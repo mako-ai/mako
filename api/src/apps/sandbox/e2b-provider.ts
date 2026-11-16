@@ -162,8 +162,47 @@ function connectSession(sessionKey: string): Promise<Sandbox> {
   return run;
 }
 
+/**
+ * Pinned-only mode, for maintenance scripts that walk existing boxes (the
+ * E2B workspace move's pre-save pass, api/src/scripts/e2b-presave-sessions.ts).
+ *
+ * Normal connectSession repairs what it finds: it lists by metadata, kills
+ * duplicate boxes and creates a fresh one when nothing answers. A script that
+ * visits someone's paused box must do none of that. In this mode a session
+ * only ever reaches the exact box pinned for it; anything else throws.
+ */
+let pinnedOnly = false;
+
+export function useE2bPinnedSessionsOnly(): void {
+  pinnedOnly = true;
+}
+
+/** Address `sessionKey` to this exact box (used with pinned-only mode). */
+export function pinE2bSession(sessionKey: string, sandboxId: string): void {
+  rememberSession(sessionKey, sandboxId);
+}
+
+/** Test seam: forget every in-process session and leave pinned-only mode. */
+export function resetE2bProviderStateForTests(): void {
+  pinnedOnly = false;
+  sessions.clear();
+  connecting.clear();
+  knownAlive.clear();
+  knownAbsent.clear();
+  keepAliveUntil.clear();
+  runningAnswer.clear();
+}
+
 async function connectSessionNow(sessionKey: string): Promise<Sandbox> {
   const known = sessions.get(sessionKey);
+  if (pinnedOnly) {
+    if (!known) {
+      throw new Error(
+        `Pinned-only mode: no sandbox is pinned for session ${sessionKey}`,
+      );
+    }
+    return Sandbox.connect(known, { apiKey: apiKey() });
+  }
   if (known) {
     try {
       return await Sandbox.connect(known, { apiKey: apiKey() });
@@ -905,6 +944,17 @@ export const e2bSandboxProvider: SandboxProvider = {
   scratch: () => "/tmp",
   hasSession: ctx => sessionExists(ctx.sessionKey),
   isRunning: ctx => sessionRunning(ctx.sessionKey),
+  sessionSandboxIds: async ctx => {
+    // Throws on a lookup failure on purpose: callers must tell "E2B said
+    // none" apart from "E2B did not answer".
+    const paginator = Sandbox.list({
+      apiKey: apiKey(),
+      query: { metadata: { makoAppsSessionKey: ctx.sessionKey } },
+      limit: 10,
+    });
+    if (!paginator.hasNext) return [];
+    return (await paginator.nextItems()).map(box => box.sandboxId);
+  },
   describe: async ctx => {
     try {
       const paginator = Sandbox.list({

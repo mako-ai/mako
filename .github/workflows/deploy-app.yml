@@ -198,9 +198,14 @@ jobs:
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_BRANCH_SIGNING_KEY }}
       AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
       # Apps sandboxes (E2B Firecracker microVMs).
+      # Per environment: the production environment secret holds the
+      # mako-prod project key, the repo-level secret the mako-dev key.
       E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
       APPS_SANDBOX_PROVIDER: e2b
-      APPS_E2B_TEMPLATE: mako-apps
+      # A variable so a project whose template needs another name is a
+      # settings change, not a code change (see
+      # docs/runbooks/e2b-workspace-migration.md).
+      APPS_E2B_TEMPLATE: ${{ vars.APPS_E2B_TEMPLATE || 'mako-apps' }}
       # Apps cloud repos (Mako-hosted GitHub storage under mako-ai-cloud).
       # All previews share the staging DB, so they share the "staging" prefix:
       # same workspace -> same repo regardless of which PR created it.
@@ -878,9 +883,17 @@ jobs:
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_SIGNING_KEY }}
       AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
       # Apps sandboxes (E2B Firecracker microVMs).
+      # Per environment: the production environment secret holds the
+      # mako-prod project key, the repo-level secret the mako-dev key.
       E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
       APPS_SANDBOX_PROVIDER: e2b
-      APPS_E2B_TEMPLATE: mako-apps
+      # A variable so a project whose template needs another name is a
+      # settings change, not a code change (see
+      # docs/runbooks/e2b-workspace-migration.md).
+      # Production reads its OWN variable. `vars.X` falls back from the
+      # environment to the repo level, so sharing APPS_E2B_TEMPLATE with
+      # previews would hand production the dev template name.
+      APPS_E2B_TEMPLATE: ${{ vars.APPS_E2B_TEMPLATE_PROD || 'mako-apps' }}
       # Apps cloud repos (Mako-hosted GitHub storage under mako-ai-cloud).
       # Production: the workspace's own GitHub repo is the only durable store
       # (apps.md §17) — no repo, no app/console saves.

@@ -6,6 +6,11 @@ vi.mock("../services/realtime.service", () => ({
 vi.mock("./dev-server.service", () => ({
   discoverDevServers: vi.fn(async () => [{ slug: "other", port: 5174 }]),
 }));
+// What the provider says it holds for a session. undefined = a provider with
+// no listing (local); a function lets a test answer or throw.
+const held = vi.hoisted(() => ({
+  ids: undefined as undefined | (() => Promise<string[]>),
+}));
 vi.mock("./sandbox/provider", () => ({
   getSandboxProvider: () => ({
     publicUrlForPort: async (_ctx: unknown, port: number) =>
@@ -13,6 +18,7 @@ vi.mock("./sandbox/provider", () => ({
     // The service resolves snapshot urls through the never-create peek.
     peekPublicUrlForPort: async (_ctx: unknown, port: number) =>
       `https://${port}-box.example`,
+    ...(held.ids ? { sessionSandboxIds: held.ids } : {}),
   }),
 }));
 
@@ -159,5 +165,82 @@ describe("box-state (memory store)", () => {
       ws,
       expect.objectContaining({ type: "app.box-state", userId: user }),
     );
+  });
+});
+
+describe("box-state after an E2B account move", () => {
+  beforeEach(() => {
+    delete process.env.REDIS_URL;
+    resetBoxStateStoreForTests();
+    vi.clearAllMocks();
+    held.ids = undefined;
+  });
+  afterEach(async () => {
+    held.ids = undefined;
+    await forgetBoxState(key);
+  });
+
+  it("drops a report from an old-account box once the new account holds one", async () => {
+    held.ids = async () => ["new-box"];
+    await patchBoxState({
+      workspaceId: ws,
+      userId: user,
+      patch: { sandboxId: "new-box", branch: "main" },
+      source: "agent",
+    });
+    const state = await patchBoxState({
+      workspaceId: ws,
+      userId: user,
+      patch: { sandboxId: "old-box", branch: "feature" },
+      source: "agent",
+    });
+    expect(state.sandboxId).toBe("new-box");
+    const stored = await getBoxState(key);
+    expect(stored?.sandboxId).toBe("new-box");
+    expect(stored?.branch).toBe("main");
+    expect(publishRealtimeEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a new box the provider does not list yet", async () => {
+    held.ids = async () => [];
+    const state = await patchBoxState({
+      workspaceId: ws,
+      userId: user,
+      patch: { sandboxId: "fresh-box", branch: "main" },
+      source: "agent",
+    });
+    expect(state.sandboxId).toBe("fresh-box");
+  });
+
+  it("accepts when the provider cannot answer", async () => {
+    held.ids = async () => {
+      throw new Error("list API blipped");
+    };
+    const state = await patchBoxState({
+      workspaceId: ws,
+      userId: user,
+      patch: { sandboxId: "some-box" },
+      source: "agent",
+    });
+    expect(state.sandboxId).toBe("some-box");
+  });
+
+  it("does not ask the provider again for the box it already believes", async () => {
+    const ids = vi.fn(async () => ["box-1"]);
+    held.ids = ids;
+    await patchBoxState({
+      workspaceId: ws,
+      userId: user,
+      patch: { sandboxId: "box-1" },
+      source: "agent",
+    });
+    await patchBoxState({
+      workspaceId: ws,
+      userId: user,
+      patch: { sandboxId: "box-1", ahead: 2 },
+      source: "agent",
+    });
+    expect(ids).toHaveBeenCalledTimes(1);
+    expect((await getBoxState(key))?.ahead).toBe(2);
   });
 });
