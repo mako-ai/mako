@@ -416,6 +416,15 @@ export interface IAppWorktree extends Document {
   userId: string;
   /** Last known branch. The sandbox wins whenever it is running. */
   branch: string;
+  /**
+   * Last REAL use of this actor's sandbox: an edit, an agent command, a
+   * preview opened or clicked, terminal input (apps/box-activity.ts). Polls
+   * from an open tab never write it. The idle sweep pauses a box this many
+   * minutes past it, and deletes a paused box days past it.
+   */
+  lastActivityAt?: Date;
+  /** A command in flight holds the box at least until here. */
+  activeUntil?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -433,6 +442,8 @@ const AppWorktreeSchema = new Schema<IAppWorktree>(
     },
     userId: { type: String, required: true },
     branch: { type: String, required: true, default: "main" },
+    lastActivityAt: { type: Date },
+    activeUntil: { type: Date },
   },
   { collection: "app_worktrees", timestamps: true },
 );

@@ -247,6 +247,12 @@ export const SourceConnection = mongoose.model<ISourceConnection>(
  * `build` sits next to `status` for a folder that carries a `package.json`
  * while CONNECTOR_BUNDLES_ENABLED is on: the source hash of the last build
  * and whether it produced a bundle. Absent for every other connector.
+ *
+ * `registry` is set for a folder installed by reference (`source:
+ * mako/<slug>@<range>` in connector.yaml, CONNECTOR_REGISTRY_ENABLED): the
+ * registry version the reference resolved to, which every run uses, and a
+ * newer major outside the range when one exists. Absent for every other
+ * connector.
  */
 export interface IConnectorDefinition extends Document {
   workspaceId: mongoose.Types.ObjectId;
@@ -284,6 +290,25 @@ export interface IConnectorDefinition extends Document {
     bytes?: number;
     builtAt?: Date;
   };
+  /** The registry version a `source:` reference resolved to (RFC connector-runtime §7). */
+  registry?: {
+    /** As written in connector.yaml: `mako/stripe@1`. */
+    ref: string;
+    /** The registry slug. */
+    slug: string;
+    range: string;
+    /** The version every run of this connector uses. */
+    version: string;
+    /** Its source hash, which names the bundle in storage. */
+    hash: string;
+    /** sha256 of the bundle bytes, checked before they enter a box. */
+    sha256: string;
+    /** The newest published version, in range or not. */
+    latest: string;
+    /** A newer major outside the range. Applying it is the workspace's commit. */
+    upgradeAvailable?: string;
+    resolvedAt: Date;
+  };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -295,6 +320,21 @@ const ConnectorBuildSchema = new Schema(
     error: { type: String, maxlength: 4000 },
     bytes: { type: Number },
     builtAt: { type: Date },
+  },
+  { _id: false },
+);
+
+const ConnectorRegistrySchema = new Schema(
+  {
+    ref: { type: String, required: true },
+    slug: { type: String, required: true },
+    range: { type: String, required: true },
+    version: { type: String, required: true },
+    hash: { type: String, required: true },
+    sha256: { type: String, required: true },
+    latest: { type: String, required: true },
+    upgradeAvailable: { type: String },
+    resolvedAt: { type: Date, required: true },
   },
   { _id: false },
 );
@@ -324,6 +364,7 @@ const ConnectorDefinitionSchema = new Schema<IConnectorDefinition>(
     lastCheckedAt: { type: Date },
     lastCheckError: { type: String, maxlength: 4000 },
     build: { type: ConnectorBuildSchema },
+    registry: { type: ConnectorRegistrySchema },
   },
   { collection: "connectordefinitions", timestamps: true },
 );

@@ -48,8 +48,13 @@ const ROOT_USER = "root";
 const userFor = (options?: { asRoot?: boolean }): string =>
   options?.asRoot ? ROOT_USER : SANDBOX_USER;
 const REMOTE_ROOT = "/home/user/app";
-/** Idle window before E2B auto-pauses the sandbox (resets on activity). */
-const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * E2B's own idle timeout: the BACKSTOP, not the policy. The idle sweep
+ * (box-idle.service.ts) pauses after 10 minutes of real use; this sits above
+ * it (15) so E2B pausing on its own never races the sweep, and a box that
+ * escaped the sweep (cron down) still sleeps.
+ */
+const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 
 function apiKey(): string {
   const key = process.env.E2B_API_KEY;
@@ -201,15 +206,56 @@ export function isConnectorBoxKey(sessionKey: string): boolean {
 function connectSession(sessionKey: string): Promise<Sandbox> {
   const inflight = connecting.get(sessionKey);
   if (inflight) return inflight;
-  const run = connectSessionNow(sessionKey).finally(() =>
-    connecting.delete(sessionKey),
-  );
+  const run = connectSessionNow(sessionKey).finally(() => {
+    connecting.delete(sessionKey);
+    // A connect resumes a paused box: "not running" no longer holds.
+    runningAnswer.delete(sessionKey);
+  });
   connecting.set(sessionKey, run);
   return run;
 }
 
+/**
+ * Pinned-only mode, for maintenance scripts that walk existing boxes (the
+ * E2B workspace move's pre-save pass, api/src/scripts/e2b-presave-sessions.ts).
+ *
+ * Normal connectSession repairs what it finds: it lists by metadata, kills
+ * duplicate boxes and creates a fresh one when nothing answers. A script that
+ * visits someone's paused box must do none of that. In this mode a session
+ * only ever reaches the exact box pinned for it; anything else throws.
+ */
+let pinnedOnly = false;
+
+export function useE2bPinnedSessionsOnly(): void {
+  pinnedOnly = true;
+}
+
+/** Address `sessionKey` to this exact box (used with pinned-only mode). */
+export function pinE2bSession(sessionKey: string, sandboxId: string): void {
+  rememberSession(sessionKey, sandboxId);
+}
+
+/** Test seam: forget every in-process session and leave pinned-only mode. */
+export function resetE2bProviderStateForTests(): void {
+  pinnedOnly = false;
+  sessions.clear();
+  connecting.clear();
+  knownAlive.clear();
+  knownAbsent.clear();
+  keepAliveUntil.clear();
+  runningAnswer.clear();
+}
+
 async function connectSessionNow(sessionKey: string): Promise<Sandbox> {
   const known = sessions.get(sessionKey);
+  if (pinnedOnly) {
+    if (!known) {
+      throw new Error(
+        `Pinned-only mode: no sandbox is pinned for session ${sessionKey}`,
+      );
+    }
+    return Sandbox.connect(known, { apiKey: apiKey() });
+  }
   if (known) {
     try {
       return await Sandbox.connect(known, { apiKey: apiKey() });
@@ -911,7 +957,7 @@ const boxLifecycleE2b: SandboxBoxLifecycle = {
     const id = await sandboxIdFor(sessionKey);
     if (!id) return;
     await Sandbox.pause(id, { apiKey: apiKey() });
-    knownAlive.delete(sessionKey);
+    noteSessionPaused(sessionKey);
   },
   async snapshot(sessionKey, name) {
     const sandbox = await connectSession(sessionKey);
@@ -933,6 +979,81 @@ const boxLifecycleE2b: SandboxBoxLifecycle = {
   },
 };
 
+/**
+ * "Running?" answers, briefly, for background polls (provider.ts isRunning).
+ *
+ * Unlike sessionExists this never trusts the in-process `sessions` map: that
+ * map still names a box after E2B paused it, and the exec that followed a
+ * stale yes is exactly what resumed it. Both answers are cached for a beat
+ * so a poll burst is one list call.
+ */
+const runningAnswer = new Map<string, { running: boolean; until: number }>();
+const RUNNING_ANSWER_TTL_MS = 10_000;
+
+async function sessionRunning(sessionKey: string): Promise<boolean> {
+  const cached = runningAnswer.get(sessionKey);
+  if (cached && cached.until > Date.now()) return cached.running;
+  try {
+    const paginator = Sandbox.list({
+      apiKey: apiKey(),
+      query: {
+        metadata: { makoAppsSessionKey: sessionKey },
+        state: ["running"],
+      },
+      limit: 1,
+    });
+    const running =
+      paginator.hasNext && (await paginator.nextItems()).length > 0;
+    runningAnswer.set(sessionKey, {
+      running,
+      until: Date.now() + RUNNING_ANSWER_TTL_MS,
+    });
+    return running;
+  } catch {
+    // A poll that cannot tell answers "offline"; the next beat asks again.
+    return false;
+  }
+}
+
+const pausedListeners = new Set<(sessionKey: string) => void>();
+
+/**
+ * Run `listener` whenever this process learns a session's box was paused.
+ * For per-session state held outside this module (a cached Sandbox handle,
+ * PR 1284), which must not outlive the pause. Returns an unsubscribe.
+ */
+export function onSessionPaused(
+  listener: (sessionKey: string) => void,
+): () => void {
+  pausedListeners.add(listener);
+  return () => pausedListeners.delete(listener);
+}
+
+/**
+ * The idle sweep paused this session's box: drop everything this process
+ * cached about it, so its polls stop answering "running" from memory and
+ * the next real use reconnects (and resumes) from scratch.
+ */
+export function noteSessionPaused(sessionKey: string): void {
+  runningAnswer.set(sessionKey, {
+    running: false,
+    until: Date.now() + RUNNING_ANSWER_TTL_MS,
+  });
+  keepAliveUntil.delete(sessionKey);
+  sessions.delete(sessionKey);
+  knownAlive.delete(sessionKey);
+  for (const listener of pausedListeners) {
+    try {
+      listener(sessionKey);
+    } catch (error) {
+      logger.warn("A session-paused listener threw", {
+        sessionKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
 export const e2bSandboxProvider: SandboxProvider = {
   id: "e2b",
   supportsRunUsers: true,
@@ -942,6 +1063,18 @@ export const e2bSandboxProvider: SandboxProvider = {
   root: () => REMOTE_ROOT,
   scratch: () => "/tmp",
   hasSession: ctx => sessionExists(ctx.sessionKey),
+  isRunning: ctx => sessionRunning(ctx.sessionKey),
+  sessionSandboxIds: async ctx => {
+    // Throws on a lookup failure on purpose: callers must tell "E2B said
+    // none" apart from "E2B did not answer".
+    const paginator = Sandbox.list({
+      apiKey: apiKey(),
+      query: { metadata: { makoAppsSessionKey: ctx.sessionKey } },
+      limit: 10,
+    });
+    if (!paginator.hasNext) return [];
+    return (await paginator.nextItems()).map(box => box.sandboxId);
+  },
   describe: async ctx => {
     try {
       const paginator = Sandbox.list({

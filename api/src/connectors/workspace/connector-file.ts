@@ -7,6 +7,10 @@
  * from them.
  */
 import { loadYaml } from "../../utils/yaml";
+import {
+  parseRegistryReference,
+  type RegistryReference,
+} from "./registry/semver";
 
 /** The runtimes that exist. Only `node` runs today; the rest are named so a
  * folder declaring one gets a straight answer instead of a parse error. */
@@ -23,9 +27,28 @@ export type ConnectorRuntime = (typeof KNOWN_RUNTIMES)[number];
 
 export interface ConnectorFile {
   runtime: ConnectorRuntime;
-  /** Entry file for the `node` runtime, relative to the folder. */
+  /**
+   * Entry file for the `node` runtime, relative to the folder. For a folder
+   * installed by reference (`source`), the default and unused: the code is
+   * the registry bundle.
+   */
   entry: string;
+  /**
+   * Install by reference (RFC connector-runtime §7): `mako/<slug>@<range>`.
+   * Mutually exclusive with `entry`. The folder then holds no code; the push
+   * reconciler resolves the newest registry version in the range. Read only
+   * with CONNECTOR_REGISTRY_ENABLED on, see {@link ParseOptions}.
+   */
+  source?: RegistryReference;
   page?: { vendor?: string; category?: string; docs?: string };
+}
+
+export interface ParseOptions {
+  /**
+   * Read `source:` (CONNECTOR_REGISTRY_ENABLED). Off, the key is ignored as
+   * any unknown key always was, so a push parses exactly as before.
+   */
+  registry?: boolean;
 }
 
 export type ParseResult =
@@ -43,7 +66,10 @@ export function isValidSlug(slug: string): boolean {
  * Every refusal is phrased as the fix, because the reader is whoever just
  * pushed the folder and the message is all they will see.
  */
-export function parseConnectorFile(contents: string): ParseResult {
+export function parseConnectorFile(
+  contents: string,
+  options: ParseOptions = {},
+): ParseResult {
   let parsed: unknown;
   try {
     parsed = loadYaml(contents);
@@ -68,7 +94,30 @@ export function parseConnectorFile(contents: string): ParseResult {
   }
 
   const raw = parsed as Record<string, unknown>;
-  const runtime = raw.runtime;
+
+  let source: RegistryReference | undefined;
+  if (options.registry && raw.source !== undefined) {
+    if (typeof raw.source !== "string") {
+      return {
+        ok: false,
+        reason: "`source` must be a string, e.g. `source: mako/stripe@1`.",
+      };
+    }
+    if (raw.entry !== undefined) {
+      return {
+        ok: false,
+        reason:
+          "connector.yaml has both `source` and `entry`. Keep `source` to install the Mako " +
+          "connector by reference, or keep `entry` (and drop `source`) to run the code in this folder.",
+      };
+    }
+    const reference = parseRegistryReference(raw.source);
+    if (!reference.ok) return { ok: false, reason: reference.reason };
+    source = reference.value;
+  }
+
+  // A reference needs no runtime line: the registry entry is a node bundle.
+  const runtime = source && raw.runtime === undefined ? "node" : raw.runtime;
   if (typeof runtime !== "string") {
     return {
       ok: false,
@@ -120,6 +169,7 @@ export function parseConnectorFile(contents: string): ParseResult {
     value: {
       runtime: runtime as ConnectorRuntime,
       entry,
+      ...(source ? { source } : {}),
       page: page as ConnectorFile["page"],
     },
   };

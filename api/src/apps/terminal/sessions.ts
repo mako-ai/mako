@@ -11,6 +11,7 @@ import {
   type SandboxTerminal,
 } from "../sandbox/provider";
 import { boxCtx, ensureWorktree, sessionKeyFor } from "../worktree.service";
+import { noteBoxActivity } from "../box-activity";
 
 const logger = loggers.api("apps-terminal");
 
@@ -130,6 +131,8 @@ const CTRL_C = 0x03;
  * closing any paste that input might have left open.
  */
 export function forward(session: LiveTerminal, data: Buffer): void {
+  // Typing is real use. An open but silent terminal is not.
+  noteBoxActivity(session.ctx?.sessionKey, "terminal-input");
   const lastCtrlC = data.lastIndexOf(CTRL_C);
   if (lastCtrlC !== -1) {
     void session.terminal.interrupt().catch(() => undefined);

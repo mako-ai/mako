@@ -16,6 +16,7 @@ import {
   boxRestoreTreeFrom,
 } from "../box";
 import { patchBoxState } from "../box-state.service";
+import { noteBoxActivity } from "../box-activity";
 import { assertSafeRelPath, EMPTY_TREE } from "../git";
 import {
   log as repoLog,
@@ -189,6 +190,7 @@ export async function commitWorktree(
   options: { stagedOnly?: boolean; paths?: string[] } = {},
 ): Promise<CommitResult> {
   const ctx = await ensureBox(handle);
+  noteBoxActivity(ctx.sessionKey, "commit");
   const result = await boxCommitAll({
     ctx,
     message,

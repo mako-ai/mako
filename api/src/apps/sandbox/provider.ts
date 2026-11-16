@@ -159,6 +159,18 @@ export interface SandboxProvider {
    * commit" needs a way to ask that is not itself an act of turning it on.
    */
   hasSession(ctx: SandboxExecContext): Promise<boolean>;
+  /**
+   * Is the sandbox RUNNING right now (not paused, not absent)? Never creates
+   * or resumes one.
+   *
+   * hasSession counts a paused box as present, which is right for a person
+   * opening a file (their uncommitted work lives there) and wrong for a
+   * background poll: any exec after it resumes the box, so a tab polling
+   * status woke every box the idle sweep had just put to sleep. Polls ask
+   * this instead and treat a paused box as offline. Optional: a provider
+   * without pausing answers through hasSession (see boxIsRunning).
+   */
+  isRunning?(ctx: SandboxExecContext): Promise<boolean>;
   /** Absolute path for scratch files that must NOT enter the working copy. */
   scratch(ctx: SandboxExecContext): string;
   /**
@@ -260,6 +272,16 @@ export interface SandboxProvider {
    * Absent where there is no VM to pause or snapshot (local).
    */
   boxLifecycle?: SandboxBoxLifecycle;
+  /**
+   * Every sandbox id the provider holds for this session, without creating or
+   * connecting to any. Throws when the provider cannot answer, so a caller
+   * can tell "none" apart from "unknown".
+   *
+   * Box processes report their own sandbox id. After an account move (a new
+   * E2B API key) a box left running in the OLD account keeps reporting for
+   * the same session key, and this is how the API recognises it as foreign.
+   */
+  sessionSandboxIds?(ctx: SandboxExecContext): Promise<string[]>;
   /** Tear down any remote session for the given affinity key (best effort). */
   destroySession?(sessionKey: string): Promise<void>;
   /**
@@ -286,4 +308,15 @@ export function getSandboxProvider(): SandboxProvider {
     return localSandboxProvider;
   }
   return e2bSandboxProvider;
+}
+
+/**
+ * Running, not merely present: the question a background poll must ask
+ * before it execs (see SandboxProvider.isRunning).
+ */
+export async function boxIsRunning(ctx: SandboxExecContext): Promise<boolean> {
+  const provider = getSandboxProvider();
+  return provider.isRunning
+    ? provider.isRunning(ctx)
+    : provider.hasSession(ctx);
 }

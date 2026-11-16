@@ -15,7 +15,9 @@ import {
   boxCtx,
   discardWorktree,
   ensureWorktree,
+  sessionKeyFor,
 } from "../../apps/worktree.service";
+import { recordBoxActivity } from "../../apps/box-activity";
 import { buildLogPath } from "../../apps/deployment.service";
 import {
   killAllTerminalSessions,
@@ -317,6 +319,33 @@ appsSandboxRoutes.openapi(
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { termId } = c.req.valid("param");
       await killTerminalSession(loaded.project, actorOf(loaded), termId);
+      return c.json({ success: true as const }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsSandboxRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/activity",
+    tags: ["Apps"],
+    summary: "Record real use of the caller's sandbox (a preview interaction)",
+    description:
+      "The workbench calls this when the person interacts with the live preview (focuses or points into it). It keeps the sandbox from the idle pause; an open tab that only polls never does. Never starts, resumes or touches a sandbox.",
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      await recordBoxActivity(
+        sessionKeyFor(loaded.project.workspaceId, actorOf(loaded)),
+        "preview",
+      );
       return c.json({ success: true as const }, 200);
     } catch (error) {
       return handleError(c, error);
