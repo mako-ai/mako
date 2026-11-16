@@ -77,6 +77,9 @@ thousand in a minute. They queue instead of all running at once:
   request made outside any step's own flow goes without a pass, and is
   refused, rather than with a neighbour's. A cancelled step is told to
   stop, and its program is stopped once the steps beside it have ended.
+- **Going back.** `WORKFLOWS_STEPS_PER_PROGRAM=1` on the Mako API gives
+  every step a program of its own again (16 steps a pod). Workers move to
+  a changed setting when the API next starts, as they do to a new image.
 - **Waiting is not failing.** A step waits up to 24 h to start
   (`WORKFLOWS_SCHEDULE_TIMEOUT`); Hatchet's default cancels it after 5 min.
   A step whose pass cannot be checked because Hatchet does not answer waits

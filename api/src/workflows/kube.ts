@@ -33,6 +33,23 @@ const ENV_LABEL = "mako.ai/env";
 const WORKER_PROGRAMS = 16;
 const WORKER_STEPS_PER_PROGRAM = 8;
 export const WORKER_STEPS = WORKER_PROGRAMS * WORKER_STEPS_PER_PROGRAM;
+
+/**
+ * Steps a step program runs at once: WORKFLOWS_STEPS_PER_PROGRAM on the API
+ * (1 to 32), else 8. Set it to 1 to go back to a program per step, 16 steps
+ * a pod, without a new build: workers move to it when the API next starts.
+ */
+function stepsPerProgram(): number {
+  const asked = Number(process.env.WORKFLOWS_STEPS_PER_PROGRAM);
+  return Number.isInteger(asked) && asked >= 1 && asked <= 32
+    ? asked
+    : WORKER_STEPS_PER_PROGRAM;
+}
+
+/** Steps one pod runs at once, as set now. */
+export function workerSteps(): number {
+  return WORKER_PROGRAMS * stepsPerProgram();
+}
 const WORKER_RESOURCES = {
   requests: { cpu: "250m", memory: "512Mi" },
   limits: { cpu: "2", memory: "3Gi" },
@@ -135,11 +152,11 @@ export async function writeWorkerSecret(
 /** Settings an operator may pass to every worker, each with its default. */
 function limitsEnv(): Array<{ name: string; value: string }> {
   const env = [
-    { name: "WORKFLOWS_MAX_STEPS", value: String(WORKER_STEPS) },
+    { name: "WORKFLOWS_MAX_STEPS", value: String(workerSteps()) },
     { name: "WORKFLOWS_MAX_PROGRAMS", value: String(WORKER_PROGRAMS) },
     {
       name: "WORKFLOWS_STEPS_PER_PROGRAM",
-      value: String(WORKER_STEPS_PER_PROGRAM),
+      value: String(stepsPerProgram()),
     },
     {
       name: "WORKFLOWS_MAX_RUNS",
@@ -242,6 +259,31 @@ function deploymentBody(workspaceId: string, replicas = 1): V1Deployment {
   };
 }
 
+/**
+ * Whether a worker Deployment is as this API would make it: its image, its
+ * size and its limits. A setting changed on the API (WORKFLOWS_MAX_RUNS,
+ * WORKFLOWS_STEPS_PER_PROGRAM, WORKFLOWS_RATE_LIMITS) then reaches the
+ * workers like a new image does.
+ */
+function isCurrent(deployment: V1Deployment): boolean {
+  const container = deployment.spec?.template?.spec?.containers?.[0];
+  if (container?.image !== runtimeImage()) return false;
+  const has = new Map(
+    (container?.env ?? [])
+      .filter(entry => entry.name.startsWith("WORKFLOWS_"))
+      .map(entry => [entry.name, entry.value]),
+  );
+  const wanted = limitsEnv();
+  return (
+    has.size === wanted.length &&
+    wanted.every(entry => has.get(entry.name) === entry.value) &&
+    JSON.stringify(container?.resources?.limits) ===
+      JSON.stringify(WORKER_RESOURCES.limits) &&
+    JSON.stringify(container?.resources?.requests) ===
+      JSON.stringify(WORKER_RESOURCES.requests)
+  );
+}
+
 /** The image a worker Deployment runs. */
 function workerImage(deployment: V1Deployment): string | undefined {
   return deployment.spec?.template?.spec?.containers?.[0]?.image;
@@ -308,12 +350,16 @@ export async function ensureWorkerDeployment(
     await ensureAutoscaler(workspaceId);
     return;
   }
-  if (workerImage(existing) !== runtimeImage() || restart) {
+  if (!isCurrent(existing) || restart) {
     await replaceWorker(
       apps,
       workspaceId,
       existing,
-      restart ? "new credential" : "new runtime image",
+      restart
+        ? "new credential"
+        : workerImage(existing) === runtimeImage()
+          ? "new settings"
+          : "new runtime image",
     );
   }
   await ensureAutoscaler(workspaceId);
@@ -394,7 +440,7 @@ export function autoscalerBodies(workspaceId: string) {
             metadata: {
               url: `${makoUrl()}/api/workflows/runtime/demand`,
               valueLocation: "steps",
-              targetValue: String(WORKER_STEPS),
+              targetValue: String(workerSteps()),
               // One step is enough to start the first pod.
               activationTargetValue: "0",
               authMode: "bearer",
@@ -481,7 +527,7 @@ export async function rollWorkersToRuntimeImage(
   const moved: string[] = [];
   for (const deployment of items) {
     const workspaceId = deployment.metadata?.labels?.[WORKSPACE_LABEL];
-    if (!workspaceId || workerImage(deployment) === image) continue;
+    if (!workspaceId || isCurrent(deployment)) continue;
     try {
       await replaceWorker(client, workspaceId, deployment, "API started");
       moved.push(workspaceId);

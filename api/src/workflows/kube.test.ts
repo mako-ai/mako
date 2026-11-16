@@ -36,6 +36,7 @@ async function main() {
     ensureAutoscaler,
     rollWorkersToRuntimeImage,
     workerSelector,
+    workerSteps,
   } = await import("./kube");
 
   // Production has no env label; a preview selects its own.
@@ -53,13 +54,16 @@ async function main() {
   const asked: { selector?: string; replaced: V1Deployment[] } = {
     replaced: [],
   };
+  let current: V1Deployment | undefined = undefined;
   const apps = {
     listNamespacedDeployment: async (req: { labelSelector?: string }) => {
       asked.selector = req.labelSelector;
+      // A worker as this API makes it: the body of the first move.
+      if (!current) return { items: [worker("seed", OLD)] };
       return {
         items: [
           worker("stale", OLD),
-          worker("current", NEW),
+          current,
           worker("raced", OLD),
           worker("broken", OLD),
         ],
@@ -77,6 +81,9 @@ async function main() {
       return req.body;
     },
   };
+  assert.deepEqual(await rollWorkersToRuntimeImage(apps as never), ["seed"]);
+  current = { ...worker("current", NEW), spec: asked.replaced[0].spec };
+  asked.replaced.length = 0;
   const moved = await rollWorkersToRuntimeImage(apps as never);
   assert.deepEqual(moved, ["stale"]);
   assert.equal(asked.selector, workerSelector());
@@ -125,6 +132,28 @@ async function main() {
   assert.equal(grownEnv.WORKFLOWS_MAX_RUNS, "20");
   delete process.env.WORKFLOWS_RATE_LIMITS;
   delete process.env.WORKFLOWS_MAX_RUNS;
+
+  // A setting changed on the API reaches a worker on the same image: one
+  // step per program again is one setting, not a revert.
+  process.env.WORKFLOWS_STEPS_PER_PROGRAM = "1";
+  asked.replaced.length = 0;
+  apps.listNamespacedDeployment = async () => ({
+    items: [current as V1Deployment],
+  });
+  assert.deepEqual(await rollWorkersToRuntimeImage(apps as never), ["current"]);
+  const single = Object.fromEntries(
+    (asked.replaced[0].spec?.template.spec?.containers[0].env ?? []).map(e => [
+      e.name,
+      e.value,
+    ]),
+  );
+  assert.equal(single.WORKFLOWS_STEPS_PER_PROGRAM, "1");
+  assert.equal(single.WORKFLOWS_MAX_STEPS, "16");
+  assert.equal(workerSteps(), 16);
+  // Not a number of steps: the default.
+  process.env.WORKFLOWS_STEPS_PER_PROGRAM = "many";
+  assert.equal(workerSteps(), WORKER_STEPS);
+  delete process.env.WORKFLOWS_STEPS_PER_PROGRAM;
 
   // The autoscaler: off unless asked for; with KEDA, an object that reads
   // Mako's demand with the worker's own key and sleeps at zero pods.
