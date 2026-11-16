@@ -110,4 +110,30 @@ describe("withBoxPushLock", () => {
     await second;
     expect(order).toEqual(["first start", "other box", "first end", "second"]);
   });
+
+  it("gives up after the wait, runs nothing, and leaves the queue working", async () => {
+    const { withBoxPushLock, BoxPushLockTimeoutError } =
+      await import("./files");
+    let releaseHolder!: () => void;
+    const holder = withBoxPushLock("busy", async () => {
+      await new Promise<void>(resolve => (releaseHolder = resolve));
+    });
+    let ran = false;
+    await expect(
+      withBoxPushLock(
+        "busy",
+        async () => {
+          ran = true;
+        },
+        { waitMs: 20 },
+      ),
+    ).rejects.toBeInstanceOf(BoxPushLockTimeoutError);
+    expect(ran).toBe(false);
+    releaseHolder();
+    await holder;
+    await withBoxPushLock("busy", async () => {
+      ran = true;
+    });
+    expect(ran).toBe(true);
+  });
 });

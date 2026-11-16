@@ -36,6 +36,22 @@ const state = vi.hoisted(() => ({
   archived: [] as Array<{ path: string; ownerId?: string; scope: string }>,
   lockHeld: [] as boolean[],
   locked: false,
+  /** The lock is held elsewhere past the wait: withBoxPushLock gives up. */
+  lockBusy: false,
+  /** Symlinks in the working copy: path → where it really points. */
+  links: new Map<string, string>(),
+  /** Every path on any ref under users/ or archive/ (the history scan). */
+  historyPaths: [] as string[],
+  /** Origin's main as the box knew it before the command. */
+  knownBase: "",
+}));
+
+vi.mock("../../apps/git", async importOriginal => ({
+  ...(await importOriginal<typeof import("../../apps/git")>()),
+  runGit: vi.fn(async () => ({
+    stdout: state.historyPaths.join("\n"),
+    stderr: "",
+  })),
 }));
 
 vi.mock("../../services/workspace.service", () => ({
@@ -97,53 +113,94 @@ vi.mock("../../logging", () => {
 
 vi.mock("../../apps/repository.service", () => ({ DEFAULT_BRANCH: "main" }));
 
-vi.mock("../../apps/worktree.service", () => ({
-  boxCtx: vi.fn(() => ({ sessionKey: "box" })),
-  ensureBox: vi.fn(async () => ({ sessionKey: "box" })),
-  ensureWorkspaceWorktree: vi.fn(async () => ({
-    appRoot: "",
-    repoDir: "/repo",
-    doc: { branch: "main", userId: "u1" },
-  })),
-  withBoxPushLock: vi.fn(async (_key: string, fn: () => Promise<unknown>) => {
-    state.locked = true;
-    try {
-      return await fn();
-    } finally {
-      state.locked = false;
+vi.mock("../../apps/worktree.service", () => {
+  class BoxPushLockTimeoutError extends Error {
+    constructor() {
+      super("The sandbox is busy with another command (waited 30 s).");
     }
-  }),
-  execInWorktree: vi.fn(
-    async (_handle: unknown, command: string, options: object = {}) => {
-      state.exec.push({ command, options: options as Record<string, unknown> });
-      state.lockHeld.push(state.locked);
-      const answer = state.answers.find(a => command.includes(a.match));
-      if (answer?.throws) throw new Error(answer.throws);
-      return {
-        exitCode: 0,
-        stdout: answer?.stdout ?? "",
-        stderr: answer?.stderr ?? "",
-        timedOut: false,
-        truncated: false,
-        durationMs: 5,
-      };
-    },
-  ),
-  readSessionFile: vi.fn(async (_handle: unknown, relPath: string) => {
-    const contents = state.files.get(relPath);
-    if (contents === undefined) throw new Error(`ENOENT ${relPath}`);
-    return contents;
-  }),
-  writeFile: vi.fn(
-    async (_handle: unknown, relPath: string, contents: string) => {
-      state.writes.push({ path: relPath, contents });
-      state.files.set(relPath, contents);
-    },
-  ),
-  writeWorktreeScratchFile: vi.fn(
-    async () => "/tmp/mako-scratch/mako-tool-output/t.log",
-  ),
-}));
+  }
+  return {
+    BoxPushLockTimeoutError,
+    boxCtx: vi.fn(() => ({ sessionKey: "box" })),
+    ensureBox: vi.fn(async () => ({ sessionKey: "box" })),
+    ensureWorkspaceWorktree: vi.fn(async () => ({
+      appRoot: "",
+      repoDir: "/repo",
+      doc: { branch: "main", userId: "u1" },
+    })),
+    withBoxPushLock: vi.fn(async (_key: string, fn: () => Promise<unknown>) => {
+      if (state.lockBusy) throw new BoxPushLockTimeoutError();
+      state.locked = true;
+      try {
+        return await fn();
+      } finally {
+        state.locked = false;
+      }
+    }),
+    execInWorktree: vi.fn(
+      async (_handle: unknown, command: string, options: object = {}) => {
+        // Path resolution and the pre-command base read answer from state;
+        // they are not the commands under test.
+        const real = /^realpath -m --relative-to=\. -- '(.*)'$/.exec(command);
+        if (real) {
+          const target =
+            state.links.get(real[1]) ?? real[1].replace(/^\.\//, "");
+          return {
+            exitCode: 0,
+            stdout: `${target}\n`,
+            stderr: "",
+            timedOut: false,
+            truncated: false,
+            durationMs: 1,
+          };
+        }
+        state.exec.push({
+          command,
+          options: options as Record<string, unknown>,
+        });
+        state.lockHeld.push(state.locked);
+        if (
+          command.startsWith(
+            "git rev-parse -q --verify refs/remotes/origin/main",
+          )
+        ) {
+          return {
+            exitCode: 0,
+            stdout: `${state.knownBase}\n`,
+            stderr: "",
+            timedOut: false,
+            truncated: false,
+            durationMs: 1,
+          };
+        }
+        const answer = state.answers.find(a => command.includes(a.match));
+        if (answer?.throws) throw new Error(answer.throws);
+        return {
+          exitCode: 0,
+          stdout: answer?.stdout ?? "",
+          stderr: answer?.stderr ?? "",
+          timedOut: false,
+          truncated: false,
+          durationMs: 5,
+        };
+      },
+    ),
+    readSessionFile: vi.fn(async (_handle: unknown, relPath: string) => {
+      const contents = state.files.get(relPath);
+      if (contents === undefined) throw new Error(`ENOENT ${relPath}`);
+      return contents;
+    }),
+    writeFile: vi.fn(
+      async (_handle: unknown, relPath: string, contents: string) => {
+        state.writes.push({ path: relPath, contents });
+        state.files.set(relPath, contents);
+      },
+    ),
+    writeWorktreeScratchFile: vi.fn(
+      async () => "/tmp/mako-scratch/mako-tool-output/t.log",
+    ),
+  };
+});
 
 // repo-tools.ts is imported for repoPathVisibility only; its own heavy
 // imports are not exercised.
@@ -151,7 +208,7 @@ vi.mock("../../apps/cloud-repo.service", () => ({
   freshenForServe: vi.fn(),
 }));
 vi.mock("../../apps/workspace-repo-required", () => ({
-  boundRepoDirIfExists: vi.fn(),
+  boundRepoDirIfExists: vi.fn(async () => "/repo"),
 }));
 
 const WS = "6846e6a01b05af0948070582";
@@ -169,12 +226,16 @@ type Tools = Record<
 async function tools(
   userId: string | undefined = "u1",
   maxTimeoutSeconds?: number,
+  automationKey?: boolean,
 ): Promise<Tools> {
-  const { createSandboxTools } = await import("./sandbox-tools");
+  const { createSandboxTools, forgetHiddenPathsCache } =
+    await import("./sandbox-tools");
+  forgetHiddenPathsCache();
   return createSandboxTools({
     workspaceId: WS,
     userId,
     maxTimeoutSeconds,
+    automationKey,
   }) as unknown as Tools;
 }
 const call = async (name: string, input: object, userId?: string) =>
@@ -184,6 +245,13 @@ const call = async (name: string, input: object, userId?: string) =>
   });
 const settleCommands = () =>
   state.exec.filter(e => e.command.includes("ls-remote origin"));
+/** The command under test, not the base read or the settle step. */
+const commandRuns = () =>
+  state.exec.filter(
+    e =>
+      !e.command.includes("ls-remote origin") &&
+      !e.command.startsWith("git rev-parse -q --verify refs/remotes/origin"),
+  );
 
 beforeEach(() => {
   state.role = "member";
@@ -206,6 +274,13 @@ beforeEach(() => {
   state.archived = [];
   state.lockHeld = [];
   state.locked = false;
+  state.lockBusy = false;
+  state.links = new Map();
+  state.historyPaths = [
+    "users/joan/consoles/mine.sql",
+    "users/joan/apps/mine/src/App.tsx",
+  ];
+  state.knownBase = "";
 });
 
 describe("who may use the sandbox", () => {
@@ -265,7 +340,7 @@ describe("who may use the sandbox", () => {
       { command: "ls" },
       { toolCallId: "t", messages: [] },
     );
-    expect(state.exec[0].options.timeoutMs).toBe(100_000);
+    expect(commandRuns()[0].options.timeoutMs).toBe(100_000);
   });
 });
 
@@ -284,7 +359,7 @@ describe("another member's private app", () => {
       command: "git show origin/main:users/vadim/apps/secret/src/App.tsx",
     });
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/holds 1 app\(s\) you may not see/);
+    expect(result.error).toMatch(/holds 1 app\(s\) and \d+ file\(s\)/);
     expect(state.exec).toHaveLength(0);
   });
 
@@ -346,13 +421,14 @@ describe("sandbox_bash", () => {
       timeoutSeconds: 30,
     });
     expect(result).toMatchObject({ success: true, stdout: "/home/user/app\n" });
-    expect(state.exec[0]).toMatchObject({
+    expect(commandRuns()[0]).toMatchObject({
       command: "pwd",
       options: { cwd: "dbt", timeoutMs: 30_000, pushIfAhead: false },
     });
     expect(settleCommands()).toHaveLength(1);
     expect(settleCommands()[0].options.pushIfAhead).toBe(false);
-    expect(state.lockHeld).toEqual([true, true]);
+    // Base read, command, settle step: all under the lock.
+    expect(state.lockHeld).toEqual([true, true, true]);
     // On a branch other than main: the session branch is pushed.
     expect(state.pushes).toBe(1);
   });
@@ -383,7 +459,7 @@ describe("sandbox_bash", () => {
   it("moves commits made on main to a sandbox branch and says so", async () => {
     state.answers.push({
       match: "ls-remote",
-      stdout: "MOVED 2 keep 1 sandbox/joan/20261116T082414Z-abcd1234\n",
+      stdout: "MOVED 2 keep 1 sandbox/joan/20261116T082414Z-abcd1234 1\n",
     });
     const result = await call("sandbox_bash", {
       command: "git commit -am settle-me",
@@ -559,6 +635,162 @@ describe("sandbox_read_file and sandbox_write_file", () => {
   });
 });
 
+describe("second security review", () => {
+  it("refuses sandbox_bash when another member's private console or notebook exists", async () => {
+    for (const hidden of [
+      "users/vadim/consoles/pipeline.sql",
+      "users/vadim/notebooks/churn.ipynb",
+    ]) {
+      state.historyPaths = [...state.historyPaths, hidden];
+      const result = await call("sandbox_bash", { command: "ls users" });
+      expect(result.success, hidden).toBe(false);
+      expect(result.error, hidden).toMatch(/0 app\(s\) and 1 file\(s\)/);
+      state.historyPaths = state.historyPaths.filter(p => p !== hidden);
+    }
+    expect(commandRuns()).toHaveLength(0);
+  });
+
+  it("keeps another member's private console and notebook hidden from the file tools", async () => {
+    state.files.set("users/vadim/consoles/pipeline.sql", "select secret");
+    state.files.set("users/vadim/notebooks/churn.ipynb", "{}");
+    for (const path of [
+      "users/vadim/consoles/pipeline.sql",
+      "users/vadim/notebooks/churn.ipynb",
+    ]) {
+      expect((await call("sandbox_read_file", { path })).error, path).toMatch(
+        /not found/,
+      );
+      expect(
+        (await call("sandbox_write_file", { path, contents: "x" })).error,
+        path,
+      ).toMatch(/not found/);
+    }
+    // The caller's own console is theirs.
+    state.files.set("users/joan/consoles/mine.sql", "select 1");
+    expect(
+      (
+        await call("sandbox_read_file", {
+          path: "users/joan/consoles/mine.sql",
+        })
+      ).success,
+    ).toBe(true);
+    expect(state.writes).toHaveLength(0);
+  });
+
+  it("allows sandbox_bash when every path under users/ is the caller's own", async () => {
+    const result = await call("sandbox_bash", { command: "ls" });
+    expect(result.success).toBe(true);
+  });
+
+  it("fails closed when the history scan cannot run", async () => {
+    const git = await import("../../apps/git");
+    vi.mocked(git.runGit).mockRejectedValueOnce(new Error("mirror gone"));
+    const result = await call("sandbox_bash", { command: "ls" });
+    expect(result.success).toBe(false);
+    expect(commandRuns()).toHaveLength(0);
+  });
+
+  it("follows a symlink before checking visibility", async () => {
+    state.apps.push({
+      appId: "a3",
+      path: "users/vadim/apps/secret",
+      scope: "private",
+      ownerId: "u2",
+    });
+    state.files.set("users/vadim/apps/secret/.env.prod", "KEY=1");
+    state.files.set("users/vadim/apps/secret/src/App.tsx", "secret");
+    state.links.set(
+      "apps/sales/link.tsx",
+      "users/vadim/apps/secret/src/App.tsx",
+    );
+    state.links.set("apps/sales/out", "../../etc/passwd");
+    const read = await call("sandbox_read_file", {
+      path: "apps/sales/link.tsx",
+    });
+    expect(read.error).toMatch(/not found/);
+    expect(JSON.stringify(read)).not.toContain('secret"');
+    const write = await call("sandbox_write_file", {
+      path: "apps/sales/link.tsx",
+      contents: "overwrite",
+    });
+    expect(write.error).toMatch(/not found/);
+    expect(
+      (await call("sandbox_read_file", { path: "apps/sales/out" })).error,
+    ).toMatch(/outside the repo/);
+    expect(state.writes).toHaveLength(0);
+  });
+
+  it("reads and writes through a symlink that stays visible, at its target", async () => {
+    state.files.set("apps/sales/real.ts", "export const a = 1;");
+    state.links.set("apps/sales/alias.ts", "apps/sales/real.ts");
+    const read = await call("sandbox_read_file", {
+      path: "apps/sales/alias.ts",
+    });
+    expect(read).toMatchObject({ success: true, path: "apps/sales/real.ts" });
+  });
+
+  it("gives a redacted read a token that stripping the prefix cannot turn into the file's hash", async () => {
+    const original = "token = mgt_abcdefghijklmnopqrstuv\n";
+    state.files.set("cfg.ini", original);
+    const read = await call("sandbox_read_file", { path: "cfg.ini" });
+    const token = String(read.hash);
+    expect(token.startsWith("redacted-")).toBe(true);
+    const { contentHash } = await import("./apps-tools/context");
+    expect(token.slice("redacted-".length)).not.toBe(contentHash(original));
+    const stripped = await call("sandbox_write_file", {
+      path: "cfg.ini",
+      contents: String(read.contents),
+      expectedHash: token.slice("redacted-".length),
+    });
+    expect(stripped.success).toBe(false);
+    expect(state.files.get("cfg.ini")).toBe(original);
+  });
+
+  it("says the sandbox is busy, and runs nothing, when the lock wait runs out", async () => {
+    state.lockBusy = true;
+    const result = await call("sandbox_bash", { command: "git commit -m x" });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/busy.*Nothing ran/);
+    expect(state.exec).toHaveLength(0);
+  });
+
+  it("refuses a key Mako minted for automation", async () => {
+    const automation = await tools("u1", 100, true);
+    for (const name of [
+      "sandbox_bash",
+      "sandbox_status",
+      "sandbox_read_file",
+      "sandbox_write_file",
+    ]) {
+      const result = await automation[name].execute(
+        { command: "ls", path: "a.txt", contents: "x" },
+        { toolCallId: "t", messages: [] },
+      );
+      expect(result.error, name).toMatch(/minted for automation/);
+    }
+    expect(state.exec).toHaveLength(0);
+  });
+
+  it("redacts OpenAI keys and service-account private keys", async () => {
+    const { redactSandboxSecrets } = await import("./sandbox-tools");
+    const openai = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
+    const legacy = "sk-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
+    const sa = JSON.stringify({
+      type: "service_account",
+      private_key:
+        "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----\n",
+    });
+    const pem =
+      "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE KEY-----";
+    const out = redactSandboxSecrets(`${openai} ${legacy}\n${sa}\n${pem}`);
+    expect(out).not.toContain(openai);
+    expect(out).not.toContain(legacy);
+    expect(out).not.toContain("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC");
+    expect(out).not.toContain("MIIEpAIBAAKCAQEA");
+    expect(out).toContain('"private_key":"[REDACTED]"');
+  });
+});
+
 describe("settleMainScript against real git", () => {
   let root: string;
   let box: string;
@@ -603,6 +835,7 @@ describe("settleMainScript against real git", () => {
       mode: "keep",
       pushed: true,
       branch: `sandbox/joan/20261116T000000Z-${sha}`,
+      verified: true,
     });
     expect(git(box, "rev-parse", "HEAD")).toBe(base);
     expect(originMain()).toBe(base);
@@ -655,6 +888,7 @@ describe("settleMainScript against real git", () => {
     const { settleMainScript, parseSettled } = await import("./sandbox-tools");
     expect(parseSettled(sh(box, settleMainScript("sandbox/x/1")))).toEqual({
       state: "clean",
+      verified: true,
     });
     git(box, "checkout", "-qb", "feature");
     fs.writeFileSync(path.join(box, "a.txt"), "3\n");
@@ -666,15 +900,64 @@ describe("settleMainScript against real git", () => {
     expect(git(box, "log", "-1", "--format=%s")).toBe("on feature");
   });
 
-  it("says UNVERIFIED when origin cannot be read, and pushes nothing", async () => {
+  it("origin unreadable: moves the commits to a local branch and resets main to the last-known base", async () => {
     const { settleMainScript, parseSettled } = await import("./sandbox-tools");
+    const base = originMain();
     fs.writeFileSync(path.join(box, "a.txt"), "4\n");
     git(box, "commit", "-qam", "offline");
+    const sha = git(box, "rev-parse", "--short=8", "HEAD");
+    // The command broke the remote AND deleted the tracking ref; the tool
+    // read the base before it ran.
     git(box, "remote", "set-url", "origin", path.join(root, "missing.git"));
-    expect(parseSettled(sh(box, settleMainScript("sandbox/x/1")))).toEqual({
-      state: "unverified",
+    git(box, "update-ref", "-d", "refs/remotes/origin/main");
+    const settled = parseSettled(
+      sh(box, settleMainScript("sandbox/x/1", base)),
+    );
+    expect(settled).toEqual({
+      state: "moved",
+      commits: 1,
+      mode: "keep",
+      pushed: false,
+      branch: `sandbox/x/1-${sha}`,
+      verified: false,
     });
-    expect(git(box, "log", "-1", "--format=%s")).toBe("offline");
+    expect(git(box, "rev-parse", "HEAD")).toBe(base);
+    expect(git(box, "log", "-1", "--format=%s", `sandbox/x/1-${sha}`)).toBe(
+      "offline",
+    );
+    // The next push from this box (what app_bash or the terminal does) once
+    // the remote is back carries nothing to main.
+    git(box, "remote", "set-url", "origin", path.join(root, "origin.git"));
+    git(box, "push", "-q", "origin", "HEAD");
+    expect(originMain()).toBe(base);
+  });
+
+  it("origin unreadable and no known base: parks the work on a branch, deletes local main", async () => {
+    const { settleMainScript, parseSettled } = await import("./sandbox-tools");
+    const base = originMain();
+    fs.writeFileSync(path.join(box, "a.txt"), "5\n");
+    git(box, "commit", "-qam", "stranded");
+    const sha = git(box, "rev-parse", "--short=8", "HEAD");
+    git(box, "remote", "set-url", "origin", path.join(root, "missing.git"));
+    git(box, "update-ref", "-d", "refs/remotes/origin/main");
+    expect(parseSettled(sh(box, settleMainScript("sandbox/x/1")))).toEqual({
+      state: "parked",
+      branch: `sandbox/x/1-${sha}`,
+    });
+    expect(git(box, "symbolic-ref", "--short", "HEAD")).toBe(
+      `sandbox/x/1-${sha}`,
+    );
+    expect(() =>
+      git(box, "rev-parse", "-q", "--verify", "refs/heads/main"),
+    ).toThrow();
+    git(box, "remote", "set-url", "origin", path.join(root, "origin.git"));
+    git(box, "push", "-q", "origin", "HEAD");
+    expect(originMain()).toBe(base);
+  });
+
+  it("ignores a known base that is not a sha", async () => {
+    const { settleMainScript } = await import("./sandbox-tools");
+    expect(settleMainScript("p", "$(rm -rf /)")).not.toContain("rm -rf");
   });
 });
 

@@ -30,6 +30,7 @@
  * - Credentials are redacted from every output and from the log line.
  * - Each command is logged: who, where, which branch, exit code, time.
  */
+import { createHmac, randomBytes } from "node:crypto";
 import { tool, type ToolSet } from "ai";
 import { Types } from "mongoose";
 import { z } from "zod";
@@ -39,14 +40,16 @@ import { canSeeIndexedApp } from "../../apps/app-authorization";
 import { listArchivedApps } from "../../apps/app-archive.service";
 import { loadAppsIndex } from "../../apps/app-index.service";
 import { boxPushIfAhead } from "../../apps/box";
-import { redactGitSecrets } from "../../apps/git";
+import { redactGitSecrets, runGit } from "../../apps/git";
 import { DEFAULT_BRANCH } from "../../apps/repository.service";
 import { getSandboxProvider } from "../../apps/sandbox/provider";
 import {
   handleForUser,
   loadOwnerDirectory,
 } from "../../apps/user-handles.service";
+import { boundRepoDirIfExists } from "../../apps/workspace-repo-required";
 import {
+  BoxPushLockTimeoutError,
   boxCtx,
   ensureBox,
   ensureWorkspaceWorktree,
@@ -55,6 +58,7 @@ import {
   withBoxPushLock,
   writeFile,
   writeWorktreeScratchFile,
+  type ExecOutcome,
   type WorktreeHandle,
 } from "../../apps/worktree.service";
 import { AppProject } from "../../database/workspace-schema";
@@ -81,8 +85,20 @@ const logger = loggers.agent();
 
 /** The longest command text kept in the log line. */
 const LOGGED_COMMAND_CHARS = 2_000;
-/** Marks the hash of a read whose text was redacted: never writable back. */
+/**
+ * Marks the hash of a read whose text was redacted: never writable back.
+ * What follows the prefix is an HMAC under a per-process secret, not the
+ * file's hash, so stripping the prefix gives nothing a write accepts.
+ */
 const REDACTED_HASH_PREFIX = "redacted-";
+const REDACTED_HASH_SECRET = randomBytes(32);
+const redactedReadToken = (path: string, contents: string) =>
+  `${REDACTED_HASH_PREFIX}${createHmac("sha256", REDACTED_HASH_SECRET)
+    .update(`${path}\u0000${contentHash(contents)}`)
+    .digest("hex")
+    .slice(0, 32)}`;
+/** How long the hidden-path scan of the repo's history is reused. */
+const HIDDEN_PATHS_TTL_MS = 60_000;
 /** Changed files listed by sandbox_status. */
 const STATUS_MAX_CHANGES = 200;
 /** The settle step's own time budget (ls-remote, fetch, push, reset). */
@@ -96,17 +112,30 @@ const DEFAULT_MAX_TIMEOUT_SECONDS = 600;
  * access keys, bearer headers and basic-auth URLs (redactGitSecrets).
  */
 export function redactSandboxSecrets(text: string): string {
-  return redactGitSecrets(text)
-    .replace(/\bmgt_[A-Za-z0-9._~+/=-]{8,}/g, "mgt_[REDACTED]")
-    .replace(/\brevops_[A-Za-z0-9_-]{16,}/g, "revops_[REDACTED]")
-    .replace(/\b([sr]k_(?:live|test)_)[A-Za-z0-9]{8,}/g, "$1[REDACTED]")
-    .replace(/\b(xox[abposr]-)[A-Za-z0-9-]{8,}/g, "$1[REDACTED]")
-    .replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, "[REDACTED-AWS-KEY]")
-    .replace(
-      /\b(aws_secret_access_key\s*[=:]\s*)[A-Za-z0-9/+=]{30,}/gi,
-      "$1[REDACTED]",
-    )
-    .replace(/\b(bearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi, "$1[REDACTED]");
+  return (
+    redactGitSecrets(text)
+      .replace(/\bmgt_[A-Za-z0-9._~+/=-]{8,}/g, "mgt_[REDACTED]")
+      .replace(/\brevops_[A-Za-z0-9_-]{16,}/g, "revops_[REDACTED]")
+      .replace(/\b([sr]k_(?:live|test)_)[A-Za-z0-9]{8,}/g, "$1[REDACTED]")
+      .replace(/\b(xox[abposr]-)[A-Za-z0-9-]{8,}/g, "$1[REDACTED]")
+      .replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, "[REDACTED-AWS-KEY]")
+      .replace(
+        /\b(aws_secret_access_key\s*[=:]\s*)[A-Za-z0-9/+=]{30,}/gi,
+        "$1[REDACTED]",
+      )
+      .replace(/\b(bearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi, "$1[REDACTED]")
+      // OpenAI keys: sk-…, sk-proj-…, sk-svcacct-….
+      .replace(
+        /\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}/g,
+        "sk-[REDACTED]",
+      )
+      // A GCP service-account JSON's key, escaped (\n) or not.
+      .replace(/("private_key"\s*:\s*")[^"]*(")/g, "$1[REDACTED]$2")
+      .replace(
+        /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+        "[REDACTED-PRIVATE-KEY]",
+      )
+  );
 }
 
 const failure = (error: unknown) => ({
@@ -138,41 +167,49 @@ export function sandboxBranchPrefix(owner: string, now = new Date()): string {
  * have installed one). It prints one line:
  *
  *   OFFMAIN <branch>   not on main: the caller pushes the session branch
- *   CLEAN              on main, nothing origin's main lacks
- *   UNVERIFIED         on main, origin's main unreadable: nothing pushed
- *   MOVED <n> <keep|soft> <pushed 0|1> <branch>
+ *   CLEAN <verified>   on main, nothing origin's main lacks
+ *   MOVED <n> <keep|soft> <pushed 0|1> <branch> <verified 0|1>
+ *   PARKED <branch>    on main, no base known at all: the checkout moved to
+ *                      <branch> and local main was deleted
  *
- * Origin's main is read with `git ls-remote`, never from
- * refs/remotes/origin/main, which the command could have moved or deleted.
- * Moved commits go to `<prefix>-<short sha>`, pushed by explicit refspec;
- * main is reset to origin's (`--keep` keeps uncommitted edits, `--soft` is
- * the fallback) and the tracking ref is restored. Nothing here ever pushes
- * while on main.
+ * The base is origin's main as `git ls-remote` reads it (verified). When the
+ * remote cannot be read, it is the last-known origin main: the sha the tool
+ * read before the command (`knownBase`), else the tracking ref. Either way,
+ * commits left on main move to `<prefix>-<short sha>` and local main is
+ * reset to the base, so no later push from this box (app_bash, the terminal)
+ * can carry them to main. The branch is pushed by explicit refspec only when
+ * the remote answered. Nothing here ever pushes while on main.
  */
-export function settleMainScript(prefix: string): string {
+export function settleMainScript(prefix: string, knownBase = ""): string {
   const main = DEFAULT_BRANCH;
   const git = "git -c core.hooksPath=/dev/null";
+  const known = /^[0-9a-f]{40}$/.test(knownBase) ? knownBase : "";
   return [
     `b=$(${git} symbolic-ref --short -q HEAD || true)`,
     `if [ "$b" != "${main}" ]; then echo "OFFMAIN $b"; exit 0; fi`,
+    `v=1`,
     `r=$(${git} ls-remote origin refs/heads/${main} 2>/dev/null | cut -f1)`,
-    `if [ -z "$r" ]; then echo UNVERIFIED; exit 0; fi`,
-    `${git} cat-file -e "$r^{commit}" 2>/dev/null || ${git} fetch -q origin ${main} 2>/dev/null`,
-    `if ! ${git} cat-file -e "$r^{commit}" 2>/dev/null; then echo UNVERIFIED; exit 0; fi`,
-    `n=$(${git} rev-list --count "$r"..HEAD)`,
-    `if [ "$n" -eq 0 ]; then ${git} update-ref refs/remotes/origin/${main} "$r"; echo CLEAN; exit 0; fi`,
+    `if [ -n "$r" ]; then ${git} cat-file -e "$r^{commit}" 2>/dev/null || ${git} fetch -q origin ${main} 2>/dev/null; ${git} cat-file -e "$r^{commit}" 2>/dev/null || r=""; fi`,
+    `if [ -z "$r" ]; then v=0; r="${known}"; fi`,
+    `if [ -n "$r" ] && ! ${git} cat-file -e "$r^{commit}" 2>/dev/null; then r=""; fi`,
+    `if [ -z "$r" ]; then r=$(${git} rev-parse -q --verify refs/remotes/origin/${main} 2>/dev/null || true); fi`,
     `br="${prefix}-$(${git} rev-parse --short=8 HEAD)"`,
+    `if [ -z "$r" ]; then ${git} branch -f "$br" HEAD && ${git} checkout -q "$br" && ${git} branch -q -D ${main}; echo "PARKED $br"; exit 0; fi`,
+    `n=$(${git} rev-list --count "$r"..HEAD)`,
+    `if [ "$n" -eq 0 ]; then [ "$v" = 1 ] && ${git} update-ref refs/remotes/origin/${main} "$r"; echo "CLEAN $v"; exit 0; fi`,
     `${git} branch -f "$br" HEAD`,
-    `if ${git} push -q origin "refs/heads/$br:refs/heads/$br" >/dev/null 2>&1; then p=1; else p=0; fi`,
+    `p=0`,
+    `if [ "$v" = 1 ] && ${git} push -q origin "refs/heads/$br:refs/heads/$br" >/dev/null 2>&1; then p=1; fi`,
     `if ${git} reset -q --keep "$r" 2>/dev/null; then m=keep; else ${git} reset -q --soft "$r"; m=soft; fi`,
     `${git} update-ref refs/remotes/origin/${main} "$r"`,
-    `echo "MOVED $n $m $p $br"`,
+    `echo "MOVED $n $m $p $br $v"`,
   ].join("\n");
 }
 
 type Settled =
   | { state: "offmain"; branch: string }
-  | { state: "clean" }
+  | { state: "clean"; verified: boolean }
+  | { state: "parked"; branch: string }
   | { state: "unverified" }
   | {
       state: "moved";
@@ -180,11 +217,12 @@ type Settled =
       mode: "keep" | "soft";
       pushed: boolean;
       branch: string;
+      verified: boolean;
     };
 
 export function parseSettled(stdout: string): Settled {
   const line = stdout.trim().split("\n").filter(Boolean).pop() ?? "";
-  const moved = /^MOVED (\d+) (keep|soft) ([01]) (\S+)$/.exec(line);
+  const moved = /^MOVED (\d+) (keep|soft) ([01]) (\S+) ([01])$/.exec(line);
   if (moved) {
     return {
       state: "moved",
@@ -192,9 +230,13 @@ export function parseSettled(stdout: string): Settled {
       mode: moved[2] as "keep" | "soft",
       pushed: moved[3] === "1",
       branch: moved[4],
+      verified: moved[5] === "1",
     };
   }
-  if (line === "CLEAN") return { state: "clean" };
+  const clean = /^CLEAN ([01])$/.exec(line);
+  if (clean) return { state: "clean", verified: clean[1] === "1" };
+  const parked = /^PARKED (\S+)$/.exec(line);
+  if (parked) return { state: "parked", branch: parked[1] };
   const off = /^OFFMAIN ?(.*)$/.exec(line);
   // A detached HEAD prints an empty name: no branch to push.
   if (off) return { state: "offmain", branch: off[1].trim() };
@@ -215,6 +257,53 @@ interface SandboxView {
   isVisible: (path: string) => boolean;
   /** Apps (live or archived) in the repo this person may not see. */
   hiddenApps: number;
+  /**
+   * Files anywhere in the repo's history, on any ref, under users/ or
+   * archive/ that this person may not see: another member's private apps,
+   * consoles and notebooks. The box's clone holds all of them.
+   */
+  hiddenPaths: number;
+}
+
+/** Every path ever under users/ or archive/, on every ref, per workspace. */
+const historyPathsCache = new Map<string, { at: number; paths: string[] }>();
+/** Tests: forget the scan so each case reads its own repo. */
+export function forgetHiddenPathsCache(): void {
+  historyPathsCache.clear();
+}
+async function personalAndArchivedPaths(
+  workspaceId: string,
+): Promise<string[]> {
+  const cached = historyPathsCache.get(workspaceId);
+  if (cached && Date.now() - cached.at < HIDDEN_PATHS_TTL_MS) {
+    return cached.paths;
+  }
+  const repoDir = await boundRepoDirIfExists(workspaceId);
+  // No repo, no sandbox to read it from; the caller treats this as a
+  // failed scan and refuses the shell.
+  if (!repoDir) {
+    throw new Error("This workspace has no repository connected.");
+  }
+  const { stdout } = await runGit(
+    [
+      "-C",
+      repoDir,
+      // Paths as bytes: a quoted name would slip past the rule below.
+      "-c",
+      "core.quotePath=false",
+      "log",
+      "--all",
+      "--name-only",
+      "--pretty=format:",
+      "--",
+      "users/",
+      "archive/",
+    ],
+    { timeoutMs: 60_000, maxBufferBytes: 256 * 1024 * 1024 },
+  );
+  const paths = [...new Set(stdout.split("\n").filter(Boolean))];
+  historyPathsCache.set(workspaceId, { at: Date.now(), paths });
+  return paths;
 }
 
 /**
@@ -250,23 +339,26 @@ async function loadSandboxView(
       (visible ? visibleAppRoots : hiddenAppRoots).push(app.path);
     }
     const visibleArchivedRoots = visibleArchived.map(app => app.path);
+    const isVisible = repoPathVisibility({
+      hiddenAppRoots,
+      visibleAppRoots,
+      visibleArchivedRoots,
+      ownHandle: directory.handleOf(userId) ?? undefined,
+    });
+    const history = await personalAndArchivedPaths(workspaceId);
     return {
-      isVisible: repoPathVisibility({
-        hiddenAppRoots,
-        visibleAppRoots,
-        visibleArchivedRoots,
-        ownHandle: directory.handleOf(userId) ?? undefined,
-      }),
+      isVisible,
       hiddenApps:
         hiddenAppRoots.length +
         Math.max(0, allArchived.length - visibleArchivedRoots.length),
+      hiddenPaths: history.filter(path => !isVisible(path)).length,
     };
   } catch (error) {
     logger.warn("sandbox: could not compute repo visibility", {
       workspaceId,
       error: error instanceof Error ? error.message : String(error),
     });
-    return { isVisible: () => false, hiddenApps: 1 };
+    return { isVisible: () => false, hiddenApps: 1, hiddenPaths: 1 };
   }
 }
 
@@ -274,9 +366,16 @@ export function createSandboxTools({
   workspaceId,
   userId,
   maxTimeoutSeconds = DEFAULT_MAX_TIMEOUT_SECONDS,
+  automationKey = false,
 }: {
   workspaceId: string;
   userId?: string;
+  /**
+   * The credential is one Mako minted for automation (a workflow worker or
+   * a sandbox run): it acts for code, not a person at a keyboard, so it
+   * gets no shell.
+   */
+  automationKey?: boolean;
   /**
    * Ceiling on a command's timeout. MCP passes ~100 s: an MCP exchange is
    * cut at 120 s, and a client retrying a cut call would otherwise run the
@@ -299,6 +398,12 @@ export function createSandboxTools({
       return {
         error:
           "The sandbox belongs to a person. This credential is not tied to one, so it has no sandbox.",
+      };
+    }
+    if (automationKey) {
+      return {
+        error:
+          "The sandbox belongs to a person. This credential was minted for automation (a workflow worker or run), so it has no sandbox.",
       };
     }
     const member = await workspaceService.getMember(workspaceId, userId);
@@ -324,6 +429,42 @@ export function createSandboxTools({
       return `${path} is an env file. Secrets do not go through the sandbox file tools.`;
     }
     return null;
+  };
+
+  /**
+   * Where a path really points inside the box: a symlink in the working copy
+   * could lead from a visible path to a hidden one. Answers the resolved
+   * repo-relative path, or the refusal.
+   */
+  const resolveInBox = async (
+    handle: WorktreeHandle,
+    view: SandboxView,
+    path: string,
+  ): Promise<{ path: string } | { error: string }> => {
+    const refused = refusePath(view, path);
+    if (refused) return { error: refused };
+    const quoted = `'${path.replace(/'/g, "'\\''")}'`;
+    const out = await execInWorktree(
+      handle,
+      `realpath -m --relative-to=. -- ${quoted}`,
+      { timeoutMs: 15_000, pushIfAhead: false },
+    );
+    const resolved = out.stdout.trim();
+    if (out.exitCode !== 0 || !resolved) {
+      return { error: `${path} could not be resolved in the sandbox.` };
+    }
+    if (
+      resolved === ".." ||
+      resolved.startsWith("../") ||
+      resolved.startsWith("/")
+    ) {
+      return { error: `${path} points outside the repo.` };
+    }
+    if (resolved !== path.replace(/^\.\//, "")) {
+      const refusedTarget = refusePath(view, resolved);
+      if (refusedTarget) return { error: `${path} not found.` };
+    }
+    return { path: resolved };
   };
 
   const branchPrefix = async () =>
@@ -449,10 +590,10 @@ export function createSandboxTools({
           const opened = await openOwnBox();
           if ("error" in opened) return { success: false, error: opened.error };
           const { handle, view } = opened;
-          if (view.hiddenApps > 0) {
+          if (view.hiddenApps > 0 || view.hiddenPaths > 0) {
             return {
               success: false,
-              error: `sandbox_bash is off in this workspace for you: the repo holds ${view.hiddenApps} app(s) you may not see (another member's private apps, or archived ones), and the sandbox holds a full clone a shell could read them from. sandbox_read_file and sandbox_write_file still work on what you may see.`,
+              error: `sandbox_bash is off in this workspace for you: the repo holds ${view.hiddenApps} app(s) and ${view.hiddenPaths} file(s) under users/ or archive/ you may not see (another member's private apps, consoles or notebooks, or archived ones), and the sandbox holds a full clone a shell could read them from. sandbox_read_file and sandbox_write_file still work on what you may see.`,
             };
           }
           if (cwd && !view.isVisible(cwd)) {
@@ -464,10 +605,19 @@ export function createSandboxTools({
           // The push lock is held from the command's start to the end of the
           // settle step: a concurrent app_bash cannot push a commit this
           // command leaves on main before it moves to a branch.
-          const { result, settled } = await withBoxPushLock(
-            ctx.sessionKey,
-            async () => {
-              let ran: Awaited<ReturnType<typeof execInWorktree>> | undefined;
+          let locked: { result: ExecOutcome; settled: Settled };
+          try {
+            locked = await withBoxPushLock(ctx.sessionKey, async () => {
+              // Origin's main as this box last knew it, before the command
+              // can touch the tracking ref: the settle step's fallback base
+              // when the remote cannot be read afterwards.
+              const before = await execInWorktree(
+                handle,
+                `git rev-parse -q --verify refs/remotes/origin/${DEFAULT_BRANCH} || true`,
+                { timeoutMs: 15_000, pushIfAhead: false },
+              ).catch(() => undefined);
+              const knownBase = before?.stdout.trim() ?? "";
+              let ran: ExecOutcome | undefined;
               let thrown: unknown;
               try {
                 ran = await execInWorktree(handle, command, {
@@ -487,7 +637,7 @@ export function createSandboxTools({
               try {
                 const out = await execInWorktree(
                   handle,
-                  settleMainScript(prefix),
+                  settleMainScript(prefix, knownBase),
                   { timeoutMs: SETTLE_TIMEOUT_MS, pushIfAhead: false },
                 );
                 settledNow = parseSettled(out.stdout);
@@ -520,8 +670,17 @@ export function createSandboxTools({
               }
               if (thrown !== undefined) throw thrown;
               return { result: ran!, settled: settledNow };
-            },
-          );
+            });
+          } catch (error) {
+            if (error instanceof BoxPushLockTimeoutError) {
+              return {
+                success: false,
+                error: `${error.message} Nothing ran. Try again in a moment.`,
+              };
+            }
+            throw error;
+          }
+          const { result, settled } = locked;
 
           const fullStdout = redactSandboxSecrets(result.stdout);
           const fullStderr = redactSandboxSecrets(result.stderr);
@@ -577,7 +736,10 @@ export function createSandboxTools({
                       (settled.pushed
                         ? " (pushed)"
                         : " (NOT pushed: they exist only in this sandbox; push the branch)") +
-                      `, and ${DEFAULT_BRANCH} is back to origin's` +
+                      `, and ${DEFAULT_BRANCH} is back to ` +
+                      (settled.verified
+                        ? "origin's"
+                        : "the last-known origin main (origin could not be read)") +
                       (settled.mode === "soft"
                         ? "; their changes also stay in the checkout as uncommitted edits."
                         : ".") +
@@ -588,7 +750,15 @@ export function createSandboxTools({
             ...(settled.state === "unverified"
               ? {
                   pushSkipped:
-                    "Could not read origin's main, so nothing was pushed. Commits made by this command stay in the sandbox until a later call can check them.",
+                    "The settle step did not finish, so nothing was pushed. Check sandbox_status before committing again.",
+                }
+              : {}),
+            ...(settled.state === "parked"
+              ? {
+                  parked: {
+                    branch: settled.branch,
+                    note: `The command committed on ${DEFAULT_BRANCH} and no copy of origin's ${DEFAULT_BRANCH} was known, so the checkout moved to ${settled.branch} (not pushed) and local ${DEFAULT_BRANCH} was deleted. Switching back to ${DEFAULT_BRANCH} recreates it from origin.`,
+                  },
                 }
               : {}),
             ...(stdout.truncated || stderr.truncated
@@ -640,9 +810,9 @@ export function createSandboxTools({
         try {
           const opened = await openOwnBox();
           if ("error" in opened) return { success: false, error: opened.error };
-          const refused = refusePath(opened.view, path);
-          if (refused) return { success: false, error: refused };
-          const contents = await readSessionFile(opened.handle, path);
+          const target = await resolveInBox(opened.handle, opened.view, path);
+          if ("error" in target) return { success: false, error: target.error };
+          const contents = await readSessionFile(opened.handle, target.path);
           const page = pageLines(contents, { offset, limit });
           // A file whose credentials were redacted on the way out cannot be
           // written back whole: the write would save the [REDACTED] markers.
@@ -650,9 +820,10 @@ export function createSandboxTools({
           const redacted = redactSandboxSecrets(contents) !== contents;
           return {
             success: true,
-            path,
+            // Where it really read: a symlink answers its target.
+            path: target.path,
             hash: redacted
-              ? `${REDACTED_HASH_PREFIX}${contentHash(contents)}`
+              ? redactedReadToken(target.path, contents)
               : contentHash(contents),
             ...(redacted
               ? {
@@ -698,8 +869,8 @@ export function createSandboxTools({
           const opened = await openOwnBox();
           if ("error" in opened) return { success: false, error: opened.error };
           const { handle, view } = opened;
-          const refused = refusePath(view, path);
-          if (refused) return { success: false, error: refused };
+          const target = await resolveInBox(handle, view, path);
+          if ("error" in target) return { success: false, error: target.error };
           if (expectedHash?.startsWith(REDACTED_HASH_PREFIX)) {
             return {
               success: false,
@@ -708,7 +879,7 @@ export function createSandboxTools({
           }
           let existing: string | undefined;
           try {
-            existing = await readSessionFile(handle, path);
+            existing = await readSessionFile(handle, target.path);
           } catch {
             existing = undefined;
           }
@@ -724,12 +895,12 @@ export function createSandboxTools({
                   : `${path} changed since you read it. Read it again and redo your change on what is there now.`,
             };
           }
-          await writeFile(handle, path, contents);
+          await writeFile(handle, target.path, contents);
           logger.info("sandbox_write_file", {
             workspaceId,
             userId,
             branch: handle.doc.branch,
-            path,
+            path: target.path,
             bytes: Buffer.byteLength(contents, "utf8"),
             created: existing === undefined,
           });

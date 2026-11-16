@@ -59,8 +59,10 @@ export const SANDBOX_CAPABILITIES: readonly SandboxCapabilityDefinition[] = [
     resultKind: "data",
   }),
   define({
+    // Replaces a file in the checkout: destructive like the shell, so MCP
+    // clients ask before each call, as its description says.
     name: "sandbox_write_file",
-    risk: "write",
+    risk: "destructive",
     minimumWorkspaceRole: "member",
     requiredGrant: "git-write",
     inputConditionalGrants: [ALWAYS_WORKFLOWS_RUN],

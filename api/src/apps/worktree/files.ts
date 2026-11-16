@@ -71,21 +71,52 @@ export type ExecOutcome = SandboxExecResult;
  * it is moved to a branch. Another API instance is not covered.
  */
 const pushLocks = new Map<string, Promise<void>>();
+
+/** How long a caller waits for the box push lock before giving up. */
+export const BOX_PUSH_LOCK_WAIT_MS = 30_000;
+
+/** The lock stayed held past the wait: the caller's work did not run. */
+export class BoxPushLockTimeoutError extends Error {
+  constructor(waitMs: number) {
+    super(
+      `The sandbox is busy with another command (waited ${Math.round(waitMs / 1000)} s).`,
+    );
+    this.name = "BoxPushLockTimeoutError";
+  }
+}
+
 export async function withBoxPushLock<T>(
   sessionKey: string,
   fn: () => Promise<T>,
+  { waitMs = BOX_PUSH_LOCK_WAIT_MS }: { waitMs?: number } = {},
 ): Promise<T> {
   const previous = pushLocks.get(sessionKey) ?? Promise.resolve();
   let release!: () => void;
   const mine = new Promise<void>(resolve => (release = resolve));
   const tail = previous.then(() => mine);
   pushLocks.set(sessionKey, tail);
-  await previous;
+  const done = () => {
+    release();
+    if (pushLocks.get(sessionKey) === tail) pushLocks.delete(sessionKey);
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = await Promise.race([
+    previous.then(() => false),
+    new Promise<boolean>(resolve => {
+      timer = setTimeout(() => resolve(true), waitMs);
+    }),
+  ]);
+  clearTimeout(timer);
+  if (timedOut) {
+    // Our slot is released at once: whoever queued behind it waits only for
+    // the holder, not for a caller that gave up.
+    done();
+    throw new BoxPushLockTimeoutError(waitMs);
+  }
   try {
     return await fn();
   } finally {
-    release();
-    if (pushLocks.get(sessionKey) === tail) pushLocks.delete(sessionKey);
+    done();
   }
 }
 
@@ -139,11 +170,16 @@ export async function execInWorktree(
   // result; it does not publish it.
   await syncBranchFromBox(handle);
   if (pushIfAhead && handle.doc.userId !== PUBLISH_ACTOR) {
+    // A push that cannot get the lock in time is skipped, not waited on for
+    // minutes: the commits stay in the box, and the next command pushes them.
     await withBoxPushLock(ctx.sessionKey, () => boxPushIfAhead(ctx)).catch(
       error =>
-        logger.warn("Apps could not push commits made in the shell", {
-          error: error instanceof Error ? error.message : String(error),
-        }),
+        logger.warn(
+          error instanceof BoxPushLockTimeoutError
+            ? "Apps skipped the push after a command: the box push lock is held"
+            : "Apps could not push commits made in the shell",
+          { error: error instanceof Error ? error.message : String(error) },
+        ),
     );
   }
   return result;

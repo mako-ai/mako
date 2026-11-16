@@ -169,6 +169,11 @@ export interface MakoMcpContext {
   acpDesktop?: boolean;
   /** Approved task grants resolved server-side for this agent session. */
   capabilityGrants?: readonly CapabilityGrant[];
+  /**
+   * The API key was minted by Mako for automation (a workflow worker or a
+   * sandbox run), not by a person for themselves. It gets no sandbox shell.
+   */
+  automationKey?: boolean;
 }
 
 export type BridgeableTool = Pick<
@@ -256,6 +261,7 @@ export function buildMakoMcpCandidateTools(
     workspaceId,
     userId,
     maxTimeoutSeconds: 100,
+    automationKey: context.automationKey,
   });
   return {
     ...connectorTools,

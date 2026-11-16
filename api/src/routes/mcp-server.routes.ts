@@ -150,6 +150,7 @@ mcpProtocolRoutes.post(
       scopes,
       acpDesktop,
       capabilityGrants,
+      automationKey: isAutomationKey(apiKey),
     };
     // External clients also get the ChatGPT connector contract (search /
     // fetch) — required for ChatGPT to accept the server as a connector,
@@ -194,3 +195,28 @@ mcpProtocolRoutes.get("/", c =>
 mcpProtocolRoutes.delete("/", c =>
   fail(c, 405, "This MCP server is stateless; there is no session"),
 );
+
+/**
+ * A key Mako minted for automation rather than one a person made for
+ * themselves: the workflow worker's (`workflows:runtime`) and a sandbox
+ * run's (`agentRun` / `recordWrites`, named "Workflows sandbox …"). A key a
+ * person mints for CI looks like any other personal key and is not caught.
+ */
+export function isAutomationKey(
+  key:
+    | {
+        name?: string;
+        scopes?: readonly string[];
+        agentRun?: boolean;
+        recordWrites?: boolean;
+      }
+    | undefined,
+): boolean {
+  if (!key) return false;
+  return (
+    !!key.scopes?.includes("workflows:runtime") ||
+    !!key.agentRun ||
+    !!key.recordWrites ||
+    /^Workflows (worker|sandbox)\b/.test(key.name ?? "")
+  );
+}

@@ -83,6 +83,7 @@ export {
 export {
   execInWorktree,
   withBoxPushLock,
+  BoxPushLockTimeoutError,
   writeWorktreeScratchFile,
   listFiles,
   readFile,
