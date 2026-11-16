@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import {
   PREVIEW_ACTIVITY_EVERY_MS,
-  PREVIEW_HEARTBEAT_MAX_MS,
   usePreviewActivity,
 } from "./usePreviewActivity";
 import { useAppsStore } from "../../store/appsStore";
@@ -87,16 +86,15 @@ describe("usePreviewActivity", () => {
     expect(report).toHaveBeenCalledTimes(1);
   });
 
-  it("a frame left focused stops counting 30 minutes after the last interaction", () => {
+  it("someone working inside the preview for an hour keeps it alive", () => {
     const { iframe } = setup();
     clickIntoFrame(iframe);
+    // In-frame clicks and pointer moves never reach this page; only the
+    // focused frame in a focused window does.
     act(() => {
-      vi.advanceTimersByTime(
-        PREVIEW_HEARTBEAT_MAX_MS + 10 * PREVIEW_ACTIVITY_EVERY_MS,
-      );
+      vi.advanceTimersByTime(60 * PREVIEW_ACTIVITY_EVERY_MS);
     });
-    // The click plus 29 beats inside the 30-minute window, then silence.
-    expect(report).toHaveBeenCalledTimes(30);
+    expect(report).toHaveBeenCalledTimes(61);
   });
 
   it("no heartbeat while the tab is hidden", () => {
