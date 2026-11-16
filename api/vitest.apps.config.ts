@@ -168,6 +168,10 @@ export default defineConfig({
       "src/connectors/workspace/workspace-connectors.test.ts",
       "src/connectors/workspace/resolver.test.ts",
       "src/connectors/workspace/sync-box.test.ts",
+      // Connector bundles: hash, guard, build box, storage, build-once.
+      "src/connectors/workspace/bundle/bundle.test.ts",
+      // Bundles through the push reconciler and the run path, flag on and off.
+      "src/connectors/workspace/bundle/bundle-reconcile.test.ts",
       "src/apps/repository.service.test.ts",
       "src/services/workspace-repos.service.test.ts",
     ],

@@ -37,6 +37,10 @@ const DELIBERATELY_UNCOVERED: Readonly<Record<string, string>> = {
     "Needs E2B credentials and a network, and self-skips without E2B_API_KEY. " +
     "Must never join an offline run — vitest.apps.config.ts documents the " +
     "same exclusion.",
+  "src/connectors/workspace/bundle/bundle-build.integration.test.ts":
+    "Builds a real connector bundle with npm and esbuild, so it needs a " +
+    "network (and E2B credentials for the e2b mode). Self-skips unless " +
+    "RUN_CONNECTOR_BUNDLE_BUILD is set; run by hand as its header says.",
 };
 
 // ── Glob matching ─────────────────────────────────────────────────

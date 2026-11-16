@@ -383,6 +383,8 @@ async function listConnectorCatalog(workspaceId: string) {
     status: entry.status,
     ...(entry.blockedReason ? { blockedReason: entry.blockedReason } : {}),
     ...(entry.lastCheckError ? { lastCheckError: entry.lastCheckError } : {}),
+    // Next to `status`: how a folder with dependencies was last built.
+    ...(entry.build ? { build: entry.build } : {}),
     entities: entry.supportedEntities,
     connections: connectionsByType.get(entry.type) ?? [],
   }));
@@ -399,7 +401,7 @@ export function createConnectorTools(workspaceId: string) {
     list_connectors: tool({
       description: [
         "List the CONNECTORS available to this workspace — the code a connection is configured with: built-in ones (Stripe, Close, PostHog, GCS, …) and the workspace's own (`ws:<slug>`, from `connectors/<slug>/` in its repo).",
-        "Each entry carries the entities it can sync, whether incremental pulls are honest, and the `connections` already configured with it (id + name — never a credential).",
+        "Each entry carries the entities it can sync, whether incremental pulls are honest, and the `connections` already configured with it (id + name — never a credential). A workspace connector also carries `status` (indexed, verified or blocked, with `blockedReason`) and, when its folder has a package.json, `build` (built or failed, with npm's or esbuild's `error`).",
         "This is the catalog of what CAN be connected. For what IS connected, call list_connections (databases and sources), and inspect_connection / probe_connection for one of them.",
       ].join("\n"),
       inputSchema: z.object({}),
