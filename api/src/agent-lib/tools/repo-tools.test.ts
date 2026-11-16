@@ -1,8 +1,8 @@
 /**
  * repo_glob / repo_grep / repo_read_file: the visibility rule and the
- * pathspec sandbox, then the four leaks review found, against a real git
- * repo: a non-ASCII hidden path, an archived private app, a folder read and
- * a grep overflow.
+ * pathspec sandbox, then, against a real git repo, the four leaks review
+ * found (a non-ASCII hidden path, an archived private app, a folder read, a
+ * grep overflow), a parent-folder pathspec and the read error messages.
  *
  * Run: tsx src/agent-lib/tools/repo-tools.test.ts
  */
@@ -104,6 +104,13 @@ function makeRepo(): string {
     "apps/sales/bindings/mrr.sql": "select mrr from fct_mrr\n",
     // Bob's private app, archived by the lifecycle job.
     "archive/users/bob/apps/old/a.ts": `${SECRET}\n`,
+    // Vadim shared one app (non-ASCII name) and kept one private.
+    "users/vadim/apps/radär/bindings/a.sql": "select * from dbt_vadim.x\n",
+    "users/vadim/apps/privé/bindings/a.sql": `select '${SECRET}' from dbt_vadim.y\n`,
+    // A folder whose only app is private: its own name passes the rule.
+    "apps/hr/salaries/bindings/a.sql": `select '${SECRET}'\n`,
+    // An archived app the actor may see, next to Bob's archived private one.
+    "archive/apps/old-sales/bindings/a.sql": "select 'old_sales'\n",
     // A big hidden file: a broad grep overflows a small buffer on it.
     "apps/payroll/big.txt": `${SECRET} ${"x".repeat(200)}\n`.repeat(50),
   };
@@ -124,8 +131,13 @@ async function againstARealRepo() {
       ref: "refs/heads/main",
       branch: "main",
       isVisible: repoPathVisibility({
-        hiddenAppRoots: ["users/bob/apps/sécret", "apps/payroll"],
-        visibleAppRoots: ["apps/sales"],
+        hiddenAppRoots: [
+          "users/bob/apps/sécret",
+          "apps/payroll",
+          "users/vadim/apps/privé",
+          "apps/hr/salaries",
+        ],
+        visibleAppRoots: ["apps/sales", "users/vadim/apps/radär"],
         visibleArchivedRoots: [],
         ownHandle: "alice",
       }),
@@ -154,6 +166,7 @@ async function againstARealRepo() {
     const folder = await readRepoFile(view, { path: "apps" });
     assert.equal(folder.success, false, "a folder is not a file");
     assert.ok(!text(folder).includes("payroll"), "no hidden name leaks");
+    assert.ok(!text(folder).includes("sales"), "no child name at all");
     const file = (await readRepoFile(view, {
       path: "apps/sales/bindings/mrr.sql",
     })) as { success: boolean; contents: string };
@@ -176,6 +189,131 @@ async function againstARealRepo() {
     });
     assert.equal(hiddenSpec.success, false);
     assert.ok(!text(hiddenSpec).includes(SECRET));
+
+    // 5. A parent folder of a visible app: allowed, filtered per path.
+    const parent = (await grepRepo(view, {
+      pattern: "dbt_vadim",
+      pathspec: "users/vadim",
+    })) as { success: boolean; matches: Array<{ path: string }> };
+    assert.equal(parent.success, true, text(parent));
+    assert.deepEqual(
+      parent.matches.map(m => m.path),
+      ["users/vadim/apps/radär/bindings/a.sql"],
+      "only the shared app's match, its non-ASCII name raw",
+    );
+    assert.ok(!text(parent).includes(SECRET));
+    assert.ok(!text(parent).includes("privé"));
+    const trailing = (await grepRepo(view, {
+      pattern: "dbt_vadim",
+      pathspec: "users/vadim/",
+    })) as { matches: unknown[] };
+    assert.equal(trailing.matches.length, 1);
+    // A pathspec inside the hidden app, or a file in it, is refused, and
+    // reads as a missing path does.
+    const notFound = (spec: string) => `${spec} not found on main.`;
+    for (const spec of [
+      "users/vadim/apps/privé",
+      "users/vadim/apps/privé/bindings",
+      "users/vadim/apps/privé/bindings/a.sql",
+      // Bob's tree holds only his private app.
+      "users/bob",
+      // Its name passes the rule, its only app is private.
+      "apps/hr",
+      "archive",
+    ]) {
+      const refused = await grepRepo(view, { pattern: ".", pathspec: spec });
+      assert.deepEqual(refused, { success: false, error: notFound(spec) });
+    }
+    for (const spec of ["users/nobody", "dbt/nothing"]) {
+      assert.deepEqual(await grepRepo(view, { pattern: ".", pathspec: spec }), {
+        success: false,
+        error: notFound(spec),
+      });
+    }
+    // A glob pathspec keeps working, filtered per path; one inside a hidden
+    // app is refused.
+    const globSpec = (await grepRepo(view, {
+      pattern: ".",
+      pathspec: "apps/*/bindings/*.sql",
+    })) as { success: boolean; matches: Array<{ path: string }> };
+    assert.equal(globSpec.success, true, text(globSpec));
+    assert.deepEqual(
+      globSpec.matches.map(m => m.path),
+      ["apps/sales/bindings/mrr.sql"],
+    );
+    const dbtGlob = (await grepRepo(view, {
+      pattern: "mrr",
+      pathspec: "dbt/models/*.sql",
+    })) as { success: boolean; count: number };
+    assert.equal(dbtGlob.success, true);
+    assert.equal(dbtGlob.count, 1);
+    assert.deepEqual(
+      await grepRepo(view, { pattern: ".", pathspec: "apps/payroll/*" }),
+      { success: false, error: notFound("apps/payroll/*") },
+    );
+    // A visible file works as a pathspec.
+    const oneFile = (await grepRepo(view, {
+      pattern: "mrr",
+      pathspec: "apps/sales/bindings/mrr.sql",
+    })) as { success: boolean; count: number };
+    assert.equal(oneFile.success, true);
+    assert.equal(oneFile.count, 1);
+
+    // 6. Read errors: a folder the actor can see into says so, a hidden or
+    //    missing path reads as missing.
+    const folderMessage = (p: string) =>
+      `${p} is a folder, not a file. List it with repo_glob, e.g. "${p}/*" for its files or "${p}/**" for everything under it.`;
+    const missingMessage = (p: string) =>
+      `${p} not found on main. Use repo_glob to find the path.`;
+    for (const p of ["apps", "dbt/models", "users/vadim", "users/vadim/apps"]) {
+      assert.deepEqual(await readRepoFile(view, { path: p }), {
+        success: false,
+        error: folderMessage(p),
+      });
+    }
+    for (const p of [
+      "apps/payroll",
+      "apps/hr",
+      "users/bob",
+      "users/vadim/apps/privé",
+      "users/vadim/apps/privé/bindings/a.sql",
+      "archive",
+      "users/nobody",
+      "dbt/models/missing.sql",
+    ]) {
+      assert.deepEqual(await readRepoFile(view, { path: p }), {
+        success: false,
+        error: missingMessage(p),
+      });
+    }
+
+    // 7. The archive: only the archived apps the actor may see.
+    const archiveView: RepoView = {
+      ...view,
+      isVisible: repoPathVisibility({
+        hiddenAppRoots: ["users/bob/apps/sécret", "apps/payroll"],
+        visibleAppRoots: ["apps/sales"],
+        visibleArchivedRoots: ["archive/apps/old-sales"],
+        ownHandle: "alice",
+      }),
+    };
+    const archive = (await grepRepo(archiveView, {
+      pattern: ".",
+      pathspec: "archive",
+    })) as { success: boolean; matches: Array<{ path: string }> };
+    assert.equal(archive.success, true);
+    assert.deepEqual(
+      archive.matches.map(m => m.path),
+      ["archive/apps/old-sales/bindings/a.sql"],
+    );
+    assert.deepEqual(await readRepoFile(archiveView, { path: "archive" }), {
+      success: false,
+      error: folderMessage("archive"),
+    });
+    assert.deepEqual(
+      await readRepoFile(archiveView, { path: "archive/users/bob" }),
+      { success: false, error: missingMessage("archive/users/bob") },
+    );
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }

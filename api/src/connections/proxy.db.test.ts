@@ -41,6 +41,8 @@ import {
   WorkspaceMember,
 } from "../database/workspace-schema";
 import { loggingMiddleware } from "../logging";
+import { requestContextStorage } from "../logging/context";
+import { createConnectorTools } from "../agent-lib/tools/connector-tools";
 import { workflowRuntimeRoutes } from "../routes/workflows";
 import { encryptString } from "../services/crypto.service";
 import { databaseConnectionService } from "../services/database-connection.service";
@@ -1263,6 +1265,116 @@ async function main() {
       },
     );
     assert.match(await readAs("user:deployer"), /^Live reads are off/);
+    // Live reads off refuse the agent's own call (call_connection) for
+    // everyone: the owner, a member who manages nothing, a viewer and a
+    // workflow. No live readers list, so only live reads decide.
+    await WorkspaceMember.create({
+      workspaceId: ws,
+      userId: "mia",
+      role: "member",
+      joinedAt: new Date(),
+    });
+    await SourceConnection.updateOne(
+      { _id: limited._id },
+      { $unset: { liveReaders: 1 } },
+    );
+    const callAs = (actor: string) =>
+      attempt(() =>
+        connectionRequest({
+          workspaceId: String(ws),
+          connection: "ch_limited",
+          request: { method: "GET", path: "/lead/" },
+          actor,
+          readOnly: true,
+          agentBudget: true,
+        }),
+      );
+    const sentBeforeOff = sent.length;
+    for (const actor of [
+      "user:deployer",
+      "user:mia",
+      "user:vera",
+      "workflow:other-flow",
+    ]) {
+      assert.match(
+        await callAs(actor),
+        /^Live reads are off for ch_limited, so nobody can read it live/,
+        actor,
+      );
+    }
+    assert.ok(
+      (await callAs("user:deployer")).includes(`/cx/${limited._id}`),
+      "the refusal links the connection's Access tab",
+    );
+    // The real tool, under the request context each sign-in leaves: MCP
+    // OAuth (/api/mcp) and a legacy unscoped key on /api/agent both act as
+    // the owner, and both are refused.
+    const callTool = createConnectorTools(String(ws))
+      .call_connection as unknown as {
+      execute: (input: unknown) => Promise<Record<string, unknown>>;
+    };
+    for (const route of ["/api/mcp", "/api/agent/chat"]) {
+      const answer = await requestContextStorage.run(
+        {
+          requestId: route,
+          method: "POST",
+          path: route,
+          startTime: Date.now(),
+          userId: "deployer",
+        },
+        () =>
+          callTool.execute({
+            connectionId: "ch_limited",
+            operation: "search_leads",
+            params: { query: "Dupont" },
+          }),
+      );
+      assert.match(
+        String(answer.error),
+        /^Live reads are off for ch_limited/,
+        route,
+      );
+    }
+    assert.equal(sent.length, sentBeforeOff, "nothing is sent while off");
+
+    // Live reads on: a named operation builds the request and passes the
+    // same checks, within a per-person, per-connection budget.
+    await SourceConnection.updateOne(
+      { _id: limited._id },
+      { $set: { liveReads: true } },
+    );
+    process.env.AGENT_CALLS_PER_MINUTE = "2";
+    // Keep the three calls in one budget window.
+    if (60_000 - (Date.now() % 60_000) < 5_000) {
+      await new Promise(resolve => setTimeout(resolve, 6_000));
+    }
+    const search = () =>
+      attempt(() =>
+        connectionRequest({
+          workspaceId: String(ws),
+          connection: "ch_limited",
+          operation: { name: "search_leads", params: { query: "Dupont" } },
+          actor: "user:deployer",
+          readOnly: true,
+          agentBudget: true,
+        }),
+      );
+    const sentBeforeOperation = sent.length;
+    assert.equal(await search(), "ok");
+    assert.equal(sent.length, sentBeforeOperation + 1);
+    const searched = new URL(sent[sent.length - 1].url);
+    assert.equal(searched.pathname, "/api/v1/lead/");
+    assert.equal(searched.searchParams.get("query"), "Dupont");
+    assert.equal(await search(), "ok");
+    assert.match(
+      await search(),
+      /^Too many live reads of ch_limited: 2 a minute per person/,
+    );
+    assert.equal(sent.length, sentBeforeOperation + 2, "over budget: not sent");
+    // Another person has a budget of their own; a workflow is not counted.
+    assert.equal(await callAs("user:mia"), "ok");
+    assert.equal(await readAs("workflow:other-flow"), "ok");
+    delete process.env.AGENT_CALLS_PER_MINUTE;
 
     // Live reads turned off again: reads are refused.
     await SourceConnection.updateOne(
