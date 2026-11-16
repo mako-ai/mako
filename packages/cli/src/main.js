@@ -22,6 +22,7 @@ const HELP = `mako — Mako from your terminal
   mako status  [<app>]                            what is LIVE: published commit vs the tip of main
   mako publish [<app>]                            deploy the app's main branch now (enqueue + wait)
   mako connector test [<path>] [--config <file>]  run a connector's code (connectors/<slug>) against its own contract
+  mako connector eject <slug>                     copy a Mako connector installed by reference into connectors/<slug> as this workspace's code
   mako connection probe <id|name> [--entity <e>]  run a configured connection live: check + one page, written nowhere
   mako dbt run|build|test -s <selector> [--env <name>] [--full-refresh] [--no-defer]
                                                   run dbt in Mako's runner on this checkout's dbt/ (uncommitted

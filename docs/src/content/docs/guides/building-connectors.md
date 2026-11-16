@@ -216,6 +216,76 @@ This is behind the `CONNECTOR_BUNDLES_ENABLED` flag while it is rolled out.
 With the flag off, a `package.json` in the folder is just a file and only the
 SDK can be imported. The `node_modules/` refusal applies with the flag off too.
 
+### Installing a Mako connector by reference
+
+Mako's own connectors are published to a registry, one immutable bundle per
+version. A workspace installs one without copying any code: it commits a
+folder holding only `connector.yaml` with a `source:` line.
+
+```yaml
+# connectors/stripe/connector.yaml
+source: mako/stripe@1
+```
+
+- **The reference.** `mako/<slug>@<range>`. The range is a major (`1`), a
+  minor (`1.4`), a caret (`^1.4.2`), a tilde (`~1.4.2`) or an exact version
+  (`1.4.2`). `source` and `entry` are mutually exclusive.
+- **Resolution.** On push, Mako picks the newest published version in the
+  range, runs its `spec`, and records that version on the connector. Every
+  `check`, `discover` and `read` runs the recorded version. The connection
+  type is `ws:<slug>`, as for any workspace connector.
+- **Upgrades.** A patch or minor release inside the range applies on the next
+  push. A new major is outside the range: Mako only reports it as
+  `upgradeAvailable`. To take it, change the range (`@2`) and push.
+- **Agents.** `list_connectors` lists registry connectors as `mako/<slug>`
+  with their versions, auth type and changelog. A connector installed by
+  reference carries `registry` with the version it runs.
+
+This is behind the `CONNECTOR_REGISTRY_ENABLED` flag while it is rolled out.
+With the flag off, Mako ignores `source:`, and the folder is refused for
+holding no code.
+
+### Ejecting a connector
+
+```
+npx @makoai/cli connector eject <slug>
+```
+
+Eject turns a connector installed by reference into this workspace's own
+code. It reads `connectors/<slug>/connector.yaml`, asks Mako which version the
+reference resolved to, and writes that version's source into the folder.
+The new `connector.yaml` names an `entry` and has no `source:`. Commit and push
+the folder.
+
+- The connector no longer upgrades. Its code is now yours to change.
+- Its connections keep the type `ws:<slug>`, so flows need no edit.
+- `--version <x.y.z>` ejects another published version. `--force` overwrites
+  files already in the folder.
+- Run `npm install` in the folder before `mako connector test` on it.
+
+### Publishing Mako's connectors
+
+Each top-level `connectors/<slug>/` folder of the Mako repository is a
+registry connector. To release one, set the version in `defineConnector` and
+`package.json`, add a `## <version>` section to its `CHANGELOG.md`, merge, and
+push a tag `connector-<slug>-v<version>` on a master commit.
+`.github/workflows/connector-release.yml` then builds the folder with the same
+bundler workspace connectors use, runs `spec` and `discover` on the bundle,
+and publishes it to the dev and production buckets. Every pull request that
+touches `connectors/` runs the same steps as a dry run.
+
+Storage layout, under `connector-registry/` in the artifact bucket:
+
+```
+connector-registry/catalog.json                 every connector and version
+connector-registry/<slug>/bundles/<hash>.mjs    the built bundle
+connector-registry/<slug>/sources/<hash>.json   its source files, for eject
+```
+
+`<hash>` is the bundle's source hash. A published version never changes.
+Re-tagging identical content is a no-op, and different content under a
+published version fails the release.
+
 ### Test it before you push
 
 ```

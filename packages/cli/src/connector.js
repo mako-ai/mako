@@ -27,8 +27,10 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { callMcpTool } from "./status.js";
+import { findRepoRoot } from "./context.js";
 
 const HELP = `mako connector test <path> [--config <file>] [--entity <name>] [--remote]
+mako connector eject <slug> [--version <x.y.z>] [--force]
 
   <path>            a connector folder (containing connector.yaml), or a connector file
   --config <file>   JSON credentials to run check, discover and read against
@@ -44,7 +46,14 @@ Dependencies: commit package.json with package-lock.json in the folder, never
 node_modules/. Mako builds one bundle per source hash on push.
 
 To run a connection Mako has configured, live against its platform:
-  mako connection probe <id|name> [--entity <name>]`;
+  mako connection probe <id|name> [--entity <name>]
+
+eject: connectors/<slug>/connector.yaml installs a Mako connector by
+reference (source: mako/<slug>@<range>). Eject copies the source of the
+version Mako resolved for it into that folder and drops source:. The folder
+is then this workspace's own code: it no longer upgrades, and its connection
+type stays ws:<slug>. --version picks another published version; --force
+overwrites files already in the folder.`;
 
 const ok = text => `  ok    ${text}`;
 const bad = text => `  FAIL  ${text}`;
@@ -291,8 +300,146 @@ async function remoteStatus(ctx, dir) {
   ];
 }
 
+/** `source:` out of connector.yaml, scanned like `entry:` above. */
+export function sourceFromManifest(text) {
+  for (const line of text.split("\n")) {
+    const match = /^source:\s*["']?([^"'#\s]+)["']?\s*(#.*)?$/.exec(
+      line.trim(),
+    );
+    if (match) return match[1];
+  }
+  return null;
+}
+
+/**
+ * `mako connector eject <slug>`: the source of the pinned registry version
+ * into `connectors/<slug>/`, and `source:` gone.
+ *
+ * The pinned version is the one Mako resolved for this folder on its last
+ * push (`inspect_connector ws:<slug>` -> `registry.version`), so the ejected
+ * code is exactly the code that has been running. The source comes from the
+ * registry (`inspect_connector mako/<slug>` with `includeSource`, as `release`), never from
+ * npm or GitHub.
+ */
+export async function eject(ctx, positional, flags, io) {
+  const slug = positional[1];
+  if (!slug || !/^[a-z][a-z0-9-]*$/.test(slug)) {
+    io.log(
+      "Usage: mako connector eject <slug>   (the folder name under connectors/)",
+    );
+    return 2;
+  }
+  const root = ctx.repoRoot ?? findRepoRoot();
+  if (!root) {
+    io.log("Run this inside the workspace repository.");
+    return 1;
+  }
+  const folder = path.join(root, "connectors", slug);
+  const manifest = path.join(folder, "connector.yaml");
+  if (!fs.existsSync(manifest)) {
+    io.log(`No connectors/${slug}/connector.yaml here.`);
+    return 1;
+  }
+  const reference = sourceFromManifest(fs.readFileSync(manifest, "utf8"));
+  if (!reference) {
+    io.log(
+      `connectors/${slug}/connector.yaml has no source:, so it already holds its own code. Nothing to eject.`,
+    );
+    return 1;
+  }
+  const match = /^mako\/([a-z][a-z0-9-]*)@(.+)$/.exec(reference);
+  if (!match) {
+    io.log(`source: ${reference} is not a mako/<slug>@<range> reference.`);
+    return 1;
+  }
+  const registrySlug = match[1];
+
+  let version = typeof flags.version === "string" ? flags.version : null;
+  if (!version) {
+    let installed;
+    try {
+      installed = await callMcpTool(ctx, "inspect_connector", {
+        connector: `ws:${slug}`,
+      });
+    } catch (error) {
+      io.log(
+        `Could not ask Mako which version ws:${slug} runs: ${error.message}`,
+      );
+      return 1;
+    }
+    version = installed?.registry?.version ?? null;
+    if (!version) {
+      io.log(
+        `Mako has not resolved ${reference} for ws:${slug}${installed?.error ? ` (${installed.error})` : ""}. ` +
+          "Push the folder first, or pass --version <x.y.z>.",
+      );
+      return 1;
+    }
+  }
+
+  let published;
+  try {
+    published = await callMcpTool(ctx, "inspect_connector", {
+      connector: `mako/${registrySlug}`,
+      version,
+      includeSource: true,
+    });
+  } catch (error) {
+    io.log(`Could not fetch mako/${registrySlug}@${version}: ${error.message}`);
+    return 1;
+  }
+  const files = published?.release?.files;
+  if (!files || typeof files !== "object") {
+    io.log(
+      `Mako returned no source for mako/${registrySlug}@${version}${published?.error ? `: ${published.error}` : "."}`,
+    );
+    return 1;
+  }
+
+  const names = Object.keys(files).sort();
+  for (const name of names) {
+    const target = path.resolve(folder, name);
+    if (!target.startsWith(`${folder}${path.sep}`)) {
+      io.log(`Refusing ${name}: it escapes connectors/${slug}/.`);
+      return 1;
+    }
+  }
+  const yaml = files["connector.yaml"];
+  if (typeof yaml !== "string" || sourceFromManifest(yaml)) {
+    io.log(
+      `mako/${registrySlug}@${version} has no runnable connector.yaml; refusing to eject it.`,
+    );
+    return 1;
+  }
+  const clashes = names.filter(
+    name => name !== "connector.yaml" && fs.existsSync(path.join(folder, name)),
+  );
+  if (clashes.length > 0 && !flags.force) {
+    io.log(
+      `connectors/${slug}/ already holds ${clashes.join(", ")}. Move them away, or pass --force to overwrite.`,
+    );
+    return 1;
+  }
+
+  for (const name of names) {
+    const target = path.join(folder, name);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, files[name]);
+  }
+  io.log(
+    [
+      `Ejected mako/${registrySlug}@${version} into connectors/${slug}/ (${names.length} files).`,
+      `connector.yaml now runs ${published.release.entry ?? "connector.ts"} and has no source:.`,
+      `The folder is this workspace's code: it no longer upgrades. Its connections keep the type ws:${slug}.`,
+      `Next: npm install in connectors/${slug}/ to test it locally (mako connector test connectors/${slug}), then commit and push.`,
+    ].join("\n"),
+  );
+  return 0;
+}
+
 export async function connector(ctx, positional, flags, io) {
   const sub = positional[0];
+  if (sub === "eject") return eject(ctx, positional, flags, io);
   if (sub !== "test") {
     io.log(HELP);
     return sub ? 2 : 0;

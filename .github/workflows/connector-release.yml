@@ -1,0 +1,126 @@
+name: Connector release
+
+# Builds Mako's own connector folders (connectors/<slug>/) into versioned
+# bundles and publishes them to the connector registry (RFC connector-runtime
+# §7, iteration 4). A workspace then installs one by reference:
+# `source: mako/<slug>@<range>` in its connector.yaml.
+#
+#  - Pull requests: a dry run of every folder. Each is built with the
+#    iteration-1 bundler, its bundle runs `spec` and `discover`, and the
+#    catalog entry is printed. Nothing is written.
+#  - A tag `connector-<slug>-v<MAJOR.MINOR.PATCH>` on a master commit: the
+#    same, then the bundle, its source and the catalog entry go to the
+#    registry prefix (`connector-registry/`) of the dev bucket, then of the
+#    production bucket. A version is immutable: re-tagging the same content is
+#    a no-op, different content under a published version fails.
+#  - workflow_dispatch: either of the above for one tag, dry run by default.
+#
+# Reading the registry is behind CONNECTOR_REGISTRY_ENABLED in the API; with
+# it off, a published bundle is inert.
+
+on:
+  push:
+    tags:
+      - "connector-*-v*"
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "connectors/**"
+      - "packages/connector-sdk/**"
+      - "api/src/connectors/workspace/**"
+      - "api/src/scripts/publish-connector.ts"
+      - ".github/workflows/connector-release.yml"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. connector-stripe-v1.0.0"
+        required: true
+        type: string
+      dry_run:
+        description: "Build and describe only; write nothing"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+# The catalog is one JSON document: publishes run one at a time. Dry runs
+# write nothing and only cancel their own superseded runs.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('connector-release-dry-{0}', github.ref) || 'connector-release-publish' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  dry-run:
+    name: Connector release (dry run)
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.dry_run)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build workspace packages the api imports
+        run: |
+          pnpm --filter @mako/schemas run build
+          pnpm --filter @mako/agent-tools run build
+      - name: Build, spec and discover every connector folder
+        if: github.event_name == 'pull_request'
+        run: pnpm --filter api exec tsx src/scripts/publish-connector.ts --all --dry-run
+      - name: Build, spec and discover the tagged connector
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ inputs.tag }}
+        run: pnpm --filter api exec tsx src/scripts/publish-connector.ts --tag "$TAG" --dry-run
+
+  publish:
+    name: Publish to ${{ matrix.target }}
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+    runs-on: ubuntu-latest
+    strategy:
+      # Dev first: a release that fails there never reaches production.
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        target: [dev, production]
+    environment:
+      name: ${{ matrix.target == 'production' && 'production' || 'connector-registry-dev' }}
+    env:
+      TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+      DASHBOARD_ARTIFACT_STORE: gcs
+      GCS_DASHBOARD_BUCKET: ${{ matrix.target == 'production' && fromJSON(vars.GCP_PROD_DEPLOY_CONFIG).dashboard_bucket || vars.GCS_DEV_DASHBOARD_BUCKET }}
+      CONNECTOR_REGISTRY_PREFIX: connector-registry
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: The tag must point at a master commit
+        run: |
+          set -euo pipefail
+          commit="$(git rev-list -n 1 "$TAG")"
+          if ! git merge-base --is-ancestor "$commit" origin/master; then
+            echo "::error::$TAG points at $commit, which is not on master. Tag a merged commit."
+            exit 1
+          fi
+          echo "RELEASE_COMMIT=$commit" >> "$GITHUB_ENV"
+          git checkout --quiet "$commit"
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build workspace packages the api imports
+        run: |
+          pnpm --filter @mako/schemas run build
+          pnpm --filter @mako/agent-tools run build
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
+      - name: Publish
+        run: pnpm --filter api exec tsx src/scripts/publish-connector.ts --tag "$TAG" --commit "$RELEASE_COMMIT"

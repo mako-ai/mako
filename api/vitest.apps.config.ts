@@ -172,6 +172,12 @@ export default defineConfig({
       "src/connectors/workspace/bundle/bundle.test.ts",
       // Bundles through the push reconciler and the run path, flag on and off.
       "src/connectors/workspace/bundle/bundle-reconcile.test.ts",
+      // The connector registry: ranges, references, the catalog and store;
+      // install by reference through the reconciler, a run and the agent
+      // tools; and the gate, mako/stripe@1 against the folder itself.
+      "src/connectors/workspace/registry/registry.test.ts",
+      "src/connectors/workspace/registry/registry-reconcile.test.ts",
+      "src/connectors/workspace/registry/registry-gate.test.ts",
       "src/apps/repository.service.test.ts",
       "src/services/workspace-repos.service.test.ts",
     ],
