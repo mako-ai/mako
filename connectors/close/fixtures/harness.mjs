@@ -468,7 +468,7 @@ const scratch = () =>
 /** Run one SDK command on the folder and parse its JSON Lines. */
 export function runFolderCommand(
   command,
-  { config, catalog, state, maxIterations } = {},
+  { config, catalog, state, maxIterations, maxBytes } = {},
 ) {
   const dir = scratch();
   const args = [
@@ -486,6 +486,7 @@ export function runFolderCommand(
   if (catalog) args.push("--catalog", file("catalog.json", catalog));
   if (state) args.push("--state", file("state.json", state));
   if (maxIterations) args.push("--max-iterations", String(maxIterations));
+  if (maxBytes) args.push("--max-bytes", String(maxBytes));
 
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, {
@@ -555,7 +556,7 @@ export async function readFolder({ entity, config, since, maxIterations }) {
           type: "STREAM",
           stream: {
             stream_descriptor: { name: entity },
-            stream_state: { since },
+            stream_state: { mako: { since } },
           },
         },
       ]
@@ -592,6 +593,42 @@ export async function readFolder({ entity, config, since, maxIterations }) {
     });
     if (!hasMore) break;
     state = [stateMessage];
+  }
+  return { rows, chunks };
+}
+
+/**
+ * Drive `SandboxedConnector` (the box path, with the box swapped for a local
+ * process) chunk by chunk, as the engine does. `since` goes in as
+ * `options.since` on every chunk; the adapter puts it into `state.mako`.
+ */
+export async function readBoxed(
+  connector,
+  { entity, since, maxIterations, pageSize },
+) {
+  const rows = [];
+  const chunks = [];
+  let state;
+  for (let chunk = 0; chunk < 2000; chunk++) {
+    let records = 0;
+    state = await connector.fetchEntityChunk({
+      entity,
+      since: since ? new Date(since) : undefined,
+      maxIterations,
+      ...(pageSize ? { batchSize: pageSize } : {}),
+      rateLimitDelay: 1,
+      state,
+      onBatch: async batch => {
+        rows.push(...batch);
+        records += batch.length;
+      },
+    });
+    chunks.push({
+      position: positionOf(state.metadata?.stream?.stream_state),
+      hasMore: state.hasMore,
+      records,
+    });
+    if (!state.hasMore) break;
   }
   return { rows, chunks };
 }
@@ -751,6 +788,7 @@ export function chunkStats(run) {
 export async function runParity({
   entities,
   makeInProcess,
+  makeBoxed,
   server,
   sourceTs,
   scenarios = SCENARIOS,
@@ -790,15 +828,22 @@ export async function runParity({
       ),
     );
     inProcess.requests = server.requests(inKey);
+    // Through `SandboxedConnector` when the caller gives one (the API test),
+    // else the SDK runner driven directly (`parity.mjs`).
+    // Schemas are compared on their own: the box path's `discover` reads
+    // every entity's custom fields at once, so it is not part of a read.
+    const boxed = makeBoxed?.({ api_key: folderKey, __base_url: server.url });
     const folder = await run("folder", () =>
-      readFolder({
-        ...options,
-        config: {
-          api_key: folderKey,
-          __base_url: server.url,
-          ...(scenario.pageSize ? { __page_size: scenario.pageSize } : {}),
-        },
-      }),
+      boxed
+        ? readBoxed(boxed, options)
+        : readFolder({
+            ...options,
+            config: {
+              api_key: folderKey,
+              __base_url: server.url,
+              ...(scenario.pageSize ? { __page_size: scenario.pageSize } : {}),
+            },
+          }),
     );
     folder.requests = server.requests(folderKey);
     const comparison = compareRuns(inProcess, folder, sourceTs);

@@ -15,8 +15,8 @@
  *   request, so it is webhook-only).
  *
  * `since` (ISO 8601) is the incremental anchor. It comes from
- * `state.mako.since` (the adapter's reserved key, PR 1284) or `state.since`
- * (the Stripe folder's convention). The connector never moves it.
+ * `state.mako.since`, which `SandboxedConnector` sets on every chunk (or a
+ * bare `state.since` from a hand run). The connector never moves it.
  *
  * Caller-set config keys, never in the credential form (like the SDK's own
  * `__http`): `__base_url`, `__page_size` (the in-process `sync_batch_size`,
@@ -138,16 +138,25 @@ function sinceOf(state: Record<string, unknown>): Date | undefined {
   return date;
 }
 
-/** The connector's own position, without the adapter's reserved keys. */
+/** The connector's own position, plus the anchor it was given, unchanged. */
 function withSince(
   state: Record<string, unknown>,
   position: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
+  const mako = state.mako as Record<string, unknown> | undefined;
   return {
     ...(position ?? {}),
+    ...(typeof mako?.since === "string" ? { mako: { since: mako.since } } : {}),
     ...(typeof state.since === "string" ? { since: state.since } : {}),
   };
 }
+
+/** The in-process `layoutSuggestion`, the same for every Close entity. */
+const LAYOUT = {
+  partitionField: "_syncedAt",
+  partitionGranularity: "day" as const,
+  clusterFields: ["_dataSourceId", "id"],
+};
 
 /** Entities whose columns depend on the account's custom fields. */
 const CUSTOM_FIELD_ENTITIES = new Set([
@@ -174,7 +183,12 @@ function entity(
     label,
     ...(description ? { description } : {}),
     primaryKey: ["id"],
-    ...(incremental ? { cursorField: "date_updated" } : {}),
+    // `native` where in-process reports it: the Search entities filter on
+    // `date_updated`; users and custom_fields report it but re-read all.
+    ...(incremental
+      ? { cursorField: "date_updated", incremental: "native" as const }
+      : {}),
+    layout: LAYOUT,
     schema: fields,
     // A whole JSON Schema, so `id` can be required and custom fields typed.
     async discoverSchema(ctx) {

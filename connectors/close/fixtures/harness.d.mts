@@ -112,6 +112,7 @@ export function runFolderCommand(
     catalog?: unknown;
     state?: unknown;
     maxIterations?: number;
+    maxBytes?: number;
   },
 ): Promise<{
   code: number | null;
@@ -127,6 +128,7 @@ export function compareRuns(
 export function runParity(options: {
   entities: string[];
   makeInProcess: (config: CloseTestConfig) => any;
+  makeBoxed?: (config: { api_key: string; __base_url: string }) => any;
   server: FixtureServer;
   sourceTs?: SourceTimestamps;
   scenarios?: Scenario[];

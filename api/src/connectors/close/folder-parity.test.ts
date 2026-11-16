@@ -10,6 +10,8 @@
  * positions and the exact requests sent. Schemas, the credential form,
  * `check` and the webhook mapping are compared too.
  *
+ * The folder runs through `SandboxedConnector`, the adapter the box path
+ * uses, with only the box replaced by a local process (`BoxlessClose`).
  * Nothing here starts a box or calls Close. The harness lives with the
  * folder: connectors/close/fixtures/harness.mjs. Re-record or print the
  * tables with connectors/close/fixtures/parity.mjs.
@@ -23,6 +25,8 @@ import { createCloseClient } from "./client";
 import { MAKO_SYSTEM_FIELDS } from "../base/BaseConnector";
 import { parseConnectorFile } from "../workspace/connector-file";
 import { SandboxedConnector } from "../workspace/SandboxedConnector";
+import type { LoadedConnector } from "../workspace/resolver";
+import type { ConnectorCommand, RunResult } from "../workspace/sync-box";
 import {
   connectionSpecificationToForm,
   jsonSchemaToEntitySchema,
@@ -60,12 +64,56 @@ const ENTITIES: string[] = makeInProcess({
   api_key: "api_test_list",
 }).getAvailableEntities();
 
-const boxed = new SandboxedConnector({
-  id: "ds_box",
-  name: "Close box",
-  type: "ws:close",
-  config: {},
-} as any);
+/**
+ * The Close folder as a workspace connector, with the box swapped for a
+ * local process running the same SDK runner on the same files. Everything
+ * else is `SandboxedConnector` as production runs it: `since` in
+ * `state.mako`, the page size and rate limit in the config, the 16 MiB chunk
+ * budget, the schema translation and the source timestamp.
+ */
+class BoxlessClose extends SandboxedConnector {
+  static spec: Record<string, any> | undefined;
+
+  protected async definition(): Promise<LoadedConnector> {
+    this.loaded ??= {
+      slug: "close",
+      runtime: "node",
+      entry: "connector.ts",
+      sha: "parity",
+      sourceSha: "parity",
+      spec: BoxlessClose.spec,
+      entities: Object.keys(BoxlessClose.spec?.mako?.entities ?? {}),
+      status: "indexed",
+    } as LoadedConnector;
+    return this.loaded;
+  }
+
+  protected async run(
+    command: ConnectorCommand,
+    options: Parameters<SandboxedConnector["run"]>[1],
+  ): Promise<RunResult> {
+    const result = await runFolderCommand(command, options);
+    return {
+      exitCode: result.code ?? 1,
+      messages: result.messages as RunResult["messages"],
+      malformed: [],
+      stderr: result.stderr,
+      timedOut: false,
+    };
+  }
+}
+
+const makeBoxed = (config: { api_key: string; __base_url: string }) =>
+  new BoxlessClose({
+    id: "ds_parity",
+    name: "Close parity",
+    type: "ws:close",
+    workspaceId: "ws_parity",
+    config,
+  } as any);
+
+/** A boxed connector with its catalog loaded, for the timestamp resolver. */
+let boxed: BoxlessClose;
 const sourceTs = {
   inProcess: (row: Record<string, unknown>) => [
     resolveSourceTimestamp(normalizePayloadKeys(row)).toISOString(),
@@ -96,6 +144,9 @@ before(async () => {
   spec = (await runFolderCommand("spec")).messages.find(
     m => m.type === "SPEC",
   )?.spec;
+  BoxlessClose.spec = spec;
+  boxed = makeBoxed({ api_key: "api_test_schema", __base_url: server.url });
+  await boxed.resolveSchema("leads");
 });
 
 after(async () => {
@@ -160,6 +211,12 @@ void test("same vendor and custom-field columns for every entity", async () => {
       system,
     );
     assert.ok(result.ok, `${entity}: ${JSON.stringify(result)}`);
+    // And through the adapter the engine calls, system columns included.
+    const viaBox = compareEntitySchema(
+      inProcess,
+      await boxed.resolveSchema(entity),
+    );
+    assert.ok(viaBox.ok, `${entity} via the box: ${JSON.stringify(viaBox)}`);
   }
   // The custom fields come from the account on both sides.
   const leads = jsonSchemaToEntitySchema(
@@ -170,6 +227,34 @@ void test("same vendor and custom-field columns for every entity", async () => {
     Object.keys(leads.fields).filter(f => f.startsWith("custom_cf_")).length,
     70,
   );
+});
+
+void test("same table layout and incremental mode for every entity", async () => {
+  const inProcess = makeInProcess({ api_key: "api_test_list" });
+  await boxed.loadDefinition();
+  const layouts = (c: { getEntityMetadata(): any[] }) => {
+    const out: Record<string, unknown> = {};
+    for (const e of c.getEntityMetadata()) {
+      out[e.name] = e.layoutSuggestion ?? null;
+      for (const sub of e.subEntities ?? []) {
+        out[`${e.name}:${sub.name}`] = e.layoutSuggestion ?? null;
+      }
+    }
+    return out;
+  };
+  const inLayouts = layouts(inProcess);
+  const boxLayouts = layouts(boxed);
+  for (const entity of ENTITIES) {
+    assert.deepEqual(boxLayouts[entity], inLayouts[entity], entity);
+  }
+  const effective = (caps: any, entity: string) =>
+    caps.perEntity?.[entity]?.mode ?? caps.mode;
+  const inCaps = inProcess.getIncrementalCapabilities();
+  const boxCaps = boxed.getIncrementalCapabilities();
+  assert.equal(boxCaps.supported, inCaps.supported);
+  for (const entity of ENTITIES) {
+    assert.equal(effective(boxCaps, entity), effective(inCaps, entity), entity);
+  }
 });
 
 void test("check agrees on a valid key and on a revoked one", async () => {
@@ -205,12 +290,14 @@ void test("every entity reads the same rows, timestamps, chunks and requests", a
   const results = await runParity({
     entities: ENTITIES,
     makeInProcess,
+    makeBoxed,
     server,
     sourceTs,
   });
   const limited = await runParity({
     entities: RATE_LIMIT_ENTITIES,
     makeInProcess,
+    makeBoxed,
     server,
     sourceTs,
     scenarios: [RATE_LIMIT_SCENARIO],
