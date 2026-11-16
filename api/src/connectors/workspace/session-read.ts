@@ -114,6 +114,9 @@ export class ConnectorSessionLostError extends Error {
   }
 }
 
+/** Boxes already reported as running without hidepid, warned once each. */
+const hidepidOffWarned = new Set<string>();
+
 /** How long one `wait` command waits in the box before reporting back. */
 const WAIT_SLICE_MS = 20_000;
 /** A batch that takes longer than this fails, as a chunk's timeout. */
@@ -462,6 +465,16 @@ export function boxSessionTransport(input: {
           // Cut off: the session may be running, with the credential on disk.
           await close(handle);
           throw error;
+        }
+        if (
+          result.stdout.includes(`${SESSION_MARKER} hidepid-off`) &&
+          !hidepidOffWarned.has(pinned ?? ctx.sessionKey)
+        ) {
+          hidepidOffWarned.add(pinned ?? ctx.sessionKey);
+          logger.warn(
+            "Connector box runs without hidepid on /proc: other runs can read every argv",
+            { sessionKey: ctx.sessionKey, sandboxId: pinned },
+          );
         }
         const marker = lastMarker(result.stdout);
         if (!marker) {

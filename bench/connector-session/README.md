@@ -112,10 +112,10 @@ Raw: [`results/e2b-pause-2026-11-16.json`](./results/e2b-pause-2026-11-16.json).
 
 | Pause | Pause call | Resume to first command | Box clock | Boot |
 | --- | --- | --- | --- | --- |
-| Full (memory), 20 s | 897 ms | 1,231 ms | jumped 23 s | same |
-| Filesystem only, 20 s | 399 ms | 9,588 ms | – | new |
+| Full (memory), 20 s | 483 ms | 1,405 ms | jumped 22 s | same |
+| Filesystem only, 20 s | 812 ms | 13,162 ms | – | new |
 
 - Full pause: session A (10-minute idle limit) served batches 3 to 6 after the resume, ended `done` and left nothing. Its wrapper was the same process, same start time.
-- Full pause: session B (10-second idle limit) ended itself on resume, because the box clock jumped 23 s. It was gone 179 ms after the resume, user and run directory included. The API reads that as `lost` and restarts from the last applied state.
+- Full pause: session B (10-second idle limit) ended itself on resume, because the box clock jumped 22 s. It was gone 177 ms after the resume, user and run directory included. The API reads that as `lost` and restarts from the last applied state.
 - Filesystem pause: the box booted again. Session C's run user and run directory were still on disk. Its record was pointed at a live bystander with the bystander's real start time and the old boot id, as a reused pid would look. The next start reaped C and the bystander lived.
 - `/proc` was mounted `hidepid=invisible` after every start. A reboot drops it until the next start.

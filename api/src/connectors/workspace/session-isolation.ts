@@ -50,6 +50,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 import {
+  HIDEPID_CHECK,
   cleanupScript,
   incomingPath,
   ISOLATED_INCOMING,
@@ -141,19 +142,22 @@ function heredoc(target: string, body: string): string {
  * process group from /proc/<pid>/stat. The start time (clock ticks since
  * boot) tells a process from a later one that reuses its pid.
  */
-const PROC_FUNCTIONS = `# Field 22 (start time) and 5 (process group) of /proc/<pid>/stat. The
+const PROC_FUNCTIONS = `# Every read below puts 2>/dev/null before its < redirect: bash applies
+# redirects left to right, and a failed open would otherwise print its
+# path on the script's stderr, which reaches the API's errors.
+# Field 22 (start time) and 5 (process group) of /proc/<pid>/stat. The
 # command name in parentheses may hold spaces: read after its last ")".
 proc_field() {
   local field stat rest
   field=$2
-  read -r stat < "/proc/$1/stat" 2>/dev/null || return 1
+  read -r stat 2>/dev/null < "/proc/$1/stat" || return 1
   rest=\${stat##*) }
   set -- $rest
   case "$field" in start) printf '%s' "\${20}" ;; pgid) printf '%s' "$3" ;; esac
 }
 proc_start() { proc_field "$1" start; }
 proc_pgid() { proc_field "$1" pgid; }
-boot_id() { local b; read -r b < /proc/sys/kernel/random/boot_id 2>/dev/null; printf '%s' "$b" | tr -cd 'a-f0-9'; }
+boot_id() { local b; read -r b 2>/dev/null < /proc/sys/kernel/random/boot_id; printf '%s' "$b" | tr -cd 'a-f0-9'; }
 # Kill the wrapper's process group, only while its pid is still the wrapper:
 # the boot, pid and start time it recorded must match a live process. A
 # wrapper that died left its pid free for reuse, and a box resumed from a
@@ -163,7 +167,7 @@ boot_id() { local b; read -r b < /proc/sys/kernel/random/boot_id 2>/dev/null; pr
 kill_wrapper_group() {
   local recorded pid start boot p cwd
   recorded=""
-  read -r recorded < "$S/supervisor.pid" 2>/dev/null
+  read -r recorded 2>/dev/null < "$S/supervisor.pid"
   set -- $(printf '%s' "$recorded" | tr -cd '0-9a-f ')
   pid=\${1:-}; start=\${2:-}; boot=\${3:-}
   case "$pid$start" in ''|*[!0-9]*) return 0 ;; esac
@@ -237,8 +241,9 @@ MAKO_SESSION_INPUTS=${shellQuote(inputs)} ${shellQuote(input.node)} ${shellQuote
   --buffer ${limits.buffer} --idle-ms ${limits.idleMs} --deadline "$deadline" \\
   < out >/dev/null 2>supervisor.err &
 supervisor=$!
-# runuser sets HOME from the run user's passwd entry and keeps TMPDIR.
-( cd ${shellQuote(l.home)} && TMPDIR=${shellQuote(l.home)} exec runuser -u ${shellQuote(l.user)} -- ${input.command} ) \\
+# -p keeps this environment: the run user's passwd entry has no home
+# (setupScript), so HOME and the rest come from here, not from argv.
+( cd ${shellQuote(l.home)} && HOME=${shellQuote(l.home)} TMPDIR=${shellQuote(l.home)} USER=${shellQuote(l.user)} LOGNAME=${shellQuote(l.user)} exec runuser -p -u ${shellQuote(l.user)} -- ${input.command} ) \\
   < /dev/null > out 2> >(exec >/dev/null; head -c ${STDERR_CAP} > stderr.log; cat > /dev/null) &
 connector=$!
 wait "$connector"
@@ -292,7 +297,7 @@ for S in ${shellQuote(ISOLATED_SESSIONS)}/*; do
   beat=$(cd "$S" 2>/dev/null && { stat -c %Y heartbeat 2>/dev/null || stat -c %Y . 2>/dev/null; } || echo 0)
   age=$((now - beat))
   if [ -f "$S/status" ]; then
-    cleanup=$(awk '{ print $4 }' < "$S/status" 2>/dev/null)
+    cleanup=$(awk '{ print $4 }' 2>/dev/null < "$S/status")
     if [ "$cleanup" != 0 ]; then unclean="$unclean \${S##*/}"; rm -rf "$S"; continue; fi
     [ "$age" -gt ${idle} ] && rm -rf "$S"
     continue
@@ -300,7 +305,7 @@ for S in ${shellQuote(ISOLATED_SESSIONS)}/*; do
   if [ "$age" -gt ${idle * 2} ] && [ -f "$S/cleanup.sh" ]; then
     kill_wrapper_group
     # Only a user this session created: its cleanup acts on its UID.
-    owner=$(head -c 64 < "$S/user" 2>/dev/null | tr -cd 'a-z0-9')
+    owner=$(head -c 64 2>/dev/null < "$S/user" | tr -cd 'a-z0-9')
     if [ -n "$owner" ] && id -u "$owner" >/dev/null 2>&1 && ! (cd "$S" && bash cleanup.sh) >/dev/null 2>&1; then unclean="$unclean \${S##*/}"; fi
     rm -rf "$S" ${shellQuote(ISOLATED_INCOMING)}/"\${S##*/}"
   fi
@@ -336,14 +341,14 @@ while :; do
   if [ -f "$S/batches/$seq.jsonl" ]; then echo "${SESSION_MARKER} ready $seq $(wc -c < "$S/batches/$seq.jsonl")"; exit 0; fi
   if [ ! -d "$S" ]; then echo "${SESSION_MARKER} gone"; exit 0; fi
   # Another attempt already took this batch and acknowledged it.
-  acked=$(head -c 20 < "$S/acked" 2>/dev/null | tr -cd 0-9)
+  acked=$(head -c 20 2>/dev/null < "$S/acked" | tr -cd 0-9)
   if [ "\${acked:-0}" -ge "$seq" ]; then echo "${SESSION_MARKER} acked"; exit 0; fi
   if [ -f "$S/status" ]; then
     # The batch is renamed before the status is written: look once more.
     if [ -f "$S/batches/$seq.jsonl" ]; then echo "${SESSION_MARKER} ready $seq $(wc -c < "$S/batches/$seq.jsonl")"; exit 0; fi
     rest=none
     [ -f "$S/batches/$seq.tail" ] && rest=$(wc -c < "$S/batches/$seq.tail")
-    tail -c 2000 < "$S/stderr.log" >&2 2>/dev/null
+    [ -f "$S/stderr.log" ] && tail -c 2000 < "$S/stderr.log" >&2
     echo "${SESSION_MARKER} $(head -c 200 < "$S/status" | tr -cd 'a-z0-9 -') $rest"
     exit 0
   fi
@@ -360,7 +365,7 @@ function ackBody(ackUpTo: number): string {
   cd "$S" || exit 0
   # A write, not touch: a redirect names no path in argv.
   printf x > heartbeat
-  acked=$(head -c 20 < acked 2>/dev/null | tr -cd 0-9)
+  acked=$(head -c 20 2>/dev/null < acked | tr -cd 0-9)
   if [ ${upTo} -gt "\${acked:-0}" ]; then printf '%s' ${upTo} > acked.tmp && mv -f acked.tmp acked; fi
   for f in batches/*.jsonl; do
     [ -f "$f" ] || continue
@@ -398,7 +403,7 @@ if [ -d "$S" ]; then
     # back must read on to the end of the pipe. Then kill the connector;
     # its wrapper runs the cleanup, once, and writes the status.
     (cd "$S" && rm -f batches/*.jsonl)
-    user=$(head -c 64 < "$S/user" 2>/dev/null | tr -cd 'a-z0-9')
+    user=$(head -c 64 2>/dev/null < "$S/user" | tr -cd 'a-z0-9')
     [ -n "$user" ] && runuser -u "$user" -- kill -9 -1 2>/dev/null
     i=0
     while [ ! -f "$S/status" ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
@@ -412,7 +417,7 @@ if [ -d "$S" ]; then
     fi
   fi
   if [ -f "$S/status" ]; then
-    wrapped=$(awk '{ print $4 }' < "$S/status" 2>/dev/null)
+    wrapped=$(awk '{ print $4 }' 2>/dev/null < "$S/status")
     [ "$wrapped" = 0 ] || code=\${wrapped:-1}
   fi
   rm -rf "$S"
@@ -476,6 +481,8 @@ ${setupScript(l)}
   echo "${SESSION_MARKER} setup-failed"
   exit ${SESSION_SETUP_FAILED_EXIT}
 fi
+# Without hidepid every user reads every argv: say so, once per start.
+${HIDEPID_CHECK} || echo "${SESSION_MARKER} hidepid-off"
 staged=1
 ${moves}
 rm -rf ${inbox}

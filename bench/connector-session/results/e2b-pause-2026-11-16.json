@@ -1,19 +1,19 @@
 {
-  "date": "2026-11-16T23:15:01.891Z",
+  "date": "2026-11-16T23:50:08.743Z",
   "template": "3f2t2qgqsu5m8e42xd5i",
   "pauseMs": 20000,
-  "box": "isdsd23hewkpcsuroknta",
+  "box": "idh56mhx8cy0inlejpwm9",
   "full": {
-    "pauseCallMs": 897,
-    "resumeMs": 1231,
-    "boxClockJumpS": 23,
+    "pauseCallMs": 483,
+    "resumeMs": 1405,
+    "boxClockJumpS": 22,
     "bootIdKept": true,
     "bEnd": "gone",
-    "bEndedAfterResumeMs": 179
+    "bEndedAfterResumeMs": 177
   },
   "filesystem": {
-    "pauseCallMs": 399,
-    "resumeMs": 9588,
+    "pauseCallMs": 812,
+    "resumeMs": 13162,
     "bootIdChanged": true,
     "hidepidAfterBootBeforeNextStart": false,
     "wrapperPidInUseAfterBoot": false
@@ -87,7 +87,7 @@
     {
       "check": "B ended itself after the pause",
       "ok": true,
-      "detail": "gone after 179 ms"
+      "detail": "gone after 177 ms"
     },
     {
       "check": "B reports gone or abandoned",

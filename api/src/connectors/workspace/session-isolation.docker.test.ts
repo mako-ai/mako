@@ -593,6 +593,18 @@ env MAKO_KEY="$key" sleep 600`,
       await hidden(ackScript(s.id, 1));
     }
     await scan;
+    // Nor in /etc/passwd, which every user can read.
+    const passwd = (await root("getent passwd")).stdout;
+    expect(passwd).toContain(`${s.run.user}:`);
+    expect(passwd).not.toContain(s.id);
+    expect(passwd).not.toContain(s.run.dir);
+    // A wait before the first ack prints no error of its own: a failed
+    // open would name the session directory on stderr.
+    const quiet = await hidden(waitScript(s.id, 2, 0, 500));
+    expect(quiet.stderr).toBe("");
+    expect(started.stderr).not.toMatch(/No such file/);
+    // Docker cannot remount /proc: the start says so.
+    expect(started.stdout).toContain("MAKO_SESSION hidepid-off");
     // The scan reads real argv: it saw the connector's own process each time.
     expect(scanned).toBeGreaterThan(100);
     expect(connectors).toBeGreaterThanOrEqual(20);

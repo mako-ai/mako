@@ -174,13 +174,17 @@ if [ -n "$left" ]; then echo "empty passwords left: $left" >&2; exit 1; fi`;
  *
  * Best effort: a container without CAP_SYS_ADMIN (the Docker suites) cannot
  * remount /proc. Sessions keep their ids and run directories out of every
- * long-lived argv without it (session-isolation.ts).
+ * long-lived argv without it (session-isolation.ts). A session start reports
+ * a box left without it (`MAKO_SESSION hidepid-off`), and the API logs it.
  */
 export function hideProcessesScript(): string {
-  return `if ! awk '$2 == "/proc" && $3 == "proc" && $4 ~ /(^|,)hidepid=(2|invisible)(,|$)/ { found = 1 } END { exit !found }' /proc/mounts 2>/dev/null; then
+  return `if ! ${HIDEPID_CHECK}; then
   mount -o remount,hidepid=invisible /proc 2>/dev/null || mount -o remount,hidepid=2 /proc 2>/dev/null || true
 fi`;
 }
+
+/** Shell that succeeds when /proc is mounted with hidepid. */
+export const HIDEPID_CHECK = `awk '$2 == "/proc" && $3 == "proc" && $4 ~ /(^|,)hidepid=(2|invisible)(,|$)/ { found = 1 } END { exit !found }' /proc/mounts 2>/dev/null`;
 
 /** Root: create the run user and its directories. Fails closed. */
 export function setupScript(l: RunLayout): string {
@@ -204,7 +208,10 @@ until err=$(groupadd -g "$gid" "$user" 2>&1); do
   sleep 0.2
 done
 n=0
-until err=$(useradd -l -M -u "$uid" -g "$gid" -d "$R/home" -s /usr/sbin/nologin "$user" 2>&1); do
+# Home /nonexistent: /etc/passwd is world-readable, and a home under the
+# run directory would show every run's id to every other run. The launch
+# sets HOME itself.
+until err=$(useradd -l -M -u "$uid" -g "$gid" -d /nonexistent -s /usr/sbin/nologin "$user" 2>&1); do
   n=$((n + 1))
   if [ "$n" -ge 20 ]; then echo "$err" >&2; groupdel "$user" 2>/dev/null || true; exit 1; fi
   sleep 0.2
