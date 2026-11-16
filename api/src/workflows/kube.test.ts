@@ -101,10 +101,10 @@ async function main() {
     (container.env ?? []).map(e => [e.name, e.value]),
   );
   assert.equal(env.WORKFLOWS_MAX_STEPS, String(WORKER_STEPS));
-  assert.equal(
-    env.WORKFLOWS_MAX_RUNS,
-    String(WORKER_STEPS * WORKER_MAX_REPLICAS),
-  );
+  assert.equal(WORKER_STEPS, 128);
+  assert.equal(env.WORKFLOWS_MAX_PROGRAMS, "16");
+  assert.equal(env.WORKFLOWS_STEPS_PER_PROGRAM, "8");
+  assert.equal(env.WORKFLOWS_MAX_RUNS, "250");
   assert.equal(env.WORKFLOWS_RATE_LIMITS, undefined);
   assert.equal(body.spec?.replicas, 1);
   process.env.WORKFLOWS_RATE_LIMITS = "model=300/minute";

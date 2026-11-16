@@ -5,7 +5,7 @@
 // needs Hatchet (a log line, a child run, a durable sleep).
 //
 //   node step.mjs describe            print every workflow's definition
-//   node step.mjs run <workflow>      run that workflow's steps, one at a time
+//   node step.mjs run <workflow>      run that workflow's steps, several at once
 //
 // Env: WORKFLOWS_ROOT, MAKO_URL. Talks to the dispatcher over the IPC channel.
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -162,7 +162,7 @@ if (mode === "describe") {
 }
 
 // ---------------------------------------------------------------------------
-// run: one workflow's steps, one at a time, each with its own pass.
+// run: one workflow's steps, several at once, each with its own pass.
 // ---------------------------------------------------------------------------
 
 async function runSteps(workflowName) {
@@ -193,7 +193,14 @@ async function runSteps(workflowName) {
     }
   })();
   const baseFetch = globalThis.fetch;
-  let currentPass = null;
+  // The steps running now, by their id: several of this workflow's at once.
+  const running = new Map(); // id -> { pass, abort }
+  // A request made outside any step's own flow (a library's timer, an event
+  // handler) is given a pass only when one step runs: with several, whose
+  // it is cannot be told, and it goes without one rather than with a
+  // neighbour's. Mako then refuses it.
+  const solePass = () =>
+    running.size === 1 ? running.values().next().value.pass : null;
   globalThis.fetch = (input, init) => {
     const url =
       typeof input === "string"
@@ -207,7 +214,7 @@ async function runSteps(workflowName) {
     } catch {
       // Not an absolute URL: not Mako.
     }
-    const pass = step.getStore()?.pass ?? currentPass;
+    const pass = step.getStore()?.pass ?? solePass();
     if (!pass || origin !== makoOrigin) return baseFetch(input, init);
     const headers = new Headers(
       init?.headers ?? (input instanceof Request ? input.headers : undefined),
@@ -231,22 +238,27 @@ async function runSteps(workflowName) {
   // Calls the dispatcher answers with the step's real Hatchet context.
   let nextCall = 0;
   const pending = new Map();
-  const call = (method, args) =>
+  const callFor = run => (method, args) =>
     new Promise((resolve, reject) => {
       const id = ++nextCall;
       pending.set(id, { resolve, reject });
-      send({ type: "call", id, method, args });
+      // `run` says whose step asks: the dispatcher answers with that
+      // step's own Hatchet context.
+      send({ type: "call", run, id, method, args });
     });
   const nameOf = workflow =>
     typeof workflow === "string"
       ? workflow
       : (workflow?.definition?.name ?? workflow?.name);
 
-  const contextFor = snapshot => {
+  const contextFor = (snapshot, run, abortController) => {
+    const call = callFor(run);
     const known = {
       input: snapshot.input,
-      abortController: new AbortController(),
-      cancelled: false,
+      abortController,
+      get cancelled() {
+        return abortController.signal.aborted;
+      },
       rethrowIfCancelled() {},
       parentOutput: async task => {
         const name = typeof task === "string" ? task : task?.name;
@@ -327,33 +339,40 @@ async function runSteps(workflowName) {
         );
       return;
     }
+    if (message?.type === "cancel") {
+      // The step is told; code that does not listen runs on until this
+      // program is stopped, which the dispatcher does once it can.
+      running.get(message.id)?.abort.abort();
+      return;
+    }
     if (message?.type !== "run") return;
     const { id, which, snapshot, pass } = message;
     const fn = fnOf(which);
     if (typeof fn !== "function") {
       send({
         type: "done",
-        id,
+        run: id,
         ok: false,
         error: errorOf(new Error(`No step ${which.task ?? which.kind}`)),
       });
       return;
     }
-    currentPass = pass;
+    const abort = new AbortController();
+    running.set(id, { pass, abort });
     try {
       const value = await step.run({ pass, snapshot }, () =>
-        fn(snapshot.input, contextFor(snapshot)),
+        fn(snapshot.input, contextFor(snapshot, id, abort)),
       );
       send({
         type: "done",
-        id,
+        run: id,
         ok: true,
         value: value === undefined ? null : value,
       });
     } catch (err) {
-      send({ type: "done", id, ok: false, error: errorOf(err) });
+      send({ type: "done", run: id, ok: false, error: errorOf(err) });
     } finally {
-      currentPass = null;
+      running.delete(id);
     }
   });
   send({ type: "ready" });

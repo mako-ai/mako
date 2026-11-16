@@ -111,7 +111,7 @@ await connection("ch_close").post("/task/", {
 
 ### Each workflow acts as itself
 
-All of a workspace's deployed workflows run in one worker pod, but workflow code never holds the pod's key. The pod's dispatcher, which runs no workflow code, asks Mako for a **pass** for each step it is about to run: a short-lived token for that workflow, that run and that step, given only for a run Hatchet says is a run of that workflow and executing now. The step runs in a program of its own, as a user of its own for that workflow, with the pass instead of the key.
+All of a workspace's deployed workflows run in one worker pod, but workflow code never holds the pod's key. The pod's dispatcher, which runs no workflow code, asks Mako for a **pass** for each step it is about to run: a short-lived token for that workflow, that run and that step, given only for a run Hatchet says is a run of that workflow and executing now. The step runs in a program of its workflow, as a user of its own for that workflow, with the pass instead of the key. Steps of the same workflow share that program, several at a time, each with its own pass; steps of different workflows never do. Do not keep one run's data in a module-level variable: another run of the same workflow may read it.
 
 So a writers list or a live readers list can name one workflow: Mako believes the workflow a pass names, and nothing a request says about itself. A pass stops working when its run ends, when the worker key is replaced, and after 24 hours at the latest. A step program stays for 60 seconds after its step, so a workflow that runs every few seconds keeps one and a daily one does not.
 
@@ -193,7 +193,7 @@ With none of these set, Mako runs without workflows.
 
 ## Bursts and limits
 
-A workflow runs at most 80 of its runs at once; more wait their turn in the order they came, so a thousand webhook calls in a minute become a queue. To choose your own number, declare it, and yours is kept:
+A workflow runs at most 250 of its runs at once; more wait their turn in the order they came, so a thousand webhook calls in a minute become a queue. To choose your own number, declare it, and yours is kept:
 
 ```ts
 import { ConcurrencyLimitStrategy } from "@hatchet-dev/typescript-sdk/v1";

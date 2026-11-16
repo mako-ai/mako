@@ -23,14 +23,16 @@ const WORKSPACE_LABEL = "mako.ai/workspace";
 const ENV_LABEL = "mako.ai/env";
 
 /**
- * The size of one worker pod, set together. A step runs in a Node process
- * of its own, measured at 80 to 120 MB while it waits on I/O, and the
- * dispatcher and entrypoint take about 300 MB with a typecheck running:
- * 16 steps fit under 3Gi with room for a step that holds a large result.
- * Steps wait on the network, so 16 of them share 2 CPUs; the request is
- * what an idle pod uses.
+ * The size of one worker pod, set together. A workflow's steps run in step
+ * programs of that workflow, each a Node process of about 100 MB running up
+ * to WORKER_STEPS_PER_PROGRAM steps at once (worker.mjs): 16 programs with
+ * 128 steps under way were measured at 1.45 GiB, and the dispatcher and
+ * entrypoint take about 300 MB with a typecheck running. Steps wait on the
+ * network, so they share 2 CPUs; the request is what an idle pod uses.
  */
-export const WORKER_STEPS = 16;
+const WORKER_PROGRAMS = 16;
+const WORKER_STEPS_PER_PROGRAM = 8;
+export const WORKER_STEPS = WORKER_PROGRAMS * WORKER_STEPS_PER_PROGRAM;
 const WORKER_RESOURCES = {
   requests: { cpu: "250m", memory: "512Mi" },
   limits: { cpu: "2", memory: "3Gi" },
@@ -38,18 +40,19 @@ const WORKER_RESOURCES = {
 
 /**
  * The most pods one workspace's worker grows to (the autoscaler below):
- * 5 x 16 steps at once. The namespace quota (deploy/workflows/k8s) holds
+ * 5 x 128 steps at once. The namespace quota (deploy/workflows/k8s) holds
  * 16 such pods for all workspaces together.
  */
 export const WORKER_MAX_REPLICAS = 5;
 
 /**
  * Runs of one workflow executing at once, unless the workflow declares its
- * own `concurrency` (worker.mjs): as many as the workspace's pods can hold
- * steps when grown out, so a run that was let in finds a slot, and the rest
- * wait in Hatchet in the order they came.
+ * own `concurrency` (worker.mjs); the rest wait in Hatchet in the order
+ * they came. 250 is the most the load test has run (deploy/workflows
+ * README): two pods hold it, and Hatchet's database was at its 2 CPUs
+ * there. Raise it with the database, not alone.
  */
-const MAX_RUNS = WORKER_STEPS * WORKER_MAX_REPLICAS;
+const MAX_RUNS = 250;
 
 /** True when this API instance can create worker pods. */
 export function isGkeWorkerConfigured(): boolean {
@@ -133,6 +136,11 @@ export async function writeWorkerSecret(
 function limitsEnv(): Array<{ name: string; value: string }> {
   const env = [
     { name: "WORKFLOWS_MAX_STEPS", value: String(WORKER_STEPS) },
+    { name: "WORKFLOWS_MAX_PROGRAMS", value: String(WORKER_PROGRAMS) },
+    {
+      name: "WORKFLOWS_STEPS_PER_PROGRAM",
+      value: String(WORKER_STEPS_PER_PROGRAM),
+    },
     {
       name: "WORKFLOWS_MAX_RUNS",
       value: process.env.WORKFLOWS_MAX_RUNS || String(MAX_RUNS),
