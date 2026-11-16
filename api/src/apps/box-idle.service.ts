@@ -48,7 +48,7 @@ import {
 import { noteSessionPaused } from "./sandbox/e2b-provider";
 import { forgetBoxCaches, resolveActorIdentity } from "./worktree/box-session";
 import { withBoxPushLock } from "./worktree/files";
-import { isUserActor } from "./worktree/worktrees";
+import { PUBLISH_ACTOR, isUserActor } from "./worktree/worktrees";
 import { forgetTerminalCaches } from "./terminal/sessions";
 
 const logger = loggers.api("apps-box-idle");
@@ -422,13 +422,15 @@ export async function settleBoxForDelete(
   const ctx = { sessionKey };
   const status = await boxStatus(ctx);
   const dirty = status.changes.length > 0 || status.ahead > 0;
-  if (!isUserActor(parts.userId)) {
+  if (parts.userId === PUBLISH_ACTOR) {
     // The publish actor's box holds a trial merge rebuilt from the branch on
     // every publish (worktree/worktrees.ts PUBLISH_ACTOR): nothing in it is
     // a person's work, and committing it would ship an unbuilt candidate.
+    // Every other actor, "api-key" included, holds real work and goes
+    // through the commit and the checks below.
     return {
       ok: true,
-      note: dirty ? "system actor: derived working copy" : undefined,
+      note: dirty ? "publish actor: derived working copy" : undefined,
     };
   }
   let committed: string | undefined;
@@ -436,7 +438,11 @@ export async function settleBoxForDelete(
     if (status.branch === "HEAD") {
       return { ok: false, reason: "uncommitted work on a detached HEAD" };
     }
-    const author = await resolveActorIdentity(parts.userId);
+    // A non-user actor ("api-key") has no person to resolve; the box's own
+    // configured identity commits for it.
+    const author = isUserActor(parts.userId)
+      ? await resolveActorIdentity(parts.userId)
+      : undefined;
     // The box's git token may have expired while it slept.
     await configureBoxRemote({
       ctx,
@@ -467,7 +473,7 @@ export async function settleBoxForDelete(
     ctx,
     `cd ${sh(boxRoot(ctx))} && ` +
       `echo "STASH=$(git stash list 2>/dev/null | head -1)"; ` +
-      `echo "UNPUSHED=$(git log --branches --not --remotes --format=%H -1 2>/dev/null)"`,
+      `echo "UNPUSHED=$(git log HEAD --branches --not --remotes --format=%H -1 2>/dev/null)"`,
     { timeoutMs: 30_000 },
   );
   if (/STASH=\S/.test(extra.stdout)) {
@@ -476,7 +482,8 @@ export async function settleBoxForDelete(
   if (/UNPUSHED=\S/.test(extra.stdout)) {
     return {
       ok: false,
-      reason: "a local branch has commits the server does not",
+      reason:
+        "commits the server does not have (a local branch or a detached HEAD)",
     };
   }
   return { ok: true, committed };

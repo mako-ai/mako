@@ -584,6 +584,42 @@ describe("settleBoxForDelete: commit before delete", () => {
     expect(await settleBoxForDelete(KEY)).toMatchObject({ ok: false });
   });
 
+  it("commits an api-key actor's work like anyone else's", async () => {
+    box.boxStatus.mockResolvedValueOnce(dirty);
+    box.boxStatus.mockResolvedValueOnce(clean);
+    box.boxCommitAll.mockResolvedValue({ committed: true, commitOid: "beef" });
+    const outcome = await settleBoxForDelete(`${WS}:api-key`);
+    expect(outcome).toEqual({ ok: true, committed: "beef" });
+    expect(box.boxCommitAll).toHaveBeenCalledWith(
+      expect.objectContaining({ author: undefined }),
+    );
+  });
+
+  it("keeps an api-key actor's box whose work cannot be pushed", async () => {
+    box.boxStatus.mockResolvedValue(dirty);
+    box.boxCommitAll.mockRejectedValue(new Error("push failed"));
+    await expect(settleBoxForDelete(`${WS}:api-key`)).rejects.toThrow(
+      /push failed/,
+    );
+  });
+
+  it("walks HEAD too, so commits on a clean detached HEAD are caught", async () => {
+    box.boxStatus.mockResolvedValue({ ...clean, branch: "HEAD" });
+    box.boxExec.mockResolvedValue({
+      stdout: "STASH=\nUNPUSHED=0123456789abcdef\n",
+      stderr: "",
+      exitCode: 0,
+    });
+    expect(await settleBoxForDelete(KEY)).toEqual({
+      ok: false,
+      reason:
+        "commits the server does not have (a local branch or a detached HEAD)",
+    });
+    expect(box.boxExec.mock.calls[0][1]).toContain(
+      "git log HEAD --branches --not --remotes",
+    );
+  });
+
   it("never commits in the publish actor's box", async () => {
     box.boxStatus.mockResolvedValue(dirty);
     const outcome = await settleBoxForDelete(`${WS}:publish`);
