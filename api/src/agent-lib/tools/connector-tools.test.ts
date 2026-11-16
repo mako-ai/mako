@@ -467,3 +467,84 @@ describe("call_connection: only useful answer headers, and the tool's signal", (
     proxied.headers = {};
   });
 });
+
+describe("call_connection: a named operation instead of a path", () => {
+  it("passes the operation to the proxy, as an agent's own look", async () => {
+    proxied.calls = [];
+    proxied.body = { data: [] };
+    const result = await tools().call_connection.execute({
+      connectionId: "fr_close",
+      operation: "search_leads",
+      params: { query: "Dupont" },
+    });
+    expect(result.status).toBe(200);
+    expect(proxied.calls[0]).toMatchObject({
+      workspaceId: WS,
+      connection: "fr_close",
+      operation: { name: "search_leads", params: { query: "Dupont" } },
+      readOnly: true,
+      agentBudget: true,
+    });
+    expect(proxied.calls[0].managerReads).toBeUndefined();
+    expect(proxied.calls[0].request).toBeUndefined();
+  });
+
+  it("keeps the caller's headers with an operation (Stripe-Account)", async () => {
+    proxied.calls = [];
+    proxied.body = {};
+    await tools().call_connection.execute({
+      connectionId: "fr_stripe",
+      operation: "get_customer",
+      params: { id: "cus_1" },
+      headers: { "stripe-account": "acct_1" },
+    });
+    expect(proxied.calls[0].operation).toEqual({
+      name: "get_customer",
+      params: { id: "cus_1" },
+      headers: { "stripe-account": "acct_1" },
+    });
+  });
+
+  it("refuses an operation mixed with raw request fields", async () => {
+    proxied.calls = [];
+    for (const raw of [
+      { method: "POST" },
+      { path: "/lead/" },
+      { query: { _limit: 1 } },
+      { body: {} },
+    ]) {
+      const result = await tools().call_connection.execute({
+        connectionId: "fr_close",
+        operation: "search_leads",
+        params: { query: "Dupont" },
+        ...raw,
+      });
+      expect(result.error).toMatch(/^Pass either `operation`/);
+      expect(result.error).toContain(Object.keys(raw)[0]);
+    }
+    expect(proxied.calls).toHaveLength(0);
+  });
+
+  it("asks for an operation or a path when given neither", async () => {
+    proxied.calls = [];
+    const result = await tools().call_connection.execute({
+      connectionId: "fr_close",
+    });
+    expect(result.error).toMatch(/operation.*path/);
+    expect(proxied.calls).toHaveLength(0);
+  });
+
+  it("inspect_connection lists the operations a connection takes", async () => {
+    const result = await tools().inspect_connection.execute({
+      connectionId: STRIPE.toString(),
+    });
+    const access = result.access as { operations: Array<{ name: string }> };
+    expect(access.operations.map(op => op.name)).toEqual([
+      "search_customers",
+      "get_customer",
+      "list_subscriptions",
+      "list_invoices",
+    ]);
+    expect(JSON.stringify(result)).not.toContain(SECRET);
+  });
+});
