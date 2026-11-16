@@ -30,6 +30,7 @@ import {
   ISOLATED_ROOT,
   ISOLATED_RUNTIME,
   launchScript,
+  preflightScript,
   runLayout,
   setupScript,
   shellQuote,
@@ -457,6 +458,57 @@ export class RunCleanupError extends Error {
   }
 }
 
+/** Boxes whose template passed the tool preflight, per process. */
+const preflighted = new Set<string>();
+
+/**
+ * Check, once per box, that the template has every tool run isolation needs.
+ * A template without them cannot isolate a run, and every run would fail at
+ * setup; this says which tool is missing, in the log and in the error.
+ */
+async function preflight(ctx: SandboxExecContext): Promise<void> {
+  if (preflighted.has(ctx.sessionKey)) return;
+  const result = await getSandboxProvider().exec(ctx, preflightScript(), {
+    timeoutMs: 30_000,
+    asRoot: true,
+  });
+  const missing = result.stdout
+    .split("\n")
+    .map(line => line.trim())
+    .filter(Boolean);
+  if (result.exitCode !== 0 || missing.length > 0) {
+    logger.error("Connector box template lacks the tools run isolation needs", {
+      sessionKey: ctx.sessionKey,
+      missing,
+      stderr: result.stderr.slice(0, 500),
+    });
+    throw new Error(
+      `This box cannot isolate connector runs: missing ${missing.join(", ") || "tools (preflight failed)"}.`,
+    );
+  }
+  preflighted.add(ctx.sessionKey);
+}
+
+/**
+ * Kill the workspace's v2 sync box after a run's cleanup failed in it.
+ *
+ * The flag-off path has no lease to mark unhealthy, so this is its hook: a
+ * box where a run's thread or file may have survived is never handed to the
+ * next run. The next command creates a fresh box under the same key.
+ */
+export async function retireSyncBox(
+  workspaceId: string,
+  reason: string,
+): Promise<void> {
+  const key = syncBoxContext(workspaceId).sessionKey;
+  logger.error("Killing a connector sync box after a failed run cleanup", {
+    workspaceId,
+    reason,
+  });
+  preflighted.delete(key);
+  await getSandboxProvider().destroySession?.(key);
+}
+
 /**
  * Open a run: on E2B a fresh Unix user, its directories and nothing else
  * (see run-isolation.ts for the layout and why root never opens a path the
@@ -495,6 +547,7 @@ export async function openRun(ctx: SandboxExecContext): Promise<OpenRun> {
     };
   }
 
+  await preflight(ctx);
   let layout: RunLayout | null = null;
   let lastError = "";
   // A random UID can collide with one in use; a fresh name and UID fixes it.
@@ -502,6 +555,7 @@ export async function openRun(ctx: SandboxExecContext): Promise<OpenRun> {
     const candidate = runLayout(
       runId,
       `mkc${randomBytes(6).toString("hex")}`,
+      randomInt(200_000, 2_000_000_000),
       randomInt(200_000, 2_000_000_000),
     );
     const setup = await provider.exec(ctx, setupScript(candidate), {

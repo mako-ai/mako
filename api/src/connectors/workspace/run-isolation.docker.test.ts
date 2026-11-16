@@ -28,7 +28,11 @@ import {
 } from "./run-isolation";
 
 const run = promisify(execFile);
-const ENABLED = process.env.RUN_DB_INTEGRATION === "1";
+// Nightly (RUN_DB_INTEGRATION) and on every PR (the api-contract workflow's
+// "Connector run isolation (Docker)" step sets RUN_CONNECTOR_ISOLATION_DOCKER).
+const ENABLED =
+  process.env.RUN_DB_INTEGRATION === "1" ||
+  process.env.RUN_CONNECTOR_ISOLATION_DOCKER === "1";
 const suite = ENABLED ? describe : describe.skip;
 const IMAGE = process.env.CONNECTOR_ISOLATION_IMAGE ?? "e2bdev/base:latest";
 
@@ -66,6 +70,7 @@ async function open(): Promise<RunLayout> {
     randomBytes(8).toString("hex"),
     `mkc${randomBytes(6).toString("hex")}`,
     300_000 + counter * 1_000 + Math.floor(Math.random() * 900),
+    500_000 + counter * 1_000 + Math.floor(Math.random() * 900),
   );
   const setup = await root(setupScript(layout));
   expect(setup, setup.stderr).toMatchObject({ code: 0 });
@@ -234,6 +239,117 @@ suite("connector run isolation in e2bdev/base (Docker)", () => {
     );
   }, 60_000);
 
+  const liveThreads = async (uid: number) =>
+    Number(
+      (
+        await root(
+          `cat /proc/[0-9]*/task/[0-9]*/status 2>/dev/null | awk -v n=${uid} '/^State:/{st=$2} /^Uid:/{if(st!="Z"&&$2==n)c++} END{print c+0}'`,
+        )
+      ).stdout.trim(),
+    );
+
+  it("kills a process whose main thread called pthread_exit (state Z, threads alive)", async () => {
+    const l = await open();
+    await connector(
+      l,
+      [],
+      [
+        "nohup python3 -c '",
+        "import threading, time, ctypes",
+        "threading.Thread(target=lambda: time.sleep(600)).start()",
+        "time.sleep(0.2)",
+        "ctypes.CDLL(None).pthread_exit(None)' >/dev/null 2>&1 &",
+        "sleep 0.8; echo started",
+      ].join("\n"),
+    );
+    expect(await liveThreads(l.uid)).toBeGreaterThan(0);
+
+    const cleanup = await root(cleanupScript(l));
+    expect(cleanup, cleanup.stderr).toMatchObject({ code: 0 });
+    expect(await liveThreads(l.uid)).toBe(0);
+  }, 60_000);
+
+  it("kills a non-dumpable process, whose /proc entry root owns", async () => {
+    const l = await open();
+    await connector(
+      l,
+      [],
+      "nohup python3 -c 'import ctypes, time; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); time.sleep(600)' >/dev/null 2>&1 &\nsleep 0.5; echo started",
+    );
+    expect(await liveThreads(l.uid)).toBeGreaterThan(0);
+    const cleanup = await root(cleanupScript(l));
+    expect(cleanup, cleanup.stderr).toMatchObject({ code: 0 });
+    expect(await liveThreads(l.uid)).toBe(0);
+  }, 60_000);
+
+  it("removes the credential and fails when a survivor cannot be killed, and the survivor cannot read the next run", async () => {
+    const thief = await open();
+    // The survivor scans every process's --config and tries to read it.
+    const thiefCode = [
+      "import glob, time",
+      "while True:",
+      "    for c in glob.glob('/proc/[0-9]*/cmdline'):",
+      "        try:",
+      "            a = open(c, 'rb').read().split(bytes(1))",
+      "            if b'--config' in a:",
+      "                p = a[a.index(b'--config') + 1].decode()",
+      "                open('/tmp/stolen', 'a').write(p + ' => ' + open(p).read() + chr(10))",
+      "        except Exception:",
+      "            pass",
+      "    time.sleep(0.02)",
+    ].join("\n");
+    await root(
+      `printf '%s' ${shellQuote(thiefCode)} > /opt/thief.py && chmod 0644 /opt/thief.py`,
+    );
+    await connector(
+      thief,
+      [],
+      "nohup python3 /opt/thief.py >/dev/null 2>&1 &\necho started",
+    );
+    const config = await writeInput(thief, "config.json", "sk_thief_own");
+    expect(await liveThreads(thief.uid)).toBeGreaterThan(0);
+    // Make the kill fail: a runuser that ignores `kill` (the script's PATH
+    // puts /usr/local/sbin first). Everything else still runs.
+    await root(
+      `printf '%s\\n' '#!/bin/sh' 'case "$*" in *kill*) exit 0;; esac' 'exec /usr/sbin/runuser "$@"' > /usr/local/sbin/runuser && chmod 0755 /usr/local/sbin/runuser`,
+    );
+    let cleanup: Sh;
+    try {
+      cleanup = await root(cleanupScript(thief), 120_000);
+    } finally {
+      await root("rm -f /usr/local/sbin/runuser");
+    }
+    // Fails closed, but the run's directory and credential are gone anyway.
+    expect(cleanup.code).toBe(3);
+    expect(cleanup.stderr).toContain("survived");
+    expect(
+      (await root(`test -e ${shellQuote(config)} || echo GONE`)).stdout,
+    ).toContain("GONE");
+    expect(
+      (await root(`test -e ${shellQuote(thief.dir)} || echo GONE`)).stdout,
+    ).toContain("GONE");
+    expect(await liveThreads(thief.uid)).toBeGreaterThan(0);
+
+    // The next run, with the survivor still alive: a different random uid
+    // and gid, and an input only the new run user can read.
+    const next = await open();
+    expect(next.gid).not.toBe(thief.gid);
+    const secret = `sk_next_${randomBytes(8).toString("hex")}`;
+    const file = await writeInput(next, "config.json", secret);
+    await root(
+      launchScript(
+        next,
+        [file],
+        `sh -c 'sleep 2' connector --config ${shellQuote(file)}`,
+      ),
+    );
+    const stolen = await root("cat /tmp/stolen 2>/dev/null; true");
+    expect(stolen.stdout).not.toContain(secret);
+
+    await root(`runuser -u ${shellQuote(thief.user)} -- kill -9 -1; true`);
+    expect((await root(cleanupScript(next))).code).toBe(0);
+  }, 180_000);
+
   it("refuses to start a run without useradd", async () => {
     await root("mv /usr/sbin/useradd /usr/sbin/useradd.off");
     try {
@@ -244,7 +360,7 @@ suite("connector run isolation in e2bdev/base (Docker)", () => {
       );
       const setup = await root(setupScript(l));
       expect(setup.code).not.toBe(0);
-      expect(setup.stderr).toContain("missing useradd");
+      expect(setup.stderr).toContain("missing tools: useradd");
     } finally {
       await root("mv /usr/sbin/useradd.off /usr/sbin/useradd");
     }

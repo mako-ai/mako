@@ -238,15 +238,14 @@ describe("per-run Unix users on providers with real users", () => {
   it("creates a run user, its home and a root-only output directory, as root", async () => {
     await runOnce();
 
-    const setup = calls().find(c => c.command.includes("useradd"));
+    const setup = calls().find(c => c.command.includes("useradd -l"));
     expect(setup?.asRoot).toBe(true);
-    expect(setup?.command).toContain("useradd -l -M -U");
+    expect(setup?.command).toContain('useradd -l -M -u "$uid" -g "$gid"');
+    expect(setup?.command).toContain('groupadd -g "$gid"');
     expect(setup?.command).toContain(
       "install -d -o root -g root -m 0711 '/var/lib/mako-connectors/runs'",
     );
-    expect(setup?.command).toContain(
-      'install -d -o root -g "$user" -m 0750 "$R"',
-    );
+    expect(setup?.command).toContain('install -d -o root -g root -m 0711 "$R"');
     expect(setup?.command).toContain(
       'install -d -o "$user" -g "$user" -m 0700 "$R/home"',
     );
@@ -260,10 +259,10 @@ describe("per-run Unix users on providers with real users", () => {
     await runOnce();
 
     const dir = dirOf(
-      calls().find(c => c.command.includes("useradd"))?.command ?? "",
+      calls().find(c => c.command.includes("useradd -l"))?.command ?? "",
     );
     const user = userOf(
-      calls().find(c => c.command.includes("useradd"))?.command ?? "",
+      calls().find(c => c.command.includes("useradd -l"))?.command ?? "",
     );
     const launch = calls().find(c => c.command.includes("mako-connector.js"));
     expect(launch?.asRoot).toBe(true);
@@ -273,10 +272,11 @@ describe("per-run Unix users on providers with real users", () => {
     );
     expect(launch?.command).toContain(`cd '${dir}/home'`);
     // Inputs belong to root and are only readable by the run's group.
+    // Inputs belong to the run user alone: no group can read them.
     expect(launch?.command).toContain(
-      `chown root:'${user}' '${dir}/config.json'`,
+      `chown '${user}:${user}' '${dir}/config.json'`,
     );
-    expect(launch?.command).toContain("chmod 0440");
+    expect(launch?.command).toContain("chmod 0400");
     // The bounded copy and the read stay in out/ too.
     const snapshot = calls().find(c => c.command.includes("head -c"));
     expect(snapshot?.asRoot).toBe(true);
@@ -330,7 +330,7 @@ describe("per-run Unix users on providers with real users", () => {
   it("gives two concurrent runs in one box different users and directories", async () => {
     await Promise.all([runOnce(), runOnce()]);
 
-    const setups = calls().filter(c => c.command.includes("useradd"));
+    const setups = calls().filter(c => c.command.includes("useradd -l"));
     expect(setups).toHaveLength(2);
     const users = setups.map(c => userOf(c.command));
     const dirs = setups.map(c => dirOf(c.command));
@@ -351,8 +351,8 @@ describe("per-run Unix users on providers with real users", () => {
   it("refuses to run when no isolated user can be created", async () => {
     sandbox.exec.mockImplementation((_ctx, command: string) =>
       Promise.resolve(
-        command.includes("useradd")
-          ? { ...result(), exitCode: 1, stderr: "missing useradd" }
+        command.includes("groupadd -g")
+          ? { ...result(), exitCode: 1, stderr: "groupadd: GID not unique" }
           : result(),
       ),
     );
@@ -435,5 +435,43 @@ describe("providers without real users keep one shared user", () => {
       expect(String(command)).not.toMatch(/useradd|runuser/);
       expect((options as { asRoot?: boolean })?.asRoot).toBeUndefined();
     }
+  });
+});
+
+describe("isolation preflight", () => {
+  beforeEach(() => {
+    sandbox.supportsRunUsers = true;
+    sandbox.exec.mockReset();
+    sandbox.readFile.mockReset();
+    sandbox.writeFile.mockReset();
+  });
+  afterEach(() => {
+    sandbox.supportsRunUsers = undefined;
+  });
+
+  it("names the missing tools and refuses the run before creating any user", async () => {
+    sandbox.exec.mockImplementation((_ctx, command: string) =>
+      Promise.resolve(
+        command.includes("command -v") && !command.includes("useradd -l")
+          ? result("runuser\ngroupadd\n")
+          : result(),
+      ),
+    );
+
+    await expect(
+      runConnectorCommand({
+        ctx: { sessionKey: "connector-box:no-tools" },
+        runtimeId: "runtime",
+        connectorDir: "/x",
+        command: "spec",
+      }),
+    ).rejects.toThrow(
+      "cannot isolate connector runs: missing runuser, groupadd",
+    );
+    expect(
+      sandbox.exec.mock.calls.some(([, command]) =>
+        String(command).includes("useradd -l"),
+      ),
+    ).toBe(false);
   });
 });

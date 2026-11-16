@@ -45,6 +45,7 @@ import {
   ensureBundle,
   materializeConnector,
   retireLegacySyncBox,
+  retireSyncBox,
   runConnectorCommand,
   syncBoxContext,
 } from "./sync-box";
@@ -401,6 +402,8 @@ async function runSpec(
           command: "spec",
           runtimeId: await connectorRuntimeId(),
           timeoutMs: 60_000,
+          // A push's spec is a one-time check: no template, killed after.
+          oneOff: true,
         },
         async lease => {
           const prepared = await ensureBundle({
@@ -465,14 +468,20 @@ async function runSpecInWorkspaceBox(
   const dir =
     bundled?.dir ??
     (await materializeConnector({ ctx, runtimeId, slug, sourceSha, files }));
-  return runConnectorCommand({
+  let cleanupFailure: string | null = null;
+  const result = await runConnectorCommand({
     ctx,
     runtimeId,
     connectorDir: dir,
     command: "spec",
     entry: bundled?.entry ?? entry,
     timeoutMs: 60_000,
+    onCleanupFailure: reason => {
+      cleanupFailure = reason;
+    },
   });
+  if (cleanupFailure) await retireSyncBox(workspaceId, cleanupFailure);
+  return result;
 }
 
 async function block(

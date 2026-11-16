@@ -7,17 +7,19 @@
  * nothing a connector or a stray process does can pre-create or redirect it):
  *
  *   /var/lib/mako-connectors/runs           root:root 0711
- *     <runId>/                              root:<run group> 0750
- *       config.json, catalog.json, ...      root:<run group> 0440
+ *     <runId>/                              root:root 0711
+ *       config.json, catalog.json, ...      <run user> 0400
  *       home/                               <run user> 0700  (HOME, TMPDIR, cwd)
  *       out/                                root:root 0700
  *         out.jsonl                         stdout, opened by root
  *         out.bounded.jsonl                 the bounded copy the API reads
  *
- * The run user can read its inputs and write its home. It cannot create,
- * rename or replace anything root later opens: root opens only `out/`, which
- * the run user cannot even enter, and the connector reaches its output file
- * only through the stdout descriptor root hands it.
+ * The run user can read its inputs and write its home. No group can read
+ * an input, and every run has its own random UID and GID, so nothing a
+ * previous run left behind shares an id with the next run. The run user
+ * cannot create, rename or replace anything root later opens: root opens
+ * only `out/`, which the run user cannot even enter, and the connector
+ * reaches its output file only through the stdout descriptor root hands it.
  */
 import path from "node:path";
 
@@ -36,10 +38,26 @@ const PATH_FOR_ROOT =
 export const shellQuote = (value: string): string =>
   `'${value.replace(/'/g, `'\\''`)}'`;
 
+/** Tools the setup and cleanup scripts need in the box. */
+export const REQUIRED_TOOLS = [
+  "runuser",
+  "useradd",
+  "userdel",
+  "groupadd",
+  "groupdel",
+  "install",
+  "stat",
+  "find",
+  "awk",
+  "cat",
+] as const;
+
 export interface RunLayout {
   runId: string;
   user: string;
   uid: number;
+  /** Random like the UID: sequential GIDs would be reused by the next run. */
+  gid: number;
   /** root:<run group> 0750: the run's inputs. */
   dir: string;
   /** The run user's own directory. */
@@ -50,13 +68,19 @@ export interface RunLayout {
   boundedFile: string;
 }
 
-export function runLayout(runId: string, user: string, uid: number): RunLayout {
+export function runLayout(
+  runId: string,
+  user: string,
+  uid: number,
+  gid: number = uid,
+): RunLayout {
   const dir = path.posix.join(ISOLATED_RUNS, runId);
   const out = path.posix.join(dir, "out");
   return {
     runId,
     user,
     uid,
+    gid,
     dir,
     home: path.posix.join(dir, "home"),
     out,
@@ -68,30 +92,52 @@ export function runLayout(runId: string, user: string, uid: number): RunLayout {
 const header = (l: RunLayout) => `${PATH_FOR_ROOT}
 user=${shellQuote(l.user)}
 uid=${l.uid}
+gid=${l.gid}
 R=${shellQuote(l.dir)}`;
+
+/**
+ * Root: list the tools a run needs that the box lacks, one per line.
+ * Empty output means the box can isolate runs.
+ */
+export function preflightScript(): string {
+  return `${PATH_FOR_ROOT}
+for tool in ${REQUIRED_TOOLS.join(" ")}; do
+  command -v "$tool" >/dev/null 2>&1 || echo "$tool"
+done
+true`;
+}
 
 /** Root: create the run user and its directories. Fails closed. */
 export function setupScript(l: RunLayout): string {
   return `set -eu
 ${header(l)}
-for tool in runuser useradd userdel stat find; do
-  command -v "$tool" >/dev/null 2>&1 || { echo "missing $tool" >&2; exit 1; }
+missing=""
+for tool in ${REQUIRED_TOOLS.join(" ")}; do
+  command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
+if [ -n "$missing" ]; then echo "missing tools:$missing" >&2; exit 1; fi
 install -d -o root -g root -m 0755 ${shellQuote(ISOLATED_ROOT)}
 install -d -o root -g root -m 0711 ${shellQuote(ISOLATED_RUNS)}
-# useradd locks /etc/passwd; concurrent runs retry. -l keeps lastlog and
-# faillog small with large random UIDs.
+# useradd and groupadd lock /etc/passwd and /etc/group; concurrent runs
+# retry. -l keeps lastlog and faillog small with large random ids.
 n=0
-until err=$(useradd -l -M -U -u "$uid" -d "$R/home" -s /usr/sbin/nologin "$user" 2>&1); do
+until err=$(groupadd -g "$gid" "$user" 2>&1); do
   n=$((n + 1))
   if [ "$n" -ge 20 ]; then echo "$err" >&2; exit 1; fi
   sleep 0.2
 done
-if ! { install -d -o root -g "$user" -m 0750 "$R" \\
-    && install -d -o "$user" -g "$user" -m 0700 "$R/home" \\
+n=0
+until err=$(useradd -l -M -u "$uid" -g "$gid" -d "$R/home" -s /usr/sbin/nologin "$user" 2>&1); do
+  n=$((n + 1))
+  if [ "$n" -ge 20 ]; then echo "$err" >&2; groupdel "$user" 2>/dev/null || true; exit 1; fi
+  sleep 0.2
+done
+if ! { install -d -o root -g root -m 0711 "$R" \
+    && install -d -o "$user" -g "$user" -m 0700 "$R/home" \
     && install -d -o root -g root -m 0700 "$R/out"; }; then
   rm -rf "$R"
   userdel "$user" 2>/dev/null || true
+  groupdel "$user" 2>/dev/null || true
   exit 1
 fi`;
 }
@@ -108,8 +154,9 @@ export function launchScript(
   command: string,
 ): string {
   const files = inputs.map(shellQuote).join(" ");
+  // Owned by the run user, readable by nobody else: no group has access.
   const handOver = inputs.length
-    ? `chown root:${shellQuote(l.user)} ${files} && chmod 0440 ${files} && `
+    ? `chown ${shellQuote(`${l.user}:${l.user}`)} ${files} && chmod 0400 ${files} && `
     : "";
   return `${handOver}cd ${shellQuote(l.home)} && runuser -u ${shellQuote(l.user)} -- env HOME=${shellQuote(l.home)} TMPDIR=${shellQuote(l.home)} ${command} > ${shellQuote(l.outputFile)}`;
 }
@@ -122,40 +169,43 @@ export function snapshotScript(l: RunLayout, maxBytes: number): string {
 }
 
 /**
- * Root: end the run. Kills every process of the run user until none is left,
- * removes its IPC objects and files, then the user.
+ * Root: end the run. Kills every thread of the run user until none is left,
+ * removes its IPC objects, its directory and its files, then the user.
  *
- * Needs no procps: processes are found through /proc and killed with
- * `kill -9 -1` as the run user, which signals all of them at once, so a
- * process that keeps forking cannot outrun a loop over pids. Exits
- * CLEANUP_SURVIVORS_EXIT if processes survive KILL_ROUNDS rounds, and
- * non-zero for any other failure; the box is then not trusted again.
+ * Liveness is read per thread from /proc/<pid>/task/<tid>/status (the Uid
+ * line), never from the owner of /proc/<pid>: a non-dumpable process shows
+ * root as that owner, and a process whose main thread called pthread_exit
+ * shows state Z while its other threads run. Processes die by `kill -9 -1`
+ * as the run user, which signals all of them at once, so a process that
+ * keeps forking cannot outrun a loop over pids. No procps needed.
+ *
+ * Fails closed. The run directory (with its credential) and the run's files
+ * are removed whatever happens. If any thread survives KILL_ROUNDS rounds the
+ * script exits CLEANUP_SURVIVORS_EXIT; any other leftover exits non-zero.
+ * Either way the caller kills the box.
  */
 export function cleanupScript(l: RunLayout): string {
   return `set -u
 ${header(l)}
-# A live (non-zombie) process of the run user. Zombies hold nothing and
-# wait for their parent; they are not a reason to distrust the box.
+# A live (not zombie, not dead) thread with the run's uid as any of its
+# real, effective, saved or filesystem uids. State comes before Uid in
+# status, and cat skips threads that exit while we read.
 alive() {
-  for d in /proc/[0-9]*; do
-    [ "$(stat -c %u "$d" 2>/dev/null)" = "$uid" ] || continue
-    state=$(sed 's/.*) //' "$d/stat" 2>/dev/null | cut -c1)
-    [ -n "$state" ] && [ "$state" != Z ] && return 0
-  done
-  return 1
+  cat /proc/[0-9]*/task/[0-9]*/status 2>/dev/null | awk -v n="$uid" '
+    /^State:/ { st = $2 }
+    /^Uid:/ { if (st != "Z" && st != "X") for (i = 2; i <= 5; i++) if ($i == n) { found = 1; exit } }
+    END { exit !found }'
 }
+survivors=0
 n=0
 while alive; do
   runuser -u "$user" -- kill -9 -1 2>/dev/null || true
   n=$((n + 1))
-  if [ "$n" -ge ${KILL_ROUNDS} ]; then
-    echo "processes of $user survived $n kill rounds" >&2
-    exit ${CLEANUP_SURVIVORS_EXIT}
-  fi
+  if [ "$n" -ge ${KILL_ROUNDS} ]; then survivors=1; break; fi
   sleep 0.05
 done
-# SysV IPC the run created (and checked after, below). /proc/sysvipc has numeric owners; ipcs truncates
-# long user names, so it cannot be trusted to match ours.
+# SysV IPC the run created (and checked after, below). /proc/sysvipc has
+# numeric owners; ipcs truncates long user names, so it cannot be trusted.
 if command -v ipcrm >/dev/null 2>&1; then
   for kind in m:shm q:msg s:sem; do
     flag=\${kind%%:*}; table=/proc/sysvipc/\${kind#*:}
@@ -166,10 +216,16 @@ if command -v ipcrm >/dev/null 2>&1; then
     done
   done
 fi
-rm -rf "$R" || exit 1
+# Always, survivors or not: the credential must not outlive the run.
+rm -rf "$R"
 for d in /tmp /var/tmp /dev/shm /run/lock /dev/mqueue; do
   [ -d "$d" ] && find "$d" -xdev -mindepth 1 -uid "$uid" -exec rm -rf {} + 2>/dev/null
 done
+if [ "$survivors" = 1 ]; then
+  echo "threads of $user survived $n kill rounds" >&2
+  exit ${CLEANUP_SURVIVORS_EXIT}
+fi
+if [ -e "$R" ]; then echo "run directory of $user survived" >&2; exit 1; fi
 if find /tmp /var/tmp /dev/shm /run/lock /dev/mqueue -xdev -mindepth 1 -uid "$uid" 2>/dev/null | grep -q .; then
   echo "files of $user survived" >&2
   exit 1
@@ -178,5 +234,6 @@ if [ -n "$(awk -v n="$uid" 'NR > 1 && $0 ~ (" " n " ")' /proc/sysvipc/shm /proc/
   echo "IPC objects of $user survived" >&2
   exit 1
 fi
-userdel "$user" || exit 1`;
+userdel "$user" || exit 1
+groupdel "$user" 2>/dev/null || true`;
 }

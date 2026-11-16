@@ -114,7 +114,8 @@ export interface BoxStore {
    * caller gets true; nobody ever replaces a template, so none is orphaned.
    */
   claimTemplate(templateKey: string, at: Date): Promise<boolean>;
-  completeTemplate(templateKey: string, snapshotId: string): Promise<void>;
+  /** False if the claim is gone (expired or deleted): the snapshot is orphaned. */
+  completeTemplate(templateKey: string, snapshotId: string): Promise<boolean>;
   touchTemplate(templateKey: string, at: Date): Promise<void>;
   /** Ready templates unused since `before`, and claims older than `claimsBefore`. */
   staleTemplates(before: Date, claimsBefore: Date): Promise<TemplateRecord[]>;
@@ -342,10 +343,11 @@ export class MongoBoxStore implements BoxStore {
   }
 
   async completeTemplate(templateKey: string, snapshotId: string) {
-    await ConnectorBoxTemplate.updateOne(
+    const result = await ConnectorBoxTemplate.updateOne(
       { templateKey, snapshotId: null },
       { $set: { snapshotId } },
     );
+    return result.modifiedCount === 1;
   }
 
   async touchTemplate(templateKey: string, at: Date): Promise<void> {
@@ -544,7 +546,9 @@ export class MemoryBoxStore implements BoxStore {
     const template = this.templates.get(templateKey);
     if (template && template.snapshotId === null) {
       template.snapshotId = snapshotId;
+      return true;
     }
+    return false;
   }
 
   async touchTemplate(templateKey: string, at: Date): Promise<void> {

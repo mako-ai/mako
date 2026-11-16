@@ -16,12 +16,14 @@ const mocks = vi.hoisted(() => ({
   readConnectorFolder: vi.fn(),
   loadConnectorDefinition: vi.fn(),
   withLease: vi.fn(),
+  retireSyncBox: vi.fn(),
   snapshotPristine: vi.fn(),
   getBoxScheduler: vi.fn(),
 }));
 
 vi.mock("./sync-box", async importOriginal => ({
   ...(await importOriginal<typeof import("./sync-box")>()),
+  retireSyncBox: mocks.retireSyncBox,
   runConnectorCommand: mocks.runConnectorCommand,
   materializeConnector: mocks.materializeConnector,
   ensureBundle: mocks.ensureBundle,
@@ -111,6 +113,23 @@ describe("flag off", () => {
         runtimeId: "rt-1",
       }),
     );
+  });
+
+  it("kills the workspace box when a run's cleanup failed in it", async () => {
+    mocks.runConnectorCommand.mockImplementationOnce(async input => {
+      input.onCleanupFailure?.("the run's processes would not die");
+      return status;
+    });
+    const c = connector();
+    await c.testConnection();
+
+    expect(mocks.retireSyncBox).toHaveBeenCalledWith(
+      "ws1",
+      "the run's processes would not die",
+    );
+    // The next command rebuilds the box instead of trusting the old one.
+    await c.testConnection();
+    expect(mocks.ensureConnectorRuntime).toHaveBeenCalledTimes(2);
   });
 
   it("treats any value but exactly true as off", async () => {

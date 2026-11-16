@@ -48,8 +48,12 @@ const QUEUE_POLL_MS = 250;
 /** A waiting entry lives this long unrefreshed; refreshed every 2 s. */
 const QUEUE_ALIVE_MS = 30_000;
 const QUEUE_REFRESH_MS = 2_000;
-/** A template claim whose snapshot never completed is dropped after this. */
-const TEMPLATE_CLAIM_MS = 10 * 60 * 1000;
+/**
+ * A template claim whose snapshot never completed is dropped after this.
+ * Far above any snapshot's duration, and a late snapshot whose claim is gone
+ * is deleted by its taker (completeTemplate returns false), never orphaned.
+ */
+const TEMPLATE_CLAIM_MS = 60 * 60 * 1000;
 /** A box stuck in pausing or killing this long is killed again. */
 const STUCK_TRANSITION_MS = 5 * 60 * 1000;
 
@@ -476,9 +480,7 @@ export class BoxScheduler {
           error: message(error),
         });
         await this.store.deleteTemplate(templateKey);
-        await this.provider
-          .deleteSnapshot(template.snapshotId as string)
-          .catch(() => undefined);
+        await this.discardSnapshot(templateKey, template.snapshotId as string);
         await this.store.transition(box.boxId, leased, { fromTemplate: null });
         template = null;
         await this.provider.lease(box, {});
@@ -682,24 +684,63 @@ export class BoxScheduler {
    * snapshot is ever orphaned by a race. A failed snapshot drops the claim.
    */
   private async snapshotPristine(held: Held, runtimeId: string): Promise<void> {
-    if (!this.config.snapshots || !held.fresh || held.box.fromTemplate) return;
+    if (
+      !this.config.snapshots ||
+      !held.fresh ||
+      held.box.fromTemplate ||
+      held.run.oneOff
+    ) {
+      return;
+    }
     const templateKey = templateKeyOf(held.key, runtimeId);
     const at = new Date(this.now());
     if (!(await this.store.claimTemplate(templateKey, at))) return;
+    let snapshotId: string | null = null;
     try {
-      const snapshotId = await this.provider.snapshot(
+      snapshotId = await this.provider.snapshot(
         held.box,
         snapshotName(templateKey),
       );
-      if (snapshotId) {
-        await this.store.completeTemplate(templateKey, snapshotId);
-      } else await this.store.deleteTemplate(templateKey);
+      if (!snapshotId) {
+        await this.store.deleteTemplate(templateKey);
+        return;
+      }
+      if (!(await this.store.completeTemplate(templateKey, snapshotId))) {
+        // The claim expired or was deleted while the snapshot ran: nobody
+        // will ever restore or delete this snapshot unless we do.
+        await this.discardSnapshot(templateKey, snapshotId);
+      }
     } catch (error) {
       await this.store.deleteTemplate(templateKey).catch(() => undefined);
+      if (snapshotId) await this.discardSnapshot(templateKey, snapshotId);
       logger.warn("Could not snapshot a connector box; continuing without", {
         boxId: held.box.boxId,
         error: message(error),
       });
+    }
+  }
+
+  /**
+   * Delete a snapshot no template points to. If the delete fails, park it
+   * under a dead key no lease looks up, already stale, so the reaper's
+   * template sweep retries the delete until it succeeds.
+   */
+  private async discardSnapshot(
+    templateKey: string,
+    snapshotId: string,
+  ): Promise<void> {
+    try {
+      await this.provider.deleteSnapshot(snapshotId);
+    } catch (error) {
+      const dead = `${templateKey}#dead:${snapshotId}`;
+      const epoch = new Date(0);
+      logger.warn("Could not delete a connector box snapshot; will retry", {
+        snapshotId,
+        error: message(error),
+      });
+      await this.store.claimTemplate(dead, epoch).catch(() => false);
+      await this.store.completeTemplate(dead, snapshotId).catch(() => false);
+      await this.store.touchTemplate(dead, epoch).catch(() => undefined);
     }
   }
 

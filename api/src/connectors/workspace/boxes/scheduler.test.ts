@@ -850,3 +850,45 @@ describe("queue", () => {
     expect(await q.isHead("k", "r2")).toBe(false);
   });
 });
+
+describe("snapshot leaks", () => {
+  it("never snapshots a one-off box", async () => {
+    const s = scheduler();
+    await s.withLease(run({ connectionId: "unsaved:x", oneOff: true }), lease =>
+      lease.snapshotPristine("rt-1"),
+    );
+    expect(provider.snapshot).not.toHaveBeenCalled();
+  });
+
+  it("deletes a snapshot that finished after its claim was dropped", async () => {
+    const s = scheduler();
+    provider.snapshot.mockImplementationOnce(async (_box, name) => {
+      store.templates.clear();
+      return `snap:${name}`;
+    });
+    await s.withLease(run(), lease => lease.snapshotPristine("rt-1"));
+    expect(provider.deleteSnapshot).toHaveBeenCalledWith(
+      expect.stringMatching(/^snap:mako-cbox-/),
+    );
+    expect(store.templates.size).toBe(0);
+  });
+
+  it("parks a snapshot whose delete failed, and the reaper deletes it later", async () => {
+    const s = scheduler();
+    const key = `${boxKey("conn-a", "hash-1")}:rt-1`;
+    await store.claimTemplate(key, new Date());
+    await store.completeTemplate(key, "snap:broken");
+    provider.failTemplate.add("snap:broken");
+    provider.deleteSnapshot.mockRejectedValueOnce(new Error("E2B 500"));
+
+    await s.withLease(run(), async () => undefined);
+
+    // Not restorable under the key, but still on record for the sweep.
+    expect(await store.getTemplate(key)).toBeNull();
+    expect([...store.templates.keys()]).toEqual([`${key}#dead:snap:broken`]);
+    const summary = await s.reap();
+    expect(summary.templatesDeleted).toBe(1);
+    expect(provider.deleteSnapshot).toHaveBeenLastCalledWith("snap:broken");
+    expect(store.templates.size).toBe(0);
+  });
+});

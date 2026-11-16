@@ -107,3 +107,21 @@ describe("connector boxes on E2B", () => {
     expect(e2b.Sandbox.kill).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("legacy sync box kills", () => {
+  it("fails, so it is retried, when the old box would not die", async () => {
+    e2b.page.items = [{ sandboxId: "sbx_old" }];
+    e2b.Sandbox.kill.mockRejectedValueOnce(new Error("500"));
+    await expect(
+      e2bSandboxProvider.destroySession?.("connector-sync:ws1"),
+    ).rejects.toThrow(/Could not kill 1 of 1/);
+  });
+
+  it("still swallows a failed kill for an app session, as before", async () => {
+    e2b.page.items = [{ sandboxId: "sbx_app" }];
+    e2b.Sandbox.kill.mockRejectedValueOnce(new Error("500"));
+    await expect(
+      e2bSandboxProvider.destroySession?.("worktree-1"),
+    ).resolves.toBeUndefined();
+  });
+});

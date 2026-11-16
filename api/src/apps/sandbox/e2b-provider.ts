@@ -965,7 +965,14 @@ export const e2bSandboxProvider: SandboxProvider = {
       [...ids].map(id => Sandbox.kill(id, { apiKey: apiKey() })),
     );
     const failed = results.filter(r => r.status === "rejected");
-    if (failed.length > 0 && isConnectorBoxKey(sessionKey)) {
+    // Connector boxes and sync boxes: a kill that failed must surface, so
+    // the reaper (or the legacy sync box retirement) tries again rather than
+    // believing a box with tenant code in it is gone.
+    if (
+      failed.length > 0 &&
+      (isConnectorBoxKey(sessionKey) ||
+        sessionKey.startsWith("connector-sync:"))
+    ) {
       throw new Error(
         `Could not kill ${failed.length} of ${ids.size} sandboxes for ${sessionKey}.`,
       );

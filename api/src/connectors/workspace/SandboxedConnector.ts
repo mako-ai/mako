@@ -32,6 +32,7 @@ import {
   firstOfType,
   materializeConnector,
   retireLegacySyncBox,
+  retireSyncBox,
   runConnectorCommand,
   syncBoxContext,
   type ConnectorCommand,
@@ -207,14 +208,26 @@ export class SandboxedConnector extends BaseConnector {
   ): Promise<RunResult> {
     if (!connectorBoxLeasesEnabled()) {
       const { dir, runtimeId, entry, ctx } = await this.ready();
-      return runConnectorCommand({
+      let cleanupFailure: string | null = null;
+      const result = await runConnectorCommand({
         ctx,
         runtimeId,
         connectorDir: dir,
         command,
         entry,
         ...options,
+        onCleanupFailure: reason => {
+          cleanupFailure = reason;
+        },
       });
+      if (cleanupFailure) {
+        // The box may hold this run's credential or a live thread of it:
+        // kill it, and make the next command rebuild a fresh one.
+        this.materializedDir = null;
+        this.runtimeId = null;
+        await retireSyncBox(this.workspaceId, cleanupFailure);
+      }
+      return result;
     }
 
     const definition = await this.definition();
