@@ -20,6 +20,7 @@ import {
   applyOwnerProposals,
   findOwnerlessRows,
   folderCreatorFromGit,
+  scaffoldEvidenceFromGit,
   formatOwnerReport,
   proposeOwner,
   type OwnerlessRow,
@@ -63,7 +64,12 @@ afterEach(() => {
 
 async function makeRepo(): Promise<{
   dir: string;
-  commit: (email: string, files: Record<string, string>, msg?: string) => void;
+  commit: (
+    email: string,
+    files: Record<string, string>,
+    msg?: string,
+    at?: string,
+  ) => void;
   move: (email: string, from: string, to: string) => void;
   remove: (email: string, folder: string) => void;
 }> {
@@ -82,14 +88,19 @@ async function makeRepo(): Promise<{
   });
   return {
     dir,
-    commit(email, files, msg = "change") {
+    commit(email, files, msg = "change", at) {
       for (const [file, body] of Object.entries(files)) {
         const full = path.join(dir, file);
         mkdirSync(path.dirname(full), { recursive: true });
         writeFileSync(full, body);
       }
       git(["add", "-A"]);
-      git(["commit", "-q", "-m", msg], as(email));
+      git(
+        ["commit", "-q", "-m", msg],
+        at
+          ? { ...as(email), GIT_AUTHOR_DATE: at, GIT_COMMITTER_DATE: at }
+          : as(email),
+      );
     },
     move(email, from, to) {
       mkdirSync(path.dirname(path.join(dir, to)), { recursive: true });
@@ -118,6 +129,7 @@ function sources(
     folderCreator: async () => ({ email: "alice@example.com" }),
     userIdForEmail: async email => users.get(email),
     isMember: id => id === ALICE || id === BOB,
+    scaffoldEvidence: async () => ({ missing: "not a scaffold" }),
     ...overrides,
   };
 }
@@ -253,6 +265,151 @@ describe("rule b: folder author on real git", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Rule d: an app Mako's scaffold commit created
+// ---------------------------------------------------------------------------
+
+describe("rule d: scaffold builder on real git", () => {
+  const T0 = "2026-10-12T12:00:00Z";
+  const at = (minutes: number) =>
+    new Date(Date.parse(T0) + minutes * 60_000).toISOString();
+  const scaffold = (repo: Awaited<ReturnType<typeof makeRepo>>, p: string) =>
+    repo.commit(
+      "bot@mako.ai",
+      { [`${p}/mako.json`]: manifest(p) },
+      `Create app "${p}" (${p})`,
+      T0,
+    );
+
+  it("names the one person who built it after the scaffold", async () => {
+    const repo = await makeRepo();
+    scaffold(repo, "apps/territory");
+    repo.commit(
+      "session@mako.ai",
+      { "apps/territory/a.ts": "1" },
+      "wip",
+      at(5),
+    );
+    repo.commit(
+      "alice@example.com",
+      { "apps/territory/b.ts": "1" },
+      "x",
+      at(11),
+    );
+    repo.commit(
+      "alice@example.com",
+      { "apps/territory/c.ts": "1" },
+      "y",
+      at(90),
+    );
+    // Outside the window: someone else's later edit does not count.
+    repo.commit(
+      "bob@example.com",
+      { "apps/territory/d.ts": "1" },
+      "z",
+      at(2000),
+    );
+    const evidence = await scaffoldEvidenceFromGit(repo.dir, "apps/territory");
+    expect(evidence).toEqual({
+      builderEmails: [
+        "alice@example.com",
+        "alice@example.com",
+        "session@mako.ai",
+      ],
+    });
+    const p = await proposeOwner(
+      row("apps/territory"),
+      sources({
+        folderCreator: async () => ({ email: "bot@mako.ai" }),
+        scaffoldEvidence: async () => evidence,
+      }),
+    );
+    expect(p).toMatchObject({ rule: "scaffold-builder", ownerId: ALICE });
+  });
+
+  it("follows the folder from its scaffolded path", async () => {
+    const repo = await makeRepo();
+    scaffold(repo, "apps/geneve-3");
+    repo.commit("alice@example.com", { "apps/geneve-3/a.ts": "1" }, "x", at(3));
+    repo.move("bob@example.com", "apps/geneve-3", "apps/geneve");
+    expect(await scaffoldEvidenceFromGit(repo.dir, "apps/geneve")).toEqual({
+      builderEmails: ["alice@example.com"],
+    });
+  });
+
+  it("names the person whose personal tree it was scaffolded into", async () => {
+    const repo = await makeRepo();
+    scaffold(repo, `users/${ALICE}/apps/cohorts`);
+    repo.move("bob@example.com", `users/${ALICE}/apps/cohorts`, "apps/cohorts");
+    const evidence = await scaffoldEvidenceFromGit(repo.dir, "apps/cohorts");
+    expect(evidence).toEqual({ personalSegment: ALICE, builderEmails: [] });
+    const p = await proposeOwner(
+      row("apps/cohorts"),
+      sources({
+        folderCreator: async () => ({ email: "bot@mako.ai" }),
+        scaffoldEvidence: async () => evidence,
+      }),
+    );
+    expect(p).toMatchObject({ rule: "scaffold-builder", ownerId: ALICE });
+  });
+
+  it("is not a scaffold when a person created the folder", async () => {
+    const repo = await makeRepo();
+    repo.commit("alice@example.com", { "apps/x/mako.json": manifest("x") });
+    expect(await scaffoldEvidenceFromGit(repo.dir, "apps/x")).toEqual({
+      missing: "creating commit is not a Mako scaffold",
+    });
+  });
+
+  const viaScaffold = (builderEmails: string[]) =>
+    proposeOwner(
+      row("apps/s"),
+      sources({
+        folderCreator: async () => ({ email: "bot@mako.ai" }),
+        scaffoldEvidence: async () => ({ builderEmails }),
+      }),
+    );
+
+  it("names no one when two people built it", async () => {
+    expect(
+      await viaScaffold(["alice@example.com", "bob@example.com"]),
+    ).toMatchObject({
+      rule: "none",
+      reason: "2 people committed after scaffold",
+    });
+  });
+
+  it("names no one when an unknown author also built it", async () => {
+    expect(
+      await viaScaffold(["alice@example.com", "x@gmail.com"]),
+    ).toMatchObject({ rule: "none", reason: "unknown author after scaffold" });
+  });
+
+  it("names no one when only Mako's own identities committed", async () => {
+    expect(
+      await viaScaffold(["bot@mako.ai", "session@mako.ai", "agent@mako.ai"]),
+    ).toMatchObject({
+      rule: "none",
+      reason: "nobody committed after scaffold",
+    });
+  });
+
+  it("names no one who left the workspace", async () => {
+    const p = await proposeOwner(
+      row("apps/s"),
+      sources({
+        folderCreator: async () => ({ email: "bot@mako.ai" }),
+        scaffoldEvidence: async () => ({ builderEmails: ["bob@example.com"] }),
+        isMember: id => id === ALICE,
+      }),
+    );
+    expect(p).toMatchObject({
+      rule: "none",
+      reason: "scaffold builder left workspace",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // System actors never own
 // ---------------------------------------------------------------------------
 
@@ -271,6 +428,19 @@ describe("system actors never become owners", () => {
       }),
     );
     expect(b.ownerId).toBeUndefined();
+    const d = await proposeOwner(
+      row("apps/sales"),
+      sources({
+        folderCreator: async () => ({ email: "bot@mako.ai" }),
+        scaffoldEvidence: async () => ({
+          personalSegment: actor || "publish",
+          builderEmails: [],
+        }),
+        ownerOfHandle: () => actor || null,
+        isMember: () => true,
+      }),
+    );
+    expect(d.ownerId).toBeUndefined();
   });
 
   it.each(SYSTEM_ACTORS)(
