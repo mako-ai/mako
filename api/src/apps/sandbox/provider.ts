@@ -155,6 +155,18 @@ export interface SandboxProvider {
     bytes: Uint8Array,
   ): Promise<void>;
   /**
+   * Write several files in ONE request, where the provider can.
+   *
+   * A connector chunk writes its config, catalog and state together; as three
+   * `writeFile` calls that was three round trips to the box (bench G1). Each
+   * file's parent directories are created as `writeFile` creates them.
+   * Optional: callers fall back to one `writeFile` per file.
+   */
+  writeFiles?(
+    ctx: SandboxExecContext,
+    files: Array<{ path: string; bytes: Uint8Array }>,
+  ): Promise<void>;
+  /**
    * Read raw bytes back out of the sandbox.
    *
    * The counterpart to writeFile: raw bytes out of the sandbox, used for

@@ -16,6 +16,7 @@
  */
 import {
   BaseConnector,
+  type NormalizedCdcRecord,
   type ConnectionTestResult,
   type ConnectorEntitySchema,
   type EntityMetadata,
@@ -26,12 +27,16 @@ import {
 } from "../base/BaseConnector";
 import { loggers } from "../../logging";
 import {
+  ConnectorOutputTooLargeError,
+  MAX_CONNECTOR_PROTOCOL_BYTES,
   failureMessage,
   firstOfType,
   materializeConnector,
   runConnectorCommand,
   syncBoxContext,
+  type ConnectorCommand,
   type ProtocolMessage,
+  type RunResult,
 } from "./sync-box";
 import { jsonSchemaToEntitySchema } from "./spec-translation";
 import {
@@ -48,6 +53,69 @@ import {
 } from "./resolver";
 
 const logger = loggers.connector();
+
+/**
+ * A chunk's byte budget (`--max-bytes`): half the protocol cap, so the page
+ * that crosses it still fits. 10 pages of large emails measured 33 MB in
+ * bench G1 and broke the 32 MiB cap on 4 of 30 chunks.
+ */
+export const CHUNK_BYTE_BUDGET = Math.floor(MAX_CONNECTOR_PROTOCOL_BYTES / 2);
+
+/**
+ * A record's own time, from its declared cursor field first, then from the
+ * update and creation fields APIs commonly use. Unix epochs count, in seconds
+ * or milliseconds: Stripe sends `created` as seconds, and the base resolver
+ * reads ISO strings only, which gave every boxed Stripe row "now".
+ */
+const UPDATED_FIELDS = [
+  "date_updated",
+  "updated_at",
+  "updatedAt",
+  "date_modified",
+  "updated",
+];
+const CREATED_FIELDS = [
+  "date_created",
+  "created_at",
+  "createdAt",
+  "created",
+  "start_date",
+  "timestamp",
+];
+
+export function recordTimestamp(
+  payload: Record<string, unknown> | undefined,
+  cursorField?: string,
+): Date | null {
+  const names = [
+    ...(cursorField ? [cursorField] : []),
+    ...UPDATED_FIELDS,
+    ...CREATED_FIELDS,
+  ];
+  for (const name of names) {
+    const date = toDate(payload?.[name]);
+    if (date) return date;
+  }
+  return null;
+}
+
+function toDate(value: unknown): Date | null {
+  if (value === null || value === undefined || value === "") return null;
+  let date: Date;
+  if (value instanceof Date) {
+    date = value;
+  } else if (typeof value === "number") {
+    if (!Number.isFinite(value) || value <= 0) return null;
+    // Seconds unless it is clearly milliseconds, as the in-process Stripe
+    // connector decides.
+    date = new Date(value > 1e12 ? value : value * 1000);
+  } else if (typeof value === "string") {
+    date = new Date(value);
+  } else {
+    return null;
+  }
+  return Number.isNaN(date.getTime()) ? null : date;
+}
 
 /** `ws:acme` -> `acme`. */
 export const WORKSPACE_TYPE_PREFIX = "ws:";
@@ -78,8 +146,44 @@ function mapLogLevel(
   }
 }
 
+/**
+ * The `--state` of one chunk: the last STATE the connector emitted, with the
+ * engine's `since` in its stream state.
+ *
+ * The engine passes `since` as `options.since` on an incremental sync, on
+ * every chunk; the in-process connectors read it there. A boxed connector can
+ * only read what is in its files, so it goes into the stream state as ISO
+ * 8601 (`state.since`). Without this every boxed read was a full read.
+ */
+export function readState(
+  entity: string,
+  previous: unknown,
+  since: Date | undefined,
+): unknown[] | undefined {
+  const base =
+    previous && typeof previous === "object"
+      ? (previous as Record<string, any>)
+      : undefined;
+  const anchor =
+    since instanceof Date && !Number.isNaN(since.getTime())
+      ? since.toISOString()
+      : undefined;
+  if (!anchor) return base ? [base] : undefined;
+  const stream = (base?.stream ?? {}) as Record<string, any>;
+  return [
+    {
+      ...(base ?? { type: "STREAM" }),
+      stream: {
+        ...stream,
+        stream_descriptor: stream.stream_descriptor ?? { name: entity },
+        stream_state: { ...(stream.stream_state ?? {}), since: anchor },
+      },
+    },
+  ];
+}
+
 export class SandboxedConnector extends BaseConnector {
-  private loaded: LoadedConnector | null = null;
+  protected loaded: LoadedConnector | null = null;
   private materializedDir: string | null = null;
   private runtimeId: string | null = null;
   /** The bundle's entry when this connector runs from one; else the definition's. */
@@ -102,7 +206,7 @@ export class SandboxedConnector extends BaseConnector {
   }
 
   /** The indexed definition, loaded once per instance. */
-  private async definition(): Promise<LoadedConnector> {
+  protected async definition(): Promise<LoadedConnector> {
     if (!this.loaded) {
       this.loaded = await loadConnectorDefinition(this.workspaceId, this.slug);
     }
@@ -161,6 +265,34 @@ export class SandboxedConnector extends BaseConnector {
     };
   }
 
+  /**
+   * Run one protocol command in the workspace's sync box.
+   *
+   * The one seam between this adapter and the box: everything above it
+   * builds inputs and reads messages, and tests replace only this.
+   */
+  protected async run(
+    command: ConnectorCommand,
+    options: {
+      config?: Record<string, unknown>;
+      catalog?: Record<string, unknown>;
+      state?: Record<string, unknown> | unknown[];
+      maxIterations?: number;
+      maxBytes?: number;
+      timeoutMs?: number;
+    },
+  ): Promise<RunResult> {
+    const { dir, runtimeId, entry, ctx } = await this.ready();
+    return runConnectorCommand({
+      ctx,
+      runtimeId,
+      connectorDir: dir,
+      command,
+      entry,
+      ...options,
+    });
+  }
+
   private async prepareBundle(input: {
     ctx: ReturnType<typeof syncBoxContext>;
     runtimeId: string;
@@ -203,17 +335,74 @@ export class SandboxedConnector extends BaseConnector {
     return (this.sourceConnection.config ?? {}) as Record<string, unknown>;
   }
 
+  /**
+   * The config a `read` gets: the credential, plus the batch size and rate
+   * limit the engine knows, under the SDK's reserved `__` keys. The in-process
+   * connectors read these from `options` or `settings`; a box has no other
+   * way to learn them. Absent values are left out, so the connector's own
+   * defaults apply, as in-process.
+   */
+  private readConfig(options: ResumableFetchOptions): Record<string, unknown> {
+    const settings = (this.sourceConnection.settings ?? {}) as {
+      sync_batch_size?: unknown;
+      rate_limit_delay_ms?: unknown;
+    };
+    const positive = (value: unknown): number | undefined =>
+      typeof value === "number" && Number.isFinite(value) && value > 0
+        ? value
+        : undefined;
+    const pageSize =
+      positive(options.batchSize) ?? positive(settings.sync_batch_size);
+    const rateLimitDelay =
+      positive(options.rateLimitDelay) ??
+      positive(settings.rate_limit_delay_ms);
+    return {
+      ...this.config(),
+      ...(pageSize !== undefined ? { __page_size: pageSize } : {}),
+      ...(rateLimitDelay !== undefined
+        ? { __rate_limit_delay_ms: rateLimitDelay }
+        : {}),
+    };
+  }
+
+  /** An entity's declared cursor field, once `discover` has run. */
+  private cursorField(entity: string): string | undefined {
+    const streams = (this.catalogCache?.catalog as any)?.streams;
+    if (!Array.isArray(streams)) return undefined;
+    const field = streams.find(
+      (s: any) => s?.name === entity,
+    )?.default_cursor_field;
+    return Array.isArray(field) && typeof field.at(-1) === "string"
+      ? field.at(-1)
+      : undefined;
+  }
+
+  /**
+   * The record's own time, never "now" when the record carries one. The
+   * entity's cursor field comes first, then update and creation fields, in
+   * ISO or Unix-epoch form (see `recordTimestamp`).
+   */
+  protected resolveRecordTimestamp(payload?: Record<string, unknown>): Date {
+    return recordTimestamp(payload) ?? super.resolveRecordTimestamp(payload);
+  }
+
+  normalizeBackfillRecord(
+    entity: string,
+    record: Record<string, unknown>,
+  ): NormalizedCdcRecord | null {
+    const normalized = super.normalizeBackfillRecord(entity, record);
+    if (!normalized) return null;
+    return {
+      ...normalized,
+      sourceTs:
+        recordTimestamp(record, this.cursorField(entity)) ??
+        normalized.sourceTs,
+    };
+  }
+
   async testConnection(): Promise<ConnectionTestResult> {
     try {
-      const { dir, runtimeId, entry, ctx } = await this.ready();
-      const result = await runConnectorCommand({
-        ctx,
-        runtimeId,
-        connectorDir: dir,
-        command: "check",
-        entry,
-        config: this.config(),
-      });
+      const result = await this.run("check", { config: this.config() });
       const failure = failureMessage(result);
       if (failure) return { success: false, message: failure };
 
@@ -259,6 +448,11 @@ export class SandboxedConnector extends BaseConnector {
       label:
         declared?.[name]?.label ?? name.charAt(0).toUpperCase() + name.slice(1),
       description: declared?.[name]?.description,
+      // The SDK puts an entity's declared `layout` in its spec; it is the
+      // in-process `layoutSuggestion`, under the name RFC §4 gives it.
+      ...(declared?.[name]?.layout
+        ? { layoutSuggestion: declared[name].layout }
+        : {}),
     }));
   }
 
@@ -280,15 +474,7 @@ export class SandboxedConnector extends BaseConnector {
 
   private async catalog(): Promise<ProtocolMessage | null> {
     if (this.catalogCache) return this.catalogCache;
-    const { dir, runtimeId, entry, ctx } = await this.ready();
-    const result = await runConnectorCommand({
-      ctx,
-      runtimeId,
-      connectorDir: dir,
-      command: "discover",
-      entry,
-      config: this.config(),
-    });
+    const result = await this.run("discover", { config: this.config() });
     const failure = failureMessage(result);
     if (failure) throw new Error(`discover failed: ${failure}`);
     this.catalogCache = firstOfType(result.messages, "CATALOG") ?? null;
@@ -314,7 +500,7 @@ export class SandboxedConnector extends BaseConnector {
    * stop need a different adapter, and they are not this iteration.
    */
   async fetchEntityChunk(options: ResumableFetchOptions): Promise<FetchState> {
-    const { dir, runtimeId, entry, ctx } = await this.ready();
+    await this.definition();
 
     // An entity the connector does not declare is a failure, not an empty
     // sync. The runner's stream selection silently drops an unknown name, so
@@ -328,24 +514,49 @@ export class SandboxedConnector extends BaseConnector {
       );
     }
 
-    const maxIterations = options.maxIterations ?? 10;
     const previous = options.state;
+    let maxIterations = options.maxIterations ?? 10;
+    let maxBytes = CHUNK_BYTE_BUDGET;
+    const read = () =>
+      this.run("read", {
+        config: this.readConfig(options),
+        catalog: {
+          streams: [
+            { stream: { name: options.entity }, sync_mode: "incremental" },
+          ],
+        },
+        state: readState(options.entity, previous?.metadata, options.since),
+        maxIterations,
+        maxBytes,
+      });
 
-    const result = await runConnectorCommand({
-      ctx,
-      runtimeId,
-      connectorDir: dir,
-      command: "read",
-      entry,
-      config: this.config(),
-      catalog: {
-        streams: [
-          { stream: { name: options.entity }, sync_mode: "incremental" },
-        ],
-      },
-      state: previous?.metadata ? [previous.metadata] : undefined,
-      maxIterations,
-    });
+    // A chunk over the protocol cap fails the same way every time it is
+    // retried as it was: same state, same pages, same bytes. Ask for half as
+    // much instead, down to one page. Only a single page over the cap is left
+    // to fail, and it says so.
+    let result: RunResult;
+    for (;;) {
+      try {
+        result = await read();
+        break;
+      } catch (error) {
+        if (!(error instanceof ConnectorOutputTooLargeError)) throw error;
+        if (maxIterations <= 1) {
+          throw new Error(
+            `read failed for "${options.entity}": one page of it is over the ` +
+              `${MAX_CONNECTOR_PROTOCOL_BYTES}-byte chunk cap. Lower the ` +
+              `connection's batch size. (${error.message})`,
+            { cause: error },
+          );
+        }
+        maxIterations = Math.max(1, Math.floor(maxIterations / 2));
+        maxBytes = Math.max(1, Math.floor(maxBytes / 2));
+        options.onLog?.(
+          "warn",
+          `A chunk of "${options.entity}" was over the protocol cap; retrying it with ${maxIterations} page(s) and a ${maxBytes}-byte budget.`,
+        );
+      }
+    }
 
     const failure = failureMessage(result);
     if (failure) {
@@ -413,11 +624,25 @@ export class SandboxedConnector extends BaseConnector {
   }
 
   getIncrementalCapabilities(): IncrementalCapabilities {
-    // Honest by default. A workspace connector declares an incremental cursor
-    // per stream in `discover`, which is not knowable synchronously here, and
-    // claiming "supported" without knowing would let the UI offer an
-    // incremental sync that silently re-reads everything.
-    return { supported: false, mode: "none" };
+    // Honest by default: only entities whose spec declares what they do with
+    // `state.since` (the SDK's `incremental`) are offered incremental. A
+    // connector that declares nothing re-reads everything, and says so.
+    const declared = ((this.loaded?.spec?.mako as any)?.entities ??
+      {}) as Record<string, { incremental?: unknown }>;
+    const modes = new Set(["native", "client-filter", "created-anchor"]);
+    const perEntity: NonNullable<IncrementalCapabilities["perEntity"]> = {};
+    for (const name of this.getAvailableEntities()) {
+      const mode = declared[name]?.incremental;
+      perEntity[name] = {
+        mode:
+          typeof mode === "string" && modes.has(mode)
+            ? (mode as IncrementalCapabilities["mode"])
+            : "none",
+      };
+    }
+    const supported = Object.values(perEntity).some(e => e.mode !== "none");
+    if (!supported) return { supported: false, mode: "none" };
+    return { supported: true, mode: "none", perEntity };
   }
 
   getMetadata(): {

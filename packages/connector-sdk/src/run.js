@@ -134,23 +134,30 @@ export async function run(argv = process.argv.slice(2)) {
     // engine could never checkpoint. Airbyte sources have no such flag,
     // which is exactly why they need a different adapter.
     const maxIterations = Number(options["max-iterations"] ?? 0) || Infinity;
+    // The byte budget, per stream. Pages vary in size and Mako's box caps a
+    // chunk's output (32 MiB): 10 pages of 200 large emails is about 65 MB.
+    // A chunk ends after the page that takes its records past this many
+    // bytes, at a page boundary like `--max-iterations`, so it resumes
+    // exactly there. One page is never split.
+    const maxBytes = Number(options["max-bytes"] ?? 0) || Infinity;
 
     for (const name of selectedStreams(catalog, connector)) {
       const entity = connector.entity(name);
       const ctx = createContext({ config, state: stateFor(state, name), log, entity: name });
       let iterations = 0;
+      let bytes = 0;
       let latest = ctx.state;
       let exhausted = true;
 
       for await (const batch of entity.read(ctx, ctx.state)) {
-        for (const record of batch.records ?? []) emitRecord(name, record);
+        for (const record of batch.records ?? []) bytes += emitRecord(name, record);
         if (batch.state !== undefined) latest = batch.state;
         iterations++;
         if (batch.hasMore === false) {
           exhausted = true;
           break;
         }
-        if (iterations >= maxIterations) {
+        if (iterations >= maxIterations || bytes >= maxBytes) {
           if (batch.hasMore !== true) {
             throw new Error(
               `Entity "${name}" reached a chunk boundary without saying whether another page exists. ` +

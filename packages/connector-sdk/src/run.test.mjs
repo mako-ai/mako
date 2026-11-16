@@ -143,6 +143,41 @@ test("a chunk stops at the budget and its state resumes exactly where it stopped
   assert.equal(third.at(-1).state.mako.hasMore, false);
 });
 
+test("a chunk also stops at its byte budget, after a whole page, and resumes there", async () => {
+  const dir = tmp();
+  const config = writeJson(dir, "config.json", { apiKey: "good-key" });
+  // One RECORD line of the fixture is about 140 bytes, so 10 records (one
+  // page) pass a 1-byte budget: the chunk ends after the first page, never
+  // inside it, even with 10 pages allowed.
+  const first = await protocol(["read", "--config", config, "--max-iterations", "10", "--max-bytes", "1"]);
+  assert.equal(first.filter(m => m.type === "RECORD").length, 10);
+  const firstState = first.at(-1).state;
+  assert.equal(firstState.mako.hasMore, true);
+  assert.deepEqual(firstState.stream.stream_state, { offset: 10 });
+
+  // A budget of one page's bytes plus one stops after the second page.
+  const recordBytes = first
+    .filter(m => m.type === "RECORD")
+    .reduce((n, m) => n + Buffer.byteLength(`${JSON.stringify(m)}\n`), 0);
+  const second = await protocol(["read", "--config", config, "--max-bytes", String(recordBytes + 1)]);
+  assert.equal(second.filter(m => m.type === "RECORD").length, 20);
+  assert.deepEqual(second.at(-1).state.stream.stream_state, { offset: 20 });
+  assert.equal(second.at(-1).state.mako.hasMore, true);
+
+  // The last page ends the stream whatever the budget says.
+  const third = await protocol([
+    "read",
+    "--config",
+    config,
+    "--state",
+    writeJson(dir, "state.json", second.at(-1).state),
+    "--max-bytes",
+    "1",
+  ]);
+  assert.equal(third.filter(m => m.type === "RECORD").length, 5);
+  assert.equal(third.at(-1).state.mako.hasMore, false);
+});
+
 test("a catalog restricts which streams are read", async () => {
   const dir = tmp();
   const config = writeJson(dir, "config.json", { apiKey: "good-key" });

@@ -11,9 +11,8 @@
  *   Nested entities carry the last parent id (payout or customer).
  * - `since` (ISO 8601) is the incremental anchor, sent as `created[gte]`. The
  *   connector never moves it. The engine passes `since` to the in-process
- *   connector as `options.since`; `SandboxedConnector` does not put it into
- *   the stream state yet, so in a box every read is a full read until it
- *   does. The parity harness seeds `state.since` itself.
+ *   connector as `options.since`; `SandboxedConnector` puts the same value
+ *   into the stream state on every chunk.
  *
  * Webhooks are not here. RFC connectors-as-code §4 defines `webhook` and
  * `subscribe` commands that the SDK does not implement yet.
@@ -41,13 +40,27 @@ interface StripeConfig {
   api_key: string;
   api_base_url?: string;
   /**
-   * Rows per page. Not in the credential form: it stands in for the
-   * in-process `settings.sync_batch_size`, which has no wire field yet. Like
-   * the SDK's own `__http`, a `__` key is set by the caller, never by a user.
-   * The parity harness sets it to make every entity span several pages.
+   * Rows per page. Not in the credential form: `SandboxedConnector` sets it
+   * from the batch size the engine knows (`settings.sync_batch_size`), as the
+   * in-process connector reads it. Like the SDK's own `__http`, a `__` key is
+   * set by Mako, never by a user.
    */
   __page_size?: number;
+  /** Delay between pages, from `settings.rate_limit_delay_ms`. */
+  __rate_limit_delay_ms?: number;
 }
+
+function rateLimitDelay(config: StripeConfig): number {
+  const value = Number(config.__rate_limit_delay_ms);
+  return Number.isFinite(value) && value > 0 ? value : RATE_LIMIT_DELAY_MS;
+}
+
+/** The in-process `layoutSuggestion`: rows are upserted in place. */
+const LAYOUT = {
+  partitionField: "_syncedAt",
+  partitionGranularity: "day" as const,
+  clusterFields: ["_dataSourceId", "id"],
+};
 
 function pageSize(config: StripeConfig): number {
   const value = Number(config.__page_size);
@@ -139,7 +152,10 @@ function entity(
   return {
     label,
     primaryKey: ["id"],
-    ...(incremental ? { cursorField: "created" } : {}),
+    ...(incremental
+      ? { cursorField: "created", incremental: "created-anchor" as const }
+      : {}),
+    layout: LAYOUT,
     schema: STRIPE_ENTITY_SCHEMA_MAP[name],
     // A whole JSON Schema, so `id` can be required. The SDK passes an object
     // schema through unchanged; its type only names the shorthand form.
@@ -152,7 +168,7 @@ function entity(
       let first = true;
 
       while (true) {
-        if (!first) await sleep(RATE_LIMIT_DELAY_MS);
+        if (!first) await sleep(rateLimitDelay(ctx.config));
         first = false;
 
         const page = await listStripePage(stripe, name, {

@@ -250,8 +250,157 @@ async function connectSessionNow(sessionKey: string): Promise<Sandbox> {
 }
 
 // ---------------------------------------------------------------------------
-// Host <-> sandbox sync (tar streams over the E2B filesystem API)
+// Held handles
 // ---------------------------------------------------------------------------
+
+/**
+ * One connected `Sandbox` handle per session, reused across calls.
+ *
+ * Every call used to start with `Sandbox.connect`, and every exec with
+ * `setTimeout` as well: an exec cost 3 round trips to E2B and a file transfer
+ * 2. A connector chunk made 8 provider calls, 20 round trips, about 3.7 s
+ * (bench/g1/RESULTS.md). A handle stays valid while its box runs, so it is
+ * held, and `connect` happens only when there is no handle or the box may
+ * have paused since.
+ *
+ * `deadline` is when E2B will pause the box, as of the last `setTimeout` this
+ * process made. A handle is trusted until shortly before it. A handle whose
+ * deadline is unknown (it came from a `connect` with no `setTimeout` after
+ * it) is trusted for HANDLE_TTL_MS only.
+ *
+ * Another API instance can still pause or kill the box under a held handle.
+ * The call then fails as "sandbox gone", and `withSandbox` connects again
+ * (which resumes a paused box, as the old per-call `connect` did) and retries
+ * it once.
+ */
+interface HeldSandbox {
+  sandbox: Sandbox;
+  deadline: number | null;
+  connectedAt: number;
+}
+
+const held = new Map<string, HeldSandbox>();
+
+/** How long a handle with an unknown deadline is trusted without a connect. */
+const HANDLE_TTL_MS = 30_000;
+/** A handle is not used this close to the box's known pause time. */
+const DEADLINE_MARGIN_MS = 5_000;
+/**
+ * `setTimeout` is skipped while the box's remaining lifetime is within this
+ * much of the lifetime a call wants. Each exec used to reset it exactly, so
+ * a box paused 10 minutes after its last command; now it pauses 9 to 10
+ * minutes after it, for one `setTimeout` a minute instead of one per call.
+ */
+const LIFETIME_SLACK_MS = 60_000;
+
+function heldUsable(entry: HeldSandbox, now: number): boolean {
+  return entry.deadline !== null
+    ? now < entry.deadline - DEADLINE_MARGIN_MS
+    : now < entry.connectedAt + HANDLE_TTL_MS;
+}
+
+function dropHandle(sessionKey: string, sandbox?: Sandbox): void {
+  const entry = held.get(sessionKey);
+  if (!entry) return;
+  if (sandbox && entry.sandbox !== sandbox) return;
+  held.delete(sessionKey);
+}
+
+/**
+ * Set the box's remaining lifetime to `lifetime`, unless it is already
+ * within LIFETIME_SLACK_MS of that and at least `floor` (the time the call
+ * itself may take). Shortening is kept on purpose: the old per-exec
+ * `setTimeout` also brought a long hold back down once the long command was
+ * done, and keepAlive holds are already folded into `lifetime`.
+ */
+async function ensureLifetime(
+  entry: HeldSandbox,
+  lifetime: number,
+  floor = 0,
+): Promise<void> {
+  const now = Date.now();
+  if (entry.deadline !== null) {
+    const remaining = entry.deadline - now;
+    if (
+      remaining >= floor &&
+      Math.abs(remaining - lifetime) <= LIFETIME_SLACK_MS
+    ) {
+      return;
+    }
+  }
+  await entry.sandbox.setTimeout(lifetime);
+  entry.deadline = now + lifetime;
+}
+
+/**
+ * The session's held handle, connecting only when there is none or it may
+ * have gone stale. `reused` says whether a connect was skipped.
+ */
+async function heldSandbox(
+  sessionKey: string,
+): Promise<{ entry: HeldSandbox; reused: boolean }> {
+  const current = held.get(sessionKey);
+  if (current && heldUsable(current, Date.now())) {
+    return { entry: current, reused: true };
+  }
+  const sandbox = await connectSession(sessionKey);
+  let entry = held.get(sessionKey);
+  if (!entry || entry.sandbox !== sandbox) {
+    const now = Date.now();
+    // Handles nobody can use any more are dropped as new ones arrive, so an
+    // instance that served thousands of sessions holds only the live ones.
+    for (const [key, other] of held) {
+      if (!heldUsable(other, now)) held.delete(key);
+    }
+    entry = { sandbox, deadline: null, connectedAt: now };
+    held.set(sessionKey, entry);
+  }
+  return { entry, reused: false };
+}
+
+/**
+ * Run `fn` on the session's sandbox, after making sure it has `lifetime`
+ * left when one is given.
+ *
+ * If a HELD handle turns out to point at a box that has gone (paused or
+ * killed by another instance), connect afresh and run it once more: that is
+ * what the old connect-per-call did, one step earlier, and a command that
+ * hit a gone box never started. A failure after a fresh connect is final.
+ */
+async function withSandbox<T>(
+  sessionKey: string,
+  lifetime: number | undefined,
+  fn: (sandbox: Sandbox) => Promise<T>,
+  floor = 0,
+): Promise<T> {
+  const { entry, reused } = await heldSandbox(sessionKey);
+  try {
+    if (lifetime !== undefined) await ensureLifetime(entry, lifetime, floor);
+    return await fn(entry.sandbox);
+  } catch (error) {
+    if (!reused || !isSandboxGone(error)) throw error;
+    dropHandle(sessionKey, entry.sandbox);
+    const fresh = await heldSandbox(sessionKey);
+    if (lifetime !== undefined) {
+      await ensureLifetime(fresh.entry, lifetime, floor);
+    }
+    return fn(fresh.entry.sandbox);
+  }
+}
+
+/** Test hook: how many handles this process holds. */
+export function heldSandboxCountForTests(): number {
+  return held.size;
+}
+
+/** Test hook: forget every held handle and lifetime. */
+export function resetHeldSandboxesForTests(): void {
+  held.clear();
+  keepAliveUntil.clear();
+  sessions.clear();
+  knownAlive.clear();
+  knownAbsent.clear();
+}
 
 // ---------------------------------------------------------------------------
 // Exec
@@ -267,12 +416,6 @@ async function execE2b(
     APPS_EXEC_MAX_TIMEOUT_MS,
   );
   const startedAt = Date.now();
-  const sandbox = await connectSession(ctx.sessionKey);
-  // Keep the sandbox alive long enough for this command + sync overhead —
-  // without clobbering a longer hold someone asked keepAlive() for.
-  await sandbox.setTimeout(
-    lifetimeMs(ctx.sessionKey, Math.max(IDLE_TIMEOUT_MS, timeoutMs + 60_000)),
-  );
 
   const cwd = options.cwd
     ? path.posix.join(REMOTE_ROOT, options.cwd)
@@ -283,79 +426,91 @@ async function execE2b(
     );
   }
 
-  let stdout = "";
-  let stderr = "";
-  let truncated = false;
-  let exitCode: number;
-  let timedOut = false;
-  const cap = APPS_EXEC_MAX_OUTPUT_BYTES;
-  const push = (target: "out" | "err", data: string) => {
-    if (target === "out") {
-      if (stdout.length < cap) stdout += data.slice(0, cap - stdout.length);
-      else truncated = true;
-    } else {
-      if (stderr.length < cap) stderr += data.slice(0, cap - stderr.length);
-      else truncated = true;
+  const run = async (
+    sandbox: Sandbox,
+  ): Promise<Omit<SandboxExecResult, "durationMs">> => {
+    let stdout = "";
+    let stderr = "";
+    let truncated = false;
+    let exitCode: number;
+    let timedOut = false;
+    const cap = APPS_EXEC_MAX_OUTPUT_BYTES;
+    const push = (target: "out" | "err", data: string) => {
+      if (target === "out") {
+        if (stdout.length < cap) stdout += data.slice(0, cap - stdout.length);
+        else truncated = true;
+      } else {
+        if (stderr.length < cap) stderr += data.slice(0, cap - stderr.length);
+        else truncated = true;
+      }
+    };
+
+    try {
+      const result = await sandbox.commands.run(command, {
+        user: SANDBOX_USER,
+        cwd,
+        timeoutMs,
+        envs: {
+          HOME: "/home/user",
+          LANG: "C.UTF-8",
+          TERM: "dumb",
+          CI: "1",
+          npm_config_yes: "true",
+          NO_UPDATE_NOTIFIER: "1",
+          // There is no human at this end. Without it git blocks on a
+          // credential prompt until the timeout and reports nothing.
+          GIT_TERMINAL_PROMPT: "0",
+          ...(options.env ?? {}),
+        },
+        onStdout: d => push("out", d),
+        onStderr: d => push("err", d),
+      });
+      exitCode = result.exitCode;
+    } catch (error) {
+      // e2b throws CommandExitError on non-zero exit and TimeoutError on
+      // deadline; normalize both into the result contract. Anything else
+      // propagates, so withSandbox can tell a gone box from a failed command.
+      const err = error as {
+        exitCode?: number;
+        stdout?: string;
+        stderr?: string;
+        name?: string;
+        message?: string;
+      };
+      if (typeof err.exitCode === "number") {
+        exitCode = err.exitCode;
+        if (err.stdout && !stdout) push("out", err.stdout);
+        if (err.stderr && !stderr) push("err", err.stderr);
+      } else if (err.name === "TimeoutError") {
+        exitCode = 124;
+        timedOut = true;
+      } else {
+        throw error;
+      }
     }
+    return { exitCode, stdout, stderr, timedOut, truncated };
   };
 
   try {
-    const result = await sandbox.commands.run(command, {
-      user: SANDBOX_USER,
-      cwd,
-      timeoutMs,
-      envs: {
-        HOME: "/home/user",
-        LANG: "C.UTF-8",
-        TERM: "dumb",
-        CI: "1",
-        npm_config_yes: "true",
-        NO_UPDATE_NOTIFIER: "1",
-        // There is no human at this end. Without it git blocks on a
-        // credential prompt until the timeout and reports nothing.
-        GIT_TERMINAL_PROMPT: "0",
-        ...(options.env ?? {}),
-      },
-      onStdout: d => push("out", d),
-      onStderr: d => push("err", d),
-    });
-    exitCode = result.exitCode;
+    // Keep the sandbox alive long enough for this command + sync overhead —
+    // without clobbering a longer hold someone asked keepAlive() for.
+    const result = await withSandbox(
+      ctx.sessionKey,
+      lifetimeMs(ctx.sessionKey, Math.max(IDLE_TIMEOUT_MS, timeoutMs + 60_000)),
+      run,
+      // The box must outlive this command whatever the slack allows.
+      timeoutMs + DEADLINE_MARGIN_MS,
+    );
+    return { ...result, durationMs: Date.now() - startedAt };
   } catch (error) {
-    // e2b throws CommandExitError on non-zero exit and TimeoutError on
-    // deadline; normalize both into the result contract.
-    const err = error as {
-      exitCode?: number;
-      stdout?: string;
-      stderr?: string;
-      name?: string;
-      message?: string;
-    };
-    if (typeof err.exitCode === "number") {
-      exitCode = err.exitCode;
-      if (err.stdout && !stdout) push("out", err.stdout);
-      if (err.stderr && !stderr) push("err", err.stderr);
-    } else if (err.name === "TimeoutError") {
-      exitCode = 124;
-      timedOut = true;
-    } else {
-      // The box is gone, not busy: drop the remembered session so the next
-      // `hasSession` asks E2B instead of repeating this instance's stale
-      // "yes" — otherwise every later discovery call execs into nothing and
-      // throws again. The error still propagates; callers that promise an
-      // empty answer rather than a failure catch it themselves.
-      if (isSandboxGone(error)) forgetSession(ctx.sessionKey);
-      throw error;
-    }
+    // The box is gone, not busy: drop the remembered session so the next
+    // `hasSession` asks E2B instead of repeating this instance's stale
+    // "yes" — otherwise every later discovery call execs into nothing and
+    // throws again. The error still propagates; callers that promise an
+    // empty answer rather than a failure catch it themselves.
+    if (isSandboxGone(error)) forgetSession(ctx.sessionKey);
+    throw error;
   }
-
-  return {
-    exitCode,
-    stdout,
-    stderr,
-    timedOut,
-    durationMs: Date.now() - startedAt,
-    truncated,
-  };
 }
 
 /**
@@ -371,8 +526,6 @@ async function execDetachedE2b(
   command: string,
   options: SandboxExecOptions = {},
 ): Promise<void> {
-  const sandbox = await connectSession(ctx.sessionKey);
-  await sandbox.setTimeout(lifetimeMs(ctx.sessionKey, IDLE_TIMEOUT_MS));
   const cwd = options.cwd
     ? path.posix.join(REMOTE_ROOT, options.cwd)
     : REMOTE_ROOT;
@@ -381,18 +534,23 @@ async function execDetachedE2b(
       `cwd escapes the session root: ${JSON.stringify(options.cwd)}`,
     );
   }
-  const result = await sandbox.commands.run(command, {
-    user: SANDBOX_USER,
-    cwd,
-    timeoutMs: 60_000,
-    envs: {
-      HOME: "/home/user",
-      LANG: "C.UTF-8",
-      TERM: "dumb",
-      CI: "1",
-      ...(options.env ?? {}),
-    },
-  });
+  const result = await withSandbox(
+    ctx.sessionKey,
+    lifetimeMs(ctx.sessionKey, IDLE_TIMEOUT_MS),
+    sandbox =>
+      sandbox.commands.run(command, {
+        user: SANDBOX_USER,
+        cwd,
+        timeoutMs: 60_000,
+        envs: {
+          HOME: "/home/user",
+          LANG: "C.UTF-8",
+          TERM: "dumb",
+          CI: "1",
+          ...(options.env ?? {}),
+        },
+      }),
+  );
   if (result.exitCode !== 0) {
     throw new Error(
       `Failed to start detached process: ${result.stderr.slice(0, 500)}`,
@@ -404,31 +562,51 @@ async function readFileE2b(
   ctx: SandboxExecContext,
   remotePath: string,
 ): Promise<Uint8Array> {
-  const sandbox = await connectSession(ctx.sessionKey);
-  const data = await sandbox.files.read(remotePath, {
-    format: "bytes",
-    user: SANDBOX_USER,
-  });
+  const data = await withSandbox(ctx.sessionKey, undefined, sandbox =>
+    sandbox.files.read(remotePath, { format: "bytes", user: SANDBOX_USER }),
+  );
   return new Uint8Array(data as Uint8Array);
 }
+
+/** The bytes a view covers, as the ArrayBuffer the E2B SDK wants. */
+const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer =>
+  bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer;
 
 async function writeFileE2b(
   ctx: SandboxExecContext,
   remotePath: string,
   bytes: Uint8Array,
 ): Promise<void> {
-  const sandbox = await connectSession(ctx.sessionKey);
-  await sandbox.files.write(remotePath, bytes.buffer as ArrayBuffer, {
-    user: SANDBOX_USER,
-  });
+  await withSandbox(ctx.sessionKey, undefined, sandbox =>
+    sandbox.files.write(remotePath, toArrayBuffer(bytes), {
+      user: SANDBOX_USER,
+    }),
+  );
+}
+
+/** Several files in one multipart request: one round trip, not one each. */
+async function writeFilesE2b(
+  ctx: SandboxExecContext,
+  files: Array<{ path: string; bytes: Uint8Array }>,
+): Promise<void> {
+  if (files.length === 0) return;
+  await withSandbox(ctx.sessionKey, undefined, sandbox =>
+    sandbox.files.write(
+      files.map(file => ({ path: file.path, data: toArrayBuffer(file.bytes) })),
+      { user: SANDBOX_USER },
+    ),
+  );
 }
 
 async function publicUrlForPortE2b(
   ctx: SandboxExecContext,
   port: number,
 ): Promise<string> {
-  const sandbox = await connectSession(ctx.sessionKey);
-  return `https://${sandbox.getHost(port)}`;
+  const { entry } = await heldSandbox(ctx.sessionKey);
+  return `https://${entry.sandbox.getHost(port)}`;
 }
 
 /**
@@ -443,6 +621,10 @@ async function peekPublicUrlForPortE2b(
   ctx: SandboxExecContext,
   port: number,
 ): Promise<string | null> {
+  const current = held.get(ctx.sessionKey);
+  if (current && heldUsable(current, Date.now())) {
+    return `https://${current.sandbox.getHost(port)}`;
+  }
   const known = sessions.get(ctx.sessionKey);
   if (known) {
     try {
@@ -488,9 +670,15 @@ async function keepAliveE2b(
   ctx: SandboxExecContext,
   ms: number,
 ): Promise<void> {
-  const sandbox = await connectSession(ctx.sessionKey);
   keepAliveUntil.set(ctx.sessionKey, Date.now() + Math.max(0, ms));
-  await sandbox.setTimeout(Math.max(IDLE_TIMEOUT_MS, ms));
+  const lifetime = Math.max(IDLE_TIMEOUT_MS, ms);
+  // Always set, never skipped as "close enough": a hold is an explicit ask.
+  await withSandbox(ctx.sessionKey, undefined, async sandbox => {
+    const now = Date.now();
+    await sandbox.setTimeout(lifetime);
+    const entry = held.get(ctx.sessionKey);
+    if (entry?.sandbox === sandbox) entry.deadline = now + lifetime;
+  });
 }
 
 /**
@@ -551,6 +739,7 @@ export function isSandboxGone(error: unknown): boolean {
  * memory becomes wrong, so that is where it is dropped.
  */
 function forgetSession(sessionKey: string): void {
+  held.delete(sessionKey);
   sessions.delete(sessionKey);
   knownAlive.delete(sessionKey);
   knownAbsent.set(sessionKey, Date.now() + KNOWN_ABSENT_TTL_MS);
@@ -562,8 +751,11 @@ async function openTerminalE2b(
   // so adding one there cannot leave this signature quietly behind.
   opts: Parameters<SandboxProvider["openTerminal"]>[1],
 ): Promise<SandboxTerminal> {
-  const sandbox = await connectSession(ctx.sessionKey);
-  await sandbox.setTimeout(lifetimeMs(ctx.sessionKey, IDLE_TIMEOUT_MS));
+  const sandbox = await withSandbox(
+    ctx.sessionKey,
+    lifetimeMs(ctx.sessionKey, IDLE_TIMEOUT_MS),
+    async box => box,
+  );
   const cwd = path.posix.join(REMOTE_ROOT, opts.cwd);
   if (!cwd.startsWith(REMOTE_ROOT)) {
     throw new Error(
@@ -827,6 +1019,7 @@ export const e2bSandboxProvider: SandboxProvider = {
     }
   },
   writeFile: writeFileE2b,
+  writeFiles: writeFilesE2b,
   readFile: readFileE2b,
   openTerminal: openTerminalE2b,
   publicUrlForPort: publicUrlForPortE2b,
@@ -834,6 +1027,7 @@ export const e2bSandboxProvider: SandboxProvider = {
   keepAlive: keepAliveE2b,
   destroySession: async sessionKey => {
     const sandboxId = sessions.get(sessionKey);
+    held.delete(sessionKey);
     sessions.delete(sessionKey);
     knownAlive.delete(sessionKey);
     keepAliveUntil.delete(sessionKey);

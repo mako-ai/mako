@@ -16,6 +16,8 @@ const SLUG = /^[a-z][a-z0-9-]*$/;
 // Entity names become table names, and Airbyte's own streams use snake_case
 // (`payment_intents`, `balance_transactions`). Hyphens stay legal too.
 const ENTITY_NAME = /^[a-z][a-z0-9_-]*$/;
+// What a read does with `state.since`, in Mako's words (IncrementalMode).
+const INCREMENTAL_MODES = ["native", "client-filter", "created-anchor"];
 
 export function defineConnector(definition) {
   const problems = validateDefinition(definition);
@@ -49,7 +51,15 @@ export function defineConnector(definition) {
           entities: Object.fromEntries(
             Object.entries(entities).map(([name, entity]) => [
               name,
-              { label: entity.label, description: entity.description },
+              {
+                label: entity.label,
+                description: entity.description,
+                // How a destination should lay the table out, and how far
+                // `state.since` narrows a read. Mako reads both from the spec
+                // it indexes, without running the connector.
+                ...(entity.layout ? { layout: entity.layout } : {}),
+                ...(entity.incremental ? { incremental: entity.incremental } : {}),
+              },
             ]),
           ),
         },
@@ -128,6 +138,11 @@ function validateDefinition(definition) {
     }
     if (typeof entity?.read !== "function") {
       problems.push(`entity "${name}" needs a read(ctx, state) generator`);
+    }
+    if (entity?.incremental && !INCREMENTAL_MODES.includes(entity.incremental)) {
+      problems.push(
+        `entity "${name}": incremental must be one of ${INCREMENTAL_MODES.join(", ")}`,
+      );
     }
     if (entity?.primaryKey && !Array.isArray(entity.primaryKey)) {
       problems.push(`entity "${name}": primaryKey must be an array of field names`);

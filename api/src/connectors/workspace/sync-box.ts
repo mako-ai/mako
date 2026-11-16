@@ -52,6 +52,24 @@ export const MAX_CONNECTOR_PROTOCOL_BYTES = 32 * 1024 * 1024;
 export const MAX_CONNECTOR_PROTOCOL_MESSAGES = 50_000;
 
 /**
+ * A chunk's protocol output passed MAX_CONNECTOR_PROTOCOL_BYTES or
+ * MAX_CONNECTOR_PROTOCOL_MESSAGES. Typed, because the same chunk retried with
+ * the same budget fails the same way: the caller has to ask for less.
+ */
+export class ConnectorOutputTooLargeError extends Error {
+  constructor(
+    message: string,
+    readonly limit: "bytes" | "messages",
+  ) {
+    super(message);
+    this.name = "ConnectorOutputTooLargeError";
+  }
+}
+
+/** The line the bounding step prints: the bounded file's size, or `missing`. */
+const BOUNDED_MARKER = "MAKO_BOUNDED_OUTPUT";
+
+/**
  * The sandbox template is not the connector runtime. Templates in the wild
  * can lag (the current E2B image has Node 20), so the content-addressed
  * runtime carries a pinned Node that can import TypeScript connectors.
@@ -302,6 +320,14 @@ export async function installConnectorBundle(input: {
  * Inputs that are objects (config, catalog, state) are written as files rather
  * than passed as arguments: a command line is visible in the box's process
  * table, and a credential must not be.
+ *
+ * Three round trips to the box, where bench G1 measured 8 provider calls:
+ * 1. one request writes every input file (and so creates the run directory);
+ * 2. one command runs the connector, deletes the inputs the moment it exits,
+ *    takes the bounded snapshot of its output and prints the snapshot's size;
+ * 3. one read brings the snapshot back.
+ * Deleting the run directory is a fourth call, off the critical path when the
+ * command finished cleanly (its credential is already gone by then).
  */
 export async function runConnectorCommand(input: {
   ctx: SandboxExecContext;
@@ -312,6 +338,12 @@ export async function runConnectorCommand(input: {
   catalog?: Record<string, unknown>;
   state?: Record<string, unknown> | unknown[];
   maxIterations?: number;
+  /**
+   * A `read` stops after the page that takes its records past this many
+   * bytes (`--max-bytes`), so a chunk of large rows stays under
+   * MAX_CONNECTOR_PROTOCOL_BYTES however many pages it was allowed.
+   */
+  maxBytes?: number;
   timeoutMs?: number;
   entry?: string;
 }): Promise<RunResult> {
@@ -333,11 +365,13 @@ export async function runConnectorCommand(input: {
     path.posix.join(input.connectorDir, input.entry ?? "connector.ts"),
   ];
 
-  try {
-    await provider.exec(ctx, `mkdir -p ${shellQuote(runDir)}`, {
-      timeoutMs: 30_000,
-    });
+  // Set once the command has deleted its inputs itself. Until then the run
+  // directory may hold a credential, and the cleanup below must finish
+  // before this function returns.
+  let inputsDeleted = false;
 
+  try {
+    const inputs: Array<{ path: string; bytes: Uint8Array }> = [];
     for (const [name, value] of [
       ["config", input.config],
       ["catalog", input.catalog],
@@ -345,15 +379,25 @@ export async function runConnectorCommand(input: {
     ] as const) {
       if (value === undefined) continue;
       const file = path.posix.join(runDir, `${name}.json`);
-      await provider.writeFile(
-        ctx,
-        file,
-        encoder.encode(JSON.stringify(value)),
-      );
+      inputs.push({ path: file, bytes: encoder.encode(JSON.stringify(value)) });
       args.push(`--${name}`, file);
     }
     if (input.maxIterations !== undefined) {
       args.push("--max-iterations", String(input.maxIterations));
+    }
+    if (input.maxBytes !== undefined) {
+      args.push("--max-bytes", String(input.maxBytes));
+    }
+
+    // Round trip 1: every input in one request.
+    if (inputs.length > 0) {
+      if (provider.writeFiles) {
+        await provider.writeFiles(ctx, inputs);
+      } else {
+        for (const file of inputs) {
+          await provider.writeFile(ctx, file.path, file.bytes);
+        }
+      }
     }
 
     const bin = path.posix.join(
@@ -364,9 +408,31 @@ export async function runConnectorCommand(input: {
       "bin",
       "mako-connector.js",
     );
-    const command_ = `${shellQuote(runtimeNode(ctx, input.runtimeId))} ${shellQuote(bin)} ${args.map(shellQuote).join(" ")} > ${shellQuote(outputPath)}`;
+    const connectorCommand = `${shellQuote(runtimeNode(ctx, input.runtimeId))} ${shellQuote(bin)} ${args.map(shellQuote).join(" ")} > ${shellQuote(outputPath)}`;
+    const inputPaths = inputs.map(file => shellQuote(file.path)).join(" ");
 
-    const result = await provider.exec(ctx, command_, {
+    // Round trip 2: run, delete the inputs, bound the output, report its size.
+    //
+    // Never read the connector's own file directly. `head` creates an
+    // immutable snapshot of at most limit + 1 bytes inside the sandbox, even
+    // if malicious connector code left a child process appending to stdout
+    // after it exited. The connector's own output file is then removed, so
+    // only the snapshot is left for the read.
+    const script = [
+      `mkdir -p ${shellQuote(runDir)}`,
+      `${connectorCommand}`,
+      `status=$?`,
+      ...(inputPaths ? [`rm -f ${inputPaths}`] : []),
+      `if test -f ${shellQuote(outputPath)}; then`,
+      `  if head -c ${MAX_CONNECTOR_PROTOCOL_BYTES + 1} ${shellQuote(outputPath)} > ${shellQuote(boundedOutputPath)}; then`,
+      `    echo "${BOUNDED_MARKER} $(wc -c < ${shellQuote(boundedOutputPath)})"`,
+      `  else echo "${BOUNDED_MARKER} error"; fi`,
+      `  rm -f ${shellQuote(outputPath)}`,
+      `else echo "${BOUNDED_MARKER} missing"; fi`,
+      `exit $status`,
+    ].join("\n");
+
+    const result = await provider.exec(ctx, script, {
       timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       // Nothing is ADDED to the environment on purpose: a connector has no
       // business reading even what an app may read. What it does see is the
@@ -376,31 +442,44 @@ export async function runConnectorCommand(input: {
       // provider's, not this call's.
     });
 
-    // Never read the connector's own file directly. `head` creates an immutable
-    // snapshot of at most limit + 1 bytes inside the sandbox, even if malicious
-    // connector code left a child process appending to stdout after it exited.
-    const snapshot = await provider.exec(
-      ctx,
-      `if test -f ${shellQuote(outputPath)}; then head -c ${MAX_CONNECTOR_PROTOCOL_BYTES + 1} ${shellQuote(outputPath)} > ${shellQuote(boundedOutputPath)} && wc -c < ${shellQuote(boundedOutputPath)}; else echo missing; fi`,
-      { timeoutMs: 30_000 },
-    );
-    const sizeText = snapshot.stdout.trim();
+    // A command that was cut off never reached the bounding step. Its output
+    // is not read: the run failed, and `timedOut` says why.
+    if (result.timedOut) {
+      return {
+        exitCode: result.exitCode,
+        messages: [],
+        malformed: [],
+        stderr: result.stderr,
+        timedOut: true,
+      };
+    }
+    inputsDeleted = true;
+
+    const markerLine = result.stdout
+      .split("\n")
+      .map(line => line.trim())
+      .filter(line => line.startsWith(`${BOUNDED_MARKER} `))
+      .at(-1);
+    const sizeText = markerLine?.slice(BOUNDED_MARKER.length + 1) ?? "";
+    let outputBytes = 0;
     if (sizeText !== "missing") {
-      const outputBytes = Number(sizeText);
-      if (!Number.isSafeInteger(outputBytes) || outputBytes < 0) {
+      outputBytes = Number(sizeText);
+      if (!sizeText || !Number.isSafeInteger(outputBytes) || outputBytes < 0) {
         throw new Error("Could not determine the connector protocol size.");
       }
       if (outputBytes > MAX_CONNECTOR_PROTOCOL_BYTES) {
-        throw new Error(
+        throw new ConnectorOutputTooLargeError(
           `Connector protocol output exceeded the ${MAX_CONNECTOR_PROTOCOL_BYTES} byte limit. Reduce the page or batch size.`,
+          "bytes",
         );
       }
     }
 
-    // A command that died before creating its output file is a failure with
-    // stderr as the only evidence; that is more useful than a read error.
+    // Round trip 3: the bounded snapshot. A command that died before
+    // creating its output file is a failure with stderr as the only
+    // evidence; that is more useful than a read error.
     const raw =
-      sizeText === "missing"
+      outputBytes === 0
         ? ""
         : new TextDecoder().decode(
             await provider.readFile(ctx, boundedOutputPath),
@@ -418,8 +497,9 @@ export async function runConnectorCommand(input: {
       if (!trimmed) continue;
       protocolLines++;
       if (protocolLines > MAX_CONNECTOR_PROTOCOL_MESSAGES) {
-        throw new Error(
+        throw new ConnectorOutputTooLargeError(
           `Connector protocol output exceeded the ${MAX_CONNECTOR_PROTOCOL_MESSAGES} message limit. Reduce the page or batch size.`,
+          "messages",
         );
       }
       try {
@@ -456,7 +536,9 @@ export async function runConnectorCommand(input: {
   } finally {
     // The credential was in this directory. A paused box snapshots its disk,
     // so leaving it would mean the key outlives the run inside a suspended VM.
-    await provider
+    // When the command deleted the inputs itself, what is left is the bounded
+    // snapshot only, and its removal need not hold up the chunk.
+    const cleanup = provider
       .exec(ctx, `rm -rf ${shellQuote(runDir)}`, { timeoutMs: 30_000 })
       .catch(error =>
         logger.error("Failed to clean a connector run directory", {
@@ -464,6 +546,7 @@ export async function runConnectorCommand(input: {
           runDir,
         }),
       );
+    if (!inputsDeleted) await cleanup;
   }
 }
 

@@ -14,6 +14,7 @@ import {
   logicalType,
   primaryKeyOf,
 } from "./spec-translation";
+import { MAKO_SYSTEM_FIELDS } from "../base/BaseConnector";
 
 let ran = 0;
 let failed = 0;
@@ -197,8 +198,29 @@ test("a loose stream stays loose instead of failing the sync", () => {
   const schema = jsonSchemaToEntitySchema("events", {
     json_schema: { type: "object", additionalProperties: true },
   });
-  assert.deepEqual(schema.fields, {});
+  // Nothing but Mako's own system columns.
+  assert.deepEqual(schema.fields, MAKO_SYSTEM_FIELDS);
   assert.equal(schema.unknownFieldPolicy, "string");
+});
+
+test("Mako's system columns are merged in, as in-process schemas spread them", () => {
+  const schema = jsonSchemaToEntitySchema("people", {
+    json_schema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        // A stream field named like a system column does not win.
+        is_deleted: { type: "string" },
+      },
+    },
+  });
+  for (const [name, field] of Object.entries(MAKO_SYSTEM_FIELDS)) {
+    assert.deepEqual(schema.fields[name], field, name);
+  }
+  assert.equal(schema.fields._syncedAt.type, "timestamp");
+  assert.equal(schema.fields.is_deleted.defaultValue, false);
+  assert.equal(schema.fields.deleted_at.derivedFrom, "_mako_deleted_at");
+  assert.equal(schema.fields.id.type, "string");
 });
 
 if (failed > 0) {

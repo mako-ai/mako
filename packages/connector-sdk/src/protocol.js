@@ -63,8 +63,11 @@ export function schemaToJsonSchema(schema) {
   return { type: "object", additionalProperties: true, properties };
 }
 
+/** Write one protocol line; returns the bytes written, newline included. */
 const write = line => {
-  process.stdout.write(`${JSON.stringify(line)}\n`);
+  const text = `${JSON.stringify(line)}\n`;
+  process.stdout.write(text);
+  return Buffer.byteLength(text);
 };
 
 export function emitSpec(spec) {
@@ -82,8 +85,9 @@ export function emitCatalog(streams) {
   write({ type: CATALOG, catalog: { streams } });
 }
 
+/** Returns the line's size in bytes, which the runner's byte budget counts. */
 export function emitRecord(stream, data, emittedAt = Date.now()) {
-  write({ type: RECORD, record: { stream, data, emitted_at: emittedAt } });
+  return write({ type: RECORD, record: { stream, data, emitted_at: emittedAt } });
 }
 
 /**

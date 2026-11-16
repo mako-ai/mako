@@ -3,11 +3,17 @@
  * folder (`connectors/stripe/`, RFC connector-runtime iteration 4).
  *
  * Both run against the same recorded Stripe responses, served locally, with
- * the real `stripe` package on each side. Every entity is read in three
- * scenarios (one page per chunk, the default chunk, incremental `since`) and
- * compared on row count, keys, order, columns, a checksum per row, the chunk
- * states and the exact requests sent. The schemas, the credential form and
- * `check` are compared too.
+ * the real `stripe` package on each side. Every entity is read in four
+ * scenarios (one page per chunk, two-row pages, the default chunk,
+ * incremental `since`) and compared on row count, keys, order, columns, a
+ * checksum per row, the chunk states, the exact requests sent and each row's
+ * source timestamp. The schemas (system columns included), the table layout,
+ * incremental capabilities, the credential form and `check` are compared too.
+ *
+ * The folder runs through `SandboxedConnector`, the adapter the box path
+ * uses, with only the box replaced by a local process (`BoxlessStripe`).
+ * `since`, the page size, the rate limit and the source timestamp therefore
+ * cross the same code a production box run does.
  *
  * The harness lives with the folder: connectors/stripe/fixtures/harness.mjs.
  * Re-record or print the table with connectors/stripe/fixtures/parity.mjs.
@@ -18,6 +24,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { StripeConnector } from "./connector";
 import { MAKO_SYSTEM_FIELDS } from "../base/BaseConnector";
+import { SandboxedConnector } from "../workspace/SandboxedConnector";
+import type { LoadedConnector } from "../workspace/resolver";
+import type { ConnectorCommand, RunResult } from "../workspace/sync-box";
 import { parseConnectorFile } from "../workspace/connector-file";
 import {
   connectionSpecificationToForm,
@@ -47,6 +56,52 @@ const makeInProcess = (config: StripeTestConfig) =>
     config,
   } as any);
 
+/**
+ * The Stripe folder as a workspace connector, with the box swapped for a
+ * local process running the same SDK runner on the same files. Everything
+ * else is `SandboxedConnector` as production runs it.
+ */
+class BoxlessStripe extends SandboxedConnector {
+  static spec: Record<string, any> | undefined;
+
+  protected async definition(): Promise<LoadedConnector> {
+    this.loaded ??= {
+      slug: "stripe",
+      runtime: "node",
+      entry: "connector.ts",
+      sha: "parity",
+      sourceSha: "parity",
+      spec: BoxlessStripe.spec,
+      entities: Object.keys(BoxlessStripe.spec?.mako?.entities ?? {}),
+      status: "indexed",
+    } as LoadedConnector;
+    return this.loaded;
+  }
+
+  protected async run(
+    command: ConnectorCommand,
+    options: Parameters<SandboxedConnector["run"]>[1],
+  ): Promise<RunResult> {
+    const result = await runFolderCommand(command, options);
+    return {
+      exitCode: result.code ?? 1,
+      messages: result.messages as RunResult["messages"],
+      malformed: [],
+      stderr: result.stderr,
+      timedOut: false,
+    };
+  }
+}
+
+const makeBoxed = (config: StripeTestConfig) =>
+  new BoxlessStripe({
+    id: "ds_parity",
+    name: "Stripe parity",
+    type: "ws:stripe",
+    workspaceId: "ws_parity",
+    config,
+  } as any);
+
 const ENTITIES = makeInProcess({
   api_key: "sk_test_list",
   api_base_url: "",
@@ -67,6 +122,7 @@ before(async () => {
   spec = (await runFolderCommand("spec")).messages.find(
     m => m.type === "SPEC",
   )?.spec;
+  BoxlessStripe.spec = spec;
 });
 
 after(async () => {
@@ -118,15 +174,17 @@ void test("same entities, labels and credential form", () => {
   assert.ok(form.ok, JSON.stringify(form, null, 2));
 });
 
-void test("same vendor schema for every entity; the 8 system columns are a known gap", async () => {
+void test("same schema for every entity, the 8 system columns included", async () => {
   const system = new Set(Object.keys(MAKO_SYSTEM_FIELDS));
   const connector = makeInProcess({
     api_key: "sk_test_list",
     api_base_url: "",
   });
+  const boxed = makeBoxed({ api_key: "sk_test_schema", api_base_url: "" });
   for (const entity of ENTITIES) {
+    const inProcess = await connector.resolveSchema(entity);
     const result = compareEntitySchema(
-      await connector.resolveSchema(entity),
+      inProcess,
       jsonSchemaToEntitySchema(
         entity,
         streams.find(s => s.name === entity),
@@ -134,21 +192,40 @@ void test("same vendor schema for every entity; the 8 system columns are a known
       system,
     );
     assert.ok(result.ok, `${entity}: ${JSON.stringify(result)}`);
-    // The gap: the in-process schema declares every system column, the folder
-    // none, and nothing on the box path merges them yet. When the adapter
-    // learns to, this assertion is the one to flip.
     assert.equal(result.systemFields, system.size, entity);
-    const folderFields = Object.keys(
-      jsonSchemaToEntitySchema(
-        entity,
-        streams.find(s => s.name === entity),
-      ).fields,
+    // Type, nullability, default and derivation of all 8, both sides.
+    assert.deepEqual(result.systemDiffs, [], entity);
+    // And through the adapter the engine calls, not only the translation.
+    const viaBox = compareEntitySchema(
+      inProcess,
+      await boxed.resolveSchema(entity),
     );
-    assert.deepEqual(
-      folderFields.filter(field => system.has(field)),
-      [],
-      entity,
+    assert.ok(viaBox.ok, `${entity} via the box: ${JSON.stringify(viaBox)}`);
+  }
+});
+
+void test("same table layout and incremental mode for every entity", async () => {
+  const inProcess = makeInProcess({
+    api_key: "sk_test_list",
+    api_base_url: "",
+  });
+  const boxed = makeBoxed({ api_key: "sk_test_list", api_base_url: "" });
+  await boxed.loadDefinition();
+  const layouts = (c: { getEntityMetadata(): any[] }) =>
+    Object.fromEntries(
+      c.getEntityMetadata().map(e => [e.name, e.layoutSuggestion ?? null]),
     );
+  assert.deepEqual(layouts(boxed), layouts(inProcess));
+
+  const effective = (
+    caps: ReturnType<StripeConnector["getIncrementalCapabilities"]>,
+    entity: string,
+  ) => caps.perEntity?.[entity]?.mode ?? caps.mode;
+  const inCaps = inProcess.getIncrementalCapabilities();
+  const boxCaps = boxed.getIncrementalCapabilities();
+  assert.equal(boxCaps.supported, inCaps.supported);
+  for (const entity of ENTITIES) {
+    assert.equal(effective(boxCaps, entity), effective(inCaps, entity), entity);
   }
 });
 
@@ -167,6 +244,7 @@ void test("every entity reads the same rows, chunks and requests", async () => {
   const results = await runParity({
     entities: ENTITIES,
     makeInProcess,
+    makeBoxed,
     server,
   });
   const report = formatReport(results);
@@ -177,6 +255,19 @@ void test("every entity reads the same rows, chunks and requests", async () => {
     report,
   );
   assert.deepEqual(server.misses, []);
+  // Every row's source timestamp matches, and none of them is "now": the
+  // boxed side reads Stripe's epoch `created` as the in-process one does.
+  const checked = results.reduce((n, r) => n + r.timestampsChecked, 0);
+  const rowsRead = results.reduce((n, r) => n + r.rows[0], 0);
+  assert.equal(checked, rowsRead);
+  assert.ok(checked > 0);
+  for (const r of results) {
+    assert.deepEqual(
+      r.timestampsFellBackToNow,
+      [0, 0],
+      `${r.scenario}/${r.entity}`,
+    );
+  }
   // The fixtures exercise more than one page, chunk boundaries and child lists.
   const chunked = (entity: string) =>
     results.find(r => r.scenario === "chunked" && r.entity === entity);

@@ -168,6 +168,8 @@ export default defineConfig({
       "src/connectors/workspace/workspace-connectors.test.ts",
       "src/connectors/workspace/resolver.test.ts",
       "src/connectors/workspace/sync-box.test.ts",
+      // One held E2B handle per session: connect and setTimeout counts.
+      "src/apps/sandbox/e2b-provider.handles.test.ts",
       // Connector bundles: hash, guard, build box, storage, build-once.
       "src/connectors/workspace/bundle/bundle.test.ts",
       // Bundles through the push reconciler and the run path, flag on and off.

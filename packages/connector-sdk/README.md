@@ -60,6 +60,19 @@ nowhere — and the same probe is the `probe_connection` MCP tool and
 `POST /connectors/:id/probe`, so a flow is not the only thing that can ever
 drive it.
 
+## What Mako passes to `read`
+
+- `state.since`: on an incremental sync, the time to read from (ISO 8601). It
+  sits in the stream state next to whatever the connector keeps there, on
+  every chunk. Carry it forward or ignore it. Declare `incremental` on the
+  entity to say how it is used.
+- `config.__page_size` and `config.__rate_limit_delay_ms`: the connection's
+  batch size and rate-limit delay, when it sets them. Like `__http`, these
+  `__` keys come from Mako, never from the credential form.
+- `--max-bytes`: a chunk ends after the page that takes its records past this
+  many bytes, as it ends after `--max-iterations` pages. A page is never
+  split, so a single page must fit Mako's 32 MiB chunk cap.
+
 ## `config.properties` is not optional
 
 Declare `config: { properties: { ... } }` even when the connector needs no
