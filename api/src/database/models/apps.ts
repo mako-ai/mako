@@ -425,6 +425,12 @@ export interface IAppWorktree extends Document {
   lastActivityAt?: Date;
   /** A command in flight holds the box at least until here. */
   activeUntil?: Date;
+  /** The idle sweep's last few pauses of this box (safety valve). */
+  idlePausedAt?: Date[];
+  /** The safety valve stopped idle pauses of this box until here. */
+  idlePauseHoldUntil?: Date;
+  /** When that hold was set: real use after it lifts the hold. */
+  idlePauseHoldSetAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -444,6 +450,9 @@ const AppWorktreeSchema = new Schema<IAppWorktree>(
     branch: { type: String, required: true, default: "main" },
     lastActivityAt: { type: Date },
     activeUntil: { type: Date },
+    idlePausedAt: { type: [Date], default: undefined },
+    idlePauseHoldUntil: { type: Date },
+    idlePauseHoldSetAt: { type: Date },
   },
   { collection: "app_worktrees", timestamps: true },
 );
