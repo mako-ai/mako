@@ -136,3 +136,78 @@ describe("BigQueryDatabaseDriver write SQL", () => {
     );
   });
 });
+
+/**
+ * A full-sync swap retried after it already committed: the first attempt
+ * swapped the rows in and dropped the staging table, then the step failed on
+ * a follow-up DDL. Production (2026-11, ip_intel.crm_asns) retried the swap
+ * 9 times over 4h22m; each retry backed the original up, dropped it, failed
+ * to read the missing staging schema, restored it and leaked the backup.
+ */
+describe("BigQueryDatabaseDriver swapStagingTable", () => {
+  /** INFORMATION_SCHEMA.TABLES says which tables exist. */
+  function responderWith(existing: string[]): QueryResponder {
+    return sql => {
+      if (sql.includes("INFORMATION_SCHEMA.TABLES")) {
+        const found = existing.some(t => sql.includes(`table_name = '${t}'`));
+        return { success: true, data: [{ cnt: found ? 1 : 0 }] };
+      }
+      if (sql.includes("INFORMATION_SCHEMA.COLUMNS")) {
+        // The staging table is gone, so its schema reads empty.
+        return { success: true, data: [] };
+      }
+      return { success: true, data: [] };
+    };
+  }
+
+  it("leaves the original alone when the staging table is missing", async () => {
+    const bq = new BigQueryDatabaseDriver();
+    const cap = makeCapturingDriver(bq, responderWith(["crm_asns"]));
+    const result = await bq.swapStagingTable(
+      conn,
+      "crm_asns",
+      "crm_asns_staging",
+      { schema: "ip_intel", stagingSchema: "mako_internal" },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain(
+      "Staging table mako_internal.crm_asns_staging not found",
+    );
+    const ddl = cap
+      .sql()
+      .map(normalizeSql)
+      .filter(s => /^(CREATE|DROP|INSERT)/.test(s));
+    expect(ddl).toEqual([]);
+  });
+
+  it("drops the backup after restoring the original from it", async () => {
+    const bq = new BigQueryDatabaseDriver();
+    // Staging exists by name but its columns cannot be read.
+    const cap = makeCapturingDriver(
+      bq,
+      responderWith(["crm_asns", "crm_asns_staging"]),
+    );
+    const result = await bq.swapStagingTable(
+      conn,
+      "crm_asns",
+      "crm_asns_staging",
+      { schema: "ip_intel", stagingSchema: "mako_internal" },
+    );
+
+    expect(result.success).toBe(false);
+    const all = cap.sql().map(normalizeSql);
+    const backup = all
+      .find(s =>
+        s.startsWith("CREATE TABLE `proj`.`ip_intel`.`crm_asns_backup_"),
+      )
+      ?.match(/`(crm_asns_backup_\d+)`/)?.[1];
+    expect(backup).toBeDefined();
+    expect(all).toContain(
+      `CREATE TABLE \`proj\`.\`ip_intel\`.\`crm_asns\` AS SELECT * FROM \`proj\`.\`ip_intel\`.\`${backup}\`;`,
+    );
+    expect(all).toContain(
+      `DROP TABLE IF EXISTS \`proj\`.\`ip_intel\`.\`${backup}\`;`,
+    );
+  });
+});
