@@ -23,6 +23,7 @@
  * per connector that the API caches for a minute.
  */
 import { createHash } from "node:crypto";
+import { Storage } from "@google-cloud/storage";
 import { getArtifactStore } from "../../../services/artifact-store.service";
 import { MAX_BUNDLE_BYTES } from "../bundle/store";
 
@@ -156,6 +157,60 @@ export async function readCatalog(): Promise<RegistryCatalog> {
     );
   }
   return parsed;
+}
+
+/** The catalog's GCS object, or null on any other store. */
+function gcsCatalogFile() {
+  // The variable the artifact store itself is built from.
+  if (process.env.DASHBOARD_ARTIFACT_STORE !== "gcs") return null;
+  const bucket = process.env.GCS_DASHBOARD_BUCKET;
+  if (!bucket) return null;
+  return new Storage().bucket(bucket).file(catalogKey());
+}
+
+/** The live catalog's generation: 0 when absent, null when the store has none. */
+export async function catalogGeneration(): Promise<number | null> {
+  const file = gcsCatalogFile();
+  if (!file) return null;
+  const [exists] = await file.exists();
+  if (!exists) return 0;
+  const [metadata] = await file.getMetadata();
+  return Number(metadata.generation);
+}
+
+/** Another writer replaced the catalog between our read and our write. */
+export class CatalogConflictError extends Error {
+  constructor() {
+    super("The registry catalog changed while this release was writing it.");
+    this.name = "CatalogConflictError";
+  }
+}
+
+/**
+ * Write the catalog only if it is still at `generation` (GCS
+ * `ifGenerationMatch`; 0 means "only if absent"). Two releases racing on the
+ * read-modify-write then cannot drop each other's version: the loser gets
+ * {@link CatalogConflictError} and merges again. Stores without generations
+ * (the filesystem one, in development and tests) write unconditionally.
+ */
+export async function writeCatalogIfUnchanged(
+  catalog: RegistryCatalog,
+  generation: number | null,
+): Promise<void> {
+  const file = gcsCatalogFile();
+  if (!file || generation === null) return writeCatalog(catalog);
+  try {
+    await file.save(Buffer.from(`${JSON.stringify(catalog, null, 2)}\n`), {
+      contentType: "application/json",
+      resumable: false,
+      preconditionOpts: { ifGenerationMatch: generation },
+    });
+  } catch (error) {
+    if ((error as { code?: unknown }).code === 412) {
+      throw new CatalogConflictError();
+    }
+    throw error;
+  }
 }
 
 export async function writeCatalog(catalog: RegistryCatalog): Promise<void> {

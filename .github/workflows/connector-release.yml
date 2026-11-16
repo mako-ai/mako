@@ -45,10 +45,17 @@ on:
 permissions:
   contents: read
 
-# The catalog is one JSON document: publishes run one at a time. Dry runs
-# write nothing and only cancel their own superseded runs.
+# Dry runs write nothing. A PR's new push cancels its own older dry run; a
+# dispatched dry run gets a group of its own. Publishes get one group per tag, so a queued release is
+# never cancelled by another one: GitHub keeps one pending run per group and
+# drops the rest. Two releases may therefore run at once; the catalog write
+# is a generation-checked GCS write that merges again on a conflict
+# (registry/store.ts writeCatalogIfUnchanged).
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('connector-release-dry-{0}', github.ref) || 'connector-release-publish' }}
+  group: >-
+    ${{ github.event_name == 'pull_request' && format('connector-release-dry-{0}', github.ref)
+    || (github.event_name == 'workflow_dispatch' && inputs.dry_run) && format('connector-release-dry-run-{0}', github.run_id)
+    || format('connector-release-publish-{0}', github.event_name == 'push' && github.ref_name || inputs.tag) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

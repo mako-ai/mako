@@ -36,9 +36,11 @@ import {
 import { registryBoxSlug } from "./registry.service";
 import { parseVersion, sortVersionsDescending } from "./semver";
 import {
+  CatalogConflictError,
+  catalogGeneration,
   readCatalog,
   sha256Hex,
-  writeCatalog,
+  writeCatalogIfUnchanged,
   writeRegistryArtifacts,
   type RegistryAuthType,
   type RegistryCatalog,
@@ -267,24 +269,34 @@ export async function publishConnector(input: {
       ),
     },
   });
-  // Read again just before writing: the workflow serializes publishes, and
-  // this narrows the window for anything else that wrote meanwhile.
-  const latest = await readCatalog();
-  await writeCatalog(
-    withVersion(latest, {
-      slug,
-      name: described.name ?? slug,
-      ...(described.title ? { title: described.title } : {}),
-      ...(parsed.value.page?.vendor
-        ? { vendor: parsed.value.page.vendor }
-        : {}),
-      ...(parsed.value.page?.category
-        ? { category: parsed.value.page.category }
-        : {}),
-      ...(parsed.value.page?.docs ? { docs: parsed.value.page.docs } : {}),
-      versions: [record],
-    }),
-  );
+  // Read, merge, and write only if nobody wrote in between; on a conflict,
+  // merge again onto what the other release wrote.
+  const published: RegistryEntry = {
+    slug,
+    name: described.name ?? slug,
+    ...(described.title ? { title: described.title } : {}),
+    ...(parsed.value.page?.vendor ? { vendor: parsed.value.page.vendor } : {}),
+    ...(parsed.value.page?.category
+      ? { category: parsed.value.page.category }
+      : {}),
+    ...(parsed.value.page?.docs ? { docs: parsed.value.page.docs } : {}),
+    versions: [record],
+  };
+  for (let attempt = 1; ; attempt++) {
+    const generation = await catalogGeneration();
+    const latest = await readCatalog();
+    try {
+      await writeCatalogIfUnchanged(withVersion(latest, published), generation);
+      break;
+    } catch (error) {
+      if (!(error instanceof CatalogConflictError) || attempt >= 5) throw error;
+      logger.warn("Registry catalog changed during a release; merging again", {
+        slug,
+        version,
+        attempt,
+      });
+    }
+  }
   logger.info("Published a connector to the registry", {
     slug,
     version,

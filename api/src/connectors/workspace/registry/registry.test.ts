@@ -7,12 +7,14 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { parseConnectorFile } from "../connector-file";
 import { maxSatisfying, parseRange, parseRegistryReference } from "./semver";
 import { resolveReference } from "./registry.service";
 import { authTypeOf, changelogFor, withVersion } from "./publish";
 import {
+  CatalogConflictError,
+  catalogGeneration,
   emptyCatalog,
   readCatalog,
   readRegistryBundle,
@@ -20,6 +22,7 @@ import {
   registryBundleKey,
   sha256Hex,
   writeCatalog,
+  writeCatalogIfUnchanged,
   writeRegistryArtifacts,
   type RegistryCatalog,
   type RegistryVersion,
@@ -308,5 +311,55 @@ describe("the store", () => {
   it("refuses a slug or a hash that could escape the prefix", () => {
     expect(() => registryBundleKey("../x", "a".repeat(64))).toThrow();
     expect(() => registryBundleKey("stripe", "../../x")).toThrow();
+  });
+});
+
+const gcs = vi.hoisted(() => ({
+  saves: [] as Array<{ ifGenerationMatch?: number }>,
+  conflict: false,
+}));
+vi.mock("@google-cloud/storage", () => ({
+  Storage: class {
+    bucket() {
+      return {
+        file: () => ({
+          exists: async () => [true],
+          getMetadata: async () => [{ generation: "17" }],
+          save: async (
+            _bytes: Buffer,
+            options: { preconditionOpts?: { ifGenerationMatch?: number } },
+          ) => {
+            gcs.saves.push({
+              ifGenerationMatch: options.preconditionOpts?.ifGenerationMatch,
+            });
+            if (gcs.conflict) {
+              throw Object.assign(new Error("precondition"), { code: 412 });
+            }
+          },
+        }),
+      };
+    }
+  },
+}));
+
+describe("the catalog write on GCS", () => {
+  beforeAll(() => {
+    process.env.DASHBOARD_ARTIFACT_STORE = "gcs";
+    process.env.GCS_DASHBOARD_BUCKET = "bucket";
+  });
+  afterAll(() => {
+    delete process.env.DASHBOARD_ARTIFACT_STORE;
+    delete process.env.GCS_DASHBOARD_BUCKET;
+  });
+
+  it("writes only at the generation it read, and reports a lost race", async () => {
+    expect(await catalogGeneration()).toBe(17);
+    await writeCatalogIfUnchanged(emptyCatalog(), 17);
+    expect(gcs.saves).toEqual([{ ifGenerationMatch: 17 }]);
+
+    gcs.conflict = true;
+    await expect(writeCatalogIfUnchanged(emptyCatalog(), 17)).rejects.toThrow(
+      CatalogConflictError,
+    );
   });
 });
