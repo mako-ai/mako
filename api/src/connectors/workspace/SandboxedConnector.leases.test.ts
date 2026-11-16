@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   readConnectorFolder: vi.fn(),
   loadConnectorDefinition: vi.fn(),
   withLease: vi.fn(),
+  snapshotPristine: vi.fn(),
   getBoxScheduler: vi.fn(),
 }));
 
@@ -80,7 +81,9 @@ beforeEach(() => {
       ctx: { sessionKey: "connector-box:cbx_1" },
       fresh: true,
       markFailed: vi.fn(),
+      markUnhealthy: vi.fn(),
       noteRuntime: vi.fn(),
+      snapshotPristine: mocks.snapshotPristine,
     }),
   );
 });
@@ -98,11 +101,11 @@ describe("flag off", () => {
     expect(mocks.withLease).not.toHaveBeenCalled();
     expect(mocks.ensureBundle).not.toHaveBeenCalled();
     expect(mocks.ensureConnectorRuntime).toHaveBeenCalledWith({
-      sessionKey: "connector-sync:ws1",
+      sessionKey: "connector-sync:v2:ws1",
     });
     expect(mocks.runConnectorCommand).toHaveBeenCalledWith(
       expect.objectContaining({
-        ctx: { sessionKey: "connector-sync:ws1" },
+        ctx: { sessionKey: "connector-sync:v2:ws1" },
         command: "check",
         connectorDir: "/tmp/acme",
         runtimeId: "rt-1",
@@ -148,7 +151,13 @@ describe("flag on", () => {
       expect.objectContaining({
         ctx: { sessionKey: "connector-box:cbx_1" },
         command: "check",
+        onCleanupFailure: expect.any(Function),
       }),
+    );
+    // The template is taken after the bundle and before the credentialed run.
+    expect(mocks.snapshotPristine).toHaveBeenCalledWith("rt-1");
+    expect(mocks.snapshotPristine.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.runConnectorCommand.mock.invocationCallOrder[0],
     );
   });
 

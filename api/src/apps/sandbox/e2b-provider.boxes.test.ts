@@ -1,0 +1,109 @@
+/**
+ * The E2B provider's rules for leased connector boxes, with the E2B SDK
+ * mocked (no account, no network):
+ *
+ * - only boxLifecycle.create may create a `connector-box:*` sandbox, so a
+ *   box the reaper killed never comes back untracked under a run's next call;
+ * - destroySession fails when it could neither list nor remember a box,
+ *   so a kill is never recorded for a box that still runs.
+ */
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const e2b = vi.hoisted(() => {
+  class SandboxNotFoundError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = "SandboxNotFoundError";
+    }
+  }
+  const sandbox = {
+    sandboxId: "sbx_new",
+    setTimeout: vi.fn(async () => undefined),
+    commands: {
+      run: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "" })),
+    },
+  };
+  const page: { items: Array<{ sandboxId: string }> } = { items: [] };
+  const Sandbox = {
+    list: vi.fn(() => ({
+      hasNext: true,
+      nextItems: vi.fn(async () => page.items),
+    })),
+    connect: vi.fn(async () => {
+      throw new SandboxNotFoundError("Sandbox is probably not running anymore");
+    }),
+    create: vi.fn(async () => sandbox),
+    kill: vi.fn(async () => true),
+  };
+  return { Sandbox, SandboxNotFoundError, sandbox, page };
+});
+
+vi.mock("e2b", () => ({
+  Sandbox: e2b.Sandbox,
+  SandboxNotFoundError: e2b.SandboxNotFoundError,
+}));
+
+import { e2bSandboxProvider } from "./e2b-provider";
+
+beforeEach(() => {
+  process.env.E2B_API_KEY = "test-key-not-real";
+  e2b.page.items = [];
+  e2b.Sandbox.create.mockClear();
+  e2b.Sandbox.kill.mockClear();
+  e2b.Sandbox.list.mockClear();
+});
+
+describe("connector boxes on E2B", () => {
+  it("never recreates a killed connector box from an ordinary call", async () => {
+    const ctx = { sessionKey: "connector-box:cbx_gone" };
+
+    await expect(e2bSandboxProvider.exec(ctx, "true")).rejects.toThrow(
+      /only its scheduler may create it/,
+    );
+    await expect(
+      e2bSandboxProvider.writeFile(ctx, "/tmp/x", new Uint8Array([1])),
+    ).rejects.toThrow(/only its scheduler may create it/);
+    expect(e2b.Sandbox.create).not.toHaveBeenCalled();
+  });
+
+  it("creates a connector box through boxLifecycle.create, from a template", async () => {
+    await e2bSandboxProvider.boxLifecycle?.create("connector-box:cbx_new", {
+      template: "snap:mako-cbox-abc",
+    });
+    expect(e2b.Sandbox.create).toHaveBeenCalledWith(
+      "snap:mako-cbox-abc",
+      expect.objectContaining({
+        metadata: { makoAppsSessionKey: "connector-box:cbx_new" },
+      }),
+    );
+  });
+
+  it("still creates app sessions on demand", async () => {
+    await e2bSandboxProvider.exec({ sessionKey: "worktree-123" }, "true");
+    expect(e2b.Sandbox.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails a kill that could neither list nor remember the box", async () => {
+    e2b.Sandbox.list.mockImplementationOnce(() => {
+      throw new Error("E2B API unreachable");
+    });
+    await expect(
+      e2bSandboxProvider.destroySession?.("connector-box:cbx_unknown"),
+    ).rejects.toThrow(/list call failed/);
+    expect(e2b.Sandbox.kill).not.toHaveBeenCalled();
+  });
+
+  it("fails a connector box kill the API refused", async () => {
+    e2b.page.items = [{ sandboxId: "sbx_1" }];
+    e2b.Sandbox.kill.mockRejectedValueOnce(new Error("500"));
+    await expect(
+      e2bSandboxProvider.destroySession?.("connector-box:cbx_1"),
+    ).rejects.toThrow(/Could not kill 1 of 1/);
+  });
+
+  it("kills every listed box and succeeds", async () => {
+    e2b.page.items = [{ sandboxId: "sbx_1" }, { sandboxId: "sbx_2" }];
+    await e2bSandboxProvider.destroySession?.("connector-box:cbx_2");
+    expect(e2b.Sandbox.kill).toHaveBeenCalledTimes(2);
+  });
+});

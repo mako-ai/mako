@@ -3,10 +3,14 @@
  * (RFC connector-runtime §6.8).
  *
  * Redis when `REDIS_URL` is set, which is how production runs several API
- * instances. An in-process fallback otherwise, with the same semantics, for
- * local development and tests; like the kernel session store it is correct
- * only for a single instance, so the scheduler also writes heartbeats to
- * Mongo when it runs on this fallback.
+ * instances. An in-process fallback otherwise, for local development and
+ * tests; like the kernel session store it is correct only for one instance.
+ *
+ * Nothing here is the source of truth. Heartbeats are also written to Mongo
+ * on every beat, and the scheduler survives Redis being down: a run whose
+ * queue calls fail proceeds without the queue (the per-connection cap is
+ * still enforced in Mongo), and a reaper that cannot read beats does not
+ * kill on heartbeat age.
  */
 import { Redis } from "ioredis";
 import { BASE_REDIS_OPTIONS } from "../../../utils/redis";
@@ -44,8 +48,11 @@ export interface BoxSignals {
   forget(boxId: string): Promise<void>;
   /** Join the queue for a key. `aliveMs` is how long the entry lives unrefreshed. */
   enqueue(key: string, entry: QueueEntry, aliveMs: number): Promise<void>;
-  /** Keep a waiting entry alive. */
-  touch(key: string, runId: string, aliveMs: number): Promise<void>;
+  /**
+   * Keep a waiting entry alive, and put it back at its original place if a
+   * peer dropped it as dead (its process stalled past `aliveMs`).
+   */
+  ensure(key: string, entry: QueueEntry, aliveMs: number): Promise<void>;
   /** Is this run first in its key's queue? Drops dead entries ahead of it. */
   isHead(key: string, runId: string): Promise<boolean>;
   dequeue(key: string, runId: string): Promise<void>;
@@ -90,9 +97,10 @@ export class MemoryBoxSignals implements BoxSignals {
     this.queues.set(key, queue);
   }
 
-  async touch(key: string, runId: string, aliveMs: number): Promise<void> {
-    const entry = this.queues.get(key)?.find(e => e.runId === runId);
-    if (entry) entry.aliveUntil = Date.now() + aliveMs;
+  async ensure(key: string, entry: QueueEntry, aliveMs: number): Promise<void> {
+    const existing = this.queues.get(key)?.find(e => e.runId === entry.runId);
+    if (existing) existing.aliveUntil = Date.now() + aliveMs;
+    else await this.enqueue(key, entry, aliveMs);
   }
 
   async isHead(key: string, runId: string): Promise<boolean> {
@@ -158,8 +166,13 @@ export class RedisBoxSignals implements BoxSignals {
       .exec();
   }
 
-  async touch(_key: string, runId: string, aliveMs: number): Promise<void> {
-    await this.redis.pexpire(ALIVE_PREFIX + runId, aliveMs);
+  async ensure(key: string, entry: QueueEntry, aliveMs: number): Promise<void> {
+    // NX keeps the original score, so a re-added entry keeps its place.
+    await this.redis
+      .multi()
+      .set(ALIVE_PREFIX + entry.runId, String(entry.priority), "PX", aliveMs)
+      .zadd(QUEUE_PREFIX + key, "NX", String(queueScore(entry)), entry.runId)
+      .exec();
   }
 
   async isHead(key: string, runId: string): Promise<boolean> {

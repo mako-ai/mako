@@ -30,6 +30,7 @@ import {
 import { getBoxSignals, type BoxSignals } from "./box-signals";
 import {
   MongoBoxStore,
+  type BoxExpect,
   type BoxRecord,
   type BoxState,
   type BoxStore,
@@ -44,6 +45,11 @@ export const DEFAULT_RUN_PRIORITY = 1;
 /** A chunk's own timeout when the caller does not say (sync-box.ts). */
 const DEFAULT_COMMAND_MS = 10 * 60 * 1000;
 const QUEUE_POLL_MS = 250;
+/** A waiting entry lives this long unrefreshed; refreshed every 2 s. */
+const QUEUE_ALIVE_MS = 30_000;
+const QUEUE_REFRESH_MS = 2_000;
+/** A template claim whose snapshot never completed is dropped after this. */
+const TEMPLATE_CLAIM_MS = 10 * 60 * 1000;
 /** A box stuck in pausing or killing this long is killed again. */
 const STUCK_TRANSITION_MS = 5 * 60 * 1000;
 
@@ -75,8 +81,19 @@ export interface BoxLease {
   readonly fresh: boolean;
   /** Count this run against the box's failure budget. */
   markFailed(reason: string): void;
+  /**
+   * The box can no longer be trusted (a run's cleanup failed, so its
+   * credential or processes may remain): kill it on release.
+   */
+  markUnhealthy(reason: string): void;
   /** Record the runtime the box now holds, for its snapshot template. */
   noteRuntime(runtimeId: string): void;
+  /**
+   * Snapshot this fresh box as its key's template, once per key. Call it
+   * after the bundle is in place and BEFORE any credentialed command, so the
+   * template holds code and runtime and never a credential or its residue.
+   */
+  snapshotPristine(runtimeId: string): Promise<void>;
 }
 
 interface Held {
@@ -86,6 +103,7 @@ interface Held {
   box: BoxRecord;
   fresh: boolean;
   runtimeId: string | null;
+  unhealthy: string | null;
 }
 
 export interface ReapSummary {
@@ -164,9 +182,14 @@ export class BoxScheduler {
       markFailed: reason => {
         failure ??= reason;
       },
+      markUnhealthy: reason => {
+        held.unhealthy ??= reason;
+        failure ??= reason;
+      },
       noteRuntime: runtimeId => {
         held.runtimeId = runtimeId;
       },
+      snapshotPristine: runtimeId => this.snapshotPristine(held, runtimeId),
     };
     try {
       return await fn(lease);
@@ -192,26 +215,51 @@ export class BoxScheduler {
     const key = boxKey(run.connectionId, run.bundleHash);
     const runId = `run_${randomBytes(8).toString("hex")}`;
     const started = this.now();
-    const aliveMs = Math.max(20 * QUEUE_POLL_MS, 5_000);
+    const entry = {
+      runId,
+      priority: run.priority ?? DEFAULT_RUN_PRIORITY,
+      enqueuedAt: started,
+    };
 
     // A new hash for this connection: its older boxes drain and die.
     if (!run.oneOff) {
       await this.store.drainOtherHashes(run.connectionId, run.bundleHash);
     }
 
-    await this.signals.enqueue(
-      key,
-      {
-        runId,
-        priority: run.priority ?? DEFAULT_RUN_PRIORITY,
-        enqueuedAt: started,
-      },
-      aliveMs,
-    );
+    // The queue orders runs; Mongo enforces the limits. When the queue's
+    // store (Redis) is down, a run proceeds without it rather than fail.
+    let queueless = false;
+    const queueDown = (error: unknown) => {
+      if (!queueless) {
+        logger.warn("Connector box queue unavailable; leasing without it", {
+          key,
+          error: message(error),
+        });
+      }
+      queueless = true;
+    };
+    await this.signals.enqueue(key, entry, QUEUE_ALIVE_MS).catch(queueDown);
+    // Refreshed for the whole wait, tryLease included: a slow ping or
+    // restore must not let a peer drop this run from the queue as dead.
+    const refresh = setInterval(() => {
+      if (!queueless) {
+        void this.signals
+          .ensure(key, entry, QUEUE_ALIVE_MS)
+          .catch(() => undefined);
+      }
+    }, QUEUE_REFRESH_MS);
+    refresh.unref?.();
     let queued = false;
     try {
       for (;;) {
-        if (await this.signals.isHead(key, runId)) {
+        let head = queueless;
+        if (!head) {
+          head = await this.signals.isHead(key, runId).catch(error => {
+            queueDown(error);
+            return true;
+          });
+        }
+        if (head) {
           const got = await this.tryLease(run, key, runId);
           if (got) {
             this.metrics.leaseWait(this.now() - started, {
@@ -228,6 +276,7 @@ export class BoxScheduler {
               box: got.box,
               fresh: got.fresh,
               runtimeId: got.box.runtimeId,
+              unhealthy: null,
             };
           }
         }
@@ -235,17 +284,24 @@ export class BoxScheduler {
           const depth = await this.signals.depth(key).catch(() => -1);
           throw new Error(
             `No connector box for this connection after ${Math.round(this.config.queueWaitMs / 1000)} s. ` +
-              `${depth >= 0 ? `${depth} runs are waiting; ` : ""}` +
+              `${depth >= 0 ? `${depth} runs are waiting. ` : ""}` +
               `At most ${this.config.maxPerConnection} boxes run per connection, and connector boxes ` +
               `stop at ${this.config.accountCeiling - this.config.appReserve} running boxes on the account, app sessions included.`,
           );
         }
         queued = true;
-        await this.signals.touch(key, runId, aliveMs);
+        if (!queueless) {
+          await this.signals
+            .ensure(key, entry, QUEUE_ALIVE_MS)
+            .catch(queueDown);
+        }
         await this.sleep(QUEUE_POLL_MS);
       }
     } finally {
-      await this.signals.dequeue(key, runId).catch(() => undefined);
+      clearInterval(refresh);
+      if (!queueless) {
+        await this.signals.dequeue(key, runId).catch(() => undefined);
+      }
     }
   }
 
@@ -264,7 +320,7 @@ export class BoxScheduler {
     // the account), else a paused one, else a new box. Resuming and creating
     // both start a VM, so both wait for a slot under the account ceiling.
     let slot: boolean | null = null;
-    const hasSlot = async () => (slot ??= await this.accountSlotFree());
+    const hasSlot = async () => (slot ??= await this.takeStartSlot());
     for (let attempt = 0; attempt < 5; attempt++) {
       const at = new Date(this.now());
       let claimed = await this.store.claimReusable(
@@ -294,7 +350,6 @@ export class BoxScheduler {
         await this.kill(box, "failed ping", leased);
         continue;
       }
-      if (from === "paused") this.noteStarted();
       return { box, source: from, fresh: false };
     }
 
@@ -302,54 +357,54 @@ export class BoxScheduler {
       return null;
     }
     if (!(await hasSlot())) return null;
-    const created = await this.create(run, key, runId, deadline);
-    this.noteStarted();
-    return created;
+    return this.create(run, key, runId, deadline);
   }
 
-  private accountCount: { value: number; at: number } | null = null;
+  /** The last account count, or the last failure to count, and when. */
+  private accountCount: { value: number | null; at: number } | null = null;
 
   /**
-   * Is there room on the provider account for one more running box, leaving
-   * `appReserve` slots for app sessions? The count is the whole account's,
-   * app sessions included, because they share one concurrency limit.
-   * Unknown (the provider could not answer) counts as full: a connector run
-   * waits rather than take the slot an app preview needs.
+   * Take one slot to start (or resume) a connector box, leaving `appReserve`
+   * slots of the account for app sessions.
+   *
+   * Two numbers decide it. The provider's count of running boxes, app
+   * sessions included, read at most once per `accountCountTtlMs` per
+   * instance (a failure is remembered as long, and counts as full). And a
+   * ledger, shared by every API instance, of connector box starts in the
+   * last `accountCountTtlMs + 10 s`: starts the count may not show yet.
+   * The ledger update is atomic, so instances never share out the same slot.
    */
-  private async accountSlotFree(): Promise<boolean> {
+  private async takeStartSlot(): Promise<boolean> {
     const limit = this.config.accountCeiling - this.config.appReserve;
     const at = this.now();
     if (
       !this.accountCount ||
       at - this.accountCount.at >= this.config.accountCountTtlMs
     ) {
-      let value: number | null;
       try {
-        value = await this.provider.countRunning();
+        const value = await this.provider.countRunning();
+        // No shared account (local provider): no ceiling.
+        if (value === null) return true;
+        this.accountCount = { value, at };
       } catch (error) {
         logger.warn("Could not count running boxes on the account", {
           error: message(error),
         });
-        this.accountCount = null;
-        return false;
+        this.accountCount = { value: null, at };
       }
-      // No shared account (local provider): no ceiling.
-      if (value === null) return true;
-      this.accountCount = { value, at };
     }
-    const free = this.accountCount.value < limit;
-    if (!free) {
-      this.metrics.ceilingReached?.({
-        running: this.accountCount.value,
-        limit,
-      });
-    }
-    return free;
-  }
-
-  /** Count a box this process just started until the next real count. */
-  private noteStarted(): void {
-    if (this.accountCount) this.accountCount.value++;
+    const running = this.accountCount.value;
+    if (running === null) return false;
+    const allowed = limit - running;
+    const claimed =
+      allowed > 0 &&
+      (await this.store.claimStartSlot(
+        new Date(at),
+        this.config.accountCountTtlMs + 10_000,
+        allowed,
+      ));
+    if (!claimed) this.metrics.ceilingReached?.({ running, limit });
+    return claimed;
   }
 
   private async create(
@@ -357,7 +412,7 @@ export class BoxScheduler {
     key: string,
     runId: string,
     deadline: Date,
-  ): Promise<{ box: BoxRecord; source: LeaseSource; fresh: boolean }> {
+  ): Promise<{ box: BoxRecord; source: LeaseSource; fresh: boolean } | null> {
     const templateKey =
       this.config.snapshots && run.runtimeId
         ? templateKeyOf(key, run.runtimeId)
@@ -394,9 +449,23 @@ export class BoxScheduler {
     // the record's heartbeat stops and the reaper kills whatever was made.
     await this.store.insert(box);
     const leased = { state: "leased" as const, leasedBy: runId };
+    // The cap check above and this insert are not one operation, and several
+    // instances may race here when the queue is down: re-count now that the
+    // record exists, and back off if this box broke the cap.
+    if ((await this.store.countLeased(key)) > this.config.maxPerConnection) {
+      await this.store.transition(box.boxId, leased, {
+        state: "killed",
+        killedAt: at,
+        killReason: "over the per-connection cap",
+        leasedBy: null,
+      });
+      return null;
+    }
     try {
       try {
-        await this.provider.lease(box, { template: template?.snapshotId });
+        await this.provider.lease(box, {
+          template: template?.snapshotId ?? undefined,
+        });
       } catch (error) {
         if (!template || !templateKey) throw error;
         // A template that will not restore is gone or broken: forget it and
@@ -407,6 +476,9 @@ export class BoxScheduler {
           error: message(error),
         });
         await this.store.deleteTemplate(templateKey);
+        await this.provider
+          .deleteSnapshot(template.snapshotId as string)
+          .catch(() => undefined);
         await this.store.transition(box.boxId, leased, { fromTemplate: null });
         template = null;
         await this.provider.lease(box, {});
@@ -433,15 +505,20 @@ export class BoxScheduler {
         at,
         this.config.heartbeatTimeoutMs * 2,
       );
-      // The in-process fallback is invisible to other API instances, so the
-      // durable record carries the beat too.
-      if (this.signals.kind === "memory") {
-        await this.store.transition(
-          held.box.boxId,
-          { state: "leased", leasedBy: held.runId },
-          { heartbeatAt: new Date(at) },
-        );
-      }
+    } catch (error) {
+      logger.warn("Connector box heartbeat (fast path) failed", {
+        boxId: held.box.boxId,
+        error: message(error),
+      });
+    }
+    // Always durable too: losing or flushing Redis must never make a live
+    // lease look dead to the reaper.
+    try {
+      await this.store.transition(
+        held.box.boxId,
+        { state: "leased", leasedBy: held.runId },
+        { heartbeatAt: new Date(at) },
+      );
     } catch (error) {
       logger.warn("Connector box heartbeat failed", {
         boxId: held.box.boxId,
@@ -452,6 +529,21 @@ export class BoxScheduler {
 
   /** End a lease. The box goes idle, or dies if it is draining or retired. */
   async release(held: Held, failure: string | null): Promise<void> {
+    if (held.unhealthy) {
+      await this.signals.forget(held.box.boxId).catch(() => undefined);
+      this.metrics.boxSeconds(
+        Math.max(
+          0,
+          (this.now() - (held.box.leasedAt?.getTime() ?? this.now())) / 1000,
+        ),
+        this.labels(held.box),
+      );
+      await this.kill(held.box, `unhealthy: ${held.unhealthy.slice(0, 200)}`, {
+        state: "leased",
+        leasedBy: held.runId,
+      });
+      return;
+    }
     const at = this.now();
     const seconds = Math.max(
       0,
@@ -546,12 +638,25 @@ export class BoxScheduler {
   async pauseIfIdle(box: BoxRecord): Promise<boolean> {
     const claimed = await this.store.transition(
       box.boxId,
-      { state: "idle", leasedBy: null, lastUsedAt: box.lastUsedAt },
+      {
+        state: "idle",
+        leasedBy: null,
+        lastUsedAt: box.lastUsedAt,
+        draining: false,
+      },
       { state: "pausing" },
     );
-    if (!claimed) return false;
+    if (!claimed) {
+      // A box drained during its idle window dies instead of pausing.
+      await this.kill(box, "drained", {
+        state: "idle",
+        leasedBy: null,
+        lastUsedAt: box.lastUsedAt,
+        draining: true,
+      });
+      return false;
+    }
     try {
-      await this.ensureTemplate(claimed);
       await this.provider.pause(claimed);
       await this.store.transition(
         claimed.boxId,
@@ -571,35 +676,46 @@ export class BoxScheduler {
   }
 
   /**
-   * Snapshot a box that is about to pause, once per template key.
+   * Snapshot a fresh box as its key's template (see BoxLease.snapshotPristine).
    *
-   * Taken while no run is in the box: run directories and run users are
-   * gone, so the snapshot holds no credential. The template is per key
-   * (connection plus hash plus runtime), so nothing a connector left on
-   * disk ever reaches another connection's box.
+   * One box per key wins the claim; nobody replaces a template, so no
+   * snapshot is ever orphaned by a race. A failed snapshot drops the claim.
    */
-  private async ensureTemplate(box: BoxRecord): Promise<void> {
-    if (!this.config.snapshots || !box.runtimeId) return;
-    const templateKey = templateKeyOf(box.key, box.runtimeId);
-    if (await this.store.getTemplate(templateKey)) return;
+  private async snapshotPristine(held: Held, runtimeId: string): Promise<void> {
+    if (!this.config.snapshots || !held.fresh || held.box.fromTemplate) return;
+    const templateKey = templateKeyOf(held.key, runtimeId);
+    const at = new Date(this.now());
+    if (!(await this.store.claimTemplate(templateKey, at))) return;
     try {
       const snapshotId = await this.provider.snapshot(
-        box,
+        held.box,
         snapshotName(templateKey),
       );
-      if (!snapshotId) return;
-      const at = new Date(this.now());
-      await this.store.putTemplate({
-        templateKey,
-        snapshotId,
-        createdAt: at,
-        lastUsedAt: at,
-      });
+      if (snapshotId) {
+        await this.store.completeTemplate(templateKey, snapshotId);
+      } else await this.store.deleteTemplate(templateKey);
     } catch (error) {
-      logger.warn("Could not snapshot a connector box; it will still pause", {
-        boxId: box.boxId,
+      await this.store.deleteTemplate(templateKey).catch(() => undefined);
+      logger.warn("Could not snapshot a connector box; continuing without", {
+        boxId: held.box.boxId,
         error: message(error),
       });
+    }
+  }
+
+  /**
+   * A connection was deleted or its credential changed: its boxes drain and
+   * die at the next sweep, and its snapshot templates are deleted.
+   */
+  async forgetConnection(connectionId: string): Promise<void> {
+    await this.store.drainConnection(connectionId);
+    for (const template of await this.store.templatesOfConnection(
+      connectionId,
+    )) {
+      if (template.snapshotId) {
+        await this.provider.deleteSnapshot(template.snapshotId);
+      }
+      await this.store.deleteTemplate(template.templateKey);
     }
   }
 
@@ -607,7 +723,7 @@ export class BoxScheduler {
   private async kill(
     box: BoxRecord,
     reason: string,
-    expect: Partial<Pick<BoxRecord, "state" | "leasedBy" | "lastUsedAt">>,
+    expect: BoxExpect,
   ): Promise<boolean> {
     const claimed = await this.store.transition(box.boxId, expect, {
       state: "killing",
@@ -656,7 +772,7 @@ export class BoxScheduler {
     const killed = async (
       box: BoxRecord,
       reason: string,
-      expect: Partial<Pick<BoxRecord, "state" | "leasedBy" | "lastUsedAt">>,
+      expect: BoxExpect,
     ) => {
       if (await this.kill(box, reason, expect)) {
         summary.killed[reason] = (summary.killed[reason] ?? 0) + 1;
@@ -664,13 +780,15 @@ export class BoxScheduler {
     };
 
     const live = await this.store.listLive();
+    // Unreadable beats are not stale beats: without them the reaper still
+    // enforces deadlines, but kills nothing for heartbeat age.
     const beats = await this.signals
       .lastBeats(live.filter(b => b.state === "leased").map(b => b.boxId))
       .catch(error => {
         logger.warn("Could not read connector box heartbeats", {
           error: message(error),
         });
-        return new Map<string, number>();
+        return null;
       });
 
     for (const box of live) {
@@ -679,12 +797,15 @@ export class BoxScheduler {
           case "leased": {
             const expect = { state: "leased" as const, leasedBy: box.leasedBy };
             const lastBeat = Math.max(
-              beats.get(box.boxId) ?? 0,
+              beats?.get(box.boxId) ?? 0,
               box.heartbeatAt?.getTime() ?? 0,
             );
             if (box.deadline && box.deadline.getTime() < at) {
               await killed(box, "lease expired", expect);
-            } else if (at - lastBeat > this.config.heartbeatTimeoutMs) {
+            } else if (
+              beats &&
+              at - lastBeat > this.config.heartbeatTimeoutMs
+            ) {
               await killed(box, "heartbeat stopped", expect);
             }
             break;
@@ -737,9 +858,12 @@ export class BoxScheduler {
 
     for (const template of await this.store.staleTemplates(
       new Date(at - this.config.templateTtlMs),
+      new Date(at - TEMPLATE_CLAIM_MS),
     )) {
       try {
-        await this.provider.deleteSnapshot(template.snapshotId);
+        if (template.snapshotId) {
+          await this.provider.deleteSnapshot(template.snapshotId);
+        }
         await this.store.deleteTemplate(template.templateKey);
         summary.templatesDeleted++;
       } catch (error) {
@@ -787,4 +911,20 @@ export function getBoxScheduler(): BoxScheduler {
     provider: sandboxBoxProvider,
   });
   return scheduler;
+}
+
+/**
+ * A connection was deleted or its credential changed. Fire-and-forget: a
+ * failure is logged, and the reaper still kills the boxes on their TTL.
+ * A no-op when leases are off and no box was ever recorded.
+ */
+export function forgetConnectionBoxes(connectionId: string): void {
+  void getBoxScheduler()
+    .forgetConnection(connectionId)
+    .catch(error =>
+      logger.warn("Could not forget a connection's connector boxes", {
+        connectionId,
+        error: message(error),
+      }),
+    );
 }

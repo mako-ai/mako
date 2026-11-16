@@ -15,6 +15,8 @@ vi.mock("../../apps/sandbox/provider", () => ({
 import {
   CONNECTOR_NODE_VERSION,
   materializeConnector,
+  retireLegacySyncBox,
+  syncBoxContext,
   MAX_CONNECTOR_PROTOCOL_BYTES,
   MAX_CONNECTOR_PROTOCOL_MESSAGES,
   installConnectorRuntime,
@@ -213,95 +215,136 @@ describe("per-run Unix users on providers with real users", () => {
     sandbox.supportsRunUsers = undefined;
   });
 
-  const runOnce = () =>
+  const runOnce = (onCleanupFailure?: (reason: string) => void) =>
     runConnectorCommand({
       ctx,
       runtimeId: "runtime",
-      connectorDir: "/scratch/connector",
+      connectorDir:
+        "/var/lib/mako-connectors/runtime/versions/runtime/connectors/acme@abc",
       command: "read",
       config: { apiKey: "secret" },
+      onCleanupFailure,
     });
 
+  const calls = () =>
+    sandbox.exec.mock.calls.map(([, command, options]) => ({
+      command: String(command),
+      asRoot: (options as { asRoot?: boolean } | undefined)?.asRoot === true,
+    }));
   const userOf = (command: string) =>
     /user='(mkc[0-9a-f]+)'/.exec(command)?.[1];
+  const dirOf = (command: string) => /R='([^']+)'/.exec(command)?.[1];
 
-  it("creates a run user that alone owns a 0700 run directory", async () => {
+  it("creates a run user, its home and a root-only output directory, as root", async () => {
     await runOnce();
 
-    const [setupCall] = sandbox.exec.mock.calls.filter(([, command]) =>
-      String(command).includes("useradd"),
+    const setup = calls().find(c => c.command.includes("useradd"));
+    expect(setup?.asRoot).toBe(true);
+    expect(setup?.command).toContain("useradd -l -M -U");
+    expect(setup?.command).toContain(
+      "install -d -o root -g root -m 0711 '/var/lib/mako-connectors/runs'",
     );
-    expect(setupCall).toBeDefined();
-    const setup = String(setupCall?.[1]);
-    expect(setupCall?.[2]).toMatchObject({ asRoot: true });
-    expect(setup).toContain('chmod 0711 "$runs"');
-    expect(setup).toContain('mkdir -m 0700 "$dir"');
-    expect(setup).toContain('chown "$user:$user" "$dir"');
-    expect(userOf(setup)).toMatch(/^mkc[0-9a-f]{12}$/);
+    expect(setup?.command).toContain(
+      'install -d -o root -g "$user" -m 0750 "$R"',
+    );
+    expect(setup?.command).toContain(
+      'install -d -o "$user" -g "$user" -m 0700 "$R/home"',
+    );
+    expect(setup?.command).toContain(
+      'install -d -o root -g root -m 0700 "$R/out"',
+    );
+    expect(userOf(setup?.command ?? "")).toMatch(/^mkc[0-9a-f]{12}$/);
   });
 
-  it("writes the credential as root and hands it to the run user read-only", async () => {
+  it("opens stdout as root on a root-only file, so root never follows a path the run controls", async () => {
     await runOnce();
 
+    const dir = dirOf(
+      calls().find(c => c.command.includes("useradd"))?.command ?? "",
+    );
+    const user = userOf(
+      calls().find(c => c.command.includes("useradd"))?.command ?? "",
+    );
+    const launch = calls().find(c => c.command.includes("mako-connector.js"));
+    expect(launch?.asRoot).toBe(true);
+    // The redirect target is in out/ (root 0700), after runuser drops privileges.
+    expect(launch?.command).toMatch(
+      new RegExp(`runuser -u '${user}' -- .* > '${dir}/out/out\\.jsonl'$`),
+    );
+    expect(launch?.command).toContain(`cd '${dir}/home'`);
+    // Inputs belong to root and are only readable by the run's group.
+    expect(launch?.command).toContain(
+      `chown root:'${user}' '${dir}/config.json'`,
+    );
+    expect(launch?.command).toContain("chmod 0440");
+    // The bounded copy and the read stay in out/ too.
+    const snapshot = calls().find(c => c.command.includes("head -c"));
+    expect(snapshot?.asRoot).toBe(true);
+    expect(snapshot?.command).toContain(`'${dir}/out/out.jsonl'`);
+    expect(snapshot?.command).toContain(`> '${dir}/out/out.bounded.jsonl'`);
+    expect(sandbox.readFile).toHaveBeenCalledWith(
+      ctx,
+      `${dir}/out/out.bounded.jsonl`,
+      { asRoot: true },
+    );
     const config = sandbox.writeFile.mock.calls.find(([, file]) =>
       String(file).endsWith("/config.json"),
     );
+    expect(config?.[1]).toBe(`${dir}/config.json`);
     expect(config?.[3]).toEqual({ asRoot: true });
-    const run = sandbox.exec.mock.calls.find(([, command]) =>
-      String(command).includes("mako-connector.js"),
-    );
-    const user = userOf(
-      String(
-        sandbox.exec.mock.calls.find(([, c]) =>
-          String(c).includes("useradd"),
-        )?.[1],
-      ),
-    );
-    expect(run?.[1]).toContain(`chown '${user}:${user}'`);
-    expect(run?.[1]).toContain("chmod 0400");
-    expect(run?.[1]).toContain(`runuser -u '${user}' --`);
-    expect(sandbox.readFile).toHaveBeenCalledWith(
-      ctx,
-      expect.stringContaining("out.bounded.jsonl"),
-      { asRoot: true },
+  });
+
+  it("kills the run user's processes without procps, then deletes its files, IPC and the user", async () => {
+    await runOnce();
+
+    const cleanup = calls().find(c => c.command.includes('userdel "$user" ||'));
+    expect(cleanup?.asRoot).toBe(true);
+    expect(cleanup?.command).toContain('runuser -u "$user" -- kill -9 -1');
+    expect(cleanup?.command).not.toContain("pkill");
+    expect(cleanup?.command).toContain("/proc/sysvipc");
+    expect(cleanup?.command).toContain(
+      "/tmp /var/tmp /dev/shm /run/lock /dev/mqueue",
     );
   });
 
-  it("kills the run user's processes, deletes its files and the user", async () => {
-    await runOnce();
+  it("reports a failed cleanup instead of swallowing it", async () => {
+    sandbox.exec.mockImplementation((_ctx, command: string) => {
+      if (command.includes("head -c")) {
+        return Promise.resolve(result(`${Buffer.byteLength(protocol)}\n`));
+      }
+      if (command.includes("kill -9 -1")) {
+        return Promise.resolve({ ...result(), exitCode: 3 });
+      }
+      return Promise.resolve(result());
+    });
+    const onCleanupFailure = vi.fn();
 
-    const cleanup = sandbox.exec.mock.calls.find(([, command]) =>
-      String(command).includes("pkill"),
+    const output = await runOnce(onCleanupFailure);
+
+    expect(output.messages).toHaveLength(1);
+    expect(onCleanupFailure).toHaveBeenCalledWith(
+      expect.stringContaining("would not die"),
     );
-    expect(cleanup?.[2]).toMatchObject({ asRoot: true });
-    expect(cleanup?.[1]).toContain('pkill -KILL -u "$user"');
-    expect(cleanup?.[1]).toContain("find /tmp /var/tmp /dev/shm");
-    expect(cleanup?.[1]).toContain("rm -rf '/scratch/connector-runs/");
-    expect(cleanup?.[1]).toContain('userdel "$user"');
   });
 
   it("gives two concurrent runs in one box different users and directories", async () => {
     await Promise.all([runOnce(), runOnce()]);
 
-    const setups = sandbox.exec.mock.calls
-      .map(([, command]) => String(command))
-      .filter(command => command.includes("useradd"));
+    const setups = calls().filter(c => c.command.includes("useradd"));
     expect(setups).toHaveLength(2);
-    const users = setups.map(userOf);
-    const dirs = setups.map(command => /dir='([^']+)'/.exec(command)?.[1]);
+    const users = setups.map(c => userOf(c.command));
+    const dirs = setups.map(c => dirOf(c.command));
     expect(new Set(users).size).toBe(2);
     expect(new Set(dirs).size).toBe(2);
-
-    // Each connector process runs as its own run's user, in its own dir.
-    const runs = sandbox.exec.mock.calls
-      .map(([, command]) => String(command))
-      .filter(command => command.includes("mako-connector.js"));
+    const launches = calls().filter(c =>
+      c.command.includes("mako-connector.js"),
+    );
     for (const [index, user] of users.entries()) {
-      const mine = runs.find(command =>
-        command.includes(`runuser -u '${user}'`),
+      const mine = launches.find(c =>
+        c.command.includes(`runuser -u '${user}'`),
       );
-      expect(mine).toContain(`cd '${dirs[index]}'`);
-      expect(mine).toContain(`${dirs[index]}/config.json`);
+      expect(mine?.command).toContain(`> '${dirs[index]}/out/out.jsonl'`);
+      expect(mine?.command).toContain(`${dirs[index]}/config.json`);
     }
   });
 
@@ -309,20 +352,18 @@ describe("per-run Unix users on providers with real users", () => {
     sandbox.exec.mockImplementation((_ctx, command: string) =>
       Promise.resolve(
         command.includes("useradd")
-          ? { ...result(), exitCode: 1, stderr: "useradd: not found" }
+          ? { ...result(), exitCode: 1, stderr: "missing useradd" }
           : result(),
       ),
     );
 
     await expect(runOnce()).rejects.toThrow(/isolated user/);
-    expect(
-      sandbox.exec.mock.calls.some(([, command]) =>
-        String(command).includes("mako-connector.js"),
-      ),
-    ).toBe(false);
+    expect(calls().some(c => c.command.includes("mako-connector.js"))).toBe(
+      false,
+    );
   });
 
-  it("writes the runtime and connector folders as root and read-only to runs", async () => {
+  it("writes the runtime and connector folders as root under /var/lib, read-only to runs", async () => {
     await materializeConnector({
       ctx,
       runtimeId: "runtime",
@@ -332,16 +373,45 @@ describe("per-run Unix users on providers with real users", () => {
     });
 
     for (const call of sandbox.writeFile.mock.calls) {
-      expect(call[1]).toContain("/connector-runtime/isolated/versions/");
+      expect(call[1]).toMatch(
+        /^\/var\/lib\/mako-connectors\/runtime\/versions\//,
+      );
       expect(call[3]).toEqual({ asRoot: true });
     }
     expect(
-      sandbox.exec.mock.calls.some(
-        ([, command, options]) =>
-          String(command).includes("chmod -R a+rX,go-w") &&
-          (options as { asRoot?: boolean })?.asRoot === true,
-      ),
+      calls().some(c => c.command.includes("chmod -R a+rX,go-w") && c.asRoot),
     ).toBe(true);
+  });
+
+  it("moves the workspace sync box to a new key and retires the old one once", async () => {
+    const destroySession = vi.fn(async () => undefined);
+    Object.assign(sandbox, { destroySession });
+    try {
+      expect(syncBoxContext("ws1")).toEqual({
+        sessionKey: "connector-sync:v2:ws1",
+      });
+      await retireLegacySyncBox("ws1");
+      await retireLegacySyncBox("ws1");
+      expect(destroySession).toHaveBeenCalledTimes(1);
+      expect(destroySession).toHaveBeenCalledWith("connector-sync:ws1");
+    } finally {
+      Object.assign(sandbox, { destroySession: undefined });
+    }
+  });
+
+  it("retries retiring the old box after a failed kill", async () => {
+    const destroySession = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("list failed"))
+      .mockResolvedValue(undefined);
+    Object.assign(sandbox, { destroySession });
+    try {
+      await retireLegacySyncBox("ws2");
+      await retireLegacySyncBox("ws2");
+      expect(destroySession).toHaveBeenCalledTimes(2);
+    } finally {
+      Object.assign(sandbox, { destroySession: undefined });
+    }
   });
 });
 

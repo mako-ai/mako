@@ -36,6 +36,7 @@ import {
   firstOfType,
   ensureBundle,
   materializeConnector,
+  retireLegacySyncBox,
   runConnectorCommand,
   syncBoxContext,
 } from "./sync-box";
@@ -307,7 +308,9 @@ async function runSpec(
           workspaceId,
           // `spec` takes no credential. Its boxes are the workspace's own and
           // never hold a connection's config.
-          connectionId: `spec:${workspaceId}`,
+          // One key per connector: a push that touches N connectors must not
+          // make each one's spec drain the others' boxes.
+          connectionId: `spec:${workspaceId}:${slug}`,
           bundleHash: sourceSha,
           command: "spec",
           runtimeId: await connectorRuntimeId(),
@@ -322,6 +325,8 @@ async function runSpec(
             ensureRuntime: ensureConnectorRuntime,
           });
           lease.noteRuntime(runtimeId);
+          // Before any credentialed command: the template must hold none.
+          await lease.snapshotPristine(runtimeId);
           const run = await runConnectorCommand({
             ctx: lease.ctx,
             runtimeId,
@@ -329,6 +334,7 @@ async function runSpec(
             command: "spec",
             entry,
             timeoutMs: 60_000,
+            onCleanupFailure: reason => lease.markUnhealthy(reason),
           });
           if (run.timedOut) lease.markFailed("timed out");
           return run;
@@ -357,6 +363,7 @@ async function runSpecInWorkspaceBox(
   entry: string,
 ) {
   const ctx = syncBoxContext(workspaceId);
+  await retireLegacySyncBox(workspaceId);
   const runtimeId = await ensureConnectorRuntime(ctx);
   const dir = await materializeConnector({
     ctx,

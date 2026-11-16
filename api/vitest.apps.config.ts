@@ -172,6 +172,7 @@ export default defineConfig({
       // store against a real in-memory Mongo.
       "src/connectors/workspace/boxes/**/*.test.ts",
       "src/connectors/workspace/SandboxedConnector.leases.test.ts",
+      "src/apps/sandbox/e2b-provider.boxes.test.ts",
       "src/apps/repository.service.test.ts",
       "src/services/workspace-repos.service.test.ts",
     ],

@@ -367,7 +367,7 @@ describe("heartbeats and the reaper", () => {
 });
 
 describe("idle, pause and TTL", () => {
-  it("pauses a box after it sits idle for idlePauseMs, and snapshots its key once", async () => {
+  it("pauses a box after it sits idle for idlePauseMs", async () => {
     const s = scheduler();
     const id = await s.withLease(run(), async lease => {
       lease.noteRuntime("rt-1");
@@ -381,8 +381,8 @@ describe("idle, pause and TTL", () => {
 
     expect(box(id).state).toBe("paused");
     expect(provider.pause).toHaveBeenCalledTimes(1);
-    expect(provider.snapshot).toHaveBeenCalledTimes(1);
-    expect(store.templates.size).toBe(1);
+    // Templates are taken before a credentialed run, never at pause time.
+    expect(provider.snapshot).not.toHaveBeenCalled();
   });
 
   it("pauses idle boxes from the reaper too (another process released them)", async () => {
@@ -449,8 +449,12 @@ describe("idle, pause and TTL", () => {
   it("starts a new box for the key from its snapshot template", async () => {
     const s = scheduler();
     const hold = gate();
-    // Box 1 runs once, pauses, and its key gets a template.
-    await s.withLease(run(), async lease => lease.noteRuntime("rt-1"));
+    // Box 1 is fresh: its key gets a template before its first command.
+    await s.withLease(run(), async lease => {
+      lease.noteRuntime("rt-1");
+      await lease.snapshotPristine("rt-1");
+    });
+    expect(provider.snapshot).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(BOX_LEASE_DEFAULTS.idlePauseMs + SECOND);
     // Box 1 is busy, so a concurrent run needs a second box.
     const busy = s.withLease(run(), () => hold.opened);
@@ -472,12 +476,9 @@ describe("idle, pause and TTL", () => {
 
   it("falls back to the base template when a snapshot will not restore", async () => {
     const s = scheduler();
-    await store.putTemplate({
-      templateKey: `${boxKey("conn-a", "hash-1")}:rt-1`,
-      snapshotId: "snap:gone",
-      createdAt: new Date(),
-      lastUsedAt: new Date(),
-    });
+    const key = `${boxKey("conn-a", "hash-1")}:rt-1`;
+    await store.claimTemplate(key, new Date());
+    await store.completeTemplate(key, "snap:gone");
     provider.failTemplate.add("snap:gone");
 
     await s.withLease(run(), async lease => {
@@ -485,16 +486,14 @@ describe("idle, pause and TTL", () => {
     });
     expect(provider.lease).toHaveBeenLastCalledWith(expect.any(Object), {});
     expect(store.templates.size).toBe(0);
+    // The record AND the snapshot go: nothing is left to leak.
+    expect(provider.deleteSnapshot).toHaveBeenCalledWith("snap:gone");
   });
 
   it("deletes templates unused for the template TTL", async () => {
     const s = scheduler();
-    await store.putTemplate({
-      templateKey: "k",
-      snapshotId: "snap:old",
-      createdAt: new Date(),
-      lastUsedAt: new Date(),
-    });
+    await store.claimTemplate("k", new Date());
+    await store.completeTemplate("k", "snap:old");
     vi.setSystemTime(Date.now() + BOX_LEASE_DEFAULTS.templateTtlMs + SECOND);
     const summary = await s.reap();
     expect(summary.templatesDeleted).toBe(1);
@@ -642,5 +641,212 @@ describe("account ceiling shared with app sessions", () => {
       accountCeiling: 20,
       appReserve: 2,
     });
+  });
+});
+
+describe("templates", () => {
+  it("takes one snapshot per key when two fresh boxes race", async () => {
+    const s = scheduler();
+    const holds = [gate(), gate()];
+    let release!: () => void;
+    const slow = new Promise<void>(resolve => (release = resolve));
+    provider.snapshot.mockImplementation(async (_box, name) => {
+      await slow;
+      return `snap:${name}`;
+    });
+    const runs = holds.map(hold =>
+      s.withLease(run(), async lease => {
+        const snap = lease.snapshotPristine("rt-1");
+        await hold.opened;
+        await snap;
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(2 * SECOND);
+    release();
+    holds.forEach(h => h.open());
+    await Promise.all(runs);
+
+    expect(provider.snapshot).toHaveBeenCalledTimes(1);
+    expect(store.templates.size).toBe(1);
+  });
+
+  it("drops the claim when the snapshot fails, so a later box can retry", async () => {
+    const s = scheduler();
+    provider.snapshot.mockRejectedValueOnce(new Error("snapshot failed"));
+    await s.withLease(run(), lease => lease.snapshotPristine("rt-1"));
+    expect(store.templates.size).toBe(0);
+  });
+
+  it("never snapshots a box restored from a template or a reused box", async () => {
+    const s = scheduler();
+    await s.withLease(run(), lease => lease.snapshotPristine("rt-1"));
+    await s.withLease(run(), lease => lease.snapshotPristine("rt-1"));
+    expect(provider.snapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("deletes a connection's templates and drains its boxes when it is deleted or rekeyed", async () => {
+    const s = scheduler();
+    const id = await s.withLease(run(), async lease => {
+      await lease.snapshotPristine("rt-1");
+      return lease.boxId;
+    });
+    await s.withLease(run({ connectionId: "conn-b" }), lease =>
+      lease.snapshotPristine("rt-1"),
+    );
+
+    await s.forgetConnection("conn-a");
+
+    expect(box(id).draining).toBe(true);
+    expect([...store.templates.keys()]).toEqual([
+      `${boxKey("conn-b", "hash-1")}:rt-1`,
+    ]);
+    expect(provider.deleteSnapshot).toHaveBeenCalledTimes(1);
+    await s.reap();
+    expect(box(id).state).toBe("killed");
+  });
+});
+
+describe("draining and unhealthy boxes", () => {
+  it("kills a box drained during its idle window instead of pausing it", async () => {
+    const s = scheduler();
+    const id = await s.withLease(run(), async l => l.boxId);
+    await store.drainOtherHashes("conn-a", "hash-2");
+    await vi.advanceTimersByTimeAsync(BOX_LEASE_DEFAULTS.idlePauseMs + SECOND);
+
+    expect(box(id).state).toBe("killed");
+    expect(box(id).killReason).toBe("drained");
+    expect(provider.pause).not.toHaveBeenCalled();
+  });
+
+  it("kills a box marked unhealthy (a run's cleanup failed) instead of idling it", async () => {
+    const s = scheduler();
+    const id = await s.withLease(run(), async lease => {
+      lease.markUnhealthy("cleanup failed");
+      return lease.boxId;
+    });
+    expect(box(id).state).toBe("killed");
+    expect(box(id).killReason).toMatch(/^unhealthy: cleanup failed/);
+  });
+});
+
+describe("Redis outage", () => {
+  function brokenSignals() {
+    const broken = new MemoryBoxSignals();
+    const fail = () => Promise.reject(new Error("ECONNREFUSED"));
+    Object.assign(broken, {
+      kind: "redis",
+      beat: fail,
+      lastBeats: fail,
+      enqueue: fail,
+      ensure: fail,
+      isHead: fail,
+      dequeue: fail,
+      depth: fail,
+    });
+    return broken;
+  }
+
+  it("still leases, and writes every heartbeat to Mongo, with Redis down", async () => {
+    signals = brokenSignals();
+    const s = scheduler();
+    const hold = gate();
+    let boxId = "";
+    const pending = s.withLease(run(), async lease => {
+      boxId = lease.boxId;
+      await hold.opened;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const started = box(boxId).heartbeatAt?.getTime() ?? 0;
+    await vi.advanceTimersByTimeAsync(5 * BOX_LEASE_DEFAULTS.heartbeatMs);
+
+    expect(box(boxId).heartbeatAt?.getTime()).toBeGreaterThan(started);
+    hold.open();
+    await pending;
+    expect(box(boxId).state).toBe("idle");
+  });
+
+  it("kills nothing for heartbeat age when the beats cannot be read", async () => {
+    const s = scheduler();
+    const held = await s.acquire(run());
+    vi.setSystemTime(Date.now() + 3 * BOX_LEASE_DEFAULTS.heartbeatTimeoutMs);
+    const reaper = new BoxScheduler({
+      store,
+      signals: brokenSignals(),
+      provider,
+      metrics,
+      config: BOX_LEASE_DEFAULTS,
+    });
+
+    const summary = await reaper.reap();
+    expect(summary.killed).toEqual({});
+    expect(box(held.box.boxId).state).toBe("leased");
+  });
+
+  it("still enforces the per-connection cap without the queue", async () => {
+    signals = brokenSignals();
+    const s = scheduler({ maxPerConnection: 2 });
+    const hold = gate();
+    const runs = [1, 2, 3].map(() => s.withLease(run(), () => hold.opened));
+    await vi.advanceTimersByTimeAsync(2 * SECOND);
+    expect(await store.countLeased(boxKey("conn-a", "hash-1"))).toBe(2);
+    hold.open();
+    await vi.advanceTimersByTimeAsync(2 * SECOND);
+    await Promise.all(runs);
+  });
+});
+
+describe("account ceiling across instances", () => {
+  it("lets two API instances with the same stale count start one box between them", async () => {
+    // 17 app sessions, limit 20 - 2 = 18: exactly one connector box fits.
+    provider.account.appSessions = 17;
+    provider.countRunning.mockImplementation(async () => 17);
+    const config = { accountCeiling: 20, appReserve: 2 };
+    const a = scheduler(config);
+    const b = scheduler(config);
+    const hold = gate();
+    const runs = [
+      a.withLease(run({ connectionId: "conn-a" }), () => hold.opened),
+      b.withLease(run({ connectionId: "conn-b" }), () => hold.opened),
+      a.withLease(run({ connectionId: "conn-c" }), () => hold.opened),
+      b.withLease(run({ connectionId: "conn-d" }), () => hold.opened),
+    ].map(p => p.catch(() => "gave up"));
+    await vi.advanceTimersByTimeAsync(3 * SECOND);
+
+    expect(provider.lease).toHaveBeenCalledTimes(1);
+    hold.open();
+    await vi.advanceTimersByTimeAsync(BOX_LEASE_DEFAULTS.queueWaitMs);
+    await Promise.all(runs);
+  });
+
+  it("remembers a failed count for the TTL instead of listing every poll", async () => {
+    provider.account.fail = true;
+    const s = scheduler({
+      accountCountTtlMs: 5 * SECOND,
+      queueWaitMs: 4 * SECOND,
+    });
+    const failed = expect(
+      s.withLease(run(), async () => undefined),
+    ).rejects.toThrow(/No connector box/);
+    await vi.advanceTimersByTimeAsync(5 * SECOND);
+    await failed;
+    // 4 s of polling every 250 ms is 16 polls; one count covers them all.
+    expect(provider.countRunning).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("queue", () => {
+  it("puts a dropped waiter back at its original place", async () => {
+    const q = new MemoryBoxSignals();
+    const first = { runId: "r1", priority: 1, enqueuedAt: 1 };
+    const second = { runId: "r2", priority: 1, enqueuedAt: 2 };
+    await q.enqueue("k", first, 1);
+    await q.enqueue("k", second, 60_000);
+    vi.setSystemTime(Date.now() + 10);
+    // r2 sees r1 dead and drops it...
+    expect(await q.isHead("k", "r2")).toBe(true);
+    // ...then r1, merely slow, comes back and is first again.
+    await q.ensure("k", first, 60_000);
+    expect(await q.isHead("k", "r1")).toBe(true);
+    expect(await q.isHead("k", "r2")).toBe(false);
   });
 });

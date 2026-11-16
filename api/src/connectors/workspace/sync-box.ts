@@ -24,6 +24,18 @@
  *    code still cannot turn a large batch into an API heap exhaustion.
  */
 import { randomBytes, randomInt } from "node:crypto";
+import {
+  CLEANUP_SURVIVORS_EXIT,
+  cleanupScript,
+  ISOLATED_ROOT,
+  ISOLATED_RUNTIME,
+  launchScript,
+  runLayout,
+  setupScript,
+  shellQuote,
+  snapshotScript,
+  type RunLayout,
+} from "./run-isolation";
 import path from "node:path";
 import {
   getSandboxProvider,
@@ -76,7 +88,44 @@ const CONNECTOR_NODE_SHA256 = {
  * in, where the repo — and its token — are checked out.
  */
 export function syncBoxContext(workspaceId: string): SandboxExecContext {
-  return { sessionKey: `connector-sync:${workspaceId}` };
+  // v2: boxes made before per-run users ran connectors as `user`, who has
+  // passwordless sudo in the template, and they pause with memory. A process
+  // a connector left in one could become root, so those boxes are never
+  // reused: the key moved, and `retireLegacySyncBox` kills the old box.
+  return { sessionKey: `connector-sync:v2:${workspaceId}` };
+}
+
+/** The pre-isolation key. Only ever used to kill that box. */
+export function legacySyncBoxKey(workspaceId: string): string {
+  return `connector-sync:${workspaceId}`;
+}
+
+const legacyRetired = new Map<string, Promise<void>>();
+
+/**
+ * Kill the workspace's pre-isolation sync box, once per process.
+ *
+ * Runs before the first command in the new box. A failure is retried on the
+ * next command rather than ignored, because a surviving legacy box is a
+ * standing root shell for whatever a pre-fix connector left running in it.
+ */
+export async function retireLegacySyncBox(workspaceId: string): Promise<void> {
+  const provider = getSandboxProvider();
+  if (!provider.supportsRunUsers || !provider.destroySession) return;
+  let pending = legacyRetired.get(workspaceId);
+  if (!pending) {
+    pending = provider
+      .destroySession(legacySyncBoxKey(workspaceId))
+      .catch(error => {
+        legacyRetired.delete(workspaceId);
+        logger.warn("Could not retire a pre-isolation sync box", {
+          workspaceId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    legacyRetired.set(workspaceId, pending);
+  }
+  await pending;
 }
 
 /** Where a connector's copied folder lives, keyed so a new sha is a new dir. */
@@ -102,14 +151,15 @@ export function connectorDir(
  * through the root's node_modules directory.
  */
 function runtimeRoot(ctx: SandboxExecContext, runtimeId: string): string {
+  // Isolated boxes keep the runtime under /var/lib, a root-only parent. Under
+  // /tmp a connector or a stray process could pre-create or symlink a parent
+  // directory before root writes into it.
+  if (runsIsolated()) {
+    return path.posix.join(ISOLATED_RUNTIME, "versions", runtimeId);
+  }
   return path.posix.join(
     getSandboxProvider().scratch(ctx),
     "connector-runtime",
-    // A root-owned tree lives apart from the old user-owned one. A box that
-    // ran connectors before per-run users existed may hold a runtime a
-    // connector could have rewritten; its marker would still match, so the
-    // isolated layout never trusts it and installs afresh.
-    ...(runsIsolated() ? ["isolated"] : []),
     "versions",
     runtimeId,
   );
@@ -156,9 +206,6 @@ function execOptions(
 function runtimeNode(ctx: SandboxExecContext, runtimeId: string): string {
   return path.posix.join(runtimeRoot(ctx, runtimeId), "node", "bin", "node");
 }
-
-const shellQuote = (value: string): string =>
-  `'${value.replace(/'/g, `'\\''`)}'`;
 
 /**
  * Put the connector's files in the box.
@@ -322,7 +369,7 @@ fi
         ? `
 # Run users read and execute this tree; none of them may change it.
 chmod -R a+rX,go-w "$runtime_root"
-chmod a+rX "$(dirname "$runtime_root")" "$(dirname "$(dirname "$runtime_root")")"`
+chmod a+rX,go-w "$(dirname "$runtime_root")" "$(dirname "$(dirname "$runtime_root")")" ${shellQuote(ISOLATED_ROOT)}`
         : ""
     }`,
     execOptions({ timeoutMs: 120_000 }),
@@ -359,51 +406,45 @@ async function mustSucceed(
 /**
  * One run's private corner of the box.
  *
- * `dir` holds the run's config, catalog, state and output. `wrap` turns a
- * command line into one that runs the connector as the run's own user.
- * `close` deletes everything the run left behind; it never throws.
+ * `dir` holds the run's inputs. `launch` turns a connector command line into
+ * one that runs it with stdout on `outputFile`; `snapshot` makes the bounded
+ * copy at `boundedFile`. `close` deletes everything the run left behind.
  */
 export interface OpenRun {
   dir: string;
   /** The run's Unix user, or null where the provider has no real users. */
   user: string | null;
-  /** Options for the API's own file and exec calls inside `dir`. */
+  /** Options for the API's own file and exec calls for this run. */
   owner: { asRoot: true } | undefined;
-  wrap(command: string): string;
-  /** Hand files root wrote into `dir` to the run user, read-only. */
-  handOver(files: string[]): string;
+  outputFile: string;
+  boundedFile: string;
+  launch(inputs: string[], command: string): string;
+  snapshot(maxBytes: number): string;
+  /** Throws when cleanup could not prove the run is gone (isolated only). */
   close(): Promise<void>;
 }
 
-const PATH_FOR_ROOT =
-  "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+/** The run's cleanup failed: the box may still hold its credential or code. */
+export class RunCleanupError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunCleanupError";
+  }
+}
 
 /**
- * Create a run directory, and on E2B a Unix user that alone can read it.
- *
- * Why a user and not just 0700: every command in the box used to run as the
- * template user, so a 0700 directory was still readable by every other run in
- * the same box. A connector could list `connector-runs/`, read a concurrent
- * run's `config.json` (another connection's credential), or leave a process
- * behind that read every later run's. Now:
- *
- * - `connector-runs/` is root-owned 0711: runs can enter their own directory
- *   but cannot list anyone else's;
- * - each run directory is 0700 and owned by a user created for the run, with
- *   a random UID so a deleted user's leftover files never belong to a later
- *   run;
- * - the connector is started with `runuser`, so it has no rights over other
- *   runs' files or processes;
- * - `close` kills every process of that user, deletes its files in the
- *   world-writable directories, and deletes the user.
+ * Open a run: on E2B a fresh Unix user, its directories and nothing else
+ * (see run-isolation.ts for the layout and why root never opens a path the
+ * run user controls); elsewhere a plain directory, as before.
  */
 export async function openRun(ctx: SandboxExecContext): Promise<OpenRun> {
   const provider = getSandboxProvider();
-  const runsRoot = path.posix.join(provider.scratch(ctx), "connector-runs");
   const runId = randomBytes(8).toString("hex");
-  const dir = path.posix.join(runsRoot, runId);
 
   if (!runsIsolated()) {
+    const dir = path.posix.join(provider.scratch(ctx), "connector-runs", runId);
+    const outputFile = path.posix.join(dir, "out.jsonl");
+    const boundedFile = path.posix.join(dir, "out.bounded.jsonl");
     await provider.exec(ctx, `mkdir -p ${shellQuote(dir)}`, {
       timeoutMs: 30_000,
     });
@@ -411,8 +452,11 @@ export async function openRun(ctx: SandboxExecContext): Promise<OpenRun> {
       dir,
       user: null,
       owner: undefined,
-      wrap: command => command,
-      handOver: () => "true",
+      outputFile,
+      boundedFile,
+      launch: (_inputs, command) => `${command} > ${shellQuote(outputFile)}`,
+      snapshot: maxBytes =>
+        `if test -f ${shellQuote(outputFile)}; then head -c ${maxBytes + 1} ${shellQuote(outputFile)} > ${shellQuote(boundedFile)} && wc -c < ${shellQuote(boundedFile)}; else echo missing; fi`,
       close: async () => {
         await provider
           .exec(ctx, `rm -rf ${shellQuote(dir)}`, { timeoutMs: 30_000 })
@@ -426,88 +470,59 @@ export async function openRun(ctx: SandboxExecContext): Promise<OpenRun> {
     };
   }
 
-  let user = "";
-  let lastError: unknown;
+  let layout: RunLayout | null = null;
+  let lastError = "";
   // A random UID can collide with one in use; a fresh name and UID fixes it.
-  for (let attempt = 0; attempt < 3 && !user; attempt++) {
-    const candidate = `mkc${randomBytes(6).toString("hex")}`;
-    const uid = randomInt(200_000, 2_000_000_000);
-    const setup = await provider.exec(
-      ctx,
-      `set -eu
-${PATH_FOR_ROOT}
-runs=${shellQuote(runsRoot)}
-dir=${shellQuote(dir)}
-user=${shellQuote(candidate)}
-command -v runuser >/dev/null
-command -v useradd >/dev/null
-# Only a root-owned directory may hold run directories. Anything else here was
-# made before runs were isolated, or by a connector, and is not trusted.
-if [ -L "$runs" ] || { [ -e "$runs" ] && [ "$(stat -c %u "$runs")" != 0 ]; }; then rm -rf "$runs"; fi
-mkdir -p "$runs"
-chown root:root "$runs"
-chmod 0711 "$runs"
-# useradd takes a lock on /etc/passwd; concurrent runs retry it.
-n=0
-until err=$(useradd -M -U -u ${uid} -d "$dir" -s /usr/sbin/nologin "$user" 2>&1); do
-  n=$((n + 1))
-  if [ "$n" -ge 20 ]; then echo "$err" >&2; exit 1; fi
-  sleep 0.2
-done
-if ! { mkdir -m 0700 "$dir" && chown "$user:$user" "$dir"; }; then
-  userdel "$user" 2>/dev/null || true
-  exit 1
-fi`,
-      { timeoutMs: 30_000, asRoot: true },
+  for (let attempt = 0; attempt < 3 && !layout; attempt++) {
+    const candidate = runLayout(
+      runId,
+      `mkc${randomBytes(6).toString("hex")}`,
+      randomInt(200_000, 2_000_000_000),
     );
-    if (setup.exitCode === 0) user = candidate;
+    const setup = await provider.exec(ctx, setupScript(candidate), {
+      timeoutMs: 30_000,
+      asRoot: true,
+    });
+    if (setup.exitCode === 0) layout = candidate;
     else lastError = (setup.stderr || setup.stdout).trim().slice(0, 2000);
   }
-  if (!user) {
+  if (!layout) {
     throw new Error(
-      `Could not create an isolated user for the connector run${lastError ? `: ${String(lastError)}` : "."}`,
+      `Could not create an isolated user for the connector run${lastError ? `: ${lastError}` : "."}`,
     );
   }
 
-  const owner = { asRoot: true } as const;
+  const l = layout;
   return {
-    dir,
-    user,
-    owner,
-    wrap: command =>
-      `cd ${shellQuote(dir)} && runuser -u ${shellQuote(user)} -- env HOME=${shellQuote(dir)} TMPDIR=${shellQuote(dir)} ${command}`,
-    handOver: files =>
-      files.length === 0
-        ? "true"
-        : `chown ${shellQuote(`${user}:${user}`)} ${files.map(shellQuote).join(" ")} && chmod 0400 ${files.map(shellQuote).join(" ")}`,
+    dir: l.dir,
+    user: l.user,
+    owner: { asRoot: true },
+    outputFile: l.outputFile,
+    boundedFile: l.boundedFile,
+    launch: (inputs, command) => launchScript(l, inputs, command),
+    snapshot: maxBytes => snapshotScript(l, maxBytes),
     close: async () => {
-      await provider
-        .exec(
-          ctx,
-          `${PATH_FOR_ROOT}
-user=${shellQuote(user)}
-pkill -KILL -u "$user" 2>/dev/null || true
-rm -rf ${shellQuote(dir)}
-find /tmp /var/tmp /dev/shm -xdev -user "$user" -exec rm -rf {} + 2>/dev/null || true
-userdel "$user" 2>/dev/null || { sleep 0.5; pkill -KILL -u "$user" 2>/dev/null || true; userdel -f "$user"; }`,
-          { timeoutMs: 30_000, asRoot: true },
-        )
-        .then(result => {
-          if (result.exitCode !== 0) {
-            logger.error("Failed to remove a connector run user", {
-              runDir: dir,
-              user,
-              stderr: result.stderr.slice(0, 500),
-            });
-          }
-        })
-        .catch(error =>
-          logger.error("Failed to clean a connector run directory", {
-            error,
-            runDir: dir,
-            user,
-          }),
-        );
+      let detail: string;
+      try {
+        const result = await provider.exec(ctx, cleanupScript(l), {
+          timeoutMs: 60_000,
+          asRoot: true,
+        });
+        if (result.exitCode === 0 && !result.timedOut) return;
+        detail = result.timedOut
+          ? "cleanup timed out"
+          : result.exitCode === CLEANUP_SURVIVORS_EXIT
+            ? "the run's processes would not die"
+            : (result.stderr || `exit ${result.exitCode}`).slice(0, 500);
+      } catch (error) {
+        detail = error instanceof Error ? error.message : String(error);
+      }
+      logger.error("Failed to remove a connector run", {
+        runDir: l.dir,
+        user: l.user,
+        detail,
+      });
+      throw new RunCleanupError(`Connector run cleanup failed: ${detail}`);
     },
   };
 }
@@ -530,13 +545,17 @@ export async function runConnectorCommand(input: {
   maxIterations?: number;
   timeoutMs?: number;
   entry?: string;
+  /**
+   * Called when the run's cleanup failed. The result still returns; the
+   * caller decides what the box is worth now (a lease kills it).
+   */
+  onCleanupFailure?: (reason: string) => void;
 }): Promise<RunResult> {
   const provider = getSandboxProvider();
   const { ctx, command } = input;
   const run = await openRun(ctx);
   const runDir = run.dir;
-  const outputPath = path.posix.join(runDir, "out.jsonl");
-  const boundedOutputPath = path.posix.join(runDir, "out.bounded.jsonl");
+  const boundedOutputPath = run.boundedFile;
   const encoder = new TextEncoder();
 
   const args = [
@@ -575,14 +594,12 @@ export async function runConnectorCommand(input: {
       "bin",
       "mako-connector.js",
     );
-    const connectorCommand = run.wrap(
+    // stdout is opened by the API's own shell (root on E2B) on a file the
+    // connector cannot reach by path; the connector only holds the descriptor.
+    const command_ = run.launch(
+      inputs,
       `${shellQuote(runtimeNode(ctx, input.runtimeId))} ${shellQuote(bin)} ${args.map(shellQuote).join(" ")}`,
     );
-    // The redirect is opened by the API's own shell (root on E2B), so the
-    // output file sits in the run directory whoever the connector runs as.
-    const command_ = run.user
-      ? `${run.handOver(inputs)} && ${connectorCommand} > ${shellQuote(outputPath)}`
-      : `${connectorCommand} > ${shellQuote(outputPath)}`;
 
     const result = await provider.exec(ctx, command_, {
       ...run.owner,
@@ -600,7 +617,7 @@ export async function runConnectorCommand(input: {
     // connector code left a child process appending to stdout after it exited.
     const snapshot = await provider.exec(
       ctx,
-      `if test -f ${shellQuote(outputPath)}; then head -c ${MAX_CONNECTOR_PROTOCOL_BYTES + 1} ${shellQuote(outputPath)} > ${shellQuote(boundedOutputPath)} && wc -c < ${shellQuote(boundedOutputPath)}; else echo missing; fi`,
+      run.snapshot(MAX_CONNECTOR_PROTOCOL_BYTES),
       { ...run.owner, timeoutMs: 30_000 },
     );
     const sizeText = snapshot.stdout.trim();
@@ -677,7 +694,13 @@ export async function runConnectorCommand(input: {
   } finally {
     // The credential was in this directory. A paused box snapshots its disk,
     // so leaving it would mean the key outlives the run inside a suspended VM.
-    await run.close();
+    try {
+      await run.close();
+    } catch (error) {
+      input.onCleanupFailure?.(
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
 }
 

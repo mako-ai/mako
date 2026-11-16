@@ -160,6 +160,14 @@ const connecting = new Map<string, Promise<Sandbox>>();
  */
 const templateOverrides = new Map<string, string>();
 
+/** Keys boxLifecycle.create is creating right now: the only ones allowed to. */
+const creatingBoxes = new Set<string>();
+
+/** Leased connector boxes (connectors/workspace/boxes/box-provider.ts). */
+export function isConnectorBoxKey(sessionKey: string): boolean {
+  return sessionKey.startsWith("connector-box:");
+}
+
 function connectSession(sessionKey: string): Promise<Sandbox> {
   const inflight = connecting.get(sessionKey);
   if (inflight) return inflight;
@@ -235,6 +243,15 @@ async function connectSessionNow(sessionKey: string): Promise<Sandbox> {
     }
   }
 
+  // A leased connector box is created only by its scheduler
+  // (boxLifecycle.create). Anything else reaching here means the box was
+  // killed under a run; recreating it would make a box no record tracks
+  // and no reaper ever kills.
+  if (isConnectorBoxKey(sessionKey) && !creatingBoxes.has(sessionKey)) {
+    throw new SandboxNotFoundError(
+      `Connector box ${sessionKey} is gone; only its scheduler may create it.`,
+    );
+  }
   const sandbox = await Sandbox.create(
     templateOverrides.get(sessionKey) ?? templateId(),
     {
@@ -832,10 +849,12 @@ async function sandboxIdFor(sessionKey: string): Promise<string | null> {
 const boxLifecycleE2b: SandboxBoxLifecycle = {
   async create(sessionKey, { template }) {
     if (template) templateOverrides.set(sessionKey, template);
+    creatingBoxes.add(sessionKey);
     try {
       await connectSession(sessionKey);
     } finally {
       templateOverrides.delete(sessionKey);
+      creatingBoxes.delete(sessionKey);
     }
   },
   async pause(sessionKey) {
@@ -913,6 +932,7 @@ export const e2bSandboxProvider: SandboxProvider = {
     // tab believes — the next touch rediscovers the same, un-killed box. The
     // metadata index is the durable truth; kill everything it names.
     const ids = new Set<string>(sandboxId ? [sandboxId] : []);
+    let listed = false;
     try {
       const paginator = Sandbox.list({
         apiKey: apiKey(),
@@ -922,6 +942,7 @@ export const e2bSandboxProvider: SandboxProvider = {
       if (paginator.hasNext) {
         for (const box of await paginator.nextItems()) ids.add(box.sandboxId);
       }
+      listed = true;
     } catch (error) {
       logger.warn(
         "Recycle could not list sandboxes by metadata; killing known id only",
@@ -931,10 +952,23 @@ export const e2bSandboxProvider: SandboxProvider = {
         },
       );
     }
-    await Promise.all(
-      [...ids].map(id =>
-        Sandbox.kill(id, { apiKey: apiKey() }).catch(() => undefined),
-      ),
+    // Knowing nothing is not the same as there being nothing. A kill that
+    // could neither list nor remember a box must fail, so its caller (the
+    // connector box reaper, a legacy sync box retirement) retries instead of
+    // recording a box as dead while it runs on.
+    if (!listed && ids.size === 0) {
+      throw new Error(
+        `Could not find the sandbox for ${sessionKey} to kill it; the list call failed.`,
+      );
+    }
+    const results = await Promise.allSettled(
+      [...ids].map(id => Sandbox.kill(id, { apiKey: apiKey() })),
     );
+    const failed = results.filter(r => r.status === "rejected");
+    if (failed.length > 0 && isConnectorBoxKey(sessionKey)) {
+      throw new Error(
+        `Could not kill ${failed.length} of ${ids.size} sandboxes for ${sessionKey}.`,
+      );
+    }
   },
 };

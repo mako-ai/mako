@@ -31,6 +31,7 @@ import {
   failureMessage,
   firstOfType,
   materializeConnector,
+  retireLegacySyncBox,
   runConnectorCommand,
   syncBoxContext,
   type ConnectorCommand,
@@ -123,6 +124,7 @@ export class SandboxedConnector extends BaseConnector {
   }> {
     const definition = await this.definition();
     const ctx = syncBoxContext(this.workspaceId);
+    await retireLegacySyncBox(this.workspaceId);
     if (!this.materializedDir || !this.runtimeId) {
       const runtimeId = await ensureConnectorRuntime(ctx);
       const files = await readConnectorFolder(
@@ -210,6 +212,8 @@ export class SandboxedConnector extends BaseConnector {
           ensureRuntime: ensureConnectorRuntime,
         });
         lease.noteRuntime(runtimeId);
+        // Before any credentialed command: the template must hold none.
+        await lease.snapshotPristine(runtimeId);
         const result = await runConnectorCommand({
           ctx: lease.ctx,
           runtimeId,
@@ -217,6 +221,9 @@ export class SandboxedConnector extends BaseConnector {
           command,
           entry: definition.entry,
           ...options,
+          // A run whose cleanup failed may have left its credential or a
+          // process behind: the box is killed, never handed to the next run.
+          onCleanupFailure: reason => lease.markUnhealthy(reason),
         });
         if (result.timedOut) lease.markFailed("timed out");
         return result;

@@ -170,18 +170,47 @@ describe("MongoBoxStore", () => {
     ]);
   });
 
-  it("stores, touches and expires templates", async () => {
-    await store.putTemplate({
-      templateKey: "k",
-      snapshotId: "snap",
-      createdAt: at(),
-      lastUsedAt: at(),
-    });
-    expect(await store.getTemplate("k")).toMatchObject({ snapshotId: "snap" });
-    expect(await store.staleTemplates(at(1))).toHaveLength(1);
-    await store.touchTemplate("k", at(10));
-    expect(await store.staleTemplates(at(1))).toHaveLength(0);
-    await store.deleteTemplate("k");
+  it("lets exactly one of many concurrent callers claim a template", async () => {
+    const claims = await Promise.all(
+      Array.from({ length: 8 }, () => store.claimTemplate("k", at())),
+    );
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    // A claim is not a template until its snapshot completes.
     expect(await store.getTemplate("k")).toBeNull();
+    await store.completeTemplate("k", "snap");
+    expect(await store.getTemplate("k")).toMatchObject({ snapshotId: "snap" });
+    // A completed template is never replaced.
+    expect(await store.claimTemplate("k", at())).toBe(false);
+    await store.completeTemplate("k", "other");
+    expect(await store.getTemplate("k")).toMatchObject({ snapshotId: "snap" });
+  });
+
+  it("touches, expires and lists templates, including abandoned claims", async () => {
+    await store.claimTemplate("conn-a:h:rt", at());
+    await store.completeTemplate("conn-a:h:rt", "snap");
+    await store.claimTemplate("conn-b:h:rt", at());
+    expect(
+      (await store.staleTemplates(at(1), at(1))).map(t => t.templateKey).sort(),
+    ).toEqual(["conn-a:h:rt", "conn-b:h:rt"]);
+    await store.touchTemplate("conn-a:h:rt", at(10));
+    expect(
+      (await store.staleTemplates(at(1), at(-1))).map(t => t.templateKey),
+    ).toEqual([]);
+    expect(
+      (await store.templatesOfConnection("conn-a")).map(t => t.templateKey),
+    ).toEqual(["conn-a:h:rt"]);
+    await store.deleteTemplate("conn-a:h:rt");
+    expect(await store.getTemplate("conn-a:h:rt")).toBeNull();
+  });
+
+  it("hands out at most `allowed` start slots across concurrent instances", async () => {
+    await mongoose.connection.collection("connector_box_starts").deleteMany({});
+    const claims = await Promise.all(
+      Array.from({ length: 10 }, () => store.claimStartSlot(at(), 15_000, 3)),
+    );
+    expect(claims.filter(Boolean)).toHaveLength(3);
+    // Starts older than the window no longer count.
+    expect(await store.claimStartSlot(at(20_000), 15_000, 3)).toBe(true);
+    expect(await store.claimStartSlot(at(20_000), 15_000, 0)).toBe(false);
   });
 });

@@ -57,10 +57,16 @@ export interface BoxRecord {
 
 export interface TemplateRecord {
   templateKey: string;
-  snapshotId: string;
+  /** Null while one box is taking the snapshot (the claim). */
+  snapshotId: string | null;
   createdAt: Date;
   lastUsedAt: Date;
 }
+
+/** Fields a compare-and-set may require. */
+export type BoxExpect = Partial<
+  Pick<BoxRecord, "state" | "leasedBy" | "lastUsedAt" | "draining">
+>;
 
 /** A reusable box taken by a lease, and the state it was taken from. */
 export interface Claimed {
@@ -91,7 +97,7 @@ export interface BoxStore {
   /** Compare-and-set. Returns the updated record, or null if `expect` failed. */
   transition(
     boxId: string,
-    expect: Partial<Pick<BoxRecord, "state" | "leasedBy" | "lastUsedAt">>,
+    expect: BoxExpect,
     set: Partial<BoxRecord>,
     inc?: BoxCounters,
   ): Promise<BoxRecord | null>;
@@ -101,11 +107,28 @@ export interface BoxStore {
   latestUse(connectionId: string): Promise<Date | null>;
   /** Mark boxes of this connection on other hashes as draining. */
   drainOtherHashes(connectionId: string, bundleHash: string): Promise<number>;
+  /** A ready template (its snapshot exists), or null. */
   getTemplate(templateKey: string): Promise<TemplateRecord | null>;
-  putTemplate(record: TemplateRecord): Promise<void>;
+  /**
+   * Claim the right to snapshot for this key: insert-if-absent. Exactly one
+   * caller gets true; nobody ever replaces a template, so none is orphaned.
+   */
+  claimTemplate(templateKey: string, at: Date): Promise<boolean>;
+  completeTemplate(templateKey: string, snapshotId: string): Promise<void>;
   touchTemplate(templateKey: string, at: Date): Promise<void>;
-  staleTemplates(before: Date): Promise<TemplateRecord[]>;
+  /** Ready templates unused since `before`, and claims older than `claimsBefore`. */
+  staleTemplates(before: Date, claimsBefore: Date): Promise<TemplateRecord[]>;
+  /** Every template of a connection (template keys start `<connectionId>:`). */
+  templatesOfConnection(connectionId: string): Promise<TemplateRecord[]>;
   deleteTemplate(templateKey: string): Promise<void>;
+  /** Mark all of a connection's live boxes draining. */
+  drainConnection(connectionId: string): Promise<number>;
+  /**
+   * Take one start slot on the account if fewer than `allowed` connector box
+   * starts happened in the last `windowMs`, across every API instance.
+   * Atomic: concurrent callers never take more than `allowed` together.
+   */
+  claimStartSlot(at: Date, windowMs: number, allowed: number): Promise<boolean>;
 }
 
 // ── Mongo ──────────────────────────────────────────────────────────────────
@@ -151,7 +174,7 @@ ConnectorBoxSchema.index(
 const ConnectorBoxTemplateSchema = new Schema<TemplateRecord>(
   {
     templateKey: { type: String, required: true },
-    snapshotId: { type: String, required: true },
+    snapshotId: { type: String, default: null },
     createdAt: { type: Date, required: true },
     lastUsedAt: { type: Date, required: true },
   },
@@ -159,6 +182,22 @@ const ConnectorBoxTemplateSchema = new Schema<TemplateRecord>(
 );
 ConnectorBoxTemplateSchema.index({ templateKey: 1 }, { unique: true });
 ConnectorBoxTemplateSchema.index({ lastUsedAt: 1 });
+
+interface StartLedger {
+  _id: string;
+  starts: Date[];
+}
+const ConnectorBoxStartSchema = new Schema<StartLedger>(
+  { _id: { type: String }, starts: { type: [Date], default: [] } },
+  { collection: "connector_box_starts", versionKey: false },
+);
+
+export const ConnectorBoxStarts =
+  (mongoose.models.ConnectorBoxStarts as mongoose.Model<StartLedger>) ??
+  mongoose.model<StartLedger>("ConnectorBoxStarts", ConnectorBoxStartSchema);
+
+const escapeRegex = (value: string) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 export const ConnectorBox =
   (mongoose.models.ConnectorBox as mongoose.Model<BoxRecord>) ??
@@ -227,17 +266,20 @@ export class MongoBoxStore implements BoxStore {
 
   async transition(
     boxId: string,
-    expect: Partial<Pick<BoxRecord, "state" | "leasedBy" | "lastUsedAt">>,
+    expect: BoxExpect,
     set: Partial<BoxRecord>,
     inc?: BoxCounters,
   ): Promise<BoxRecord | null> {
+    const query: Record<string, unknown> = { boxId, ...expect };
+    // `draining: false` must also match records written before the field.
+    if (expect.draining === false) query.draining = { $ne: true };
     const update: Record<string, unknown> = {
       $set: set.state ? { ...set, stateChangedAt: new Date() } : set,
     };
     const $inc = incUpdate(inc);
     if ($inc) update.$inc = $inc;
     return strip(
-      await ConnectorBox.findOneAndUpdate({ boxId, ...expect }, update, {
+      await ConnectorBox.findOneAndUpdate(query, update, {
         returnDocument: "after",
       }).lean<BoxRecord>(),
     );
@@ -278,15 +320,31 @@ export class MongoBoxStore implements BoxStore {
     return strip(
       await ConnectorBoxTemplate.findOne({
         templateKey,
+        snapshotId: { $ne: null },
       }).lean<TemplateRecord>(),
     );
   }
 
-  async putTemplate(record: TemplateRecord): Promise<void> {
-    await ConnectorBoxTemplate.updateOne(
-      { templateKey: record.templateKey },
-      { $set: record },
+  async claimTemplate(templateKey: string, at: Date): Promise<boolean> {
+    const result = await ConnectorBoxTemplate.updateOne(
+      { templateKey },
+      {
+        $setOnInsert: {
+          templateKey,
+          snapshotId: null,
+          createdAt: at,
+          lastUsedAt: at,
+        },
+      },
       { upsert: true },
+    );
+    return result.upsertedCount === 1;
+  }
+
+  async completeTemplate(templateKey: string, snapshotId: string) {
+    await ConnectorBoxTemplate.updateOne(
+      { templateKey, snapshotId: null },
+      { $set: { snapshotId } },
     );
   }
 
@@ -297,15 +355,64 @@ export class MongoBoxStore implements BoxStore {
     );
   }
 
-  async staleTemplates(before: Date): Promise<TemplateRecord[]> {
+  async staleTemplates(
+    before: Date,
+    claimsBefore: Date,
+  ): Promise<TemplateRecord[]> {
     const docs = await ConnectorBoxTemplate.find({
-      lastUsedAt: { $lt: before },
+      $or: [
+        { snapshotId: { $ne: null }, lastUsedAt: { $lt: before } },
+        { snapshotId: null, createdAt: { $lt: claimsBefore } },
+      ],
+    }).lean<TemplateRecord[]>();
+    return docs.map(doc => strip(doc) as TemplateRecord);
+  }
+
+  async templatesOfConnection(connectionId: string) {
+    const docs = await ConnectorBoxTemplate.find({
+      templateKey: { $regex: `^${escapeRegex(connectionId)}:` },
     }).lean<TemplateRecord[]>();
     return docs.map(doc => strip(doc) as TemplateRecord);
   }
 
   async deleteTemplate(templateKey: string): Promise<void> {
     await ConnectorBoxTemplate.deleteOne({ templateKey });
+  }
+
+  async drainConnection(connectionId: string): Promise<number> {
+    const result = await ConnectorBox.updateMany(
+      { connectionId, state: { $in: LIVE_BOX_STATES } },
+      { $set: { draining: true } },
+    );
+    return result.modifiedCount;
+  }
+
+  async claimStartSlot(
+    at: Date,
+    windowMs: number,
+    allowed: number,
+  ): Promise<boolean> {
+    if (allowed <= 0) return false;
+    const since = new Date(at.getTime() - windowMs);
+    const recent = {
+      $filter: { input: "$starts", cond: { $gt: ["$$this", since] } },
+    };
+    await ConnectorBoxStarts.updateOne(
+      { _id: "account" },
+      { $setOnInsert: { starts: [] } },
+      { upsert: true },
+    );
+    // One atomic document update: the filter re-checks the window count, so
+    // two instances can never both take the last slot.
+    const result = await ConnectorBoxStarts.updateOne(
+      {
+        _id: "account",
+        $expr: { $lt: [{ $size: recent }, allowed] },
+      },
+      [{ $set: { starts: { $concatArrays: [recent, [at]] } } }],
+      { updatePipeline: true },
+    );
+    return result.modifiedCount === 1;
   }
 }
 
@@ -361,7 +468,7 @@ export class MemoryBoxStore implements BoxStore {
 
   async transition(
     boxId: string,
-    expect: Partial<Pick<BoxRecord, "state" | "leasedBy" | "lastUsedAt">>,
+    expect: BoxExpect,
     set: Partial<BoxRecord>,
     inc?: BoxCounters,
   ): Promise<BoxRecord | null> {
@@ -419,11 +526,25 @@ export class MemoryBoxStore implements BoxStore {
 
   async getTemplate(templateKey: string): Promise<TemplateRecord | null> {
     const template = this.templates.get(templateKey);
-    return template ? { ...template } : null;
+    return template?.snapshotId ? { ...template } : null;
   }
 
-  async putTemplate(record: TemplateRecord): Promise<void> {
-    this.templates.set(record.templateKey, { ...record });
+  async claimTemplate(templateKey: string, at: Date): Promise<boolean> {
+    if (this.templates.has(templateKey)) return false;
+    this.templates.set(templateKey, {
+      templateKey,
+      snapshotId: null,
+      createdAt: at,
+      lastUsedAt: at,
+    });
+    return true;
+  }
+
+  async completeTemplate(templateKey: string, snapshotId: string) {
+    const template = this.templates.get(templateKey);
+    if (template && template.snapshotId === null) {
+      template.snapshotId = snapshotId;
+    }
   }
 
   async touchTemplate(templateKey: string, at: Date): Promise<void> {
@@ -431,13 +552,50 @@ export class MemoryBoxStore implements BoxStore {
     if (template) template.lastUsedAt = at;
   }
 
-  async staleTemplates(before: Date): Promise<TemplateRecord[]> {
+  async staleTemplates(
+    before: Date,
+    claimsBefore: Date,
+  ): Promise<TemplateRecord[]> {
     return [...this.templates.values()]
-      .filter(t => t.lastUsedAt < before)
+      .filter(t =>
+        t.snapshotId ? t.lastUsedAt < before : t.createdAt < claimsBefore,
+      )
+      .map(t => ({ ...t }));
+  }
+
+  async templatesOfConnection(connectionId: string) {
+    return [...this.templates.values()]
+      .filter(t => t.templateKey.startsWith(`${connectionId}:`))
       .map(t => ({ ...t }));
   }
 
   async deleteTemplate(templateKey: string): Promise<void> {
     this.templates.delete(templateKey);
+  }
+
+  async drainConnection(connectionId: string): Promise<number> {
+    let count = 0;
+    for (const box of this.boxes.values()) {
+      if (box.connectionId === connectionId && box.state !== "killed") {
+        box.draining = true;
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /** Shared by every scheduler given this store: the "all instances" view. */
+  readonly starts: number[] = [];
+
+  async claimStartSlot(
+    at: Date,
+    windowMs: number,
+    allowed: number,
+  ): Promise<boolean> {
+    const since = at.getTime() - windowMs;
+    while (this.starts.length && this.starts[0] <= since) this.starts.shift();
+    if (this.starts.length >= allowed) return false;
+    this.starts.push(at.getTime());
+    return true;
   }
 }
