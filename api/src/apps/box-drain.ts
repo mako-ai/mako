@@ -37,39 +37,47 @@ export interface DrainOptions {
   swapTime: Date;
   apply: boolean;
   /**
-   * Session keys the pre-save dry run classed `foreign-origin` (preview and
+   * Sandbox ids the pre-save dry run classed `foreign-origin` (preview and
    * laptop boxes). Neither counted by the swap-time guard nor killed.
+   *
+   * By sandbox id, not session key: a session key names a person's box in
+   * one database, and a production session can share its key with a box a
+   * preview made against a copy of that database. Skipping by key would let
+   * a production box escape the kill (and the gate) because a preview box
+   * once carried the same key. A sandbox id names exactly one machine.
    */
-  ignoreSessionKeys?: Set<string>;
+  ignoreSandboxIds?: Set<string>;
 }
 
 export interface DrainReport {
   aborted?: string;
   candidates: number;
-  /** Boxes skipped because their session was classed foreign-origin. */
+  /** Boxes skipped because the dry run classed them foreign-origin. */
   ignored: number;
+  /** Their ids: expected leftovers in the old account after the kill. */
+  ignoredIds: string[];
   startedAfterSwap: string[];
   killed: string[];
   failed: Array<{ sandboxId: string; error: string }>;
 }
 
 /**
- * Session keys of `foreign-origin` rows in a pre-save dry run's JSON lines.
+ * Sandbox ids of `foreign-origin` rows in a pre-save dry run's JSON lines.
  * Unparseable lines are skipped: the report also holds a header and totals.
  */
-export function foreignOriginSessionKeys(jsonl: string): Set<string> {
-  const keys = new Set<string>();
+export function foreignOriginSandboxIds(jsonl: string): Set<string> {
+  const ids = new Set<string>();
   for (const line of jsonl.split("\n")) {
     try {
-      const row = JSON.parse(line) as { action?: string; sessionKey?: string };
-      if (row.action === "foreign-origin" && row.sessionKey) {
-        keys.add(row.sessionKey);
+      const row = JSON.parse(line) as { action?: string; sandboxId?: string };
+      if (row.action === "foreign-origin" && row.sandboxId) {
+        ids.add(row.sandboxId);
       }
     } catch {
       // not a row
     }
   }
-  return keys;
+  return ids;
 }
 
 export function sha256Hex(value: string): string {
@@ -83,6 +91,7 @@ export async function drainOldBoxes(
   const report: DrainReport = {
     candidates: 0,
     ignored: 0,
+    ignoredIds: [],
     startedAfterSwap: [],
     killed: [],
     failed: [],
@@ -101,10 +110,13 @@ export async function drainOldBoxes(
     return { ...report, aborted: "swap time is not a valid date" };
   }
 
-  const ignore = options.ignoreSessionKeys ?? new Set<string>();
+  const ignore = options.ignoreSandboxIds ?? new Set<string>();
   const listed = (await ops.listBoxes()).filter(b => b.sessionKey);
-  const boxes = listed.filter(b => !ignore.has(b.sessionKey ?? ""));
-  report.ignored = listed.length - boxes.length;
+  const boxes = listed.filter(b => !ignore.has(b.sandboxId));
+  report.ignoredIds = listed
+    .filter(b => ignore.has(b.sandboxId))
+    .map(b => b.sandboxId);
+  report.ignored = report.ignoredIds.length;
   report.candidates = boxes.length;
   report.startedAfterSwap = boxes
     .filter(b => b.startedAt.getTime() > options.swapTime.getTime())

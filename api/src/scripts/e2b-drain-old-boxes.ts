@@ -6,8 +6,9 @@
  *   pnpm --filter api exec tsx src/scripts/e2b-drain-old-boxes.ts \
  *     --expect-key-sha256 "$OLD_KEY_SHA256" --swap-time "$SWAP_TIME"          # dry run
  *   ... --apply                                                               # kill
- *   --ignore-foreign-from presave-dry.jsonl   skip sessions the pre-save dry
- *                                             run classed foreign-origin
+ *   --ignore-foreign-from presave-dry.jsonl   skip the boxes (by sandbox id)
+ *                                             the pre-save dry run classed
+ *                                             foreign-origin
  *
  * Environment (process only; no .env file is loaded):
  *   E2B_API_KEY         the OLD account's key.
@@ -21,7 +22,7 @@ import { Sandbox } from "e2b";
 import fs from "node:fs";
 import {
   drainOldBoxes,
-  foreignOriginSessionKeys,
+  foreignOriginSandboxIds,
   type DrainBox,
 } from "../apps/box-drain";
 
@@ -83,8 +84,8 @@ async function main(): Promise<void> {
       expectKeySha256: args.expectKeySha256 ?? "",
       swapTime: new Date(args.swapTime ?? ""),
       apply: args.apply,
-      ignoreSessionKeys: args.ignoreFrom
-        ? foreignOriginSessionKeys(fs.readFileSync(args.ignoreFrom, "utf8"))
+      ignoreSandboxIds: args.ignoreFrom
+        ? foreignOriginSandboxIds(fs.readFileSync(args.ignoreFrom, "utf8"))
         : undefined,
     },
   );
