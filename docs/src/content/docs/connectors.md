@@ -83,6 +83,12 @@ From a workflow, see [Workflows](/workflows/#calling-a-service-through-a-connect
 
 See the [Building Connectors](/guides/building-connectors/) guide for implementing new connectors. A workspace connector under `connectors/<slug>/` may declare npm dependencies in its own `package.json` with a `package-lock.json`; Mako builds it into one bundle per source hash on push. Never commit its `node_modules/`: Mako refuses the folder.
 
+A workspace can also install one of Mako's own connectors by reference: a
+`connectors/<slug>/connector.yaml` holding `source: mako/stripe@1` runs the
+newest published 1.x release, and `mako connector eject <slug>` turns it into
+the workspace's own code. See [Installing a Mako connector by
+reference](/guides/building-connectors/#installing-a-mako-connector-by-reference).
+
 Each connector extends `BaseConnector` and implements:
 
 ```typescript

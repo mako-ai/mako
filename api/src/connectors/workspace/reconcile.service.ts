@@ -23,6 +23,7 @@ import {
   isValidSlug,
   parseConnectorFile,
   validateSpec,
+  type ConnectorFile,
 } from "./connector-file";
 import { listConnectorFoldersAtMain, ensureConnectorRuntime } from "./resolver";
 import {
@@ -33,12 +34,22 @@ import {
 import { connectorBundlesEnabled } from "./bundle/flag";
 import { dependencyPlan, nodeModulesRefusal } from "./bundle/manifest";
 import {
+  CONNECTOR_BUNDLE_ENTRY,
   failureMessage,
   firstOfType,
   materializeConnector,
   runConnectorCommand,
   syncBoxContext,
 } from "./sync-box";
+import type { SandboxExecContext } from "../../apps/sandbox/provider";
+import { connectorRegistryEnabled } from "./registry/flag";
+import {
+  getRegistryCatalog,
+  prepareRegistryConnector,
+  resolveReference,
+  type RegistryResolution,
+} from "./registry/registry.service";
+import type { RegistryCatalog } from "./registry/store";
 
 const logger = loggers.connector();
 
@@ -107,6 +118,12 @@ async function reconcile(
   // Connector bundles (RFC connector-runtime §5). Off: every line below that
   // reads `bundling` is skipped. The node_modules/ guard runs either way.
   const bundling = connectorBundlesEnabled();
+  // Install by reference (RFC connector-runtime §7). Off: `source:` is not
+  // read, and a push behaves exactly as before.
+  const registry = connectorRegistryEnabled();
+  // Read at most once per pass, and only when a folder holds a reference.
+  let catalog: Promise<RegistryCatalog> | null = null;
+  const loadCatalog = () => (catalog ??= getRegistryCatalog({ fresh: true }));
 
   const rows = await ConnectorDefinition.find({ workspaceId });
   const rowBySlug = new Map(rows.map(row => [row.slug, row]));
@@ -179,7 +196,9 @@ async function reconcile(
     seen.add(slug);
 
     const decoder = new TextDecoder();
-    const parsed = parseConnectorFile(decoder.decode(yamlBytes));
+    const parsed = parseConnectorFile(decoder.decode(yamlBytes), {
+      registry,
+    });
     const row = rowBySlug.get(slug);
 
     if (!parsed.ok) {
@@ -192,6 +211,20 @@ async function reconcile(
         row,
       );
       result.blocked++;
+      continue;
+    }
+
+    if (parsed.value.source) {
+      const outcome = await indexReference({
+        workspaceId,
+        slug,
+        commit,
+        files,
+        file: parsed.value,
+        row,
+        loadCatalog,
+      });
+      result[outcome]++;
       continue;
     }
 
@@ -272,6 +305,8 @@ async function reconcile(
       if (row) {
         row.set({
           ...buildFields,
+          // An ejected folder is code again: it no longer follows a release.
+          ...(row.registry ? { registry: undefined } : {}),
           runtime: parsed.value.runtime,
           entry: parsed.value.entry,
           sha: commit,
@@ -397,25 +432,188 @@ async function runSpec(
     });
   }
 
+  const spec = await specAt(ctx, runtimeId, dir, runEntry);
+  return { ...spec, build };
+}
+
+/** Run `spec` on code already in the box and validate what it says. */
+async function specAt(
+  ctx: SandboxExecContext,
+  runtimeId: string,
+  dir: string,
+  entry: string,
+): Promise<
+  { ok: true; spec: Record<string, unknown> } | { ok: false; reason: string }
+> {
   const result = await runConnectorCommand({
     ctx,
     runtimeId,
     connectorDir: dir,
     command: "spec",
-    entry: runEntry,
+    entry,
     timeoutMs: 60_000,
   });
 
   const failure = failureMessage(result);
-  if (failure) return { ok: false, reason: failure, build };
+  if (failure) return { ok: false, reason: failure };
 
   const message = firstOfType<{ spec?: Record<string, unknown> }>(
     result.messages,
     "SPEC",
   );
   const validation = validateSpec(message?.spec);
-  if (!validation.ok) return { ok: false, reason: validation.reason, build };
-  return { ok: true, spec: message!.spec!, build };
+  if (!validation.ok) return { ok: false, reason: validation.reason };
+  return { ok: true, spec: message!.spec! };
+}
+
+/**
+ * A folder whose connector.yaml says `source: mako/<slug>@<range>`.
+ *
+ * The folder holds no code. The reference resolves to the newest registry
+ * version in range; that version's bundle runs `spec` in the sync box, and
+ * the row records the version so every later command runs the same bytes.
+ *
+ * `sourceSha` covers the folder AND the resolved bundle hash. A new release
+ * inside the range therefore reads as changed code: spec runs again and a
+ * `verified` status, which a check on the old version earned, is dropped.
+ * A newer major only updates `upgradeAvailable` on an otherwise unchanged row.
+ */
+async function indexReference(input: {
+  workspaceId: string;
+  slug: string;
+  commit: string;
+  files: Map<string, Uint8Array>;
+  file: ConnectorFile;
+  row: IConnectorDefinition | undefined;
+  loadCatalog: () => Promise<RegistryCatalog>;
+}): Promise<"created" | "updated" | "unchanged" | "blocked"> {
+  const { workspaceId, slug, commit, files, file, row } = input;
+  const reference = file.source!;
+  const folderSha = sourceShaOf(files);
+
+  let catalog: RegistryCatalog;
+  try {
+    catalog = await input.loadCatalog();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    logger.error("Could not read the connector registry", {
+      workspaceId,
+      slug,
+      reason,
+    });
+    // A storage outage is not a broken connector. A row that already runs a
+    // resolved version keeps running it; only a first install is refused.
+    if (row && row.registry && row.status !== "blocked") return "unchanged";
+    await block(
+      workspaceId,
+      slug,
+      commit,
+      folderSha,
+      `Could not read the connector registry to resolve ${reference.text}: ${reason}`,
+      row,
+    );
+    return "blocked";
+  }
+
+  let resolved: ReturnType<typeof resolveReference>;
+  try {
+    resolved = resolveReference(reference, catalog);
+  } catch (error) {
+    // A malformed catalog entry blocks this connector, never the whole push.
+    resolved = {
+      ok: false,
+      reason: `Could not resolve ${reference.text}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  if (!resolved.ok) {
+    await block(workspaceId, slug, commit, folderSha, resolved.reason, row);
+    return "blocked";
+  }
+  const resolution = resolved.resolution;
+  const sourceSha = blobOid(
+    `${folderSha}\nregistry:${resolution.slug}@${resolution.version}:${resolution.hash}`,
+  );
+
+  if (row && row.sourceSha === sourceSha && row.status !== "blocked") {
+    // Same version: keep the row and its `verified`. Only what is newer than
+    // it may have changed, which is news, not new code.
+    const previous = row.registry;
+    if (
+      row.sha !== commit ||
+      previous?.latest !== resolution.latest ||
+      previous?.upgradeAvailable !== resolution.upgradeAvailable ||
+      previous?.ref !== resolution.ref
+    ) {
+      row.set({
+        sha: commit,
+        registry: {
+          ...resolution,
+          resolvedAt: previous?.resolvedAt ?? resolution.resolvedAt,
+        },
+      });
+      await row.save();
+    }
+    return "unchanged";
+  }
+
+  try {
+    const spec = await runRegistrySpec(workspaceId, resolution);
+    if (!spec.ok) {
+      await block(workspaceId, slug, commit, sourceSha, spec.reason, row);
+      return "blocked";
+    }
+    const entities = Object.keys((spec.spec?.mako as any)?.entities ?? {});
+    const fields = {
+      runtime: "node",
+      entry: CONNECTOR_BUNDLE_ENTRY,
+      sha: commit,
+      sourceSha,
+      spec: spec.spec,
+      status: "indexed" as const,
+      entities,
+      hasIcon: false,
+      registry: resolution,
+    };
+    if (row) {
+      row.set({
+        ...fields,
+        blockedReason: undefined,
+        lastCheckError: undefined,
+        // The code is the registry's bundle, not a build of this folder.
+        build: undefined,
+      });
+      await row.save();
+      return "updated";
+    }
+    await ConnectorDefinition.create({ workspaceId, slug, ...fields });
+    return "created";
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    logger.error("Failed to index a connector installed by reference", {
+      workspaceId,
+      slug,
+      ref: reference.text,
+      reason,
+    });
+    await block(workspaceId, slug, commit, sourceSha, reason, row);
+    return "blocked";
+  }
+}
+
+async function runRegistrySpec(
+  workspaceId: string,
+  resolution: RegistryResolution,
+): Promise<
+  { ok: true; spec: Record<string, unknown> } | { ok: false; reason: string }
+> {
+  const ctx = syncBoxContext(workspaceId);
+  const runtimeId = await ensureConnectorRuntime(ctx);
+  const { dir, entry } = await prepareRegistryConnector({
+    ctx,
+    runtimeId,
+    registry: resolution,
+  });
+  return specAt(ctx, runtimeId, dir, entry);
 }
 
 async function block(
