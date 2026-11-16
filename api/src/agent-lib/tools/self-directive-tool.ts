@@ -534,7 +534,6 @@ export function createSelfDirectiveTools(workspaceId: string, userId?: string) {
         "- archive_section: Move a section into a workspace skill and leave a one-line pointer. Provide 'find' (exact section text), 'skill_name' (lowercase, '-' or '_'), 'load_when' (retrieval trigger), optionally 'entities'. The skill is retrieved on demand in future sessions, so nothing is lost.",
         "",
         "Always read_self_directive first to see what exists before modifying.",
-        'An update that points to a skill (skills/<name>, load_skill("<name>")) that does not exist is refused. Lines the directive already holds are skipped.',
         "The directive is ALWAYS loaded into your prompt — keep it a terse index of durable rules. Detailed or situational knowledge (long playbooks, per-table quirks, worked examples) belongs in skills: archive_section moves it there. When the result reports the directive is nearly full, archive detail first, then compact what remains with 'set'.",
       ].join("\n"),
       inputSchema: updateSelfDirectiveSchema,
