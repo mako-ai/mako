@@ -131,12 +131,14 @@ export async function reconcileWorkers(
 
   for (const { workspaceId, replicas } of workers) {
     const state = byId.get(workspaceId);
-    const tenant = tenantOfToken(state?.hatchetToken);
-    const demand = await (
-      tenant
-        ? readQueue(tenant, now.getTime())
-        : Promise.resolve({ queued: 0, running: 0 })
-    )
+    // Reading the token is inside the chain: a token that cannot be read
+    // (a database restored under another key) leaves its own worker as it
+    // is, and the sweep goes on to the next.
+    const demand = await Promise.resolve()
+      .then(() => tenantOfToken(state?.hatchetToken))
+      .then(tenant =>
+        tenant ? readQueue(tenant, now.getTime()) : { queued: 0, running: 0 },
+      )
       .then(queue => demandOf(state?.live, queue))
       .catch(error => {
         logger.warn("Could not read Hatchet to size a workflow worker", {
