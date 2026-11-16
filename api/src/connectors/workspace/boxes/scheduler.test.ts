@@ -200,6 +200,25 @@ describe("lease acquire and release", () => {
     expect(provider.ping).toHaveBeenCalledTimes(1);
   });
 
+  it("counts a run that threw an error with no message as failed, and pings next time", async () => {
+    const s = scheduler();
+    const id = await s.withLease(run(), async lease => lease.boxId);
+    await s
+      .withLease(run(), async () => {
+        throw new Error();
+      })
+      .catch(() => undefined);
+    expect(box(id).failures).toBe(1);
+    expect(box(id).lastOkAt).toBeNull();
+    await s
+      .withLease(run(), async lease => lease.markFailed(""))
+      .catch(() => undefined);
+    expect(box(id).failures).toBe(2);
+    provider.ping.mockClear();
+    await s.withLease(run(), async lease => lease.boxId);
+    expect(provider.ping).toHaveBeenCalledTimes(1);
+  });
+
   it("pings a paused box, which a lease resumes", async () => {
     const s = scheduler();
     const id = await s.withLease(run(), async lease => lease.boxId);

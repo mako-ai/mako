@@ -155,6 +155,14 @@ function snapshotName(templateKey: string): string {
 const message = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+/**
+ * A failure's reason, never empty: an empty string would read as "no
+ * failure" wherever `failure` is tested, and a run that threw `new Error()`
+ * would count as a success that skips the next ping.
+ */
+const reasonOf = (reason: string, fallback = "run failed"): string =>
+  reason.trim() ? reason : fallback;
+
 export class BoxScheduler {
   readonly config: BoxLeaseConfig;
   private readonly store: BoxStore;
@@ -213,11 +221,11 @@ export class BoxScheduler {
       ctx: boxContext(held.box),
       fresh: held.fresh,
       markFailed: reason => {
-        failure ??= reason;
+        failure ??= reasonOf(reason);
       },
       markUnhealthy: reason => {
-        held.unhealthy ??= reason;
-        failure ??= reason;
+        held.unhealthy ??= reasonOf(reason, "unhealthy");
+        failure ??= reasonOf(reason);
       },
       noteRuntime: runtimeId => {
         held.runtimeId = runtimeId;
@@ -237,7 +245,10 @@ export class BoxScheduler {
     try {
       return await fn(lease);
     } catch (error) {
-      failure ??= message(error);
+      failure ??= reasonOf(
+        message(error),
+        error instanceof Error ? error.name || "Error" : "run failed",
+      );
       this.memos.delete(held.box.boxId);
       // Leased without a ping, a box can turn out to be gone at the first
       // command. Never hand it out again: the next run gets a new box.
