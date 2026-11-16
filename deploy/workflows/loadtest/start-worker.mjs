@@ -12,6 +12,8 @@ process.env.GIT_SHA = "loadtest";
 process.env.WORKER_RUN = `loadtest-${process.pid}`;
 for (const name of [
   "WORKFLOWS_MAX_STEPS",
+  "WORKFLOWS_MAX_PROGRAMS",
+  "WORKFLOWS_STEPS_PER_PROGRAM",
   "WORKFLOWS_MAX_RUNS",
   "WORKFLOWS_RATE_LIMITS",
 ]) {

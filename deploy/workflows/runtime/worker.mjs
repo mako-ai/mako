@@ -1,8 +1,8 @@
 // The dispatcher: one Hatchet worker for the workflows under WORKFLOWS_ROOT,
 // started by entrypoint.mjs. It holds the worker key and the Hatchet token,
 // and runs no workflow code: a workflow is described by a step program
-// (step.mjs describe) and each of its steps runs in a step program of its
-// own, as the workflow's own user, with a pass for that step from Mako
+// (step.mjs describe) and its steps run in step programs of that workflow
+// alone, as the workflow's own user, each with a pass for that step from Mako
 // (api/src/workflows/pass.ts) instead of the key. Workflows that share this
 // pod can then not act as each other: a step has no key and no token to
 // borrow, and another workflow's user cannot read its pass.
@@ -13,6 +13,7 @@
 //
 // Env: WORKFLOWS_ROOT, GIT_SHA, HATCHET_CLIENT_TOKEN, WORKFLOWS_ACTIVE,
 // MAKO_URL, MAKO_API_KEY; and the limits below: WORKFLOWS_MAX_STEPS,
+// WORKFLOWS_MAX_PROGRAMS, WORKFLOWS_STEPS_PER_PROGRAM,
 // WORKFLOWS_MAX_RUNS, WORKFLOWS_SCHEDULE_TIMEOUT, WORKFLOWS_RATE_LIMITS.
 import { execFileSync, fork } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -223,14 +224,29 @@ async function passFor(workflow, runId, step) {
 // ---------------------------------------------------------------------------
 
 const uidOf = new Map();
-const idle = new Map(); // workflow -> [{ child, timer, at }]
+const programs = new Map(); // workflow -> [{ child, load, retired, timer, at }]
 
-// Step programs alive at once, busy or idle: each is a Node process, and the
-// pod has a memory limit. Past it a step waits for one to finish (or an idle
-// one of another workflow is stopped), and Hatchet is given as many slots,
-// so it does not hand out more steps than run. The pod's size and this
-// number are set together (api/src/workflows/kube.ts).
-const MAX_STEPS = Math.max(1, Number(process.env.WORKFLOWS_MAX_STEPS) || 8);
+// Step programs alive at once, busy or idle: each is a Node process of about
+// 100 MB, and the pod has a memory limit. A program runs several steps of
+// its one workflow at a time: steps wait on the network, and what keeps
+// workflows apart is the program and its user, which steps of the same
+// workflow share anyway. Past both numbers a step waits for a place (or an
+// idle program of another workflow is stopped). Hatchet is given
+// WORKFLOWS_MAX_STEPS slots, so it does not hand out more steps than run.
+// The pod's size and these numbers are set together
+// (api/src/workflows/kube.ts).
+const MAX_PROGRAMS = Math.max(
+  1,
+  Number(process.env.WORKFLOWS_MAX_PROGRAMS) || 8,
+);
+const STEPS_PER_PROGRAM = Math.max(
+  1,
+  Number(process.env.WORKFLOWS_STEPS_PER_PROGRAM) || 8,
+);
+const MAX_STEPS = Math.max(
+  1,
+  Number(process.env.WORKFLOWS_MAX_STEPS) || MAX_PROGRAMS * STEPS_PER_PROGRAM,
+);
 
 // Runs of one workflow executing at once, in the whole workspace. More wait
 // in Hatchet, oldest first, instead of all starting together: a burst of a
@@ -282,12 +298,21 @@ const wake = () => {
 };
 const alive = child => child.exitCode === null && child.connected;
 
+const usable = program => alive(program.child) && !program.retired;
+
 function spawnFor(workflow) {
   live++;
   return new Promise((resolve, reject) => {
     const child = startStepProgram(["run", workflow], uidOf.get(workflow));
+    // Every step running in it listens for its own messages.
+    child.setMaxListeners(0);
+    const program = { child, load: 0, retired: false, timer: null, at: 0 };
     child.once("exit", () => {
       live--;
+      clearTimeout(program.timer);
+      const list = programs.get(workflow) ?? [];
+      const at = list.indexOf(program);
+      if (at >= 0) list.splice(at, 1);
       wake();
     });
     child.stderrTail = "";
@@ -304,8 +329,14 @@ function spawnFor(workflow) {
     child.once("exit", onExit);
     child.once("message", message => {
       child.off("exit", onExit);
-      if (message?.type === "ready") resolve(child);
-      else reject(new Error("The step program did not start"));
+      if (message?.type !== "ready") {
+        reject(new Error("The step program did not start"));
+        return;
+      }
+      const list = programs.get(workflow) ?? [];
+      list.push(program);
+      programs.set(workflow, list);
+      resolve(program);
     });
   });
 }
@@ -313,44 +344,53 @@ function spawnFor(workflow) {
 /** Stop the step program idle the longest, any workflow's. */
 function stopOldestIdle() {
   let oldest = null;
-  for (const [workflow, list] of idle) {
-    for (const entry of list) {
-      if (!oldest || entry.at < oldest.entry.at) oldest = { workflow, entry };
+  for (const list of programs.values()) {
+    for (const program of list) {
+      if (program.load > 0 || !usable(program)) continue;
+      if (!oldest || program.at < oldest.at) oldest = program;
     }
   }
   if (!oldest) return;
-  const list = idle.get(oldest.workflow);
-  list.splice(list.indexOf(oldest.entry), 1);
-  clearTimeout(oldest.entry.timer);
-  oldest.entry.child.kill("SIGTERM");
+  // Not taken again while it stops.
+  oldest.retired = true;
+  oldest.child.kill("SIGTERM");
 }
 
+/** A place for one step of `workflow`: in a program of its own workflow. */
 async function acquire(workflow) {
   for (;;) {
-    const list = idle.get(workflow) ?? [];
-    while (list.length) {
-      const { child, timer } = list.pop();
-      clearTimeout(timer);
-      if (alive(child)) return child;
+    // The fullest program that still has room: an idle one can then stop.
+    const open = (programs.get(workflow) ?? [])
+      .filter(program => usable(program) && program.load < STEPS_PER_PROGRAM)
+      .sort((a, b) => b.load - a.load)[0];
+    const program =
+      open ?? (live < MAX_PROGRAMS ? await spawnFor(workflow) : null);
+    if (program && usable(program)) {
+      clearTimeout(program.timer);
+      program.load++;
+      return program;
     }
-    if (live < MAX_STEPS) return spawnFor(workflow);
-    stopOldestIdle();
-    // Woken when a program exits or goes idle.
-    await new Promise(resolve => waiting.push(resolve));
+    if (!program) stopOldestIdle();
+    // Woken when a program exits or a step ends.
+    if (!program) await new Promise(resolve => waiting.push(resolve));
   }
 }
 
-function release(workflow, child) {
-  if (!alive(child)) return;
-  const list = idle.get(workflow) ?? [];
-  const entry = { child, at: Date.now() };
-  entry.timer = setTimeout(() => {
-    const at = list.indexOf(entry);
-    if (at >= 0) list.splice(at, 1);
-    child.kill("SIGTERM");
-  }, IDLE_MS);
-  list.push(entry);
-  idle.set(workflow, list);
+function release(program) {
+  program.load--;
+  if (program.load === 0 && alive(program.child)) {
+    if (program.retired) {
+      // A cancelled step may still run in it: nothing else does now.
+      program.child.kill("SIGKILL");
+    } else {
+      program.at = Date.now();
+      program.timer = setTimeout(() => {
+        if (program.load > 0) return;
+        program.retired = true;
+        program.child.kill("SIGTERM");
+      }, IDLE_MS);
+    }
+  }
   wake();
 }
 
@@ -417,7 +457,8 @@ async function runStep(workflow, which, parents, input, ctx) {
     snapshot.workflowRunId,
     snapshot.taskName,
   );
-  const child = await acquire(workflow);
+  const program = await acquire(workflow);
+  const { child } = program;
   const id = ++nextRun;
   const signal = ctx.abortController?.signal;
   return new Promise((resolve, reject) => {
@@ -428,6 +469,7 @@ async function runStep(workflow, which, parents, input, ctx) {
       child.off("message", onMessage);
       child.off("exit", onExit);
       signal?.removeEventListener("abort", onAbort);
+      release(program);
       settle(value);
     };
     const onExit = code =>
@@ -437,38 +479,47 @@ async function runStep(workflow, which, parents, input, ctx) {
           child.stderrTail || `the step program exited with code ${code}`,
         ),
       );
-    // A cancelled step stops at once, and its program is not reused.
+    // A cancelled step (or one out of time) is told to stop, and its
+    // program takes no new step: it is stopped for good once the steps
+    // beside it have ended, at once when there are none. Stopping it now
+    // would end those steps too.
     const onAbort = () => {
-      child.kill("SIGKILL");
+      program.retired = true;
+      if (alive(child)) child.send({ type: "cancel", id });
       finish(reject, new Error("The step was cancelled"));
     };
     const onMessage = async message => {
-      if (message?.type === "call") {
+      // Each step answers only what its own code asked.
+      if (message?.run !== id) return;
+      if (message.type === "call") {
         const handler = CALLS[message.method];
         try {
           if (!handler) {
             throw new Error(`ctx.${message.method} is not available`);
           }
           const value = await handler(ctx, message.args ?? []);
-          child.send({
-            type: "result",
-            id: message.id,
-            ok: true,
-            value: value ?? null,
-          });
+          if (alive(child)) {
+            child.send({
+              type: "result",
+              id: message.id,
+              ok: true,
+              value: value ?? null,
+            });
+          }
         } catch (err) {
-          child.send({
-            type: "result",
-            id: message.id,
-            ok: false,
-            name: err?.name,
-            error: err?.message ?? String(err),
-          });
+          if (alive(child)) {
+            child.send({
+              type: "result",
+              id: message.id,
+              ok: false,
+              name: err?.name,
+              error: err?.message ?? String(err),
+            });
+          }
         }
         return;
       }
-      if (message?.type !== "done" || message.id !== id) return;
-      release(workflow, child);
+      if (message.type !== "done") return;
       if (message.ok) {
         finish(resolve, message.value);
         return;
@@ -626,7 +677,7 @@ const worker = await hatchet.worker("workspace", {
 process.on("SIGTERM", async () => {
   console.log(`${process.env.GIT_SHA}: finishing running tasks`);
   await worker.stop();
-  for (const list of idle.values()) {
+  for (const list of programs.values()) {
     for (const { child } of list) child.kill("SIGKILL");
   }
   emptyHomes();
