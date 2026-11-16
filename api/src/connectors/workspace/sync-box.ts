@@ -32,6 +32,7 @@ import {
   launchScript,
   preflightScript,
   runLayout,
+  stagedPath,
   setupScript,
   shellQuote,
   snapshotScript,
@@ -40,6 +41,7 @@ import {
 import path from "node:path";
 import {
   getSandboxProvider,
+  isSandboxGone,
   type SandboxExecContext,
   type SandboxExecOptions,
 } from "../../apps/sandbox/provider";
@@ -444,6 +446,8 @@ export interface OpenRun {
   owner: { asRoot: true } | undefined;
   outputFile: string;
   boundedFile: string;
+  /** Where to write the input whose final path is `input` (isolated: the root-only stage). */
+  stagePath(input: string): string;
   launch(inputs: string[], command: string): string;
   snapshot(maxBytes: number): string;
   /** Throws when cleanup could not prove the run is gone (isolated only). */
@@ -531,6 +535,7 @@ export async function openRun(ctx: SandboxExecContext): Promise<OpenRun> {
       owner: undefined,
       outputFile,
       boundedFile,
+      stagePath: input => input,
       launch: (_inputs, command) => `${command} > ${shellQuote(outputFile)}`,
       snapshot: maxBytes =>
         `if test -f ${shellQuote(outputFile)}; then head -c ${maxBytes + 1} ${shellQuote(outputFile)} > ${shellQuote(boundedFile)} && wc -c < ${shellQuote(boundedFile)}; else echo missing; fi`,
@@ -578,6 +583,7 @@ export async function openRun(ctx: SandboxExecContext): Promise<OpenRun> {
     owner: { asRoot: true },
     outputFile: l.outputFile,
     boundedFile: l.boundedFile,
+    stagePath: input => stagedPath(l, input),
     launch: (inputs, command) => launchScript(l, inputs, command),
     snapshot: maxBytes => snapshotScript(l, maxBytes),
     close: async () => {
@@ -594,6 +600,9 @@ export async function openRun(ctx: SandboxExecContext): Promise<OpenRun> {
             ? "the run's processes would not die"
             : (result.stderr || `exit ${result.exitCode}`).slice(0, 500);
       } catch (error) {
+        // The box itself is gone (killed under the run, e.g. by another
+        // run's failed cleanup): so is everything the run left in it.
+        if (isSandboxGone(error)) return;
         detail = error instanceof Error ? error.message : String(error);
       }
       logger.error("Failed to remove a connector run", {
@@ -715,9 +724,12 @@ export async function runConnectorCommand(input: {
     ] as const) {
       if (value === undefined) continue;
       const file = path.posix.join(runDir, `${name}.json`);
+      // Isolated runs: written into the root-only stage, handed to the run
+      // user and moved to `file` only at launch, so no other run can open
+      // it while it still has the mode the write gave it.
       await writeBoxFile(
         ctx,
-        file,
+        run.stagePath(file),
         encoder.encode(JSON.stringify(value)),
         run.owner,
       );

@@ -10,6 +10,8 @@ const sandbox = vi.hoisted(() => ({
 
 vi.mock("../../apps/sandbox/provider", () => ({
   getSandboxProvider: () => sandbox,
+  isSandboxGone: (error: unknown) =>
+    (error as { name?: string })?.name === "SandboxNotFoundError",
 }));
 
 import {
@@ -245,7 +247,12 @@ describe("per-run Unix users on providers with real users", () => {
     expect(setup?.command).toContain(
       "install -d -o root -g root -m 0711 '/var/lib/mako-connectors/runs'",
     );
-    expect(setup?.command).toContain('install -d -o root -g root -m 0711 "$R"');
+    expect(setup?.command).toContain(
+      'install -d -o root -g "$gid" -m 0750 "$R"',
+    );
+    expect(setup?.command).toContain(
+      'install -d -o root -g root -m 0700 "$R/stage"',
+    );
     expect(setup?.command).toContain(
       'install -d -o "$user" -g "$user" -m 0700 "$R/home"',
     );
@@ -272,11 +279,6 @@ describe("per-run Unix users on providers with real users", () => {
     );
     expect(launch?.command).toContain(`cd '${dir}/home'`);
     // Inputs belong to root and are only readable by the run's group.
-    // Inputs belong to the run user alone: no group can read them.
-    expect(launch?.command).toContain(
-      `chown '${user}:${user}' '${dir}/config.json'`,
-    );
-    expect(launch?.command).toContain("chmod 0400");
     // The bounded copy and the read stay in out/ too.
     const snapshot = calls().find(c => c.command.includes("head -c"));
     expect(snapshot?.asRoot).toBe(true);
@@ -287,11 +289,17 @@ describe("per-run Unix users on providers with real users", () => {
       `${dir}/out/out.bounded.jsonl`,
       { asRoot: true },
     );
+    // The API writes the credential into the root-only stage; launch hands
+    // it over there and only then moves it to where the connector reads it.
     const config = sandbox.writeFile.mock.calls.find(([, file]) =>
       String(file).endsWith("/config.json"),
     );
-    expect(config?.[1]).toBe(`${dir}/config.json`);
+    expect(config?.[1]).toBe(`${dir}/stage/config.json`);
     expect(config?.[3]).toEqual({ asRoot: true });
+    expect(launch?.command).toContain(
+      `chown '${user}:${user}' '${dir}/stage/config.json' && chmod 0400 '${dir}/stage/config.json' && mv '${dir}/stage/config.json' '${dir}'/`,
+    );
+    expect(launch?.command).toContain(`--config' '${dir}/config.json'`);
   });
 
   it("kills the run user's processes without procps, then deletes its files, IPC and the user", async () => {

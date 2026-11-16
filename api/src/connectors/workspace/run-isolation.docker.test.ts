@@ -24,6 +24,7 @@ import {
   setupScript,
   shellQuote,
   snapshotScript,
+  stagedPath,
   type RunLayout,
 } from "./run-isolation";
 
@@ -77,10 +78,15 @@ async function open(): Promise<RunLayout> {
   return layout;
 }
 
-/** Write an input as root, the way `writeFile(..., { asRoot: true })` does. */
+/**
+ * Write an input as root, the way `writeFile(..., { asRoot: true })` does:
+ * into the stage, with the default 0644 mode. Returns its final path.
+ */
 async function writeInput(l: RunLayout, name: string, body: string) {
   const file = `${l.dir}/${name}`;
-  const res = await root(`printf %s ${shellQuote(body)} > ${shellQuote(file)}`);
+  const res = await root(
+    `umask 022; printf %s ${shellQuote(body)} > ${shellQuote(stagedPath(l, file))}`,
+  );
   expect(res.code).toBe(0);
   return file;
 }
@@ -348,6 +354,87 @@ suite("connector run isolation in e2bdev/base (Docker)", () => {
 
     await root(`runuser -u ${shellQuote(thief.user)} -- kill -9 -1; true`);
     expect((await root(cleanupScript(next))).code).toBe(0);
+  }, 180_000);
+
+  it("lets no concurrent run read an input in the gap between the write and the launch", async () => {
+    // A watcher run, alive the whole time, polls every 5 ms: every path any
+    // process names after --config, every file under the runs directory it
+    // can list, and the victim's stage and final paths directly.
+    const watcher = await open();
+    const victim = await open();
+    const watchCode = [
+      "import glob, time, os",
+      `victim = ${JSON.stringify(victim.dir)}`,
+      "end = time.time() + 6",
+      "hits = open(os.environ['HOME'] + '/hits', 'a')",
+      "while time.time() < end:",
+      "    paths = [victim + '/config.json', victim + '/stage/config.json']",
+      "    paths += glob.glob('/var/lib/mako-connectors/runs/*/*.json')",
+      "    paths += glob.glob('/var/lib/mako-connectors/runs/*/stage/*')",
+      "    for c in glob.glob('/proc/[0-9]*/cmdline'):",
+      "        try:",
+      "            a = open(c, 'rb').read().split(bytes(1))",
+      "            if b'--config' in a: paths.append(a[a.index(b'--config') + 1].decode())",
+      "        except Exception: pass",
+      "    for p in paths:",
+      "        try:",
+      "            hits.write(p + ' => ' + open(p).read() + chr(10)); hits.flush()",
+      "        except Exception: pass",
+      "    time.sleep(0.005)",
+    ].join("\n");
+    await root(
+      `printf '%s' ${shellQuote(watchCode)} > /opt/watch.py && chmod 0644 /opt/watch.py`,
+    );
+    const watching = connector(watcher, [], "python3 /opt/watch.py; echo done");
+
+    const secret = `sk_victim_${randomBytes(8).toString("hex")}`;
+    const file = await writeInput(victim, "config.json", secret);
+    // The write left the input 0644, as an API write may. 100 ms gap.
+    expect(
+      (
+        await root(`stat -c %a ${shellQuote(stagedPath(victim, file))}`)
+      ).stdout.trim(),
+    ).toBe("644");
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await root(
+      launchScript(
+        victim,
+        [file],
+        `sh -c 'sleep 1' connector --config ${shellQuote(file)}`,
+      ),
+    );
+    await watching;
+
+    const hits = await root(
+      `cat ${shellQuote(`${watcher.home}/hits`)} 2>/dev/null; true`,
+    );
+    expect(hits.stdout).not.toContain(secret);
+    expect(hits.stdout).toBe("");
+    expect((await root(cleanupScript(victim))).code).toBe(0);
+    expect((await root(cleanupScript(watcher))).code).toBe(0);
+  }, 60_000);
+
+  it("finds and kills a thread flood that overflows a single argv", async () => {
+    // 6,000 threads under a 256 KB stack limit: one `cat` over every status
+    // path fails with E2BIG there (a check that would report nothing alive).
+    const l = await open();
+    await root(
+      `printf '%s\\n' 'import threading, time' 'threading.stack_size(262144)' '[threading.Thread(target=time.sleep, args=(600,)).start() for _ in range(6000)]' 'time.sleep(600)' > /opt/flood.py && chmod 0644 /opt/flood.py`,
+    );
+    await connector(
+      l,
+      [],
+      "nohup python3 /opt/flood.py >/dev/null 2>&1 &\nsleep 8; echo started",
+    );
+    const old = await root(
+      "ulimit -s 256; cat /proc/[0-9]*/task/[0-9]*/status >/dev/null; echo exit=$?",
+    );
+    expect(old.stdout + old.stderr).toMatch(/Argument list too long|exit=126/);
+    expect(await liveThreads(l.uid)).toBeGreaterThan(5000);
+
+    const cleanup = await root(`ulimit -s 256\n${cleanupScript(l)}`, 120_000);
+    expect(cleanup, cleanup.stderr).toMatchObject({ code: 0 });
+    expect(await liveThreads(l.uid)).toBe(0);
   }, 180_000);
 
   it("refuses to start a run without useradd", async () => {

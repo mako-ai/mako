@@ -7,16 +7,19 @@
  * nothing a connector or a stray process does can pre-create or redirect it):
  *
  *   /var/lib/mako-connectors/runs           root:root 0711
- *     <runId>/                              root:root 0711
- *       config.json, catalog.json, ...      <run user> 0400
+ *     <runId>/                              root:<run group> 0750
+ *       stage/                              root:root 0700   (the API writes inputs here)
+ *       config.json, catalog.json, ...      <run user> 0400  (moved in at launch)
  *       home/                               <run user> 0700  (HOME, TMPDIR, cwd)
  *       out/                                root:root 0700
  *         out.jsonl                         stdout, opened by root
  *         out.bounded.jsonl                 the bounded copy the API reads
  *
- * The run user can read its inputs and write its home. No group can read
- * an input, and every run has its own random UID and GID, so nothing a
- * previous run left behind shares an id with the next run. The run user
+ * Only the run's own group can enter the run directory, and every run has
+ * its own random UID and GID, so no other run (concurrent or left over) can
+ * even reach a path in it. Inputs never sit anywhere readable before they
+ * are 0400 and owned by the run user: the API writes them into the root-only
+ * `stage/`, and launch hands them over there and only then moves them in. The run user
  * cannot create, rename or replace anything root later opens: root opens
  * only `out/`, which the run user cannot even enter, and the connector
  * reaches its output file only through the stdout descriptor root hands it.
@@ -50,6 +53,8 @@ export const REQUIRED_TOOLS = [
   "find",
   "awk",
   "cat",
+  "xargs",
+  "mv",
 ] as const;
 
 export interface RunLayout {
@@ -58,8 +63,10 @@ export interface RunLayout {
   uid: number;
   /** Random like the UID: sequential GIDs would be reused by the next run. */
   gid: number;
-  /** root:<run group> 0750: the run's inputs. */
+  /** root:<run group> 0750: the run's inputs, once handed over. */
   dir: string;
+  /** root-only: where the API writes inputs before launch. */
+  stage: string;
   /** The run user's own directory. */
   home: string;
   /** root-only. */
@@ -82,6 +89,7 @@ export function runLayout(
     uid,
     gid,
     dir,
+    stage: path.posix.join(dir, "stage"),
     home: path.posix.join(dir, "home"),
     out,
     outputFile: path.posix.join(out, "out.jsonl"),
@@ -132,7 +140,8 @@ until err=$(useradd -l -M -u "$uid" -g "$gid" -d "$R/home" -s /usr/sbin/nologin 
   if [ "$n" -ge 20 ]; then echo "$err" >&2; groupdel "$user" 2>/dev/null || true; exit 1; fi
   sleep 0.2
 done
-if ! { install -d -o root -g root -m 0711 "$R" \
+if ! { install -d -o root -g "$gid" -m 0750 "$R" \
+    && install -d -o root -g root -m 0700 "$R/stage" \
     && install -d -o "$user" -g "$user" -m 0700 "$R/home" \
     && install -d -o root -g root -m 0700 "$R/out"; }; then
   rm -rf "$R"
@@ -142,21 +151,29 @@ if ! { install -d -o root -g root -m 0711 "$R" \
 fi`;
 }
 
+/** Where the API writes an input before launch: the root-only stage. */
+export function stagedPath(l: RunLayout, input: string): string {
+  return path.posix.join(l.stage, path.posix.basename(input));
+}
+
 /**
- * Root: hand the inputs to the run user read-only, then start `command` as
- * the run user with stdout already open on a root-owned file.
+ * Root: hand the staged inputs to the run user (0400, owned by it, while
+ * still in the root-only stage), move them into the run directory, then
+ * start `command` as the run user with stdout already open on a root-owned
+ * file.
  *
- * `command` is a shell-quoted argv, run by `runuser` without a shell.
+ * `inputs` are the final paths in the run directory, as the connector's
+ * arguments name them; each was written at `stagedPath`. `command` is a
+ * shell-quoted argv, run by `runuser` without a shell.
  */
 export function launchScript(
   l: RunLayout,
   inputs: string[],
   command: string,
 ): string {
-  const files = inputs.map(shellQuote).join(" ");
-  // Owned by the run user, readable by nobody else: no group has access.
+  const staged = inputs.map(input => shellQuote(stagedPath(l, input)));
   const handOver = inputs.length
-    ? `chown ${shellQuote(`${l.user}:${l.user}`)} ${files} && chmod 0400 ${files} && `
+    ? `chown ${shellQuote(`${l.user}:${l.user}`)} ${staged.join(" ")} && chmod 0400 ${staged.join(" ")} && mv ${staged.join(" ")} ${shellQuote(l.dir)}/ && `
     : "";
   return `${handOver}cd ${shellQuote(l.home)} && runuser -u ${shellQuote(l.user)} -- env HOME=${shellQuote(l.home)} TMPDIR=${shellQuote(l.home)} ${command} > ${shellQuote(l.outputFile)}`;
 }
@@ -189,13 +206,18 @@ export function cleanupScript(l: RunLayout): string {
 ${header(l)}
 # A live (not zombie, not dead) thread with the run's uid as any of its
 # real, effective, saved or filesystem uids. State comes before Uid in
-# status, and cat skips threads that exit while we read.
+# status. The paths come from the shell's own glob and printf (a builtin),
+# and xargs splits them, so no argv grows with the thread count. Reading no
+# status at all counts as alive: a check that failed must not pass.
 alive() {
-  cat /proc/[0-9]*/task/[0-9]*/status 2>/dev/null | awk -v n="$uid" '
-    /^State:/ { st = $2 }
+  printf '%s\\n' /proc/[0-9]*/task/[0-9]*/status | xargs cat 2>/dev/null | awk -v n="$uid" '
+    /^State:/ { st = $2; seen++ }
     /^Uid:/ { if (st != "Z" && st != "X") for (i = 2; i <= 5; i++) if ($i == n) { found = 1; exit } }
-    END { exit !found }'
+    END { exit !(found || seen == 0) }'
 }
+# One round always, before any check: a check that misses a thread must
+# still have been preceded by a kill.
+runuser -u "$user" -- kill -9 -1 2>/dev/null || true
 survivors=0
 n=0
 while alive; do

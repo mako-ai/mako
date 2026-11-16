@@ -209,17 +209,28 @@ export class SandboxedConnector extends BaseConnector {
     if (!connectorBoxLeasesEnabled()) {
       const { dir, runtimeId, entry, ctx } = await this.ready();
       let cleanupFailure: string | null = null;
-      const result = await runConnectorCommand({
-        ctx,
-        runtimeId,
-        connectorDir: dir,
-        command,
-        entry,
-        ...options,
-        onCleanupFailure: reason => {
-          cleanupFailure = reason;
-        },
-      });
+      let result: RunResult;
+      try {
+        result = await runConnectorCommand({
+          ctx,
+          runtimeId,
+          connectorDir: dir,
+          command,
+          entry,
+          ...options,
+          onCleanupFailure: reason => {
+            cleanupFailure = reason;
+          },
+        });
+      } catch (error) {
+        // The box may have been killed under this run (another run's failed
+        // cleanup retires the whole sync box). Forget what this instance put
+        // in it, so the chunk's retry rebuilds a fresh box instead of failing
+        // on a connector directory that no longer exists.
+        this.materializedDir = null;
+        this.runtimeId = null;
+        throw error;
+      }
       if (cleanupFailure) {
         // The box may hold this run's credential or a live thread of it:
         // kill it, and make the next command rebuild a fresh one.
