@@ -396,8 +396,6 @@ export async function rollWorkersToRuntimeImage(
     try {
       await replaceWorker(client, workspaceId, deployment, "API started");
       moved.push(workspaceId);
-      // The autoscaler's target follows the steps a pod now runs.
-      await ensureAutoscaler(workspaceId);
     } catch (error) {
       if ((error as { code?: number } | null)?.code === 409) continue;
       logger.warn("Could not move a workflow worker to the new image", {
