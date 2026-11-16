@@ -62,7 +62,17 @@ export const RESCUE_SECRET_NAMES = [
   "*service-account*.json",
   "*-key.json",
   "*_key.json",
+  "*service_account*.json",
+  "*secret*.json",
+  "secrets.y*ml",
+  "token*.txt",
 ] as const;
+
+/**
+ * A GCP service-account key file keeps its default download name,
+ * `<project>-<12 hex>.json`.
+ */
+const GCP_KEY_FILE = /-[0-9a-f]{12}\.json$/i;
 
 /** Build output: left out of a rescue, and losing it is fine. */
 export const RESCUE_EXCLUDED_DIRS = ["node_modules", "target", "dist"] as const;
@@ -119,6 +129,7 @@ export function excludedBecause(path: string, size: number): string | null {
   }
   if (NAME_RULES.some(rule => rule.test(base))) return "secret-shaped name";
   if (/(^|\/)\.aws\/credentials$/i.test(path)) return "secret-shaped name";
+  if (GCP_KEY_FILE.test(base)) return "secret-shaped name";
   if (size > RESCUE_MAX_FILE_BYTES) return "over 10 MB";
   return null;
 }
@@ -133,6 +144,7 @@ export function blockedBecause(path: string, size: number): string | null {
   const base = parts[parts.length - 1] ?? path;
   if (NAME_RULES.some(rule => rule.test(base))) return "secret-shaped name";
   if (/(^|\/)\.aws\/credentials$/i.test(path)) return "secret-shaped name";
+  if (GCP_KEY_FILE.test(base)) return "secret-shaped name";
   if (size > RESCUE_MAX_FILE_BYTES) return "over 10 MB";
   return null;
 }
@@ -233,7 +245,10 @@ export function parseInspection(stdout: string): RescueInspection {
 /** `<size>\t<path>\0` per changed path (size -1 = deleted). */
 export function changesScript(root: string): string {
   return (
-    `cd ${sh(root)} && git ls-files -z --modified --deleted --others --exclude-standard | sort -zu | ` +
+    // Worktree changes, untracked files, AND staged changes: a file staged
+    // and untouched since is not "modified" to ls-files, but it is work.
+    `cd ${sh(root)} && { git ls-files -z --modified --deleted --others --exclude-standard; ` +
+    `git diff --cached --name-only -z HEAD 2>/dev/null; } | sort -zu | ` +
     `while IFS= read -r -d '' f; do if [ -e "$f" ]; then s=$(stat -c %s -- "$f" 2>/dev/null || stat -f %z -- "$f" 2>/dev/null || echo 0); else s=-1; fi; printf '%s\\t%s\\0' "$s" "$f"; done`
   );
 }

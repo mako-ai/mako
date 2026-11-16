@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import {
   PREVIEW_ACTIVITY_EVERY_MS,
+  PREVIEW_HEARTBEAT_MAX_MS,
   usePreviewActivity,
 } from "./usePreviewActivity";
 import { useAppsStore } from "../../store/appsStore";
@@ -95,6 +96,18 @@ describe("usePreviewActivity", () => {
       vi.advanceTimersByTime(60 * PREVIEW_ACTIVITY_EVERY_MS);
     });
     expect(report).toHaveBeenCalledTimes(61);
+  });
+
+  it("a frame left focused stops counting 2 hours after the last interaction", () => {
+    const { iframe } = setup();
+    clickIntoFrame(iframe);
+    act(() => {
+      vi.advanceTimersByTime(
+        PREVIEW_HEARTBEAT_MAX_MS + 30 * PREVIEW_ACTIVITY_EVERY_MS,
+      );
+    });
+    // The click plus 119 beats inside the 2 hours, then silence.
+    expect(report).toHaveBeenCalledTimes(120);
   });
 
   it("no heartbeat while the tab is hidden", () => {

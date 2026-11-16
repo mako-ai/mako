@@ -839,9 +839,24 @@ async function sessionRunning(sessionKey: string): Promise<boolean> {
   }
 }
 
+const pausedListeners = new Set<(sessionKey: string) => void>();
+
 /**
- * The idle sweep paused this session's box: drop what this process believed
- * about it, so its own polls stop answering "running" from memory.
+ * Run `listener` whenever this process learns a session's box was paused.
+ * For per-session state held outside this module (a cached Sandbox handle,
+ * PR 1284), which must not outlive the pause. Returns an unsubscribe.
+ */
+export function onSessionPaused(
+  listener: (sessionKey: string) => void,
+): () => void {
+  pausedListeners.add(listener);
+  return () => pausedListeners.delete(listener);
+}
+
+/**
+ * The idle sweep paused this session's box: drop everything this process
+ * cached about it, so its polls stop answering "running" from memory and
+ * the next real use reconnects (and resumes) from scratch.
  */
 export function noteSessionPaused(sessionKey: string): void {
   runningAnswer.set(sessionKey, {
@@ -849,6 +864,18 @@ export function noteSessionPaused(sessionKey: string): void {
     until: Date.now() + RUNNING_ANSWER_TTL_MS,
   });
   keepAliveUntil.delete(sessionKey);
+  sessions.delete(sessionKey);
+  knownAlive.delete(sessionKey);
+  for (const listener of pausedListeners) {
+    try {
+      listener(sessionKey);
+    } catch (error) {
+      logger.warn("A session-paused listener threw", {
+        sessionKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 }
 
 export const e2bSandboxProvider: SandboxProvider = {

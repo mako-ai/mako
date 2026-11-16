@@ -16,15 +16,18 @@
  * truth. Writes are throttled per process: a burst of agent commands is one
  * write, not fifty.
  */
+import { Redis } from "ioredis";
 import { Types } from "mongoose";
 import { AppWorktree } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { BoundedMap } from "../utils/bounded-map";
+import { BASE_REDIS_OPTIONS } from "../utils/redis";
 
 const logger = loggers.api("apps-box-activity");
 
 /** What counted as use. Logged, so a box that never sleeps can be explained. */
 export type BoxActivityKind =
+  | "read"
   | "edit"
   | "commit"
   | "agent-exec"
@@ -77,6 +80,9 @@ export async function recordBoxActivity(
     at: prev && now - prev.at < WRITE_THROTTLE_MS ? prev.at : now,
     until: Math.max(until, prev?.until ?? 0),
   });
+  // Across instances: one plain (hold-less) write per session per window.
+  // A hold that reaches further always goes through.
+  if (holdMs === 0 && !(await claimSharedWindow(sessionKey))) return;
   try {
     await AppWorktree.updateOne(
       {
@@ -100,6 +106,54 @@ export async function recordBoxActivity(
       error: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+/**
+ * The cross-instance half of the throttle: SET NX PX in Redis when
+ * REDIS_URL is set (every API instance and the sweep share it). Without
+ * Redis, or when Redis is down, the per-process throttle alone applies:
+ * a lost claim costs one extra write, never a lost record.
+ */
+let redis: Redis | null | undefined;
+
+function sharedRedis(): Redis | null {
+  if (redis !== undefined) return redis;
+  const url = process.env.REDIS_URL;
+  if (!url) return (redis = null);
+  redis = new Redis(url, {
+    ...BASE_REDIS_OPTIONS,
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+    connectTimeout: 2000,
+  });
+  redis.on("error", error =>
+    logger.warn("Apps box-activity redis error", {
+      error: error instanceof Error ? error.message : String(error),
+    }),
+  );
+  return redis;
+}
+
+async function claimSharedWindow(sessionKey: string): Promise<boolean> {
+  const client = sharedRedis();
+  if (!client) return true;
+  try {
+    const set = await client.set(
+      `apps:box-activity:throttle:${sessionKey}`,
+      "1",
+      "PX",
+      WRITE_THROTTLE_MS,
+      "NX",
+    );
+    return set === "OK";
+  } catch {
+    return true;
+  }
+}
+
+/** Test seam: use this Redis-like client (null = none). */
+export function setBoxActivityRedisForTests(client: Redis | null): void {
+  redis = client;
 }
 
 /** Fire-and-forget form for hot paths. */

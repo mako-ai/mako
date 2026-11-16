@@ -449,6 +449,8 @@ export async function readFile(
   const safe = assertSafeRelPath(relPath);
   const source = await readSource(project, userId, at);
   if (source.kind === "box") {
+    // Someone opened a file: real use, even if they never edit.
+    noteBoxActivity(source.ctx.sessionKey, "read");
     const blob = await boxReadFile(source.ctx, appPath(project, safe));
     return { path: safe, ...blob };
   }

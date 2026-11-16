@@ -65,14 +65,20 @@ const BOX_ROOT = "/home/user/app";
 export interface BoxIdleConfig {
   /** Pause sweep. Off only with `APPS_BOX_IDLE_SWEEP=off`. */
   enabled: boolean;
-  /** Deletion. On only with `APPS_BOX_REAPER=on`. */
-  reaperEnabled: boolean;
   /** Pause a running box this long after its last real use. */
   idleMs: number;
   /** Delete a paused session this long after its last real use. */
   pausedRetentionMs: number;
   /** At most this many sessions deleted per hourly run. */
   reapBatch: number;
+  /**
+   * Running work found by the probe (a terminal command, a workflow run)
+   * keeps a box awake at most this long after its last real use. `vim`,
+   * `less`, `tail -f` or a REPL left open would otherwise hold it forever.
+   */
+  maxHoldMs: number;
+  /** Reaper: off, dryrun (settle and log, kill nothing) or on. */
+  reaperMode: "off" | "dryrun" | "on";
 }
 
 function positive(raw: string | undefined, fallback: number): number {
@@ -86,6 +92,8 @@ function positive(raw: string | undefined, fallback: number): number {
  *   APPS_BOX_PAUSED_RETENTION_DAYS  default 14
  *   APPS_BOX_REAP_BATCH             default 10
  *   APPS_BOX_IDLE_SWEEP=off         disables the pause sweep
+ *   APPS_BOX_MAX_HOLD_MINUTES       default 120 (cap on probe-found work)
+ *   APPS_BOX_REAPER=dryrun          plans and settles, logs "would kill"
  *   APPS_BOX_REAPER=on              enables deletion (off by default)
  */
 export function boxIdleConfig(
@@ -93,7 +101,13 @@ export function boxIdleConfig(
 ): BoxIdleConfig {
   return {
     enabled: env.APPS_BOX_IDLE_SWEEP !== "off",
-    reaperEnabled: env.APPS_BOX_REAPER === "on",
+    reaperMode:
+      env.APPS_BOX_REAPER === "on"
+        ? "on"
+        : env.APPS_BOX_REAPER === "dryrun"
+          ? "dryrun"
+          : "off",
+    maxHoldMs: positive(env.APPS_BOX_MAX_HOLD_MINUTES, 120) * 60_000,
     idleMs: positive(env.APPS_BOX_IDLE_MINUTES, 10) * 60_000,
     pausedRetentionMs:
       positive(env.APPS_BOX_PAUSED_RETENTION_DAYS, 14) * 24 * 3_600_000,
@@ -214,6 +228,7 @@ export interface SweepResult {
     sessionKey: string;
     sandboxId: string;
     idleMinutes: number;
+    note?: string;
   }>;
   kept: Array<{ sessionKey: string; reason: string }>;
   usage: WorkspaceBoxUsage[];
@@ -263,9 +278,15 @@ export async function sweepIdleBoxes(
       busy = `work probe failed: ${message(error)}`;
     }
     if (busy) {
-      result.kept.push({ sessionKey, reason: busy });
-      continue;
+      if (now - lastUseOf(act, since) < config.maxHoldMs) {
+        result.kept.push({ sessionKey, reason: busy });
+        continue;
+      }
+      // Past the cap: an editor or a `tail -f` left open is not use.
     }
+    const note = busy
+      ? `${busy} ignored: no real use for ${Math.round(config.maxHoldMs / 60_000)} min`
+      : undefined;
 
     // Re-read just this session: the probe took seconds, and someone may
     // have typed or saved meanwhile.
@@ -288,6 +309,7 @@ export async function sweepIdleBoxes(
           sessionKey,
           sandboxId: box.sandboxId,
           idleMinutes,
+          ...(note ? { note } : {}),
         });
       } catch (error) {
         result.kept.push({
@@ -374,7 +396,8 @@ export async function planReap(
 
 export interface ReapOutcome {
   sessionKey: string;
-  action: "deleted" | "kept";
+  /** would-delete: dry run, settled and re-paused, nothing killed. */
+  action: "deleted" | "would-delete" | "kept";
   reason?: string;
   rescues: Array<{ sandboxId: string; result: RescueResult }>;
   killFailures: string[];
@@ -384,6 +407,7 @@ export interface ReapOutcome {
 export async function reapSession(
   deps: ReapDeps,
   candidate: ReapCandidate,
+  options: { dryRun?: boolean } = {},
 ): Promise<ReapOutcome> {
   const { sessionKey } = candidate;
   const outcome: ReapOutcome = {
@@ -425,6 +449,14 @@ export async function reapSession(
     outcome.reason = "used during the settle";
     return outcome;
   }
+  if (options.dryRun) {
+    // Settled (rescues pushed) but nothing is killed: back to sleep.
+    for (const id of candidate.sandboxIds) {
+      await deps.pause(id).catch(() => false);
+    }
+    outcome.action = "would-delete";
+    return outcome;
+  }
   for (const sandboxId of candidate.sandboxIds) {
     try {
       await deps.kill(sandboxId);
@@ -449,7 +481,11 @@ export async function reapPausedBoxes(
   const plan = await planReap(deps, config);
   const outcomes: ReapOutcome[] = [];
   for (const candidate of plan.due) {
-    outcomes.push(await reapSession(deps, candidate));
+    outcomes.push(
+      await reapSession(deps, candidate, {
+        dryRun: config.reaperMode === "dryrun",
+      }),
+    );
   }
   return { plan, outcomes };
 }

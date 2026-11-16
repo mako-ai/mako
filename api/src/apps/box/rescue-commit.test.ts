@@ -198,6 +198,35 @@ describe("rescueCommit", () => {
     expect(await git(origin, "rev-parse", BRANCH)).toBe(head);
   });
 
+  it("staged 1: a staged new file, untouched since, is saved", async () => {
+    await write("apps/sales/staged.ts", "staged\n");
+    await git(root, "add", "apps/sales/staged.ts");
+    const result = await rescue();
+    expect(result).toMatchObject({ status: "saved", files: 1 });
+    expect(await git(origin, "show", `${BRANCH}:apps/sales/staged.ts`)).toBe(
+      "staged",
+    );
+  });
+
+  it("staged 2: a staged edit, untouched since, is saved", async () => {
+    await write("apps/sales/App.tsx", "export default 9;\n");
+    await git(root, "add", "apps/sales/App.tsx");
+    const result = await rescue();
+    expect(result).toMatchObject({ status: "saved", files: 1 });
+    expect(await git(origin, "show", `${BRANCH}:apps/sales/App.tsx`)).toBe(
+      "export default 9;",
+    );
+  });
+
+  it("staged 3: a staged delete is saved", async () => {
+    await git(root, "rm", "-q", "apps/sales/App.tsx");
+    const result = await rescue();
+    expect(result).toMatchObject({ status: "saved", files: 1 });
+    expect(
+      await git(origin, "ls-tree", "-r", "--name-only", BRANCH),
+    ).not.toContain("apps/sales/App.tsx");
+  });
+
   async function blobOnServer(sha: string): Promise<boolean> {
     return exec("git", ["-C", origin, "cat-file", "-e", sha]).then(
       () => true,
@@ -304,10 +333,19 @@ describe("helpers", () => {
       "gcp-service-account-prod.json",
       "stripe-key.json",
       "api_key.json",
+      "my_service_account.json",
+      "client_secret_123.json",
+      "secrets.yaml",
+      "SECRETS.YML",
+      "token.txt",
+      "token-prod.txt",
+      "acme-prod-1a2b3c4d5e6f.json",
     ]) {
       expect(excludedBecause(name, 1)).toBe("secret-shaped name");
     }
     expect(excludedBecause("apps/sales/App.tsx", 1)).toBeNull();
+    expect(excludedBecause("package.json", 1)).toBeNull();
+    expect(excludedBecause("apps/sales/app.json", 1)).toBeNull();
     expect(excludedBecause("apps/sales/App.tsx", 11 * 1024 * 1024)).toBe(
       "over 10 MB",
     );

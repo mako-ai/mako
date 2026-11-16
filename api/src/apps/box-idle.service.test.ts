@@ -117,13 +117,14 @@ function sweepDeps(
 }
 
 describe("config", () => {
-  it("defaults: 10 idle minutes, 14 days, 10 per run, pause on, reaper OFF", () => {
+  it("defaults: 10 idle minutes, 14 days, 10 per run, 2 h hold cap, pause on, reaper OFF", () => {
     expect(config).toEqual({
       enabled: true,
-      reaperEnabled: false,
+      reaperMode: "off",
       idleMs: 10 * MIN,
       pausedRetentionMs: 14 * DAY,
       reapBatch: 10,
+      maxHoldMs: 120 * MIN,
     });
   });
 
@@ -135,15 +136,20 @@ describe("config", () => {
         APPS_BOX_REAP_BATCH: "2",
         APPS_BOX_IDLE_SWEEP: "off",
         APPS_BOX_REAPER: "on",
+        APPS_BOX_MAX_HOLD_MINUTES: "30",
       }),
     ).toEqual({
       enabled: false,
-      reaperEnabled: true,
+      reaperMode: "on",
       idleMs: 5 * MIN,
       pausedRetentionMs: 3 * DAY,
       reapBatch: 2,
+      maxHoldMs: 30 * MIN,
     });
-    expect(boxIdleConfig({ APPS_BOX_REAPER: "yes" }).reaperEnabled).toBe(false);
+    expect(boxIdleConfig({ APPS_BOX_REAPER: "dryrun" }).reaperMode).toBe(
+      "dryrun",
+    );
+    expect(boxIdleConfig({ APPS_BOX_REAPER: "yes" }).reaperMode).toBe("off");
   });
 
   it("ignores junk values", () => {
@@ -250,6 +256,41 @@ describe("sweepIdleBoxes: no pause while active", () => {
       expect(result.pausedNow).toEqual([]);
       expect(result.kept).toEqual([{ sessionKey: KEY, reason: work }]);
     }
+  });
+
+  it("2 h cap: a terminal left in vim stops holding the box", async () => {
+    const { deps } = sweepDeps(
+      [appBox()],
+      { [KEY]: activity(121) },
+      {
+        runningWork: vi.fn(async () => "terminal command vim"),
+      },
+    );
+    const result = await sweepIdleBoxes(deps, config);
+    expect(result.kept).toEqual([]);
+    expect(result.pausedNow).toEqual([
+      {
+        sessionKey: KEY,
+        sandboxId: "sbx-1",
+        idleMinutes: 121,
+        note: "terminal command vim ignored: no real use for 120 min",
+      },
+    ]);
+  });
+
+  it("2 h cap: inside the cap, the same command still holds the box", async () => {
+    const { deps } = sweepDeps(
+      [appBox()],
+      { [KEY]: activity(119) },
+      {
+        runningWork: vi.fn(async () => "terminal command tail"),
+      },
+    );
+    const result = await sweepIdleBoxes(deps, config);
+    expect(result.pausedNow).toEqual([]);
+    expect(result.kept).toEqual([
+      { sessionKey: KEY, reason: "terminal command tail" },
+    ]);
   });
 
   it("keeps a box when the work probe fails", async () => {
@@ -697,6 +738,42 @@ describe("reapSession", () => {
     const outcome = await reapSession(deps, candidate());
     expect(deps.kill).not.toHaveBeenCalled();
     expect(outcome.reason).toBe("used during the settle");
+  });
+
+  it("dry run settles every box, re-pauses them and kills nothing", async () => {
+    const { deps, calls } = reapDeps(
+      [],
+      { [KEY]: activity(20 * 24 * 60) },
+      {
+        settle: vi.fn(async (_k: string, id: string) => {
+          calls.push(`settle:${id}`);
+          return saved(id);
+        }),
+      },
+    );
+    const outcome = await reapSession(deps, candidate(["sbx-1", "sbx-2"]), {
+      dryRun: true,
+    });
+    expect(calls).toEqual([
+      "settle:sbx-1",
+      "settle:sbx-2",
+      "pause:sbx-1",
+      "pause:sbx-2",
+    ]);
+    expect(deps.kill).not.toHaveBeenCalled();
+    expect(deps.forget).not.toHaveBeenCalled();
+    expect(outcome.action).toBe("would-delete");
+    expect(outcome.rescues).toHaveLength(2);
+  });
+
+  it("APPS_BOX_REAPER=dryrun end to end kills nothing", async () => {
+    const { deps } = reapDeps([paused()], { [KEY]: activity(20 * 24 * 60) });
+    const { outcomes } = await reapPausedBoxes(
+      deps,
+      boxIdleConfig({ APPS_BOX_REAPER: "dryrun" }),
+    );
+    expect(outcomes[0].action).toBe("would-delete");
+    expect(deps.kill).not.toHaveBeenCalled();
   });
 
   it("plan + reap end to end", async () => {

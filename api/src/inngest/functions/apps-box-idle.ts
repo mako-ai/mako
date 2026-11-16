@@ -4,7 +4,8 @@
  * - Every 2 minutes: pause running app boxes idle past APPS_BOX_IDLE_MINUTES
  *   (default 10) and log running/paused counts and box-seconds per
  *   workspace.
- * - Hourly, only with APPS_BOX_REAPER=on (off by default): delete sessions
+ * - Hourly, with APPS_BOX_REAPER=dryrun (settle, log "would kill") or on
+ *   (off by default): delete sessions
  *   paused and unused past APPS_BOX_PAUSED_RETENTION_DAYS (default 14),
  *   rescuing uncommitted work to a mako-presave/ branch first, at most
  *   APPS_BOX_REAP_BATCH (default 10) per run, one step per session.
@@ -68,9 +69,10 @@ export const appsBoxPausedReaperFunction = inngest.createFunction(
   },
   async ({ step }) => {
     const config = boxIdleConfig();
-    // Deletion is opt-in and separate from pausing: APPS_BOX_REAPER=on.
-    if (!config.enabled || !config.reaperEnabled) {
-      return { skipped: "APPS_BOX_REAPER is not on" };
+    // Deletion is opt-in and separate from pausing. Roll out:
+    // off -> dryrun (settle, log "would kill") -> read the logs -> on.
+    if (!config.enabled || config.reaperMode === "off") {
+      return { skipped: "APPS_BOX_REAPER is off" };
     }
     if (!boxIdleSweepAvailable()) return { skipped: "no e2b provider" };
     const plan = await step.run("plan", async () => {
@@ -81,6 +83,7 @@ export const appsBoxPausedReaperFunction = inngest.createFunction(
       return planned.due;
     });
     let deleted = 0;
+    let wouldDelete = 0;
     let kept = 0;
     // One step per session: a slow or failing box costs only its own step,
     // and a retry of the function never repeats a finished deletion.
@@ -88,7 +91,9 @@ export const appsBoxPausedReaperFunction = inngest.createFunction(
       const outcome = await step.run(
         `reap-${candidate.sessionKey}`,
         async () => {
-          const result = await reapSession(realReapDeps(), candidate);
+          const result = await reapSession(realReapDeps(), candidate, {
+            dryRun: config.reaperMode === "dryrun",
+          });
           for (const { sandboxId, result: rescue } of result.rescues) {
             // Everything deletion will lose is logged BEFORE the kill below
             // ran: excluded paths (secrets, >10 MB, build output) and ignored
@@ -109,7 +114,18 @@ export const appsBoxPausedReaperFunction = inngest.createFunction(
               ignored: rescue.ignored,
             });
           }
-          if (result.action === "deleted") {
+          if (result.action === "would-delete") {
+            log.info(
+              "Apps paused box would be deleted (dry run, nothing killed)",
+              {
+                sessionKey: candidate.sessionKey,
+                boxes: candidate.sandboxIds,
+                idleDays: Math.floor(
+                  (Date.now() - candidate.lastUse) / 86_400_000,
+                ),
+              },
+            );
+          } else if (result.action === "deleted") {
             log.info("Apps paused box deleted", {
               sessionKey: candidate.sessionKey,
               boxes: candidate.sandboxIds.length,
@@ -128,8 +144,15 @@ export const appsBoxPausedReaperFunction = inngest.createFunction(
         },
       );
       if (outcome.action === "deleted") deleted += 1;
+      else if (outcome.action === "would-delete") wouldDelete += 1;
       else kept += 1;
     }
-    return { due: plan.length, deleted, kept };
+    return {
+      mode: config.reaperMode,
+      due: plan.length,
+      deleted,
+      wouldDelete,
+      kept,
+    };
   },
 );

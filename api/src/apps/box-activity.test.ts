@@ -34,6 +34,7 @@ import {
   parseSessionKey,
   recordBoxActivity,
   resetBoxActivityThrottleForTests,
+  setBoxActivityRedisForTests,
 } from "./box-activity";
 import { tailBoxLog } from "./sandbox-ops.service";
 import { discoverDevServers } from "./dev-server/status";
@@ -44,6 +45,7 @@ const KEY = `${WS}:6846e6a01b05af0948070999`;
 beforeEach(() => {
   vi.clearAllMocks();
   resetBoxActivityThrottleForTests();
+  setBoxActivityRedisForTests(null);
 });
 
 describe("parseSessionKey", () => {
@@ -104,6 +106,65 @@ describe("recordBoxActivity", () => {
   it("never throws when the database does", async () => {
     db.updateOne.mockRejectedValueOnce(new Error("down"));
     await expect(recordBoxActivity(KEY, "edit")).resolves.toBeUndefined();
+  });
+});
+
+describe("shared throttle (Redis)", () => {
+  function fakeRedis() {
+    const keys = new Map<string, number>();
+    let clock = 0;
+    const client = {
+      set: vi.fn(
+        async (
+          key: string,
+          _v: string,
+          _px: string,
+          ms: number,
+          _nx: string,
+        ) => {
+          const until = keys.get(key) ?? -1;
+          if (until > clock) return null;
+          keys.set(key, clock + ms);
+          return "OK";
+        },
+      ),
+      tick: (ms: number) => {
+        clock += ms;
+      },
+    };
+    return client;
+  }
+
+  it("another instance's write inside 30 s skips ours", async () => {
+    const redis = fakeRedis();
+    setBoxActivityRedisForTests(redis as never);
+    await recordBoxActivity(KEY, "read", { now: 0 });
+    // A second process: its own in-process throttle is empty.
+    resetBoxActivityThrottleForTests();
+    await recordBoxActivity(KEY, "read", { now: 1_000 });
+    expect(db.updateOne).toHaveBeenCalledTimes(1);
+    redis.tick(30_000);
+    resetBoxActivityThrottleForTests();
+    await recordBoxActivity(KEY, "read", { now: 31_000 });
+    expect(db.updateOne).toHaveBeenCalledTimes(2);
+  });
+
+  it("a hold always goes through the shared throttle", async () => {
+    setBoxActivityRedisForTests(fakeRedis() as never);
+    await recordBoxActivity(KEY, "read", { now: 0 });
+    resetBoxActivityThrottleForTests();
+    await recordBoxActivity(KEY, "agent-exec", { now: 1_000, holdMs: 120_000 });
+    expect(db.updateOne).toHaveBeenCalledTimes(2);
+  });
+
+  it("Redis down: the write still happens", async () => {
+    setBoxActivityRedisForTests({
+      set: vi.fn(async () => {
+        throw new Error("down");
+      }),
+    } as never);
+    await recordBoxActivity(KEY, "read", { now: 0 });
+    expect(db.updateOne).toHaveBeenCalledTimes(1);
   });
 });
 

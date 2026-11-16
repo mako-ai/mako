@@ -104,3 +104,51 @@ describe("openAppBoxById", () => {
     expect(await run("false")).toMatchObject({ exitCode: 1, stderr: "boom" });
   });
 });
+
+describe("noteSessionPaused (e2b-provider)", () => {
+  it("runs registered listeners, and unsubscribes", async () => {
+    const { noteSessionPaused, onSessionPaused } =
+      await import("./e2b-provider");
+    const seen: string[] = [];
+    const off = onSessionPaused(key => seen.push(key));
+    noteSessionPaused("ws:u1");
+    off();
+    noteSessionPaused("ws:u2");
+    expect(seen).toEqual(["ws:u1"]);
+  });
+
+  it("a throwing listener does not stop the others", async () => {
+    const { noteSessionPaused, onSessionPaused } =
+      await import("./e2b-provider");
+    const seen: string[] = [];
+    const offA = onSessionPaused(() => {
+      throw new Error("boom");
+    });
+    const offB = onSessionPaused(key => seen.push(key));
+    noteSessionPaused("ws:u3");
+    offA();
+    offB();
+    expect(seen).toEqual(["ws:u3"]);
+  });
+
+  it("drops the cached session, so the next lookup asks E2B again", async () => {
+    const { noteSessionPaused, e2bSandboxProvider } =
+      await import("./e2b-provider");
+    const key = `${WS}:6846e6a01b05af0948070999`;
+    sdk.list.mockReturnValue(page([{ id: "sbx-7", key }]));
+    // Known running: hasSession answers from memory afterwards.
+    await e2bSandboxProvider.hasSession({ sessionKey: key });
+    noteSessionPaused(key);
+    sdk.list.mockClear();
+    sdk.list.mockReturnValue(page([]));
+    expect(await e2bSandboxProvider.isRunning?.({ sessionKey: key })).toBe(
+      false,
+    );
+    // The running answer was set to "paused" without a list call.
+    expect(sdk.list).not.toHaveBeenCalled();
+    expect(await e2bSandboxProvider.hasSession({ sessionKey: key })).toBe(
+      false,
+    );
+    expect(sdk.list).toHaveBeenCalledTimes(1);
+  });
+});
