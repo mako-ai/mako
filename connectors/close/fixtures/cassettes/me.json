@@ -1,0 +1,3 @@
+[
+{"hash":"b63628f7dce434f9ee06e82dbf0398aa","request":"GET /me/","status":200,"body":{"id":"user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U","first_name":"User","last_name":"0001","email":"user0001@example.com","organizations":[{"id":"orga_fixture000000000000000000000000000000","name":"Fixture Org"}]}}
+]
