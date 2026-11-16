@@ -112,6 +112,29 @@ function dockerExec(
 
 const q = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 let calls = 0;
+/** Every provider call of the current batch: what it was and how long it took. */
+let trace: Array<{ op: string; ms: number }> = [];
+/** What a call is, from what it runs. */
+function opOf(kind: string, script = ""): string {
+  if (kind !== "exec") return kind;
+  if (script.includes("MAKO_CHUNK"))
+    return "exec: chunk command (setup, connector, cleanup)";
+  if (script.includes("setsid nohup")) return "exec: session start";
+  if (script.includes("closed $code")) return "exec: session close";
+  if (script.includes("MAKO_SESSION waiting")) return "exec: session wait";
+  if (script.includes('[ "$n" -le')) return "exec: session ack (off path)";
+  if (script.startsWith("rm -f")) return "exec: remove output (off path)";
+  if (script.includes('command -v "$tool"')) return "exec: prepare box";
+  return "exec: other";
+}
+async function traced<T>(op: string, work: () => Promise<T>): Promise<T> {
+  const t0 = performance.now();
+  try {
+    return await work();
+  } finally {
+    trace.push({ op, ms: performance.now() - t0 });
+  }
+}
 const pinned = (options?: { expectSandboxId?: string }) => {
   if (options?.expectSandboxId && options.expectSandboxId !== container) {
     throw Object.assign(new Error("Sandbox is probably not running anymore"), {
@@ -131,7 +154,9 @@ const dockerProvider = {
   async exec(_ctx: unknown, command: string, options: any = {}) {
     pinned(options);
     calls++;
-    const res = await dockerExec(command, options);
+    const res = await traced(opOf("exec", command), () =>
+      dockerExec(command, options),
+    );
     return {
       exitCode: res.code,
       stdout: res.stdout.toString("utf8"),
@@ -173,15 +198,20 @@ const dockerProvider = {
           `mkdir -p "$(dirname ${q(f.path)})" && printf %s ${q(Buffer.from(f.bytes).toString("base64"))} | base64 -d > ${q(f.path)}`,
       )
       .join(" && ");
-    const res = await dockerExec(script, { asRoot: options.asRoot });
+    const res = await traced("writeFiles: inputs", () =>
+      dockerExec(script, { asRoot: options.asRoot }),
+    );
     if (res.code !== 0) throw new Error(`writeFiles: ${res.stderr}`);
   },
   async readFile(_ctx: unknown, remotePath: string, options: any = {}) {
     pinned(options);
     calls++;
-    const res = await dockerExec(`cat ${q(remotePath)}`, {
-      asRoot: options.asRoot,
-    });
+    const op = remotePath.includes("/sessions/")
+      ? "readFile: batch"
+      : "readFile: chunk output";
+    const res = await traced(op, () =>
+      dockerExec(`cat ${q(remotePath)}`, { asRoot: options.asRoot }),
+    );
     if (res.code !== 0)
       throw new Error(`read ${remotePath}: ${res.stderr.trim()}`);
     return new Uint8Array(res.stdout);
@@ -275,6 +305,7 @@ interface Sample {
   ms: number;
   rows: number;
   calls: number;
+  trace: Array<{ op: string; ms: number }>;
 }
 
 /** CHUNKS chunks of one entity, as the engine runs them. */
@@ -293,6 +324,7 @@ async function read(
     let rows = 0;
     let writing = 0;
     const before = calls;
+    trace = [];
     const s0 = performance.now();
     state = await connector.fetchEntityChunk({
       entity,
@@ -316,6 +348,7 @@ async function read(
       ms: performance.now() - s0 - writing,
       rows,
       calls: calls - before,
+      trace,
     });
     if (!state.hasMore) break;
   }
@@ -351,6 +384,73 @@ async function read(
       50,
     ),
     totalMs: Math.round(totalMs),
+    breakdown: breakdown(samples.slice(1)),
+  };
+}
+
+/** Batches 2..N: per kind of call, how many per batch and their p50. */
+function breakdown(samples: Sample[]) {
+  const ops = new Map<string, number[]>();
+  for (const sample of samples) {
+    for (const { op, ms } of sample.trace) {
+      const list = ops.get(op) ?? [];
+      list.push(ms);
+      ops.set(op, list);
+    }
+  }
+  return Object.fromEntries(
+    [...ops].map(([op, values]) => [
+      op,
+      {
+        perBatch: Math.round((values.length / samples.length) * 100) / 100,
+        p50Ms: pct(values, 50),
+      },
+    ]),
+  );
+}
+
+/**
+ * Inside the box, with no round trip: what one per-run user's setup and
+ * cleanup cost, and what one connector process start costs (the runner's
+ * `spec`: Node boot, SDK import, connector load).
+ */
+async function inBox() {
+  const iso = await import(
+    pathToFileURL(path.join(API, "src/connectors/workspace/run-isolation.ts"))
+      .href
+  );
+  const crypto = await import("node:crypto");
+  const timeIt = async (script: string) => {
+    const res = await dockerExec(
+      `s=$(date +%s%N); ( ${script} ) >/dev/null 2>&1; e=$(date +%s%N); echo $(( (e - s) / 1000000 ))`,
+      { asRoot: true },
+    );
+    return Number(res.stdout.toString().trim().split("\n").at(-1));
+  };
+  const userSetup: number[] = [];
+  const userCleanup: number[] = [];
+  const boot: number[] = [];
+  const node = syncBox.connectorRuntimeNodePath(ctx, runtimeId);
+  const bin = `/var/lib/mako-connectors/runtime/versions/${runtimeId}/node_modules/@makoai/connector-sdk/bin/mako-connector.js`;
+  for (let i = 0; i < 20; i++) {
+    const l = iso.runLayout(
+      crypto.randomBytes(8).toString("hex"),
+      `mkc${crypto.randomBytes(6).toString("hex")}`,
+      300_000 + i * 7 + Math.floor(Math.random() * 1_000_000),
+      300_000 + i * 7 + Math.floor(Math.random() * 1_000_000),
+    );
+    userSetup.push(await timeIt(iso.setupScript(l)));
+    userCleanup.push(await timeIt(iso.cleanupScript(l)));
+    boot.push(
+      await timeIt(
+        `${q(node)} ${q(bin)} spec --connector ${q(`${dir}/connector.ts`)}`,
+      ),
+    );
+  }
+  return {
+    userSetupP50Ms: pct(userSetup, 50),
+    userCleanupP50Ms: pct(userCleanup, 50),
+    connectorStartP50Ms: pct(boot, 50),
   };
 }
 
@@ -374,6 +474,7 @@ const results: Record<string, unknown> = {
   runtimeInstallMs: Math.round(installMs),
   chunksPerScenario: CHUNKS,
   roundTrip: await roundTrip(),
+  inBox: await inBox(),
   scenarios: [] as unknown[],
 };
 

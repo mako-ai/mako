@@ -1,14 +1,19 @@
 {
-  "date": "2026-11-16T21:22:33.059Z",
+  "date": "2026-11-16T22:00:26.745Z",
   "image": "e2bdev/base:latest",
   "box": "2 vCPU, 2 GiB (docker --cpus 2 --memory 2g)",
   "host": "darwin arm64, Node 24.22.1",
   "connectorNode": "v24.22.1",
-  "runtimeInstallMs": 2130,
+  "runtimeInstallMs": 2297,
   "chunksPerScenario": 20,
   "roundTrip": {
-    "p50Ms": 29,
-    "p95Ms": 35
+    "p50Ms": 32,
+    "p95Ms": 36
+  },
+  "inBox": {
+    "userSetupP50Ms": 26,
+    "userCleanupP50Ms": 25,
+    "connectorStartP50Ms": 37
   },
   "scenarios": [
     {
@@ -18,13 +23,31 @@
       "writeDelayMs": 0,
       "chunks": 20,
       "rows": 20000,
-      "firstMs": 267,
-      "p50Ms": 223,
-      "p95Ms": 247,
-      "meanMs": 224,
+      "firstMs": 263,
+      "p50Ms": 226,
+      "p95Ms": 241,
+      "meanMs": 227,
       "callsFirst": 5,
       "callsLater": 4,
-      "totalMs": 4518
+      "totalMs": 4582,
+      "breakdown": {
+        "exec: remove output (off path)": {
+          "perBatch": 1,
+          "p50Ms": 35
+        },
+        "writeFiles: inputs": {
+          "perBatch": 1,
+          "p50Ms": 35
+        },
+        "exec: chunk command (setup, connector, cleanup)": {
+          "perBatch": 1,
+          "p50Ms": 142
+        },
+        "readFile: chunk output": {
+          "perBatch": 1,
+          "p50Ms": 43
+        }
+      }
     },
     {
       "mode": "session",
@@ -33,13 +56,27 @@
       "writeDelayMs": 0,
       "chunks": 20,
       "rows": 20000,
-      "firstMs": 242,
-      "p50Ms": 49,
-      "p95Ms": 63,
-      "meanMs": 51,
+      "firstMs": 250,
+      "p50Ms": 52,
+      "p95Ms": 65,
+      "meanMs": 54,
       "callsFirst": 3,
       "callsLater": 2,
-      "totalMs": 1205
+      "totalMs": 1269,
+      "breakdown": {
+        "exec: session ack (off path)": {
+          "perBatch": 1,
+          "p50Ms": 36
+        },
+        "readFile: batch": {
+          "perBatch": 1,
+          "p50Ms": 45
+        },
+        "exec: session close": {
+          "perBatch": 0.05,
+          "p50Ms": 149
+        }
+      }
     },
     {
       "mode": "chunk",
@@ -48,13 +85,31 @@
       "writeDelayMs": 500,
       "chunks": 20,
       "rows": 20000,
-      "firstMs": 228,
-      "p50Ms": 233,
-      "p95Ms": 290,
+      "firstMs": 227,
+      "p50Ms": 229,
+      "p95Ms": 275,
       "meanMs": 233,
       "callsFirst": 4,
       "callsLater": 4,
-      "totalMs": 14681
+      "totalMs": 14677,
+      "breakdown": {
+        "writeFiles: inputs": {
+          "perBatch": 1,
+          "p50Ms": 36
+        },
+        "exec: chunk command (setup, connector, cleanup)": {
+          "perBatch": 1,
+          "p50Ms": 146
+        },
+        "readFile: chunk output": {
+          "perBatch": 1,
+          "p50Ms": 42
+        },
+        "exec: remove output (off path)": {
+          "perBatch": 1,
+          "p50Ms": 33
+        }
+      }
     },
     {
       "mode": "session",
@@ -63,13 +118,27 @@
       "writeDelayMs": 500,
       "chunks": 20,
       "rows": 20000,
-      "firstMs": 291,
-      "p50Ms": 57,
-      "p95Ms": 66,
-      "meanMs": 57,
+      "firstMs": 269,
+      "p50Ms": 52,
+      "p95Ms": 71,
+      "meanMs": 53,
       "callsFirst": 3,
       "callsLater": 2,
-      "totalMs": 11392
+      "totalMs": 11303,
+      "breakdown": {
+        "exec: session ack (off path)": {
+          "perBatch": 1,
+          "p50Ms": 37
+        },
+        "readFile: batch": {
+          "perBatch": 1,
+          "p50Ms": 45
+        },
+        "exec: session close": {
+          "perBatch": 0.05,
+          "p50Ms": 91
+        }
+      }
     },
     {
       "mode": "chunk",
@@ -78,13 +147,31 @@
       "writeDelayMs": 0,
       "chunks": 20,
       "rows": 20000,
-      "firstMs": 2301,
-      "p50Ms": 2343,
-      "p95Ms": 2401,
-      "meanMs": 2337,
+      "firstMs": 2249,
+      "p50Ms": 2291,
+      "p95Ms": 2541,
+      "meanMs": 2343,
       "callsFirst": 4,
       "callsLater": 4,
-      "totalMs": 46708
+      "totalMs": 46768,
+      "breakdown": {
+        "exec: remove output (off path)": {
+          "perBatch": 1,
+          "p50Ms": 34
+        },
+        "writeFiles: inputs": {
+          "perBatch": 1,
+          "p50Ms": 36
+        },
+        "exec: chunk command (setup, connector, cleanup)": {
+          "perBatch": 1,
+          "p50Ms": 2206
+        },
+        "readFile: chunk output": {
+          "perBatch": 1,
+          "p50Ms": 46
+        }
+      }
     },
     {
       "mode": "session",
@@ -93,13 +180,31 @@
       "writeDelayMs": 0,
       "chunks": 20,
       "rows": 20000,
-      "firstMs": 2310,
-      "p50Ms": 2047,
-      "p95Ms": 2083,
-      "meanMs": 2046,
+      "firstMs": 2433,
+      "p50Ms": 2043,
+      "p95Ms": 2100,
+      "meanMs": 2047,
       "callsFirst": 3,
       "callsLater": 4,
-      "totalMs": 41175
+      "totalMs": 41322,
+      "breakdown": {
+        "readFile: batch": {
+          "perBatch": 2,
+          "p50Ms": 43
+        },
+        "exec: session ack (off path)": {
+          "perBatch": 1,
+          "p50Ms": 43
+        },
+        "exec: session wait": {
+          "perBatch": 1,
+          "p50Ms": 1943
+        },
+        "exec: session close": {
+          "perBatch": 0.05,
+          "p50Ms": 307
+        }
+      }
     },
     {
       "mode": "chunk",
@@ -108,13 +213,31 @@
       "writeDelayMs": 500,
       "chunks": 20,
       "rows": 20000,
-      "firstMs": 2322,
-      "p50Ms": 2305,
-      "p95Ms": 2360,
-      "meanMs": 2309,
+      "firstMs": 2811,
+      "p50Ms": 3003,
+      "p95Ms": 3230,
+      "meanMs": 2948,
       "callsFirst": 4,
       "callsLater": 4,
-      "totalMs": 56206
+      "totalMs": 68845,
+      "breakdown": {
+        "writeFiles: inputs": {
+          "perBatch": 1,
+          "p50Ms": 44
+        },
+        "exec: chunk command (setup, connector, cleanup)": {
+          "perBatch": 1,
+          "p50Ms": 2882
+        },
+        "readFile: chunk output": {
+          "perBatch": 1,
+          "p50Ms": 57
+        },
+        "exec: remove output (off path)": {
+          "perBatch": 1,
+          "p50Ms": 38
+        }
+      }
     },
     {
       "mode": "session",
@@ -123,133 +246,31 @@
       "writeDelayMs": 500,
       "chunks": 20,
       "rows": 20000,
-      "firstMs": 2371,
-      "p50Ms": 1564,
-      "p95Ms": 1613,
-      "meanMs": 1560,
+      "firstMs": 2630,
+      "p50Ms": 1543,
+      "p95Ms": 1643,
+      "meanMs": 1550,
       "callsFirst": 3,
       "callsLater": 4,
-      "totalMs": 42027
-    },
-    {
-      "mode": "chunk",
-      "entity": "email",
-      "pageDelayMs": 0,
-      "writeDelayMs": 0,
-      "chunks": 20,
-      "rows": 11400,
-      "firstMs": 256,
-      "p50Ms": 239,
-      "p95Ms": 319,
-      "meanMs": 250,
-      "callsFirst": 4,
-      "callsLater": 4,
-      "totalMs": 5001
-    },
-    {
-      "mode": "session",
-      "entity": "email",
-      "pageDelayMs": 0,
-      "writeDelayMs": 0,
-      "chunks": 20,
-      "rows": 11400,
-      "firstMs": 277,
-      "p50Ms": 79,
-      "p95Ms": 114,
-      "meanMs": 85,
-      "callsFirst": 3,
-      "callsLater": 2,
-      "totalMs": 1889
-    },
-    {
-      "mode": "chunk",
-      "entity": "email",
-      "pageDelayMs": 0,
-      "writeDelayMs": 500,
-      "chunks": 20,
-      "rows": 11400,
-      "firstMs": 241,
-      "p50Ms": 257,
-      "p95Ms": 309,
-      "meanMs": 260,
-      "callsFirst": 4,
-      "callsLater": 4,
-      "totalMs": 10202
-    },
-    {
-      "mode": "session",
-      "entity": "email",
-      "pageDelayMs": 0,
-      "writeDelayMs": 500,
-      "chunks": 20,
-      "rows": 11400,
-      "firstMs": 262,
-      "p50Ms": 72,
-      "p95Ms": 84,
-      "meanMs": 73,
-      "callsFirst": 3,
-      "callsLater": 2,
-      "totalMs": 6663
-    },
-    {
-      "mode": "chunk",
-      "entity": "email",
-      "pageDelayMs": 200,
-      "writeDelayMs": 0,
-      "chunks": 20,
-      "rows": 11400,
-      "firstMs": 1508,
-      "p50Ms": 1479,
-      "p95Ms": 1509,
-      "meanMs": 1418,
-      "callsFirst": 4,
-      "callsLater": 4,
-      "totalMs": 28452
-    },
-    {
-      "mode": "session",
-      "entity": "email",
-      "pageDelayMs": 200,
-      "writeDelayMs": 0,
-      "chunks": 20,
-      "rows": 11400,
-      "firstMs": 1478,
-      "p50Ms": 1248,
-      "p95Ms": 1305,
-      "meanMs": 1197,
-      "callsFirst": 3,
-      "callsLater": 4,
-      "totalMs": 24220
-    },
-    {
-      "mode": "chunk",
-      "entity": "email",
-      "pageDelayMs": 200,
-      "writeDelayMs": 500,
-      "chunks": 20,
-      "rows": 11400,
-      "firstMs": 1517,
-      "p50Ms": 1491,
-      "p95Ms": 1517,
-      "meanMs": 1431,
-      "callsFirst": 4,
-      "callsLater": 4,
-      "totalMs": 33731
-    },
-    {
-      "mode": "session",
-      "entity": "email",
-      "pageDelayMs": 200,
-      "writeDelayMs": 500,
-      "chunks": 20,
-      "rows": 11400,
-      "firstMs": 1532,
-      "p50Ms": 991,
-      "p95Ms": 1041,
-      "meanMs": 929,
-      "callsFirst": 3,
-      "callsLater": 4,
-      "totalMs": 24198
+      "totalMs": 42097,
+      "breakdown": {
+        "readFile: batch": {
+          "perBatch": 2,
+          "p50Ms": 50
+        },
+        "exec: session ack (off path)": {
+          "perBatch": 1,
+          "p50Ms": 45
+        },
+        "exec: session wait": {
+          "perBatch": 1,
+          "p50Ms": 1442
+        },
+        "exec: session close": {
+          "perBatch": 0.05,
+          "p50Ms": 574
+        }
+      }
     }
   ],
   "leftInBox": [

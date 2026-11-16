@@ -207,7 +207,9 @@ unclean=""
 now=$(date +%s)
 for S in ${shellQuote(ISOLATED_SESSIONS)}/*; do
   [ -d "$S" ] || continue
-  beat=$(stat -c %Y "$S/heartbeat" 2>/dev/null || echo 0)
+  # A session being created has no heartbeat for a moment: its directory's
+  # own time stands in, so a concurrent start never reaps it.
+  beat=$(stat -c %Y "$S/heartbeat" 2>/dev/null || stat -c %Y "$S" 2>/dev/null || echo 0)
   age=$((now - beat))
   if [ -f "$S/status" ]; then
     cleanup=$(awk '{ print $4 }' "$S/status" 2>/dev/null)
@@ -215,10 +217,12 @@ for S in ${shellQuote(ISOLATED_SESSIONS)}/*; do
     [ "$age" -gt ${idle} ] && rm -rf "$S"
     continue
   fi
-  if [ "$age" -gt ${idle * 2} ]; then
+  if [ "$age" -gt ${idle * 2} ] && [ -f "$S/cleanup.sh" ]; then
     pid=$(cat "$S/supervisor.pid" 2>/dev/null | tr -cd 0-9)
     [ -n "$pid" ] && kill -9 -- "-$pid" 2>/dev/null
-    if [ -f "$S/cleanup.sh" ] && ! bash "$S/cleanup.sh" >/dev/null 2>&1; then unclean="$unclean \${S##*/}"; fi
+    # Only a user this session created: its cleanup acts on its UID.
+    owner=$(head -c 64 "$S/user" 2>/dev/null | tr -cd 'a-z0-9')
+    if [ -n "$owner" ] && id -u "$owner" >/dev/null 2>&1 && ! bash "$S/cleanup.sh" >/dev/null 2>&1; then unclean="$unclean \${S##*/}"; fi
     rm -rf "$S" ${shellQuote(ISOLATED_INCOMING)}/"\${S##*/}"
   fi
 done
@@ -307,8 +311,10 @@ S=${S}
 code=0
 if [ -d "$S" ]; then
   if [ ! -f "$S/status" ] && [ -f "$S/cleanup.sh" ]; then
-    # Kill the connector; its wrapper then runs the cleanup, once, and
-    # writes the status.
+    # Drop the waiting batches first: a supervisor holding the connector
+    # back must read on to the end of the pipe. Then kill the connector;
+    # its wrapper runs the cleanup, once, and writes the status.
+    rm -f "$S"/batches/*.jsonl
     user=$(head -c 64 "$S/user" 2>/dev/null | tr -cd 'a-z0-9')
     [ -n "$user" ] && runuser -u "$user" -- kill -9 -1 2>/dev/null
     i=0
@@ -317,8 +323,10 @@ if [ -d "$S" ]; then
       # No wrapper to do it: stop whatever is left of it, clean up here.
       pid=$(cat "$S/supervisor.pid" 2>/dev/null | tr -cd 0-9)
       [ -n "$pid" ] && kill -9 -- "-$pid" 2>/dev/null
-      bash "$S/cleanup.sh" >/dev/null 2>&1
-      code=$?
+      if [ -n "$user" ] && id -u "$user" >/dev/null 2>&1; then
+        bash "$S/cleanup.sh" >/dev/null 2>&1
+        code=$?
+      fi
     fi
   fi
   if [ -f "$S/status" ]; then
@@ -368,20 +376,24 @@ export function startScript(input: {
 install -d -o root -g root -m 0755 ${shellQuote(ISOLATED_ROOT)}
 install -d -o root -g root -m 0700 ${shellQuote(ISOLATED_SESSIONS)}
 ${reapScript(input.limits.idleMs)}
-if ! (
-${setupScript(l)}
-); then
-  rm -rf ${inbox}
-  echo "${SESSION_MARKER} setup-failed"
-  exit ${SESSION_SETUP_FAILED_EXIT}
-fi
 S=${S}
 install -d -o root -g root -m 0700 "$S" "$S/batches"
 # Beat first: a concurrent start's reap must never take this for abandoned.
 touch "$S/heartbeat"
 printf '%s' ${shellQuote(l.user)} > "$S/user"
+# The cleanup exists before the user does: whatever cuts this start short,
+# a close or a reap can remove what it created.
 ${heredoc(`"$S/cleanup.sh"`, cleanupScript(l))}
 chmod 0700 "$S/cleanup.sh"
+if ! (
+${setupScript(l)}
+); then
+  # setupScript removed what it made. Never the cleanup here: on a UID
+  # collision it would act on the other run's UID.
+  rm -rf ${inbox} "$S"
+  echo "${SESSION_MARKER} setup-failed"
+  exit ${SESSION_SETUP_FAILED_EXIT}
+fi
 staged=1
 ${moves}
 rm -rf ${inbox}

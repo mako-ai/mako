@@ -267,6 +267,25 @@ touch "$HOME/finished"`,
     await expectGone(s);
   }, 120_000);
 
+  it("closes a session the API stopped reading early, without waiting out the backpressure", async () => {
+    const s = layout();
+    // An endless source, held back after one batch.
+    const started = await start(
+      s,
+      `hello; b=1
+while :; do
+  i=0; while [ $i -lt 2000 ]; do record "$b-$i-padding-padding-padding-padding"; i=$((i + 1)); done
+  state $b true; b=$((b + 1))
+done`,
+      { limits: { buffer: 1 } },
+    );
+    expect(marker(started), started.stderr).toMatch(/^ready 1 /);
+    const t0 = Date.now();
+    expect(marker(await root(closeScript(s.id)))).toBe("closed 0");
+    expect(Date.now() - t0).toBeLessThan(5_000);
+    await expectGone(s);
+  }, 60_000);
+
   it("keeps a concurrent run out of the session's credential, batches and process", async () => {
     const victim = layout();
     const secret = `sk_victim_${randomBytes(8).toString("hex")}`;
@@ -389,6 +408,23 @@ done`,
     await expectGone(s);
     expect(marker(await root(closeScript(next.id)))).toBe("closed 0");
     await expectGone(next);
+  }, 60_000);
+
+  it("never reaps a session another start is still creating", async () => {
+    // A session directory caught between its creation and its first beat.
+    const creating = `${ISOLATED_SESSIONS}/ffffffffffffffff`;
+    await root(`mkdir -p ${shellQuote(creating)}/batches`);
+    const s = layout();
+    const out = await start(s, `hello; record a; state 1 false`, {
+      limits: { idleMs: 1_000 },
+    });
+    expect(marker(out), out.stderr).toMatch(/^ready 1 /);
+    expect(
+      (await root(`test -d ${shellQuote(creating)} && echo yes`)).stdout.trim(),
+    ).toBe("yes");
+    await root(`rm -rf ${shellQuote(creating)}`);
+    expect(marker(await root(closeScript(s.id)))).toBe("closed 0");
+    await expectGone(s);
   }, 60_000);
 
   it("ends a session at its deadline, and its complete batches stay readable", async () => {

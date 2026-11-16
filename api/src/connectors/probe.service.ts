@@ -420,6 +420,7 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
       since: input.since,
       batchSize: limit,
       maxIterations: 1,
+      singleChunk: true,
       onBatch: async batch => {
         received += batch.length;
         const room = limit - records.length;

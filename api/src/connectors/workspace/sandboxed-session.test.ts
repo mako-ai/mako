@@ -170,6 +170,7 @@ void test("a read takes batch 1, 2, 3 of one session and closes it after the las
     box: "box-1",
     seq: 1,
     entity: "rows",
+    fp: (first.metadata as any)[MAKO_SESSION_KEY].fp,
   });
   // The orchestrator adds its own keys between chunks.
   first.metadata = { ...(first.metadata as object), rowsWrittenTotal: 2 };
@@ -363,6 +364,55 @@ void test("another entity's session is never pulled", async () => {
     onBatch: async () => undefined,
   });
   assert.deepEqual(box.session.ops(), ["start", "close"]);
+});
+
+void test("a session started by a chunk whose write fails is closed, never orphaned", async () => {
+  const box = make();
+  box.session.starts.push(batch(1, [1], "c1", true));
+  await assert.rejects(
+    box.fetchEntityChunk({
+      entity: "rows",
+      onBatch: async () => {
+        throw new Error("warehouse down");
+      },
+    }),
+    /warehouse down/,
+  );
+  assert.deepEqual(box.session.ops(), ["start", "close"]);
+});
+
+void test("a probe's single chunk never opens a session", async () => {
+  const box = make();
+  box.runAnswers.push(ok([stateMessage("c1", true)]));
+  const state = await box.fetchEntityChunk({
+    entity: "rows",
+    maxIterations: 1,
+    singleChunk: true,
+    onBatch: async () => undefined,
+  });
+  assert.deepEqual(box.session.ops(), []);
+  assert.equal(box.runs.length, 1);
+  assert.equal((state.metadata as any)[MAKO_SESSION_KEY], undefined);
+});
+
+void test("a connection edited mid-read replaces its session, from the applied state", async () => {
+  const box = make();
+  box.session.starts.push(
+    batch(1, [1], "c1", true),
+    batch(1, [2], "c2", false),
+  );
+  const sink = collect();
+  const first = await box.fetchEntityChunk({ entity: "rows", ...sink });
+  // A new key: the config the next chunk would send differs.
+  (box as any).sourceConnection.config = { api_key: "rotated" };
+  await box.fetchEntityChunk({ entity: "rows", state: first, ...sink });
+  assert.deepEqual(box.session.ops(), ["start", "close", "start", "close"]);
+  const restart = (box.session.calls[2] as any).input;
+  assert.equal(restart.config.api_key, "rotated");
+  assert.equal(restart.state[0].stream.stream_state.cursor, "c1");
+  // The fingerprint is a short hash, never the config.
+  const fp = (first.metadata as any)[MAKO_SESSION_KEY].fp;
+  assert.match(fp, /^[a-f0-9]{16}$/);
 });
 
 void test("sessions stay off unless CONNECTOR_SESSION_READS is true", async () => {

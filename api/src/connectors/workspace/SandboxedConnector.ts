@@ -25,7 +25,7 @@ import {
   type IncrementalCapabilities,
   type ResumableFetchOptions,
 } from "../base/BaseConnector";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { NonRetriableError } from "inngest";
 import { loggers } from "../../logging";
 import {
@@ -285,7 +285,7 @@ function withMakoSince(
 export const MAKO_SESSION_KEY = "makoSession";
 
 type SessionMeta =
-  | { id: string; box?: string; seq: number; entity: string }
+  | { id: string; box?: string; seq: number; entity: string; fp?: string }
   | { unsupported: true };
 
 function sessionMeta(metadata: unknown): SessionMeta | undefined {
@@ -308,6 +308,7 @@ function sessionMeta(metadata: unknown): SessionMeta | undefined {
       box: typeof meta.box === "string" ? meta.box : undefined,
       seq: meta.seq as number,
       entity: meta.entity,
+      fp: typeof meta.fp === "string" ? meta.fp : undefined,
     };
   }
   return undefined;
@@ -804,7 +805,9 @@ export class SandboxedConnector extends BaseConnector {
     let maxIterations = options.maxIterations ?? 10;
     let sessionUnsupported = session !== undefined && "unsupported" in session;
 
-    if (!sessionUnsupported) {
+    // A probe reads one chunk and drops its state: a session would stay
+    // open, reading ahead, until its idle timeout.
+    if (!sessionUnsupported && !options.singleChunk) {
       const transport = await this.sessionTransport();
       if (transport) {
         const viaSession = await this.fetchViaSession(
@@ -986,7 +989,9 @@ export class SandboxedConnector extends BaseConnector {
   private async fetchViaSession(
     transport: ReadSessionTransport,
     options: ResumableFetchOptions,
-    meta: { id: string; box?: string; seq: number; entity: string } | undefined,
+    meta:
+      | { id: string; box?: string; seq: number; entity: string; fp?: string }
+      | undefined,
   ): Promise<
     { state: FetchState } | { fallback: "unsupported" | "too-large" }
   > {
@@ -995,8 +1000,24 @@ export class SandboxedConnector extends BaseConnector {
     let handle: SessionHandle | undefined;
     let seq = 1;
     let outcome: Awaited<ReturnType<ReadSessionTransport["pull"]>> | undefined;
+    let fresh = false;
+    const config = this.readConfig(options);
+    // What a session was started with: the config Mako would send now and
+    // the code it would run. A chunk process re-reads both every chunk; a
+    // session that no longer matches is replaced, from the applied state.
+    const fp = await this.sessionFingerprint(config, options);
 
-    if (meta && meta.entity === options.entity) {
+    if (meta && meta.entity === options.entity && meta.fp !== fp) {
+      logger.info(
+        "Read session started with other config or code; replacing it",
+        {
+          type: this.sourceConnection.type,
+          entity: options.entity,
+          sessionId: meta.id,
+        },
+      );
+      await transport.close({ id: meta.id, box: meta.box });
+    } else if (meta && meta.entity === options.entity) {
       handle = { id: meta.id, box: meta.box };
       seq = meta.seq + 1;
       outcome = await transport.pull(handle, seq);
@@ -1011,8 +1032,9 @@ export class SandboxedConnector extends BaseConnector {
       }
     }
     if (!outcome) {
+      fresh = true;
       const started = await transport.start({
-        config: this.readConfig(options),
+        config,
         catalog: this.readCatalog(options.entity),
         state: readState(
           options.entity,
@@ -1051,9 +1073,17 @@ export class SandboxedConnector extends BaseConnector {
       await transport.close(current);
       throw new Error(`read failed for "${options.entity}": ${failure}`);
     }
-    // A failed write leaves the session as it is: the retry asks for this
-    // same batch, which stays until the next one is pulled.
-    const state = await this.applyRead(outcome.result, options, maxIterations);
+    // A failed write leaves a resumed session as it is: the retry asks for
+    // this same batch, which stays until the next one is pulled. A session
+    // started by this call is known to nobody else, so it is closed: the
+    // retry starts its own from the same applied state.
+    let state: FetchState;
+    try {
+      state = await this.applyRead(outcome.result, options, maxIterations);
+    } catch (error) {
+      if (fresh) await transport.close(current).catch(() => undefined);
+      throw error;
+    }
     if (!state.hasMore) {
       await transport.close(current);
       return { state };
@@ -1065,9 +1095,33 @@ export class SandboxedConnector extends BaseConnector {
         ...(current.box ? { box: current.box } : {}),
         seq,
         entity: options.entity,
+        fp,
       },
     };
     return { state };
+  }
+
+  /**
+   * A short hash of what a session reads with: its config (credential
+   * included), the connector's source and the page budget. Salted with the
+   * workspace id and kept to 16 hex characters: it tells two configs apart
+   * and says nothing about either.
+   */
+  private async sessionFingerprint(
+    config: Record<string, unknown>,
+    options: ResumableFetchOptions,
+  ): Promise<string> {
+    const definition = await this.definition();
+    return createHash("sha256")
+      .update(this.workspaceId)
+      .update("\0")
+      .update(JSON.stringify(config))
+      .update("\0")
+      .update(definition.sourceSha)
+      .update("\0")
+      .update(String(options.maxIterations ?? 10))
+      .digest("hex")
+      .slice(0, 16);
   }
 
   supportsResumableFetching(): boolean {

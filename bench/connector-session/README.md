@@ -42,6 +42,23 @@ A session batch costs 78% less for `call` (174 ms saved) and 67% less for
 import, connector load), the per-run user's setup and cleanup, and 2 calls.
 Of the 2 calls left, 1 is the acknowledgement, which runs beside the read.
 
+### Where the time goes, per batch (`call`, no latency, p50)
+
+From the second run, which traced every provider call. Chunk process 226 ms, session 52 ms.
+
+| Step | Chunk process | Session |
+| --- | --- | --- |
+| Write the inputs (config, catalog, state) | 35 ms | 0, once per read |
+| Command round trip | 32 ms | 0 |
+| Per-run user setup, in the box | 26 ms | 0, once per read |
+| Connector process start (Node, SDK, connector), in the box | 37 ms | 0, once per read |
+| Reading 10 pages and cutting the output | about 22 ms | in the background |
+| Per-run user cleanup, in the box | 25 ms | 0, once per read |
+| Read the output back (9.6 MB) | 43 ms | 45 ms |
+| Acknowledge or remove the output | off the path | off the path |
+
+The process start is 37 of the 174 ms saved (21%). The rest is transport and isolation: the input write (35 ms), the command round trip (32 ms) and the per-run user's setup and cleanup (51 ms). Only the read-back remains.
+
 ### With a vendor's latency (200 ms per page) and a warehouse write (500 ms)
 
 | Entity | Write | Chunk process p50 | Session p50 | Saved |
@@ -56,18 +73,25 @@ keeps paging while the API writes, held back at 2 batches. Twenty `call`
 batches took 42.0 s in a session against 56.2 s as chunk processes (25%
 less wall time).
 
+A noisy host moved one chunk-process number between runs: `call` with 200 ms pages and a 500 ms write took 2,305 ms in the first run and 3,003 ms in the second. The session took 1,564 and 1,543 ms.
+
 When the connector is behind, a pull costs 4 calls: the optimistic
 `readFile` misses, then a `wait`, then the read and the acknowledgement.
 
 ### What this means on E2B
 
-The Docker box understates the saving. One E2B round trip costs 176 ms from
-Europe against 29 ms here (bench G1), and the live test of the boxed path
-measured a warm chunk at 3.2–4.1 s, mostly the process start. A session
-batch that is ready costs one `readFile` on the critical path. G1 measured
-that read at 416 ms p50 for a 9.6 MB `call` chunk. This model, not a
-measurement, puts a warm session batch near 0.4 s against 3.2–4.1 s. The
-E2B number needs a live run (the G1 script's E2B account rules apply).
+The G1 re-run measured a warm flag-off chunk from `europe-west1` at 917 ms:
+- input write 164 ms;
+- command round trip 165 ms;
+- per-run user isolation 131 ms;
+- connector start 100 ms;
+- read-back of 9.6 MB 271 ms.
+
+A ready session batch keeps the read-back (271 ms) and the 86 ms G1 did not attribute. This model, not a measurement, puts it near 357 ms against 917 ms, or 560 ms (61%) saved per batch. The process start is 100 ms of that. The input write, the command round trip and the user isolation are 460 ms, which a session pays once per read.
+
+With `CONNECTOR_BOX_LEASES` on, each chunk adds 3 round trips of 519 ms (ping, runtime check, connector check). Sessions do not run with leases on yet, so they do not remove those.
+
+The E2B number needs a live run (the G1 script's E2B account rules apply).
 
 Nothing was left in the box after the 16 reads: no run user, no run
 directory, no session directory.
