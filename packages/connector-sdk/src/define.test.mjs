@@ -42,6 +42,25 @@ test("a sub-entity is parent:Type, as Close activities are", () => {
   }
 });
 
+test("two entities that land on one table are refused", () => {
+  for (const pair of [
+    ["activities:Call", "call_activities"],
+    ["activities:Call", "activities:call"],
+    ["x:ABC", "x:Abc"],
+  ]) {
+    assert.throws(
+      () =>
+        defineConnector({
+          name: "close",
+          version: "1",
+          entities: Object.fromEntries(pair.map(name => [name, entity])),
+        }),
+      /would both write to table/,
+      pair.join(" + "),
+    );
+  }
+});
+
 test("entity names stay lowercase, and the connector name stays a slug", () => {
   assert.throws(
     () =>

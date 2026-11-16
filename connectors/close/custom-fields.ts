@@ -3,7 +3,7 @@
  * chunk, as a fresh in-process connector instance does per chunk, so the
  * cache lifetime matches (port of `api/src/connectors/close/custom-fields.ts`).
  */
-import type { CloseClient } from "./client.ts";
+import { type CloseClient, CloseHttpError } from "./client.ts";
 import type { CloseCustomField } from "./schema.ts";
 
 const ENTITY_TO_SCHEMA_OBJECT_TYPE: Record<string, string> = {
@@ -30,6 +30,18 @@ function toCustomField(f: RawCustomField, appliesTo: string): CloseCustomField {
     appliesTo,
     acceptsMultipleValues: Boolean(f.accepts_multiple_values),
   };
+}
+
+/**
+ * A lookup that failed. Only a 404 means "this type has no custom fields".
+ * Anything else (401, 403, a 429 or 5xx past every retry) is rethrown: an
+ * empty list would drop every `custom_cf_*` column from `discover` or the
+ * Search selection while the run reports success. The in-process cache
+ * returns [] for every error; this is a deliberate difference.
+ */
+function emptyOnlyIfMissing(error: unknown): CloseCustomField[] {
+  if (error instanceof CloseHttpError && error.status === 404) return [];
+  throw error;
 }
 
 export class CloseCustomFieldCache {
@@ -86,8 +98,8 @@ export class CloseCustomFieldCache {
       );
       this.cache.set(objectType, fields);
       return fields;
-    } catch {
-      return [];
+    } catch (error) {
+      return emptyOnlyIfMissing(error);
     }
   }
 
@@ -105,8 +117,8 @@ export class CloseCustomFieldCache {
       );
       this.cache.set(cacheKey, fields);
       return fields;
-    } catch {
-      return [];
+    } catch (error) {
+      return emptyOnlyIfMissing(error);
     }
   }
 }

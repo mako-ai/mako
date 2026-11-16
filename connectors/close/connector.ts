@@ -79,13 +79,39 @@ const rateLimitDelay = (config: CloseConfig) =>
 const sleep = (ms: number) =>
   new Promise<void>(resolve => setTimeout(resolve, ms));
 
+/**
+ * The host the key may be sent to. Tenant config reaches the box unfiltered
+ * today, so `__base_url` is honoured only for Close itself or a loopback
+ * address (the fixture server). Anything else is refused, never used: the
+ * stored key must not follow a URL a connection editor typed.
+ */
+export function closeBaseUrl(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  let url: URL;
+  try {
+    url = new URL(String(value));
+  } catch {
+    throw new Error("__base_url is not a URL");
+  }
+  const close = url.protocol === "https:" && url.hostname === "api.close.com";
+  const loopback =
+    url.protocol === "http:" &&
+    (url.hostname === "127.0.0.1" || url.hostname === "localhost");
+  if (!close && !loopback) {
+    throw new Error(
+      "__base_url must be https://api.close.com or a loopback address",
+    );
+  }
+  return String(value);
+}
+
 /** One client per process: the gate is per key, and a box holds one key. */
 let client: CloseClient | undefined;
 function closeClient(ctx: Context<CloseConfig>): CloseClient {
   if (!ctx.config.api_key) throw new Error("Close API key not configured");
   client ??= createCloseClient({
     apiKey: ctx.config.api_key,
-    baseUrl: ctx.config.__base_url,
+    baseUrl: closeBaseUrl(ctx.config.__base_url),
     minDelayMs: Math.max(MIN_REQUEST_SPACING_MS, rateLimitDelay(ctx.config)),
     log: message => ctx.log(message),
   });

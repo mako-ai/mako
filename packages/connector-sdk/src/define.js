@@ -121,6 +121,13 @@ export function defineConnector(definition) {
   };
 }
 
+/** The engine's table name for an entity (`activities:Call` -> `call_activities`). */
+export function tableNameOf(name) {
+  if (!name.includes(":")) return name;
+  const [parent, type] = name.split(":");
+  return `${type.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase()}_${parent}`;
+}
+
 function validateDefinition(definition) {
   const problems = [];
   if (!definition || typeof definition !== "object")
@@ -151,6 +158,20 @@ function validateDefinition(definition) {
   ) {
     problems.push("at least one entity is required");
     return problems;
+  }
+  // The engine names a table `parent:Type` -> `type_parent` (snake_case,
+  // lowercase; `getEntityTableName`). Two entities that land on one table
+  // would overwrite each other, so they are refused here.
+  const tables = new Map();
+  for (const name of Object.keys(entities)) {
+    const table = tableNameOf(name);
+    if (tables.has(table)) {
+      problems.push(
+        `entities "${tables.get(table)}" and "${name}" would both write to table "${table}"`,
+      );
+    } else {
+      tables.set(table, name);
+    }
   }
   for (const [name, entity] of Object.entries(entities)) {
     if (!ENTITY_NAME.test(name)) {

@@ -233,7 +233,9 @@ export async function* readCloseSearch(
 
       const response = await api.post("/data/search/", body);
       let data: SearchRow[] = response?.data || [];
-      pageCursor = response?.cursor || null;
+      // Moved only once the page is complete: a follow-up that fails must
+      // retry this page, not skip it. (In-process moves it first.)
+      const nextCursor: string | null = response?.cursor || null;
 
       if (fieldPlan && fieldPlan.supplemental.length > 0 && data.length > 0) {
         data = await fetchSupplementalCustomFields(
@@ -243,6 +245,7 @@ export async function* readCloseSearch(
           fieldPlan.supplemental,
         );
       }
+      pageCursor = nextCursor;
 
       let records: unknown[] = [];
       if (data.length > 0) {

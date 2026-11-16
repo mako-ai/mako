@@ -183,6 +183,24 @@ void test("check agrees on a valid key and on a revoked one", async () => {
   );
 });
 
+void test("the key is never sent to a host other than Close or loopback", async () => {
+  for (const [baseUrl, message] of [
+    ["https://attacker.example/api/v1", /must be https:\/\/api\.close\.com/],
+    ["http://api.close.com/api/v1", /must be https:\/\/api\.close\.com/],
+    ["not a url", /not a URL/],
+  ] as const) {
+    const run = await runFolderCommand("check", {
+      config: { api_key: "api_test_host", __base_url: baseUrl },
+    });
+    const status = run.messages.find(
+      m => m.type === "CONNECTION_STATUS",
+    )?.connectionStatus;
+    assert.equal(status?.status, "FAILED", baseUrl);
+    assert.match(String(status?.message), message, baseUrl);
+  }
+  assert.deepEqual(server.requests("api_test_host"), []);
+});
+
 void test("every entity reads the same rows, timestamps, chunks and requests", async () => {
   const results = await runParity({
     entities: ENTITIES,

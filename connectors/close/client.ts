@@ -11,6 +11,9 @@
  *   1 s doubling up to 60 s. Every Close call this connector makes is a
  *   read, so every retryable error is retried.
  *
+ * Two limits the in-process client does not have, because a box is killed
+ * after 10 minutes: 60 s per attempt, and 4 minutes of backoff per process.
+ *
  * It uses `fetch`, not axios: the folder needs no dependency.
  */
 
@@ -21,6 +24,39 @@ const BASE_DELAY_MS = 1_000;
 const MAX_DELAY_MS = 60_000;
 const MAX_RETRY_AFTER_MS = 5 * 60_000;
 const MAX_ERROR_BODY = 2_000;
+/** One attempt's limit. axios in-process has none; a box must not hang. */
+const REQUEST_TIMEOUT_MS = 60_000;
+/**
+ * Total backoff one process may spend. The box kills `read` after 10
+ * minutes and discards the chunk, so a longer wait only loses work. Past
+ * this budget the request fails and the chunk retries from its last state.
+ */
+const MAX_TOTAL_WAIT_MS = 4 * 60_000;
+
+/** Network failures worth retrying, as `base/http-retry.ts` lists them. */
+const RETRYABLE_NETWORK_CODES = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ECONNABORTED",
+  "ETIMEDOUT",
+  "ESOCKETTIMEDOUT",
+  "EPIPE",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "UND_ERR_SOCKET",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+/** A transport failure or a timed-out attempt; never a programming error. */
+export function isNetworkError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error.name === "TimeoutError") return true;
+  const cause = (error as { cause?: { code?: unknown } }).cause;
+  const code = cause?.code ?? (error as { code?: unknown }).code;
+  return typeof code === "string" && RETRYABLE_NETWORK_CODES.has(code);
+}
 
 export class CloseHttpError extends Error {
   status: number;
@@ -88,10 +124,13 @@ export function createCloseClient(options: CloseClientOptions): CloseClient {
   const log = options.log ?? (() => {});
   const authorization = `Basic ${Buffer.from(`${options.apiKey}:`).toString("base64")}`;
   let gate: Promise<void> = Promise.resolve();
+  let waited = 0;
 
   /** One attempt, through the gate. */
   const attempt = (url: string, init: RequestInit): Promise<Response> => {
-    const turn = gate.then(() => fetch(url, init));
+    const turn = gate.then(() =>
+      fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }),
+    );
     gate = turn.then(
       () => sleep(options.minDelayMs),
       () => sleep(options.minDelayMs),
@@ -144,7 +183,8 @@ export function createCloseClient(options: CloseClientOptions): CloseClient {
       }
 
       const status = error instanceof CloseHttpError ? error.status : undefined;
-      const retryable = status === undefined || RETRYABLE_STATUS(status);
+      const retryable =
+        status === undefined ? isNetworkError(error) : RETRYABLE_STATUS(status);
       if (retry >= MAX_RETRIES || !retryable) throw error;
 
       const fromHeader =
@@ -157,6 +197,13 @@ export function createCloseClient(options: CloseClientOptions): CloseClient {
           : Math.floor(
               random() * Math.min(MAX_DELAY_MS, BASE_DELAY_MS * 2 ** retry),
             );
+      if (waited + delayMs > MAX_TOTAL_WAIT_MS) {
+        log(
+          `Close API ${method} ${endpoint} -> ${status ?? String(error)}; ${waited} ms already spent waiting, giving the chunk back`,
+        );
+        throw error;
+      }
+      waited += delayMs;
       log(
         `Close API ${method} ${endpoint} -> ${status ?? String(error)}; retry ${retry + 1}/${MAX_RETRIES} in ${delayMs} ms`,
       );
