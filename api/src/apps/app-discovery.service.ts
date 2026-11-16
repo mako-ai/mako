@@ -30,6 +30,7 @@ import type { OwnerDirectory } from "./user-handles";
 import { githubIdsOfLogins, loadPeopleDirectory } from "./app-owner.service";
 import { verifiedAppIds } from "./app-lifecycle-state";
 import { timed } from "../middleware/server-timing";
+import { isPersonActorId } from "./worktree/worktrees";
 import "./bindings.service";
 
 export interface DiscoveryApp {
@@ -352,13 +353,17 @@ export async function listDiscoveryApps(
 
 const withOwner = (owner: AppOwner | undefined) => (owner ? { owner } : {});
 
-/** The person behind an app: its sharing owner, else its tree's owner. */
-function ownerOf(
+/**
+ * The person behind an app: its sharing owner, else its tree's owner. Any
+ * real user id counts (isPersonActorId: 15 characters, or legacy 24-hex);
+ * a sentinel such as "system" or "publish" is nobody.
+ */
+export function ownerOf(
   folder: Pick<AppIndexRow, "scope" | "ownerId">,
   state: Pick<IAppProject, "owner_id" | "createdBy"> | undefined,
 ): string | undefined {
   const fromState = state?.owner_id || state?.createdBy;
-  if (fromState && Types.ObjectId.isValid(fromState)) return fromState;
+  if (fromState && isPersonActorId(fromState)) return fromState;
   return folder.scope === "private" ? folder.ownerId : undefined;
 }
 
