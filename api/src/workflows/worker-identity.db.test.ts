@@ -96,14 +96,6 @@ async function main() {
     if (!href.startsWith("https://hatchet.example/")) {
       return realFetch(input, init);
     }
-    if (href.endsWith("/task-stats")) {
-      return hatchetDown
-        ? Response.json({}, { status: 502 })
-        : Response.json({
-            step: { queued: { total: 3 }, running: { total: 2 } },
-            other: { queued: { total: 1 } },
-          });
-    }
     const id = href.match(/workflow-runs\/([0-9a-f-]{36})/)?.[1] ?? "";
     if (hatchetDown) return Response.json({}, { status: 502 });
     if (!RUNS[id]) return Response.json({}, { status: 404 });
@@ -315,23 +307,7 @@ async function main() {
     hatchetDown = true;
     assert.equal(await askPass("3f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f"), 503);
 
-    // What the autoscaler reads: no answer from Hatchet is not "no work".
-    const askDemand = () =>
-      realFetch(`http://127.0.0.1:${port}/api/workflows/runtime/demand`, {
-        headers: { Authorization: `Bearer ${WORKER_KEY}` },
-      });
-    assert.equal((await askDemand()).status, 503);
     hatchetDown = false;
-    const demand = await askDemand();
-    assert.equal(demand.status, 200);
-    // The commit on main has not been reported running: one more than idle
-    // would need, but the queue already asks for more.
-    assert.deepEqual(await demand.json(), {
-      steps: 6,
-      queued: 4,
-      running: 2,
-      building: true,
-    });
 
     uninstall();
     console.log("workflow worker identity tests passed");

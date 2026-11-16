@@ -16,7 +16,6 @@
 import {
   AppsV1Api,
   CoreV1Api,
-  CustomObjectsApi,
   KubeConfig,
   type V1Pod,
 } from "@kubernetes/client-node";
@@ -101,11 +100,6 @@ export async function gkeClients(): Promise<{
     core: kc.makeApiClient(CoreV1Api),
     apps: kc.makeApiClient(AppsV1Api),
   };
-}
-
-/** The same cluster's custom resources (the workflow workers' KEDA objects). */
-export async function gkeCustomObjects(): Promise<CustomObjectsApi> {
-  return (await gkeKubeConfig()).makeApiClient(CustomObjectsApi);
 }
 
 export class GKEKernelProvider implements KernelProvider {

@@ -98,25 +98,27 @@ webhook calls. Mako's webhook starts one run per POST.
 
 ## Autoscaling (optional)
 
-With `WORKFLOWS_AUTOSCALER=keda` on the Mako API, each worker Deployment
-gets a KEDA `ScaledObject` and `TriggerAuthentication` of the same name
-(`api/src/workflows/kube.ts`, `autoscalerBodies`): 0 to 5 pods, one per 128
-steps the workspace has to run.
+With `WORKFLOWS_AUTOSCALE=on` on the Mako API, Mako sets each worker's
+pod count itself (`api/src/workflows/scale.ts`): 0 to 5 pods, one per 128
+steps the workspace has to run. Nothing to install in the cluster.
 
-- KEDA reads `GET <mako>/api/workflows/runtime/demand` every 15 s with the
-  worker's own key, from its Secret. Mako answers `steps`: the steps queued
-  or running in Hatchet (its `task-stats`), and 1 while a commit or a change
-  of triggers has not been reported by a worker yet, so a push wakes a
-  sleeping worker as a run does.
-- The last pod stops after 10 minutes without work. Pods are removed one a
-  minute, and a pod asked to stop finishes its steps first.
-- No answer from Mako or Hatchet is not "no work": KEDA keeps one pod.
+- Every minute the `workflows-scale` Inngest function reads each
+  workspace's work from Hatchet's own queue (`task-stats`: steps queued or
+  running), counts a commit the worker has not built yet as work, and sets
+  the pods. It grows at once and shrinks one pod a minute.
+- The last pod stops after 10 minutes without work, so a schedule that
+  fires every few minutes keeps its worker.
+- Mako wakes a sleeping worker at once when it starts or retries a run
+  (the app, the API, an agent, a webhook), deploys a commit, or switches a
+  workflow's triggers. A schedule Hatchet fires by itself is picked up by
+  the next sweep, within a minute.
 - A run started while no pod is up waits `QUEUED`: about a minute for the
   pod to start and build, longer when a node must start.
+- When Hatchet cannot be read, the worker is left as it is.
+- A pod that is removed finishes its running steps first.
 
-It needs KEDA in the cluster and the Mako API's Kubernetes identity allowed
-to manage `scaledobjects` and `triggerauthentications` (`keda.sh`) in
-`mako-workflows`. Without the setting nothing changes: one pod, always on.
+Without the setting nothing changes: the pods a worker has stay, one by
+default.
 
 ## Load test
 

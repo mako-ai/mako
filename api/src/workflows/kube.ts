@@ -4,12 +4,11 @@
  * named `wf-<prefix><id>`, created once: the pod holds its Mako API key and
  * asks Mako which commit to run, so a deploy never touches Kubernetes.
  */
-import { CustomObjectsApi, type V1Deployment } from "@kubernetes/client-node";
+import type { V1Deployment } from "@kubernetes/client-node";
 
 import { loggers } from "../logging";
 import {
   gkeClients,
-  gkeCustomObjects,
   isGkeProviderConfigured,
 } from "../services/kernel-provider/gke-kernel-provider";
 import { workflowsNamePrefix } from "./hatchet";
@@ -56,7 +55,7 @@ const WORKER_RESOURCES = {
 };
 
 /**
- * The most pods one workspace's worker grows to (the autoscaler below):
+ * The most pods one workspace's worker grows to (scale.ts):
  * 5 x 128 steps at once. The namespace quota (deploy/workflows/k8s) holds
  * 16 such pods for all workspaces together.
  */
@@ -347,7 +346,6 @@ export async function ensureWorkerDeployment(
       body: deploymentBody(workspaceId),
     });
     logger.info("Created workflow worker", { workspaceId });
-    await ensureAutoscaler(workspaceId);
     return;
   }
   if (!isCurrent(existing) || restart) {
@@ -361,139 +359,6 @@ export async function ensureWorkerDeployment(
           ? "new settings"
           : "new runtime image",
     );
-  }
-  await ensureAutoscaler(workspaceId);
-}
-
-// --- Autoscaling (optional) ---------------------------------------------------
-
-type CustomObjects = Pick<
-  CustomObjectsApi,
-  | "getNamespacedCustomObject"
-  | "createNamespacedCustomObject"
-  | "replaceNamespacedCustomObject"
->;
-
-/** True when workers are scaled by KEDA (WORKFLOWS_AUTOSCALER=keda). */
-export function isAutoscaled(): boolean {
-  return process.env.WORKFLOWS_AUTOSCALER === "keda";
-}
-
-const KEDA = { group: "keda.sh", version: "v1alpha1" };
-
-/**
- * The KEDA objects that scale a workspace's worker between 0 pods and
- * WORKER_MAX_REPLICAS. KEDA asks Mako how many steps the workspace has to
- * run (`GET /api/workflows/runtime/demand`, with the worker's own key from
- * its Secret) and keeps one pod per WORKER_STEPS of them. Mako answers from
- * Hatchet's queue, and counts a deploy the worker has not built yet as work,
- * so a sleeping worker wakes for a push as it does for a run.
- */
-export function autoscalerBodies(workspaceId: string) {
-  const name = workerName(workspaceId);
-  const metadata = {
-    name,
-    namespace: NAMESPACE,
-    labels: resourceLabels(workspaceId),
-  };
-  return {
-    TriggerAuthentication: {
-      apiVersion: `${KEDA.group}/${KEDA.version}`,
-      kind: "TriggerAuthentication",
-      metadata,
-      spec: {
-        secretTargetRef: [{ parameter: "token", name, key: "MAKO_API_KEY" }],
-      },
-    },
-    ScaledObject: {
-      apiVersion: `${KEDA.group}/${KEDA.version}`,
-      kind: "ScaledObject",
-      metadata,
-      spec: {
-        scaleTargetRef: { name },
-        minReplicaCount: 0,
-        maxReplicaCount: WORKER_MAX_REPLICAS,
-        pollingInterval: 15,
-        // Ten minutes without work before the last pod stops: a schedule
-        // that fires every few minutes keeps its worker.
-        cooldownPeriod: 600,
-        // Mako or Hatchet not answering is not "no work": keep one pod.
-        fallback: { failureThreshold: 3, replicas: 1 },
-        advanced: {
-          horizontalPodAutoscalerConfig: {
-            behavior: {
-              // Grow at once; shrink one pod at a time, five minutes after
-              // the queue allows it. A pod asked to stop finishes its steps
-              // first (terminationGracePeriodSeconds).
-              scaleUp: { stabilizationWindowSeconds: 0 },
-              scaleDown: {
-                stabilizationWindowSeconds: 300,
-                policies: [{ type: "Pods", value: 1, periodSeconds: 60 }],
-              },
-            },
-          },
-        },
-        triggers: [
-          {
-            type: "metrics-api",
-            metricType: "AverageValue",
-            metadata: {
-              url: `${makoUrl()}/api/workflows/runtime/demand`,
-              valueLocation: "steps",
-              targetValue: String(workerSteps()),
-              // One step is enough to start the first pod.
-              activationTargetValue: "0",
-              authMode: "bearer",
-            },
-            authenticationRef: { name },
-          },
-        ],
-      },
-    },
-  };
-}
-
-/**
- * Create or update the workspace's KEDA objects. Nothing without
- * WORKFLOWS_AUTOSCALER=keda: the worker then stays at the pods it has.
- */
-export async function ensureAutoscaler(
-  workspaceId: string,
-  custom?: CustomObjects,
-): Promise<void> {
-  if (!isAutoscaled()) return;
-  const client = custom ?? (await gkeCustomObjects());
-  const bodies = autoscalerBodies(workspaceId);
-  const kinds = [
-    ["triggerauthentications", bodies.TriggerAuthentication],
-    ["scaledobjects", bodies.ScaledObject],
-  ] as const;
-  for (const [plural, body] of kinds) {
-    const at = { ...KEDA, namespace: NAMESPACE, plural };
-    let existing: { metadata?: { resourceVersion?: string } } | undefined;
-    try {
-      existing = await client.getNamespacedCustomObject({
-        ...at,
-        name: body.metadata.name,
-      });
-    } catch (error) {
-      if (!isNotFound(error)) throw error;
-    }
-    if (!existing) {
-      await client.createNamespacedCustomObject({ ...at, body });
-      continue;
-    }
-    await client.replaceNamespacedCustomObject({
-      ...at,
-      name: body.metadata.name,
-      body: {
-        ...body,
-        metadata: {
-          ...body.metadata,
-          resourceVersion: existing.metadata?.resourceVersion,
-        },
-      },
-    });
   }
 }
 
@@ -540,4 +405,55 @@ export async function rollWorkersToRuntimeImage(
     }
   }
   return moved;
+}
+
+/** This environment's workers, by workspace, with their pod count. */
+export async function listWorkers(
+  apps?: AppsClient,
+): Promise<Array<{ workspaceId: string; replicas: number }>> {
+  const client = apps ?? (await gkeClients()).apps;
+  const { items } = await client.listNamespacedDeployment({
+    namespace: NAMESPACE,
+    labelSelector: workerSelector(),
+  });
+  return items.flatMap(deployment => {
+    const workspaceId = deployment.metadata?.labels?.[WORKSPACE_LABEL];
+    return workspaceId
+      ? [{ workspaceId, replicas: deployment.spec?.replicas ?? 1 }]
+      : [];
+  });
+}
+
+/**
+ * Set the pod count of a workspace's worker, from the count it has: 0 puts
+ * it to sleep. The pod template is not touched, so pods that stay are not
+ * restarted; a pod that goes finishes its steps first. Returns the count
+ * before and after, or null when the workspace has no worker.
+ */
+export async function setWorkerReplicas(
+  workspaceId: string,
+  wanted: (current: number) => number,
+  apps?: AppsClient,
+): Promise<{ from: number; to: number } | null> {
+  const client = apps ?? (await gkeClients()).apps;
+  const name = workerName(workspaceId);
+  let existing: V1Deployment;
+  try {
+    existing = await client.readNamespacedDeployment({
+      name,
+      namespace: NAMESPACE,
+    });
+  } catch (error) {
+    if (isNotFound(error)) return null;
+    throw error;
+  }
+  const from = existing.spec?.replicas ?? 1;
+  const to = Math.max(0, Math.min(WORKER_MAX_REPLICAS, wanted(from)));
+  if (to === from || !existing.spec) return { from, to: from };
+  await client.replaceNamespacedDeployment({
+    name,
+    namespace: NAMESPACE,
+    body: { ...existing, spec: { ...existing.spec, replicas: to } },
+  });
+  return { from, to };
 }
