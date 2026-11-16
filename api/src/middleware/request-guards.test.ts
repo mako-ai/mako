@@ -161,39 +161,57 @@ async function edgeOrigin() {
 }
 
 /**
- * While this instance clones a workspace's repo, that workspace's repo-work
- * requests are refused at once (503 + Retry-After), take no slot and do not
- * wait (2026-11-16: waiters held the pool 10 s, then failed anyway). Other
- * workspaces are unaffected.
+ * While this instance clones a workspace's repo and the pool is full, that
+ * workspace's repo-work requests are refused at once (503 + Retry-After)
+ * instead of waiting 10 s (2026-11-16). With a free slot they run and join
+ * the clone, as before. Other workspaces still wait for a slot.
  */
 async function shedWhileCloningRepo() {
   const pool = createConcurrencyPool({ name: "t3", max: 1, maxWaitMs: 5_000 });
+  let unblock!: () => void;
+  const blocker = new Promise<void>(r => (unblock = r));
   const app = new Hono();
   app.get(
     "/api/workspaces/:workspaceId/apps/:id/files",
     concurrencyLimit(pool, shedWhileCloning),
-    c => c.text("ok"),
+    async c => {
+      if (c.req.query("hold")) await blocker;
+      return c.text("ok");
+    },
   );
   const OTHER = "6846e6a01b05af0948070583";
+  const url = (ws: string, hold = false) =>
+    `/api/workspaces/${ws}/apps/${APP}/files${hold ? "?hold=1" : ""}`;
   let finish!: () => void;
   cloneInFlight.set(WS, new Promise<void>(r => (finish = r)));
   try {
+    // A free slot: the request runs, cloning or not.
+    assert.equal((await app.request(url(WS))).status, 200);
+
+    // The one slot is taken: a request for the cloning workspace is
+    // refused at once and takes nothing.
+    const holder = app.request(url(OTHER, true));
+    await new Promise(r => setTimeout(r, 5));
+    assert.equal(pool.active, 1);
     const started = Date.now();
-    const shed = await app.request(`/api/workspaces/${WS}/apps/${APP}/files`);
+    const shed = await app.request(url(WS));
     assert.equal(shed.status, 503);
     assert.equal(shed.headers.get("Retry-After"), "2");
     assert.ok(Date.now() - started < 1_000, "refused without waiting");
-    assert.equal(pool.active, 0, "took no slot");
-    const other = await app.request(
-      `/api/workspaces/${OTHER}/apps/${APP}/files`,
-    );
-    assert.equal(other.status, 200);
+    assert.equal(pool.waiting, 0, "did not queue");
+
+    // Another workspace waits for the slot as before.
+    const other = app.request(url(OTHER));
+    await new Promise(r => setTimeout(r, 5));
+    assert.equal(pool.waiting, 1);
+    unblock();
+    assert.equal((await holder).status, 200);
+    assert.equal((await other).status, 200);
   } finally {
+    unblock();
     finish();
     cloneInFlight.delete(WS);
   }
-  const after = await app.request(`/api/workspaces/${WS}/apps/${APP}/files`);
-  assert.equal(after.status, 200, "served once the clone ended");
 }
 
 async function main() {

@@ -30,6 +30,7 @@ export interface ConcurrencyPool {
   readonly name: string;
   /** Resolves with a release function, or null when no slot freed in time. */
   acquire(): Promise<(() => void) | null>;
+  readonly max: number;
   readonly active: number;
   readonly waiting: number;
 }
@@ -60,6 +61,7 @@ export function createConcurrencyPool(
 
   return {
     name: options.name,
+    max: options.max,
     get active() {
       return active;
     },
@@ -99,10 +101,11 @@ function busy(c: Context): Response {
 
 export interface ConcurrencyLimitOptions {
   /**
-   * Refuse at once (503 + Retry-After), without waiting for a slot, when
-   * this says the request would only queue behind slow work: a clone of
-   * the workspace repo in progress (2026-11-16: waiters held the pool for
-   * 10 s and then failed anyway).
+   * Asked only when the pool has no free slot: refuse at once (503 +
+   * Retry-After) instead of waiting for one, when this says the request
+   * would only queue behind slow work. A clone of the workspace repo in
+   * progress, for one (2026-11-16: waiters held their place 10 s and then
+   * failed anyway). With a free slot the request runs as before.
    */
   shedWhen?: (c: Context) => boolean;
 }
@@ -113,7 +116,7 @@ export function concurrencyLimit(
   options: ConcurrencyLimitOptions = {},
 ) {
   return async (c: Context, next: Next) => {
-    if (options.shedWhen?.(c)) {
+    if (pool.active >= pool.max && options.shedWhen?.(c)) {
       logger.warn("Repo clone in progress; refusing request", {
         pool: pool.name,
         path: c.req.path,
@@ -151,9 +154,11 @@ export const repoWorkPool = createConcurrencyPool({
 });
 
 /**
- * For the repo-work routes: refuse at once while this instance clones the
- * request's workspace repo. The clone takes 11 to 14 s on a new instance;
- * a waiter would hold its place for 10 s and fail anyway.
+ * For the repo-work routes: when the pool is full and this instance is
+ * cloning the request's workspace repo, refuse at once. The clone takes 11
+ * to 14 s on a new instance; a waiter would hold its place for 10 s and
+ * fail anyway. With a free slot the request joins the clone and answers
+ * when it ends, as before.
  */
 export const shedWhileCloning: ConcurrencyLimitOptions = {
   shedWhen: c => {
