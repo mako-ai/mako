@@ -27,6 +27,8 @@ export default defineConfig({
     include: [
       "src/databases/**/*.test.ts",
       "src/services/destination-writer.service.test.ts",
+      // A failed MAX probe is a failure, never "no data".
+      "src/services/destination-writer/query-introspection.test.ts",
       "src/sync-cdc/adapters/**/*.test.ts",
       "src/sync-cdc/backlog.test.ts",
       "src/sync-cdc/consumer.test.ts",

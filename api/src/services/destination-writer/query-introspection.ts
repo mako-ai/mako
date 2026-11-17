@@ -90,6 +90,19 @@ export async function getMaxTrackingValue(
       signal: options?.signal,
     });
 
+    // Drivers report a failed query as `{ success: false }` rather than
+    // throwing. It must not read as "no data": a poll would then treat a
+    // warehouse hiccup as an empty table and re-read the whole entity.
+    if (!result.success) {
+      // MongoDB has no SQL: this probe always fails there. Keep the old
+      // reading (no value, so a poll fetches everything) until a native
+      // probe exists, or a dropped collection would never refill.
+      if (connection.type === "mongodb") {
+        return { success: true, maxValue: undefined };
+      }
+      return { success: false, error: result.error || "Query failed" };
+    }
+
     if (result.success && result.data && result.data.length > 0) {
       const maxValue = result.data[0].max_value;
       if (maxValue !== null && maxValue !== undefined) {
