@@ -114,26 +114,39 @@ router.openapi(
 
       let event: any;
 
+      // A boxed connector's events wait in their own lane, pinned to the
+      // connection they were verified for: a batch hands a connector only
+      // its own connection's events (webhook-batch.ts), and the inline cron
+      // never sees them, so a slow box cannot hold up anyone else's. Only a
+      // `ws:` connector with CONNECTOR_WEBHOOK_BATCHES on is "box".
+      const boxLane = connector.webhookDelivery?.() === "box";
+
       if (connector.supportsWebhooks()) {
-        let verificationResult: Awaited<
-          ReturnType<typeof connector.verifyWebhook>
-        >;
-        try {
-          verificationResult = await connector.verifyWebhook({
+        const secret = flow.webhookConfig.secret;
+        const verify = () =>
+          connector.verifyWebhook({
             payload: rawBodyText,
             headers: headers,
-            secret: flow.webhookConfig.secret,
+            secret,
             query,
           });
-        } catch (error) {
-          // The check itself could not run (a workspace connector whose
-          // definition failed to load, say). Nothing was stored, so the
-          // vendor must retry: never a 2xx here.
-          logger.error("Webhook verification could not run", {
-            flowId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          return fail(c, 503, "Webhook verification is unavailable");
+        let verificationResult: Awaited<ReturnType<typeof verify>>;
+        if (boxLane) {
+          try {
+            verificationResult = await verify();
+          } catch (error) {
+            // The check itself could not run (the workspace connector's
+            // definition failed to load, say). Nothing was stored, so the
+            // vendor must retry: never a 2xx here. In-process connectors
+            // keep today's answer (the outer catch).
+            logger.error("Webhook verification could not run", {
+              flowId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return fail(c, 503, "Webhook verification is unavailable");
+          }
+        } else {
+          verificationResult = await verify();
         }
 
         if (!verificationResult.valid) {
@@ -174,12 +187,6 @@ router.openapi(
           return fail(c, 400, "Invalid JSON payload");
         }
       }
-
-      // A boxed connector's events wait in their own lane, pinned to the
-      // connection they were verified for: a batch hands a connector only
-      // its own connection's events (webhook-batch.ts), and the inline cron
-      // never sees them, so a slow box cannot hold up anyone else's.
-      const boxLane = connector.webhookDelivery?.() === "box";
 
       const webhookEvent = new WebhookEvent({
         flowId,

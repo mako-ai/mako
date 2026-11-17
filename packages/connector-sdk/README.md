@@ -95,6 +95,8 @@ webhooks: {
     signatureHeader: "close-sig-hash",
     signatureEncoding: "hex", // or "base64"
     // signaturePrefix: "sha256=",
+    timestampHeader: "close-sig-timestamp", // Unix seconds; refuses replays
+    toleranceSeconds: 300,
   },
   events: ["lead.updated" /* ... */],
   async handleBatch(ctx, events) {

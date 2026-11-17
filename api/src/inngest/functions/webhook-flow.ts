@@ -216,6 +216,63 @@ export function shapeWebhookCdcRecords(params: {
  */
 
 /**
+ * Reset failed and stale-processing inline webhook events to pending, for the
+ * CDC scheduler cron to pick up again.
+ */
+export async function retryFailedInlineWebhooks(logger: {
+  info: (...args: any[]) => void;
+}) {
+  // Inline events only (`lane: null`). Box-lane events have their own
+  // retry, per workspace (connectors/workspace/webhook-batch.ts), so a
+  // box backlog can never fill this global batch.
+  const failedEvents = await WebhookEvent.find({
+    status: "failed",
+    lane: null,
+    attempts: { $lt: 5 },
+  })
+    .select("_id flowId eventId")
+    .limit(500)
+    .lean();
+
+  const staleProcessingCutoff = new Date(Date.now() - 5 * 60 * 1000);
+  const staleProcessingEvents = await WebhookEvent.find({
+    status: "processing",
+    lane: null,
+    attempts: { $lt: 5 },
+    receivedAt: { $lt: staleProcessingCutoff },
+  })
+    .select("_id flowId eventId")
+    .limit(500)
+    .lean();
+
+  const allEvents = [...failedEvents, ...staleProcessingEvents];
+  if (allEvents.length === 0) {
+    return { retried: 0, failed: 0, staleProcessing: 0 };
+  }
+
+  // Reset all to pending — the CDC scheduler cron picks them up.
+  await WebhookEvent.updateMany(
+    { _id: { $in: allEvents.map(e => e._id) } },
+    {
+      $set: { status: "pending" },
+      $unset: { applyError: "", error: "", processedAt: "" },
+    },
+  );
+
+  logger.info("Reset webhook events to pending for retry", {
+    total: allEvents.length,
+    failed: failedEvents.length,
+    staleProcessing: staleProcessingEvents.length,
+  });
+
+  return {
+    retried: allEvents.length,
+    failed: failedEvents.length,
+    staleProcessing: staleProcessingEvents.length,
+  };
+}
+
+/**
  * Retry failed / stuck webhook events.
  *
  * All webhook flows are CDC: this resets failed and stale-processing events to
@@ -230,51 +287,9 @@ export const webhookRetryFunction = inngest.createFunction(
     triggers: { cron: "*/30 * * * *" },
   },
   async ({ step, logger }) => {
-    const result = await step.run("retry-failed-events", async () => {
-      const failedEvents = await WebhookEvent.find({
-        status: "failed",
-        attempts: { $lt: 5 },
-      })
-        .select("_id flowId eventId")
-        .limit(500)
-        .lean();
-
-      const staleProcessingCutoff = new Date(Date.now() - 5 * 60 * 1000);
-      const staleProcessingEvents = await WebhookEvent.find({
-        status: "processing",
-        attempts: { $lt: 5 },
-        receivedAt: { $lt: staleProcessingCutoff },
-      })
-        .select("_id flowId eventId")
-        .limit(500)
-        .lean();
-
-      const allEvents = [...failedEvents, ...staleProcessingEvents];
-      if (allEvents.length === 0) {
-        return { retried: 0, failed: 0, staleProcessing: 0 };
-      }
-
-      // Reset all to pending — the CDC scheduler cron picks them up.
-      await WebhookEvent.updateMany(
-        { _id: { $in: allEvents.map(e => e._id) } },
-        {
-          $set: { status: "pending" },
-          $unset: { applyError: "", error: "", processedAt: "" },
-        },
-      );
-
-      logger.info("Reset webhook events to pending for retry", {
-        total: allEvents.length,
-        failed: failedEvents.length,
-        staleProcessing: staleProcessingEvents.length,
-      });
-
-      return {
-        retried: allEvents.length,
-        failed: failedEvents.length,
-        staleProcessing: staleProcessingEvents.length,
-      };
-    });
+    const result = await step.run("retry-failed-events", () =>
+      retryFailedInlineWebhooks(logger),
+    );
 
     return result;
   },

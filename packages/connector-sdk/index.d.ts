@@ -116,6 +116,13 @@ export interface WebhookVerification {
   signatureEncoding: "hex" | "base64";
   /** Text before the signature in its header, e.g. `"sha256="`. */
   signaturePrefix?: string;
+  /**
+   * A header with the send time in Unix seconds, and the window around now
+   * it must fall in (1 to 86400). Declared together. Mako then refuses a
+   * delivery without the header or outside the window.
+   */
+  timestampHeader?: string;
+  toleranceSeconds?: number;
 }
 
 /** One stored delivery, as Mako hands it to `handleBatch`. */

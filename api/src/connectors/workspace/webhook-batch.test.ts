@@ -46,12 +46,17 @@ import {
   WebhookEvent,
 } from "../../database/workspace-schema";
 import { webhookRoutes } from "../../routes/webhooks";
-import { ingestPendingWebhookEvents } from "../../inngest/functions/webhook-flow";
+import {
+  ingestPendingWebhookEvents,
+  retryFailedInlineWebhooks,
+} from "../../inngest/functions/webhook-flow";
+import { connectorRegistry } from "../registry";
 import {
   BOX_CODES,
   cutBatch,
   flowsWithPendingBoxWebhooks,
   processBoxWebhookBatch,
+  retryFailedBoxWebhooks,
   type WebhookBatchRunner,
 } from "./webhook-batch";
 import { ConnectorOutputTooLargeError, type RunResult } from "./sync-box";
@@ -293,6 +298,24 @@ describe("ingress", () => {
     });
     expect(res.status).toBe(503);
     expect(await WebhookEvent.countDocuments({})).toBe(0);
+  });
+
+  it("keeps today's answer for an in-process connector whose check throws: 200, nothing stored", async () => {
+    const spy = vi.spyOn(connectorRegistry, "getConnectorFor").mockReturnValue({
+      supportsWebhooks: () => true,
+      webhookDelivery: () => "inline",
+      verifyWebhook: async () => {
+        throw new Error("provider library blew up");
+      },
+    } as never);
+    try {
+      const res = await deliver("{}", {});
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ received: false });
+      expect(await WebhookEvent.countDocuments({})).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("with the flag off, keeps today's path: no lane, the shared-token check", async () => {
@@ -825,7 +848,7 @@ describe("a batch", () => {
     });
   });
 
-  it("hands a flow pointed at a new in-process connection back to the inline cron", async () => {
+  it("drops the events of a flow pointed at a new in-process connection: they stay pinned", async () => {
     const e = await boxEvent();
     const inProcess = new Types.ObjectId();
     await SourceConnection.collection.insertOne({
@@ -846,12 +869,15 @@ describe("a batch", () => {
     });
     expect(result.next).toBe("stop");
     expect(box.calls).toHaveLength(0);
-    const after = await WebhookEvent.findById(e._id).lean();
-    expect(after?.lane).toBeUndefined();
-    expect(after?.status).toBe("pending");
+    expect(await WebhookEvent.findById(e._id).lean()).toMatchObject({
+      lane: "box",
+      status: "completed",
+      applyStatus: "dropped",
+      applyError: { code: BOX_CODES.connectionChanged },
+    });
   });
 
-  it("hands a flow that moved to an in-process connector back to the inline cron", async () => {
+  it("drops the events of a flow whose connection became an in-process connector", async () => {
     await SourceConnection.collection.updateOne(
       { _id: conn },
       { $set: { type: "close" } },
@@ -862,9 +888,261 @@ describe("a batch", () => {
       runner: fakeRunner(() => ok([])).factory,
     });
     expect(result.next).toBe("stop");
-    const after = await WebhookEvent.findById(e._id).lean();
-    expect(after?.lane).toBeUndefined();
-    expect(after?.status).toBe("pending");
+    expect(await WebhookEvent.findById(e._id).lean()).toMatchObject({
+      status: "completed",
+      applyStatus: "dropped",
+      applyError: { code: BOX_CODES.connectionChanged },
+    });
+  });
+
+  it("caps deferrals: the 5th deferral fails the event for good", async () => {
+    const e = await boxEvent(
+      flowId,
+      conn,
+      { event: { id: "x" } },
+      { deferrals: 4 },
+    );
+    const box = fakeRunner(events =>
+      ok([
+        {
+          type: "WEBHOOK",
+          webhook: { eventId: events[0].eventId, outcome: "deferred" },
+        },
+      ]),
+    );
+    await processBoxWebhookBatch({
+      flowId: String(flowId),
+      runner: box.factory,
+    });
+    expect(await WebhookEvent.findById(e._id).lean()).toMatchObject({
+      status: "failed",
+      attempts: 5,
+      applyError: { code: BOX_CODES.deferred },
+    });
+  });
+
+  it("an ingest failure blames no event: the batch is released, refunded and halved", async () => {
+    const events = [await boxEvent(), await boxEvent()];
+    mocks.appendNormalizedEvents.mockRejectedValueOnce(
+      new Error("BSONObj exceeds maximum nested object depth"),
+    );
+    const box = fakeRunner(batch => ok(batch.map(x => leadOutcome(x))));
+    const result = await processBoxWebhookBatch({
+      flowId: String(flowId),
+      runner: box.factory,
+    });
+    expect(result).toMatchObject({ next: "stop", failed: 0, ingested: 0 });
+    for (const e of events) {
+      expect(await WebhookEvent.findById(e._id).lean()).toMatchObject({
+        status: "pending",
+        attempts: 0,
+      });
+    }
+    expect(
+      (await Flow.collection.findOne({ _id: flowId }))?.webhookConfig
+        ?.boxBatchSize,
+    ).toBe(1);
+  });
+
+  it("a record nested 300 deep fails its own event; the rest is written", async () => {
+    const [deep, fine] = [await boxEvent(), await boxEvent()];
+    let nested: Record<string, unknown> = { leaf: 1 };
+    for (let i = 0; i < 300; i++) nested = { n: nested };
+    const box = fakeRunner(batch =>
+      ok([
+        leadOutcome(batch[0], { payload: { id: "x", nested } }),
+        leadOutcome(batch[1]),
+      ]),
+    );
+    const result = await processBoxWebhookBatch({
+      flowId: String(flowId),
+      runner: box.factory,
+    });
+    expect(result).toMatchObject({ ingested: 1, failed: 1 });
+    expect(await WebhookEvent.findById(deep._id).lean()).toMatchObject({
+      status: "failed",
+      attempts: 5,
+      applyError: { code: BOX_CODES.recordTooLarge },
+    });
+    expect(await WebhookEvent.findById(fine._id).lean()).toMatchObject({
+      status: "completed",
+    });
+  });
+
+  it("strips system keys after normalising, in any case", async () => {
+    await boxEvent();
+    const box = fakeRunner(batch =>
+      ok([
+        leadOutcome(batch[0], {
+          payload: {
+            id: "x",
+            ".mako_deleted_at": "2020-01-01",
+            _MAKO_SOURCE_TS: "2020-01-01",
+            _DataSourceId: "someone_else",
+            _SYNCEDAT: "2020-01-01",
+            keep: 1,
+          },
+        }),
+      ]),
+    );
+    await processBoxWebhookBatch({
+      flowId: String(flowId),
+      runner: box.factory,
+    });
+    const [written] = mocks.appendNormalizedEvents.mock.calls[0][0].events;
+    const keys = Object.keys(written.payload).map(k => k.toLowerCase());
+    expect(keys.filter(k => k.startsWith("_mako"))).toEqual([]);
+    expect(keys.filter(k => k === "_datasourceid")).toEqual(["_datasourceid"]);
+    expect(written.payload._dataSourceId).toBe(String(conn));
+    expect(written.payload._DataSourceId).toBeUndefined();
+    expect(written.payload.keep).toBe(1);
+  });
+
+  it("refuses the secret in any case and as hex or base64 of its bytes", async () => {
+    const forms = [
+      SECRET.toUpperCase(),
+      Buffer.from(SECRET, "hex").toString("base64"),
+      Buffer.from(SECRET, "utf8").toString("base64"),
+    ];
+    const leaks = [];
+    for (const form of forms) {
+      leaks.push(await boxEvent(flowId, conn, { note: form }));
+    }
+    const clean = await boxEvent();
+    const box = fakeRunner(batch => ok(batch.map(x => leadOutcome(x))));
+    await processBoxWebhookBatch({
+      flowId: String(flowId),
+      runner: box.factory,
+    });
+    expect(box.calls[0].batch.events.map((e: any) => e.eventId)).toEqual([
+      clean.eventId,
+    ]);
+    for (const leak of leaks) {
+      expect(await WebhookEvent.findById(leak._id).lean()).toMatchObject({
+        applyError: { code: BOX_CODES.secretInBatch },
+      });
+    }
+  });
+
+  it("caps the records of a whole batch at 50,000, as a failed box run", async () => {
+    for (let i = 0; i < 51; i++) await boxEvent();
+    const box = fakeRunner(batch =>
+      ok(
+        batch.map(e => ({
+          type: "WEBHOOK",
+          webhook: {
+            eventId: e.eventId,
+            outcome: "records",
+            records: Array.from({ length: 1_000 }, (_, i) => ({
+              entity: "leads",
+              recordId: `l${i}`,
+              operation: "upsert",
+              payload: {},
+            })),
+          },
+        })),
+      ),
+    );
+    const result = await processBoxWebhookBatch({
+      flowId: String(flowId),
+      runner: box.factory,
+    });
+    expect(result).toMatchObject({ next: "stop", ingested: 0, failed: 0 });
+    expect(mocks.appendNormalizedEvents).not.toHaveBeenCalled();
+    expect(
+      await WebhookEvent.countDocuments({ flowId, status: "pending" }),
+    ).toBe(51);
+  });
+});
+
+describe("retries", () => {
+  const old = new Date(Date.now() - 60 * 60_000);
+  async function failedEvent(workspaceId: Types.ObjectId, extra = {}) {
+    seq++;
+    return WebhookEvent.create({
+      flowId: new Types.ObjectId(),
+      workspaceId,
+      eventId: `retry_${seq}`,
+      eventType: "x",
+      receivedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, seq % 60, seq)),
+      status: "failed",
+      attempts: 0,
+      processedAt: old,
+      rawPayload: {},
+      ...extra,
+    });
+  }
+
+  it("600 deferred box events never crowd an inline event out of the retry cron", async () => {
+    const noisy = new Types.ObjectId();
+    const ops = Array.from({ length: 600 }, (_, i) => ({
+      insertOne: {
+        document: {
+          flowId: new Types.ObjectId(),
+          workspaceId: noisy,
+          eventId: `deferred_${i}`,
+          eventType: "lead.updated",
+          receivedAt: new Date(Date.UTC(2025, 0, 1, 0, 0, 0, i)),
+          status: "failed",
+          attempts: 0,
+          processedAt: old,
+          rawPayload: {},
+          lane: "box",
+          applyStatus: "pending",
+          applyError: { code: "ENRICH_DEFERRED", message: "x" },
+        },
+      },
+    }));
+    await WebhookEvent.bulkWrite(ops);
+    const victim = await failedEvent(new Types.ObjectId());
+
+    const inline = await retryFailedInlineWebhooks({ info: () => {} });
+    expect(inline.failed).toBe(1);
+    expect(await WebhookEvent.findById(victim._id).lean()).toMatchObject({
+      status: "pending",
+    });
+    expect(
+      await WebhookEvent.countDocuments({ lane: "box", status: "pending" }),
+    ).toBe(0);
+
+    // The box lane's own retry: capped per workspace, oldest workspace
+    // first, so a second workspace's event gets through too.
+    const quiet = new Types.ObjectId();
+    const theirs = await failedEvent(quiet, { lane: "box" });
+    const box = await retryFailedBoxWebhooks({ perWorkspace: 100 });
+    expect(box).toEqual({ retried: 101, workspaces: 2 });
+    expect(await WebhookEvent.findById(theirs._id).lean()).toMatchObject({
+      status: "pending",
+    });
+    expect(
+      await WebhookEvent.countDocuments({
+        workspaceId: noisy,
+        status: "pending",
+      }),
+    ).toBe(100);
+  });
+
+  it("retries a stale box claim, and leaves a recent failure for later", async () => {
+    const stale = await failedEvent(ws, {
+      lane: "box",
+      status: "processing",
+      claimedAt: old,
+    });
+    const recent = await failedEvent(ws, {
+      lane: "box",
+      processedAt: new Date(),
+    });
+    const spent = await failedEvent(ws, { lane: "box", attempts: 5 });
+    await retryFailedBoxWebhooks();
+    expect((await WebhookEvent.findById(stale._id).lean())?.status).toBe(
+      "pending",
+    );
+    expect((await WebhookEvent.findById(recent._id).lean())?.status).toBe(
+      "failed",
+    );
+    expect((await WebhookEvent.findById(spent._id).lean())?.status).toBe(
+      "failed",
+    );
   });
 });
 

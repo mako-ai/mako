@@ -18,7 +18,20 @@ export interface DeclaredWebhookVerification {
   signatureHeader: string;
   signatureEncoding: "hex" | "base64";
   signaturePrefix?: string;
+  /**
+   * A header carrying the send time in Unix seconds, and how far from now
+   * it may be. Declared together. When declared, a delivery without the
+   * header, or outside the window, is refused: a captured delivery cannot
+   * be replayed later.
+   */
+  timestampHeader?: string;
+  toleranceSeconds?: number;
 }
+
+/** The key a secret decodes to must be at least this long. */
+export const MIN_SECRET_BYTES = 16;
+/** The widest replay window a declaration may ask for. */
+export const MAX_TOLERANCE_SECONDS = 24 * 60 * 60;
 
 const HEADER_NAME = /^[a-z0-9-]{1,64}$/;
 
@@ -47,6 +60,19 @@ export function declaredWebhookVerification(
   if (
     v.signaturePrefix !== undefined &&
     (typeof v.signaturePrefix !== "string" || v.signaturePrefix.length > 32)
+  ) {
+    return null;
+  }
+  const hasTimestamp = v.timestampHeader !== undefined;
+  const hasTolerance = v.toleranceSeconds !== undefined;
+  if (hasTimestamp !== hasTolerance) return null;
+  if (
+    hasTimestamp &&
+    (typeof v.timestampHeader !== "string" ||
+      !HEADER_NAME.test(v.timestampHeader) ||
+      !Number.isSafeInteger(v.toleranceSeconds) ||
+      (v.toleranceSeconds as number) < 1 ||
+      (v.toleranceSeconds as number) > MAX_TOLERANCE_SECONDS)
   ) {
     return null;
   }
@@ -84,6 +110,12 @@ export function declaredWebhookVerification(
     ...(typeof v.signaturePrefix === "string"
       ? { signaturePrefix: v.signaturePrefix }
       : {}),
+    ...(hasTimestamp
+      ? {
+          timestampHeader: v.timestampHeader as string,
+          toleranceSeconds: v.toleranceSeconds as number,
+        }
+      : {}),
   };
 }
 
@@ -98,18 +130,29 @@ function header(
   return typeof value === "string" ? value : undefined;
 }
 
-function keyOf(
+/**
+ * The HMAC key, decoded strictly. A secret that does not round-trip in its
+ * encoding, or decodes to fewer than MIN_SECRET_BYTES, is no key: Node's
+ * lenient base64 would turn `"ab=" + junk` into a 1-byte key.
+ */
+export function keyOf(
   secret: string,
   encoding: DeclaredWebhookVerification["secretEncoding"],
 ): Buffer | null {
-  if (encoding === "utf8") return Buffer.from(secret, "utf8");
-  if (encoding === "hex") {
-    return /^(?:[0-9a-fA-F]{2})+$/.test(secret)
-      ? Buffer.from(secret, "hex")
-      : null;
+  let key: Buffer;
+  if (encoding === "utf8") {
+    key = Buffer.from(secret, "utf8");
+  } else if (encoding === "hex") {
+    if (!/^(?:[0-9a-fA-F]{2})+$/.test(secret)) return null;
+    key = Buffer.from(secret, "hex");
+  } else {
+    if (secret.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(secret)) {
+      return null;
+    }
+    key = Buffer.from(secret, "base64");
+    if (key.toString("base64") !== secret) return null;
   }
-  const key = Buffer.from(secret, "base64");
-  return key.length > 0 ? key : null;
+  return key.length >= MIN_SECRET_BYTES ? key : null;
 }
 
 /**
@@ -122,6 +165,8 @@ export function verifyDeclaredWebhook(
     payload: string;
     headers: Record<string, string | string[] | undefined>;
     secret?: string;
+    /** The time now, for the replay window. */
+    now?: Date;
   },
 ): WebhookVerificationResult {
   const { payload, headers, secret } = options;
@@ -135,6 +180,22 @@ export function verifyDeclaredWebhook(
       valid: false,
       error: `Missing ${declaration.signatureHeader} header`,
     };
+  }
+  if (declaration.timestampHeader) {
+    const sent = header(headers, declaration.timestampHeader);
+    if (!sent || !/^\d{1,12}$/.test(sent)) {
+      return {
+        valid: false,
+        error: `Missing or malformed ${declaration.timestampHeader} header`,
+      };
+    }
+    const nowSeconds = (options.now ?? new Date()).getTime() / 1000;
+    if (
+      Math.abs(nowSeconds - Number(sent)) >
+      (declaration.toleranceSeconds as number)
+    ) {
+      return { valid: false, error: "The delivery is outside its time window" };
+    }
   }
   const prefix = declaration.signaturePrefix ?? "";
   if (!presented.startsWith(prefix)) {

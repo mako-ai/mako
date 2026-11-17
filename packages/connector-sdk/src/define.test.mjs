@@ -154,3 +154,15 @@ test("a webhook outcome must name its own event, in order", async () => {
     /must name event "a"/,
   );
 });
+
+test("a replay window needs its header and its tolerance together, within a day", () => {
+  const define = verification =>
+    defineConnector({ ...webhookBase(), webhooks: { handleBatch: () => [], verification } });
+  assert.throws(() => define({ ...closeVerification, timestampHeader: "close-sig-timestamp" }), /go together/);
+  assert.throws(
+    () => define({ ...closeVerification, timestampHeader: "close-sig-timestamp", toleranceSeconds: 86_401 }),
+    /from 1 to 86400/,
+  );
+  const ok = define({ ...closeVerification, timestampHeader: "close-sig-timestamp", toleranceSeconds: 300 });
+  assert.equal(ok.spec().mako.webhooks.verification.toleranceSeconds, 300);
+});

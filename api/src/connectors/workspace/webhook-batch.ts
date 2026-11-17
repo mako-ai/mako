@@ -20,9 +20,10 @@
  *    exactly as the inline cron does (`shapeWebhookCdcRecords`).
  *
  * Isolation between connections: box-lane events never enter the inline
- * cron's scan, every batch run is per flow (one at a time, Inngest
- * singleton), concurrency is keyed by connection and capped per workspace,
- * and one batch's command is bounded by a timeout. A slow or hostile
+ * cron's scan or its retry cron, every batch run is per flow (one at a time,
+ * Inngest singleton), concurrency is capped in all and per workspace, the
+ * box lane's retry is capped per workspace, and one batch is one box run
+ * bounded by a timeout. A slow or hostile
  * connector delays only its own flow.
  */
 import { randomBytes } from "node:crypto";
@@ -38,6 +39,7 @@ import { syncConnectorRegistry } from "../../sync/connector-registry";
 import { sourceConnectionManager } from "../../sync/database-data-source-manager";
 import { hasCdcDestinationAdapter } from "../../sync-cdc/adapters/registry";
 import { cdcIngestService } from "../../sync-cdc/ingest";
+import { normalizePayloadKeys } from "../../sync-cdc/normalization";
 import {
   shapeWebhookCdcRecords,
   type WebhookCdcRecord,
@@ -99,7 +101,21 @@ export const BOX_CODES = {
   deferred: "ENRICH_DEFERRED",
   connectionChanged: "CONNECTION_CHANGED",
   secretInBatch: "SECRET_IN_BATCH",
+  recordTooLarge: "RECORD_TOO_LARGE",
 } as const;
+
+/** Deferrals after which an event is failed for good. */
+export const MAX_DEFERRALS = 5;
+/** Nesting depth a record's payload may reach (BSON allows 100). */
+export const MAX_RECORD_DEPTH = 32;
+/** Bytes one record's payload may serialize to. */
+export const MAX_RECORD_BYTES = 1024 * 1024;
+/** Records one batch may yield in all. */
+export const MAX_RECORDS_PER_BATCH = 50_000;
+/** A failed box-lane event waits this long before its retry. */
+export const BOX_RETRY_AFTER_MS = 10 * 60_000;
+/** A box-lane event claimed this long ago, still processing, was abandoned. */
+export const BOX_STALE_CLAIM_MS = 15 * 60_000;
 
 /** The longest id, change id or reason kept from a box. */
 const MAX_ID_LENGTH = 512;
@@ -115,6 +131,7 @@ type StoredEvent = {
   eventType: string;
   rawPayload: unknown;
   receivedAt: Date;
+  deferrals?: number;
 };
 
 export interface BatchResult {
@@ -171,6 +188,76 @@ export async function flowsWithPendingBoxWebhooks(
     workspaceId: String(row.workspaceId),
     connectionId: String(row.dataSourceId ?? row._id),
   }));
+}
+
+/**
+ * The box lane's own retry, run by the dispatcher every minute. The inline
+ * retry cron never sees box-lane events (`lane: null`), so a box backlog
+ * cannot fill its global batch, and this one is capped per workspace: at
+ * most `perWorkspace` events of each of at most `workspaces` workspaces,
+ * oldest first, so one workspace cannot fill it either.
+ *
+ * - `failed` with attempts left, settled more than BOX_RETRY_AFTER_MS ago:
+ *   back to pending. A deferred event counts here too (its attempt was
+ *   refunded; its deferrals are capped at MAX_DEFERRALS).
+ * - `processing` claimed more than BOX_STALE_CLAIM_MS ago: the run that
+ *   held it died. Back to pending.
+ */
+export async function retryFailedBoxWebhooks(
+  options: { now?: Date; perWorkspace?: number; workspaces?: number } = {},
+): Promise<{ retried: number; workspaces: number }> {
+  const now = (options.now ?? new Date()).getTime();
+  const perWorkspace = options.perWorkspace ?? 100;
+  const groups = (await WebhookEvent.aggregate([
+    {
+      $match: {
+        lane: "box",
+        attempts: { $lt: FINAL_ATTEMPTS },
+        $or: [
+          {
+            status: "failed",
+            $or: [
+              { processedAt: { $lt: new Date(now - BOX_RETRY_AFTER_MS) } },
+              { processedAt: { $exists: false } },
+            ],
+          },
+          {
+            status: "processing",
+            claimedAt: { $lt: new Date(now - BOX_STALE_CLAIM_MS) },
+          },
+        ],
+      },
+    },
+    {
+      $group: {
+        _id: "$workspaceId",
+        ids: {
+          $topN: {
+            n: perWorkspace,
+            sortBy: { receivedAt: 1, _id: 1 },
+            output: "$_id",
+          },
+        },
+        oldest: { $min: "$receivedAt" },
+      },
+    },
+    { $sort: { oldest: 1 } },
+    { $limit: options.workspaces ?? 50 },
+  ])) as Array<{ _id: Types.ObjectId; ids: Types.ObjectId[] }>;
+  const ids = groups.flatMap(group => group.ids);
+  if (ids.length === 0) return { retried: 0, workspaces: 0 };
+  await WebhookEvent.updateMany(
+    {
+      _id: { $in: ids },
+      lane: "box",
+      status: { $in: ["failed", "processing"] },
+    },
+    {
+      $set: { status: "pending" },
+      $unset: { applyError: "", processedAt: "", boxClaim: "", claimedAt: "" },
+    },
+  );
+  return { retried: ids.length, workspaces: groups.length };
 }
 
 /** Pending box-lane events of a flow, ended with a reason (no box ran). */
@@ -232,6 +319,7 @@ type CheckedOutcome =
   | { kind: "deferred"; reason: string }
   | { kind: "extract_failed"; reason: string }
   | { kind: "too_many"; count: number }
+  | { kind: "too_large"; reason: string }
   | {
       kind: "records";
       records: Array<{
@@ -253,17 +341,38 @@ const shortString = (value: unknown, max = MAX_ID_LENGTH) =>
     ? value
     : undefined;
 
-/** Keys only Mako writes: a connector's payload never sets them. */
-function withoutSystemKeys(
+const SYSTEM_KEYS = new Set(["_syncedat", "_datasourceid", "_datasourcename"]);
+
+/**
+ * Keys only Mako writes: a connector's payload never sets them. Checked on
+ * the keys as the writer will see them (dots become underscores, as
+ * `normalizePayloadKeys` does) and in any case, so `.mako_x`, `_MAKO_X` and
+ * `_DataSourceId` are caught too.
+ */
+export function withoutSystemKeys(
   payload: Record<string, unknown>,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(payload)) {
-    if (key.startsWith("_mako") || key === "_syncedAt") continue;
-    if (key === "_dataSourceId" || key === "_dataSourceName") continue;
+  for (const [key, value] of Object.entries(normalizePayloadKeys(payload))) {
+    const lower = key.toLowerCase();
+    if (lower.startsWith("_mako") || SYSTEM_KEYS.has(lower)) continue;
     out[key] = value;
   }
   return out;
+}
+
+/** Whether `value` nests deeper than `max` objects or arrays. */
+function deeperThan(value: unknown, max: number): boolean {
+  const stack: Array<[unknown, number]> = [[value, 1]];
+  while (stack.length > 0) {
+    const [current, depth] = stack.pop() as [unknown, number];
+    if (!current || typeof current !== "object") continue;
+    if (depth > max) return true;
+    for (const child of Object.values(current as object)) {
+      if (child && typeof child === "object") stack.push([child, depth + 1]);
+    }
+  }
+  return false;
 }
 
 /**
@@ -327,6 +436,20 @@ export function checkOutcome(
       invalid++;
       continue;
     }
+    // A payload the writer cannot store (BSON caps nesting at 100) or that
+    // dwarfs any real row fails its own event, never the batch.
+    if (deeperThan(record.payload, MAX_RECORD_DEPTH)) {
+      return {
+        kind: "too_large",
+        reason: `A record of ${entity} nests deeper than ${MAX_RECORD_DEPTH} levels`,
+      };
+    }
+    if (Buffer.byteLength(JSON.stringify(record.payload)) > MAX_RECORD_BYTES) {
+      return {
+        kind: "too_large",
+        reason: `A record of ${entity} is over ${MAX_RECORD_BYTES} bytes`,
+      };
+    }
     const ts =
       typeof record.sourceTs === "string" ? new Date(record.sourceTs) : null;
     records.push({
@@ -386,13 +509,16 @@ export async function processBoxWebhookBatch(input: {
   }
 
   if (!isWorkspaceConnectorType(connection.type)) {
-    // The flow moved to an in-process connector, by a new connection or by
-    // an edit of this one: its events go back to the inline cron, which
-    // handles them as it handles any other. No box runs, so no connection
-    // can receive another's events here.
-    await WebhookEvent.updateMany(
-      { flowId, lane: "box", status: "pending" },
-      { $unset: { lane: "", dataSourceId: "" } },
+    // The flow moved to an in-process connector. Its box-lane events were
+    // verified for, and pinned to, a workspace connection: they are dropped,
+    // never handed to another connection. The new connector's own webhook
+    // and its next sync carry on from here.
+    await endPending(
+      { flowId },
+      "completed",
+      "dropped",
+      BOX_CODES.connectionChanged,
+      "The flow's connection is no longer a workspace connector",
     );
     return emptyResult("stop", "not a workspace connector");
   }
@@ -438,7 +564,7 @@ export async function processBoxWebhookBatch(input: {
   })
     .sort({ receivedAt: 1, _id: 1 })
     .limit(size)
-    .select("_id eventId eventType rawPayload receivedAt")
+    .select("_id eventId eventType rawPayload receivedAt deferrals")
     .lean()) as unknown as StoredEvent[];
   if (candidates.length === 0) return emptyResult("empty");
 
@@ -468,7 +594,10 @@ export async function processBoxWebhookBatch(input: {
   const claim = randomBytes(12).toString("hex");
   await WebhookEvent.updateMany(
     { _id: { $in: batch.map(e => e._id) }, status: "pending", lane: "box" },
-    { $set: { status: "processing", boxClaim: claim }, $inc: { attempts: 1 } },
+    {
+      $set: { status: "processing", boxClaim: claim, claimedAt: new Date() },
+      $inc: { attempts: 1 },
+    },
   );
   const claimedIds = new Set(
     (
@@ -615,10 +744,11 @@ async function runBatch(input: {
   // into a box; the rest of the batch goes on.
   let events = input.events;
   if (input.secret) {
-    const secret = input.secret;
-    const leaking = events.filter(e =>
-      JSON.stringify(wireEvent(e)).includes(secret),
-    );
+    const variants = secretVariants(input.secret);
+    const leaking = events.filter(e => {
+      const text = JSON.stringify(wireEvent(e)).toLowerCase();
+      return variants.some(v => text.includes(v));
+    });
     if (leaking.length > 0) {
       await WebhookEvent.bulkWrite(
         leaking.map(e =>
@@ -694,13 +824,24 @@ async function runBatch(input: {
   if (failure) return boxFailed(failure, null);
 
   const byEvent = new Map<string, Record<string, unknown>>();
+  let totalRecords = 0;
   for (const message of run.messages) {
     if (message.type !== "WEBHOOK") continue;
     const outcome = message.webhook as Record<string, unknown> | undefined;
     const id = outcome?.eventId;
     if (outcome && typeof id === "string" && !byEvent.has(id)) {
       byEvent.set(id, outcome);
+      if (Array.isArray(outcome.records))
+        totalRecords += outcome.records.length;
     }
+  }
+  // A cap on the whole answer, on top of the cap per event: past it, the
+  // batch is treated as a failed box run (halved, nobody blamed).
+  if (totalRecords > MAX_RECORDS_PER_BATCH) {
+    return boxFailed(
+      `The connector gave ${totalRecords} records for one batch; the cap is ${MAX_RECORDS_PER_BATCH}`,
+      { code: BOX_CODES.tooManyRecords },
+    );
   }
 
   const cdcEvents: Array<WebhookCdcRecord & { webhookEventId: string }> = [];
@@ -744,6 +885,21 @@ async function runBatch(input: {
       // As the inline path's ENRICH_DEFERRED: parked as `failed` with the
       // attempt refunded, so the retry cron re-queues it without using up
       // its retries, and it stays out of the pending queue meanwhile.
+      // Deferrals are capped: past MAX_DEFERRALS the event is failed for
+      // good, so a connector cannot keep one in the retry queue forever.
+      if ((event.deferrals ?? 0) + 1 >= MAX_DEFERRALS) {
+        totals.failed++;
+        ops.push(
+          failedOp(
+            claim,
+            event,
+            BOX_CODES.deferred,
+            `Deferred ${MAX_DEFERRALS} times: ${checked.reason}`,
+            true,
+          ),
+        );
+        continue;
+      }
       totals.deferred++;
       ops.push({
         updateOne: {
@@ -751,12 +907,13 @@ async function runBatch(input: {
           update: {
             $set: {
               status: "failed",
+              processedAt: new Date(),
               applyError: {
                 code: BOX_CODES.deferred,
                 message: checked.reason,
               },
             },
-            $inc: { attempts: -1 },
+            $inc: { attempts: -1, deferrals: 1 },
           },
         },
       });
@@ -770,6 +927,13 @@ async function runBatch(input: {
           applyStatus: "dropped",
           applyError: { code: BOX_CODES.skipped, message: checked.reason },
         }),
+      );
+      continue;
+    }
+    if (checked.kind === "too_large") {
+      totals.failed++;
+      ops.push(
+        failedOp(claim, event, BOX_CODES.recordTooLarge, checked.reason, true),
       );
       continue;
     }
@@ -861,17 +1025,18 @@ async function runBatch(input: {
         events: cdcEvents,
       });
     } catch (error) {
+      // As a failed box run: with more than one event none is blamed, the
+      // batch is released and the next one is half as large. Nothing of
+      // this batch was settled yet, so every event is still claimed.
       const reason = error instanceof Error ? error.message : String(error);
-      await failClaimed(claim, events, `CDC ingest failed: ${reason}`);
-      return {
-        next: "stop",
-        ...totals,
-        applied: 0,
-        dropped: 0,
+      Object.assign(totals, {
         ingested: 0,
-        failed: events.length,
-        reason,
-      };
+        failed: 0,
+        dropped: 0,
+        applied: 0,
+        deferred: 0,
+      });
+      return boxFailed(`CDC ingest failed: ${reason}`, null);
     }
     totals.ingested = cdcEvents.length;
   }
@@ -881,6 +1046,27 @@ async function runBatch(input: {
     ...totals,
     entities: [...new Set(cdcEvents.map(e => e.entity))],
   };
+}
+
+/**
+ * The forms a signing secret could take in a payload, lowercased: as is,
+ * and its UTF-8 bytes (and, for a hex secret, its decoded bytes) in hex and
+ * base64. A batch is compared lowercased against each.
+ */
+export function secretVariants(secret: string): string[] {
+  const forms = new Set<string>([secret]);
+  const encode = (bytes: Buffer) => {
+    if (bytes.length === 0) return;
+    forms.add(bytes.toString("hex"));
+    forms.add(bytes.toString("base64"));
+    forms.add(bytes.toString("base64").replace(/=+$/, ""));
+    forms.add(bytes.toString("base64url"));
+  };
+  encode(Buffer.from(secret, "utf8"));
+  if (/^(?:[0-9a-fA-F]{2})+$/.test(secret)) encode(Buffer.from(secret, "hex"));
+  return [...forms]
+    .filter(form => form.length >= 8)
+    .map(form => form.toLowerCase());
 }
 
 /**

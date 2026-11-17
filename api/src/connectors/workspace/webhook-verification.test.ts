@@ -13,6 +13,7 @@ import { createHmac } from "node:crypto";
 import { before, test } from "node:test";
 import {
   declaredWebhookVerification,
+  keyOf,
   verifyDeclaredWebhook,
 } from "./webhook-verification";
 import { verifyCloseWebhook } from "../close/webhooks";
@@ -24,6 +25,9 @@ import {
   buildDeliveries,
   buildWebhookEvents,
 } from "../../../../connectors/close/fixtures/webhook-events.mjs";
+
+/** The fixture deliveries' close-sig-timestamp, 1763290800, as a Date. */
+const SENT = new Date(1763290800 * 1000);
 
 const spec = (verification: unknown) => ({
   mako: { webhooks: { verification } },
@@ -49,7 +53,7 @@ void test("the Close declaration agrees with the in-process check on every deliv
   assert.ok(deliveries.length >= 6);
   let valid = 0;
   for (const delivery of deliveries) {
-    const ours = verifyDeclaredWebhook(declaration, delivery);
+    const ours = verifyDeclaredWebhook(declaration, { ...delivery, now: SENT });
     const theirs = verifyCloseWebhook(delivery);
     assert.equal(ours.valid, theirs.valid, delivery.name);
     if (ours.valid) {
@@ -70,7 +74,11 @@ void test("headers are matched case-insensitively, as a proxy may rewrite them",
     Object.entries(valid.headers).map(([k, v]) => [k.toUpperCase(), v]),
   );
   assert.equal(
-    verifyDeclaredWebhook(declaration, { ...valid, headers: shouted }).valid,
+    verifyDeclaredWebhook(declaration, {
+      ...valid,
+      headers: shouted,
+      now: SENT,
+    }).valid,
     true,
   );
 });
@@ -87,7 +95,7 @@ void test("a base64, prefixed scheme with a literal separator verifies", () => {
     }),
   )!;
   const body = JSON.stringify({ id: "evt_1" });
-  const signature = createHmac("sha256", "s3cret")
+  const signature = createHmac("sha256", "s3cret-s3cret-s3cret")
     .update(`1700000000.${body}`)
     .digest("base64");
   const headers = { "x-ts": "1700000000", "x-sig": `v1=${signature}` };
@@ -95,13 +103,13 @@ void test("a base64, prefixed scheme with a literal separator verifies", () => {
     verifyDeclaredWebhook(declaration, {
       payload: body,
       headers,
-      secret: "s3cret",
+      secret: "s3cret-s3cret-s3cret",
     }).valid,
     true,
   );
   for (const [name, options] of [
     ["no prefix", { headers: { ...headers, "x-sig": signature } }],
-    ["other secret", { secret: "other" }],
+    ["other secret", { secret: "other-other-other-other" }],
     ["no secret", { secret: undefined }],
     ["no timestamp", { headers: { "x-sig": headers["x-sig"] } }],
     ["other body", { payload: body.replace("evt_1", "evt_2") }],
@@ -109,7 +117,7 @@ void test("a base64, prefixed scheme with a literal separator verifies", () => {
     const result = verifyDeclaredWebhook(declaration, {
       payload: body,
       headers,
-      secret: "s3cret",
+      secret: "s3cret-s3cret-s3cret",
       ...options,
     });
     assert.equal(result.valid, false, name);
@@ -144,4 +152,79 @@ void test("a hex secret that is not hex is malformed, not a key", () => {
     valid: false,
     error: "The webhook secret is malformed",
   });
+});
+
+void test("the Close declaration refuses a replay: an old, a future, an empty or a missing timestamp", () => {
+  const declaration = declaredWebhookVerification(
+    spec(CLOSE_WEBHOOK_VERIFICATION),
+  )!;
+  assert.equal(declaration.timestampHeader, "close-sig-timestamp");
+  assert.equal(declaration.toleranceSeconds, 300);
+  const [event] = buildWebhookEvents(["lead.updated"]);
+  const valid = buildDeliveries(event.rawPayload)[0];
+  const at = (seconds: number) => new Date((1763290800 + seconds) * 1000);
+  assert.equal(
+    verifyDeclaredWebhook(declaration, { ...valid, now: at(299) }).valid,
+    true,
+  );
+  assert.equal(
+    verifyDeclaredWebhook(declaration, { ...valid, now: at(-299) }).valid,
+    true,
+  );
+  for (const [name, now] of [
+    ["365 days later", at(365 * 86400)],
+    ["301 s later", at(301)],
+    ["301 s earlier", at(-301)],
+  ] as const) {
+    assert.equal(
+      verifyDeclaredWebhook(declaration, { ...valid, now }).valid,
+      false,
+      name,
+    );
+  }
+  // An empty timestamp signs as the body alone; it is still refused.
+  const sign = (ts: string) =>
+    createHmac("sha256", Buffer.from(valid.secret!, "hex"))
+      .update(ts + valid.payload)
+      .digest("hex");
+  for (const ts of ["", "abc", "-1"]) {
+    const result = verifyDeclaredWebhook(declaration, {
+      ...valid,
+      headers: { "close-sig-hash": sign(ts), "close-sig-timestamp": ts },
+      now: SENT,
+    });
+    assert.equal(result.valid, false, JSON.stringify(ts));
+  }
+  const { ["close-sig-timestamp"]: _drop, ...noTs } = valid.headers;
+  assert.equal(
+    verifyDeclaredWebhook(declaration, { ...valid, headers: noTs, now: SENT })
+      .valid,
+    false,
+  );
+});
+
+void test("a declared window needs both fields, within 1 s to 1 day", () => {
+  const base = { ...CLOSE_WEBHOOK_VERIFICATION } as Record<string, unknown>;
+  const { toleranceSeconds: _t, ...headerOnly } = base;
+  for (const bad of [
+    headerOnly,
+    { ...base, toleranceSeconds: 0 },
+    { ...base, toleranceSeconds: 86_401 },
+    { ...base, timestampHeader: "Close-Sig-Timestamp" },
+  ]) {
+    assert.equal(declaredWebhookVerification(spec(bad)), null);
+  }
+});
+
+void test("a base64 secret decodes strictly, to at least 16 bytes", () => {
+  // Node's lenient decoder reads "ab=" + junk as a 1-byte key.
+  assert.equal(keyOf(`ab=${"x".repeat(40)}`, "base64"), null);
+  assert.equal(keyOf("YWJj", "base64"), null, "3 bytes is too short");
+  assert.equal(keyOf("YWJjZA", "base64"), null, "no padding: not canonical");
+  assert.equal(keyOf("YW Jj", "base64"), null);
+  const good = Buffer.alloc(32, 7).toString("base64");
+  assert.equal(keyOf(good, "base64")?.length, 32);
+  assert.equal(keyOf("0f".repeat(16), "hex")?.length, 16);
+  assert.equal(keyOf("0f".repeat(15), "hex"), null, "15 bytes is too short");
+  assert.equal(keyOf("short", "utf8"), null);
 });

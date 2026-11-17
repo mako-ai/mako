@@ -41,6 +41,10 @@ export interface IWebhookEvent extends Document {
   dataSourceId?: Types.ObjectId;
   /** The batch run holding a box-lane event while it is `processing`. */
   boxClaim?: string;
+  /** When that run claimed it; a stale claim is retried. */
+  claimedAt?: Date;
+  /** Times the connector deferred a box-lane event (capped). */
+  deferrals?: number;
 }
 
 /**
@@ -94,6 +98,8 @@ const WebhookEventSchema = new Schema<IWebhookEvent>(
     lane: { type: String, enum: ["box"] },
     dataSourceId: { type: Schema.Types.ObjectId, ref: "SourceConnection" },
     boxClaim: String,
+    claimedAt: Date,
+    deferrals: Number,
   },
   {
     timestamps: false,

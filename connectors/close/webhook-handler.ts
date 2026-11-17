@@ -52,7 +52,14 @@ export const CLOSE_WEBHOOK_VERIFICATION: WebhookVerification = {
   signedPayload: ["header:close-sig-timestamp", "body"],
   signatureHeader: "close-sig-hash",
   signatureEncoding: "hex",
+  // Not in the in-process check: a delivery more than 5 minutes from now is
+  // refused, so a captured one cannot be replayed.
+  timestampHeader: "close-sig-timestamp",
+  toleranceSeconds: 300,
 };
+
+/** A Close object id: a prefix, `_`, then letters and digits. */
+const CLOSE_ID = /^[a-z]+_[A-Za-z0-9]{1,64}$/;
 
 /**
  * Columns a Close webhook leaves out of an object's payload, per entity,
@@ -137,6 +144,14 @@ async function fillRecord(
   }
   const missing = spec.fields.filter(field => !(field in payload));
   if (missing.length === 0) return { kind: "record", record };
+  // The id goes into a URL path: anything but a Close id (`..`, `/`, `?`)
+  // is refused before any request.
+  if (!CLOSE_ID.test(record.recordId)) {
+    return {
+      kind: "failed",
+      reason: `Not a Close id: ${JSON.stringify(record.recordId).slice(0, 80)}`,
+    };
+  }
   if (budgetSpent()) {
     return {
       kind: "deferred",

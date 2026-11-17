@@ -206,6 +206,8 @@ void test("the folder fills the same fields from the same objects as the in-proc
     signedPayload: ["header:close-sig-timestamp", "body"],
     signatureHeader: "close-sig-hash",
     signatureEncoding: "hex",
+    timestampHeader: "close-sig-timestamp",
+    toleranceSeconds: 300,
   });
   assert.equal(spec.mako.webhooks.events.length, 86);
 });
@@ -337,4 +339,22 @@ void test("past the fill budget, events are deferred, never answered unfilled", 
     ["records", "records", "deferred", "records"],
   );
   assert.equal(gets.length, 2);
+});
+
+void test("an id that is not a Close id is refused before any request", async () => {
+  const fields = CLOSE_WEBHOOK_FILL_FIELDS.leads.fields;
+  const events = ["..", "lead_x/../../me", "lead_x?_fields=x"].map((id, i) =>
+    partial("lead.updated", id, `ev_badid_${i}`, fields),
+  );
+  requests.length = 0;
+  const result = await connector().runWebhookBatch(
+    { events },
+    { timeoutMs: 60_000 },
+  );
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.deepEqual(
+    outcomesOf(result).map(o => o.outcome),
+    ["extract_failed", "extract_failed", "extract_failed"],
+  );
+  assert.deepEqual(requests, []);
 });

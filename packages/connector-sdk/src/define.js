@@ -60,6 +60,16 @@ export function validateWebhookVerification(verification) {
   if (v.signaturePrefix !== undefined && (typeof v.signaturePrefix !== "string" || v.signaturePrefix.length > 32)) {
     problems.push("webhooks.verification.signaturePrefix must be a short string");
   }
+  if ((v.timestampHeader === undefined) !== (v.toleranceSeconds === undefined)) {
+    problems.push("webhooks.verification.timestampHeader and toleranceSeconds go together");
+  } else if (v.timestampHeader !== undefined) {
+    if (typeof v.timestampHeader !== "string" || !HEADER_NAME.test(v.timestampHeader)) {
+      problems.push("webhooks.verification.timestampHeader must be a lowercase header name");
+    }
+    if (!Number.isSafeInteger(v.toleranceSeconds) || v.toleranceSeconds < 1 || v.toleranceSeconds > 86400) {
+      problems.push("webhooks.verification.toleranceSeconds must be a whole number from 1 to 86400");
+    }
+  }
   const parts = v.signedPayload;
   if (!Array.isArray(parts) || parts.length === 0 || parts.length > 8) {
     problems.push("webhooks.verification.signedPayload must list 1 to 8 parts");
