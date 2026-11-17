@@ -903,6 +903,10 @@ jobs:
       # reason as APPS_E2B_TEMPLATE_PROD: `vars.E2B_DOMAIN` would fall back to
       # the repo level and hand production the preview domain.
       E2B_DOMAIN: ${{ vars.E2B_DOMAIN_PROD || 'e2b.app' }}
+      # Connector read sessions: one connector process per entity read
+      # (#1299). Off unless the repo variable says "true", so turning it on or
+      # off is `gh variable set` plus a redeploy, with no code change.
+      CONNECTOR_SESSION_READS: ${{ vars.CONNECTOR_SESSION_READS_PROD || 'false' }}
       # Apps cloud repos (Mako-hosted GitHub storage under mako-ai-cloud).
       # Production: the workspace's own GitHub repo is the only durable store
       # (apps.md §17) — no repo, no app/console saves.
@@ -1136,6 +1140,7 @@ jobs:
             --set-env-vars APPS_SANDBOX_PROVIDER=${APPS_SANDBOX_PROVIDER} \
             --set-env-vars APPS_E2B_TEMPLATE=${APPS_E2B_TEMPLATE} \
             --set-env-vars E2B_DOMAIN=${E2B_DOMAIN} \
+            --set-env-vars CONNECTOR_SESSION_READS=${CONNECTOR_SESSION_READS} \
             --set-env-vars APPS_REQUIRE_CONNECTED_REPO=${APPS_REQUIRE_CONNECTED_REPO} \
             --set-env-vars APPS_REPO_WARM_ON_BOOT=true \
             --set-env-vars APPS_ROW_OWNER_PERSON_IDS=${APPS_ROW_OWNER_PERSON_IDS} \
