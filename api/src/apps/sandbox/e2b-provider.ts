@@ -41,6 +41,7 @@ import type {
   SandboxProvider,
 } from "./provider";
 import { viteAllowedHostEnv } from "./e2b-domain";
+import { isPersonActorId } from "../actor-id";
 import { commandToRun } from "./hidden-command";
 
 const logger = loggers.api("apps-e2b");
@@ -212,19 +213,26 @@ export function isConnectorBoxKey(sessionKey: string): boolean {
  * Which boxes take public traffic on their ports. E2B now secures every new
  * box's ports behind a traffic access token by default, and a browser iframe
  * cannot send that header, so app previews answered 403. A person's app box
- * (`<workspaceId>:<userId>`) serves those previews and opts out of the
- * token. Its ports are public at an unguessable `<port>-<sandboxId>` host, as
- * they were before 16 Nov 2026.
+ * (`<workspaceId>:<userId>`, isPersonActorId) serves those previews and opts
+ * out of the token. Its ports are public at an unguessable
+ * `<port>-<sandboxId>` host, as they were before 16 Nov 2026.
+ *
+ * MCP calls need no extra case. Every MCP credential (OAuth token or
+ * workspace API key) acts as a real user (unified-auth.middleware.ts sets the
+ * key's creator), so app_open_app opens `<workspaceId>:<creatorId>`.
+ * app_browse drives a browser inside the box against 127.0.0.1 and needs no
+ * public port at all.
  *
  * Everything else keeps E2B's secured default because it serves no browser:
- * connector boxes (`connector-box:`, `connector-build:`, `connector-sync:`)
- * and the `<workspaceId>:publish` build box.
+ * connector boxes (`connector-box:`, `connector-build:`, `connector-sync:`),
+ * the `<workspaceId>:publish` build box and the `<workspaceId>:api-key`
+ * fallback actor.
  */
 export function allowsPublicTraffic(sessionKey: string): boolean {
   const at = sessionKey.indexOf(":");
-  if (at <= 0 || at === sessionKey.length - 1) return false;
+  if (at <= 0) return false;
   if (!/^[0-9a-f]{24}$/.test(sessionKey.slice(0, at))) return false;
-  return sessionKey.slice(at + 1) !== "publish";
+  return isPersonActorId(sessionKey.slice(at + 1));
 }
 
 /**

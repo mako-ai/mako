@@ -22,6 +22,7 @@ import { getSandboxProvider } from "../sandbox/provider";
 import { repoForWorkspace, appRootFor, WorktreeHandle } from "./repo";
 import { boxCtx } from "./box-session";
 import { defaultBranchForActor } from "../branch-policy";
+import { isPersonActorId } from "../actor-id";
 
 const logger = loggers.api("apps");
 
@@ -58,15 +59,7 @@ export function isUserActor(actorId: string): boolean {
   return /^[0-9a-f]{24}$/i.test(actorId);
 }
 
-/**
- * A real person's user id: 15 characters of [0-9a-z] (auth.service.ts
- * generateId: hex from a UUID today, base36 from Lucia for older accounts),
- * or a legacy 24-hex id. Every system actor fails: PUBLISH_ACTOR, "api-key",
- * "", connector session prefixes.
- */
-export function isPersonActorId(actorId: string): boolean {
-  return /^[0-9a-z]{15}$/.test(actorId) || /^[0-9a-f]{24}$/i.test(actorId);
-}
+export { isPersonActorId };
 
 /** The opposite of isPersonActorId: publish, api-key and other sentinels. */
 export function isSystemActor(actorId: string): boolean {
