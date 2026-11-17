@@ -20,6 +20,11 @@ import {
 } from "../../services/flow-execution-tracking";
 import { resolveBackfillFetchForEntity } from "../../sync-cdc/backfill-fetch-resolver";
 import {
+  resolvePollCursorForEntity,
+  stampPollRunStartedAt,
+  type ResolvedPollCursor,
+} from "../../sync-cdc/poll-cursor-resolver";
+import {
   resolveCdcDestinationAdapter,
   hasStagingSupport,
   resolveEntityPartitioning,
@@ -215,6 +220,36 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           return decision;
         },
       )) as Awaited<ReturnType<typeof resolveBackfillFetchForEntity>>;
+      stepsUsed++;
+    }
+
+    // ── Resolve the poll cursor (scheduled incremental poll) ─────────
+    // The poll's own anchor: the start of the last completed poll/backfill
+    // run of this entity, minus an overlap. Webhook writes cannot move it.
+    // See sync-cdc/poll-cursor.ts.
+    const isIncrementalPoll =
+      !backfill &&
+      !checkpointEnabled &&
+      isCdcEnabled &&
+      syncMode === "incremental" &&
+      writeMode !== "overwrite";
+    let pollCursor: ResolvedPollCursor | undefined;
+    if (isIncrementalPoll) {
+      pollCursor = (await step.run(
+        `resolve-poll-cursor-${safeEntityStepId}`,
+        async () => {
+          const resolved = await resolvePollCursorForEntity({
+            flowId,
+            entity,
+            executionId,
+          });
+          logExec("info", `${entity}: incremental poll — ${resolved.reason}`, {
+            entity,
+            pollSince: resolved.since,
+          });
+          return resolved;
+        },
+      )) as ResolvedPollCursor;
       stepsUsed++;
     }
 
@@ -433,6 +468,14 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                       backfillFetch.mode === "incremental"
                         ? { mode: "incremental", since: backfillFetch.since }
                         : { mode: "full" },
+                  }
+                : {}),
+              ...(pollCursor
+                ? {
+                    pollCursor: {
+                      since: pollCursor.since,
+                      overlapMs: pollCursor.overlapMs,
+                    },
                   }
                 : {}),
               state,
@@ -720,6 +763,21 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           });
         },
       );
+    }
+
+    // ── Stamp the poll cursor ────────────────────────────────────────
+    // Only after every row of this run reached the live table: the next poll
+    // re-reads from this run's start (minus the overlap).
+    const pollRunStartedAt = pollCursor?.runStartedAt;
+    if (pollRunStartedAt) {
+      await step.run(`stamp-poll-cursor-${safeEntityStepId}`, async () => {
+        await stampPollRunStartedAt({
+          workspaceId,
+          flowId,
+          entity,
+          runStartedAt: pollRunStartedAt,
+        });
+      });
     }
 
     return { completed: true, rowsWritten: totalWrittenForEntity };

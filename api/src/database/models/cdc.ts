@@ -166,6 +166,12 @@ export interface ICdcEntityState extends Document {
   lastBackfillRunStartedAt?: Date;
   /** Same, for the last run in which this entity was fetched in FULL. */
   lastFullBackfillRunStartedAt?: Date;
+  /**
+   * Start of the last scheduled poll run in which this entity completed —
+   * the anchor of the next incremental poll. Only polls write it; webhook
+   * writes never move it. See sync-cdc/poll-cursor.ts.
+   */
+  lastPollRunStartedAt?: Date;
   lastIngestSeq: number;
   lastMaterializedSeq: number;
   lastMaterializedAt?: Date;
@@ -210,6 +216,7 @@ const CdcEntityStateSchema = new Schema<ICdcEntityState>(
     backfillCompletedAt: Date,
     lastBackfillRunStartedAt: Date,
     lastFullBackfillRunStartedAt: Date,
+    lastPollRunStartedAt: Date,
     lastIngestSeq: { type: Number, default: 0 },
     lastMaterializedSeq: { type: Number, default: 0 },
     lastMaterializedAt: Date,
