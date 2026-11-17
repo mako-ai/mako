@@ -128,16 +128,17 @@ consoleWriteRoutes.put("/:path{.+}", async (c: Context) => {
       });
     }
 
-    const data = await saveConsoleByPath({
+    const saved = await saveConsoleByPath({
       workspaceId,
       user,
       path: pathOrId,
       body,
     });
+    if (!saved.ok) return fail(c, saved.status, saved.error, saved.detail);
     return c.json({
       success: true,
       message: "Console updated successfully",
-      data,
+      data: saved.payload,
     });
   } catch (error) {
     return serverError(

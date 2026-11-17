@@ -90,9 +90,13 @@ function liveConsoleToRow(
     loc.scope === "private" ? "private" : "workspace";
   const ownerId =
     loc.ownerId || live.row?.owner_id || live.row?.createdBy || "git";
-  const connectionId =
-    live.parsed.meta.connectionId &&
-    Types.ObjectId.isValid(live.parsed.meta.connectionId)
+  // A row synced from this blob holds the connection the reactor kept: a
+  // foreign or deleted id in the file is already dropped there.
+  const rowInSync = live.row?.sourceBlobSha === live.oid;
+  const connectionId = rowInSync
+    ? (live.row?.connectionId ?? undefined)
+    : live.parsed.meta.connectionId &&
+        Types.ObjectId.isValid(live.parsed.meta.connectionId)
       ? new Types.ObjectId(live.parsed.meta.connectionId)
       : live.row?.connectionId;
   const authored = live.parsed.meta.description;

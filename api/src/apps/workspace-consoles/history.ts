@@ -5,6 +5,7 @@
  */
 import { Types } from "mongoose";
 import type { ISavedConsole } from "../../database/workspace-schema";
+import { workspaceOwnsConnection } from "../../services/consoles/connection-scope";
 import { validateScheduledConsoleSchedule } from "../../services/scheduled-query-schedule.service";
 import { RepoRequiredError } from "../config";
 import { boundRepoDirIfExists } from "../workspace-repo-required";
@@ -132,12 +133,21 @@ export async function restoreConsoleTo(
   const subject = info?.subject ? ` "${info.subject}"` : "";
 
   row.code = parsed.code;
+  // A version can name any ObjectId (a pushed file): only a connection of
+  // this workspace comes back with it.
   row.connectionId =
-    parsed.meta.connectionId && Types.ObjectId.isValid(parsed.meta.connectionId)
+    parsed.meta.connectionId &&
+    Types.ObjectId.isValid(parsed.meta.connectionId) &&
+    (await workspaceOwnsConnection(row.workspaceId, parsed.meta.connectionId))
       ? new Types.ObjectId(parsed.meta.connectionId)
       : undefined;
   row.databaseName = parsed.meta.databaseName;
-  row.databaseId = parsed.meta.databaseId;
+  // Legacy files default database_id to the connection id: a dropped
+  // connection takes that copy with it.
+  row.databaseId =
+    !row.connectionId && parsed.meta.databaseId === parsed.meta.connectionId
+      ? undefined
+      : parsed.meta.databaseId;
   row.resultsViewMode = parsed.meta.resultsViewMode;
   row.mongoOptions = parsed.meta.mongoOptions as ISavedConsole["mongoOptions"];
   row.chartSpec =

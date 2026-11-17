@@ -23,6 +23,10 @@ import {
 import { buildConsoleWriteGuard } from "../console-save-guards";
 import { publishRealtimeEvent } from "../realtime.service";
 import { canWriteConsole } from "./access";
+import {
+  FOREIGN_CONNECTION_ERROR,
+  connectionIdAllowed,
+} from "./connection-scope";
 import { getConsoleByPath, saveConsole } from "./crud";
 import { ensureConsoleFolderPath } from "./folders";
 
@@ -32,7 +36,7 @@ export type SaveResult<T> =
   | { ok: true; payload: T }
   | {
       ok: false;
-      status: 403 | 409;
+      status: 403 | 404 | 409;
       error: string;
       /** Extra body fields (`conflict`, `versionConflict`, `draftConflict`). */
       detail?: Record<string, unknown>;
@@ -97,6 +101,13 @@ async function connectionOrFirst(
   const databases = await DatabaseConnection.find({ workspaceId }).limit(1);
   return databases.length > 0 ? databases[0]._id.toString() : undefined;
 }
+
+/** A connectionId from another workspace (or no such connection): 404. */
+const foreignConnection = {
+  ok: false as const,
+  status: 404 as const,
+  error: FOREIGN_CONNECTION_ERROR,
+};
 
 /** A positive integer counter the client echoed back, else undefined. */
 function counter(value: unknown): number | undefined {
@@ -207,6 +218,9 @@ export async function createConsoleAtPath(input: {
   resultsViewMode?: "table" | "json" | "chart";
 }): Promise<SaveResult<Record<string, unknown>>> {
   const { workspaceId, path } = input;
+  if (!(await connectionIdAllowed(workspaceId, input.connectionId))) {
+    return foreignConnection;
+  }
   const targetConnectionId = await connectionOrFirst(
     workspaceId,
     input.connectionId,
@@ -269,8 +283,11 @@ export async function saveConsoleByPath(input: {
   user: SaveActor;
   path: string;
   body: ConsoleSaveBody;
-}): Promise<Record<string, unknown>> {
+}): Promise<SaveResult<Record<string, unknown>>> {
   const { workspaceId, body } = input;
+  if (!(await connectionIdAllowed(workspaceId, body.connectionId))) {
+    return foreignConnection;
+  }
   const targetConnectionId = await connectionOrFirst(
     workspaceId,
     body.connectionId,
@@ -292,13 +309,16 @@ export async function saveConsoleByPath(input: {
     },
   });
   return {
-    id: savedConsole._id.toString(),
-    path: input.path,
-    content: body.content,
-    connectionId: targetConnectionId,
-    databaseName: body.databaseName,
-    databaseId: body.databaseId,
-    language: savedConsole.language,
+    ok: true,
+    payload: {
+      id: savedConsole._id.toString(),
+      path: input.path,
+      content: body.content,
+      connectionId: targetConnectionId,
+      databaseName: body.databaseName,
+      databaseId: body.databaseId,
+      language: savedConsole.language,
+    },
   };
 }
 
@@ -365,6 +385,9 @@ export async function saveConsoleById(input: {
       status: 403,
       error: "This console is read-only. Create a copy to make changes.",
     };
+  }
+  if (!(await connectionIdAllowed(workspaceId, body.connectionId))) {
+    return foreignConnection;
   }
 
   const now = new Date();

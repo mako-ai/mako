@@ -5,7 +5,6 @@ import {
 } from "../../services/scheduled-run-claim";
 import { inngest } from "../client";
 import {
-  DatabaseConnection,
   type IDatabaseConnection,
   type ISavedConsole,
   SavedConsole,
@@ -18,8 +17,65 @@ import { getNextScheduledConsoleRunAt } from "../../services/scheduled-query-sch
 import { emitScheduledQueryTerminalEvent } from "../../services/flow-run-notification.emit";
 import { liveConsoleCode } from "../../apps/workspace-consoles.service";
 import { mapConsoleLanguageToQueryLanguage } from "../../services/console-execution.service";
+import { findWorkspaceConnection } from "../../services/consoles/connection-scope";
 
 const logger = loggers.inngest();
+
+/**
+ * The console a scheduled run executes, with its database connection. The
+ * connection is loaded with the console's workspace in the filter: a
+ * connectionId that names another workspace's database (a pushed
+ * front-matter line, an old row) fails the run instead of running there.
+ */
+export async function loadScheduledConsole(
+  workspaceId: string,
+  consoleId: string,
+): Promise<{ savedConsole: ISavedConsole; connection: IDatabaseConnection }> {
+  const savedConsoleDoc = await SavedConsole.findOne({
+    _id: new Types.ObjectId(consoleId),
+    workspaceId: new Types.ObjectId(workspaceId),
+  });
+
+  if (!savedConsoleDoc) {
+    throw new Error("Scheduled console not found");
+  }
+
+  const savedConsole = savedConsoleDoc.toObject({
+    getters: true,
+  }) as ISavedConsole;
+  // Git is the definition: run the file at main, not the row's last
+  // pushed copy.
+  const liveCode = await liveConsoleCode(workspaceId, consoleId);
+  if (liveCode) savedConsole.code = liveCode.code;
+
+  if (!savedConsole.connectionId) {
+    throw new Error("Scheduled console has no database connection");
+  }
+
+  const connectionMongooseDoc = await findWorkspaceConnection(
+    savedConsoleDoc.workspaceId,
+    savedConsole.connectionId,
+  );
+  if (!connectionMongooseDoc) {
+    logger.warn(
+      "Scheduled console points at a connection outside its workspace",
+      {
+        workspaceId,
+        consoleId,
+        connectionId: String(savedConsole.connectionId),
+      },
+    );
+    throw new Error(
+      "Scheduled console's database connection is not in this workspace; refusing to run",
+    );
+  }
+
+  const connection = connectionMongooseDoc.toObject({
+    getters: true,
+  }) as IDatabaseConnection;
+
+  return { savedConsole, connection };
+}
 
 export const scheduledQuerySchedulerFunction = inngest.createFunction(
   {
@@ -111,41 +167,9 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
     });
 
     try {
-      const consoleDoc = (await step.run("load-console", async () => {
-        const savedConsoleDoc = await SavedConsole.findOne({
-          _id: new Types.ObjectId(consoleId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        });
-
-        if (!savedConsoleDoc) {
-          throw new Error("Scheduled console not found");
-        }
-
-        const savedConsole = savedConsoleDoc.toObject({
-          getters: true,
-        }) as ISavedConsole;
-        // Git is the definition: run the file at main, not the row's last
-        // pushed copy.
-        const liveCode = await liveConsoleCode(workspaceId, consoleId);
-        if (liveCode) savedConsole.code = liveCode.code;
-
-        const connectionMongooseDoc = savedConsole.connectionId
-          ? await DatabaseConnection.findById(savedConsole.connectionId)
-          : null;
-
-        if (!connectionMongooseDoc) {
-          throw new Error("Scheduled console has no database connection");
-        }
-
-        const connection = connectionMongooseDoc.toObject({
-          getters: true,
-        }) as IDatabaseConnection;
-
-        return {
-          savedConsole,
-          connection,
-        };
-      })) as unknown as {
+      const consoleDoc = (await step.run("load-console", () =>
+        loadScheduledConsole(workspaceId, consoleId),
+      )) as unknown as {
         savedConsole: ISavedConsole;
         connection: IDatabaseConnection;
       };
