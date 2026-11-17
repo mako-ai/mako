@@ -1271,12 +1271,15 @@ export async function performStagingMerge(
 
   if (!cdcAdapter.mergeFromStaging) return { written: 0 };
 
-  // append / overwrite merge with a plain INSERT, and a retry cannot tell
-  // whether a merge that threw had committed. Releasing the staged rows from
-  // the buffer before the INSERT means a retry never loads them a second
-  // time; staging (still there until cleanup) is then their only copy, as
-  // before BULK_STAGED_FIELD. append_dedup keeps them until cleanup: its
-  // keyed merge makes a second load a no-op.
+  // append / overwrite merge with a plain INSERT. Release the staged rows
+  // from the buffer before it, so no later flush can load them again: from
+  // here staging is their only copy, and it stays until cleanup. The merge
+  // runs in its own Inngest step (flush-apply / merge-final), so a failed
+  // merge is retried against that staging table, not re-flushed. A merge
+  // that commits and then throws is retried too and appends twice: a retry
+  // cannot tell it from one that failed, and a duplicate beats a lost row.
+  // append_dedup keeps the rows until cleanup: its keyed merge is a no-op
+  // the second time.
   const isDedup =
     options.writeMode !== "append" && options.writeMode !== "overwrite";
   if (!isDedup) {

@@ -577,6 +577,14 @@ export const syncBackfillEntityFunction = inngest.createFunction(
               await performBulkFlush(bulkSyncOptions as any, () =>
                 touchHeartbeat(executionId),
               );
+            }),
+          );
+          stepsUsed++;
+          // The merge is its own step, like merge-final: a retry of a failed
+          // merge re-runs it against the staging table that is still there,
+          // instead of re-entering the flush step, which drops staging.
+          await step.run(`flush-apply-${safeEntityStepId}-${flushIndex}`, () =>
+            withHeartbeat(executionId, async () => {
               await performStagingMerge(bulkSyncOptions as any);
               await performStagingCleanup(bulkSyncOptions as any);
             }),

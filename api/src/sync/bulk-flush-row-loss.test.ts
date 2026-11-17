@@ -183,6 +183,8 @@ let prepareCalls = 0;
 let failingPrepareCalls = new Set<number>();
 /** Merge calls (1-based) that commit in live and then throw (poll error). */
 let mergesThatThrowAfterCommit = new Set<number>();
+/** Merge calls (1-based) that fail and write nothing. */
+let mergesThatFail = new Set<number>();
 let writeModeOfRun: "append_dedup" | "append" | "overwrite" = "append_dedup";
 
 async function idsInParquet(filePath: string): Promise<string[]> {
@@ -234,6 +236,10 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
     return { loaded: ids.length };
   }) as any,
   mergeFromStaging: (async () => {
+    if (mergesThatFail.has(mergeCalls + 1)) {
+      mergeCalls++;
+      throw new Error("Job exceeded rate limits");
+    }
     const written = staging.length;
     if (writeModeOfRun === "append_dedup") {
       const seen = new Set(live);
@@ -332,6 +338,8 @@ async function runEntity(
         await step(async () => {
           await performRescueAndPrepareStaging(options, { dedupOnly: true });
           await performBulkFlush(options);
+        });
+        await step(async () => {
           await performStagingMerge(options);
           await performStagingCleanup(options);
         });
@@ -372,6 +380,7 @@ describe("bulk backfill lands every row exactly once", () => {
     failingLoadCalls = new Set();
     mergeCalls = 0;
     mergesThatThrowAfterCommit = new Set();
+    mergesThatFail = new Set();
     prepareCalls = 0;
     failingPrepareCalls = new Set();
     // 730 rows, one cursor value: 3 mid-run flushes of 200+ rows (5 batches
@@ -411,14 +420,34 @@ describe("bulk backfill lands every row exactly once", () => {
     120_000,
   );
   it.each(["append_dedup", "append", "overwrite"] as const)(
-    "%s: a merge commits and then throws, and the step is retried",
+    "%s: a merge fails without committing, and its step is retried",
     async writeMode => {
       // Merge 1 is the start-of-run rescue (staging empty); merge 2 is the
-      // first flush-merge. It writes to live, then reports a failure.
-      mergesThatThrowAfterCommit = new Set([2]);
+      // first flush-apply. It writes nothing and throws.
+      mergesThatFail = new Set([2]);
       await runEntity(writeMode, 200);
       expectEveryRowExactlyOnce();
       expect(await getTempCollectionCount(FLOW_ID, ENTITY)).toBe(0);
+    },
+    60_000,
+  );
+
+  it("append_dedup: a merge commits and then throws: still exactly once", async () => {
+    mergesThatThrowAfterCommit = new Set([2]);
+    await runEntity("append_dedup", 200);
+    expectEveryRowExactlyOnce();
+  }, 60_000);
+
+  it.each(["append", "overwrite"] as const)(
+    "%s: a merge commits and then throws: no row lost, that flush appended twice",
+    async writeMode => {
+      // A plain INSERT retry cannot tell this from a merge that failed.
+      // At-least-once: the retried merge appends the same flush again.
+      mergesThatThrowAfterCommit = new Set([2]);
+      await runEntity(writeMode, 200);
+      const ids = new Set(live);
+      expect(sourceRows.every(r => ids.has(String(r.id)))).toBe(true);
+      expect(live.length).toBe(sourceRows.length + 200);
     },
     60_000,
   );
