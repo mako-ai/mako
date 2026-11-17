@@ -68,6 +68,7 @@ export async function syncFlowWebhookSubscription(
   try {
     const source = await sourceConnectionManager.getSourceConnection(
       String(flow.dataSourceId),
+      String(flow.workspaceId),
     );
     if (!source) {
       return { status: "skipped", reason: "connector not found" };
@@ -131,6 +132,8 @@ export async function syncFlowWebhookSubscription(
 /** What a deleted webhook flow leaves behind to unsubscribe. */
 export interface FlowWebhookTeardownTarget {
   flowId: string;
+  /** The flow's workspace: the connection is looked up in it only. */
+  workspaceId: string;
   dataSourceId: string;
   endpoint: string;
   providerWebhookId?: string;
@@ -149,9 +152,15 @@ export type FlowWebhookSubscriptionRemoveResult =
 export async function removeFlowWebhookSubscription(
   target: FlowWebhookTeardownTarget,
 ): Promise<FlowWebhookSubscriptionRemoveResult> {
+  // Queued before the target carried its workspace: never look the
+  // connection up unscoped.
+  if (!target.workspaceId) {
+    return { status: "skipped", reason: "no workspace on the target" };
+  }
   try {
     const source = await sourceConnectionManager.getSourceConnection(
       target.dataSourceId,
+      target.workspaceId,
     );
     if (!source) {
       return { status: "skipped", reason: "connector not found" };

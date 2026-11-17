@@ -206,6 +206,7 @@ describe("removal", () => {
     );
     expect(unsubscribe?.data).toEqual({
       flowId: gone._id.toString(),
+      workspaceId: String(gone.workspaceId),
       dataSourceId: expect.any(String),
       endpoint: "https://mako.example/api/webhooks/ws/gone",
       providerWebhookId: "10:sub-1",

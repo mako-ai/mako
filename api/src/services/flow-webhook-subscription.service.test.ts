@@ -12,12 +12,14 @@ import {
 } from "./flow-webhook-subscription.service";
 
 const FLOW_ID = new Types.ObjectId();
+const WORKSPACE_ID = new Types.ObjectId();
 const DATA_SOURCE_ID = new Types.ObjectId();
 const ENDPOINT = "https://mako.example/api/webhooks/ws/flow";
 
 function webhookFlow(overrides: Record<string, unknown> = {}) {
   return {
     _id: FLOW_ID,
+    workspaceId: WORKSPACE_ID,
     type: "webhook",
     dataSourceId: DATA_SOURCE_ID,
     entityLayouts: [
@@ -239,6 +241,7 @@ async function testRemoveDeletesThroughTheConnector() {
   });
   const target = {
     flowId: String(FLOW_ID),
+    workspaceId: String(WORKSPACE_ID),
     dataSourceId: String(DATA_SOURCE_ID),
     endpoint: ENDPOINT,
     providerWebhookId: "10:a,20:b",
@@ -455,6 +458,50 @@ async function testConnectorsWithoutLookupAreNeverProvisionedOnSave() {
   assert.equal(calls.length + creates.length, 0);
 }
 
+/**
+ * A flow's connection is looked up in the flow's workspace only, on sync and
+ * on teardown. A teardown target with no workspace is skipped, never looked
+ * up unscoped.
+ */
+async function testConnectionLookupsAreScopedToTheWorkspace() {
+  const lookups: unknown[][] = [];
+  stubProvider(async () => ({ providerWebhookId: "we_old" }));
+  (sourceConnectionManager as any).getSourceConnection = async (
+    ...args: unknown[]
+  ) => {
+    lookups.push(args);
+    return null;
+  };
+  const synced = await syncFlowWebhookSubscription(webhookFlow());
+  assert.deepEqual(synced, {
+    status: "skipped",
+    reason: "connector not found",
+  });
+  assert.deepEqual(lookups, [[String(DATA_SOURCE_ID), String(WORKSPACE_ID)]]);
+
+  lookups.length = 0;
+  const removed = await removeFlowWebhookSubscription({
+    flowId: String(FLOW_ID),
+    workspaceId: String(WORKSPACE_ID),
+    dataSourceId: String(DATA_SOURCE_ID),
+    endpoint: ENDPOINT,
+  });
+  assert.equal(removed.status, "skipped");
+  assert.deepEqual(lookups, [[String(DATA_SOURCE_ID), String(WORKSPACE_ID)]]);
+
+  lookups.length = 0;
+  const legacy = await removeFlowWebhookSubscription({
+    flowId: String(FLOW_ID),
+    dataSourceId: String(DATA_SOURCE_ID),
+    endpoint: ENDPOINT,
+  } as any);
+  assert.deepEqual(legacy, {
+    status: "skipped",
+    reason: "no workspace on the target",
+  });
+  assert.equal(lookups.length, 0);
+}
+
 async function main() {
   testEntitySignatureIgnoresOrderAndDisabled();
   await testScheduledFlowWithWebhooksOnIsSynced();
@@ -469,6 +516,7 @@ async function main() {
   await testReportsMissingSubscriptionAndProviderErrors();
   await testRemoveDeletesThroughTheConnector();
   await testWiseFlowRetargetsThroughTheService();
+  await testConnectionLookupsAreScopedToTheWorkspace();
 }
 
 main().catch((error: unknown) => {

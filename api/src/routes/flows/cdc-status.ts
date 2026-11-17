@@ -176,15 +176,17 @@ export function registerCdcStatusRoutes(flowRoutes: FlowRouter): void {
           return fail(c, 400, "Flow has no connector data source");
         }
 
-        const sourceConnection = await SourceConnection.findById(
-          flow.dataSourceId,
-        ).lean();
+        const sourceConnection = await SourceConnection.findOne({
+          _id: flow.dataSourceId,
+          workspaceId: flow.workspaceId,
+        }).lean();
         if (!sourceConnection) {
           return fail(c, 404, "Data source not found");
         }
 
         const decrypted = await sourceConnectionManager.getSourceConnection(
           String(sourceConnection._id),
+          String(flow.workspaceId),
         );
         if (!decrypted) {
           return fail(c, 404, "Could not resolve data source");

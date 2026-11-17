@@ -32,6 +32,7 @@
  * reintroduce them by writing whole nested objects.
  */
 import { Types } from "mongoose";
+import { flowFileConnectionRefusal } from "./flow-connection-scope";
 import {
   applyDefinition,
   clearFlowInvalid,
@@ -382,11 +383,16 @@ export async function ensureFlowDerivedCache(flow: {
     await markFlowInvalid(row, "unparseable flow file", path);
     return "invalid";
   }
-  let refusal: string | null;
-  try {
-    refusal = applyDefinition(row, parsed);
-  } catch (error) {
-    refusal = error instanceof Error ? error.message : String(error);
+  let refusal: string | null = await flowFileConnectionRefusal(
+    workspaceId,
+    parsed,
+  );
+  if (!refusal) {
+    try {
+      refusal = applyDefinition(row, parsed);
+    } catch (error) {
+      refusal = error instanceof Error ? error.message : String(error);
+    }
   }
   if (refusal) {
     await markFlowInvalid(row, refusal, path);
@@ -609,6 +615,19 @@ export async function syncFlowsFromRepo(
         reason: applyFailure,
       });
       if (row) await markFlowInvalid(row, applyFailure, path);
+      result.invalid.push(slug);
+      continue;
+    }
+
+    // A file may only name this workspace's connections.
+    const foreign = await flowFileConnectionRefusal(workspaceId, parsed);
+    if (foreign) {
+      logger.warn("Flow file names another workspace's connection", {
+        workspaceId,
+        path,
+        reason: foreign,
+      });
+      if (row) await markFlowInvalid(row, foreign, path);
       result.invalid.push(slug);
       continue;
     }

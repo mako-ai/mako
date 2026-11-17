@@ -200,6 +200,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           const decision = await resolveBackfillFetchForEntity({
             flowId,
             dataSourceId,
+            workspaceId,
             entity,
           });
           if (decision && !state) {

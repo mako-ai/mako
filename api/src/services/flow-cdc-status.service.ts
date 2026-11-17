@@ -377,6 +377,7 @@ export async function getFlowSchemaHealth(
     try {
       const ds = await sourceConnectionManager.getSourceConnection(
         String(flow.dataSourceId),
+        String(flow.workspaceId),
       );
       if (ds) {
         const connector = await syncConnectorRegistry.getConnectorFor(ds);

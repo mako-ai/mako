@@ -35,7 +35,11 @@ vi.mock("../inngest/client", () => ({
   inngest: { send: vi.fn(async () => undefined) },
 }));
 
-import { Flow } from "../database/workspace-schema";
+import {
+  DatabaseConnection,
+  Flow,
+  SourceConnection,
+} from "../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
   blobOid,
@@ -127,9 +131,32 @@ afterAll(async () => {
   });
 });
 
+/** The connections a flow file names, in workspace `ws`. */
+async function seedConnections(
+  ws: string,
+  ids: { source: string; dest: string },
+): Promise<void> {
+  const workspaceId = new Types.ObjectId(ws);
+  await SourceConnection.collection.insertOne({
+    _id: new Types.ObjectId(ids.source),
+    workspaceId,
+    name: "Close",
+    type: "close",
+  } as any);
+  await DatabaseConnection.collection.insertOne({
+    _id: new Types.ObjectId(ids.dest),
+    workspaceId,
+    name: "Warehouse",
+    type: "bigquery",
+  } as any);
+}
+
 beforeEach(async () => {
   WS = new Types.ObjectId().toString();
   await Flow.deleteMany({});
+  await SourceConnection.collection.deleteMany({});
+  await DatabaseConnection.collection.deleteMany({});
+  await seedConnections(WS, { source: CONNECTOR, dest: DEST });
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
   await bindTestWorkspaceRepo(WS);
 });
@@ -385,6 +412,73 @@ describe("one bad file is that file's problem", () => {
     expect(after!.name).toBe(before!.name);
     expect(after!.writeMode).toBe(before!.writeMode);
     expect(after!.sourceBlobSha).toBe(before!.sourceBlobSha);
+  });
+});
+
+describe("a flow names only its own workspace's connections", () => {
+  const OTHER_WS = new Types.ObjectId().toString();
+  const FOREIGN_SOURCE = new Types.ObjectId().toString();
+  const FOREIGN_DEST = new Types.ObjectId().toString();
+  beforeEach(async () => {
+    await seedConnections(OTHER_WS, {
+      source: FOREIGN_SOURCE,
+      dest: FOREIGN_DEST,
+    });
+  });
+
+  it("a NEW file naming another workspace's source creates no row", async () => {
+    await push({
+      "flows/a-foreign.yml": flowYaml("Foreign").replace(
+        `connector_id: ${CONNECTOR}`,
+        `connector_id: ${FOREIGN_SOURCE}`,
+      ),
+      "flows/z-good-one.yml": flowYaml("Good"),
+    });
+
+    const result = await syncFlowsFromRepo(WS, "user-42");
+
+    expect(result.invalid).toEqual(["a-foreign"]);
+    expect(result.created).toBe(1);
+    expect(
+      await Flow.findOne({ workspaceId: WS, slug: "a-foreign" }),
+    ).toBeNull();
+  });
+
+  it("an EXISTING flow pointed at another workspace's destination keeps its row", async () => {
+    await push({ "flows/close.yml": flowYaml("Close") });
+    await syncFlowsFromRepo(WS, "user-42");
+    await push({
+      "flows/close.yml": flowYaml("Close").replace(
+        `connection_id: ${DEST}`,
+        `connection_id: ${FOREIGN_DEST}`,
+      ),
+    });
+
+    const result = await syncFlowsFromRepo(WS, "user-42");
+
+    expect(result.invalid).toEqual(["close"]);
+    const row = await Flow.findOne({ workspaceId: WS, slug: "close" });
+    expect(String(row?.destinationDatabaseId)).toBe(DEST);
+    expect(row?.definitionInvalid?.reason).toContain(
+      `destination.connection_id: ${FOREIGN_DEST}`,
+    );
+  });
+
+  it("the cache resync refuses a file naming another workspace's source", async () => {
+    await push({ "flows/close.yml": flowYaml("Close") });
+    await syncFlowsFromRepo(WS, "user-42");
+    // A push the reactor has not seen yet: only the SHA check reads it.
+    await push({
+      "flows/close.yml": flowYaml("Close").replace(
+        `connector_id: ${CONNECTOR}`,
+        `connector_id: ${FOREIGN_SOURCE}`,
+      ),
+    });
+    const row = await Flow.findOne({ workspaceId: WS, slug: "close" });
+
+    expect(await ensureFlowDerivedCache(row!)).toBe("invalid");
+    const after = await Flow.findOne({ workspaceId: WS, slug: "close" });
+    expect(String(after?.dataSourceId)).toBe(CONNECTOR);
   });
 });
 

@@ -190,14 +190,24 @@ function fakeRunner(
   answer: (events: any[]) => RunResult | Promise<RunResult>,
   declared = ["leads", "contacts", "users"],
 ) {
-  const calls: Array<{ connectionId: string; batch: any; timeoutMs: number }> =
-    [];
+  const calls: Array<{
+    connectionId: string;
+    workspaceId: string;
+    batch: any;
+    timeoutMs: number;
+  }> = [];
   const factory = async (
     connectionId: string,
+    workspaceId: string,
   ): Promise<WebhookBatchRunner> => ({
     declaredEntities: async () => declared,
     runWebhookBatch: async (batch, options) => {
-      calls.push({ connectionId, batch, timeoutMs: options.timeoutMs });
+      calls.push({
+        connectionId,
+        workspaceId,
+        batch,
+        timeoutMs: options.timeoutMs,
+      });
       return answer(batch.events);
     },
   });
@@ -368,6 +378,7 @@ describe("a batch", () => {
     expect(result.entities).toEqual(["leads"]);
     expect(box.calls).toHaveLength(1);
     expect(box.calls[0].connectionId).toBe(String(conn));
+    expect(box.calls[0].workspaceId).toBe(String(ws));
     expect(box.calls[0].timeoutMs).toBe(WEBHOOK_BATCH_DEFAULTS.timeoutMs);
     expect(box.calls[0].batch.events.map((e: any) => e.eventId)).toEqual(
       mine.map(e => e.eventId),
@@ -401,6 +412,33 @@ describe("a batch", () => {
     expect(
       await WebhookEvent.findOne({ flowId: otherFlowId }).lean(),
     ).toMatchObject({ status: "pending" });
+  });
+
+  it("never reads a connection of another workspace, even one the flow row names", async () => {
+    const foreignConn = new Types.ObjectId();
+    await SourceConnection.collection.insertOne({
+      _id: foreignConn,
+      workspaceId: new Types.ObjectId(),
+      name: "Someone else's Close",
+      type: "ws:close",
+      config: { api_key: "api_key_foreign" },
+    });
+    const foreignFlow = await makeFlow(foreignConn);
+    const event = await boxEvent(foreignFlow, foreignConn);
+    const box = fakeRunner(events => ok(events.map(e => leadOutcome(e))));
+
+    const result = await processBoxWebhookBatch({
+      flowId: String(foreignFlow),
+      runner: box.factory,
+    });
+
+    expect(result.next).toBe("stop");
+    expect(box.calls).toHaveLength(0);
+    expect(await WebhookEvent.findById(event._id).lean()).toMatchObject({
+      status: "completed",
+      applyStatus: "dropped",
+      applyError: { code: "MISSING_DEPENDENCY" },
+    });
   });
 
   it("drops events verified for a connection the flow no longer uses", async () => {

@@ -38,7 +38,11 @@ vi.mock("../connectors/workspace/reconcile.service", () => ({
   syncConnectorsFromRepo: (...args: unknown[]) => syncConnectors(...args),
 }));
 
-import { Flow } from "../database/workspace-schema";
+import {
+  DatabaseConnection,
+  Flow,
+  SourceConnection,
+} from "../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -129,6 +133,22 @@ beforeEach(async () => {
   WS = new Types.ObjectId().toString();
   syncConnectors.mockClear();
   await Flow.deleteMany({});
+  // The connections the flow files name, in this workspace: the reactor
+  // refuses a file naming any other (flow-connection-scope.ts).
+  await SourceConnection.collection.deleteMany({});
+  await DatabaseConnection.collection.deleteMany({});
+  await SourceConnection.collection.insertOne({
+    _id: new Types.ObjectId(CONNECTOR),
+    workspaceId: new Types.ObjectId(WS),
+    name: "Close",
+    type: "close",
+  } as any);
+  await DatabaseConnection.collection.insertOne({
+    _id: new Types.ObjectId(DEST),
+    workspaceId: new Types.ObjectId(WS),
+    name: "Warehouse",
+    type: "bigquery",
+  } as any);
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
   await bindTestWorkspaceRepo(WS);
 });

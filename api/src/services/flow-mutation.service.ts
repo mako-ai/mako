@@ -580,6 +580,15 @@ export async function applyFlowUpdate(params: {
           "databaseSource.connectionId is required",
         );
       }
+      if (
+        body.databaseSource.connectionId &&
+        !(await DatabaseConnection.exists({
+          _id: newConnectionId,
+          workspaceId: new Types.ObjectId(workspaceId),
+        }))
+      ) {
+        throw new FlowRequestError(404, "Source database connection not found");
+      }
 
       flow.databaseSource = {
         connectionId: newConnectionId,
@@ -625,6 +634,18 @@ export async function applyFlowUpdate(params: {
       throw new FlowRequestError(
         400,
         "tableDestination.connectionId is required",
+      );
+    }
+    if (
+      body.tableDestination.connectionId &&
+      !(await DatabaseConnection.exists({
+        _id: newConnectionId,
+        workspaceId: new Types.ObjectId(workspaceId),
+      }))
+    ) {
+      throw new FlowRequestError(
+        404,
+        "Destination database connection not found",
       );
     }
 

@@ -94,6 +94,7 @@ export class CdcConsumerService {
       try {
         const ds = await sourceConnectionManager.getSourceConnection(
           String(flow.dataSourceId),
+          String(flow.workspaceId),
         );
         const conn = ds
           ? await syncConnectorRegistry.getConnectorFor(ds)

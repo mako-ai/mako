@@ -329,6 +329,7 @@ export async function buildEntityLayout(flow: IFlow, entity: string) {
     try {
       const ds = await sourceConnectionManager.getSourceConnection(
         String(flow.dataSourceId),
+        String(flow.workspaceId),
       );
       const conn = ds ? await syncConnectorRegistry.getConnectorFor(ds) : null;
       const schema = conn ? await conn.resolveSchema(entity) : null;

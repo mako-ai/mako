@@ -71,7 +71,9 @@ import {
   performPrepareStaging,
   performOverwriteTruncate,
   performRescueAndPrepareStaging,
+  performSyncChunk,
 } from "./sync-orchestrator";
+import { sourceConnectionManager } from "./database-data-source-manager";
 
 const baseOptions = {
   dataSourceId: "ds1",
@@ -252,5 +254,31 @@ describe("Retry-safe staging prepare (lost flush batches)", () => {
     staging.push("b");
     await performRescueAndPrepareStaging(rescueOptions, { dedupOnly: true });
     expect(live).toEqual(["a", "b"]);
+  });
+});
+
+/**
+ * A flow reads its source connection in its own workspace only
+ * (flow-connection-scope.ts): a connection of another workspace reads as
+ * missing, on the polling read and on the staging merge.
+ */
+describe("source connection lookups are scoped to the flow's workspace", () => {
+  const lookup = vi.mocked(sourceConnectionManager.getSourceConnection);
+  beforeEach(() => {
+    lookup.mockClear();
+    lookup.mockResolvedValue(null);
+  });
+
+  it("the polling read looks the connection up in the flow's workspace, and a miss fails the chunk", async () => {
+    await expect(performSyncChunk(baseOptions)).rejects.toThrow(
+      "Data source 'ds1' not found",
+    );
+    expect(lookup).toHaveBeenCalledWith("ds1", "ws1");
+  });
+
+  it("the staging merge looks the connection up in the flow's workspace", async () => {
+    await performRescueAndPrepareStaging(rescueOptions);
+    expect(lookup).toHaveBeenCalled();
+    for (const call of lookup.mock.calls) expect(call).toEqual(["ds1", "ws1"]);
   });
 });
