@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => ({
   loadConnectorDefinition: vi.fn(),
   commitFlowFile: vi.fn(),
   startBackfill: vi.fn(),
+  cancelBackfill: vi.fn(),
 }));
 
 vi.mock("../../sync-cdc/ingest", () => ({
@@ -53,7 +54,10 @@ vi.mock("../../services/flow-sync.service", async importOriginal => ({
   listFlowDefinitionsAtMain: async () => [],
 }));
 vi.mock("../../sync-cdc/backfill", () => ({
-  cdcBackfillService: { startBackfill: mocks.startBackfill },
+  cdcBackfillService: {
+    startBackfill: mocks.startBackfill,
+    cancelBackfill: mocks.cancelBackfill,
+  },
 }));
 
 import {
@@ -203,6 +207,8 @@ beforeEach(async () => {
   });
   mocks.startBackfill.mockReset();
   mocks.startBackfill.mockResolvedValue({ runId: "run-1", reusedRunId: false });
+  mocks.cancelBackfill.mockReset();
+  mocks.cancelBackfill.mockResolvedValue(undefined);
   vi.spyOn(sourceConnectionManager, "getSourceConnection").mockImplementation(
     async () => decrypted(),
   );
@@ -515,6 +521,125 @@ describe("review attacks", () => {
         entity: "leads",
       }),
     ).toBeUndefined();
+  });
+});
+
+describe("review round 2", () => {
+  it("C. refuses a shadow that names another table connection but writes the live dataset", async () => {
+    const live = await makeFlow();
+    const shadow = await makeFlow({
+      shadowOf: live,
+      ...approved(),
+      destinationDatabaseName: "elsewhere",
+      tableDestination: {
+        connectionId: new Types.ObjectId(),
+        database: "x",
+        schema: "pl_close",
+        tableName: "shadow_",
+      },
+    });
+    await expect(
+      applyFlowRuntime(decrypted(), await lean(shadow)),
+    ).rejects.toThrow(/writes the live flow's dataset/);
+  });
+
+  it("F. a chunk stays on the runtime its run decided", async () => {
+    const id = await makeFlow({ connectorRuntime: "boxed", ...approved() });
+    const source = decrypted();
+    // Decided built-in at the start: stays built-in though the flow is boxed now.
+    expect(await applyFlowRuntimeById(source, String(id), "builtin")).toBe(
+      source,
+    );
+    // Decided boxed, then switched back: the run stops, no cursor crosses.
+    await Flow.collection.updateOne(
+      { _id: id },
+      { $unset: { connectorRuntime: 1, boxedApproval: 1 } },
+    );
+    await expect(
+      applyFlowRuntimeById(source, String(id), "boxed"),
+    ).rejects.toThrow(/can no longer run boxed/);
+    // Decided boxed, then the flag went off: the same.
+    const again = await makeFlow({ connectorRuntime: "boxed", ...approved() });
+    process.env.CONNECTOR_BOXED_SWITCH = "false";
+    await expect(
+      applyFlowRuntimeById(source, String(again), "boxed"),
+    ).rejects.toThrow(/can no longer run boxed/);
+  });
+
+  it("I. a file's unapproved runtime: boxed ran built-in, so approving it is a switch: refused mid-run, cursors dropped", async () => {
+    const id = await makeFlow({ connectorRuntime: "boxed" });
+    await FlowExecution.collection.insertOne({
+      flowId: id,
+      workspaceId: ws,
+      status: "running",
+      startedAt: new Date(),
+      success: false,
+      logs: [],
+    });
+    await expect(
+      switchFlowRuntime({
+        flow: (await Flow.findById(id))!,
+        target: "boxed",
+        force: true,
+      }),
+    ).rejects.toThrow(/in flight/);
+  });
+
+  it("H. stop cancels a shadow backfill in progress", async () => {
+    const live = await makeFlow();
+    await makeFlow({
+      shadowOf: live,
+      ...approved(),
+      tableDestination: {
+        connectionId: db,
+        schema: "pl_close_shadow",
+        tableName: "",
+      },
+      backfillState: { status: "running", runId: "r1" },
+    });
+    const out = await stopShadow({ live: (await Flow.findById(live))! });
+    expect(out?.cancelledBackfill).toBe(true);
+    expect(mocks.cancelBackfill).toHaveBeenCalledTimes(1);
+  });
+
+  it("E. start on a shadow already running this twin never restarts its backfill", async () => {
+    const live = await makeFlow();
+    const first = await startShadow({
+      live: (await Flow.findById(live))!,
+      userId: "u",
+    });
+    await Flow.collection.updateOne(
+      { _id: new Types.ObjectId(first.shadowFlowId) },
+      {
+        $set: {
+          backfillState: {
+            status: "completed",
+            completedAt: new Date(),
+            runId: "run-1",
+          },
+        },
+      },
+    );
+    mocks.startBackfill.mockClear();
+    const again = await startShadow({
+      live: (await Flow.findById(live))!,
+      userId: "u",
+    });
+    expect(again.created).toBe(false);
+    expect(mocks.startBackfill).not.toHaveBeenCalled();
+    // New twin code: the shadow restarts its evidence.
+    mocks.loadConnectorDefinition.mockResolvedValue({
+      slug: "close",
+      sha: "sha2",
+      sourceSha: "source-sha-2",
+      entry: "connector.ts",
+      runtime: "node",
+      entities: ["leads"],
+      spec: CLOSE_SPEC,
+      status: "indexed",
+    });
+    await startShadow({ live: (await Flow.findById(live))!, userId: "u" });
+    expect(mocks.startBackfill).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1007,6 +1132,66 @@ describe("parity", () => {
     const gate = await parityGate({ _id: live, workspaceId: ws }, now);
     expect(gate.open).toBe(false);
     expect(gate.reasons.join(" ")).toMatch(/covers 50 min/);
+  });
+
+  it("A. keeps the gate closed for an entity the shadow never synced", async () => {
+    const now = new Date("2026-11-17T12:00:00Z");
+    const { live, shadow } = await shadowPair(new Date("2026-11-17T09:00:00Z"));
+    await CdcEntityState.collection.insertOne({
+      flowId: live,
+      workspaceId: ws,
+      entity: "subscriptions",
+    });
+    const { query } = fakeQuery(summary());
+    const check = await runParityCheck({
+      shadowFlowId: String(shadow),
+      trigger: "manual",
+      deps: { query, keyColumns: async () => ["id"], now: () => now },
+    });
+    expect(check.clean).toBe(false);
+    expect(check.reasons.join(" ")).toMatch(
+      /has not synced 1 entity .*subscriptions/,
+    );
+  });
+
+  it("D. a clean check opens no gate for other twin code, nor after a new backfill", async () => {
+    const now = new Date("2026-11-17T12:00:00Z");
+    const { live, shadow } = await shadowPair(new Date("2026-11-17T09:00:00Z"));
+    const { query } = fakeQuery(summary());
+    await runParityCheck({
+      shadowFlowId: String(shadow),
+      trigger: "manual",
+      deps: { query, keyColumns: async () => ["id"], now: () => now },
+    });
+    const ref = { _id: live, workspaceId: ws };
+    expect(
+      (await parityGate(ref, now, { slug: "close", sourceSha: "source-sha" }))
+        .open,
+    ).toBe(true);
+    const otherCode = await parityGate(ref, now, {
+      slug: "close",
+      sourceSha: "pushed",
+    });
+    expect(otherCode.open).toBe(false);
+    expect(otherCode.reasons.join(" ")).toMatch(/latest check ran close/);
+    expect(
+      (
+        await parityGate(ref, now, {
+          slug: "close-v2",
+          sourceSha: "source-sha",
+        })
+      ).open,
+    ).toBe(false);
+    await Flow.collection.updateOne(
+      { _id: shadow },
+      {
+        $set: { "backfillState.completedAt": new Date("2026-11-17T11:59:00Z") },
+      },
+    );
+    const rebackfilled = await parityGate(ref, now);
+    expect(rebackfilled.reasons.join(" ")).toMatch(
+      /predates the shadow's current backfill/,
+    );
   });
 
   it("switches once the gate is open, without force", async () => {

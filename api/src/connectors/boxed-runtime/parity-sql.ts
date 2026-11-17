@@ -120,7 +120,10 @@ c AS (
 /** Column `i`'s differing-row count is `d<i>` in the summary row. */
 export function buildSummarySql(input: ParityTables): string {
   const both = "NOT recent AND lp AND sp";
-  const inWindow = `lp AND lts >= ${ts(input.windowStart)} AND lts < ${ts(input.cutoff)}`;
+  // A key either side changed after the cutoff is in flight, in the window
+  // as everywhere else: a shadow that already has a newer version is not
+  // counted as behind.
+  const inWindow = `NOT recent AND lp AND lts >= ${ts(input.windowStart)} AND lts < ${ts(input.cutoff)}`;
   const matched = `${inWindow} AND sp AND sts = lts`;
   const fieldCounts = input.columns.map(
     (c, i) =>
@@ -227,7 +230,13 @@ export function readSummaryRow(
   const wLive = num(row.w_live);
   const wMatched = num(row.w_matched);
   const str = (v: unknown) =>
-    v === null || v === undefined ? null : String((v as any)?.value ?? v);
+    v === null || v === undefined
+      ? null
+      : String(
+          typeof v === "object" && "value" in v
+            ? (v as { value: unknown }).value
+            : v,
+        );
   return {
     liveRows: num(row.live_rows),
     shadowRows: num(row.shadow_rows),

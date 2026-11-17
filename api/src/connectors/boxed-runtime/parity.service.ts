@@ -209,20 +209,28 @@ export function entityReasons(e: Omit<IFlowParityEntity, "clean" | "reasons">) {
 }
 
 /** The entities both flows have synced, sorted. */
-async function parityEntities(live: IFlow, shadow: IFlow): Promise<string[]> {
+async function parityEntities(
+  live: IFlow,
+  shadow: IFlow,
+): Promise<{ both: string[]; liveOnly: string[] }> {
   const ids = (f: IFlow) => ({ $in: [f._id, String(f._id)] });
   const [liveStates, shadowStates] = await Promise.all([
     CdcEntityState.distinct("entity", { flowId: ids(live) }),
     CdcEntityState.distinct("entity", { flowId: ids(shadow) }),
   ]);
   const onLive = new Set((liveStates as string[]).map(String));
-  return [...new Set((shadowStates as string[]).map(String))]
-    .filter(entity => onLive.has(entity))
-    .sort();
+  const onShadow = new Set((shadowStates as string[]).map(String));
+  return {
+    both: [...onShadow].filter(entity => onLive.has(entity)).sort(),
+    // An entity the live flow syncs and the shadow never did: after a
+    // switch it would stop updating, so it keeps the gate closed.
+    liveOnly: [...onLive].filter(entity => !onShadow.has(entity)).sort(),
+  };
 }
 
 function bigQueryTarget(destination: IDatabaseConnection) {
-  const conn = (destination as any).connection ?? {};
+  const conn =
+    (destination as { connection?: Record<string, unknown> }).connection ?? {};
   return {
     project: String(conn.project_id ?? ""),
     location: typeof conn.location === "string" ? conn.location : undefined,
@@ -313,8 +321,16 @@ export async function runParityCheck(input: {
     });
     const window = parityWindow(cutoff, backfillCompletedAt);
 
-    const entities = await parityEntities(live, shadow);
+    const { both: entities, liveOnly: missingEntities } = await parityEntities(
+      live,
+      shadow,
+    );
     const reasons: string[] = [];
+    if (missingEntities.length > 0) {
+      reasons.push(
+        `The shadow has not synced ${missingEntities.length} entit${missingEntities.length === 1 ? "y" : "ies"} the live flow syncs: ${missingEntities.join(", ")}`,
+      );
+    }
     if (!backfillCompletedAt) {
       reasons.push("The shadow's full backfill has not completed");
     }
@@ -484,6 +500,10 @@ export async function runParityCheck(input: {
       status: "done",
       cutoff,
       window,
+      twin: {
+        slug: shadow.boxedApproval?.slug ?? "",
+        sourceSha: shadow.boxedApproval?.sourceSha,
+      },
       shadowBackfillCompletedAt: backfillCompletedAt,
       entities: results,
       clean: reasons.length === 0,
@@ -534,6 +554,12 @@ export async function shadowOf(
 export async function parityGate(
   live: Pick<IFlow, "_id" | "workspaceId">,
   now: Date = new Date(),
+  /**
+   * The twin a switch would approve (slug and code). The check must be
+   * evidence about THAT code: a clean check of `close` opens no gate for
+   * `close-v2`, nor for `close` after new code was pushed.
+   */
+  expectTwin?: { slug: string; sourceSha?: string },
 ): Promise<ParityGate> {
   const shadow = await shadowOf(live);
   if (!shadow) {
@@ -561,6 +587,25 @@ export async function parityGate(
     if (coverage < PARITY_GATE.windowMinutes) {
       reasons.push(
         `The check covers ${coverage} min of live updates after the shadow's backfill; the gate needs ${PARITY_GATE.windowMinutes}`,
+      );
+    }
+    if (
+      expectTwin &&
+      (check.twin?.slug !== expectTwin.slug ||
+        (check.twin?.sourceSha ?? "") !== (expectTwin.sourceSha ?? ""))
+    ) {
+      reasons.push(
+        `The latest check ran ${check.twin?.slug || "another twin"}${check.twin?.sourceSha ? ` at ${check.twin.sourceSha.slice(0, 8)}` : ""}; the switch would run ${expectTwin.slug}${expectTwin.sourceSha ? ` at ${expectTwin.sourceSha.slice(0, 8)}` : ""}. Restart the shadow and check again`,
+      );
+    }
+    // Evidence about the shadow's CURRENT backfill, not an earlier one.
+    const current = await shadowBackfillCompletedAt(shadow);
+    const checked = check.shadowBackfillCompletedAt
+      ? new Date(check.shadowBackfillCompletedAt).getTime()
+      : null;
+    if (!current || checked !== current.getTime()) {
+      reasons.push(
+        "The latest check predates the shadow's current backfill; check again once it completes",
       );
     }
     const finished = check.finishedAt ?? check.startedAt;

@@ -85,6 +85,19 @@ async function assertNoRunInFlight(flow: IFlow): Promise<void> {
   }
 }
 
+/** The runtime the flow's runs use now (runtime.ts boxedTwinFor). */
+async function effectiveRuntime(flow: IFlow): Promise<"builtin" | "boxed"> {
+  const type = (
+    (await SourceConnection.findOne({
+      _id: flow.dataSourceId,
+      workspaceId: flow.workspaceId,
+    })
+      .select("type")
+      .lean()) as { type?: string } | null
+  )?.type;
+  return type && boxedTwinFor(flow, type) ? "boxed" : "builtin";
+}
+
 async function dropBackfillCursors(flow: IFlow): Promise<void> {
   await cdcSyncStateService.clearBackfillCursorsForFlow({
     workspaceId: String(flow.workspaceId),
@@ -218,9 +231,15 @@ export async function startShadow(input: {
   let created = false;
   if (existing) {
     shadow = existing;
+    // Already running this very twin and code, and backfilling or backfilled:
+    // a repeated `start` changes nothing and never restarts the backfill.
+    const status = shadow.backfillState?.status;
     if (
       shadow.schedule?.enabled &&
-      shadow.backfillState?.status === "running"
+      (shadow.boxedConnector ?? "") === (live.boxedConnector ?? "") &&
+      isTwinApproved(shadow, twin.slug) &&
+      shadow.boxedApproval?.sourceSha === twin.pin.sourceSha &&
+      (status === "running" || status === "completed")
     ) {
       return {
         shadowFlowId: String(shadow._id),
@@ -231,6 +250,9 @@ export async function startShadow(input: {
         webhooksMirrored,
       };
     }
+    // Resumed, or the twin changed: the shadow runs the live flow's twin,
+    // and its evidence starts again from a full backfill.
+    shadow.boxedConnector = live.boxedConnector;
     shadow.schedule = { enabled: true, cron: pollCron, timezone };
   } else {
     const name = `${(live.name ?? live.slug ?? "flow").slice(0, 180)} (shadow)`;
@@ -297,7 +319,7 @@ export async function startShadow(input: {
 export async function stopShadow(input: {
   live: FlowDoc;
   userId?: string;
-}): Promise<{ shadowFlowId: string } | null> {
+}): Promise<{ shadowFlowId: string; cancelledBackfill: boolean } | null> {
   const shadow = (await Flow.findOne({
     workspaceId: input.live.workspaceId,
     shadowOf: input.live._id,
@@ -309,7 +331,18 @@ export async function stopShadow(input: {
     timezone: shadow.schedule?.timezone,
   };
   await commitAndSave(shadow, input.userId);
-  return { shadowFlowId: String(shadow._id) };
+  // Stop means stop: a full backfill in progress holds the key in a box
+  // for hours. Cancelling it also cancels its running execution.
+  let cancelledBackfill = false;
+  const status = shadow.backfillState?.status;
+  if (status === "running" || status === "paused") {
+    await cdcBackfillService.cancelBackfill(
+      String(shadow.workspaceId),
+      String(shadow._id),
+    );
+    cancelledBackfill = true;
+  }
+  return { shadowFlowId: String(shadow._id), cancelledBackfill };
 }
 
 export interface SwitchResult {
@@ -338,13 +371,19 @@ export async function switchFlowRuntime(input: {
       "A shadow is always boxed; switch its live flow instead",
     );
   }
-  const current = flow.connectorRuntime === "boxed" ? "boxed" : "builtin";
+  // What the flow last RAN on, not what its file says: a `runtime: boxed`
+  // with no standing approval ran built-in, and its cursors are built-in.
+  const current = await effectiveRuntime(flow);
+  const setting = flow.connectorRuntime === "boxed" ? "boxed" : "builtin";
 
   if (target === "builtin") {
-    if (current !== "builtin" || flow.boxedApproval) {
-      // `force` switches back even mid-run: the way out stays one call.
+    if (current === "boxed") {
+      // `force` switches back even mid-run: the way out stays one call. The
+      // run itself stops at its next chunk (applyFlowRuntimeById).
       if (!input.force) await assertNoRunInFlight(flow);
       await dropBackfillCursors(flow);
+    }
+    if (setting !== "builtin" || flow.boxedApproval) {
       flow.connectorRuntime = undefined;
       // Boxing again needs a fresh owner/admin approval.
       flow.boxedApproval = undefined;
@@ -358,7 +397,7 @@ export async function switchFlowRuntime(input: {
       : 0;
     return {
       runtime: "builtin",
-      changed: current !== "builtin",
+      changed: current !== "builtin" || setting !== "builtin",
       gate: null,
       forced: false,
       relaned,
@@ -378,7 +417,10 @@ export async function switchFlowRuntime(input: {
       );
     }
   }
-  const gate = await parityGate(flow, input.now);
+  const gate = await parityGate(flow, input.now, {
+    slug: twin.slug,
+    sourceSha: twin.pin.sourceSha,
+  });
   if (!gate.open && !input.force) {
     throw new BoxedRuntimeError(
       `The parity gate is closed: ${gate.reasons.join("; ")}`,
@@ -389,10 +431,10 @@ export async function switchFlowRuntime(input: {
     boxedTwinFor(flow, twin.connectionType) === twin.slug &&
     flow.boxedApproval?.sourceSha === twin.pin.sourceSha;
   if (!approved) {
-    if (current !== "boxed") {
-      await assertNoRunInFlight(flow);
-      await dropBackfillCursors(flow);
-    }
+    // A change of the code that runs: from built-in, or to other twin code.
+    // Either way no run may be in flight, and no stored cursor survives.
+    await assertNoRunInFlight(flow);
+    await dropBackfillCursors(flow);
     flow.connectorRuntime = "boxed";
     flow.boxedApproval = newApproval(flow, "switch", twin, input.userId);
     await commitAndSave(flow, input.userId);

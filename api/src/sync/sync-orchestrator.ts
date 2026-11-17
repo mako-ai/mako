@@ -120,6 +120,11 @@ export interface SyncChunkOptions {
   /** Airbyte-style destination write mode (default append_dedup). */
   writeMode?: "append_dedup" | "append" | "overwrite";
   flowId?: string;
+  /**
+   * The runtime the run decided at its start. A chunk is held to it, so a
+   * switch mid-run never hands one connector's cursor to the other.
+   */
+  connectorRuntime?: "builtin" | "boxed";
   /** The flow's workspace: the source connection is looked up in it only. */
   workspaceId: string;
   syncEngine?: string;
@@ -278,6 +283,7 @@ export async function performSyncChunk(
     const sourceConnection = await applyFlowRuntimeById(
       storedConnection,
       options.flowId,
+      options.connectorRuntime,
     );
 
     if (!sourceConnection.active) {

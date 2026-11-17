@@ -18,30 +18,53 @@ export function boxedKind(
   return flow.connectorRuntime === "boxed" ? "switch" : null;
 }
 
-export function destinationOf(
-  flow: Pick<
-    IFlow,
-    "destinationDatabaseId" | "destinationDatabaseName" | "tableDestination"
-  >,
-) {
+type DestinationFields = Pick<
+  IFlow,
+  "destinationDatabaseId" | "destinationDatabaseName" | "tableDestination"
+>;
+
+/**
+ * Every field that can choose where a flow's rows land. The CDC writer takes
+ * the connection from `destinationDatabaseId` and the dataset from
+ * `tableDestination.schema` (default `public`); the other fields are kept so
+ * that any change to them voids an approval too.
+ */
+export function destinationOf(flow: DestinationFields) {
   const table = flow.tableDestination;
   return {
-    connection: String(table?.connectionId ?? flow.destinationDatabaseId ?? ""),
-    database: String(table?.database ?? flow.destinationDatabaseName ?? ""),
-    schema: String(table?.schema ?? ""),
+    connections: [
+      String(flow.destinationDatabaseId ?? ""),
+      String(table?.connectionId ?? ""),
+    ],
+    database: [
+      String(flow.destinationDatabaseName ?? ""),
+      String(table?.database ?? ""),
+    ],
+    schema: String(table?.schema || "public"),
     prefix: String(table?.tableName ?? ""),
   };
 }
 
 /** The destination tables as one comparable string. */
-export function destinationKey(
-  flow: Pick<
-    IFlow,
-    "destinationDatabaseId" | "destinationDatabaseName" | "tableDestination"
-  >,
-): string {
+export function destinationKey(flow: DestinationFields): string {
   const d = destinationOf(flow);
-  return JSON.stringify([d.connection, d.database, d.schema, d.prefix]);
+  return JSON.stringify([d.connections, d.database, d.schema, d.prefix]);
+}
+
+/**
+ * Whether two flows can write the same dataset: a connection either names
+ * (the writer's or the table's) in common, and the same dataset. The table
+ * prefix does not separate them: a shadow writes its own dataset.
+ */
+export function mayShareDataset(
+  a: DestinationFields,
+  b: DestinationFields,
+): boolean {
+  const x = destinationOf(a);
+  const y = destinationOf(b);
+  const xs = new Set(x.connections.filter(Boolean));
+  const shared = y.connections.some(c => c && xs.has(c));
+  return shared && x.schema === y.schema;
 }
 
 /** What an approval is bound to, from the flow as it stands. */

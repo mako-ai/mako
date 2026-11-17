@@ -65,6 +65,8 @@ export interface IFlowParityCheck {
   cutoff?: Date;
   /** The live-update window: changes in [start, end) on the live side. */
   window?: { start: Date; end: Date; coverageMinutes: number };
+  /** The twin the shadow ran (its approval): slug and folder source hash. */
+  twin?: { slug: string; sourceSha?: string };
   /** When the shadow's full-history backfill completed, as this check saw it. */
   shadowBackfillCompletedAt?: Date | null;
   entities: IFlowParityEntity[];
@@ -139,6 +141,7 @@ const FlowParityCheckSchema = new Schema<IFlowParityCheck>(
     finishedAt: Date,
     cutoff: Date,
     window: { start: Date, end: Date, coverageMinutes: Number },
+    twin: { slug: String, sourceSha: String },
     shadowBackfillCompletedAt: { type: Date, default: null },
     entities: [EntitySchema],
     clean: { type: Boolean, default: false },

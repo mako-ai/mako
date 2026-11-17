@@ -270,7 +270,31 @@ const spec = {
     sameDestination(flow("pl_close"), flow("pl_close_shadow")),
     false,
   );
-  assert.equal(sameDestination(flow("x", "a"), flow("x", "b")), false);
+  // The table prefix does not separate them: a shadow writes its own dataset.
+  assert.equal(sameDestination(flow("x", "a"), flow("x", "b")), true);
+  // The writer takes the connection from destinationDatabaseId: a different
+  // tableDestination.connectionId or database does not separate them.
+  const other = new Types.ObjectId();
+  assert.equal(
+    sameDestination(flow("pl_close"), {
+      destinationDatabaseId: db,
+      destinationDatabaseName: "elsewhere",
+      tableDestination: {
+        connectionId: other,
+        database: "x",
+        schema: "pl_close",
+      },
+    } as unknown as FlowRuntimeFields),
+    true,
+  );
+  assert.equal(
+    sameDestination(flow("public"), {
+      destinationDatabaseId: db,
+      tableDestination: { connectionId: db },
+    } as unknown as FlowRuntimeFields),
+    true,
+    "an unset dataset is public, as the writer reads it",
+  );
 }
 
 // 4. The flow file: runtime keys only when set, and they round-trip.
@@ -380,6 +404,10 @@ const spec = {
   assert.ok(sql.includes("TIMESTAMP('2026-11-17T11:50:00.000Z')"));
   assert.ok(sql.includes("TIMESTAMP('2026-11-17T09:50:00.000Z')"));
   assert.ok(sql.includes("AS d2"), "one count per column");
+  assert.ok(
+    sql.includes("COUNTIF(NOT recent AND lp AND lts >="),
+    "the window leaves out keys in flight, as the full comparison does",
+  );
   assert.ok(!/\b(INSERT|UPDATE|DELETE|MERGE|CREATE|DROP)\b/.test(sql));
   const samples = buildSamplesSql(tables, ["name", "it's"], 3);
   assert.ok(samples.includes("'it\\'s' AS field"));

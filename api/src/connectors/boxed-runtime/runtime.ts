@@ -18,8 +18,13 @@
  * With CONNECTOR_BOXED_SWITCH off nothing here rewrites anything: every
  * function returns its input, and the built-in path runs as before.
  */
+import { NonRetriableError } from "inngest";
 import { Types } from "mongoose";
-import { Flow, type IFlow } from "../../database/workspace-schema";
+import {
+  Flow,
+  type IFlow,
+  type ISourceConnection,
+} from "../../database/workspace-schema";
 import { loggers } from "../../logging";
 import type { SourceConnectionConfig } from "../../sync/database-data-source-manager";
 import {
@@ -39,7 +44,7 @@ import {
   approvalBinding,
   boxedKind,
   destinationKey,
-  destinationOf,
+  mayShareDataset,
 } from "./approval";
 
 export { approvalBinding, boxedKind, destinationKey };
@@ -163,7 +168,7 @@ export function configForTwin(
   spec: Record<string, unknown> | undefined,
   slug: string,
 ): Record<string, unknown> {
-  const connectionSpecification = (spec as any)?.connectionSpecification as
+  const connectionSpecification = spec?.connectionSpecification as
     { properties?: Record<string, unknown>; required?: unknown } | undefined;
   const properties = connectionSpecification?.properties;
   if (!properties || typeof properties !== "object") {
@@ -194,19 +199,12 @@ export function configForTwin(
   return out;
 }
 
-/** Whether two flows write the same tables. */
+/** Whether two flows can write the same dataset (approval.ts). */
 export function sameDestination(
   a: FlowRuntimeFields,
   b: FlowRuntimeFields,
 ): boolean {
-  const x = destinationOf(a);
-  const y = destinationOf(b);
-  return (
-    x.connection === y.connection &&
-    x.database === y.database &&
-    x.schema === y.schema &&
-    x.prefix === y.prefix
-  );
+  return mayShareDataset(a, b);
 }
 
 /**
@@ -290,15 +288,24 @@ export async function applyFlowRuntime(
 }
 
 /**
- * `applyFlowRuntime` for a caller that holds only a flow id (a chunk). With
- * the flag off it returns the source without reading Mongo.
+ * `applyFlowRuntime` for a caller that holds only a flow id (a chunk).
+ *
+ * `decided` is the runtime the run chose at its start:
+ * - `builtin`: the chunk stays built-in, whatever the flow says now;
+ * - `boxed`: the chunk stays boxed, or fails if the flow can no longer run
+ *   boxed (switched back, approval voided, flag off): a box cursor is never
+ *   handed to the built-in connector, nor the key to unapproved code;
+ * - absent (a run started before this field): decided per chunk.
+ * With the flag off and nothing decided boxed, no Mongo read.
  */
 export async function applyFlowRuntimeById(
   source: SourceConnectionConfig,
   flowId: string | undefined,
+  decided?: "builtin" | "boxed",
 ): Promise<SourceConnectionConfig> {
-  if (!connectorBoxedSwitchEnabled() || !flowId) return source;
-  if (!Types.ObjectId.isValid(flowId)) return source;
+  if (decided === "builtin") return source;
+  if (decided !== "boxed" && !connectorBoxedSwitchEnabled()) return source;
+  if (!flowId || !Types.ObjectId.isValid(flowId)) return source;
   // The flow's own workspace only: a chunk naming another workspace's flow
   // id finds nothing and runs as before.
   const flow = (await Flow.findOne({
@@ -309,7 +316,13 @@ export async function applyFlowRuntimeById(
   })
     .select(FLOW_RUNTIME_PROJECTION)
     .lean()) as FlowRuntimeFields | null;
-  return flow ? applyFlowRuntime(source, flow) : source;
+  const out = flow ? await applyFlowRuntime(source, flow) : source;
+  if (decided === "boxed" && out.type === source.type) {
+    throw new NonRetriableError(
+      "This run started on the folder twin, and the flow can no longer run boxed (switched back, approval voided, or the flag is off). The run stops here; the next run starts on the built-in connector.",
+    );
+  }
+  return out;
 }
 
 /** The twin's indexed definition when it can take this flow's webhooks. */
@@ -369,7 +382,9 @@ export async function boxedWebhookConnector(
     workspaceId,
     config: {},
     settings: connection.settings ?? {},
-  } as any);
+    // A source-connection row shape, not a Mongoose document: the adapter
+    // reads only these fields, and ingress hands it no credential.
+  } as unknown as ISourceConnection);
   await connector.loadDefinition();
   return connector;
 }

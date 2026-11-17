@@ -53,6 +53,8 @@ export interface SyncBackfillEntityPayload {
   isCdcEnabled: boolean;
   destinationType: string;
   queries?: unknown[];
+  /** The runtime the parent run decided (connectors/boxed-runtime). */
+  connectorRuntime?: "builtin" | "boxed";
 }
 
 export interface SyncBackfillEntityResult {
@@ -416,6 +418,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                 l.entity === entity || l.entity === entity.split(":")[0],
             );
             const result = await performSyncChunk({
+              connectorRuntime: data.connectorRuntime,
               dataSourceId,
               destinationId,
               destinationDatabaseName,
