@@ -1,4 +1,5 @@
 import { z } from "@hono/zod-openapi";
+import { inWorkspace } from "../../utils/workspace-scope";
 import { Types } from "mongoose";
 import {
   CdcEntityState,
@@ -84,8 +85,8 @@ export function registerCdcStatusRoutes(flowRoutes: FlowRouter): void {
           return c.json({ success: true, data: {} });
         }
 
-        const destinationDoc = await DatabaseConnection.findById(
-          flow.tableDestination.connectionId,
+        const destinationDoc = await DatabaseConnection.findOne(
+          inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
         );
         const destination = destinationDoc?.toObject();
         if (!destination) {
@@ -176,15 +177,17 @@ export function registerCdcStatusRoutes(flowRoutes: FlowRouter): void {
           return fail(c, 400, "Flow has no connector data source");
         }
 
-        const sourceConnection = await SourceConnection.findById(
-          flow.dataSourceId,
-        ).lean();
+        const sourceConnection = await SourceConnection.findOne({
+          _id: flow.dataSourceId,
+          workspaceId: flow.workspaceId,
+        }).lean();
         if (!sourceConnection) {
           return fail(c, 404, "Data source not found");
         }
 
         const decrypted = await sourceConnectionManager.getSourceConnection(
           String(sourceConnection._id),
+          String(flow.workspaceId),
         );
         if (!decrypted) {
           return fail(c, 404, "Could not resolve data source");

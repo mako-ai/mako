@@ -1,4 +1,5 @@
 import { createRoute, z } from "@hono/zod-openapi";
+import { inWorkspace } from "../utils/workspace-scope";
 import type { Context } from "hono";
 import { Types } from "mongoose";
 import {
@@ -96,8 +97,8 @@ router.openapi(
         return fail(c, 403, "Webhook endpoint disabled");
       }
 
-      const sourceConnection = await SourceConnection.findById(
-        flow.dataSourceId,
+      const sourceConnection = await SourceConnection.findOne(
+        inWorkspace(flow.dataSourceId, flow.workspaceId),
       );
       if (!sourceConnection) {
         return fail(c, 404, "Data source not found");

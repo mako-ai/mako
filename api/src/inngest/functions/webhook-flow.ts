@@ -1,4 +1,5 @@
 import { inngest } from "../client";
+import { inWorkspace } from "../../utils/workspace-scope";
 import {
   WebhookEvent,
   Flow,
@@ -663,9 +664,11 @@ export async function ingestPendingWebhookEvents(logger: {
     }
     const flow: any = flowDoc.toObject();
 
-    const sourceConnection = await SourceConnection.findById(flow.dataSourceId);
-    const database = await DatabaseConnection.findById(
-      flow.destinationDatabaseId,
+    const sourceConnection = await SourceConnection.findOne(
+      inWorkspace(flow.dataSourceId, flow.workspaceId),
+    );
+    const database = await DatabaseConnection.findOne(
+      inWorkspace(flow.destinationDatabaseId, flow.workspaceId),
     );
 
     if (!sourceConnection || !database) {

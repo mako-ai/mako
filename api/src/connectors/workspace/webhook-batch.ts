@@ -72,15 +72,21 @@ export interface WebhookBatchRunner {
 
 export type WebhookBatchRunnerFactory = (
   connectionId: string,
+  workspaceId: string,
 ) => Promise<WebhookBatchRunner>;
 
 /**
  * The connection's connector, built the way a read builds it: the decrypted
  * credential from the source connection manager, through the sync registry.
  */
-const defaultRunner: WebhookBatchRunnerFactory = async connectionId => {
-  const config =
-    await sourceConnectionManager.getSourceConnection(connectionId);
+const defaultRunner: WebhookBatchRunnerFactory = async (
+  connectionId,
+  workspaceId,
+) => {
+  const config = await sourceConnectionManager.getSourceConnection(
+    connectionId,
+    workspaceId,
+  );
   if (!config) throw new Error(`Data source not found: ${connectionId}`);
   const connector = await syncConnectorRegistry.getConnectorFor(config);
   if (!(connector instanceof SandboxedConnector)) {
@@ -551,8 +557,15 @@ export async function processBoxWebhookBatch(input: {
     return emptyResult("stop", "flow not found");
   }
   const [connection, database]: any[] = await Promise.all([
-    SourceConnection.findById(flow.dataSourceId).lean(),
-    DatabaseConnection.findById(flow.destinationDatabaseId).lean(),
+    // Scoped to the flow's workspace (flow-connection-scope.ts).
+    SourceConnection.findOne({
+      _id: flow.dataSourceId,
+      workspaceId: flow.workspaceId,
+    }).lean(),
+    DatabaseConnection.findOne({
+      _id: flow.destinationDatabaseId,
+      workspaceId: flow.workspaceId,
+    }).lean(),
   ]);
   if (!connection || !database) {
     await endPending(
@@ -673,7 +686,10 @@ export async function processBoxWebhookBatch(input: {
   let runner: WebhookBatchRunner;
   let declared: Set<string>;
   try {
-    runner = await (input.runner ?? defaultRunner)(String(connection._id));
+    runner = await (input.runner ?? defaultRunner)(
+      String(connection._id),
+      String(flow.workspaceId),
+    );
     declared = new Set(await runner.declaredEntities());
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);

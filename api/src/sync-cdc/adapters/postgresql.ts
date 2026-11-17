@@ -1,4 +1,5 @@
 import { Types } from "mongoose";
+import { inWorkspace } from "../../utils/workspace-scope";
 import {
   DatabaseConnection,
   type IFlow,
@@ -54,6 +55,8 @@ export function buildPgLayoutIndexStatements(
 
 interface PostgreSqlAdapterConfig {
   destinationDatabaseId: string;
+  /** The flow\'s workspace: the destination is looked up in it only. */
+  workspaceId: string;
   destinationDatabaseName?: string;
   tableDestination: {
     connectionId: string;
@@ -78,8 +81,11 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
 
   /** Full Refresh | Overwrite: clear the live table (no-op when absent). */
   async truncateLiveTable(layout: CdcEntityLayout): Promise<void> {
-    const destination = await DatabaseConnection.findById(
-      this.config.tableDestination.connectionId,
+    const destination = await DatabaseConnection.findOne(
+      inWorkspace(
+        this.config.tableDestination.connectionId,
+        this.config.workspaceId,
+      ),
     );
     if (!destination) return;
     const driver = databaseRegistry.getDriver(destination.type);
@@ -112,8 +118,11 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
     if (this.layoutIndexesEnsured.has(cacheKey)) return;
 
     try {
-      const destination = await DatabaseConnection.findById(
-        this.config.tableDestination.connectionId,
+      const destination = await DatabaseConnection.findOne(
+        inWorkspace(
+          this.config.tableDestination.connectionId,
+          this.config.workspaceId,
+        ),
       );
       if (!destination) return;
       const driver = databaseRegistry.getDriver(destination.type);
@@ -320,6 +329,7 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
 
     const writer = await createDestinationWriter(
       {
+        workspaceId: this.config.workspaceId,
         destinationDatabaseId: new Types.ObjectId(
           this.config.destinationDatabaseId,
         ),

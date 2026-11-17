@@ -92,6 +92,9 @@ export default defineConfig({
       // GET/list from git at main; leftover local git without a binding
       // must not populate the list (issue #956).
       "src/services/flow-sync.repo.test.ts",
+      // A flow names only its own workspace's connections: apply-time
+      // refusal, the API update, and the scoped connection lookup.
+      "src/services/flow-connection-scope.test.ts",
       // Flow + connector git history and restore-as-new-commit.
       "src/services/repo-entity-restore.service.test.ts",
       // The live connector probe: its service (bounded, read-only, secrets

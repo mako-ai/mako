@@ -1,4 +1,5 @@
 import { promises as fs } from "fs";
+import { inWorkspace } from "../utils/workspace-scope";
 import { syncConnectorRegistry } from "./connector-registry";
 import { sourceConnectionManager } from "./database-data-source-manager";
 import {
@@ -39,6 +40,7 @@ const orchestratorLogger = loggers.sync("orchestrator");
 async function resolveEntitySchemaSafe(params: {
   entity: string;
   dataSourceId?: string;
+  workspaceId: string;
   sourceConnection?: { id?: string } | null;
   connector?: { resolveSchema?: (entity: string) => Promise<unknown> } | null;
   context: string;
@@ -51,6 +53,7 @@ async function resolveEntitySchemaSafe(params: {
         (params.dataSourceId
           ? await sourceConnectionManager.getSourceConnection(
               params.dataSourceId,
+              params.workspaceId,
             )
           : null);
       if (!ds) return null;
@@ -116,7 +119,8 @@ export interface SyncChunkOptions {
   /** Airbyte-style destination write mode (default append_dedup). */
   writeMode?: "append_dedup" | "append" | "overwrite";
   flowId?: string;
-  workspaceId?: string;
+  /** The flow's workspace: the source connection is looked up in it only. */
+  workspaceId: string;
   syncEngine?: string;
   backfillRunId?: string;
   /**
@@ -261,8 +265,10 @@ export async function performSyncChunk(
 
   try {
     // Get the data source
-    const sourceConnection =
-      await sourceConnectionManager.getSourceConnection(dataSourceId);
+    const sourceConnection = await sourceConnectionManager.getSourceConnection(
+      dataSourceId,
+      options.workspaceId,
+    );
     if (!sourceConnection) {
       throw new Error(`Data source '${dataSourceId}' not found`);
     }
@@ -349,8 +355,8 @@ async function performSyncChunkSql(
     entity,
   );
 
-  const destinationConn = await DatabaseConnection.findById(
-    tableDestination.connectionId,
+  const destinationConn = await DatabaseConnection.findOne(
+    inWorkspace(tableDestination.connectionId, options.workspaceId),
   )
     .select({ type: 1 })
     .lean();
@@ -369,6 +375,7 @@ async function performSyncChunkSql(
   const cdcAdapter = resolveCdcDestinationAdapter({
     destinationType: destinationConn?.type || "",
     flowId: options.flowId,
+    workspaceId: options.workspaceId,
     destinationDatabaseId: options.destinationId,
     destinationDatabaseName: options.destinationDatabaseName,
     tableDestination: {
@@ -412,8 +419,8 @@ async function performSyncChunkSql(
         await import("../services/destination-writer.service");
       const { DatabaseConnection } =
         await import("../database/workspace-schema");
-      const destConn = await DatabaseConnection.findById(
-        tableDestination.connectionId,
+      const destConn = await DatabaseConnection.findOne(
+        inWorkspace(tableDestination.connectionId, options.workspaceId),
       );
       if (destConn) {
         const result = await getMaxTrackingValue(
@@ -451,6 +458,7 @@ async function performSyncChunkSql(
   const entitySchema = await resolveEntitySchemaSafe({
     entity,
     connector: connector as any,
+    workspaceId: options.workspaceId,
     context: "syncChunk",
   });
   orchestratorLogger.info("Schema resolution result", {
@@ -1046,8 +1054,8 @@ async function resolveAdapterContext(options: SyncChunkOptions) {
     tableDestination.tableName,
     entity,
   );
-  const destinationConn = await DatabaseConnection.findById(
-    tableDestination.connectionId,
+  const destinationConn = await DatabaseConnection.findOne(
+    inWorkspace(tableDestination.connectionId, options.workspaceId),
   )
     .select({ type: 1 })
     .lean();
@@ -1055,6 +1063,7 @@ async function resolveAdapterContext(options: SyncChunkOptions) {
   const cdcAdapter = resolveCdcDestinationAdapter({
     destinationType: destinationConn?.type || "",
     flowId: options.flowId,
+    workspaceId: options.workspaceId,
     destinationDatabaseId: options.destinationId,
     destinationDatabaseName: options.destinationDatabaseName,
     tableDestination: {
@@ -1085,6 +1094,7 @@ export async function performBulkFlush(
   const entitySchema = await resolveEntitySchemaSafe({
     entity,
     dataSourceId: options.dataSourceId,
+    workspaceId: options.workspaceId,
     context: "performBulkFlush",
   });
   const cdcLayout = buildCdcEntityLayout({
@@ -1301,10 +1311,12 @@ export async function performStagingMerge(
 
   const sourceConnection = await sourceConnectionManager.getSourceConnection(
     options.dataSourceId,
+    options.workspaceId,
   );
   const entitySchema = await resolveEntitySchemaSafe({
     entity,
     sourceConnection,
+    workspaceId: options.workspaceId,
     context: "performStagingMerge",
   });
   const cdcLayout = buildCdcEntityLayout({

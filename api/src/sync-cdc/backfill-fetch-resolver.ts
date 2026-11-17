@@ -27,10 +27,12 @@ export type ResolvedBackfillFetch =
 export async function resolveBackfillFetchForEntity(params: {
   flowId: string;
   dataSourceId: string;
+  workspaceId: string;
   entity: string;
 }): Promise<ResolvedBackfillFetch | null> {
   const source = await sourceConnectionManager.getSourceConnection(
     params.dataSourceId,
+    params.workspaceId,
   );
   const connectorType: string | undefined = source?.type;
   if (!isIncrementalResyncConnector(connectorType)) return null;

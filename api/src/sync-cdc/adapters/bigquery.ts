@@ -7,6 +7,7 @@
  * - bigquery-load.ts   Parquet staging loads, expiry, drop
  * - bigquery-target.ts resolved client type, quota retry, logger
  */
+import { inWorkspace } from "../../utils/workspace-scope";
 import { BigQuery } from "@google-cloud/bigquery";
 import {
   isLocalBigQueryEmulator,
@@ -77,6 +78,8 @@ export {
 
 interface BigQueryAdapterConfig {
   destinationDatabaseId: string;
+  /** The flow\'s workspace: the destination is looked up in it only. */
+  workspaceId: string;
   destinationDatabaseName?: string;
   tableDestination: {
     connectionId: string;
@@ -606,8 +609,8 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   // ---------------------------------------------------------------------------
 
   private async resolveDestination(): Promise<IDatabaseConnection> {
-    const doc = await DatabaseConnection.findById(
-      this.config.destinationDatabaseId,
+    const doc = await DatabaseConnection.findOne(
+      inWorkspace(this.config.destinationDatabaseId, this.config.workspaceId),
     );
     if (!doc) {
       throw new Error(

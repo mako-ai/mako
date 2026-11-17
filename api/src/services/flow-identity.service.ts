@@ -15,6 +15,7 @@
  * "source → destination" derivation the scheduler logged, extracted here so
  * runtime, routes and the migration share one copy.
  */
+import { inWorkspace } from "../utils/workspace-scope";
 import { Types } from "mongoose";
 
 import {
@@ -29,6 +30,7 @@ import { reserveSlug, slugifyName } from "../utils/slugify";
 export async function deriveFlowDisplayName(
   flow: Pick<
     IFlow,
+    | "workspaceId"
     | "sourceType"
     | "databaseSource"
     | "dataSourceId"
@@ -41,14 +43,14 @@ export async function deriveFlowDisplayName(
     let destName: string;
 
     if (flow.sourceType === "database" && flow.databaseSource?.connectionId) {
-      const sourceDb = await DatabaseConnection.findById(
-        flow.databaseSource.connectionId,
+      const sourceDb = await DatabaseConnection.findOne(
+        inWorkspace(flow.databaseSource.connectionId, flow.workspaceId),
       );
       sourceName =
         sourceDb?.name || flow.databaseSource.connectionId.toString();
     } else if (flow.dataSourceId) {
-      const sourceConnection = await SourceConnection.findById(
-        flow.dataSourceId,
+      const sourceConnection = await SourceConnection.findOne(
+        inWorkspace(flow.dataSourceId, flow.workspaceId),
       );
       sourceName = sourceConnection?.name || flow.dataSourceId.toString();
     } else {
@@ -56,15 +58,15 @@ export async function deriveFlowDisplayName(
     }
 
     if (flow.tableDestination?.connectionId) {
-      const destDb = await DatabaseConnection.findById(
-        flow.tableDestination.connectionId,
+      const destDb = await DatabaseConnection.findOne(
+        inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
       );
       destName = flow.tableDestination.tableName
         ? `${destDb?.name || "DB"}.${flow.tableDestination.tableName}`
         : destDb?.name || flow.tableDestination.connectionId.toString();
     } else {
-      const database = await DatabaseConnection.findById(
-        flow.destinationDatabaseId,
+      const database = await DatabaseConnection.findOne(
+        inWorkspace(flow.destinationDatabaseId, flow.workspaceId),
       );
       destName = database?.name || flow.destinationDatabaseId.toString();
     }
@@ -88,6 +90,7 @@ export async function flowDisplayName(
   flow: Pick<
     IFlow,
     | "name"
+    | "workspaceId"
     | "sourceType"
     | "databaseSource"
     | "dataSourceId"

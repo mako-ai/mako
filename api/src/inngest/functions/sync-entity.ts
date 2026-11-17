@@ -200,6 +200,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           const decision = await resolveBackfillFetchForEntity({
             flowId,
             dataSourceId,
+            workspaceId,
             entity,
           });
           if (decision && !state) {
@@ -223,6 +224,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         ? resolveCdcDestinationAdapter({
             destinationType,
             flowId: String(flowId),
+            workspaceId,
             destinationDatabaseId: destinationId,
             destinationDatabaseName,
             tableDestination: {

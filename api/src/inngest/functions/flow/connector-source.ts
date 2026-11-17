@@ -82,9 +82,15 @@ export function selectEntitiesToSync(params: {
 }
 
 /** The decrypted source connection and its connector, or a throw. */
-async function loadConnector(dataSourceId: string, queries?: unknown[]) {
-  const sourceConnection =
-    await sourceConnectionManager.getSourceConnection(dataSourceId);
+async function loadConnector(
+  dataSourceId: string,
+  workspaceId: string,
+  queries?: unknown[],
+) {
+  const sourceConnection = await sourceConnectionManager.getSourceConnection(
+    dataSourceId,
+    workspaceId,
+  );
   if (!sourceConnection) {
     throw new Error(`Data source not found: ${dataSourceId}`);
   }
@@ -138,6 +144,7 @@ export async function runConnectorSourceFlow(
     async () => {
       const { sourceConnection, connector } = await loadConnector(
         dataSourceId.toString(),
+        String(flow.workspaceId),
       );
       const supports = connector.supportsResumableFetching();
       logger.info("Connector chunking support check", {
@@ -185,6 +192,7 @@ export async function runConnectorSourceFlow(
   const entitiesToSync = await step.run("get-entities-to-sync", async () => {
     const { connector } = await loadConnector(
       dataSourceId.toString(),
+      String(flow.workspaceId),
       flow.queries,
     );
 

@@ -1,4 +1,5 @@
 import { Types } from "mongoose";
+import { inWorkspace } from "../utils/workspace-scope";
 import {
   CdcChangeEvent,
   CdcEntityState,
@@ -61,8 +62,8 @@ export class CdcConsumerService {
       return { skipped: true, reason: "missing table destination" as const };
     }
 
-    const destination = await DatabaseConnection.findById(
-      flow.tableDestination.connectionId,
+    const destination = await DatabaseConnection.findOne(
+      inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
     ).lean();
     if (!destination) {
       throw new Error("Destination connection not found");
@@ -81,6 +82,7 @@ export class CdcConsumerService {
     const adapter = resolveCdcDestinationAdapter({
       destinationType: destination.type,
       flowId: String(flow._id),
+      workspaceId: String(flow.workspaceId),
       destinationDatabaseId: String(flow.destinationDatabaseId),
       destinationDatabaseName: flow.destinationDatabaseName,
       tableDestination: {
@@ -94,6 +96,7 @@ export class CdcConsumerService {
       try {
         const ds = await sourceConnectionManager.getSourceConnection(
           String(flow.dataSourceId),
+          String(flow.workspaceId),
         );
         const conn = ds
           ? await syncConnectorRegistry.getConnectorFor(ds)

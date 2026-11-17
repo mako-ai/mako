@@ -3,6 +3,7 @@
  * (backlog, lag, failures, transitions per entity) and schema health (live
  * destination column types against the connector schema).
  */
+import { inWorkspace } from "../utils/workspace-scope";
 import { Types } from "mongoose";
 import {
   CdcChangeEvent,
@@ -344,8 +345,8 @@ export async function getFlowSchemaHealth(
     );
   }
 
-  const destination = await DatabaseConnection.findById(
-    flow.tableDestination.connectionId,
+  const destination = await DatabaseConnection.findOne(
+    inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
   );
   if (!destination) {
     throw new FlowRequestError(404, "Destination connection not found");
@@ -377,6 +378,7 @@ export async function getFlowSchemaHealth(
     try {
       const ds = await sourceConnectionManager.getSourceConnection(
         String(flow.dataSourceId),
+        String(flow.workspaceId),
       );
       if (ds) {
         const connector = await syncConnectorRegistry.getConnectorFor(ds);

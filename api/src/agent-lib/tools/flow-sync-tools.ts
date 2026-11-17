@@ -173,11 +173,22 @@ export function createFlowSyncTools({
       inputSchema: z.object({}),
       execute: async () => {
         try {
-          const flows = await Flow.find({
+          // Names come only from this workspace's connections: an id of
+          // another workspace's populates as null (flow-connection-scope.ts).
+          const inThisWorkspace = {
             workspaceId: new Types.ObjectId(workspaceId),
-          })
-            .populate("dataSourceId", "name type")
-            .populate("destinationDatabaseId", "name type")
+          };
+          const flows = await Flow.find(inThisWorkspace)
+            .populate({
+              path: "dataSourceId",
+              select: "name type",
+              match: inThisWorkspace,
+            })
+            .populate({
+              path: "destinationDatabaseId",
+              select: "name type",
+              match: inThisWorkspace,
+            })
             .sort({ name: 1 });
           return { success: true, flows: flows.map(summarizeFlow) };
         } catch (error) {

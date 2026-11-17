@@ -19,6 +19,8 @@ export interface DestinationConfig {
   tableDestination?: ITableDestination;
 
   // Common
+  /** The flow's workspace: the destination is looked up in it only. */
+  workspaceId: string;
   dataSourceId?: string;
   dataSourceName?: string;
 

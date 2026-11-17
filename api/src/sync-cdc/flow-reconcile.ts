@@ -184,6 +184,7 @@ export async function teardownFlow(flow: IFlow): Promise<{
         name: "flow.webhook.unsubscribe",
         data: {
           flowId,
+          workspaceId: workspaceOid.toString(),
           dataSourceId: String(flow.dataSourceId),
           endpoint: flow.webhookConfig.endpoint,
           providerWebhookId: flow.webhookConfig.providerWebhookId,

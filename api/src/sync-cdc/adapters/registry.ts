@@ -118,6 +118,8 @@ function withCdcQueryLabels<T extends object>(
 export function resolveCdcDestinationAdapter(params: {
   destinationType: string;
   destinationDatabaseId: string;
+  /** The flow's workspace: the destination is looked up in it only. */
+  workspaceId: string;
   destinationDatabaseName?: string;
   tableDestination: {
     connectionId: string;
@@ -133,6 +135,7 @@ export function resolveCdcDestinationAdapter(params: {
     return withCdcQueryLabels(
       new BigQueryDestinationAdapter({
         destinationDatabaseId: params.destinationDatabaseId,
+        workspaceId: params.workspaceId,
         destinationDatabaseName: params.destinationDatabaseName,
         tableDestination: params.tableDestination,
       }),
@@ -148,6 +151,7 @@ export function resolveCdcDestinationAdapter(params: {
   if (normalizedType === "clickhouse") {
     return new ClickHouseDestinationAdapter({
       destinationDatabaseId: params.destinationDatabaseId,
+      workspaceId: params.workspaceId,
       destinationDatabaseName: params.destinationDatabaseName,
       tableDestination: params.tableDestination,
     });
@@ -156,6 +160,7 @@ export function resolveCdcDestinationAdapter(params: {
   if (normalizedType === "postgresql") {
     return new PostgreSqlDestinationAdapter({
       destinationDatabaseId: params.destinationDatabaseId,
+      workspaceId: params.workspaceId,
       destinationDatabaseName: params.destinationDatabaseName,
       tableDestination: params.tableDestination,
     });
@@ -164,6 +169,7 @@ export function resolveCdcDestinationAdapter(params: {
   if (normalizedType === "mysql") {
     return new MySqlDestinationAdapter({
       destinationDatabaseId: params.destinationDatabaseId,
+      workspaceId: params.workspaceId,
       destinationDatabaseName: params.destinationDatabaseName,
       tableDestination: params.tableDestination,
     });
@@ -172,6 +178,7 @@ export function resolveCdcDestinationAdapter(params: {
   if (normalizedType === "mongodb") {
     return new MongoDbDestinationAdapter({
       destinationDatabaseId: params.destinationDatabaseId,
+      workspaceId: params.workspaceId,
       destinationDatabaseName: params.destinationDatabaseName,
       tableDestination: params.tableDestination,
     });

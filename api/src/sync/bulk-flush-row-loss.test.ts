@@ -118,7 +118,8 @@ function collection(name: string): FakeCollection {
 
 vi.mock("../database/workspace-schema", () => ({
   DatabaseConnection: {
-    findById: vi.fn(() => ({
+    // Scoped by workspace (utils/workspace-scope.ts): findOne, not findById.
+    findOne: vi.fn(() => ({
       select: () => ({
         lean: () => Promise.resolve({ type: "bigquery" }),
       }),

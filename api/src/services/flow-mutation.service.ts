@@ -7,6 +7,7 @@
  * (`commitFlowFileOrFail`), then `flow.save()` — so the repo gate and the
  * write-through stay visible at every mutating route.
  */
+import { inWorkspace } from "../utils/workspace-scope";
 import type { IncrementalCapabilities } from "@mako/schemas";
 import { Types } from "mongoose";
 import { asSystem } from "../access/connection-writes";
@@ -329,7 +330,9 @@ export async function buildNewFlow(params: {
 
   let createIncremental: IncrementalCapabilities | undefined;
   if (sourceType !== "database" && body.dataSourceId) {
-    const ds = await SourceConnection.findById(body.dataSourceId)
+    const ds = await SourceConnection.findOne(
+      inWorkspace(body.dataSourceId, workspaceId),
+    )
       .select({ type: 1, config: 1 })
       .lean();
     createIncremental = resolveConnectorIncrementalCapabilities(ds as any);
@@ -406,6 +409,7 @@ export async function finishFlowCreate(params: {
       await asSystem(() =>
         createDestinationWriter(
           {
+            workspaceId: flow.workspaceId,
             destinationDatabaseId: flowData.destinationDatabaseId,
             tableDestination: flowData.tableDestination,
           },
@@ -492,15 +496,20 @@ export async function applyFlowUpdate(params: {
 
   let syncConfigWarnings: string[] = [];
   if (syncConfigTouched) {
-    const destForWriteMode = await DatabaseConnection.findById(
-      flow.tableDestination?.connectionId || flow.destinationDatabaseId,
+    const destForWriteMode = await DatabaseConnection.findOne(
+      inWorkspace(
+        flow.tableDestination?.connectionId || flow.destinationDatabaseId,
+        flow.workspaceId,
+      ),
     )
       .select({ type: 1 })
       .lean();
 
     let updateIncremental: IncrementalCapabilities | undefined;
     if (flow.sourceType !== "database" && flow.dataSourceId) {
-      const ds = await SourceConnection.findById(flow.dataSourceId)
+      const ds = await SourceConnection.findOne(
+        inWorkspace(flow.dataSourceId, flow.workspaceId),
+      )
         .select({ type: 1, config: 1 })
         .lean();
       updateIncremental = resolveConnectorIncrementalCapabilities(ds as any);
@@ -580,6 +589,15 @@ export async function applyFlowUpdate(params: {
           "databaseSource.connectionId is required",
         );
       }
+      if (
+        body.databaseSource.connectionId &&
+        !(await DatabaseConnection.exists({
+          _id: newConnectionId,
+          workspaceId: new Types.ObjectId(workspaceId),
+        }))
+      ) {
+        throw new FlowRequestError(404, "Source database connection not found");
+      }
 
       flow.databaseSource = {
         connectionId: newConnectionId,
@@ -627,6 +645,18 @@ export async function applyFlowUpdate(params: {
         "tableDestination.connectionId is required",
       );
     }
+    if (
+      body.tableDestination.connectionId &&
+      !(await DatabaseConnection.exists({
+        _id: newConnectionId,
+        workspaceId: new Types.ObjectId(workspaceId),
+      }))
+    ) {
+      throw new FlowRequestError(
+        404,
+        "Destination database connection not found",
+      );
+    }
 
     flow.tableDestination = {
       connectionId: newConnectionId,
@@ -668,8 +698,8 @@ export async function applyFlowUpdate(params: {
   if (flow.syncEngine === "cdc") {
     const effectiveDestConnectionId =
       flow.tableDestination?.connectionId || flow.destinationDatabaseId;
-    const destination = await DatabaseConnection.findById(
-      effectiveDestConnectionId,
+    const destination = await DatabaseConnection.findOne(
+      inWorkspace(effectiveDestConnectionId, flow.workspaceId),
     )
       .select({ type: 1 })
       .lean();
