@@ -70,6 +70,13 @@ export interface StreamingParquetOptions {
    */
   countRowsUpTo?: number;
   fields?: FieldMeta[];
+  /**
+   * Columns every row must carry as a valid timestamp (the sync writers pass
+   * `_syncedAt` and `_mako_source_ts`). They are typed TIMESTAMP whatever
+   * `fields` says, and a row whose value is missing or unparseable fails the
+   * build with MissingRowTimestampError, so it never reaches a destination.
+   */
+  requiredTimestampColumns?: string[];
   onBatchInserted?: (totalRows: number) => Promise<void>;
   /**
    * Codec and row-group options for the COPY. Default SNAPPY: the CDC and
@@ -77,6 +84,35 @@ export interface StreamingParquetOptions {
    * `appBindingParquetWriteOptions()`.
    */
   writeOptions?: ParquetWriteOptions;
+}
+
+/**
+ * A row reached the Parquet build without a valid value in a column the
+ * caller marked required (`requiredTimestampColumns`). The build stops and
+ * writes nothing: a NULL `_mako_source_ts` or `_syncedAt` in live is a row
+ * the CDC merge and incremental anchors cannot order.
+ */
+export class MissingRowTimestampError extends Error {
+  readonly column: string;
+  readonly rowsMissing: number;
+  constructor(column: string, rowsMissing: number) {
+    super(
+      `${rowsMissing} row(s) have no valid "${column}" timestamp. ` +
+        `Nothing was written: a row without it cannot be ordered by the CDC merge.`,
+    );
+    this.name = "MissingRowTimestampError";
+    this.column = column;
+    this.rowsMissing = rowsMissing;
+  }
+}
+
+function isValidTimestamp(value: unknown): boolean {
+  if (value instanceof Date) return !Number.isNaN(value.getTime());
+  if (typeof value === "string" || typeof value === "number") {
+    if (value === "") return false;
+    return !Number.isNaN(new Date(value).getTime());
+  }
+  return false;
 }
 
 /**
@@ -237,16 +273,24 @@ function escapeDuckDBValue(
       // '...' literal. Strip NULs at the boundary before the single-quote
       // escape so connector payloads with inlined binary (e.g. Close emails
       // with embedded PNG bytes) don't kill the whole batch.
+      // A Date in an untyped column goes out as plain ISO 8601, which every
+      // destination casts back to a timestamp. JSON.stringify would wrap it
+      // in quotes ("\"2026-…Z\""), and BigQuery's SAFE_CAST turns that into
+      // NULL (17 Nov 2026: 11,165 PT Close leads lost their dates).
       const raw =
-        typeof value === "object" && value !== null
-          ? // MongoDB/BSON scalars (ObjectId, Decimal128, Long, Binary, ...)
-            // stringify to their canonical form via toString(); nested
-            // documents/arrays fall back to JSON. Matches arrow-serializer.
-            "_bsontype" in (value as Record<string, unknown>) &&
-            typeof (value as { toString?: unknown }).toString === "function"
-            ? String(value)
-            : JSON.stringify(value)
-          : String(value);
+        value instanceof Date
+          ? Number.isNaN(value.getTime())
+            ? ""
+            : value.toISOString()
+          : typeof value === "object" && value !== null
+            ? // MongoDB/BSON scalars (ObjectId, Decimal128, Long, Binary, ...)
+              // stringify to their canonical form via toString(); nested
+              // documents/arrays fall back to JSON. Matches arrow-serializer.
+              "_bsontype" in (value as Record<string, unknown>) &&
+              typeof (value as { toString?: unknown }).toString === "function"
+              ? String(value)
+              : JSON.stringify(value)
+            : String(value);
       // eslint-disable-next-line no-control-regex
       const stripped = raw.replace(/\u0000/g, "");
       return `'${stripped.replace(/'/g, "''")}'`;
@@ -322,6 +366,7 @@ export async function buildParquetFromBatches(
   let tableCreated = false;
   let columns: string[] = [];
   let columnTypeMap = new Map<string, DuckDBColumnType>();
+  const requiredTs = options.requiredTimestampColumns ?? [];
 
   try {
     await connection.run(`PRAGMA threads=${duckDbThreads}`);
@@ -373,6 +418,9 @@ export async function buildParquetFromBatches(
         const schema = resolveColumnSchema(options.fields ?? [], batch);
         columns = schema.columns;
         columnTypeMap = schema.typeMap;
+        for (const col of requiredTs) {
+          if (columnTypeMap.has(col)) columnTypeMap.set(col, "TIMESTAMP");
+        }
 
         const colDefs = columns.map(
           col =>
@@ -393,7 +441,9 @@ export async function buildParquetFromBatches(
         }
         if (newCols.length > 0) {
           for (const col of newCols) {
-            const colType = inferColumnFromBatch(col, batch);
+            const colType = requiredTs.includes(col)
+              ? "TIMESTAMP"
+              : inferColumnFromBatch(col, batch);
             columnTypeMap.set(col, colType);
             await connection.run(
               `ALTER TABLE _data ADD COLUMN ${escapeIdentifier(col)} ${colType}`,
@@ -401,6 +451,12 @@ export async function buildParquetFromBatches(
           }
           columns.push(...newCols);
         }
+      }
+
+      for (const col of requiredTs) {
+        let missing = 0;
+        for (const row of batch) if (!isValidTimestamp(row[col])) missing++;
+        if (missing > 0) throw new MissingRowTimestampError(col, missing);
       }
 
       let insertedInThisCall = 0;
