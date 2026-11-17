@@ -38,6 +38,8 @@ import {
 
 type Row = Record<string, unknown>;
 const tables = new Map<string, Row[]>();
+/** Stored bytes per table, for the sampling path (absent = small). */
+const sizes = new Map<string, number>();
 /** A table whose COUNT fails. */
 const BROKEN: Row[] = [{ id: "x" }];
 const queries: string[] = [];
@@ -52,6 +54,9 @@ const fakeDriver = {
   getChildren: async () => [],
   formatTableRef: (schema: string | undefined, table: string) =>
     `${schema}.${table}`,
+  buildTableStatsQuery: (schema: string, names: string[]) =>
+    `STATS ${schema} ${names.join(",")}`,
+  tableSampleClause: (percent: number) => `SAMPLE${percent}`,
   executeQuery: async (_db: unknown, sql: string) => {
     queries.push(sql);
     const list = sql.match(
@@ -71,9 +76,30 @@ const fakeDriver = {
       }
       return { success: true, data };
     }
-    const count = sql.match(/^SELECT (.*) FROM (\S+)$/);
+    const stats = sql.match(/^STATS (\S+) (.*)$/);
+    if (stats) {
+      const data = stats[2].split(",").flatMap(name => {
+        const rows = tables.get(`${stats[1]}.${name}`);
+        return rows
+          ? [
+              {
+                table_name: name,
+                row_count: rows.length,
+                size_bytes: sizes.get(`${stats[1]}.${name}`) ?? 1000,
+              },
+            ]
+          : [];
+      });
+      return { success: true, data };
+    }
+    const count = sql.match(/^SELECT (.*) FROM (\S+)( SAMPLE10)?$/);
     if (count) {
-      const rows = tables.get(count[2]);
+      const all = tables.get(count[2]);
+      // A 10% "block" sample: every 10th row.
+      const rows =
+        all && count[3] && all !== BROKEN
+          ? all.filter((_, i) => i % 10 === 0)
+          : all;
       if (!rows) return { success: false, error: "Not found: table" };
       if (rows === BROKEN) return { success: false, error: "quota exceeded" };
       const out: Row = { n: rows.length };
@@ -157,6 +183,36 @@ const people = (n: number, emailEvery = 1): Row[] =>
     ["phone", "rare"],
   );
 
+  // Sampled counts compare shares and need a 75% loss: sampling moves a
+  // share a lot, a rewrite that empties a column moves it to zero. The
+  // table doubled: phone kept its 50% share (fine), email fell from 100%
+  // to 50% (noise-sized, fine), fax from 40% to 5% (flagged).
+  assert.deepEqual(
+    compareCounts({
+      entity: "contacts",
+      table: "contacts",
+      before: {
+        rows: 10_000,
+        sampled: true,
+        columns: [
+          { name: "email", nonNull: 10_000 },
+          { name: "phone", nonNull: 5_000 },
+          { name: "fax", nonNull: 4_000 },
+        ],
+      },
+      after: {
+        rows: 20_000,
+        sampled: true,
+        columns: [
+          { name: "email", nonNull: 10_000 },
+          { name: "phone", nonNull: 10_000 },
+          { name: "fax", nonNull: 1_000 },
+        ],
+      },
+    }).map(f => [f.column, f.expected, f.lostPct]),
+    [["fax", 8_000, 87.5]],
+  );
+
   // Growth and a 0.4% dip are fine.
   assert.deepEqual(
     compareCounts({
@@ -235,8 +291,8 @@ async function main() {
       await prepareFlowDataDiff({ flowId: id, entities, backfill: true }),
       { reasons: ["backfill"] },
     );
-    // One column list + one COUNT per table.
-    assert.equal(queries.length, 3);
+    // One column list, one size lookup, one COUNT per table.
+    assert.equal(queries.length, 4);
     tables.set("fr.contacts", people(1000, 2));
     tables.set("fr.leads", people(210));
     const diff = await compareFlowDataDiff({ flowId: id, executionId: "e1" });
@@ -368,6 +424,45 @@ async function main() {
       rowsBefore: 200,
       rowsAfter: 210,
     });
+
+    // 9. A table over 1 GB is counted on a 10% sample: exact rows from
+    //    metadata, column shares scaled to them. Emptying the emails is
+    //    flagged; leads, small, is counted in full.
+    tables.set("fr.contacts", people(1000));
+    tables.set("fr.leads", people(210));
+    sizes.set("fr.contacts", 5e9);
+    queries.length = 0;
+    await prepareFlowDataDiff({ flowId: id, entities, backfill: true });
+    assert.ok(
+      queries.includes(
+        "SELECT COUNT(*) AS n, COUNT(`id`) AS c_0, COUNT(`email`) AS c_1, COUNT(`created_at`) AS c_2 FROM fr.contacts SAMPLE10",
+      ),
+    );
+    assert.ok(queries.some(q => q.endsWith("FROM fr.leads")));
+    const sampledOpen = await FlowDataDiff.findOne({
+      flowId,
+      status: "open",
+    }).lean();
+    assert.deepEqual(sampledOpen!.tables[0].before, {
+      rows: 1000,
+      sampled: true,
+      columns: [
+        { name: "id", nonNull: 1000 },
+        { name: "email", nonNull: 1000 },
+        { name: "created_at", nonNull: 1000 },
+      ],
+    });
+    tables.set(
+      "fr.contacts",
+      people(1000).map((r, i) =>
+        Math.floor(i / 10) % 10 < 9 ? { ...r, email: null } : r,
+      ),
+    );
+    const sampledDiff = await compareFlowDataDiff({ flowId: id });
+    assert.deepEqual(
+      sampledDiff!.flagged.map(f => [f.table, f.column, f.before, f.after]),
+      [["contacts", "email", 1000, 100]],
+    );
 
     console.info("data-diff.db.test: ok");
   } finally {

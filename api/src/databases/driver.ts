@@ -211,6 +211,21 @@ export interface DatabaseDriver {
     options?: { projectId?: string },
   ): string;
 
+  /**
+   * Build one metadata query giving each table's exact row count and stored
+   * size, yielding rows shaped `{ table_name, row_count, size_bytes }`.
+   * With `tableSampleClause`, lets a caller sample a large table instead of
+   * scanning it (BigQuery bills the bytes a query reads).
+   */
+  buildTableStatsQuery?(
+    schema: string,
+    tableNames: string[],
+    options?: { projectId?: string },
+  ): string;
+
+  /** The clause after a table reference that samples `percent` of it. */
+  tableSampleClause?(percent: number): string;
+
   // ============ WRITE CAPABILITIES (for db-to-db sync) ============
 
   /**

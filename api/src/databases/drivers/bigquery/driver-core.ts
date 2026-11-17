@@ -182,6 +182,22 @@ export class BigQueryDriverCore implements DatabaseDriver {
     return `SELECT table_name, column_name FROM ${dataset}.INFORMATION_SCHEMA.COLUMNS WHERE table_name IN (${inList}) ORDER BY table_name, ordinal_position`;
   }
 
+  buildTableStatsQuery(
+    schema: string,
+    tableNames: string[],
+    options?: { projectId?: string },
+  ): string {
+    const inList = tableNames.map(escapeSqlLiteral).join(",");
+    const dataset = options?.projectId
+      ? `\`${options.projectId}\`.\`${schema}\``
+      : `\`${schema}\``;
+    return `SELECT table_id AS table_name, row_count, size_bytes FROM ${dataset}.__TABLES__ WHERE table_id IN (${inList})`;
+  }
+
+  tableSampleClause(percent: number): string {
+    return `TABLESAMPLE SYSTEM (${Number(percent)} PERCENT)`;
+  }
+
   // ============ WRITE CAPABILITIES ============
 
   supportsWrites(): boolean {

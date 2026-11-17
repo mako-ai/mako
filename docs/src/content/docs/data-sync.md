@@ -189,6 +189,8 @@ A write that can rewrite existing rows gets a before/after check of every destin
 
 Before the write, the runtime counts each column's non-null values: one column-list query per destination, then one `COUNT(col)` query per table. After the next successful run it counts again. A column is flagged when it lost more than 10 values and more than 0.5% of its baseline. When the table shrank, each baseline scales down by the same ratio first, so a purge flags only `(rows)`.
 
+On BigQuery, a table over 1 GB is measured on `TABLESAMPLE SYSTEM (10 PERCENT)`, which reads a tenth of the bytes. Its row count stays exact (table metadata), and each column is judged on its share of the rows. Block samples move a column's share a lot between two reads, so a sampled column is flagged only when it lost more than 75% of its share: a column a rewrite emptied, not a partial loss.
+
 Flags log at warn under the `api.flow-data-diff` category, so a log alert can page on them. `flow_status` shows the last check and `flow_data_diff` lists them. Checks stay 180 days. Works on every SQL destination (BigQuery, Postgres, MySQL, ClickHouse). MongoDB destinations are skipped.
 
 ### Driving syncs from an agent or the terminal

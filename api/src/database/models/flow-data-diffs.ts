@@ -20,6 +20,11 @@ export type FlowDataDiffReason =
 
 export interface IFlowDataDiffCounts {
   rows: number;
+  /**
+   * The table was over 1 GB: `rows` is exact (metadata), each column's
+   * `nonNull` is its share in a 10% block sample times `rows`.
+   */
+  sampled?: boolean;
   columns: { name: string; nonNull: number }[];
 }
 
@@ -64,6 +69,7 @@ export interface IFlowDataDiff extends Document {
 const CountsSchema = new Schema(
   {
     rows: { type: Number, required: true },
+    sampled: Boolean,
     columns: [
       new Schema(
         { name: { type: String, required: true }, nonNull: Number },

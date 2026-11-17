@@ -5,7 +5,8 @@
  * non-null values of every column of each destination table (one query per
  * table). After the run, it counts again and flags each column whose non-null
  * count fell by more than DATA_DIFF_MIN_LOST rows and DATA_DIFF_MIN_RATIO of
- * its baseline. A table that shrank (a purge, a hard delete) scales each
+ * its baseline. A table over 1 GB is measured on a 10% block sample and
+ * judged on column shares (see DATA_DIFF_SAMPLE_OVER_BYTES). A table that shrank (a purge, a hard delete) scales each
  * column's baseline down by the same ratio, so a column is flagged only for
  * values lost beyond the rows that went.
  *
@@ -52,6 +53,18 @@ const log = loggers.api("flow-data-diff");
 export const DATA_DIFF_MIN_LOST = 10;
 /** …and more than this share of its baseline (0.5%). */
 export const DATA_DIFF_MIN_RATIO = 0.005;
+/**
+ * A table over this size is measured on a 10% block sample: its exact row
+ * count from metadata, each column's non-null share from the sample, scaled
+ * to the rows. Block samples follow write order, so a column's share moves a
+ * lot between two samples: up to 72% on `call_activities` for columns over
+ * 1% full. A sampled column is flagged only when it lost more than
+ * DATA_DIFF_SAMPLED_MIN_RATIO of its share, which still catches a column a
+ * rewrite emptied.
+ */
+export const DATA_DIFF_SAMPLE_OVER_BYTES = 1e9;
+export const DATA_DIFF_SAMPLE_PERCENT = 10;
+export const DATA_DIFF_SAMPLED_MIN_RATIO = 0.75;
 /** An open baseline older than this is stale: a fresh one replaces it. */
 const OPEN_BASELINE_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 /** Tables counted at once on one destination. */
@@ -69,12 +82,19 @@ export function compareCounts(params: {
 }): IFlowDataDiffFlag[] {
   const { entity, table, before, after } = params;
   const flags: IFlowDataDiffFlag[] = [];
-  const flag = (column: string, was: number, now: number, expected: number) => {
+  const sampled = Boolean(before.sampled || after.sampled);
+  const flag = (
+    column: string,
+    was: number,
+    now: number,
+    expected: number,
+    minRatio = DATA_DIFF_MIN_RATIO,
+  ) => {
     const lost = expected - now;
     if (
       lost > DATA_DIFF_MIN_LOST &&
-      was > 0 &&
-      lost / was > DATA_DIFF_MIN_RATIO
+      expected > 0 &&
+      lost / expected > minRatio
     ) {
       flags.push({
         entity,
@@ -84,21 +104,29 @@ export function compareCounts(params: {
         after: now,
         expected,
         lost,
-        lostPct: Math.round((lost / was) * 10_000) / 100,
+        lostPct: Math.round((lost / expected) * 10_000) / 100,
       });
     }
   };
 
   flag("(rows)", before.rows, after.rows, before.rows);
-  const shrink =
-    before.rows > 0 && after.rows < before.rows ? after.rows / before.rows : 1;
+  // Exact counts scale the baseline down when the table shrank. Sampled
+  // counts compare ratios: the baseline scales to the new row count either
+  // way, so a column is judged on its share of the rows.
+  const scale =
+    before.rows <= 0
+      ? 1
+      : sampled || after.rows < before.rows
+        ? after.rows / before.rows
+        : 1;
   const afterByName = new Map(after.columns.map(c => [c.name, c.nonNull]));
   for (const column of before.columns) {
     flag(
       column.name,
       column.nonNull,
       afterByName.get(column.name) ?? 0,
-      Math.round(column.nonNull * shrink),
+      Math.round(column.nonNull * scale),
+      sampled ? DATA_DIFF_SAMPLED_MIN_RATIO : DATA_DIFF_MIN_RATIO,
     );
   }
   return flags;
@@ -239,6 +267,24 @@ export async function countEntityTables(params: {
     columnsByTable.set(table, list);
   }
 
+  // Tables over 1 GB: exact rows from metadata, column shares from a sample.
+  const largeRows = new Map<string, number>();
+  const statsSql = driver.tableSampleClause
+    ? driver.buildTableStatsQuery?.(destination.schema, names, { projectId })
+    : undefined;
+  if (statsSql) {
+    const stats = await run(statsSql);
+    const rows = (stats.success ? (stats.data ?? []) : []) as Record<
+      string,
+      unknown
+    >[];
+    for (const row of rows) {
+      if (num(row.size_bytes) > DATA_DIFF_SAMPLE_OVER_BYTES) {
+        largeRows.set(String(row.table_name), num(row.row_count));
+      }
+    }
+  }
+
   return mapLimit(
     tables,
     COUNT_CONCURRENCY,
@@ -247,20 +293,40 @@ export async function countEntityTables(params: {
       if (!columns?.length) {
         return { ...t, counts: EMPTY };
       }
+      const exactRows = largeRows.get(t.table);
+      const sample =
+        exactRows !== undefined
+          ? driver.tableSampleClause?.(DATA_DIFF_SAMPLE_PERCENT)
+          : undefined;
       const result = await run(
-        buildNonNullCountQuery({ tableRef: tableRef(t.table), columns, quote }),
+        buildNonNullCountQuery({
+          tableRef: sample
+            ? `${tableRef(t.table)} ${sample}`
+            : tableRef(t.table),
+          columns,
+          quote,
+        }),
       );
       if (!result.success) {
         return { ...t, error: result.error || "count failed" };
       }
       const row = ((result.data ?? [])[0] ?? {}) as Record<string, unknown>;
+      const counted = num(row.n);
+      const rows = sample ? (exactRows ?? 0) : counted;
+      const nonNull = (value: number) =>
+        !sample
+          ? value
+          : counted > 0
+            ? Math.round((value / counted) * rows)
+            : 0;
       return {
         ...t,
         counts: {
-          rows: num(row.n),
+          rows,
+          ...(sample ? { sampled: true } : {}),
           columns: columns.map((name, i) => ({
             name,
-            nonNull: num(row[`c_${i}`]),
+            nonNull: nonNull(num(row[`c_${i}`])),
           })),
         },
       };
