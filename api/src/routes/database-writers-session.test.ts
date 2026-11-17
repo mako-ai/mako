@@ -10,6 +10,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { OpenAPIHono } from "@hono/zod-openapi";
+import { ConnectionAccessEvent } from "../access/connection-access-event";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
@@ -98,5 +99,16 @@ describe("PUT /databases/{id}/writers in the app", () => {
     ]);
     // Someone outside the workspace is still refused.
     expect((await put([{ principal: "user:stranger" }])).status).toBe(400);
+    // The change is recorded, with who made it; the refusal is not.
+    const events = await ConnectionAccessEvent.find({
+      connectionId: db._id,
+    }).lean();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      kind: "database",
+      via: "app",
+      changes: { writers: { added: ["user:vic"], removed: [] } },
+    });
+    expect(events[0].actor).toBeTruthy();
   });
 });

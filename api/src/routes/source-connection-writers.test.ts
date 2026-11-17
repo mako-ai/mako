@@ -17,6 +17,7 @@ import {
   vi,
 } from "vitest";
 import { Hono } from "hono";
+import { ConnectionAccessEvent } from "../access/connection-access-event";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
@@ -113,6 +114,7 @@ beforeEach(async () => {
   who.role = "member";
   await SourceConnection.deleteMany({});
   await ConnectionWriteEvent.deleteMany({});
+  await ConnectionAccessEvent.deleteMany({});
   // Tests that add a viewer each create her.
   await WorkspaceMember.deleteMany({ userId: "vera" });
   const row = await SourceConnection.create({
@@ -175,6 +177,34 @@ describe("source connection writers", () => {
       ).status,
     ).toBe(200);
     expect(stored?.liveReads).toBe(false);
+    // Each change is recorded: the switch, what was added, what was removed.
+    const events = await ConnectionAccessEvent.find({ connectionId: id })
+      .sort({ at: 1 })
+      .lean();
+    expect(events.map(e => [e.actor, e.via, e.changes])).toEqual([
+      ["manager1", "app", { liveReads: true }],
+      [
+        "manager1",
+        "app",
+        {
+          liveReads: false,
+          writers: {
+            added: ["workflow:fr-offer-to-cash", "workflow:other-flow"],
+            removed: [],
+          },
+        },
+      ],
+      [
+        "manager1",
+        "app",
+        {
+          writers: {
+            added: ["workflow:*"],
+            removed: ["workflow:fr-offer-to-cash", "workflow:other-flow"],
+          },
+        },
+      ],
+    ]);
   });
 
   it("limits live reads to the listed, viewers included, and opens them again", async () => {
@@ -220,6 +250,31 @@ describe("source connection writers", () => {
     expect(
       (await SourceConnection.findById(id).lean())?.liveReaders,
     ).toBeUndefined();
+    // Limiting, emptying and reopening live reads are each recorded.
+    const readers = (
+      await ConnectionAccessEvent.find({ connectionId: id })
+        .sort({ at: 1 })
+        .lean()
+    ).flatMap(e => (e.changes.liveReaders ? [e.changes.liveReaders] : []));
+    expect(readers).toEqual([
+      {
+        added: [
+          "user:vera",
+          "workflow:fr-offer-to-cash",
+          "workflow:other-flow",
+        ],
+        removed: [],
+      },
+      {
+        added: [],
+        removed: [
+          "user:vera",
+          "workflow:fr-offer-to-cash",
+          "workflow:other-flow",
+        ],
+      },
+      { added: [], removed: [], everyone: true },
+    ]);
   });
 
   it("refuses a stranger, an agent or an API key as a live reader", async () => {

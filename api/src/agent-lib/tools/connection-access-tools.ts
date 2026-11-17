@@ -54,9 +54,9 @@ import {
   writersOutsideRefusal,
 } from "../../access/connection-writers-list";
 import {
-  ConnectionAccessEvent,
   listChange,
-  type ConnectionAccessChanges,
+  recordAccessChange,
+  writerLabel,
 } from "../../access/connection-access-event";
 import { principalsOutsideWorkspace } from "../../access/connection-writes";
 import {
@@ -417,35 +417,6 @@ function selfGrantRefusal(add: WriterInput[], userId: string): string | null {
     : null;
 }
 
-/**
- * Keep the change (who, what was added and removed). The access is already
- * changed when this runs: a failure to record is logged, not returned.
- */
-async function recordAccessChange(
-  workspaceId: string,
-  connectionId: Types.ObjectId,
-  kind: Kind,
-  caller: Caller,
-  changes: ConnectionAccessChanges,
-): Promise<void> {
-  try {
-    await ConnectionAccessEvent.create({
-      workspaceId: new Types.ObjectId(workspaceId),
-      connectionId,
-      kind,
-      actor: caller.userId as string,
-      via: "mcp",
-      changes,
-    });
-  } catch (error) {
-    logger.error("Could not record a connection access change", {
-      workspaceId,
-      connectionId: String(connectionId),
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
 async function setDatabaseAccess(
   workspaceId: string,
   caller: Caller,
@@ -509,8 +480,15 @@ async function setDatabaseAccess(
       writers: writers.length,
       via: "mcp",
     });
-    await recordAccessChange(workspaceId, row._id, "database", caller, {
-      writers: listChange(stored.map(key), writers.map(key)),
+    await recordAccessChange({
+      workspaceId,
+      connectionId: row._id,
+      kind: "database",
+      actor: caller.userId as string,
+      via: "mcp",
+      changes: {
+        writers: listChange(stored.map(writerLabel), writers.map(writerLabel)),
+      },
     });
   }
   return {
@@ -705,30 +683,37 @@ async function setSourceAccess(
       managersRemoved: before.filter(id => !managers.includes(id)),
       via: "mcp",
     });
-    await recordAccessChange(workspaceId, row._id, "source", caller, {
-      ...(changed.includes("writers")
-        ? {
-            writers: listChange(
-              storedWriters.map(w => w.principal),
-              writers.map(w => w.principal),
-            ),
-          }
-        : {}),
-      ...(changed.includes("liveReads") ? { liveReads } : {}),
-      ...(changed.includes("liveReaders")
-        ? {
-            liveReaders: {
-              ...listChange(
-                (row.liveReaders ?? []).map(w => w.principal),
-                (liveReaders ?? []).map(w => w.principal),
+    await recordAccessChange({
+      workspaceId,
+      connectionId: row._id,
+      kind: "source",
+      actor: editor,
+      via: "mcp",
+      changes: {
+        ...(changed.includes("writers")
+          ? {
+              writers: listChange(
+                storedWriters.map(w => w.principal),
+                writers.map(w => w.principal),
               ),
-              ...(liveReaders === null ? { everyone: true } : {}),
-            },
-          }
-        : {}),
-      ...(changed.includes("managers")
-        ? { managers: listChange(before, managers) }
-        : {}),
+            }
+          : {}),
+        ...(changed.includes("liveReads") ? { liveReads } : {}),
+        ...(changed.includes("liveReaders")
+          ? {
+              liveReaders: {
+                ...listChange(
+                  (row.liveReaders ?? []).map(w => w.principal),
+                  (liveReaders ?? []).map(w => w.principal),
+                ),
+                ...(liveReaders === null ? { everyone: true } : {}),
+              },
+            }
+          : {}),
+        ...(changed.includes("managers")
+          ? { managers: listChange(before, managers) }
+          : {}),
+      },
     });
   }
 

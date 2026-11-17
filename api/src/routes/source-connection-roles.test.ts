@@ -17,6 +17,7 @@ import {
   vi,
 } from "vitest";
 import { Hono } from "hono";
+import { ConnectionAccessEvent } from "../access/connection-access-event";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
@@ -286,6 +287,17 @@ describe("managers list", () => {
     as("member", "member2");
     expect((await rename(mine)).status).toBe(200);
     expect((await managersOfRow(mine)).managers).toEqual(["member2"]);
+    // Who handed the key over, and to whom, is recorded.
+    const events = await ConnectionAccessEvent.find({
+      connectionId: mine,
+    }).lean();
+    expect(events.map(e => [e.actor, e.via, e.changes])).toEqual([
+      [
+        "member1",
+        "app",
+        { managers: { added: ["member2"], removed: ["member1"] } },
+      ],
+    ]);
   });
 
   it("a connection created by `system` has no manager: the workspace owner manages it", async () => {

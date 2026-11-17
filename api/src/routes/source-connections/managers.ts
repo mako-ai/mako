@@ -3,6 +3,10 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { SourceConnection } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
 import {
+  listChange,
+  recordAccessChange,
+} from "../../access/connection-access-event";
+import {
   changeRefusal,
   managersOf,
   mayChangeSourceConnection,
@@ -89,6 +93,14 @@ sourceConnectionManagerRoutes.openapi(
     const before = managersOf(row);
     row.set("managers", next);
     await row.save();
+    await recordAccessChange({
+      workspaceId,
+      connectionId: id,
+      kind: "source",
+      actor: user.id,
+      via: "app",
+      changes: { managers: listChange(before, next) },
+    });
     logger.info("Source connection managers changed", {
       workspaceId,
       connectionId: id,

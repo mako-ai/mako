@@ -13,6 +13,11 @@ import {
   WRITERS_IN_APP_ONLY,
   writersEditor,
 } from "../../access/connection-writers-list";
+import {
+  listChange,
+  recordAccessChange,
+  writerLabel,
+} from "../../access/connection-access-event";
 import { createRoute, z } from "@hono/zod-openapi";
 import { unifiedAuthMiddleware } from "../../auth/unified-auth.middleware";
 import {
@@ -150,8 +155,19 @@ connectionWriterRoutes.openapi(
         400,
       );
     }
+    const before = (database.writers ?? []).map(writerLabel);
     database.writers = nextWriters(database.writers, writers, userId);
     await database.save();
+    await recordAccessChange({
+      workspaceId: workspace._id,
+      connectionId: databaseId,
+      kind: "database",
+      actor: userId,
+      via: "app",
+      changes: {
+        writers: listChange(before, database.writers.map(writerLabel)),
+      },
+    });
     logger.info("Connection writers changed", {
       workspaceId: String(workspace._id),
       databaseId,
