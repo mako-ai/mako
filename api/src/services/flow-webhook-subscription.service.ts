@@ -132,8 +132,11 @@ export async function syncFlowWebhookSubscription(
 /** What a deleted webhook flow leaves behind to unsubscribe. */
 export interface FlowWebhookTeardownTarget {
   flowId: string;
-  /** The flow's workspace: the connection is looked up in it only. */
-  workspaceId: string;
+  /**
+   * The flow's workspace: the connection is looked up in it only. Absent on
+   * events queued before it was added (teardownWorkspaceId recovers it).
+   */
+  workspaceId?: string;
   dataSourceId: string;
   endpoint: string;
   providerWebhookId?: string;
@@ -145,6 +148,31 @@ export type FlowWebhookSubscriptionRemoveResult =
   | { status: "failed"; error: string };
 
 /**
+ * The workspace a teardown looks its connection up in. An event queued
+ * before targets carried one: the flow's own row, if it still exists, else
+ * the workspace in the subscription's own URL (`/api/webhooks/<ws>/<flow>`),
+ * only when that URL names this flow. Never an unscoped lookup.
+ */
+async function teardownWorkspaceId(
+  target: FlowWebhookTeardownTarget,
+): Promise<string | null> {
+  if (target.workspaceId) return target.workspaceId;
+  if (Types.ObjectId.isValid(target.flowId)) {
+    const row = await Flow.findById(target.flowId)
+      .select({ workspaceId: 1 })
+      .lean();
+    if (row?.workspaceId) return String(row.workspaceId);
+  }
+  const match = /\/api\/webhooks\/([0-9a-f]{24})\/([0-9a-f]{24})\/?$/i.exec(
+    target.endpoint ?? "",
+  );
+  if (match && match[2].toLowerCase() === String(target.flowId).toLowerCase()) {
+    return match[1];
+  }
+  return null;
+}
+
+/**
  * Remove the provider-side subscription(s) of a flow that was deleted, so the
  * provider stops POSTing to a URL that now answers 404. Runs after the row is
  * gone, from what `teardownFlow` captured. Best-effort, like the sync above.
@@ -152,15 +180,18 @@ export type FlowWebhookSubscriptionRemoveResult =
 export async function removeFlowWebhookSubscription(
   target: FlowWebhookTeardownTarget,
 ): Promise<FlowWebhookSubscriptionRemoveResult> {
-  // Queued before the target carried its workspace: never look the
-  // connection up unscoped.
-  if (!target.workspaceId) {
+  const workspaceId = await teardownWorkspaceId(target);
+  if (!workspaceId) {
+    logger.warn(
+      "Webhook teardown has no workspace; the provider subscription stays",
+      { flowId: target.flowId, endpoint: target.endpoint },
+    );
     return { status: "skipped", reason: "no workspace on the target" };
   }
   try {
     const source = await sourceConnectionManager.getSourceConnection(
       target.dataSourceId,
-      target.workspaceId,
+      workspaceId,
     );
     if (!source) {
       return { status: "skipped", reason: "connector not found" };

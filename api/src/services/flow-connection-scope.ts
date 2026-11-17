@@ -83,6 +83,55 @@ export async function foreignConnectionRefusal(
   return null;
 }
 
+/**
+ * `foreignConnectionRefusal` for many files at once, in 2 queries: what
+ * GET/list shows, so a file the reactor refuses never looks valid there.
+ * Null entries (unparsed files) answer null.
+ */
+export async function flowFilesConnectionRefusals(
+  workspaceId: string,
+  files: Array<FlowFile | null>,
+): Promise<Array<string | null>> {
+  const ws = new Types.ObjectId(workspaceId);
+  const refsPerFile = files.map(f => (f ? flowFileConnectionRefs(f) : []));
+  const ids = (kind: FlowConnectionRef["kind"]) => [
+    ...new Set(
+      refsPerFile
+        .flat()
+        .filter(r => r.kind === kind && Types.ObjectId.isValid(r.id))
+        .map(r => r.id),
+    ),
+  ];
+  const [sources, databases] = await Promise.all([
+    ids("source").length
+      ? SourceConnection.find({ _id: { $in: ids("source") }, workspaceId: ws })
+          .select({ _id: 1 })
+          .lean()
+      : [],
+    ids("database").length
+      ? DatabaseConnection.find({
+          _id: { $in: ids("database") },
+          workspaceId: ws,
+        })
+          .select({ _id: 1 })
+          .lean()
+      : [],
+  ]);
+  const owned = {
+    source: new Set(sources.map(d => String(d._id))),
+    database: new Set(databases.map(d => String(d._id))),
+  };
+  return refsPerFile.map(refs => {
+    const foreign = refs.find(
+      r => Types.ObjectId.isValid(r.id) && !owned[r.kind].has(r.id),
+    );
+    if (!foreign) return null;
+    const what =
+      foreign.kind === "source" ? "source connection" : "database connection";
+    return `\`${foreign.field}: ${foreign.id}\` does not name a ${what} in this workspace`;
+  });
+}
+
 /** `foreignConnectionRefusal` for a whole flow file. */
 export function flowFileConnectionRefusal(
   workspaceId: string,

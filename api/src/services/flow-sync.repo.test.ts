@@ -464,6 +464,40 @@ describe("a flow names only its own workspace's connections", () => {
     );
   });
 
+  it("GET/list shows a refused file invalid and never its foreign ids", async () => {
+    await push({ "flows/close.yml": flowYaml("Close") });
+    await syncFlowsFromRepo(WS, "user-42");
+    await push({
+      "flows/close.yml": flowYaml("Close").replace(
+        `connection_id: ${DEST}`,
+        `connection_id: ${FOREIGN_DEST}`,
+      ),
+      "flows/new-foreign.yml": flowYaml("New foreign").replace(
+        `connector_id: ${CONNECTOR}`,
+        `connector_id: ${FOREIGN_SOURCE}`,
+      ),
+    });
+    await syncFlowsFromRepo(WS, "user-42");
+
+    const listed = await loadLiveFlows(WS);
+    const plain = Object.fromEntries(
+      listed.map(live => [live.def.slug, liveFlowToPlain(live, WS)]),
+    );
+    expect(plain.close.definitionInvalid).toBeTruthy();
+    expect(String(plain.close.destinationDatabaseId)).toBe(DEST);
+    expect(plain["new-foreign"].definitionInvalid).toBeTruthy();
+    expect(String(plain["new-foreign"].dataSourceId ?? "")).not.toBe(
+      FOREIGN_SOURCE,
+    );
+
+    const row = await Flow.findOne({ workspaceId: WS, slug: "close" });
+    const one = await loadLiveFlowById(WS, String(row!._id));
+    expect(one?.connectionRefusal).toContain(
+      `destination.connection_id: ${FOREIGN_DEST}`,
+    );
+    expect(liveFlowToPlain(one!, WS).definitionInvalid).toBeTruthy();
+  });
+
   it("the cache resync refuses a file naming another workspace's source", async () => {
     await push({ "flows/close.yml": flowYaml("Close") });
     await syncFlowsFromRepo(WS, "user-42");

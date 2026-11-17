@@ -489,16 +489,48 @@ async function testConnectionLookupsAreScopedToTheWorkspace() {
   assert.equal(removed.status, "skipped");
   assert.deepEqual(lookups, [[String(DATA_SOURCE_ID), String(WORKSPACE_ID)]]);
 
+  // Queued before targets carried a workspace: the flow row, if it still
+  // exists, else the workspace in the subscription's own URL.
+  const legacyEndpoint = `https://mako.example/api/webhooks/${WORKSPACE_ID}/${FLOW_ID}`;
+  const rowWorkspace = new Types.ObjectId();
+  (Flow as any).findById = () => ({
+    select: () => ({ lean: async () => ({ workspaceId: rowWorkspace }) }),
+  });
   lookups.length = 0;
-  const legacy = await removeFlowWebhookSubscription({
+  await removeFlowWebhookSubscription({
     flowId: String(FLOW_ID),
     dataSourceId: String(DATA_SOURCE_ID),
-    endpoint: ENDPOINT,
-  } as any);
-  assert.deepEqual(legacy, {
-    status: "skipped",
-    reason: "no workspace on the target",
+    endpoint: legacyEndpoint,
   });
+  assert.deepEqual(lookups, [[String(DATA_SOURCE_ID), String(rowWorkspace)]]);
+
+  (Flow as any).findById = () => ({
+    select: () => ({ lean: async () => null }),
+  });
+  lookups.length = 0;
+  await removeFlowWebhookSubscription({
+    flowId: String(FLOW_ID),
+    dataSourceId: String(DATA_SOURCE_ID),
+    endpoint: legacyEndpoint,
+  });
+  assert.deepEqual(lookups, [[String(DATA_SOURCE_ID), String(WORKSPACE_ID)]]);
+
+  // A URL naming another flow, or no ObjectIds at all: skipped, no lookup.
+  lookups.length = 0;
+  for (const endpoint of [
+    `https://mako.example/api/webhooks/${WORKSPACE_ID}/${new Types.ObjectId()}`,
+    ENDPOINT,
+  ]) {
+    const skipped = await removeFlowWebhookSubscription({
+      flowId: String(FLOW_ID),
+      dataSourceId: String(DATA_SOURCE_ID),
+      endpoint,
+    });
+    assert.deepEqual(skipped, {
+      status: "skipped",
+      reason: "no workspace on the target",
+    });
+  }
   assert.equal(lookups.length, 0);
 }
 
