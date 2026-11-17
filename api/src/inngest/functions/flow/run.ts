@@ -50,10 +50,10 @@ export const flowFunction = inngest.createFunction(
     ],
     triggers: { event: "flow.execute" },
   },
-  async ({ event, step, logger }) => {
+  async ({ event, step, group, logger }) => {
     const data = event.data as FlowRunEventData;
     const { flowId, noJitter, backfill, backfillRunId } = data;
-    const ctx = createFlowRunContext({ step, logger, data });
+    const ctx = createFlowRunContext({ step, group, logger, data });
 
     logger.info("Flow function started", {
       flowId,

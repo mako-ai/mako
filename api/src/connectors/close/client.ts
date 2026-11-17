@@ -76,11 +76,18 @@ export function createCloseClient(options: {
   apiKey: string;
   /** Minimum spacing between requests on this key's rate gate. */
   minDelayMs: number;
+  /**
+   * Requests on this key's gate at once, this one included. Entities of one
+   * flow sync in parallel; with one slot, the ones in this process would
+   * take turns and gain nothing. Default 1.
+   */
+  maxInFlight?: number;
   emitLog: CloseSyncLog;
   /** Late-bound so tests that stub `sleep` on the connector stay fast. */
   sleep: (ms: number) => Promise<void>;
 }): AxiosInstance {
   const { apiKey, minDelayMs, emitLog, sleep } = options;
+  const maxInFlight = options.maxInFlight ?? 1;
   // The rate gate's key as the connection proxy keys it (trimmed,
   // connections/callable.ts), so sync and proxy wait at one gate.
   const gateKey = String(apiKey).trim();
@@ -154,6 +161,8 @@ export function createCloseClient(options: {
                 );
               },
               minDelayMs,
+              "sync",
+              { maxInFlight },
             ),
           {
             maxRetries: CLOSE_MAX_RETRIES,

@@ -474,6 +474,17 @@ export class SandboxedConnector extends BaseConnector {
     };
   }
 
+  /**
+   * Install the runtime and this connector into the workspace sync box, so
+   * several entity runs that start together find it ready instead of all
+   * installing into the same paths at once. A no-op under box leases, where
+   * every run holds a box of its own.
+   */
+  async prepareSyncBox(): Promise<void> {
+    if (connectorBoxLeasesEnabled()) return;
+    await this.ready();
+  }
+
   private folderCache: Map<string, Uint8Array> | null = null;
 
   /** The folder at the indexed sha, read once per instance. */

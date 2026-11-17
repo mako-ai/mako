@@ -119,6 +119,7 @@ sync:
   write_mode: append_dedup    # append_dedup | append | overwrite
   delete_mode: soft
   batch_size: 2000
+  entity_parallelism: 3       # connector flows: entities synced at once; omit for the default
 entities:
   layouts:                    # explicit selection; dropping an entry later disposes that entity's checkpoint
     - entity: leads

@@ -230,6 +230,8 @@ export function applyDefinition(doc: IFlow, file: FlowFile): string | null {
       : "cdc";
   doc.deleteMode = file.sync.deleteMode as IFlow["deleteMode"];
   if (file.sync.batchSize !== undefined) doc.batchSize = file.sync.batchSize;
+  // The file owns it: dropping the line goes back to the default.
+  doc.entityParallelism = file.sync.entityParallelism;
 
   doc.entityFilter = file.entityFilter as IFlow["entityFilter"];
   doc.entityLayouts = file.entityLayouts as unknown as IFlow["entityLayouts"];

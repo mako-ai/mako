@@ -31,6 +31,7 @@ import { resolveCloseEntitySchema } from "./schema";
 import axios, { AxiosInstance } from "axios";
 import { loggers } from "../../logging";
 import { createCloseClient, type CloseLogLevel } from "./client";
+import { defaultEntityParallelism } from "../../inngest/functions/flow/entity-parallelism";
 import {
   CLOSE_SIMPLE_ENTITY_ENDPOINTS,
   closeAvailableEntities,
@@ -206,6 +207,7 @@ export class CloseConnector extends BaseConnector {
       this.webhookFillApi = createCloseClient({
         apiKey: this.sourceConnection.config.api_key,
         minDelayMs: CLOSE_WEBHOOK_FILL_MIN_DELAY_MS,
+        maxInFlight: defaultEntityParallelism(),
         emitLog: (level, message, metadata) =>
           this.emitSyncLog(level, message, metadata),
         sleep: ms => this.sleep(ms),
@@ -222,6 +224,10 @@ export class CloseConnector extends BaseConnector {
       this.closeApi = createCloseClient({
         apiKey: this.sourceConnection.config.api_key,
         minDelayMs: Math.max(500, this.getRateLimitDelay()),
+        // One slot per entity a flow syncs at once: entities of one flow
+        // that land in this process share this key's gate, and each still
+        // sends one request at a time.
+        maxInFlight: defaultEntityParallelism(),
         emitLog: (level, message, metadata) =>
           this.emitSyncLog(level, message, metadata),
         // Late-bound so tests that stub `sleep` on the instance stay fast.

@@ -1,3 +1,4 @@
+import { NonRetriableError } from "inngest";
 import { inngest } from "../client";
 import { Flow } from "../../database/workspace-schema";
 import {
@@ -25,6 +26,7 @@ import {
   resolveEntityPartitioning,
   resolveEntityClustering,
 } from "../../sync-cdc/adapters/registry";
+import { boxedEntityRunLimit } from "./flow/entity-parallelism";
 
 /**
  * Max steps to use before yielding back to the parent for re-invocation.
@@ -53,6 +55,30 @@ export interface SyncBackfillEntityPayload {
   isCdcEnabled: boolean;
   destinationType: string;
   queries?: unknown[];
+  /**
+   * Second concurrency key (flow/entity-parallelism.ts): one shared key for
+   * workspace connector runs under box leases, a key of its own for every
+   * other run.
+   */
+  runConcurrencyKey?: string;
+}
+
+/**
+ * Stop between chunks when the execution was cancelled. The `flow.cancel`
+ * event already cancels this run; this also stops it when only the
+ * execution document says so, which the parent sees only before an entity.
+ */
+async function throwIfExecutionCancelled(executionId?: string): Promise<void> {
+  if (!executionId) return;
+  const execution = await Flow.db
+    .collection("flow_executions")
+    .findOne(
+      { _id: new Types.ObjectId(executionId) },
+      { projection: { status: 1 } },
+    );
+  if (execution?.status === "cancelled") {
+    throw new NonRetriableError("Flow execution cancelled by user");
+  }
 }
 
 export interface SyncBackfillEntityResult {
@@ -64,10 +90,21 @@ export const syncBackfillEntityFunction = inngest.createFunction(
   {
     id: "sync-backfill-entity",
     name: "Sync Backfill Entity",
-    concurrency: {
-      limit: 1,
-      key: "event.data.flowId",
-    },
+    // Several entities of one flow sync at once; the parent decides how
+    // many (flow/entity-parallelism.ts).
+    // 1. One run per flow + entity, ever. Buffer, staging and checkpoint
+    //    names carry no run id, so an orphaned child of a cancelled or
+    //    failed run must block a new one for the same entity (#1318).
+    // 2. Under box leases, workspace-connector runs share one key so leased
+    //    boxes stay under the E2B account ceiling; every other run has a
+    //    key of its own. Read once, when the function registers.
+    concurrency: [
+      {
+        limit: 1,
+        key: 'event.data.flowId + ":" + event.data.entity',
+      },
+      { limit: boxedEntityRunLimit(), key: "event.data.runConcurrencyKey" },
+    ],
     retries: 3,
     cancelOn: [
       {
@@ -351,6 +388,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         // Up to 10 connector pages fetched and written in one step.
         () =>
           withHeartbeat(executionId, async () => {
+            await throwIfExecutionCancelled(executionId);
             logger.info("Executing chunk", { flowId, entity, chunkIndex });
 
             const syncLogger: SyncLogger = {

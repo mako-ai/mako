@@ -263,6 +263,13 @@ export interface IFlow extends Document {
   paginationConfig?: IPaginationConfig;
   typeCoercions?: ITypeCoercion[];
   batchSize?: number;
+  /**
+   * Connector flows: entities synced at once. Unset uses
+   * BACKFILL_ENTITY_PARALLELISM (default 3); 1 syncs them one at a time.
+   * Capped at MAX_ENTITY_PARALLELISM (inngest/functions/flow/
+   * entity-parallelism.ts).
+   */
+  entityParallelism?: number;
   backfillState?: {
     status?: BackfillStatus;
     runId?: string;
@@ -614,6 +621,11 @@ const FlowSchema = new Schema<IFlow>(
       default: 2000,
       min: 100,
       max: 50000,
+    },
+    entityParallelism: {
+      type: Number,
+      min: 1,
+      max: 64,
     },
     backfillState: {
       status: {
