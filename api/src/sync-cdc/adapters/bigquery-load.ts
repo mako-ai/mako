@@ -49,6 +49,19 @@ export function buildCdcParquet(
   });
 }
 
+/**
+ * Schema changes a staging load may make. A bulk backfill appends one Parquet
+ * file per flush batch to the same staging table, and the first file creates
+ * it. DuckDB 2.0 writes a column with no NULL in a file as REQUIRED, so that
+ * first file can make a column REQUIRED. Without ALLOW_FIELD_RELAXATION the
+ * next file with a NULL in that column (or without the column) fails with
+ * "Field X has changed mode from REQUIRED to NULLABLE", on every retry.
+ */
+export const STAGING_SCHEMA_UPDATE_OPTIONS = [
+  "ALLOW_FIELD_ADDITION",
+  "ALLOW_FIELD_RELAXATION",
+];
+
 /** Append a Parquet file to a staging table with a load job. */
 export async function loadParquetToStaging(
   target: BigQueryTarget,
@@ -60,7 +73,7 @@ export async function loadParquetToStaging(
   const loadMetadata: JobLoadMetadata & { labels?: Record<string, string> } = {
     sourceFormat: "PARQUET",
     writeDisposition: "WRITE_APPEND",
-    schemaUpdateOptions: ["ALLOW_FIELD_ADDITION"],
+    schemaUpdateOptions: [...STAGING_SCHEMA_UPDATE_OPTIONS],
   };
   // Moved to configuration.labels by bigquery-load-labels.ts.
   if (canLabelLoadJobs(bq)) {
@@ -130,11 +143,17 @@ export async function expireStagingTable(
 export async function dropStagingTable(
   target: BigQueryTarget,
   stagingTable: string,
+  options?: { strict?: boolean },
 ): Promise<void> {
-  await runBigQuery(
+  const result = await runBigQuery(
     target,
     `DROP TABLE IF EXISTS ${fullTableName(target, stagingTable)}`,
   );
+  if (options?.strict && !result.success) {
+    throw new Error(
+      `Could not drop staging table ${stagingTable}: ${result.error || "unknown error"}`,
+    );
+  }
   log.info("Cleaned up staging table", {
     stagingTable,
     dataset: target.dataset,

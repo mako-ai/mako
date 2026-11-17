@@ -256,7 +256,9 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
       await this.executeQuery(
         `RENAME TABLE ${fullLive} TO ${escId(db)}.${escId(old)}, ${fullTmp} TO ${fullLive}`,
       );
-      await this.executeQuery(`DROP TABLE IF EXISTS ${escId(db)}.${escId(old)}`);
+      await this.executeQuery(
+        `DROP TABLE IF EXISTS ${escId(db)}.${escId(old)}`,
+      );
     }
 
     log.info("Repartitioned live table in place", {
@@ -428,7 +430,7 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
   async prepareStaging(
     layout: CdcEntityLayout,
     flowId: string,
-    options?: { stagingSuffix?: string },
+    options?: { stagingSuffix?: string; strict?: boolean },
   ): Promise<void> {
     const db = this.getDatabase();
     await this.executeQuery(`CREATE DATABASE IF NOT EXISTS ${escId(db)}`);
@@ -437,6 +439,10 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
       flowId,
       options?.stagingSuffix,
     );
+    if (options?.strict) {
+      await this.dropTable(stagingTable);
+      return;
+    }
     await this.dropTable(stagingTable).catch(() => undefined);
   }
 

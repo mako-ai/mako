@@ -585,7 +585,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   async prepareStaging(
     layout: CdcEntityLayout,
     flowId: string,
-    options?: { stagingSuffix?: string },
+    options?: { stagingSuffix?: string; strict?: boolean },
   ): Promise<void> {
     await this.ensureDataset();
     const stagingTable = bigQueryStagingTableName(
@@ -594,6 +594,10 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       options?.stagingSuffix,
     );
     const target = await this.resolveBqClient();
+    if (options?.strict) {
+      await dropStagingTable(target, stagingTable, { strict: true });
+      return;
+    }
     await dropStagingTable(target, stagingTable).catch(() => undefined);
   }
 

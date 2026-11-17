@@ -78,7 +78,8 @@ export interface CdcDestinationAdapter {
   prepareStaging?(
     layout: CdcEntityLayout,
     flowId: string,
-    options?: { stagingSuffix?: string },
+    /** strict: throw when the drop fails instead of ignoring it. */
+    options?: { stagingSuffix?: string; strict?: boolean },
   ): Promise<void>;
 
   /**

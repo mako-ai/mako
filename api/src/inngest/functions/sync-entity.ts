@@ -560,9 +560,9 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                 { entity, flushIndex, tempCount },
               );
               // Retry-safe: a failed attempt may have loaded batches into
-              // staging and deleted them from the buffer. Merge those first;
-              // dropping staging here would lose them. Keyed (dedup) merges
-              // only — see performRescueAndPrepareStaging.
+              // staging. Dropping staging puts them back in the flush buffer
+              // (BULK_STAGED_FIELD); keyed (dedup) merges also merge them
+              // first — see performRescueAndPrepareStaging.
               const { rescued } = await performRescueAndPrepareStaging(
                 bulkSyncOptions as any,
                 { dedupOnly: true },
@@ -577,6 +577,14 @@ export const syncBackfillEntityFunction = inngest.createFunction(
               await performBulkFlush(bulkSyncOptions as any, () =>
                 touchHeartbeat(executionId),
               );
+            }),
+          );
+          stepsUsed++;
+          // The merge is its own step, like merge-final: a retry of a failed
+          // merge re-runs it against the staging table that is still there,
+          // instead of re-entering the flush step, which drops staging.
+          await step.run(`flush-apply-${safeEntityStepId}-${flushIndex}`, () =>
+            withHeartbeat(executionId, async () => {
               await performStagingMerge(bulkSyncOptions as any);
               await performStagingCleanup(bulkSyncOptions as any);
             }),

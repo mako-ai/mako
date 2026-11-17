@@ -19,7 +19,15 @@ vi.mock("../database/workspace-schema", () => ({
       }),
     })),
   },
-  Flow: { db: { collection: vi.fn() } },
+  // performPrepareStaging clears the staged marks in the flush buffer.
+  Flow: {
+    db: {
+      collection: vi.fn(() => ({
+        updateMany: async () => ({ modifiedCount: 0 }),
+        deleteMany: async () => ({ deletedCount: 0 }),
+      })),
+    },
+  },
 }));
 
 vi.mock("./database-data-source-manager", () => ({
