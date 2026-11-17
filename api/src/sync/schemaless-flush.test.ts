@@ -492,4 +492,18 @@ describe("a flush never runs without the entity schema", () => {
     await flushAndMerge();
     expectEveryRowTimestamped();
   }, 60_000);
+
+  it("append: a schema failure at merge keeps the staged rows in the buffer", async () => {
+    await fetchAll();
+    const options = { ...runOptions(), writeMode: "append" };
+    await performBulkFlush(options);
+    const staged = await getTempCollectionCount(FLOW_ID, ENTITY);
+    expect(staged).toBe(sourceRows.length);
+    schemaAnswers = ["throw"];
+    await expect(performStagingMerge(options)).rejects.toBeInstanceOf(
+      SchemaResolutionError,
+    );
+    // The rows are still in the buffer, so a later flush can load them again.
+    expect(await getTempCollectionCount(FLOW_ID, ENTITY)).toBe(staged);
+  }, 60_000);
 });

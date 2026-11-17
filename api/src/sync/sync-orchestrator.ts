@@ -1363,6 +1363,20 @@ export async function performStagingMerge(
 
   if (!cdcAdapter.mergeFromStaging) return { written: 0 };
 
+  const sourceConnection = await sourceConnectionManager.getSourceConnection(
+    options.dataSourceId,
+    options.workspaceId,
+  );
+  const entitySchema = await resolveEntitySchema({
+    entity,
+    sourceConnection,
+    dataSourceId: options.dataSourceId,
+    workspaceId: options.workspaceId,
+    context: "performStagingMerge",
+  });
+  // Resolve the schema first: it can throw (and retry), and a throw after
+  // the release below would leave staging as the rows' only copy, which the
+  // next run's prepare drops.
   // append / overwrite merge with a plain INSERT. Release the staged rows
   // from the buffer before it, so no later flush can load them again: from
   // here staging is their only copy, and it stays until cleanup. The merge
@@ -1380,17 +1394,6 @@ export async function performStagingMerge(
     });
   }
 
-  const sourceConnection = await sourceConnectionManager.getSourceConnection(
-    options.dataSourceId,
-    options.workspaceId,
-  );
-  const entitySchema = await resolveEntitySchema({
-    entity,
-    sourceConnection,
-    dataSourceId: options.dataSourceId,
-    workspaceId: options.workspaceId,
-    context: "performStagingMerge",
-  });
   const cdcLayout = buildCdcEntityLayout({
     entity,
     tableName: entityTableName,
