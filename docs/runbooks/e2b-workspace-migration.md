@@ -190,6 +190,11 @@ by hand from that box before step 12.
 
 ## Step 6. Swap the GitHub secrets (Joan)
 
+Since 17 Nov 2026 the deploys read `E2B_API_KEY` from Secret Manager
+(`--set-secrets E2B_API_KEY=E2B_API_KEY:latest`), not from GitHub. Production
+reads `mako-ai-prod`, previews read `mako-ai-dev`. A key change is now a new
+Secret Manager version plus a redeploy. The GitHub secrets below are unused.
+
 - Production environment secret `E2B_API_KEY` = `mako-prod` key.
 - Repo-level secret `E2B_API_KEY` = `mako-dev` key. PR previews read this one.
 
@@ -396,10 +401,11 @@ cherry-pick what they want.
 
 Rollback works for the 7 days of the drain, while the old boxes still exist.
 
-1. Put the old key back on the production environment:
+1. Put the old key back as the latest version of `mako-ai-prod`'s secret.
+   The deploy reads `E2B_API_KEY:latest` from there:
    ```bash
    gcloud secrets versions access "$OLD_VERSION" --secret=E2B_API_KEY --project=mako-ai-dev \
-     | gh secret set E2B_API_KEY --env production
+     | gcloud secrets versions add E2B_API_KEY --project=mako-ai-prod --data-file=-
    ```
 2. Redeploy as in step 7. Record `OLD_REVISION` and `SWAP_TIME` again. If
    step 3 used another name, also run

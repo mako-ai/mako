@@ -198,9 +198,9 @@ jobs:
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_BRANCH_SIGNING_KEY }}
       AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
       # Apps sandboxes (E2B Firecracker microVMs).
-      # Per environment: the production environment secret holds the
-      # mako-prod project key, the repo-level secret the mako-dev key.
-      E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+      # E2B_API_KEY is a Secret Manager reference (mako-ai-dev secret
+      # E2B_API_KEY, mako-dev key), set with --set-secrets below, so
+      # `gcloud run services describe` never prints it.
       APPS_SANDBOX_PROVIDER: e2b
       # A variable so a project whose template needs another name is a
       # settings change, not a code change (see
@@ -631,7 +631,6 @@ jobs:
             --set-env-vars INNGEST_SIGNING_KEY=${INNGEST_SIGNING_KEY} \
             --set-env-vars NODE_ENV=production \
             --set-env-vars AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY} \
-            --set-env-vars E2B_API_KEY=${E2B_API_KEY} \
             --set-env-vars APPS_SANDBOX_PROVIDER=${APPS_SANDBOX_PROVIDER} \
             --set-env-vars APPS_E2B_TEMPLATE=${APPS_E2B_TEMPLATE} \
             --set-env-vars E2B_DOMAIN=${E2B_DOMAIN} \
@@ -677,7 +676,7 @@ jobs:
             --set-env-vars WORKFLOWS_NAME_PREFIX=${WORKFLOWS_NAME_PREFIX} \
             --set-env-vars HATCHET_API_URL=${HATCHET_API_URL} \
             --set-env-vars HATCHET_CLIENT_TLS_STRATEGY=none \
-            --set-secrets HATCHET_ADMIN_PASSWORD=HATCHET_ADMIN_PASSWORD:latest \
+            --set-secrets HATCHET_ADMIN_PASSWORD=HATCHET_ADMIN_PASSWORD:latest,E2B_API_KEY=E2B_API_KEY:latest \
             --quiet
 
           # Get the Cloud Run URL
@@ -888,9 +887,9 @@ jobs:
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_SIGNING_KEY }}
       AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
       # Apps sandboxes (E2B Firecracker microVMs).
-      # Per environment: the production environment secret holds the
-      # mako-prod project key, the repo-level secret the mako-dev key.
-      E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+      # E2B_API_KEY is a Secret Manager reference (mako-ai-prod secret
+      # E2B_API_KEY, mako-prod key), set with --set-secrets below, so
+      # `gcloud run services describe` never prints it.
       APPS_SANDBOX_PROVIDER: e2b
       # A variable so a project whose template needs another name is a
       # settings change, not a code change (see
@@ -1132,7 +1131,6 @@ jobs:
             --set-env-vars INNGEST_SERVE_PATH=/api/inngest \
             --set-env-vars NODE_ENV=production \
             --set-env-vars AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY} \
-            --set-env-vars E2B_API_KEY=${E2B_API_KEY} \
             --set-env-vars APPS_SANDBOX_PROVIDER=${APPS_SANDBOX_PROVIDER} \
             --set-env-vars APPS_E2B_TEMPLATE=${APPS_E2B_TEMPLATE} \
             --set-env-vars E2B_DOMAIN=${E2B_DOMAIN} \
@@ -1183,7 +1181,7 @@ jobs:
             --set-env-vars HATCHET_API_URL=${HATCHET_API_URL} \
             --set-env-vars HATCHET_CLIENT_TLS_STRATEGY=none \
             --set-env-vars APPS_ORIGIN_BASE=https://makousercontent.com \
-            --set-secrets HATCHET_ADMIN_PASSWORD=HATCHET_ADMIN_PASSWORD:latest \
+            --set-secrets HATCHET_ADMIN_PASSWORD=HATCHET_ADMIN_PASSWORD:latest,E2B_API_KEY=E2B_API_KEY:latest \
             --quiet
 
       - name: Finalize Cloud Run direct URL
