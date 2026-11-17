@@ -102,6 +102,12 @@ export async function resolveEntitySchema(params: {
   workspaceId: string;
   sourceConnection?: { id?: string; type?: string } | null;
   connector?: { resolveSchema?: (entity: string) => Promise<unknown> } | null;
+  /**
+   * The flow's queries, for a connector whose entities they name (GraphQL,
+   * PostHog): injected into the connection as `performSyncChunk` does, or
+   * the connector built here would not know the entity at all.
+   */
+  queries?: unknown[];
   context: string;
 }): Promise<ConnectorEntitySchema | null> {
   let sourceType = params.sourceConnection?.type;
@@ -123,7 +129,20 @@ export async function resolveEntitySchema(params: {
         );
       }
       sourceType = (ds as { type?: string }).type;
-      connector = await syncConnectorRegistry.getConnectorFor(ds as any);
+      const withQueries =
+        params.queries && params.queries.length > 0
+          ? {
+              ...ds,
+              connection: {
+                ...((ds as { connection?: Record<string, unknown> })
+                  .connection ?? {}),
+                queries: params.queries,
+              },
+            }
+          : ds;
+      connector = await syncConnectorRegistry.getConnectorFor(
+        withQueries as any,
+      );
       if (!connector) {
         throw new Error(`no connector for source type "${sourceType}"`);
       }
@@ -1316,6 +1335,7 @@ export async function performBulkFlush(
     entity,
     dataSourceId: options.dataSourceId,
     workspaceId: options.workspaceId,
+    queries: options.queries,
     context: "performBulkFlush",
   });
   const cdcLayout = buildCdcEntityLayout({
@@ -1522,6 +1542,7 @@ export async function performStagingMerge(
     sourceConnection,
     dataSourceId: options.dataSourceId,
     workspaceId: options.workspaceId,
+    queries: options.queries,
     context: "performStagingMerge",
   });
   // Resolve the schema first: it can throw (and retry), and a throw after

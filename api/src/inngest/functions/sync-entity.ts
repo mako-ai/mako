@@ -335,6 +335,9 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         tableDestination,
         deleteMode,
         writeMode,
+        // A flow's queries name its entities (GraphQL): the flush and the
+        // merge resolve the schema from a connector that must see them too.
+        queries,
         entityPartitioning: resolveEntityPartitioning(
           bulkEntityLayout as any,
           (tableDestination as any)?.partitioning,
