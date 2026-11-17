@@ -44,12 +44,17 @@ function matches(doc: Doc, filter: Filter): boolean {
 }
 
 const collections = new Map<string, FakeCollection>();
+const insertOptions: Array<Record<string, unknown>> = [];
 let nextId = 1;
 
 class FakeCollection {
   docs: Doc[] = [];
   constructor(private name: string) {}
-  async insertMany(rows: Record<string, unknown>[]) {
+  async insertMany(
+    rows: Record<string, unknown>[],
+    opts?: Record<string, unknown>,
+  ) {
+    insertOptions.push(opts ?? {});
     for (const row of rows) this.docs.push({ ...row, _id: nextId++ });
     return { insertedCount: rows.length };
   }
@@ -485,4 +490,24 @@ describe("bulk backfill lands every row exactly once", () => {
     },
     60_000,
   );
+});
+
+describe("bulk buffer writes", () => {
+  it("every insert into the buffer carries a deadline", async () => {
+    collections.clear();
+    insertOptions.length = 0;
+    sourceRows = Array.from({ length: 120 }, (_, i) => ({
+      id: `lead_${i}`,
+      date_created: SAME_DAY,
+      date_updated: SAME_DAY,
+    }));
+    await performSyncChunk({
+      ...runOptions("append_dedup"),
+      maxIterations: 10,
+    });
+    expect(insertOptions.length).toBeGreaterThan(0);
+    for (const o of insertOptions) {
+      expect(o).toMatchObject({ ordered: false, timeoutMS: 120_000 });
+    }
+  });
 });

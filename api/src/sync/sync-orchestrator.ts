@@ -572,6 +572,11 @@ async function performSyncChunkSql(
               );
               await bulkTempCollection.insertMany(enrichedRecords, {
                 ordered: false,
+                // A hung buffer write held a CH Close backfill step open
+                // for 40 min on 17 Nov 2026, until its instance shut down.
+                // Fail the write instead, so the chunk step errors and
+                // Inngest retries it from the last saved state.
+                timeoutMS: BUFFER_WRITE_TIMEOUT_MS,
               });
               runningRowsWritten += processedRecords.length;
               logger?.log("info", "Buffered batch to MongoDB temp collection", {
@@ -682,6 +687,12 @@ function resolvePositiveIntEnv(
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
+
+/** Deadline for one insert into the bulk buffer (MongoDB CSOT `timeoutMS`). */
+const BUFFER_WRITE_TIMEOUT_MS = resolvePositiveIntEnv(
+  process.env.SYNC_BULK_BUFFER_WRITE_TIMEOUT_MS,
+  120_000,
+);
 
 const FLUSH_BATCH_SIZE = resolvePositiveIntEnv(
   process.env.SYNC_BULK_FLUSH_BATCH_SIZE,
