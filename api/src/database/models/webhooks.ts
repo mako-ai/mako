@@ -31,6 +31,20 @@ export interface IWebhookEvent extends Document {
     message: string;
     code?: string;
   };
+  /**
+   * `box`: a workspace (boxed) connector's event, handled by a batch run
+   * (connectors/workspace/webhook-batch.ts), never by the inline cron.
+   * Absent for every other event.
+   */
+  lane?: "box";
+  /** The connection a box-lane event was verified for. */
+  dataSourceId?: Types.ObjectId;
+  /** The batch run holding a box-lane event while it is `processing`. */
+  boxClaim?: string;
+  /** When that run claimed it; a stale claim is retried. */
+  claimedAt?: Date;
+  /** Times the connector deferred a box-lane event (capped). */
+  deferrals?: number;
 }
 
 /**
@@ -81,6 +95,11 @@ const WebhookEventSchema = new Schema<IWebhookEvent>(
       message: String,
       code: String,
     },
+    lane: { type: String, enum: ["box"] },
+    dataSourceId: { type: Schema.Types.ObjectId, ref: "SourceConnection" },
+    boxClaim: String,
+    claimedAt: Date,
+    deferrals: Number,
   },
   {
     timestamps: false,
@@ -95,6 +114,10 @@ WebhookEventSchema.index({ flowId: 1, applyStatus: 1, receivedAt: 1 });
 // find({ status: "pending" }).sort({ receivedAt: 1 }). Without a flowId-free
 // index this query does a COLLSCAN + in-memory sort over the whole collection.
 WebhookEventSchema.index({ status: 1, receivedAt: 1 });
+// The same query with `lane: null` (inline events only), and the box-lane
+// sweep that finds flows with pending box events. One index serves both, so
+// a box backlog is never scanned by the inline cron.
+WebhookEventSchema.index({ status: 1, lane: 1, receivedAt: 1 });
 WebhookEventSchema.index({ workspaceId: 1, receivedAt: -1 });
 // Tiered retention by applyStatus (anchored on receivedAt, which is required on
 // every doc so the four partial TTLs fully cover the collection). MongoDB allows

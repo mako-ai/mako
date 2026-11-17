@@ -400,6 +400,16 @@ export abstract class BaseConnector {
   }
 
   /**
+   * Where a verified delivery is turned into change records. `inline`: the
+   * CDC scheduler cron calls `extractWebhookCdcRecords` in the API, as for
+   * every in-process connector. `box`: the connector runs in a sandbox, and
+   * its events wait in their own lane for a batch run (webhook-batch.ts).
+   */
+  webhookDelivery(): "inline" | "box" {
+    return "inline";
+  }
+
+  /**
    * Check if connector can provision provider webhooks automatically.
    */
   supportsWebhookProvisioning(): boolean {

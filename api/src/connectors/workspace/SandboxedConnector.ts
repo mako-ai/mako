@@ -24,6 +24,8 @@ import {
   type FetchState,
   type IncrementalCapabilities,
   type ResumableFetchOptions,
+  type WebhookHandlerOptions,
+  type WebhookVerificationResult,
 } from "../base/BaseConnector";
 import { createHash, randomBytes } from "node:crypto";
 import { NonRetriableError } from "inngest";
@@ -62,6 +64,11 @@ import {
 import { connectorBoxLeasesEnabled } from "./boxes/config";
 import { getBoxScheduler } from "./boxes/scheduler";
 import { connectorSessionReadsEnabled } from "./session-config";
+import { connectorWebhookBatchesEnabled } from "./webhook-config";
+import {
+  declaredWebhookVerification,
+  verifyDeclaredWebhook,
+} from "./webhook-verification";
 import {
   boxSessionTransport,
   sessionReadsSupported,
@@ -501,6 +508,7 @@ export class SandboxedConnector extends BaseConnector {
       config?: Record<string, unknown>;
       catalog?: Record<string, unknown>;
       state?: Record<string, unknown> | unknown[];
+      batch?: Record<string, unknown>;
       maxIterations?: number;
       maxBytes?: number;
       timeoutMs?: number;
@@ -1201,6 +1209,80 @@ export class SandboxedConnector extends BaseConnector {
     const supported = Object.values(perEntity).some(e => e.mode !== "none");
     if (!supported) return { supported: false, mode: "none" };
     return { supported: true, mode: "none", perEntity };
+  }
+
+  /**
+   * Webhooks, with CONNECTOR_WEBHOOK_BATCHES on. The route then verifies
+   * every delivery here, in the API, against the scheme the connector
+   * declared; one that declares none is refused (`verifyWebhook`). Off:
+   * exactly the old path.
+   */
+  supportsWebhooks(): boolean {
+    return connectorWebhookBatchesEnabled();
+  }
+
+  webhookDelivery(): "inline" | "box" {
+    return connectorWebhookBatchesEnabled() ? "box" : "inline";
+  }
+
+  getSupportedWebhookEvents(): string[] {
+    const events = (this.loaded?.spec?.mako as any)?.webhooks?.events;
+    return Array.isArray(events)
+      ? events.filter((e: unknown): e is string => typeof e === "string")
+      : [];
+  }
+
+  /**
+   * The signature check, in the API, with the flow's secret. The secret is
+   * used here and nowhere else: no box, and no connector code, sees it. The
+   * scheme comes from the spec indexed at push time, never from a run.
+   */
+  async verifyWebhook(
+    options: WebhookHandlerOptions,
+  ): Promise<WebhookVerificationResult> {
+    if (!connectorWebhookBatchesEnabled()) {
+      return { valid: false, error: "Webhook batches are off" };
+    }
+    const declaration = declaredWebhookVerification(
+      (await this.definition()).spec,
+    );
+    if (!declaration) {
+      return {
+        valid: false,
+        error: `The connector "${this.slug}" declares no webhook verification Mako can run.`,
+      };
+    }
+    return verifyDeclaredWebhook(declaration, {
+      payload:
+        typeof options.payload === "string"
+          ? options.payload
+          : JSON.stringify(options.payload),
+      headers: options.headers,
+      secret: options.secret,
+    });
+  }
+
+  /** The entities the indexed connector declares, once loaded. */
+  async declaredEntities(): Promise<string[]> {
+    return (await this.definition()).entities ?? [];
+  }
+
+  /**
+   * One webhook batch in the box: `mako-connector webhook --config --batch`.
+   * The config is the connection's, as a read gets it; the batch holds the
+   * stored events and nothing else. Its answer is checked by the caller
+   * (webhook-batch.ts), which trusts nothing in it.
+   */
+  async runWebhookBatch(
+    batch: { events: Array<Record<string, unknown>> },
+    options: { timeoutMs: number },
+  ): Promise<RunResult> {
+    await this.definition();
+    return this.run("webhook", {
+      config: this.readConfig({} as ResumableFetchOptions),
+      batch,
+      timeoutMs: options.timeoutMs,
+    });
   }
 
   getMetadata(): {

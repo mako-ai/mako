@@ -114,13 +114,40 @@ router.openapi(
 
       let event: any;
 
+      // A boxed connector's events wait in their own lane, pinned to the
+      // connection they were verified for: a batch hands a connector only
+      // its own connection's events (webhook-batch.ts), and the inline cron
+      // never sees them, so a slow box cannot hold up anyone else's. Only a
+      // `ws:` connector with CONNECTOR_WEBHOOK_BATCHES on is "box".
+      const boxLane = connector.webhookDelivery?.() === "box";
+
       if (connector.supportsWebhooks()) {
-        const verificationResult = await connector.verifyWebhook({
-          payload: rawBodyText,
-          headers: headers,
-          secret: flow.webhookConfig.secret,
-          query,
-        });
+        const secret = flow.webhookConfig.secret;
+        const verify = () =>
+          connector.verifyWebhook({
+            payload: rawBodyText,
+            headers: headers,
+            secret,
+            query,
+          });
+        let verificationResult: Awaited<ReturnType<typeof verify>>;
+        if (boxLane) {
+          try {
+            verificationResult = await verify();
+          } catch (error) {
+            // The check itself could not run (the workspace connector's
+            // definition failed to load, say). Nothing was stored, so the
+            // vendor must retry: never a 2xx here. In-process connectors
+            // keep today's answer (the outer catch).
+            logger.error("Webhook verification could not run", {
+              flowId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return fail(c, 503, "Webhook verification is unavailable");
+          }
+        } else {
+          verificationResult = await verify();
+        }
 
         if (!verificationResult.valid) {
           logger.error("Webhook signature verification failed", {
@@ -164,6 +191,7 @@ router.openapi(
       const webhookEvent = new WebhookEvent({
         flowId,
         workspaceId,
+        ...(boxLane ? { lane: "box", dataSourceId: sourceConnection._id } : {}),
         // Close (and some other vendors) nest the unique event id at
         // `event.event.id`; the top-level `event.id` is the OBJECT id, which is
         // stable across updates. Falling back to it would defeat the

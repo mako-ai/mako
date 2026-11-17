@@ -28,7 +28,8 @@
  * Search pages also shrink by themselves when one is too large for a chunk
  * (see `search.ts`).
  *
- * The webhook half is in `webhooks.ts`, exported below as `webhook`.
+ * The webhook half is in `webhooks.ts`, exported below as `webhook`. The
+ * SDK's `webhooks` definition, which a box runs, is in `webhook-handler.ts`.
  */
 import { defineConnector } from "@makoai/connector-sdk";
 import type {
@@ -61,6 +62,10 @@ import {
   handleWebhookBatch,
   verifyCloseWebhook,
 } from "./webhooks.ts";
+import {
+  CLOSE_WEBHOOK_FILL_MIN_DELAY_MS,
+  closeWebhookDefinition,
+} from "./webhook-handler.ts";
 
 interface CloseConfig {
   api_key: string;
@@ -123,6 +128,22 @@ function closeClient(ctx: Context<CloseConfig>): CloseClient {
     log: message => ctx.log(message),
   });
   return client;
+}
+
+/**
+ * Webhook fill reads: single-object GETs on the same key, with the
+ * in-process fill client's 100 ms pause instead of the bulk 500 ms.
+ */
+let fillClient: CloseClient | undefined;
+function webhookFillClient(ctx: Context<CloseConfig>): CloseClient {
+  if (!ctx.config.api_key) throw new Error("Close API key not configured");
+  fillClient ??= createCloseClient({
+    apiKey: ctx.config.api_key,
+    baseUrl: closeBaseUrl(ctx.config.__base_url),
+    minDelayMs: CLOSE_WEBHOOK_FILL_MIN_DELAY_MS,
+    log: message => ctx.log(message),
+  });
+  return fillClient;
 }
 
 let customFieldCache: CloseCustomFieldCache | undefined;
@@ -317,6 +338,11 @@ export default defineConnector<CloseConfig>({
     return true;
   },
   entities: ENTITIES,
+  // Verified by Mako's API, handled here in batches (webhook-handler.ts).
+  webhooks: closeWebhookDefinition<CloseConfig>(ctx => ({
+    api: webhookFillClient(ctx),
+    log: message => ctx.log(message),
+  })),
 });
 
 /**

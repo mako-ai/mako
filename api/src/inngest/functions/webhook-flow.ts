@@ -37,7 +37,7 @@ const CDC_MATERIALIZE_CONCURRENCY_PER_FLOW = Math.max(
   1,
 );
 
-type WebhookCdcRecord = {
+export type WebhookCdcRecord = {
   entity: string;
   recordId: string;
   operation: "upsert" | "delete";
@@ -122,6 +122,37 @@ export async function buildWebhookCdcRecords(params: {
     }
   }
 
+  return {
+    records: shapeWebhookCdcRecords({
+      rawRecords,
+      sourceConnection,
+      flow,
+      webhookEvent,
+    }),
+    extractedCount: extractedRecords.length,
+  };
+}
+
+/**
+ * Connector records -> the CDC records the flow writes: the flow's entity
+ * selection applied, `_dataSourceId`/`_dataSourceName`/`_syncedAt` stamped,
+ * and a stable changeId. Shared by the inline cron and box-lane batches
+ * (connectors/workspace/webhook-batch.ts), so the two cannot drift.
+ */
+export function shapeWebhookCdcRecords(params: {
+  rawRecords: Array<{
+    entity: string;
+    recordId?: unknown;
+    operation?: string;
+    payload?: unknown;
+    sourceTs?: unknown;
+    changeId?: unknown;
+  }>;
+  sourceConnection: { id: string; name: string };
+  flow: Parameters<typeof isEntityEnabledForFlow>[0];
+  webhookEvent: { eventId: string; receivedAt: Date | string };
+}): WebhookCdcRecord[] {
+  const { rawRecords, sourceConnection, flow, webhookEvent } = params;
   const receivedAt = new Date(webhookEvent.receivedAt);
   const out: WebhookCdcRecord[] = [];
 
@@ -175,7 +206,7 @@ export async function buildWebhookCdcRecords(params: {
     });
   }
 
-  return { records: out, extractedCount: extractedRecords.length };
+  return out;
 }
 
 /**
@@ -183,6 +214,63 @@ export async function buildWebhookCdcRecords(params: {
  * Superseded by a TTL index on webhookevents.receivedAt (7 days).
  * MongoDB's background thread handles expiration automatically.
  */
+
+/**
+ * Reset failed and stale-processing inline webhook events to pending, for the
+ * CDC scheduler cron to pick up again.
+ */
+export async function retryFailedInlineWebhooks(logger: {
+  info: (...args: any[]) => void;
+}) {
+  // Inline events only (`lane: null`). Box-lane events have their own
+  // retry, per workspace (connectors/workspace/webhook-batch.ts), so a
+  // box backlog can never fill this global batch.
+  const failedEvents = await WebhookEvent.find({
+    status: "failed",
+    lane: null,
+    attempts: { $lt: 5 },
+  })
+    .select("_id flowId eventId")
+    .limit(500)
+    .lean();
+
+  const staleProcessingCutoff = new Date(Date.now() - 5 * 60 * 1000);
+  const staleProcessingEvents = await WebhookEvent.find({
+    status: "processing",
+    lane: null,
+    attempts: { $lt: 5 },
+    receivedAt: { $lt: staleProcessingCutoff },
+  })
+    .select("_id flowId eventId")
+    .limit(500)
+    .lean();
+
+  const allEvents = [...failedEvents, ...staleProcessingEvents];
+  if (allEvents.length === 0) {
+    return { retried: 0, failed: 0, staleProcessing: 0 };
+  }
+
+  // Reset all to pending — the CDC scheduler cron picks them up.
+  await WebhookEvent.updateMany(
+    { _id: { $in: allEvents.map(e => e._id) } },
+    {
+      $set: { status: "pending" },
+      $unset: { applyError: "", error: "", processedAt: "" },
+    },
+  );
+
+  logger.info("Reset webhook events to pending for retry", {
+    total: allEvents.length,
+    failed: failedEvents.length,
+    staleProcessing: staleProcessingEvents.length,
+  });
+
+  return {
+    retried: allEvents.length,
+    failed: failedEvents.length,
+    staleProcessing: staleProcessingEvents.length,
+  };
+}
 
 /**
  * Retry failed / stuck webhook events.
@@ -199,51 +287,9 @@ export const webhookRetryFunction = inngest.createFunction(
     triggers: { cron: "*/30 * * * *" },
   },
   async ({ step, logger }) => {
-    const result = await step.run("retry-failed-events", async () => {
-      const failedEvents = await WebhookEvent.find({
-        status: "failed",
-        attempts: { $lt: 5 },
-      })
-        .select("_id flowId eventId")
-        .limit(500)
-        .lean();
-
-      const staleProcessingCutoff = new Date(Date.now() - 5 * 60 * 1000);
-      const staleProcessingEvents = await WebhookEvent.find({
-        status: "processing",
-        attempts: { $lt: 5 },
-        receivedAt: { $lt: staleProcessingCutoff },
-      })
-        .select("_id flowId eventId")
-        .limit(500)
-        .lean();
-
-      const allEvents = [...failedEvents, ...staleProcessingEvents];
-      if (allEvents.length === 0) {
-        return { retried: 0, failed: 0, staleProcessing: 0 };
-      }
-
-      // Reset all to pending — the CDC scheduler cron picks them up.
-      await WebhookEvent.updateMany(
-        { _id: { $in: allEvents.map(e => e._id) } },
-        {
-          $set: { status: "pending" },
-          $unset: { applyError: "", error: "", processedAt: "" },
-        },
-      );
-
-      logger.info("Reset webhook events to pending for retry", {
-        total: allEvents.length,
-        failed: failedEvents.length,
-        staleProcessing: staleProcessingEvents.length,
-      });
-
-      return {
-        retried: allEvents.length,
-        failed: failedEvents.length,
-        staleProcessing: staleProcessingEvents.length,
-      };
-    });
+    const result = await step.run("retry-failed-events", () =>
+      retryFailedInlineWebhooks(logger),
+    );
 
     return result;
   },
@@ -513,12 +559,16 @@ const CDC_INGEST_BATCH_LIMIT = Math.max(
  * Ingest pending WebhookEvents into CdcChangeEvents, grouped by flow.
  * Returns the number of events ingested.
  */
-async function ingestPendingWebhookEvents(logger: {
+export async function ingestPendingWebhookEvents(logger: {
   info: (...args: any[]) => void;
   warn: (...args: any[]) => void;
 }): Promise<{ ingested: number; dropped: number; failed: number }> {
+  // Box-lane events are a boxed connector's: batch runs handle them
+  // (connectors/workspace/webhook-batch.ts). `lane: null` keeps a box
+  // backlog out of this global scan ({ status, lane, receivedAt } index).
   const pendingEvents = await WebhookEvent.find({
     status: "pending",
+    lane: null,
   })
     .sort({ receivedAt: 1 })
     .limit(CDC_INGEST_BATCH_LIMIT)

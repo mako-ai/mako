@@ -79,6 +79,51 @@ drive it.
   restarts `read` from the previous chunk's state, so a connector reads the
   same pages either way. Nothing changes for the connector author.
 
+## Webhooks
+
+A connector may handle its vendor's webhooks. Mako receives every delivery
+and checks its signature in its own API, with the flow's signing secret. The
+secret never reaches the connector. So the connector declares the vendor's
+scheme as data, and Mako runs it:
+
+```ts
+webhooks: {
+  verification: {
+    scheme: "hmac-sha256",
+    secretEncoding: "hex", // or "base64", "utf8"
+    signedPayload: ["header:close-sig-timestamp", "body"], // or "literal:."
+    signatureHeader: "close-sig-hash",
+    signatureEncoding: "hex", // or "base64"
+    // signaturePrefix: "sha256=",
+    timestampHeader: "close-sig-timestamp", // Unix seconds; refuses replays
+    toleranceSeconds: 300,
+  },
+  events: ["lead.updated" /* ... */],
+  async handleBatch(ctx, events) {
+    return events.map(e => ({ eventId: e.eventId, outcome: "unmapped" }));
+  },
+},
+```
+
+Mako stores verified deliveries and hands them to `handleBatch` in batches
+(`mako-connector webhook --config config.json --batch batch.json`), with
+the connection's credential in `ctx.config`. Return one outcome per event,
+in order:
+
+- `records`: the change records, `{ entity, recordId, operation, payload,
+  sourceTs?, changeId? }`. `payload` must be the whole row, as `read` emits
+  it: a missing column is written as NULL. When a vendor sends a partial
+  object, re-fetch the row by id with `ctx`.
+- `unmapped`: an event type the connector does not handle.
+- `skipped`: nothing to write on purpose, with a `reason`.
+- `extract_failed`: a handled type whose payload yielded nothing, or whose
+  fill failed. Mako retries it, up to 5 attempts.
+- `deferred`: not now, for example a request budget is spent. Mako retries
+  it later without counting the attempt.
+
+Mako drops records for undeclared entities, stamps `_dataSourceId` and
+`_syncedAt`, applies the flow's entity selection and writes the rest.
+
 ## `config.properties` is not optional
 
 Declare `config: { properties: { ... } }` even when the connector needs no

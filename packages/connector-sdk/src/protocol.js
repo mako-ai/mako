@@ -16,6 +16,11 @@ export const RECORD = "RECORD";
 export const STATE = "STATE";
 export const LOG = "LOG";
 export const TRACE = "TRACE";
+/**
+ * Mako's own message, outside Airbyte's protocol: one webhook event's
+ * outcome. A stock Airbyte consumer never runs the `webhook` command.
+ */
+export const WEBHOOK = "WEBHOOK";
 
 /**
  * Shorthand a connector author writes -> the JSON Schema the wire carries.
@@ -106,6 +111,11 @@ export function emitState(stream, streamState, { hasMore } = {}) {
   };
   if (hasMore !== undefined) state.mako = { hasMore };
   write({ type: STATE, state });
+}
+
+/** One event's outcome from the `webhook` command, in the batch's order. */
+export function emitWebhookOutcome(outcome) {
+  return write({ type: WEBHOOK, webhook: outcome });
 }
 
 /** Returns the line's size in bytes: logs count toward the byte budget too. */
