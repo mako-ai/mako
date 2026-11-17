@@ -137,6 +137,18 @@ export function stripeSupportedWebhookEvents(): string[] {
   return EVENTS.map(([event]) => event);
 }
 
+/**
+ * Only the events of the given entities. No entities means no explicit
+ * selection: every supported event.
+ */
+export function stripeWebhookEventsForEntities(entities: string[]): string[] {
+  if (entities.length === 0) return stripeSupportedWebhookEvents();
+  const entitySet = new Set(entities.map(e => e.toLowerCase()));
+  return EVENTS.filter(([, mapping]) =>
+    entitySet.has(mapping.entity.toLowerCase()),
+  ).map(([event]) => event);
+}
+
 /** Verify a delivery with the SDK (`stripe-signature` + endpoint secret). */
 export function verifyStripeWebhook(
   stripe: () => Stripe,

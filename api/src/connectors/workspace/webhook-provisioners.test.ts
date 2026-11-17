@@ -100,8 +100,10 @@ void test("adopt reads the key from the webhook when the list leaves it out", as
   assert.ok(calls.includes("GET /webhook/whsub_k/"));
 });
 
-void test("only Close has a provisioner, and it needs a key", async () => {
+void test("only Close and Stripe have a provisioner, and each needs a key", async () => {
   assert.equal(hasWebhookProvisioner("close"), true);
+  assert.equal(hasWebhookProvisioner("stripe"), true);
+  await assert.rejects(() => webhookProvisionerFor("stripe", {}), /API key/);
   assert.equal(hasWebhookProvisioner("acme"), false);
   assert.equal(hasWebhookProvisioner("__proto__"), false);
   assert.equal(hasWebhookProvisioner("constructor"), false);

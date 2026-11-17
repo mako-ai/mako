@@ -105,6 +105,20 @@ webhooks: {
 },
 ```
 
+Stripe signs differently: one header carries `t=<unix seconds>` and one or
+more `v1=<hex>`, each an HMAC-SHA256 of `<t>.<raw body>`. Declare it as
+`stripe-v1`. The signed bytes are fixed by the scheme, and the timestamp is
+always signed:
+
+```ts
+verification: {
+  scheme: "stripe-v1",
+  signatureHeader: "stripe-signature",
+  secretEncoding: "utf8", // the whole `whsec_...` string is the key
+  toleranceSeconds: 300,
+},
+```
+
 Mako stores verified deliveries and hands them to `handleBatch` in batches
 (`mako-connector webhook --config config.json --batch batch.json`), with
 the connection's credential in `ctx.config`. Return one outcome per event,

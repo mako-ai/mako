@@ -33,8 +33,34 @@ const INCREMENTAL_MODES = ["native", "client-filter", "created-anchor"];
  *   body, `header:<name>` a request header, `literal:<text>` fixed text.
  * - `signatureHeader`: the header carrying the signature, in
  *   `signatureEncoding`, after an optional `signaturePrefix` (`sha256=`).
+ *
+ * `stripe-v1` is Stripe's scheme, which one header carries whole:
+ * `t=<unix seconds>,v1=<hex>[,v1=<hex>...]`, each `v1` an HMAC-SHA256 of
+ * `<t>.<raw body>` under the secret's UTF-8 bytes. It declares only
+ * `signatureHeader`, `secretEncoding: "utf8"` and `toleranceSeconds`; the
+ * signed bytes are fixed by the scheme, and the timestamp is always signed.
  */
-export const WEBHOOK_VERIFICATION_SCHEMES = ["hmac-sha256"];
+export const WEBHOOK_VERIFICATION_SCHEMES = ["hmac-sha256", "stripe-v1"];
+const STRIPE_V1_KEYS = new Set(["scheme", "signatureHeader", "secretEncoding", "toleranceSeconds"]);
+
+function validateStripeV1(v) {
+  const problems = [];
+  for (const key of Object.keys(v)) {
+    if (!STRIPE_V1_KEYS.has(key)) {
+      problems.push(`webhooks.verification.${key} is not part of the stripe-v1 scheme`);
+    }
+  }
+  if (typeof v.signatureHeader !== "string" || !HEADER_NAME.test(v.signatureHeader)) {
+    problems.push("webhooks.verification.signatureHeader must be a lowercase header name");
+  }
+  if (v.secretEncoding !== "utf8") {
+    problems.push('webhooks.verification.secretEncoding must be "utf8" for stripe-v1');
+  }
+  if (!Number.isSafeInteger(v.toleranceSeconds) || v.toleranceSeconds < 1 || v.toleranceSeconds > 86400) {
+    problems.push("webhooks.verification.toleranceSeconds must be a whole number from 1 to 86400");
+  }
+  return problems;
+}
 const SECRET_ENCODINGS = ["hex", "base64", "utf8"];
 const SIGNATURE_ENCODINGS = ["hex", "base64"];
 const HEADER_NAME = /^[a-z0-9-]{1,64}$/;
@@ -43,8 +69,9 @@ export function validateWebhookVerification(verification) {
   if (!verification || typeof verification !== "object") {
     return ["webhooks.verification must be an object"];
   }
-  const problems = [];
   const v = verification;
+  if (v.scheme === "stripe-v1") return validateStripeV1(v);
+  const problems = [];
   if (!WEBHOOK_VERIFICATION_SCHEMES.includes(v.scheme)) {
     problems.push(`webhooks.verification.scheme must be one of ${WEBHOOK_VERIFICATION_SCHEMES.join(", ")}`);
   }

@@ -15,8 +15,11 @@
  *   connector as `options.since`; `SandboxedConnector` puts the same value
  *   into the stream state on every chunk.
  *
- * Webhooks are not here. RFC connectors-as-code §4 defines `webhook` and
- * `subscribe` commands that the SDK does not implement yet.
+ * Webhooks: Mako's API verifies each delivery against the `stripe-v1`
+ * scheme this folder declares, then hands verified events to the box in
+ * batches (`webhook-handler.ts`). The API also creates the Stripe endpoint
+ * with the connection's key and keeps its signing secret on the flow. No
+ * box sees that secret.
  */
 import Stripe from "stripe";
 import { defineConnector } from "@makoai/connector-sdk";
@@ -27,6 +30,10 @@ import type {
 } from "@makoai/connector-sdk";
 import { listStripePage } from "./lists.ts";
 import { STRIPE_ENTITY_SCHEMA_MAP, stripeJsonSchema } from "./schema.ts";
+import {
+  STRIPE_WEBHOOK_FILL_TIMEOUT_MS,
+  stripeWebhookDefinition,
+} from "./webhook-handler.ts";
 
 /** Pinned: it decides the shape of every record. Same as the in-process one. */
 const STRIPE_API_VERSION = "2023-10-16" as Stripe.LatestApiVersion;
@@ -127,10 +134,14 @@ function hostConfig(
   }
 }
 
-function stripeClient(ctx: Context<StripeConfig>): Stripe {
+function stripeClient(
+  ctx: Context<StripeConfig>,
+  options: Pick<Stripe.StripeConfig, "timeout" | "maxNetworkRetries"> = {},
+): Stripe {
   if (!ctx.config.api_key) throw new Error("Stripe API key is required");
   return new Stripe(ctx.config.api_key, {
     apiVersion: STRIPE_API_VERSION,
+    ...options,
     ...hostConfig(ctx.config.api_base_url, message => ctx.log(message)),
   });
 }
@@ -200,7 +211,7 @@ function entity(
 
 export default defineConnector<StripeConfig>({
   name: "stripe",
-  version: "1.0.0",
+  version: "1.1.0",
   title: "Stripe",
   documentationUrl: "https://docs.stripe.com/api",
   config: {
@@ -231,4 +242,13 @@ export default defineConnector<StripeConfig>({
       entity(name, label, incremental),
     ]),
   ),
+  // Verified by Mako's API, handled here in batches (webhook-handler.ts).
+  webhooks: stripeWebhookDefinition<StripeConfig>(ctx => ({
+    stripe: () =>
+      stripeClient(ctx, {
+        timeout: STRIPE_WEBHOOK_FILL_TIMEOUT_MS,
+        maxNetworkRetries: 0,
+      }),
+    log: message => ctx.log(message),
+  })),
 });
