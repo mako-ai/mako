@@ -12,8 +12,9 @@
  * does: an invitee event yields the invitee and its embedded scheduled
  * event, an event_type event yields the event type.
  *
- * Then it fills what Calendly leaves out. The writer replaces a whole row,
- * so a column a payload lacks is written NULL. In RealAdvisor's warehouse,
+ * Then it fills what Calendly leaves out. A row a webhook writes first
+ * lands without those columns, and a key sent null overwrites (an absent
+ * key is left alone on an existing row since PR 1347). In RealAdvisor's warehouse,
  * 29,901 of 29,984 webhook-written scheduled events had `calendar_event`
  * NULL, and 11 of 11 webhook-written event types had `slug` and `profile`
  * NULL. Invitee payloads carry every invitee column. So:
@@ -38,7 +39,6 @@ import type {
   WebhookDefinition,
   WebhookEvent,
   WebhookOutcome,
-  WebhookDelivery,
   WebhookVerification,
 } from "@makoai/connector-sdk";
 import {
@@ -99,25 +99,35 @@ export function calendlyWebhookEventsForEntities(entities: string[]): string[] {
 }
 
 /**
- * `verifyCalendlyWebhook` as data. `t` and `v1` come from the one header;
- * the signed bytes are `t`, ".", then the raw body.
+ * `verifyCalendlyWebhook` as data: Calendly's header is Stripe's format,
+ * `t=<unix seconds>,v1=<hex>`, an HMAC-SHA256 of `<t>.<raw body>` under
+ * the signing key's UTF-8 bytes, within 3 minutes.
  */
 export const CALENDLY_WEBHOOK_VERIFICATION: WebhookVerification = {
-  scheme: "hmac-sha256",
-  secretEncoding: "utf8",
-  signedPayload: ["param:t", "literal:.", "body"],
+  scheme: "stripe-v1",
   signatureHeader: "calendly-webhook-signature",
-  signatureEncoding: "hex",
-  signatureParam: "v1",
-  timestampParam: "t",
+  secretEncoding: "utf8",
   toleranceSeconds: 180,
 };
 
-/** How Mako names a stored delivery: in-process `verifyCalendlyWebhook`'s id and type. */
-export const CALENDLY_WEBHOOK_DELIVERY: WebhookDelivery = {
-  idFields: ["created_at", "payload.uri"],
-  typeField: "event",
-};
+/**
+ * A stored event as the in-process connector holds it: Mako stores the raw
+ * body, keyed `<created_at>:<payload.uri>` and typed by `event`, as
+ * in-process `verifyCalendlyWebhook` names it; in-process adds those to
+ * the body as `id` and `type`.
+ */
+export function inProcessCalendlyEvent(event: WebhookEvent): WebhookEvent {
+  const raw = event.rawPayload;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return event;
+  return {
+    ...event,
+    rawPayload: {
+      ...(raw as Record<string, unknown>),
+      type: event.eventType,
+      id: event.eventId,
+    },
+  };
+}
 
 /** One change record, as the SDK's `WebhookChangeRecord`. */
 export interface WebhookChangeRecord {
@@ -423,8 +433,10 @@ export function calendlyWebhookDefinition<Config>(
 ): WebhookDefinition<Config> {
   return {
     verification: CALENDLY_WEBHOOK_VERIFICATION,
-    delivery: CALENDLY_WEBHOOK_DELIVERY,
+    eventIdPath: ["created_at", "payload.uri"],
+    eventTypePath: "event",
     events: [...CALENDLY_SUPPORTED_WEBHOOK_EVENTS],
-    handleBatch: (ctx, events) => handleCalendlyWebhookBatch(deps(ctx), events),
+    handleBatch: (ctx, events) =>
+      handleCalendlyWebhookBatch(deps(ctx), events.map(inProcessCalendlyEvent)),
   };
 }

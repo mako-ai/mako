@@ -21,6 +21,12 @@ import { isHandle } from "./user-handles";
 export const APPS_DIR = "apps";
 /** Workflows live next to apps: `workflows/<name>/workflow.ts`. */
 export const WORKFLOWS_DIR = "workflows";
+/**
+ * Connector folders (RFC #947). Code on main here receives the keys of its
+ * connections in a box, so, like `workflows/`, only an admin lands it on main
+ * (workflows/policy.ts ADMIN_ONLY_DIRS). Same value as resolver.ts's.
+ */
+export const CONNECTOR_FOLDERS_DIR = "connectors";
 export const USERS_DIR = "users";
 export const APP_MANIFEST = "mako.json";
 /** A committed marker that keeps an otherwise empty folder in git. */

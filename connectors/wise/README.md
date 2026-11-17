@@ -68,8 +68,8 @@ defers the event, and any other failure fails it for a retry.
 
 ## What differs from in-process
 
-- Webhook rows are filled (above). In-process writes them partial, which
-  NULLs every column the event lacks.
+- Webhook rows are filled (above). In-process writes the extraction's
+  nulls, which overwrite every column the event lacks.
 - `api_base_url` must be a Wise host over https or a loopback address.
 - `sca_private_key` is a password field in the form, not a textarea. It is
   encrypted on both.

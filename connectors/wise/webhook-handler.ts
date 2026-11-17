@@ -13,10 +13,12 @@
  * The handler starts from `handleWebhookBatch` (the in-process mapping,
  * parity-tested), then fills what a Wise payload leaves out. A Wise event
  * carries a state change, not the object: a `transfers#state-change` upsert
- * has the transfer's id, profile, account and states and nothing else. The
- * CDC writer replaces the whole row, so written as is, every other column
- * goes NULL. RealAdvisor's warehouse shows it: 5 of 5 webhook-written
- * transfers have `targetValue`, `sourceCurrency`, `created` and `user` NULL.
+ * has the transfer's id, profile, account and states and nothing else, and
+ * the extraction sets the columns it lacks to null. Written as is, those
+ * nulls overwrite the row (a key that is absent is left alone since PR
+ * 1347; a null is not), and a new row lands with them NULL. RealAdvisor's
+ * warehouse shows it: 5 of 5 webhook-written transfers have `targetValue`,
+ * `sourceCurrency`, `created` and `user` NULL.
  *
  * - An upsert whose payload lacks, or has null for, any of its entity's
  *   REST columns (`WISE_WEBHOOK_FILL`) gets one GET of the object. The GET
@@ -37,7 +39,6 @@
 import type {
   Context,
   WebhookDefinition,
-  WebhookDelivery,
   WebhookEvent,
   WebhookOutcome,
   WebhookVerification,
@@ -57,7 +58,6 @@ import {
 export const WISE_WEBHOOK_VERIFICATION: WebhookVerification = {
   scheme: "rsa-sha256",
   publicKeys: [WISE_PRODUCTION_PUBLIC_KEY, WISE_SANDBOX_PUBLIC_KEY],
-  signedPayload: ["body"],
   signatureHeader: "x-signature-sha256",
   signatureEncoding: "base64",
   testNotification: {
@@ -67,11 +67,60 @@ export const WISE_WEBHOOK_VERIFICATION: WebhookVerification = {
   },
 };
 
-/** The in-process event id (`X-Delivery-Id`) and type (`event_type`). */
-export const WISE_WEBHOOK_DELIVERY: WebhookDelivery = {
-  idHeader: "x-delivery-id",
-  typeField: "event_type",
-};
+/**
+ * The event id in-process `verifyWiseWebhook` gives a delivery that has no
+ * `X-Delivery-Id`: type, resource id and time, else the subscription id.
+ */
+export function wiseFallbackEventId(
+  body: Record<string, unknown>,
+  eventType: string | undefined,
+): string | undefined {
+  const data = (body.data ?? {}) as Record<string, unknown>;
+  const resource = (data.resource ?? {}) as Record<string, unknown>;
+  const resourceId =
+    resource.id != null
+      ? String(resource.id)
+      : data.balance_id != null
+        ? String(data.balance_id)
+        : undefined;
+  const occurredAt =
+    typeof data.occurred_at === "string" ? data.occurred_at : "";
+  const stepId = data.step_id != null ? String(data.step_id) : "";
+  if (eventType && resourceId) {
+    return `${eventType}:${resourceId}:${occurredAt || stepId || body.sent_at || ""}`;
+  }
+  return typeof body.subscription_id === "string"
+    ? body.subscription_id
+    : undefined;
+}
+
+/** Mako's id for a body it found no declared id for: a SHA-1 of the body. */
+const BODY_HASH_ID = /^[0-9a-f]{40}$/;
+
+/**
+ * A stored event as the in-process connector holds it. Mako stores the raw
+ * body, keyed by `X-Delivery-Id` (`eventIdHeader`), or by a SHA-1 of the
+ * body when the header is missing, and typed by `event_type`. In-process
+ * `verifyWiseWebhook` adds `type`, `event_type` and `id` (the header, else
+ * its own fallback) to the body, and the extraction reads them.
+ */
+export function inProcessWiseEvent(event: WebhookEvent): WebhookEvent {
+  const raw = event.rawPayload;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return event;
+  const body = raw as Record<string, unknown>;
+  const id = BODY_HASH_ID.test(event.eventId)
+    ? wiseFallbackEventId(body, event.eventType)
+    : event.eventId;
+  return {
+    ...event,
+    rawPayload: {
+      ...body,
+      type: event.eventType,
+      ...("event_type" in body ? { event_type: event.eventType } : {}),
+      ...(id !== undefined ? { id } : {}),
+    },
+  };
+}
 
 type Row = Record<string, unknown>;
 
@@ -364,8 +413,10 @@ export function wiseWebhookDefinition<Config>(
 ): WebhookDefinition<Config> {
   return {
     verification: WISE_WEBHOOK_VERIFICATION,
-    delivery: WISE_WEBHOOK_DELIVERY,
+    eventIdHeader: "x-delivery-id",
+    eventTypePath: "event_type",
     events: [...WISE_SUPPORTED_WEBHOOK_EVENTS],
-    handleBatch: (ctx, events) => handleWiseWebhookBatch(deps(ctx), events),
+    handleBatch: (ctx, events) =>
+      handleWiseWebhookBatch(deps(ctx), events.map(inProcessWiseEvent)),
   };
 }

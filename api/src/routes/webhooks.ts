@@ -189,6 +189,13 @@ router.openapi(
         }
       }
 
+      // A boxed connector says where its vendor puts the event id and type
+      // (PandaDoc posts a bare array, Claap nests the type); without an id
+      // the box lane keys on a hash of the body, never a random id.
+      const boxIdentity = boxLane
+        ? connector.webhookEventIdentity?.(event, rawBodyText, headers)
+        : undefined;
+
       const webhookEvent = new WebhookEvent({
         flowId,
         workspaceId,
@@ -198,8 +205,10 @@ router.openapi(
         // stable across updates. Falling back to it would defeat the
         // (flowId,eventId) unique index for vendor retries. Prefer the nested
         // event id, then top-level, then a random id as a last resort.
-        eventId: event.id || event.event?.id || randomUUID(),
+        eventId:
+          boxIdentity?.eventId || event.id || event.event?.id || randomUUID(),
         eventType:
+          boxIdentity?.eventType ||
           event.type ||
           event.event_type ||
           event.action ||
@@ -211,7 +220,13 @@ router.openapi(
         attempts: 0,
         rawPayload: event,
         // Minus any shared-secret header: a token must never sit in Mongo.
-        signature: JSON.stringify(redactWebhookSecretHeaders(headers)),
+        // A `shared-secret` connector's declared header holds the secret too.
+        signature: JSON.stringify(
+          redactWebhookSecretHeaders(
+            headers,
+            connector.webhookSecretHeaders?.() ?? [],
+          ),
+        ),
       });
 
       await webhookEvent.save();

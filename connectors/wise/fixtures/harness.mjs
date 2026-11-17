@@ -1062,23 +1062,27 @@ export function runFolderWebhook(input) {
 
 /** The in-process connector's answer for the same batch, same shape. */
 export function inProcessWebhookOutcomes(connector, events) {
-  return events.map(({ eventId, eventType, rawPayload }) => {
-    if (!connector.getWebhookEventMapping(eventType)) {
-      return { eventId, outcome: "unmapped" };
-    }
-    const records = (
-      connector.extractWebhookCdcRecords(rawPayload, eventType) ?? []
-    ).filter(Boolean);
-    if (records.length === 0) return { eventId, outcome: "extract_failed" };
-    return {
-      eventId,
-      outcome: "records",
-      records: records.map(record => ({
-        ...record,
-        sourceTs: record.sourceTs.toISOString(),
-      })),
-    };
-  });
+  // In-process stores the event its own check made of the delivery.
+  return events.map(
+    ({ eventId, eventType, rawPayload: stored, inProcessPayload }) => {
+      const rawPayload = inProcessPayload ?? stored;
+      if (!connector.getWebhookEventMapping(eventType)) {
+        return { eventId, outcome: "unmapped" };
+      }
+      const records = (
+        connector.extractWebhookCdcRecords(rawPayload, eventType) ?? []
+      ).filter(Boolean);
+      if (records.length === 0) return { eventId, outcome: "extract_failed" };
+      return {
+        eventId,
+        outcome: "records",
+        records: records.map(record => ({
+          ...record,
+          sourceTs: record.sourceTs.toISOString(),
+        })),
+      };
+    },
+  );
 }
 
 /**

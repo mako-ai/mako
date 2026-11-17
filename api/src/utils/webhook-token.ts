@@ -16,8 +16,15 @@ import { createHash, timingSafeEqual } from "node:crypto";
  */
 export const WEBHOOK_TOKEN_HEADER = "x-mako-webhook-token";
 
-/** Headers that carry the shared secret and must never be persisted. */
-const SECRET_HEADERS = new Set([WEBHOOK_TOKEN_HEADER, "authorization"]);
+/**
+ * Headers that carry the shared secret and must never be persisted. Claap
+ * sends the flow's secret itself in `x-claap-webhook-secret`.
+ */
+const SECRET_HEADERS = new Set([
+  WEBHOOK_TOKEN_HEADER,
+  "authorization",
+  "x-claap-webhook-secret",
+]);
 
 export function presentedWebhookToken(
   headers: Record<string, string | undefined>,
@@ -46,13 +53,19 @@ export function webhookTokenMatches(
   return timingSafeEqual(a, b);
 }
 
-/** The request headers minus the ones that carry a shared secret. */
+/**
+ * The request headers minus the ones that carry a shared secret: the fixed
+ * list, plus `extra` (a connector's declared secret header).
+ */
 export function redactWebhookSecretHeaders(
   headers: Record<string, string>,
+  extra: Iterable<string> = [],
 ): Record<string, string> {
+  const secret = new Set(SECRET_HEADERS);
+  for (const name of extra) secret.add(name.toLowerCase());
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) {
-    out[name] = SECRET_HEADERS.has(name.toLowerCase()) ? "[redacted]" : value;
+    out[name] = secret.has(name.toLowerCase()) ? "[redacted]" : value;
   }
   return out;
 }

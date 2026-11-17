@@ -51,7 +51,10 @@ import {
   wiseWebhookPublicKeys,
   WISE_SUPPORTED_WEBHOOK_EVENTS,
 } from "./webhooks.ts";
-import { wiseWebhookDefinition } from "./webhook-handler.ts";
+import {
+  wiseWebhookDefinition,
+  inProcessWiseEvent,
+} from "./webhook-handler.ts";
 
 interface WiseConfig {
   api_key: string;
@@ -322,5 +325,7 @@ export const webhook = {
       wiseWebhookPublicKeys(Boolean(options.sandbox), options.secret),
     ),
   changeRecords: wiseWebhookChangeRecords,
-  handleBatch: handleWebhookBatch,
+  /** As the box runs it: the stored event made in-process-shaped, then mapped. */
+  handleBatch: (events: Parameters<typeof inProcessWiseEvent>[0][]) =>
+    handleWebhookBatch(events.map(inProcessWiseEvent)),
 };

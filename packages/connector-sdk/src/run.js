@@ -218,14 +218,17 @@ export async function run(argv = process.argv.slice(2)) {
 
   if (command === "webhook") {
     // A batch of stored, verified deliveries, as Mako writes it:
-    // `{ events: [{ eventId, eventType, rawPayload, receivedAt }] }`. The
+    // `{ events: [{ eventId, eventType, rawPayload, receivedAt }],
+    // enabledEntities? }`. The
     // webhook's signing secret is never in it, nor in `--config`.
     if (!options.batch) throw new Error("webhook needs --batch <file>");
     const batch = readJson(options.batch);
     const events = Array.isArray(batch?.events) ? batch.events : null;
     if (!events) throw new Error("The webhook batch has no events array.");
     const ctx = createContext({ config, log });
-    const outcomes = await connector.handleWebhooks(ctx, events);
+    const outcomes = await connector.handleWebhooks(ctx, events, {
+      enabledEntities: Array.isArray(batch?.enabledEntities) ? batch.enabledEntities : undefined,
+    });
     for (const outcome of outcomes) {
       emitWebhookOutcome(outcome);
       if (process.stdout.writableNeedDrain) await once(process.stdout, "drain");
@@ -259,8 +262,11 @@ async function readChunk({
   budget.logBytes = 0;
   let latest = ctx.state;
   let exhausted = true;
+  let broke = false;
+  let lastHasMore;
 
   for await (const batch of entity.read(ctx, ctx.state)) {
+    lastHasMore = batch.hasMore;
     for (const record of batch.records ?? []) bytes += emitRecord(name, record);
     // A session's stdout is a pipe whose reader holds the connector back
     // while the API is behind. Node buffers pipe writes it cannot hand over,
@@ -271,6 +277,7 @@ async function readChunk({
     iterations++;
     if (batch.hasMore === false) {
       exhausted = true;
+      broke = true;
       break;
     }
     const overBytes = bytes + budget.logBytes >= maxBytes;
@@ -289,6 +296,7 @@ async function readChunk({
         );
       }
       exhausted = false;
+      broke = true;
       break;
     }
     if (iterations >= maxIterations || overBytes) {
@@ -302,8 +310,21 @@ async function readChunk({
       // completed page ended: the next chunk resumes there, and no row
       // is read twice or skipped.
       exhausted = false;
+      broke = true;
       break;
     }
+  }
+  // A read that returns after a batch with `hasMore: true` ends its chunk
+  // there on purpose (a per-chunk cap of its own, a quota checkpoint): the
+  // next chunk resumes from its state. That state must have moved, or the
+  // next chunk would read the same pages forever.
+  if (!broke && lastHasMore === true) {
+    if (JSON.stringify(latest) === JSON.stringify(ctx.state)) {
+      throw new Error(
+        `Entity "${name}" ended its read with hasMore: true and its state unchanged, so the next chunk would re-read the same pages.`,
+      );
+    }
+    exhausted = false;
   }
   return { latest, exhausted };
 }

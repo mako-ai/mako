@@ -29,7 +29,7 @@ jobs:
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       SERVICE_NAME: mako-pr-${{ github.event.pull_request.number }}
-      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
+      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_PREVIEW_SERVICE_ACCOUNT }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -177,7 +177,7 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
-          credentials_json: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
+          credentials_json: ${{ secrets.GCP_PREVIEW_SERVICE_ACCOUNT }}
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v3

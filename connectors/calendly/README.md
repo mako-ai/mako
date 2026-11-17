@@ -52,8 +52,8 @@ Mako checks every delivery in its API before storing it:
 `<t>.<raw body>` under the signing key, `t` within 180 s of now. A delivery's
 id is `<created_at>:<payload.uri>`, so a resend is stored once.
 
-Calendly's payloads leave columns out, and the writer replaces a whole row.
-So the handler fills a partial scheduled event or event type from
+Calendly's payloads leave columns out, so a row a webhook writes first
+would land without them. So the handler fills a partial scheduled event or event type from
 `GET /scheduled_events/<uuid>` or `GET /event_types/<uuid>`. Only the
 columns the payload lacks or sends null are filled. A 404 drops the record.
 Other failures retry the event. Invitee payloads are whole and cost no

@@ -138,16 +138,13 @@ void test("the folder declares Wise's RSA scheme, its test ping and the delivery
   assert.match(webhooks.verification.publicKeys[0], /BEGIN PUBLIC KEY/);
   assert.equal(webhooks.verification.signatureHeader, "x-signature-sha256");
   assert.equal(webhooks.verification.signatureEncoding, "base64");
-  assert.deepEqual(webhooks.verification.signedPayload, ["body"]);
   assert.deepEqual(webhooks.verification.testNotification, {
     header: "x-test-notification",
     value: "true",
     eventType: "wise#test-notification",
   });
-  assert.deepEqual(webhooks.delivery, {
-    idHeader: "x-delivery-id",
-    typeField: "event_type",
-  });
+  assert.equal(webhooks.eventIdHeader, "x-delivery-id");
+  assert.equal(webhooks.eventTypePath, "event_type");
   assert.equal(webhooks.events.length, 8);
 });
 

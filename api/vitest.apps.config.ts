@@ -21,6 +21,9 @@ export default defineConfig({
       // Its browser half: opt-in (SHARE_ORIGIN_PLAYWRIGHT), headless.
       "src/apps/share-app-origin.browser.test.ts",
       "src/apps/worktree.service.test.ts",
+      // Doors onto main without a hook: merge and publish, workflows/ and
+      // connectors/ need an admin.
+      "src/apps/worktree/main-gate.test.ts",
       "src/apps/workspace-repo.test.ts",
       "src/apps/workspace-prompt.test.ts",
       "src/migrations/2026-09-02-110000_workspace_self_directive_to_git.test.ts",
@@ -35,6 +38,8 @@ export default defineConfig({
       "src/agent-lib/tools/apps-tools-workflow-target.test.ts",
       "src/apps/git-endpoint.test.ts",
       "src/apps/workspace-consoles.service.test.ts",
+      // A console never stores or runs another workspace's connection.
+      "src/services/consoles/connection-scope.test.ts",
       "src/apps/workspace-skills.service.test.ts",
       // Skill loads per day behind list_skills' loads30d / lastLoadedAt.
       "src/services/skill-usage.service.test.ts",

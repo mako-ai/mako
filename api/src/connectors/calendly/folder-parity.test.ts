@@ -335,19 +335,16 @@ void test("webhooks: same events, entity selections and change records", async (
 void test("the folder declares Calendly's signature scheme and delivery ids", () => {
   assert.deepEqual(spec?.mako?.webhooks, {
     verification: {
-      scheme: "hmac-sha256",
-      secretEncoding: "utf8",
-      signedPayload: ["param:t", "literal:.", "body"],
+      scheme: "stripe-v1",
       signatureHeader: "calendly-webhook-signature",
-      signatureEncoding: "hex",
-      signatureParam: "v1",
-      timestampParam: "t",
+      secretEncoding: "utf8",
       toleranceSeconds: 180,
     },
-    delivery: { idFields: ["created_at", "payload.uri"], typeField: "event" },
     events: makeInProcess({
       access_token: "cal_test_list",
     }).getSupportedWebhookEvents(),
+    eventIdPath: ["created_at", "payload.uri"],
+    eventTypePath: "event",
   });
 });
 

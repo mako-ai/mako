@@ -18,6 +18,7 @@ import {
   getNextScheduledConsoleRunAt,
   validateScheduledConsoleSchedule,
 } from "../../services/scheduled-query-schedule.service";
+import { workspaceOwnsConnection } from "../../services/consoles/connection-scope";
 import { createSerializer } from "../serialized";
 import { loadOwnerDirectory } from "../user-handles.service";
 import { boundRepoDirIfExists } from "../workspace-repo-required";
@@ -180,6 +181,18 @@ async function syncNow(
         { access, ownerId },
       );
 
+      const connectionId = await scopedConnectionId(
+        workspaceId,
+        parsed.meta.connectionId,
+        entry.path,
+      );
+      // Legacy files default database_id to the connection id: a dropped
+      // connection takes that copy with it.
+      const databaseId =
+        connectionId === null &&
+        parsed.meta.databaseId === parsed.meta.connectionId
+          ? null
+          : (parsed.meta.databaseId ?? null);
       const set: Record<string, unknown> = {
         path: entry.path,
         sourceBlobSha: entry.oid,
@@ -190,13 +203,9 @@ async function syncNow(
         access,
         isPrivate: access === "private",
         owner_id: ownerId,
-        connectionId:
-          parsed.meta.connectionId &&
-          Types.ObjectId.isValid(parsed.meta.connectionId)
-            ? new Types.ObjectId(parsed.meta.connectionId)
-            : null,
+        connectionId,
         databaseName: parsed.meta.databaseName ?? null,
-        databaseId: parsed.meta.databaseId ?? null,
+        databaseId,
         resultsViewMode: parsed.meta.resultsViewMode ?? null,
         mongoOptions: parsed.meta.mongoOptions ?? null,
         chartSpec: chartSpec ?? null,
@@ -310,6 +319,28 @@ async function syncNow(
     logger.info("Console index synced from repo", { workspaceId, ...stats });
   }
   return stats;
+}
+
+/**
+ * The front-matter connection, if it belongs to this workspace. A pushed
+ * file can name any ObjectId; one from another workspace (or one that no
+ * longer exists) is dropped with an error, so the console is indexed with
+ * no connection and cannot run, scheduled or not.
+ */
+async function scopedConnectionId(
+  workspaceId: string,
+  connectionId: string | undefined,
+  path: string,
+): Promise<Types.ObjectId | null> {
+  if (!connectionId || !Types.ObjectId.isValid(connectionId)) return null;
+  if (await workspaceOwnsConnection(workspaceId, connectionId)) {
+    return new Types.ObjectId(connectionId);
+  }
+  logger.error(
+    "Console file names a connection outside this workspace; indexed without it",
+    { workspaceId, path, connectionId },
+  );
+  return null;
 }
 
 async function sidecarMatches(

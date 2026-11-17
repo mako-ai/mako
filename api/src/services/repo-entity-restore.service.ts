@@ -11,6 +11,7 @@
  * and CDC streams / connector rows reconcile exactly as they would on a push.
  */
 import { RepoRequiredError } from "../apps/config";
+import { runGit } from "../apps/git";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import { authorForUser } from "../apps/workspace-consoles.service";
 import {
@@ -69,6 +70,18 @@ async function resolveRestorePoint(
   if (!oid) throw new RestoreRefusedError(`No such commit: ${sha}`);
   const [info] = await repoLog(repoDir, oid, 1);
   return { repoDir, oid, subject: info?.subject ?? "" };
+}
+
+/** Whether `oid` is on main's history (main itself included). */
+async function isAncestorOfMain(repoDir: string, oid: string) {
+  const main = await resolveCommit(repoDir, MAIN_REF);
+  if (!main) return false;
+  try {
+    await runGit(["-C", repoDir, "merge-base", "--is-ancestor", oid, main]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** The same subject consoles and apps use for a restore commit. */
@@ -143,6 +156,14 @@ export async function restoreConnectorTo(args: {
     args.workspaceId,
     args.sha,
   );
+  // A restore goes back to a version main HAD. A commit that only a branch
+  // holds (or a branch name) would land unreviewed code on main, where it
+  // runs with its connections' keys.
+  if (!(await isAncestorOfMain(repoDir, oid))) {
+    throw new RestoreRefusedError(
+      "That commit was never on main; merge it through an admin instead",
+    );
+  }
   const then = (await listTree(repoDir, oid)).filter(e => scope.owns(e.path));
   if (!then.some(e => e.path === `${scope.pathspec}connector.yaml`)) {
     throw new RestoreRefusedError(

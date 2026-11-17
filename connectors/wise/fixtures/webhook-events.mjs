@@ -20,19 +20,35 @@ export const TEST_WEBHOOK_KEYS = crypto.generateKeyPairSync("rsa", {
 const SUBSCRIPTION = "00000000-0000-4000-a000-000000000001";
 
 /**
- * A verified delivery as Mako stores it: the body, plus the `type` and `id`
- * the declaration reads (`event_type`, `X-Delivery-Id`). The in-process
- * check stores the same keys.
+ * A verified delivery as Mako stores it: the raw body, keyed by
+ * `X-Delivery-Id`, or by a SHA-1 of the body when there is none, and typed
+ * by `event_type`. `inProcessPayload` is the event in-process
+ * `verifyWiseWebhook` makes of the same delivery: the body plus `type`,
+ * `event_type` and `id` (the header, else type, resource id and time).
  */
 export function storedEvent(body, deliveryId) {
   const type = body.event_type;
+  const data = body.data ?? {};
+  const resourceId =
+    data.resource?.id != null
+      ? String(data.resource.id)
+      : data.balance_id != null
+        ? String(data.balance_id)
+        : undefined;
+  const fallbackId =
+    type && resourceId
+      ? `${type}:${resourceId}:${data.occurred_at || (data.step_id != null ? String(data.step_id) : "") || body.sent_at || ""}`
+      : body.subscription_id;
   return {
-    eventId: deliveryId ?? `generated-${type}`,
+    eventId:
+      deliveryId ??
+      crypto.createHash("sha1").update(JSON.stringify(body)).digest("hex"),
     eventType: type ?? "unknown",
-    rawPayload: {
+    rawPayload: body,
+    inProcessPayload: {
       ...body,
-      ...(type ? { type } : {}),
-      ...(deliveryId ? { id: deliveryId } : {}),
+      ...(type ? { type, event_type: type } : {}),
+      id: deliveryId ?? fallbackId,
     },
     receivedAt: "2026-11-16T11:00:00.000Z",
   };
@@ -281,9 +297,14 @@ export function buildWebhookEvents() {
   );
   // A test notification, as Mako stores it: its type and id only.
   events.push({
-    eventId: "test:d-test",
+    eventId: "d-test",
     eventType: "wise#test-notification",
-    rawPayload: { type: "wise#test-notification", id: "test:d-test" },
+    rawPayload: { type: "wise#test-notification" },
+    inProcessPayload: {
+      type: "wise#test-notification",
+      event_type: "wise#test-notification",
+      id: "test:d-test",
+    },
     receivedAt: "2026-11-16T11:00:00.000Z",
   });
   // An event type the connector does not map.

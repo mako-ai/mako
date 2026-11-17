@@ -53,3 +53,9 @@ overrides:
   # monaco-editor 0.55 pins dompurify 3.2.7 exactly (high advisory
   # GHSA-mrv2-3pqr-j5jr); Monaco only uses it to sanitize hover markdown.
   dompurify@<3.4.17: ^3.4.17
+# Audit exceptions. GHSA-fc5q-39xc-vjpf (picomatch ReDoS, high): docs-only
+# path via astro/starlight; remove when picomatch >4.0.7 ships a fix
+# (added 2026-11-17).
+auditConfig:
+  ignoreGhsas:
+    - GHSA-fc5q-39xc-vjpf

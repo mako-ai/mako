@@ -5,60 +5,78 @@
  * stays in the API, and no box ever receives it. The connector declares its
  * vendor's scheme as data instead (the SDK's `webhooks.verification`, kept
  * in the spec Mako indexed at push time), and this file runs it. Nothing in
- * a declaration is code: a scheme name, encodings, header and key names,
- * literal text and public keys. Anything this file does not know fails
- * closed.
- *
- * Two schemes: `hmac-sha256` under the flow's secret (Close, Calendly), and
- * `rsa-sha256` against public keys the connector declares (Wise), which
- * needs no secret. A signature header may hold `key=value` pairs
- * (`t=...,v1=...`, Calendly and Stripe): `signatureParam` names the
- * signature, which may repeat (any one may match), and `timestampParam`
- * the send time.
- *
- * `declaredWebhookDelivery` reads where a delivery's event id and type are
- * (the SDK's `webhooks.delivery`), so a stored event is keyed as the
- * in-process connector keys it.
+ * a declaration is code: a scheme name, encodings, header names and literal
+ * text. Anything this file does not know fails closed.
  */
 import {
   createHmac,
   createPublicKey,
-  randomUUID,
   timingSafeEqual,
   verify as verifySignature,
   type KeyObject,
 } from "node:crypto";
 import type { WebhookVerificationResult } from "../base/BaseConnector";
 
-export interface DeclaredWebhookVerification {
-  scheme: "hmac-sha256" | "rsa-sha256";
-  /** HMAC only. */
-  secretEncoding?: "hex" | "base64" | "utf8";
-  /** RSA only: PEM public keys, any one of which may verify. */
-  publicKeys?: string[];
+export type DeclaredWebhookVerification =
+  | DeclaredHmacVerification
+  | DeclaredStripeV1Verification
+  | DeclaredSharedSecretVerification
+  | DeclaredRsaVerification;
+
+/**
+ * A vendor that signs the raw body with its own RSA keys (Wise). No secret:
+ * the connector declares the vendor's public keys, and a signature any one
+ * of them verifies is valid. A declared `testNotification` (the vendor's
+ * unsigned test ping) is answered without a signature and stored under its
+ * `eventType` with no payload, so nothing it says reaches a table.
+ */
+export interface DeclaredRsaVerification {
+  scheme: "rsa-sha256";
+  publicKeys: string[];
+  signatureHeader: string;
+  signatureEncoding: "hex" | "base64";
+  testNotification?: { header: string; value: string; eventType: string };
+}
+
+/**
+ * A vendor that sends the secret itself in a header (Claap). Compared in
+ * constant time with the flow's secret, which must be MIN_SECRET_BYTES long.
+ */
+export interface DeclaredSharedSecretVerification {
+  scheme: "shared-secret";
+  secretHeader: string;
+}
+
+/**
+ * Stripe's scheme: one header, `t=<unix seconds>,v1=<hex>[,v1=<hex>...]`.
+ * Each `v1` is an HMAC-SHA256 of `<t>.<raw body>` under the secret's UTF-8
+ * bytes, as `stripe.webhooks.constructEvent` checks it. The timestamp is
+ * always signed, and always bounded by `toleranceSeconds`.
+ */
+export interface DeclaredStripeV1Verification {
+  scheme: "stripe-v1";
+  signatureHeader: string;
+  secretEncoding: "utf8";
+  toleranceSeconds: number;
+}
+
+export interface DeclaredHmacVerification {
+  scheme: "hmac-sha256";
+  secretEncoding: "hex" | "base64" | "utf8";
   signedPayload: string[];
   signatureHeader: string;
   signatureEncoding: "hex" | "base64";
   signaturePrefix?: string;
-  /** The signature header is `k=v,k=v`; the signature is this key's value. */
-  signatureParam?: string;
+  /** A query parameter carrying the signature, read before the header. */
+  signatureQuery?: string;
   /**
-   * A header (or a key of the signature header) carrying the send time in
-   * Unix seconds, and how far from now it may be. When declared, a
-   * delivery without it, or outside the window, is refused: a captured
-   * delivery cannot be replayed later.
+   * A header carrying the send time in Unix seconds, and how far from now
+   * it may be. Declared together. When declared, a delivery without the
+   * header, or outside the window, is refused: a captured delivery cannot
+   * be replayed later.
    */
   timestampHeader?: string;
-  timestampParam?: string;
   toleranceSeconds?: number;
-  /** The vendor's unsigned test ping, stored under `eventType`. */
-  testNotification?: { header: string; value: string; eventType: string };
-}
-
-export interface DeclaredWebhookDelivery {
-  idHeader?: string;
-  idFields?: string[];
-  typeField?: string;
 }
 
 /** The key a secret decodes to must be at least this long. */
@@ -67,25 +85,8 @@ export const MIN_SECRET_BYTES = 16;
 export const MAX_TOLERANCE_SECONDS = 24 * 60 * 60;
 
 const HEADER_NAME = /^[a-z0-9-]{1,64}$/;
-const PARAM_NAME = /^[A-Za-z0-9_-]{1,32}$/;
-const EVENT_TYPE = /^[A-Za-z0-9_.:#-]{1,64}$/;
-const FIELD_PATH = /^[A-Za-z0-9_-]{1,64}(\.[A-Za-z0-9_-]{1,64}){0,4}$/;
-const MAX_PUBLIC_KEYS = 4;
-const MAX_PUBLIC_KEY_LENGTH = 4096;
-
-/** An RSA public key from PEM, or null. Only RSA SPKI keys are taken. */
-function rsaPublicKey(pem: unknown): KeyObject | null {
-  if (typeof pem !== "string" || pem.length > MAX_PUBLIC_KEY_LENGTH) {
-    return null;
-  }
-  if (!pem.trim().startsWith("-----BEGIN PUBLIC KEY-----")) return null;
-  try {
-    const key = createPublicKey({ key: pem, format: "pem" });
-    return key.asymmetricKeyType === "rsa" ? key : null;
-  } catch {
-    return null;
-  }
-}
+const QUERY_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+const BODY_PATH = /^[A-Za-z0-9_]{1,64}(\.[A-Za-z0-9_]{1,64}){0,7}$/;
 
 /**
  * The declaration in an indexed spec, or null when there is none or it is
@@ -98,25 +99,23 @@ export function declaredWebhookVerification(
   const v = (spec as { mako?: { webhooks?: { verification?: unknown } } })?.mako
     ?.webhooks?.verification as Record<string, unknown> | undefined;
   if (!v || typeof v !== "object") return null;
-  if (v.scheme !== "hmac-sha256" && v.scheme !== "rsa-sha256") return null;
-  const rsa = v.scheme === "rsa-sha256";
-  let publicKeys: string[] | undefined;
-  if (rsa) {
-    if (v.secretEncoding !== undefined) return null;
-    if (
-      !Array.isArray(v.publicKeys) ||
-      v.publicKeys.length === 0 ||
-      v.publicKeys.length > MAX_PUBLIC_KEYS ||
-      v.publicKeys.some(key => !rsaPublicKey(key))
-    ) {
-      return null;
-    }
-    publicKeys = [...(v.publicKeys as string[])];
-  } else {
-    if (!["hex", "base64", "utf8"].includes(v.secretEncoding as string)) {
-      return null;
-    }
-    if (v.publicKeys !== undefined) return null;
+  if (v.scheme === "stripe-v1") return declaredStripeV1(v);
+  if (v.scheme === "rsa-sha256") return declaredRsa(v);
+  if (v.scheme === "shared-secret") {
+    return typeof v.secretHeader === "string" &&
+      HEADER_NAME.test(v.secretHeader)
+      ? { scheme: "shared-secret", secretHeader: v.secretHeader }
+      : null;
+  }
+  if (v.scheme !== "hmac-sha256") return null;
+  if (
+    v.signatureQuery !== undefined &&
+    (typeof v.signatureQuery !== "string" || !QUERY_NAME.test(v.signatureQuery))
+  ) {
+    return null;
+  }
+  if (!["hex", "base64", "utf8"].includes(v.secretEncoding as string)) {
+    return null;
   }
   if (!["hex", "base64"].includes(v.signatureEncoding as string)) return null;
   if (
@@ -131,42 +130,123 @@ export function declaredWebhookVerification(
   ) {
     return null;
   }
-  const hasParam = v.signatureParam !== undefined;
-  if (
-    hasParam &&
-    (typeof v.signatureParam !== "string" || !PARAM_NAME.test(v.signatureParam))
-  ) {
-    return null;
-  }
-  const hasTimestampHeader = v.timestampHeader !== undefined;
-  const hasTimestampParam = v.timestampParam !== undefined;
+  const hasTimestamp = v.timestampHeader !== undefined;
   const hasTolerance = v.toleranceSeconds !== undefined;
-  if (hasTimestampHeader && hasTimestampParam) return null;
-  if ((hasTimestampHeader || hasTimestampParam) !== hasTolerance) return null;
+  if (hasTimestamp !== hasTolerance) return null;
   if (
-    hasTimestampHeader &&
+    hasTimestamp &&
     (typeof v.timestampHeader !== "string" ||
-      !HEADER_NAME.test(v.timestampHeader))
-  ) {
-    return null;
-  }
-  if (
-    hasTimestampParam &&
-    (!hasParam ||
-      typeof v.timestampParam !== "string" ||
-      !PARAM_NAME.test(v.timestampParam))
-  ) {
-    return null;
-  }
-  if (
-    hasTolerance &&
-    (!Number.isSafeInteger(v.toleranceSeconds) ||
+      !HEADER_NAME.test(v.timestampHeader) ||
+      !Number.isSafeInteger(v.toleranceSeconds) ||
       (v.toleranceSeconds as number) < 1 ||
       (v.toleranceSeconds as number) > MAX_TOLERANCE_SECONDS)
   ) {
     return null;
   }
-  let testNotification: DeclaredWebhookVerification["testNotification"];
+  const parts = v.signedPayload;
+  if (!Array.isArray(parts) || parts.length === 0 || parts.length > 8) {
+    return null;
+  }
+  if (!parts.includes("body")) return null;
+  // A window on a timestamp the signature does not cover is no window: a
+  // replay would carry an old body with a fresh header. The timestamp must
+  // be signed.
+  if (hasTimestamp && !parts.includes(`header:${v.timestampHeader}`)) {
+    return null;
+  }
+  for (const part of parts) {
+    if (part === "body") continue;
+    if (
+      typeof part === "string" &&
+      part.startsWith("header:") &&
+      HEADER_NAME.test(part.slice("header:".length))
+    ) {
+      continue;
+    }
+    if (
+      typeof part === "string" &&
+      part.startsWith("literal:") &&
+      part.length <= 72
+    ) {
+      continue;
+    }
+    return null;
+  }
+  return {
+    scheme: "hmac-sha256",
+    secretEncoding:
+      v.secretEncoding as DeclaredHmacVerification["secretEncoding"],
+    signedPayload: [...(parts as string[])],
+    signatureHeader: v.signatureHeader,
+    signatureEncoding:
+      v.signatureEncoding as DeclaredHmacVerification["signatureEncoding"],
+    ...(typeof v.signaturePrefix === "string"
+      ? { signaturePrefix: v.signaturePrefix }
+      : {}),
+    ...(typeof v.signatureQuery === "string"
+      ? { signatureQuery: v.signatureQuery }
+      : {}),
+    ...(hasTimestamp
+      ? {
+          timestampHeader: v.timestampHeader as string,
+          toleranceSeconds: v.toleranceSeconds as number,
+        }
+      : {}),
+  };
+}
+
+const STRIPE_V1_KEYS = new Set([
+  "scheme",
+  "signatureHeader",
+  "secretEncoding",
+  "toleranceSeconds",
+]);
+
+/** A stripe-v1 declaration, exactly its four keys, or null. */
+const RSA_KEYS = new Set([
+  "scheme",
+  "publicKeys",
+  "signatureHeader",
+  "signatureEncoding",
+  "testNotification",
+]);
+const EVENT_TYPE = /^[A-Za-z0-9_.:#-]{1,64}$/;
+const MAX_PUBLIC_KEY_LENGTH = 4096;
+
+/** An RSA public key from PEM (SPKI), or null. */
+function rsaPublicKey(pem: unknown): KeyObject | null {
+  if (typeof pem !== "string" || pem.length > MAX_PUBLIC_KEY_LENGTH) {
+    return null;
+  }
+  if (!pem.trim().startsWith("-----BEGIN PUBLIC KEY-----")) return null;
+  try {
+    const key = createPublicKey({ key: pem, format: "pem" });
+    return key.asymmetricKeyType === "rsa" ? key : null;
+  } catch {
+    return null;
+  }
+}
+
+function declaredRsa(
+  v: Record<string, unknown>,
+): DeclaredRsaVerification | null {
+  if (Object.keys(v).some(key => !RSA_KEYS.has(key))) return null;
+  if (
+    !Array.isArray(v.publicKeys) ||
+    v.publicKeys.length === 0 ||
+    v.publicKeys.length > 4 ||
+    v.publicKeys.some(key => !rsaPublicKey(key))
+  ) {
+    return null;
+  }
+  if (
+    typeof v.signatureHeader !== "string" ||
+    !HEADER_NAME.test(v.signatureHeader)
+  ) {
+    return null;
+  }
+  if (!["hex", "base64"].includes(v.signatureEncoding as string)) return null;
+  let testNotification: DeclaredRsaVerification["testNotification"];
   if (v.testNotification !== undefined) {
     const t = v.testNotification as Record<string, unknown> | null;
     if (
@@ -188,169 +268,176 @@ export function declaredWebhookVerification(
       eventType: t.eventType,
     };
   }
-  const parts = v.signedPayload;
-  if (!Array.isArray(parts) || parts.length === 0 || parts.length > 8) {
-    return null;
-  }
-  if (!parts.includes("body")) return null;
-  // A window on a timestamp the signature does not cover is no window: a
-  // replay would carry an old body with a fresh header. The timestamp must
-  // be signed.
-  if (hasTimestampHeader && !parts.includes(`header:${v.timestampHeader}`)) {
-    return null;
-  }
-  if (hasTimestampParam && !parts.includes(`param:${v.timestampParam}`)) {
-    return null;
-  }
-  for (const part of parts) {
-    if (part === "body") continue;
-    if (
-      typeof part === "string" &&
-      part.startsWith("header:") &&
-      HEADER_NAME.test(part.slice("header:".length))
-    ) {
-      continue;
-    }
-    if (
-      hasParam &&
-      typeof part === "string" &&
-      part.startsWith("param:") &&
-      PARAM_NAME.test(part.slice("param:".length))
-    ) {
-      continue;
-    }
-    if (
-      typeof part === "string" &&
-      part.startsWith("literal:") &&
-      part.length <= 72
-    ) {
-      continue;
-    }
-    return null;
-  }
   return {
-    scheme: rsa ? "rsa-sha256" : "hmac-sha256",
-    ...(rsa
-      ? { publicKeys }
-      : {
-          secretEncoding:
-            v.secretEncoding as DeclaredWebhookVerification["secretEncoding"],
-        }),
-    signedPayload: [...(parts as string[])],
+    scheme: "rsa-sha256",
+    publicKeys: [...(v.publicKeys as string[])],
     signatureHeader: v.signatureHeader,
-    signatureEncoding:
-      v.signatureEncoding as DeclaredWebhookVerification["signatureEncoding"],
-    ...(typeof v.signaturePrefix === "string"
-      ? { signaturePrefix: v.signaturePrefix }
-      : {}),
-    ...(hasParam ? { signatureParam: v.signatureParam as string } : {}),
-    ...(hasTimestampHeader
-      ? { timestampHeader: v.timestampHeader as string }
-      : {}),
-    ...(hasTimestampParam
-      ? { timestampParam: v.timestampParam as string }
-      : {}),
-    ...(hasTolerance ? { toleranceSeconds: v.toleranceSeconds as number } : {}),
+    signatureEncoding: v.signatureEncoding as "hex" | "base64",
     ...(testNotification ? { testNotification } : {}),
   };
 }
 
-/** The delivery declaration in an indexed spec, or null when none is valid. */
-export function declaredWebhookDelivery(
-  spec: unknown,
-): DeclaredWebhookDelivery | null {
-  const d = (spec as { mako?: { webhooks?: { delivery?: unknown } } })?.mako
-    ?.webhooks?.delivery as Record<string, unknown> | undefined;
-  if (!d || typeof d !== "object") return null;
-  for (const key of Object.keys(d)) {
-    if (!["idHeader", "idFields", "typeField"].includes(key)) return null;
-  }
-  if (
-    d.idHeader !== undefined &&
-    (typeof d.idHeader !== "string" || !HEADER_NAME.test(d.idHeader))
-  ) {
-    return null;
-  }
-  if (
-    d.idFields !== undefined &&
-    (!Array.isArray(d.idFields) ||
-      d.idFields.length === 0 ||
-      d.idFields.length > 4 ||
-      d.idFields.some(f => typeof f !== "string" || !FIELD_PATH.test(f)))
-  ) {
-    return null;
-  }
-  if (
-    d.typeField !== undefined &&
-    (typeof d.typeField !== "string" || !FIELD_PATH.test(d.typeField))
-  ) {
-    return null;
-  }
-  return {
-    ...(d.idHeader ? { idHeader: d.idHeader as string } : {}),
-    ...(d.idFields ? { idFields: [...(d.idFields as string[])] } : {}),
-    ...(d.typeField ? { typeField: d.typeField as string } : {}),
-  };
-}
-
-/** A dotted path's value, own properties only. */
-function pick(value: unknown, path: string): unknown {
-  let current = value;
-  for (const key of path.split(".")) {
-    if (
-      !current ||
-      typeof current !== "object" ||
-      Array.isArray(current) ||
-      !Object.prototype.hasOwnProperty.call(current, key)
-    ) {
-      return undefined;
-    }
-    current = (current as Record<string, unknown>)[key];
-  }
-  return current;
-}
-
-const scalar = (value: unknown): string | undefined =>
-  typeof value === "string" && value.length > 0
-    ? value
-    : typeof value === "number" && Number.isFinite(value)
-      ? String(value)
-      : undefined;
-
 /**
- * A verified event with the id and type its delivery declaration names,
- * as `id` and `type`, the keys the webhook route stores it by. An event
- * the declaration finds nothing for is returned unchanged.
+ * An RSA-SHA256 signature of the raw body, by any declared key, or the
+ * declared test ping (answered whatever its signature, with no payload).
  */
-export function identifyDeclaredEvent(
-  delivery: DeclaredWebhookDelivery | null,
-  event: unknown,
-  headers: Record<string, string | string[] | undefined>,
-): unknown {
+function verifyRsa(
+  declaration: DeclaredRsaVerification,
+  options: {
+    payload: string;
+    headers: Record<string, string | string[] | undefined>;
+  },
+): WebhookVerificationResult {
+  const { payload, headers } = options;
+  const test = declaration.testNotification;
   if (
-    !delivery ||
-    !event ||
-    typeof event !== "object" ||
-    Array.isArray(event)
+    test &&
+    header(headers, test.header)?.trim().toLowerCase() ===
+      test.value.toLowerCase()
   ) {
-    return event;
+    return { valid: true, event: { type: test.eventType } };
   }
-  let id = delivery.idHeader
-    ? scalar(header(headers, delivery.idHeader))
-    : undefined;
-  if (!id && delivery.idFields) {
-    const values = delivery.idFields.map(field => scalar(pick(event, field)));
-    if (values.every(v => v !== undefined)) id = values.join(":");
+  const presented = header(headers, declaration.signatureHeader);
+  if (!presented) {
+    return {
+      valid: false,
+      error: `Missing ${declaration.signatureHeader} header`,
+    };
   }
-  const type = delivery.typeField
-    ? scalar(pick(event, delivery.typeField))
-    : undefined;
-  if (id === undefined && type === undefined) return event;
+  const signature = Buffer.from(presented, declaration.signatureEncoding);
+  let matched = false;
+  if (signature.length > 0) {
+    for (const pem of declaration.publicKeys) {
+      const key = rsaPublicKey(pem);
+      if (!key) continue;
+      try {
+        if (
+          verifySignature(
+            "sha256",
+            Buffer.from(payload, "utf8"),
+            key,
+            signature,
+          )
+        ) {
+          matched = true;
+          break;
+        }
+      } catch {
+        // A signature this key cannot read: try the next key.
+      }
+    }
+  }
+  if (!matched) return { valid: false, error: "Invalid signature" };
+  try {
+    return { valid: true, event: JSON.parse(payload) };
+  } catch {
+    return { valid: false, error: "Invalid JSON payload" };
+  }
+}
+
+function declaredStripeV1(
+  v: Record<string, unknown>,
+): DeclaredStripeV1Verification | null {
+  if (Object.keys(v).some(key => !STRIPE_V1_KEYS.has(key))) return null;
+  if (
+    typeof v.signatureHeader !== "string" ||
+    !HEADER_NAME.test(v.signatureHeader)
+  ) {
+    return null;
+  }
+  if (v.secretEncoding !== "utf8") return null;
+  if (
+    !Number.isSafeInteger(v.toleranceSeconds) ||
+    (v.toleranceSeconds as number) < 1 ||
+    (v.toleranceSeconds as number) > MAX_TOLERANCE_SECONDS
+  ) {
+    return null;
+  }
   return {
-    ...(event as Record<string, unknown>),
-    ...(type !== undefined ? { type } : {}),
-    ...(id !== undefined ? { id: id.slice(0, 512) } : {}),
+    scheme: "stripe-v1",
+    signatureHeader: v.signatureHeader,
+    secretEncoding: "utf8",
+    toleranceSeconds: v.toleranceSeconds as number,
   };
+}
+
+/** A Stripe signature header: its one `t`, and every `v1`. */
+function parseStripeSignatureHeader(
+  value: string,
+): { timestamp: string; signatures: string[] } | null {
+  let timestamp: string | undefined;
+  const signatures: string[] = [];
+  for (const item of value.split(",")) {
+    const at = item.indexOf("=");
+    if (at <= 0) continue;
+    const key = item.slice(0, at).trim();
+    const val = item.slice(at + 1).trim();
+    if (key === "t") {
+      // Two timestamps make the signed one ambiguous: refused.
+      if (timestamp !== undefined) return null;
+      timestamp = val;
+    } else if (key === "v1") {
+      signatures.push(val);
+    }
+  }
+  if (timestamp === undefined || signatures.length === 0) return null;
+  // At most 16 signatures: Stripe sends one per active secret (two while a
+  // secret rolls). More is not a Stripe delivery.
+  if (signatures.length > 16) return null;
+  return { timestamp, signatures };
+}
+
+function verifyStripeV1(
+  declaration: DeclaredStripeV1Verification,
+  options: {
+    payload: string;
+    headers: Record<string, string | string[] | undefined>;
+    secret?: string;
+    now?: Date;
+  },
+): WebhookVerificationResult {
+  const { payload, headers, secret } = options;
+  if (!secret) return { valid: false, error: "Missing webhook secret" };
+  const key = keyOf(secret, declaration.secretEncoding);
+  if (!key) return { valid: false, error: "The webhook secret is malformed" };
+  const presented = header(headers, declaration.signatureHeader);
+  if (!presented) {
+    return {
+      valid: false,
+      error: `Missing ${declaration.signatureHeader} header`,
+    };
+  }
+  const parsed = parseStripeSignatureHeader(presented);
+  if (!parsed || !/^\d{1,12}$/.test(parsed.timestamp)) {
+    return {
+      valid: false,
+      error: `Malformed ${declaration.signatureHeader} header`,
+    };
+  }
+  const nowSeconds = (options.now ?? new Date()).getTime() / 1000;
+  if (
+    Math.abs(nowSeconds - Number(parsed.timestamp)) >
+    declaration.toleranceSeconds
+  ) {
+    return { valid: false, error: "The delivery is outside its time window" };
+  }
+  const expected = Buffer.from(
+    createHmac("sha256", key)
+      .update(`${parsed.timestamp}.`)
+      .update(payload)
+      .digest("hex"),
+    "utf8",
+  );
+  const matched = parsed.signatures.some(signature => {
+    const given = Buffer.from(signature, "utf8");
+    return given.length === expected.length && timingSafeEqual(expected, given);
+  });
+  if (!matched) return { valid: false, error: "Invalid signature" };
+  try {
+    return { valid: true, event: JSON.parse(payload) };
+  } catch {
+    return { valid: false, error: "Invalid JSON payload" };
+  }
 }
 
 function header(
@@ -365,35 +452,13 @@ function header(
 }
 
 /**
- * `k=v,k=v` → its values per key, keys and values trimmed, in order. A key
- * may repeat: Stripe sends one `v1` per signing secret while a secret
- * rolls. Null when nothing parses.
- */
-function headerParams(value: string): Map<string, string[]> | null {
-  const params = new Map<string, string[]>();
-  for (const part of value.split(",")) {
-    const at = part.indexOf("=");
-    if (at <= 0) continue;
-    const key = part.slice(0, at).trim();
-    const val = part.slice(at + 1).trim();
-    if (!key || !val) continue;
-    params.set(key, [...(params.get(key) ?? []), val]);
-  }
-  return params.size > 0 ? params : null;
-}
-
-/** The last value of a key, as Calendly's own parser reads `t`. */
-const lastParam = (params: Map<string, string[]> | null, key: string) =>
-  params?.get(key)?.at(-1);
-
-/**
  * The HMAC key, decoded strictly. A secret that does not round-trip in its
  * encoding, or decodes to fewer than MIN_SECRET_BYTES, is no key: Node's
  * lenient base64 would turn `"ab=" + junk` into a 1-byte key.
  */
 export function keyOf(
   secret: string,
-  encoding: DeclaredWebhookVerification["secretEncoding"],
+  encoding: DeclaredHmacVerification["secretEncoding"],
 ): Buffer | null {
   let key: Buffer;
   if (encoding === "utf8") {
@@ -412,88 +477,53 @@ export function keyOf(
 }
 
 /**
- * Check one delivery against a declaration (with the flow's secret for
- * HMAC). Valid means the signature matched (in constant time for HMAC) and
- * the body is JSON, or the delivery is the declared test notification.
- * The event carries the id and type `delivery` names.
+ * Check one delivery against a declaration with the flow's secret. Valid
+ * means the signature matched in constant time and the body is JSON.
  */
 export function verifyDeclaredWebhook(
   declaration: DeclaredWebhookVerification,
   options: {
     payload: string;
     headers: Record<string, string | string[] | undefined>;
+    /** The request's query string, for a signature sent as a parameter. */
+    query?: Record<string, string | string[] | undefined>;
     secret?: string;
     /** The time now, for the replay window. */
     now?: Date;
-    /** Where the event id and type are (the declared `delivery`). */
-    delivery?: DeclaredWebhookDelivery | null;
   },
 ): WebhookVerificationResult {
+  if (declaration.scheme === "stripe-v1") {
+    return verifyStripeV1(declaration, options);
+  }
+  if (declaration.scheme === "rsa-sha256") {
+    return verifyRsa(declaration, options);
+  }
   const { payload, headers, secret } = options;
-
-  // The vendor's test ping: answered whatever its signature, stored with
-  // no payload under a type no entity maps, so nothing it says is written.
-  const test = declaration.testNotification;
-  if (
-    test &&
-    header(headers, test.header)?.trim().toLowerCase() ===
-      test.value.toLowerCase()
-  ) {
-    const deliveryId = options.delivery?.idHeader
-      ? header(headers, options.delivery.idHeader)
-      : undefined;
-    return {
-      valid: true,
-      event: {
-        type: test.eventType,
-        id: `test:${deliveryId ? deliveryId.slice(0, 256) : randomUUID()}`,
-      },
-    };
+  if (!secret) return { valid: false, error: "Missing webhook secret" };
+  if (declaration.scheme === "shared-secret") {
+    return verifySharedSecret(declaration, { payload, headers, secret });
   }
+  const key = keyOf(secret, declaration.secretEncoding);
+  if (!key) return { valid: false, error: "The webhook secret is malformed" };
 
-  let key: Buffer | null = null;
-  if (declaration.scheme === "hmac-sha256") {
-    if (!secret) return { valid: false, error: "Missing webhook secret" };
-    key = keyOf(
-      secret,
-      declaration.secretEncoding as NonNullable<
-        DeclaredWebhookVerification["secretEncoding"]
-      >,
-    );
-    if (!key) return { valid: false, error: "The webhook secret is malformed" };
-  }
-
-  const signatureValue = header(headers, declaration.signatureHeader);
-  if (!signatureValue) {
+  const fromQuery = declaration.signatureQuery
+    ? single(options.query?.[declaration.signatureQuery])
+    : undefined;
+  const presented = fromQuery || header(headers, declaration.signatureHeader);
+  if (!presented) {
     return {
       valid: false,
-      error: `Missing ${declaration.signatureHeader} header`,
+      error: declaration.signatureQuery
+        ? `Missing ${declaration.signatureQuery} parameter or ${declaration.signatureHeader} header`
+        : `Missing ${declaration.signatureHeader} header`,
     };
   }
-  let params: Map<string, string[]> | null = null;
-  // Every signature the header presents; any one that matches is valid.
-  let presented = [signatureValue];
-  if (declaration.signatureParam) {
-    params = headerParams(signatureValue);
-    const values = params?.get(declaration.signatureParam);
-    if (!values || values.length === 0 || values.length > 8) {
-      return {
-        valid: false,
-        error: `Malformed ${declaration.signatureHeader} header`,
-      };
-    }
-    presented = values;
-  }
-
-  if (declaration.timestampHeader || declaration.timestampParam) {
-    const sent = declaration.timestampHeader
-      ? header(headers, declaration.timestampHeader)
-      : lastParam(params, declaration.timestampParam as string);
-    const name = declaration.timestampHeader ?? declaration.timestampParam;
+  if (declaration.timestampHeader) {
+    const sent = header(headers, declaration.timestampHeader);
     if (!sent || !/^\d{1,12}$/.test(sent)) {
       return {
         valid: false,
-        error: `Missing or malformed ${name} timestamp`,
+        error: `Missing or malformed ${declaration.timestampHeader} header`,
       };
     }
     const nowSeconds = (options.now ?? new Date()).getTime() / 1000;
@@ -505,81 +535,155 @@ export function verifyDeclaredWebhook(
     }
   }
   const prefix = declaration.signaturePrefix ?? "";
-  const given = presented
-    .filter(value => value.startsWith(prefix))
-    .map(value => value.slice(prefix.length));
-  if (given.length === 0) {
+  if (!presented.startsWith(prefix)) {
     return { valid: false, error: "Invalid signature" };
   }
 
-  const chunks: Buffer[] = [];
+  const hmac = createHmac("sha256", key);
   for (const part of declaration.signedPayload) {
     if (part === "body") {
-      chunks.push(Buffer.from(payload, "utf8"));
+      hmac.update(payload);
     } else if (part.startsWith("header:")) {
       const name = part.slice("header:".length);
       const value = header(headers, name);
       if (value === undefined) {
         return { valid: false, error: `Missing ${name} header` };
       }
-      chunks.push(Buffer.from(value, "utf8"));
-    } else if (part.startsWith("param:")) {
-      const name = part.slice("param:".length);
-      const value = lastParam(params, name);
-      if (value === undefined) {
-        return { valid: false, error: `Missing ${name} in the signature` };
-      }
-      chunks.push(Buffer.from(value, "utf8"));
+      hmac.update(value);
     } else {
-      chunks.push(Buffer.from(part.slice("literal:".length), "utf8"));
+      hmac.update(part.slice("literal:".length));
     }
   }
-  const signed = Buffer.concat(chunks);
-
-  let matched = false;
-  if (declaration.scheme === "hmac-sha256") {
-    const expected = Buffer.from(
-      createHmac("sha256", key as Buffer)
-        .update(signed)
-        .digest(declaration.signatureEncoding),
-      "utf8",
-    );
-    // Every candidate is compared, in constant time each.
-    for (const candidate of given) {
-      const givenBytes = Buffer.from(candidate, "utf8");
-      if (
-        expected.length === givenBytes.length &&
-        timingSafeEqual(expected, givenBytes)
-      ) {
-        matched = true;
-      }
-    }
-  } else {
-    for (const candidate of given) {
-      const signature = Buffer.from(candidate, declaration.signatureEncoding);
-      if (signature.length === 0) continue;
-      for (const pem of declaration.publicKeys ?? []) {
-        const publicKey = rsaPublicKey(pem);
-        if (!publicKey) continue;
-        try {
-          if (verifySignature("sha256", signed, publicKey, signature)) {
-            matched = true;
-          }
-        } catch {
-          // A signature this key cannot read: try the next key.
-        }
-      }
-    }
+  // Hex compares case-insensitively, as the in-process checks do
+  // (timingSafeEqualHex); base64 is case-sensitive.
+  const fold = (text: string) =>
+    declaration.signatureEncoding === "hex" ? text.toLowerCase() : text;
+  const expected = Buffer.from(
+    fold(hmac.digest(declaration.signatureEncoding)),
+    "utf8",
+  );
+  const given = Buffer.from(fold(presented.slice(prefix.length)), "utf8");
+  if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
+    return { valid: false, error: "Invalid signature" };
   }
-  if (!matched) return { valid: false, error: "Invalid signature" };
-  let event: unknown;
   try {
-    event = JSON.parse(payload);
+    return { valid: true, event: JSON.parse(payload) };
   } catch {
     return { valid: false, error: "Invalid JSON payload" };
   }
+}
+
+function single(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) return value.length > 0 ? value[0] : undefined;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * The secret itself in a header, compared in constant time. The flow's
+ * secret must be at least MIN_SECRET_BYTES long: a short one is guessable.
+ */
+function verifySharedSecret(
+  declaration: DeclaredSharedSecretVerification,
+  options: {
+    payload: string;
+    headers: Record<string, string | string[] | undefined>;
+    secret: string;
+  },
+): WebhookVerificationResult {
+  const expected = Buffer.from(options.secret, "utf8");
+  if (expected.length < MIN_SECRET_BYTES) {
+    return { valid: false, error: "The webhook secret is malformed" };
+  }
+  const presented = header(options.headers, declaration.secretHeader);
+  if (!presented) {
+    return {
+      valid: false,
+      error: `Missing ${declaration.secretHeader} header`,
+    };
+  }
+  const given = Buffer.from(presented, "utf8");
+  if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
+    return { valid: false, error: "Invalid webhook secret" };
+  }
+  try {
+    return { valid: true, event: JSON.parse(options.payload) };
+  } catch {
+    return { valid: false, error: "Invalid JSON payload" };
+  }
+}
+
+/**
+ * Where the connector says a delivery's event id and type sit in its body
+ * (the SDK's `webhooks.eventIdPath` / `eventTypePath`), from the indexed
+ * spec. Paths that are not plain dotted names are ignored.
+ */
+export function declaredWebhookIdentity(spec: unknown): {
+  /** One path, or several whose values join with ":". */
+  eventIdPath?: string | string[];
+  /** A header with the vendor's delivery id, read before the body. */
+  eventIdHeader?: string;
+  eventTypePath?: string;
+} {
+  const w = (spec as { mako?: { webhooks?: Record<string, unknown> } })?.mako
+    ?.webhooks;
+  const ok = (value: unknown): value is string =>
+    typeof value === "string" && BODY_PATH.test(value);
+  const idPath = w?.eventIdPath;
+  const idPaths =
+    Array.isArray(idPath) &&
+    idPath.length > 0 &&
+    idPath.length <= 4 &&
+    idPath.every(ok)
+      ? (idPath as string[])
+      : undefined;
   return {
-    valid: true,
-    event: identifyDeclaredEvent(options.delivery ?? null, event, headers),
+    ...(ok(idPath) ? { eventIdPath: idPath } : {}),
+    ...(idPaths ? { eventIdPath: [...idPaths] } : {}),
+    ...(typeof w?.eventIdHeader === "string" &&
+    HEADER_NAME.test(w.eventIdHeader)
+      ? { eventIdHeader: w.eventIdHeader }
+      : {}),
+    ...(ok(w?.eventTypePath) ? { eventTypePath: w.eventTypePath } : {}),
   };
+}
+
+/**
+ * A delivery's event id as declared: the id header's value, else the body
+ * path's value, else every listed path's value joined with ":" (all of
+ * them present). Undefined when the declaration finds nothing.
+ */
+export function declaredEventId(
+  identity: ReturnType<typeof declaredWebhookIdentity>,
+  body: unknown,
+  headers: Record<string, string | string[] | undefined> = {},
+): string | undefined {
+  if (identity.eventIdHeader) {
+    const value = header(headers, identity.eventIdHeader);
+    if (value && value.length <= 512) return value;
+  }
+  const paths = identity.eventIdPath;
+  if (typeof paths === "string") return valueAtPath(body, paths);
+  if (Array.isArray(paths)) {
+    const values = paths.map(path => valueAtPath(body, path));
+    if (values.every(v => v !== undefined)) {
+      return values.join(":").slice(0, 512);
+    }
+  }
+  return undefined;
+}
+
+/** The string or number at a dotted path of a parsed body, as a string. */
+export function valueAtPath(body: unknown, path: string): string | undefined {
+  let node: unknown = body;
+  for (const part of path.split(".")) {
+    if (node === null || typeof node !== "object") return undefined;
+    if (!Object.prototype.hasOwnProperty.call(node, part)) return undefined;
+    node = (node as Record<string, unknown>)[part];
+  }
+  if (typeof node === "string" && node.length > 0 && node.length <= 512) {
+    return node;
+  }
+  return typeof node === "number" && Number.isFinite(node)
+    ? String(node)
+    : undefined;
 }

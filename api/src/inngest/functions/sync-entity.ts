@@ -20,6 +20,11 @@ import {
 } from "../../services/flow-execution-tracking";
 import { resolveBackfillFetchForEntity } from "../../sync-cdc/backfill-fetch-resolver";
 import {
+  resolvePollCursorForEntity,
+  stampPollRunStartedAt,
+  type ResolvedPollCursor,
+} from "../../sync-cdc/poll-cursor-resolver";
+import {
   resolveCdcDestinationAdapter,
   hasStagingSupport,
   resolveEntityPartitioning,
@@ -53,11 +58,19 @@ export interface SyncBackfillEntityPayload {
   isCdcEnabled: boolean;
   destinationType: string;
   queries?: unknown[];
+  /**
+   * Fetch state of a run that yielded at the step budget without a backfill
+   * checkpoint (a poll). The continuation resumes from it instead of
+   * re-reading the entity from the start.
+   */
+  resumeState?: FetchState;
 }
 
 export interface SyncBackfillEntityResult {
   completed: boolean;
   rowsWritten: number;
+  /** Set when the entity yielded without a checkpoint: pass it back as resumeState. */
+  state?: FetchState;
 }
 
 export const syncBackfillEntityFunction = inngest.createFunction(
@@ -99,6 +112,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       isCdcEnabled,
       destinationType,
       queries,
+      resumeState,
     } = data;
 
     const safeEntityStepId = entity.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -186,6 +200,19 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       }
     }
 
+    // A poll that yielded at the step budget resumes where it stopped.
+    // Without this, every continuation re-read the entity from its first
+    // page: with a stable poll cursor that is the same large read up to 100
+    // times.
+    if (!checkpointEnabled && !state && resumeState) {
+      state = resumeState;
+      logger.info("Resuming entity from the previous invocation's state", {
+        flowId,
+        entity,
+        totalProcessed: resumeState.totalProcessed,
+      });
+    }
+
     // ── Resolve fetch scope (full vs incremental scheduled resync) ───
     // Decided once per entity and run from values that are stable for the
     // whole run, so a continuation invocation re-derives the same answer.
@@ -215,6 +242,36 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           return decision;
         },
       )) as Awaited<ReturnType<typeof resolveBackfillFetchForEntity>>;
+      stepsUsed++;
+    }
+
+    // ── Resolve the poll cursor (scheduled incremental poll) ─────────
+    // The poll's own anchor: the start of the last completed poll/backfill
+    // run of this entity, minus an overlap. Webhook writes cannot move it.
+    // See sync-cdc/poll-cursor.ts.
+    const isIncrementalPoll =
+      !backfill &&
+      !checkpointEnabled &&
+      isCdcEnabled &&
+      syncMode === "incremental" &&
+      writeMode !== "overwrite";
+    let pollCursor: ResolvedPollCursor | undefined;
+    if (isIncrementalPoll) {
+      pollCursor = (await step.run(
+        `resolve-poll-cursor-${safeEntityStepId}`,
+        async () => {
+          const resolved = await resolvePollCursorForEntity({
+            flowId,
+            entity,
+            executionId,
+          });
+          logExec("info", `${entity}: incremental poll — ${resolved.reason}`, {
+            entity,
+            pollSince: resolved.since,
+          });
+          return resolved;
+        },
+      )) as ResolvedPollCursor;
       stepsUsed++;
     }
 
@@ -310,8 +367,11 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           // flush-merge/flush-final steps below — they re-run
           // performPrepareStaging per flush cycle, and re-truncating there
           // would wipe rows already written by earlier flushes (bug B1, see
-          // docs/sync-modes-hardening-plan.md).
-          await performOverwriteTruncate(bulkSyncOptions as any);
+          // docs/sync-modes-hardening-plan.md). A resumed invocation (state
+          // carried over) already truncated in its first invocation.
+          if (!resumeState) {
+            await performOverwriteTruncate(bulkSyncOptions as any);
+          }
         }),
       );
       stepsUsed++;
@@ -343,7 +403,11 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           `Entity ${entity} yielding to parent after ${stepsUsed} steps (chunk ${chunkIndex})`,
           { flowId, entity, stepsUsed, chunkIndex },
         );
-        return { completed: false, rowsWritten: totalWrittenForEntity };
+        return {
+          completed: false,
+          rowsWritten: totalWrittenForEntity,
+          ...(!checkpointEnabled && state ? { state } : {}),
+        };
       }
 
       const chunkResult = await step.run(
@@ -433,6 +497,14 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                       backfillFetch.mode === "incremental"
                         ? { mode: "incremental", since: backfillFetch.since }
                         : { mode: "full" },
+                  }
+                : {}),
+              ...(pollCursor
+                ? {
+                    pollCursor: {
+                      since: pollCursor.since,
+                      overlapMs: pollCursor.overlapMs,
+                    },
                   }
                 : {}),
               state,
@@ -720,6 +792,21 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           });
         },
       );
+    }
+
+    // ── Stamp the poll cursor ────────────────────────────────────────
+    // Only after every row of this run reached the live table: the next poll
+    // re-reads from this run's start (minus the overlap).
+    const pollRunStartedAt = pollCursor?.runStartedAt;
+    if (pollRunStartedAt) {
+      await step.run(`stamp-poll-cursor-${safeEntityStepId}`, async () => {
+        await stampPollRunStartedAt({
+          workspaceId,
+          flowId,
+          entity,
+          runStartedAt: pollRunStartedAt,
+        });
+      });
     }
 
     return { completed: true, rowsWritten: totalWrittenForEntity };
