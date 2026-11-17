@@ -11,6 +11,7 @@ import { Flow, type IFlow } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
 import type { FlowFile } from "./flow-config-files";
+import { approvalFingerprint } from "../connectors/boxed-runtime/approval";
 import { resyncLastRunAt } from "./resync-schedule";
 
 const logger = loggers.api("flow-sync");
@@ -142,6 +143,25 @@ export function derivedFlowId(
  * current row rather than half-writing one.
  */
 export function applyDefinition(doc: IFlow, file: FlowFile): string | null {
+  // An owner/admin's approval to run a folder twin is bound to what it
+  // approved: the connection, the destination tables, the live flow, the
+  // kind and the twin. A file edit that moves any of them voids it, so a
+  // repo push alone never redirects an approved key (connectors/boxed-runtime).
+  const approvalBefore = doc.boxedApproval
+    ? approvalFingerprint(doc)
+    : undefined;
+  const refusal = applyDefinitionFields(doc, file);
+  if (
+    !refusal &&
+    approvalBefore !== undefined &&
+    approvalFingerprint(doc) !== approvalBefore
+  ) {
+    doc.boxedApproval = undefined;
+  }
+  return refusal;
+}
+
+function applyDefinitionFields(doc: IFlow, file: FlowFile): string | null {
   doc.name = file.name;
   // `type` is retired: never written (a file's `type: webhook` arrives here
   // as webhookEnabled, see parseFlowFile).
@@ -269,6 +289,15 @@ export function applyDefinition(doc: IFlow, file: FlowFile): string | null {
       keysetDirection: file.pagination.keysetDirection,
     } as IFlow["paginationConfig"];
   }
+  // Which code reads the connection (connectors/boxed-runtime). Absent in
+  // the file means built-in: unset, so the row matches what the file says.
+  doc.connectorRuntime = file.runtime === "boxed" ? "boxed" : undefined;
+  doc.boxedConnector = file.boxedConnector || undefined;
+  // `shadow_of:` and `replaces:` are Mongo-only: set by an owner/admin's
+  // flow_shadow or switch, written to the file for reading, and never set
+  // or changed from it. A member's file cannot make a flow a shadow of, or
+  // a replacement for, another flow.
+
   if (file.conflict) {
     doc.conflictConfig = {
       ...(doc.conflictConfig ?? {}),

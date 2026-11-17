@@ -134,6 +134,26 @@ export interface ISyncStateMeta {
   lastErrorMessage?: string;
 }
 
+/** An owner/admin's approval for a flow to run a folder twin. */
+export interface IBoxedApproval {
+  by: string;
+  at: Date;
+  /** `shadow`: this shadow may run boxed. `switch`: this live flow may. */
+  kind: "shadow" | "switch";
+  /** The twin's folder slug. */
+  slug: string;
+  /** Bound to: the connection, the destination tables, the live flow. */
+  connectionId: string;
+  destination: string;
+  shadowOf?: string;
+  /**
+   * The code approved: the folder's source hash. A registry connector
+   * whose registry slug is the connection's type needs no pin (Mako-built).
+   */
+  sourceSha?: string;
+  registryHash?: string;
+}
+
 /**
  * Flow model interface (data sync flow configuration)
  */
@@ -235,6 +255,58 @@ export interface IFlow extends Document {
     boxBatchSize?: number;
   };
   entityFilter?: string[]; // Optional: specific entities to sync (for connector sources)
+  /**
+   * Which code reads a built-in connection for this flow (RFC
+   * connector-runtime §10, iteration 5). `builtin` (absent) runs the
+   * in-process connector. `boxed` runs the workspace's folder twin
+   * (`ws:<boxedConnector ?? connection type>`) in a box with the SAME
+   * connection's credential. Honoured only with CONNECTOR_BOXED_SWITCH on
+   * (connectors/boxed-runtime). Definition: in `flows/<slug>.yml`.
+   */
+  connectorRuntime?: "builtin" | "boxed";
+  /** The folder slug a boxed run uses; absent = the connection's type. */
+  boxedConnector?: string;
+  /**
+   * Set on a shadow flow: the live flow it mirrors. A shadow reads the live
+   * flow's connection through its folder twin and writes to its own
+   * dataset; it never writes the live one (assertShadowIsolated).
+   */
+  shadowOf?: Types.ObjectId;
+  /**
+   * Who allowed this flow's connection to be read by a folder twin, and
+   * exactly what they allowed. Set only by an owner/admin action
+   * (flow_update runtime, flow_shadow start), never from
+   * `flows/<slug>.yml`, and cleared by applyDefinition when the file moves
+   * anything it is bound to. A boxed run needs every field to still hold
+   * (connectors/boxed-runtime/runtime.ts `boxedTwinFor`, `assertTwinPinned`).
+   * Runtime bookkeeping, not in the file.
+   */
+  boxedApproval?: IBoxedApproval;
+  /**
+   * Set on a promoted twin: the built-in flow it replaced at a switch. It
+   * writes that flow's dataset and takes its webhook deliveries (forwarded
+   * from that flow's URL). Definition: `replaces:` in the file.
+   */
+  replaces?: Types.ObjectId;
+  /**
+   * Set on a built-in flow paused by a switch: the twin flow that replaced
+   * it, and the triggers to restore on a switch back (their crons kept
+   * here, since a paused flow's file says "off"). Mongo-only bookkeeping,
+   * set and cleared by an owner/admin's switch, never by a file.
+   */
+  boxedSwitch?: {
+    to: Types.ObjectId;
+    by: string;
+    at: Date;
+    poll?: { enabled: boolean; cron?: string; timezone?: string };
+    resync?: {
+      enabled: boolean;
+      cron?: string;
+      timezone?: string;
+      entities?: string[];
+    };
+    webhook: boolean;
+  };
   queries?: IFlowQuery[]; // Queries for GraphQL/PostHog connectors
   syncMode: "full" | "incremental";
   /**
@@ -482,6 +554,50 @@ const FlowSchema = new Schema<IFlow>(
       boxBatchSize: Number,
     },
     entityFilter: [String],
+    connectorRuntime: { type: String, enum: ["builtin", "boxed"] },
+    boxedConnector: {
+      type: String,
+      trim: true,
+      match: /^[a-z0-9][a-z0-9_-]*$/,
+    },
+    shadowOf: { type: Schema.Types.ObjectId, ref: "Flow" },
+    replaces: { type: Schema.Types.ObjectId, ref: "Flow" },
+    boxedSwitch: {
+      type: new Schema(
+        {
+          to: { type: Schema.Types.ObjectId, ref: "Flow" },
+          by: String,
+          at: Date,
+          poll: { enabled: Boolean, cron: String, timezone: String },
+          resync: {
+            enabled: Boolean,
+            cron: String,
+            timezone: String,
+            entities: [String],
+          },
+          webhook: Boolean,
+        },
+        { _id: false },
+      ),
+      required: false,
+    },
+    boxedApproval: {
+      type: new Schema(
+        {
+          by: String,
+          at: Date,
+          kind: { type: String, enum: ["shadow", "switch"] },
+          slug: String,
+          connectionId: String,
+          destination: String,
+          shadowOf: String,
+          sourceSha: String,
+          registryHash: String,
+        },
+        { _id: false },
+      ),
+      required: false,
+    },
     queries: [
       {
         name: { type: String, required: true },

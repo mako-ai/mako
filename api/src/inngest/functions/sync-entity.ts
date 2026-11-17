@@ -58,6 +58,8 @@ export interface SyncBackfillEntityPayload {
   isCdcEnabled: boolean;
   destinationType: string;
   queries?: unknown[];
+  /** The runtime the parent run decided (connectors/boxed-runtime). */
+  connectorRuntime?: "builtin" | "boxed";
   /**
    * Fetch state of a run that yielded at the step budget without a backfill
    * checkpoint (a poll). The continuation resumes from it instead of
@@ -482,6 +484,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                 l.entity === entity || l.entity === entity.split(":")[0],
             );
             const result = await performSyncChunk({
+              connectorRuntime: data.connectorRuntime,
               dataSourceId,
               destinationId,
               destinationDatabaseName,

@@ -9,6 +9,7 @@ import { Flow, type IFlow } from "../../../database/workspace-schema";
 import { withHeartbeat } from "../../../services/flow-execution-tracking";
 import { syncConnectorRegistry } from "../../../sync/connector-registry";
 import { sourceConnectionManager } from "../../../sync/database-data-source-manager";
+import { applyFlowRuntime } from "../../../connectors/boxed-runtime/runtime";
 import {
   forceDrainCdcFlow,
   markCdcBackfillCompletedForFlow,
@@ -82,19 +83,30 @@ export function selectEntitiesToSync(params: {
   return availableEntities;
 }
 
-/** The decrypted source connection and its connector, or a throw. */
+/**
+ * The decrypted source connection and its connector, or a throw. A flow that
+ * runs boxed (a shadow, or `runtime: boxed`) gets its folder twin on the
+ * same connection (connectors/boxed-runtime); every other flow, the
+ * connection's own connector, as before.
+ */
 async function loadConnector(
+  flow: IFlow,
   dataSourceId: string,
   workspaceId: string,
   queries?: unknown[],
 ) {
-  const sourceConnection = await sourceConnectionManager.getSourceConnection(
+  const stored = await sourceConnectionManager.getSourceConnection(
     dataSourceId,
     workspaceId,
   );
-  if (!sourceConnection) {
+  if (!stored) {
     throw new Error(`Data source not found: ${dataSourceId}`);
   }
+  const sourceConnection = await applyFlowRuntime(stored, flow);
+  // Which code this run reads with, decided once: every chunk is held to it
+  // (performSyncChunk), so one runtime never resumes the other's cursor.
+  const connectorRuntime: "builtin" | "boxed" =
+    sourceConnection.type !== stored.type ? "boxed" : "builtin";
 
   // Inject flow queries into sourceConnection for GraphQL/PostHog connectors
   // The registry maps connection -> config when creating the connector
@@ -112,7 +124,7 @@ async function loadConnector(
       `Failed to create connector for type: ${sourceConnection.type}`,
     );
   }
-  return { sourceConnection, connector };
+  return { sourceConnection, connector, connectorRuntime };
 }
 
 export async function runConnectorSourceFlow(
@@ -140,22 +152,26 @@ export async function runConnectorSourceFlow(
   const dataSourceId = flow.dataSourceId;
 
   // Check if connector supports chunked execution
-  const supportsChunking = await step.run(
-    "check-chunking-support",
-    async () => {
-      const { sourceConnection, connector } = await loadConnector(
+  const chunking = (await step.run("check-chunking-support", async () => {
+    const { sourceConnection, connector, connectorRuntime } =
+      await loadConnector(
+        flow,
         dataSourceId.toString(),
         String(flow.workspaceId),
       );
-      const supports = connector.supportsResumableFetching();
-      logger.info("Connector chunking support check", {
-        flowId,
-        connectorType: sourceConnection.type,
-        supportsChunking: supports,
-      });
-      return supports;
-    },
-  );
+    const supports = connector.supportsResumableFetching();
+    logger.info("Connector chunking support check", {
+      flowId,
+      connectorType: sourceConnection.type,
+      supportsChunking: supports,
+    });
+    return { supports, connectorRuntime };
+  })) as boolean | { supports: boolean; connectorRuntime: "builtin" | "boxed" };
+  // A run memoized before the runtime was recorded returned a bare boolean.
+  const supportsChunking =
+    typeof chunking === "boolean" ? chunking : chunking.supports;
+  const connectorRuntime =
+    typeof chunking === "boolean" ? undefined : chunking.connectorRuntime;
 
   if (!supportsChunking) {
     // Every connector supports chunked fetching; the non-chunked legacy
@@ -192,6 +208,7 @@ export async function runConnectorSourceFlow(
   // Get entities to sync
   const entitiesToSync = await step.run("get-entities-to-sync", async () => {
     const { connector } = await loadConnector(
+      flow,
       dataSourceId.toString(),
       String(flow.workspaceId),
       flow.queries,
@@ -309,6 +326,7 @@ export async function runConnectorSourceFlow(
       isCdcEnabled,
       destinationType: destinationType || "",
       queries: flow.queries,
+      ...(connectorRuntime ? { connectorRuntime } : {}),
     };
 
     let entityCompleted = false;

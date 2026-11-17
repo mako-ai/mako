@@ -38,6 +38,16 @@ export interface SourceConnectionConfig {
   workspaceId?: string;
   active: boolean;
   connection: any;
+  /**
+   * Set only by connectors/boxed-runtime on a built-in connection read by
+   * its folder twin: the code the key may reach. The box checks it when it
+   * loads the definition.
+   */
+  boxedPin?: {
+    connectionType: string;
+    sourceSha?: string;
+    registryHash?: string;
+  };
   settings: {
     sync_batch_size?: number;
     rate_limit_delay_ms?: number;

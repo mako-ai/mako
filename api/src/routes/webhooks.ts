@@ -9,6 +9,11 @@ import {
 } from "../database/workspace-schema";
 import { randomUUID } from "crypto";
 import { connectorRegistry } from "../connectors/registry";
+import {
+  forwardLane,
+  forwardTargetOf,
+  mirrorDeliveryToShadows,
+} from "../connectors/boxed-runtime/webhook-mirror";
 import { isWebhookFlow } from "../services/flow-triggers.service";
 import {
   presentedWebhookToken,
@@ -92,7 +97,14 @@ router.openapi(
         return fail(c, 404, "Invalid webhook endpoint");
       }
 
-      if (!flow.webhookConfig?.enabled) {
+      // A built-in flow paused by a switch keeps its URL, its secret and
+      // the vendor's subscription: it verifies each delivery as before and
+      // forwards it to the twin that writes its dataset now
+      // (connectors/boxed-runtime, webhook-mirror.ts).
+      const forwardTo = flow.webhookConfig?.enabled
+        ? null
+        : await forwardTargetOf(flow);
+      if (!flow.webhookConfig || (!flow.webhookConfig.enabled && !forwardTo)) {
         logger.warn("Webhook received for disabled flow", { flowId });
         return fail(c, 403, "Webhook endpoint disabled");
       }
@@ -189,6 +201,9 @@ router.openapi(
         }
       }
 
+      const toBox = forwardTo
+        ? forwardLane(forwardTo, sourceConnection.type) === "box"
+        : boxLane;
       // A boxed connector says where its vendor puts the event id and type
       // (PandaDoc posts a bare array, Claap nests the type); without an id
       // the box lane keys on a hash of the body, never a random id.
@@ -197,9 +212,9 @@ router.openapi(
         : undefined;
 
       const webhookEvent = new WebhookEvent({
-        flowId,
+        flowId: forwardTo ? forwardTo._id : flowId,
         workspaceId,
-        ...(boxLane ? { lane: "box", dataSourceId: sourceConnection._id } : {}),
+        ...(toBox ? { lane: "box", dataSourceId: sourceConnection._id } : {}),
         // Close (and some other vendors) nest the unique event id at
         // `event.event.id`; the top-level `event.id` is the OBJECT id, which is
         // stable across updates. Falling back to it would defeat the
@@ -230,6 +245,19 @@ router.openapi(
       });
 
       await webhookEvent.save();
+
+      // Active boxed shadows of this flow get a copy in their box lane
+      // (webhook-mirror.ts). Best-effort; never changes this answer.
+      if (!forwardTo && connector.supportsWebhooks()) {
+        await mirrorDeliveryToShadows({
+          flow,
+          connection: sourceConnection,
+          eventId: webhookEvent.eventId,
+          eventType: webhookEvent.eventType,
+          rawPayload: event,
+          signature: webhookEvent.signature,
+        });
+      }
 
       await Flow.updateOne(
         { _id: flowId },

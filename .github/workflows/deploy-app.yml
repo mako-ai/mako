@@ -947,6 +947,11 @@ jobs:
       # Production: the workspace's own GitHub repo is the only durable store
       # (apps.md §17) — no repo, no app/console saves.
       APPS_REQUIRE_CONNECTED_REPO: "true"
+      # Boxed shadow and switch for built-in connectors (RFC
+      # connector-runtime §10, iteration 5): a flow may run its folder twin
+      # in a box, as a shadow or switched. Off unless the repo variable says
+      # "true"; off, every flow runs its built-in connector.
+      CONNECTOR_BOXED_SWITCH: ${{ vars.CONNECTOR_BOXED_SWITCH_PROD || 'false' }}
       # A real user (15-character id) owns the app row they create
       # (project-rows.ts rowOwnerActor). Turned on after the 2026-11-16 owner
       # backfill (scripts/backfill-app-row-owners.ts) set 35 rows.
@@ -1190,6 +1195,7 @@ jobs:
             --set-env-vars CONNECTOR_WEBHOOK_BATCHES=${CONNECTOR_WEBHOOK_BATCHES} \
             --set-env-vars APPS_REQUIRE_CONNECTED_REPO=${APPS_REQUIRE_CONNECTED_REPO} \
             --set-env-vars APPS_REPO_WARM_ON_BOOT=true \
+            --set-env-vars CONNECTOR_BOXED_SWITCH=${CONNECTOR_BOXED_SWITCH} \
             --set-env-vars APPS_ROW_OWNER_PERSON_IDS=${APPS_ROW_OWNER_PERSON_IDS} \
             --set-env-vars TAVILY_API_KEY=${TAVILY_API_KEY} \
             --set-env-vars LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY} \

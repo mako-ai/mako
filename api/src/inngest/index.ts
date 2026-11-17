@@ -41,6 +41,10 @@ import {
 import { kernelPoolReaperFunction } from "./functions/kernel-pool-reaper";
 import { workflowsScaleFunction } from "./functions/workflows-scale";
 import { connectorBoxReaperFunction } from "./functions/connector-box-reaper";
+import {
+  connectorParityCheckFunction,
+  connectorParitySchedulerFunction,
+} from "./functions/connector-parity";
 import { syncBackfillEntityFunction } from "./functions/sync-entity";
 import { cdcRepartitionFunction } from "./functions/cdc-repartition";
 import { usageReportingFunction } from "./functions/usage-reporting";
@@ -90,6 +94,7 @@ const baseFunctions = [
   appsThumbnailWarmFunction,
   flowWebhookResubscribeFunction,
   flowWebhookUnsubscribeFunction,
+  connectorParityCheckFunction,
 ];
 
 const allWebhookFunctions = [
@@ -134,6 +139,7 @@ export function getFunctions() {
         workflowsScaleFunction,
         kernelPoolReaperFunction,
         connectorBoxReaperFunction,
+        connectorParitySchedulerFunction,
         scheduledQuerySchedulerFunction,
         dbtSchedulerFunction,
       ];
@@ -197,4 +203,6 @@ export {
   dbtSchedulerFunction,
   dbtRunSweeperFunction,
   connectorBoxReaperFunction,
+  connectorParityCheckFunction,
+  connectorParitySchedulerFunction,
 };

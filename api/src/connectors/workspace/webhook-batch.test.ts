@@ -976,10 +976,28 @@ describe("a batch", () => {
     });
   });
 
-  it("drops the events of a flow whose connection became an in-process connector", async () => {
+  it("hands a flow's events to the inline lane when its connection became a built-in one (a switch back, connectors/boxed-runtime)", async () => {
     await SourceConnection.collection.updateOne(
       { _id: conn },
       { $set: { type: "close" } },
+    );
+    const e = await boxEvent();
+    const box = fakeRunner(() => ok([]));
+    const result = await processBoxWebhookBatch({
+      flowId: String(flowId),
+      runner: box.factory,
+    });
+    expect(result.next).toBe("stop");
+    expect(box.calls).toHaveLength(0);
+    const after = await WebhookEvent.findById(e._id).lean();
+    expect(after).toMatchObject({ status: "pending" });
+    expect(after?.lane).toBeUndefined();
+  });
+
+  it("drops the events of a flow whose connection became an in-process connector Mako cannot box", async () => {
+    await SourceConnection.collection.updateOne(
+      { _id: conn },
+      { $set: { type: "hubspot" } },
     );
     const e = await boxEvent();
     const result = await processBoxWebhookBatch({

@@ -21,6 +21,11 @@
  * | `webhookConfig.boxBatchSize` | run state (boxed webhook batch size) |
  * | `syncState`, `streamState`, `backfillState`, `lastRunAt`, … | run state |
  *
+ * `runtime: boxed`, `boxed_connector:` and `shadow_of:` are definition: which
+ * code reads the connection, and which live flow a shadow mirrors
+ * (connectors/boxed-runtime). Written only when set, so every other file
+ * keeps its bytes.
+ *
  * Credentials never appear either: connections are referenced by id,
  * exactly as `dbt/environments.yml` does.
  *
@@ -129,6 +134,14 @@ export interface FlowFile {
   };
   typeCoercions?: Array<Record<string, unknown>>;
   queries?: Array<Record<string, unknown>>;
+  /** `boxed`: read through the connection's folder twin. Absent: built-in. */
+  runtime?: "builtin" | "boxed";
+  /** The twin's folder slug, when it is not the connection's type. */
+  boxedConnector?: string;
+  /** A shadow's live flow, by id. */
+  shadowOf?: string;
+  /** A promoted twin's replaced built-in flow, by id. */
+  replaces?: string;
 }
 
 /**
@@ -300,6 +313,11 @@ function renderFlowFile(flow: FlowFile, format: 1 | 2): string {
         })
       : undefined,
   });
+
+  if (flow.runtime === "boxed") doc.runtime = "boxed";
+  if (flow.boxedConnector) doc.boxed_connector = flow.boxedConnector;
+  if (flow.shadowOf) doc.shadow_of = flow.shadowOf;
+  if (flow.replaces) doc.replaces = flow.replaces;
 
   if (format === 2) {
     // Live updates: polling (a cron, or off) and, once a flow has had
@@ -488,6 +506,35 @@ export function parseFlowFileResult(contents: string): FlowFileParse {
     };
   }
 
+  const runtime = str(doc.runtime);
+  if (runtime && runtime !== "builtin" && runtime !== "boxed") {
+    return {
+      ok: false,
+      reason: `\`runtime:\` must be "builtin" or "boxed", not "${runtime}"`,
+    };
+  }
+  const boxedConnector = str(doc.boxed_connector);
+  if (boxedConnector && !/^[a-z0-9][a-z0-9_-]*$/.test(boxedConnector)) {
+    return {
+      ok: false,
+      reason: `\`boxed_connector:\` must be a connector folder slug (connectors/<slug>/), not "${boxedConnector}"`,
+    };
+  }
+  const replaces = str(doc.replaces);
+  if (replaces && !/^[0-9a-f]{24}$/i.test(replaces)) {
+    return {
+      ok: false,
+      reason: `\`replaces:\` must be the replaced flow's id (24 hex characters), not "${replaces}"`,
+    };
+  }
+  const shadowOf = str(doc.shadow_of);
+  if (shadowOf && !/^[0-9a-f]{24}$/i.test(shadowOf)) {
+    return {
+      ok: false,
+      reason: `\`shadow_of:\` must be the live flow's id (24 hex characters), not "${shadowOf}"`,
+    };
+  }
+
   const srcDoc = (doc.source ?? {}) as Record<string, unknown>;
   const source: FlowFile["source"] =
     str(srcDoc.type) === "database"
@@ -601,6 +648,10 @@ export function parseFlowFileResult(contents: string): FlowFileParse {
     queries: Array.isArray(doc.queries)
       ? (doc.queries as Array<Record<string, unknown>>)
       : undefined,
+    ...(runtime === "boxed" ? { runtime: "boxed" as const } : {}),
+    ...(boxedConnector ? { boxedConnector } : {}),
+    ...(shadowOf ? { shadowOf } : {}),
+    ...(replaces ? { replaces } : {}),
   };
   return { ok: true, file };
 }
@@ -711,5 +762,9 @@ export function flowToFile(flow: IFlow): FlowFile {
       : undefined,
     typeCoercions: plain<Array<Record<string, unknown>>>(flow.typeCoercions),
     queries: plain<Array<Record<string, unknown>>>(flow.queries),
+    ...(flow.connectorRuntime === "boxed" ? { runtime: "boxed" as const } : {}),
+    ...(flow.boxedConnector ? { boxedConnector: flow.boxedConnector } : {}),
+    ...(flow.shadowOf ? { shadowOf: flow.shadowOf.toString() } : {}),
+    ...(flow.replaces ? { replaces: flow.replaces.toString() } : {}),
   };
 }

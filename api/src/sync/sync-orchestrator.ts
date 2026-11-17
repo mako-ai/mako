@@ -1,6 +1,7 @@
 import { promises as fs } from "fs";
 import { inWorkspace } from "../utils/workspace-scope";
 import { syncConnectorRegistry } from "./connector-registry";
+import { applyFlowRuntimeById } from "../connectors/boxed-runtime/runtime";
 import { sourceConnectionManager } from "./database-data-source-manager";
 import {
   SyncLogger,
@@ -28,6 +29,7 @@ import { BSON, Collection } from "mongodb";
 import { Types } from "mongoose";
 import { ProgressReporter } from "./progress-reporter";
 import axios from "axios";
+import { NonRetriableError } from "inngest";
 import { loggers } from "../logging";
 import {
   destinationFallbackSince,
@@ -206,6 +208,11 @@ export interface SyncChunkOptions {
   /** Airbyte-style destination write mode (default append_dedup). */
   writeMode?: "append_dedup" | "append" | "overwrite";
   flowId?: string;
+  /**
+   * The runtime the run decided at its start. A chunk is held to it, so a
+   * switch mid-run never hands one connector's cursor to the other.
+   */
+  connectorRuntime?: "builtin" | "boxed";
   /** The flow's workspace: the source connection is looked up in it only. */
   workspaceId: string;
   syncEngine?: string;
@@ -364,14 +371,21 @@ export async function performSyncChunk(
   const syncMode = isIncremental ? "incremental" : "full";
 
   try {
-    // Get the data source
-    const sourceConnection = await sourceConnectionManager.getSourceConnection(
+    // Get the data source. A flow that runs boxed (a shadow, or switched)
+    // reads it through its folder twin (connectors/boxed-runtime); with
+    // CONNECTOR_BOXED_SWITCH off this returns the source unchanged.
+    const storedConnection = await sourceConnectionManager.getSourceConnection(
       dataSourceId,
       options.workspaceId,
     );
-    if (!sourceConnection) {
+    if (!storedConnection) {
       throw new Error(`Data source '${dataSourceId}' not found`);
     }
+    const sourceConnection = await applyFlowRuntimeById(
+      storedConnection,
+      options.flowId,
+      options.connectorRuntime,
+    );
 
     if (!sourceConnection.active) {
       throw new Error(`Data source '${sourceConnection.name}' is not active`);
@@ -422,7 +436,13 @@ export async function performSyncChunk(
     logger?.log("error", errorMsg, {
       stack: error instanceof Error ? error.stack : undefined,
     });
-    const wrappedError = new Error(errorMsg);
+    // A refusal that must not be retried (a run whose runtime can no longer
+    // hold, connectors/boxed-runtime) stays non-retriable: Inngest decides
+    // from the error that reaches it, and a plain wrapper would retry it.
+    const wrappedError =
+      error instanceof NonRetriableError
+        ? new NonRetriableError(errorMsg, { cause: error })
+        : new Error(errorMsg);
     (wrappedError as Error & { cause?: unknown }).cause = error;
     throw wrappedError;
   }
