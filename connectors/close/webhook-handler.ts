@@ -15,7 +15,9 @@
  * - A Close event payload is the object's own row without its expansions
  *   (`CLOSE_WEBHOOK_FILL_FIELDS`). Written as is, those columns go NULL.
  * - An upsert that lacks any fill field gets one
- *   `GET /<object>/<id>/?_fields=<missing>`. Only absent keys are filled;
+ *   `GET /<object>/<id>/?_fields=<missing>`, or one Search read for an
+ *   entity whose object GET omits them (EmailThread `latest_emails`, also
+ *   filled when the payload holds it null). Only absent keys are filled;
  *   the webhook's own values win. A field the object omits too is NULL, as
  *   a backfill stores it.
  * - 404 (deleted or merged since): the record is dropped. Its delete event
@@ -67,7 +69,21 @@ const CLOSE_ID = /^[a-z]+_[A-Za-z0-9]{1,64}$/;
  * `CLOSE_WEBHOOK_FILL_FIELDS`; the API test holds the two equal.
  */
 export const CLOSE_WEBHOOK_FILL_FIELDS: Readonly<
-  Record<string, { path: string; fields: readonly string[] }>
+  Record<
+    string,
+    {
+      path: string;
+      fields: readonly string[];
+      /**
+       * Read the fields through Search for this object type instead of the
+       * REST object. Close's GET of an email thread returns no
+       * `latest_emails`; Search does.
+       */
+      search?: string;
+      /** Fill a field whose payload value is null or empty, not only absent. */
+      fillEmpty?: boolean;
+    }
+  >
 > = {
   leads: {
     path: "/lead/",
@@ -101,6 +117,8 @@ export const CLOSE_WEBHOOK_FILL_FIELDS: Readonly<
   "activities:EmailThread": {
     path: "/activity/emailthread/",
     fields: ["latest_emails"],
+    search: "activity.email_thread",
+    fillEmpty: true,
   },
 };
 
@@ -142,7 +160,14 @@ async function fillRecord(
   if (!spec || record.operation !== "upsert" || !payload) {
     return { kind: "record", record };
   }
-  const missing = spec.fields.filter(field => !(field in payload));
+  const isEmpty = (value: unknown) =>
+    value === null ||
+    value === undefined ||
+    value === "" ||
+    (Array.isArray(value) && value.length === 0);
+  const missing = spec.fields.filter(
+    field => !(field in payload) || (spec.fillEmpty && isEmpty(payload[field])),
+  );
   if (missing.length === 0) return { kind: "record", record };
   // The id goes into a URL path: anything but a Close id (`..`, `/`, `?`)
   // is refused before any request.
@@ -161,11 +186,43 @@ async function fillRecord(
 
   let fetched: Record<string, unknown>;
   try {
-    fetched =
-      ((await deps.api.get(
-        `${spec.path}${encodeURIComponent(record.recordId)}/`,
-        { _fields: missing.join(",") },
-      )) as Record<string, unknown> | null) ?? {};
+    if (spec.search) {
+      const found = (await deps.api.post("/data/search/", {
+        query: {
+          type: "and",
+          negate: false,
+          queries: [
+            { type: "object_type", object_type: spec.search, negate: false },
+            { type: "id", value: record.recordId, negate: false },
+          ],
+        },
+        _limit: 1,
+        _fields: { [spec.search]: ["id", ...missing] },
+      })) as { data?: Record<string, unknown>[] } | null;
+      const row = found?.data?.[0];
+      if (!row) {
+        // Search answers an empty page, never 404, for an object that is
+        // gone. The REST object tells the two apart: a 404 lands in the
+        // catch below as `gone`.
+        await deps.api.get(
+          `${spec.path}${encodeURIComponent(record.recordId)}/`,
+          { _fields: "id" },
+        );
+        // It exists: a new object reaches Search a little after its webhook.
+        // Counted retries, so the event is applied filled or left to the poll.
+        return {
+          kind: "failed",
+          reason: `Close ${record.entity} ${record.recordId} is not in Search yet`,
+        };
+      }
+      fetched = row;
+    } else {
+      fetched =
+        ((await deps.api.get(
+          `${spec.path}${encodeURIComponent(record.recordId)}/`,
+          { _fields: missing.join(",") },
+        )) as Record<string, unknown> | null) ?? {};
+    }
   } catch (error) {
     if (error instanceof CloseHttpError && error.status === 404) {
       deps.log(
