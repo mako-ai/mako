@@ -11,7 +11,7 @@
 import { Types } from "mongoose";
 
 import { FlowExecution, type IFlow } from "../database/workspace-schema";
-import { inngest } from "../inngest";
+import { inngest } from "../inngest/client";
 import { cdcBackfillService } from "../sync-cdc/backfill";
 
 export class FlowCancelError extends Error {

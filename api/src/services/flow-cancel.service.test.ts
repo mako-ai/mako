@@ -30,7 +30,7 @@ const state = vi.hoisted(() => ({
   roles: {} as Record<string, string>,
 }));
 
-vi.mock("../inngest", () => ({
+vi.mock("../inngest/client", () => ({
   inngest: {
     send: vi.fn(
       async (event: { name: string; data: Record<string, unknown> }) => {
