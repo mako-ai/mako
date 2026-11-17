@@ -132,13 +132,38 @@ async function resolveAndValidateHostname(
   };
 }
 
-function createPinnedAgent(
+const POOL_MAX_AGENTS = 100;
+const POOL_IDLE_MS = 30_000;
+
+type PinnedAgent = InstanceType<UndiciModule["Agent"]>;
+
+interface PinnedAgentOptions {
+  /** Checks the pinned IP again at every connect. */
+  assertIp?: (ip: string) => void;
+  /** How long an idle socket stays open for the next request. */
+  idleMs?: number;
+  /** Extra TLS options (tests: a self-signed CA). */
+  tls?: Record<string, unknown>;
+}
+
+/**
+ * An undici Agent whose sockets only ever reach `validatedIp`: its DNS
+ * lookup ignores the hostname and answers the pinned IP, after checking it
+ * again. Idle sockets stay open `idleMs` for the next request.
+ */
+export function createPinnedAgent(
   undici: UndiciModule,
   validatedIp: string,
   family: 4 | 6,
-): InstanceType<UndiciModule["Agent"]> {
+  options: PinnedAgentOptions = {},
+): PinnedAgent {
+  const assertIp = options.assertIp ?? assertPublicIp;
+  const idleMs = options.idleMs ?? POOL_IDLE_MS;
   return new undici.Agent({
+    keepAliveTimeout: idleMs,
+    keepAliveMaxTimeout: idleMs,
     connect: {
+      ...options.tls,
       lookup(
         _hostname: string,
         _options: unknown,
@@ -153,7 +178,7 @@ function createPinnedAgent(
         // local dev (Node 22+) working with pinned DNS resolution.
         // Re-check the address actually connected to.
         try {
-          assertPublicIp(validatedIp);
+          assertIp(validatedIp);
         } catch (error) {
           callback(error as NodeJS.ErrnoException, []);
           return;
@@ -164,9 +189,66 @@ function createPinnedAgent(
   });
 }
 
+/**
+ * Pinned agents kept for reuse, so a run of calls to one service shares its
+ * TCP+TLS connections. An agent is keyed by scheme, host (name and port) and
+ * the pinned IP, so it is never shared across hosts or ports, and it still
+ * only connects to the IP it was made for. Every request resolves and
+ * validates DNS first: a changed answer is a new key and a new agent. The
+ * least recently used agent is closed past `maxAgents`.
+ */
+export function createPinnedAgentPool(
+  undici: UndiciModule,
+  options: PinnedAgentOptions & { maxAgents?: number } = {},
+) {
+  const maxAgents = options.maxAgents ?? POOL_MAX_AGENTS;
+  const agents = new Map<string, PinnedAgent>();
+  return {
+    get(url: URL, ip: string, family: 4 | 6): PinnedAgent {
+      const key = `${url.protocol}//${url.host}|${ip}`;
+      const found = agents.get(key);
+      if (found) {
+        agents.delete(key);
+        agents.set(key, found);
+        return found;
+      }
+      const agent = createPinnedAgent(undici, ip, family, options);
+      agents.set(key, agent);
+      if (agents.size > maxAgents) {
+        const [oldestKey, oldest] = agents.entries().next().value ?? [];
+        if (oldestKey !== undefined && oldest) {
+          agents.delete(oldestKey);
+          // Graceful: requests in flight on it finish first.
+          void oldest.close().catch(() => undefined);
+        }
+      }
+      return agent;
+    },
+    get size() {
+      return agents.size;
+    },
+    async close(): Promise<void> {
+      const all = [...agents.values()];
+      agents.clear();
+      await Promise.all(all.map(agent => agent.close()));
+    },
+  };
+}
+
+let pinnedAgentPool: ReturnType<typeof createPinnedAgentPool> | undefined;
+
+function pooledAgent(
+  undici: UndiciModule,
+  url: URL,
+  resolved: { address: string; family: 4 | 6 },
+): PinnedAgent {
+  pinnedAgentPool ??= createPinnedAgentPool(undici);
+  return pinnedAgentPool.get(url, resolved.address, resolved.family);
+}
+
 let undiciModulePromise: Promise<UndiciModule> | undefined;
 
-async function loadUndici(): Promise<UndiciModule> {
+export async function loadUndici(): Promise<UndiciModule> {
   undiciModulePromise ??= import("undici");
   return undiciModulePromise;
 }
@@ -280,11 +362,7 @@ export async function safeFetch(
 
     try {
       const undici = await loadUndici();
-      const agent = createPinnedAgent(
-        undici,
-        resolved.address,
-        resolved.family,
-      );
+      const agent = pooledAgent(undici, currentUrl, resolved);
       const response = await undici.fetch(currentUrl.toString(), {
         method: "GET",
         redirect: "manual",
@@ -292,6 +370,11 @@ export async function safeFetch(
         headers: stripBlockedRequestHeaders({ ...DEFAULT_HEADERS }),
         dispatcher: agent,
       });
+
+      if (response.status < 200 || response.status >= 300) {
+        // Free the pooled socket for the next request.
+        await response.body?.cancel().catch(() => undefined);
+      }
 
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.get("location");
@@ -369,7 +452,7 @@ export async function safeRequest(
       signal,
       headers: stripBlockedRequestHeaders(options.headers),
       body: options.body,
-      dispatcher: createPinnedAgent(undici, resolved.address, resolved.family),
+      dispatcher: pooledAgent(undici, url, resolved),
     });
     const headers: Record<string, string> = {};
     response.headers.forEach((value, name) => {
