@@ -772,6 +772,40 @@ async function testAppenderMatchesLegacyInsertText() {
   }
 }
 
+async function testLargeCellsFlushEarlyAndKeepEveryRow() {
+  console.log(
+    "  buildParquetFromBatches: large cells flush the staging table early, no row lost",
+  );
+  // 40 rows of 1,000,000 characters: ten early flushes inside one batch.
+  const rows = Array.from({ length: 40 }, (_, k) => ({
+    id: k,
+    body: String(k % 10).repeat(1_000_000),
+  }));
+  const result = await buildParquetFromBatches({
+    filenameBase: "test-large-cells",
+    fields: [{ name: "id", type: "INT64" }, { name: "body" }],
+    streamBatches: async insertBatch => {
+      await insertBatch(rows);
+    },
+  });
+  const instance = await DuckDBInstance.create(":memory:");
+  const conn = await instance.connect();
+  try {
+    assert.equal(result.rowCount, 40);
+    const got = await (
+      await conn.run(
+        `SELECT COUNT(*), COUNT(DISTINCT id), MIN(LENGTH(body)), MAX(LENGTH(body)) FROM read_parquet('${result.filePath.replace(/'/g, "''")}')`,
+      )
+    ).getRows();
+    assert.deepEqual(got[0]?.map(Number), [40, 40, 1_000_000, 1_000_000]);
+  } finally {
+    conn.closeSync();
+    await fsPromises
+      .rm(result.filePath, { force: true })
+      .catch(() => undefined);
+  }
+}
+
 async function main() {
   console.log("Running streaming-parquet-builder tests...\n");
 
@@ -807,6 +841,8 @@ async function main() {
   await testDefaultCodecIsSnappy();
   console.log("  PASSED");
   await testAppenderMatchesLegacyInsertText();
+  console.log("  PASSED");
+  await testLargeCellsFlushEarlyAndKeepEveryRow();
   console.log("  PASSED");
   await testZstdRoundTrip();
   console.log("  PASSED\n");

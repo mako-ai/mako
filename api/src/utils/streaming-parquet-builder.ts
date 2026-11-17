@@ -19,6 +19,8 @@ const logger = loggers.api("streaming-parquet-builder");
  * loop and the staging table stays a few megabytes.
  */
 const STAGE_FLUSH_ROWS = 2048;
+/** Staged text that forces an early flush (UTF-16 units, about 8 MB). */
+const STAGE_FLUSH_CHARS = 4 * 1024 * 1024;
 const DEFAULT_DUCKDB_MEMORY_LIMIT_MB = 512;
 const DEFAULT_DUCKDB_THREADS = 1;
 
@@ -500,29 +502,42 @@ export async function buildParquetFromBatches(
       const columnTypes = columns.map(
         col => columnTypeMap.get(col) ?? "VARCHAR",
       );
-      let insertedInThisCall = 0;
-      for (let offset = 0; offset < batch.length; offset += STAGE_FLUSH_ROWS) {
-        const room = limit - totalRows - insertedInThisCall;
-        if (room <= 0) break;
-        const end = Math.min(
-          offset + STAGE_FLUSH_ROWS,
-          batch.length,
-          offset + room,
-        );
-        for (let r = offset; r < end; r++) {
-          const row = batch[r];
-          for (let c = 0; c < columns.length; c++) {
-            const text = duckDBCellText(row[columns[c]], columnTypes[c]);
-            if (text === null) stage.appendNull();
-            else stage.appendVarchar(text);
-          }
-          stage.endRow();
-        }
+      // Cast what is staged into _data. Flushed by row count and by text
+      // size, so a batch of very large cells (emails with inlined files) never
+      // sits whole in the appender's buffer.
+      const take = Math.min(batch.length, Math.max(0, limit - totalRows));
+      let stagedRows = 0;
+      let stagedChars = 0;
+      const flushStage = async () => {
+        if (stagedRows === 0) return;
         stage.flushSync();
         await connection.run(castStageSql);
         await connection.run("TRUNCATE _stage");
-        insertedInThisCall += end - offset;
+        stagedRows = 0;
+        stagedChars = 0;
+      };
+      for (let r = 0; r < take; r++) {
+        const row = batch[r];
+        for (let c = 0; c < columns.length; c++) {
+          const text = duckDBCellText(row[columns[c]], columnTypes[c]);
+          if (text === null) {
+            stage.appendNull();
+          } else {
+            stage.appendVarchar(text);
+            stagedChars += text.length;
+          }
+        }
+        stage.endRow();
+        stagedRows++;
+        if (
+          stagedRows >= STAGE_FLUSH_ROWS ||
+          stagedChars >= STAGE_FLUSH_CHARS
+        ) {
+          await flushStage();
+        }
       }
+      await flushStage();
+      const insertedInThisCall = take;
 
       totalRows += insertedInThisCall;
 
