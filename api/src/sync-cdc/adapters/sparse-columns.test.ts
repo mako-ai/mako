@@ -425,6 +425,16 @@ describe("follow-ups: new live tables and schemaless delete state", () => {
       expect.arrayContaining(["date_created", "calendar_event_link", "source"]),
     );
     expect(cols).not.toContain(ABSENT_COLUMNS_FIELD);
+    // A dotted schema name (Close custom fields) maps to the staged name.
+    const dotted = liveTableCreateColumns(new Set(["id", "custom_cf_abc"]), {
+      ...schema,
+      fields: {
+        ...schema.fields,
+        "custom.cf_abc": { type: "string", nullable: true },
+      },
+    } as ConnectorEntitySchema);
+    expect(dotted).toContain("custom_cf_abc");
+    expect(dotted).not.toContain("custom.cf_abc");
     const ddl = buildCreateLiveTableStatement({
       fullLive: "`p`.`d`.`leads`",
       columns: cols,

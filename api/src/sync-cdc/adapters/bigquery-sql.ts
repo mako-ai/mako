@@ -403,7 +403,11 @@ export function liveTableCreateColumns(
   entitySchema: ConnectorEntitySchema | undefined,
 ): string[] {
   const cols = new Set<string>(stagingCols);
-  for (const name of Object.keys(entitySchema?.fields ?? {})) cols.add(name);
+  // Records reach staging through normalizePayloadKeys (`.` → `_`). Schema
+  // names get the same treatment: BigQuery rejects `.` in a column name.
+  for (const name of Object.keys(entitySchema?.fields ?? {})) {
+    cols.add(name.replace(/\./g, "_"));
+  }
   cols.delete(ABSENT_COLUMNS_FIELD);
   return [...cols];
 }
