@@ -1099,11 +1099,13 @@ jobs:
           # The startup probe reads /health/ready, which answers 503 while a
           # new instance clones its 5 hottest workspace repos
           # (APPS_REPO_WARM_ON_BOOT, api/src/apps/cloud-repo/warm-boot.ts).
-          # The API caps that wait at 25 s from process start. The probe keeps
+          # The API caps that wait at 90 s from the warm's start. The probe keeps
           # Cloud Run's 240 s budget (80 x 3 s), the same as the TCP default:
           # a slow boot (p99 79 s, max 111 s over 7 days) must not fail, or
           # the second revision fails after the first serves and the
-          # migrations below never run.
+          # migrations below never run. Worst case: 111 s boot + 90 s warm
+          # = 201 s, inside 240 s. The probe applies to every instance,
+          # rollout or autoscaled.
           # 6 warm instances, not 3: on 17 Nov a backfill spike made Cloud Run
           # start 5 instances at once, and 60 requests were aborted in the
           # ~25 s each took to boot.
