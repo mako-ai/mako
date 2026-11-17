@@ -52,37 +52,55 @@ import { loggers } from "../../logging";
 
 const logger = loggers.connector();
 
-/** Boxes already reported as running without hidepid. */
-const hidepidOffBoxes = new Set<string>();
-let hidepidOffRuns = 0;
+/** Hidepid reports, by category so Cloud Logging can count them. */
+const boxLogger = loggers.api("connector-box");
+
+/** What a command's output said about hidepid on its box. */
+export type HidepidReport = "off" | "off-capable";
+
+/** The `MAKO_HIDEPID` line of a command's output, if any. */
+export function hidepidReport(stdout: string): HidepidReport | null {
+  const line = stdout
+    .split("\n")
+    .map(l => l.trim())
+    .find(l => l.startsWith(`${HIDEPID_MARKER} off`));
+  if (!line) return null;
+  return line === `${HIDEPID_MARKER} off capable` ? "off-capable" : "off";
+}
 
 /**
- * A command's output said its box has no hidepid on /proc (`MAKO_HIDEPID
- * off`): other runs there can read its argv. Counted on every run, logged
- * once per box. Returns whether the output said so.
+ * A command's output said its box has no hidepid on /proc: other runs there
+ * can read its argv. Logged on every run with `hidepidOff: true`, so Cloud
+ * Logging counts them. An error when root could have remounted /proc: a
+ * template or kernel change turned the protection off.
  */
 export function noteHidepidOff(
   stdout: string,
   ctx: SandboxExecContext,
   box: string | undefined,
   what: "chunk" | "session",
-): boolean {
-  if (!stdout.includes(`${HIDEPID_MARKER} off`)) return false;
-  hidepidOffRuns += 1;
-  const key = box ?? ctx.sessionKey;
-  if (!hidepidOffBoxes.has(key)) {
-    hidepidOffBoxes.add(key);
-    logger.warn(
+): HidepidReport | null {
+  const report = hidepidReport(stdout);
+  if (!report) return null;
+  const fields = {
+    hidepidOff: true,
+    capable: report === "off-capable",
+    sandboxId: box,
+    sessionKey: ctx.sessionKey,
+    what,
+  };
+  if (report === "off-capable") {
+    boxLogger.error(
+      "Connector box has no hidepid on /proc although root could remount it: other runs can read every argv",
+      fields,
+    );
+  } else {
+    boxLogger.warn(
       "Connector box runs without hidepid on /proc: other runs can read every argv",
-      { sessionKey: ctx.sessionKey, sandboxId: box, what, hidepidOffRuns },
+      fields,
     );
   }
-  return true;
-}
-
-/** Runs that reported a box without hidepid, since the process started. */
-export function hidepidOffRunCount(): number {
-  return hidepidOffRuns;
+  return report;
 }
 
 /** One command's worth of the protocol. */
