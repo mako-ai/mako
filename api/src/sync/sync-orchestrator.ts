@@ -13,12 +13,14 @@ import {
   ITableDestination,
 } from "../database/workspace-schema";
 import { markAbsentColumns, stripUndefined } from "../sync-cdc/sparse-rows";
+import { nestedValuesAsJsonText } from "./bulk-buffer-json";
 import {
   buildParquetFromBatches,
   isDuckDBMemoryError,
+  parquetBuildByteBudget,
   type FieldMeta,
 } from "../utils/streaming-parquet-builder";
-import { Collection } from "mongodb";
+import { BSON, Collection } from "mongodb";
 import { Types } from "mongoose";
 import { ProgressReporter } from "./progress-reporter";
 import axios from "axios";
@@ -733,7 +735,7 @@ async function performSyncChunkSql(
             if (useBulkPath && bulkTempCollection) {
               const enrichedRecords = processedRecords.map(
                 (record: Record<string, unknown>) => ({
-                  ...record,
+                  ...nestedValuesAsJsonText(record, entitySchema),
                   _mako_source_ts: resolveSourceTimestamp(record),
                   _bulkRunId: bulkRunId,
                 }),
@@ -904,6 +906,32 @@ function syncMemorySnapshot(): {
  */
 export const BULK_STAGED_FIELD = "_mako_bulk_staged";
 
+/**
+ * The row cap for the retry after a flush batch failed with a DuckDB memory
+ * error: half the rows the failed attempt read, or null when it cannot get
+ * smaller. `minBatchSize` floors a batch the row cap ended. A batch the byte
+ * budget ended was already below its row cap, so it halves past the floor,
+ * down to 1 row: 2 MB rows end a 128 MiB batch at 64 rows, and a floor of
+ * 100 would only read the same 64 again. So does a batch an earlier byte
+ * cut already shrank below the floor.
+ */
+export function flushBatchSizeAfterMemoryError(params: {
+  batchSize: number;
+  rowsRead: number;
+  minBatchSize: number;
+}): number | null {
+  const attempted = Math.min(
+    params.batchSize,
+    params.rowsRead || params.batchSize,
+  );
+  // Below the floor already (an earlier byte cut shrank it there): no floor.
+  const byteCut =
+    attempted < params.batchSize || params.batchSize < params.minBatchSize;
+  const floor = byteCut ? 1 : params.minBatchSize;
+  if (attempted <= floor) return null;
+  return Math.max(floor, Math.floor(attempted / 2));
+}
+
 function bulkBufferCollection(flowId: string, entity: string): Collection {
   return Flow.db.collection(
     `backfill_tmp_${flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`,
@@ -937,16 +965,22 @@ async function flushBulkBuffer(
   if (!loadStagingFromParquet) return { flushed: 0 };
 
   let currentBatchSize = FLUSH_BATCH_SIZE;
+  // Bytes per batch (BSON size of the buffered rows):
+  // SYNC_BULK_FLUSH_BATCH_BYTES, else a quarter of the DuckDB memory limit.
+  const batchBytes =
+    resolvePositiveIntEnv(process.env.SYNC_BULK_FLUSH_BATCH_BYTES, 0) ||
+    parquetBuildByteBudget();
   let totalFlushed = 0;
   let batchNum = 0;
 
   logger?.log(
     "info",
-    `Flushing ${entity} buffer to staging (${initialCount.toLocaleString()} rows, starting batch size ${currentBatchSize.toLocaleString()})`,
+    `Flushing ${entity} buffer to staging (${initialCount.toLocaleString()} rows, batches of up to ${currentBatchSize.toLocaleString()} rows or ${Math.round(batchBytes / 1024 / 1024)} MiB)`,
     {
       entity,
       totalCount: initialCount,
       batchSize: currentBatchSize,
+      batchBytes,
       minBatchSize: MIN_FLUSH_BATCH_SIZE,
       mongoStreamChunk: MONGO_TO_PARQUET_CHUNK,
       memoryBefore: syncMemorySnapshot(),
@@ -984,6 +1018,8 @@ async function flushBulkBuffer(
     );
 
     const tParquetStart = Date.now();
+    let rowsRead = 0;
+    let bytesRead = 0;
 
     let parquet;
     try {
@@ -1002,6 +1038,12 @@ async function flushBulkBuffer(
           let buffer: Record<string, unknown>[] = [];
           for await (const doc of cursor) {
             const d = doc as Record<string, unknown>;
+            // The batch ends at its byte budget as well as its row count:
+            // wide rows past the budget fail the build (see
+            // parquetBuildByteBudget). The rows left stay for the next batch.
+            if (rowsRead > 0 && bytesRead >= batchBytes) break;
+            rowsRead++;
+            bytesRead += BSON.calculateObjectSize(d);
             const { _id, ...rest } = d;
             currentChunk.push(_id);
             if (currentChunk.length >= DELETE_CHUNK) {
@@ -1025,21 +1067,20 @@ async function flushBulkBuffer(
       });
     } catch (err) {
       if (isDuckDBMemoryError(err)) {
-        const shrunkSize = Math.max(
-          MIN_FLUSH_BATCH_SIZE,
-          Math.floor(currentBatchSize / 2),
-        );
+        const shrunkSize = flushBatchSizeAfterMemoryError({
+          batchSize: currentBatchSize,
+          rowsRead,
+          minBatchSize: MIN_FLUSH_BATCH_SIZE,
+        });
 
-        if (
-          shrunkSize <= MIN_FLUSH_BATCH_SIZE &&
-          currentBatchSize <= MIN_FLUSH_BATCH_SIZE
-        ) {
+        if (shrunkSize === null) {
           logger?.log(
             "error",
-            `${entity} flush: DuckDB memory error at minimum batch size (${currentBatchSize}), cannot shrink further`,
+            `${entity} flush: DuckDB memory error at minimum batch size (${Math.min(currentBatchSize, rowsRead || currentBatchSize)} rows), cannot shrink further`,
             {
               entity,
               batchSize: currentBatchSize,
+              rowsRead,
               minBatchSize: MIN_FLUSH_BATCH_SIZE,
               error: err instanceof Error ? err.message : String(err),
             },
