@@ -1682,7 +1682,8 @@ agent's per-server activity into eviction would make it exact.
 
 ## §13.10 Box identity and liveness are pushed, so tabs stay coherent (RFC, 2026-08-27)
 
-The dev-server URL is `https://<port>-<sandboxId>.e2b.app` — the E2B sandbox id
+The dev-server URL is `https://<port>-<sandboxId>.<E2B_DOMAIN>` (`e2b.app` by
+default, `e2b-juliett.dev` in the EU) — the E2B sandbox id
 is baked into the hostname, and E2B offers no stable alias. So a recycle mints a
 new id and every open tab's iframe is suddenly pointing at a dead sandbox
 ("sandbox not found"), and a _second_ browser had no way to know the first had

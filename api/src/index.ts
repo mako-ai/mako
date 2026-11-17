@@ -61,6 +61,7 @@ import { assertDevLoginSafeAtBoot } from "./auth/dev-login";
 import { initAppBindingParquetWriteOptions } from "./utils/parquet-compression";
 import { initParquetRowLimits } from "./utils/parquet-row-limit";
 import { attachAppsTerminalWs } from "./apps/terminal-ws";
+import { e2bStartupInfo } from "./apps/sandbox/e2b-domain";
 import {
   isGkeWorkerConfigured,
   rollWorkersToRuntimeImage,
@@ -474,6 +475,10 @@ async function main(): Promise<void> {
       health: "/health",
     },
   });
+
+  // Which E2B region app boxes live in. The SDK reads E2B_DOMAIN itself; a
+  // malformed value throws here, so a bad deploy fails at boot.
+  logger.info("E2B sandboxes", e2bStartupInfo());
 
   const server = serve({
     fetch: app.fetch,

@@ -206,6 +206,10 @@ jobs:
       # settings change, not a code change (see
       # docs/runbooks/e2b-workspace-migration.md).
       APPS_E2B_TEMPLATE: ${{ vars.APPS_E2B_TEMPLATE || 'mako-apps' }}
+      # E2B region of the key above: e2b.app is us-west-1, e2b-juliett.dev
+      # is the EU project. The SDK and Vite's allowed host both follow it.
+      # `--set-env-vars` replaces the whole env, so it must be listed here.
+      E2B_DOMAIN: ${{ vars.E2B_DOMAIN || 'e2b.app' }}
       # Apps cloud repos (Mako-hosted GitHub storage under mako-ai-cloud).
       # All previews share the staging DB, so they share the "staging" prefix:
       # same workspace -> same repo regardless of which PR created it.
@@ -630,6 +634,7 @@ jobs:
             --set-env-vars E2B_API_KEY=${E2B_API_KEY} \
             --set-env-vars APPS_SANDBOX_PROVIDER=${APPS_SANDBOX_PROVIDER} \
             --set-env-vars APPS_E2B_TEMPLATE=${APPS_E2B_TEMPLATE} \
+            --set-env-vars E2B_DOMAIN=${E2B_DOMAIN} \
             --set-env-vars TAVILY_API_KEY=${TAVILY_API_KEY} \
             --set-env-vars LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY} \
             --set-env-vars LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY} \
@@ -894,6 +899,10 @@ jobs:
       # environment to the repo level, so sharing APPS_E2B_TEMPLATE with
       # previews would hand production the dev template name.
       APPS_E2B_TEMPLATE: ${{ vars.APPS_E2B_TEMPLATE_PROD || 'mako-apps' }}
+      # E2B region of the production key. Its own variable for the same
+      # reason as APPS_E2B_TEMPLATE_PROD: `vars.E2B_DOMAIN` would fall back to
+      # the repo level and hand production the preview domain.
+      E2B_DOMAIN: ${{ vars.E2B_DOMAIN_PROD || 'e2b.app' }}
       # Apps cloud repos (Mako-hosted GitHub storage under mako-ai-cloud).
       # Production: the workspace's own GitHub repo is the only durable store
       # (apps.md §17) — no repo, no app/console saves.
@@ -1123,6 +1132,7 @@ jobs:
             --set-env-vars E2B_API_KEY=${E2B_API_KEY} \
             --set-env-vars APPS_SANDBOX_PROVIDER=${APPS_SANDBOX_PROVIDER} \
             --set-env-vars APPS_E2B_TEMPLATE=${APPS_E2B_TEMPLATE} \
+            --set-env-vars E2B_DOMAIN=${E2B_DOMAIN} \
             --set-env-vars APPS_REQUIRE_CONNECTED_REPO=${APPS_REQUIRE_CONNECTED_REPO} \
             --set-env-vars APPS_REPO_WARM_ON_BOOT=true \
             --set-env-vars APPS_ROW_OWNER_PERSON_IDS=${APPS_ROW_OWNER_PERSON_IDS} \

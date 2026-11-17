@@ -7,6 +7,7 @@
  */
 import { appSdkDependency } from "./app-sdk-package";
 import { PNPM_VERSION } from "./package-manager";
+import { previewHostSuffix } from "./sandbox/e2b-domain";
 
 export interface ScaffoldOptions {
   title: string;
@@ -16,12 +17,19 @@ export interface ScaffoldOptions {
    * deployments, sharing and favourites when it is filed into a folder.
    */
   id?: string;
+  /**
+   * Vite's allowed host for the box's preview origin. Defaults to
+   * `.<E2B_DOMAIN>`. Only a `vite` started by hand reads it: Mako's own
+   * launcher sets the current host inline at every launch.
+   */
+  allowedHost?: string;
 }
 
 export function createAppsScaffold(
   options: ScaffoldOptions,
 ): Record<string, string> {
   const { title, description, id } = options;
+  const allowedHost = options.allowedHost ?? previewHostSuffix();
   const safeTitle = title.trim() || "Mako App";
   const pkgName =
     safeTitle
@@ -125,10 +133,10 @@ export default defineConfig({
   base: "./",
   server: {
     // The preview reaches the dev server on the sandbox's public origin
-    // (<port>-<sandbox>.e2b.app). Without this, a \`vite\` started from the
-    // terminal answers "Blocked request. This host is not allowed."
+    // (<port>-<sandbox>.<E2B domain>). Without this, a \`vite\` started from
+    // the terminal answers "Blocked request. This host is not allowed."
     host: true,
-    allowedHosts: [".e2b.app"],
+    allowedHosts: [${JSON.stringify(allowedHost)}],
   },
 });
 `,

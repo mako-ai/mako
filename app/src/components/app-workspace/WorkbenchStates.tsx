@@ -9,6 +9,7 @@ import {
 import { useAppsStore } from "../../store/appsStore";
 import { TAB_KIND_ICONS } from "../../lib/entity-icons";
 import { usePreviewActivity } from "./usePreviewActivity";
+import { previewHostSuffix } from "../../lib/preview-host";
 
 /** Streams the dev boot log (npm install → vite) while a server starts. */
 export function DevBootLog({
@@ -201,7 +202,7 @@ export function DevPreviewPane({
       A dev server for this app is running in the sandbox but rejects the
       preview host — it was started outside Mako without{" "}
       <code>server.allowedHosts</code> including{" "}
-      <code>&quot;.e2b.app&quot;</code>. Use{" "}
+      <code>&quot;{previewHostSuffix(preview.url)}&quot;</code>. Use{" "}
       <strong>Restart dev session</strong> to let Mako run it, or add that host
       to the app&apos;s <code>vite.config</code>.
     </Alert>
@@ -232,7 +233,7 @@ export function DevPreviewPane({
         // `Access-Control-Allow-Origin: *`.
         //
         // The live dev server (§12.4) is a genuinely foreign origin
-        // (`<port>-<sandbox>.e2b.app`), so `allow-same-origin` grants
+        // (`<port>-<sandbox>.<E2B domain>`), so `allow-same-origin` grants
         // it only ITS OWN origin, never ours. It is required there:
         // with an opaque origin, Vite's HMR socket and its
         // cross-origin module scripts do not work.
