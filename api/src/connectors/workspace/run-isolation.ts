@@ -133,7 +133,8 @@ true`;
  * shadow lock, so concurrent runs retry them like useradd.
  */
 export function hardenScript(): string {
-  return `# A password kept in /etc/passwd or /etc/group itself (anything but "x",
+  return `${hideProcessesScript()}
+# A password kept in /etc/passwd or /etc/group itself (anything but "x",
 # e.g. "node::" with no shadow line) bypasses the shadow files below. Move
 # every such field into the shadow files first, so the lock below sees it.
 n=0
@@ -164,6 +165,27 @@ left=$(awk -F: '$2 == "" { print $1 }' /etc/shadow; if [ -r /etc/gshadow ]; then
 if [ -n "$left" ]; then echo "empty passwords left: $left" >&2; exit 1; fi`;
 }
 
+/**
+ * Root: mount /proc with hidepid=invisible, so a user sees only its own
+ * processes. Any user can otherwise read every process's argv in
+ * /proc/<pid>/cmdline, and a run's setup and cleanup name its run directory
+ * there for a few milliseconds. Root sees everything still, and envd runs
+ * as root. A mount survives a pause and a resume.
+ *
+ * Best effort: a container without CAP_SYS_ADMIN (the Docker suites) cannot
+ * remount /proc. Sessions keep their ids and run directories out of every
+ * long-lived argv without it (session-isolation.ts). A session start reports
+ * a box left without it (`MAKO_SESSION hidepid-off`), and the API logs it.
+ */
+export function hideProcessesScript(): string {
+  return `if ! ${HIDEPID_CHECK}; then
+  mount -o remount,hidepid=invisible /proc 2>/dev/null || mount -o remount,hidepid=2 /proc 2>/dev/null || true
+fi`;
+}
+
+/** Shell that succeeds when /proc is mounted with hidepid. */
+export const HIDEPID_CHECK = `awk '$2 == "/proc" && $3 == "proc" && $4 ~ /(^|,)hidepid=(2|invisible)(,|$)/ { found = 1 } END { exit !found }' /proc/mounts 2>/dev/null`;
+
 /** Root: create the run user and its directories. Fails closed. */
 export function setupScript(l: RunLayout): string {
   return `set -eu
@@ -186,7 +208,10 @@ until err=$(groupadd -g "$gid" "$user" 2>&1); do
   sleep 0.2
 done
 n=0
-until err=$(useradd -l -M -u "$uid" -g "$gid" -d "$R/home" -s /usr/sbin/nologin "$user" 2>&1); do
+# Home /nonexistent: /etc/passwd is world-readable, and a home under the
+# run directory would show every run's id to every other run. The launch
+# sets HOME itself.
+until err=$(useradd -l -M -u "$uid" -g "$gid" -d /nonexistent -s /usr/sbin/nologin "$user" 2>&1); do
   n=$((n + 1))
   if [ "$n" -ge 20 ]; then echo "$err" >&2; groupdel "$user" 2>/dev/null || true; exit 1; fi
   sleep 0.2

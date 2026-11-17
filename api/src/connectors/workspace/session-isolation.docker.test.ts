@@ -26,10 +26,15 @@ import {
   shellQuote,
 } from "./run-isolation";
 import {
+  HIDDEN_COMMAND_ENV,
+  HIDDEN_COMMAND_SHIM,
+} from "../../apps/sandbox/hidden-command";
+import {
   ISOLATED_SESSIONS,
   ackScript,
   batchPath,
   closeScript,
+  connectorInput,
   sessionLayout,
   startScript,
   waitScript,
@@ -69,6 +74,73 @@ async function root(script: string, timeoutMs = 60_000): Promise<Sh> {
       stderr: e.stderr ?? "",
     };
   }
+}
+
+/**
+ * A session command as the API sends it: bash, the script in the
+ * environment, never in argv (SandboxExecOptions.hideCommand).
+ */
+async function hidden(script: string, timeoutMs = 60_000): Promise<Sh> {
+  try {
+    const { stdout, stderr } = await run(
+      "docker",
+      [
+        "exec",
+        "-e",
+        `${HIDDEN_COMMAND_ENV}=${script}`,
+        container,
+        "bash",
+        "-c",
+        HIDDEN_COMMAND_SHIM,
+      ],
+      { timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 },
+    );
+    return { code: 0, stdout, stderr };
+  } catch (error) {
+    const e = error as { code?: number; stdout?: string; stderr?: string };
+    return {
+      code: typeof e.code === "number" ? e.code : 1,
+      stdout: e.stdout ?? "",
+      stderr: e.stderr ?? "",
+    };
+  }
+}
+
+/** Every process's pid and argv, read without naming anything in argv. */
+async function cmdlines(): Promise<Array<{ pid: string; argv: string }>> {
+  const out = await root(
+    `for p in /proc/[0-9]*; do printf '%s\t' "\${p#/proc/}"; tr '\\0' ' ' < "$p/cmdline" 2>/dev/null; echo; done`,
+  );
+  return out.stdout
+    .split("\n")
+    .filter(Boolean)
+    .map(line => {
+      const [pid, ...rest] = line.split("\t");
+      return { pid, argv: rest.join("\t") };
+    });
+}
+
+/** The wrapper's recorded pid, start time and boot id. */
+async function recorded(s: SessionLayout): Promise<[string, string, string]> {
+  const raw = (await root(`cat ${shellQuote(`${s.dir}/supervisor.pid`)}`))
+    .stdout;
+  const [pid, start, boot] = raw.trim().split(/\s+/);
+  return [pid, start, boot];
+}
+
+const alive = async (pid: string) =>
+  (await root(`kill -0 ${pid} 2>/dev/null && echo yes`)).stdout.trim() ===
+  "yes";
+
+/** Kill the session's wrapper and supervisor, as an OOM kill would. */
+async function killWrapper(s: SessionLayout) {
+  const killed = await root(
+    `for p in /proc/[0-9]*; do
+  [ "\${p#/proc/}" = "$$" ] && continue
+  if [ "$(readlink $p/cwd 2>/dev/null)" = ${shellQuote(s.dir)} ]; then kill -9 \${p#/proc/}; fi
+done`,
+  );
+  expect(killed.code).toBe(0);
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -117,8 +189,8 @@ async function start(
     `umask 022; mkdir -p ${shellQuote(`${ISOLATED_INCOMING}/${s.id}`)} && printf %s ${shellQuote(secret)} > ${shellQuote(incomingPath(s.id, "config.json"))}`,
   );
   expect(write.code, write.stderr).toBe(0);
-  const command = `sh -c ${shellQuote(`${PRELUDE}\n${snippet}`)} connector ${shellQuote(config)}`;
-  return root(
+  const command = `sh -c ${shellQuote(`${PRELUDE}\n${snippet}`)} connector ${shellQuote(connectorInput(config))}`;
+  return hidden(
     startScript({
       layout: s,
       inputs: [config],
@@ -138,7 +210,7 @@ const marker = (sh: Sh) =>
     ?.slice("MAKO_SESSION ".length);
 
 const wait = async (s: SessionLayout, seq: number, ack = seq - 1) =>
-  marker(await root(waitScript(s.id, seq, ack, 20_000)));
+  marker(await hidden(waitScript(s.id, seq, ack, 20_000)));
 
 const batch = async (s: SessionLayout, seq: number) =>
   (await root(`cat ${shellQuote(batchPath(s.id, seq))}`)).stdout;
@@ -263,7 +335,7 @@ touch "$HOME/finished"`,
       ).toBe("");
     }
     expect(await wait(s, 6, 5)).toMatch(/^ended done 0 0 none$/);
-    expect(marker(await root(closeScript(s.id)))).toBe("closed 0");
+    expect(marker(await hidden(closeScript(s.id)))).toBe("closed 0");
     await expectGone(s);
   }, 120_000);
 
@@ -281,7 +353,7 @@ done`,
     );
     expect(marker(started), started.stderr).toMatch(/^ready 1 /);
     const t0 = Date.now();
-    expect(marker(await root(closeScript(s.id)))).toBe("closed 0");
+    expect(marker(await hidden(closeScript(s.id)))).toBe("closed 0");
     expect(Date.now() - t0).toBeLessThan(5_000);
     await expectGone(s);
   }, 60_000);
@@ -336,7 +408,7 @@ wait`,
     expect(await batch(victim, 1)).toContain(secret);
 
     for (const s of [victim, thief]) {
-      expect(marker(await root(closeScript(s.id)))).toBe("closed 0");
+      expect(marker(await hidden(closeScript(s.id)))).toBe("closed 0");
       await expectGone(s);
     }
   }, 120_000);
@@ -356,7 +428,7 @@ record a; state 1 false`,
     expect(await wait(s, 2, 1)).toBe("ended done 0 0 none");
     expect(await liveThreads(s.run.uid)).toBe(0);
     expect((await root(`id -u ${s.run.user}`)).code).not.toBe(0);
-    expect(marker(await root(closeScript(s.id)))).toBe("closed 0");
+    expect(marker(await hidden(closeScript(s.id)))).toBe("closed 0");
     await expectGone(s);
   }, 60_000);
 
@@ -389,13 +461,7 @@ env MAKO_KEY="$key" sleep 600`,
     );
     expect(marker(started), started.stderr).toMatch(/^ready 1 /);
     // The supervisor and its wrapper die (OOM, say); the connector lives on.
-    const killed = await root(
-      `for p in /proc/[0-9]*; do
-  [ "\${p#/proc/}" = "$$" ] && continue
-  if grep -qa -e session-supervisor -e ${shellQuote(`${s.dir}/run.sh`)} $p/cmdline 2>/dev/null; then kill -9 \${p#/proc/}; fi
-done`,
-    );
-    expect(killed.code).toBe(0);
+    await killWrapper(s);
     await sleep(300);
     expect(await liveThreads(s.run.uid)).toBeGreaterThan(0);
     await root(`touch -d @1 ${shellQuote(`${s.dir}/heartbeat`)}`);
@@ -406,7 +472,7 @@ done`,
     });
     expect(marker(nextStart), nextStart.stderr).toMatch(/^ready 1 /);
     await expectGone(s);
-    expect(marker(await root(closeScript(next.id)))).toBe("closed 0");
+    expect(marker(await hidden(closeScript(next.id)))).toBe("closed 0");
     await expectGone(next);
   }, 60_000);
 
@@ -423,7 +489,7 @@ done`,
       (await root(`test -d ${shellQuote(creating)} && echo yes`)).stdout.trim(),
     ).toBe("yes");
     await root(`rm -rf ${shellQuote(creating)}`);
-    expect(marker(await root(closeScript(s.id)))).toBe("closed 0");
+    expect(marker(await hidden(closeScript(s.id)))).toBe("closed 0");
     await expectGone(s);
   }, 60_000);
 
@@ -444,7 +510,7 @@ sleep 600`,
     ).toBe(true);
     expect(await batch(s, 1)).toContain('"v":"a"');
     expect(await wait(s, 2, 0)).toMatch(/^ended deadline 137 0 none$/);
-    expect(marker(await root(closeScript(s.id)))).toBe("closed 0");
+    expect(marker(await hidden(closeScript(s.id)))).toBe("closed 0");
     await expectGone(s);
   }, 60_000);
 
@@ -452,7 +518,7 @@ sleep 600`,
     const old = layout();
     const refused = await start(old, `record a; state 1 false; sleep 600`);
     expect(marker(refused)).toMatch(/^ended unsupported \d+ 0 none$/);
-    expect(marker(await root(closeScript(old.id)))).toBe("closed 0");
+    expect(marker(await hidden(closeScript(old.id)))).toBe("closed 0");
     await expectGone(old);
 
     const big = layout();
@@ -462,7 +528,7 @@ sleep 600`,
       { limits: { maxBytes: 2_000 } },
     );
     expect(marker(capped)).toMatch(/^ended too-large-bytes \d+ 0 none$/);
-    expect(marker(await root(closeScript(big.id)))).toBe("closed 0");
+    expect(marker(await hidden(closeScript(big.id)))).toBe("closed 0");
     await expectGone(big);
   }, 60_000);
 
@@ -475,13 +541,13 @@ echo '{"type":"TRACE","trace":{"type":"ERROR","error":{"message":"401 revoked"}}
 echo boom >&2; exit 3`,
     );
     expect(marker(out)).toMatch(/^ready 1 /);
-    const ended = await root(waitScript(failed.id, 2, 1, 20_000));
+    const ended = await hidden(waitScript(failed.id, 2, 1, 20_000));
     expect(marker(ended)).toMatch(/^ended done 3 0 \d+$/);
     expect(ended.stderr).toContain("boom");
     expect(
       (await root(`cat ${shellQuote(`${failed.batches}/2.tail`)}`)).stdout,
     ).toContain("401 revoked");
-    expect(marker(await root(closeScript(failed.id)))).toBe("closed 0");
+    expect(marker(await hidden(closeScript(failed.id)))).toBe("closed 0");
     await expectGone(failed);
 
     const live = layout();
@@ -491,12 +557,154 @@ echo boom >&2; exit 3`,
 env MAKO_KEY="$key" sleep 600`,
     );
     expect(marker(liveStart)).toMatch(/^ready 1 /);
-    await root(ackScript(live.id, 1));
-    expect(marker(await root(closeScript(live.id)))).toBe("closed 0");
+    await hidden(ackScript(live.id, 1));
+    expect(marker(await hidden(closeScript(live.id)))).toBe("closed 0");
     await expectGone(live);
     // And the runs directory holds nothing of either.
     expect((await root(`ls ${shellQuote(ISOLATED_RUNS)}`)).stdout).not.toMatch(
       new RegExp(`${failed.id}|${live.id}`),
     );
   }, 60_000);
+
+  it("keeps the session's id and run directory out of every process's argv", async () => {
+    const s = layout();
+    const started = await start(
+      s,
+      `key=$(cat "$1"); hello; record a; state 1 true
+env MAKO_KEY="$key" sleep 600`,
+    );
+    expect(marker(started), started.stderr).toMatch(/^ready 1 /);
+    // Read every argv many times while waits and acks run, as a hostile
+    // run polling /proc would.
+    const seen: string[] = [];
+    let scanned = 0;
+    let connectors = 0;
+    const scan = (async () => {
+      for (let i = 0; i < 20; i++) {
+        for (const { argv } of await cmdlines()) {
+          scanned++;
+          if (argv.includes("sleep 600")) connectors++;
+          if (argv.includes(s.id) || argv.includes(s.run.dir)) seen.push(argv);
+        }
+      }
+    })();
+    for (let i = 0; i < 5; i++) {
+      expect(await wait(s, 2, 1)).toBe("waiting");
+      await hidden(ackScript(s.id, 1));
+    }
+    await scan;
+    // Nor in /etc/passwd, which every user can read.
+    const passwd = (await root("getent passwd")).stdout;
+    expect(passwd).toContain(`${s.run.user}:`);
+    expect(passwd).not.toContain(s.id);
+    expect(passwd).not.toContain(s.run.dir);
+    // A wait before the first ack prints no error of its own: a failed
+    // open would name the session directory on stderr.
+    const quiet = await hidden(waitScript(s.id, 2, 0, 500));
+    expect(quiet.stderr).toBe("");
+    expect(started.stderr).not.toMatch(/No such file/);
+    // Docker cannot remount /proc: the start says so.
+    expect(started.stdout).toContain("MAKO_SESSION hidepid-off");
+    // The scan reads real argv: it saw the connector's own process each time.
+    expect(scanned).toBeGreaterThan(100);
+    expect(connectors).toBeGreaterThanOrEqual(20);
+    expect(seen).toEqual([]);
+
+    // The wrapper is "bash run.sh", the supervisor names no directory, and
+    // no process inherits the hidden command.
+    const [wrapper] = await recorded(s);
+    const all = await cmdlines();
+    expect(all.find(p => p.pid === wrapper)?.argv.trim()).toBe("bash run.sh");
+    const supervisor = all.find(p => p.argv.includes("session-supervisor"));
+    expect(supervisor?.argv).not.toMatch(/--dir|--inputs/);
+    const environs = await root(
+      `for p in /proc/[0-9]*; do tr '\\0' '\\n' < "$p/environ" 2>/dev/null; done | grep -c '^${HIDDEN_COMMAND_ENV}=' || true`,
+    );
+    expect(environs.stdout.trim()).toBe("0");
+
+    expect(marker(await hidden(closeScript(s.id)))).toBe("closed 0");
+    await expectGone(s);
+  }, 120_000);
+
+  it("never kills a process group whose leader is no longer the wrapper (pid reuse)", async () => {
+    // An unrelated root process group, standing in for whatever reuses a
+    // dead wrapper's pid.
+    const bystander = (
+      await root(
+        `setsid sh -c 'exec sleep 600' </dev/null >/dev/null 2>&1 & echo $!`,
+      )
+    ).stdout.trim();
+    expect(bystander).toMatch(/^\d+$/);
+    await sleep(200);
+    expect(await alive(bystander)).toBe(true);
+
+    // Close: the wrapper died, and its recorded pid now names the bystander
+    // with another start time.
+    const closed = layout();
+    const out = await start(
+      closed,
+      `key=$(cat "$1"); hello; record a; state 1 true
+env MAKO_KEY="$key" sleep 600`,
+    );
+    expect(marker(out), out.stderr).toMatch(/^ready 1 /);
+    const [, start1, boot1] = await recorded(closed);
+    expect(boot1).toMatch(/^[a-f0-9]{32}$/);
+    await killWrapper(closed);
+    await root(
+      `printf '%s %s %s\\n' ${bystander} ${Number(start1) + 1} ${boot1} > ${shellQuote(`${closed.dir}/supervisor.pid`)}`,
+    );
+    expect(marker(await hidden(closeScript(closed.id), 90_000))).toBe(
+      "closed 0",
+    );
+    expect(await alive(bystander)).toBe(true);
+    await expectGone(closed);
+
+    // Reap: the same, found by the next start.
+    const reaped = layout();
+    const out2 = await start(
+      reaped,
+      `key=$(cat "$1"); hello; record a; state 1 true
+env MAKO_KEY="$key" sleep 600`,
+      { limits: { idleMs: 1_000 } },
+    );
+    expect(marker(out2), out2.stderr).toMatch(/^ready 1 /);
+    // This time the start time matches the bystander's own, as after a
+    // reboot that reused every pid: only the boot id tells them apart.
+    await killWrapper(reaped);
+    const bystanderStart = (
+      await root(
+        `awk '{ sub(/.*\\) /, ""); print $20 }' /proc/${bystander}/stat`,
+      )
+    ).stdout.trim();
+    expect(bystanderStart).toMatch(/^\d+$/);
+    await root(
+      `printf '%s %s %s\\n' ${bystander} ${bystanderStart} ${"0".repeat(32)} > ${shellQuote(`${reaped.dir}/supervisor.pid`)} && touch -d @1 ${shellQuote(`${reaped.dir}/heartbeat`)}`,
+    );
+    const next = layout();
+    const nextStart = await start(next, `hello; record b; state 1 false`, {
+      limits: { idleMs: 1_000 },
+    });
+    expect(marker(nextStart), nextStart.stderr).toMatch(/^ready 1 /);
+    expect(await alive(bystander)).toBe(true);
+    await expectGone(reaped);
+    expect(marker(await hidden(closeScript(next.id)))).toBe("closed 0");
+    await expectGone(next);
+    await root(`kill -9 ${bystander}`);
+  }, 180_000);
+
+  it("kills a live wrapper's group when its pid and start time still match", async () => {
+    const s = layout();
+    const out = await start(
+      s,
+      `key=$(cat "$1"); hello; record a; state 1 true
+env MAKO_KEY="$key" sleep 600`,
+    );
+    expect(marker(out), out.stderr).toMatch(/^ready 1 /);
+    const [wrapper] = await recorded(s);
+    // A wrapper that hangs: alive, but never writes the status.
+    await root(`kill -STOP ${wrapper}`);
+    expect(marker(await hidden(closeScript(s.id), 90_000))).toBe("closed 0");
+    expect(await alive(wrapper)).toBe(false);
+    await expectGone(s);
+  }, 120_000);
 });

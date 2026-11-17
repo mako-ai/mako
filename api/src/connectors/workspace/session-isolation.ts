@@ -25,9 +25,10 @@
  *     batches/<seq>.part                      the batch being written
  *     batches/<seq>.tail                      what followed the last STATE
  *     run.sh, cleanup.sh                      root 0700, this file's text
- *     heartbeat                               touched by every wait and ack
+ *     heartbeat                               written by every wait and ack
  *     acked                                   the highest acknowledged batch
- *     supervisor.pid, supervisor.out          the wrapper's pid; the reason
+ *     supervisor.pid                          the wrapper's pid, start time, boot id
+ *     supervisor.out                          the reason the supervisor ended
  *     stderr.log                              the connector's, capped
  *     status                                  "ended <reason> <exit> <cleanup>"
  *   /var/lib/mako-connectors/runs/<id>/       the run directory, as a chunk's
@@ -35,10 +36,21 @@
  *
  * The run user can reach none of it. It writes only to the pipe root reads,
  * and root opens no path the run user controls.
+ *
+ * No process of a session names its run directory or its id in argv, which
+ * every user in the box can read in /proc/<pid>/cmdline. The API sends each
+ * command in the environment (SandboxExecOptions.hideCommand). The wrapper
+ * and the supervisor run in the session directory and take their paths
+ * from their files and their environment. The connector runs in its home
+ * and names its inputs relative to it. A process's cwd and environment are
+ * readable by its own user only. On E2B, /proc is also mounted with
+ * hidepid=invisible (run-isolation.ts `hardenScript`), so a run user sees no
+ * other user's process at all.
  */
 import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 import {
+  HIDEPID_CHECK,
   cleanupScript,
   incomingPath,
   ISOLATED_INCOMING,
@@ -126,6 +138,54 @@ function heredoc(target: string, body: string): string {
 }
 
 /**
+ * Shell functions, bash builtins only, that read a process's start time and
+ * process group from /proc/<pid>/stat. The start time (clock ticks since
+ * boot) tells a process from a later one that reuses its pid.
+ */
+const PROC_FUNCTIONS = `# Every read below puts 2>/dev/null before its < redirect: bash applies
+# redirects left to right, and a failed open would otherwise print its
+# path on the script's stderr, which reaches the API's errors.
+# Field 22 (start time) and 5 (process group) of /proc/<pid>/stat. The
+# command name in parentheses may hold spaces: read after its last ")".
+proc_field() {
+  local field stat rest
+  field=$2
+  read -r stat 2>/dev/null < "/proc/$1/stat" || return 1
+  rest=\${stat##*) }
+  set -- $rest
+  case "$field" in start) printf '%s' "\${20}" ;; pgid) printf '%s' "$3" ;; esac
+}
+proc_start() { proc_field "$1" start; }
+proc_pgid() { proc_field "$1" pgid; }
+boot_id() { local b; read -r b 2>/dev/null < /proc/sys/kernel/random/boot_id; printf '%s' "$b" | tr -cd 'a-f0-9'; }
+# Kill the wrapper's process group, only while its pid is still the wrapper:
+# the boot, pid and start time it recorded must match a live process. A
+# wrapper that died left its pid free for reuse, and a box resumed from a
+# filesystem-only snapshot booted again with every pid reused. Then its
+# group's leftovers are killed one by one, and only those still running in
+# this session's directory (the wrapper's cwd, which they inherited).
+kill_wrapper_group() {
+  local recorded pid start boot p cwd
+  recorded=""
+  read -r recorded 2>/dev/null < "$S/supervisor.pid"
+  set -- $(printf '%s' "$recorded" | tr -cd '0-9a-f ')
+  pid=\${1:-}; start=\${2:-}; boot=\${3:-}
+  case "$pid$start" in ''|*[!0-9]*) return 0 ;; esac
+  [ -n "$pid" ] && [ -n "$start" ] && [ -n "$boot" ] && [ "$pid" -gt 1 ] || return 0
+  if [ "$boot" = "$(boot_id)" ] && [ "$(proc_start "$pid")" = "$start" ]; then
+    kill -9 -- "-$pid" 2>/dev/null
+    return 0
+  fi
+  for p in /proc/[0-9]*; do
+    p=\${p#/proc/}
+    [ "$(proc_pgid "$p")" = "$pid" ] || continue
+    cwd=$(readlink "/proc/$p/cwd" 2>/dev/null)
+    case "$cwd" in "$S"|"$S (deleted)") kill -9 "$p" 2>/dev/null ;; esac
+  done
+  return 0
+}`;
+
+/**
  * The session's wrapper, run detached as root: the connector as the run
  * user, its stdout a root-owned FIFO the supervisor reads; then the cleanup,
  * whatever happened; then the status line. A second, independent timer runs
@@ -138,7 +198,11 @@ function heredoc(target: string, body: string): string {
  */
 export function wrapperScript(input: {
   layout: SessionLayout;
-  /** The connector's shell-quoted argv, run by runuser without a shell. */
+  /**
+   * The connector's shell-quoted argv, run by runuser without a shell, in
+   * the run user's home. It names its inputs relative to that home
+   * (`connectorInput`), never by their full path.
+   */
   command: string;
   node: string;
   limits: SessionLimits;
@@ -154,21 +218,33 @@ export function wrapperScript(input: {
 set -u
 ${PATH_FOR_ROOT}
 S=${S}
-echo $$ > "$S/supervisor.pid"
+# Every path below is relative to the session directory, or held in a
+# variable: argv never names it (see the header).
+cd "$S" || exit 1
+# The pid, its start time and the boot: a reap or close kills this group
+# only while all three still match (kill_wrapper_group).
+read -r self < /proc/$$/stat
+self=\${self##*) }
+set -- $self
+read -r boot < /proc/sys/kernel/random/boot_id
+printf '%s %s %s\\n' "$$" "\${20}" "$(printf '%s' "$boot" | tr -cd 'a-f0-9')" > supervisor.pid.tmp && mv -f supervisor.pid.tmp supervisor.pid
+set --
 # The box's own clock: the API's may disagree with it.
 deadline=$(( $(date +%s) * 1000 + ${limits.maxAgeMs} ))
 # The independent backstop: the run user dies a minute after the deadline
 # even if everything below hangs.
-( exec </dev/null >/dev/null 2>&1; sleep ${hardStop}; bash "$S/cleanup.sh" ) &
+( exec </dev/null >/dev/null 2>&1; sleep ${hardStop}; bash cleanup.sh ) &
 backstop=$!
-mkfifo -m 0600 "$S/out"
-${shellQuote(input.node)} ${shellQuote(SUPERVISOR_PATH)} --dir "$S" --user ${shellQuote(l.user)} \\
-  --inputs ${shellQuote(inputs)} --max-bytes ${limits.maxBytes} --max-messages ${limits.maxMessages} \\
+mkfifo -m 0600 out
+MAKO_SESSION_INPUTS=${shellQuote(inputs)} ${shellQuote(input.node)} ${shellQuote(SUPERVISOR_PATH)} --user ${shellQuote(l.user)} \\
+  --max-bytes ${limits.maxBytes} --max-messages ${limits.maxMessages} \\
   --buffer ${limits.buffer} --idle-ms ${limits.idleMs} --deadline "$deadline" \\
-  < "$S/out" >/dev/null 2>"$S/supervisor.err" &
+  < out >/dev/null 2>supervisor.err &
 supervisor=$!
-( cd ${shellQuote(l.home)} && exec runuser -u ${shellQuote(l.user)} -- env HOME=${shellQuote(l.home)} TMPDIR=${shellQuote(l.home)} ${input.command} ) \\
-  < /dev/null > "$S/out" 2> >(exec >/dev/null; head -c ${STDERR_CAP} > "$S/stderr.log"; cat > /dev/null) &
+# -p keeps this environment: the run user's passwd entry has no home
+# (setupScript), so HOME and the rest come from here, not from argv.
+( cd ${shellQuote(l.home)} && HOME=${shellQuote(l.home)} TMPDIR=${shellQuote(l.home)} USER=${shellQuote(l.user)} LOGNAME=${shellQuote(l.user)} exec runuser -p -u ${shellQuote(l.user)} -- ${input.command} ) \\
+  < /dev/null > out 2> >(exec >/dev/null; head -c ${STDERR_CAP} > stderr.log; cat > /dev/null) &
 connector=$!
 wait "$connector"
 code=$?
@@ -176,16 +252,24 @@ code=$?
 # supervisor reads the rest and stops.
 runuser -u ${shellQuote(l.user)} -- kill -9 -1 2>/dev/null
 wait "$supervisor"
-bash "$S/cleanup.sh" >/dev/null 2>"$S/cleanup.err"
+bash cleanup.sh >/dev/null 2>cleanup.err
 cleanup=$?
 kill "$backstop" 2>/dev/null
-reason=$(head -c 64 "$S/supervisor.out" 2>/dev/null | tr -cd 'a-z-')
-printf 'ended %s %s %s\\n' "\${reason:-error}" "$code" "$cleanup" > "$S/status.tmp" && mv -f "$S/status.tmp" "$S/status"
+reason=$(head -c 64 supervisor.out 2>/dev/null | tr -cd 'a-z-')
+printf 'ended %s %s %s\\n' "\${reason:-error}" "$code" "$cleanup" > status.tmp && mv -f status.tmp status
 # Nobody is reading an abandoned session: drop its data, keep the status
 # only when the cleanup failed, for the next start to report.
 if [ "\${reason:-}" = abandoned ]; then
-  if [ "$cleanup" = 0 ]; then rm -rf "$S"; else rm -rf "$S/batches"; fi
+  if [ "$cleanup" = 0 ]; then rm -rf "$S"; else rm -rf batches; fi
 fi`;
+}
+
+/**
+ * An input as the connector names it: relative to its home, the run
+ * directory's `home/`, so its argv never holds the run directory.
+ */
+export function connectorInput(file: string): string {
+  return path.posix.join("..", path.posix.basename(file));
 }
 
 /**
@@ -203,26 +287,26 @@ fi`;
 export function reapScript(idleMs: number): string {
   const idle = Math.max(1, Math.ceil(idleMs / 1000));
   return `${PATH_FOR_ROOT}
+${PROC_FUNCTIONS}
 unclean=""
 now=$(date +%s)
 for S in ${shellQuote(ISOLATED_SESSIONS)}/*; do
   [ -d "$S" ] || continue
   # A session being created has no heartbeat for a moment: its directory's
   # own time stands in, so a concurrent start never reaps it.
-  beat=$(stat -c %Y "$S/heartbeat" 2>/dev/null || stat -c %Y "$S" 2>/dev/null || echo 0)
+  beat=$(cd "$S" 2>/dev/null && { stat -c %Y heartbeat 2>/dev/null || stat -c %Y . 2>/dev/null; } || echo 0)
   age=$((now - beat))
   if [ -f "$S/status" ]; then
-    cleanup=$(awk '{ print $4 }' "$S/status" 2>/dev/null)
+    cleanup=$(awk '{ print $4 }' 2>/dev/null < "$S/status")
     if [ "$cleanup" != 0 ]; then unclean="$unclean \${S##*/}"; rm -rf "$S"; continue; fi
     [ "$age" -gt ${idle} ] && rm -rf "$S"
     continue
   fi
   if [ "$age" -gt ${idle * 2} ] && [ -f "$S/cleanup.sh" ]; then
-    pid=$(cat "$S/supervisor.pid" 2>/dev/null | tr -cd 0-9)
-    [ -n "$pid" ] && kill -9 -- "-$pid" 2>/dev/null
+    kill_wrapper_group
     # Only a user this session created: its cleanup acts on its UID.
-    owner=$(head -c 64 "$S/user" 2>/dev/null | tr -cd 'a-z0-9')
-    if [ -n "$owner" ] && id -u "$owner" >/dev/null 2>&1 && ! bash "$S/cleanup.sh" >/dev/null 2>&1; then unclean="$unclean \${S##*/}"; fi
+    owner=$(head -c 64 2>/dev/null < "$S/user" | tr -cd 'a-z0-9')
+    if [ -n "$owner" ] && id -u "$owner" >/dev/null 2>&1 && ! (cd "$S" && bash cleanup.sh) >/dev/null 2>&1; then unclean="$unclean \${S##*/}"; fi
     rm -rf "$S" ${shellQuote(ISOLATED_INCOMING)}/"\${S##*/}"
   fi
 done
@@ -257,15 +341,15 @@ while :; do
   if [ -f "$S/batches/$seq.jsonl" ]; then echo "${SESSION_MARKER} ready $seq $(wc -c < "$S/batches/$seq.jsonl")"; exit 0; fi
   if [ ! -d "$S" ]; then echo "${SESSION_MARKER} gone"; exit 0; fi
   # Another attempt already took this batch and acknowledged it.
-  acked=$(head -c 20 "$S/acked" 2>/dev/null | tr -cd 0-9)
+  acked=$(head -c 20 2>/dev/null < "$S/acked" | tr -cd 0-9)
   if [ "\${acked:-0}" -ge "$seq" ]; then echo "${SESSION_MARKER} acked"; exit 0; fi
   if [ -f "$S/status" ]; then
     # The batch is renamed before the status is written: look once more.
     if [ -f "$S/batches/$seq.jsonl" ]; then echo "${SESSION_MARKER} ready $seq $(wc -c < "$S/batches/$seq.jsonl")"; exit 0; fi
     rest=none
     [ -f "$S/batches/$seq.tail" ] && rest=$(wc -c < "$S/batches/$seq.tail")
-    tail -c 2000 "$S/stderr.log" >&2 2>/dev/null
-    echo "${SESSION_MARKER} $(head -c 200 "$S/status" | tr -cd 'a-z0-9 -') $rest"
+    [ -f "$S/stderr.log" ] && tail -c 2000 < "$S/stderr.log" >&2
+    echo "${SESSION_MARKER} $(head -c 200 < "$S/status" | tr -cd 'a-z0-9 -') $rest"
     exit 0
   fi
   i=$((i + 1))
@@ -277,16 +361,19 @@ done`;
 /** Shell that beats and deletes batches up to `ackUpTo`, in `$S`. */
 function ackBody(ackUpTo: number): string {
   const upTo = Math.max(0, Math.floor(ackUpTo));
-  return `if [ -d "$S" ]; then
-  touch "$S/heartbeat"
-  acked=$(head -c 20 "$S/acked" 2>/dev/null | tr -cd 0-9)
-  if [ ${upTo} -gt "\${acked:-0}" ]; then printf '%s' ${upTo} > "$S/acked.tmp" && mv -f "$S/acked.tmp" "$S/acked"; fi
-  for f in "$S"/batches/*.jsonl; do
+  return `if [ -d "$S" ]; then (
+  cd "$S" || exit 0
+  # A write, not touch: a redirect names no path in argv.
+  printf x > heartbeat
+  acked=$(head -c 20 2>/dev/null < acked | tr -cd 0-9)
+  if [ ${upTo} -gt "\${acked:-0}" ]; then printf '%s' ${upTo} > acked.tmp && mv -f acked.tmp acked; fi
+  for f in batches/*.jsonl; do
     [ -f "$f" ] || continue
     n=\${f##*/}; n=\${n%.jsonl}
     case "$n" in ''|*[!0-9]*) continue ;; esac
     [ "$n" -le ${upTo} ] && rm -f "$f"
   done
+)
 fi`;
 }
 
@@ -307,6 +394,7 @@ true`;
 export function closeScript(id: string): string {
   const S = shellQuote(sessionDir(id));
   return `${PATH_FOR_ROOT}
+${PROC_FUNCTIONS}
 S=${S}
 code=0
 if [ -d "$S" ]; then
@@ -314,23 +402,22 @@ if [ -d "$S" ]; then
     # Drop the waiting batches first: a supervisor holding the connector
     # back must read on to the end of the pipe. Then kill the connector;
     # its wrapper runs the cleanup, once, and writes the status.
-    rm -f "$S"/batches/*.jsonl
-    user=$(head -c 64 "$S/user" 2>/dev/null | tr -cd 'a-z0-9')
+    (cd "$S" && rm -f batches/*.jsonl)
+    user=$(head -c 64 2>/dev/null < "$S/user" | tr -cd 'a-z0-9')
     [ -n "$user" ] && runuser -u "$user" -- kill -9 -1 2>/dev/null
     i=0
     while [ ! -f "$S/status" ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
     if [ ! -f "$S/status" ]; then
       # No wrapper to do it: stop whatever is left of it, clean up here.
-      pid=$(cat "$S/supervisor.pid" 2>/dev/null | tr -cd 0-9)
-      [ -n "$pid" ] && kill -9 -- "-$pid" 2>/dev/null
+      kill_wrapper_group
       if [ -n "$user" ] && id -u "$user" >/dev/null 2>&1; then
-        bash "$S/cleanup.sh" >/dev/null 2>&1
+        (cd "$S" && bash cleanup.sh) >/dev/null 2>&1
         code=$?
       fi
     fi
   fi
   if [ -f "$S/status" ]; then
-    wrapped=$(awk '{ print $4 }' "$S/status" 2>/dev/null)
+    wrapped=$(awk '{ print $4 }' 2>/dev/null < "$S/status")
     [ "$wrapped" = 0 ] || code=\${wrapped:-1}
   fi
   rm -rf "$S"
@@ -379,12 +466,12 @@ ${reapScript(input.limits.idleMs)}
 S=${S}
 install -d -o root -g root -m 0700 "$S" "$S/batches"
 # Beat first: a concurrent start's reap must never take this for abandoned.
-touch "$S/heartbeat"
+printf x > "$S/heartbeat"
 printf '%s' ${shellQuote(l.user)} > "$S/user"
 # The cleanup exists before the user does: whatever cuts this start short,
 # a close or a reap can remove what it created.
 ${heredoc(`"$S/cleanup.sh"`, cleanupScript(l))}
-chmod 0700 "$S/cleanup.sh"
+(cd "$S" && chmod 0700 cleanup.sh)
 if ! (
 ${setupScript(l)}
 ); then
@@ -394,11 +481,13 @@ ${setupScript(l)}
   echo "${SESSION_MARKER} setup-failed"
   exit ${SESSION_SETUP_FAILED_EXIT}
 fi
+# Without hidepid every user reads every argv: say so, once per start.
+${HIDEPID_CHECK} || echo "${SESSION_MARKER} hidepid-off"
 staged=1
 ${moves}
 rm -rf ${inbox}
 if [ "$staged" != 1 ] || ! { ${handOver}; }; then
-  bash "$S/cleanup.sh" >/dev/null 2>&1
+  (cd "$S" && bash cleanup.sh) >/dev/null 2>&1
   rm -rf "$S"
   echo "${SESSION_MARKER} inputs-missing"
   exit ${SESSION_INPUTS_MISSING_EXIT}
@@ -417,8 +506,9 @@ ${heredoc(
     limits: input.limits,
   }),
 )}
-chmod 0700 "$S/run.sh"
-touch "$S/heartbeat"
-setsid nohup bash "$S/run.sh" </dev/null >/dev/null 2>&1 &
+(cd "$S" && chmod 0700 run.sh)
+printf x > "$S/heartbeat"
+# From its own directory, so its argv is "bash run.sh" and names nothing.
+( cd "$S" && exec setsid nohup bash run.sh </dev/null >/dev/null 2>&1 ) &
 ${waitScript(s.id, 1, 0, input.waitMs)}`;
 }

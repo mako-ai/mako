@@ -95,3 +95,27 @@ The E2B number needs a live run (the G1 script's E2B account rules apply).
 
 Nothing was left in the box after the 16 reads: no run user, no run
 directory, no session directory.
+
+## A session across an E2B pause, 16 Nov 2026
+
+`e2b-pause.mts` runs the session scripts in a real E2B box (template
+`mako-apps`, dev `3f2t2qgqsu5m8e42xd5i`, project `mako-dev`), sent hidden
+from argv as the API sends them. The connector is a shell loop run as the
+per-run user. Every box it makes is killed at the end.
+
+```bash
+cd api
+E2B_API_KEY=... pnpm exec tsx ../bench/connector-session/e2b-pause.mts
+```
+
+Raw: [`results/e2b-pause-2026-11-16.json`](./results/e2b-pause-2026-11-16.json). 30 of 30 checks passed.
+
+| Pause | Pause call | Resume to first command | Box clock | Boot |
+| --- | --- | --- | --- | --- |
+| Full (memory), 20 s | 483 ms | 1,405 ms | jumped 22 s | same |
+| Filesystem only, 20 s | 812 ms | 13,162 ms | – | new |
+
+- Full pause: session A (10-minute idle limit) served batches 3 to 6 after the resume, ended `done` and left nothing. Its wrapper was the same process, same start time.
+- Full pause: session B (10-second idle limit) ended itself on resume, because the box clock jumped 22 s. It was gone 177 ms after the resume, user and run directory included. The API reads that as `lost` and restarts from the last applied state.
+- Filesystem pause: the box booted again. Session C's run user and run directory were still on disk. Its record was pointed at a live bystander with the bystander's real start time and the old boot id, as a reused pid would look. The next start reaped C and the bystander lived.
+- `/proc` was mounted `hidepid=invisible` after every start. A reboot drops it until the next start.

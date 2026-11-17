@@ -36,14 +36,18 @@ const args = {};
 const argv = process.argv.slice(2);
 for (let i = 0; i < argv.length; i += 2) args[argv[i].replace(/^--/, "")] = argv[i + 1];
 
-const dir = args.dir;
+// The wrapper starts it in the session directory and names neither that
+// directory nor the run's inputs in argv, which any user in the box can
+// read: the directory is the cwd, the inputs come in the environment.
+const dir = args.dir || process.cwd();
 const batches = path.join(dir, "batches");
 const maxBytes = Number(args["max-bytes"]);
 const maxMessages = Number(args["max-messages"]);
 const buffer = Math.max(1, Number(args.buffer) || 1);
 const idleMs = Number(args["idle-ms"]);
 const deadline = Number(args.deadline);
-const inputs = (args.inputs || "").split(",").filter(Boolean);
+const inputs = (process.env.MAKO_SESSION_INPUTS || args.inputs || "").split(",").filter(Boolean);
+delete process.env.MAKO_SESSION_INPUTS;
 const heartbeat = path.join(dir, "heartbeat");
 const NEWLINE = 10;
 

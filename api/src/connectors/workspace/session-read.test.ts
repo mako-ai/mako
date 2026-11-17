@@ -164,12 +164,45 @@ describe("read session transport", () => {
     expect(script).toContain("/runtime/versions/rt/node/bin/node");
     // No credential on any command line.
     expect(script).not.toContain("sk_live_x");
+    // The command travels in the environment, and the connector names its
+    // inputs relative to its home: no argv in the box holds the run
+    // directory or the session id.
+    expect(startCall[2]).toMatchObject({ hideCommand: true });
+    expect(script).toContain("'--config' '../config.json'");
+    expect(script).not.toContain(`'--config' '/var/lib`);
     // 3: the batch, pinned.
     expect(sandbox.readFile).toHaveBeenCalledWith(
       expect.anything(),
       `/var/lib/mako-connectors/sessions/${handle.id}/batches/1.jsonl`,
       { asRoot: true, expectSandboxId: "sbx-1" },
     );
+  });
+
+  it("sends every session command hidden from argv", async () => {
+    const { transport } = setup();
+    replies.start = () => result("MAKO_SESSION ready 1 99\n");
+    replies.wait = () => result("MAKO_SESSION ready 2 99\n");
+    replies.close = () => result("MAKO_SESSION closed 0\n");
+    sandbox.readFile
+      .mockResolvedValueOnce(encode(RECORD + STATE))
+      .mockRejectedValueOnce(new Error("not yet"))
+      .mockResolvedValueOnce(encode(RECORD + STATE));
+    const { handle } = await start(transport);
+    await transport.pull(handle, 2);
+    await transport.close(handle);
+    await new Promise(r => setTimeout(r, 0));
+    const session = sandbox.exec.mock.calls.filter(
+      ([, script]) => kindOf(String(script)) !== "prepare",
+    );
+    expect(session.map(([, script]) => kindOf(String(script))).sort()).toEqual([
+      "ack",
+      "close",
+      "start",
+      "wait",
+    ]);
+    for (const [, , options] of session) {
+      expect(options).toMatchObject({ hideCommand: true });
+    }
   });
 
   it("takes a ready batch in one call, and acknowledges the one before off the path", async () => {

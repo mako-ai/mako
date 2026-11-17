@@ -62,7 +62,18 @@ export interface SandboxExecOptions {
    * on in a box that holds none of its state.
    */
   expectSandboxId?: string;
+  /**
+   * Keep the command text out of every process's argv. Any user in the box
+   * can read another process's `/proc/<pid>/cmdline`, and a box shell runs
+   * its command as `bash -c <command>`. With this set, the command travels
+   * in an environment variable and the shell runs `eval` on it: a process's
+   * environment is readable only by its own user. Connector runs use it so
+   * a run's paths and a session's id never show to another run.
+   */
+  hideCommand?: boolean;
 }
+
+export { HIDDEN_COMMAND_ENV, commandToRun } from "./hidden-command";
 
 /** Options for a single file transfer. */
 export interface SandboxFileOptions {

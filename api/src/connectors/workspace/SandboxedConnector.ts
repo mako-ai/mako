@@ -276,23 +276,40 @@ function withMakoSince(
 }
 
 /**
- * Where a read session is, in the chunk metadata the engine keeps between
- * chunks: its id, its box and the last batch this read applied (`seq`). The
- * next chunk pulls `seq + 1` from it, and a retry of this chunk pulls `seq`
- * again, never a later one. `unsupported` means the runner cannot do
- * sessions, so the rest of the read goes chunk by chunk.
+ * Where a read session is: its id, its box, the last batch this read applied
+ * (`seq`) and the fingerprint of what it reads with. The next chunk pulls
+ * `seq + 1`, and a retry of this chunk pulls `seq` again, never a later one.
+ * `unsupported` means the runner cannot do sessions, so the rest of the read
+ * goes chunk by chunk.
+ *
+ * It lives in `FetchState.readSession`, beside the metadata, never in it:
+ * the metadata is the connector's own STATE, and a connector that could
+ * write this pointer could aim the next chunk at another read's session, to
+ * close it or to take its batches. Only this file writes `readSession`, and
+ * only from the session the API itself started. It names the connection
+ * and the entity it belongs to, and a pointer for any other is ignored.
+ */
+type SessionPointer = {
+  id: string;
+  box?: string;
+  seq: number;
+  entity: string;
+  connection: string;
+  fp?: string;
+};
+type SessionMeta = SessionPointer | { unsupported: true };
+
+/**
+ * The key the first sessions kept in the metadata. A connector's STATE may
+ * still carry it; it is stripped and never read.
  */
 export const MAKO_SESSION_KEY = "makoSession";
 
-type SessionMeta =
-  | { id: string; box?: string; seq: number; entity: string; fp?: string }
-  | { unsupported: true };
-
-function sessionMeta(metadata: unknown): SessionMeta | undefined {
-  const value =
-    metadata && typeof metadata === "object"
-      ? (metadata as Record<string, unknown>)[MAKO_SESSION_KEY]
-      : undefined;
+function sessionMeta(
+  state: FetchState | undefined,
+  connection: string,
+): SessionMeta | undefined {
+  const value = state?.readSession;
   if (!value || typeof value !== "object") return undefined;
   const meta = value as Record<string, unknown>;
   if (meta.unsupported === true) return { unsupported: true };
@@ -300,6 +317,7 @@ function sessionMeta(metadata: unknown): SessionMeta | undefined {
     typeof meta.id === "string" &&
     /^[a-f0-9]{16}$/.test(meta.id) &&
     typeof meta.entity === "string" &&
+    meta.connection === connection &&
     Number.isSafeInteger(meta.seq) &&
     (meta.seq as number) >= 1
   ) {
@@ -308,6 +326,7 @@ function sessionMeta(metadata: unknown): SessionMeta | undefined {
       box: typeof meta.box === "string" ? meta.box : undefined,
       seq: meta.seq as number,
       entity: meta.entity,
+      connection,
       fp: typeof meta.fp === "string" ? meta.fp : undefined,
     };
   }
@@ -450,6 +469,14 @@ export class SandboxedConnector extends BaseConnector {
       definition.sha,
     );
     return this.folderCache;
+  }
+
+  /** The connection a read session pointer belongs to. */
+  private sessionOwner(): string {
+    return (
+      this.connectionId() ??
+      String((this.sourceConnection as { id?: unknown }).id ?? "")
+    );
   }
 
   /** The saved data source's id, or null for a connection not saved yet. */
@@ -810,7 +837,7 @@ export class SandboxedConnector extends BaseConnector {
     }
 
     const previous = options.state;
-    const session = sessionMeta(previous?.metadata);
+    const session = sessionMeta(previous, this.sessionOwner());
     let maxIterations = options.maxIterations ?? 10;
     let sessionUnsupported = session !== undefined && "unsupported" in session;
 
@@ -882,12 +909,7 @@ export class SandboxedConnector extends BaseConnector {
       throw new Error(`read failed for "${options.entity}": ${failure}`);
     }
     const state = await this.applyRead(result, options, maxIterations);
-    if (sessionUnsupported) {
-      state.metadata = {
-        ...((state.metadata as Record<string, unknown>) ?? {}),
-        [MAKO_SESSION_KEY]: { unsupported: true },
-      };
-    }
+    if (sessionUnsupported) state.readSession = { unsupported: true };
     return state;
   }
 
@@ -945,8 +967,10 @@ export class SandboxedConnector extends BaseConnector {
       totalProcessed: (previous?.totalProcessed ?? 0) + records.length,
       hasMore,
       iterationsInChunk: maxIterations,
+      // The connector's STATE, never with a session pointer in it: it may
+      // carry one, and the engine's own lives in `readSession`.
       metadata: withSince(
-        stateMessage?.state ?? withoutSession(previous?.metadata),
+        withoutSession(stateMessage?.state ?? previous?.metadata),
         chunkSince(options.since, previous?.metadata),
       ),
     };
@@ -998,9 +1022,7 @@ export class SandboxedConnector extends BaseConnector {
   private async fetchViaSession(
     transport: ReadSessionTransport,
     options: ResumableFetchOptions,
-    meta:
-      | { id: string; box?: string; seq: number; entity: string; fp?: string }
-      | undefined,
+    meta: SessionPointer | undefined,
   ): Promise<
     { state: FetchState } | { fallback: "unsupported" | "too-large" }
   > {
@@ -1097,23 +1119,23 @@ export class SandboxedConnector extends BaseConnector {
       await transport.close(current);
       return { state };
     }
-    state.metadata = {
-      ...((state.metadata as Record<string, unknown>) ?? {}),
-      [MAKO_SESSION_KEY]: {
-        id: current.id,
-        ...(current.box ? { box: current.box } : {}),
-        seq,
-        entity: options.entity,
-        fp,
-      },
+    const pointer: SessionPointer = {
+      id: current.id,
+      ...(current.box ? { box: current.box } : {}),
+      seq,
+      entity: options.entity,
+      connection: this.sessionOwner(),
+      fp,
     };
+    state.readSession = pointer;
     return { state };
   }
 
   /**
    * A short hash of what a session reads with: its config (credential
-   * included), the connector's source and the page budget. Salted with the
-   * workspace id and kept to 16 hex characters: it tells two configs apart
+   * included), the connector's source, the SDK runtime and the page budget.
+   * An API deploy that ships another SDK replaces a session, never reuses
+   * it. Salted with the workspace id and kept to 16 hex characters: it tells two configs apart
    * and says nothing about either.
    */
   private async sessionFingerprint(
@@ -1128,9 +1150,16 @@ export class SandboxedConnector extends BaseConnector {
       .update("\0")
       .update(definition.sourceSha)
       .update("\0")
+      .update(await this.sessionRuntimeId())
+      .update("\0")
       .update(String(options.maxIterations ?? 10))
       .digest("hex")
       .slice(0, 16);
+  }
+
+  /** The SDK runtime a session would run on now. The seam tests replace. */
+  protected async sessionRuntimeId(): Promise<string> {
+    return connectorRuntimeId();
   }
 
   supportsResumableFetching(): boolean {
