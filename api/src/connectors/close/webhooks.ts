@@ -583,14 +583,55 @@ export async function adoptCloseWebhook(
     );
   }
   // The same match provisionCloseWebhook adopts by: `url`, else `endpoint`.
-  const onUrl = list.some(
+  const existing = list.find(
     item =>
       (item?.url === options.endpointUrl ||
         item?.endpoint === options.endpointUrl) &&
       webhookIdOf(item),
   );
-  if (!onUrl) return null;
-  return provisionCloseWebhook(api, options, eventsForEntities);
+  if (!existing) return null;
+  const webhookId = String(webhookIdOf(existing));
+
+  const requested = (options.events ?? [])
+    .map(event => event.trim())
+    .filter(event => event.length > 0);
+  const { selectors } = normalizeEventSelectors(
+    requested.length > 0
+      ? requested
+      : eventsForEntities(options.enabledEntities ?? []),
+  );
+  if (selectors.length === 0) {
+    throw new Error("No valid Close webhook events configured");
+  }
+
+  // The event update is the point of adopting: a failed PUT fails the call,
+  // so the save reports it, instead of keeping the old event list silently.
+  try {
+    await api.put(`/webhook/${webhookId}/`, { events: selectors });
+  } catch (error) {
+    throw new Error(
+      `Failed to update the events of Close webhook ${webhookId}: ${describeProvisioningError(error)}`,
+      { cause: error },
+    );
+  }
+
+  let signingSecret = extractCloseSigningSecret(existing);
+  if (!signingSecret) {
+    try {
+      const detail = await api.get(`/webhook/${webhookId}/`);
+      signingSecret = extractCloseSigningSecret(detail?.data);
+    } catch (error) {
+      throw new Error(
+        `Failed to read the signing key of Close webhook ${webhookId}: ${describeProvisioningError(error)}`,
+        { cause: error },
+      );
+    }
+  }
+  return {
+    providerWebhookId: webhookId,
+    endpointUrl: options.endpointUrl,
+    signingSecret,
+  };
 }
 
 /**

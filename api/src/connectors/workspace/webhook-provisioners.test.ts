@@ -19,7 +19,7 @@ const URL_A = "https://api.example.test/api/webhooks/ws1/flowA";
 const events = () => ["lead.created", "lead.updated"];
 
 /** A Close API stand-in: records calls, serves one webhook list. */
-function fakeClose(list: Array<Record<string, unknown>>) {
+function fakeClose(list: Array<Record<string, unknown>>, putError?: Error) {
   const calls: string[] = [];
   const api = {
     get: async (path: string) => {
@@ -30,6 +30,7 @@ function fakeClose(list: Array<Record<string, unknown>>) {
     },
     put: async (path: string) => {
       calls.push(`PUT ${path}`);
+      if (putError) throw putError;
       return { data: {} };
     },
     post: async (path: string) => {
@@ -70,6 +71,33 @@ void test("adopt also matches a webhook listed with `endpoint` instead of `url`"
   assert.equal(result?.providerWebhookId, "whsub_e");
   assert.equal(result?.signingSecret, key);
   assert.ok(!calls.some(c => c.startsWith("POST")), "never creates");
+});
+
+void test("adopt fails, with the reason, when Close refuses the event update", async () => {
+  const { api, calls } = fakeClose(
+    [{ id: "whsub_a", url: URL_A, signature_key: "d".repeat(64) }],
+    new Error("HTTP 429: rate limited"),
+  );
+  await assert.rejects(
+    () => adoptCloseWebhook(api, { endpointUrl: URL_A }, events),
+    /Failed to update the events of Close webhook whsub_a: .*429/,
+  );
+  assert.ok(calls.includes("PUT /webhook/whsub_a/"));
+  assert.ok(!calls.some(c => c.startsWith("POST")), "never creates");
+});
+
+void test("adopt reads the key from the webhook when the list leaves it out", async () => {
+  const key = "e".repeat(64);
+  const { api, calls } = fakeClose([{ id: "whsub_k", url: URL_A }]);
+  (api as any).get = async (path: string) => {
+    calls.push(`GET ${path}`);
+    return path === "/webhook/"
+      ? { data: { data: [{ id: "whsub_k", url: URL_A }] } }
+      : { data: { id: "whsub_k", signature_key: key } };
+  };
+  const result = await adoptCloseWebhook(api, { endpointUrl: URL_A }, events);
+  assert.equal(result?.signingSecret, key);
+  assert.ok(calls.includes("GET /webhook/whsub_k/"));
 });
 
 void test("only Close has a provisioner, and it needs a key", async () => {
