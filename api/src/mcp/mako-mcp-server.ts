@@ -255,7 +255,7 @@ export function buildMakoMcpCandidateTools(
   // Gated by the capability's live minimum role (member); creates source
   // connections only.
   const connectionWriteTools = createConnectionWriteTools(workspaceId, userId);
-  // Who may use a connection: the connections-manage grant, and the app's
+  // Who may use a connection: the connections-access grant, and the app's
   // own rights (owner/admin, or a source connection's managers) in the tool.
   const connectionAccessTools = createConnectionAccessTools(
     workspaceId,
@@ -342,10 +342,11 @@ const EXTERNAL_MCP_IMPLICIT_GRANTS: readonly CapabilityGrant[] = [
  * opted into per key via `members:write` and never conferred by the blanket
  * ACP-desktop grant — otherwise adding a grant to CAPABILITY_GRANTS silently
  * widens that surface, which is exactly what happened when this one was
- * added.
+ * added. `connections-access` changes who may use a credential: the same
+ * reasoning, one level down.
  */
 const ACP_DESKTOP_WITHHELD_GRANTS: ReadonlySet<CapabilityGrant> =
-  new Set<CapabilityGrant>(["members-write"]);
+  new Set<CapabilityGrant>(["members-write", "connections-access"]);
 
 function sessionCapabilityGrants(
   context: MakoMcpContext,
@@ -518,6 +519,7 @@ function capabilityScopeForGrant(
   if (grant === "members-write") return "members:write";
   if (grant === "connections-write") return "connections:write";
   if (grant === "connections-manage") return "connections:manage";
+  if (grant === "connections-access") return "connections:access";
   if (grant === "workflows-run") return "workflows:run";
   return undefined;
 }

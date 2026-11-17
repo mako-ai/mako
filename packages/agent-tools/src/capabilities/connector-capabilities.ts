@@ -27,8 +27,10 @@
  * member, and changing or deleting takes being one of the connection's
  * managers, as in the UI. `set_connection_access` changes who may use a
  * connection (a database connection's writers; a source connection's
- * writers, live reads, live readers and managers) under the same
- * `connections-manage` grant, for the people who may change it in the app:
+ * writers, live reads, live readers and managers). It needs its own grant,
+ * `connections-access`, which no sign-in carries: only an API key created
+ * with the `connections:access` scope. It acts for the people who may
+ * change access in the app:
  * the workspace owner and admins for a database connection, a source
  * connection's managers and the workspace owner for theirs. They are kept
  * out of the in-product chat so a prompt-injected page cannot plant, repoint
@@ -138,8 +140,9 @@ export const CONNECTOR_CAPABILITIES = [
   define({
     name: "set_connection_access",
     pack: "connector-admin",
-    risk: "write",
-    requiredGrant: "connections-manage",
+    // It can take access away (a writer, a manager) as well as give it.
+    risk: "destructive",
+    requiredGrant: "connections-access",
     minimumWorkspaceRole: "member",
     surfaces: EXTERNAL_MCP_ONLY,
     resultKind: "data",

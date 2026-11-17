@@ -16,6 +16,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
+import { ConnectionAccessEvent } from "../../access/connection-access-event";
 import { User } from "../../database/schema";
 import {
   DatabaseConnection,
@@ -63,6 +64,7 @@ beforeEach(async () => {
     DatabaseConnection.deleteMany({}),
     WorkspaceMember.deleteMany({}),
     User.deleteMany({}),
+    ConnectionAccessEvent.deleteMany({}),
   ]);
   WS = new Types.ObjectId().toString();
   for (const [userId, role] of [
@@ -340,6 +342,47 @@ describe("a source connection's access", () => {
       expect(result.error).toBeTruthy();
     }
     expect((await source())?.managers).toEqual(["manager1"]);
+  });
+});
+
+describe("every change is recorded", () => {
+  it("additions, removals and the switch, with who made them; nothing for a refusal or a no-op", async () => {
+    await as("owner1")({
+      connectionId: DB.toString(),
+      addWriters: [{ principal: "user:member2", where: "mako_out" }],
+      removeWriters: [{ principal: "user:admin1" }],
+    });
+    await as("manager1")({
+      connectionId: SOURCE.toString(),
+      liveReads: true,
+      removeWriters: [{ principal: "workflow:send-digest" }],
+      addManagers: ["user:member2"],
+    });
+    // Refused, then unchanged: neither is an event.
+    await as("member2")({
+      connectionId: DB.toString(),
+      addWriters: [{ principal: "workflow:*" }],
+    });
+    await as("manager1")({ connectionId: SOURCE.toString(), liveReads: true });
+
+    const events = await ConnectionAccessEvent.find({}).sort({ at: 1 }).lean();
+    expect(
+      events.map(e => [String(e.connectionId), e.kind, e.actor, e.via]),
+    ).toEqual([
+      [DB.toString(), "database", "owner1", "mcp"],
+      [SOURCE.toString(), "source", "manager1", "mcp"],
+    ]);
+    expect(events[0].changes).toEqual({
+      writers: {
+        added: ["user:member2 mako_out"],
+        removed: ["user:admin1 finance"],
+      },
+    });
+    expect(events[1].changes).toEqual({
+      writers: { added: [], removed: ["workflow:send-digest"] },
+      liveReads: true,
+      managers: { added: ["member2"], removed: [] },
+    });
   });
 });
 

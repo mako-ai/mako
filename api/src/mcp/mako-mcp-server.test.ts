@@ -935,11 +935,7 @@ async function main() {
     // Changing or removing an existing credential is not implicit: a key
     // minted with the defaults cannot rename, disable or delete one.
     const defaults = await listFor(["mcp", "query:read"]);
-    for (const manage of [
-      "update_connection",
-      "delete_connection",
-      "set_connection_access",
-    ]) {
+    for (const manage of ["update_connection", "delete_connection"]) {
       assert.equal(
         defaults.has(manage),
         false,
@@ -948,7 +944,40 @@ async function main() {
     }
     const managing = await listFor(["mcp", "query:read", "connections:manage"]);
     assert.ok(managing.has("update_connection"));
-    assert.ok(managing.has("set_connection_access"));
+    // Who may use a connection is its own scope, which no sign-in carries:
+    // not the defaults, not connections:manage, not the full OAuth set.
+    const withoutAccess: WorkspaceApiKeyScope[][] = [
+      ["mcp", "query:read"],
+      ["mcp", "query:read", "connections:manage"],
+      [...parseMcpOAuthScopes(undefined)],
+    ];
+    for (const scopes of withoutAccess) {
+      assert.equal(
+        (await listFor(scopes)).has("set_connection_access"),
+        false,
+        "set_connection_access must need the connections:access scope",
+      );
+    }
+    assert.equal(ALL_OAUTH_SCOPES.includes("connections:access"), false);
+    const access = await listFor(["mcp", "connections:access"]);
+    assert.equal(
+      access.get("set_connection_access")?.annotations?.destructiveHint,
+      true,
+    );
+    assert.equal(
+      (await listFor(["mcp", "connections:access"], "viewer")).has(
+        "set_connection_access",
+      ),
+      false,
+      "a viewer must not change access, whatever the key carries",
+    );
+    assert.equal(
+      (await listFor(["mcp", "connections:access"], "admin", true)).has(
+        "set_connection_access",
+      ),
+      false,
+      "the desktop agent must not change access",
+    );
     assert.equal(
       managing.get("delete_connection")?.annotations?.destructiveHint,
       true,

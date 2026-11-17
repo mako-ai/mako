@@ -42,6 +42,13 @@ import type { CapabilityGrant } from "@mako/agent-tools";
  * removing an existing credential can break what already runs on it, so a
  * key carries it only when asked for (OAuth sign-ins carry it, like
  * `workflows:run`).
+ *
+ * `connections:access` maps to the `connections-access` grant behind
+ * set_connection_access: who may use a connection (writers, live reads, live
+ * readers, managers). No OAuth sign-in carries it, unlike every other scope
+ * here but `members:write` and `query:write`: only a key an admin created
+ * with it. The tool then checks the app's own rights against the key's
+ * owner.
  */
 export const WORKSPACE_API_KEY_SCOPES = [
   "mcp",
@@ -52,6 +59,7 @@ export const WORKSPACE_API_KEY_SCOPES = [
   "members:write",
   "connections:write",
   "connections:manage",
+  "connections:access",
   // Start workflow runs and add webhooks over MCP: that executes the
   // workspace's own workflow code, so a read-only key cannot.
   "workflows:run",
@@ -180,6 +188,9 @@ export function capabilityGrantsFromScopes(
   }
   if (hasWorkspaceApiKeyScope(scopes, "connections:manage")) {
     grants.push("connections-manage");
+  }
+  if (hasWorkspaceApiKeyScope(scopes, "connections:access")) {
+    grants.push("connections-access");
   }
   if (hasWorkspaceApiKeyScope(scopes, "workflows:run")) {
     grants.push("workflows-run");

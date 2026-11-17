@@ -546,11 +546,15 @@ credential check and deletes it again if the check fails) and the
 `update_connection` / `delete_connection` tools (rename, plain config, remove;
 an explicit per-key scope, carried by OAuth sign-ins;
 only for the connection's managers or the workspace owner, as in the app, and
-never a secret or the address a key is sent to) and `set_connection_access`
+never a secret or the address a key is sent to). The `connections:access`
+scope maps to the `connections-access` grant behind `set_connection_access`
 (who may use a connection: a database connection's writers, for the workspace
 owner and admins; a source connection's writers, live reads, live readers and
-managers, for its managers and the workspace owner). Like `warehouse:write` it is carried by every
-OAuth login and is not a default for new API keys.
+managers, for its managers and the workspace owner). Unlike the two above, no
+OAuth login carries `connections:access`: only an API key created with it, and
+every change it makes is kept in `connection_access_events`. Like
+`warehouse:write`, `connections:write` and `connections:manage` are carried by
+every OAuth login and are not defaults for new API keys.
 
 The opt-in `query:write` scope is double-gated: it yields "write-opt-in"
 query access, which `sql_execute_query` resolves per connection — write

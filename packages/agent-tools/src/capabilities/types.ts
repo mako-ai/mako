@@ -13,6 +13,7 @@ export type CapabilityRisk = "read" | "write" | "destructive";
 
 export type CapabilityGrant =
   | "artifact-write"
+  | "connections-access"
   | "connections-manage"
   | "connections-write"
   | "git-write"
@@ -23,8 +24,13 @@ export type CapabilityGrant =
 
 export const CAPABILITY_GRANTS = [
   "artifact-write",
-  // Rename, change or delete an existing source connection, and change who
-  // may use a connection (set_connection_access). An explicit
+  // Change who may use a connection (set_connection_access): writers, live
+  // reads, live readers, managers. An explicit per-key scope
+  // (`connections:access`) that NO sign-in carries: an agent that reads
+  // pages and query results must not be able to widen who uses a credential
+  // unless an admin made a key for exactly that.
+  "connections-access",
+  // Rename, change or delete an existing source connection. An explicit
   // per-key scope (`connections:manage`), carried by every OAuth sign-in like
   // `workflows:run`; a key minted with the defaults cannot remove the
   // credential a running flow uses. The connection's managers gate it too.

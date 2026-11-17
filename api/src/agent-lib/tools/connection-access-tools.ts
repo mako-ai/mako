@@ -9,8 +9,10 @@
  *
  * Authorization — the rights are the app's, checked live on every call:
  *
- *   1. The credential holds the `connections-manage` grant: every OAuth
- *      sign-in, an API key only when created with `connections:manage`.
+ *   1. The credential holds the `connections-access` grant: an API key
+ *      created with the `connections:access` scope. No OAuth sign-in carries
+ *      it, so an agent a person merely signed in (Claude Code, Cursor)
+ *      cannot change access, whatever a page or a query result tells it.
  *   2. Database connection: the credential's owner is the workspace owner or
  *      an admin (`PUT /databases/{id}/writers`).
  *   3. Source connection: the credential's owner is one of the connection's
@@ -34,7 +36,8 @@
  * Changes are deltas (add / remove), never a whole list: an agent that read
  * the list a moment ago does not erase an entry someone added since. Every
  * entry records who added it (the credential's owner), and every change is
- * logged with `via: "mcp"`.
+ * recorded (access/connection-access-event.ts): additions and removals,
+ * who, when.
  *
  * It is external-MCP only (connector-capabilities.ts): the in-product chat
  * reads pages and query results, and a prompt injected there must not be
@@ -50,6 +53,11 @@ import {
   publicWriters,
   writersOutsideRefusal,
 } from "../../access/connection-writers-list";
+import {
+  ConnectionAccessEvent,
+  listChange,
+  type ConnectionAccessChanges,
+} from "../../access/connection-access-event";
 import { principalsOutsideWorkspace } from "../../access/connection-writes";
 import {
   changeRefusal,
@@ -409,6 +417,35 @@ function selfGrantRefusal(add: WriterInput[], userId: string): string | null {
     : null;
 }
 
+/**
+ * Keep the change (who, what was added and removed). The access is already
+ * changed when this runs: a failure to record is logged, not returned.
+ */
+async function recordAccessChange(
+  workspaceId: string,
+  connectionId: Types.ObjectId,
+  kind: Kind,
+  caller: Caller,
+  changes: ConnectionAccessChanges,
+): Promise<void> {
+  try {
+    await ConnectionAccessEvent.create({
+      workspaceId: new Types.ObjectId(workspaceId),
+      connectionId,
+      kind,
+      actor: caller.userId as string,
+      via: "mcp",
+      changes,
+    });
+  } catch (error) {
+    logger.error("Could not record a connection access change", {
+      workspaceId,
+      connectionId: String(connectionId),
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 async function setDatabaseAccess(
   workspaceId: string,
   caller: Caller,
@@ -471,6 +508,9 @@ async function setDatabaseAccess(
       userId: caller.userId,
       writers: writers.length,
       via: "mcp",
+    });
+    await recordAccessChange(workspaceId, row._id, "database", caller, {
+      writers: listChange(stored.map(key), writers.map(key)),
     });
   }
   return {
@@ -664,6 +704,31 @@ async function setSourceAccess(
       managersAdded: managers.filter(id => !before.includes(id)),
       managersRemoved: before.filter(id => !managers.includes(id)),
       via: "mcp",
+    });
+    await recordAccessChange(workspaceId, row._id, "source", caller, {
+      ...(changed.includes("writers")
+        ? {
+            writers: listChange(
+              storedWriters.map(w => w.principal),
+              writers.map(w => w.principal),
+            ),
+          }
+        : {}),
+      ...(changed.includes("liveReads") ? { liveReads } : {}),
+      ...(changed.includes("liveReaders")
+        ? {
+            liveReaders: {
+              ...listChange(
+                (row.liveReaders ?? []).map(w => w.principal),
+                (liveReaders ?? []).map(w => w.principal),
+              ),
+              ...(liveReaders === null ? { everyone: true } : {}),
+            },
+          }
+        : {}),
+      ...(changed.includes("managers")
+        ? { managers: listChange(before, managers) }
+        : {}),
     });
   }
 

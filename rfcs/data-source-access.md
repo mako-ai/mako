@@ -28,8 +28,9 @@ writers?: { principal: string; where?: string; addedBy; addedAt }[]
   are refused until listed, and the refusal says how to get added.
 - Owner and admins edit the list, the same people who may set
   `allowAgentWrites` or delete a connection today: in the app, or over MCP
-  with `set_connection_access` (the `connections:manage` scope, external MCP
-  only, never the in-product chat). The REST route stays app-session only.
+  with `set_connection_access` (an API key with the `connections:access`
+  scope, which no sign-in carries; external MCP only, never the in-product
+  chat; every change is recorded in `connection_access_events`). The REST route stays app-session only.
 
 ## The check
 

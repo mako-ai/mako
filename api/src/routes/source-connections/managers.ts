@@ -58,7 +58,7 @@ sourceConnectionManagerRoutes.openapi(
     const user = c.get("user");
     // This route takes a person signed in to the app, never an API key. An
     // MCP client goes through set_connection_access, which needs the
-    // connections-manage grant and checks the same rights.
+    // connections-access grant and checks the same rights.
     if (c.get("authType") !== "session" || !user?.id) {
       return fail(c, 403, "Managers can only be changed in the app");
     }
