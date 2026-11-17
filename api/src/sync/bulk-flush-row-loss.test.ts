@@ -275,6 +275,7 @@ vi.mock("../sync-cdc/adapters/registry", async () => {
 });
 
 import {
+  flushBatchSizeAfterMemoryError,
   getTempCollectionCount,
   performBulkFlush,
   performOverwriteTruncate,
@@ -529,6 +530,27 @@ describe("bulk flush batch bytes", () => {
     expect(loadSizes.length).toBeGreaterThanOrEqual(120 / 6);
     expect(Math.max(...loadSizes)).toBeLessThanOrEqual(6);
   }, 60_000);
+});
+
+describe("flush batch size after a DuckDB memory error", () => {
+  const next = (batchSize: number, rowsRead: number) =>
+    flushBatchSizeAfterMemoryError({ batchSize, rowsRead, minBatchSize: 100 });
+
+  it("halves a batch the row cap ended, down to the floor", () => {
+    expect(next(2000, 2000)).toBe(1000);
+    expect(next(150, 150)).toBe(100);
+    expect(next(100, 100)).toBeNull();
+  });
+
+  it("halves a batch the byte budget ended past the floor", () => {
+    // 2 MB rows: the 128 MiB budget ends the batch at 64 rows.
+    expect(next(2000, 64)).toBe(32);
+    expect(next(100, 64)).toBe(32);
+    // The retry after that: 32 rows, below the floor already.
+    expect(next(32, 32)).toBe(16);
+    expect(next(2000, 2)).toBe(1);
+    expect(next(2000, 1)).toBeNull();
+  });
 });
 
 describe("bulk buffer writes", () => {

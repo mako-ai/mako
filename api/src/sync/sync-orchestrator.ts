@@ -825,6 +825,32 @@ function syncMemorySnapshot(): {
  */
 export const BULK_STAGED_FIELD = "_mako_bulk_staged";
 
+/**
+ * The row cap for the retry after a flush batch failed with a DuckDB memory
+ * error: half the rows the failed attempt read, or null when it cannot get
+ * smaller. `minBatchSize` floors a batch the row cap ended. A batch the byte
+ * budget ended was already below its row cap, so it halves past the floor,
+ * down to 1 row: 2 MB rows end a 128 MiB batch at 64 rows, and a floor of
+ * 100 would only read the same 64 again. So does a batch an earlier byte
+ * cut already shrank below the floor.
+ */
+export function flushBatchSizeAfterMemoryError(params: {
+  batchSize: number;
+  rowsRead: number;
+  minBatchSize: number;
+}): number | null {
+  const attempted = Math.min(
+    params.batchSize,
+    params.rowsRead || params.batchSize,
+  );
+  // Below the floor already (an earlier byte cut shrank it there): no floor.
+  const byteCut =
+    attempted < params.batchSize || params.batchSize < params.minBatchSize;
+  const floor = byteCut ? 1 : params.minBatchSize;
+  if (attempted <= floor) return null;
+  return Math.max(floor, Math.floor(attempted / 2));
+}
+
 function bulkBufferCollection(flowId: string, entity: string): Collection {
   return Flow.db.collection(
     `backfill_tmp_${flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`,
@@ -960,25 +986,20 @@ async function flushBulkBuffer(
       });
     } catch (err) {
       if (isDuckDBMemoryError(err)) {
-        // Half the rows this attempt read: a batch the byte budget cut is
-        // smaller than currentBatchSize.
-        const shrunkSize = Math.max(
-          MIN_FLUSH_BATCH_SIZE,
-          Math.floor(
-            Math.min(currentBatchSize, rowsRead || currentBatchSize) / 2,
-          ),
-        );
+        const shrunkSize = flushBatchSizeAfterMemoryError({
+          batchSize: currentBatchSize,
+          rowsRead,
+          minBatchSize: MIN_FLUSH_BATCH_SIZE,
+        });
 
-        if (
-          shrunkSize <= MIN_FLUSH_BATCH_SIZE &&
-          currentBatchSize <= MIN_FLUSH_BATCH_SIZE
-        ) {
+        if (shrunkSize === null) {
           logger?.log(
             "error",
-            `${entity} flush: DuckDB memory error at minimum batch size (${currentBatchSize}), cannot shrink further`,
+            `${entity} flush: DuckDB memory error at minimum batch size (${Math.min(currentBatchSize, rowsRead || currentBatchSize)} rows), cannot shrink further`,
             {
               entity,
               batchSize: currentBatchSize,
+              rowsRead,
               minBatchSize: MIN_FLUSH_BATCH_SIZE,
               error: err instanceof Error ? err.message : String(err),
             },
