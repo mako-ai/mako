@@ -917,6 +917,10 @@ jobs:
       # (#1299). Off unless the repo variable says "true", so turning it on or
       # off is `gh variable set` plus a redeploy, with no code change.
       CONNECTOR_SESSION_READS: ${{ vars.CONNECTOR_SESSION_READS_PROD || 'false' }}
+      # Webhook batches: ws: connectors with webhooks apply through the box
+      # lane. Off unless the repo variable says "true". mako-canary keeps its
+      # own config (DISABLE_WEBHOOK_PROCESSING).
+      CONNECTOR_WEBHOOK_BATCHES: ${{ vars.CONNECTOR_WEBHOOK_BATCHES_PROD || 'false' }}
       # Apps cloud repos (Mako-hosted GitHub storage under mako-ai-cloud).
       # Production: the workspace's own GitHub repo is the only durable store
       # (apps.md §17) — no repo, no app/console saves.
@@ -1161,6 +1165,7 @@ jobs:
             --set-env-vars APPS_E2B_TEMPLATE=${APPS_E2B_TEMPLATE} \
             --set-env-vars E2B_DOMAIN=${E2B_DOMAIN} \
             --set-env-vars CONNECTOR_SESSION_READS=${CONNECTOR_SESSION_READS} \
+            --set-env-vars CONNECTOR_WEBHOOK_BATCHES=${CONNECTOR_WEBHOOK_BATCHES} \
             --set-env-vars APPS_REQUIRE_CONNECTED_REPO=${APPS_REQUIRE_CONNECTED_REPO} \
             --set-env-vars APPS_REPO_WARM_ON_BOOT=true \
             --set-env-vars APPS_ROW_OWNER_PERSON_IDS=${APPS_ROW_OWNER_PERSON_IDS} \
