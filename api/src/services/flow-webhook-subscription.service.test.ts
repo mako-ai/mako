@@ -7,6 +7,7 @@ import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { WiseConnector } from "../connectors/wise/connector";
 import {
   flowEntitySignature,
+  PROVISION_NEEDS_ADMIN,
   removeFlowWebhookSubscription,
   syncFlowWebhookSubscription,
 } from "./flow-webhook-subscription.service";
@@ -485,7 +486,17 @@ async function testRepoPushNeverProvisions() {
   );
   assert.deepEqual(result, {
     status: "skipped",
-    reason: "webhook not provisioned",
+    reason: PROVISION_NEEDS_ADMIN,
+  });
+  // A caller that passes no options gets the same fail-safe answer.
+  const silent = await syncFlowWebhookSubscription(
+    webhookFlow({
+      webhookConfig: { endpoint: ENDPOINT, secret: "", enabled: true },
+    }),
+  );
+  assert.deepEqual(silent, {
+    status: "skipped",
+    reason: PROVISION_NEEDS_ADMIN,
   });
   assert.equal(calls.length + creates.length, 0);
 }

@@ -38,6 +38,7 @@ import {
 } from "./flow-triggers.service";
 import {
   flowEntitySignature,
+  PROVISION_NEEDS_ADMIN,
   syncFlowWebhookSubscription,
 } from "./flow-webhook-subscription.service";
 import {
@@ -779,6 +780,13 @@ export async function finishFlowUpdate(params: {
     if (webhookSync.status === "failed") {
       syncConfigWarnings.push(
         `Saved, but the provider webhook subscription could not be set up: ${webhookSync.error}. The flow keeps polling; fix the cause and save again, or re-provision from the Triggers step.`,
+      );
+    } else if (
+      webhookSync.status === "skipped" &&
+      webhookSync.reason === PROVISION_NEEDS_ADMIN
+    ) {
+      syncConfigWarnings.push(
+        "Saved, but only an owner or admin can set up the provider webhook subscription. Ask one to save this flow or use “Create in …” on the Triggers step. The flow keeps polling.",
       );
     } else if (webhookSync.status === "not_found") {
       syncConfigWarnings.push(

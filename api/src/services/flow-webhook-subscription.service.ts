@@ -61,9 +61,13 @@ export interface FlowWebhookSubscriptionSyncOptions {
   mayProvision: boolean;
 }
 
+/** The reason a save that could provision was not allowed to. */
+export const PROVISION_NEEDS_ADMIN = "provisioning needs an owner or admin";
+
 export async function syncFlowWebhookSubscription(
   flow: IFlow,
-  options: FlowWebhookSubscriptionSyncOptions,
+  // Fail-safe default: a caller that says nothing never provisions.
+  options: FlowWebhookSubscriptionSyncOptions = { mayProvision: false },
   deps: FlowWebhookSubscriptionDeps = defaultDeps,
 ): Promise<FlowWebhookSubscriptionSyncResult> {
   const webhook = flow.webhookConfig;
@@ -103,8 +107,11 @@ export async function syncFlowWebhookSubscription(
     // No secret: never provisioned (or the secret was cleared). Adopt the
     // subscription already on this URL, else create one.
     if (!webhook.secret) {
-      if (!connector.supportsWebhookProvisioning() || !options.mayProvision) {
+      if (!connector.supportsWebhookProvisioning()) {
         return { status: "skipped", reason: "webhook not provisioned" };
+      }
+      if (!options.mayProvision) {
+        return { status: "skipped", reason: PROVISION_NEEDS_ADMIN };
       }
       return await provisionFlowWebhook(flow, connector, entities, deps);
     }
