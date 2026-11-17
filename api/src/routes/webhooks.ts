@@ -115,12 +115,26 @@ router.openapi(
       let event: any;
 
       if (connector.supportsWebhooks()) {
-        const verificationResult = await connector.verifyWebhook({
-          payload: rawBodyText,
-          headers: headers,
-          secret: flow.webhookConfig.secret,
-          query,
-        });
+        let verificationResult: Awaited<
+          ReturnType<typeof connector.verifyWebhook>
+        >;
+        try {
+          verificationResult = await connector.verifyWebhook({
+            payload: rawBodyText,
+            headers: headers,
+            secret: flow.webhookConfig.secret,
+            query,
+          });
+        } catch (error) {
+          // The check itself could not run (a workspace connector whose
+          // definition failed to load, say). Nothing was stored, so the
+          // vendor must retry: never a 2xx here.
+          logger.error("Webhook verification could not run", {
+            flowId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return fail(c, 503, "Webhook verification is unavailable");
+        }
 
         if (!verificationResult.valid) {
           logger.error("Webhook signature verification failed", {

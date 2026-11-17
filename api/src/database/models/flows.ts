@@ -227,6 +227,12 @@ export interface IFlow extends Document {
     provisionError?: { message: string; at: Date } | null;
     totalReceived: number;
     enabled: boolean;
+    /**
+     * Boxed connectors only: events per webhook batch. Halved after a batch
+     * fails in its box, doubled back after one succeeds, so one bad event
+     * is isolated without failing its neighbours (webhook-batch.ts).
+     */
+    boxBatchSize?: number;
   };
   entityFilter?: string[]; // Optional: specific entities to sync (for connector sources)
   queries?: IFlowQuery[]; // Queries for GraphQL/PostHog connectors
@@ -473,6 +479,7 @@ const FlowSchema = new Schema<IFlow>(
         type: Boolean,
         default: true,
       },
+      boxBatchSize: Number,
     },
     entityFilter: [String],
     queries: [

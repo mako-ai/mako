@@ -282,6 +282,19 @@ describe("ingress", () => {
     expect(await WebhookEvent.countDocuments({})).toBe(0);
   });
 
+  it("answers 503, never 2xx, when the connector's definition cannot load", async () => {
+    mocks.loadConnectorDefinition.mockRejectedValue(
+      new Error('The connector "close" is blocked'),
+    );
+    const body = JSON.stringify({ event: { id: "ev_blocked" } });
+    const res = await deliver(body, {
+      "close-sig-hash": sign(body),
+      "close-sig-timestamp": "1763290800",
+    });
+    expect(res.status).toBe(503);
+    expect(await WebhookEvent.countDocuments({})).toBe(0);
+  });
+
   it("with the flag off, keeps today's path: no lane, the shared-token check", async () => {
     process.env.CONNECTOR_WEBHOOK_BATCHES = "false";
     const body = JSON.stringify({ id: "ev_token", type: "x" });
@@ -566,7 +579,21 @@ describe("a batch", () => {
     });
   });
 
-  it("a timed-out box fails its own batch and ends the run, leaving others pending", async () => {
+  /** Run batches of the flow until it settles or `max` runs. */
+  async function drain(runner: ReturnType<typeof fakeRunner>, max = 20) {
+    const results = [];
+    for (let i = 0; i < max; i++) {
+      const result = await processBoxWebhookBatch({
+        flowId: String(flowId),
+        runner: runner.factory,
+      });
+      results.push(result);
+      if (result.next === "empty") break;
+    }
+    return results;
+  }
+
+  it("a timed-out box costs one run, blames no event of a larger batch, and halves the next one", async () => {
     const mine = [await boxEvent(), await boxEvent()];
     const theirs = await boxEvent(otherFlowId, otherConn);
     const box = fakeRunner(() => ({
@@ -580,24 +607,76 @@ describe("a batch", () => {
       flowId: String(flowId),
       runner: box.factory,
     });
-    expect(result).toMatchObject({ next: "stop", failed: 2 });
+    expect(result).toMatchObject({ next: "stop", failed: 0, claimed: 2 });
+    expect(box.calls).toHaveLength(1);
     for (const e of mine) {
       expect(await WebhookEvent.findById(e._id).lean()).toMatchObject({
-        status: "failed",
-        attempts: 1,
-        applyError: {
-          code: BOX_CODES.boxFailed,
-          message: "The connector timed out.",
-        },
+        status: "pending",
+        attempts: 0,
       });
     }
+    expect(
+      (await Flow.collection.findOne({ _id: flowId }))?.webhookConfig
+        ?.boxBatchSize,
+    ).toBe(1);
     expect(mocks.appendNormalizedEvents).not.toHaveBeenCalled();
     expect(await WebhookEvent.findById(theirs._id).lean()).toMatchObject({
       status: "pending",
     });
+
+    // Alone, an event that still times out is failed for the retry cron.
+    await processBoxWebhookBatch({
+      flowId: String(flowId),
+      runner: box.factory,
+    });
+    expect(await WebhookEvent.findById(mine[0]._id).lean()).toMatchObject({
+      status: "failed",
+      attempts: 1,
+      applyError: {
+        code: BOX_CODES.boxFailed,
+        message: "The connector timed out.",
+      },
+    });
+    expect(box.calls).toHaveLength(2);
   });
 
-  it("a connector that throws or exits non-zero fails the batch, with its message", async () => {
+  it("isolates the one event that crashes the box, and every other event is written", async () => {
+    const events = [];
+    for (let i = 0; i < 8; i++) events.push(await boxEvent());
+    const poison = events[5].eventId;
+    const box = fakeRunner(batch =>
+      batch.some(e => e.eventId === poison)
+        ? ok([
+            {
+              type: "TRACE",
+              trace: { type: "ERROR", error: { message: "handler threw" } },
+            },
+          ])
+        : ok(batch.map(e => leadOutcome(e))),
+    );
+    const results = await drain(box);
+    // No run makes more than one box run.
+    expect(box.calls.length).toBeLessThanOrEqual(results.length);
+    expect(results.at(-1)?.next).toBe("empty");
+    const stored = new Map(
+      (await WebhookEvent.find({ flowId }).lean()).map(e => [e.eventId, e]),
+    );
+    for (const e of events) {
+      const row = stored.get(e.eventId)!;
+      if (e.eventId === poison) {
+        expect(row).toMatchObject({
+          status: "failed",
+          applyError: { code: BOX_CODES.boxFailed, message: "handler threw" },
+        });
+      } else {
+        expect(row.status).toBe("completed");
+        // Never blamed: no attempt was spent on a batch the poison broke.
+        expect(row.attempts).toBe(1);
+      }
+    }
+  });
+
+  it("a connector that throws or exits non-zero fails the event, with its message", async () => {
     await boxEvent();
     const box = fakeRunner(() =>
       ok([
@@ -614,7 +693,7 @@ describe("a batch", () => {
     expect(result).toMatchObject({ next: "stop", reason: "401: key revoked" });
   });
 
-  it("halves a batch whose answer is over the protocol cap, down to the one event that is", async () => {
+  it("an answer over the protocol cap shrinks the next batch, one box run at a time, down to the event that causes it", async () => {
     for (let i = 0; i < 4; i++) await boxEvent();
     const huge = (
       await WebhookEvent.find({ flowId }).sort({ receivedAt: 1 })
@@ -625,30 +704,79 @@ describe("a batch", () => {
       }
       return ok(events.map(e => leadOutcome(e)));
     });
-    const result = await processBoxWebhookBatch({
+    const first = await processBoxWebhookBatch({
       flowId: String(flowId),
       runner: box.factory,
     });
-    expect(result).toMatchObject({ claimed: 4, ingested: 3, failed: 1 });
+    expect(first).toMatchObject({ next: "stop", claimed: 4, failed: 0 });
+    expect(box.calls).toHaveLength(1);
+    await drain(box);
     expect(box.calls.map(c => c.batch.events.length)).toEqual([4, 2, 2, 1, 1]);
     expect(await WebhookEvent.findOne({ eventId: huge }).lean()).toMatchObject({
       status: "failed",
+      attempts: 5,
       applyError: { code: BOX_CODES.outputTooLarge },
     });
+    expect(
+      await WebhookEvent.countDocuments({ flowId, status: "completed" }),
+    ).toBe(3);
   });
 
-  it("refuses to send a batch whose payload echoes the signing secret", async () => {
+  it("fails only the event whose payload echoes the signing secret, and sends the rest", async () => {
     const leak = await boxEvent(flowId, conn, { note: `key ${SECRET}` });
+    const clean = await boxEvent();
     const box = fakeRunner(events => ok(events.map(e => leadOutcome(e))));
     const result = await processBoxWebhookBatch({
       flowId: String(flowId),
       runner: box.factory,
     });
-    expect(box.calls).toHaveLength(0);
-    expect(result).toMatchObject({ next: "stop", failed: 1 });
+    expect(box.calls).toHaveLength(1);
+    expect(box.calls[0].batch.events.map((e: any) => e.eventId)).toEqual([
+      clean.eventId,
+    ]);
+    expect(JSON.stringify(box.calls[0].batch)).not.toContain(SECRET);
+    expect(result).toMatchObject({ failed: 1, ingested: 1 });
     expect(await WebhookEvent.findById(leak._id).lean()).toMatchObject({
       status: "failed",
       applyError: { code: BOX_CODES.secretInBatch },
+    });
+  });
+
+  it("never writes an entity the connector did not declare, even one the shaping renames", async () => {
+    await Flow.collection.updateOne(
+      { _id: flowId },
+      { $unset: { entityFilter: "" } },
+    );
+    const e = await boxEvent();
+    const box = fakeRunner(
+      batch =>
+        ok([
+          {
+            type: "WEBHOOK",
+            webhook: {
+              eventId: batch[0].eventId,
+              outcome: "records",
+              records: [
+                {
+                  entity: "activities",
+                  recordId: "x",
+                  operation: "upsert",
+                  payload: { _type: "Anything" },
+                },
+              ],
+            },
+          },
+        ]),
+      ["activities"],
+    );
+    await processBoxWebhookBatch({
+      flowId: String(flowId),
+      runner: box.factory,
+    });
+    expect(mocks.appendNormalizedEvents).not.toHaveBeenCalled();
+    expect(await WebhookEvent.findById(e._id).lean()).toMatchObject({
+      applyStatus: "dropped",
+      applyError: { code: "ENTITY_DISABLED" },
     });
   });
 
@@ -665,6 +793,32 @@ describe("a batch", () => {
     expect(await WebhookEvent.findById(e._id).lean()).toMatchObject({
       status: "pending",
     });
+  });
+
+  it("hands a flow pointed at a new in-process connection back to the inline cron", async () => {
+    const e = await boxEvent();
+    const inProcess = new Types.ObjectId();
+    await SourceConnection.collection.insertOne({
+      _id: inProcess,
+      workspaceId: ws,
+      name: "PL Close",
+      type: "close",
+      config: {},
+    });
+    await Flow.collection.updateOne(
+      { _id: flowId },
+      { $set: { dataSourceId: inProcess } },
+    );
+    const box = fakeRunner(() => ok([]));
+    const result = await processBoxWebhookBatch({
+      flowId: String(flowId),
+      runner: box.factory,
+    });
+    expect(result.next).toBe("stop");
+    expect(box.calls).toHaveLength(0);
+    const after = await WebhookEvent.findById(e._id).lean();
+    expect(after?.lane).toBeUndefined();
+    expect(after?.status).toBe("pending");
   });
 
   it("hands a flow that moved to an in-process connector back to the inline cron", async () => {

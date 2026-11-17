@@ -15,6 +15,7 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -115,13 +116,13 @@ class BoxlessClose extends SandboxedConnector {
   }
 }
 
-const connector = () =>
+const connector = (baseUrl?: string) =>
   new BoxlessClose({
     _id: "665f000000000000000000c1",
     workspaceId: "ws_webhooks",
     name: "PL Close shadow",
     type: "ws:close",
-    config: { api_key: API_KEY, __base_url: server.url },
+    config: { api_key: API_KEY, __base_url: baseUrl ?? server.url },
   } as never);
 
 before(async () => {
@@ -276,7 +277,10 @@ void test("a partial lead.updated is re-fetched by id and writes the row a read 
   // the budget halves, as a read's does.
   assert.ok(requests.length > 0 && requests.length <= 8, requests.join("\n"));
   for (const request of requests) {
-    assert.match(request, /\/custom_field_schema\/lead\/|\/data\/search\//);
+    assert.match(
+      request,
+      /\/custom_field_schema\/lead\/|\/data\/search\/|^GET \/lead\/lead_does_not_exist\//,
+    );
   }
 });
 
@@ -298,4 +302,68 @@ void test("a batch with no lead upserts makes no request to Close", async () => 
   assert.deepEqual(server.requests(API_KEY).slice(before), []);
   const outcomes = result.messages.filter(m => m.type === "WEBHOOK");
   assert.equal(outcomes.length, 3);
+});
+
+void test("a lead the search index has not caught up with fails for a retry, never skipped or written stale", async () => {
+  const fresh = partialLeadUpdated(7, "ev_lagging_missing");
+  const stale = partialLeadUpdated(42, "ev_lagging_stale");
+  // The stale event's own copy is newer than anything the index returns.
+  stale.rawPayload.event.data.date_updated = "2030-01-01T00:00:00.000000+00:00";
+  const staleRow = { ...stale.lead, date_updated: "2026-01-01T00:00:00.000Z" };
+
+  // A Close whose index returns the stale row and misses the fresh lead,
+  // while a direct read of the fresh lead succeeds.
+  const seen: string[] = [];
+  const lagging = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", chunk => (body += chunk));
+    req.on("end", () => {
+      const url = (req.url ?? "").replace(/^\/api\/v1/, "");
+      seen.push(`${req.method} ${url}`);
+      res.setHeader("content-type", "application/json");
+      if (url.startsWith("/custom_field_schema/")) {
+        res.end(JSON.stringify({ fields: [] }));
+      } else if (url.startsWith("/data/search/")) {
+        res.end(JSON.stringify({ data: [staleRow], cursor: null }));
+      } else if (url.startsWith(`/lead/${fresh.lead.id}/`)) {
+        res.end(JSON.stringify({ id: fresh.lead.id }));
+      } else {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ error: "Not found" }));
+      }
+    });
+  });
+  await new Promise<void>(resolve => lagging.listen(0, "127.0.0.1", resolve));
+  const { port } = lagging.address() as { port: number };
+  try {
+    const events = [fresh, stale].map(e => ({
+      eventId: e.eventId,
+      eventType: e.eventType,
+      rawPayload: e.rawPayload,
+      receivedAt: "2026-11-16T11:00:00.000Z",
+    }));
+    const result = await connector(`http://127.0.0.1:${port}`).runWebhookBatch(
+      { events },
+      { timeoutMs: 60_000 },
+    );
+    assert.equal(
+      result.exitCode,
+      0,
+      JSON.stringify(result.messages) + result.stderr,
+    );
+    const outcomes: any[] = result.messages
+      .filter(m => m.type === "WEBHOOK")
+      .map(m => m.webhook);
+    assert.deepEqual(
+      outcomes.map(o => [o.eventId, o.outcome]),
+      [
+        ["ev_lagging_missing", "extract_failed"],
+        ["ev_lagging_stale", "extract_failed"],
+      ],
+    );
+    assert.match(outcomes[0].reason, /has not caught up/);
+    assert.ok(seen.some(r => r.startsWith(`GET /lead/${fresh.lead.id}/`)));
+  } finally {
+    await new Promise(resolve => lagging.close(resolve));
+  }
 });

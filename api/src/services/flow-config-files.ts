@@ -18,6 +18,7 @@
  * | `webhookConfig.secret` | a credential |
  * | `webhookConfig.endpoint` | inbound URL identity; Mongo-side, must survive a rename |
  * | `webhookConfig.lastReceivedAt` / `totalReceived` | counters |
+ * | `webhookConfig.boxBatchSize` | run state (boxed webhook batch size) |
  * | `syncState`, `streamState`, `backfillState`, `lastRunAt`, … | run state |
  *
  * Credentials never appear either: connections are referenced by id,

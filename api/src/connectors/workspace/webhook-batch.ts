@@ -372,7 +372,19 @@ export async function processBoxWebhookBatch(input: {
     return emptyResult("stop", "missing dependency");
   }
 
-  // Events verified for another connection never reach this one.
+  if (!isWorkspaceConnectorType(connection.type)) {
+    // The flow moved to an in-process connector, by a new connection or by
+    // an edit of this one: its events go back to the inline cron, which
+    // handles them as it handles any other. No box runs, so no connection
+    // can receive another's events here.
+    await WebhookEvent.updateMany(
+      { flowId, lane: "box", status: "pending" },
+      { $unset: { lane: "", dataSourceId: "" } },
+    );
+    return emptyResult("stop", "not a workspace connector");
+  }
+
+  // Events verified for another connection never reach this one's box.
   await endPending(
     { flowId, dataSourceId: { $ne: connection._id } },
     "completed",
@@ -380,16 +392,6 @@ export async function processBoxWebhookBatch(input: {
     BOX_CODES.connectionChanged,
     "The flow's connection changed after this event was received",
   );
-
-  if (!isWorkspaceConnectorType(connection.type)) {
-    // The flow moved to an in-process connector: its events go back to the
-    // inline cron, which handles them as it handles any other.
-    await WebhookEvent.updateMany(
-      { flowId, lane: "box", status: "pending" },
-      { $unset: { lane: "", dataSourceId: "" } },
-    );
-    return emptyResult("stop", "not a workspace connector");
-  }
 
   const isCdc =
     flow.syncEngine === "cdc" &&
@@ -406,6 +408,14 @@ export async function processBoxWebhookBatch(input: {
     return emptyResult("stop", "not a CDC flow");
   }
 
+  // The flow's current batch size: halved after a failed box run, doubled
+  // back after a good one (see `runBatch`).
+  const stored = Number(flow.webhookConfig?.boxBatchSize);
+  const size =
+    Number.isSafeInteger(stored) && stored >= 1
+      ? Math.min(stored, limits.maxEvents)
+      : limits.maxEvents;
+
   const candidates = (await WebhookEvent.find({
     flowId,
     workspaceId: flow.workspaceId,
@@ -414,12 +424,15 @@ export async function processBoxWebhookBatch(input: {
     status: "pending",
   })
     .sort({ receivedAt: 1, _id: 1 })
-    .limit(limits.maxEvents)
+    .limit(size)
     .select("_id eventId eventType rawPayload receivedAt")
     .lean()) as unknown as StoredEvent[];
   if (candidates.length === 0) return emptyResult("empty");
 
-  const { batch, tooLarge } = cutBatch(candidates, limits);
+  const { batch, tooLarge } = cutBatch(candidates, {
+    maxEvents: size,
+    maxBytes: limits.maxBytes,
+  });
   if (tooLarge) {
     await WebhookEvent.updateOne(
       { _id: tooLarge._id, status: "pending" },
@@ -446,7 +459,11 @@ export async function processBoxWebhookBatch(input: {
   );
   const claimedIds = new Set(
     (
-      await WebhookEvent.find({ boxClaim: claim, status: "processing" })
+      await WebhookEvent.find({
+        _id: { $in: batch.map(e => e._id) },
+        boxClaim: claim,
+        status: "processing",
+      })
         .select("_id")
         .lean()
     ).map(e => String(e._id)),
@@ -480,12 +497,22 @@ export async function processBoxWebhookBatch(input: {
     claim,
     limits,
   });
+  // A batch that failed in its box is cut in half next time; a good one
+  // grows back. One bad event ends up alone, and only it fails.
+  const nextSize = result.shrink
+    ? Math.max(1, Math.ceil(claimed.length / 2))
+    : size < limits.maxEvents
+      ? Math.min(limits.maxEvents, size * 2)
+      : null;
   await Flow.updateOne(
     { _id: flowId },
     {
       $set: {
         lastRunAt: new Date(),
         ...(result.ingested > 0 ? { lastSuccessAt: new Date() } : {}),
+        ...(nextSize !== null
+          ? { "webhookConfig.boxBatchSize": nextSize }
+          : {}),
       },
       $inc: { runCount: 1 },
     },
@@ -499,16 +526,16 @@ export async function processBoxWebhookBatch(input: {
     failed: result.failed,
     reason: result.reason,
   });
+  const { shrink: _shrink, ...rest } = result;
   return {
-    ...result,
+    ...rest,
     claimed: claimed.length,
     // A short read means the queue was drained when this batch was cut;
     // what arrived since waits for the next cron.
     next:
       result.next === "stop"
         ? "stop"
-        : candidates.length < limits.maxEvents &&
-            claimed.length === candidates.length
+        : candidates.length < size && claimed.length === candidates.length
           ? "empty"
           : "more",
   };
@@ -560,76 +587,72 @@ async function runBatch(input: {
   events: StoredEvent[];
   claim: string;
   limits: WebhookBatchLimits;
-}): Promise<Omit<BatchResult, "claimed">> {
-  const { flow, connection, runner, declared, events, claim, limits } = input;
+}): Promise<Omit<BatchResult, "claimed"> & { shrink?: boolean }> {
+  const { flow, connection, runner, declared, claim, limits } = input;
   const totals = { ingested: 0, failed: 0, dropped: 0, applied: 0 };
+
+  // Defense in depth: the signing secret is never part of a batch. An
+  // event whose payload echoes it is failed on its own and never carried
+  // into a box; the rest of the batch goes on.
+  let events = input.events;
+  if (input.secret) {
+    const secret = input.secret;
+    const leaking = events.filter(e =>
+      JSON.stringify(wireEvent(e)).includes(secret),
+    );
+    if (leaking.length > 0) {
+      await WebhookEvent.bulkWrite(
+        leaking.map(e =>
+          failedOp(
+            claim,
+            e,
+            BOX_CODES.secretInBatch,
+            "The event holds the webhook signing secret; it is not sent to a box",
+            true,
+          ),
+        ),
+      );
+      totals.failed += leaking.length;
+      events = events.filter(e => !leaking.includes(e));
+      if (events.length === 0) return { next: "more", ...totals };
+    }
+  }
   const batch = { events: events.map(wireEvent) };
 
-  // Defense in depth: the signing secret is never part of a batch. A
-  // payload that echoes it is refused rather than carried into a box.
-  if (input.secret && JSON.stringify(batch).includes(input.secret)) {
-    await WebhookEvent.bulkWrite(
-      events.map(e =>
-        failedOp(
-          claim,
-          e,
-          BOX_CODES.secretInBatch,
-          "The event holds the webhook signing secret; it is not sent to a box",
-          true,
-        ),
-      ),
-    );
-    return { next: "stop", ...totals, failed: events.length };
-  }
+  // One box run per batch, never more: a failure ends the run. With more
+  // than one event, nobody knows which event caused it, so none is blamed:
+  // they go back to pending with their attempt refunded, and the next batch
+  // of this flow is half as large. A single event that fails is its own.
+  const boxFailed = async (
+    reason: string,
+    final: { code: string } | null,
+  ): Promise<Omit<BatchResult, "claimed"> & { shrink?: boolean }> => {
+    if (events.length > 1) {
+      await releaseClaimed(claim, events);
+      return { next: "stop", ...totals, shrink: true, reason };
+    }
+    if (final) {
+      await WebhookEvent.bulkWrite([
+        failedOp(claim, events[0], final.code, reason, true),
+      ]);
+    } else {
+      await failClaimed(claim, events, reason);
+    }
+    return { next: "stop", ...totals, failed: totals.failed + 1, reason };
+  };
 
   let run: RunResult;
   try {
     run = await runner.runWebhookBatch(batch, { timeoutMs: limits.timeoutMs });
   } catch (error) {
-    if (error instanceof ConnectorOutputTooLargeError) {
-      if (events.length === 1) {
-        await WebhookEvent.bulkWrite([
-          failedOp(
-            claim,
-            events[0],
-            BOX_CODES.outputTooLarge,
-            `The connector's answer for this event is over the protocol cap (${error.message})`,
-            true,
-          ),
-        ]);
-        return { next: "more", ...totals, failed: 1 };
-      }
-      // Halve and run each half: the answer to a smaller batch is smaller.
-      const half = Math.ceil(events.length / 2);
-      const first = await runBatch({ ...input, events: events.slice(0, half) });
-      if (first.next === "stop") {
-        await failClaimed(claim, events.slice(half), first.reason ?? "");
-        return {
-          next: "stop",
-          ingested: first.ingested,
-          applied: first.applied,
-          dropped: first.dropped,
-          failed: first.failed + (events.length - half),
-          entities: first.entities,
-          reason: first.reason,
-        };
-      }
-      const second = await runBatch({ ...input, events: events.slice(half) });
-      return {
-        next: second.next,
-        ingested: first.ingested + second.ingested,
-        applied: first.applied + second.applied,
-        dropped: first.dropped + second.dropped,
-        failed: first.failed + second.failed,
-        entities: [
-          ...new Set([...(first.entities ?? []), ...(second.entities ?? [])]),
-        ],
-        ...(second.reason ? { reason: second.reason } : {}),
-      };
-    }
     const reason = error instanceof Error ? error.message : String(error);
-    await failClaimed(claim, events, reason);
-    return { next: "stop", ...totals, failed: events.length, reason };
+    if (error instanceof ConnectorOutputTooLargeError) {
+      return boxFailed(
+        `The connector's answer is over the protocol cap (${reason})`,
+        { code: BOX_CODES.outputTooLarge },
+      );
+    }
+    return boxFailed(reason, null);
   }
 
   // The connector's own log lines, capped: a box cannot flood the API log.
@@ -647,12 +670,9 @@ async function runBatch(input: {
   }
 
   const failure = failureMessage(run);
-  if (failure) {
-    await failClaimed(claim, events, failure);
-    // A timeout or a crash ends this run: the next cron tries again, and a
-    // hostile connector costs at most one timeout per cron cycle.
-    return { next: "stop", ...totals, failed: events.length, reason: failure };
-  }
+  // A timeout or a crash ends this run: a hostile connector costs at most
+  // one box run, one timeout, per dispatch.
+  if (failure) return boxFailed(failure, null);
 
   const byEvent = new Map<string, Record<string, unknown>>();
   for (const message of run.messages) {
@@ -739,12 +759,15 @@ async function runBatch(input: {
       );
       continue;
     }
+    // Checked again after shaping: it may rename an entity (a generic
+    // `activities` record becomes `activities:<_type>`), and a box must
+    // never reach a table its connector did not declare.
     const records = shapeWebhookCdcRecords({
       rawRecords: checked.records,
       sourceConnection: source,
       flow,
       webhookEvent: { eventId: event.eventId, receivedAt: event.receivedAt },
-    });
+    }).filter(record => declared.has(record.entity));
     if (records.length === 0) {
       totals.dropped++;
       ops.push(
@@ -817,6 +840,28 @@ async function runBatch(input: {
     ...totals,
     entities: [...new Set(cdcEvents.map(e => e.entity))],
   };
+}
+
+/**
+ * Events of a batch that failed as a whole, back to pending with their
+ * attempt refunded: the batch failed, not they.
+ */
+async function releaseClaimed(
+  claim: string,
+  events: StoredEvent[],
+): Promise<void> {
+  await WebhookEvent.updateMany(
+    {
+      _id: { $in: events.map(e => e._id) },
+      boxClaim: claim,
+      status: "processing",
+    },
+    {
+      $set: { status: "pending" },
+      $inc: { attempts: -1 },
+      $unset: { boxClaim: "" },
+    },
+  );
 }
 
 /** Every event still held by this claim, failed for the retry cron. */

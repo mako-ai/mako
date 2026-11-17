@@ -25,7 +25,7 @@ import type {
   WebhookVerification,
 } from "@makoai/connector-sdk";
 import { CLOSE_SEARCH_BASE_FIELDS, closeSearchObjectType } from "./catalog.ts";
-import { type CloseClient, isHttp400 } from "./client.ts";
+import { type CloseClient, CloseHttpError, isHttp400 } from "./client.ts";
 import type { CloseCustomFieldCache } from "./custom-fields.ts";
 import { normalizeCloseSearchBatch } from "./records.ts";
 import {
@@ -217,34 +217,97 @@ export async function handleCloseWebhookBatch(
     fetched.set(entity, await fetchCloseRowsById(deps, entity, ids));
   }
 
-  return outcomes.map(outcome => {
-    if (outcome.outcome !== "records") return outcome;
+  // Search is an index, and it can lag behind a write. A row it does not
+  // return is confirmed gone by a direct read (404) before the event is
+  // skipped; a row older than the event's own copy is stale. Either way
+  // the event fails, and Mako retries it later, rather than writing an old
+  // row as new or dropping a lead that exists.
+  const gone = new Map<string, boolean>();
+  const isGone = async (entity: string, id: string): Promise<boolean> => {
+    const key = `${entity} ${id}`;
+    if (!gone.has(key)) gone.set(key, await confirmGone(deps, entity, id));
+    return gone.get(key) as boolean;
+  };
+
+  const out: WebhookOutcome[] = [];
+  for (const outcome of outcomes) {
+    if (outcome.outcome !== "records") {
+      out.push(outcome);
+      continue;
+    }
     const missing: string[] = [];
-    const records = (outcome.records as WebhookChangeRecord[]).flatMap(
-      record => {
-        if (!needsRefetch(record)) return [record];
-        const row = fetched.get(record.entity)?.get(record.recordId);
-        if (!row) {
-          missing.push(`${record.entity} ${record.recordId}`);
-          return [];
-        }
-        return [
-          {
-            ...record,
-            payload: row,
-            // The row is as of now: never older than the event.
-            sourceTs: later(record.sourceTs, row.date_updated),
-          },
-        ];
-      },
-    );
-    if (records.length > 0) return { ...outcome, records };
-    return {
-      eventId: outcome.eventId,
-      outcome: "skipped" as const,
-      reason: `Close no longer returns ${missing.join(", ")}`,
-    };
-  });
+    const lagging: string[] = [];
+    const records: WebhookChangeRecord[] = [];
+    for (const record of outcome.records as WebhookChangeRecord[]) {
+      if (!needsRefetch(record)) {
+        records.push(record);
+        continue;
+      }
+      const label = `${record.entity} ${record.recordId}`;
+      const row = fetched.get(record.entity)?.get(record.recordId);
+      if (!row) {
+        if (await isGone(record.entity, record.recordId)) missing.push(label);
+        else lagging.push(label);
+        continue;
+      }
+      if (isOlder(row.date_updated, record.payload?.date_updated)) {
+        lagging.push(label);
+        continue;
+      }
+      records.push({
+        ...record,
+        payload: row,
+        // The row is as of now: never older than the event.
+        sourceTs: later(record.sourceTs, row.date_updated),
+      });
+    }
+    if (lagging.length > 0) {
+      out.push({
+        eventId: outcome.eventId,
+        outcome: "extract_failed",
+        reason: `Close search has not caught up with ${lagging.join(", ")}; retry later`,
+      });
+    } else if (records.length > 0) {
+      out.push({ ...outcome, records });
+    } else {
+      out.push({
+        eventId: outcome.eventId,
+        outcome: "skipped",
+        reason: `Close no longer has ${missing.join(", ")}`,
+      });
+    }
+  }
+  return out;
+}
+
+/** Whether `a` parses to a time strictly before `b`. False if either does not. */
+function isOlder(a: unknown, b: unknown): boolean {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  const x = new Date(a).getTime();
+  const y = new Date(b).getTime();
+  return Number.isFinite(x) && Number.isFinite(y) && x < y;
+}
+
+/** Endpoint of one object by id, for the entities that are re-fetched. */
+const OBJECT_ENDPOINTS: Record<string, string> = { leads: "/lead/" };
+
+/** True only when Close answers 404 for the object itself. */
+async function confirmGone(
+  deps: CloseWebhookDeps,
+  entity: string,
+  id: string,
+): Promise<boolean> {
+  const endpoint = OBJECT_ENDPOINTS[entity];
+  if (!endpoint) return false;
+  try {
+    await deps.api.get(`${endpoint}${encodeURIComponent(id)}/`, {
+      _fields: "id",
+    });
+    return false;
+  } catch (error) {
+    if (error instanceof CloseHttpError && error.status === 404) return true;
+    return false;
+  }
 }
 
 /** The SDK's `webhooks` definition, given how this process reaches Close. */
