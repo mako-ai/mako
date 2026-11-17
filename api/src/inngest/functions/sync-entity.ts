@@ -332,6 +332,8 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         syncEngine,
         entity,
         isIncremental: syncMode === "incremental",
+        // Backfills and scheduled resyncs read the source in full; polls do not.
+        fullRead: Boolean(backfill),
         tableDestination,
         deleteMode,
         writeMode,

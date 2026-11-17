@@ -1,4 +1,5 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { DuckDBInstance, type DuckDBConnection } from "@duckdb/node-api";
 import {
   buildLivePartitionFilter,
   buildLivePartitionProbeQuery,
@@ -153,6 +154,143 @@ describe("buildMergeStatement", () => {
     expect(sql).toContain(
       "ON __live.`tenant` = __stg.`tenant` AND __live.`id` = __stg.`id`",
     );
+  });
+});
+
+/**
+ * Close lead webhook, 17 Nov 2026: the webhook stamped date_updated
+ * 09:28:27.865, the API returned .863 for the same version. The live row then
+ * outranked every later backfill, so a damaged webhook write stayed pinned on
+ * 3 CH-sellers leads. A full read (backfill or resync) wins within 1 s; a
+ * webhook or poll write keeps the strict guard.
+ */
+describe("MERGE ordering guard: full-read skew tolerance", () => {
+  const STORED = "2026-11-17 09:28:27.865";
+  let instance: DuckDBInstance;
+  let conn: DuckDBConnection;
+
+  beforeAll(async () => {
+    instance = await DuckDBInstance.create(":memory:");
+    conn = await instance.connect();
+    // The two BigQuery functions the guard uses, in DuckDB terms.
+    await conn.run("CREATE MACRO TIMESTAMP_SUB(t, i) AS t - i");
+    await conn.run("CREATE MACRO bq_timestamp(s) AS CAST(s AS TIMESTAMPTZ)");
+  });
+  afterAll(() => {
+    conn.closeSync();
+    instance.closeSync();
+  });
+
+  const guardOf = (fullRead: boolean | undefined, softDelete = false) => {
+    const extra = softDelete ? ["_mako_deleted_at"] : [];
+    const sql = buildMergeStatement(
+      params({
+        columns: ["id", "name", "_mako_source_ts", ...extra],
+        stagingCols: new Set(["id", "name", "_mako_source_ts", ...extra]),
+        liveTypes: new Map([
+          ["id", "INT64"],
+          ["name", "STRING"],
+          ["_mako_source_ts", "TIMESTAMP"],
+          ["_mako_deleted_at", "TIMESTAMP"],
+        ]),
+        fullRead,
+      }),
+    );
+    return sql.split("WHEN MATCHED AND ")[1]!.split(" THEN UPDATE")[0]!;
+  };
+
+  /** Does a staged row stamped `incoming` overwrite a live row stamped `stored`? */
+  const wins = async (
+    fullRead: boolean | undefined,
+    incoming: string,
+    stored: string,
+    liveDeletedAt?: string,
+  ) => {
+    const predicate = guardOf(fullRead, liveDeletedAt !== undefined)
+      .replaceAll("__stg.`_mako_source_ts`", `TIMESTAMPTZ '${incoming}+00'`)
+      .replaceAll("__live.`_mako_source_ts`", `TIMESTAMPTZ '${stored}+00'`)
+      .replaceAll(
+        "__live.`_mako_deleted_at`",
+        liveDeletedAt ? `TIMESTAMPTZ '${liveDeletedAt}+00'` : "NULL",
+      )
+      .replaceAll("TIMESTAMP('", "bq_timestamp('");
+    const rows = (
+      await conn.runAndReadAll(`SELECT (${predicate}) AS wins`)
+    ).getRowObjects();
+    return rows[0]!.wins;
+  };
+
+  it("a backfill row 2 ms behind a webhook-written row overwrites it", async () => {
+    expect(await wins(true, "2026-11-17 09:28:27.863", STORED)).toBe(true);
+  });
+
+  it("a webhook or poll row 2 ms behind does not", async () => {
+    expect(await wins(false, "2026-11-17 09:28:27.863", STORED)).toBe(false);
+    expect(await wins(undefined, "2026-11-17 09:28:27.863", STORED)).toBe(
+      false,
+    );
+  });
+
+  it("a backfill row more than 1 s behind still loses", async () => {
+    expect(await wins(true, "2026-11-17 09:28:26.864", STORED)).toBe(false);
+    expect(await wins(true, "2026-11-17 09:28:26.865", STORED)).toBe(true);
+  });
+
+  it("newer rows win either way", async () => {
+    expect(await wins(true, "2026-11-17 09:28:28.000", STORED)).toBe(true);
+    expect(await wins(false, "2026-11-17 09:28:28.000", STORED)).toBe(true);
+  });
+
+  it("a soft-deleted live row keeps the strict guard against a full read", async () => {
+    // Updated at .465, deleted at .865 (a Close lead merge); the backfill
+    // read the record in between. It must not undelete the row.
+    expect(await wins(true, "2026-11-17 09:28:27.465", STORED, STORED)).toBe(
+      false,
+    );
+    // A live (not deleted) row with the same column still gets the window.
+    expect(await wins(true, "2026-11-17 09:28:27.465", STORED, "")).toBe(true);
+  });
+
+  it("only a full read shifts the live side by 1 s", () => {
+    expect(guardOf(true)).toBe(
+      "COALESCE(__stg.`_mako_source_ts`, TIMESTAMP('1970-01-01 00:00:00 UTC')) >= TIMESTAMP_SUB(COALESCE(__live.`_mako_source_ts`, TIMESTAMP('1970-01-01 00:00:00 UTC')), INTERVAL 1 SECOND)",
+    );
+    expect(guardOf(false)).toBe(
+      "COALESCE(__stg.`_mako_source_ts`, TIMESTAMP('1970-01-01 00:00:00 UTC')) >= COALESCE(__live.`_mako_source_ts`, TIMESTAMP('1970-01-01 00:00:00 UTC'))",
+    );
+  });
+
+  it("keeps the absent-column handling under a full read", () => {
+    const sql = buildMergeStatement(
+      params({
+        columns: ["id", "name", "_mako_source_ts"],
+        stagingCols: new Set([
+          "id",
+          "name",
+          "_mako_source_ts",
+          "_mako_absent_cols",
+        ]),
+        fullRead: true,
+      }),
+    );
+    expect(sql).toContain(
+      "`name` = IF(STRPOS(IFNULL(__stg.`_mako_absent_cols`, ''), ',name,') > 0, __live.`name`, __stg.`name`)",
+    );
+    expect(sql).toContain("INTERVAL 1 SECOND");
+  });
+
+  it("leaves the ingest-seq guard strict", () => {
+    const sql = buildMergeStatement(
+      params({
+        columns: ["id", "name", "_mako_ingest_seq"],
+        stagingCols: new Set(["id", "name", "_mako_ingest_seq"]),
+        fullRead: true,
+      }),
+    );
+    expect(sql).toContain(
+      "COALESCE(__stg.`_mako_ingest_seq`, -1) >= COALESCE(__live.`_mako_ingest_seq`, -1)",
+    );
+    expect(sql).not.toContain("INTERVAL");
   });
 });
 

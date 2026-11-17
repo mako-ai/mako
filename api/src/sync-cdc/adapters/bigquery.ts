@@ -316,6 +316,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       stagingSuffix?: string;
       knownStagingRowCount?: number;
       prunePartitions?: boolean;
+      fullRead?: boolean;
     },
   ): Promise<{ written: number }> {
     const stagingTable = bigQueryStagingTableName(
@@ -326,6 +327,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     return this.mergeStagingToLive(layout, stagingTable, entitySchema, {
       knownStagingRowCount: options?.knownStagingRowCount,
       prunePartitions: options?.prunePartitions,
+      fullRead: options?.fullRead,
     });
   }
 
@@ -393,7 +395,11 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     layout: CdcEntityLayout,
     stagingTable: string,
     entitySchema?: ConnectorEntitySchema,
-    options?: { knownStagingRowCount?: number; prunePartitions?: boolean },
+    options?: {
+      knownStagingRowCount?: number;
+      prunePartitions?: boolean;
+      fullRead?: boolean;
+    },
   ): Promise<{ written: number }> {
     const target = await this.resolveBqClient();
     const { projectId, dataset } = target;
@@ -524,6 +530,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           liveTypes,
           entitySchema,
           livePartitionFilter,
+          fullRead: options?.fullRead,
         });
 
     log.info("Starting staging-to-live MERGE", {
