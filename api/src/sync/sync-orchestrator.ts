@@ -24,9 +24,14 @@ import axios from "axios";
 import { loggers } from "../logging";
 import { LEGACY_ENGINE_REMOVED } from "../services/flow-triggers.service";
 import {
+  SandboxedConnector,
+  isWorkspaceConnectorType,
+} from "../connectors/workspace/SandboxedConnector";
+import {
   normalizePayloadKeys,
   normalizePayloadBySchema,
   resolveSourceTimestamp,
+  SYNC_REQUIRED_TIMESTAMP_COLUMNS,
 } from "../sync-cdc/normalization";
 import {
   buildCdcEntityLayout,
@@ -37,16 +42,65 @@ import {
 
 const orchestratorLogger = loggers.sync("orchestrator");
 
-async function resolveEntitySchemaSafe(params: {
+/**
+ * A connector's schema could not be resolved: its sandbox dropped the stream,
+ * its custom-field lookup timed out, its source connection was not found.
+ *
+ * Thrown out of the Inngest step, so the step retries. The sync never goes on
+ * without the schema. On 17 Nov 2026 the PT Close shadow leads flush logged
+ * "Schema resolution failed: [unavailable] the connection to sandbox … ended
+ * before the stream completed", flushed with no field types, and wrote 11,165
+ * rows whose date_created, date_updated, _syncedAt and _mako_source_ts were
+ * NULL: with no types every Date went to Parquet as a JSON-quoted string, and
+ * BigQuery's SAFE_CAST turned each one into NULL.
+ */
+export class SchemaResolutionError extends Error {
+  readonly entity: string;
+  readonly context: string;
+  constructor(entity: string, context: string, cause: unknown) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    super(
+      `Schema resolution failed for "${entity}" (${context}): ${reason}. ` +
+        `The step retries; it never writes rows without the schema.`,
+    );
+    this.name = "SchemaResolutionError";
+    this.entity = entity;
+    this.context = context;
+  }
+}
+
+function isWorkspaceConnector(
+  connector: unknown,
+  sourceType: string | undefined,
+): boolean {
+  if (connector instanceof SandboxedConnector) return true;
+  return !!sourceType && isWorkspaceConnectorType(sourceType);
+}
+
+/**
+ * Resolve the entity schema for a sync write.
+ *
+ * Returns null only when the connector has no schema to give: a built-in
+ * connector that keeps the BaseConnector default (REST, GraphQL, custom API,
+ * BigQuery source), or one that declares no schema for this entity. Every
+ * failure throws SchemaResolutionError, so the step retries instead of
+ * writing untyped rows.
+ *
+ * A workspace (ws:) connector always declares its streams in its catalog, so
+ * a null there means discovery came back incomplete: it throws too.
+ */
+export async function resolveEntitySchema(params: {
   entity: string;
   dataSourceId?: string;
   workspaceId: string;
-  sourceConnection?: { id?: string } | null;
+  sourceConnection?: { id?: string; type?: string } | null;
   connector?: { resolveSchema?: (entity: string) => Promise<unknown> } | null;
   context: string;
 }): Promise<ConnectorEntitySchema | null> {
+  let sourceType = params.sourceConnection?.type;
+  let schema: ConnectorEntitySchema | null;
+  let connector = params.connector;
   try {
-    let connector = params.connector;
     if (!connector) {
       const ds =
         params.sourceConnection ||
@@ -56,23 +110,38 @@ async function resolveEntitySchemaSafe(params: {
               params.workspaceId,
             )
           : null);
-      if (!ds) return null;
+      if (!ds) {
+        throw new Error(
+          `source connection ${params.dataSourceId ?? "(none)"} not found`,
+        );
+      }
+      sourceType = (ds as { type?: string }).type;
       connector = await syncConnectorRegistry.getConnectorFor(ds as any);
+      if (!connector) {
+        throw new Error(`no connector for source type "${sourceType}"`);
+      }
     }
-    const schema = connector?.resolveSchema
-      ? ((await connector.resolveSchema(
+    schema = connector?.resolveSchema
+      ? (((await connector.resolveSchema(
           params.entity,
-        )) as ConnectorEntitySchema)
+        )) as ConnectorEntitySchema | null) ?? null)
       : null;
-    return schema || null;
   } catch (err) {
     orchestratorLogger.warn("Schema resolution failed", {
       entity: params.entity,
       context: params.context,
       error: err instanceof Error ? err.message : String(err),
     });
-    return null;
+    throw new SchemaResolutionError(params.entity, params.context, err);
   }
+  if (!schema && isWorkspaceConnector(connector, sourceType)) {
+    throw new SchemaResolutionError(
+      params.entity,
+      params.context,
+      new Error("the workspace connector's catalog has no schema for it"),
+    );
+  }
+  return schema;
 }
 
 function camelToSnake(str: string): string {
@@ -455,9 +524,10 @@ async function performSyncChunkSql(
   })();
   let runningRowsWritten = previousRowsWritten;
 
-  const entitySchema = await resolveEntitySchemaSafe({
+  const entitySchema = await resolveEntitySchema({
     entity,
     connector: connector as any,
+    sourceConnection,
     workspaceId: options.workspaceId,
     context: "syncChunk",
   });
@@ -820,6 +890,7 @@ async function flushBulkBuffer(
       parquet = await buildParquetFromBatches({
         filenameBase: `backfill-${entity}`,
         fields: schemaFields,
+        requiredTimestampColumns: SYNC_REQUIRED_TIMESTAMP_COLUMNS,
         streamBatches: async insertBatch => {
           const cursor = tempCollection
             .find(NOT_STAGED, {
@@ -1091,7 +1162,7 @@ export async function performBulkFlush(
 
   const tempCollection = bulkBufferCollection(flowId, entity);
 
-  const entitySchema = await resolveEntitySchemaSafe({
+  const entitySchema = await resolveEntitySchema({
     entity,
     dataSourceId: options.dataSourceId,
     workspaceId: options.workspaceId,
@@ -1313,9 +1384,10 @@ export async function performStagingMerge(
     options.dataSourceId,
     options.workspaceId,
   );
-  const entitySchema = await resolveEntitySchemaSafe({
+  const entitySchema = await resolveEntitySchema({
     entity,
     sourceConnection,
+    dataSourceId: options.dataSourceId,
     workspaceId: options.workspaceId,
     context: "performStagingMerge",
   });

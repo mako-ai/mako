@@ -13,6 +13,13 @@ const VOLATILE_BACKFILL_IDEMPOTENCY_FIELDS = new Set([
   "_mako_webhook_event_id",
 ]);
 
+/**
+ * Every row a sync writes carries these. A row without them lands in live
+ * with NULLs the CDC merge cannot order (see bigquery-sql.ts: a NULL
+ * `_mako_source_ts` sorts as 1970), so the Parquet build refuses it.
+ */
+export const SYNC_REQUIRED_TIMESTAMP_COLUMNS = ["_syncedAt", "_mako_source_ts"];
+
 export function normalizePayloadKeys(
   payload?: Record<string, unknown>,
 ): Record<string, unknown> {

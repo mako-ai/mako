@@ -10,6 +10,7 @@ import {
   buildParquetFromBatches,
   type FieldMeta,
 } from "../../utils/streaming-parquet-builder";
+import { SYNC_REQUIRED_TIMESTAMP_COLUMNS } from "../normalization";
 import { canLabelLoadJobs } from "./bigquery-load-labels";
 import {
   bqLog as log,
@@ -43,6 +44,7 @@ export function buildCdcParquet(
   return buildParquetFromBatches({
     filenameBase: `cdc-${entity}`,
     fields: schemaFields,
+    requiredTimestampColumns: SYNC_REQUIRED_TIMESTAMP_COLUMNS,
     streamBatches: async insertBatch => {
       await insertBatch(records);
     },
