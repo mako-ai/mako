@@ -715,10 +715,11 @@ function syncMemorySnapshot(): {
 
 /**
  * Marks a buffered row as loaded into the staging table. The row stays in
- * the buffer until the merge into live has run (performStagingCleanup), so
- * the staging table is never the only copy of a row. A retried flush step
- * drops staging and clears the marks (performPrepareStaging), which loads
- * every row again. Before this, each batch was deleted from the buffer as
+ * the buffer until the merge (append_dedup: until performStagingCleanup;
+ * append / overwrite: until just before the INSERT, see performStagingMerge),
+ * so a failed load or a retried flush never leaves staging as the only copy.
+ * A retried flush step drops staging and clears the marks
+ * (performPrepareStaging), which loads every staged row again. Before this, each batch was deleted from the buffer as
  * soon as it was loaded, and a retry that dropped staging lost whole
  * FLUSH_BATCH_SIZE blocks while the run still reported "completed".
  */
@@ -1158,8 +1159,12 @@ export async function performPrepareStaging(
     "performPrepareStaging: dropping staging table for fresh load",
     { entity, flowId },
   );
+  // strict: the marks below are cleared only once staging is really gone.
+  // A swallowed drop failure would leave the staged rows in staging and
+  // load them a second time.
   await cdcAdapter.prepareStaging(cdcLayout, flowId, {
     stagingSuffix: "backfill_staging",
+    strict: true,
   });
 
   // Staging is empty now, so no buffered row is in it any more: clear the
@@ -1228,6 +1233,13 @@ export async function performRescueAndPrepareStaging(
       "Rescued staging rows left by a previous attempt before dropping staging",
       { entity: options.entity, flowId: options.flowId, rescued },
     );
+    // The staged rows are in live now: release them from the buffer so the
+    // drop below does not send them back to be loaded again.
+    if (options.flowId) {
+      await bulkBufferCollection(options.flowId, options.entity).deleteMany({
+        [BULK_STAGED_FIELD]: true,
+      });
+    }
   }
   await performPrepareStaging(options);
   return { rescued };
@@ -1258,6 +1270,20 @@ export async function performStagingMerge(
     await resolveAdapterContext(options);
 
   if (!cdcAdapter.mergeFromStaging) return { written: 0 };
+
+  // append / overwrite merge with a plain INSERT, and a retry cannot tell
+  // whether a merge that threw had committed. Releasing the staged rows from
+  // the buffer before the INSERT means a retry never loads them a second
+  // time; staging (still there until cleanup) is then their only copy, as
+  // before BULK_STAGED_FIELD. append_dedup keeps them until cleanup: its
+  // keyed merge makes a second load a no-op.
+  const isDedup =
+    options.writeMode !== "append" && options.writeMode !== "overwrite";
+  if (!isDedup) {
+    await bulkBufferCollection(flowId, entity).deleteMany({
+      [BULK_STAGED_FIELD]: true,
+    });
+  }
 
   const sourceConnection = await sourceConnectionManager.getSourceConnection(
     options.dataSourceId,

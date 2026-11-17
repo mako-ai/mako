@@ -24,6 +24,7 @@ vi.mock("../database/workspace-schema", () => ({
     db: {
       collection: vi.fn(() => ({
         updateMany: async () => ({ modifiedCount: 0 }),
+        deleteMany: async () => ({ deletedCount: 0 }),
       })),
     },
   },

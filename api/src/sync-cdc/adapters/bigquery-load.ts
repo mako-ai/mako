@@ -143,11 +143,17 @@ export async function expireStagingTable(
 export async function dropStagingTable(
   target: BigQueryTarget,
   stagingTable: string,
+  options?: { strict?: boolean },
 ): Promise<void> {
-  await runBigQuery(
+  const result = await runBigQuery(
     target,
     `DROP TABLE IF EXISTS ${fullTableName(target, stagingTable)}`,
   );
+  if (options?.strict && !result.success) {
+    throw new Error(
+      `Could not drop staging table ${stagingTable}: ${result.error || "unknown error"}`,
+    );
+  }
   log.info("Cleaned up staging table", {
     stagingTable,
     dataset: target.dataset,

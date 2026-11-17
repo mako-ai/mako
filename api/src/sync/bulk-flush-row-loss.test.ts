@@ -177,6 +177,12 @@ let live: string[] = [];
 let loadCalls = 0;
 /** Load calls (1-based) that fail, as BigQuery rejected the 13 Nov loads. */
 let failingLoadCalls = new Set<number>();
+let mergeCalls = 0;
+let prepareCalls = 0;
+/** prepareStaging calls (1-based) whose DROP fails (rate limit, 5xx). */
+let failingPrepareCalls = new Set<number>();
+/** Merge calls (1-based) that commit in live and then throw (poll error). */
+let mergesThatThrowAfterCommit = new Set<number>();
 let writeModeOfRun: "append_dedup" | "append" | "overwrite" = "append_dedup";
 
 async function idsInParquet(filePath: string): Promise<string[]> {
@@ -198,7 +204,19 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
   truncateLiveTable: (async () => {
     live = [];
   }) as any,
-  prepareStaging: (async () => {
+  prepareStaging: (async (
+    _l: unknown,
+    _f: string,
+    o?: { strict?: boolean },
+  ) => {
+    prepareCalls++;
+    if (failingPrepareCalls.has(prepareCalls)) {
+      // A real adapter swallows this unless strict.
+      if (o?.strict) {
+        throw new Error("Exceeded rate limits: table update operations");
+      }
+      return;
+    }
     staging = [];
   }) as any,
   cleanupStaging: (async () => {
@@ -222,6 +240,10 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
       for (const id of new Set(staging)) if (!seen.has(id)) live.push(id);
     } else {
       live.push(...staging);
+    }
+    mergeCalls++;
+    if (mergesThatThrowAfterCommit.has(mergeCalls)) {
+      throw new Error("Job polling failed after the MERGE committed");
     }
     return { written };
   }) as any,
@@ -264,12 +286,8 @@ async function step(fn: () => Promise<unknown>): Promise<void> {
   }
 }
 
-async function runEntity(
-  writeMode: "append_dedup" | "append" | "overwrite",
-  flushThreshold: number,
-): Promise<void> {
-  writeModeOfRun = writeMode;
-  const options = {
+function runOptions(writeMode: "append_dedup" | "append" | "overwrite"): any {
+  return {
     dataSourceId: "69c781737eb58b93e5ac3385",
     destinationId: "dest1",
     flowId: FLOW_ID,
@@ -283,7 +301,15 @@ async function runEntity(
       schema: "pl_close_crm",
       tableName: "",
     },
-  } as any;
+  };
+}
+
+async function runEntity(
+  writeMode: "append_dedup" | "append" | "overwrite",
+  flushThreshold: number,
+): Promise<void> {
+  writeModeOfRun = writeMode;
+  const options = runOptions(writeMode);
 
   await step(async () => {
     await performRescueAndPrepareStaging(options);
@@ -344,6 +370,10 @@ describe("bulk backfill lands every row exactly once", () => {
     live = [];
     loadCalls = 0;
     failingLoadCalls = new Set();
+    mergeCalls = 0;
+    mergesThatThrowAfterCommit = new Set();
+    prepareCalls = 0;
+    failingPrepareCalls = new Set();
     // 730 rows, one cursor value: 3 mid-run flushes of 200+ rows (5 batches
     // of 50 each) and a final flush.
     sourceRows = Array.from({ length: 730 }, (_, i) => ({
@@ -379,5 +409,51 @@ describe("bulk backfill lands every row exactly once", () => {
       expect(await getTempCollectionCount(FLOW_ID, ENTITY)).toBe(0);
     },
     120_000,
+  );
+  it.each(["append_dedup", "append", "overwrite"] as const)(
+    "%s: a merge commits and then throws, and the step is retried",
+    async writeMode => {
+      // Merge 1 is the start-of-run rescue (staging empty); merge 2 is the
+      // first flush-merge. It writes to live, then reports a failure.
+      mergesThatThrowAfterCommit = new Set([2]);
+      await runEntity(writeMode, 200);
+      expectEveryRowExactlyOnce();
+      expect(await getTempCollectionCount(FLOW_ID, ENTITY)).toBe(0);
+    },
+    60_000,
+  );
+
+  it.each(["append_dedup", "append"] as const)(
+    "%s: a run resumed after a crash between flush and merge",
+    async writeMode => {
+      writeModeOfRun = writeMode;
+      const options = runOptions(writeMode);
+      sourceRows = sourceRows.slice(0, 120);
+      // Attempt 1: rows buffered and flushed into staging, then the worker
+      // dies before the merge. Rows are marked staged in the buffer.
+      await performSyncChunk({ ...options, maxIterations: 10 });
+      await performBulkFlush(options);
+      expect(staging).toHaveLength(120);
+      // The resumed run starts with the rescue, then flushes what is left.
+      await performRescueAndPrepareStaging(options);
+      await performBulkFlush(options);
+      await performStagingMerge(options);
+      await performStagingCleanup(options);
+      expectEveryRowExactlyOnce();
+      expect(await getTempCollectionCount(FLOW_ID, ENTITY)).toBe(0);
+    },
+    60_000,
+  );
+  it.each(["append_dedup", "append", "overwrite"] as const)(
+    "%s: the retry's staging drop fails once",
+    async writeMode => {
+      // Prepare 1 starts the run, prepare 2 the first flush. The load of the
+      // 3rd batch fails, and the retry's drop (prepare 3) fails too.
+      failingLoadCalls = new Set([3, 4, 5]);
+      failingPrepareCalls = new Set([3]);
+      await runEntity(writeMode, 200);
+      expectEveryRowExactlyOnce();
+    },
+    60_000,
   );
 });
