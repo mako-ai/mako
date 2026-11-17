@@ -34,15 +34,19 @@ jobs:
   build-publish:
     name: Build + publish kernel image
     runs-on: ubuntu-latest
+    # Master runs push to the prod registry, so they take the prod deployer
+    # from the `production` environment (master only). PR runs get the
+    # dev-only preview deployer.
+    environment: ${{ github.event_name == 'pull_request' && 'preview' || 'production' }}
     steps:
       - uses: actions/checkout@v5
 
-      # One SA (GCP_DEV_SERVICE_ACCOUNT) has cross-project push access to both
-      # the dev and prod Artifact Registries — same as the app deploy.
+      # Master: the prod deployer pushes to the dev and prod registries.
+      # PR: the preview deployer reaches the dev registry only.
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
-          credentials_json: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
+          credentials_json: ${{ secrets.GCP_PROD_SERVICE_ACCOUNT || secrets.GCP_PREVIEW_SERVICE_ACCOUNT }}
 
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2

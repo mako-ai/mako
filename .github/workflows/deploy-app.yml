@@ -173,7 +173,9 @@ jobs:
       BCRYPT_ROUNDS: ${{ vars.BCRYPT_ROUNDS }}
       DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
       ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
-      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
+      # Dev-only deployer (github-preview-deployer@mako-ai-dev). Any PR branch
+      # can read repo-level secrets, so this key holds no production role.
+      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_PREVIEW_SERVICE_ACCOUNT }}
       GH_CLIENT_ID: ${{ vars.GH_CLIENT_ID }}
       GH_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET }}
       GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
@@ -462,15 +464,18 @@ jobs:
           fi
           echo "Stale database cleanup complete"
 
-      # Step 4: Rebuild ephemeral database from production (only when rebuild requested)
-      - name: Rebuild ephemeral database from production
+      # Step 4: Rebuild ephemeral database from staging (only when rebuild requested)
+      # The source is the staging database, which seed-database.yml refreshes
+      # from production every night. PR jobs never get PROD_DATABASE_URL. It
+      # lives only in the `production` environment, which deploys from master.
+      - name: Rebuild ephemeral database from staging
         if: needs.detect-changes.outputs.rebuild_ephemeral_db == 'true'
         env:
-          PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
           EPHEMERAL_DB_URL: ${{ steps.ephemeral-db.outputs.ephemeral_db_url }}
           STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
         run: |
           set -o pipefail  # Ensure pipeline fails if any command fails
+          SOURCE_DATABASE_URL="$STAGING_DATABASE_URL"
 
           EPHEMERAL_DB_NAME="staging_pr_${PR_NUMBER}"
           echo "Rebuilding ephemeral database: ${EPHEMERAL_DB_NAME}"
@@ -479,21 +484,21 @@ jobs:
           echo "Dropping existing ephemeral database if it exists..."
           mongosh "$EPHEMERAL_DB_URL" --eval "db.dropDatabase()" || true
 
-          # Extract production database name from URL and build a base URI without the db path
+          # Extract source database name from URL and build a base URI without the db path
           # Format: mongodb+srv://user:pass@cluster/dbname?params
           # mongodump errors with "cannot specify both a URI with a database and --db"
           # when the URI contains a database path AND --db is passed, so we strip the
           # database component from the URI and pass it separately via --db.
-          if [[ "$PROD_DATABASE_URL" == *"?"* ]]; then
-            PROD_DB_NAME=$(echo "$PROD_DATABASE_URL" | sed -E 's|.*/([^/?]+)\?.*|\1|')
-            PROD_URI_NO_DB=$(echo "$PROD_DATABASE_URL" | sed -E 's|/[^/?]+\?|/?|')
+          if [[ "$SOURCE_DATABASE_URL" == *"?"* ]]; then
+            SOURCE_DB_NAME=$(echo "$SOURCE_DATABASE_URL" | sed -E 's|.*/([^/?]+)\?.*|\1|')
+            SOURCE_URI_NO_DB=$(echo "$SOURCE_DATABASE_URL" | sed -E 's|/[^/?]+\?|/?|')
           else
-            PROD_DB_NAME=$(echo "$PROD_DATABASE_URL" | sed -E 's|.*/([^/]+)$|\1|')
-            PROD_URI_NO_DB=$(echo "$PROD_DATABASE_URL" | sed -E 's|/[^/]+$||')
+            SOURCE_DB_NAME=$(echo "$SOURCE_DATABASE_URL" | sed -E 's|.*/([^/]+)$|\1|')
+            SOURCE_URI_NO_DB=$(echo "$SOURCE_DATABASE_URL" | sed -E 's|/[^/]+$||')
           fi
-          echo "Production database name: $PROD_DB_NAME"
+          echo "Source database name: $SOURCE_DB_NAME"
 
-          # Dump from production and restore to ephemeral database using archive pipe
+          # Dump from staging and restore to ephemeral database using archive pipe
           # This approach preserves namespace metadata correctly for remapping
           # Exclude large collections that aren't needed for PR preview testing
           # to stay within Atlas storage quota limits
@@ -512,17 +517,17 @@ jobs:
             EXCLUDE_ARGS="${EXCLUDE_ARGS} --excludeCollection=${col}"
           done
 
-          echo "Copying production database to ephemeral database: ${EPHEMERAL_DB_NAME}"
+          echo "Copying staging database to ephemeral database: ${EPHEMERAL_DB_NAME}"
           echo "Excluding collections: ${EXCLUDE_COLLECTIONS[*]}"
-          if ! mongodump --uri="$PROD_URI_NO_DB" --db="${PROD_DB_NAME}" ${EXCLUDE_ARGS} --gzip --archive | mongorestore --uri="$STAGING_DATABASE_URL" --gzip --archive \
-            --nsInclude="${PROD_DB_NAME}.*" \
-            --nsFrom="${PROD_DB_NAME}.*" \
+          if ! mongodump --uri="$SOURCE_URI_NO_DB" --db="${SOURCE_DB_NAME}" ${EXCLUDE_ARGS} --gzip --archive | mongorestore --uri="$STAGING_DATABASE_URL" --gzip --archive \
+            --nsInclude="${SOURCE_DB_NAME}.*" \
+            --nsFrom="${SOURCE_DB_NAME}.*" \
             --nsTo="${EPHEMERAL_DB_NAME}.*"; then
-            echo "❌ Failed to copy production database to ephemeral database"
+            echo "❌ Failed to copy staging database to ephemeral database"
             exit 1
           fi
 
-          echo "✅ Production database successfully copied to ephemeral database: ${EPHEMERAL_DB_NAME}"
+          echo "✅ Staging database successfully copied to ephemeral database: ${EPHEMERAL_DB_NAME}"
 
           # Create empty excluded collections with their indexes so the app
           # schema is complete even though we skipped the data transfer.
@@ -874,12 +879,16 @@ jobs:
       BASE_URL: https://app.mako.ai
       BCRYPT_ROUNDS: ${{ vars.BCRYPT_ROUNDS }}
       CLIENT_URL: https://app.mako.ai
+      # PROD_DATABASE_URL, REDIS_URL, INNGEST_SIGNING_KEY, STRIPE_SECRET_KEY and
+      # STRIPE_WEBHOOK_SECRET are `production` environment secrets.
       DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
       # App lifecycle (stale notices, archive, paused schedules): unset = dry
       # run everywhere; "all", or a comma-separated list of workspace ids.
       APPS_LIFECYCLE_ENFORCE: ${{ vars.APPS_LIFECYCLE_ENFORCE }}
       ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
-      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
+      # Production deployer key. It lives only in the `production` environment
+      # secrets, which GitHub hands out to master runs alone.
+      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_PROD_SERVICE_ACCOUNT }}
       GH_CLIENT_ID: ${{ vars.GH_CLIENT_ID }}
       GH_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET }}
       GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
