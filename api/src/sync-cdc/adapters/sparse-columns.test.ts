@@ -4,7 +4,10 @@ import { DuckDBInstance } from "@duckdb/node-api";
 import { MongoClient, type Collection } from "mongodb";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { Types } from "mongoose";
-import type { ConnectorEntitySchema } from "../../connectors/base/BaseConnector";
+import {
+  MAKO_SYSTEM_FIELDS,
+  type ConnectorEntitySchema,
+} from "../../connectors/base/BaseConnector";
 import {
   normalizePayloadBySchema,
   selectLatestChangePerRecord,
@@ -262,6 +265,35 @@ describe("normalization: absent keys stay absent", () => {
       },
     ]);
     expect(latest.payload).toEqual({ id: "a", name: "new" });
+  });
+});
+
+describe("delete state on polled rows", () => {
+  it("a polled row clears a stale soft delete instead of keeping it as absent", () => {
+    // A webhook soft-deleted the record; a later backfill returns it live.
+    // The orchestrator sets _mako_deleted_at: null on every polled record,
+    // so deleted_at derives as null and neither is marked absent.
+    const systemSchema = {
+      ...schema,
+      fields: { ...schema.fields, ...MAKO_SYSTEM_FIELDS },
+    } as ConnectorEntitySchema;
+    const { payload } = normalizePayloadBySchema(
+      { id: "a", name: "A", _mako_deleted_at: null },
+      systemSchema,
+    );
+    expect(payload).toMatchObject({
+      _mako_deleted_at: null,
+      deleted_at: null,
+      is_deleted: false,
+    });
+    const [marked] = markAbsentColumns(
+      [payload],
+      Object.keys(systemSchema.fields),
+    );
+    const absent = String(marked[ABSENT_COLUMNS_FIELD] ?? "");
+    for (const col of ["_mako_deleted_at", "deleted_at", "is_deleted"]) {
+      expect(absent).not.toContain(`,${col},`);
+    }
   });
 });
 

@@ -619,8 +619,14 @@ async function performSyncChunkSql(
           const processedRecords = batch.map((record: any) => {
             // Undefined keys are absent keys. Dropping them here keeps the
             // Mongo bulk buffer from storing them as null (sparse-rows.ts).
+            const keyed = stripUndefined(normalizePayloadKeys(record));
             const normalized = {
-              ...stripUndefined(normalizePayloadKeys(record)),
+              ...keyed,
+              // A record a source read returns is live unless it says
+              // otherwise. Carry the delete state explicitly: an absent key
+              // would keep a stale soft-delete time on a revived row
+              // (sparse-rows.ts), and deleted_at derives from this one.
+              _mako_deleted_at: keyed._mako_deleted_at ?? null,
               _dataSourceId: sourceConnection.id,
               _dataSourceName: sourceConnection.name,
               _syncedAt: new Date(),
