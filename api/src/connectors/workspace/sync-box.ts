@@ -29,6 +29,7 @@ import {
   CHUNK_MARKER,
   chunkScript,
   CLEANUP_SURVIVORS_EXIT,
+  HIDEPID_MARKER,
   incomingPath,
   ISOLATED_ROOT,
   ISOLATED_RUNTIME,
@@ -50,6 +51,39 @@ import {
 import { loggers } from "../../logging";
 
 const logger = loggers.connector();
+
+/** Boxes already reported as running without hidepid. */
+const hidepidOffBoxes = new Set<string>();
+let hidepidOffRuns = 0;
+
+/**
+ * A command's output said its box has no hidepid on /proc (`MAKO_HIDEPID
+ * off`): other runs there can read its argv. Counted on every run, logged
+ * once per box. Returns whether the output said so.
+ */
+export function noteHidepidOff(
+  stdout: string,
+  ctx: SandboxExecContext,
+  box: string | undefined,
+  what: "chunk" | "session",
+): boolean {
+  if (!stdout.includes(`${HIDEPID_MARKER} off`)) return false;
+  hidepidOffRuns += 1;
+  const key = box ?? ctx.sessionKey;
+  if (!hidepidOffBoxes.has(key)) {
+    hidepidOffBoxes.add(key);
+    logger.warn(
+      "Connector box runs without hidepid on /proc: other runs can read every argv",
+      { sessionKey: ctx.sessionKey, sandboxId: box, what, hidepidOffRuns },
+    );
+  }
+  return true;
+}
+
+/** Runs that reported a box without hidepid, since the process started. */
+export function hidepidOffRunCount(): number {
+  return hidepidOffRuns;
+}
 
 /** One command's worth of the protocol. */
 export interface ProtocolMessage {
@@ -794,6 +828,7 @@ async function runIsolated(
         { ...owner, timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS },
       );
       marker = lastMarker(result.stdout, CHUNK_MARKER);
+      noteHidepidOff(result.stdout, ctx, result.sandboxId, "chunk");
     } catch (error) {
       if (isSandboxGone(error)) prepared.delete(ctx.sessionKey);
       await abandonRun(input, layout, owner);

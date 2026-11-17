@@ -52,6 +52,7 @@ import {
   connectorCommandLine,
   connectorRuntimeNode,
   forgetPreparedBox,
+  noteHidepidOff,
   parseProtocol,
   prepareBox,
   writeAll,
@@ -113,9 +114,6 @@ export class ConnectorSessionLostError extends Error {
     this.name = "ConnectorSessionLostError";
   }
 }
-
-/** Boxes already reported as running without hidepid, warned once each. */
-const hidepidOffWarned = new Set<string>();
 
 /** How long one `wait` command waits in the box before reporting back. */
 const WAIT_SLICE_MS = 20_000;
@@ -466,16 +464,7 @@ export function boxSessionTransport(input: {
           await close(handle);
           throw error;
         }
-        if (
-          result.stdout.includes(`${SESSION_MARKER} hidepid-off`) &&
-          !hidepidOffWarned.has(pinned ?? ctx.sessionKey)
-        ) {
-          hidepidOffWarned.add(pinned ?? ctx.sessionKey);
-          logger.warn(
-            "Connector box runs without hidepid on /proc: other runs can read every argv",
-            { sessionKey: ctx.sessionKey, sandboxId: pinned },
-          );
-        }
+        noteHidepidOff(result.stdout, ctx, pinned, "session");
         const marker = lastMarker(result.stdout);
         if (!marker) {
           await close(handle);
@@ -500,6 +489,15 @@ export function boxSessionTransport(input: {
             break;
           }
           continue;
+        }
+        if (marker === "hidepid-refused") {
+          logger.error(
+            "Connector box has no hidepid on /proc although root can remount it; refusing the read session",
+            { sessionKey: ctx.sessionKey, sandboxId: pinned },
+          );
+          throw new Error(
+            "The connector box hides no process from other runs (/proc without hidepid), so the read session was refused.",
+          );
         }
         if (marker === "inputs-missing") {
           forgetPreparedBox(ctx.sessionKey);

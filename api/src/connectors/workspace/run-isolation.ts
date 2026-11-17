@@ -174,14 +174,28 @@ if [ -n "$left" ]; then echo "empty passwords left: $left" >&2; exit 1; fi`;
  *
  * Best effort: a container without CAP_SYS_ADMIN (the Docker suites) cannot
  * remount /proc. Sessions keep their ids and run directories out of every
- * long-lived argv without it (session-isolation.ts). A session start reports
- * a box left without it (`MAKO_SESSION hidepid-off`), and the API logs it.
+ * long-lived argv without it (session-isolation.ts). Nothing here fails open
+ * silently: a chunk run in a box without hidepid prints `MAKO_HIDEPID off`,
+ * and a session start refuses a box whose root could have remounted /proc.
  */
 export function hideProcessesScript(): string {
   return `if ! ${HIDEPID_CHECK}; then
   mount -o remount,hidepid=invisible /proc 2>/dev/null || mount -o remount,hidepid=2 /proc 2>/dev/null || true
 fi`;
 }
+
+/**
+ * The line a box without hidepid prints: `MAKO_HIDEPID off`. Its own
+ * prefix, never a command's last marker. The API logs it (sync-box.ts
+ * `noteHidepidOff`).
+ */
+export const HIDEPID_MARKER = "MAKO_HIDEPID";
+
+/**
+ * Shell that succeeds when root holds CAP_SYS_ADMIN (bit 21 of CapEff), so
+ * it could remount /proc. True on E2B, false in a default Docker container.
+ */
+export const CAN_REMOUNT_PROC_CHECK = `[ "$(( 0x$(awk '/^CapEff:/ { print $2 }' /proc/self/status 2>/dev/null) >> 21 & 1 ))" = 1 ] 2>/dev/null`;
 
 /** Shell that succeeds when /proc is mounted with hidepid. */
 export const HIDEPID_CHECK = `awk '$2 == "/proc" && $3 == "proc" && $4 ~ /(^|,)hidepid=(2|invisible)(,|$)/ { found = 1 } END { exit !found }' /proc/mounts 2>/dev/null`;
@@ -423,6 +437,8 @@ ${setupScript(l)}
   echo "${CHUNK_MARKER} setup-failed"
   exit ${SETUP_FAILED_EXIT}
 fi
+# Without hidepid, other runs read this run's argv: the API logs it.
+${HIDEPID_CHECK} || echo "${HIDEPID_MARKER} off"
 staged=1
 ${moves}
 rm -rf ${inbox}

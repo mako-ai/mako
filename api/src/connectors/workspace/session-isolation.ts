@@ -50,8 +50,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 import {
+  CAN_REMOUNT_PROC_CHECK,
   HIDEPID_CHECK,
+  HIDEPID_MARKER,
   cleanupScript,
+  hideProcessesScript,
   incomingPath,
   ISOLATED_INCOMING,
   ISOLATED_ROOT,
@@ -72,6 +75,11 @@ export const SESSION_SETUP_FAILED_EXIT = 97;
 export const SESSION_INPUTS_MISSING_EXIT = 98;
 /** Start refused: an earlier session in this box left something behind. */
 export const SESSION_BOX_UNCLEAN_EXIT = 96;
+/**
+ * Start refused: /proc has no hidepid although root could remount it (E2B).
+ * A template or kernel change must never turn the protection off silently.
+ */
+export const SESSION_HIDEPID_REFUSED_EXIT = 95;
 
 /** The connector's stderr is kept up to this many bytes. */
 const STDERR_CAP = 256 * 1024;
@@ -233,7 +241,12 @@ set --
 deadline=$(( $(date +%s) * 1000 + ${limits.maxAgeMs} ))
 # The independent backstop: the run user dies a minute after the deadline
 # even if everything below hangs.
-( exec </dev/null >/dev/null 2>&1; sleep ${hardStop}; bash cleanup.sh ) &
+# Its sleep runs as a child it waits on, so the kill below ends both: a
+# subshell killed during a plain sleep leaves that sleep running as root.
+( exec </dev/null >/dev/null 2>&1
+  trap '[ -n "\${nap:-}" ] && kill "$nap" 2>/dev/null; exit 0' TERM
+  sleep ${hardStop} & nap=$!
+  wait "$nap" && bash cleanup.sh ) &
 backstop=$!
 mkfifo -m 0600 out
 MAKO_SESSION_INPUTS=${shellQuote(inputs)} ${shellQuote(input.node)} ${shellQuote(SUPERVISOR_PATH)} --user ${shellQuote(l.user)} \\
@@ -463,6 +476,17 @@ export function startScript(input: {
 install -d -o root -g root -m 0755 ${shellQuote(ISOLATED_ROOT)}
 install -d -o root -g root -m 0700 ${shellQuote(ISOLATED_SESSIONS)}
 ${reapScript(input.limits.idleMs)}
+# Before anything of this run exists: without hidepid, every user reads the
+# setup's argv. A box whose root could remount /proc and did not is refused.
+${hideProcessesScript()}
+if ! ${HIDEPID_CHECK}; then
+  if ${CAN_REMOUNT_PROC_CHECK}; then
+    rm -rf ${inbox}
+    echo "${SESSION_MARKER} hidepid-refused"
+    exit ${SESSION_HIDEPID_REFUSED_EXIT}
+  fi
+  echo "${HIDEPID_MARKER} off"
+fi
 S=${S}
 install -d -o root -g root -m 0700 "$S" "$S/batches"
 # Beat first: a concurrent start's reap must never take this for abandoned.
@@ -481,8 +505,6 @@ ${setupScript(l)}
   echo "${SESSION_MARKER} setup-failed"
   exit ${SESSION_SETUP_FAILED_EXIT}
 fi
-# Without hidepid every user reads every argv: say so, once per start.
-${HIDEPID_CHECK} || echo "${SESSION_MARKER} hidepid-off"
 staged=1
 ${moves}
 rm -rf ${inbox}

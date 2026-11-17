@@ -607,6 +607,8 @@ suite("connector run isolation in e2bdev/base (Docker)", () => {
       expect(res.code, res.stderr).toBe(0);
       const [size, cleanup] = marker(res.stdout) ?? [];
       expect(cleanup).toBe("0");
+      // Docker cannot remount /proc: the run says so, for the API to log.
+      expect(res.stdout).toContain("MAKO_HIDEPID off");
       const out = (await root(`cat ${shellQuote(resultPath(l.runId))}`)).stdout;
       expect(out).toBe(`got ${secret}`);
       expect(Number(size)).toBe(out.length);

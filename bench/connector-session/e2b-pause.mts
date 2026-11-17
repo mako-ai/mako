@@ -388,6 +388,10 @@ try {
     "hidepid back on after the next start",
     /hidepid=(2|invisible)/.test(mounts3.stdout),
   );
+  const naps = await root(
+    `for p in /proc/[0-9]*; do tr '\\0' ' ' < "$p/cmdline" 2>/dev/null; echo; done | grep -c '^sleep ${Math.ceil(LIMITS.maxAgeMs / 1000) + 60} $' || true`,
+  );
+  check("no backstop sleep left", naps.stdout.trim() === "0", naps.stdout.trim());
   const users = await root("getent passwd | grep -c '^mkc' || true");
   check(
     "no run user left in the box",
