@@ -68,4 +68,11 @@ describe("getMaxTrackingValue", () => {
     expect(result.success).toBe(false);
     expect(result.error).toBe("rateLimitExceeded");
   });
+
+  it("keeps a MongoDB destination's failed SQL probe as no value", async () => {
+    executeQuery.mockResolvedValue({ success: false, error: "not SQL" });
+    expect(
+      await getMaxTrackingValue({ type: "mongodb" } as any, "t", "_syncedAt"),
+    ).toEqual({ success: true, maxValue: undefined });
+  });
 });
