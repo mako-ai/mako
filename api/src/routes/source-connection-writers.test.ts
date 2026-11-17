@@ -264,6 +264,7 @@ describe("source connection writers", () => {
           "workflow:other-flow",
         ],
         removed: [],
+        limited: true,
       },
       {
         added: [],
@@ -275,6 +276,16 @@ describe("source connection writers", () => {
       },
       { added: [], removed: [], everyone: true },
     ]);
+    // An empty list where everyone read before adds no one and removes no
+    // one, and still shuts live reads to all but the writers: recorded.
+    await ConnectionAccessEvent.deleteMany({});
+    await req("PUT", `/${id}/writers`, { writers: [], liveReaders: [] });
+    const [shut] = await ConnectionAccessEvent.find({
+      connectionId: id,
+    }).lean();
+    expect(shut.changes).toEqual({
+      liveReaders: { added: [], removed: [], limited: true },
+    });
   });
 
   it("refuses a stranger, an agent or an API key as a live reader", async () => {

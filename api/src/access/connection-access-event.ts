@@ -20,8 +20,12 @@ export interface ListChange {
 export interface ConnectionAccessChanges {
   /** `principal`, or `principal where` on a database connection. */
   writers?: ListChange;
-  /** `everyone: true` when the list was dropped. */
-  liveReaders?: ListChange & { everyone?: boolean };
+  /**
+   * `everyone: true` when the list was dropped (everyone reads live again);
+   * `limited: true` when a list was put where everyone read before, even an
+   * empty one (only the writers read live then).
+   */
+  liveReaders?: ListChange & { everyone?: boolean; limited?: boolean };
   /** User ids. */
   managers?: ListChange;
   /** The switch as it is after the change. */
@@ -88,7 +92,9 @@ function withoutEmpty(
     !!list && list.added.length + list.removed.length > 0;
   return {
     ...(moved(changes.writers) ? { writers: changes.writers } : {}),
-    ...(moved(changes.liveReaders) || changes.liveReaders?.everyone
+    ...(moved(changes.liveReaders) ||
+    changes.liveReaders?.everyone ||
+    changes.liveReaders?.limited
       ? { liveReaders: changes.liveReaders }
       : {}),
     ...(moved(changes.managers) ? { managers: changes.managers } : {}),

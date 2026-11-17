@@ -172,6 +172,49 @@ describe("a database connection's writers", () => {
     expect((await database())?.writers).toHaveLength(1);
   });
 
+  it("tells an unknown address from an outside account in no combination", async () => {
+    // The same shape of answer whichever of the two addresses has an account.
+    const answer = async (addWriters: { principal: string }[]) =>
+      String(
+        (await as("admin1")({ connectionId: DB.toString(), addWriters })).error,
+      )
+        .replace("stranger@example.com", "<email>")
+        .replace("nobody@example.com", "<email>");
+    const member = { principal: "member2@example.com" };
+    const agent = { principal: "agent:user:x" };
+    for (const others of [[], [member], [agent], [member, agent]]) {
+      expect(
+        await answer([{ principal: "stranger@example.com" }, ...others]),
+      ).toBe(await answer([{ principal: "nobody@example.com" }, ...others]));
+    }
+    // Both at once: both named, neither singled out.
+    expect(
+      await answer([
+        { principal: "nobody@example.com" },
+        { principal: "stranger@example.com" },
+      ]),
+    ).toBe("<email>, <email> is not a member of this workspace");
+    expect((await database())?.writers).toHaveLength(1);
+  });
+
+  it("gives a writer who left the workspace no further entry", async () => {
+    await DatabaseConnection.updateOne(
+      { _id: DB },
+      { $push: { writers: { principal: "user:gone" } } },
+    );
+    const result = await as("admin1")({
+      connectionId: DB.toString(),
+      addWriters: [{ principal: "user:gone", where: "finance" }],
+    });
+    expect(result.error).toMatch(/not a member/);
+    // And they can still be taken off.
+    const removed = await as("admin1")({
+      connectionId: DB.toString(),
+      removeWriters: [{ principal: "user:gone" }],
+    });
+    expect(removed.changed).toEqual(["writers"]);
+  });
+
   it("refuses the caller adding themselves, by id or by email", async () => {
     await User.collection.insertOne({
       _id: "admin1",
@@ -326,6 +369,42 @@ describe("a source connection's access", () => {
     });
     expect(last.error).toMatch(/at least one manager/);
     expect((await source())?.managers).toEqual(["member2"]);
+  });
+
+  it("answers the same for an unknown address and an outside account as a manager", async () => {
+    const answer = async (input: Record<string, unknown>) =>
+      JSON.stringify(
+        await as("manager1")({ connectionId: SOURCE.toString(), ...input }),
+      ).replace(/(stranger|nobody)@example\.com/g, "<email>");
+    for (const others of [[], ["workflow:*"], ["member2@example.com"]]) {
+      expect(
+        await answer({ addManagers: ["stranger@example.com", ...others] }),
+      ).toBe(await answer({ addManagers: ["nobody@example.com", ...others] }));
+    }
+    // Removing either removes no one.
+    expect(await answer({ removeManagers: ["stranger@example.com"] })).toBe(
+      await answer({ removeManagers: ["nobody@example.com"] }),
+    );
+    expect((await source())?.managers).toEqual(["manager1"]);
+  });
+
+  it("asks for a manager who can no longer manage to be taken off, as the app does", async () => {
+    await SourceConnection.updateOne(
+      { _id: SOURCE },
+      { managers: ["manager1", "gone"] },
+    );
+    const id = SOURCE.toString();
+    const kept = await as("manager1")({
+      connectionId: id,
+      addManagers: ["user:member2"],
+    });
+    expect(kept.error).toMatch(/gone .*removeManagers/);
+    const cleaned = await as("manager1")({
+      connectionId: id,
+      addManagers: ["user:member2"],
+      removeManagers: ["gone"],
+    });
+    expect(cleaned.access?.managers).toEqual(["manager1", "member2"]);
   });
 
   it("refuses a viewer, a stranger or a workflow as a manager", async () => {

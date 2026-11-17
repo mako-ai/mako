@@ -30,8 +30,9 @@
  * they do it in the app.
  *
  * A refusal names a person as the caller named them: an email stays an
- * email, so the answer for an address with a Mako account in another
- * workspace is the answer for an address with none.
+ * email, and an address with a Mako account in another workspace is refused
+ * in the same check, the same words and the same order as an address with
+ * none. Nothing here tells whether an address has an account.
  *
  * Changes are deltas (add / remove), never a whole list: an agent that read
  * the list a moment ago does not erase an entry someone added since. Every
@@ -177,10 +178,27 @@ async function resolvePrincipals(refs: string[]): Promise<Map<string, string>> {
   );
 }
 
-/** The references that are neither listable principals nor known emails. */
-function unlistable(principals: string[]): string[] {
-  return principals.filter(p => !LISTABLE_PRINCIPAL.test(p));
+/**
+ * The principals among `added` that are not members of the workspace, in
+ * the order given: an account outside it, or an email no account holds
+ * (still an email after resolvePrincipals). One check for both, so a
+ * refusal cannot tell them apart.
+ */
+async function outsideWorkspace(
+  workspaceId: string,
+  added: string[],
+): Promise<string[]> {
+  const strangers = new Set(
+    await principalsOutsideWorkspace(
+      workspaceId,
+      added.filter(p => !EMAIL.test(p)),
+    ),
+  );
+  return [...new Set(added)].filter(p => EMAIL.test(p) || strangers.has(p));
 }
+
+const notAMember = (principals: string[]) =>
+  `${principals.join(", ")} is not a member of this workspace`;
 
 const key = (w: WriterInput) => `${w.principal} ${w.where ?? ""}`;
 
@@ -386,15 +404,17 @@ async function resolveWriters(
   return refused ? { error: refused } : next;
 }
 
-/** Why `principals` cannot be put on a list, or null: emails read as non-members. */
+/**
+ * Why `principals` cannot be put on a list, or null. An email is not judged
+ * here, with or without an account: outsideWorkspace refuses it.
+ */
 function notListable(principals: string[]): string | null {
-  const bad = unlistable(principals);
-  if (bad.length === 0) return null;
-  const emails = bad.filter(p => EMAIL.test(p));
-  if (emails.length > 0) {
-    return `${emails.join(", ")} is not a member of this workspace`;
-  }
-  return `${bad.join(", ")} cannot be listed. Use \`user:<id>\`, a member's email, \`workflow:<name>\` or \`workflow:*\`.`;
+  const bad = principals.filter(
+    p => !EMAIL.test(p) && !LISTABLE_PRINCIPAL.test(p),
+  );
+  return bad.length > 0
+    ? `${bad.join(", ")} cannot be listed. Use \`user:<id>\`, a member's email, \`workflow:<name>\` or \`workflow:*\`.`
+    : null;
 }
 
 /**
@@ -443,18 +463,14 @@ async function setDatabaseAccess(
   if (self) return { error: self };
 
   const stored = row.writers ?? [];
-  const known = new Set(stored.map(w => w.principal));
-  const strangers = await principalsOutsideWorkspace(
+  // Everyone added, already listed or not: a writer who left the workspace
+  // gets no further entry.
+  const strangers = await outsideWorkspace(
     workspaceId,
-    resolved.add.map(w => w.principal).filter(p => !known.has(p)),
+    resolved.add.map(w => w.principal),
   );
   if (strangers.length > 0) {
-    return {
-      error: asGiven(
-        `${strangers.join(", ")} is not a member of this workspace`,
-        resolved.given,
-      ),
-    };
+    return { error: asGiven(notAMember(strangers), resolved.given) };
   }
 
   const wanted = applyWriters(stored, resolved.add, resolved.remove);
@@ -548,6 +564,15 @@ async function setSourceAccess(
     if (wanted.length > MAX_ENTRIES) {
       return { error: `A writers list holds at most ${MAX_ENTRIES} entries.` };
     }
+    const known = new Set(storedWriters.map(w => w.principal));
+    const strangers = await outsideWorkspace(
+      workspaceId,
+      resolved.add.map(w => w.principal).filter(p => !known.has(p)),
+    );
+    if (strangers.length > 0) {
+      return { error: asGiven(notAMember(strangers), resolved.given) };
+    }
+    // What is left to refuse: a viewer as a writer.
     const outside = await writersOutsideRefusal(
       workspaceId,
       wanted,
@@ -590,6 +615,14 @@ async function setSourceAccess(
         error: `A live readers list holds at most ${MAX_ENTRIES} entries.`,
       };
     }
+    const known = new Set(storedReaders.map(w => w.principal));
+    const strangers = await outsideWorkspace(
+      workspaceId,
+      resolved.add.map(w => w.principal).filter(p => !known.has(p)),
+    );
+    if (strangers.length > 0) {
+      return { error: asGiven(notAMember(strangers), resolved.given) };
+    }
     const outside = await writersOutsideRefusal(
       workspaceId,
       wanted,
@@ -623,18 +656,26 @@ async function setSourceAccess(
         : principal;
       return /^[A-Za-z0-9_-]+$/.test(id) ? id : null;
     };
-    const notPeople = refs.filter(ref => idOf(ref) === null);
+    // Not a person at all (a workflow, a malformed id): named. An email is
+    // not judged here, with or without an account.
+    const notPeople = refs.filter(
+      ref => !EMAIL.test(ref) && idOf(ref) === null,
+    );
     if (notPeople.length > 0) {
       return {
-        error: notPeople.every(ref => EMAIL.test(ref))
-          ? MANAGERS_REFUSAL
-          : `${notPeople.join(", ")}: a manager is a person, named by email or \`user:<id>\`. Nothing was changed.`,
+        error: `${notPeople.join(", ")}: a manager is a person, named by email or \`user:<id>\`. Nothing was changed.`,
       };
     }
-    const add = (input.addManagers ?? []).map(idOf) as string[];
+    // An email no account holds is refused like a non-member when added,
+    // and removes no one, like any person who is not on the list.
+    const add = (input.addManagers ?? []).map(idOf);
+    if (add.includes(null)) return { error: MANAGERS_REFUSAL };
     const remove = new Set((input.removeManagers ?? []).map(idOf));
     const next = [
-      ...new Set([...before.filter(id => !remove.has(id)), ...add]),
+      ...new Set([
+        ...before.filter(id => !remove.has(id)),
+        ...(add as string[]),
+      ]),
     ];
     if (next.length === 0) {
       return {
@@ -645,13 +686,20 @@ async function setSourceAccess(
     if (next.length > MAX_MANAGERS) {
       return { error: `A connection has at most ${MAX_MANAGERS} managers.` };
     }
-    // The people newly put on the list are members who may configure
-    // connections: a viewer, or someone outside the workspace, would hold a
-    // key they cannot use.
-    const added = next.filter(id => !before.includes(id));
-    const roles = await Promise.all(added.map(id => caller.roleOf(id)));
-    if (roles.some(role => !mayCreateSourceConnection(role))) {
+    // Every manager is a member who may configure connections, as the app's
+    // route requires of the whole list: a viewer, or someone outside the
+    // workspace, would hold a key they cannot use.
+    const roles = await Promise.all(next.map(id => caller.roleOf(id)));
+    const unfit = next.filter((_, n) => !mayCreateSourceConnection(roles[n]));
+    if (unfit.some(id => !before.includes(id))) {
       return { error: MANAGERS_REFUSAL };
+    }
+    if (unfit.length > 0) {
+      // Already on the list (`system`, someone who left, a viewer now):
+      // named, so the caller can take them off.
+      return {
+        error: `${unfit.join(", ")} on the managers list can no longer manage this connection (not a member or admin of this workspace). Remove them in the same call with removeManagers. Nothing was changed.`,
+      };
     }
     if (
       next.length !== before.length ||
@@ -707,6 +755,7 @@ async function setSourceAccess(
                   (liveReaders ?? []).map(w => w.principal),
                 ),
                 ...(liveReaders === null ? { everyone: true } : {}),
+                ...(!row.liveReaders && liveReaders ? { limited: true } : {}),
               },
             }
           : {}),

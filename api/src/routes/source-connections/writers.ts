@@ -233,6 +233,10 @@ sourceConnectionWriterRoutes.openapi(
           ...(before.liveReaders !== null && readersNow === null
             ? { everyone: true }
             : {}),
+          // A list where everyone read before, even an empty one.
+          ...(before.liveReaders === null && readersNow !== null
+            ? { limited: true }
+            : {}),
         },
       },
     });
