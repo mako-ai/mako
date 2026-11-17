@@ -329,14 +329,14 @@ export function createFlowSyncTools({
 
     flow_cancel: tool({
       description:
-        "Cancel a sync's running work: every running execution (or only `executionId`, the run marked cancelled) plus its CDC backfill when one is running or paused. Any cancel stops every live run of the sync. Returns what it cancelled. Owner or admin. Follow it with flow_status.",
+        "Cancel a sync's running work: with no `executionId`, every running execution plus its CDC backfill when one is running or paused; with `executionId`, that run only, and a live backfill keeps its state and resume point. Returns what it cancelled. Owner or admin. Follow it with flow_status.",
       inputSchema: z.object({
         flow: flowRef,
         executionId: z
           .string()
           .optional()
           .describe(
-            "Mark only this run cancelled (flow_status lists run ids; default: every running one)",
+            "Cancel only this run (flow_status lists run ids; default: every running one and the backfill)",
           ),
       }),
       execute: async ({ flow: ref, executionId }) => {

@@ -7,9 +7,10 @@
  * the flowId alone, so any cancel stops every run of the flow, the CDC
  * backfill's included; `executionId` only picks the rows marked.
  *
- * With `cancelBackfill`, a CDC flow whose backfill is running or paused also
- * gets `cdcBackfillService.cancelBackfill`, so its state goes back to idle
- * instead of staying `running` with no run behind it. That is an owner/admin
+ * With `cancelBackfill` and no `executionId`, a CDC flow whose backfill is
+ * running or paused also gets `cdcBackfillService.cancelBackfill`, so its state goes back to idle
+ * instead of staying `running` with no run behind it. A named execution
+ * leaves the backfill's state and resume point alone, so it can resume. That is an owner/admin
  * step (POST …/sync-cdc/backfill/cancel), so only callers that checked the
  * role pass it.
  */
@@ -96,6 +97,7 @@ export async function cancelFlowRuns(
   const backfillStatus = flow.backfillState?.status;
   const cancelBackfill =
     options.cancelBackfill === true &&
+    !executionId &&
     flow.syncEngine === "cdc" &&
     !!backfillStatus &&
     ACTIVE_BACKFILL.has(backfillStatus);
