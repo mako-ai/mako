@@ -1,4 +1,5 @@
 import { Types } from "mongoose";
+import { inWorkspace } from "../../utils/workspace-scope";
 import {
   DatabaseConnection,
   type IFlow,
@@ -21,6 +22,8 @@ const log = loggers.sync("cdc.adapter.mysql");
 
 interface MySqlAdapterConfig {
   destinationDatabaseId: string;
+  /** The flow\'s workspace: the destination is looked up in it only. */
+  workspaceId: string;
   destinationDatabaseName?: string;
   tableDestination: {
     connectionId: string;
@@ -51,13 +54,15 @@ export class MySqlDestinationAdapter implements CdcDestinationAdapter {
 
   /** Full Refresh | Overwrite: clear the live table (no-op when absent). */
   async truncateLiveTable(layout: CdcEntityLayout): Promise<void> {
-    const destination = await DatabaseConnection.findById(
-      this.config.tableDestination.connectionId,
+    const destination = await DatabaseConnection.findOne(
+      inWorkspace(
+        this.config.tableDestination.connectionId,
+        this.config.workspaceId,
+      ),
     );
     if (!destination) return;
     const driver = databaseRegistry.getDriver(destination.type) as
-      | MySQLDatabaseDriver
-      | undefined;
+      MySQLDatabaseDriver | undefined;
     if (!driver) return;
     const schema = this.config.tableDestination.schema;
     const result = await driver.executeQuery(
@@ -245,13 +250,15 @@ export class MySqlDestinationAdapter implements CdcDestinationAdapter {
     if (this.layoutIndexesEnsured.has(cacheKey)) return;
 
     try {
-      const destination = await DatabaseConnection.findById(
-        this.config.tableDestination.connectionId,
+      const destination = await DatabaseConnection.findOne(
+        inWorkspace(
+          this.config.tableDestination.connectionId,
+          this.config.workspaceId,
+        ),
       );
       if (!destination) return;
       const driver = databaseRegistry.getDriver(destination.type) as
-        | MySQLDatabaseDriver
-        | undefined;
+        MySQLDatabaseDriver | undefined;
       if (!driver) return;
 
       const columnTypes = await driver.fetchColumnTypes(
@@ -305,6 +312,7 @@ export class MySqlDestinationAdapter implements CdcDestinationAdapter {
 
     const writer = await createDestinationWriter(
       {
+        workspaceId: this.config.workspaceId,
         destinationDatabaseId: new Types.ObjectId(
           this.config.destinationDatabaseId,
         ),

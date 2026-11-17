@@ -3,6 +3,7 @@
  * failed events, reconcile apply status, drop orphaned staging tables, and
  * drain pending events into the CDC store.
  */
+import { inWorkspace } from "../../utils/workspace-scope";
 import { Types } from "mongoose";
 import {
   CdcChangeEvent,
@@ -123,7 +124,11 @@ export async function resolveOrphanedWebhookApplyStatus(
 export async function cleanupOrphanStagingTables(
   flow: Pick<
     IFlow,
-    "_id" | "tableDestination" | "destinationDatabaseId" | "entityLayouts"
+    | "_id"
+    | "workspaceId"
+    | "tableDestination"
+    | "destinationDatabaseId"
+    | "entityLayouts"
   >,
 ): Promise<number> {
   try {
@@ -133,8 +138,8 @@ export async function cleanupOrphanStagingTables(
     ) {
       return 0;
     }
-    const destination = await DatabaseConnection.findById(
-      flow.tableDestination.connectionId,
+    const destination = await DatabaseConnection.findOne(
+      inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
     );
     if (!destination || !hasCdcDestinationAdapter(destination.type)) return 0;
 

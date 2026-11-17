@@ -1,4 +1,5 @@
 import { promises as fs, createReadStream } from "fs";
+import { inWorkspace } from "../../utils/workspace-scope";
 import { createClient } from "@clickhouse/client";
 import {
   DatabaseConnection,
@@ -118,6 +119,8 @@ export function buildClickHouseRepartitionStatements(params: {
 
 interface ClickHouseAdapterConfig {
   destinationDatabaseId: string;
+  /** The flow\'s workspace: the destination is looked up in it only. */
+  workspaceId: string;
   destinationDatabaseName?: string;
   tableDestination: {
     connectionId: string;
@@ -135,8 +138,8 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
 
   private async resolveDestination(): Promise<IDatabaseConnection> {
     if (this._resolvedDestination) return this._resolvedDestination;
-    const doc = await DatabaseConnection.findById(
-      this.config.destinationDatabaseId,
+    const doc = await DatabaseConnection.findOne(
+      inWorkspace(this.config.destinationDatabaseId, this.config.workspaceId),
     );
     if (!doc) {
       throw new Error(

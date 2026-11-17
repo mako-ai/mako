@@ -1,4 +1,5 @@
 import { z } from "@hono/zod-openapi";
+import { inWorkspace } from "../../utils/workspace-scope";
 import { Types } from "mongoose";
 import {
   CdcEntityState,
@@ -84,8 +85,8 @@ export function registerCdcStatusRoutes(flowRoutes: FlowRouter): void {
           return c.json({ success: true, data: {} });
         }
 
-        const destinationDoc = await DatabaseConnection.findById(
-          flow.tableDestination.connectionId,
+        const destinationDoc = await DatabaseConnection.findOne(
+          inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
         );
         const destination = destinationDoc?.toObject();
         if (!destination) {

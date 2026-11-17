@@ -3,6 +3,7 @@ import {
   type IFlow,
   type IDatabaseConnection,
 } from "../../database/workspace-schema";
+import { inWorkspace } from "../../utils/workspace-scope";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { loggers } from "../../logging";
 import {
@@ -38,6 +39,8 @@ export function buildMongoLayoutIndexSpecs(
 
 interface MongoDbAdapterConfig {
   destinationDatabaseId: string;
+  /** The flow\'s workspace: the destination is looked up in it only. */
+  workspaceId: string;
   destinationDatabaseName?: string;
   tableDestination: {
     connectionId: string;
@@ -56,8 +59,8 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
 
   private async resolveDestination(): Promise<IDatabaseConnection> {
     if (this._resolvedDestination) return this._resolvedDestination;
-    const doc = await DatabaseConnection.findById(
-      this.config.destinationDatabaseId,
+    const doc = await DatabaseConnection.findOne(
+      inWorkspace(this.config.destinationDatabaseId, this.config.workspaceId),
     );
     if (!doc) {
       throw new Error(

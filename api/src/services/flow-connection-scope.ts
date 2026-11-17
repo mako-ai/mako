@@ -4,10 +4,15 @@
  * `flows/<slug>.yml` carries raw connection ids. Without this check a file
  * could point a flow at another workspace's source (its credential would be
  * read, its webhook provisioned) or destination (rows written into another
- * workspace's warehouse). The push reactor and the API refuse such a file;
- * every flow → connection lookup is also scoped to the flow's workspace
- * (`getSourceConnection(id, workspaceId)`), so a row written before this
- * check cannot be used either.
+ * workspace's warehouse). The push reactor, the cache resync and the API
+ * refuse such a file.
+ *
+ * Defence in depth: the runtime lookups a flow run makes (source reads, CDC
+ * adapters, the destination writer, database sources, backfill, both
+ * webhook lanes) also filter on the flow's workspace (`inWorkspace`,
+ * `getSourceConnection(id, workspaceId)`). A row written before this check
+ * then reads its connection as missing. A prod scan on 2026-11-17 found 0
+ * such rows in 46 flows.
  */
 import { Types } from "mongoose";
 import {

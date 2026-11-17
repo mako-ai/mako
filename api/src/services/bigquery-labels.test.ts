@@ -253,6 +253,7 @@ async function testCdcAdapterLabels(): Promise<void> {
     const adapter = resolveCdcDestinationAdapter({
       destinationType: "bigquery",
       destinationDatabaseId: "db1",
+      workspaceId: "665f00000000000000000001",
       flowId: "flow1",
       tableDestination: {
         connectionId: "db1",

@@ -4,6 +4,7 @@
  * backfill — release the backfill gate so the scheduler and auto-recovery
  * are not blocked forever. Always rethrows: Inngest owns the retry.
  */
+import { inWorkspace } from "../../../utils/workspace-scope";
 import { Types } from "mongoose";
 import {
   DatabaseConnection,
@@ -92,8 +93,8 @@ export async function handleFlowRunFailure(
             flowId,
           });
 
-          const sourceConnection = await DatabaseConnection.findById(
-            cleanupDbSource.connectionId,
+          const sourceConnection = await DatabaseConnection.findOne(
+            inWorkspace(cleanupDbSource.connectionId, cleanupFlow.workspaceId),
           );
 
           const destinationWriter = await createDbSourceWriter(
@@ -215,7 +216,12 @@ async function releaseCdcBackfillGate(
   const { step, flowId } = ctx;
   const destinationType = flowRef.tableDestination?.connectionId
     ? (
-        await DatabaseConnection.findById(flowRef.tableDestination.connectionId)
+        await DatabaseConnection.findOne(
+          inWorkspace(
+            flowRef.tableDestination.connectionId,
+            flowRef.workspaceId,
+          ),
+        )
           .select({ type: 1 })
           .lean()
       )?.type

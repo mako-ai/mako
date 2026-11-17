@@ -3,6 +3,7 @@
  * table under its new layout, re-materialize, resume — plus the recovery of
  * repartitions a crash left half-done.
  */
+import { inWorkspace } from "../../utils/workspace-scope";
 import { Types } from "mongoose";
 import {
   CdcEntityState,
@@ -36,6 +37,7 @@ export function resolveRepartitionAdapter(
   const adapter = resolveCdcDestinationAdapter({
     destinationType,
     flowId: String(flow._id),
+    workspaceId: String(flow.workspaceId),
     destinationDatabaseId: String(flow.destinationDatabaseId),
     destinationDatabaseName: flow.destinationDatabaseName,
     tableDestination: {
@@ -150,8 +152,8 @@ export async function repartitionEntity(params: {
   if (!flow.tableDestination?.connectionId) {
     return { outcome: "missing" };
   }
-  const destination = await DatabaseConnection.findById(
-    flow.tableDestination.connectionId,
+  const destination = await DatabaseConnection.findOne(
+    inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
   ).lean();
   const adapter = destination
     ? resolveRepartitionAdapter(flow, destination.type)

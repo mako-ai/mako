@@ -31,6 +31,7 @@ function makeWriter(
   tableDestination: Record<string, unknown> = {},
 ): { writer: DestinationWriter; internals: WriterInternals } {
   const writer = new DestinationWriter({
+    workspaceId: "665f00000000000000000001",
     tableDestination: {
       connectionId: "conn-1",
       tableName: "users",

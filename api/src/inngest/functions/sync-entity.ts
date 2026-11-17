@@ -224,6 +224,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         ? resolveCdcDestinationAdapter({
             destinationType,
             flowId: String(flowId),
+            workspaceId,
             destinationDatabaseId: destinationId,
             destinationDatabaseName,
             tableDestination: {

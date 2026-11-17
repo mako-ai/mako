@@ -2,6 +2,7 @@
  * Backfill completion: mark it complete, purge soft deletes after a hard-delete
  * backfill, and force-drain the flow's pending CDC events.
  */
+import { inWorkspace } from "../../utils/workspace-scope";
 import { Types } from "mongoose";
 import { DatabaseConnection, Flow } from "../../database/workspace-schema";
 import { databaseRegistry } from "../../databases/registry";
@@ -68,8 +69,8 @@ export async function purgeSoftDeletesAfterBackfill(params: {
     return;
   }
 
-  const destination = await DatabaseConnection.findById(
-    flow.tableDestination.connectionId,
+  const destination = await DatabaseConnection.findOne(
+    inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
   );
   if (!destination) return;
 

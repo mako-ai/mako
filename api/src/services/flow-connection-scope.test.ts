@@ -32,6 +32,10 @@ import {
   foreignConnectionRefusal,
 } from "./flow-connection-scope";
 import { applyFlowUpdate } from "./flow-mutation.service";
+import { DestinationWriter } from "./destination-writer/writer";
+import { MongoDbDestinationAdapter } from "../sync-cdc/adapters/mongodb";
+import { createFlowSyncTools } from "../agent-lib/tools/flow-sync-tools";
+import { inWorkspace } from "../utils/workspace-scope";
 import type { FlowFile } from "./flow-config-files";
 
 let mongo: MongoMemoryServer;
@@ -210,5 +214,75 @@ describe("the API update", () => {
       message: "Source database connection not found",
     });
     expect(String(flow.databaseSource.connectionId)).toBe(String(DEST));
+  });
+});
+
+/**
+ * Defence in depth: a row written before the apply-time check could still
+ * name a foreign connection. The runtime reads it as missing.
+ */
+describe("runtime lookups read another workspace's connection as missing", () => {
+  it("the destination writer refuses a foreign table destination", async () => {
+    const writer = new DestinationWriter({
+      workspaceId: String(WS),
+      tableDestination: {
+        connectionId: FOREIGN_DEST,
+        schema: "s",
+        tableName: "t",
+      } as any,
+    });
+    await expect(writer.initialize()).rejects.toThrow(
+      `Database connection not found: ${FOREIGN_DEST}`,
+    );
+  });
+
+  it("a CDC adapter refuses a foreign destination", async () => {
+    const adapter = new MongoDbDestinationAdapter({
+      destinationDatabaseId: String(FOREIGN_DEST),
+      workspaceId: String(WS),
+      tableDestination: {
+        connectionId: String(FOREIGN_DEST),
+        schema: "s",
+        tableName: "t",
+      },
+    } as any);
+    await expect((adapter as any).resolveDestination()).rejects.toThrow(
+      "not found",
+    );
+  });
+
+  it("a missing or malformed id finds nothing and never throws", async () => {
+    expect(
+      await DatabaseConnection.findOne(inWorkspace(undefined, WS)),
+    ).toBeNull();
+    expect(
+      await DatabaseConnection.findOne(inWorkspace("close", WS)),
+    ).toBeNull();
+    expect(
+      await DatabaseConnection.findOne(inWorkspace(DEST, "not-an-id")),
+    ).toBeNull();
+    expect(
+      (await DatabaseConnection.findOne(inWorkspace(DEST, WS)))?.name,
+    ).toBe("bq");
+  });
+
+  it("flow_list names only this workspace's connections", async () => {
+    await Flow.collection.deleteMany({});
+    await Flow.collection.insertOne({
+      _id: new Types.ObjectId(),
+      workspaceId: WS,
+      slug: "leaky",
+      name: "Leaky",
+      createdBy: "u",
+      sourceType: "connector",
+      dataSourceId: FOREIGN_SOURCE,
+      destinationDatabaseId: FOREIGN_DEST,
+    } as any);
+    const tools = createFlowSyncTools({ workspaceId: String(WS) });
+    const result: any = await (tools.flow_list as any).execute({}, {} as any);
+    expect(result.success).toBe(true);
+    const text = JSON.stringify(result.flows);
+    expect(text).not.toContain("Their Close");
+    expect(text).not.toContain("their bq");
   });
 });

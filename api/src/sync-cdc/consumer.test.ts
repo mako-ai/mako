@@ -25,7 +25,8 @@ const flowDoc = {
 vi.mock("../database/workspace-schema", () => ({
   Flow: { findById: vi.fn(() => ({ lean: () => Promise.resolve(flowDoc) })) },
   DatabaseConnection: {
-    findById: vi.fn(() => ({
+    // Scoped by workspace (utils/workspace-scope.ts): findOne, not findById.
+    findOne: vi.fn(() => ({
       lean: () => Promise.resolve({ type: "postgresql" }),
     })),
   },

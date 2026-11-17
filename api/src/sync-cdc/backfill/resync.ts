@@ -2,6 +2,7 @@
  * Resync a CDC flow from scratch (optionally dropping its destination tables),
  * or only a subset of its entities.
  */
+import { inWorkspace } from "../../utils/workspace-scope";
 import { Types } from "mongoose";
 import {
   CdcEntityState,
@@ -157,7 +158,11 @@ export async function resyncEntities(params: {
 export async function deleteDestinationTables(
   flow: Pick<
     IFlow,
-    "_id" | "tableDestination" | "destinationDatabaseId" | "entityLayouts"
+    | "_id"
+    | "workspaceId"
+    | "tableDestination"
+    | "destinationDatabaseId"
+    | "entityLayouts"
   >,
   /** Restrict to these entities (omit to drop all configured entities). */
   onlyEntities?: string[],
@@ -166,8 +171,8 @@ export async function deleteDestinationTables(
     return;
   }
 
-  const destination = await DatabaseConnection.findById(
-    flow.tableDestination.connectionId,
+  const destination = await DatabaseConnection.findOne(
+    inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
   );
   if (!destination) {
     return;

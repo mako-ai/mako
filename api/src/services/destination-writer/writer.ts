@@ -7,6 +7,7 @@
  * driver-backed half of this class (it shares the writer's inferred schema,
  * table cache and staging state).
  */
+import { inWorkspace } from "../../utils/workspace-scope";
 import { Types } from "mongoose";
 import {
   DatabaseConnection,
@@ -167,8 +168,11 @@ export class DestinationWriter {
   async initialize(): Promise<void> {
     if (this.config.tableDestination) {
       // Load the database connection for SQL destination
-      const conn = await DatabaseConnection.findById(
-        this.config.tableDestination.connectionId,
+      const conn = await DatabaseConnection.findOne(
+        inWorkspace(
+          this.config.tableDestination.connectionId,
+          this.config.workspaceId,
+        ),
       );
       if (!conn) {
         throw new Error(
@@ -653,6 +657,8 @@ export class DestinationWriter {
  */
 export async function createDestinationWriter(
   flow: {
+    /** The flow's workspace: the destination is looked up in it only. */
+    workspaceId: Types.ObjectId | string;
     destinationDatabaseId: Types.ObjectId;
     destinationDatabaseName?: string;
     tableDestination?: ITableDestination;
@@ -661,6 +667,7 @@ export async function createDestinationWriter(
   dataSourceName?: string,
 ): Promise<DestinationWriter> {
   const config: DestinationConfig = {
+    workspaceId: String(flow.workspaceId),
     dataSourceId: flow.dataSourceId?.toString(),
     dataSourceName,
   };
@@ -679,7 +686,9 @@ export async function createDestinationWriter(
       connectionIdentifier,
       async (id: string) => {
         const realDestinationId = id.includes(":") ? id.split(":")[0] : id;
-        const destConn = await DatabaseConnection.findById(realDestinationId);
+        const destConn = await DatabaseConnection.findOne(
+          inWorkspace(realDestinationId, flow.workspaceId),
+        );
         if (!destConn) return null;
 
         return {

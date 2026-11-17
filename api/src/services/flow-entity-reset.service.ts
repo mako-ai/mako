@@ -5,6 +5,7 @@
  *
  * Refusals are {@link FlowRequestError}s; the routes answer them as-is.
  */
+import { inWorkspace } from "../utils/workspace-scope";
 import { Types } from "mongoose";
 import { asSystem } from "../access/connection-writes";
 import {
@@ -54,8 +55,8 @@ export async function resetFlowEntity(params: {
   await assertCanStartBackfill(workspaceId, flowId);
 
   if (flow.tableDestination?.connectionId && flow.tableDestination?.schema) {
-    const destination = await DatabaseConnection.findById(
-      flow.tableDestination.connectionId,
+    const destination = await DatabaseConnection.findOne(
+      inWorkspace(flow.tableDestination.connectionId, workspaceId),
     );
     if (destination) {
       const driver = databaseRegistry.getDriver(destination.type);
@@ -149,8 +150,8 @@ export async function resetFlowColumn(params: {
 
   if (startBackfill) await assertCanStartBackfill(workspaceId, flowId);
 
-  const destinationRaw = await DatabaseConnection.findById(
-    flow.tableDestination.connectionId,
+  const destinationRaw = await DatabaseConnection.findOne(
+    inWorkspace(flow.tableDestination.connectionId, workspaceId),
   );
   if (!destinationRaw) {
     throw new FlowRequestError(404, "Destination connection not found");

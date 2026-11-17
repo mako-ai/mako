@@ -3,6 +3,7 @@
  * execution (one Inngest step per chunk), the full-sync staging swap, and the
  * incremental tracking value.
  */
+import { inWorkspace } from "../../../utils/workspace-scope";
 import { Types } from "mongoose";
 import {
   DatabaseConnection,
@@ -36,6 +37,7 @@ export async function createDbSourceWriter(
 ) {
   const destinationWriter = await createDestinationWriter(
     {
+      workspaceId: flow.workspaceId,
       destinationDatabaseId: flow.destinationDatabaseId,
       destinationDatabaseName: flow.destinationDatabaseName,
       tableDestination: flow.tableDestination,
@@ -78,8 +80,8 @@ export async function runDatabaseSourceFlow(
   });
 
   await step.run("validate-db-source", async () => {
-    const sourceConnection = await DatabaseConnection.findById(
-      dbSource.connectionId,
+    const sourceConnection = await DatabaseConnection.findOne(
+      inWorkspace(dbSource.connectionId, flow.workspaceId),
     );
     if (!sourceConnection) {
       throw new Error(
@@ -95,8 +97,8 @@ export async function runDatabaseSourceFlow(
 
   // Initialize destination writer once
   await step.run("init-destination-writer", async () => {
-    const sourceConnection = await DatabaseConnection.findById(
-      dbSource.connectionId,
+    const sourceConnection = await DatabaseConnection.findOne(
+      inWorkspace(dbSource.connectionId, flow.workspaceId),
     );
 
     const destinationWriter = await createDbSourceWriter(
@@ -135,8 +137,8 @@ export async function runDatabaseSourceFlow(
           });
 
           // Re-create destination writer for this chunk
-          const sourceConnection = await DatabaseConnection.findById(
-            dbSource.connectionId,
+          const sourceConnection = await DatabaseConnection.findOne(
+            inWorkspace(dbSource.connectionId, flow.workspaceId),
           );
           if (!sourceConnection) {
             throw new Error("Source connection not found");
@@ -258,8 +260,8 @@ export async function runDatabaseSourceFlow(
           flowId,
         });
 
-        const sourceConnection = await DatabaseConnection.findById(
-          dbSource.connectionId,
+        const sourceConnection = await DatabaseConnection.findOne(
+          inWorkspace(dbSource.connectionId, flow.workspaceId),
         );
 
         const destinationWriter = await createDbSourceWriter(
@@ -291,8 +293,8 @@ export async function runDatabaseSourceFlow(
 
         if (flow.tableDestination?.connectionId) {
           // SQL table destination: query the destination table for max tracking value
-          const destConnection = await DatabaseConnection.findById(
-            flow.tableDestination.connectionId,
+          const destConnection = await DatabaseConnection.findOne(
+            inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
           );
 
           if (destConnection) {

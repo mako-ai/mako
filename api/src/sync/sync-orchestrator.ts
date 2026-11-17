@@ -1,4 +1,5 @@
 import { promises as fs } from "fs";
+import { inWorkspace } from "../utils/workspace-scope";
 import { syncConnectorRegistry } from "./connector-registry";
 import { sourceConnectionManager } from "./database-data-source-manager";
 import {
@@ -354,8 +355,8 @@ async function performSyncChunkSql(
     entity,
   );
 
-  const destinationConn = await DatabaseConnection.findById(
-    tableDestination.connectionId,
+  const destinationConn = await DatabaseConnection.findOne(
+    inWorkspace(tableDestination.connectionId, options.workspaceId),
   )
     .select({ type: 1 })
     .lean();
@@ -374,6 +375,7 @@ async function performSyncChunkSql(
   const cdcAdapter = resolveCdcDestinationAdapter({
     destinationType: destinationConn?.type || "",
     flowId: options.flowId,
+    workspaceId: options.workspaceId,
     destinationDatabaseId: options.destinationId,
     destinationDatabaseName: options.destinationDatabaseName,
     tableDestination: {
@@ -417,8 +419,8 @@ async function performSyncChunkSql(
         await import("../services/destination-writer.service");
       const { DatabaseConnection } =
         await import("../database/workspace-schema");
-      const destConn = await DatabaseConnection.findById(
-        tableDestination.connectionId,
+      const destConn = await DatabaseConnection.findOne(
+        inWorkspace(tableDestination.connectionId, options.workspaceId),
       );
       if (destConn) {
         const result = await getMaxTrackingValue(
@@ -1041,8 +1043,8 @@ async function resolveAdapterContext(options: SyncChunkOptions) {
     tableDestination.tableName,
     entity,
   );
-  const destinationConn = await DatabaseConnection.findById(
-    tableDestination.connectionId,
+  const destinationConn = await DatabaseConnection.findOne(
+    inWorkspace(tableDestination.connectionId, options.workspaceId),
   )
     .select({ type: 1 })
     .lean();
@@ -1050,6 +1052,7 @@ async function resolveAdapterContext(options: SyncChunkOptions) {
   const cdcAdapter = resolveCdcDestinationAdapter({
     destinationType: destinationConn?.type || "",
     flowId: options.flowId,
+    workspaceId: options.workspaceId,
     destinationDatabaseId: options.destinationId,
     destinationDatabaseName: options.destinationDatabaseName,
     tableDestination: {
