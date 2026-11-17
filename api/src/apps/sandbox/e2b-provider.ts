@@ -40,6 +40,7 @@ import type {
   SandboxExecResult,
   SandboxProvider,
 } from "./provider";
+import { viteAllowedHostEnv } from "./e2b-domain";
 import { commandToRun } from "./hidden-command";
 
 const logger = loggers.api("apps-e2b");
@@ -811,6 +812,8 @@ async function execE2b(
         // There is no human at this end. Without it git blocks on a
         // credential prompt until the timeout and reports nothing.
         GIT_TERMINAL_PROMPT: "0",
+        // A `vite` the agent starts by hand accepts the preview origin.
+        ...viteAllowedHostEnv(),
         ...run.env,
       },
       onStdout: d => push("out", d),
@@ -911,6 +914,7 @@ async function execDetachedE2b(
           LANG: "C.UTF-8",
           TERM: "dumb",
           CI: "1",
+          ...viteAllowedHostEnv(),
           ...(options.env ?? {}),
         },
       });
@@ -1206,6 +1210,9 @@ async function openTerminalE2b(
             // whole reason for a PTY over one-shot commands.
             TERM: "xterm-256color",
             COLORTERM: "truecolor",
+            // A `vite` the user starts in this shell accepts the preview
+            // origin, whatever the app's committed vite.config.ts says.
+            ...viteAllowedHostEnv(),
           },
         });
         return { sandbox: box, handle: pty };

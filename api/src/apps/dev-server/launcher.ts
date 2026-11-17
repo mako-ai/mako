@@ -3,14 +3,19 @@
  * `makoData` / `makoEyes` plugins and the box's reports to Mako.
  */
 
+import { previewHostSuffix } from "../sandbox/e2b-domain";
+
 /**
  * Node launcher, run inside the sandbox. Uses Vite's JS API because inline
  * `server` options there beat the app's config file; the CLI has no flag for
  * `allowedHosts`, and editing the app's `vite.config.ts` to add one would be
  * committing our infrastructure into the user's repository.
  *
- * `.e2b.app` is matched as a suffix, so it covers the sandbox's own origin
- * without our having to know the sandbox id at write time.
+ * The allowed host is `.<E2B_DOMAIN>` (`.e2b.app` by default), matched as a
+ * suffix, so it covers the sandbox's own origin without our having to know
+ * the sandbox id at write time. It is written into the launcher at every
+ * launch, so an app whose committed `vite.config.ts` names another domain
+ * still serves on the current one.
  */
 export function launcherSource(
   appDir: string,
@@ -19,6 +24,7 @@ export function launcherSource(
   slug: string,
   boxEnv: string,
   appEnv: Record<string, string>,
+  allowedHost: string = previewHostSuffix(),
 ): string {
   return `
 import { createServer } from "${appDir}/node_modules/vite/dist/node/index.js";
@@ -461,7 +467,7 @@ const server = await createServer({
     strictPort: true,
     // The browser reaches us on the sandbox's public origin; without this
     // Vite answers 403 "Blocked request. This host is not allowed."
-    allowedHosts: [".e2b.app"],
+    allowedHosts: [${JSON.stringify(allowedHost)}],
     // inotify does not fire in the E2B microVM (verified: fs.watch gets no
     // event even for a same-process append), so without polling the module
     // graph never invalidates: edits commit and land on disk but the served

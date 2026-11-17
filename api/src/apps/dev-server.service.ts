@@ -8,7 +8,7 @@
  * environment had none.
  *
  * Now the dev server runs where the app's files already are. E2B exposes a
- * per-sandbox public origin for any port (`https://<port>-<sandboxId>.e2b.app`),
+ * per-sandbox public origin for any port (`https://<port>-<sandboxId>.<E2B_DOMAIN>`),
  * which the browser loads directly — no Mako proxy, no WebSocket relay of our
  * own (HMR rides that same origin), and nothing of the tenant's on our host.
  *

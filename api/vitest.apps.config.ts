@@ -200,6 +200,8 @@ export default defineConfig({
       "src/apps/sandbox/e2b-provider.boxes.test.ts",
       // One held E2B handle per session: connect and setTimeout counts.
       "src/apps/sandbox/e2b-provider.handles.test.ts",
+      // E2B_DOMAIN → Vite allowed host in the launcher and the scaffold.
+      "src/apps/sandbox/e2b-domain.test.ts",
       // Connector bundles: hash, guard, build box, storage, build-once.
       "src/connectors/workspace/bundle/bundle.test.ts",
       // Bundles through the push reconciler and the run path, flag on and off.
