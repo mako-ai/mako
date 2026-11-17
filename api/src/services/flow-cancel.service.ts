@@ -2,11 +2,16 @@
  * Cancel a sync's running work: the one step behind POST
  * /flows/:flowId/cancel and the MCP `flow_cancel` tool.
  *
- * Each running execution gets its own `flow.cancel` event. The Inngest
- * functions cancel on the flowId; `cancel-flow` marks the named execution
- * row `cancelled`. A CDC flow whose backfill is running or paused also gets
- * the backfill cancel (`cdcBackfillService.cancelBackfill`), so the state
- * machine goes back to idle instead of resuming the run.
+ * Each execution cancelled gets its own `flow.cancel` event, and
+ * `cancel-flow` marks that row `cancelled`. The Inngest functions cancel on
+ * the flowId alone, so any cancel stops every run of the flow, the CDC
+ * backfill's included; `executionId` only picks the rows marked.
+ *
+ * With `cancelBackfill`, a CDC flow whose backfill is running or paused also
+ * gets `cdcBackfillService.cancelBackfill`, so its state goes back to idle
+ * instead of staying `running` with no run behind it. That is an owner/admin
+ * step (POST …/sync-cdc/backfill/cancel), so only callers that checked the
+ * role pass it.
  */
 import { Types } from "mongoose";
 
@@ -49,6 +54,7 @@ export async function cancelFlowRuns(
   workspaceId: string,
   flow: CancellableFlow,
   executionId?: string,
+  options: { cancelBackfill?: boolean } = {},
 ): Promise<FlowCancelResult> {
   const flowId = flow._id.toString();
   const scope = {
@@ -87,11 +93,9 @@ export async function cancelFlowRuns(
       .lean();
   }
 
-  // A backfill run is cancelled with the whole flow, never with one named
-  // execution: the caller asked for that one only.
   const backfillStatus = flow.backfillState?.status;
   const cancelBackfill =
-    !executionId &&
+    options.cancelBackfill === true &&
     flow.syncEngine === "cdc" &&
     !!backfillStatus &&
     ACTIVE_BACKFILL.has(backfillStatus);

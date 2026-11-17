@@ -186,7 +186,7 @@ Over MCP (external clients only), six tools cover syncs:
 | `flow_list` / `flow_read` | List syncs, or read one as its `flows/<slug>.yml` shape (never credentials or webhook secrets), with its triggers |
 | `flow_status` | Per-entity CDC state (mode, backlog, failures, last materialised) plus the last executions |
 | `flow_backfill` | Start (or resume) a backfill, optionally for some entities |
-| `flow_cancel` | Cancel one execution, or every running execution plus a running CDC backfill |
+| `flow_cancel` | Cancel every running execution (or mark one) plus a running CDC backfill; any cancel stops every live run of the sync |
 | `flow_update` | Change the three trigger controls (poll, webhook, resync) and commit the flow file |
 
 A sync is addressed by id, name or slug, or any unique short name (`wise`, `fr_close`). The two writes need the `warehouse:write` grant and an owner or admin role; the reads need neither.

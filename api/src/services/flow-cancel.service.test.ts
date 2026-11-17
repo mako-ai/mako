@@ -4,10 +4,14 @@
  *
  *   ALL RUNNING — no executionId cancels every running execution of the
  *                 flow, one `flow.cancel` event each, and says which.
- *   ONE         — an executionId cancels that execution only, never the
- *                 backfill, and only when it is a running run of this flow.
- *   BACKFILL    — a CDC flow whose backfill is running or paused also gets
- *                 the backfill cancel, even with no execution row running.
+ *   ONE         — an executionId marks that execution only, and only when
+ *                 it is a running run of this flow.
+ *   BACKFILL    — with cancelBackfill (the MCP tool, owner/admin), a CDC
+ *                 flow whose backfill is running or paused also gets the
+ *                 backfill cancel, with or without an executionId: the
+ *                 flow.cancel event stops every run of the flow anyway.
+ *   ROUTE       — without it (the role-less REST route) the backfill is
+ *                 never touched.
  *   NOTHING     — nothing running is a 404, and no event is sent.
  *   TENANCY     — another workspace's execution is "not a run of this flow".
  *   ROLE        — the MCP tool refuses a member; an admin may.
@@ -148,7 +152,7 @@ describe("cancelFlowRuns", () => {
     expect(state.backfillCancels).toEqual([]);
   });
 
-  it("cancels only the named execution, never the backfill", async () => {
+  it("marks only the named execution; the route never touches the backfill", async () => {
     const flow = await makeFlow({ backfillState: { status: "running" } });
     const one = await makeRun(flow._id, "running");
     await makeRun(flow._id, "running");
@@ -159,15 +163,27 @@ describe("cancelFlowRuns", () => {
     expect(result.backfill).toBeNull();
     expect(state.sent).toHaveLength(1);
     expect(state.backfillCancels).toEqual([]);
+
+    // No executionId and only a backfill running: still nothing for the route.
+    const idle = await makeFlow({
+      slug: "b",
+      backfillState: { status: "running" },
+    });
+    await expect(cancelFlowRuns(WS.toString(), idle)).rejects.toMatchObject({
+      status: 404,
+    });
+    expect(state.backfillCancels).toEqual([]);
   });
 
-  it("cancels a running or paused CDC backfill with the flow", async () => {
+  it("with cancelBackfill, cancels a running or paused CDC backfill too", async () => {
     for (const status of ["running", "paused"]) {
       state.backfillCancels.length = 0;
       const flow = await makeFlow({
         backfillState: { status, runId: `run_${status}` },
       });
-      const result = await cancelFlowRuns(WS.toString(), flow);
+      const result = await cancelFlowRuns(WS.toString(), flow, undefined, {
+        cancelBackfill: true,
+      });
       expect(result.executions).toEqual([]);
       expect(result.backfill).toEqual({
         runId: `run_${status}`,
@@ -179,10 +195,28 @@ describe("cancelFlowRuns", () => {
     }
   });
 
+  it("with cancelBackfill and an executionId, cancels the backfill it stops", async () => {
+    const flow = await makeFlow({
+      backfillState: { status: "running", runId: "run_1" },
+    });
+    const one = await makeRun(flow._id, "running");
+    const result = await cancelFlowRuns(WS.toString(), flow, one, {
+      cancelBackfill: true,
+    });
+    expect(result.executions.map(e => e.executionId)).toEqual([one]);
+    expect(result.backfill).toEqual({
+      runId: "run_1",
+      previousStatus: "running",
+    });
+    expect(state.backfillCancels).toHaveLength(1);
+  });
+
   it("is a 404 when nothing runs, and sends nothing", async () => {
     const flow = await makeFlow({ backfillState: { status: "completed" } });
     await makeRun(flow._id, "completed");
-    await expect(cancelFlowRuns(WS.toString(), flow)).rejects.toMatchObject({
+    await expect(
+      cancelFlowRuns(WS.toString(), flow, undefined, { cancelBackfill: true }),
+    ).rejects.toMatchObject({
       name: "FlowCancelError",
       status: 404,
       message: "No running execution found",

@@ -329,14 +329,14 @@ export function createFlowSyncTools({
 
     flow_cancel: tool({
       description:
-        "Cancel a sync's running work: `executionId` alone, or else every running execution of the sync plus its CDC backfill when one is running or paused. Returns what it cancelled. Owner or admin. Follow it with flow_status.",
+        "Cancel a sync's running work: every running execution (or only `executionId`, the run marked cancelled) plus its CDC backfill when one is running or paused. Any cancel stops every live run of the sync. Returns what it cancelled. Owner or admin. Follow it with flow_status.",
       inputSchema: z.object({
         flow: flowRef,
         executionId: z
           .string()
           .optional()
           .describe(
-            "Only this execution (flow_status lists runs; default: all running)",
+            "Mark only this run cancelled (flow_status lists run ids; default: every running one)",
           ),
       }),
       execute: async ({ flow: ref, executionId }) => {
@@ -345,7 +345,9 @@ export function createFlowSyncTools({
             return failure("Owner/admin role required");
           }
           const flow = await findFlow(workspaceId, ref);
-          const result = await cancelFlowRuns(workspaceId, flow, executionId);
+          const result = await cancelFlowRuns(workspaceId, flow, executionId, {
+            cancelBackfill: true,
+          });
           return {
             success: true,
             id: result.flowId,

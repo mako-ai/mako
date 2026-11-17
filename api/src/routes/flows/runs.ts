@@ -124,7 +124,8 @@ export function registerRunsRoutes(flowRoutes: FlowRouter): void {
         }
 
         // Same step as the MCP flow_cancel tool: the given execution, or
-        // every running one (plus a running CDC backfill).
+        // every running one. No role check here, so no backfill cancel: that
+        // is POST …/sync-cdc/backfill/cancel's, owner/admin only.
         const result = await cancelFlowRuns(
           String(workspaceId),
           flow,
