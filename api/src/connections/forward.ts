@@ -494,10 +494,14 @@ export async function send(
     }
     // The service did not answer: a 503 that names it and says why, not an
     // internal error. A caller that hung up gets the error as it is.
-    const reason = options.signal?.aborted ? null : unreachableReason(error);
-    if (reason) {
+    // "Could not be reached" only when the request was never sent; else the
+    // service may have received it, and a write sent again may run twice.
+    const failure = options.signal?.aborted ? null : unreachableReason(error);
+    if (failure) {
       throw new ConnectionRequestError(
-        `${url.host} could not be reached: ${reason}.`,
+        failure.maybeSent
+          ? `${url.host} did not answer: ${failure.reason}. The request may have been received.`
+          : `${url.host} could not be reached: ${failure.reason}. The request was not sent.`,
         503,
       );
     }
@@ -509,32 +513,44 @@ export async function send(
   return clean(answer, callable, config, sent);
 }
 
-/** Network error codes (Node and undici) and what they say about the service. */
-const NETWORK_CODES: Record<string, string> = {
+/**
+ * Network error codes (Node and undici) that fire before the request is
+ * sent: the service never saw it.
+ */
+const NOT_SENT_CODES: Record<string, string> = {
   UND_ERR_CONNECT_TIMEOUT: "no connection within the connect timeout",
-  ETIMEDOUT: "the connection timed out",
   ECONNREFUSED: "the connection was refused",
-  ECONNRESET: "the connection was reset",
-  EPIPE: "the connection was closed",
-  UND_ERR_SOCKET: "the connection was closed",
-  UND_ERR_CLOSED: "the connection was closed",
   EHOSTUNREACH: "the host is unreachable",
   ENETUNREACH: "the network is unreachable",
   ENOTFOUND: "its name does not resolve",
   EAI_AGAIN: "its name lookup failed",
-  UND_ERR_HEADERS_TIMEOUT: "no answer in time",
-  UND_ERR_BODY_TIMEOUT: "no answer in time",
   ERR_TLS_CERT_ALTNAME_INVALID: "its TLS certificate does not match",
   CERT_HAS_EXPIRED: "its TLS certificate has expired",
 };
 
 /**
- * Why a transport error means the service was not reached or did not answer,
- * or null when it is something else (a header the HTTP client refused, a
- * blocked address). Reads `fetch failed` and its causes, and the abort of
- * the request timeout.
+ * Network error codes that may fire after the request was sent: the service
+ * may have received it (and carried out a write).
  */
-export function unreachableReason(error: unknown): string | null {
+const MAYBE_SENT_CODES: Record<string, string> = {
+  ETIMEDOUT: "the connection timed out",
+  ECONNRESET: "the connection was reset",
+  EPIPE: "the connection was closed",
+  UND_ERR_SOCKET: "the connection was closed",
+  UND_ERR_CLOSED: "the connection was closed",
+  UND_ERR_HEADERS_TIMEOUT: "no answer in time",
+  UND_ERR_BODY_TIMEOUT: "no answer in time",
+};
+
+/**
+ * Why a transport error means the service was not reached or did not answer,
+ * and whether the request may have reached it; null when it is something
+ * else (a header the HTTP client refused, a blocked address). Reads `fetch
+ * failed` and its causes, and the abort of the request timeout.
+ */
+export function unreachableReason(
+  error: unknown,
+): { reason: string; maybeSent: boolean } | null {
   const seen = new Set<unknown>();
   const queue: unknown[] = [error];
   while (queue.length > 0) {
@@ -547,11 +563,17 @@ export function unreachableReason(error: unknown): string | null {
       cause?: unknown;
       errors?: unknown;
     };
-    if (typeof code === "string" && NETWORK_CODES[code]) {
-      return `${NETWORK_CODES[code]} (${code})`;
+    if (typeof code === "string" && NOT_SENT_CODES[code]) {
+      return { reason: `${NOT_SENT_CODES[code]} (${code})`, maybeSent: false };
+    }
+    if (typeof code === "string" && MAYBE_SENT_CODES[code]) {
+      return { reason: `${MAYBE_SENT_CODES[code]} (${code})`, maybeSent: true };
     }
     if (name === "AbortError" || name === "TimeoutError") {
-      return "no answer within the request timeout";
+      return {
+        reason: "no answer within the request timeout",
+        maybeSent: true,
+      };
     }
     queue.push(cause);
     if (Array.isArray(errors)) queue.push(...errors);

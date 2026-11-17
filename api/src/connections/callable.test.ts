@@ -886,7 +886,7 @@ describe("no secret in any answer", () => {
     expect(error).toBeInstanceOf(ConnectionRequestError);
     expect((error as ConnectionRequestError).status).toBe(503);
     expect((error as Error).message).toBe(
-      "probo.example.com could not be reached: no connection within the connect timeout (UND_ERR_CONNECT_TIMEOUT).",
+      "probo.example.com could not be reached: no connection within the connect timeout (UND_ERR_CONNECT_TIMEOUT). The request was not sent.",
     );
   });
 
@@ -900,13 +900,28 @@ describe("no secret in any answer", () => {
         token: KEY,
       }),
       type("custom_api"),
-      { method: "GET", path: "/" },
+      { method: "POST", path: "/tasks", body: { text: "call back" } },
     ).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ConnectionRequestError);
     expect((error as ConnectionRequestError).status).toBe(503);
-    expect((error as Error).message).toContain(
-      "x.example.com could not be reached",
+    // A write that timed out may have run: never "could not be reached".
+    expect((error as Error).message).toBe(
+      "x.example.com did not answer: no answer within the request timeout. The request may have been received.",
     );
+  });
+
+  it("says a reset or headers timeout may have been received", () => {
+    for (const code of [
+      "ECONNRESET",
+      "UND_ERR_SOCKET",
+      "UND_ERR_HEADERS_TIMEOUT",
+    ]) {
+      const cause = Object.assign(new Error(code), { code });
+      expect(
+        unreachableReason(new TypeError("fetch failed", { cause }))?.maybeSent,
+        code,
+      ).toBe(true);
+    }
   });
 
   it("reads a network code from a nested cause and an AggregateError", () => {
@@ -917,7 +932,10 @@ describe("no secret in any answer", () => {
       unreachableReason(
         new TypeError("fetch failed", { cause: new AggregateError([refused]) }),
       ),
-    ).toBe("the connection was refused (ECONNREFUSED)");
+    ).toEqual({
+      reason: "the connection was refused (ECONNREFUSED)",
+      maybeSent: false,
+    });
     expect(
       unreachableReason(new TypeError("Headers.append: bad value")),
     ).toBeNull();
