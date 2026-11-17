@@ -11,6 +11,7 @@
 import {
   createHmac,
   createPublicKey,
+  randomUUID,
   timingSafeEqual,
   verify as verifySignature,
   type KeyObject,
@@ -281,6 +282,20 @@ function declaredRsa(
  * An RSA-SHA256 signature of the raw body, by any declared key, or the
  * declared test ping (answered whatever its signature, with no payload).
  */
+/** Whether a delivery is the declared (unsigned) test ping. */
+export function isDeclaredTestNotification(
+  declaration: DeclaredWebhookVerification | null,
+  headers: Record<string, string | string[] | undefined>,
+): boolean {
+  if (declaration?.scheme !== "rsa-sha256") return false;
+  const test = declaration.testNotification;
+  return Boolean(
+    test &&
+    header(headers, test.header)?.trim().toLowerCase() ===
+      test.value.toLowerCase(),
+  );
+}
+
 function verifyRsa(
   declaration: DeclaredRsaVerification,
   options: {
@@ -289,13 +304,17 @@ function verifyRsa(
   },
 ): WebhookVerificationResult {
   const { payload, headers } = options;
-  const test = declaration.testNotification;
-  if (
-    test &&
-    header(headers, test.header)?.trim().toLowerCase() ===
-      test.value.toLowerCase()
-  ) {
-    return { valid: true, event: { type: test.eventType } };
+  if (isDeclaredTestNotification(declaration, headers)) {
+    // Unsigned, so never keyed by a header a forger chooses: a `test:` id
+    // can not take a real delivery's (flow, event id) slot. The box lane
+    // names it `test:<delivery id>` (SandboxedConnector), as in-process.
+    return {
+      valid: true,
+      event: {
+        type: declaration.testNotification!.eventType,
+        id: `test:${randomUUID()}`,
+      },
+    };
   }
   const presented = header(headers, declaration.signatureHeader);
   if (!presented) {

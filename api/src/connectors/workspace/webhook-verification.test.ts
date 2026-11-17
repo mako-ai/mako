@@ -495,3 +495,76 @@ void test("an event id comes from a declared header, one path, or several joined
     assert.equal(got.eventIdHeader, undefined, JSON.stringify(bad));
   }
 });
+
+void test("a forged Wise test ping can not take a real delivery's event id", async () => {
+  const { SandboxedConnector } = await import("./SandboxedConnector");
+  const fixtures =
+    await import("../../../../connectors/wise/fixtures/webhook-events.mjs");
+  const wise = await folderSpec("wise");
+  const testKey = fixtures.TEST_WEBHOOK_KEYS.publicKey;
+  const wiseSpec = {
+    ...wise,
+    mako: {
+      ...wise.mako,
+      webhooks: {
+        ...wise.mako.webhooks,
+        verification: {
+          ...wise.mako.webhooks.verification,
+          publicKeys: [testKey],
+        },
+      },
+    },
+  };
+  class SpecWise extends SandboxedConnector {
+    constructor() {
+      super({
+        _id: "665f00000000000000000002",
+        workspaceId: "ws1",
+        name: "Wise",
+        type: "ws:wise",
+        config: {},
+      } as never);
+      this.loaded = { slug: "wise", spec: wiseSpec, entities: [] } as never;
+    }
+  }
+  const connector = new SpecWise();
+  const declaration = declaredWebhookVerification(wiseSpec)!;
+  const identify = (d: {
+    payload: string;
+    headers: Record<string, string>;
+  }) => {
+    const result = verifyDeclaredWebhook(declaration, d);
+    assert.ok(result.valid);
+    return connector.webhookEventIdentity(result.event, d.payload, d.headers);
+  };
+
+  const [real] = fixtures
+    .buildDeliveries()
+    .filter((d: { name: string }) => d.name === "valid");
+  const realId = identify(real).eventId;
+  assert.equal(realId, real.headers["x-delivery-id"]);
+
+  // The same delivery id on an unsigned ping: keyed apart, never equal.
+  const forged = {
+    payload: "{}",
+    headers: {
+      "x-test-notification": "true",
+      "x-delivery-id": real.headers["x-delivery-id"],
+    },
+  };
+  const ping = identify(forged);
+  assert.equal(ping.eventId, `test:${real.headers["x-delivery-id"]}`);
+  assert.notEqual(ping.eventId, realId);
+  // Without a delivery id it is still a `test:` id.
+  const bare = identify({
+    payload: "{}",
+    headers: { "x-test-notification": "TRUE" },
+  });
+  assert.match(bare.eventId, /^test:/);
+  // A delivery that is not a ping keeps its plain header id.
+  assert.equal(
+    connector.webhookEventIdentity({}, "{}", { "x-delivery-id": "d-2" })
+      .eventId,
+    "d-2",
+  );
+});

@@ -78,6 +78,7 @@ import {
 import {
   declaredEventId,
   declaredWebhookIdentity,
+  isDeclaredTestNotification,
   declaredWebhookVerification,
   valueAtPath,
   verifyDeclaredWebhook,
@@ -1303,6 +1304,30 @@ export class SandboxedConnector extends BaseConnector {
     const identity = declaredWebhookIdentity(this.loaded?.spec);
     const { eventTypePath } = identity;
     const e = event as { id?: unknown; event?: { id?: unknown } } | null;
+    // An unsigned test ping never takes a declared id: anyone can send one,
+    // so `x-delivery-id` alone would let it claim a real delivery's slot
+    // and get the real one dropped as a duplicate. `test:<id>`, as in-process.
+    if (
+      isDeclaredTestNotification(
+        declaredWebhookVerification(this.loaded?.spec),
+        headers,
+      )
+    ) {
+      const deliveryId = identity.eventIdHeader
+        ? declaredEventId(
+            { eventIdHeader: identity.eventIdHeader },
+            undefined,
+            headers,
+          )
+        : undefined;
+      return {
+        eventId: deliveryId
+          ? `test:${deliveryId}`
+          : typeof e?.id === "string" && e.id.startsWith("test:")
+            ? e.id
+            : `test:${createHash("sha1").update(rawBody, "utf8").digest("hex")}`,
+      };
+    }
     const eventId =
       declaredEventId(identity, event, headers) ??
       (typeof e?.id === "string" && e.id ? e.id : undefined) ??
