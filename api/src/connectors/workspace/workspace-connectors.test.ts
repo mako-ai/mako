@@ -228,6 +228,40 @@ describe("a connector pushed to the workspace repo", () => {
     expect(missing.ok).toBe(false);
   }, 120_000);
 
+  it("offers a query connector's incremental mode before any query exists", async () => {
+    // A GraphQL folder's queries live on the flow: the flow form asks the
+    // catalog for the mode before the connector has a single entity.
+    await ConnectorDefinition.create({
+      workspaceId: new Types.ObjectId(WS),
+      slug: "graphql",
+      sha: "s",
+      sourceSha: "s",
+      entities: [],
+      spec: {
+        mako: {
+          name: "graphql",
+          version: "1.0.0",
+          entities: {},
+          queryEntities: { source: "flow", incremental: "client-filter" },
+        },
+      },
+    });
+    await ConnectorDefinition.create({
+      workspaceId: new Types.ObjectId(WS),
+      slug: "plain",
+      sha: "s",
+      sourceSha: "s",
+      entities: ["rows"],
+      spec: {
+        mako: { name: "plain", version: "1.0.0", entities: { rows: {} } },
+      },
+    });
+    const catalog = await listWorkspaceConnectors(WS);
+    const bySlug = Object.fromEntries(catalog.map(c => [c.type, c]));
+    expect(bySlug["ws:graphql"].queryEntitiesIncremental).toBe("client-filter");
+    expect(bySlug["ws:plain"].queryEntitiesIncremental).toBeUndefined();
+  });
+
   it("cannot be seen or used by another workspace", async () => {
     await push({
       "connectors/acme/connector.yaml": "runtime: node\n",

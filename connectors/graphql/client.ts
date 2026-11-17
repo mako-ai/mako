@@ -115,6 +115,47 @@ function v4Blocked(host: string): boolean {
   });
 }
 
+/** An IPv6 address's 8 groups, `::` expanded; null when it is not one. */
+function v6Groups(host: string): number[] | null {
+  const [head, tail, ...rest] = host.split("::");
+  if (rest.length > 0) return null;
+  const parse = (part: string | undefined) =>
+    part ? part.split(":").map(g => parseInt(g, 16)) : [];
+  const left = parse(head);
+  const right = parse(tail);
+  if (tail === undefined && left.length !== 8) return null;
+  const groups = [
+    ...left,
+    ...new Array(8 - left.length - right.length).fill(0),
+    ...right,
+  ];
+  return groups.length === 8 &&
+    groups.every(g => Number.isInteger(g) && g >= 0 && g <= 0xffff)
+    ? groups
+    : null;
+}
+
+/**
+ * The IPv4 address an IPv6 literal carries in its last 32 bits: mapped
+ * (`::ffff:a.b.c.d`), compatible (`::a.b.c.d`) or NAT64 (`64:ff9b::`).
+ * Node writes them in hex (`::ffff:a9fe:a9fe`).
+ */
+function embeddedV4(host: string): string | null {
+  const groups = v6Groups(host);
+  if (!groups) return null;
+  const zero = (from: number, to: number) =>
+    groups.slice(from, to).every(g => g === 0);
+  const mapped = zero(0, 5) && (groups[5] === 0xffff || groups[5] === 0);
+  const nat64 = groups[0] === 0x64 && groups[1] === 0xff9b && zero(2, 6);
+  if (!mapped && !nat64) return null;
+  return [
+    groups[6] >> 8,
+    groups[6] & 0xff,
+    groups[7] >> 8,
+    groups[7] & 0xff,
+  ].join(".");
+}
+
 /**
  * The endpoint, checked: http or https, never a cloud metadata name or a
  * private or link-local IP literal.
@@ -129,14 +170,21 @@ export function checkEndpoint(endpoint: string): URL {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error(`The GraphQL endpoint must be http or https: ${endpoint}`);
   }
-  const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  // A trailing dot names the same host to DNS (`metadata.google.internal.`).
+  const host = url.hostname
+    .replace(/^\[|\]$/g, "")
+    .toLowerCase()
+    .replace(/\.+$/, "");
   const metadata =
     host === "metadata" ||
     host === "metadata.google.internal" ||
     host.endsWith(".internal");
   const v6Blocked =
     host.includes(":") &&
-    (/^f[cd]/.test(host) || /^fe[89ab]/.test(host) || host === "::");
+    (/^f[cd]/.test(host) ||
+      /^fe[89ab]/.test(host) ||
+      host === "::" ||
+      v4Blocked(embeddedV4(host) ?? ""));
   if (metadata || v4Blocked(host) || v6Blocked) {
     throw new Error(
       `The GraphQL endpoint points at a private or metadata address: ${host}`,

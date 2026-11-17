@@ -393,3 +393,49 @@ void test("the cassettes hold no credential", () => {
     assert.doesNotMatch(text, /gql_test_|Bearer |admin-secret/i, file);
   }
 });
+
+void test("the endpoint check refuses metadata names and private IPs in any spelling", async () => {
+  // Through `check`, as a box runs it: the refusal comes before any request.
+  const status = async (endpoint: string) =>
+    (await runFolderCommand("check", { config: { endpoint } })).messages.find(
+      m => m.type === "CONNECTION_STATUS",
+    )?.connectionStatus;
+  for (const url of [
+    "http://metadata.google.internal/",
+    "http://metadata.google.internal./",
+    "http://169.254.169.254/",
+    "http://10.0.0.1/",
+    "http://[::ffff:169.254.169.254]/",
+    "http://[::ffff:10.0.0.1]/",
+    "http://[::a9fe:a9fe]/",
+    "http://[64:ff9b::a9fe:a9fe]/",
+    "http://[fd00::1]/",
+  ]) {
+    const result = await status(url);
+    assert.equal(result?.status, "FAILED", url);
+    assert.match(result?.message ?? "", /private or metadata address/, url);
+  }
+  // A public name passes the check and fails later, on the network.
+  const open = await status("http://[2001:db8::1]:9/graphql");
+  assert.doesNotMatch(open?.message ?? "", /private or metadata address/);
+});
+
+void test("an unknown query entity fails the read, even with no query at all", async () => {
+  // In-process throws "Query configuration '<entity>' not found"; the box
+  // must not answer 0 rows instead (a probe on a connection with no flow).
+  for (const config of [
+    { endpoint: CONFIG.endpoint },
+    { ...CONFIG, queries: FLOW_QUERIES.slice(0, 1) },
+  ]) {
+    const box = boxed(BoxlessGraphql, config);
+    await assert.rejects(
+      box.fetchEntityChunk({
+        entity: "no_such_query",
+        maxIterations: 1,
+        singleChunk: true,
+        onBatch: async () => {},
+      } as any),
+      /has no entity "no_such_query"/,
+    );
+  }
+});

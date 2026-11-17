@@ -912,10 +912,20 @@ export class SandboxedConnector extends BaseConnector {
     // a flow whose `entityFilter` points at an entity a later push renamed or
     // removed would otherwise report a successful sync of zero rows forever.
     const declared = this.getAvailableEntities();
-    if (declared.length > 0 && !declared.includes(options.entity)) {
+    // A connector whose entities are queries knows them all from the config:
+    // an empty list means no query, never "anything goes".
+    const queryEntities = Boolean(
+      (this.loaded?.spec?.mako as any)?.queryEntities,
+    );
+    if (
+      (declared.length > 0 || queryEntities) &&
+      !declared.includes(options.entity)
+    ) {
       throw new Error(
         `The connector "${this.slug}" has no entity "${options.entity}". ` +
-          `It offers: ${declared.join(", ")}.`,
+          (declared.length > 0
+            ? `It offers: ${declared.join(", ")}.`
+            : "It offers none: its entities are queries, and this connection or flow has none."),
       );
     }
 

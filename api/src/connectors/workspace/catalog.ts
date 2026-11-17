@@ -52,7 +52,19 @@ export interface WorkspaceConnectorSummary {
   };
   hasIcon: boolean;
   source: "workspace";
+  /**
+   * The incremental mode every query entity shares, from the indexed spec
+   * (`mako.queryEntities.incremental`). It holds before any query exists,
+   * which is when the flow form asks (GraphQL's queries live on the flow).
+   */
+  queryEntitiesIncremental?: "native" | "client-filter" | "created-anchor";
 }
+
+const INCREMENTAL_MODES = new Set([
+  "native",
+  "client-filter",
+  "created-anchor",
+]);
 
 /** Every connector this workspace ships, for the catalog the picker renders. */
 export async function listWorkspaceConnectors(
@@ -107,6 +119,9 @@ export async function listWorkspaceConnectors(
         : {}),
       hasIcon: row.hasIcon === true,
       source: "workspace" as const,
+      ...(INCREMENTAL_MODES.has(mako.queryEntities?.incremental)
+        ? { queryEntitiesIncremental: mako.queryEntities.incremental }
+        : {}),
     };
   });
 }
