@@ -23,6 +23,10 @@ import { Types } from "mongoose";
 import { ProgressReporter } from "./progress-reporter";
 import axios from "axios";
 import { loggers } from "../logging";
+import {
+  destinationFallbackSince,
+  pollOverlapMsFromEnv,
+} from "../sync-cdc/poll-cursor";
 import { LEGACY_ENGINE_REMOVED } from "../services/flow-triggers.service";
 import {
   SandboxedConnector,
@@ -149,6 +153,13 @@ function camelToSnake(str: string): string {
   return str.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
 }
 
+/** A destination error that means the table does not exist (yet). */
+export function isMissingTableError(error: unknown): boolean {
+  return /not found|does not exist|doesn't exist|no such table|unknown table/i.test(
+    String(error ?? ""),
+  );
+}
+
 /**
  * Get per-entity table name for connector -> SQL destinations.
  * Sub-types use snake_case: activities:Call → call_activities,
@@ -203,6 +214,13 @@ export interface SyncChunkOptions {
    * Absent: the historical behaviour (poll anchor on the first chunk).
    */
   backfillFetch?: { mode: "full" } | { mode: "incremental"; since: string };
+  /**
+   * Poll-owned cursor of a scheduled incremental poll, resolved once per
+   * entity and run by sync-cdc/poll-cursor.ts. `since` (when a poll or
+   * backfill stamp exists) replaces the destination anchor; `overlapMs` is
+   * subtracted from the destination fallback too.
+   */
+  pollCursor?: { since?: string; overlapMs?: number };
   entityPartitioning?: {
     type?: "time" | "ingestion";
     field: string;
@@ -455,15 +473,17 @@ async function performSyncChunkSql(
     },
   });
 
-  // Incremental: get last sync date from destination table.
+  // Incremental poll anchor (first chunk only; the connector carries its
+  // cursor in `state` for later chunks).
   //
-  // Historically skipped for CDC because CDC runs were always full webhook
-  // backfills. Under the unified trigger model a scheduled CDC flow polls
-  // with syncMode=incremental, and without an anchor every poll would
-  // re-fetch the entire entity. The CDC live table carries the same
-  // _syncedAt column, so anchor there too. Note: incremental CDC polls are
-  // upsert-only; deletes are reconciled by the periodic full backfill
-  // (backfillSchedule), not by polls.
+  // The anchor is the poll's own cursor (sync-cdc/poll-cursor.ts): the start
+  // of the last completed poll or backfill run of this entity, minus an
+  // overlap. It used to be MAX(_syncedAt) of the live table, Mako's write
+  // time, which webhook writes advance too: a change a webhook missed before
+  // the latest webhook write was never polled again. Without a stamp on
+  // record, the destination is the fallback, on the source timestamp first.
+  // Incremental CDC polls are upsert-only; deletes are reconciled by the
+  // periodic full backfill (backfillSchedule), not by polls.
   const backfillFetch = options.backfillFetch;
   const anchorIncremental =
     !backfillFetch &&
@@ -483,7 +503,21 @@ async function performSyncChunkSql(
       }
     }
   }
+  const pollSince = options.pollCursor?.since
+    ? new Date(options.pollCursor.since)
+    : undefined;
+  const hasPollSince = Boolean(pollSince && !Number.isNaN(pollSince.getTime()));
   if (anchorIncremental) {
+    const overlapMs = options.pollCursor?.overlapMs ?? pollOverlapMsFromEnv();
+    const overlapMin = Math.round(overlapMs / 60_000);
+    // The destination is always asked first: an empty or missing live table
+    // (dropped, or the flow pointed at a new table) needs a full fetch even
+    // when a poll cursor is on record, or older history never arrives.
+    let destination:
+      | { kind: "rows"; maxSyncedAt: string }
+      | { kind: "empty"; reason: string }
+      | { kind: "unknown"; reason: string };
+    let maxOf: ((column: string) => Promise<string | undefined>) | undefined;
     try {
       const { getMaxTrackingValue } =
         await import("../services/destination-writer.service");
@@ -492,27 +526,74 @@ async function performSyncChunkSql(
       const destConn = await DatabaseConnection.findOne(
         inWorkspace(tableDestination.connectionId, options.workspaceId),
       );
-      if (destConn) {
-        const result = await getMaxTrackingValue(
-          destConn,
-          entityTableName,
-          "_syncedAt",
-          tableDestination.schema,
-          tableDestination.database,
-        );
-        if (result.success && result.maxValue) {
-          lastSyncDate = new Date(result.maxValue);
-          logger?.log(
-            "info",
-            `Incremental from SQL: syncing ${entity} after ${lastSyncDate.toISOString()}`,
+      if (!destConn) {
+        destination = { kind: "unknown", reason: "destination not found" };
+      } else {
+        const probe = (column: string) =>
+          getMaxTrackingValue(
+            destConn,
+            entityTableName,
+            column,
+            tableDestination.schema,
+            tableDestination.database,
           );
+        maxOf = async column => {
+          const r = await probe(column);
+          return r.success ? r.maxValue : undefined;
+        };
+        const synced = await probe("_syncedAt");
+        if (synced.success) {
+          destination = synced.maxValue
+            ? { kind: "rows", maxSyncedAt: synced.maxValue }
+            : { kind: "empty", reason: "the live table is empty" };
+        } else if (isMissingTableError(synced.error)) {
+          destination = { kind: "empty", reason: "the live table is missing" };
+        } else {
+          destination = { kind: "unknown", reason: String(synced.error) };
         }
       }
     } catch (err) {
+      destination = { kind: "unknown", reason: String(err) };
+    }
+
+    if (destination.kind === "empty") {
+      logger?.log(
+        "info",
+        `Incremental poll: ${destination.reason} for ${entity}; fetching everything`,
+      );
+    } else if (hasPollSince && pollSince) {
+      lastSyncDate = pollSince;
+      if (destination.kind === "unknown") {
+        logger?.log(
+          "warn",
+          `Could not read the destination for ${entity} (${destination.reason}); using the poll cursor`,
+        );
+      }
+      logger?.log(
+        "info",
+        `Incremental poll: syncing ${entity} updated since ${pollSince.toISOString()} (poll cursor)`,
+      );
+    } else if (destination.kind === "unknown") {
       logger?.log(
         "warn",
-        `Could not get incremental anchor from SQL destination: ${err}`,
+        `Could not get incremental anchor from SQL destination: ${destination.reason}`,
       );
+    } else if (maxOf) {
+      const maxSourceTs = await maxOf("_mako_source_ts").catch(() => undefined);
+      const fallback = destinationFallbackSince({
+        maxSourceTs,
+        maxSyncedAt: maxSourceTs ? undefined : destination.maxSyncedAt,
+        overlapMs,
+      });
+      if (fallback) {
+        lastSyncDate = fallback.since;
+        logger?.log(
+          fallback.column === "_syncedAt" ? "warn" : "info",
+          fallback.column === "_syncedAt"
+            ? `Incremental poll: ${entity} has no _mako_source_ts; anchoring on MAX(_syncedAt) minus ${overlapMin} min: ${fallback.since.toISOString()}`
+            : `Incremental poll: no poll cursor on record for ${entity}; anchoring on MAX(_mako_source_ts) minus ${overlapMin} min: ${fallback.since.toISOString()}`,
+        );
+      }
     }
   }
 
