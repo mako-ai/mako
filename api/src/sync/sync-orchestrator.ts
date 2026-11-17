@@ -12,7 +12,11 @@ import {
   Flow,
   ITableDestination,
 } from "../database/workspace-schema";
-import { markAbsentColumns, stripUndefined } from "../sync-cdc/sparse-rows";
+import {
+  markAbsentColumns,
+  stripUndefined,
+  withPolledDeleteState,
+} from "../sync-cdc/sparse-rows";
 import { nestedValuesAsJsonText } from "./bulk-buffer-json";
 import {
   buildParquetFromBatches,
@@ -704,12 +708,7 @@ async function performSyncChunkSql(
             // Mongo bulk buffer from storing them as null (sparse-rows.ts).
             const keyed = stripUndefined(normalizePayloadKeys(record));
             const normalized = {
-              ...keyed,
-              // A record a source read returns is live unless it says
-              // otherwise. Carry the delete state explicitly: an absent key
-              // would keep a stale soft-delete time on a revived row
-              // (sparse-rows.ts), and deleted_at derives from this one.
-              _mako_deleted_at: keyed._mako_deleted_at ?? null,
+              ...withPolledDeleteState(keyed),
               _dataSourceId: sourceConnection.id,
               _dataSourceName: sourceConnection.name,
               _syncedAt: new Date(),
