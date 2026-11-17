@@ -8,8 +8,11 @@
  *    copy of the live flow's verified deliveries. Its full-history backfill
  *    starts at once.
  * 2. Parity checks (parity.service.ts), hourly and on demand.
- * 3. `switchFlowRuntime(…, "boxed")` once the gate is open: the live flow
- *    keeps its id, dataset, cursors and vendor subscription.
+ * 3. `switchFlowRuntime(…, "boxed")` once the gate is open: the shadow is
+ *    pointed at the live dataset and takes the live triggers (poll cadence
+ *    and resync cron); the built-in flow is paused (poll, webhook and resync
+ *    off, crons kept for the way back), and its URL forwards each verified
+ *    delivery to the twin. The vendor subscription does not change.
  * 4. `switchFlowRuntime(…, "builtin")` goes back in one call, any time.
  *
  * Every write goes through `flows/<slug>.yml` first (commitFlowFile), as the
@@ -29,7 +32,7 @@ import { listFlowDefinitionsAtMain } from "../../services/flow-sync.service";
 import { hasWebhookTrigger } from "../../services/flow-triggers.service";
 import { cdcBackfillService } from "../../sync-cdc/backfill";
 import { sourceConnectionManager } from "../../sync/database-data-source-manager";
-import { relaneBoxEventsToInline } from "./relane";
+import { moveBoxEventsToFlow } from "./relane";
 import { loadConnectorDefinition } from "../workspace/resolver";
 import { isWorkspaceConnectorType } from "../workspace/SandboxedConnector";
 import { connectorWebhookBatchesEnabled } from "../workspace/webhook-config";
@@ -38,13 +41,11 @@ import { BOXED_CAPABLE_TYPES, connectorBoxedSwitchEnabled } from "./config";
 import { parityGate, shadowOf, type ParityGate } from "./parity.service";
 import {
   approvalBinding,
-  boxedTwinFor,
   isTwinApproved,
   configForTwin,
   twinPin,
   twinSlug,
 } from "./runtime";
-import { cdcSyncStateService } from "../../sync-cdc/sync-state";
 
 /**
  * An owner/admin's approval of exactly this: the kind, the twin and the
@@ -68,10 +69,9 @@ export function newApproval(
 }
 
 /**
- * A switch never hands one runtime's cursor to the other. Refused while a
- * run is in flight (its chunk state is the old runtime's), and every
- * stored backfill cursor is dropped, so a resumed backfill restarts its
- * entities from the start; the merge by key absorbs the overlap.
+ * A switch changes which flow writes the live dataset. Each flow keeps its
+ * own runtime and cursors, so none crosses; but two writers must never
+ * race, so a switch waits until neither flow has a run in flight.
  */
 async function assertNoRunInFlight(flow: IFlow): Promise<void> {
   const running = await FlowExecution.countDocuments({
@@ -80,29 +80,9 @@ async function assertNoRunInFlight(flow: IFlow): Promise<void> {
   });
   if (running > 0 || flow.backfillState?.status === "running") {
     throw new BoxedRuntimeError(
-      "A run of this flow is in flight; its cursor belongs to the current runtime. Switch when it ends (flow_status).",
+      "A run of this flow is in flight; two flows must never write the live dataset at once. Switch when it ends (flow_status).",
     );
   }
-}
-
-/** The runtime the flow's runs use now (runtime.ts boxedTwinFor). */
-async function effectiveRuntime(flow: IFlow): Promise<"builtin" | "boxed"> {
-  const type = (
-    (await SourceConnection.findOne({
-      _id: flow.dataSourceId,
-      workspaceId: flow.workspaceId,
-    })
-      .select("type")
-      .lean()) as { type?: string } | null
-  )?.type;
-  return type && boxedTwinFor(flow, type) ? "boxed" : "builtin";
-}
-
-async function dropBackfillCursors(flow: IFlow): Promise<void> {
-  await cdcSyncStateService.clearBackfillCursorsForFlow({
-    workspaceId: String(flow.workspaceId),
-    flowId: String(flow._id),
-  });
 }
 
 type FlowDoc = InstanceType<typeof Flow>;
@@ -348,15 +328,36 @@ export async function stopShadow(input: {
 export interface SwitchResult {
   runtime: "builtin" | "boxed";
   changed: boolean;
+  /** The flow writing the live dataset now. */
+  writerFlowId: string;
   gate: ParityGate | null;
   forced: boolean;
-  /** Box-lane events handed back to the built-in connector. */
+  /** Forwarded events handed back to the built-in flow on a switch back. */
   relaned: number;
 }
 
+/** The twin flow a paused built-in flow was switched to, or null. */
+async function promotedTwinOf(live: IFlow): Promise<FlowDoc | null> {
+  if (!live.boxedSwitch?.to) return null;
+  return (await Flow.findOne({
+    _id: live.boxedSwitch.to,
+    workspaceId: live.workspaceId,
+  })) as FlowDoc | null;
+}
+
 /**
- * Switch a live flow to its folder twin, or back. Boxed needs the parity
- * gate open, unless `force`. Built-in is always allowed and takes one call.
+ * Switch a built-in flow to its folder twin, or back. Name the built-in
+ * (live) flow.
+ *
+ * Boxed: the gate must be open (or `force`). The shadow becomes the writer:
+ * it points at the live dataset, takes the live poll cadence and resync
+ * cron, drops `shadow_of` and gains `replaces`. The built-in flow is paused
+ * (poll, webhook and resync off; their crons kept in `boxedSwitch`), and
+ * its URL forwards each verified delivery to the twin.
+ *
+ * Built-in: one call. The twin goes back to a stopped shadow on its own
+ * dataset, its forwarded events go to the built-in flow's inline lane, and
+ * the built-in flow gets its triggers back.
  */
 export async function switchFlowRuntime(input: {
   flow: FlowDoc;
@@ -365,47 +366,32 @@ export async function switchFlowRuntime(input: {
   userId?: string;
   now?: Date;
 }): Promise<SwitchResult> {
-  const { flow, target } = input;
-  if (flow.shadowOf) {
-    throw new BoxedRuntimeError(
-      "A shadow is always boxed; switch its live flow instead",
-    );
+  const { flow: live, target } = input;
+  if (live.shadowOf || live.replaces) {
+    throw new BoxedRuntimeError("Name the built-in flow; this one is its twin");
   }
-  // What the flow last RAN on, not what its file says: a `runtime: boxed`
-  // with no standing approval ran built-in, and its cursors are built-in.
-  const current = await effectiveRuntime(flow);
-  const setting = flow.connectorRuntime === "boxed" ? "boxed" : "builtin";
 
-  if (target === "builtin") {
-    if (current === "boxed") {
-      // `force` switches back even mid-run: the way out stays one call. The
-      // run itself stops at its next chunk (applyFlowRuntimeById).
-      if (!input.force) await assertNoRunInFlight(flow);
-      await dropBackfillCursors(flow);
-    }
-    if (setting !== "builtin" || flow.boxedApproval) {
-      flow.connectorRuntime = undefined;
-      // Boxing again needs a fresh owner/admin approval.
-      flow.boxedApproval = undefined;
-      await commitAndSave(flow, input.userId);
-    }
-    const relaned = flow.dataSourceId
-      ? await relaneBoxEventsToInline(
-          flow._id,
-          new Types.ObjectId(String(flow.dataSourceId)),
-        )
-      : 0;
+  if (target === "builtin") return switchBack(live, input);
+
+  if (live.boxedSwitch?.to) {
     return {
-      runtime: "builtin",
-      changed: current !== "builtin" || setting !== "builtin",
+      runtime: "boxed",
+      changed: false,
+      writerFlowId: String(live.boxedSwitch.to),
       gate: null,
       forced: false,
-      relaned,
+      relaned: 0,
     };
   }
-
-  const twin = await checkTwin(flow);
-  if (hasWebhookTrigger(flow)) {
+  const shadow = (await Flow.findOne({
+    workspaceId: live.workspaceId,
+    shadowOf: live._id,
+  }).sort({ createdAt: -1 })) as FlowDoc | null;
+  if (!shadow) {
+    throw new BoxedRuntimeError("No shadow: start one with flow_shadow");
+  }
+  const twin = await checkTwin(shadow);
+  if (hasWebhookTrigger(live)) {
     if (!connectorWebhookBatchesEnabled()) {
       throw new BoxedRuntimeError(
         "The flow takes webhooks, and CONNECTOR_WEBHOOK_BATCHES is off: its deliveries would have no box lane",
@@ -417,7 +403,7 @@ export async function switchFlowRuntime(input: {
       );
     }
   }
-  const gate = await parityGate(flow, input.now, {
+  const gate = await parityGate(live, input.now, {
     slug: twin.slug,
     sourceSha: twin.pin.sourceSha,
   });
@@ -426,25 +412,164 @@ export async function switchFlowRuntime(input: {
       `The parity gate is closed: ${gate.reasons.join("; ")}`,
     );
   }
-  const approved =
-    current === "boxed" &&
-    boxedTwinFor(flow, twin.connectionType) === twin.slug &&
-    flow.boxedApproval?.sourceSha === twin.pin.sourceSha;
-  if (!approved) {
-    // A change of the code that runs: from built-in, or to other twin code.
-    // Either way no run may be in flight, and no stored cursor survives.
-    await assertNoRunInFlight(flow);
-    await dropBackfillCursors(flow);
-    flow.connectorRuntime = "boxed";
-    flow.boxedApproval = newApproval(flow, "switch", twin, input.userId);
-    await commitAndSave(flow, input.userId);
+  // Two writers must never race on the live dataset.
+  await assertNoRunInFlight(live);
+  await assertNoRunInFlight(shadow);
+
+  // 1. Pause the built-in flow, keeping its crons for the way back.
+  const webhookOn = hasWebhookTrigger(live);
+  const pausedFrom = {
+    poll: {
+      enabled: Boolean(live.schedule?.enabled),
+      cron: live.schedule?.cron,
+      timezone: live.schedule?.timezone,
+    },
+    resync: {
+      enabled: Boolean(live.backfillSchedule?.enabled),
+      cron: live.backfillSchedule?.cron,
+      timezone: live.backfillSchedule?.timezone,
+      entities: live.backfillSchedule?.entities,
+    },
+  };
+  live.boxedSwitch = {
+    to: shadow._id,
+    by: input.userId ?? "system",
+    at: new Date(),
+    ...pausedFrom,
+    webhook: webhookOn,
+  };
+  live.schedule = { ...pausedFrom.poll, enabled: false } as IFlow["schedule"];
+  live.backfillSchedule = {
+    ...pausedFrom.resync,
+    enabled: false,
+    lastRunAt: live.backfillSchedule?.lastRunAt,
+  } as IFlow["backfillSchedule"];
+  if (live.webhookConfig) live.webhookConfig.enabled = false;
+  await commitAndSave(live, input.userId);
+
+  // 2. Point the shadow at live, with the live triggers.
+  try {
+    shadow.shadowOf = undefined;
+    shadow.replaces = live._id;
+    shadow.connectorRuntime = "boxed";
+    shadow.tableDestination = plainTable(
+      live.tableDestination,
+    ) as unknown as IFlow["tableDestination"];
+    shadow.destinationDatabaseId = live.destinationDatabaseId;
+    shadow.destinationDatabaseName = live.destinationDatabaseName;
+    shadow.entityFilter = live.entityFilter;
+    shadow.entityLayouts = live.entityLayouts;
+    if (pausedFrom.poll.enabled && pausedFrom.poll.cron) {
+      shadow.schedule = { ...pausedFrom.poll } as IFlow["schedule"];
+    }
+    shadow.backfillSchedule = {
+      ...pausedFrom.resync,
+      lastRunAt: shadow.backfillSchedule?.lastRunAt,
+    } as IFlow["backfillSchedule"];
+    shadow.boxedApproval = newApproval(shadow, "switch", twin, input.userId);
+    await commitAndSave(shadow, input.userId);
+  } catch (error) {
+    // The built-in flow resumes: never leave the dataset without a writer.
+    await restoreBuiltin(live, input.userId);
+    throw error;
   }
   return {
     runtime: "boxed",
-    changed: !approved,
+    changed: true,
+    writerFlowId: String(shadow._id),
     gate,
     forced: !gate.open,
     relaned: 0,
+  };
+}
+
+function plainTable(table: IFlow["tableDestination"]) {
+  const raw =
+    table && typeof (table as { toObject?: unknown }).toObject === "function"
+      ? (
+          table as unknown as { toObject: () => Record<string, unknown> }
+        ).toObject()
+      : (table as unknown as Record<string, unknown>);
+  return { ...(raw ?? {}) };
+}
+
+async function restoreBuiltin(live: FlowDoc, userId?: string) {
+  const paused = live.boxedSwitch;
+  if (!paused) return;
+  live.schedule = {
+    enabled: Boolean(paused.poll?.enabled),
+    cron: paused.poll?.cron,
+    timezone: paused.poll?.timezone,
+  } as IFlow["schedule"];
+  live.backfillSchedule = {
+    enabled: Boolean(paused.resync?.enabled),
+    cron: paused.resync?.cron,
+    timezone: paused.resync?.timezone,
+    entities: paused.resync?.entities,
+    lastRunAt: live.backfillSchedule?.lastRunAt,
+  } as IFlow["backfillSchedule"];
+  if (live.webhookConfig) live.webhookConfig.enabled = paused.webhook;
+  live.boxedSwitch = undefined;
+  await commitAndSave(live, userId);
+}
+
+async function switchBack(
+  live: FlowDoc,
+  input: { force?: boolean; userId?: string },
+): Promise<SwitchResult> {
+  const twin = await promotedTwinOf(live);
+  if (!live.boxedSwitch?.to) {
+    return {
+      runtime: "builtin",
+      changed: false,
+      writerFlowId: String(live._id),
+      gate: null,
+      forced: false,
+      relaned: 0,
+    };
+  }
+  let relaned = 0;
+  if (twin) {
+    // `force` switches back even mid-run: the way out stays one call. The
+    // twin's run stops at its next chunk (applyFlowRuntimeById).
+    if (!input.force) await assertNoRunInFlight(twin);
+    // The twin goes back to a stopped shadow on its own dataset. A new
+    // `flow_shadow start` re-approves it and backfills from scratch.
+    twin.replaces = undefined;
+    twin.shadowOf = live._id;
+    twin.connectorRuntime = undefined;
+    twin.boxedApproval = undefined;
+    twin.tableDestination = {
+      ...plainTable(live.tableDestination),
+      schema: shadowDataset(live.tableDestination?.schema || "public"),
+    } as unknown as IFlow["tableDestination"];
+    twin.schedule = {
+      enabled: false,
+      cron: twin.schedule?.cron,
+      timezone: twin.schedule?.timezone,
+    } as IFlow["schedule"];
+    twin.backfillSchedule = {
+      enabled: false,
+      cron: twin.backfillSchedule?.cron,
+      timezone: twin.backfillSchedule?.timezone,
+    } as IFlow["backfillSchedule"];
+    await commitAndSave(twin, input.userId);
+    if (live.dataSourceId) {
+      relaned = await moveBoxEventsToFlow(
+        twin._id,
+        live._id,
+        new Types.ObjectId(String(live.dataSourceId)),
+      );
+    }
+  }
+  await restoreBuiltin(live, input.userId);
+  return {
+    runtime: "builtin",
+    changed: true,
+    writerFlowId: String(live._id),
+    gate: null,
+    forced: false,
+    relaned,
   };
 }
 
@@ -483,6 +608,25 @@ export async function runtimeStatus(flow: IFlow) {
   };
   if (flow.shadowOf) {
     return { ...base, shadowOf: String(flow.shadowOf) };
+  }
+  if (flow.replaces) {
+    // A promoted twin: it writes the replaced flow's dataset.
+    return { ...base, replaces: String(flow.replaces) };
+  }
+  if (flow.boxedSwitch?.to) {
+    // A built-in flow paused by a switch.
+    return {
+      ...base,
+      switchedTo: {
+        id: String(flow.boxedSwitch.to),
+        at: flow.boxedSwitch.at,
+        by: flow.boxedSwitch.by,
+        keptCrons: {
+          poll: flow.boxedSwitch.poll?.cron ?? null,
+          resync: flow.boxedSwitch.resync?.cron ?? null,
+        },
+      },
+    };
   }
   const shadow = await shadowOf(flow);
   if (!shadow) return { ...base, shadow: null, gate: null };

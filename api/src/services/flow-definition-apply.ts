@@ -278,6 +278,7 @@ function applyDefinitionFields(doc: IFlow, file: FlowFile): string | null {
   doc.connectorRuntime = file.runtime === "boxed" ? "boxed" : undefined;
   doc.boxedConnector = file.boxedConnector || undefined;
   doc.shadowOf = file.shadowOf ? new Types.ObjectId(file.shadowOf) : undefined;
+  doc.replaces = file.replaces ? new Types.ObjectId(file.replaces) : undefined;
 
   if (file.conflict) {
     doc.conflictConfig = {

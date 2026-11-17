@@ -26,16 +26,22 @@ export const BOXED_CAPABLE_TYPES: ReadonlySet<string> = new Set([
   "posthog",
 ]);
 
+/**
+ * The switch gate (Joan, 2026-11-17): evidence, same day, any connector.
+ * 1. A full key comparison of every entity with 0 unexplained gaps (a key
+ *    changed after the cutoff is in flight, so explained).
+ * 2. Column coverage: every live column exists in the shadow.
+ * 3. 0 new NULL rows: no row where live has a value and the shadow NULL.
+ * 4. Freshness and errors over the last 30 minutes after the backfill:
+ *    live updates the shadow also has, its lag, and no failed shadow run,
+ *    entity or webhook batch.
+ * Other value differences are reported, with samples, and do not block.
+ */
 export const PARITY_GATE = {
-  /** Live updates the shadow must have kept up with before a switch. */
-  windowMinutes: 120,
+  /** The freshness and error window, after the shadow's full backfill. */
+  windowMinutes: 30,
   /** The latest clean check must be this recent to open the gate. */
-  maxCheckAgeMinutes: 90,
-  /**
-   * Share of compared keys allowed to differ (missing on a side, or with a
-   * differing field checksum). 0: every compared row must match.
-   */
-  tolerance: 0,
+  maxCheckAgeMinutes: 60,
   /** p95 of how much later the shadow wrote a live change than live did. */
   maxLagP95Seconds: 15 * 60,
   /**
@@ -49,7 +55,7 @@ export const PARITY_GATE = {
 } as const;
 
 /** How often the scheduled parity check runs for each active shadow. */
-export const PARITY_CRON = "20 * * * *";
+export const PARITY_CRON = "*/15 * * * *";
 
 /** The Inngest event that runs one parity check (inngest/functions/connector-parity.ts). */
 export const CONNECTOR_PARITY_CHECK_EVENT = "connector/parity.check";

@@ -282,6 +282,31 @@ export interface IFlow extends Document {
    * Runtime bookkeeping, not in the file.
    */
   boxedApproval?: IBoxedApproval;
+  /**
+   * Set on a promoted twin: the built-in flow it replaced at a switch. It
+   * writes that flow's dataset and takes its webhook deliveries (forwarded
+   * from that flow's URL). Definition: `replaces:` in the file.
+   */
+  replaces?: Types.ObjectId;
+  /**
+   * Set on a built-in flow paused by a switch: the twin flow that replaced
+   * it, and the triggers to restore on a switch back (their crons kept
+   * here, since a paused flow's file says "off"). Mongo-only bookkeeping,
+   * set and cleared by an owner/admin's switch, never by a file.
+   */
+  boxedSwitch?: {
+    to: Types.ObjectId;
+    by: string;
+    at: Date;
+    poll?: { enabled: boolean; cron?: string; timezone?: string };
+    resync?: {
+      enabled: boolean;
+      cron?: string;
+      timezone?: string;
+      entities?: string[];
+    };
+    webhook: boolean;
+  };
   queries?: IFlowQuery[]; // Queries for GraphQL/PostHog connectors
   syncMode: "full" | "incremental";
   /**
@@ -536,6 +561,26 @@ const FlowSchema = new Schema<IFlow>(
       match: /^[a-z0-9][a-z0-9_-]*$/,
     },
     shadowOf: { type: Schema.Types.ObjectId, ref: "Flow" },
+    replaces: { type: Schema.Types.ObjectId, ref: "Flow" },
+    boxedSwitch: {
+      type: new Schema(
+        {
+          to: { type: Schema.Types.ObjectId, ref: "Flow" },
+          by: String,
+          at: Date,
+          poll: { enabled: Boolean, cron: String, timezone: String },
+          resync: {
+            enabled: Boolean,
+            cron: String,
+            timezone: String,
+            entities: [String],
+          },
+          webhook: Boolean,
+        },
+        { _id: false },
+      ),
+      required: false,
+    },
     boxedApproval: {
       type: new Schema(
         {

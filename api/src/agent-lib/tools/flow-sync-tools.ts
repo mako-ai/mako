@@ -345,7 +345,7 @@ export function createFlowSyncTools({
 
     flow_update: tool({
       description:
-        'Change what starts a sync — the three trigger controls: `poll` (a cron, or "off"), `webhook` ("on" / "off"; on gives the sync its webhook URL and installs or adopts the provider subscription where the connector can; polling keeps running), `resync` (a cron for the periodic full re-read, or "off"). Or, alone, `runtime`: "boxed" runs the same sync and dataset through the connection\'s folder twin in a box (needs CONNECTOR_BOXED_SWITCH and an open parity gate, see flow_shadow; `force` skips the gate), "builtin" switches back at once. Writes flows/<slug>.yml on main, then saves. Owner or admin.',
+        'Change what starts a sync — the three trigger controls: `poll` (a cron, or "off"), `webhook` ("on" / "off"; on gives the sync its webhook URL and installs or adopts the provider subscription where the connector can; polling keeps running), `resync` (a cron for the periodic full re-read, or "off"). Or, alone, `runtime` on the built-in sync: "boxed" switches it to its shadow (the connection\'s folder twin in a box): the shadow writes the live dataset with the live poll and resync crons, and the built-in sync is paused (poll, webhook and resync off, crons kept) and forwards its webhook deliveries. Needs CONNECTOR_BOXED_SWITCH and an open parity gate (flow_parity); `force` skips the gate. "builtin" switches back in one call. Writes flows/<slug>.yml on main, then saves. Owner or admin.',
       inputSchema: z.object({
         flow: flowRef,
         poll: z.string().optional().describe('Cron for polling, or "off"'),
@@ -418,6 +418,7 @@ export function createFlowSyncTools({
               runtime: switched.runtime,
               changed: switched.changed,
               forced: switched.forced,
+              writerFlowId: switched.writerFlowId,
               relanedWebhookEvents: switched.relaned,
               gate: switched.gate
                 ? { open: switched.gate.open, reasons: switched.gate.reasons }

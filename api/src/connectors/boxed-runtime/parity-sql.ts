@@ -125,6 +125,15 @@ export function buildSummarySql(input: ParityTables): string {
   // counted as behind.
   const inWindow = `NOT recent AND lp AND lts >= ${ts(input.windowStart)} AND lts < ${ts(input.cutoff)}`;
   const matched = `${inWindow} AND sp AND sts = lts`;
+  // A new NULL: live has a value, the shadow has NULL. Blocks the gate.
+  const newNull = (c: string) =>
+    `lr.${escId(c)} IS NOT NULL AND sr.${escId(c)} IS NULL`;
+  const nullCounts = input.columns.map(
+    (c, i) => `COUNTIF(${both} AND ${newNull(c)}) AS n${i}`,
+  );
+  const anyNewNull = input.columns.length
+    ? input.columns.map(c => `(${newNull(c)})`).join(" OR ")
+    : "FALSE";
   const fieldCounts = input.columns.map(
     (c, i) =>
       `COUNTIF(${both} AND ${asText("lr", c)} IS DISTINCT FROM ${asText("sr", c)}) AS d${i}`,
@@ -146,7 +155,8 @@ SELECT
   APPROX_QUANTILES(IF(${matched}, TIMESTAMP_DIFF(ssy, lsy, SECOND), NULL), 100)[SAFE_OFFSET(50)] AS w_lag_p50,
   APPROX_QUANTILES(IF(${matched}, TIMESTAMP_DIFF(ssy, lsy, SECOND), NULL), 100)[SAFE_OFFSET(95)] AS w_lag_p95${
     fieldCounts.length ? ",\n  " + fieldCounts.join(",\n  ") : ""
-  }
+  }${nullCounts.length ? ",\n  " + nullCounts.join(",\n  ") : ""},
+  COUNTIF(${both} AND (${anyNewNull})) AS new_null_rows
 FROM c`;
 }
 
@@ -221,6 +231,10 @@ export interface SummaryRow {
   };
   /** Differing rows per column, largest first, zeros left out. */
   fieldDiffs: Array<{ field: string; rows: number }>;
+  /** Rows where live has a value and the shadow NULL. */
+  newNullRows: number;
+  /** The same per column, largest first, zeros left out. */
+  newNullFields: Array<{ field: string; rows: number }>;
 }
 
 export function readSummaryRow(
@@ -257,6 +271,11 @@ export function readSummaryRow(
     },
     fieldDiffs: columns
       .map((field, i) => ({ field, rows: num(row[`d${i}`]) }))
+      .filter(d => d.rows > 0)
+      .sort((a, b) => b.rows - a.rows || a.field.localeCompare(b.field)),
+    newNullRows: num(row.new_null_rows),
+    newNullFields: columns
+      .map((field, i) => ({ field, rows: num(row[`n${i}`]) }))
       .filter(d => d.rows > 0)
       .sort((a, b) => b.rows - a.rows || a.field.localeCompare(b.field)),
   };

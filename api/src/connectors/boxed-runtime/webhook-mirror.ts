@@ -12,9 +12,16 @@
  * changes the vendor's answer or the live flow's event.
  */
 import { Types } from "mongoose";
-import { WebhookEvent } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
-import { shadowTakesWebhooks, shadowsToMirror } from "./runtime";
+import { Flow, WebhookEvent } from "../../database/workspace-schema";
+import { connectorWebhookBatchesEnabled } from "../workspace/webhook-config";
+import {
+  FLOW_RUNTIME_PROJECTION,
+  boxedTwinFor,
+  shadowTakesWebhooks,
+  shadowsToMirror,
+  type FlowRuntimeFields,
+} from "./runtime";
 
 const logger = loggers.connector();
 
@@ -73,4 +80,43 @@ export async function mirrorDeliveryToShadows(input: {
     });
   }
   return mirrored;
+}
+
+/**
+ * The twin a paused built-in flow forwards its deliveries to: the flow named
+ * in its `boxedSwitch` (Mongo-only, set by an owner/admin's switch) that
+ * names it back in `replaces`, on the same connection. Null otherwise.
+ */
+export async function forwardTargetOf(flow: {
+  _id: unknown;
+  workspaceId: unknown;
+  dataSourceId?: unknown;
+  boxedSwitch?: { to?: unknown } | null;
+}): Promise<FlowRuntimeFields | null> {
+  if (!flow.boxedSwitch?.to) return null;
+  const filter: Record<string, unknown> = {
+    _id: flow.boxedSwitch.to,
+    workspaceId: flow.workspaceId,
+    replaces: flow._id,
+    dataSourceId: flow.dataSourceId,
+  };
+  const target = (await Flow.findOne(filter)
+    .select(FLOW_RUNTIME_PROJECTION)
+    .lean()) as FlowRuntimeFields | null;
+  return target;
+}
+
+/**
+ * The lane a forwarded delivery takes: the box lane when the twin runs
+ * boxed and webhook batches are on; else inline, where the built-in code
+ * applies it (the twin runs built-in with the switch flag off).
+ */
+export function forwardLane(
+  target: FlowRuntimeFields,
+  connectionType: string,
+): "box" | "inline" {
+  return connectorWebhookBatchesEnabled() &&
+    boxedTwinFor(target, connectionType)
+    ? "box"
+    : "inline";
 }

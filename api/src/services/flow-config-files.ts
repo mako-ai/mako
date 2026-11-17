@@ -140,6 +140,8 @@ export interface FlowFile {
   boxedConnector?: string;
   /** A shadow's live flow, by id. */
   shadowOf?: string;
+  /** A promoted twin's replaced built-in flow, by id. */
+  replaces?: string;
 }
 
 /**
@@ -315,6 +317,7 @@ function renderFlowFile(flow: FlowFile, format: 1 | 2): string {
   if (flow.runtime === "boxed") doc.runtime = "boxed";
   if (flow.boxedConnector) doc.boxed_connector = flow.boxedConnector;
   if (flow.shadowOf) doc.shadow_of = flow.shadowOf;
+  if (flow.replaces) doc.replaces = flow.replaces;
 
   if (format === 2) {
     // Live updates: polling (a cron, or off) and, once a flow has had
@@ -517,6 +520,13 @@ export function parseFlowFileResult(contents: string): FlowFileParse {
       reason: `\`boxed_connector:\` must be a connector folder slug (connectors/<slug>/), not "${boxedConnector}"`,
     };
   }
+  const replaces = str(doc.replaces);
+  if (replaces && !/^[0-9a-f]{24}$/i.test(replaces)) {
+    return {
+      ok: false,
+      reason: `\`replaces:\` must be the replaced flow's id (24 hex characters), not "${replaces}"`,
+    };
+  }
   const shadowOf = str(doc.shadow_of);
   if (shadowOf && !/^[0-9a-f]{24}$/i.test(shadowOf)) {
     return {
@@ -641,6 +651,7 @@ export function parseFlowFileResult(contents: string): FlowFileParse {
     ...(runtime === "boxed" ? { runtime: "boxed" as const } : {}),
     ...(boxedConnector ? { boxedConnector } : {}),
     ...(shadowOf ? { shadowOf } : {}),
+    ...(replaces ? { replaces } : {}),
   };
   return { ok: true, file };
 }
@@ -754,5 +765,6 @@ export function flowToFile(flow: IFlow): FlowFile {
     ...(flow.connectorRuntime === "boxed" ? { runtime: "boxed" as const } : {}),
     ...(flow.boxedConnector ? { boxedConnector: flow.boxedConnector } : {}),
     ...(flow.shadowOf ? { shadowOf: flow.shadowOf.toString() } : {}),
+    ...(flow.replaces ? { replaces: flow.replaces.toString() } : {}),
   };
 }

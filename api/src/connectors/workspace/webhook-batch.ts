@@ -742,10 +742,12 @@ export async function processBoxWebhookBatch(input: {
   }
   // A shadow's events are copies of its live flow's deliveries: the
   // secret kept out of the batch is the live flow's.
-  const secret: unknown = flow.shadowOf
+  // A promoted twin's events are forwarded from the flow it replaced: same.
+  const sourceFlow = flow.shadowOf ?? flow.replaces;
+  const secret: unknown = sourceFlow
     ? (
         (await Flow.findOne({
-          _id: flow.shadowOf,
+          _id: sourceFlow,
           workspaceId: flow.workspaceId,
         })
           .select("webhookConfig.secret")

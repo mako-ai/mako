@@ -38,6 +38,7 @@ import {
 import {
   assertSafeName,
   entityReasons,
+  entityVerdict,
   parityCutoff,
   parityWindow,
 } from "./parity.service";
@@ -470,11 +471,12 @@ const spec = {
   const cutoff = new Date("2026-11-17T12:00:00Z");
   assert.equal(
     parityWindow(cutoff, new Date("2026-11-17T09:00:00Z")).coverageMinutes,
-    120,
+    30,
+    "the window is 30 min",
   );
   assert.equal(
-    parityWindow(cutoff, new Date("2026-11-17T11:15:00Z")).coverageMinutes,
-    45,
+    parityWindow(cutoff, new Date("2026-11-17T11:45:00Z")).coverageMinutes,
+    15,
   );
   assert.equal(
     parityWindow(cutoff, null).coverageMinutes,
@@ -499,6 +501,8 @@ const spec = {
     liveOnlyColumns: [],
     shadowOnlyColumns: [],
     topFields: [],
+    newNullRows: 0,
+    newNullFields: [],
     window: {
       liveRows: 5,
       matched: 5,
@@ -510,11 +514,29 @@ const spec = {
   assert.deepEqual(entityReasons(clean), []);
   assert.match(
     entityReasons({ ...clean, shadowOnly: 1 })[0],
-    /1 of 10 rows differ/,
+    /1 of 10 keys are on one side only/,
   );
   assert.match(
     entityReasons({ ...clean, liveOnlyColumns: ["x"] })[0],
-    /columns differ/,
+    /the shadow lacks 1 live column: x/,
+  );
+  assert.match(
+    entityReasons({
+      ...clean,
+      newNullRows: 2,
+      newNullFields: [{ field: "email", rows: 2 }],
+    })[0],
+    /2 rows have a value on live and NULL on the shadow \(email 2\)/,
+  );
+  // Reported, not blocking: value differences and extra shadow columns.
+  assert.deepEqual(
+    entityReasons({ ...clean, rowsDiffering: 4, shadowOnlyColumns: ["y"] }),
+    [],
+  );
+  assert.equal(
+    entityVerdict({ ...clean, rowsDiffering: 4, shadowOnlyColumns: ["y"] })
+      .notes.length,
+    2,
   );
   assert.match(
     entityReasons({

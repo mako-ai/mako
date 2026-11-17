@@ -9,8 +9,11 @@ import {
 } from "../database/workspace-schema";
 import { randomUUID } from "crypto";
 import { connectorRegistry } from "../connectors/registry";
-import { boxedWebhookConnector } from "../connectors/boxed-runtime/runtime";
-import { mirrorDeliveryToShadows } from "../connectors/boxed-runtime/webhook-mirror";
+import {
+  forwardLane,
+  forwardTargetOf,
+  mirrorDeliveryToShadows,
+} from "../connectors/boxed-runtime/webhook-mirror";
 import { isWebhookFlow } from "../services/flow-triggers.service";
 import {
   presentedWebhookToken,
@@ -94,7 +97,14 @@ router.openapi(
         return fail(c, 404, "Invalid webhook endpoint");
       }
 
-      if (!flow.webhookConfig?.enabled) {
+      // A built-in flow paused by a switch keeps its URL, its secret and
+      // the vendor's subscription: it verifies each delivery as before and
+      // forwards it to the twin that writes its dataset now
+      // (connectors/boxed-runtime, webhook-mirror.ts).
+      const forwardTo = flow.webhookConfig?.enabled
+        ? null
+        : await forwardTargetOf(flow);
+      if (!flow.webhookConfig || (!flow.webhookConfig.enabled && !forwardTo)) {
         logger.warn("Webhook received for disabled flow", { flowId });
         return fail(c, 403, "Webhook endpoint disabled");
       }
@@ -106,22 +116,7 @@ router.openapi(
         return fail(c, 404, "Data source not found");
       }
 
-      // A flow switched to its folder twin (`runtime: boxed`, with
-      // CONNECTOR_BOXED_SWITCH on) takes its deliveries through the twin:
-      // the same subscription, URL and secret, verified by the twin's
-      // declared scheme, stored in the box lane. Null for every other flow,
-      // which keeps the connection's own connector below.
-      const boxed = await boxedWebhookConnector(flow, sourceConnection).catch(
-        error => {
-          logger.warn("Switched flow's twin unavailable; built-in ingress", {
-            flowId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          return null;
-        },
-      );
-      const connector =
-        boxed ?? connectorRegistry.getConnectorFor(sourceConnection);
+      const connector = connectorRegistry.getConnectorFor(sourceConnection);
       if (!connector) {
         return fail(
           c,
@@ -206,10 +201,13 @@ router.openapi(
         }
       }
 
+      const toBox = forwardTo
+        ? forwardLane(forwardTo, sourceConnection.type) === "box"
+        : boxLane;
       const webhookEvent = new WebhookEvent({
-        flowId,
+        flowId: forwardTo ? forwardTo._id : flowId,
         workspaceId,
-        ...(boxLane ? { lane: "box", dataSourceId: sourceConnection._id } : {}),
+        ...(toBox ? { lane: "box", dataSourceId: sourceConnection._id } : {}),
         // Close (and some other vendors) nest the unique event id at
         // `event.event.id`; the top-level `event.id` is the OBJECT id, which is
         // stable across updates. Falling back to it would defeat the
@@ -235,7 +233,7 @@ router.openapi(
 
       // Active boxed shadows of this flow get a copy in their box lane
       // (webhook-mirror.ts). Best-effort; never changes this answer.
-      if (connector.supportsWebhooks()) {
+      if (!forwardTo && connector.supportsWebhooks()) {
         await mirrorDeliveryToShadows({
           flow,
           connection: sourceConnection,

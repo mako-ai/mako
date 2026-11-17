@@ -37,8 +37,13 @@ export interface IFlowParityEntity {
   /** Columns on one side only (metadata columns excluded). */
   liveOnlyColumns: string[];
   shadowOnlyColumns: string[];
-  /** The fields that differ most, with samples. */
+  /** The fields that differ most, with samples. Reported, not blocking. */
   topFields: IFlowParityFieldDiff[];
+  /** Rows where live has a value and the shadow NULL. Blocks the gate. */
+  newNullRows: number;
+  newNullFields: Array<{ field: string; rows: number }>;
+  /** What the check found that does not block the gate. */
+  notes: string[];
   /** Live rows changed in the window, and how the shadow kept up. */
   window: {
     liveRows: number;
@@ -65,6 +70,12 @@ export interface IFlowParityCheck {
   cutoff?: Date;
   /** The live-update window: changes in [start, end) on the live side. */
   window?: { start: Date; end: Date; coverageMinutes: number };
+  /** The shadow's failures in the freshness window. Any one blocks the gate. */
+  errors?: {
+    failedRuns: number;
+    failedEntities: string[];
+    failedWebhookEvents: number;
+  };
   /** The twin the shadow ran (its approval): slug and folder source hash. */
   twin?: { slug: string; sourceSha?: string };
   /** When the shadow's full-history backfill completed, as this check saw it. */
@@ -110,6 +121,9 @@ const EntitySchema = new Schema<IFlowParityEntity>(
     liveOnlyColumns: [String],
     shadowOnlyColumns: [String],
     topFields: [FieldDiffSchema],
+    newNullRows: { type: Number, default: 0 },
+    newNullFields: [{ _id: false, field: String, rows: Number }],
+    notes: [String],
     window: {
       liveRows: Number,
       matched: Number,
@@ -142,6 +156,11 @@ const FlowParityCheckSchema = new Schema<IFlowParityCheck>(
     cutoff: Date,
     window: { start: Date, end: Date, coverageMinutes: Number },
     twin: { slug: String, sourceSha: String },
+    errors: {
+      failedRuns: Number,
+      failedEntities: [String],
+      failedWebhookEvents: Number,
+    },
     shadowBackfillCompletedAt: { type: Date, default: null },
     entities: [EntitySchema],
     clean: { type: Boolean, default: false },

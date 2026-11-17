@@ -197,11 +197,11 @@ A sync is addressed by id, name or slug, or any unique short name (`wise`, `fr_c
 A sync on a built-in connection (Close, Stripe, PandaDoc, Calendly, Claap, Wise, PostHog) can run the connection's folder twin in a box instead: `ws:<slug>` from the workspace's `connectors/<slug>/`, or `mako/<slug>` installed there by reference. It uses the same connection and the same key. Behind `CONNECTOR_BOXED_SWITCH`, off by default.
 
 1. `flow_shadow` `start`: a second sync on the same connection writes `<dataset>_shadow`. Its full-history backfill starts at once. It polls on the live cadence and gets a copy of each verified webhook delivery.
-2. Parity checks run hourly, or now with `flow_shadow` `check`. Each compares every row: keys on both sides, a checksum over every field, the fields that differ most with samples, and the last 2 h of live updates with the shadow's lag.
-3. `flow_parity` shows the gate. It opens on a clean check under 90 minutes old that covers 2 h of live updates after the backfill.
-4. `flow_update` `runtime: boxed` switches the sync. It keeps its id, dataset, cursors and vendor subscription. `runtime: builtin` switches back in one call.
+2. Parity checks run every 15 minutes, or now with `flow_shadow` `check`. Each compares every row of every entity.
+3. `flow_parity` shows the gate. It opens on a check under 60 minutes old with 4 results. Every compared key is on both sides. Every live column exists in the shadow. No row has a value on live and NULL on the shadow. In the last 30 minutes after the backfill, every live update reached the shadow and no shadow run, entity or webhook batch failed. Other value differences are listed with samples and do not block.
+4. `flow_update` `runtime: boxed` on the built-in sync switches it. The shadow then writes the live dataset, with the live poll cadence and resync cron. The built-in sync is paused: poll, webhook and resync are off, and their crons are kept. Its webhook URL forwards each verified delivery to the shadow, so the vendor subscription does not change. `runtime: builtin` switches back in one call.
 
-The flow file records it as `runtime: boxed` (and `shadow_of: <id>` on a shadow). A shadow never writes the live dataset: a run whose destination matches its live sync fails before it reads.
+The flow file records `shadow_of: <id>` on a shadow, and `runtime: boxed` with `replaces: <id>` on a switched twin. A shadow never writes the live dataset: a run whose destination matches its live sync fails before it reads. A paused built-in sync never runs.
 
 The CLI wraps the same tools:
 

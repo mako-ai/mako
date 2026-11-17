@@ -91,11 +91,12 @@ export function approvalBinding(
  */
 export function approvalFingerprint(
   flow: Parameters<typeof approvalBinding>[0] &
-    Pick<IFlow, "connectorRuntime" | "boxedConnector">,
+    Pick<IFlow, "connectorRuntime" | "boxedConnector" | "replaces">,
 ): string {
   return JSON.stringify([
     approvalBinding(flow),
     boxedKind(flow),
     flow.boxedConnector ?? "",
+    flow.replaces ? String(flow.replaces) : "",
   ]);
 }

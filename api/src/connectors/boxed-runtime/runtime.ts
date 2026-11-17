@@ -20,11 +20,7 @@
  */
 import { NonRetriableError } from "inngest";
 import { Types } from "mongoose";
-import {
-  Flow,
-  type IFlow,
-  type ISourceConnection,
-} from "../../database/workspace-schema";
+import { Flow, type IFlow } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
 import type { SourceConnectionConfig } from "../../sync/database-data-source-manager";
 import {
@@ -32,7 +28,6 @@ import {
   type LoadedConnector,
 } from "../workspace/resolver";
 import {
-  SandboxedConnector,
   WORKSPACE_TYPE_PREFIX,
   isWorkspaceConnectorType,
 } from "../workspace/SandboxedConnector";
@@ -66,6 +61,8 @@ export type FlowRuntimeFields = Pick<
   | "boxedConnector"
   | "shadowOf"
   | "boxedApproval"
+  | "replaces"
+  | "boxedSwitch"
 >;
 
 export const FLOW_RUNTIME_PROJECTION = {
@@ -78,6 +75,8 @@ export const FLOW_RUNTIME_PROJECTION = {
   boxedConnector: 1,
   shadowOf: 1,
   boxedApproval: 1,
+  replaces: 1,
+  boxedSwitch: 1,
 } as const;
 
 /** Whether the flow asks for its folder twin: switched, or a shadow. */
@@ -242,6 +241,24 @@ export async function assertShadowIsolated(
   }
 }
 
+async function assertReplacementStands(flow: FlowRuntimeFields) {
+  const replaced = (await Flow.findOne({
+    _id: flow.replaces,
+    workspaceId: flow.workspaceId,
+  })
+    .select({ boxedSwitch: 1, dataSourceId: 1 })
+    .lean()) as Pick<IFlow, "boxedSwitch" | "dataSourceId"> | null;
+  if (
+    !replaced ||
+    String(replaced.boxedSwitch?.to ?? "") !== String(flow._id) ||
+    String(replaced.dataSourceId) !== String(flow.dataSourceId)
+  ) {
+    throw new NonRetriableError(
+      "This flow names a flow it replaces, and that flow is not paused for it. An owner/admin switches flows with flow_update runtime=boxed.",
+    );
+  }
+}
+
 /**
  * The source connection a run of this flow uses. Unchanged unless the flow
  * runs boxed now; then `ws:<slug>`, with the same id, workspace, settings and
@@ -251,6 +268,16 @@ export async function applyFlowRuntime(
   source: SourceConnectionConfig,
   flow: FlowRuntimeFields,
 ): Promise<SourceConnectionConfig> {
+  // A built-in flow paused by a switch never runs: its twin writes its
+  // dataset now, and two writers would race. Switch back to run it again.
+  if (flow.boxedSwitch?.to) {
+    throw new NonRetriableError(
+      `This flow was switched to its folder twin (flow ${String(flow.boxedSwitch.to)}) and is paused. Switch back with flow_update runtime=builtin.`,
+    );
+  }
+  // A promoted twin writes the replaced flow's dataset only while that flow
+  // is paused for it. A file naming another flow in `replaces:` gets nothing.
+  if (flow.replaces) await assertReplacementStands(flow);
   if (flow.shadowOf && !connectorBoxedSwitchEnabled()) {
     throw new Error(
       "This is a shadow flow, and shadows run only with CONNECTOR_BOXED_SWITCH on.",
@@ -341,52 +368,6 @@ async function webhookCapableTwin(
     });
     return null;
   }
-}
-
-/**
- * The connector that takes a switched flow's deliveries: its folder twin,
- * verifying in the API with the flow's secret and storing in the box lane.
- * It is built without a credential: ingress verifies, it never reads.
- *
- * Null, so ingress stays on the built-in connector, when the flow is not
- * switched, when webhook batches are off, or when the twin declares no
- * verification Mako runs. A delivery is then never refused for being
- * switched: the switch guard (switchFlowRuntime) refuses those states up
- * front, and this keeps a file edit from cutting a flow's webhooks off.
- */
-export async function boxedWebhookConnector(
-  flow: ApprovalFields & Pick<IFlow, "workspaceId">,
-  connection: {
-    _id: unknown;
-    name?: string;
-    type: string;
-    settings?: unknown;
-  },
-): Promise<SandboxedConnector | null> {
-  if (flow.shadowOf) return null;
-  const slug = boxedTwinFor(flow, connection.type);
-  if (!slug) return null;
-  const workspaceId = String(flow.workspaceId);
-  const twin = await webhookCapableTwin(workspaceId, slug);
-  if (!twin) return null;
-  if (!isTwinCodeAllowed(twin, flow.boxedApproval, connection.type)) {
-    logger.warn("Switched flow's twin code changed; built-in ingress", {
-      slug,
-    });
-    return null;
-  }
-  const connector = new SandboxedConnector({
-    _id: connection._id,
-    name: connection.name,
-    type: `${WORKSPACE_TYPE_PREFIX}${slug}`,
-    workspaceId,
-    config: {},
-    settings: connection.settings ?? {},
-    // A source-connection row shape, not a Mongoose document: the adapter
-    // reads only these fields, and ingress hands it no credential.
-  } as unknown as ISourceConnection);
-  await connector.loadDefinition();
-  return connector;
 }
 
 /**

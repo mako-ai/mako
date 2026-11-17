@@ -19,6 +19,7 @@ import { Types } from "mongoose";
 import {
   CdcEntityState,
   DatabaseConnection,
+  WebhookEvent,
   Flow,
   FlowExecution,
   FlowParityCheck,
@@ -175,26 +176,42 @@ export function parityWindow(cutoff: Date, backfillCompletedAt: Date | null) {
   };
 }
 
-/** Why one entity is not clean; empty when it is. */
-export function entityReasons(e: Omit<IFlowParityEntity, "clean" | "reasons">) {
+/**
+ * Why one entity blocks the gate (`reasons`), and what it found that does
+ * not block (`notes`). The gate (config.ts PARITY_GATE): 0 key gaps on the
+ * compared keys, every live column in the shadow, 0 new NULL rows, and in
+ * the window every live update matched within the lag bound.
+ */
+export function entityVerdict(
+  e: Omit<IFlowParityEntity, "clean" | "reasons" | "notes">,
+): { reasons: string[]; notes: string[] } {
+  if (e.error) return { reasons: [`${e.entity}: ${e.error}`], notes: [] };
   const reasons: string[] = [];
-  if (e.error) return [`${e.entity}: ${e.error}`];
-  const allowed = Math.floor(PARITY_GATE.tolerance * e.compared);
-  const differing = e.liveOnly + e.shadowOnly + e.rowsDiffering;
-  if (differing > allowed) {
+  const notes: string[] = [];
+  const gaps = e.liveOnly + e.shadowOnly;
+  if (gaps > 0) {
     reasons.push(
-      `${e.entity}: ${differing} of ${e.compared} rows differ (${e.liveOnly} live only, ${e.shadowOnly} shadow only, ${e.rowsDiffering} with differing fields)`,
+      `${e.entity}: ${gaps} of ${e.compared} keys are on one side only (${e.liveOnly} live only, ${e.shadowOnly} shadow only)`,
     );
   }
-  if (e.liveOnlyColumns.length || e.shadowOnlyColumns.length) {
+  if (e.liveOnlyColumns.length > 0) {
     reasons.push(
-      `${e.entity}: columns differ (live only: ${e.liveOnlyColumns.join(", ") || "none"}; shadow only: ${e.shadowOnlyColumns.join(", ") || "none"})`,
+      `${e.entity}: the shadow lacks ${e.liveOnlyColumns.length} live column${e.liveOnlyColumns.length === 1 ? "" : "s"}: ${e.liveOnlyColumns.join(", ")}`,
     );
   }
-  const windowAllowed = Math.floor(PARITY_GATE.tolerance * e.window.liveRows);
-  if (e.window.missingOrBehind > windowAllowed) {
+  if ((e.newNullRows ?? 0) > 0) {
     reasons.push(
-      `${e.entity}: ${e.window.missingOrBehind} of ${e.window.liveRows} live updates in the window are missing or older in the shadow`,
+      `${e.entity}: ${e.newNullRows} rows have a value on live and NULL on the shadow (${(
+        e.newNullFields ?? []
+      )
+        .slice(0, 5)
+        .map(f => `${f.field} ${f.rows}`)
+        .join(", ")})`,
+    );
+  }
+  if (e.window.missingOrBehind > 0) {
+    reasons.push(
+      `${e.entity}: ${e.window.missingOrBehind} of ${e.window.liveRows} live updates in the last ${PARITY_GATE.windowMinutes} min are missing or older in the shadow`,
     );
   }
   if (
@@ -205,7 +222,55 @@ export function entityReasons(e: Omit<IFlowParityEntity, "clean" | "reasons">) {
       `${e.entity}: shadow lag p95 is ${e.window.lagP95Seconds} s, over ${PARITY_GATE.maxLagP95Seconds} s`,
     );
   }
-  return reasons;
+  if (e.rowsDiffering > 0) {
+    notes.push(
+      `${e.entity}: ${e.rowsDiffering} rows differ in field values (see topFields)`,
+    );
+  }
+  if (e.shadowOnlyColumns.length > 0) {
+    notes.push(
+      `${e.entity}: the shadow adds ${e.shadowOnlyColumns.length} column${e.shadowOnlyColumns.length === 1 ? "" : "s"}: ${e.shadowOnlyColumns.join(", ")}`,
+    );
+  }
+  return { reasons, notes };
+}
+
+/** Why one entity blocks the gate; empty when it does not. */
+export function entityReasons(
+  e: Omit<IFlowParityEntity, "clean" | "reasons" | "notes">,
+): string[] {
+  return entityVerdict(e).reasons;
+}
+
+/**
+ * The shadow's failures since `since`: failed runs, entities whose last
+ * failure is in the window, and failed box-lane webhook events.
+ */
+export async function shadowErrorsSince(shadowId: Types.ObjectId, since: Date) {
+  const ids = { $in: [shadowId, String(shadowId)] };
+  const [failedRuns, entities, failedWebhookEvents] = await Promise.all([
+    FlowExecution.countDocuments({
+      flowId: shadowId,
+      status: "failed",
+      startedAt: { $gte: since },
+    }),
+    CdcEntityState.find({ flowId: ids, lastFailedAt: { $gte: since } })
+      .select("entity")
+      .lean(),
+    WebhookEvent.countDocuments({
+      flowId: shadowId,
+      lane: "box",
+      status: "failed",
+      receivedAt: { $gte: since },
+    }),
+  ]);
+  return {
+    failedRuns,
+    failedEntities: (entities as Array<{ entity: string }>)
+      .map(e => String(e.entity))
+      .sort(),
+    failedWebhookEvents,
+  };
 }
 
 /** The entities both flows have synced, sorted. */
@@ -400,6 +465,8 @@ export async function runParityCheck(input: {
         liveOnlyColumns: [] as string[],
         shadowOnlyColumns: [] as string[],
         topFields: [] as IFlowParityEntity["topFields"],
+        newNullRows: 0,
+        newNullFields: [] as IFlowParityEntity["newNullFields"],
         window: {
           liveRows: 0,
           matched: 0,
@@ -484,22 +551,52 @@ export async function runParityCheck(input: {
           shadowOnlyColumns: cols.shadowOnly,
           topFields,
         };
-        const why = entityReasons(result);
-        results.push({ ...result, clean: why.length === 0, reasons: why });
-        reasons.push(...why);
+        const verdict = entityVerdict(result);
+        results.push({
+          ...result,
+          clean: verdict.reasons.length === 0,
+          reasons: verdict.reasons,
+          notes: verdict.notes,
+        });
+        reasons.push(...verdict.reasons);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const failed = { ...base, error: message };
-        const why = entityReasons(failed);
-        results.push({ ...failed, clean: false, reasons: why });
-        reasons.push(...why);
+        const verdict = entityVerdict(failed);
+        results.push({
+          ...failed,
+          clean: false,
+          reasons: verdict.reasons,
+          notes: [],
+        });
+        reasons.push(...verdict.reasons);
       }
+    }
+
+    // Errors in the freshness window: any failed shadow run, entity or
+    // webhook batch since the window opened blocks the gate.
+    const errors = await shadowErrorsSince(shadow._id, window.start);
+    if (errors.failedRuns > 0) {
+      reasons.push(
+        `${errors.failedRuns} shadow run${errors.failedRuns === 1 ? "" : "s"} failed in the window`,
+      );
+    }
+    if (errors.failedEntities.length > 0) {
+      reasons.push(
+        `Shadow entities failed in the window: ${errors.failedEntities.join(", ")}`,
+      );
+    }
+    if (errors.failedWebhookEvents > 0) {
+      reasons.push(
+        `${errors.failedWebhookEvents} shadow webhook event${errors.failedWebhookEvents === 1 ? "" : "s"} failed in the window`,
+      );
     }
 
     return await finish({
       status: "done",
       cutoff,
       window,
+      errors,
       twin: {
         slug: shadow.boxedApproval?.slug ?? "",
         sourceSha: shadow.boxedApproval?.sourceSha,

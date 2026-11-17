@@ -81,7 +81,6 @@ import {
   boxedKind,
 } from "./runtime";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
-import { cdcSyncStateService } from "../../sync-cdc/sync-state";
 import { parityGate, runParityCheck } from "./parity.service";
 import { startShadow, stopShadow, switchFlowRuntime } from "./shadow.service";
 
@@ -397,35 +396,6 @@ describe("review attacks", () => {
     ).rejects.toThrow(/changed since/);
   });
 
-  it("1. sends a switched flow's deliveries to built-in ingress once its twin's code changed", async () => {
-    const spy = vi.spyOn(connectorRegistry, "getConnectorFor").mockReturnValue({
-      supportsWebhooks: () => true,
-      webhookDelivery: () => "inline",
-      verifyWebhook: async ({ payload }: { payload: string }) => ({
-        valid: true,
-        event: JSON.parse(payload),
-      }),
-    } as never);
-    const id = await makeFlow({ connectorRuntime: "boxed", ...approved() });
-    mocks.loadConnectorDefinition.mockResolvedValue(
-      def({
-        sourceSha: "pushed",
-        spec: CLOSE_SPEC,
-      }),
-    );
-    const body = JSON.stringify({ event: { id: "ev_pushed" } });
-    const res = await webhookRoutes.request(`/webhooks/${ws}/${id}`, {
-      method: "POST",
-      body,
-      headers: { "content-type": "application/json" },
-    });
-    expect(res.status).toBe(200);
-    expect(
-      (await WebhookEvent.findOne({ eventId: "ev_pushed" }).lean())?.lane,
-    ).toBeUndefined();
-    expect(spy).toHaveBeenCalled();
-  });
-
   it("2. voids the approval when the destination moves under it", async () => {
     const id = await makeFlow({ connectorRuntime: "boxed", ...approved() });
     await Flow.collection.updateOne(
@@ -479,48 +449,35 @@ describe("review attacks", () => {
     expect(await applyFlowRuntimeById(source, String(foreign))).toBe(source);
   });
 
-  it("cursors: refuses a switch while a run is in flight, and drops stored backfill cursors on a switch", async () => {
-    const id = await makeFlow();
-    await FlowExecution.collection.insertOne({
-      flowId: id,
-      workspaceId: ws,
-      status: "running",
-      startedAt: new Date(),
-      success: false,
-      logs: [],
+  it("a switch waits while either flow has a run in flight: two writers never race", async () => {
+    const live = await makeFlow();
+    const shadow = await makeFlow({
+      shadowOf: live,
+      ...approved(),
+      tableDestination: {
+        connectionId: db,
+        schema: "pl_close_shadow",
+        tableName: "",
+      },
     });
-    await expect(
-      switchFlowRuntime({
-        flow: (await Flow.findById(id))!,
-        target: "boxed",
-        force: true,
-      }),
-    ).rejects.toThrow(/in flight/);
-    await FlowExecution.collection.deleteMany({ flowId: id });
-
-    await cdcSyncStateService.saveBackfillCursor({
-      workspaceId: String(ws),
-      flowId: String(id),
-      entity: "leads",
-      cursor: {
-        totalProcessed: 10,
-        iterationsInChunk: 1,
-        hasMore: true,
-        metadata: { builtin: "page-2" },
-      } as any,
-    });
-    await switchFlowRuntime({
-      flow: (await Flow.findById(id))!,
-      target: "boxed",
-      force: true,
-    });
-    expect(
-      await cdcSyncStateService.loadBackfillCursor({
-        workspaceId: String(ws),
-        flowId: String(id),
-        entity: "leads",
-      }),
-    ).toBeUndefined();
+    for (const running of [live, shadow]) {
+      await FlowExecution.collection.insertOne({
+        flowId: running,
+        workspaceId: ws,
+        status: "running",
+        startedAt: new Date(),
+        success: false,
+        logs: [],
+      });
+      await expect(
+        switchFlowRuntime({
+          flow: (await Flow.findById(live))!,
+          target: "boxed",
+          force: true,
+        }),
+      ).rejects.toThrow(/in flight/);
+      await FlowExecution.collection.deleteMany({});
+    }
   });
 });
 
@@ -564,25 +521,6 @@ describe("review round 2", () => {
     await expect(
       applyFlowRuntimeById(source, String(again), "boxed"),
     ).rejects.toThrow(/can no longer run boxed/);
-  });
-
-  it("I. a file's unapproved runtime: boxed ran built-in, so approving it is a switch: refused mid-run, cursors dropped", async () => {
-    const id = await makeFlow({ connectorRuntime: "boxed" });
-    await FlowExecution.collection.insertOne({
-      flowId: id,
-      workspaceId: ws,
-      status: "running",
-      startedAt: new Date(),
-      success: false,
-      logs: [],
-    });
-    await expect(
-      switchFlowRuntime({
-        flow: (await Flow.findById(id))!,
-        target: "boxed",
-        force: true,
-      }),
-    ).rejects.toThrow(/in flight/);
   });
 
   it("H. stop cancels a shadow backfill in progress", async () => {
@@ -725,29 +663,69 @@ describe("ingress", () => {
       }),
     } as never);
 
-  it("stores a switched flow's delivery in the box lane, verified by the twin's declared scheme", async () => {
-    const spy = builtinVerifies();
-    const id = await makeFlow({ connectorRuntime: "boxed", ...approved() });
-    const body = JSON.stringify({
-      event: { id: "ev_sw", object_type: "lead", action: "updated" },
+  async function switchedPair() {
+    const live = await makeFlow({ connectorRuntime: undefined });
+    const twin = await makeFlow({
+      replaces: live,
+      connectorRuntime: "boxed",
+      webhookConfig: undefined,
+      ...approved(),
     });
-    const res = await deliver(id, body);
-    expect(res.status).toBe(200);
-    const stored = await WebhookEvent.findOne({ eventId: "ev_sw" }).lean();
-    expect(stored).toMatchObject({ lane: "box", status: "pending" });
-    expect(String(stored!.dataSourceId)).toBe(String(conn));
-    expect(spy).not.toHaveBeenCalled();
+    await Flow.collection.updateOne(
+      { _id: live },
+      {
+        $set: {
+          "webhookConfig.enabled": false,
+          "schedule.enabled": false,
+          boxedSwitch: { to: twin, by: "owner", at: new Date(), webhook: true },
+        },
+      },
+    );
+    return { live, twin };
+  }
+
+  it("a paused built-in flow verifies each delivery and forwards it to its twin's box lane", async () => {
+    builtinVerifies();
+    const { live, twin } = await switchedPair();
+    const body = JSON.stringify({ event: { id: "ev_fwd" } });
+    expect((await deliver(live, body)).status).toBe(200);
+    expect(await WebhookEvent.countDocuments({ flowId: live })).toBe(0);
+    const forwarded = await WebhookEvent.findOne({ flowId: twin }).lean();
+    expect(forwarded).toMatchObject({
+      lane: "box",
+      status: "pending",
+      eventId: "ev_fwd",
+    });
+    expect(String(forwarded!.dataSourceId)).toBe(String(conn));
   });
 
-  it("keeps a switched flow on built-in ingress when webhook batches are off", async () => {
-    process.env.CONNECTOR_WEBHOOK_BATCHES = "false";
-    const spy = builtinVerifies();
-    const id = await makeFlow({ connectorRuntime: "boxed", ...approved() });
-    const body = JSON.stringify({ event: { id: "ev_off" } });
-    expect((await deliver(id, body)).status).toBe(200);
-    const stored = await WebhookEvent.findOne({ eventId: "ev_off" }).lean();
-    expect(stored?.lane).toBeUndefined();
-    expect(spy).toHaveBeenCalled();
+  it("forwards to the twin's inline lane when it cannot run boxed (flag off)", async () => {
+    builtinVerifies();
+    const { live, twin } = await switchedPair();
+    process.env.CONNECTOR_BOXED_SWITCH = "false";
+    const body = JSON.stringify({ event: { id: "ev_fwd_off" } });
+    expect((await deliver(live, body)).status).toBe(200);
+    const forwarded = await WebhookEvent.findOne({ flowId: twin }).lean();
+    expect(forwarded?.eventId).toBe("ev_fwd_off");
+    expect(forwarded?.lane).toBeUndefined();
+  });
+
+  it("refuses a delivery to a paused flow whose named twin does not name it back", async () => {
+    builtinVerifies();
+    const live = await makeFlow();
+    const stranger = await makeFlow({ webhookConfig: undefined });
+    await Flow.collection.updateOne(
+      { _id: live },
+      {
+        $set: {
+          "webhookConfig.enabled": false,
+          boxedSwitch: { to: stranger, webhook: true },
+        },
+      },
+    );
+    const res = await deliver(live, JSON.stringify({ event: { id: "ev_x" } }));
+    expect(res.status).toBe(403);
+    expect(await WebhookEvent.countDocuments({})).toBe(0);
   });
 
   it("copies a live flow's verified delivery to its active shadow's box lane", async () => {
@@ -917,26 +895,73 @@ describe("shadow and switch", () => {
     );
   });
 
-  it("refuses a switch while the gate is closed, switches with force, and back in one call", async () => {
-    const id = await makeFlow();
+  it("refuses a switch while the gate is closed; with force, promotes the shadow and pauses the built-in; back in one call", async () => {
+    const live = await makeFlow({
+      backfillSchedule: { enabled: true, cron: "0 3 * * 0", timezone: "UTC" },
+    });
     await expect(
-      switchFlowRuntime({ flow: (await Flow.findById(id))!, target: "boxed" }),
-    ).rejects.toThrow(/parity gate is closed: No shadow/);
+      switchFlowRuntime({
+        flow: (await Flow.findById(live))!,
+        target: "boxed",
+      }),
+    ).rejects.toThrow(/No shadow/);
+    const started = await startShadow({
+      live: (await Flow.findById(live))!,
+      userId: "u",
+    });
+    const shadow = new Types.ObjectId(started.shadowFlowId);
+    await expect(
+      switchFlowRuntime({
+        flow: (await Flow.findById(live))!,
+        target: "boxed",
+      }),
+    ).rejects.toThrow(/parity gate is closed/);
 
-    const forced = await switchFlowRuntime({
-      flow: (await Flow.findById(id))!,
+    const out = await switchFlowRuntime({
+      flow: (await Flow.findById(live))!,
       target: "boxed",
       force: true,
+      userId: "owner",
     });
-    expect(forced).toMatchObject({
+    expect(out).toMatchObject({
       runtime: "boxed",
-      changed: true,
       forced: true,
+      writerFlowId: String(shadow),
     });
-    expect((await lean(id)).connectorRuntime).toBe("boxed");
 
+    // The built-in is paused: poll, webhook and resync off, crons kept.
+    const paused = await lean(live);
+    expect(paused.schedule.enabled).toBe(false);
+    expect(paused.webhookConfig.enabled).toBe(false);
+    expect(paused.backfillSchedule.enabled).toBe(false);
+    expect(paused.boxedSwitch).toMatchObject({
+      to: shadow,
+      webhook: true,
+      poll: { enabled: true, cron: "0 * * * *" },
+      resync: { enabled: true, cron: "0 3 * * 0" },
+    });
+    // The shadow writes the live dataset, with the live triggers.
+    const writer = await lean(shadow);
+    expect(writer.shadowOf).toBeUndefined();
+    expect(String(writer.replaces)).toBe(String(live));
+    expect(writer.tableDestination.schema).toBe("pl_close");
+    expect(writer.backfillSchedule).toMatchObject({
+      enabled: true,
+      cron: "0 3 * * 0",
+    });
+    expect(writer.boxedApproval).toMatchObject({
+      kind: "switch",
+      slug: "close",
+    });
+    // It runs boxed on the live dataset; the paused built-in never runs.
+    expect((await applyFlowRuntime(decrypted(), writer)).type).toBe("ws:close");
+    await expect(applyFlowRuntime(decrypted(), paused)).rejects.toThrow(
+      /paused/,
+    );
+
+    // A forwarded event pending in the twin goes back to the built-in.
     await WebhookEvent.create({
-      flowId: id,
+      flowId: shadow,
       workspaceId: ws,
       eventId: "ev_pending",
       eventType: "lead.updated",
@@ -947,32 +972,74 @@ describe("shadow and switch", () => {
       dataSourceId: conn,
     });
     const back = await switchFlowRuntime({
-      flow: (await Flow.findById(id))!,
+      flow: (await Flow.findById(live))!,
       target: "builtin",
     });
     expect(back).toMatchObject({
       runtime: "builtin",
       changed: true,
       relaned: 1,
+      writerFlowId: String(live),
     });
-    expect((await lean(id)).connectorRuntime).toBeUndefined();
+    const restored = await lean(live);
+    expect(restored.boxedSwitch).toBeUndefined();
+    expect(restored.schedule).toMatchObject({
+      enabled: true,
+      cron: "0 * * * *",
+    });
+    expect(restored.webhookConfig.enabled).toBe(true);
+    expect(restored.backfillSchedule).toMatchObject({
+      enabled: true,
+      cron: "0 3 * * 0",
+    });
+    const stopped = await lean(shadow);
+    expect(String(stopped.shadowOf)).toBe(String(live));
+    expect(stopped.replaces).toBeUndefined();
+    expect(stopped.tableDestination.schema).toBe("pl_close_shadow");
+    expect(stopped.schedule.enabled).toBe(false);
+    expect(stopped.boxedApproval).toBeUndefined();
+    const event = await WebhookEvent.findOne({ eventId: "ev_pending" }).lean();
+    expect(String(event!.flowId)).toBe(String(live));
+    expect(event!.lane).toBeUndefined();
   });
 
   it("refuses to switch a webhook flow whose twin declares no verification", async () => {
+    const live = await makeFlow();
+    await makeFlow({
+      shadowOf: live,
+      ...approved(),
+      tableDestination: {
+        connectionId: db,
+        schema: "pl_close_shadow",
+        tableName: "",
+      },
+    });
     mocks.loadConnectorDefinition.mockResolvedValue({
       slug: "close",
+      sourceSha: "source-sha",
       entities: ["leads"],
       spec: { connectionSpecification: CLOSE_SPEC.connectionSpecification },
       status: "indexed",
     });
-    const id = await makeFlow();
     await expect(
       switchFlowRuntime({
-        flow: (await Flow.findById(id))!,
+        flow: (await Flow.findById(live))!,
         target: "boxed",
         force: true,
       }),
     ).rejects.toThrow(/declares no webhook verification/);
+  });
+
+  it("refuses a promoted twin whose replaced flow is not paused for it", async () => {
+    const live = await makeFlow();
+    const twin = await makeFlow({
+      replaces: live,
+      connectorRuntime: "boxed",
+      ...approved(),
+    });
+    await expect(
+      applyFlowRuntime(decrypted(), await lean(twin)),
+    ).rejects.toThrow(/not paused for it/);
   });
 });
 
@@ -1039,7 +1106,7 @@ describe("parity", () => {
     return { query, sqls };
   }
 
-  it("stores a clean check and opens the gate once 2 h of live updates are covered", async () => {
+  it("stores a clean check and opens the gate once 30 min of live updates are covered", async () => {
     const now = new Date("2026-11-17T12:00:00Z");
     const { live, shadow } = await shadowPair(new Date("2026-11-17T09:00:00Z"));
     const { query, sqls } = fakeQuery(summary());
@@ -1050,7 +1117,7 @@ describe("parity", () => {
     });
     expect(check.status).toBe("done");
     expect(check.clean).toBe(true);
-    expect(check.window?.coverageMinutes).toBe(120);
+    expect(check.window?.coverageMinutes).toBe(30);
     expect(check.entities[0]).toMatchObject({
       entity: "leads",
       compared: 98,
@@ -1069,7 +1136,7 @@ describe("parity", () => {
     expect(gate).toMatchObject({ open: true, reasons: [] });
   });
 
-  it("reports differing fields with samples, and keeps the gate closed", async () => {
+  it("reports differing values with samples without blocking; a new NULL blocks", async () => {
     const now = new Date("2026-11-17T12:00:00Z");
     const { live, shadow } = await shadowPair(new Date("2026-11-17T09:00:00Z"));
     const { query } = fakeQuery(
@@ -1089,7 +1156,10 @@ describe("parity", () => {
       trigger: "manual",
       deps: { query, keyColumns: async () => ["id"], now: () => now },
     });
-    expect(check.clean).toBe(false);
+    expect(check.clean).toBe(true);
+    expect(check.entities[0].notes.join(" ")).toMatch(
+      /3 rows differ in field values/,
+    );
     expect(check.entities[0].topFields).toEqual([
       {
         field: "name",
@@ -1097,9 +1167,87 @@ describe("parity", () => {
         samples: [{ key: '{"id":"lead_1"}', live: '"A"', shadow: '"B"' }],
       },
     ]);
-    const gate = await parityGate({ _id: live, workspaceId: ws }, now);
+
+    const nulls = fakeQuery(
+      summary({ rows_differing: 2, d2: 2, n2: 2, new_null_rows: 2 }),
+    );
+    const bad = await runParityCheck({
+      shadowFlowId: String(shadow),
+      trigger: "manual",
+      deps: {
+        query: nulls.query,
+        keyColumns: async () => ["id"],
+        // A minute later, so it is the latest check.
+        now: () => new Date(now.getTime() + 60_000),
+      },
+    });
+    expect(bad.clean).toBe(false);
+    const gate = await parityGate(
+      { _id: live, workspaceId: ws },
+      new Date(now.getTime() + 120_000),
+    );
     expect(gate.open).toBe(false);
-    expect(gate.reasons.join(" ")).toMatch(/3 of 98 rows differ/);
+    expect(gate.reasons.join(" ")).toMatch(
+      /2 rows have a value on live and NULL on the shadow \(name 2\)/,
+    );
+  });
+
+  it("blocks on a key gap, a missing live column, and a failed shadow run in the window", async () => {
+    const now = new Date("2026-11-17T12:00:00Z");
+    const { shadow } = await shadowPair(new Date("2026-11-17T09:00:00Z"));
+    const gap = await runParityCheck({
+      shadowFlowId: String(shadow),
+      trigger: "manual",
+      deps: {
+        query: fakeQuery(summary({ shadow_only: 1 })).query,
+        keyColumns: async () => ["id"],
+        now: () => now,
+      },
+    });
+    expect(gap.reasons.join(" ")).toMatch(/1 of 98 keys are on one side only/);
+
+    const missingColumn = fakeQuery(summary());
+    const query = async (d: unknown, sql: string) => {
+      if (
+        sql.includes("INFORMATION_SCHEMA") &&
+        sql.includes("pl_close_shadow")
+      ) {
+        return ["id", "_mako_source_ts", "_syncedAt", "_mako_deleted_at"].map(
+          column_name => ({ table_name: "leads", column_name }),
+        );
+      }
+      return missingColumn.query(d, sql);
+    };
+    const cols = await runParityCheck({
+      shadowFlowId: String(shadow),
+      trigger: "manual",
+      deps: { query, keyColumns: async () => ["id"], now: () => now },
+    });
+    expect(cols.reasons.join(" ")).toMatch(
+      /the shadow lacks 1 live column: name/,
+    );
+
+    await FlowExecution.collection.insertOne({
+      flowId: shadow,
+      workspaceId: ws,
+      status: "failed",
+      startedAt: new Date("2026-11-17T11:40:00Z"),
+      success: false,
+      logs: [],
+    });
+    const failed = await runParityCheck({
+      shadowFlowId: String(shadow),
+      trigger: "manual",
+      deps: {
+        query: fakeQuery(summary()).query,
+        keyColumns: async () => ["id"],
+        now: () => now,
+      },
+    });
+    expect(failed.errors).toMatchObject({ failedRuns: 1 });
+    expect(failed.reasons.join(" ")).toMatch(
+      /1 shadow run failed in the window/,
+    );
   });
 
   it("4. refuses a dataset name that is not plain, before any SQL", async () => {
@@ -1120,9 +1268,9 @@ describe("parity", () => {
     expect(sqls).toHaveLength(0);
   });
 
-  it("keeps the gate closed until the window covers 2 h after the backfill", async () => {
+  it("keeps the gate closed until the window covers 30 min after the backfill", async () => {
     const now = new Date("2026-11-17T12:00:00Z");
-    const { live, shadow } = await shadowPair(new Date("2026-11-17T11:00:00Z"));
+    const { live, shadow } = await shadowPair(new Date("2026-11-17T11:30:00Z"));
     const { query } = fakeQuery(summary());
     await runParityCheck({
       shadowFlowId: String(shadow),
@@ -1131,7 +1279,7 @@ describe("parity", () => {
     });
     const gate = await parityGate({ _id: live, workspaceId: ws }, now);
     expect(gate.open).toBe(false);
-    expect(gate.reasons.join(" ")).toMatch(/covers 50 min/);
+    expect(gate.reasons.join(" ")).toMatch(/covers 20 min/);
   });
 
   it("A. keeps the gate closed for an entity the shadow never synced", async () => {
@@ -1208,6 +1356,10 @@ describe("parity", () => {
       target: "boxed",
       now,
     });
-    expect(out).toMatchObject({ runtime: "boxed", forced: false });
+    expect(out).toMatchObject({
+      runtime: "boxed",
+      forced: false,
+      writerFlowId: String(shadow),
+    });
   });
 });
