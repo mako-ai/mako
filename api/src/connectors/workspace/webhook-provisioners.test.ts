@@ -190,3 +190,39 @@ void test("a folder that declares no verification is refused before any call", a
     /declares no webhook verification/,
   );
 });
+
+void test("PandaDoc and Claap folders provision as their built-ins do, create only", () => {
+  process.env.CONNECTOR_WEBHOOK_BATCHES = "true";
+  const pandadoc = new SpecConnector("ws:pandadoc", VERIFYING_SPEC);
+  const claap = new SpecConnector("ws:claap", VERIFYING_SPEC);
+  const close = new SpecConnector("ws:close", VERIFYING_SPEC);
+  assert.equal(pandadoc.supportsWebhookProvisioning(), true);
+  assert.equal(claap.supportsWebhookProvisioning(), true);
+  // The built-ins have no in-place update; Close's adopt stays.
+  assert.equal(pandadoc.supportsWebhookSubscriptionUpdate(), false);
+  assert.equal(claap.supportsWebhookSubscriptionUpdate(), false);
+  assert.equal(close.supportsWebhookSubscriptionUpdate(), true);
+  // PandaDoc returns its shared key; Claap may not show its secret.
+  const pd = pandadoc.getWebhookCapabilities();
+  const cl = claap.getWebhookCapabilities();
+  assert.equal(pd.provisioning.storesSecretAutomatically, true);
+  assert.equal(cl.provisioning.storesSecretAutomatically, false);
+  assert.match(String(cl.secretHelpText), /X-Claap-Webhook-Secret/);
+  assert.match(String(pd.secretHelpText), /Shared Key/);
+});
+
+void test("a shared-secret folder names its secret header for redaction", () => {
+  const claap = new SpecConnector("ws:claap", {
+    mako: {
+      webhooks: {
+        verification: {
+          scheme: "shared-secret",
+          secretHeader: "x-claap-webhook-secret",
+        },
+      },
+    },
+  });
+  assert.deepEqual(claap.webhookSecretHeaders(), ["x-claap-webhook-secret"]);
+  const close = new SpecConnector("ws:close", VERIFYING_SPEC);
+  assert.deepEqual(close.webhookSecretHeaders(), []);
+});

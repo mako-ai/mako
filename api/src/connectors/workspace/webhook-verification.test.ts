@@ -13,8 +13,10 @@ import { createHmac } from "node:crypto";
 import { before, test } from "node:test";
 import {
   type DeclaredHmacVerification,
+  declaredWebhookIdentity,
   declaredWebhookVerification,
   keyOf,
+  valueAtPath,
   verifyDeclaredWebhook,
 } from "./webhook-verification";
 import { verifyCloseWebhook } from "../close/webhooks";
@@ -266,4 +268,91 @@ void test("a declared timestamp must be signed: an unsigned window is refused", 
     now: SENT,
   });
   assert.equal(result.valid, false);
+});
+
+void test("shared-secret: the header must hold the flow's secret, in constant time", () => {
+  const declaration = declaredWebhookVerification(
+    spec({ scheme: "shared-secret", secretHeader: "x-claap-webhook-secret" }),
+  );
+  assert.deepEqual(declaration, {
+    scheme: "shared-secret",
+    secretHeader: "x-claap-webhook-secret",
+  });
+  const secret = "s".repeat(24);
+  const verify = (
+    headers: Record<string, string>,
+    s = secret,
+    payload = "{}",
+  ) => verifyDeclaredWebhook(declaration!, { payload, headers, secret: s });
+  assert.equal(verify({ "X-Claap-Webhook-Secret": secret }).valid, true);
+  assert.equal(verify({ "x-claap-webhook-secret": `${secret}x` }).valid, false);
+  assert.equal(verify({}).valid, false);
+  assert.equal(
+    verify({ "x-claap-webhook-secret": "short" }, "short").valid,
+    false,
+  );
+  assert.equal(
+    verify({ "x-claap-webhook-secret": secret }, secret, "{").valid,
+    false,
+  );
+  assert.equal(
+    declaredWebhookVerification(
+      spec({ scheme: "shared-secret", secretHeader: "Bad Header" }),
+    ),
+    null,
+  );
+});
+
+void test("a signature in a query parameter is read first, the header second", () => {
+  const declaration = declaredWebhookVerification(
+    spec({
+      scheme: "hmac-sha256",
+      secretEncoding: "utf8",
+      signedPayload: ["body"],
+      signatureQuery: "signature",
+      signatureHeader: "signature",
+      signatureEncoding: "hex",
+    }),
+  )!;
+  const secret = "pandadoc-fixture-shared-key-0001";
+  const body = '[{"event":"document_updated","data":{"id":"d1"}}]';
+  const signature = createHmac("sha256", secret).update(body).digest("hex");
+  const verify = (query: Record<string, string>, headers = {}) =>
+    verifyDeclaredWebhook(declaration, {
+      payload: body,
+      headers,
+      query,
+      secret,
+    }).valid;
+  assert.equal(verify({ signature }), true);
+  assert.equal(verify({}, { signature }), true);
+  assert.equal(verify({ signature: signature.toUpperCase() }), true);
+  assert.equal(verify({ signature: "00" + signature.slice(2) }), false);
+  assert.equal(verify({}), false);
+  assert.equal(
+    declaredWebhookVerification(
+      spec({ ...declaration, signatureQuery: "not a name" }),
+    ),
+    null,
+  );
+});
+
+void test("where an event id and type sit is read from the spec, plain paths only", () => {
+  assert.deepEqual(
+    declaredWebhookIdentity({
+      mako: { webhooks: { eventIdPath: "eventId", eventTypePath: "0.event" } },
+    }),
+    { eventIdPath: "eventId", eventTypePath: "0.event" },
+  );
+  assert.deepEqual(
+    declaredWebhookIdentity({
+      mako: { webhooks: { eventIdPath: "a..b", eventTypePath: "$.x" } },
+    }),
+    {},
+  );
+  assert.equal(valueAtPath([{ event: "e" }], "0.event"), "e");
+  assert.equal(valueAtPath({ event: { type: "t" } }, "event.type"), "t");
+  assert.equal(valueAtPath({ id: 7 }, "id"), "7");
+  assert.equal(valueAtPath({ id: {} }, "id"), undefined);
+  assert.equal(valueAtPath({}, "constructor"), undefined);
 });

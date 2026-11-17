@@ -1,0 +1,3 @@
+[
+{"request":"GET /signed/t/rec_0015/fr.json?sig=fixture15","status":200,"body":{"segments":[{"startedAt":1.2,"endedAt":4.8,"text":"Bonjour, ici rec_0015 (fr).","speaker":"speaker_1","words":[{"w":"Bonjour","s":1.2}]},{"startedAt":65,"endedAt":70.5,"text":"Merci pour votre temps.","speaker":"speaker_2","languageCode":"fr"},{"startedAt":3700,"endedAt":3702,"text":"Au revoir."}]}}
+]

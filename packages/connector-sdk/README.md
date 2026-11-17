@@ -119,10 +119,25 @@ verification: {
 },
 ```
 
+Two more shapes for vendors that fit neither:
+
+- A signature in a query parameter (PandaDoc's `?signature=`): add
+  `signatureQuery: "signature"`. Mako reads it first, the header second.
+- No signature at all, the secret itself in a header (Claap):
+  `verification: { scheme: "shared-secret", secretHeader: "x-claap-webhook-secret" }`.
+  Mako compares it in constant time and refuses a secret under 16 bytes.
+
+Mako dedupes deliveries on their event id. Say where it sits with
+`eventIdPath` (a dotted path into the JSON body, `"eventId"`, `"event.id"`)
+and where the type sits with `eventTypePath` (`"event.type"`, `"0.event"`).
+Without an id, Mako keys a delivery on a SHA-1 of its raw body.
+
 Mako stores verified deliveries and hands them to `handleBatch` in batches
 (`mako-connector webhook --config config.json --batch batch.json`), with
 the connection's credential in `ctx.config`. Return one outcome per event,
-in order:
+in order. Its third argument holds `enabledEntities`, the entities the flow
+syncs, when Mako sends them, so a handler can skip work whose records would
+be dropped:
 
 - `records`: the change records, `{ entity, recordId, operation, payload,
   sourceTs?, changeId? }`. `payload` must be the whole row, as `read` emits
@@ -163,6 +178,10 @@ runs it has to strip types: unflagged from 22.18, and from 22.6 with
 older the runner refuses with a message saying so rather than failing as an
 unknown file extension. Mako's own sandbox satisfies this; a laptop running
 `mako connector test` needs it too.
+
+A read may end its chunk early: return after a batch with `hasMore: true`
+(a per-chunk cap of its own, a quota checkpoint). The next chunk starts from
+that batch's state, which must have moved.
 
 Every batch returned by `read` includes `hasMore`. This lets Mako distinguish
 the final page from a stream paused exactly at its chunk limit. The pagination

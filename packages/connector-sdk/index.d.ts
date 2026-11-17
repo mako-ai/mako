@@ -117,7 +117,18 @@ export interface StripeV1WebhookVerification {
 
 export type WebhookVerification =
   | HmacWebhookVerification
-  | StripeV1WebhookVerification;
+  | StripeV1WebhookVerification
+  | SharedSecretWebhookVerification;
+
+/**
+ * A vendor that does not sign: it sends the secret itself in a header
+ * (Claap's `X-Claap-Webhook-Secret`). Mako compares it in constant time.
+ */
+export interface SharedSecretWebhookVerification {
+  scheme: "shared-secret";
+  /** Lowercase name of the header that carries the secret. */
+  secretHeader: string;
+}
 
 export interface HmacWebhookVerification {
   scheme: "hmac-sha256";
@@ -131,6 +142,11 @@ export interface HmacWebhookVerification {
   /** Lowercase name of the header that carries the signature. */
   signatureHeader: string;
   signatureEncoding: "hex" | "base64";
+  /**
+   * A query parameter that carries the signature (PandaDoc's `?signature=`).
+   * Read first; `signatureHeader` is the fallback.
+   */
+  signatureQuery?: string;
   /** Text before the signature in its header, e.g. `"sha256="`. */
   signaturePrefix?: string;
   /**
@@ -140,6 +156,14 @@ export interface HmacWebhookVerification {
    */
   timestampHeader?: string;
   toleranceSeconds?: number;
+}
+
+export interface WebhookBatchOptions {
+  /**
+   * The entities the flow syncs, when Mako sends them. Records for any
+   * other entity are dropped anyway; a handler may skip the work.
+   */
+  enabledEntities?: string[];
 }
 
 /** One stored delivery, as Mako hands it to `handleBatch`. */
@@ -182,6 +206,15 @@ export interface WebhookDefinition<Config = Record<string, unknown>> {
   /** Every event type the connector handles, for subscribing at the vendor. */
   events?: string[];
   /**
+   * Where a delivery's event id sits in its JSON body, as a dotted path
+   * (`"eventId"`, `"event.id"`). Mako dedupes deliveries on it. Without it,
+   * or when the path holds no id, Mako uses `id`, then `event.id`, then a
+   * SHA-1 of the raw body.
+   */
+  eventIdPath?: string;
+  /** Where the event type sits, as a dotted path (`"event.type"`, `"0.event"`). */
+  eventTypePath?: string;
+  /**
    * A batch in, one outcome per event out, in the same order. Runs in a box
    * with the connection's credential in `ctx.config`, so a handler can
    * re-fetch a row whose payload is partial.
@@ -189,6 +222,7 @@ export interface WebhookDefinition<Config = Record<string, unknown>> {
   handleBatch(
     ctx: Context<Config>,
     events: WebhookEvent[],
+    options: WebhookBatchOptions,
   ): Promise<WebhookOutcome[]> | WebhookOutcome[];
 }
 
@@ -218,7 +252,11 @@ export interface Connector {
   entityNames(): string[];
   entity(name: string): EntityDefinition | undefined;
   hasWebhooks(): boolean;
-  handleWebhooks(ctx: Context, events: WebhookEvent[]): Promise<WebhookOutcome[]>;
+  handleWebhooks(
+    ctx: Context,
+    events: WebhookEvent[],
+    options?: WebhookBatchOptions,
+  ): Promise<WebhookOutcome[]>;
 }
 
 export function defineConnector<Config = Record<string, unknown>>(

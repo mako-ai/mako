@@ -1,0 +1,5 @@
+[
+{"request":"GET /v1/recordings/rec_0003/transcript?format=json&lang=fr","status":200,"body":{"result":{"transcript":{"segments":[{"startedAt":1.2,"endedAt":4.8,"text":"Bonjour, ici rec_0003 (fr).","speaker":"speaker_1","words":[{"w":"Bonjour","s":1.2}]},{"startedAt":65,"endedAt":70.5,"text":"Merci pour votre temps.","speaker":"speaker_2","languageCode":"fr"},{"startedAt":3700,"endedAt":3702,"text":"Au revoir."}]}}}},
+{"request":"GET /v1/recordings/rec_0005/transcript?format=json&lang=fr","status":200,"body":{"result":{"transcript":{"segments":[{"startedAt":1.2,"endedAt":4.8,"text":"Bonjour, ici rec_0005 (fr).","speaker":"speaker_1","words":[{"w":"Bonjour","s":1.2}]},{"startedAt":65,"endedAt":70.5,"text":"Merci pour votre temps.","speaker":"speaker_2","languageCode":"fr"},{"startedAt":3700,"endedAt":3702,"text":"Au revoir."}]}}}},
+{"request":"GET /v1/recordings/rec_0008/transcript?format=json&lang=de","status":404,"body":{"error":{"message":"No transcript in de"}}}
+]
