@@ -18,6 +18,7 @@ import {
   keyOf,
   valueAtPath,
   verifyDeclaredWebhook,
+  declaredEventId,
 } from "./webhook-verification";
 import { verifyCloseWebhook } from "../close/webhooks";
 import {
@@ -355,4 +356,215 @@ void test("where an event id and type sit is read from the spec, plain paths onl
   assert.equal(valueAtPath({ id: 7 }, "id"), "7");
   assert.equal(valueAtPath({ id: {} }, "id"), undefined);
   assert.equal(valueAtPath({}, "constructor"), undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Wise (rsa-sha256) and Calendly (stripe-v1), each against its in-process
+// check, on the folders' own fixture deliveries and declarations.
+// ---------------------------------------------------------------------------
+
+async function folderSpec(slug: "wise" | "calendly") {
+  const harness = await import(
+    slug === "wise"
+      ? "../../../../connectors/wise/fixtures/harness.mjs"
+      : "../../../../connectors/calendly/fixtures/harness.mjs"
+  );
+  harness.ensureFolderInstalled();
+  const run = await harness.runFolderCommand("spec");
+  return run.messages.find((m: any) => m.type === "SPEC")?.spec;
+}
+
+void test("the Wise declaration agrees with the in-process check, with Wise's own keys", async () => {
+  const { verifyWiseWebhook, wiseWebhookPublicKeys } =
+    await import("../wise/webhooks");
+  const fixtures =
+    await import("../../../../connectors/wise/fixtures/webhook-events.mjs");
+  const wise = await folderSpec("wise");
+  const declared = wise.mako.webhooks.verification;
+  // Wise's production and sandbox keys, in the built-in's order.
+  assert.deepEqual(declared.publicKeys, wiseWebhookPublicKeys(false));
+  // The fixtures are signed by a per-run key: swap it in on both sides.
+  const testKey = fixtures.TEST_WEBHOOK_KEYS.publicKey;
+  const declaration = declaredWebhookVerification(
+    spec({ ...declared, publicKeys: [testKey] }),
+  );
+  assert.ok(declaration);
+  const deliveries = fixtures.buildDeliveries();
+  assert.equal(deliveries.length, 9);
+  let valid = 0;
+  for (const d of deliveries) {
+    const ours = verifyDeclaredWebhook(declaration, d);
+    const theirs = verifyWiseWebhook(
+      { payload: d.payload, headers: d.headers, secret: "production" },
+      () => [testKey],
+    );
+    assert.equal(ours.valid, theirs.valid, d.name);
+    if (ours.valid) valid++;
+  }
+  assert.equal(valid, 4);
+  // A key that is not RSA, or junk, makes the declaration unrunnable.
+  for (const publicKeys of [[], ["junk"], Array(5).fill(testKey)]) {
+    assert.equal(
+      declaredWebhookVerification(spec({ ...declared, publicKeys })),
+      null,
+    );
+  }
+});
+
+void test("Calendly's header is Stripe's: stripe-v1 agrees with the in-process check", async () => {
+  const { verifyCalendlyWebhook } = await import("../calendly/webhooks");
+  const fixtures =
+    await import("../../../../connectors/calendly/fixtures/webhook-events.mjs");
+  const calendly = await folderSpec("calendly");
+  const declaration = declaredWebhookVerification(calendly);
+  assert.equal(declaration?.scheme, "stripe-v1");
+  const {
+    type: _t,
+    id: _i,
+    ...body
+  } = fixtures.buildWebhookEvents()[0].rawPayload as Record<string, unknown>;
+  const deliveries = fixtures.buildDeliveries(body);
+  assert.equal(deliveries.length, 10);
+  const at = fixtures.DELIVERY_TIMESTAMP * 1000;
+  const realNow = Date.now;
+  Date.now = () => at; // the in-process check reads the clock itself
+  try {
+    let valid = 0;
+    for (const d of deliveries) {
+      const ours = verifyDeclaredWebhook(declaration!, {
+        ...d,
+        now: new Date(at),
+      });
+      const theirs = verifyCalendlyWebhook(d);
+      assert.equal(ours.valid, theirs.valid, d.name);
+      if (ours.valid) valid++;
+    }
+    assert.equal(valid, 2);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+void test("an event id comes from a declared header, one path, or several joined", () => {
+  const identity = (webhooks: Record<string, unknown>) =>
+    declaredWebhookIdentity({ mako: { webhooks } });
+  const body = {
+    created_at: "2026-11-16T10:00:00Z",
+    payload: { uri: "https://api.calendly.com/x/1" },
+    event: "invitee.created",
+  };
+  assert.equal(
+    declaredEventId(
+      identity({ eventIdPath: ["created_at", "payload.uri"] }),
+      body,
+    ),
+    "2026-11-16T10:00:00Z:https://api.calendly.com/x/1",
+  );
+  // One path missing: no declared id, the route's fallbacks apply.
+  assert.equal(
+    declaredEventId(
+      identity({ eventIdPath: ["created_at", "payload.id"] }),
+      body,
+    ),
+    undefined,
+  );
+  assert.equal(
+    declaredEventId(
+      identity({ eventIdHeader: "x-delivery-id", eventIdPath: "event" }),
+      body,
+      { "X-Delivery-Id": "d-1" },
+    ),
+    "d-1",
+  );
+  assert.equal(
+    declaredEventId(
+      identity({ eventIdHeader: "x-delivery-id", eventIdPath: "event" }),
+      body,
+      {},
+    ),
+    "invitee.created",
+  );
+  for (const bad of [
+    { eventIdPath: [] },
+    { eventIdPath: Array(5).fill("a") },
+    { eventIdPath: ["a/b"] },
+    { eventIdHeader: "X-Id" },
+  ]) {
+    const got = identity(bad);
+    assert.equal(got.eventIdPath, undefined, JSON.stringify(bad));
+    assert.equal(got.eventIdHeader, undefined, JSON.stringify(bad));
+  }
+});
+
+void test("a forged Wise test ping can not take a real delivery's event id", async () => {
+  const { SandboxedConnector } = await import("./SandboxedConnector");
+  const fixtures =
+    await import("../../../../connectors/wise/fixtures/webhook-events.mjs");
+  const wise = await folderSpec("wise");
+  const testKey = fixtures.TEST_WEBHOOK_KEYS.publicKey;
+  const wiseSpec = {
+    ...wise,
+    mako: {
+      ...wise.mako,
+      webhooks: {
+        ...wise.mako.webhooks,
+        verification: {
+          ...wise.mako.webhooks.verification,
+          publicKeys: [testKey],
+        },
+      },
+    },
+  };
+  class SpecWise extends SandboxedConnector {
+    constructor() {
+      super({
+        _id: "665f00000000000000000002",
+        workspaceId: "ws1",
+        name: "Wise",
+        type: "ws:wise",
+        config: {},
+      } as never);
+      this.loaded = { slug: "wise", spec: wiseSpec, entities: [] } as never;
+    }
+  }
+  const connector = new SpecWise();
+  const declaration = declaredWebhookVerification(wiseSpec)!;
+  const identify = (d: {
+    payload: string;
+    headers: Record<string, string>;
+  }) => {
+    const result = verifyDeclaredWebhook(declaration, d);
+    assert.ok(result.valid);
+    return connector.webhookEventIdentity(result.event, d.payload, d.headers);
+  };
+
+  const [real] = fixtures
+    .buildDeliveries()
+    .filter((d: { name: string }) => d.name === "valid");
+  const realId = identify(real).eventId;
+  assert.equal(realId, real.headers["x-delivery-id"]);
+
+  // The same delivery id on an unsigned ping: keyed apart, never equal.
+  const forged = {
+    payload: "{}",
+    headers: {
+      "x-test-notification": "true",
+      "x-delivery-id": real.headers["x-delivery-id"],
+    },
+  };
+  const ping = identify(forged);
+  assert.equal(ping.eventId, `test:${real.headers["x-delivery-id"]}`);
+  assert.notEqual(ping.eventId, realId);
+  // Without a delivery id it is still a `test:` id.
+  const bare = identify({
+    payload: "{}",
+    headers: { "x-test-notification": "TRUE" },
+  });
+  assert.match(bare.eventId, /^test:/);
+  // A delivery that is not a ping keeps its plain header id.
+  assert.equal(
+    connector.webhookEventIdentity({}, "{}", { "x-delivery-id": "d-2" })
+      .eventId,
+    "d-2",
+  );
 });

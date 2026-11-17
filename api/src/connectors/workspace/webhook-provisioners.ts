@@ -7,7 +7,7 @@
  * connector. The secret goes straight onto `flow.webhookConfig.secret`
  * (flow-webhook-subscription.service.ts) and nowhere else.
  *
- * Close and Stripe so far, keyed by the folder's slug. A folder of that name
+ * Close, PandaDoc, Claap, Stripe, Wise and Calendly, keyed by the folder's slug. A folder of that name
  * gets the vendor's provisioning only if it also declares a verification
  * scheme Mako can run
  * (SandboxedConnector checks). The client is the vendor's default base URL,
@@ -15,6 +15,7 @@
  */
 import type Stripe from "stripe";
 import type {
+  DeleteWebhookSubscriptionOptions,
   ProvisionWebhookOptions,
   ProvisionWebhookResult,
   UpdateWebhookSubscriptionOptions,
@@ -35,6 +36,8 @@ export interface WebhookProvisioner {
   update(
     options: UpdateWebhookSubscriptionOptions,
   ): Promise<ProvisionWebhookResult | null>;
+  /** Remove every subscription on the URL; only where `canDelete`. */
+  delete?(options: DeleteWebhookSubscriptionOptions): Promise<number>;
 }
 
 type ProvisionerFactory = (
@@ -48,6 +51,8 @@ interface ProvisionerEntry {
    * connector's `supportsWebhookSubscriptionUpdate`. False: Mako creates.
    */
   canUpdate: boolean;
+  /** Whether `delete` removes the subscriptions of a deleted flow. */
+  canDelete?: boolean;
   /** As the built-in connector's `getWebhookCapabilities()`. */
   storesSecretAutomatically: boolean;
   secretHelpText?: string;
@@ -59,6 +64,60 @@ const apiKeyOf = (config: Record<string, unknown>, vendor: string): string => {
   if (!apiKey.trim()) throw new Error(`${vendor} API key not configured`);
   return apiKey;
 };
+
+const credential = (config: Record<string, unknown>, key: string) =>
+  typeof config[key] === "string" ? (config[key] as string) : "";
+
+/** Wise's production and sandbox API hosts, as the folder allows them. */
+const WISE_HOSTS = new Set([
+  "api.wise.com",
+  "api.transferwise.com",
+  "api.sandbox.transferwise.tech",
+  "sandbox.transferwise.tech",
+  "api.sandbox.wise.com",
+  "sandbox.wise.com",
+]);
+
+/** `https://<host>` when `value` is an https URL on a Wise host, else undefined. */
+function wiseHostUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "https:" || !WISE_HOSTS.has(url.hostname)) {
+      return undefined;
+    }
+    if (url.username || url.password || url.port) return undefined;
+    return `https://${url.hostname}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The config a built-in connector provisions with: the credential (and
+ * Wise's profile), and `api_base_url` only when it is one of Wise's own
+ * HTTPS hosts, so the key goes only to the vendor. Throws when the
+ * credential is missing.
+ */
+export function builtInProvisioningConfig(
+  slug: "wise" | "calendly",
+  config: Record<string, unknown>,
+): Record<string, string> {
+  if (slug === "wise") {
+    const apiKey = credential(config, "api_key");
+    if (!apiKey.trim()) throw new Error("Wise API token not configured");
+    const profileId = credential(config, "profile_id");
+    const baseUrl = wiseHostUrl(config.api_base_url);
+    return {
+      api_key: apiKey,
+      ...(profileId ? { profile_id: profileId } : {}),
+      ...(baseUrl ? { api_base_url: baseUrl } : {}),
+    };
+  }
+  const token = credential(config, "access_token");
+  if (!token.trim()) throw new Error("Calendly access token not configured");
+  return { access_token: token };
+}
 
 const PROVISIONERS: Record<string, ProvisionerEntry> = {
   close: {
@@ -125,6 +184,52 @@ const PROVISIONERS: Record<string, ProvisionerEntry> = {
         name: "Claap",
         type: "claap",
         config: { api_key: apiKey },
+      } as never);
+      return {
+        create: options => connector.createWebhookSubscription(options),
+        update: async () => null,
+      };
+    },
+  },
+  // The built-in connector itself, on the token and profile, plus
+  // `api_base_url` only when it is Wise's own host (a sandbox connection
+  // provisions in the sandbox). Profile subscriptions on every profile it
+  // syncs; Wise signs with its RSA keys, so the "secret" names the key set.
+  wise: {
+    canUpdate: true,
+    canDelete: true,
+    storesSecretAutomatically: true,
+    actionHint:
+      "on every profile this connection syncs and records which Wise signing key verifies it",
+    secretHelpText:
+      'Wise signs webhooks with its RSA public keys, not a shared secret: this field only names the key set — "production" (or blank) or "sandbox". Creating the webhook in Wise fills it in.',
+    factory: async config => {
+      const { WiseConnector } = await import("../wise/connector");
+      const connector = new WiseConnector({
+        id: "webhook-provisioning",
+        name: "Wise",
+        type: "wise",
+        config: builtInProvisioningConfig("wise", config),
+      } as never);
+      return {
+        create: options => connector.createWebhookSubscription(options),
+        update: options => connector.updateWebhookSubscription(options),
+        delete: options => connector.deleteWebhookSubscription(options),
+      };
+    },
+  },
+  // The built-in's organization-scoped `createWebhookSubscription` on the
+  // token alone (api.calendly.com). Calendly returns the signing key.
+  calendly: {
+    canUpdate: false,
+    storesSecretAutomatically: true,
+    factory: async config => {
+      const { CalendlyConnector } = await import("../calendly/connector");
+      const connector = new CalendlyConnector({
+        id: "webhook-provisioning",
+        name: "Calendly",
+        type: "calendly",
+        config: builtInProvisioningConfig("calendly", config),
       } as never);
       return {
         create: options => connector.createWebhookSubscription(options),

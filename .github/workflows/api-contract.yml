@@ -120,6 +120,8 @@ jobs:
           npm ci --prefix connectors/posthog --no-audit --no-fund --ignore-scripts
           npm ci --prefix connectors/pandadoc --no-audit --no-fund --ignore-scripts
           npm ci --prefix connectors/claap --no-audit --no-fund --ignore-scripts
+          npm ci --prefix connectors/wise --no-audit --no-fund --ignore-scripts
+          npm ci --prefix connectors/calendly --no-audit --no-fund --ignore-scripts
 
       - name: App SDK version is published to npm
         # Scaffolds depend on `@makoai/app-sdk@^<vendored version>` (from

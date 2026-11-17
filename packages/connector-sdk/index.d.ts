@@ -118,7 +118,8 @@ export interface StripeV1WebhookVerification {
 export type WebhookVerification =
   | HmacWebhookVerification
   | StripeV1WebhookVerification
-  | SharedSecretWebhookVerification;
+  | SharedSecretWebhookVerification
+  | RsaWebhookVerification;
 
 /**
  * A vendor that does not sign: it sends the secret itself in a header
@@ -201,6 +202,26 @@ export type WebhookOutcome =
   /** Not now, e.g. a request budget is spent. Retried later, the attempt not counted. */
   | { eventId: string; outcome: "deferred"; reason?: string };
 
+/**
+ * A vendor that signs the raw body with its own RSA keys (Wise). No secret:
+ * the public keys are declared here, and a signature any one verifies is
+ * valid.
+ */
+export interface RsaWebhookVerification {
+  scheme: "rsa-sha256";
+  /** 1 to 4 PEM public keys (SPKI). */
+  publicKeys: string[];
+  /** Lowercase name of the header with the signature of the raw body. */
+  signatureHeader: string;
+  signatureEncoding: "hex" | "base64";
+  /**
+   * The vendor's unsigned test ping: a delivery whose `header` equals
+   * `value` (ignoring case) is answered and stored under `eventType` with
+   * no payload, so a handler answers it `unmapped`.
+   */
+  testNotification?: { header: string; value: string; eventType: string };
+}
+
 export interface WebhookDefinition<Config = Record<string, unknown>> {
   verification: WebhookVerification;
   /** Every event type the connector handles, for subscribing at the vendor. */
@@ -211,7 +232,12 @@ export interface WebhookDefinition<Config = Record<string, unknown>> {
    * or when the path holds no id, Mako uses `id`, then `event.id`, then a
    * SHA-1 of the raw body.
    */
-  eventIdPath?: string;
+  eventIdPath?: string | string[];
+  /**
+   * A header carrying the vendor's delivery id (Wise's `x-delivery-id`).
+   * Read before `eventIdPath`. A list of paths joins their values with ":".
+   */
+  eventIdHeader?: string;
   /** Where the event type sits, as a dotted path (`"event.type"`, `"0.event"`). */
   eventTypePath?: string;
   /**

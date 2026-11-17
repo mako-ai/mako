@@ -23,6 +23,7 @@ import {
   type FetchOptions,
   type FetchState,
   type IncrementalCapabilities,
+  type DeleteWebhookSubscriptionOptions,
   type ProvisionWebhookOptions,
   type ProvisionWebhookResult,
   type ResumableFetchOptions,
@@ -75,7 +76,9 @@ import {
   webhookProvisionerTraits,
 } from "./webhook-provisioners";
 import {
+  declaredEventId,
   declaredWebhookIdentity,
+  isDeclaredTestNotification,
   declaredWebhookVerification,
   valueAtPath,
   verifyDeclaredWebhook,
@@ -1288,20 +1291,45 @@ export class SandboxedConnector extends BaseConnector {
   /**
    * The id and type of a verified delivery, for the box lane's stored
    * event. The connector may say where they sit in the body
-   * (`webhooks.eventIdPath` / `eventTypePath`). Otherwise the id is `id`,
+   * (`webhooks.eventIdPath` / `eventTypePath`), or name a header with its
+   * delivery id (`eventIdHeader`). Otherwise the id is `id`,
    * then `event.id`, then a SHA-1 of the raw body, so a vendor's
    * re-delivery of the same body dedupes instead of getting a random id.
    */
   webhookEventIdentity(
     event: unknown,
     rawBody: string,
+    headers: Record<string, string | string[] | undefined> = {},
   ): { eventId: string; eventType?: string } {
-    const { eventIdPath, eventTypePath } = declaredWebhookIdentity(
-      this.loaded?.spec,
-    );
+    const identity = declaredWebhookIdentity(this.loaded?.spec);
+    const { eventTypePath } = identity;
     const e = event as { id?: unknown; event?: { id?: unknown } } | null;
+    // An unsigned test ping never takes a declared id: anyone can send one,
+    // so `x-delivery-id` alone would let it claim a real delivery's slot
+    // and get the real one dropped as a duplicate. `test:<id>`, as in-process.
+    if (
+      isDeclaredTestNotification(
+        declaredWebhookVerification(this.loaded?.spec),
+        headers,
+      )
+    ) {
+      const deliveryId = identity.eventIdHeader
+        ? declaredEventId(
+            { eventIdHeader: identity.eventIdHeader },
+            undefined,
+            headers,
+          )
+        : undefined;
+      return {
+        eventId: deliveryId
+          ? `test:${deliveryId}`
+          : typeof e?.id === "string" && e.id.startsWith("test:")
+            ? e.id
+            : `test:${createHash("sha1").update(rawBody, "utf8").digest("hex")}`,
+      };
+    }
     const eventId =
-      (eventIdPath ? valueAtPath(event, eventIdPath) : undefined) ??
+      declaredEventId(identity, event, headers) ??
       (typeof e?.id === "string" && e.id ? e.id : undefined) ??
       (typeof e?.event?.id === "string" && e.event.id
         ? e.event.id
@@ -1329,6 +1357,20 @@ export class SandboxedConnector extends BaseConnector {
       this.supportsWebhookProvisioning() &&
       webhookProvisionerTraits(this.slug)?.canUpdate === true
     );
+  }
+
+  supportsWebhookSubscriptionDelete(): boolean {
+    return (
+      this.supportsWebhookProvisioning() &&
+      webhookProvisionerTraits(this.slug)?.canDelete === true
+    );
+  }
+
+  async deleteWebhookSubscription(
+    options: DeleteWebhookSubscriptionOptions,
+  ): Promise<number> {
+    const provisioner = await this.webhookProvisioner();
+    return provisioner.delete ? provisioner.delete(options) : 0;
   }
 
   getWebhookCapabilities(): WebhookCapabilities {

@@ -45,7 +45,54 @@ const INCREMENTAL_MODES = ["native", "client-filter", "created-anchor"];
  * `signatureHeader`, `secretEncoding: "utf8"` and `toleranceSeconds`; the
  * signed bytes are fixed by the scheme, and the timestamp is always signed.
  */
-export const WEBHOOK_VERIFICATION_SCHEMES = ["hmac-sha256", "stripe-v1", "shared-secret"];
+export const WEBHOOK_VERIFICATION_SCHEMES = ["hmac-sha256", "stripe-v1", "shared-secret", "rsa-sha256"];
+const RSA_KEYS = new Set(["scheme", "publicKeys", "signatureHeader", "signatureEncoding", "testNotification"]);
+const PEM_PUBLIC_KEY = /^-----BEGIN PUBLIC KEY-----\n?[A-Za-z0-9+/=\s]{64,4096}\n?-----END PUBLIC KEY-----\n?$/;
+const EVENT_TYPE = /^[A-Za-z0-9_.:#-]{1,64}$/;
+
+/**
+ * A vendor that signs the raw body with its own RSA keys (Wise): no secret,
+ * the vendor's public keys declared as data, any one of which may verify.
+ * `testNotification` names the vendor's unsigned test ping, which Mako
+ * answers and stores under `eventType` with no payload.
+ */
+function validateRsa(v) {
+  const problems = [];
+  for (const key of Object.keys(v)) {
+    if (!RSA_KEYS.has(key)) problems.push(`webhooks.verification.${key} is not part of the rsa-sha256 scheme`);
+  }
+  if (
+    !Array.isArray(v.publicKeys) ||
+    v.publicKeys.length === 0 ||
+    v.publicKeys.length > 4 ||
+    v.publicKeys.some(key => typeof key !== "string" || !PEM_PUBLIC_KEY.test(key.trim() + "\n"))
+  ) {
+    problems.push("webhooks.verification.publicKeys must list 1 to 4 PEM public keys");
+  }
+  if (typeof v.signatureHeader !== "string" || !HEADER_NAME.test(v.signatureHeader)) {
+    problems.push("webhooks.verification.signatureHeader must be a lowercase header name");
+  }
+  if (!SIGNATURE_ENCODINGS.includes(v.signatureEncoding)) {
+    problems.push(`webhooks.verification.signatureEncoding must be one of ${SIGNATURE_ENCODINGS.join(", ")}`);
+  }
+  if (v.testNotification !== undefined) {
+    const t = v.testNotification;
+    if (
+      !t ||
+      typeof t !== "object" ||
+      typeof t.header !== "string" ||
+      !HEADER_NAME.test(t.header) ||
+      typeof t.value !== "string" ||
+      t.value.length === 0 ||
+      t.value.length > 64 ||
+      typeof t.eventType !== "string" ||
+      !EVENT_TYPE.test(t.eventType)
+    ) {
+      problems.push("webhooks.verification.testNotification must be { header, value, eventType }");
+    }
+  }
+  return problems;
+}
 const STRIPE_V1_KEYS = new Set(["scheme", "signatureHeader", "secretEncoding", "toleranceSeconds"]);
 
 function validateStripeV1(v) {
@@ -79,6 +126,7 @@ export function validateWebhookVerification(verification) {
   }
   const v = verification;
   if (v.scheme === "stripe-v1") return validateStripeV1(v);
+  if (v.scheme === "rsa-sha256") return validateRsa(v);
   const problems = [];
   if (!WEBHOOK_VERIFICATION_SCHEMES.includes(v.scheme)) {
     problems.push(`webhooks.verification.scheme must be one of ${WEBHOOK_VERIFICATION_SCHEMES.join(", ")}`);
@@ -197,6 +245,7 @@ export function defineConnector(definition) {
                   verification: definition.webhooks.verification,
                   ...(definition.webhooks.events ? { events: [...definition.webhooks.events] } : {}),
                   ...(definition.webhooks.eventIdPath ? { eventIdPath: definition.webhooks.eventIdPath } : {}),
+                  ...(definition.webhooks.eventIdHeader ? { eventIdHeader: definition.webhooks.eventIdHeader } : {}),
                   ...(definition.webhooks.eventTypePath ? { eventTypePath: definition.webhooks.eventTypePath } : {}),
                 },
               }
@@ -354,10 +403,20 @@ function validateDefinition(definition) {
       ) {
         problems.push("webhooks.events must be an array of event names");
       }
-      for (const key of ["eventIdPath", "eventTypePath"]) {
-        if (webhooks[key] !== undefined && (typeof webhooks[key] !== "string" || !BODY_PATH.test(webhooks[key]))) {
-          problems.push(`webhooks.${key} must be a dotted path into the body, like "event.id"`);
-        }
+      if (webhooks.eventTypePath !== undefined && (typeof webhooks.eventTypePath !== "string" || !BODY_PATH.test(webhooks.eventTypePath))) {
+        problems.push('webhooks.eventTypePath must be a dotted path into the body, like "event.id"');
+      }
+      // One path, or up to 4 whose values join with ":" (Calendly's id is
+      // its `created_at` and the payload's `uri`).
+      const idPaths = Array.isArray(webhooks.eventIdPath) ? webhooks.eventIdPath : [webhooks.eventIdPath];
+      if (
+        webhooks.eventIdPath !== undefined &&
+        (idPaths.length === 0 || idPaths.length > 4 || idPaths.some(p => typeof p !== "string" || !BODY_PATH.test(p)))
+      ) {
+        problems.push('webhooks.eventIdPath must be a dotted path into the body, like "event.id", or a list of 1 to 4');
+      }
+      if (webhooks.eventIdHeader !== undefined && (typeof webhooks.eventIdHeader !== "string" || !HEADER_NAME.test(webhooks.eventIdHeader))) {
+        problems.push("webhooks.eventIdHeader must be a lowercase header name");
       }
     }
   }

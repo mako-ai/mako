@@ -8,13 +8,36 @@
  * a declaration is code: a scheme name, encodings, header names and literal
  * text. Anything this file does not know fails closed.
  */
-import { createHmac, timingSafeEqual } from "node:crypto";
+import {
+  createHmac,
+  createPublicKey,
+  randomUUID,
+  timingSafeEqual,
+  verify as verifySignature,
+  type KeyObject,
+} from "node:crypto";
 import type { WebhookVerificationResult } from "../base/BaseConnector";
 
 export type DeclaredWebhookVerification =
   | DeclaredHmacVerification
   | DeclaredStripeV1Verification
-  | DeclaredSharedSecretVerification;
+  | DeclaredSharedSecretVerification
+  | DeclaredRsaVerification;
+
+/**
+ * A vendor that signs the raw body with its own RSA keys (Wise). No secret:
+ * the connector declares the vendor's public keys, and a signature any one
+ * of them verifies is valid. A declared `testNotification` (the vendor's
+ * unsigned test ping) is answered without a signature and stored under its
+ * `eventType` with no payload, so nothing it says reaches a table.
+ */
+export interface DeclaredRsaVerification {
+  scheme: "rsa-sha256";
+  publicKeys: string[];
+  signatureHeader: string;
+  signatureEncoding: "hex" | "base64";
+  testNotification?: { header: string; value: string; eventType: string };
+}
 
 /**
  * A vendor that sends the secret itself in a header (Claap). Compared in
@@ -78,6 +101,7 @@ export function declaredWebhookVerification(
     ?.webhooks?.verification as Record<string, unknown> | undefined;
   if (!v || typeof v !== "object") return null;
   if (v.scheme === "stripe-v1") return declaredStripeV1(v);
+  if (v.scheme === "rsa-sha256") return declaredRsa(v);
   if (v.scheme === "shared-secret") {
     return typeof v.secretHeader === "string" &&
       HEADER_NAME.test(v.secretHeader)
@@ -180,6 +204,156 @@ const STRIPE_V1_KEYS = new Set([
 ]);
 
 /** A stripe-v1 declaration, exactly its four keys, or null. */
+const RSA_KEYS = new Set([
+  "scheme",
+  "publicKeys",
+  "signatureHeader",
+  "signatureEncoding",
+  "testNotification",
+]);
+const EVENT_TYPE = /^[A-Za-z0-9_.:#-]{1,64}$/;
+const MAX_PUBLIC_KEY_LENGTH = 4096;
+
+/** An RSA public key from PEM (SPKI), or null. */
+function rsaPublicKey(pem: unknown): KeyObject | null {
+  if (typeof pem !== "string" || pem.length > MAX_PUBLIC_KEY_LENGTH) {
+    return null;
+  }
+  if (!pem.trim().startsWith("-----BEGIN PUBLIC KEY-----")) return null;
+  try {
+    const key = createPublicKey({ key: pem, format: "pem" });
+    return key.asymmetricKeyType === "rsa" ? key : null;
+  } catch {
+    return null;
+  }
+}
+
+function declaredRsa(
+  v: Record<string, unknown>,
+): DeclaredRsaVerification | null {
+  if (Object.keys(v).some(key => !RSA_KEYS.has(key))) return null;
+  if (
+    !Array.isArray(v.publicKeys) ||
+    v.publicKeys.length === 0 ||
+    v.publicKeys.length > 4 ||
+    v.publicKeys.some(key => !rsaPublicKey(key))
+  ) {
+    return null;
+  }
+  if (
+    typeof v.signatureHeader !== "string" ||
+    !HEADER_NAME.test(v.signatureHeader)
+  ) {
+    return null;
+  }
+  if (!["hex", "base64"].includes(v.signatureEncoding as string)) return null;
+  let testNotification: DeclaredRsaVerification["testNotification"];
+  if (v.testNotification !== undefined) {
+    const t = v.testNotification as Record<string, unknown> | null;
+    if (
+      !t ||
+      typeof t !== "object" ||
+      typeof t.header !== "string" ||
+      !HEADER_NAME.test(t.header) ||
+      typeof t.value !== "string" ||
+      t.value.length === 0 ||
+      t.value.length > 64 ||
+      typeof t.eventType !== "string" ||
+      !EVENT_TYPE.test(t.eventType)
+    ) {
+      return null;
+    }
+    testNotification = {
+      header: t.header,
+      value: t.value,
+      eventType: t.eventType,
+    };
+  }
+  return {
+    scheme: "rsa-sha256",
+    publicKeys: [...(v.publicKeys as string[])],
+    signatureHeader: v.signatureHeader,
+    signatureEncoding: v.signatureEncoding as "hex" | "base64",
+    ...(testNotification ? { testNotification } : {}),
+  };
+}
+
+/**
+ * An RSA-SHA256 signature of the raw body, by any declared key, or the
+ * declared test ping (answered whatever its signature, with no payload).
+ */
+/** Whether a delivery is the declared (unsigned) test ping. */
+export function isDeclaredTestNotification(
+  declaration: DeclaredWebhookVerification | null,
+  headers: Record<string, string | string[] | undefined>,
+): boolean {
+  if (declaration?.scheme !== "rsa-sha256") return false;
+  const test = declaration.testNotification;
+  return Boolean(
+    test &&
+    header(headers, test.header)?.trim().toLowerCase() ===
+      test.value.toLowerCase(),
+  );
+}
+
+function verifyRsa(
+  declaration: DeclaredRsaVerification,
+  options: {
+    payload: string;
+    headers: Record<string, string | string[] | undefined>;
+  },
+): WebhookVerificationResult {
+  const { payload, headers } = options;
+  if (isDeclaredTestNotification(declaration, headers)) {
+    // Unsigned, so never keyed by a header a forger chooses: a `test:` id
+    // can not take a real delivery's (flow, event id) slot. The box lane
+    // names it `test:<delivery id>` (SandboxedConnector), as in-process.
+    return {
+      valid: true,
+      event: {
+        type: declaration.testNotification!.eventType,
+        id: `test:${randomUUID()}`,
+      },
+    };
+  }
+  const presented = header(headers, declaration.signatureHeader);
+  if (!presented) {
+    return {
+      valid: false,
+      error: `Missing ${declaration.signatureHeader} header`,
+    };
+  }
+  const signature = Buffer.from(presented, declaration.signatureEncoding);
+  let matched = false;
+  if (signature.length > 0) {
+    for (const pem of declaration.publicKeys) {
+      const key = rsaPublicKey(pem);
+      if (!key) continue;
+      try {
+        if (
+          verifySignature(
+            "sha256",
+            Buffer.from(payload, "utf8"),
+            key,
+            signature,
+          )
+        ) {
+          matched = true;
+          break;
+        }
+      } catch {
+        // A signature this key cannot read: try the next key.
+      }
+    }
+  }
+  if (!matched) return { valid: false, error: "Invalid signature" };
+  try {
+    return { valid: true, event: JSON.parse(payload) };
+  } catch {
+    return { valid: false, error: "Invalid JSON payload" };
+  }
+}
+
 function declaredStripeV1(
   v: Record<string, unknown>,
 ): DeclaredStripeV1Verification | null {
@@ -340,6 +514,9 @@ export function verifyDeclaredWebhook(
   if (declaration.scheme === "stripe-v1") {
     return verifyStripeV1(declaration, options);
   }
+  if (declaration.scheme === "rsa-sha256") {
+    return verifyRsa(declaration, options);
+  }
   const { payload, headers, secret } = options;
   if (!secret) return { valid: false, error: "Missing webhook secret" };
   if (declaration.scheme === "shared-secret") {
@@ -460,17 +637,58 @@ function verifySharedSecret(
  * spec. Paths that are not plain dotted names are ignored.
  */
 export function declaredWebhookIdentity(spec: unknown): {
-  eventIdPath?: string;
+  /** One path, or several whose values join with ":". */
+  eventIdPath?: string | string[];
+  /** A header with the vendor's delivery id, read before the body. */
+  eventIdHeader?: string;
   eventTypePath?: string;
 } {
   const w = (spec as { mako?: { webhooks?: Record<string, unknown> } })?.mako
     ?.webhooks;
   const ok = (value: unknown): value is string =>
     typeof value === "string" && BODY_PATH.test(value);
+  const idPath = w?.eventIdPath;
+  const idPaths =
+    Array.isArray(idPath) &&
+    idPath.length > 0 &&
+    idPath.length <= 4 &&
+    idPath.every(ok)
+      ? (idPath as string[])
+      : undefined;
   return {
-    ...(ok(w?.eventIdPath) ? { eventIdPath: w.eventIdPath } : {}),
+    ...(ok(idPath) ? { eventIdPath: idPath } : {}),
+    ...(idPaths ? { eventIdPath: [...idPaths] } : {}),
+    ...(typeof w?.eventIdHeader === "string" &&
+    HEADER_NAME.test(w.eventIdHeader)
+      ? { eventIdHeader: w.eventIdHeader }
+      : {}),
     ...(ok(w?.eventTypePath) ? { eventTypePath: w.eventTypePath } : {}),
   };
+}
+
+/**
+ * A delivery's event id as declared: the id header's value, else the body
+ * path's value, else every listed path's value joined with ":" (all of
+ * them present). Undefined when the declaration finds nothing.
+ */
+export function declaredEventId(
+  identity: ReturnType<typeof declaredWebhookIdentity>,
+  body: unknown,
+  headers: Record<string, string | string[] | undefined> = {},
+): string | undefined {
+  if (identity.eventIdHeader) {
+    const value = header(headers, identity.eventIdHeader);
+    if (value && value.length <= 512) return value;
+  }
+  const paths = identity.eventIdPath;
+  if (typeof paths === "string") return valueAtPath(body, paths);
+  if (Array.isArray(paths)) {
+    const values = paths.map(path => valueAtPath(body, path));
+    if (values.every(v => v !== undefined)) {
+      return values.join(":").slice(0, 512);
+    }
+  }
+  return undefined;
 }
 
 /** The string or number at a dotted path of a parsed body, as a string. */

@@ -131,6 +131,15 @@ Mako dedupes deliveries on their event id. Say where it sits with
 `eventIdPath` (a dotted path into the JSON body, `"eventId"`, `"event.id"`)
 and where the type sits with `eventTypePath` (`"event.type"`, `"0.event"`).
 Without an id, Mako keys a delivery on a SHA-1 of its raw body.
+`eventIdPath` may also be a list of up to 4 paths whose values join with
+":" (Calendly: `["created_at", "payload.uri"]`). `eventIdHeader` names a
+header with the vendor's delivery id (Wise: `"x-delivery-id"`), read first.
+
+A vendor that signs with its own RSA keys (Wise) declares
+`scheme: "rsa-sha256"` with `publicKeys`, `signatureHeader` and
+`signatureEncoding`. No secret is involved. Its unsigned test ping can be
+declared as `testNotification: { header, value, eventType }`: Mako answers
+it and stores it under `eventType` with no payload.
 
 Mako stores verified deliveries and hands them to `handleBatch` in batches
 (`mako-connector webhook --config config.json --batch batch.json`), with
