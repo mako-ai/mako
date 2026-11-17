@@ -161,11 +161,34 @@ describe("a database connection's writers", () => {
         connectionId: DB.toString(),
         addWriters: [{ principal }],
       });
-      answers.push(String(result.error).replace(/^\S+/, ""));
+      // Neither whether the address has an account, nor its id.
+      expect(String(result.error)).not.toContain("user:");
+      answers.push(String(result.error).replace(principal, "<email>"));
     }
-    expect(answers[0]).toBe(" is not a member of this workspace");
+    expect(answers[0]).toBe("<email> is not a member of this workspace");
     expect(answers[1]).toBe(answers[0]);
     expect((await database())?.writers).toHaveLength(1);
+  });
+
+  it("refuses the caller adding themselves, by id or by email", async () => {
+    await User.collection.insertOne({
+      _id: "admin1",
+      email: "admin1@example.com",
+    } as never);
+    for (const principal of ["user:admin1", "admin1@example.com"]) {
+      const result = await as("admin1")({
+        connectionId: DB.toString(),
+        addWriters: [{ principal }],
+      });
+      expect(result.error).toMatch(/cannot add yourself/);
+    }
+    // Another admin (here the owner) may add them.
+    const byOwner = await as("owner1")({
+      connectionId: DB.toString(),
+      addWriters: [{ principal: "user:admin1" }],
+    });
+    expect(byOwner.error).toBeUndefined();
+    expect((await database())?.writers).toHaveLength(2);
   });
 
   it("refuses source-only settings and an unlistable principal", async () => {
@@ -184,7 +207,7 @@ describe("a database connection's writers", () => {
   });
 
   it("an unchanged list writes nothing", async () => {
-    const result = await as("admin1")({
+    const result = await as("owner1")({
       connectionId: DB.toString(),
       addWriters: [{ principal: "user:admin1", where: "finance" }],
     });
@@ -257,6 +280,21 @@ describe("a source connection's access", () => {
       (await as("manager1")({ connectionId: id, addLiveReaders: ["user:x9"] }))
         .error,
     ).toMatch(/not a member/);
+    const stranger = await as("manager1")({
+      connectionId: id,
+      addWriters: [{ principal: "stranger@example.com" }],
+    });
+    expect(stranger.error).toBe(
+      "stranger@example.com is not a member of this workspace",
+    );
+    expect(
+      (
+        await as("manager1")({
+          connectionId: id,
+          addWriters: [{ principal: "user:manager1" }],
+        })
+      ).error,
+    ).toMatch(/cannot add yourself/);
     expect(
       (
         await as("manager1")({
