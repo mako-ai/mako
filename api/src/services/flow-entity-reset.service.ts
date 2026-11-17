@@ -17,6 +17,7 @@ import {
 } from "../database/workspace-schema";
 import { databaseRegistry } from "../databases/registry";
 import { cdcBackfillService } from "../sync-cdc/backfill";
+import { openFlowDataDiff } from "../sync-cdc/data-diff";
 import { resolveConfiguredEntities } from "../sync-cdc/entity-selection";
 import { cdcLiveTableName, cdcStageTableName } from "../sync-cdc/normalization";
 import { buildColumnResetQuery } from "./flow-column-reset-sql";
@@ -53,6 +54,18 @@ export async function resetFlowEntity(params: {
     throw new FlowRequestError(400, "Entity reset requires syncEngine=cdc");
   }
   await assertCanStartBackfill(workspaceId, flowId);
+
+  // Count what the table holds before it goes, for the data-diff check the
+  // refilling backfill closes.
+  await openFlowDataDiff({
+    flow: {
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+      tableDestination: flow.tableDestination,
+    },
+    entities: [entity],
+    reasons: ["entity-reset"],
+  });
 
   if (flow.tableDestination?.connectionId && flow.tableDestination?.schema) {
     const destination = await DatabaseConnection.findOne(

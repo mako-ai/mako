@@ -42,6 +42,11 @@ import { workspaceService } from "../../services/workspace.service";
 import { cdcBackfillService } from "../../sync-cdc/backfill";
 import { resyncLastRunAt } from "../../services/resync-schedule";
 import { cancelFlowRuns } from "../../services/flow-cancel.service";
+import {
+  DATA_DIFF_MIN_LOST,
+  DATA_DIFF_MIN_RATIO,
+  listFlowDataDiffs,
+} from "../../sync-cdc/data-diff";
 
 const OBJECT_ID = /^[0-9a-f]{24}$/i;
 const RECENT_EXECUTIONS = 5;
@@ -149,6 +154,30 @@ async function findFlow(workspaceId: string, ref: string) {
   throw new Error(`No sync "${ref}" in this workspace. flow_list shows them.`);
 }
 
+type DataDiffRow = Awaited<ReturnType<typeof listFlowDataDiffs>>[number];
+
+/** One data-diff check as flow_status and flow_data_diff show it. */
+export function summarizeDataDiff(check: DataDiffRow, flagLimit?: number) {
+  const flagged = check.flagged ?? [];
+  return {
+    status: check.status,
+    reasons: check.reasons,
+    baselineAt: check.baselineAt,
+    comparedAt: check.comparedAt ?? null,
+    executionId: check.executionId ?? null,
+    ...(check.from ? { baselineFrom: check.from } : {}),
+    tables: (check.tables ?? []).map(t => ({
+      entity: t.entity,
+      table: t.table,
+      rowsBefore: t.before?.rows ?? null,
+      rowsAfter: t.after?.rows ?? null,
+      ...(t.error ? { error: t.error } : {}),
+    })),
+    flaggedCount: flagged.length,
+    flagged: flagLimit === undefined ? flagged : flagged.slice(0, flagLimit),
+  };
+}
+
 /** The same precondition every flow write route checks first. */
 async function assertFlowRepo(workspaceId: string): Promise<void> {
   await requireWorkspaceRepo(workspaceId);
@@ -224,7 +253,7 @@ export function createFlowSyncTools({
 
     flow_status: tool({
       description:
-        "How a sync is doing, per entity: mode (steady / backfill), backlog, consecutive failures and the last error, last materialised, last backfill, lifetime events and rows; plus its last runs. Use it after flow_backfill or flow_update, and to find a sync that went quiet.",
+        "How a sync is doing, per entity: mode (steady / backfill), backlog, consecutive failures and the last error, last materialised, last backfill, lifetime events and rows; its last runs; and its last data-diff check (columns that lost non-null values, see flow_data_diff). Use it after flow_backfill or flow_update, and to find a sync that went quiet.",
       inputSchema: z.object({
         flow: flowRef,
         executions: z
@@ -250,6 +279,7 @@ export function createFlowSyncTools({
           })
             .sort({ entity: 1 })
             .lean();
+          const [lastDiff] = await listFlowDataDiffs(flow._id, 1);
           const runs = await FlowExecution.find({ flowId: flow._id })
             .sort({ startedAt: -1 })
             .limit(executions ?? RECENT_EXECUTIONS)
@@ -275,6 +305,7 @@ export function createFlowSyncTools({
               lifetimeEventsProcessed: s.lifetimeEventsProcessed,
               lifetimeRowsApplied: s.lifetimeRowsApplied,
             })),
+            dataDiff: lastDiff ? summarizeDataDiff(lastDiff, 10) : null,
             executions: runs.map(r => ({
               id: r._id.toString(),
               status: r.status,
@@ -284,6 +315,34 @@ export function createFlowSyncTools({
               durationMs: r.duration ?? null,
               error: r.error?.message ?? null,
             })),
+          };
+        } catch (error) {
+          return failure(error);
+        }
+      },
+    }),
+
+    flow_data_diff: tool({
+      description: `The data-diff checks of a sync, newest first. A check records each destination column's non-null count before a write that can rewrite rows (a backfill or resync, an entity reset, a connector, connector-code or destination change) and again after the next successful run. \`flagged\` lists the columns (and "(rows)") that lost more than ${DATA_DIFF_MIN_LOST} values and ${DATA_DIFF_MIN_RATIO * 100}% of their baseline, scaled down when the table shrank. status "open" means the baseline waits for a run.`,
+      inputSchema: z.object({
+        flow: flowRef,
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(20)
+          .optional()
+          .describe("How many checks to show (default 5)"),
+      }),
+      execute: async ({ flow: ref, limit }) => {
+        try {
+          const flow = await findFlow(workspaceId, ref);
+          const checks = await listFlowDataDiffs(flow._id, limit ?? 5);
+          return {
+            success: true,
+            id: flow._id.toString(),
+            name: flow.name ?? flow.slug,
+            checks: checks.map(check => summarizeDataDiff(check)),
           };
         } catch (error) {
           return failure(error);

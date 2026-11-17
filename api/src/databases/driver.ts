@@ -199,6 +199,18 @@ export interface DatabaseDriver {
     options?: { projectId?: string },
   ): string | null;
 
+  /**
+   * Build one query listing the columns of the given tables, yielding rows
+   * shaped `{ table_name, column_name }`. Defaults (when not implemented) to
+   * the standard `information_schema.columns` filtered on `table_schema`.
+   * BigQuery keeps its INFORMATION_SCHEMA per dataset.
+   */
+  buildColumnListQuery?(
+    schema: string,
+    tableNames: string[],
+    options?: { projectId?: string },
+  ): string;
+
   // ============ WRITE CAPABILITIES (for db-to-db sync) ============
 
   /**

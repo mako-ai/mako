@@ -170,6 +170,18 @@ export class BigQueryDriverCore implements DatabaseDriver {
     return `SELECT table_id, row_count FROM ${dataset}.__TABLES__ WHERE table_id IN (${inList})`;
   }
 
+  buildColumnListQuery(
+    schema: string,
+    tableNames: string[],
+    options?: { projectId?: string },
+  ): string {
+    const inList = tableNames.map(escapeSqlLiteral).join(",");
+    const dataset = options?.projectId
+      ? `\`${options.projectId}\`.\`${schema}\``
+      : `\`${schema}\``;
+    return `SELECT table_name, column_name FROM ${dataset}.INFORMATION_SCHEMA.COLUMNS WHERE table_name IN (${inList}) ORDER BY table_name, ordinal_position`;
+  }
+
   // ============ WRITE CAPABILITIES ============
 
   supportsWrites(): boolean {

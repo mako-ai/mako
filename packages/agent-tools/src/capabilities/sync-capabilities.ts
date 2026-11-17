@@ -49,6 +49,12 @@ export const SYNC_CAPABILITIES: readonly SyncCapabilityDefinition[] = [
     resultKind: "data",
   }),
   define({
+    name: "flow_data_diff",
+    risk: "read",
+    surfaces: EXTERNAL_MCP_ONLY,
+    resultKind: "data",
+  }),
+  define({
     name: "flow_backfill",
     risk: "write",
     minimumWorkspaceRole: "admin",

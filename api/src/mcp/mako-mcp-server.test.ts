@@ -788,7 +788,12 @@ async function main() {
       tools: { name: string; annotations?: { readOnlyHint?: boolean } }[];
     };
     const byName = new Map(tools.map(tool => [tool.name, tool]));
-    for (const read of ["flow_list", "flow_read", "flow_status"]) {
+    for (const read of [
+      "flow_list",
+      "flow_read",
+      "flow_status",
+      "flow_data_diff",
+    ]) {
       assert.ok(byName.has(read), `${read} must be listed for a ${role}`);
       assert.equal(
         byName.get(read)?.annotations?.readOnlyHint,
