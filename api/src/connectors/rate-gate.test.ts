@@ -102,4 +102,56 @@ describe("rate gate", () => {
     ).resolves.toBe(2);
     expect(ran).toEqual([]);
   });
+  it("runs up to maxInFlight requests at once on one key, never more", async () => {
+    let running = 0;
+    let most = 0;
+    const job = () => async () => {
+      running += 1;
+      most = Math.max(most, running);
+      await new Promise(r => setTimeout(r, 5));
+      running -= 1;
+    };
+    // Six entity requests of one flow, three slots: one shared gate.
+    await Promise.all(
+      Array.from({ length: 6 }, () =>
+        throttledRequest("key-slots", job(), 1, "sync", { maxInFlight: 3 }),
+      ),
+    );
+    expect(most).toBe(3);
+  });
+
+  it("keeps one request at a time for callers that pass no maxInFlight", async () => {
+    let running = 0;
+    let most = 0;
+    const job = () => async () => {
+      running += 1;
+      most = Math.max(most, running);
+      await new Promise(r => setTimeout(r, 2));
+      running -= 1;
+    };
+    await Promise.all(
+      Array.from({ length: 4 }, () => throttledRequest("key-one", job(), 0)),
+    );
+    expect(most).toBe(1);
+  });
+
+  it("lets a one-slot proxy request run alone, then the slots refill", async () => {
+    const log: string[] = [];
+    let running = 0;
+    const job = (name: string) => async () => {
+      running += 1;
+      log.push(`${name}:${running}`);
+      await new Promise(r => setTimeout(r, 3));
+      running -= 1;
+    };
+    const syncs = ["s1", "s2", "s3", "s4", "s5", "s6"].map(n =>
+      throttledRequest("key-mixed", job(n), 0, "sync", { maxInFlight: 3 }),
+    );
+    const proxy = throttledRequest("key-mixed", job("p1"), 0, "proxy");
+    await Promise.all([...syncs, proxy]);
+    // The proxy waited for its turn (after four syncs) and ran alone.
+    expect(log).toContain("p1:1");
+    expect(log.indexOf("p1:1")).toBeGreaterThanOrEqual(4);
+    expect(Math.max(...log.map(l => Number(l.split(":")[1])))).toBe(3);
+  });
 });

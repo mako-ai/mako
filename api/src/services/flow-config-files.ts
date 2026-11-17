@@ -115,6 +115,7 @@ export interface FlowFile {
     engine?: string;
     deleteMode?: string;
     batchSize?: number;
+    entityParallelism?: number;
   };
   entityFilter?: string[];
   entityLayouts?: Array<Record<string, unknown>>;
@@ -364,6 +365,7 @@ function renderFlowFile(flow: FlowFile, format: 1 | 2): string {
         : flow.sync.engine,
     delete_mode: flow.sync.deleteMode,
     batch_size: flow.sync.batchSize,
+    entity_parallelism: flow.sync.entityParallelism,
   });
   if (Object.keys(sync).length > 0) doc.sync = sync;
 
@@ -571,6 +573,10 @@ export function parseFlowFileResult(contents: string): FlowFileParse {
       deleteMode: str(syncDoc.delete_mode),
       batchSize:
         typeof syncDoc.batch_size === "number" ? syncDoc.batch_size : undefined,
+      entityParallelism:
+        typeof syncDoc.entity_parallelism === "number"
+          ? syncDoc.entity_parallelism
+          : undefined,
     },
     entityFilter: Array.isArray(entitiesDoc.filter)
       ? (entitiesDoc.filter.filter(e => typeof e === "string") as string[])
@@ -683,6 +689,7 @@ export function flowToFile(flow: IFlow): FlowFile {
       engine: flow.syncEngine,
       deleteMode: flow.deleteMode,
       batchSize: flow.batchSize,
+      entityParallelism: flow.entityParallelism,
     },
     entityFilter: plain<string[]>(flow.entityFilter),
     entityLayouts: plain<Array<Record<string, unknown>>>(flow.entityLayouts),

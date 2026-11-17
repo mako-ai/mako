@@ -28,8 +28,18 @@ export interface FlowRunState {
   cdcBackfillRunId?: string;
 }
 
+/** Inngest's `group` tools, as far as the flow run uses them. */
+export interface FlowRunGroupTools {
+  parallel: <T>(
+    options: { mode?: "race" },
+    callback: () => Promise<T>,
+  ) => Promise<T>;
+}
+
 export interface FlowRunContext {
   step: GetStepTools<typeof inngest>;
+  /** Absent only in tests that build a context by hand. */
+  group?: FlowRunGroupTools;
   logger: Logger;
   flowId: string;
   data: FlowRunEventData;
@@ -60,15 +70,17 @@ export function resolveRunTriggerType(
 
 export function createFlowRunContext(params: {
   step: GetStepTools<typeof inngest>;
+  group?: FlowRunGroupTools;
   logger: Logger;
   data: FlowRunEventData;
 }): FlowRunContext {
-  const { step, logger, data } = params;
+  const { step, group, logger, data } = params;
   const { flowId } = data;
   const state: FlowRunState = {};
 
   return {
     step,
+    group,
     logger,
     flowId,
     data,

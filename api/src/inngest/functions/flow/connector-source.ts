@@ -1,7 +1,8 @@
 /**
  * The connector branch of a flow run: resolve the entities to sync, fan each
  * out to the `sync-backfill-entity` child function (each child gets its own
- * step budget), and — for a CDC backfill — complete the backfill, drain the
+ * step budget), several entities at once (entity-parallelism.ts), and — for a
+ * CDC backfill — once every entity is done, complete the backfill, drain the
  * pending events and start the stream.
  */
 import { Types } from "mongoose";
@@ -20,6 +21,23 @@ import {
   syncMachineService,
 } from "../../../sync-cdc/sync-state";
 import { syncBackfillEntityFunction } from "../sync-entity";
+import {
+  boxLeaseConfig,
+  connectorBoxLeasesEnabled,
+} from "../../../connectors/workspace/boxes/config";
+import {
+  isWorkspaceConnectorType,
+  type SandboxedConnector,
+} from "../../../connectors/workspace/SandboxedConnector";
+import {
+  entityRunConcurrencyKey,
+  entityStepId,
+  resolveEntityParallelism,
+  runEntityLanes,
+  syncEntityViaChild,
+  type EntityInvocationResult,
+} from "./entity-parallelism";
+import { isCancellationError } from "./failure";
 import {
   completeExecutionStep,
   emitSuccessNotification,
@@ -139,22 +157,28 @@ export async function runConnectorSourceFlow(
   const dataSourceId = flow.dataSourceId;
 
   // Check if connector supports chunked execution
-  const supportsChunking = await step.run(
-    "check-chunking-support",
-    async () => {
-      const { sourceConnection, connector } = await loadConnector(
-        dataSourceId.toString(),
-        String(flow.workspaceId),
-      );
-      const supports = connector.supportsResumableFetching();
-      logger.info("Connector chunking support check", {
-        flowId,
-        connectorType: sourceConnection.type,
-        supportsChunking: supports,
-      });
-      return supports;
-    },
-  );
+  const connectorInfo = await step.run("check-chunking-support", async () => {
+    const { sourceConnection, connector } = await loadConnector(
+      dataSourceId.toString(),
+      String(flow.workspaceId),
+    );
+    const supports = connector.supportsResumableFetching();
+    logger.info("Connector chunking support check", {
+      flowId,
+      connectorType: sourceConnection.type,
+      supportsChunking: supports,
+    });
+    // Older runs memoized a bare boolean here.
+    return {
+      supportsChunking: supports,
+      boxed: isWorkspaceConnectorType(sourceConnection.type),
+    };
+  });
+  const supportsChunking =
+    typeof connectorInfo === "boolean"
+      ? connectorInfo
+      : connectorInfo.supportsChunking;
+  const boxed = typeof connectorInfo === "object" && connectorInfo.boxed;
 
   if (!supportsChunking) {
     // Every connector supports chunked fetching; the non-chunked legacy
@@ -248,10 +272,49 @@ export async function runConnectorSourceFlow(
     });
   }
 
-  // Process each entity via fan-out to child functions.
-  // Each child gets its own 1000-step Inngest budget.
-  for (const entity of entitiesToSync) {
-    const safeEntityStepId = entity.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const parallelismDecision = resolveEntityParallelism({
+    entities: entitiesToSync,
+    flowOverride: flow.entityParallelism,
+    boxed,
+    leasesEnabled: connectorBoxLeasesEnabled(),
+    maxLeasesPerConnection: boxLeaseConfig().maxPerConnection,
+  });
+  const { parallelism } = parallelismDecision;
+  logger.info("Entity parallelism for this run", {
+    flowId,
+    entities: entitiesToSync.length,
+    parallelism,
+    limitedBy: parallelismDecision.limitedBy,
+    boxed,
+  });
+
+  // Several entities of a workspace connector starting at once on a cold
+  // sync box would all install the runtime and the connector into it at
+  // the same time. Install once, here, before they start. Best effort:
+  // every chunk still installs what it finds missing.
+  if (boxed && parallelism > 1) {
+    await step.run("prepare-connector-box", async () => {
+      try {
+        const { connector } = await loadConnector(
+          dataSourceId.toString(),
+          String(flow.workspaceId),
+          flow.queries,
+        );
+        await (connector as Partial<SandboxedConnector>).prepareSyncBox?.();
+      } catch (error) {
+        logger.warn("Could not prepare the connector box before the entities", {
+          flowId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+  }
+
+  // Each entity runs in the `sync-backfill-entity` child function, which
+  // gets its own 1000-step Inngest budget; up to `parallelism` at once.
+  // Step ids stay per entity, so they do not depend on which lane ran it.
+  const runEntity = async (entity: string) => {
+    const safeEntityStepId = entityStepId(entity);
     await throwIfExecutionCancelled("connector-before-entity", {
       entity,
     });
@@ -279,7 +342,7 @@ export async function runConnectorSourceFlow(
           );
         });
       }
-      continue;
+      return;
     }
 
     logger.info("Invoking child function for entity sync", {
@@ -308,27 +371,26 @@ export async function runConnectorSourceFlow(
       isCdcEnabled,
       destinationType: destinationType || "",
       queries: flow.queries,
+      runConcurrencyKey: entityRunConcurrencyKey({
+        flowId: flowId.toString(),
+        entity,
+        boxed,
+      }),
     };
 
-    let entityCompleted = false;
-    let invocationIndex = 0;
-    while (!entityCompleted) {
-      const result = (await step.invoke(
-        `sync-entity-${safeEntityStepId}-${invocationIndex}`,
-        {
+    entityStatsMap[entity] = await syncEntityViaChild({
+      entity,
+      invoke: stepId =>
+        step.invoke(stepId, {
           function: syncBackfillEntityFunction,
           data: entityPayload,
-        },
-      )) as { completed: boolean; rowsWritten: number };
-      entityCompleted = result.completed;
-      entityStatsMap[entity] = result.rowsWritten;
-      invocationIndex++;
-      if (invocationIndex > 100) {
-        throw new Error(
-          `Entity ${entity} exceeded 100 continuation invocations`,
-        );
-      }
-    }
+        }) as Promise<EntityInvocationResult>,
+      beforeContinuation: invocationIndex =>
+        throwIfExecutionCancelled("connector-before-entity-continuation", {
+          entity,
+          invocationIndex,
+        }),
+    });
 
     checkpointCompletedEntities.add(entity);
     logger.info("Entity sync completed via child function", {
@@ -336,7 +398,22 @@ export async function runConnectorSourceFlow(
       entity,
       rowsWritten: entityStatsMap[entity],
     });
-  }
+  };
+
+  const { group } = ctx;
+  await runEntityLanes({
+    entities: entitiesToSync,
+    parallelism,
+    runEntity,
+    isCancellation: error =>
+      typeof error === "object" &&
+      error !== null &&
+      isCancellationError(error as Error),
+    // Race mode: Inngest resumes the run as soon as one lane's step settles,
+    // so a free lane takes the next entity at once. Default parallelism
+    // would wait for every lane's step before resuming (a wave of N).
+    parallel: group ? fn => group.parallel({ mode: "race" }, fn) : undefined,
+  });
 
   // Post-backfill CDC state machine: complete the backfill, drain pending
   // events, and (re)start the stream. Applies to any CDC backfill run.
