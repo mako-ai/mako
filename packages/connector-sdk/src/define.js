@@ -27,12 +27,17 @@ const INCREMENTAL_MODES = ["native", "client-filter", "created-anchor"];
  * stored: the secret never reaches a box, so no connector code can check a
  * signature. A connector says which scheme its vendor uses instead.
  *
- * - `scheme`: only `hmac-sha256` for now.
+ * - `scheme`: `hmac-sha256`, or `shared-secret` for a vendor that sends
+ *   the secret itself in a header instead of a signature (Claap).
  * - `secretEncoding`: how the stored secret becomes the HMAC key.
  * - `signedPayload`: the parts signed, in order. `body` is the raw request
  *   body, `header:<name>` a request header, `literal:<text>` fixed text.
  * - `signatureHeader`: the header carrying the signature, in
  *   `signatureEncoding`, after an optional `signaturePrefix` (`sha256=`).
+ * - `signatureQuery`: a query parameter that carries the signature instead
+ *   (PandaDoc's `?signature=`). It is read first; the header is the fallback.
+ * - `secretHeader` (`shared-secret` only): the header that carries the
+ *   secret, compared in constant time.
  *
  * `stripe-v1` is Stripe's scheme, which one header carries whole:
  * `t=<unix seconds>,v1=<hex>[,v1=<hex>...]`, each `v1` an HMAC-SHA256 of
@@ -40,7 +45,7 @@ const INCREMENTAL_MODES = ["native", "client-filter", "created-anchor"];
  * `signatureHeader`, `secretEncoding: "utf8"` and `toleranceSeconds`; the
  * signed bytes are fixed by the scheme, and the timestamp is always signed.
  */
-export const WEBHOOK_VERIFICATION_SCHEMES = ["hmac-sha256", "stripe-v1"];
+export const WEBHOOK_VERIFICATION_SCHEMES = ["hmac-sha256", "stripe-v1", "shared-secret"];
 const STRIPE_V1_KEYS = new Set(["scheme", "signatureHeader", "secretEncoding", "toleranceSeconds"]);
 
 function validateStripeV1(v) {
@@ -64,6 +69,9 @@ function validateStripeV1(v) {
 const SECRET_ENCODINGS = ["hex", "base64", "utf8"];
 const SIGNATURE_ENCODINGS = ["hex", "base64"];
 const HEADER_NAME = /^[a-z0-9-]{1,64}$/;
+const QUERY_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+/** A dotted path into a delivery's JSON body: `eventId`, `event.type`, `0.event`. */
+const BODY_PATH = /^[A-Za-z0-9_]{1,64}(\.[A-Za-z0-9_]{1,64}){0,7}$/;
 
 export function validateWebhookVerification(verification) {
   if (!verification || typeof verification !== "object") {
@@ -74,6 +82,16 @@ export function validateWebhookVerification(verification) {
   const problems = [];
   if (!WEBHOOK_VERIFICATION_SCHEMES.includes(v.scheme)) {
     problems.push(`webhooks.verification.scheme must be one of ${WEBHOOK_VERIFICATION_SCHEMES.join(", ")}`);
+    return problems;
+  }
+  if (v.scheme === "shared-secret") {
+    if (typeof v.secretHeader !== "string" || !HEADER_NAME.test(v.secretHeader)) {
+      problems.push("webhooks.verification.secretHeader must be a lowercase header name");
+    }
+    return problems;
+  }
+  if (v.signatureQuery !== undefined && (typeof v.signatureQuery !== "string" || !QUERY_NAME.test(v.signatureQuery))) {
+    problems.push("webhooks.verification.signatureQuery must be a query parameter name");
   }
   if (!SECRET_ENCODINGS.includes(v.secretEncoding)) {
     problems.push(`webhooks.verification.secretEncoding must be one of ${SECRET_ENCODINGS.join(", ")}`);
@@ -178,6 +196,8 @@ export function defineConnector(definition) {
                 webhooks: {
                   verification: definition.webhooks.verification,
                   ...(definition.webhooks.events ? { events: [...definition.webhooks.events] } : {}),
+                  ...(definition.webhooks.eventIdPath ? { eventIdPath: definition.webhooks.eventIdPath } : {}),
+                  ...(definition.webhooks.eventTypePath ? { eventTypePath: definition.webhooks.eventTypePath } : {}),
                 },
               }
             : {}),
@@ -237,12 +257,19 @@ export function defineConnector(definition) {
      * handler maps each event to change records, re-fetching what a partial
      * payload lacks with `ctx` (the connection's credential, never the
      * webhook secret). Mako filters, stamps and writes the records.
+     * `options.enabledEntities`, when Mako sends it, lists the entities the
+     * flow syncs, so a handler can skip work whose records would be dropped.
      */
-    async handleWebhooks(ctx, events) {
+    async handleWebhooks(ctx, events, options = {}) {
       if (!definition.webhooks) {
         throw new Error(`The connector "${definition.name}" declares no webhooks.`);
       }
-      const outcomes = await definition.webhooks.handleBatch(ctx, events);
+      const enabledEntities = Array.isArray(options.enabledEntities)
+        ? options.enabledEntities.filter(e => typeof e === "string")
+        : undefined;
+      const outcomes = await definition.webhooks.handleBatch(ctx, events, {
+        ...(enabledEntities ? { enabledEntities } : {}),
+      });
       return checkWebhookOutcomes(events, outcomes);
     },
     hasWebhooks: () => Boolean(definition.webhooks),
@@ -326,6 +353,11 @@ function validateDefinition(definition) {
         (!Array.isArray(webhooks.events) || webhooks.events.some(e => typeof e !== "string"))
       ) {
         problems.push("webhooks.events must be an array of event names");
+      }
+      for (const key of ["eventIdPath", "eventTypePath"]) {
+        if (webhooks[key] !== undefined && (typeof webhooks[key] !== "string" || !BODY_PATH.test(webhooks[key]))) {
+          problems.push(`webhooks.${key} must be a dotted path into the body, like "event.id"`);
+        }
       }
     }
   }

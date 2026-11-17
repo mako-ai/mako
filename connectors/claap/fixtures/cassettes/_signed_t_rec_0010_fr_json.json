@@ -1,0 +1,3 @@
+[
+{"request":"GET /signed/t/rec_0010/fr.json?sig=fixture10","status":200,"body":{"segments":[]}}
+]

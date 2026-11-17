@@ -410,6 +410,15 @@ export abstract class BaseConnector {
   }
 
   /**
+   * The event id and type of a verified box-lane delivery, when the
+   * connector knows where they sit. Undefined: the route's own fallbacks.
+   */
+  webhookEventIdentity?(
+    event: unknown,
+    rawBody: string,
+  ): { eventId: string; eventType?: string } | undefined;
+
+  /**
    * Check if connector can provision provider webhooks automatically.
    */
   supportsWebhookProvisioning(): boolean {

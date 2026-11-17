@@ -72,9 +72,12 @@ import { connectorWebhookBatchesEnabled } from "./webhook-config";
 import {
   hasWebhookProvisioner,
   webhookProvisionerFor,
+  webhookProvisionerTraits,
 } from "./webhook-provisioners";
 import {
+  declaredWebhookIdentity,
   declaredWebhookVerification,
+  valueAtPath,
   verifyDeclaredWebhook,
 } from "./webhook-verification";
 import {
@@ -1266,8 +1269,37 @@ export class SandboxedConnector extends BaseConnector {
           ? options.payload
           : JSON.stringify(options.payload),
       headers: options.headers,
+      query: options.query as Record<string, string | string[] | undefined>,
       secret: options.secret,
     });
+  }
+
+  /**
+   * The id and type of a verified delivery, for the box lane's stored
+   * event. The connector may say where they sit in the body
+   * (`webhooks.eventIdPath` / `eventTypePath`). Otherwise the id is `id`,
+   * then `event.id`, then a SHA-1 of the raw body, so a vendor's
+   * re-delivery of the same body dedupes instead of getting a random id.
+   */
+  webhookEventIdentity(
+    event: unknown,
+    rawBody: string,
+  ): { eventId: string; eventType?: string } {
+    const { eventIdPath, eventTypePath } = declaredWebhookIdentity(
+      this.loaded?.spec,
+    );
+    const e = event as { id?: unknown; event?: { id?: unknown } } | null;
+    const eventId =
+      (eventIdPath ? valueAtPath(event, eventIdPath) : undefined) ??
+      (typeof e?.id === "string" && e.id ? e.id : undefined) ??
+      (typeof e?.event?.id === "string" && e.event.id
+        ? e.event.id
+        : undefined) ??
+      createHash("sha1").update(rawBody, "utf8").digest("hex");
+    const eventType = eventTypePath
+      ? valueAtPath(event, eventTypePath)
+      : undefined;
+    return { eventId, ...(eventType ? { eventType } : {}) };
   }
 
   /**
@@ -1282,19 +1314,27 @@ export class SandboxedConnector extends BaseConnector {
   }
 
   supportsWebhookSubscriptionUpdate(): boolean {
-    return this.supportsWebhookProvisioning();
+    return (
+      this.supportsWebhookProvisioning() &&
+      webhookProvisionerTraits(this.slug)?.canUpdate === true
+    );
   }
 
   getWebhookCapabilities(): WebhookCapabilities {
     const provisioning = this.supportsWebhookProvisioning();
+    const traits = provisioning ? webhookProvisionerTraits(this.slug) : null;
     return {
       supported: this.supportsWebhooks(),
       provisioning: {
         supported: provisioning,
         providerLabel: this.getMetadata().name,
-        storesSecretAutomatically: provisioning,
+        storesSecretAutomatically:
+          provisioning && (traits?.storesSecretAutomatically ?? true),
+        ...(traits?.actionHint ? { actionHint: traits.actionHint } : {}),
       },
-      secretHelpText: "Enter the webhook signing secret from your provider",
+      secretHelpText:
+        traits?.secretHelpText ??
+        "Enter the webhook signing secret from your provider",
     };
   }
 
@@ -1337,7 +1377,10 @@ export class SandboxedConnector extends BaseConnector {
    * (webhook-batch.ts), which trusts nothing in it.
    */
   async runWebhookBatch(
-    batch: { events: Array<Record<string, unknown>> },
+    batch: {
+      events: Array<Record<string, unknown>>;
+      enabledEntities?: string[];
+    },
     options: { timeoutMs: number },
   ): Promise<RunResult> {
     await this.definition();
