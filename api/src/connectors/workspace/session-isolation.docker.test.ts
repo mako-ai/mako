@@ -782,6 +782,10 @@ suite(
         "--init",
         "--cap-add",
         "SYS_ADMIN",
+        // Docker's AppArmor profile denies mount even with the capability
+        // (the CI runner has one): a start there is refused, as it should be.
+        "--security-opt",
+        "apparmor=unconfined",
         IMAGE,
         "sleep",
         "infinity",
