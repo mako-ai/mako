@@ -15,6 +15,7 @@ import {
   selectLatestChangePerRecord,
   withSyncedAt,
 } from "../normalization";
+import { writeBatchByKeySet } from "../sparse-rows";
 import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
 
@@ -117,7 +118,8 @@ export class MySqlDestinationAdapter implements CdcDestinationAdapter {
         });
       });
 
-      const write = await writer.writeBatch(
+      const write = await writeBatchByKeySet(
+        writer,
         rows,
         params.layout.writeMode === "append"
           ? {}
@@ -156,7 +158,8 @@ export class MySqlDestinationAdapter implements CdcDestinationAdapter {
           });
         });
 
-        const write = await writer.writeBatch(
+        const write = await writeBatchByKeySet(
+          writer,
           rows,
           params.layout.writeMode === "append"
             ? {}
@@ -220,7 +223,8 @@ export class MySqlDestinationAdapter implements CdcDestinationAdapter {
       });
     });
 
-    const write = await writer.writeBatch(
+    const write = await writeBatchByKeySet(
+      writer,
       rows,
       params.layout.writeMode === "append"
         ? {}

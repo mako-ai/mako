@@ -12,6 +12,7 @@ import {
   Flow,
   ITableDestination,
 } from "../database/workspace-schema";
+import { markAbsentColumns, stripUndefined } from "../sync-cdc/sparse-rows";
 import {
   buildParquetFromBatches,
   isDuckDBMemoryError,
@@ -616,8 +617,10 @@ async function performSyncChunkSql(
           });
 
           const processedRecords = batch.map((record: any) => {
+            // Undefined keys are absent keys. Dropping them here keeps the
+            // Mongo bulk buffer from storing them as null (sparse-rows.ts).
             const normalized = {
-              ...normalizePayloadKeys(record),
+              ...stripUndefined(normalizePayloadKeys(record)),
               _dataSourceId: sourceConnection.id,
               _dataSourceName: sourceConnection.name,
               _syncedAt: new Date(),
@@ -863,6 +866,16 @@ async function flushBulkBuffer(
     },
   );
 
+  // A buffered row lacks the schema columns its source read did not return
+  // (Close Search never returns lead.source, only webhooks do). Staging
+  // still has every schema column, so mark the ones each row lacks and the
+  // MERGE keeps their live values (sparse-rows.ts).
+  const schemaColumnNames = schemaFields?.map(f => f.name) ?? [];
+  const markRows = (rows: Record<string, unknown>[]) =>
+    cdcAdapter.honoursAbsentColumns && schemaColumnNames.length > 0
+      ? markAbsentColumns(rows, schemaColumnNames)
+      : rows;
+
   const DELETE_CHUNK = 2000;
   const CONSECUTIVE_OK_TO_GROW = 5;
   let consecutiveSuccesses = 0;
@@ -910,12 +923,12 @@ async function flushBulkBuffer(
             }
             buffer.push(rest);
             if (buffer.length >= MONGO_TO_PARQUET_CHUNK) {
-              await insertBatch(buffer);
+              await insertBatch(markRows(buffer));
               buffer = [];
             }
           }
           if (buffer.length > 0) {
-            await insertBatch(buffer);
+            await insertBatch(markRows(buffer));
           }
           if (currentChunk.length > 0) {
             docIdChunks.push(currentChunk);

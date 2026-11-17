@@ -34,6 +34,11 @@ export interface CdcEntityLayout {
 
 export interface CdcDestinationAdapter {
   destinationType: string;
+  /**
+   * Its staging MERGE honours `_mako_absent_cols` (sparse-rows.ts), so the
+   * bulk flush marks the schema columns each buffered row lacks.
+   */
+  readonly honoursAbsentColumns?: boolean;
   ensureLiveTable(layout: CdcEntityLayout): Promise<void>;
   /**
    * Clear the live table at the start of a Full Refresh | Overwrite run.
