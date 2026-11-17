@@ -16,7 +16,7 @@ import { installConnectorBundle } from "../sync-box";
 import { connectorSdkVersion } from "../resolver";
 import { buildBundleInBox } from "./build-box";
 import { connectorBundlesEnabled } from "./flag";
-import { dependencyPlan } from "./manifest";
+import { dependencyPlan, hasDependencies } from "./manifest";
 import { bundleSourceHash } from "./source-hash";
 import { readStoredBundle, writeStoredBundle } from "./store";
 
@@ -46,7 +46,7 @@ export interface BundleBuildStatus {
  * Does this folder run from a bundle?
  *
  * Only with the flag on, and only a `node` folder that carries a
- * `package.json`. A folder without one runs its TypeScript entry exactly as
+ * `package.json` whose lockfile installs at least one package. A folder without one runs its TypeScript entry exactly as
  * before, flag or not: that is the no-regression path for every connector
  * written before bundles existed.
  */
@@ -57,7 +57,8 @@ export function shouldBundle(
   return (
     connectorBundlesEnabled() &&
     runtime === "node" &&
-    dependencyPlan(files).kind === "npm"
+    dependencyPlan(files).kind === "npm" &&
+    hasDependencies(files)
   );
 }
 

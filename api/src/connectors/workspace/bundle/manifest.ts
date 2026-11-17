@@ -116,6 +116,27 @@ export function dependencyPlan(
   return { kind: "npm" };
 }
 
+/**
+ * Does a folder that passed {@link dependencyPlan} as `npm` install anything?
+ *
+ * A lockfile whose only entry is the root package installs nothing, so a
+ * build would only re-wrap the entry. Such a folder runs its TypeScript entry
+ * as it did before bundles existed, flag or not. That keeps a folder that
+ * ships `package.json` for its peer dependency on the SDK alone (Close, for
+ * one) on the path it already runs on when bundles are turned on.
+ */
+export function hasDependencies(
+  files: ReadonlyMap<string, Uint8Array>,
+): boolean {
+  const lock = parseJsonObject(files.get(LOCKFILE), LOCKFILE);
+  if (typeof lock === "string") return true;
+  const packages = lock.packages;
+  if (!packages || typeof packages !== "object" || Array.isArray(packages)) {
+    return true;
+  }
+  return Object.keys(packages).some(key => key !== "");
+}
+
 function parseJsonObject(
   bytes: Uint8Array | undefined,
   name: string,
