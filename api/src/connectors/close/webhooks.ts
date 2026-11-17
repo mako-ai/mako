@@ -833,7 +833,11 @@ export async function fillCloseWebhookPartialRecords<T extends FillableRecord>(
                 type: "and",
                 negate: false,
                 queries: [
-                  { type: "object_type", object_type: searchType, negate: false },
+                  {
+                    type: "object_type",
+                    object_type: searchType,
+                    negate: false,
+                  },
                   { type: "id", value: record.recordId, negate: false },
                 ],
               },
@@ -850,7 +854,14 @@ export async function fillCloseWebhookPartialRecords<T extends FillableRecord>(
         const row = (response?.data as { data?: unknown[] } | undefined)
           ?.data?.[0];
         if (!row) {
-          // A new object reaches Search a little after its webhook.
+          // Search answers an empty page, never 404, for an object that is
+          // gone. The REST object tells the two apart: a 404 lands in the
+          // catch below and drops the record (its delete event follows).
+          await api().get(
+            `${spec.path}${encodeURIComponent(record.recordId)}/`,
+            { params: { _fields: "id" } },
+          );
+          // It exists: a new object reaches Search a little after its webhook.
           throw new WebhookEnrichmentRetryError(
             `Close ${record.entity} ${record.recordId} is not in Search yet`,
             "fail",

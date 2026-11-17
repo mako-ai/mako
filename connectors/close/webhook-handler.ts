@@ -201,8 +201,15 @@ async function fillRecord(
       })) as { data?: Record<string, unknown>[] } | null;
       const row = found?.data?.[0];
       if (!row) {
-        // A new object reaches Search a little after its webhook. Counted
-        // retries, so the event is applied filled or left to the poll.
+        // Search answers an empty page, never 404, for an object that is
+        // gone. The REST object tells the two apart: a 404 lands in the
+        // catch below as `gone`.
+        await deps.api.get(
+          `${spec.path}${encodeURIComponent(record.recordId)}/`,
+          { _fields: "id" },
+        );
+        // It exists: a new object reaches Search a little after its webhook.
+        // Counted retries, so the event is applied filled or left to the poll.
         return {
           kind: "failed",
           reason: `Close ${record.entity} ${record.recordId} is not in Search yet`,

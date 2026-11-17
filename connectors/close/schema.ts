@@ -541,9 +541,10 @@ const WEBHOOK_ONLY_SEARCH_FIELDS: Record<string, readonly string[]> = {
 export function closeActivitySearchFields(entity: string): string[] | null {
   if (!ACTIVITY_SCHEMA_MAP[entity]) return null;
   const skip = new Set(WEBHOOK_ONLY_SEARCH_FIELDS[entity] ?? []);
-  return Object.keys({ ...COMMON_ACTIVITY, ...ACTIVITY_SCHEMA_MAP[entity] }).filter(
-    field => !skip.has(field),
-  );
+  return Object.keys({
+    ...COMMON_ACTIVITY,
+    ...ACTIVITY_SCHEMA_MAP[entity],
+  }).filter(field => !skip.has(field));
 }
 
 export interface CloseCustomField {

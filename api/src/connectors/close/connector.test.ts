@@ -1595,6 +1595,14 @@ function stubCloseGet(
       calls.push({ url, params });
       return { data: handler(url, params) };
     },
+    // Search reads (EmailThread): recorded with the asked fields as `_fields`.
+    post: async (url: string, body: { _fields?: Record<string, string[]> }) => {
+      const asked = Object.values(body?._fields ?? {})[0] ?? [];
+      const params = { _fields: asked.filter(f => f !== "id").join(",") };
+      calls.push({ url, params });
+      const row = handler(url, params);
+      return { data: { data: row ? [row] : [] } };
+    },
   };
   return calls;
 }
@@ -1693,7 +1701,7 @@ async function testPartialEntitiesAskForTheirMissingColumns() {
       "activity.email_thread.updated",
       "activity.email_thread",
       { id: "acti_2", _type: "EmailThread", n_emails: 2 },
-      "/activity/emailthread/acti_2/",
+      "/data/search/",
       ["latest_emails"],
     ],
   ];
@@ -1728,6 +1736,87 @@ async function testPartialEntitiesAskForTheirMissingColumns() {
     // would store them.
     for (const field of fields) assert.ok(field in payload, field);
   }
+}
+
+/**
+ * EmailThread fills `latest_emails` through Search (Close's GET of a thread
+ * never returns it), also when the payload holds it null. A thread missing
+ * from Search is dropped when its REST object is gone (404) and retried when
+ * it exists.
+ */
+async function testEmailThreadFillReadsSearch() {
+  const threadEvent = (data: Record<string, unknown>) => ({
+    event: {
+      id: "ev_thread",
+      object_type: "activity.email_thread",
+      action: "created",
+      object_id: "acti_T",
+      data: {
+        id: "acti_T",
+        _type: "EmailThread",
+        n_emails: 1,
+        date_updated: "2026-11-17T18:24:29.000Z",
+        ...data,
+      },
+    },
+  });
+
+  // A null payload value is filled from Search.
+  let connector = createConnector();
+  let calls = stubCloseGet(connector, () => ({
+    id: "acti_T",
+    latest_emails: [{ id: "acti_E" }],
+  }));
+  let [record] = await connector.enrichWebhookCdcRecords(
+    connector.extractWebhookCdcRecords(
+      threadEvent({ latest_emails: null }),
+      "activity.email_thread.created",
+    ),
+    allEntities,
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "/data/search/");
+  assert.deepEqual((record.payload as Record<string, unknown>).latest_emails, [
+    { id: "acti_E" },
+  ]);
+
+  // Gone: Search has no row, the REST object answers 404 -> dropped.
+  connector = createConnector();
+  calls = stubCloseGet(connector, url => {
+    if (url === "/data/search/") return null;
+    const error: any = new Error("Request failed with status code 404");
+    error.isAxiosError = true;
+    error.response = { status: 404 };
+    throw error;
+  });
+  const dropped = await connector.enrichWebhookCdcRecords(
+    connector.extractWebhookCdcRecords(
+      threadEvent({}),
+      "activity.email_thread.created",
+    ),
+    allEntities,
+  );
+  assert.equal(dropped.length, 0);
+  assert.deepEqual(
+    calls.map(c => c.url),
+    ["/data/search/", "/activity/emailthread/acti_T/"],
+  );
+
+  // Exists but not in Search yet -> a counted retry, never applied unfilled.
+  connector = createConnector();
+  stubCloseGet(connector, url =>
+    url === "/data/search/" ? null : { id: "acti_T" },
+  );
+  await assert.rejects(
+    connector.enrichWebhookCdcRecords(
+      connector.extractWebhookCdcRecords(
+        threadEvent({}),
+        "activity.email_thread.created",
+      ),
+      allEntities,
+    ),
+    /not in Search yet/,
+  );
 }
 
 /** Complete payloads, deletes, other entities and disabled entities cost no request. */
@@ -1957,6 +2046,7 @@ async function main() {
   await testCallSearchRequestsTranscripts();
   await testLeadWebhookIsFilledFromTheRestLead();
   await testPartialEntitiesAskForTheirMissingColumns();
+  await testEmailThreadFillReadsSearch();
   await testFillSkipsRecordsThatNeedNoRead();
   await testFailedReadNeverAppliesThePartialRecord();
   await testFillBudgetDefersOncePerRunTimeIsSpent();
