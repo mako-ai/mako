@@ -100,6 +100,32 @@ test("set sends only the controls given, and a refusal exits 1", async () => {
   }
 });
 
+test("cancel passes the execution and lists what stopped", async () => {
+  const mcp = stubMcp({
+    flow_cancel: {
+      success: true,
+      id: "f1",
+      cancelled: [{ executionId: "e1", startedAt: null, eventId: "ev1" }],
+      backfill: { runId: "run_1", previousStatus: "running" },
+    },
+  });
+  try {
+    const out = io();
+    assert.equal(
+      await sync(CTX, ["cancel", "wise"], { execution: "e1" }, out),
+      0,
+    );
+    assert.deepEqual(mcp.calls, [
+      { name: "flow_cancel", args: { flow: "wise", executionId: "e1" } },
+    ]);
+    const text = out.lines.join("\n");
+    assert.match(text, /Cancelled run e1/);
+    assert.match(text, /Cancelled backfill \(was running\)/);
+  } finally {
+    mcp.restore();
+  }
+});
+
 test("bad flags never reach the server", async () => {
   const mcp = stubMcp({});
   try {

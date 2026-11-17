@@ -111,7 +111,7 @@ App performance (mako://skills/apps, "Performance"): filter, join and aggregate 
 dbt: before creating a dbt model or a binding that aggregates a business metric, call lookup_term and find_models; when a canonical model exists, read it or extend it, never derive the metric again. model_readers({ name }) lists the apps and bindings a change touches. Before joining two entities, call find_join_path({ from, to }): join on the columns it returns and heed its fan-out warnings. Edits commit to the user's session branch (dbt/ folder); validate with dbt_parse / dbt_compile_model / dbt_show (poll dbt_get_run). dbt_run_model, dbt_run_job and dbt_cancel_run need the warehouse:write scope.
 
 Slow SQL: create_console → run_console → check_query_status. A source connection (kind "source": Stripe, Close, PostHog, …) is not SQL-queryable: call_connection reads it live (a named operation or a GET), probe_connection reads one page of an entity; list_connectors is the connector catalog.
-Syncs: flow_list → flow_read / flow_status; flow_backfill and flow_update need warehouse:write and an owner/admin.
+Syncs: flow_list → flow_read / flow_status; flow_backfill, flow_cancel, flow_update need warehouse:write + owner/admin.
 Repo: repo_glob / repo_grep / repo_read_file read any file of the workspace repo (dbt YAML, dbt/ontology/terms.yml, skills, other apps' bindings), read-only.
 Skills: get_relevant_skills({ query }) early; list_skills, load_skill, read_skill_resource or mako://skills/{name} for specifics. web_search / fetch_url for public docs.`;
 

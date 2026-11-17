@@ -1,12 +1,13 @@
 /**
  * Sync (flow) tools for agents outside the product: read the syncs, see how
- * each entity is doing, start a backfill, change the trigger controls.
+ * each entity is doing, start or cancel a run, change the trigger controls.
  *
  * Reads are reads. A backfill re-reads a source and MERGEs into the
  * warehouse, and a trigger change rewrites `flows/<slug>.yml` and changes
  * what starts a sync, so both are gated like dbt_run_model (the
  * `warehouse-write` grant) and, like the flow routes they mirror, need an
- * owner or admin. External MCP only: the in-product agent has the flow
+ * owner or admin. A cancel stops a run mid-write, so it is gated the same.
+ * External MCP only: the in-product agent has the flow
  * editor.
  */
 import type { AgentCapabilityDefinition, AgentSurface } from "./types";
@@ -49,6 +50,14 @@ export const SYNC_CAPABILITIES: readonly SyncCapabilityDefinition[] = [
   }),
   define({
     name: "flow_backfill",
+    risk: "write",
+    minimumWorkspaceRole: "admin",
+    requiredGrant: "warehouse-write",
+    surfaces: EXTERNAL_MCP_ONLY,
+    resultKind: "run",
+  }),
+  define({
+    name: "flow_cancel",
     risk: "write",
     minimumWorkspaceRole: "admin",
     requiredGrant: "warehouse-write",

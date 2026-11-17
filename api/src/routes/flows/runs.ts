@@ -2,6 +2,10 @@ import { z } from "@hono/zod-openapi";
 import { Types } from "mongoose";
 import { Flow, FlowExecution } from "../../database/workspace-schema";
 import { inngest } from "../../inngest";
+import {
+  cancelFlowRuns,
+  FlowCancelError,
+} from "../../services/flow-cancel.service";
 import { resolveLiveFlowRow } from "../../services/flow-sync.service";
 import { fail } from "../lib/respond";
 import {
@@ -119,44 +123,30 @@ export function registerRunsRoutes(flowRoutes: FlowRouter): void {
           return fail(c, 404, "Flow not found");
         }
 
-        let executionIdToCancel = executionId;
-
-        // If no executionId provided, find the running execution
-        if (!executionIdToCancel) {
-          const runningExecution = await FlowExecution.findOne({
-            flowId: new Types.ObjectId(flowId),
-            workspaceId: new Types.ObjectId(workspaceId),
-            status: "running",
-          })
-            .sort({ startedAt: -1 })
-            .lean();
-
-          if (!runningExecution) {
-            return fail(c, 404, "No running execution found");
-          }
-
-          executionIdToCancel = runningExecution._id.toString();
-        }
-
-        // Trigger cancellation via Inngest
-        const eventId = await inngest.send({
-          name: "flow.cancel",
-          data: {
-            flowId: flow._id.toString(),
-            executionId: executionIdToCancel,
-          },
-        });
+        // Same step as the MCP flow_cancel tool: the given execution, or
+        // every running one (plus a running CDC backfill).
+        const result = await cancelFlowRuns(
+          String(workspaceId),
+          flow,
+          executionId,
+        );
+        const first = result.executions[0];
 
         return c.json({
           success: true,
           message: "Cancellation request sent successfully",
           data: {
             flowId: flow._id,
-            executionId: executionIdToCancel,
-            eventId,
+            executionId: first?.executionId ?? null,
+            eventId: first?.eventId ?? null,
+            executions: result.executions,
+            backfill: result.backfill,
           },
         });
       } catch (error) {
+        if (error instanceof FlowCancelError) {
+          return fail(c, error.status, error.message);
+        }
         logger.error("Error cancelling flow", { error });
         return fail(c, 500, thrownMessage(error));
       }
