@@ -1767,7 +1767,7 @@ async function testEmailThreadFillReadsSearch() {
     id: "acti_T",
     latest_emails: [{ id: "acti_E" }],
   }));
-  let [record] = await connector.enrichWebhookCdcRecords(
+  const [record] = await connector.enrichWebhookCdcRecords(
     connector.extractWebhookCdcRecords(
       threadEvent({ latest_emails: null }),
       "activity.email_thread.created",
