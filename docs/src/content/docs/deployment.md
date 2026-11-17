@@ -100,6 +100,9 @@ Set these in Cloud Run's environment configuration (`deploy.sh` generates the se
 | `APPS_ORIGIN_BASE`             | Optional    | Serves each published app from `https://<appId>.<domain>` so the browser cache works. Off unless set. If the browser can't reach the app host (e.g. a proxy blocks it), the client falls back to Mako's origin. Must be a registrable domain separate from `CLIENT_URL`'s (a `mako.ai` subdomain is refused) |
 | `APPS_ORIGIN_TOKEN_WINDOW_SECONDS` / `APPS_STABLE_SIGNED_URL_WINDOW_SECONDS` | Optional | How long one app view-token URL (default `3600`) and one signed parquet URL (default `21600`) stay identical. Longer = more cache hits, longer-lived bearer URLs |
 | `APPS_ORIGIN_FRAME_ANCESTORS`  | Optional    | Space-separated extra origins allowed to frame app hosts besides `CLIENT_URL` |
+| `APPS_BOX_IDLE_MINUTES`        | Optional    | Minutes without real use before an app sandbox is paused (default `10`). `APPS_BOX_IDLE_SWEEP=off` turns the pause sweep off |
+| `APPS_BOX_REAPER`              | Optional    | Deletes a person's sandbox session whose boxes are all paused and unused for `APPS_BOX_PAUSED_RETENTION_DAYS` (default `14`): `off` (default), `dryrun` (logs the plan), or `on`. Unsaved work goes to a `mako-presave/...` branch first |
+| `WORKFLOWS_AUTOSCALE`          | Optional    | `on` lets Mako set each workspace's workflow worker pod count (0–5) on GKE. Off by default. See [Workflows](/workflows/#settings) |
 
 ### API Protection
 
