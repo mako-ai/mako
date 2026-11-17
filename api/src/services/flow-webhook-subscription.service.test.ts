@@ -7,6 +7,7 @@ import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { WiseConnector } from "../connectors/wise/connector";
 import {
   flowEntitySignature,
+  PROVISION_NEEDS_ADMIN,
   removeFlowWebhookSubscription,
   syncFlowWebhookSubscription,
 } from "./flow-webhook-subscription.service";
@@ -15,6 +16,9 @@ const FLOW_ID = new Types.ObjectId();
 const WORKSPACE_ID = new Types.ObjectId();
 const DATA_SOURCE_ID = new Types.ObjectId();
 const ENDPOINT = "https://mako.example/api/webhooks/ws/flow";
+
+/** A save by an owner/admin: it may create a subscription. */
+const OWNER = { mayProvision: true };
 
 function webhookFlow(overrides: Record<string, unknown> = {}) {
   return {
@@ -105,6 +109,7 @@ async function testSkipsFlowsThatWereNeverProvisioned() {
         type: "scheduled",
         webhookConfig: { enabled: true, totalReceived: 0 },
       }),
+      OWNER,
     ),
     { status: "skipped", reason: "not a webhook flow" },
   );
@@ -114,6 +119,7 @@ async function testSkipsFlowsThatWereNeverProvisioned() {
         webhookFlow({
           webhookConfig: { endpoint: ENDPOINT, secret: "", enabled: true },
         }),
+        OWNER,
       )
     ).status,
     "skipped",
@@ -124,6 +130,7 @@ async function testSkipsFlowsThatWereNeverProvisioned() {
         webhookFlow({
           webhookConfig: { endpoint: ENDPOINT, secret: "x", enabled: false },
         }),
+        OWNER,
       )
     ).status,
     "skipped",
@@ -154,7 +161,7 @@ async function testNewIdIsCommittedToTheFlowFileThenIndexed() {
   const { commits, deps } = stubCommit({ ok: true, sourceBlobSha: "sha_1" });
 
   const flow = webhookFlow();
-  const result = await syncFlowWebhookSubscription(flow, deps);
+  const result = await syncFlowWebhookSubscription(flow, OWNER, deps);
 
   assert.deepEqual(result, { status: "updated", providerWebhookId: "we_new" });
   assert.equal(calls.length, 1);
@@ -183,7 +190,7 @@ async function testFailedCommitLeavesIndexUntouched() {
   const { commits, deps } = stubCommit({ ok: false });
 
   const flow = webhookFlow();
-  const result = await syncFlowWebhookSubscription(flow, deps);
+  const result = await syncFlowWebhookSubscription(flow, OWNER, deps);
 
   assert.equal(result.status, "updated");
   assert.equal(commits.length, 1);
@@ -197,7 +204,7 @@ async function testUnchangedIdIsNotRewritten() {
     endpointUrl: ENDPOINT,
   }));
   const { commits, deps } = stubCommit({ ok: true });
-  const result = await syncFlowWebhookSubscription(webhookFlow(), deps);
+  const result = await syncFlowWebhookSubscription(webhookFlow(), OWNER, deps);
   assert.equal(result.status, "updated");
   assert.equal(commits.length, 0);
   assert.equal(persisted.length, 0);
@@ -205,14 +212,14 @@ async function testUnchangedIdIsNotRewritten() {
 
 async function testReportsMissingSubscriptionAndProviderErrors() {
   stubProvider(async () => null);
-  assert.deepEqual(await syncFlowWebhookSubscription(webhookFlow()), {
+  assert.deepEqual(await syncFlowWebhookSubscription(webhookFlow(), OWNER), {
     status: "not_found",
   });
 
   stubProvider(async () => {
     throw new Error("Invalid API Key provided");
   });
-  const failed = await syncFlowWebhookSubscription(webhookFlow());
+  const failed = await syncFlowWebhookSubscription(webhookFlow(), OWNER);
   assert.equal(failed.status, "failed");
   assert.match((failed as { error: string }).error, /Invalid API Key provided/);
 
@@ -220,9 +227,43 @@ async function testReportsMissingSubscriptionAndProviderErrors() {
     throw new Error("must not be called");
   }, false);
   assert.equal(
-    (await syncFlowWebhookSubscription(webhookFlow())).status,
+    (await syncFlowWebhookSubscription(webhookFlow(), OWNER)).status,
     "skipped",
   );
+}
+
+/** A repo push (any writer) never creates a subscription; it may retarget. */
+async function testRepoPushNeverProvisions() {
+  const creates: UpdateCall[] = [];
+  const { calls } = stubProvider(async () => null, true, {
+    creates,
+    create: async () => ({
+      providerWebhookId: "we_new",
+      endpointUrl: ENDPOINT,
+      signingSecret: "whsec_new",
+    }),
+  });
+  const result = await syncFlowWebhookSubscription(
+    webhookFlow({
+      webhookConfig: { endpoint: ENDPOINT, secret: "", enabled: true },
+    }),
+    { mayProvision: false },
+  );
+  assert.deepEqual(result, {
+    status: "skipped",
+    reason: PROVISION_NEEDS_ADMIN,
+  });
+  // A caller that passes no options gets the same fail-safe answer.
+  const silent = await syncFlowWebhookSubscription(
+    webhookFlow({
+      webhookConfig: { endpoint: ENDPOINT, secret: "", enabled: true },
+    }),
+  );
+  assert.deepEqual(silent, {
+    status: "skipped",
+    reason: PROVISION_NEEDS_ADMIN,
+  });
+  assert.equal(calls.length + creates.length, 0);
 }
 
 async function testRemoveDeletesThroughTheConnector() {
@@ -320,7 +361,7 @@ async function testWiseFlowRetargetsThroughTheService() {
       totalReceived: 0,
     },
   });
-  const result = await syncFlowWebhookSubscription(flow, deps);
+  const result = await syncFlowWebhookSubscription(flow, OWNER, deps);
 
   assert.equal(result.status, "updated");
   assert.deepEqual(subscriptions.map(s => s.trigger_on).sort(), [
@@ -343,6 +384,7 @@ async function testScheduledFlowWithWebhooksOnIsSynced() {
   const { deps } = stubCommit({ ok: true });
   const result = await syncFlowWebhookSubscription(
     webhookFlow({ type: "scheduled" }),
+    OWNER,
     deps,
   );
   assert.equal(result.status, "updated");
@@ -376,7 +418,7 @@ async function testProvisioningAdoptsAnExistingSubscription() {
   );
   const { commits, deps } = stubCommit({ ok: true });
   const flow = unprovisioned();
-  const result = await syncFlowWebhookSubscription(flow, deps);
+  const result = await syncFlowWebhookSubscription(flow, OWNER, deps);
 
   assert.deepEqual(result, {
     status: "provisioned",
@@ -408,7 +450,11 @@ async function testProvisioningCreatesWhenNoneExists() {
     }),
   });
   const { deps } = stubCommit({ ok: true });
-  const result = await syncFlowWebhookSubscription(unprovisioned(), deps);
+  const result = await syncFlowWebhookSubscription(
+    unprovisioned(),
+    OWNER,
+    deps,
+  );
   assert.deepEqual(result, {
     status: "provisioned",
     providerWebhookId: "we_new",
@@ -426,7 +472,7 @@ async function testProvisioningRefusalIsStored() {
     true,
     { creates: [], create: async () => ({}) },
   );
-  const result = await syncFlowWebhookSubscription(unprovisioned());
+  const result = await syncFlowWebhookSubscription(unprovisioned(), OWNER);
   assert.equal(result.status, "failed");
   assert.match((result as { error: string }).error, /limited token/);
   const set = ((persisted.at(-1) as unknown[])[1] as any).$set;
@@ -450,6 +496,7 @@ async function testConnectorsWithoutLookupAreNeverProvisionedOnSave() {
   );
   const result = await syncFlowWebhookSubscription(
     unprovisioned({ type: "webhook" }),
+    OWNER,
   );
   assert.deepEqual(result, {
     status: "skipped",
@@ -546,6 +593,7 @@ async function main() {
   await testFailedCommitLeavesIndexUntouched();
   await testUnchangedIdIsNotRewritten();
   await testReportsMissingSubscriptionAndProviderErrors();
+  await testRepoPushNeverProvisions();
   await testRemoveDeletesThroughTheConnector();
   await testWiseFlowRetargetsThroughTheService();
   await testConnectionLookupsAreScopedToTheWorkspace();

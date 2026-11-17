@@ -50,8 +50,24 @@ export interface FlowWebhookSubscriptionDeps {
 
 const defaultDeps: FlowWebhookSubscriptionDeps = { commitFlowFile };
 
+export interface FlowWebhookSubscriptionSyncOptions {
+  /**
+   * Whether this save may create a provider subscription (and so a signing
+   * secret). Only an owner/admin actor may: `flow_update` and an owner/admin
+   * PUT pass true. A repo push passes false: any writer can push, so a push
+   * only retargets a subscription the flow already has. The "Create in …"
+   * button stays, and is owner/admin too.
+   */
+  mayProvision: boolean;
+}
+
+/** The reason a save that could provision was not allowed to. */
+export const PROVISION_NEEDS_ADMIN = "provisioning needs an owner or admin";
+
 export async function syncFlowWebhookSubscription(
   flow: IFlow,
+  // Fail-safe default: a caller that says nothing never provisions.
+  options: FlowWebhookSubscriptionSyncOptions = { mayProvision: false },
   deps: FlowWebhookSubscriptionDeps = defaultDeps,
 ): Promise<FlowWebhookSubscriptionSyncResult> {
   const webhook = flow.webhookConfig;
@@ -93,6 +109,9 @@ export async function syncFlowWebhookSubscription(
     if (!webhook.secret) {
       if (!connector.supportsWebhookProvisioning()) {
         return { status: "skipped", reason: "webhook not provisioned" };
+      }
+      if (!options.mayProvision) {
+        return { status: "skipped", reason: PROVISION_NEEDS_ADMIN };
       }
       return await provisionFlowWebhook(flow, connector, entities, deps);
     }

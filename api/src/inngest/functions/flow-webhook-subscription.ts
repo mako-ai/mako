@@ -24,7 +24,10 @@ export const flowWebhookResubscribeFunction = inngest.createFunction(
       if (!flow) {
         return { status: "skipped" as const, reason: "flow not found" };
       }
-      const outcome = await syncFlowWebhookSubscription(flow);
+      // A repo push: any writer. It retargets, never provisions.
+      const outcome = await syncFlowWebhookSubscription(flow, {
+        mayProvision: false,
+      });
       if (outcome.status === "failed" || outcome.status === "not_found") {
         logger.warn("Flow webhook subscription not retargeted", {
           flowId,

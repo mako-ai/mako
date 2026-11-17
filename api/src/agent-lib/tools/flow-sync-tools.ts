@@ -434,7 +434,10 @@ export function createFlowSyncTools({
             isWebhookFlow(flow) &&
             (!webhookOnBefore || !flow.webhookConfig?.secret)
           ) {
-            const sync = await syncFlowWebhookSubscription(flow);
+            // flow_update is owner/admin only (mayChange above).
+            const sync = await syncFlowWebhookSubscription(flow, {
+              mayProvision: true,
+            });
             if (sync.status === "failed") {
               warning = `Saved, but the provider webhook subscription could not be set up: ${sync.error}. The sync keeps polling.`;
             } else if (sync.status === "not_found") {

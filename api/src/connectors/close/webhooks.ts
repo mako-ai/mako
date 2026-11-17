@@ -558,6 +558,83 @@ export async function provisionCloseWebhook(
 }
 
 /**
+ * Adopt the Close webhook already on `options.endpointUrl`: set its events
+ * and return its id and signing key. Resolves to null when none targets the
+ * URL, so the caller creates one. Boxed Close connectors use it
+ * (workspace/webhook-provisioners.ts); the built-in keeps its button.
+ */
+export async function adoptCloseWebhook(
+  api: AxiosInstance,
+  options: ProvisionWebhookOptions,
+  eventsForEntities: (entities: string[]) => string[],
+): Promise<ProvisionWebhookResult | null> {
+  let list: Array<Record<string, unknown>>;
+  try {
+    const response = await api.get("/webhook/");
+    list = Array.isArray(response?.data)
+      ? response.data
+      : Array.isArray(response?.data?.data)
+        ? response.data.data
+        : [];
+  } catch (error) {
+    throw new Error(
+      `Failed to list Close webhook subscriptions: ${describeProvisioningError(error)}`,
+      { cause: error },
+    );
+  }
+  // The same match provisionCloseWebhook adopts by: `url`, else `endpoint`.
+  const existing = list.find(
+    item =>
+      (item?.url === options.endpointUrl ||
+        item?.endpoint === options.endpointUrl) &&
+      webhookIdOf(item),
+  );
+  if (!existing) return null;
+  const webhookId = String(webhookIdOf(existing));
+
+  const requested = (options.events ?? [])
+    .map(event => event.trim())
+    .filter(event => event.length > 0);
+  const { selectors } = normalizeEventSelectors(
+    requested.length > 0
+      ? requested
+      : eventsForEntities(options.enabledEntities ?? []),
+  );
+  if (selectors.length === 0) {
+    throw new Error("No valid Close webhook events configured");
+  }
+
+  // The event update is the point of adopting: a failed PUT fails the call,
+  // so the save reports it, instead of keeping the old event list silently.
+  try {
+    await api.put(`/webhook/${webhookId}/`, { events: selectors });
+  } catch (error) {
+    throw new Error(
+      `Failed to update the events of Close webhook ${webhookId}: ${describeProvisioningError(error)}`,
+      { cause: error },
+    );
+  }
+
+  let signingSecret = extractCloseSigningSecret(existing);
+  if (!signingSecret) {
+    try {
+      const detail = await api.get(`/webhook/${webhookId}/`);
+      signingSecret = extractCloseSigningSecret(detail?.data);
+    } catch (error) {
+      throw new Error(
+        `Failed to read the signing key of Close webhook ${webhookId}: ${describeProvisioningError(error)}`,
+        { cause: error },
+      );
+    }
+  }
+  return {
+    providerWebhookId: webhookId,
+    endpointUrl: options.endpointUrl,
+    signingSecret,
+  };
+}
+
+/**
  * Columns a Close webhook leaves out of an object's payload, per entity.
  *
  * Close event payloads are the object's own row without its expansions:
