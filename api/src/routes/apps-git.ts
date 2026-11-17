@@ -118,14 +118,20 @@ while read old new ref; do
 
   # Workflows: what is on main is deployed and, once activated, runs on a
   # schedule with the workspace's data. A push to main that changes
-  # workflows/ comes from a workspace admin (MAKO_WORKFLOWS_ADMIN, set by the
-  # endpoint from the member's role). Any member pushes workflow changes to
-  # a branch.
+  # workflows/ or connectors/ comes from a workspace admin
+  # (MAKO_WORKFLOWS_ADMIN, the pusher's admin bit, set by the endpoint from
+  # the member's role). Any member pushes those changes to a branch.
   if [ "$ref" = "refs/heads/${DEFAULT_BRANCH}" ] && [ "$new" != "$zero" ] && [ "$MAKO_WORKFLOWS_ADMIN" != "1" ]; then
     base="$old"
     [ "$base" = "$zero" ] && base=$(git hash-object -t tree /dev/null)
     if [ -n "$(git diff --name-only "$base" "$new" -- workflows/)" ]; then
       echo "mako: refusing $ref - only workspace admins put workflows on ${DEFAULT_BRANCH}. Push a branch and ask an admin to merge." >&2
+      exit 1
+    fi
+    # Connector folders: code on main runs in a box with the keys of the
+    # connections that use it. Same rule, same admin bit.
+    if [ -n "$(git diff --name-only "$base" "$new" -- connectors/)" ]; then
+      echo "mako: refusing $ref - only workspace admins put connector code on ${DEFAULT_BRANCH}: it runs with its connections' keys. Push a branch and ask an admin to merge." >&2
       exit 1
     fi
   fi
