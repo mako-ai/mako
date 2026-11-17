@@ -132,14 +132,17 @@ const PROVISIONERS: Record<string, ProvisionerEntry> = {
       };
     },
   },
-  stripe: async config => {
-    const apiKey = typeof config.api_key === "string" ? config.api_key : "";
-    if (!apiKey.trim()) throw new Error("Stripe API key not configured");
-    const { default: Stripe } = await import("stripe");
-    // api.stripe.com, whatever `api_base_url` the connection holds.
-    return stripeWebhookProvisioner(
-      new Stripe(apiKey, { apiVersion: STRIPE_API_VERSION }),
-    );
+  stripe: {
+    canUpdate: true,
+    storesSecretAutomatically: true,
+    factory: async config => {
+      const apiKey = apiKeyOf(config, "Stripe");
+      const { default: Stripe } = await import("stripe");
+      // api.stripe.com, whatever `api_base_url` the connection holds.
+      return stripeWebhookProvisioner(
+        new Stripe(apiKey, { apiVersion: STRIPE_API_VERSION }),
+      );
+    },
   },
 };
 
