@@ -19,9 +19,11 @@
  * bare `state.since` from a hand run). The connector never moves it.
  *
  * Caller-set config keys, never in the credential form (like the SDK's own
- * `__http`): `__base_url`, `__page_size` (the in-process `sync_batch_size`,
- * offset lists only: the Search API page is 200 on both sides) and
- * `__rate_limit_delay_ms` (the in-process `rate_limit_delay_ms`).
+ * `__http`): `__base_url`, `__page_size` (the in-process `sync_batch_size`;
+ * on the Search API it lowers the 200-row page, which in-process ignores)
+ * and `__rate_limit_delay_ms` (the in-process `rate_limit_delay_ms`).
+ * Search pages also shrink by themselves when one is too large for a chunk
+ * (see `search.ts`).
  *
  * The webhook half is in `webhooks.ts`, exported below as `webhook`.
  */
@@ -45,6 +47,7 @@ import {
   CLOSE_SEARCH_CUSTOM_SELECTOR_BATCH,
   type SearchState,
   readCloseSearch,
+  searchPageSize,
 } from "./search.ts";
 import {
   closeSupportedWebhookEvents,
@@ -231,6 +234,7 @@ function entity(
                 Math.max(MIN_REQUEST_SPACING_MS, rateLimitDelay(ctx.config)),
               ),
             selectorBudget,
+            pageSize: searchPageSize(ctx.config.__page_size),
           },
           name,
           state as SearchState,

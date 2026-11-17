@@ -16,6 +16,17 @@
  * iteration, so a chunk of N iterations ends on the same page on both sides.
  * Empty windows and recoveries from a cursor error count no iteration and
  * yield nothing, as in-process.
+ *
+ * Page size. A page is 200 rows, or `__page_size` when the caller sets one
+ * (capped at 200). A page whose records serialize to more than
+ * `SEARCH_PAGE_BYTE_BUDGET` is dropped and read again at half the size,
+ * from the same cursor, down to `MIN_SEARCH_PAGE_SIZE`. Close's search
+ * cursor is an offset (`{"skip": n}`, signed), independent of `_limit`, so
+ * the smaller page starts on the same row and its cursor ends where it
+ * ends: no row is skipped or read twice. The smaller size is kept for the
+ * rest of the walk and carried in the state as `pageSize`, so the next
+ * chunk does not read the oversized page again. A shrink counts no
+ * iteration and yields nothing.
  */
 import type { ReadBatch } from "@makoai/connector-sdk";
 import {
@@ -38,6 +49,16 @@ import {
 export const CLOSE_SEARCH_CUSTOM_SELECTOR_BATCH = 60;
 const MIN_CUSTOM_SELECTOR_BATCH = 5;
 export const SEARCH_PAGE_SIZE = 200;
+/** The smallest page a shrink goes to. A page this small is kept as is. */
+export const MIN_SEARCH_PAGE_SIZE = 10;
+/**
+ * Bytes one page's records may serialize to. Mako caps a chunk's protocol
+ * output at 32 MiB (`MAX_CONNECTOR_PROTOCOL_BYTES`) and ends a chunk after
+ * the page that crosses half of it (`CHUNK_BYTE_BUDGET`, 16 MiB). A page
+ * must therefore fit in the other 16 MiB with its RECORD envelopes and logs:
+ * 8 MiB leaves half of that as margin.
+ */
+export const SEARCH_PAGE_BYTE_BUDGET = 8 * 1024 * 1024;
 export const WINDOW_DAYS = 7;
 export const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -53,6 +74,8 @@ export interface SearchState {
   lastSeenDateCreated?: string | null;
   cursor?: string | null;
   windowField?: WindowField;
+  /** Rows per page after a shrink; absent while the page is full size. */
+  pageSize?: number | null;
 }
 
 export interface SearchContext {
@@ -63,7 +86,23 @@ export interface SearchContext {
   pause: () => Promise<void>;
   /** Per-process selector budget; only ever shrinks. */
   selectorBudget: { size: number };
+  /** Rows per page: 200, or `__page_size` capped at 200. */
+  pageSize?: number;
+  /** Bytes one page's records may serialize to; see SEARCH_PAGE_BYTE_BUDGET. */
+  pageByteBudget?: number;
 }
+
+/** The page size for `__page_size`: 200 unless set lower. */
+export function searchPageSize(value: unknown): number {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0
+    ? Math.min(n, SEARCH_PAGE_SIZE)
+    : SEARCH_PAGE_SIZE;
+}
+
+/** UTF-8 bytes of the records as JSON, as the runner writes them. */
+const serializedBytes = (records: unknown[]): number =>
+  new TextEncoder().encode(JSON.stringify(records)).length;
 
 const addDaysIso = (iso: string, days: number) =>
   new Date(new Date(iso).getTime() + days * DAY_MS).toISOString();
@@ -143,6 +182,13 @@ export async function* readCloseSearch(
   let pageCursor: string | null = state.pageCursor ?? null;
   let lastSeenWindowValue: string | null =
     state.lastSeenWindowValue ?? state.lastSeenDateCreated ?? null;
+  const fullPageSize = ctx.pageSize ?? SEARCH_PAGE_SIZE;
+  const byteBudget = ctx.pageByteBudget ?? SEARCH_PAGE_BYTE_BUDGET;
+  const resumedPageSize = Number(state.pageSize);
+  let pageSize =
+    Number.isInteger(resumedPageSize) && resumedPageSize > 0
+      ? Math.min(resumedPageSize, fullPageSize)
+      : fullPageSize;
 
   if (!windowStart) {
     if (since) {
@@ -179,6 +225,7 @@ export async function* readCloseSearch(
     pageCursor,
     lastSeenWindowValue,
     windowField,
+    ...(pageSize < fullPageSize ? { pageSize } : {}),
   });
   const done = (): ReadBatch => ({
     records: [],
@@ -217,7 +264,7 @@ export async function* readCloseSearch(
             ),
           ],
         },
-        _limit: SEARCH_PAGE_SIZE,
+        _limit: pageSize,
         sort: [
           ascSort(objectType, windowField),
           ascSort(objectType, secondarySortField),
@@ -245,11 +292,30 @@ export async function* readCloseSearch(
           fieldPlan.supplemental,
         );
       }
-      pageCursor = nextCursor;
 
       let records: unknown[] = [];
       if (data.length > 0) {
         records = normalizeCloseSearchBatch(entity, data);
+        if (pageSize > MIN_SEARCH_PAGE_SIZE) {
+          const bytes = serializedBytes(records);
+          if (bytes > byteBudget) {
+            // Drop the page and read it again, smaller, from the same
+            // cursor: nothing about the position has moved yet.
+            const next = Math.max(
+              MIN_SEARCH_PAGE_SIZE,
+              Math.floor(pageSize / 2),
+            );
+            ctx.log(
+              `Close page of ${data.length} ${entity} rows is ${bytes} bytes, over the ${byteBudget}-byte page budget; ${pageSize} -> ${next} rows per page`,
+            );
+            pageSize = next;
+            continue;
+          }
+        }
+      }
+      pageCursor = nextCursor;
+
+      if (data.length > 0) {
         const lastValue = data[data.length - 1]?.[windowField];
         if (typeof lastValue === "string" && lastValue.length > 0) {
           lastSeenWindowValue = new Date(lastValue).toISOString();
