@@ -173,14 +173,27 @@ class SourceConnectionManager {
     return Promise.all(sources.map(source => this.toConfig(source)));
   }
 
-  /** One source connection by id, or null. */
+  /**
+   * One source connection by id, or null. A flow's lookup passes the flow's
+   * `workspaceId`: a connection of another workspace then reads as missing
+   * (flow-connection-scope.ts).
+   */
   async getSourceConnection(
     id: string,
+    workspaceId?: string,
   ): Promise<SourceConnectionConfig | null> {
     if (!ObjectId.isValid(id)) return null;
+    if (workspaceId !== undefined && !ObjectId.isValid(workspaceId)) {
+      return null;
+    }
     const source = await (
       await this.connectors()
-    ).findOne({ _id: new ObjectId(id) });
+    ).findOne({
+      _id: new ObjectId(id),
+      ...(workspaceId !== undefined
+        ? { workspaceId: new ObjectId(workspaceId) }
+        : {}),
+    });
     return source ? this.toConfig(source) : null;
   }
 
@@ -370,8 +383,8 @@ function proxyManager() {
         workspaceId,
       );
     },
-    async getSourceConnection(id: string) {
-      return getSourceConnectionManager().getSourceConnection(id);
+    async getSourceConnection(id: string, workspaceId?: string) {
+      return getSourceConnectionManager().getSourceConnection(id, workspaceId);
     },
     async getSourceConnectionsByType(type: string) {
       return getSourceConnectionManager().getSourceConnectionsByType(type);

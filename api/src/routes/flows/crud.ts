@@ -23,6 +23,7 @@ import { isWebhookFlow } from "../../services/flow-triggers.service";
 import { getRequestBaseUrl } from "../../services/flow-webhook-url";
 import { teardownFlow } from "../../sync-cdc/flow-reconcile";
 import { generateWebhookEndpoint } from "../../utils/webhook.utils";
+import { workspaceService } from "../../services/workspace.service";
 import { fail } from "../lib/respond";
 import {
   ANY_JSON_BODY,
@@ -218,7 +219,20 @@ export function registerCrudRoutes(flowRoutes: FlowRouter): void {
           if (failed) return failed;
         }
         await flow.save();
-        await finishFlowUpdate({ flow, before, syncConfigWarnings });
+        // Only an owner/admin save may create a provider subscription.
+        const userId = c.get("user")?.id;
+        const mayProvision = userId
+          ? await workspaceService.hasRole(workspaceId, userId, [
+              "owner",
+              "admin",
+            ])
+          : false;
+        await finishFlowUpdate({
+          flow,
+          before,
+          syncConfigWarnings,
+          mayProvision,
+        });
 
         return c.json({
           success: true,

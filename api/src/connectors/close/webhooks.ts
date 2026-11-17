@@ -582,8 +582,12 @@ export async function adoptCloseWebhook(
       { cause: error },
     );
   }
+  // The same match provisionCloseWebhook adopts by: `url`, else `endpoint`.
   const onUrl = list.some(
-    item => item?.url === options.endpointUrl && webhookIdOf(item),
+    item =>
+      (item?.url === options.endpointUrl ||
+        item?.endpoint === options.endpointUrl) &&
+      webhookIdOf(item),
   );
   if (!onUrl) return null;
   return provisionCloseWebhook(api, options, eventsForEntities);

@@ -61,6 +61,17 @@ void test("adopt sets the events of the webhook on the URL and returns its key",
   assert.ok(!calls.some(c => c.startsWith("POST")), "never creates");
 });
 
+void test("adopt also matches a webhook listed with `endpoint` instead of `url`", async () => {
+  const key = "c".repeat(64);
+  const { api, calls } = fakeClose([
+    { id: "whsub_e", endpoint: URL_A, signature_key: key },
+  ]);
+  const result = await adoptCloseWebhook(api, { endpointUrl: URL_A }, events);
+  assert.equal(result?.providerWebhookId, "whsub_e");
+  assert.equal(result?.signingSecret, key);
+  assert.ok(!calls.some(c => c.startsWith("POST")), "never creates");
+});
+
 void test("only Close has a provisioner, and it needs a key", async () => {
   assert.equal(hasWebhookProvisioner("close"), true);
   assert.equal(hasWebhookProvisioner("acme"), false);

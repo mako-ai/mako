@@ -756,6 +756,8 @@ export async function finishFlowUpdate(params: {
   flow: FlowDocument;
   before: ReturnType<typeof webhookStateBefore>;
   syncConfigWarnings: string[];
+  /** The actor is owner/admin: the save may create a subscription. */
+  mayProvision: boolean;
 }): Promise<void> {
   const { flow, syncConfigWarnings } = params;
   const entitySignatureBefore = params.before.entitySignature;
@@ -771,7 +773,9 @@ export async function finishFlowUpdate(params: {
       !webhookOnBefore ||
       !flow.webhookConfig?.secret)
   ) {
-    const webhookSync = await syncFlowWebhookSubscription(flow);
+    const webhookSync = await syncFlowWebhookSubscription(flow, {
+      mayProvision: params.mayProvision,
+    });
     if (webhookSync.status === "failed") {
       syncConfigWarnings.push(
         `Saved, but the provider webhook subscription could not be set up: ${webhookSync.error}. The flow keeps polling; fix the cause and save again, or re-provision from the Triggers step.`,

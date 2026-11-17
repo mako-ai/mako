@@ -50,8 +50,20 @@ export interface FlowWebhookSubscriptionDeps {
 
 const defaultDeps: FlowWebhookSubscriptionDeps = { commitFlowFile };
 
+export interface FlowWebhookSubscriptionSyncOptions {
+  /**
+   * Whether this save may create a provider subscription (and so a signing
+   * secret). Only an owner/admin actor may: `flow_update` and an owner/admin
+   * PUT pass true. A repo push passes false: any writer can push, so a push
+   * only retargets a subscription the flow already has. The "Create in …"
+   * button stays, and is owner/admin too.
+   */
+  mayProvision: boolean;
+}
+
 export async function syncFlowWebhookSubscription(
   flow: IFlow,
+  options: FlowWebhookSubscriptionSyncOptions,
   deps: FlowWebhookSubscriptionDeps = defaultDeps,
 ): Promise<FlowWebhookSubscriptionSyncResult> {
   const webhook = flow.webhookConfig;
@@ -68,6 +80,7 @@ export async function syncFlowWebhookSubscription(
   try {
     const source = await sourceConnectionManager.getSourceConnection(
       String(flow.dataSourceId),
+      String(flow.workspaceId),
     );
     if (!source) {
       return { status: "skipped", reason: "connector not found" };
@@ -90,7 +103,7 @@ export async function syncFlowWebhookSubscription(
     // No secret: never provisioned (or the secret was cleared). Adopt the
     // subscription already on this URL, else create one.
     if (!webhook.secret) {
-      if (!connector.supportsWebhookProvisioning()) {
+      if (!connector.supportsWebhookProvisioning() || !options.mayProvision) {
         return { status: "skipped", reason: "webhook not provisioned" };
       }
       return await provisionFlowWebhook(flow, connector, entities, deps);
