@@ -210,3 +210,19 @@ void test("PandaDoc and Claap folders provision as their built-ins do, create on
   assert.match(String(cl.secretHelpText), /X-Claap-Webhook-Secret/);
   assert.match(String(pd.secretHelpText), /Shared Key/);
 });
+
+void test("a shared-secret folder names its secret header for redaction", () => {
+  const claap = new SpecConnector("ws:claap", {
+    mako: {
+      webhooks: {
+        verification: {
+          scheme: "shared-secret",
+          secretHeader: "x-claap-webhook-secret",
+        },
+      },
+    },
+  });
+  assert.deepEqual(claap.webhookSecretHeaders(), ["x-claap-webhook-secret"]);
+  const close = new SpecConnector("ws:close", VERIFYING_SPEC);
+  assert.deepEqual(close.webhookSecretHeaders(), []);
+});

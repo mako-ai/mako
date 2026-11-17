@@ -220,7 +220,13 @@ router.openapi(
         attempts: 0,
         rawPayload: event,
         // Minus any shared-secret header: a token must never sit in Mongo.
-        signature: JSON.stringify(redactWebhookSecretHeaders(headers)),
+        // A `shared-secret` connector's declared header holds the secret too.
+        signature: JSON.stringify(
+          redactWebhookSecretHeaders(
+            headers,
+            connector.webhookSecretHeaders?.() ?? [],
+          ),
+        ),
       });
 
       await webhookEvent.save();

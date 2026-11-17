@@ -1275,6 +1275,17 @@ export class SandboxedConnector extends BaseConnector {
   }
 
   /**
+   * The header a `shared-secret` declaration reads: it holds the flow's
+   * secret, so the route redacts it before a delivery is stored.
+   */
+  webhookSecretHeaders(): string[] {
+    const declaration = declaredWebhookVerification(this.loaded?.spec);
+    return declaration?.scheme === "shared-secret"
+      ? [declaration.secretHeader]
+      : [];
+  }
+
+  /**
    * The id and type of a verified delivery, for the box lane's stored
    * event. The connector may say where they sit in the body
    * (`webhooks.eventIdPath` / `eventTypePath`). Otherwise the id is `id`,

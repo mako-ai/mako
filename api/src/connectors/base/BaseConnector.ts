@@ -418,6 +418,9 @@ export abstract class BaseConnector {
     rawBody: string,
   ): { eventId: string; eventType?: string } | undefined;
 
+  /** Request headers that carry the webhook secret itself, never stored. */
+  webhookSecretHeaders?(): string[];
+
   /**
    * Check if connector can provision provider webhooks automatically.
    */
