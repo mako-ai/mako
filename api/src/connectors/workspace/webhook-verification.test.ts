@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { before, test } from "node:test";
 import {
+  type DeclaredHmacVerification,
   declaredWebhookVerification,
   keyOf,
   verifyDeclaredWebhook,
@@ -157,7 +158,7 @@ void test("a hex secret that is not hex is malformed, not a key", () => {
 void test("the Close declaration refuses a replay: an old, a future, an empty or a missing timestamp", () => {
   const declaration = declaredWebhookVerification(
     spec(CLOSE_WEBHOOK_VERIFICATION),
-  )!;
+  ) as DeclaredHmacVerification;
   assert.equal(declaration.timestampHeader, "close-sig-timestamp");
   assert.equal(declaration.toleranceSeconds, 300);
   const [event] = buildWebhookEvents(["lead.updated"]);

@@ -1,0 +1,756 @@
+/**
+ * The Stripe folder's webhooks against the built-in Stripe webhook path.
+ *
+ * The folder runs as Mako runs it: a `webhook` command through
+ * `SandboxedConnector.runWebhookBatch`, with only the box swapped for a
+ * local process running the same SDK runner on the same files. Its answer
+ * crosses `checkOutcome` and `shapeWebhookCdcRecords`, the API's own checks.
+ * The built-in side is `buildWebhookCdcRecords` on `StripeConnector`, the
+ * inline path production runs today. Stripe is a small local server that
+ * serves single objects, so every request the folder makes is seen.
+ *
+ * Proven here:
+ * - The same 72 events, mapped to the same entity and operation.
+ * - The `stripe-v1` declaration accepts and refuses what
+ *   `stripe.webhooks.constructEvent` does, on the same deliveries.
+ * - Every event type gives the same applied rows on both paths: entity, id,
+ *   operation, payload, source time and change id, with no request.
+ * - A partial or thin payload is filled by one GET and never written with
+ *   NULLs. A 404 skips, a failure retries, a spent budget defers.
+ * - Provisioning creates the endpoint with the connection's key and returns
+ *   the signing secret to the API only.
+ *
+ * Run: node --import tsx src/connectors/stripe/folder-webhook-batches.test.ts
+ */
+import { after, before, test } from "node:test";
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import http from "node:http";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import Stripe from "stripe";
+import { SandboxedConnector } from "../workspace/SandboxedConnector";
+import type { LoadedConnector } from "../workspace/resolver";
+import type { ConnectorCommand, RunResult } from "../workspace/sync-box";
+import { checkOutcome } from "../workspace/webhook-batch";
+import {
+  declaredWebhookVerification,
+  verifyDeclaredWebhook,
+} from "../workspace/webhook-verification";
+import {
+  hasWebhookProvisioner,
+  stripeWebhookProvisioner,
+  webhookProvisionerFor,
+} from "../workspace/webhook-provisioners";
+import {
+  buildWebhookCdcRecords,
+  shapeWebhookCdcRecords,
+} from "../../inngest/functions/webhook-flow";
+import {
+  FOLDER,
+  RUNNER,
+  ensureFolderInstalled,
+  runFolderCommand,
+} from "../../../../connectors/stripe/fixtures/harness.mjs";
+import {
+  LIST_PATH,
+  SENT_AT,
+  TEST_SIGNING_SECRET,
+  buildWebhookEvents,
+  entityOfEvent,
+  rowsByEntity,
+} from "../../../../connectors/stripe/fixtures/webhook-events.mjs";
+import { STRIPE_API_VERSION, StripeConnector } from "./connector";
+import {
+  stripeSupportedWebhookEvents,
+  stripeWebhookEventMapping,
+  verifyStripeWebhook,
+} from "./webhooks";
+
+process.env.CONNECTOR_WEBHOOK_BATCHES = "true";
+
+const API_KEY = "sk_test_webhooks";
+const SOURCE = { id: "665f000000000000000000d1", name: "PL Stripe shadow" };
+let spec: Record<string, any>;
+
+/** A Stripe that serves objects by path. Every request is recorded. */
+const objects = new Map<string, Record<string, unknown>>();
+const failing = new Set<string>();
+const requests: string[] = [];
+const endpoints: Array<Record<string, any>> = [];
+let server: http.Server;
+let baseUrl = "";
+
+function serve(
+  req: http.IncomingMessage,
+  body: string,
+  res: http.ServerResponse,
+) {
+  const url = new URL(req.url ?? "/", "http://stripe.local");
+  const route = url.pathname;
+  requests.push(`${req.method} ${route}`);
+  res.setHeader("content-type", "application/json");
+  const send = (status: number, value: unknown) => {
+    res.statusCode = status;
+    res.end(JSON.stringify(value));
+  };
+  if (req.headers.authorization !== `Bearer ${API_KEY}`) {
+    return send(401, { error: { type: "invalid_request_error" } });
+  }
+  if (route === "/v1/webhook_endpoints" && req.method === "POST") {
+    const form = new URLSearchParams(body);
+    const endpoint = {
+      id: `we_fx${endpoints.length + 1}`,
+      object: "webhook_endpoint",
+      url: form.get("url"),
+      api_version: form.get("api_version"),
+      enabled_events: eventsOf(form),
+      status: "enabled",
+    };
+    endpoints.push(endpoint);
+    return send(200, { ...endpoint, secret: TEST_SIGNING_SECRET });
+  }
+  if (route === "/v1/webhook_endpoints" && req.method === "GET") {
+    return send(200, {
+      object: "list",
+      data: endpoints,
+      has_more: false,
+      url: "/v1/webhook_endpoints",
+    });
+  }
+  const endpoint = endpoints.find(
+    e => route === `/v1/webhook_endpoints/${e.id}`,
+  );
+  if (endpoint && req.method === "POST") {
+    const form = new URLSearchParams(body);
+    endpoint.enabled_events = eventsOf(form);
+    return send(200, endpoint);
+  }
+  if (failing.has(route)) {
+    return send(500, { error: { type: "api_error", message: "Boom" } });
+  }
+  const object = objects.get(route);
+  if (!object) {
+    return send(404, {
+      error: { type: "invalid_request_error", code: "resource_missing" },
+    });
+  }
+  return send(200, object);
+}
+
+/** `enabled_events[0]=...&enabled_events[1]=...`, as stripe-node sends it. */
+const eventsOf = (form: URLSearchParams) =>
+  [...form.entries()]
+    .filter(([key]) => /^enabled_events\[\d*\]$/.test(key))
+    .map(([, value]) => value);
+
+/** Run the folder's `webhook` command, with every input as a file. */
+function runFolder(
+  command: string,
+  inputs: Record<string, unknown>,
+): Promise<RunResult> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mako-stripe-webhook-"));
+  const args = [
+    RUNNER,
+    command,
+    "--connector",
+    path.join(FOLDER, "connector.ts"),
+  ];
+  for (const [name, value] of Object.entries(inputs)) {
+    if (value === undefined) continue;
+    const file = path.join(dir, `${name}.json`);
+    fs.writeFileSync(file, JSON.stringify(value));
+    args.push(`--${name}`, file);
+  }
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, {
+      cwd: FOLDER,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", chunk => (stdout += chunk));
+    child.stderr.on("data", chunk => (stderr += chunk));
+    child.on("error", reject);
+    child.on("close", code => {
+      fs.rmSync(dir, { recursive: true, force: true });
+      resolve({
+        exitCode: code ?? 1,
+        messages: stdout
+          .split("\n")
+          .filter(Boolean)
+          .map(line => JSON.parse(line)),
+        malformed: [],
+        stderr,
+        timedOut: false,
+      });
+    });
+  });
+}
+
+const handed: Array<{ command: ConnectorCommand; options: any }> = [];
+
+class BoxlessStripe extends SandboxedConnector {
+  protected async definition(): Promise<LoadedConnector> {
+    this.loaded ??= {
+      slug: "stripe",
+      runtime: "node",
+      entry: "connector.ts",
+      sha: "webhooks",
+      sourceSha: "webhooks",
+      spec,
+      entities: Object.keys(spec?.mako?.entities ?? {}),
+      status: "indexed",
+    } as LoadedConnector;
+    return this.loaded;
+  }
+
+  protected async run(
+    command: ConnectorCommand,
+    options: Parameters<SandboxedConnector["run"]>[1],
+  ): Promise<RunResult> {
+    handed.push({ command, options });
+    return runFolder(command, { config: options.config, batch: options.batch });
+  }
+}
+
+const boxed = () =>
+  new BoxlessStripe({
+    _id: SOURCE.id,
+    workspaceId: "ws_webhooks",
+    name: SOURCE.name,
+    type: "ws:stripe",
+    config: { api_key: API_KEY, api_base_url: baseUrl },
+  } as never);
+
+const builtIn = () =>
+  new StripeConnector({
+    _id: SOURCE.id,
+    name: SOURCE.name,
+    type: "stripe",
+    config: { api_key: API_KEY, api_base_url: baseUrl },
+  } as never);
+
+before(async () => {
+  ensureFolderInstalled();
+  const result = await runFolderCommand("spec");
+  spec = result.messages.find((m: any) => m.type === "SPEC")!.spec;
+  server = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", chunk => (body += chunk));
+    req.on("end", () => serve(req, body, res));
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+});
+
+after(async () => {
+  await new Promise(resolve => server?.close(resolve));
+});
+
+const outcomesOf = (result: RunResult): any[] =>
+  result.messages.filter(m => m.type === "WEBHOOK").map(m => m.webhook);
+
+/** The folder's applied rows, through the API's own checks and shaping. */
+async function folderRows(events: ReturnType<typeof buildWebhookEvents>) {
+  const result = await boxed().runWebhookBatch(
+    { events },
+    { timeoutMs: 60_000 },
+  );
+  assert.equal(result.exitCode, 0, result.stderr);
+  const declared = new Set(Object.keys(spec.mako.entities));
+  const outcomes = outcomesOf(result);
+  return {
+    outcomes,
+    rows: outcomes.map((outcome, i) => {
+      const checked = checkOutcome(outcome, declared, 1_000);
+      if (checked?.kind !== "records") return null;
+      return shapeWebhookCdcRecords({
+        rawRecords: checked.records,
+        sourceConnection: SOURCE,
+        flow: {} as never,
+        webhookEvent: events[i],
+      });
+    }),
+  };
+}
+
+/** A row as stored, less the write time. */
+const comparable = (record: Record<string, any>) => {
+  const { _syncedAt: _drop, ...payload } = record.payload;
+  return {
+    entity: record.entity,
+    recordId: record.recordId,
+    operation: record.operation,
+    payload,
+    sourceTs: (record.sourceTs as Date).toISOString(),
+    changeId: record.changeId,
+  };
+};
+
+void test("the folder handles the same 72 events, mapped as the built-in maps them", async () => {
+  const folder = await import(
+    pathToFileURL(path.join(FOLDER, "webhooks.ts")).href
+  );
+  const events = stripeSupportedWebhookEvents();
+  assert.equal(events.length, 72);
+  assert.deepEqual(folder.stripeSupportedWebhookEvents(), events);
+  assert.deepEqual(spec.mako.webhooks.events, events);
+  for (const event of [
+    ...events,
+    "balance.available",
+    "customer.source.created",
+  ]) {
+    assert.deepEqual(
+      folder.stripeWebhookEventMapping(event),
+      stripeWebhookEventMapping(event),
+      event,
+    );
+  }
+  assert.equal(
+    new Set(events.map(e => stripeWebhookEventMapping(e)!.entity)).size,
+    19,
+  );
+  assert.deepEqual(spec.mako.webhooks.verification, {
+    scheme: "stripe-v1",
+    signatureHeader: "stripe-signature",
+    secretEncoding: "utf8",
+    toleranceSeconds: 300,
+  });
+});
+
+/** Deliveries of one body, signed in every way that matters. */
+function deliveries(payload: string, now: number) {
+  const sign = (
+    timestamp: number,
+    secret = TEST_SIGNING_SECRET,
+    body = payload,
+  ) =>
+    Stripe.webhooks.generateTestHeaderString({
+      payload: body,
+      secret,
+      timestamp,
+    });
+  const valid = sign(now);
+  const v1Of = (header: string) =>
+    header.split(",").find(p => p.startsWith("v1="))!;
+  const other = sign(now, "whsec_other_0123456789abcdefABCDEF");
+  return [
+    ["valid", valid, true],
+    ["valid, 299 s old", sign(now - 299), true],
+    [
+      "two secrets while rolling, the second valid",
+      `t=${now},${v1Of(other)},${v1Of(valid)}`,
+      true,
+    ],
+    [
+      "v0 and v1, as Stripe test mode sends",
+      `${valid},v0=${"0".repeat(64)}`,
+      true,
+    ],
+    ["301 s old", sign(now - 301), false],
+    ["other secret", other, false],
+    [
+      "other body",
+      sign(now, TEST_SIGNING_SECRET, payload.replace("evt_", "evt_x")),
+      false,
+    ],
+    ["timestamp swapped", valid.replace(`t=${now}`, `t=${now - 1}`), false],
+    ["no v1", `t=${now}`, false],
+    ["v0 only", `t=${now},v0=${v1Of(valid).slice(3)}`, false],
+    ["no timestamp", v1Of(valid), false],
+    ["empty", "", false],
+    ["garbage", "not a signature", false],
+  ] as const;
+}
+
+void test("stripe-v1 accepts and refuses exactly what constructEvent does", () => {
+  const declaration = declaredWebhookVerification(spec);
+  assert.ok(declaration);
+  const now = Math.floor(Date.now() / 1000);
+  const [event] = buildWebhookEvents(["invoice.paid"]);
+  const payload = JSON.stringify(event.rawPayload);
+  const stripe = () => new Stripe(API_KEY, { apiVersion: STRIPE_API_VERSION });
+  let valid = 0;
+  for (const [name, header, expected] of deliveries(payload, now)) {
+    const delivery = {
+      payload,
+      headers: header ? { "stripe-signature": header } : {},
+      secret: TEST_SIGNING_SECRET,
+    };
+    const ours = verifyDeclaredWebhook(declaration, delivery);
+    const theirs = verifyStripeWebhook(stripe, delivery);
+    assert.equal(theirs.valid, expected, `built-in: ${name}`);
+    assert.equal(ours.valid, expected, `declared: ${name}`);
+    if (ours.valid) {
+      valid++;
+      assert.deepEqual(ours.event, JSON.parse(JSON.stringify(theirs.event)));
+    }
+  }
+  assert.equal(valid, 4);
+  // No secret, or one that is too short to be a key: refused on both.
+  for (const secret of [undefined, "whsec_short"]) {
+    const delivery = {
+      payload,
+      headers: { "stripe-signature": deliveries(payload, now)[0][1] },
+      secret,
+    };
+    assert.equal(verifyDeclaredWebhook(declaration, delivery).valid, false);
+  }
+});
+
+void test("stripe-v1 also refuses a timestamp more than 300 s ahead, which constructEvent lets through", () => {
+  const declaration = declaredWebhookVerification(spec)!;
+  const now = Math.floor(Date.now() / 1000);
+  const payload = JSON.stringify({ id: "evt_future", type: "invoice.paid" });
+  const header = Stripe.webhooks.generateTestHeaderString({
+    payload,
+    secret: TEST_SIGNING_SECRET,
+    timestamp: now + 301,
+  });
+  const delivery = {
+    payload,
+    headers: { "stripe-signature": header },
+    secret: TEST_SIGNING_SECRET,
+  };
+  assert.equal(verifyDeclaredWebhook(declaration, delivery).valid, false);
+  assert.equal(
+    verifyStripeWebhook(
+      () => new Stripe(API_KEY, { apiVersion: STRIPE_API_VERSION }),
+      delivery,
+    ).valid,
+    true,
+  );
+});
+
+void test("a stripe-v1 declaration the API cannot run is refused", () => {
+  const base = spec.mako.webhooks.verification;
+  const wrap = (verification: unknown) => ({
+    mako: { webhooks: { verification } },
+  });
+  for (const [name, bad] of [
+    ["hex secret", { ...base, secretEncoding: "hex" }],
+    ["no window", { ...base, toleranceSeconds: undefined }],
+    ["window too wide", { ...base, toleranceSeconds: 86_401 }],
+    ["header case", { ...base, signatureHeader: "Stripe-Signature" }],
+    ["extra key", { ...base, signedPayload: ["body"] }],
+  ] as const) {
+    assert.equal(declaredWebhookVerification(wrap(bad)), null, name);
+  }
+});
+
+void test("every event type applies the same row on both paths, with no request", async () => {
+  const types = stripeSupportedWebhookEvents();
+  const events = buildWebhookEvents(types);
+  handed.length = 0;
+  requests.length = 0;
+  const { rows } = await folderRows(events);
+
+  // The box got the connection's credential and the events, nothing else.
+  assert.equal(handed[0].command, "webhook");
+  assert.deepEqual(Object.keys(handed[0].options.batch), ["events"]);
+  assert.equal(handed[0].options.config.api_key, API_KEY);
+  assert.equal(JSON.stringify(handed[0].options).includes("whsec_"), false);
+
+  const connector = builtIn();
+  let compared = 0;
+  for (const [i, event] of events.entries()) {
+    const theirs = await buildWebhookCdcRecords({
+      connector,
+      sourceConnection: SOURCE,
+      flow: {} as never,
+      webhookEvent: event,
+    });
+    assert.equal(theirs.records.length, 1, event.eventType);
+    assert.equal(rows[i]?.length, 1, event.eventType);
+    assert.deepEqual(
+      comparable(rows[i]![0]),
+      comparable(theirs.records[0]),
+      event.eventType,
+    );
+    assert.equal(rows[i]![0].entity, entityOfEvent(event.eventType));
+    compared++;
+  }
+  assert.equal(compared, 72);
+  assert.deepEqual(requests, [], "a whole payload costs no request");
+});
+
+void test("a partial upsert is filled by one GET; the webhook's values win; deletes cost none", async () => {
+  const rowsOf = rowsByEntity();
+  const sub = structuredClone(rowsOf.subscriptions[0]);
+  const customer = structuredClone(rowsOf.customers[0]);
+  objects.set(`/v1/subscriptions/${sub.id}`, {
+    ...sub,
+    status: "from GET, must not win",
+    // Stripe leaves this one out too: stored as NULL, as a backfill would.
+    pause_collection: undefined,
+  });
+  objects.set(`/v1/customers/${customer.id}`, customer);
+
+  const events = buildWebhookEvents([
+    "customer.subscription.updated",
+    "customer.updated",
+    "customer.deleted",
+  ]);
+  events[0].rawPayload.data.object = { ...sub, status: "active" };
+  delete events[0].rawPayload.data.object.items;
+  delete events[0].rawPayload.data.object.pause_collection;
+  events[1].rawPayload.data.object = {
+    id: customer.id,
+    object: "customer",
+    email: "new@example.test",
+  };
+  events[2].rawPayload.data.object = {
+    id: "cus_deleted",
+    object: "customer",
+    deleted: true,
+  };
+
+  requests.length = 0;
+  const { outcomes, rows } = await folderRows(events);
+  assert.deepEqual(
+    outcomes.map(o => o.outcome),
+    ["records", "records", "records"],
+  );
+
+  const filledSub = rows[0]![0].payload;
+  assert.deepEqual(filledSub.items, sub.items);
+  assert.equal(filledSub.status, "active");
+  assert.equal(filledSub.pause_collection, null);
+  const filledCustomer = rows[1]![0].payload;
+  assert.equal(filledCustomer.email, "new@example.test");
+  assert.equal(filledCustomer.name, customer.name);
+  assert.equal(filledCustomer.created, customer.created);
+  // Includable columns stay absent: Stripe never returns them unexpanded.
+  assert.equal("subscriptions" in filledCustomer, false);
+  assert.equal(
+    rows[1]![0].sourceTs.toISOString(),
+    new Date(customer.created * 1000).toISOString(),
+  );
+  assert.equal(rows[2]![0].operation, "delete");
+
+  assert.deepEqual(requests, [
+    `GET /v1/subscriptions/${sub.id}`,
+    `GET /v1/customers/${customer.id}`,
+  ]);
+});
+
+void test("a thin event, which only names its object, takes the whole object", async () => {
+  const invoice = structuredClone(rowsByEntity().invoices[0]);
+  objects.set(`/v1/invoices/${invoice.id}`, invoice);
+  const events = [
+    {
+      eventId: "evt_thin",
+      eventType: "invoice.paid",
+      receivedAt: new Date(SENT_AT * 1000).toISOString(),
+      rawPayload: {
+        id: "evt_thin",
+        object: "v2.core.event",
+        type: "invoice.paid",
+        related_object: {
+          id: invoice.id,
+          type: "invoice",
+          url: `/v1/invoices/${invoice.id}`,
+        },
+      },
+    },
+  ];
+  requests.length = 0;
+  const { outcomes, rows } = await folderRows(events);
+  assert.equal(outcomes[0].outcome, "records");
+  const {
+    _syncedAt: _a,
+    _dataSourceId: _b,
+    _dataSourceName: _c,
+    ...payload
+  } = rows[0]![0].payload;
+  assert.deepEqual(payload, invoice);
+  assert.equal(rows[0]![0].changeId, "evt_thin");
+  assert.deepEqual(requests, [`GET /v1/invoices/${invoice.id}`]);
+});
+
+void test("404 or a deleted object skips; a failed read holds the event for a retry", async () => {
+  const charge = structuredClone(rowsByEntity().charges[0]);
+  failing.add("/v1/charges/ch_broken");
+  objects.set("/v1/customers/cus_gone_since", {
+    id: "cus_gone_since",
+    object: "customer",
+    deleted: true,
+  });
+  const events = buildWebhookEvents([
+    "charge.updated",
+    "charge.updated",
+    "customer.updated",
+  ]);
+  events[0].rawPayload.data.object = {
+    id: "ch_missing",
+    object: "charge",
+    amount: 1,
+  };
+  events[1].rawPayload.data.object = {
+    ...charge,
+    id: "ch_broken",
+    outcome: undefined,
+  };
+  delete events[1].rawPayload.data.object.outcome;
+  events[2].rawPayload.data.object = {
+    id: "cus_gone_since",
+    object: "customer",
+  };
+  const { outcomes } = await folderRows(events);
+  assert.deepEqual(
+    outcomes.map(o => o.outcome),
+    ["skipped", "extract_failed", "skipped"],
+  );
+  assert.match(outcomes[0].reason, /404/);
+  assert.match(outcomes[1].reason, /ch_broken.*HTTP 500/);
+});
+
+void test("past the fill budget, events are deferred, never answered partial", async () => {
+  const folder = await import(
+    pathToFileURL(path.join(FOLDER, "webhook-handler.ts")).href
+  );
+  const product = structuredClone(rowsByEntity().products[0]);
+  let clock = 0;
+  const gets: string[] = [];
+  const stripe = {
+    products: {
+      async retrieve(id: string) {
+        gets.push(id);
+        clock += 600;
+        return { ...product, id };
+      },
+    },
+  };
+  const events = buildWebhookEvents([
+    "product.updated",
+    "product.updated",
+    "product.updated",
+    "product.deleted",
+  ]);
+  for (const [i, event] of events.slice(0, 3).entries()) {
+    event.rawPayload.data.object = { id: `prod_p${i}`, object: "product" };
+  }
+  const outcomes = await folder.handleStripeWebhookBatch(
+    { stripe: () => stripe, log: () => {}, budgetMs: 1_000, now: () => clock },
+    events,
+  );
+  assert.deepEqual(
+    outcomes.map((o: any) => o.outcome),
+    ["records", "records", "deferred", "records"],
+  );
+  assert.equal(gets.length, 2);
+});
+
+void test("an id that cannot go into a path is refused before any request", async () => {
+  const events = buildWebhookEvents([
+    "coupon.updated",
+    "coupon.updated",
+    "coupon.updated",
+  ]);
+  for (const [i, id] of ["..", ".", "a b"].entries()) {
+    events[i].rawPayload.data.object = { id, object: "coupon" };
+  }
+  requests.length = 0;
+  const { outcomes } = await folderRows(events);
+  assert.deepEqual(
+    outcomes.map(o => o.outcome),
+    ["extract_failed", "extract_failed", "extract_failed"],
+  );
+  assert.deepEqual(requests, []);
+});
+
+void test("the fill table covers every entity with events, less what Stripe never returns", async () => {
+  const folder = await import(
+    pathToFileURL(path.join(FOLDER, "webhook-handler.ts")).href
+  );
+  const withEvents = new Set(
+    stripeSupportedWebhookEvents().map(
+      e => stripeWebhookEventMapping(e)!.entity,
+    ),
+  );
+  assert.deepEqual(
+    Object.keys(folder.STRIPE_WEBHOOK_FILL_FIELDS).sort(),
+    [...withEvents].sort(),
+  );
+  assert.deepEqual(Object.keys(LIST_PATH).sort(), [...withEvents].sort());
+  // A list row of every entity has every fill field: a whole payload is
+  // never mistaken for a partial one.
+  const rows = rowsByEntity();
+  for (const [entity, fields] of Object.entries(
+    folder.STRIPE_WEBHOOK_FILL_FIELDS as Record<string, string[]>,
+  )) {
+    for (const row of rows[entity]) {
+      for (const field of fields) assert.ok(field in row, `${entity}.${field}`);
+    }
+  }
+});
+
+void test("provisioning creates the endpoint pinned to 2023-10-16 and returns its secret", async () => {
+  const stripe = new Stripe(API_KEY, {
+    apiVersion: STRIPE_API_VERSION,
+    host: "127.0.0.1",
+    port: Number(new URL(baseUrl).port),
+    protocol: "http",
+  });
+  const provisioner = stripeWebhookProvisioner(stripe);
+  const url = "https://api.example.test/api/webhooks/ws1/flowS";
+  endpoints.length = 0;
+
+  assert.equal(await provisioner.update({ endpointUrl: url }), null);
+  const created = await provisioner.create({
+    endpointUrl: url,
+    enabledEntities: ["invoices", "customers"],
+  });
+  assert.equal(created.signingSecret, TEST_SIGNING_SECRET);
+  assert.equal(endpoints[0].api_version, "2023-10-16");
+  assert.deepEqual(endpoints[0].enabled_events, [
+    "customer.created",
+    "customer.updated",
+    "customer.deleted",
+    "invoice.created",
+    "invoice.finalized",
+    "invoice.paid",
+    "invoice.payment_failed",
+    "invoice.updated",
+    "invoice.deleted",
+  ]);
+
+  // A save later retargets the same endpoint; Stripe shows no secret again.
+  const updated = await provisioner.update({
+    endpointUrl: url,
+    enabledEntities: ["charges"],
+    providerWebhookId: created.providerWebhookId,
+  });
+  assert.equal(updated?.providerWebhookId, created.providerWebhookId);
+  assert.equal(updated?.signingSecret, undefined);
+  assert.equal(endpoints.length, 1);
+  assert.deepEqual(endpoints[0].enabled_events, [
+    "charge.succeeded",
+    "charge.failed",
+    "charge.captured",
+    "charge.refunded",
+    "charge.updated",
+  ]);
+});
+
+void test("a boxed Stripe folder offers provisioning, with the flag on and its scheme declared", async () => {
+  assert.equal(hasWebhookProvisioner("stripe"), true);
+  await assert.rejects(() => webhookProvisionerFor("stripe", {}), /API key/);
+  const connector = boxed();
+  (connector as any).loaded = {
+    slug: "stripe",
+    spec,
+    entities: [],
+  };
+  assert.equal(connector.supportsWebhooks(), true);
+  assert.equal(connector.webhookDelivery(), "box");
+  assert.equal(connector.supportsWebhookProvisioning(), true);
+  assert.equal(connector.supportsWebhookSubscriptionUpdate(), true);
+  assert.deepEqual(
+    connector.getSupportedWebhookEvents(),
+    stripeSupportedWebhookEvents(),
+  );
+});

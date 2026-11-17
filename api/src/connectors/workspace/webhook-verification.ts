@@ -11,7 +11,23 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { WebhookVerificationResult } from "../base/BaseConnector";
 
-export interface DeclaredWebhookVerification {
+export type DeclaredWebhookVerification =
+  DeclaredHmacVerification | DeclaredStripeV1Verification;
+
+/**
+ * Stripe's scheme: one header, `t=<unix seconds>,v1=<hex>[,v1=<hex>...]`.
+ * Each `v1` is an HMAC-SHA256 of `<t>.<raw body>` under the secret's UTF-8
+ * bytes, as `stripe.webhooks.constructEvent` checks it. The timestamp is
+ * always signed, and always bounded by `toleranceSeconds`.
+ */
+export interface DeclaredStripeV1Verification {
+  scheme: "stripe-v1";
+  signatureHeader: string;
+  secretEncoding: "utf8";
+  toleranceSeconds: number;
+}
+
+export interface DeclaredHmacVerification {
   scheme: "hmac-sha256";
   secretEncoding: "hex" | "base64" | "utf8";
   signedPayload: string[];
@@ -46,6 +62,7 @@ export function declaredWebhookVerification(
   const v = (spec as { mako?: { webhooks?: { verification?: unknown } } })?.mako
     ?.webhooks?.verification as Record<string, unknown> | undefined;
   if (!v || typeof v !== "object") return null;
+  if (v.scheme === "stripe-v1") return declaredStripeV1(v);
   if (v.scheme !== "hmac-sha256") return null;
   if (!["hex", "base64", "utf8"].includes(v.secretEncoding as string)) {
     return null;
@@ -108,11 +125,11 @@ export function declaredWebhookVerification(
   return {
     scheme: "hmac-sha256",
     secretEncoding:
-      v.secretEncoding as DeclaredWebhookVerification["secretEncoding"],
+      v.secretEncoding as DeclaredHmacVerification["secretEncoding"],
     signedPayload: [...(parts as string[])],
     signatureHeader: v.signatureHeader,
     signatureEncoding:
-      v.signatureEncoding as DeclaredWebhookVerification["signatureEncoding"],
+      v.signatureEncoding as DeclaredHmacVerification["signatureEncoding"],
     ...(typeof v.signaturePrefix === "string"
       ? { signaturePrefix: v.signaturePrefix }
       : {}),
@@ -123,6 +140,119 @@ export function declaredWebhookVerification(
         }
       : {}),
   };
+}
+
+const STRIPE_V1_KEYS = new Set([
+  "scheme",
+  "signatureHeader",
+  "secretEncoding",
+  "toleranceSeconds",
+]);
+
+/** A stripe-v1 declaration, exactly its four keys, or null. */
+function declaredStripeV1(
+  v: Record<string, unknown>,
+): DeclaredStripeV1Verification | null {
+  if (Object.keys(v).some(key => !STRIPE_V1_KEYS.has(key))) return null;
+  if (
+    typeof v.signatureHeader !== "string" ||
+    !HEADER_NAME.test(v.signatureHeader)
+  ) {
+    return null;
+  }
+  if (v.secretEncoding !== "utf8") return null;
+  if (
+    !Number.isSafeInteger(v.toleranceSeconds) ||
+    (v.toleranceSeconds as number) < 1 ||
+    (v.toleranceSeconds as number) > MAX_TOLERANCE_SECONDS
+  ) {
+    return null;
+  }
+  return {
+    scheme: "stripe-v1",
+    signatureHeader: v.signatureHeader,
+    secretEncoding: "utf8",
+    toleranceSeconds: v.toleranceSeconds as number,
+  };
+}
+
+/** A Stripe signature header: its one `t`, and every `v1`. */
+function parseStripeSignatureHeader(
+  value: string,
+): { timestamp: string; signatures: string[] } | null {
+  let timestamp: string | undefined;
+  const signatures: string[] = [];
+  for (const item of value.split(",")) {
+    const at = item.indexOf("=");
+    if (at <= 0) continue;
+    const key = item.slice(0, at).trim();
+    const val = item.slice(at + 1).trim();
+    if (key === "t") {
+      // Two timestamps make the signed one ambiguous: refused.
+      if (timestamp !== undefined) return null;
+      timestamp = val;
+    } else if (key === "v1") {
+      signatures.push(val);
+    }
+  }
+  if (timestamp === undefined || signatures.length === 0) return null;
+  // At most 16 signatures: Stripe sends one per active secret (two while a
+  // secret rolls). More is not a Stripe delivery.
+  if (signatures.length > 16) return null;
+  return { timestamp, signatures };
+}
+
+function verifyStripeV1(
+  declaration: DeclaredStripeV1Verification,
+  options: {
+    payload: string;
+    headers: Record<string, string | string[] | undefined>;
+    secret?: string;
+    now?: Date;
+  },
+): WebhookVerificationResult {
+  const { payload, headers, secret } = options;
+  if (!secret) return { valid: false, error: "Missing webhook secret" };
+  const key = keyOf(secret, declaration.secretEncoding);
+  if (!key) return { valid: false, error: "The webhook secret is malformed" };
+  const presented = header(headers, declaration.signatureHeader);
+  if (!presented) {
+    return {
+      valid: false,
+      error: `Missing ${declaration.signatureHeader} header`,
+    };
+  }
+  const parsed = parseStripeSignatureHeader(presented);
+  if (!parsed || !/^\d{1,12}$/.test(parsed.timestamp)) {
+    return {
+      valid: false,
+      error: `Malformed ${declaration.signatureHeader} header`,
+    };
+  }
+  const nowSeconds = (options.now ?? new Date()).getTime() / 1000;
+  if (
+    Math.abs(nowSeconds - Number(parsed.timestamp)) >
+    declaration.toleranceSeconds
+  ) {
+    return { valid: false, error: "The delivery is outside its time window" };
+  }
+  const expected = Buffer.from(
+    createHmac("sha256", key)
+      .update(`${parsed.timestamp}.`)
+      .update(payload)
+      .digest("hex"),
+    "utf8",
+  );
+  const matched = parsed.signatures.some(signature => {
+    const given = Buffer.from(signature, "utf8");
+    return given.length === expected.length && timingSafeEqual(expected, given);
+  });
+  if (!matched) return { valid: false, error: "Invalid signature" };
+  try {
+    return { valid: true, event: JSON.parse(payload) };
+  } catch {
+    return { valid: false, error: "Invalid JSON payload" };
+  }
 }
 
 function header(
@@ -143,7 +273,7 @@ function header(
  */
 export function keyOf(
   secret: string,
-  encoding: DeclaredWebhookVerification["secretEncoding"],
+  encoding: DeclaredHmacVerification["secretEncoding"],
 ): Buffer | null {
   let key: Buffer;
   if (encoding === "utf8") {
@@ -175,6 +305,9 @@ export function verifyDeclaredWebhook(
     now?: Date;
   },
 ): WebhookVerificationResult {
+  if (declaration.scheme === "stripe-v1") {
+    return verifyStripeV1(declaration, options);
+  }
   const { payload, headers, secret } = options;
   if (!secret) return { valid: false, error: "Missing webhook secret" };
   const key = keyOf(secret, declaration.secretEncoding);

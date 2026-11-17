@@ -126,7 +126,7 @@ test("webhooks need a handler and a verification Mako can run as data", () => {
   );
   const withVerification = verification =>
     defineConnector({ ...webhookBase(), webhooks: { handleBatch: () => [], verification } });
-  assert.throws(() => withVerification({ ...closeVerification, scheme: "md5" }), /scheme must be one of hmac-sha256/);
+  assert.throws(() => withVerification({ ...closeVerification, scheme: "md5" }), /scheme must be one of hmac-sha256, stripe-v1/);
   assert.throws(
     () => withVerification({ ...closeVerification, signedPayload: ["header:close-sig-timestamp"] }),
     /must include "body"/,
@@ -184,4 +184,21 @@ test("a declared timestamp must be part of the signed payload", () => {
       }),
     /must include "header:x-ts"/,
   );
+});
+
+test("stripe-v1 declares a header, a UTF-8 secret and a window, nothing else", () => {
+  const define = verification => defineConnector({ ...webhookBase(), webhooks: { handleBatch: () => [], verification } });
+  const stripe = {
+    scheme: "stripe-v1",
+    signatureHeader: "stripe-signature",
+    secretEncoding: "utf8",
+    toleranceSeconds: 300,
+  };
+  assert.deepEqual(define(stripe).spec().mako.webhooks.verification, stripe);
+  assert.throws(() => define({ ...stripe, toleranceSeconds: undefined }), /from 1 to 86400/);
+  assert.throws(() => define({ ...stripe, toleranceSeconds: 86_401 }), /from 1 to 86400/);
+  assert.throws(() => define({ ...stripe, secretEncoding: "hex" }), /"utf8" for stripe-v1/);
+  assert.throws(() => define({ ...stripe, signatureHeader: "Stripe-Signature" }), /lowercase header name/);
+  assert.throws(() => define({ ...stripe, signedPayload: ["body"] }), /signedPayload is not part of the stripe-v1 scheme/);
+  assert.throws(() => define({ ...stripe, scheme: "stripe-v2" }), /scheme must be one of hmac-sha256, stripe-v1/);
 });

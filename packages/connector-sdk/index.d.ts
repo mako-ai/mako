@@ -102,7 +102,24 @@ export interface EntityDefinition<Config = Record<string, unknown>> {
  * How Mako verifies a delivery's signature, in its API, before storing it.
  * Data, never code: the signing secret stays in Mako and no box sees it.
  */
-export interface WebhookVerification {
+/**
+ * Stripe's scheme: `t=<unix seconds>,v1=<hex>[,v1=...]` in one header, each
+ * `v1` an HMAC-SHA256 of `<t>.<raw body>` under the secret's UTF-8 bytes.
+ * The timestamp is always signed; `toleranceSeconds` (1 to 86400) bounds it.
+ */
+export interface StripeV1WebhookVerification {
+  scheme: "stripe-v1";
+  /** Lowercase name of the header, e.g. `"stripe-signature"`. */
+  signatureHeader: string;
+  secretEncoding: "utf8";
+  toleranceSeconds: number;
+}
+
+export type WebhookVerification =
+  | HmacWebhookVerification
+  | StripeV1WebhookVerification;
+
+export interface HmacWebhookVerification {
   scheme: "hmac-sha256";
   /** How the stored signing secret becomes the HMAC key. */
   secretEncoding: "hex" | "base64" | "utf8";
