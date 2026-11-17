@@ -331,6 +331,7 @@ const CONTACT: Fields = {
   organization_id: "string",
   timezone: "string",
   timezone_source: "string",
+  lead_suggestions_operation_id: "string",
   created_by: "string",
   updated_by: "string",
   date_created: "timestamp",
@@ -360,6 +361,7 @@ const OPPORTUNITY: Fields = {
   value_formatted: "string",
   value_period: "string",
   note: "string",
+  note_html: "string",
   created_by: "string",
   created_by_name: "string",
   updated_by: "string",
@@ -527,9 +529,21 @@ export function closeBaseFields(entity: string): Fields | null {
  * The Search API `_fields` list of an activity subtype: every column its
  * schema declares. Same rule as the in-process `closeActivitySearchFields`.
  */
+/**
+ * Fields only Close webhooks carry. Search answers them with null, so asking
+ * for them would write null over the webhook value on every poll and resync.
+ * They stay in the schema, so webhook rows keep typing them.
+ */
+const WEBHOOK_ONLY_SEARCH_FIELDS: Record<string, readonly string[]> = {
+  "activities:Meeting": ["calendar_event_link"],
+};
+
 export function closeActivitySearchFields(entity: string): string[] | null {
   if (!ACTIVITY_SCHEMA_MAP[entity]) return null;
-  return Object.keys({ ...COMMON_ACTIVITY, ...ACTIVITY_SCHEMA_MAP[entity] });
+  const skip = new Set(WEBHOOK_ONLY_SEARCH_FIELDS[entity] ?? []);
+  return Object.keys({ ...COMMON_ACTIVITY, ...ACTIVITY_SCHEMA_MAP[entity] }).filter(
+    field => !skip.has(field),
+  );
 }
 
 export interface CloseCustomField {
