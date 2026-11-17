@@ -575,10 +575,11 @@ export async function loadWebhookConnector(
     String(sourceConnection._id),
   );
   if (!decrypted) return null;
+  // A Mongoose document in the ingest; a plain row in tests.
   const row: Record<string, unknown> =
-    typeof (sourceConnection as any).toObject === "function"
-      ? (sourceConnection as any).toObject()
-      : { ...sourceConnection };
+    typeof sourceConnection.toObject === "function"
+      ? sourceConnection.toObject()
+      : { ...(sourceConnection as object) };
   return deps.getConnectorFor({
     ...row,
     config: decrypted.connection,
@@ -686,7 +687,36 @@ export async function ingestPendingWebhookEvents(logger: {
       continue;
     }
 
-    const connector = await loadWebhookConnector(sourceConnection);
+    // Decrypting a workspace connector's config loads its definition, which
+    // throws when the definition is missing or blocked. That fails this
+    // flow's events only; every other flow in the batch still ingests.
+    let connector: BaseConnector | null;
+    try {
+      connector = await loadWebhookConnector(sourceConnection);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("Could not load the connector for a webhook flow", {
+        flowId,
+        type: sourceConnection.type,
+        error: message,
+      });
+      await WebhookEvent.updateMany(
+        { _id: { $in: events.map(e => e._id) } },
+        {
+          $set: {
+            status: "failed",
+            applyStatus: "failed",
+            processedAt: new Date(),
+            applyError: {
+              code: "CONNECTOR_LOAD_FAILED",
+              message: `Could not load the ${sourceConnection.type} connector: ${message}`,
+            },
+          },
+        },
+      );
+      totalFailed += events.length;
+      continue;
+    }
     if (!connector) {
       logger.warn("Connector not found for data source", {
         flowId,
