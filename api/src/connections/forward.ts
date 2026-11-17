@@ -27,7 +27,10 @@ import {
   type RequestShape,
 } from "./callable";
 
-/** A caller mistake or a refusal: the message is safe to show. */
+/**
+ * A caller mistake, a refusal, or a service Mako could not reach (503): the
+ * message is safe to show.
+ */
 export class ConnectionRequestError extends Error {
   constructor(
     message: string,
@@ -489,12 +492,71 @@ export async function send(
     if (error instanceof RateGateBusyError) {
       throw new ConnectionRequestError(error.message, 503);
     }
+    // The service did not answer: a 503 that names it and says why, not an
+    // internal error. A caller that hung up gets the error as it is.
+    const reason = options.signal?.aborted ? null : unreachableReason(error);
+    if (reason) {
+      throw new ConnectionRequestError(
+        `${url.host} could not be reached: ${reason}.`,
+        503,
+      );
+    }
     throw withoutSecrets(
       error,
       searchableSecrets(secretsOf(callable, config), sent),
     );
   }
   return clean(answer, callable, config, sent);
+}
+
+/** Network error codes (Node and undici) and what they say about the service. */
+const NETWORK_CODES: Record<string, string> = {
+  UND_ERR_CONNECT_TIMEOUT: "no connection within the connect timeout",
+  ETIMEDOUT: "the connection timed out",
+  ECONNREFUSED: "the connection was refused",
+  ECONNRESET: "the connection was reset",
+  EPIPE: "the connection was closed",
+  UND_ERR_SOCKET: "the connection was closed",
+  UND_ERR_CLOSED: "the connection was closed",
+  EHOSTUNREACH: "the host is unreachable",
+  ENETUNREACH: "the network is unreachable",
+  ENOTFOUND: "its name does not resolve",
+  EAI_AGAIN: "its name lookup failed",
+  UND_ERR_HEADERS_TIMEOUT: "no answer in time",
+  UND_ERR_BODY_TIMEOUT: "no answer in time",
+  ERR_TLS_CERT_ALTNAME_INVALID: "its TLS certificate does not match",
+  CERT_HAS_EXPIRED: "its TLS certificate has expired",
+};
+
+/**
+ * Why a transport error means the service was not reached or did not answer,
+ * or null when it is something else (a header the HTTP client refused, a
+ * blocked address). Reads `fetch failed` and its causes, and the abort of
+ * the request timeout.
+ */
+export function unreachableReason(error: unknown): string | null {
+  const seen = new Set<unknown>();
+  const queue: unknown[] = [error];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || typeof current !== "object" || seen.has(current)) continue;
+    seen.add(current);
+    const { code, name, cause, errors } = current as {
+      code?: unknown;
+      name?: unknown;
+      cause?: unknown;
+      errors?: unknown;
+    };
+    if (typeof code === "string" && NETWORK_CODES[code]) {
+      return `${NETWORK_CODES[code]} (${code})`;
+    }
+    if (name === "AbortError" || name === "TimeoutError") {
+      return "no answer within the request timeout";
+    }
+    queue.push(cause);
+    if (Array.isArray(errors)) queue.push(...errors);
+  }
+  return null;
 }
 
 /**

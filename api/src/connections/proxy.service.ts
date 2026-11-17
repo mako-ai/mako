@@ -547,6 +547,12 @@ export async function connectionRequest(
     );
   } catch (error) {
     // `send` strips every credential from its errors.
+    if (error instanceof ConnectionRequestError && error.status === 503) {
+      logger.warn("Connection service unreachable", {
+        ...where,
+        error: error.message,
+      });
+    }
     if (logId) {
       await recordOutcome(logId, {
         error: (error instanceof Error ? error.message : String(error)).slice(

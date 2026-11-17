@@ -28,6 +28,7 @@ import {
   forward,
   resolveRequest,
   setTransportForTests,
+  unreachableReason,
   urlUnder,
 } from "./forward";
 import { CustomApiConnector } from "../connectors/custom_api/connector";
@@ -864,6 +865,82 @@ describe("no secret in any answer", () => {
     expect(err.message).not.toContain("tok_9f2c4e7a");
     expect(err.cause).toBeUndefined();
     expect(String(err.stack)).not.toContain("tok_9f2c4e7a");
+  });
+
+  it("answers 503 naming the host when the service cannot be reached", async () => {
+    const connectTimeout = Object.assign(new Error("Connect Timeout Error"), {
+      name: "ConnectTimeoutError",
+      code: "UND_ERR_CONNECT_TIMEOUT",
+    });
+    setTransportForTests(async () => {
+      throw new TypeError("fetch failed", { cause: connectTimeout });
+    });
+    const error = await forward(
+      connection("custom_api", {
+        base_url: "https://probo.example.com/api",
+        token: KEY,
+      }),
+      type("custom_api"),
+      { method: "POST", path: "/", body: { query: "{ viewer { id } }" } },
+    ).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ConnectionRequestError);
+    expect((error as ConnectionRequestError).status).toBe(503);
+    expect((error as Error).message).toBe(
+      "probo.example.com could not be reached: no connection within the connect timeout (UND_ERR_CONNECT_TIMEOUT).",
+    );
+  });
+
+  it("answers 503 when the service does not answer within the timeout", async () => {
+    setTransportForTests(async () => {
+      throw new DOMException("This operation was aborted", "AbortError");
+    });
+    const error = await forward(
+      connection("custom_api", {
+        base_url: "https://x.example.com",
+        token: KEY,
+      }),
+      type("custom_api"),
+      { method: "GET", path: "/" },
+    ).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ConnectionRequestError);
+    expect((error as ConnectionRequestError).status).toBe(503);
+    expect((error as Error).message).toContain(
+      "x.example.com could not be reached",
+    );
+  });
+
+  it("reads a network code from a nested cause and an AggregateError", () => {
+    const refused = Object.assign(new Error("connect ECONNREFUSED"), {
+      code: "ECONNREFUSED",
+    });
+    expect(
+      unreachableReason(
+        new TypeError("fetch failed", { cause: new AggregateError([refused]) }),
+      ),
+    ).toBe("the connection was refused (ECONNREFUSED)");
+    expect(
+      unreachableReason(new TypeError("Headers.append: bad value")),
+    ).toBeNull();
+    expect(unreachableReason("fetch failed")).toBeNull();
+  });
+
+  it("passes a caller's own abort through as it is", async () => {
+    const caller = new AbortController();
+    caller.abort();
+    setTransportForTests(async () => {
+      throw new DOMException("This operation was aborted", "AbortError");
+    });
+    const error = await forward(
+      connection("custom_api", {
+        base_url: "https://x.example.com",
+        token: KEY,
+      }),
+      type("custom_api"),
+      { method: "GET", path: "/" },
+      { signal: caller.signal },
+    ).catch((e: unknown) => e);
+    expect(error).not.toBeInstanceOf(ConnectionRequestError);
+    expect((error as Error).name).toBe("AbortError");
   });
 
   it("drops a header echoing a Custom API's key", async () => {
