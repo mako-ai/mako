@@ -22,10 +22,12 @@ import {
   tokenFor,
   authArgs,
   cloneMirrorInto,
+  singleFlightClone,
   ensureLocalRepo,
 } from "./target";
 import { mirrorPushNow } from "./push";
 import { fetchFromCloud } from "./fetch";
+import { cloneInFlight } from "./clone-state";
 
 const logger = loggers.api("apps");
 
@@ -221,8 +223,13 @@ export async function adoptConnectedRepo(
   }
   if (!remoteEmpty) {
     // IMPORT: drop the (history-less) local slot and adopt the repo's history.
-    await fs.rm(repoDir, { recursive: true, force: true });
-    await cloneMirrorInto(workspaceId, url, token, label);
+    // Single-flight with ensureLocalRepo, so a restore of the same slot
+    // cannot interleave with the drop and the clone.
+    await cloneInFlight.get(workspaceId)?.catch(() => undefined);
+    await singleFlightClone(workspaceId, async () => {
+      await fs.rm(repoDir, { recursive: true, force: true });
+      await cloneMirrorInto(workspaceId, url, token, label);
+    });
     logger.info("Apps workspace imported its connected repo", {
       workspaceId,
       repo: label,
