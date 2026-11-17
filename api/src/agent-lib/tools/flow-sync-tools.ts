@@ -11,6 +11,7 @@
  *
  * Writes are the routes' own steps, in their order: the backfill is
  * `cdcBackfillService.startBackfill` (POST …/sync-cdc/backfill/start); a
+ * cancel is `cancelFlowRuns` (POST …/cancel); a
  * trigger change sets the fields exactly as PUT /flows/:id (poll, webhook)
  * and POST …/backfill-schedule (resync) do, commits `flows/<slug>.yml`
  * (`commitFlowFile`), then saves. Same role rule too: owner or admin.
@@ -40,6 +41,7 @@ import { generateWebhookEndpoint } from "../../utils/webhook.utils";
 import { workspaceService } from "../../services/workspace.service";
 import { cdcBackfillService } from "../../sync-cdc/backfill";
 import { resyncLastRunAt } from "../../services/resync-schedule";
+import { cancelFlowRuns } from "../../services/flow-cancel.service";
 
 const OBJECT_ID = /^[0-9a-f]{24}$/i;
 const RECENT_EXECUTIONS = 5;
@@ -274,6 +276,7 @@ export function createFlowSyncTools({
               lifetimeRowsApplied: s.lifetimeRowsApplied,
             })),
             executions: runs.map(r => ({
+              id: r._id.toString(),
               status: r.status,
               success: r.success,
               startedAt: r.startedAt,
@@ -317,6 +320,39 @@ export function createFlowSyncTools({
             id: flow._id.toString(),
             runId: run.runId,
             resumed: run.reusedRunId,
+          };
+        } catch (error) {
+          return failure(error);
+        }
+      },
+    }),
+
+    flow_cancel: tool({
+      description:
+        "Cancel a sync's running work: with no `executionId`, every running execution plus its CDC backfill when one is running or paused; with `executionId`, that run only, and a live backfill keeps its state and resume point. Returns what it cancelled. Owner or admin. Follow it with flow_status.",
+      inputSchema: z.object({
+        flow: flowRef,
+        executionId: z
+          .string()
+          .optional()
+          .describe(
+            "Cancel only this run (flow_status lists run ids; default: every running one and the backfill)",
+          ),
+      }),
+      execute: async ({ flow: ref, executionId }) => {
+        try {
+          if (!(await mayChange())) {
+            return failure("Owner/admin role required");
+          }
+          const flow = await findFlow(workspaceId, ref);
+          const result = await cancelFlowRuns(workspaceId, flow, executionId, {
+            cancelBackfill: true,
+          });
+          return {
+            success: true,
+            id: result.flowId,
+            cancelled: result.executions,
+            backfill: result.backfill,
           };
         } catch (error) {
           return failure(error);

@@ -50,10 +50,12 @@ the workers".
 
 Syncs: `mako sync ls` lists every sync with its triggers and state; `mako sync
 status <name|id>` shows per-entity mode, backlog, failures and the last runs;
-`mako sync backfill <name|id> [--entity a,b]` re-reads now; `mako sync set
+`mako sync backfill <name|id> [--entity a,b]` re-reads now; `mako sync cancel
+<name|id> [--execution <id>]` cancels the running runs (and a running
+backfill) or one run; `mako sync set
 <name|id> [--poll <cron|off>] [--webhook on|off] [--resync <cron|off>] [--tz
 <zone>]` changes what starts a sync. A name can be any unique short name.
-The two writes need an owner/admin and the warehouse-write grant; `--json` prints
+The three writes need an owner/admin and the warehouse-write grant; `--json` prints
 the server's answer.
 
 Also: `mako whoami` (says when the token expired, and refreshes it when it

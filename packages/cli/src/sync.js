@@ -1,8 +1,10 @@
 /**
  * `mako sync` — the workspace's syncs (flows) from the terminal: list them,
- * see how each entity is doing, start a backfill, change the triggers.
+ * see how each entity is doing, start a backfill, cancel a run, change the
+ * triggers.
  *
- * It speaks MCP (`flow_list`, `flow_status`, `flow_backfill`, `flow_update`),
+ * It speaks MCP (`flow_list`, `flow_status`, `flow_backfill`, `flow_cancel`,
+ * `flow_update`),
  * like `status` and `connection probe`, so the login token is enough and the
  * rules — what is shown, who may act, no secret in any answer — are the
  * server's, not this file's.
@@ -12,6 +14,7 @@ import { callMcpTool } from "./status.js";
 const HELP = `mako sync ls                                  every sync: triggers, engine, state
 mako sync status <name|id>                    per entity: mode, backlog, failures, last materialised; last runs
 mako sync backfill <name|id> [--entity a,b]   re-read every record now (owner/admin)
+mako sync cancel <name|id> [--execution <id>] cancel the running runs and backfill, or one run (owner/admin)
 mako sync set <name|id> [--poll <cron|off>] [--webhook on|off] [--resync <cron|off>] [--tz <zone>]
                                               change what starts a sync (owner/admin)
 
@@ -80,7 +83,7 @@ export async function sync(ctx, positional, flags, io = { log: console.log }) {
     );
   }
 
-  if (!target || !["status", "backfill", "set"].includes(sub)) {
+  if (!target || !["status", "backfill", "cancel", "set"].includes(sub)) {
     io.log(HELP);
     return sub && sub !== "help" ? 2 : 0;
   }
@@ -117,6 +120,7 @@ export async function sync(ctx, positional, flags, io = { log: console.log }) {
       "Last runs:",
       ...table(
         o.executions.map(r => [
+          r.id ?? "",
           r.startedAt,
           r.status,
           r.durationMs != null ? `${Math.round(r.durationMs / 1000)}s` : "",
@@ -137,6 +141,21 @@ export async function sync(ctx, positional, flags, io = { log: console.log }) {
     const out = await callMcpTool(ctx, "flow_backfill", args);
     return done(out, flags, io, o => [
       `Backfill ${o.resumed ? "resumed" : "started"} (run ${o.runId}). Follow it: mako sync status ${target}`,
+    ]);
+  }
+
+  if (sub === "cancel") {
+    const args = { flow: target };
+    if (flags.execution !== undefined) {
+      args.executionId = String(flags.execution);
+    }
+    const out = await callMcpTool(ctx, "flow_cancel", args);
+    return done(out, flags, io, o => [
+      ...o.cancelled.map(r => `Cancelled run ${r.executionId}`),
+      ...(o.backfill
+        ? [`Cancelled backfill (was ${o.backfill.previousStatus})`]
+        : []),
+      `Follow it: mako sync status ${target}`,
     ]);
   }
 

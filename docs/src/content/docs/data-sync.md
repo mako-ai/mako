@@ -179,13 +179,14 @@ resync:
 
 ### Driving syncs from an agent or the terminal
 
-Over MCP (external clients only), five tools cover syncs:
+Over MCP (external clients only), six tools cover syncs:
 
 | Tool | What it does |
 |------|--------------|
 | `flow_list` / `flow_read` | List syncs, or read one as its `flows/<slug>.yml` shape (never credentials or webhook secrets), with its triggers |
 | `flow_status` | Per-entity CDC state (mode, backlog, failures, last materialised) plus the last executions |
 | `flow_backfill` | Start (or resume) a backfill, optionally for some entities |
+| `flow_cancel` | Cancel every running execution plus a running CDC backfill, or one execution (the backfill keeps its resume point) |
 | `flow_update` | Change the three trigger controls (poll, webhook, resync) and commit the flow file |
 
 A sync is addressed by id, name or slug, or any unique short name (`wise`, `fr_close`). The two writes need the `warehouse:write` grant and an owner or admin role; the reads need neither.
@@ -196,6 +197,7 @@ The CLI wraps the same tools:
 mako sync ls
 mako sync status <name|id>
 mako sync backfill <name|id> [--entity a,b]
+mako sync cancel <name|id> [--execution <id>]
 mako sync set <name|id> [--poll <cron|off>] [--webhook on|off] [--resync <cron|off>] [--tz <zone>]
 ```
 
