@@ -36,6 +36,7 @@ import {
   buildLivePartitionFilter,
   buildLivePartitionProbeQuery,
   buildMergeStatement,
+  liveTableCreateColumns,
   escId,
   sqlString,
 } from "./bigquery-sql";
@@ -429,7 +430,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       await createLiveTableFromStaging(
         target,
         layout,
-        Array.from(stagingCols),
+        liveTableCreateColumns(stagingCols, entitySchema),
         entitySchema,
         { liveCols, liveTypes },
       );

@@ -392,6 +392,22 @@ export function buildBigQueryRepartitionStatements(params: {
   };
 }
 
+/**
+ * Columns for a brand-new live table: the staged columns plus every entity
+ * schema field. Staging holds only the columns the first batch carried
+ * (sparse-rows.ts), so a sparse first batch would otherwise create a table
+ * without the partition field and fail its own PARTITION BY.
+ */
+export function liveTableCreateColumns(
+  stagingCols: Iterable<string>,
+  entitySchema: ConnectorEntitySchema | undefined,
+): string[] {
+  const cols = new Set<string>(stagingCols);
+  for (const name of Object.keys(entitySchema?.fields ?? {})) cols.add(name);
+  cols.delete(ABSENT_COLUMNS_FIELD);
+  return [...cols];
+}
+
 /** `CREATE TABLE IF NOT EXISTS` for a live table typed by the schema contract. */
 export function buildCreateLiveTableStatement(p: {
   fullLive: string;

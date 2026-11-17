@@ -131,3 +131,21 @@ export async function writeBatchByKeySet<O>(
   }
   return { success: true, rowsWritten };
 }
+
+/**
+ * A record a source read returns is live unless it says otherwise. It
+ * carries all 3 delete columns explicitly, with or without an entity schema:
+ * an absent key would keep a stale soft-delete time on a revived row, and
+ * without a schema nothing derives deleted_at or is_deleted.
+ */
+export function withPolledDeleteState(
+  row: Record<string, unknown>,
+): Record<string, unknown> {
+  const makoDeletedAt = row._mako_deleted_at ?? null;
+  return {
+    ...row,
+    _mako_deleted_at: makoDeletedAt,
+    deleted_at: "deleted_at" in row ? row.deleted_at : makoDeletedAt,
+    is_deleted: "is_deleted" in row ? row.is_deleted : makoDeletedAt != null,
+  };
+}
