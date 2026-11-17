@@ -714,9 +714,27 @@ function syncMemorySnapshot(): {
 }
 
 /**
- * Flush ALL rows from the temp collection to BQ staging in batches of
- * FLUSH_BATCH_SIZE.  Each batch builds its own parquet file and loads it
- * independently so peak memory stays bounded.
+ * Marks a buffered row as loaded into the staging table. The row stays in
+ * the buffer until the merge into live has run (performStagingCleanup), so
+ * the staging table is never the only copy of a row. A retried flush step
+ * drops staging and clears the marks (performPrepareStaging), which loads
+ * every row again. Before this, each batch was deleted from the buffer as
+ * soon as it was loaded, and a retry that dropped staging lost whole
+ * FLUSH_BATCH_SIZE blocks while the run still reported "completed".
+ */
+export const BULK_STAGED_FIELD = "_mako_bulk_staged";
+
+function bulkBufferCollection(flowId: string, entity: string): Collection {
+  return Flow.db.collection(
+    `backfill_tmp_${flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`,
+  );
+}
+const NOT_STAGED = { [BULK_STAGED_FIELD]: { $ne: true } };
+
+/**
+ * Flush every not-yet-staged row from the temp collection to BQ staging in
+ * batches of FLUSH_BATCH_SIZE.  Each batch builds its own parquet file and
+ * loads it independently so peak memory stays bounded.
  *
  * This runs inside a single Inngest step — the internal loop handles memory
  * via small parquet files but doesn't create additional Inngest steps.
@@ -731,7 +749,7 @@ async function flushBulkBuffer(
   schemaFields?: FieldMeta[],
   onBatchFlushed?: () => Promise<void>,
 ): Promise<{ flushed: number }> {
-  const initialCount = await tempCollection.countDocuments();
+  const initialCount = await tempCollection.countDocuments(NOT_STAGED);
   if (initialCount === 0) return { flushed: 0 };
 
   const loadStagingFromParquet =
@@ -760,7 +778,7 @@ async function flushBulkBuffer(
   let consecutiveSuccesses = 0;
   let oomCeiling = FLUSH_BATCH_SIZE;
 
-  let remaining = await tempCollection.countDocuments();
+  let remaining = await tempCollection.countDocuments(NOT_STAGED);
   while (remaining > 0) {
     batchNum++;
     const effectiveBatchSize = Math.min(currentBatchSize, remaining);
@@ -784,7 +802,9 @@ async function flushBulkBuffer(
         fields: schemaFields,
         streamBatches: async insertBatch => {
           const cursor = tempCollection
-            .find({}, { projection: { _bulkRunId: 0 } })
+            .find(NOT_STAGED, {
+              projection: { _bulkRunId: 0, [BULK_STAGED_FIELD]: 0 },
+            })
             .sort({ _id: 1 })
             .limit(effectiveBatchSize);
 
@@ -871,7 +891,7 @@ async function flushBulkBuffer(
     );
 
     if (parquet.rowCount === 0) {
-      const actualRemaining = await tempCollection.countDocuments();
+      const actualRemaining = await tempCollection.countDocuments(NOT_STAGED);
       logger?.log(
         "warn",
         `${entity} flush: empty parquet (possible race), stopping flush loop (${actualRemaining} rows still in temp, ${totalFlushed} flushed so far)`,
@@ -913,9 +933,14 @@ async function flushBulkBuffer(
       { entity, batch: batchNum, loadMs, memory: memAfterLoad },
     );
 
+    // Mark, don't delete: until the merge runs, staging must not be the
+    // only copy of these rows (see BULK_STAGED_FIELD).
     let batchRows = 0;
     for (const chunk of docIdChunks) {
-      await tempCollection.deleteMany({ _id: { $in: chunk as any } });
+      await tempCollection.updateMany(
+        { _id: { $in: chunk as any } },
+        { $set: { [BULK_STAGED_FIELD]: true } },
+      );
       batchRows += chunk.length;
     }
     docIdChunks = [];
@@ -965,7 +990,7 @@ async function flushBulkBuffer(
       },
     );
 
-    remaining = await tempCollection.countDocuments();
+    remaining = await tempCollection.countDocuments(NOT_STAGED);
   }
 
   logger?.log(
@@ -1043,9 +1068,7 @@ export async function performBulkFlush(
 
   if (!cdcAdapter.loadStagingFromParquet) return { flushed: 0 };
 
-  const db = Flow.db;
-  const collName = `backfill_tmp_${options.flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
-  const tempCollection = db.collection(collName);
+  const tempCollection = bulkBufferCollection(flowId, entity);
 
   const entitySchema = await resolveEntitySchemaSafe({
     entity,
@@ -1138,6 +1161,22 @@ export async function performPrepareStaging(
   await cdcAdapter.prepareStaging(cdcLayout, flowId, {
     stagingSuffix: "backfill_staging",
   });
+
+  // Staging is empty now, so no buffered row is in it any more: clear the
+  // marks so the next flush loads those rows again (see BULK_STAGED_FIELD).
+  const { modifiedCount } = await bulkBufferCollection(
+    flowId,
+    entity,
+  ).updateMany(
+    { [BULK_STAGED_FIELD]: true },
+    { $unset: { [BULK_STAGED_FIELD]: "" } },
+  );
+  if (modifiedCount > 0) {
+    orchestratorLogger.warn(
+      "Staging dropped before its merge ran; its rows go back to the flush buffer",
+      { entity, flowId, rows: modifiedCount },
+    );
+  }
 }
 
 /**
@@ -1145,12 +1184,14 @@ export async function performPrepareStaging(
  * live, then drops the staging table for a fresh load.
  *
  * Use this instead of a bare `performPrepareStaging` wherever a flush follows.
- * `performBulkFlush` deletes each batch from the temp buffer as soon as it is
- * loaded into staging, so between that delete and a successful merge the
- * staging table is the ONLY copy of those rows. An Inngest retry of the step
- * (merge timeout, instance restart) used to start by dropping staging, which
- * lost every batch the failed attempt had already loaded — whole
- * FLUSH_BATCH_SIZE blocks, with the run still reporting "completed".
+ * An Inngest retry of a flush step (load failure, merge timeout, instance
+ * restart) used to start by dropping staging. `performBulkFlush` used to
+ * delete each batch from the temp buffer as soon as it was loaded, so the
+ * retry lost every batch the failed attempt had already loaded — whole
+ * FLUSH_BATCH_SIZE blocks, with the run still reporting "completed". The
+ * buffer now keeps staged rows until the merge (BULK_STAGED_FIELD), so a
+ * drop no longer loses rows in any write mode; the rescue merge stays for
+ * staging left by a run that crashed before that change.
  *
  * `dedupOnly` (the per-flush steps): rescue only when the merge is keyed
  * (`append_dedup`, the default), where merging the same rows twice is a
@@ -1203,9 +1244,7 @@ export function getTempCollectionCount(
   flowId: string,
   entity: string,
 ): Promise<number> {
-  const db = Flow.db;
-  const collName = `backfill_tmp_${flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
-  return db.collection(collName).countDocuments();
+  return bulkBufferCollection(flowId, entity).countDocuments();
 }
 
 export async function performStagingMerge(
@@ -1277,14 +1316,26 @@ export async function performStagingCleanup(
     "performStagingCleanup: dropping staging table and temp collection",
     { entity, flowId },
   );
+  // The merge has run: the staged rows are in live. Delete them from the
+  // buffer before dropping staging, so a crash in between leaves rows a
+  // retry can only re-merge from staging (append_dedup) or skip, never load
+  // twice from the buffer.
+  const tempCollection = bulkBufferCollection(flowId, entity);
+  await tempCollection.deleteMany({ [BULK_STAGED_FIELD]: true });
+
   await cdcAdapter.cleanupStaging(cdcLayout, flowId, {
     stagingSuffix: "backfill_staging",
   });
 
-  const db = Flow.db;
-  const collName = `backfill_tmp_${flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
-  await db
-    .collection(collName)
-    .drop()
-    .catch(() => undefined);
+  // Rows still here were never staged (a flush that stopped early). Keep
+  // them for the next flush instead of dropping them with the collection.
+  const leftover = await tempCollection.countDocuments();
+  if (leftover > 0) {
+    orchestratorLogger.warn(
+      "performStagingCleanup: rows left in the flush buffer were never staged; keeping them",
+      { entity, flowId, leftover },
+    );
+    return;
+  }
+  await tempCollection.drop().catch(() => undefined);
 }
