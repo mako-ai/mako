@@ -23,6 +23,7 @@ import { appRepoPath, parseAppFolderPath, type AppScope } from "../app-paths";
 import { loadOwnerDirectory } from "../user-handles.service";
 
 import { createAppsScaffold } from "../scaffold";
+import { authorForUser } from "../workspace-consoles/authors";
 import {
   mirrorPushDefaultBranchNow,
   resolveMirrorTarget,
@@ -196,6 +197,26 @@ export async function commitFilesOnBranch(
   );
 }
 
+/**
+ * Git trailer naming the person a Mako-made commit was made for. The
+ * scaffold is committed by Mako (the committer stays bot@mako.ai), so
+ * without it the history names no one; the owner backfill
+ * (app-row-owners.ts) reads it first.
+ */
+export const REQUESTED_BY_TRAILER = "Mako-Requested-By";
+
+/** The scaffold commit message: subject, then the requester trailer. */
+export function scaffoldCommitMessage(
+  title: string,
+  appPath: string,
+  requestedBy: string | undefined,
+): string {
+  const subject = `Create app "${title}" (${appPath})`;
+  return requestedBy
+    ? `${subject}\n\n${REQUESTED_BY_TRAILER}: ${requestedBy}`
+    : subject;
+}
+
 export async function createProject(input: {
   workspaceId: string;
   title: string;
@@ -251,8 +272,11 @@ export async function createProject(input: {
     path: appPath,
     description: input.description,
     access: "private",
-    owner_id: input.userId,
-    createdBy: input.userId ?? "system",
+    // The requester owns the app from its first moment (resource-acl reads
+    // owner_id, then createdBy). No requester means no owner: a sentinel in
+    // createdBy would read as a fake owner and hide the row from backfills.
+    ...(input.userId ? { owner_id: input.userId } : {}),
+    createdBy: input.userId ?? "",
     defaultBranch: DEFAULT_BRANCH,
   });
 
@@ -270,11 +294,20 @@ export async function createProject(input: {
     for (const [rel, contents] of Object.entries(scaffold)) {
       prefixed[`${appPath}/${rel}`] = contents;
     }
+    // Authored by the person who asked (Mako stays the committer), with a
+    // trailer naming them by id, so the history says whose app this is
+    // whichever surface created it: the UI, in-app chat or MCP.
+    const author =
+      input.author ??
+      (input.userId ? await authorForUser(input.userId) : undefined);
     scaffoldCommit = await commitFilesOnBranch(
       repoDir,
       DEFAULT_BRANCH,
       { writes: prefixed },
-      { message: `Create app "${title}" (${appPath})`, author: input.author },
+      {
+        message: scaffoldCommitMessage(title, appPath, input.userId),
+        author,
+      },
     );
   } catch (error) {
     // Don't leave a content-less project behind.

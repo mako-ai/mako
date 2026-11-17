@@ -56,6 +56,8 @@ export default defineConfig({
       "src/apps/box-presave.git.test.ts",
       // The drain's key and swap-time guards.
       "src/apps/box-drain.test.ts",
+      // UI, chat and MCP app creation name the requester (author, trailer, row).
+      "src/apps/app-create-author.test.ts",
       // App search names 15-character owners (app-discovery ownerOf).
       "src/apps/app-discovery-owner.test.ts",
       // Owner backfill for ownerless app rows + the gated owner stamp.
