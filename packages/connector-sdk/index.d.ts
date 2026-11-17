@@ -149,7 +149,9 @@ export type WebhookOutcome =
   /** A handled type whose payload yielded no record: Mako marks it failed. */
   | { eventId: string; outcome: "extract_failed"; reason?: string }
   /** Nothing to write on purpose, e.g. a re-fetch found the row gone. */
-  | { eventId: string; outcome: "skipped"; reason?: string };
+  | { eventId: string; outcome: "skipped"; reason?: string }
+  /** Not now, e.g. a request budget is spent. Retried later, the attempt not counted. */
+  | { eventId: string; outcome: "deferred"; reason?: string };
 
 export interface WebhookDefinition<Config = Record<string, unknown>> {
   verification: WebhookVerification;

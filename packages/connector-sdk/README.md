@@ -114,7 +114,10 @@ in order:
   object, re-fetch the row by id with `ctx`.
 - `unmapped`: an event type the connector does not handle.
 - `skipped`: nothing to write on purpose, with a `reason`.
-- `extract_failed`: a handled type whose payload yielded nothing.
+- `extract_failed`: a handled type whose payload yielded nothing, or whose
+  fill failed. Mako retries it, up to 5 attempts.
+- `deferred`: not now, for example a request budget is spent. Mako retries
+  it later without counting the attempt.
 
 Mako drops records for undeclared entities, stamps `_dataSourceId` and
 `_syncedAt`, applies the flow's entity selection and writes the rest.

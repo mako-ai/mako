@@ -95,6 +95,8 @@ export const BOX_CODES = {
   outputTooLarge: "OUTPUT_TOO_LARGE",
   tooManyRecords: "TOO_MANY_RECORDS",
   skipped: "SKIPPED_BY_CONNECTOR",
+  /** The inline path's code for the same case (WebhookEnrichmentRetryError). */
+  deferred: "ENRICH_DEFERRED",
   connectionChanged: "CONNECTION_CHANGED",
   secretInBatch: "SECRET_IN_BATCH",
 } as const;
@@ -123,6 +125,8 @@ export interface BatchResult {
   failed: number;
   dropped: number;
   applied: number;
+  /** Events the connector put off (ENRICH_DEFERRED), attempt refunded. */
+  deferred?: number;
   /** Entities that got CDC events, to materialize now. */
   entities?: string[];
   reason?: string;
@@ -225,6 +229,7 @@ function wireEvent(event: StoredEvent) {
 type CheckedOutcome =
   | { kind: "unmapped" }
   | { kind: "skipped"; reason: string }
+  | { kind: "deferred"; reason: string }
   | { kind: "extract_failed"; reason: string }
   | { kind: "too_many"; count: number }
   | {
@@ -273,6 +278,14 @@ export function checkOutcome(
 ): CheckedOutcome | null {
   const outcome = message?.outcome;
   if (outcome === "unmapped") return { kind: "unmapped" };
+  if (outcome === "deferred") {
+    return {
+      kind: "deferred",
+      reason:
+        shortString(message?.reason, MAX_REASON_LENGTH) ??
+        "The connector deferred this event",
+    };
+  }
   if (outcome === "skipped") {
     return {
       kind: "skipped",
@@ -589,7 +602,13 @@ async function runBatch(input: {
   limits: WebhookBatchLimits;
 }): Promise<Omit<BatchResult, "claimed"> & { shrink?: boolean }> {
   const { flow, connection, runner, declared, claim, limits } = input;
-  const totals = { ingested: 0, failed: 0, dropped: 0, applied: 0 };
+  const totals = {
+    ingested: 0,
+    failed: 0,
+    dropped: 0,
+    applied: 0,
+    deferred: 0,
+  };
 
   // Defense in depth: the signing secret is never part of a batch. An
   // event whose payload echoes it is failed on its own and never carried
@@ -719,6 +738,28 @@ async function runBatch(input: {
           { applyError: "" },
         ),
       );
+      continue;
+    }
+    if (checked.kind === "deferred") {
+      // As the inline path's ENRICH_DEFERRED: parked as `failed` with the
+      // attempt refunded, so the retry cron re-queues it without using up
+      // its retries, and it stays out of the pending queue meanwhile.
+      totals.deferred++;
+      ops.push({
+        updateOne: {
+          filter: { _id: event._id, boxClaim: claim },
+          update: {
+            $set: {
+              status: "failed",
+              applyError: {
+                code: BOX_CODES.deferred,
+                message: checked.reason,
+              },
+            },
+            $inc: { attempts: -1 },
+          },
+        },
+      });
       continue;
     }
     if (checked.kind === "skipped") {

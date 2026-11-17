@@ -780,6 +780,36 @@ describe("a batch", () => {
     });
   });
 
+  it("a deferred event is parked as ENRICH_DEFERRED with its attempt refunded, as the inline path does", async () => {
+    const [deferred, written] = [await boxEvent(), await boxEvent()];
+    const box = fakeRunner(events =>
+      ok([
+        {
+          type: "WEBHOOK",
+          webhook: {
+            eventId: events[0].eventId,
+            outcome: "deferred",
+            reason: "budget spent",
+          },
+        },
+        leadOutcome(events[1]),
+      ]),
+    );
+    const result = await processBoxWebhookBatch({
+      flowId: String(flowId),
+      runner: box.factory,
+    });
+    expect(result).toMatchObject({ deferred: 1, ingested: 1, failed: 0 });
+    expect(await WebhookEvent.findById(deferred._id).lean()).toMatchObject({
+      status: "failed",
+      attempts: 0,
+      applyError: { code: "ENRICH_DEFERRED", message: "budget spent" },
+    });
+    expect(await WebhookEvent.findById(written._id).lean()).toMatchObject({
+      status: "completed",
+    });
+  });
+
   it("with the flag off, touches nothing", async () => {
     process.env.CONNECTOR_WEBHOOK_BATCHES = "false";
     const e = await boxEvent();

@@ -215,7 +215,7 @@ export function tableNameOf(name) {
   return `${type.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase()}_${parent}`;
 }
 
-const WEBHOOK_OUTCOMES = ["records", "unmapped", "extract_failed", "skipped"];
+const WEBHOOK_OUTCOMES = ["records", "unmapped", "extract_failed", "skipped", "deferred"];
 
 /**
  * A handler's answer, checked before it is written: one outcome per event,
