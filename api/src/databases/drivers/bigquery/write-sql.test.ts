@@ -204,10 +204,31 @@ describe("BigQueryDatabaseDriver swapStagingTable", () => {
       ?.match(/`(crm_asns_backup_\d+)`/)?.[1];
     expect(backup).toBeDefined();
     expect(all).toContain(
-      `CREATE TABLE \`proj\`.\`ip_intel\`.\`crm_asns\` AS SELECT * FROM \`proj\`.\`ip_intel\`.\`${backup}\`;`,
+      `CREATE OR REPLACE TABLE \`proj\`.\`ip_intel\`.\`crm_asns\` AS SELECT * FROM \`proj\`.\`ip_intel\`.\`${backup}\`;`,
     );
     expect(all).toContain(
       `DROP TABLE IF EXISTS \`proj\`.\`ip_intel\`.\`${backup}\`;`,
+    );
+  });
+
+  it("names the backup when the restore fails too", async () => {
+    const bq = new BigQueryDatabaseDriver();
+    const base = responderWith(["crm_asns", "crm_asns_staging"]);
+    makeCapturingDriver(bq, sql =>
+      sql.startsWith("CREATE OR REPLACE TABLE")
+        ? { success: false, error: "quota" }
+        : base(sql),
+    );
+    const result = await bq.swapStagingTable(
+      conn,
+      "crm_asns",
+      "crm_asns_staging",
+      { schema: "ip_intel", stagingSchema: "mako_internal" },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(
+      /its rows are kept in ip_intel\.crm_asns_backup_\d+/,
     );
   });
 });

@@ -234,16 +234,19 @@ export class BigQueryDatabaseDriver extends BigQueryBatchWriteDriver {
     );
     if (!swapResult.success) {
       // Restore from backup, then drop the backup once the restore landed.
+      // OR REPLACE: step 3 may have created an empty original before its
+      // INSERT failed, and a plain CREATE would then fail on "Already Exists".
       const restoreResult = await this.executeQuery(
         database,
-        `CREATE TABLE ${fullOriginal} AS SELECT * FROM ${fullBackup};`,
+        `CREATE OR REPLACE TABLE ${fullOriginal} AS SELECT * FROM ${fullBackup};`,
       );
-      if (restoreResult.success) {
-        await this.executeQuery(
-          database,
-          `DROP TABLE IF EXISTS ${fullBackup};`,
-        );
+      if (!restoreResult.success) {
+        return {
+          success: false,
+          error: `Failed to create new table: ${swapResult.error}; restoring ${dataset}.${originalTableName} also failed (${restoreResult.error}), its rows are kept in ${dataset}.${backupName}`,
+        };
       }
+      await this.executeQuery(database, `DROP TABLE IF EXISTS ${fullBackup};`);
       return {
         success: false,
         error: `Failed to create new table: ${swapResult.error}`,
