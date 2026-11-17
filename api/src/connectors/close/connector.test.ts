@@ -1551,6 +1551,276 @@ async function testWebhookSignatureVerification() {
   assert.deepEqual(short, { valid: false, error: "Invalid signature" });
 }
 
+function leadUpdatedWebhook() {
+  // The shape of a real Close `lead.updated` delivery: the lead's own row,
+  // with no contacts, opportunities, tasks, html_url, integration_links,
+  // primary_email or primary_phone.
+  return {
+    subscription_id: "whsub_1",
+    event: {
+      id: "ev_lead_1",
+      object_type: "lead",
+      action: "updated",
+      object_id: "lead_1",
+      date_updated: "2026-11-17T06:05:50.267000",
+      data: {
+        id: "lead_1",
+        name: "Michal",
+        display_name: "Michal",
+        status_label: "Interested",
+        contact_ids: ["cont_1"],
+        url: null,
+        date_updated: "2026-11-17T06:05:50.265000+00:00",
+        "custom.cf_abc": "inbound",
+      },
+    },
+  };
+}
+
+function stubCloseGet(
+  connector: CloseConnector,
+  handler: (url: string, params: Record<string, unknown>) => unknown,
+) {
+  const calls: Array<{ url: string; params: Record<string, unknown> }> = [];
+  (connector as any).closeApi = {
+    get: async (url: string, config?: { params?: Record<string, unknown> }) => {
+      const params = config?.params ?? {};
+      calls.push({ url, params });
+      return { data: handler(url, params) };
+    },
+  };
+  return calls;
+}
+
+const allEntities = { isEntityEnabled: () => true };
+
+/**
+ * Regression (PL, 17 Nov 2026): 3,572 leads had `contacts` and `tasks` NULL
+ * because the `lead.updated` payload was applied as the full row. The
+ * enrichment step reads the missing expansions from the REST lead and fills
+ * only absent keys.
+ */
+async function testLeadWebhookIsFilledFromTheRestLead() {
+  const connector = createConnector();
+  const calls = stubCloseGet(connector, () => ({
+    id: "lead_1",
+    contacts: [{ id: "cont_1", name: "Michal" }],
+    opportunities: [],
+    tasks: [{ id: "task_1" }],
+    html_url: "https://app.close.com/lead/lead_1/",
+    integration_links: [],
+    primary_email: { email: "m@example.com" },
+    primary_phone: { phone: "+48661232471" },
+    // Not asked for: must never overwrite the webhook's value.
+    name: "Stale name",
+  }));
+
+  const records = connector.extractWebhookCdcRecords(
+    leadUpdatedWebhook(),
+    "lead.updated",
+  );
+  const [record] = await connector.enrichWebhookCdcRecords(
+    records,
+    allEntities,
+  );
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "/lead/lead_1/");
+  assert.deepEqual(String(calls[0].params._fields).split(",").sort(), [
+    "contacts",
+    "html_url",
+    "integration_links",
+    "opportunities",
+    "primary_email",
+    "primary_phone",
+    "tasks",
+  ]);
+  const payload = record.payload as Record<string, unknown>;
+  assert.deepEqual(payload.contacts, [{ id: "cont_1", name: "Michal" }]);
+  assert.deepEqual(payload.tasks, [{ id: "task_1" }]);
+  assert.deepEqual(payload.opportunities, []);
+  assert.equal(payload.html_url, "https://app.close.com/lead/lead_1/");
+  assert.deepEqual(payload.primary_email, { email: "m@example.com" });
+  assert.deepEqual(payload.primary_phone, { phone: "+48661232471" });
+  // The webhook's own fields win and the record keeps its identity.
+  assert.equal(payload.name, "Michal");
+  assert.equal(payload.custom_cf_abc, "inbound");
+  assert.equal(record.changeId, "ev_lead_1");
+  assert.equal(record.recordId, "lead_1");
+}
+
+/** Each partial entity asks for its own missing columns only. */
+async function testPartialEntitiesAskForTheirMissingColumns() {
+  const connector = createConnector();
+  const calls = stubCloseGet(connector, url => ({ url }));
+  const cases: Array<
+    [string, string, Record<string, unknown>, string, string[]]
+  > = [
+    [
+      "contact.updated",
+      "contact",
+      { id: "cont_1", name: "A", emails: [] },
+      "/contact/cont_1/",
+      ["display_name", "integration_links"],
+    ],
+    [
+      "opportunity.updated",
+      "opportunity",
+      { id: "oppo_1", status_label: "Won", value: 1 },
+      "/opportunity/oppo_1/",
+      [
+        "integration_links",
+        "pipeline_name",
+        "stall_status",
+        "status_display_name",
+      ],
+    ],
+    [
+      "activity.email.updated",
+      "activity.email",
+      { id: "acti_1", _type: "Email", body_html: "<p>x</p>" },
+      "/activity/email/acti_1/",
+      ["body_html_quoted", "body_text_quoted"],
+    ],
+    [
+      "activity.email_thread.updated",
+      "activity.email_thread",
+      { id: "acti_2", _type: "EmailThread", n_emails: 2 },
+      "/activity/emailthread/acti_2/",
+      ["latest_emails"],
+    ],
+  ];
+
+  for (const [eventType, objectType, data, url, fields] of cases) {
+    calls.length = 0;
+    const records = connector.extractWebhookCdcRecords(
+      {
+        event: {
+          id: `ev_${data.id}`,
+          object_type: objectType,
+          action: "updated",
+          object_id: data.id,
+          data: { ...data, date_updated: "2026-11-17T06:00:00.000Z" },
+        },
+      },
+      eventType,
+    );
+    const [record] = await connector.enrichWebhookCdcRecords(
+      records,
+      allEntities,
+    );
+    assert.equal(calls.length, 1, eventType);
+    assert.equal(calls[0].url, url, eventType);
+    assert.deepEqual(
+      String(calls[0].params._fields).split(",").sort(),
+      fields,
+      eventType,
+    );
+    const payload = record.payload as Record<string, unknown>;
+    // Fields the object does not return are stored NULL, as a backfill
+    // would store them.
+    for (const field of fields) assert.ok(field in payload, field);
+  }
+}
+
+/** Complete payloads, deletes, other entities and disabled entities cost no request. */
+async function testFillSkipsRecordsThatNeedNoRead() {
+  const connector = createConnector();
+  const calls = stubCloseGet(connector, () => {
+    throw new Error("unexpected request");
+  });
+
+  const complete = connector.extractWebhookCdcRecords(
+    {
+      event: {
+        id: "ev_c",
+        object_type: "contact",
+        action: "updated",
+        object_id: "cont_1",
+        data: {
+          id: "cont_1",
+          display_name: "A",
+          integration_links: [],
+          date_updated: "2026-11-17T06:00:00.000Z",
+        },
+      },
+    },
+    "contact.updated",
+  );
+  const deleted = connector.extractWebhookCdcRecords(
+    {
+      event: {
+        id: "ev_d",
+        object_type: "lead",
+        action: "deleted",
+        object_id: "lead_9",
+        date_updated: "2026-11-17T06:00:00.000Z",
+        data: { id: "lead_9" },
+      },
+    },
+    "lead.deleted",
+  );
+  const note = connector.extractWebhookCdcRecords(
+    {
+      event: {
+        id: "ev_n",
+        object_type: "activity.note",
+        action: "updated",
+        object_id: "acti_n",
+        data: {
+          id: "acti_n",
+          note: "x",
+          date_updated: "2026-11-17T06:00:00.000Z",
+        },
+      },
+    },
+    "activity.note.updated",
+  );
+  const lead = connector.extractWebhookCdcRecords(
+    leadUpdatedWebhook(),
+    "lead.updated",
+  );
+
+  const input = [...complete, ...deleted, ...note];
+  assert.deepEqual(
+    await connector.enrichWebhookCdcRecords(input, allEntities),
+    input,
+  );
+  assert.deepEqual(
+    await connector.enrichWebhookCdcRecords(lead, {
+      isEntityEnabled: () => false,
+    }),
+    lead,
+  );
+  assert.equal(calls.length, 0);
+}
+
+/**
+ * A failed read never lets the partial row through: a 404 (lead deleted or
+ * merged since) and an error after the client's retries both drop it.
+ */
+async function testFailedReadDropsThePartialRecord() {
+  for (const status of [404, 500]) {
+    const connector = createConnector();
+    stubCloseGet(connector, () => {
+      throw Object.assign(new Error(`HTTP ${status}`), {
+        isAxiosError: true,
+        response: { status, data: {} },
+      });
+    });
+    const records = connector.extractWebhookCdcRecords(
+      leadUpdatedWebhook(),
+      "lead.updated",
+    );
+    assert.equal(records.length, 1);
+    assert.deepEqual(
+      await connector.enrichWebhookCdcRecords(records, allEntities),
+      [],
+      `status ${status}`,
+    );
+  }
+}
+
 async function main() {
   testCloseApiErrorResponseIsFormattedForLogs();
   await testWebhookSignatureVerification();
@@ -1589,6 +1859,10 @@ async function main() {
   await testSyncAndProxyShareTheTrimmedKeysGate();
   await testCloseRetriesAreCappedAndDateAware();
   await testCallSearchRequestsTranscripts();
+  await testLeadWebhookIsFilledFromTheRestLead();
+  await testPartialEntitiesAskForTheirMissingColumns();
+  await testFillSkipsRecordsThatNeedNoRead();
+  await testFailedReadDropsThePartialRecord();
 }
 
 main().catch(error => {

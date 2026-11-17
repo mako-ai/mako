@@ -58,6 +58,7 @@ import {
   closeWebhookEventMapping,
   closeWebhookEventsForEntities,
   extractCloseWebhookData,
+  fillCloseWebhookPartialRecords,
   provisionCloseWebhook,
   verifyCloseWebhook,
 } from "./webhooks";
@@ -467,6 +468,25 @@ export class CloseConnector extends BaseConnector {
         record.changeId ||
         `${eventType || "close.event"}:${record.entity}:${record.recordId}:${sourceTs.toISOString()}`,
     }));
+  }
+
+  /**
+   * Close webhook payloads leave out an object's expansions (a lead's
+   * contacts, opportunities and tasks, an email's quoted bodies, …). Read
+   * them from the REST object before the record is applied, so a webhook
+   * upsert never NULLs them (see fillCloseWebhookPartialRecords).
+   */
+  async enrichWebhookCdcRecords(
+    records: NormalizedCdcRecord[],
+    options: { isEntityEnabled: (entity: string) => boolean },
+  ): Promise<NormalizedCdcRecord[]> {
+    return fillCloseWebhookPartialRecords(
+      () => this.getCloseClient(),
+      records,
+      // The flow drops records of entities it does not sync; never spend a
+      // request on them.
+      record => options.isEntityEnabled(record.entity),
+    );
   }
 
   normalizeBackfillRecord(
