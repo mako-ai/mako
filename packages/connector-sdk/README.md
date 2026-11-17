@@ -105,6 +105,32 @@ webhooks: {
 },
 ```
 
+Two more shapes are declared the same way:
+
+- A vendor that signs with its own RSA keys (Wise) declares
+  `scheme: "rsa-sha256"` and `publicKeys: [pem, ...]` instead of
+  `secretEncoding`. No secret is involved.
+- A vendor whose signature header holds `key=value` pairs
+  (`t=1492774577,v1=5257a8...`, Calendly and Stripe) declares
+  `signatureParam: "v1"`, `timestampParam: "t"` and signs
+  `["param:t", "literal:.", "body"]`.
+
+A vendor's unsigned test ping can be declared as
+`testNotification: { header, value, eventType }`: Mako answers it and
+stores it under `eventType` with no payload.
+
+`delivery` says where a delivery's event id and type are, so vendor
+retries are stored once:
+
+```ts
+delivery: {
+  idHeader: "x-delivery-id", // or idFields: ["created_at", "payload.uri"]
+  typeField: "event_type",
+},
+```
+
+Mako adds what it read to the stored payload as `id` and `type`.
+
 Mako stores verified deliveries and hands them to `handleBatch` in batches
 (`mako-connector webhook --config config.json --batch batch.json`), with
 the connection's credential in `ctx.config`. Return one outcome per event,

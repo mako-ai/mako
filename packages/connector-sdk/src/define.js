@@ -23,21 +23,36 @@ const INCREMENTAL_MODES = ["native", "client-filter", "created-anchor"];
 
 /**
  * How Mako checks a webhook's signature, as data. Mako verifies every
- * delivery in its API, with the flow's signing secret, before anything is
- * stored: the secret never reaches a box, so no connector code can check a
- * signature. A connector says which scheme its vendor uses instead.
+ * delivery in its API before anything is stored: a signing secret never
+ * reaches a box, so no connector code can check a signature. A connector
+ * says which scheme its vendor uses instead.
  *
- * - `scheme`: only `hmac-sha256` for now.
- * - `secretEncoding`: how the stored secret becomes the HMAC key.
+ * - `scheme`: `hmac-sha256` (a shared secret, the flow's) or `rsa-sha256`
+ *   (the vendor's public keys, declared in `publicKeys`; no secret).
+ * - `secretEncoding` (HMAC only): how the stored secret becomes the key.
+ * - `publicKeys` (RSA only): 1 to 4 PEM public keys; any one may verify.
  * - `signedPayload`: the parts signed, in order. `body` is the raw request
- *   body, `header:<name>` a request header, `literal:<text>` fixed text.
+ *   body, `header:<name>` a request header, `param:<key>` a value of the
+ *   signature header (see `signatureParam`), `literal:<text>` fixed text.
  * - `signatureHeader`: the header carrying the signature, in
  *   `signatureEncoding`, after an optional `signaturePrefix` (`sha256=`).
+ * - `signatureParam`: the signature header is `key=value` pairs joined by
+ *   commas (`t=1492774577,v1=5257a8...`, Calendly and Stripe); the
+ *   signature is this key's value. `timestampParam` names the send time.
+ * - `timestampHeader` or `timestampParam`, with `toleranceSeconds`: the send
+ *   time in Unix seconds and the window around now it must fall in. It
+ *   must be signed.
+ * - `testNotification`: a delivery whose `header` equals `value` (ignoring
+ *   case) is the vendor's test ping. Mako answers it unsigned and stores it
+ *   under `eventType`, with no payload, for the handler to call unmapped.
  */
-export const WEBHOOK_VERIFICATION_SCHEMES = ["hmac-sha256"];
+export const WEBHOOK_VERIFICATION_SCHEMES = ["hmac-sha256", "rsa-sha256"];
 const SECRET_ENCODINGS = ["hex", "base64", "utf8"];
 const SIGNATURE_ENCODINGS = ["hex", "base64"];
 const HEADER_NAME = /^[a-z0-9-]{1,64}$/;
+const PARAM_NAME = /^[A-Za-z0-9_-]{1,32}$/;
+const EVENT_TYPE = /^[A-Za-z0-9_.:#-]{1,64}$/;
+const PEM_PUBLIC_KEY = /^-----BEGIN PUBLIC KEY-----\n?[A-Za-z0-9+/=\s]{64,4096}\n?-----END PUBLIC KEY-----\n?$/;
 
 export function validateWebhookVerification(verification) {
   if (!verification || typeof verification !== "object") {
@@ -48,8 +63,25 @@ export function validateWebhookVerification(verification) {
   if (!WEBHOOK_VERIFICATION_SCHEMES.includes(v.scheme)) {
     problems.push(`webhooks.verification.scheme must be one of ${WEBHOOK_VERIFICATION_SCHEMES.join(", ")}`);
   }
-  if (!SECRET_ENCODINGS.includes(v.secretEncoding)) {
-    problems.push(`webhooks.verification.secretEncoding must be one of ${SECRET_ENCODINGS.join(", ")}`);
+  if (v.scheme === "rsa-sha256") {
+    if (v.secretEncoding !== undefined) {
+      problems.push("webhooks.verification.secretEncoding is for hmac-sha256 only");
+    }
+    if (
+      !Array.isArray(v.publicKeys) ||
+      v.publicKeys.length === 0 ||
+      v.publicKeys.length > 4 ||
+      v.publicKeys.some(key => typeof key !== "string" || !PEM_PUBLIC_KEY.test(key.trim() + "\n"))
+    ) {
+      problems.push("webhooks.verification.publicKeys must list 1 to 4 PEM public keys");
+    }
+  } else {
+    if (!SECRET_ENCODINGS.includes(v.secretEncoding)) {
+      problems.push(`webhooks.verification.secretEncoding must be one of ${SECRET_ENCODINGS.join(", ")}`);
+    }
+    if (v.publicKeys !== undefined) {
+      problems.push("webhooks.verification.publicKeys is for rsa-sha256 only");
+    }
   }
   if (!SIGNATURE_ENCODINGS.includes(v.signatureEncoding)) {
     problems.push(`webhooks.verification.signatureEncoding must be one of ${SIGNATURE_ENCODINGS.join(", ")}`);
@@ -60,14 +92,45 @@ export function validateWebhookVerification(verification) {
   if (v.signaturePrefix !== undefined && (typeof v.signaturePrefix !== "string" || v.signaturePrefix.length > 32)) {
     problems.push("webhooks.verification.signaturePrefix must be a short string");
   }
-  if ((v.timestampHeader === undefined) !== (v.toleranceSeconds === undefined)) {
-    problems.push("webhooks.verification.timestampHeader and toleranceSeconds go together");
-  } else if (v.timestampHeader !== undefined) {
-    if (typeof v.timestampHeader !== "string" || !HEADER_NAME.test(v.timestampHeader)) {
+  if (v.signatureParam !== undefined && (typeof v.signatureParam !== "string" || !PARAM_NAME.test(v.signatureParam))) {
+    problems.push("webhooks.verification.signatureParam must be a short key name");
+  }
+  if (v.timestampParam !== undefined) {
+    if (typeof v.timestampParam !== "string" || !PARAM_NAME.test(v.timestampParam)) {
+      problems.push("webhooks.verification.timestampParam must be a short key name");
+    }
+    if (v.signatureParam === undefined) {
+      problems.push("webhooks.verification.timestampParam needs signatureParam");
+    }
+    if (v.timestampHeader !== undefined) {
+      problems.push("webhooks.verification declares timestampHeader or timestampParam, not both");
+    }
+  }
+  const timed = v.timestampHeader !== undefined || v.timestampParam !== undefined;
+  if (timed !== (v.toleranceSeconds !== undefined)) {
+    problems.push("webhooks.verification.timestampHeader (or timestampParam) and toleranceSeconds go together");
+  } else if (timed) {
+    if (v.timestampHeader !== undefined && (typeof v.timestampHeader !== "string" || !HEADER_NAME.test(v.timestampHeader))) {
       problems.push("webhooks.verification.timestampHeader must be a lowercase header name");
     }
     if (!Number.isSafeInteger(v.toleranceSeconds) || v.toleranceSeconds < 1 || v.toleranceSeconds > 86400) {
       problems.push("webhooks.verification.toleranceSeconds must be a whole number from 1 to 86400");
+    }
+  }
+  if (v.testNotification !== undefined) {
+    const t = v.testNotification;
+    if (
+      !t ||
+      typeof t !== "object" ||
+      typeof t.header !== "string" ||
+      !HEADER_NAME.test(t.header) ||
+      typeof t.value !== "string" ||
+      t.value.length === 0 ||
+      t.value.length > 64 ||
+      typeof t.eventType !== "string" ||
+      !EVENT_TYPE.test(t.eventType)
+    ) {
+      problems.push("webhooks.verification.testNotification must be { header, value, eventType }");
     }
   }
   const parts = v.signedPayload;
@@ -85,15 +148,69 @@ export function validateWebhookVerification(verification) {
       `webhooks.verification.signedPayload must include "header:${v.timestampHeader}" when timestampHeader is declared`,
     );
   }
+  if (typeof v.timestampParam === "string" && !parts.includes(`param:${v.timestampParam}`)) {
+    problems.push(
+      `webhooks.verification.signedPayload must include "param:${v.timestampParam}" when timestampParam is declared`,
+    );
+  }
   for (const part of parts) {
+    const isParam = typeof part === "string" && part.startsWith("param:") && PARAM_NAME.test(part.slice(6));
+    if (isParam && v.signatureParam === undefined) {
+      problems.push(`webhooks.verification.signedPayload part ${JSON.stringify(part)} needs signatureParam`);
+      continue;
+    }
     const ok =
       part === "body" ||
+      isParam ||
       (typeof part === "string" && part.startsWith("header:") && HEADER_NAME.test(part.slice(7))) ||
       (typeof part === "string" && part.startsWith("literal:") && part.length <= 72);
     if (!ok) {
       problems.push(
-        `webhooks.verification.signedPayload part ${JSON.stringify(part)} must be "body", "header:<name>" or "literal:<text>"`,
+        `webhooks.verification.signedPayload part ${JSON.stringify(part)} must be "body", "header:<name>", "param:<key>" or "literal:<text>"`,
       );
+    }
+  }
+  return problems;
+}
+
+/**
+ * Where a stored delivery's event id and type come from, as data. Mako
+ * reads them in its API when it stores the delivery: the event id is the
+ * key vendor retries are deduplicated on.
+ *
+ * - `idHeader`: a header carrying the vendor's delivery id.
+ * - `idFields`: else, dotted paths into the body whose values, joined with
+ *   ":", make the id. All of them must be strings or numbers.
+ * - `typeField`: a dotted path to the event type in the body.
+ *
+ * Mako adds what it read to the stored payload as `id` and `type`.
+ */
+const FIELD_PATH = /^[A-Za-z0-9_-]{1,64}(\.[A-Za-z0-9_-]{1,64}){0,4}$/;
+
+export function validateWebhookDelivery(delivery) {
+  if (!delivery || typeof delivery !== "object") {
+    return ["webhooks.delivery must be an object"];
+  }
+  const problems = [];
+  const d = delivery;
+  if (d.idHeader !== undefined && (typeof d.idHeader !== "string" || !HEADER_NAME.test(d.idHeader))) {
+    problems.push("webhooks.delivery.idHeader must be a lowercase header name");
+  }
+  if (
+    d.idFields !== undefined &&
+    (!Array.isArray(d.idFields) ||
+      d.idFields.length === 0 ||
+      d.idFields.length > 4 ||
+      d.idFields.some(f => typeof f !== "string" || !FIELD_PATH.test(f)))
+  ) {
+    problems.push("webhooks.delivery.idFields must list 1 to 4 dotted field paths");
+  }
+  if (d.typeField !== undefined && (typeof d.typeField !== "string" || !FIELD_PATH.test(d.typeField))) {
+    problems.push("webhooks.delivery.typeField must be a dotted field path");
+  }
+  for (const key of Object.keys(d)) {
+    if (!["idHeader", "idFields", "typeField"].includes(key)) {
+      problems.push(`webhooks.delivery.${key} is not a known key`);
     }
   }
   return problems;
@@ -150,6 +267,7 @@ export function defineConnector(definition) {
             ? {
                 webhooks: {
                   verification: definition.webhooks.verification,
+                  ...(definition.webhooks.delivery ? { delivery: definition.webhooks.delivery } : {}),
                   ...(definition.webhooks.events ? { events: [...definition.webhooks.events] } : {}),
                 },
               }
@@ -294,6 +412,9 @@ function validateDefinition(definition) {
         problems.push("webhooks.handleBatch(ctx, events) must be a function");
       }
       problems.push(...validateWebhookVerification(webhooks.verification));
+      if (webhooks.delivery !== undefined) {
+        problems.push(...validateWebhookDelivery(webhooks.delivery));
+      }
       if (
         webhooks.events !== undefined &&
         (!Array.isArray(webhooks.events) || webhooks.events.some(e => typeof e !== "string"))

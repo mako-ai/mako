@@ -23,6 +23,7 @@ import {
   type FetchOptions,
   type FetchState,
   type IncrementalCapabilities,
+  type DeleteWebhookSubscriptionOptions,
   type ProvisionWebhookOptions,
   type ProvisionWebhookResult,
   type ResumableFetchOptions,
@@ -71,9 +72,11 @@ import { connectorSessionReadsEnabled } from "./session-config";
 import { connectorWebhookBatchesEnabled } from "./webhook-config";
 import {
   hasWebhookProvisioner,
+  webhookProvisionerCan,
   webhookProvisionerFor,
 } from "./webhook-provisioners";
 import {
+  declaredWebhookDelivery,
   declaredWebhookVerification,
   verifyDeclaredWebhook,
 } from "./webhook-verification";
@@ -1260,6 +1263,9 @@ export class SandboxedConnector extends BaseConnector {
         error: `The connector "${this.slug}" declares no webhook verification Mako can run.`,
       };
     }
+    // Where the event id and type are, so a stored event is keyed (and a
+    // vendor retry deduplicated) as the in-process connector keys it.
+    const delivery = declaredWebhookDelivery((await this.definition()).spec);
     return verifyDeclaredWebhook(declaration, {
       payload:
         typeof options.payload === "string"
@@ -1267,6 +1273,7 @@ export class SandboxedConnector extends BaseConnector {
           : JSON.stringify(options.payload),
       headers: options.headers,
       secret: options.secret,
+      delivery,
     });
   }
 
@@ -1282,7 +1289,17 @@ export class SandboxedConnector extends BaseConnector {
   }
 
   supportsWebhookSubscriptionUpdate(): boolean {
-    return this.supportsWebhookProvisioning();
+    return (
+      this.supportsWebhookProvisioning() &&
+      webhookProvisionerCan(this.slug, "update")
+    );
+  }
+
+  supportsWebhookSubscriptionDelete(): boolean {
+    return (
+      this.supportsWebhookProvisioning() &&
+      webhookProvisionerCan(this.slug, "delete")
+    );
   }
 
   getWebhookCapabilities(): WebhookCapabilities {
@@ -1307,7 +1324,15 @@ export class SandboxedConnector extends BaseConnector {
   async updateWebhookSubscription(
     options: UpdateWebhookSubscriptionOptions,
   ): Promise<ProvisionWebhookResult | null> {
-    return (await this.webhookProvisioner()).update(options);
+    const provisioner = await this.webhookProvisioner();
+    return provisioner.update ? provisioner.update(options) : null;
+  }
+
+  async deleteWebhookSubscription(
+    options: DeleteWebhookSubscriptionOptions,
+  ): Promise<number> {
+    const provisioner = await this.webhookProvisioner();
+    return provisioner.delete ? provisioner.delete(options) : 0;
   }
 
   /** Refused unless the flag is on and the folder declares a scheme Mako runs. */

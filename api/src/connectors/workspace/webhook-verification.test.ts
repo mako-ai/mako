@@ -9,14 +9,18 @@
  * Run: node --import tsx src/connectors/workspace/webhook-verification.test.ts
  */
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHmac, createSign, generateKeyPairSync } from "node:crypto";
 import { before, test } from "node:test";
 import {
+  declaredWebhookDelivery,
   declaredWebhookVerification,
+  identifyDeclaredEvent,
   keyOf,
   verifyDeclaredWebhook,
 } from "./webhook-verification";
 import { verifyCloseWebhook } from "../close/webhooks";
+import { verifyWiseWebhook, wiseWebhookPublicKeys } from "../wise/webhooks";
+import { verifyCalendlyWebhook } from "../calendly/webhooks";
 import {
   ensureFolderInstalled,
   runFolderCommand,
@@ -265,4 +269,399 @@ void test("a declared timestamp must be signed: an unsigned window is refused", 
     now: SENT,
   });
   assert.equal(result.valid, false);
+});
+
+// ---------------------------------------------------------------------------
+// rsa-sha256 (Wise), key=value signature headers (Calendly), test pings and
+// the delivery's id and type, each against the in-process check.
+// ---------------------------------------------------------------------------
+
+const { publicKey: TEST_PUBLIC, privateKey: TEST_PRIVATE } =
+  generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+const { publicKey: OTHER_PUBLIC } = generateKeyPairSync("rsa", {
+  modulusLength: 2048,
+  publicKeyEncoding: { type: "spki", format: "pem" },
+  privateKeyEncoding: { type: "pkcs8", format: "pem" },
+});
+
+const rsaDeclaration = {
+  scheme: "rsa-sha256",
+  publicKeys: [OTHER_PUBLIC, TEST_PUBLIC],
+  signedPayload: ["body"],
+  signatureHeader: "x-signature-sha256",
+  signatureEncoding: "base64",
+  testNotification: {
+    header: "x-test-notification",
+    value: "true",
+    eventType: "wise#test-notification",
+  },
+};
+const rsaDelivery = { idHeader: "x-delivery-id", typeField: "event_type" };
+
+function wiseDeliveries() {
+  const body = JSON.stringify({
+    data: {
+      resource: { id: 111, profile_id: 222, account_id: 333, type: "transfer" },
+      current_state: "outgoing_payment_sent",
+      previous_state: "processing",
+      occurred_at: "2026-11-16T10:00:00Z",
+    },
+    subscription_id: "sub-1",
+    event_type: "transfers#state-change",
+    schema_version: "2.0.0",
+    sent_at: "2026-11-16T10:00:01Z",
+  });
+  const sign = (payload: string) =>
+    createSign("RSA-SHA256").update(payload).sign(TEST_PRIVATE, "base64");
+  const good = sign(body);
+  const headers = { "x-signature-sha256": good, "x-delivery-id": "dlv-1" };
+  return [
+    { name: "valid", payload: body, headers },
+    {
+      name: "tampered body",
+      payload: body.replace("sub-1", "sub-2"),
+      headers,
+    },
+    { name: "no signature", payload: body, headers: { "x-delivery-id": "d" } },
+    {
+      name: "garbage signature",
+      payload: body,
+      headers: { ...headers, "x-signature-sha256": "bm90IGEgc2lnbmF0dXJl" },
+    },
+    {
+      name: "valid, no delivery id",
+      payload: body,
+      headers: { "x-signature-sha256": good },
+    },
+    {
+      name: "test notification, unsigned",
+      payload: "{}",
+      headers: { "X-Test-Notification": " TRUE ", "x-delivery-id": "dlv-t" },
+    },
+  ];
+}
+
+void test("rsa-sha256 agrees with the in-process Wise check, with the same event id and type", () => {
+  const declaration = declaredWebhookVerification(spec(rsaDeclaration));
+  assert.ok(declaration);
+  const delivery = declaredWebhookDelivery({
+    mako: { webhooks: { delivery: rsaDelivery } },
+  });
+  let valid = 0;
+  for (const d of wiseDeliveries()) {
+    const ours = verifyDeclaredWebhook(declaration, { ...d, delivery });
+    const theirs = verifyWiseWebhook(
+      { payload: d.payload, headers: d.headers, secret: "production" },
+      () => [TEST_PUBLIC],
+    );
+    assert.equal(ours.valid, theirs.valid, d.name);
+    if (!ours.valid) continue;
+    valid++;
+    const a = ours.event as Record<string, unknown>;
+    const b = theirs.event as Record<string, unknown>;
+    assert.equal(a.type, b.type, d.name);
+    if (d.name === "valid, no delivery id") {
+      // In-process builds a fallback id from the body; the declaration
+      // names only the header, so the route falls back to a random id.
+      assert.equal(a.id, undefined);
+      continue;
+    }
+    assert.equal(a.id, b.id, d.name);
+    if (d.name === "valid") {
+      assert.deepEqual(a, b);
+    }
+  }
+  assert.equal(valid, 3);
+});
+
+void test("rsa-sha256 refuses keys it cannot read and declarations with a secret", () => {
+  for (const [name, bad] of [
+    ["no keys", { ...rsaDeclaration, publicKeys: [] }],
+    [
+      "junk key",
+      {
+        ...rsaDeclaration,
+        publicKeys: [
+          "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----",
+        ],
+      },
+    ],
+    ["private key", { ...rsaDeclaration, publicKeys: [TEST_PRIVATE] }],
+    [
+      "five keys",
+      { ...rsaDeclaration, publicKeys: Array(5).fill(TEST_PUBLIC) },
+    ],
+    ["secret encoding", { ...rsaDeclaration, secretEncoding: "hex" }],
+    [
+      "test ping header case",
+      {
+        ...rsaDeclaration,
+        testNotification: { header: "X-Test", value: "true", eventType: "t" },
+      },
+    ],
+  ] as const) {
+    assert.equal(declaredWebhookVerification(spec(bad)), null, name);
+  }
+  // An HMAC declaration never answers a test ping it did not declare.
+  const hmac = declaredWebhookVerification(spec(CLOSE_WEBHOOK_VERIFICATION))!;
+  assert.equal(
+    verifyDeclaredWebhook(hmac, {
+      payload: "{}",
+      headers: { "x-test-notification": "true" },
+      secret: "0f".repeat(32),
+    }).valid,
+    false,
+  );
+});
+
+const calendlyDeclaration = {
+  scheme: "hmac-sha256",
+  secretEncoding: "utf8",
+  signedPayload: ["param:t", "literal:.", "body"],
+  signatureHeader: "calendly-webhook-signature",
+  signatureEncoding: "hex",
+  signatureParam: "v1",
+  timestampParam: "t",
+  toleranceSeconds: 180,
+};
+const calendlyDelivery = {
+  idFields: ["created_at", "payload.uri"],
+  typeField: "event",
+};
+const CALENDLY_KEY = "test-signing-key-0123456789abcdef";
+
+function calendlyDeliveries(t: number) {
+  const body = JSON.stringify({
+    event: "invitee.created",
+    created_at: "2026-11-16T10:00:00.000000Z",
+    created_by: "https://api.calendly.com/users/U1",
+    payload: {
+      uri: "https://api.calendly.com/scheduled_events/E1/invitees/I1",
+      email: "a@example.com",
+    },
+  });
+  const sign = (ts: string, payload: string, key = CALENDLY_KEY) =>
+    createHmac("sha256", key).update(`${ts}.${payload}`).digest("hex");
+  const h = (value: string) => ({ "calendly-webhook-signature": value });
+  const good = sign(String(t), body);
+  return [
+    { name: "valid", payload: body, headers: h(`t=${t},v1=${good}`) },
+    { name: "spaces", payload: body, headers: h(` t = ${t} , v1 = ${good} `) },
+    {
+      name: "tampered",
+      payload: body.replace("I1", "I2"),
+      headers: h(`t=${t},v1=${good}`),
+    },
+    {
+      name: "wrong key",
+      payload: body,
+      headers: h(`t=${t},v1=${sign(String(t), body, "x".repeat(32))}`),
+    },
+    { name: "no v1", payload: body, headers: h(`t=${t}`) },
+    { name: "no t", payload: body, headers: h(`v1=${good}`) },
+    { name: "no header", payload: body, headers: {} },
+    {
+      name: "stale",
+      payload: body,
+      headers: h(`t=${t - 181},v1=${sign(String(t - 181), body)}`),
+    },
+    {
+      name: "timestamp swapped",
+      payload: body,
+      headers: h(`t=${t - 1},v1=${good}`),
+    },
+    {
+      name: "no secret",
+      payload: body,
+      headers: h(`t=${t},v1=${good}`),
+      secret: null,
+    },
+  ];
+}
+
+void test("a key=value signature header agrees with the in-process Calendly check, with the same event id and type", () => {
+  const declaration = declaredWebhookVerification(spec(calendlyDeclaration));
+  assert.ok(declaration);
+  const delivery = declaredWebhookDelivery({
+    mako: { webhooks: { delivery: calendlyDelivery } },
+  });
+  const t = Math.floor(Date.now() / 1000);
+  let valid = 0;
+  for (const d of calendlyDeliveries(t)) {
+    const secret = d.secret === null ? undefined : CALENDLY_KEY;
+    const ours = verifyDeclaredWebhook(declaration, {
+      payload: d.payload,
+      headers: d.headers,
+      secret,
+      delivery,
+    });
+    const theirs = verifyCalendlyWebhook({
+      payload: d.payload,
+      headers: d.headers,
+      secret,
+    });
+    assert.equal(ours.valid, theirs.valid, d.name);
+    if (ours.valid) {
+      valid++;
+      assert.deepEqual(ours.event, theirs.event, d.name);
+    }
+  }
+  assert.equal(valid, 2);
+});
+
+void test("param parts need signatureParam, and a param timestamp must be signed", () => {
+  const { signatureParam: _s, ...noParam } = calendlyDeclaration;
+  assert.equal(declaredWebhookVerification(spec(noParam)), null);
+  assert.equal(
+    declaredWebhookVerification(
+      spec({ ...calendlyDeclaration, signedPayload: ["literal:.", "body"] }),
+    ),
+    null,
+  );
+  assert.equal(
+    declaredWebhookVerification(
+      spec({ ...calendlyDeclaration, timestampHeader: "x-ts" }),
+    ),
+    null,
+  );
+});
+
+void test("a delivery declaration names an id header, id fields and a type field, nothing else", () => {
+  assert.deepEqual(
+    declaredWebhookDelivery({
+      mako: { webhooks: { delivery: calendlyDelivery } },
+    }),
+    calendlyDelivery,
+  );
+  for (const bad of [
+    { idHeader: "X-Id" },
+    { idFields: [] },
+    { idFields: ["a..b"] },
+    { typeField: "a/b" },
+    { idScript: "x" },
+  ]) {
+    assert.equal(
+      declaredWebhookDelivery({ mako: { webhooks: { delivery: bad } } }),
+      null,
+      JSON.stringify(bad),
+    );
+  }
+  const d = declaredWebhookDelivery({
+    mako: { webhooks: { delivery: calendlyDelivery } },
+  });
+  // A missing field leaves the id to the route; own properties only.
+  assert.deepEqual(identifyDeclaredEvent(d, { event: "x", payload: {} }, {}), {
+    event: "x",
+    payload: {},
+    type: "x",
+  });
+  assert.deepEqual(
+    identifyDeclaredEvent(d, { created_at: "c", payload: { uri: 7 } }, {}),
+    { created_at: "c", payload: { uri: 7 }, id: "c:7" },
+  );
+  assert.deepEqual(identifyDeclaredEvent(d, { event: "toString" }, {}), {
+    event: "toString",
+    type: "toString",
+  });
+  assert.deepEqual(identifyDeclaredEvent(d, { payload: {} }, {}), {
+    payload: {},
+  });
+  assert.deepEqual(identifyDeclaredEvent(null, { a: 1 }, {}), { a: 1 });
+});
+
+void test("the Wise folder's declaration agrees with the in-process check on its fixture deliveries", async () => {
+  const harness =
+    await import("../../../../connectors/wise/fixtures/harness.mjs");
+  const fixtures =
+    await import("../../../../connectors/wise/fixtures/webhook-events.mjs");
+  harness.ensureFolderInstalled();
+  const run = await harness.runFolderCommand("spec");
+  const wiseSpec = run.messages.find((m: any) => m.type === "SPEC")?.spec;
+  const declared = wiseSpec?.mako?.webhooks;
+  assert.ok(declared?.verification, "the Wise folder declares one");
+  // The folder ships Wise's own two keys, in the built-in's production order.
+  assert.deepEqual(
+    declared.verification.publicKeys,
+    wiseWebhookPublicKeys(false, "production"),
+  );
+  // The fixtures are signed by a per-run test key: swap it in on both sides.
+  const declaration = declaredWebhookVerification(
+    spec({
+      ...declared.verification,
+      publicKeys: [fixtures.TEST_WEBHOOK_KEYS.publicKey],
+    }),
+  );
+  assert.ok(declaration);
+  const delivery = declaredWebhookDelivery(wiseSpec);
+  assert.deepEqual(delivery, {
+    idHeader: "x-delivery-id",
+    typeField: "event_type",
+  });
+  const deliveries = fixtures.buildDeliveries();
+  assert.equal(deliveries.length, 9);
+  for (const d of deliveries) {
+    const ours = verifyDeclaredWebhook(declaration, { ...d, delivery });
+    const theirs = verifyWiseWebhook(
+      { payload: d.payload, headers: d.headers, secret: "production" },
+      () => [fixtures.TEST_WEBHOOK_KEYS.publicKey],
+    );
+    assert.equal(ours.valid, theirs.valid, d.name);
+    if (ours.valid && d.name !== "valid, no delivery id") {
+      const a = ours.event as Record<string, unknown>;
+      const b = theirs.event as Record<string, unknown>;
+      assert.equal(a.id, b.id, d.name);
+      assert.equal(a.type, b.type, d.name);
+    }
+  }
+});
+
+void test("the Calendly folder's declaration agrees with the in-process check on its fixture deliveries", async () => {
+  const harness =
+    await import("../../../../connectors/calendly/fixtures/harness.mjs");
+  const fixtures =
+    await import("../../../../connectors/calendly/fixtures/webhook-events.mjs");
+  harness.ensureFolderInstalled();
+  const run = await harness.runFolderCommand("spec");
+  const calendlySpec = run.messages.find((m: any) => m.type === "SPEC")?.spec;
+  assert.deepEqual(
+    calendlySpec?.mako?.webhooks?.verification,
+    calendlyDeclaration,
+  );
+  const declaration = declaredWebhookVerification(calendlySpec);
+  const delivery = declaredWebhookDelivery(calendlySpec);
+  assert.ok(declaration);
+  assert.deepEqual(delivery, calendlyDelivery);
+  const {
+    type: _t,
+    id: _i,
+    ...body
+  } = fixtures.buildWebhookEvents()[0].rawPayload as Record<string, unknown>;
+  const deliveries = fixtures.buildDeliveries(body);
+  assert.equal(deliveries.length, 10);
+  // The in-process check reads the clock itself.
+  const realNow = Date.now;
+  Date.now = () => fixtures.DELIVERY_TIMESTAMP * 1000;
+  try {
+    let valid = 0;
+    for (const d of deliveries) {
+      const ours = verifyDeclaredWebhook(declaration, {
+        ...d,
+        delivery,
+        now: new Date(fixtures.DELIVERY_TIMESTAMP * 1000),
+      });
+      const theirs = verifyCalendlyWebhook(d);
+      assert.equal(ours.valid, theirs.valid, d.name);
+      if (ours.valid) {
+        valid++;
+        assert.deepEqual(ours.event, theirs.event, d.name);
+      }
+    }
+    assert.equal(valid, 2);
+  } finally {
+    Date.now = realNow;
+  }
 });

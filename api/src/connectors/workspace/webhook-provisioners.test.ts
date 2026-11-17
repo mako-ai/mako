@@ -11,7 +11,9 @@ import type { AxiosInstance } from "axios";
 import { adoptCloseWebhook } from "../close/webhooks";
 import { SandboxedConnector } from "./SandboxedConnector";
 import {
+  builtInProvisioningConfig,
   hasWebhookProvisioner,
+  webhookProvisionerCan,
   webhookProvisionerFor,
 } from "./webhook-provisioners";
 
@@ -100,8 +102,35 @@ void test("adopt reads the key from the webhook when the list leaves it out", as
   assert.ok(calls.includes("GET /webhook/whsub_k/"));
 });
 
-void test("only Close has a provisioner, and it needs a key", async () => {
+void test("Close, Wise and Calendly have provisioners, each needing its credential", async () => {
   assert.equal(hasWebhookProvisioner("close"), true);
+  assert.equal(hasWebhookProvisioner("wise"), true);
+  assert.equal(hasWebhookProvisioner("calendly"), true);
+  await assert.rejects(
+    () => webhookProvisionerFor("wise", {}),
+    /Wise API token/,
+  );
+  await assert.rejects(
+    () => webhookProvisionerFor("calendly", { api_key: "k" }),
+    /Calendly access token/,
+  );
+  // As the built-ins: Wise updates and deletes, Calendly only creates.
+  assert.deepEqual(
+    ["close", "wise", "calendly"].map(slug => [
+      webhookProvisionerCan(slug, "update"),
+      webhookProvisionerCan(slug, "delete"),
+    ]),
+    [
+      [true, false],
+      [true, true],
+      [false, false],
+    ],
+  );
+  const calendly = await webhookProvisionerFor("calendly", {
+    access_token: "t",
+  });
+  assert.equal(calendly.update, undefined);
+  assert.equal(calendly.delete, undefined);
   assert.equal(hasWebhookProvisioner("acme"), false);
   assert.equal(hasWebhookProvisioner("__proto__"), false);
   assert.equal(hasWebhookProvisioner("constructor"), false);
@@ -187,4 +216,34 @@ void test("a folder that declares no verification is refused before any call", a
     () => connector.updateWebhookSubscription({ endpointUrl: URL_A }),
     /declares no webhook verification/,
   );
+});
+
+void test("the provisioned built-ins never take a base URL from the connection", () => {
+  // A connection editor's `api_base_url` must not redirect the key: the
+  // built-ins get the credential only, and so call the vendor's own host.
+  const evil = { api_base_url: "https://attacker.example" };
+  assert.deepEqual(
+    builtInProvisioningConfig("wise", {
+      ...evil,
+      api_key: "k",
+      profile_id: "9",
+      sca_private_key: "x",
+    }),
+    { api_key: "k", profile_id: "9" },
+  );
+  assert.deepEqual(
+    builtInProvisioningConfig("calendly", { ...evil, access_token: "t" }),
+    { access_token: "t" },
+  );
+});
+
+void test("flag on: boxed Wise updates and deletes; boxed Calendly only creates", () => {
+  process.env.CONNECTOR_WEBHOOK_BATCHES = "true";
+  const wise = new SpecConnector("ws:wise", VERIFYING_SPEC);
+  assert.equal(wise.supportsWebhookSubscriptionUpdate(), true);
+  assert.equal(wise.supportsWebhookSubscriptionDelete(), true);
+  const calendly = new SpecConnector("ws:calendly", VERIFYING_SPEC);
+  assert.equal(calendly.supportsWebhookProvisioning(), true);
+  assert.equal(calendly.supportsWebhookSubscriptionUpdate(), false);
+  assert.equal(calendly.supportsWebhookSubscriptionDelete(), false);
 });

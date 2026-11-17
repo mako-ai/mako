@@ -100,15 +100,22 @@ export interface EntityDefinition<Config = Record<string, unknown>> {
 
 /**
  * How Mako verifies a delivery's signature, in its API, before storing it.
- * Data, never code: the signing secret stays in Mako and no box sees it.
+ * Data, never code: a signing secret stays in Mako and no box sees it.
  */
 export interface WebhookVerification {
-  scheme: "hmac-sha256";
-  /** How the stored signing secret becomes the HMAC key. */
-  secretEncoding: "hex" | "base64" | "utf8";
+  /**
+   * `hmac-sha256` under the flow's signing secret, or `rsa-sha256` against
+   * the vendor's public keys (`publicKeys`), which needs no secret.
+   */
+  scheme: "hmac-sha256" | "rsa-sha256";
+  /** HMAC only: how the stored signing secret becomes the HMAC key. */
+  secretEncoding?: "hex" | "base64" | "utf8";
+  /** RSA only: 1 to 4 PEM public keys. A signature any one verifies is valid. */
+  publicKeys?: string[];
   /**
    * The signed bytes, in order: `"body"` (the raw request body),
-   * `"header:<lowercase name>"` or `"literal:<text>"`. Must include `"body"`.
+   * `"header:<lowercase name>"`, `"param:<key>"` (a value of the signature
+   * header, with `signatureParam`) or `"literal:<text>"`. Must include `"body"`.
    */
   signedPayload: string[];
   /** Lowercase name of the header that carries the signature. */
@@ -117,12 +124,40 @@ export interface WebhookVerification {
   /** Text before the signature in its header, e.g. `"sha256="`. */
   signaturePrefix?: string;
   /**
+   * The signature header is `key=value` pairs joined by commas
+   * (`t=1492774577,v1=5257a8...`); the signature is this key's value. A
+   * key given twice counts once, the last.
+   */
+  signatureParam?: string;
+  /**
    * A header with the send time in Unix seconds, and the window around now
    * it must fall in (1 to 86400). Declared together. Mako then refuses a
    * delivery without the header or outside the window.
    */
   timestampHeader?: string;
+  /** As `timestampHeader`, for a send time inside the signature header. */
+  timestampParam?: string;
   toleranceSeconds?: number;
+  /**
+   * The vendor's test ping: a delivery whose `header` equals `value`
+   * (ignoring case) is answered without a signature and stored under
+   * `eventType` with no payload, so a handler can answer it `unmapped`.
+   */
+  testNotification?: { header: string; value: string; eventType: string };
+}
+
+/**
+ * Where a stored delivery's event id and type come from. Mako reads them
+ * when it stores the delivery, adds them to the stored payload as `id` and
+ * `type`, and deduplicates vendor retries on the id.
+ */
+export interface WebhookDelivery {
+  /** Lowercase name of a header with the vendor's delivery id. */
+  idHeader?: string;
+  /** Else, dotted body paths whose values, joined with ":", are the id. */
+  idFields?: string[];
+  /** Dotted body path to the event type. */
+  typeField?: string;
 }
 
 /** One stored delivery, as Mako hands it to `handleBatch`. */
@@ -162,6 +197,8 @@ export type WebhookOutcome =
 
 export interface WebhookDefinition<Config = Record<string, unknown>> {
   verification: WebhookVerification;
+  /** Where each delivery's event id and type come from. */
+  delivery?: WebhookDelivery;
   /** Every event type the connector handles, for subscribing at the vendor. */
   events?: string[];
   /**

@@ -13,6 +13,7 @@
  * never one from the connection's config, so a key goes only to its vendor.
  */
 import type {
+  DeleteWebhookSubscriptionOptions,
   ProvisionWebhookOptions,
   ProvisionWebhookResult,
 } from "../base/BaseConnector";
@@ -20,10 +21,45 @@ import type {
 export interface WebhookProvisioner {
   /** Create the subscription (or adopt one already on the URL). */
   create(options: ProvisionWebhookOptions): Promise<ProvisionWebhookResult>;
-  /** Adopt the subscription on the URL and set its events; null when none. */
-  update(
+  /**
+   * Adopt the subscription on the URL and set its events; null when none.
+   * Absent when the built-in connector cannot update one either.
+   */
+  update?(
     options: ProvisionWebhookOptions,
   ): Promise<ProvisionWebhookResult | null>;
+  /** Remove every subscription on the URL; absent when the vendor's built-in cannot. */
+  delete?(options: DeleteWebhookSubscriptionOptions): Promise<number>;
+}
+
+/** Which slugs can update or delete, known without building a client. */
+const CAPABILITIES: Record<string, { update: boolean; delete: boolean }> = {
+  close: { update: true, delete: false },
+  wise: { update: true, delete: true },
+  calendly: { update: false, delete: false },
+};
+
+const credential = (config: Record<string, unknown>, key: string) =>
+  typeof config[key] === "string" ? (config[key] as string) : "";
+
+/**
+ * The config a built-in connector provisions with: the credential (and
+ * Wise's profile), never `api_base_url`, so the key goes only to the
+ * vendor's own host. Throws when the credential is missing.
+ */
+export function builtInProvisioningConfig(
+  slug: "wise" | "calendly",
+  config: Record<string, unknown>,
+): Record<string, string> {
+  if (slug === "wise") {
+    const apiKey = credential(config, "api_key");
+    if (!apiKey.trim()) throw new Error("Wise API token not configured");
+    const profileId = credential(config, "profile_id");
+    return { api_key: apiKey, ...(profileId ? { profile_id: profileId } : {}) };
+  }
+  const token = credential(config, "access_token");
+  if (!token.trim()) throw new Error("Calendly access token not configured");
+  return { access_token: token };
 }
 
 type ProvisionerFactory = (
@@ -53,10 +89,44 @@ const PROVISIONERS: Record<string, ProvisionerFactory> = {
         adoptCloseWebhook(api, options, closeWebhookEventsForEntities),
     };
   },
+  // The built-in connectors themselves, on the credential alone: no
+  // `api_base_url` reaches them, so they call the vendor's own host.
+  wise: async config => {
+    const { WiseConnector } = await import("../wise/connector");
+    const wise = new WiseConnector({
+      name: "Wise webhook provisioning",
+      type: "wise",
+      config: builtInProvisioningConfig("wise", config),
+    } as never);
+    return {
+      create: options => wise.createWebhookSubscription(options),
+      update: options => wise.updateWebhookSubscription(options),
+      delete: options => wise.deleteWebhookSubscription(options),
+    };
+  },
+  calendly: async config => {
+    const { CalendlyConnector } = await import("../calendly/connector");
+    const calendly = new CalendlyConnector({
+      name: "Calendly webhook provisioning",
+      type: "calendly",
+      config: builtInProvisioningConfig("calendly", config),
+    } as never);
+    return {
+      create: options => calendly.createWebhookSubscription(options),
+    };
+  },
 };
 
 export function hasWebhookProvisioner(slug: string): boolean {
   return Object.prototype.hasOwnProperty.call(PROVISIONERS, slug);
+}
+
+/** Whether the slug's provisioner can update, or delete, a subscription. */
+export function webhookProvisionerCan(
+  slug: string,
+  action: "update" | "delete",
+): boolean {
+  return hasWebhookProvisioner(slug) && CAPABILITIES[slug]?.[action] === true;
 }
 
 export async function webhookProvisionerFor(
