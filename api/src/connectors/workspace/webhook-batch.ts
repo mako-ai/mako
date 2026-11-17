@@ -831,8 +831,9 @@ async function runBatch(input: {
     const id = outcome?.eventId;
     if (outcome && typeof id === "string" && !byEvent.has(id)) {
       byEvent.set(id, outcome);
-      if (Array.isArray(outcome.records))
+      if (Array.isArray(outcome.records)) {
         totalRecords += outcome.records.length;
+      }
     }
   }
   // A cap on the whole answer, on top of the cap per event: past it, the
