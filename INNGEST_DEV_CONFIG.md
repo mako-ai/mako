@@ -105,6 +105,7 @@ ClickHouse, etc.). Several environment variables control memory and batch sizing
 | `SYNC_PARQUET_DUCKDB_MEMORY_LIMIT_MB` | `512` | DuckDB per-instance memory cap. Raise if entities contain very large text (e.g. meeting notes). |
 | `SYNC_PARQUET_DUCKDB_THREADS` | `1` | DuckDB thread count. Keep at 1 to minimize peak memory. |
 | `SYNC_BULK_FLUSH_BATCH_SIZE` | `10000` | Max rows per Parquet file in the bulk flush loop. |
+| `SYNC_BULK_FLUSH_BATCH_BYTES` | a quarter of `SYNC_PARQUET_DUCKDB_MEMORY_LIMIT_MB` (128 MiB) | Max bytes (BSON size) per Parquet file in the bulk flush loop. A batch ends at this or at `SYNC_BULK_FLUSH_BATCH_SIZE` rows, whichever comes first. |
 | `SYNC_BULK_FLUSH_MIN_BATCH_SIZE` | `100` | Floor for adaptive batch shrinking (see below). |
 | `SYNC_BULK_MONGO_TO_PARQUET_CHUNK` | `200` | Rows per DuckDB `INSERT` micro-batch from Mongo cursor. |
 

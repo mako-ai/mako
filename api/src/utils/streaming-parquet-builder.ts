@@ -33,6 +33,27 @@ function parsePositiveInt(
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function duckDbMemoryLimitMb(): number {
+  return parsePositiveInt(
+    process.env.SYNC_PARQUET_DUCKDB_MEMORY_LIMIT_MB,
+    DEFAULT_DUCKDB_MEMORY_LIMIT_MB,
+  );
+}
+
+/**
+ * Bytes of rows one Parquet build can hold: a quarter of the DuckDB memory
+ * limit (128 MiB at the default 512 MB).
+ *
+ * DuckDB reads a column 2,048 rows at a time, and the strings of those rows
+ * go into one allocation that doubles as it grows. 1,000 Close meetings of
+ * 286 KB ask for one 512 MiB block and fail at the 512 MB limit; 500 of them
+ * ask for 256 MiB and pass. A build under a quarter of the limit stays under
+ * half of it at its peak.
+ */
+export function parquetBuildByteBudget(): number {
+  return Math.floor((duckDbMemoryLimitMb() * 1024 * 1024) / 4);
+}
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -359,10 +380,7 @@ export async function buildParquetFromBatches(
 
   const instance = await DuckDBInstance.create(dbPath);
   const connection = await instance.connect();
-  const duckDbMemoryLimitMb = parsePositiveInt(
-    process.env.SYNC_PARQUET_DUCKDB_MEMORY_LIMIT_MB,
-    DEFAULT_DUCKDB_MEMORY_LIMIT_MB,
-  );
+  const memoryLimitMb = duckDbMemoryLimitMb();
   const duckDbThreads = parsePositiveInt(
     process.env.SYNC_PARQUET_DUCKDB_THREADS,
     DEFAULT_DUCKDB_THREADS,
@@ -406,7 +424,7 @@ export async function buildParquetFromBatches(
 
   try {
     await connection.run(`PRAGMA threads=${duckDbThreads}`);
-    await connection.run(`PRAGMA memory_limit='${duckDbMemoryLimitMb}MB'`);
+    await connection.run(`PRAGMA memory_limit='${memoryLimitMb}MB'`);
     await connection.run(
       `PRAGMA temp_directory='${os.tmpdir().replace(/'/g, "''")}'`,
     );
@@ -604,7 +622,7 @@ export async function buildParquetFromBatches(
       rowGroupSize: writeOptions.rowGroupSize,
       encodeDurationMs,
       parquetPath,
-      duckDbMemoryLimitMb,
+      duckDbMemoryLimitMb: memoryLimitMb,
       duckDbThreads,
     });
 

@@ -13,12 +13,14 @@ import {
   ITableDestination,
 } from "../database/workspace-schema";
 import { markAbsentColumns, stripUndefined } from "../sync-cdc/sparse-rows";
+import { nestedValuesAsJsonText } from "./bulk-buffer-json";
 import {
   buildParquetFromBatches,
   isDuckDBMemoryError,
+  parquetBuildByteBudget,
   type FieldMeta,
 } from "../utils/streaming-parquet-builder";
-import { Collection } from "mongodb";
+import { BSON, Collection } from "mongodb";
 import { Types } from "mongoose";
 import { ProgressReporter } from "./progress-reporter";
 import axios from "axios";
@@ -652,7 +654,7 @@ async function performSyncChunkSql(
             if (useBulkPath && bulkTempCollection) {
               const enrichedRecords = processedRecords.map(
                 (record: Record<string, unknown>) => ({
-                  ...record,
+                  ...nestedValuesAsJsonText(record, entitySchema),
                   _mako_source_ts: resolveSourceTimestamp(record),
                   _bulkRunId: bulkRunId,
                 }),
@@ -856,16 +858,22 @@ async function flushBulkBuffer(
   if (!loadStagingFromParquet) return { flushed: 0 };
 
   let currentBatchSize = FLUSH_BATCH_SIZE;
+  // Bytes per batch (BSON size of the buffered rows):
+  // SYNC_BULK_FLUSH_BATCH_BYTES, else a quarter of the DuckDB memory limit.
+  const batchBytes =
+    resolvePositiveIntEnv(process.env.SYNC_BULK_FLUSH_BATCH_BYTES, 0) ||
+    parquetBuildByteBudget();
   let totalFlushed = 0;
   let batchNum = 0;
 
   logger?.log(
     "info",
-    `Flushing ${entity} buffer to staging (${initialCount.toLocaleString()} rows, starting batch size ${currentBatchSize.toLocaleString()})`,
+    `Flushing ${entity} buffer to staging (${initialCount.toLocaleString()} rows, batches of up to ${currentBatchSize.toLocaleString()} rows or ${Math.round(batchBytes / 1024 / 1024)} MiB)`,
     {
       entity,
       totalCount: initialCount,
       batchSize: currentBatchSize,
+      batchBytes,
       minBatchSize: MIN_FLUSH_BATCH_SIZE,
       mongoStreamChunk: MONGO_TO_PARQUET_CHUNK,
       memoryBefore: syncMemorySnapshot(),
@@ -903,6 +911,8 @@ async function flushBulkBuffer(
     );
 
     const tParquetStart = Date.now();
+    let rowsRead = 0;
+    let bytesRead = 0;
 
     let parquet;
     try {
@@ -921,6 +931,12 @@ async function flushBulkBuffer(
           let buffer: Record<string, unknown>[] = [];
           for await (const doc of cursor) {
             const d = doc as Record<string, unknown>;
+            // The batch ends at its byte budget as well as its row count:
+            // wide rows past the budget fail the build (see
+            // parquetBuildByteBudget). The rows left stay for the next batch.
+            if (rowsRead > 0 && bytesRead >= batchBytes) break;
+            rowsRead++;
+            bytesRead += BSON.calculateObjectSize(d);
             const { _id, ...rest } = d;
             currentChunk.push(_id);
             if (currentChunk.length >= DELETE_CHUNK) {
@@ -944,9 +960,13 @@ async function flushBulkBuffer(
       });
     } catch (err) {
       if (isDuckDBMemoryError(err)) {
+        // Half the rows this attempt read: a batch the byte budget cut is
+        // smaller than currentBatchSize.
         const shrunkSize = Math.max(
           MIN_FLUSH_BATCH_SIZE,
-          Math.floor(currentBatchSize / 2),
+          Math.floor(
+            Math.min(currentBatchSize, rowsRead || currentBatchSize) / 2,
+          ),
         );
 
         if (
