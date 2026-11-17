@@ -109,6 +109,8 @@ export default defineConfig({
       // Source connections over MCP: plain settings and access, update,
       // delete; the app's permission rules, no secret in or out.
       "src/agent-lib/tools/connection-manage-tools.test.ts",
+      // Who may use a connection, over MCP: the app's rights, both kinds.
+      "src/agent-lib/tools/connection-access-tools.test.ts",
       "src/agent-lib/tools/apps-tools-consistency.test.ts",
       // Tool-output caps: no single result may flood the prompt.
       "src/agent-lib/tools/apps-tools-output-caps.test.ts",

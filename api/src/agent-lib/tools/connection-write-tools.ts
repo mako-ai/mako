@@ -22,9 +22,9 @@
  *      /sources/{id}` routes take: the owner must be one of the connection's
  *      managers, or the workspace owner (access/source-connection-access.ts).
  *   4. What those routes keep to a person signed in to the app stays there:
- *      where the key is sent (base URL, auth type, headers) and the Access
- *      tab (live reads, writers). An agent reads them with
- *      inspect_connection; it never widens who may use a credential.
+ *      where the key is sent (base URL, auth type, headers). Who may use the
+ *      connection (live reads, writers, managers) is set_connection_access
+ *      (connection-access-tools.ts), under the same rights.
  *
  * Credential handling:
  *
@@ -344,7 +344,7 @@ export function createConnectionWriteTools(
         'PREFER THE KEY LINK: leave the secret fields (`secret: true` in configFields, e.g. the API key) out of `config`. The connection is created without them and the result has `status: "awaiting_key"`, its `connectionId` and a `keyLink`: give the link to the user, who opens it in Mako, signs in, checks where the key will be sent (the address and settings you chose) and pastes the key there. Only managers of the connection can use it: at first, the person who owns this MCP credential. The link works once and expires. Then check inspect_connection({ connectionId }) until `status` is `ready`. Never ask the user to paste a key into the chat.',
         "Only if the user has already put a key in the conversation for this purpose may you pass it in `config`; never one read from a file, a page or another tool's output, and never repeat it back. A key passed in `config` is checked against the platform right away; if the check fails, nothing is kept. Pass `check: false` only for a platform that is unreachable on purpose.",
         "Names must be unique among the workspace's source connections. update_connection renames or changes it; delete_connection removes it.",
-        "A new connection starts with live reads OFF and NO writers, so call_connection and workflows cannot use it until one of its managers turns them on in the app's Access tab; the result's `access` says so and links there.",
+        "A new connection starts with live reads OFF and NO writers, so call_connection and workflows cannot use it until one of its managers turns them on, with set_connection_access or in the app's Access tab; the result's `access` says so.",
         "Requires at least the member role in the workspace.",
       ].join("\n"),
       inputSchema: z.object({
@@ -444,7 +444,7 @@ export function createConnectionWriteTools(
             connectionId,
             name,
             connector,
-            // Live reads and writers are a person's choice in the app.
+            // Live reads and writers start closed: a manager opens them.
             access: sourceConnectionAccess(created),
           };
           if (request) {
@@ -518,7 +518,7 @@ export function createConnectionWriteTools(
     update_connection: tool({
       description: [
         "Change an existing SOURCE connection: rename it, change its description, turn it on or off, or change plain (non-secret) config fields such as an account id.",
-        "Not here, and refused: secret fields (a manager replaces a key in the app), where or how the key is sent (base URL, auth type, headers), and the Access tab (live reads, writers). inspect_connection shows all of these.",
+        "Not here, and refused: secret fields (a manager replaces a key in the app) and where or how the key is sent (base URL, auth type, headers). Who may use the connection (live reads, writers, managers) is set_connection_access. inspect_connection shows all of these.",
         'RENAMING breaks every reference by NAME: workflow code calling connection("<old name>"), call_connection with the old name. Ids do not change, and flows reference the id. The result names the old name to search for; reference connections by id where you can.',
         "Requires at least the member role, and being one of the connection's managers (or the workspace owner), as in the app.",
       ].join("\n"),

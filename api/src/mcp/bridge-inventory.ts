@@ -15,6 +15,7 @@ import { Types } from "mongoose";
 import { createFlowTools } from "../agents/flow";
 import { createConsoleSearchTools } from "../agent-lib/tools/console-search-tools";
 import { createConnectorTools } from "../agent-lib/tools/connector-tools";
+import { createConnectionAccessTools } from "../agent-lib/tools/connection-access-tools";
 import { createConnectionWriteTools } from "../agent-lib/tools/connection-write-tools";
 import { createDbtServerTools } from "../agent-lib/tools/dbt-tools";
 import { createFlowFileTools } from "../agent-lib/tools/flow-file-tools";
@@ -92,6 +93,7 @@ export function collectLiveAgentToolNames(): string[] {
   add(keysOf(createSelfDirectiveTools(INVENTORY_WORKSPACE_ID)));
   add(keysOf(createConnectorTools(INVENTORY_WORKSPACE_ID)));
   add(keysOf(createConnectionWriteTools(INVENTORY_WORKSPACE_ID)));
+  add(keysOf(createConnectionAccessTools(INVENTORY_WORKSPACE_ID)));
   add(keysOf(createFlowFileTools(INVENTORY_WORKSPACE_ID)));
   add(keysOf(createFlowSyncTools({ workspaceId: INVENTORY_WORKSPACE_ID })));
   // MCP-surface only (no mode lists them), but they are real server factories

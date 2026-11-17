@@ -23,7 +23,8 @@ export type CapabilityGrant =
 
 export const CAPABILITY_GRANTS = [
   "artifact-write",
-  // Rename, change or delete an existing source connection. An explicit
+  // Rename, change or delete an existing source connection, and change who
+  // may use a connection (set_connection_access). An explicit
   // per-key scope (`connections:manage`), carried by every OAuth sign-in like
   // `workflows:run`; a key minted with the defaults cannot remove the
   // credential a running flow uses. The connection's managers gate it too.

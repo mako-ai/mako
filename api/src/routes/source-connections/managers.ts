@@ -56,8 +56,9 @@ sourceConnectionManagerRoutes.openapi(
     const workspaceId = c.req.param("workspaceId");
     const id = c.req.param("id");
     const user = c.get("user");
-    // People pick who holds a key, in the app: never an API key, MCP client
-    // or agent, whatever it is asked.
+    // This route takes a person signed in to the app, never an API key. An
+    // MCP client goes through set_connection_access, which needs the
+    // connections-manage grant and checks the same rights.
     if (c.get("authType") !== "session" || !user?.id) {
       return fail(c, 403, "Managers can only be changed in the app");
     }

@@ -25,8 +25,14 @@
  * which an API key carries only with the explicit `connections:manage`
  * scope (OAuth sign-ins carry it). The caller's live role must be at least
  * member, and changing or deleting takes being one of the connection's
- * managers, as in the UI. They are kept out of the in-product chat so a prompt-injected page
- * cannot plant, repoint or remove a credential the workspace syncs from.
+ * managers, as in the UI. `set_connection_access` changes who may use a
+ * connection (a database connection's writers; a source connection's
+ * writers, live reads, live readers and managers) under the same
+ * `connections-manage` grant, for the people who may change it in the app:
+ * the workspace owner and admins for a database connection, a source
+ * connection's managers and the workspace owner for theirs. They are kept
+ * out of the in-product chat so a prompt-injected page cannot plant, repoint
+ * or remove a credential the workspace syncs from, or widen who uses one.
  *
  * Deliberately NOT the same thing as the `list_data_sources` /
  * `inspect_data_source` family, which operate on in-browser DuckDB
@@ -106,8 +112,8 @@ export const CONNECTOR_CAPABILITIES = [
     surfaces: EXTERNAL_MCP_ONLY,
     resultKind: "data",
   }),
-  // Renames, describes, disables, or changes plain config. Secrets, where the
-  // key is sent and the Access tab stay in the app.
+  // Renames, describes, disables, or changes plain config. Secrets and where
+  // the key is sent stay in the app; access is set_connection_access.
   define({
     name: "update_connection",
     pack: "connector-admin",
@@ -121,6 +127,18 @@ export const CONNECTOR_CAPABILITIES = [
     name: "delete_connection",
     pack: "connector-admin",
     risk: "destructive",
+    requiredGrant: "connections-manage",
+    minimumWorkspaceRole: "member",
+    surfaces: EXTERNAL_MCP_ONLY,
+    resultKind: "data",
+  }),
+  // Who may use a connection, of either kind: writers, live reads, live
+  // readers, managers. The tool checks the app's own rights live (owner or
+  // admin for a database connection, a manager or the owner for a source).
+  define({
+    name: "set_connection_access",
+    pack: "connector-admin",
+    risk: "write",
     requiredGrant: "connections-manage",
     minimumWorkspaceRole: "member",
     surfaces: EXTERNAL_MCP_ONLY,

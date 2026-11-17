@@ -266,6 +266,9 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // routes do). Neither reaches the platform behind it.
   update_connection: bridge(),
   delete_connection: bridge({ destructiveHint: true }),
+  // Who may use a connection (writers, live reads, live readers, managers):
+  // the same grant, and the app's own rights checked live in the tool.
+  set_connection_access: bridge(),
   // The pre-push check for flow files. Reads only — it says what a push
   // WOULD do to running streams and performs none of it — so it is bridged
   // next to the discovery pair it completes: discover ids, write the file,

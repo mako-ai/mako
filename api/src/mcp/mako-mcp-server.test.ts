@@ -935,7 +935,11 @@ async function main() {
     // Changing or removing an existing credential is not implicit: a key
     // minted with the defaults cannot rename, disable or delete one.
     const defaults = await listFor(["mcp", "query:read"]);
-    for (const manage of ["update_connection", "delete_connection"]) {
+    for (const manage of [
+      "update_connection",
+      "delete_connection",
+      "set_connection_access",
+    ]) {
       assert.equal(
         defaults.has(manage),
         false,
@@ -944,6 +948,7 @@ async function main() {
     }
     const managing = await listFor(["mcp", "query:read", "connections:manage"]);
     assert.ok(managing.has("update_connection"));
+    assert.ok(managing.has("set_connection_access"));
     assert.equal(
       managing.get("delete_connection")?.annotations?.destructiveHint,
       true,

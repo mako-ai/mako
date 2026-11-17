@@ -49,6 +49,7 @@ import { createVersionHistoryTools } from "../agent-lib/tools/version-history-to
 import { createSkillTools } from "../agent-lib/tools/skill-tools";
 import { createSelfDirectiveTools } from "../agent-lib/tools/self-directive-tool";
 import { createConnectorTools } from "../agent-lib/tools/connector-tools";
+import { createConnectionAccessTools } from "../agent-lib/tools/connection-access-tools";
 import { createConnectionWriteTools } from "../agent-lib/tools/connection-write-tools";
 import { createFlowFileTools } from "../agent-lib/tools/flow-file-tools";
 import { createWorkflowTools } from "../agent-lib/tools/workflow-tools";
@@ -254,6 +255,12 @@ export function buildMakoMcpCandidateTools(
   // Gated by the capability's live minimum role (member); creates source
   // connections only.
   const connectionWriteTools = createConnectionWriteTools(workspaceId, userId);
+  // Who may use a connection: the connections-manage grant, and the app's
+  // own rights (owner/admin, or a source connection's managers) in the tool.
+  const connectionAccessTools = createConnectionAccessTools(
+    workspaceId,
+    userId,
+  );
   // The pre-push check for `flows/<slug>.yml` (RFC: agent-authored flows).
   // The agent in that scenario has the WORKSPACE repo checked out, not this
   // monorepo, so `pnpm flows:validate` is not a surface it can reach.
@@ -278,6 +285,7 @@ export function buildMakoMcpCandidateTools(
   return {
     ...connectorTools,
     ...connectionWriteTools,
+    ...connectionAccessTools,
     ...flowFileTools,
     ...flowSyncTools,
     ...workflowTools,
