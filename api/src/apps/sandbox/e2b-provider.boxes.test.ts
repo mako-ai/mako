@@ -48,7 +48,7 @@ vi.mock("e2b", async importOriginal => ({
   SandboxNotFoundError: e2b.SandboxNotFoundError,
 }));
 
-import { e2bSandboxProvider } from "./e2b-provider";
+import { allowsPublicTraffic, e2bSandboxProvider } from "./e2b-provider";
 
 beforeEach(() => {
   process.env.E2B_API_KEY = "test-key-not-real";
@@ -79,6 +79,29 @@ describe("connector boxes on E2B", () => {
       "snap:mako-cbox-abc",
       expect.objectContaining({
         metadata: { makoAppsSessionKey: "connector-box:cbx_new" },
+      }),
+    );
+  });
+
+  it("keeps a connector box on E2B's secured traffic default", async () => {
+    await e2bSandboxProvider.boxLifecycle?.create("connector-box:cbx_sec", {
+      template: "snap:mako-cbox-abc",
+    });
+    const calls = e2b.Sandbox.create.mock.calls as unknown as Array<
+      [string, { network?: unknown }]
+    >;
+    const options = calls[0]?.[1];
+    expect(options?.network).toBeUndefined();
+  });
+
+  it("opens a person's app box to public traffic so previews load", async () => {
+    const sessionKey = "6846e6a01b05af0948070582:user_abc";
+    await e2bSandboxProvider.exec({ sessionKey }, "true");
+    expect(e2b.Sandbox.create).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        metadata: { makoAppsSessionKey: sessionKey },
+        network: { allowPublicTraffic: true },
       }),
     );
   });
@@ -253,5 +276,21 @@ describe("a pinned call when this process holds a handle to another box", () => 
       .catch((error: unknown) => error);
     expect(String(failure)).toContain("503");
     expect((failure as Error).name).not.toBe("SandboxNotFoundError");
+  });
+});
+
+describe("allowsPublicTraffic", () => {
+  it.each([
+    ["6846e6a01b05af0948070582:ut8p3kq", true],
+    ["6846e6a01b05af0948070582:1aa042bc", true],
+    ["6846e6a01b05af0948070582:publish", false],
+    ["connector-box:cbx_1", false],
+    ["connector-build:6846e6a01b05af0948070582:b1", false],
+    ["connector-sync:v2:6846e6a01b05af0948070582", false],
+    ["worktree-123", false],
+    ["6846e6a01b05af0948070582:", false],
+    [":user", false],
+  ])("%s -> %s", (key, expected) => {
+    expect(allowsPublicTraffic(key)).toBe(expected);
   });
 });

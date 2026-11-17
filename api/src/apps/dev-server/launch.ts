@@ -14,7 +14,7 @@ import {
 } from "../worktree.service";
 import { loggers } from "../../logging";
 import { boxEnvPath, sh } from "../box";
-import { probeReachable } from "../box-state.service";
+import { probePreview } from "../box-state.service";
 import { noteBoxActivity } from "../box-activity";
 import { resolveAppEnv } from "../env.service";
 
@@ -162,7 +162,10 @@ async function ensureDevServerLaunch(
     // "restart" of such a server means exactly this: replace it with one
     // that Mako runs. Kill by port — the launcher-path reap cannot see it.
     const url = await provider.publicUrlForPort(ctx, port);
-    if (await probeReachable(url)) {
+    // A refusal by E2B's edge (traffic token) is the box's, not the
+    // server's: replacing the server would not change it.
+    const probe = await probePreview(url);
+    if (probe.reachable || probe.blockedBy === "e2b-traffic-token") {
       logger.info("Apps adopting a dev server started outside Mako", {
         appRoot: handle.appRoot,
         port,

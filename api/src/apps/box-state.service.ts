@@ -50,7 +50,17 @@ export interface BoxDevServer {
    * than saying so.
    */
   reachable?: boolean;
+  /** Why `reachable` is false, when the probe could tell. */
+  blockedBy?: PreviewBlock;
 }
+
+/**
+ * Who refused the preview host:
+ * - "host": the dev server itself (vite without `server.allowedHosts`);
+ * - "e2b-traffic-token": E2B's edge, because the box was created with its
+ *   ports secured behind a traffic access token a browser cannot send.
+ */
+export type PreviewBlock = "host" | "e2b-traffic-token";
 
 export interface BoxState {
   /** null = the box has not said yet. */
@@ -218,19 +228,40 @@ export async function getBoxState(
   }
 }
 
-/** Does the public origin answer (anything but a 4xx/5xx)? One request, 4s cap. */
-export async function probeReachable(url: string): Promise<boolean> {
+/** E2B's edge answers this when a box's ports need a traffic access token. */
+const E2B_TRAFFIC_TOKEN = /traffic access token/i;
+
+/**
+ * Does the public origin answer (anything but a 4xx/5xx), and if not, who
+ * refused it? One request, 4s cap.
+ */
+export async function probePreview(
+  url: string,
+): Promise<{ reachable: boolean; blockedBy?: PreviewBlock }> {
   try {
     const res = await fetch(url, {
       redirect: "manual",
       signal: AbortSignal.timeout(4000),
     });
-    return res.status < 400;
+    if (res.status < 400) return { reachable: true };
+    const body = await res.text().catch(() => "");
+    return {
+      reachable: false,
+      blockedBy:
+        res.status === 403 && E2B_TRAFFIC_TOKEN.test(body.slice(0, 2000))
+          ? "e2b-traffic-token"
+          : "host",
+    };
   } catch {
     // Unreachable from here says nothing certain about the browser; only a
     // definite refusal counts as unreachable.
-    return true;
+    return { reachable: true };
   }
+}
+
+/** Does the public origin answer (anything but a 4xx/5xx)? */
+export async function probeReachable(url: string): Promise<boolean> {
+  return (await probePreview(url)).reachable;
 }
 
 /** A snapshot that can answer git status without touching the box. */
@@ -375,6 +406,7 @@ function applyPatch(prev: BoxState | null, patch: BoxStatePatch): BoxState {
           port: d.port,
           url: before?.url,
           reachable: before?.reachable,
+          blockedBy: before?.blockedBy,
         };
       });
   }
@@ -388,6 +420,7 @@ function applyPatch(prev: BoxState | null, patch: BoxStatePatch): BoxState {
         port,
         url: previous?.port === port ? previous.url : undefined,
         reachable: previous?.port === port ? previous.reachable : undefined,
+        blockedBy: previous?.port === port ? previous.blockedBy : undefined,
       });
     }
     next.devServers = list;
@@ -516,7 +549,9 @@ export async function patchBoxState(input: {
         );
         if (!url) continue;
         server.url = url;
-        server.reachable = await probeReachable(server.url);
+        const probe = await probePreview(server.url);
+        server.reachable = probe.reachable;
+        server.blockedBy = probe.blockedBy;
       } catch (error) {
         logger.warn("Apps box-state could not resolve a dev-server url", {
           sessionKey,

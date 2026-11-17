@@ -187,6 +187,15 @@ export function DevPreviewPane({
     // The boot writes a real log (npm install → vite); stream its
     // tail here so starting reads as PROGRESS.
     <DevBootLog workspaceId={workspaceId} appId={appId} />
+  ) : preview?.mode === "dev" &&
+    preview.reachable === false &&
+    preview.blockedBy === "e2b-traffic-token" ? (
+    <Alert severity="warning" sx={{ m: 2 }}>
+      The dev server is running, but this sandbox blocks public traffic, so the
+      preview cannot load. Recycle the sandbox in{" "}
+      <strong>Settings → Sandbox → Kill &amp; recycle sandbox</strong>. The new
+      sandbox serves previews.
+    </Alert>
   ) : preview?.mode === "dev" && preview.reachable === false ? (
     <Alert severity="warning" sx={{ m: 2 }}>
       A dev server for this app is running in the sandbox but rejects the

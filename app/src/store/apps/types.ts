@@ -87,6 +87,7 @@ export interface AppsBoxState {
     port: number;
     url?: string;
     reachable?: boolean;
+    blockedBy?: PreviewBlock;
   }> | null;
   /** The E2B sandbox id backing this box; null when none is running. */
   sandboxId?: string | null;
@@ -187,9 +188,14 @@ export interface AppPreview {
   builtAt?: number;
   /** "dev" = live `vite dev` proxy (HMR, no rebuild step); "static" = one-shot build. */
   mode?: "static" | "dev";
-  /** false = the server answers the box but 403s the preview host (see box-state). */
+  /** false = the preview host answers 403 (see box-state). */
   reachable?: boolean;
+  /** Who refused it: the dev server ("host") or E2B's edge ("e2b-traffic-token"). */
+  blockedBy?: PreviewBlock;
 }
+
+/** Who refused a dev preview's public host (api box-state PreviewBlock). */
+export type PreviewBlock = "host" | "e2b-traffic-token";
 
 export interface AppRepoBinding {
   /** GitHub App installation granting access (needed to re-save the binding). */
@@ -547,7 +553,12 @@ export interface AppsStore {
    */
   checkDevStatus: (workspaceId: string, appId: string) => Promise<void>;
   /** A dev server for this app is serving at `url` (discovery or push). */
-  markDevServing: (appId: string, url: string, reachable?: boolean) => void;
+  markDevServing: (
+    appId: string,
+    url: string,
+    reachable?: boolean,
+    blockedBy?: PreviewBlock,
+  ) => void;
   /** No dev server is serving this app any more. */
   markDevDown: (appId: string) => void;
   /**

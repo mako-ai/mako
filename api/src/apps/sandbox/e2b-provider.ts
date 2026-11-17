@@ -208,6 +208,25 @@ export function isConnectorBoxKey(sessionKey: string): boolean {
 }
 
 /**
+ * Which boxes take public traffic on their ports. E2B now secures every new
+ * box's ports behind a traffic access token by default, and a browser iframe
+ * cannot send that header, so app previews answered 403. A person's app box
+ * (`<workspaceId>:<userId>`) serves those previews and opts out of the
+ * token. Its ports are public at an unguessable `<port>-<sandboxId>` host, as
+ * they were before 16 Nov 2026.
+ *
+ * Everything else keeps E2B's secured default because it serves no browser:
+ * connector boxes (`connector-box:`, `connector-build:`, `connector-sync:`)
+ * and the `<workspaceId>:publish` build box.
+ */
+export function allowsPublicTraffic(sessionKey: string): boolean {
+  const at = sessionKey.indexOf(":");
+  if (at <= 0 || at === sessionKey.length - 1) return false;
+  if (!/^[0-9a-f]{24}$/.test(sessionKey.slice(0, at))) return false;
+  return sessionKey.slice(at + 1) !== "publish";
+}
+
+/**
  * The first two frames outside this file and node_modules: which code path
  * connected to (and so possibly resumed) a box. Recorded per session for the
  * idle sweep's safety valve, which names it when a box keeps waking up
@@ -373,6 +392,11 @@ async function connectSessionNow(sessionKey: string): Promise<Sandbox> {
       apiKey: apiKey(),
       timeoutMs: IDLE_TIMEOUT_MS,
       metadata: { makoAppsSessionKey: sessionKey },
+      // App boxes only: previews load in a browser iframe, which cannot send
+      // E2B's traffic access token. See allowsPublicTraffic.
+      ...(allowsPublicTraffic(sessionKey)
+        ? { network: { allowPublicTraffic: true } }
+        : {}),
       // Pause WITH MEMORY on idle: the sandbox is a stateful computer now —
       // tmux sessions, per-app dev servers, a user's running processes — so
       // idling must be sleep, not death. A full memory snapshot means resume
