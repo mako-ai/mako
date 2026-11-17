@@ -56,6 +56,8 @@ import {
   syncConsolesIndexFromRepo,
 } from "./workspace-consoles.service";
 import { ConsoleManager, type ConsoleFile } from "../utils/console-manager";
+import { seedTestConnections } from "./seed-test-connections";
+import { getConsoleWithMetadata } from "../services/consoles/tree";
 import {
   bindTestWorkspaceRepo,
   unbindTestWorkspaceRepo,
@@ -111,6 +113,10 @@ beforeEach(async () => {
   });
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
   await bindTestWorkspaceRepo(WS);
+  // The connection ids the fixtures name belong to WS.
+  await seedTestConnections(WS, {
+    database: ["6846e6a01b05af0948070583", "68471be56e70c184bbc6cceb"],
+  });
 });
 
 async function fileAt(rel: string): Promise<string | null> {
@@ -500,6 +506,48 @@ describe("sync from repo", () => {
     expect((await SavedConsole.findById(shared!._id))?.is_deleted).toBe(true);
   });
 
+  it("a pushed file naming another workspace's connection is indexed without it", async () => {
+    await adoptWorkspaceConsoles(WS, { replayHistory: false });
+    const otherWs = new Types.ObjectId().toString();
+    const foreign = new Types.ObjectId().toString();
+    await seedTestConnections(otherWs, { database: [foreign] });
+    await externalCommit({
+      "consoles/steal.sql": serializeConsoleFile({
+        name: "steal",
+        language: "sql",
+        code: "DELETE FROM customers",
+        connectionId: foreign,
+        schedule: { cron: "* * * * *", timezone: "UTC" },
+      }),
+      "consoles/own.sql":
+        "-- connection: 6846e6a01b05af0948070583\n\nSELECT 1\n",
+    });
+    const stats = await syncConsolesIndexFromRepo(WS, USER);
+    expect(stats).toMatchObject({ created: 2 });
+    const steal = await SavedConsole.findOne({
+      workspaceId: WS,
+      name: "steal",
+    });
+    expect(steal?.connectionId ?? null).toBeNull();
+    const own = await SavedConsole.findOne({ workspaceId: WS, name: "own" });
+    expect(own?.connectionId?.toString()).toBe("6846e6a01b05af0948070583");
+    // GET hands the editor the connection the sync kept, not the file's.
+    const shown = await getConsoleWithMetadata(steal!._id.toString(), WS);
+    expect(shown?.connectionId).toBeUndefined();
+    const shownOwn = await getConsoleWithMetadata(own!._id.toString(), WS);
+    expect(shownOwn?.connectionId).toBe("6846e6a01b05af0948070583");
+
+    // An existing row moved onto a foreign id by a later push loses it too.
+    await externalCommit({
+      "consoles/own.sql": `-- connection: ${foreign}\n\nSELECT 2\n`,
+    });
+    await syncConsolesIndexFromRepo(WS, USER);
+    const moved = await SavedConsole.findById(own!._id);
+    expect(moved?.code).toBe("SELECT 2");
+    expect(moved?.connectionId ?? null).toBeNull();
+    expect(moved?.databaseId ?? null).toBeNull();
+  });
+
   it("a rename keeps the row (id, telemetry, embedding) when the blob is unchanged", async () => {
     const saved = await manager.saveConsole(
       "old name",
@@ -834,6 +882,33 @@ describe("history — the apps surface for a console", () => {
     expect(subjects[0]).toMatch(/^Restore "create: h" \(/);
     expect(subjects).toHaveLength(3);
     expect(await fileAt("consoles/h.sql")).toContain("SELECT 1");
+  });
+
+  it("restoring a version that names another workspace's connection drops it", async () => {
+    const otherWs = new Types.ObjectId().toString();
+    const foreign = new Types.ObjectId().toString();
+    await seedTestConnections(otherWs, { database: [foreign] });
+    const saved = await manager.saveConsole(
+      "r",
+      "SELECT 1",
+      WS,
+      USER,
+      "68471be56e70c184bbc6cceb",
+      "db",
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    // A push put a foreign id in the file; the sync refused it on the row.
+    await externalCommit({
+      "consoles/r.sql": `-- connection: ${foreign}\n\nSELECT 2\n`,
+    });
+    const row = (await SavedConsole.findById(saved._id))!;
+    const history = await consoleHistory(row);
+    await restoreConsoleTo(row, history[0].oid, USER);
+    const after = (await SavedConsole.findById(saved._id))!;
+    expect(after.code).toBe("SELECT 2");
+    expect(after.connectionId).toBeUndefined();
+    expect(await fileAt("consoles/r.sql")).not.toContain(foreign);
   });
 
   it("does not list leftover local git history when no GitHub repo is bound", async () => {

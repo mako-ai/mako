@@ -174,8 +174,9 @@ function computeCompositeScore(item: any, maxRelevanceScore: number): number {
   return relevanceNorm * 0.6 + recencyScore * 0.2 + savedBoost * 0.2;
 }
 
-async function enrichWithConnectionNames(
+export async function enrichWithConnectionNames(
   results: ConsoleSearchResult[],
+  workspaceId: string,
 ): Promise<void> {
   const connectionIds = [
     ...new Set(
@@ -191,8 +192,10 @@ async function enrichWithConnectionNames(
   );
   if (validConnectionIds.length === 0) return;
 
+  // Only this workspace's connections: a console row can carry any id.
   const connections = await DatabaseConnection.find({
     _id: { $in: validConnectionIds.map(id => new Types.ObjectId(id)) },
+    workspaceId: new Types.ObjectId(workspaceId),
   })
     .select("name")
     .lean();
@@ -280,7 +283,7 @@ export async function searchConsoles(
   results.sort((a, b) => b.compositeScore - a.compositeScore);
   results = results.slice(0, limit);
 
-  await enrichWithConnectionNames(results);
+  await enrichWithConnectionNames(results, workspaceId);
   throwIfAborted(signal);
 
   return results.map(r => ({
