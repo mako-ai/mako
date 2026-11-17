@@ -1127,6 +1127,31 @@ describe("retries", () => {
     ).toBe(100);
   });
 
+  it("fails a stale claim with no attempt left, instead of leaving it processing forever", async () => {
+    const dead = await failedEvent(ws, {
+      lane: "box",
+      status: "processing",
+      attempts: 5,
+      claimedAt: old,
+      boxClaim: "abc",
+    });
+    const live = await failedEvent(ws, {
+      lane: "box",
+      status: "processing",
+      attempts: 5,
+      claimedAt: new Date(),
+      boxClaim: "def",
+    });
+    await retryFailedBoxWebhooks();
+    expect(await WebhookEvent.findById(dead._id).lean()).toMatchObject({
+      status: "failed",
+      applyError: { code: BOX_CODES.staleClaim },
+    });
+    expect((await WebhookEvent.findById(live._id).lean())?.status).toBe(
+      "processing",
+    );
+  });
+
   it("retries a stale box claim, and leaves a recent failure for later", async () => {
     const stale = await failedEvent(ws, {
       lane: "box",
@@ -1168,6 +1193,43 @@ describe("dispatch", () => {
         [String(otherFlowId), String(otherConn), String(ws)],
       ].sort((a, b) => a[0].localeCompare(b[0])),
     );
+  });
+
+  it("sends at most one run per connection, and none while it holds a live claim", async () => {
+    // One connection, 3 flows: 1 dispatched, not 3.
+    const third = await makeFlow(conn);
+    await boxEvent(flowId, conn);
+    await boxEvent(third, conn);
+    const fourth = await makeFlow(conn);
+    await boxEvent(fourth, conn);
+    await boxEvent(otherFlowId, otherConn);
+    let flows = await flowsWithPendingBoxWebhooks();
+    expect(flows.filter(f => f.connectionId === String(conn))).toHaveLength(1);
+    expect(
+      flows.filter(f => f.connectionId === String(otherConn)),
+    ).toHaveLength(1);
+
+    // A live claim on the connection: none of its flows is sent.
+    await boxEvent(
+      third,
+      conn,
+      {},
+      {
+        status: "processing",
+        boxClaim: "live",
+        claimedAt: new Date(),
+      },
+    );
+    flows = await flowsWithPendingBoxWebhooks();
+    expect(flows.map(f => f.connectionId)).toEqual([String(otherConn)]);
+
+    // A stale claim (its run died) does not block the connection.
+    await WebhookEvent.updateMany(
+      { boxClaim: "live" },
+      { $set: { claimedAt: new Date(Date.now() - 60 * 60_000) } },
+    );
+    flows = await flowsWithPendingBoxWebhooks();
+    expect(flows.filter(f => f.connectionId === String(conn))).toHaveLength(1);
   });
 
   it("cutBatch never returns an empty batch with nothing to fail", () => {

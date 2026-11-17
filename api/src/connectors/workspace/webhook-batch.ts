@@ -102,6 +102,7 @@ export const BOX_CODES = {
   connectionChanged: "CONNECTION_CHANGED",
   secretInBatch: "SECRET_IN_BATCH",
   recordTooLarge: "RECORD_TOO_LARGE",
+  staleClaim: "FAILED_STALE_CLAIM",
 } as const;
 
 /** Deferrals after which an event is failed for good. */
@@ -163,11 +164,31 @@ const emptyResult = (
 });
 
 /** Flows with pending box-lane events, for the CDC scheduler's dispatch. */
+/**
+ * Flows to run now: at most one per connection, and none for a connection
+ * that already holds a live claim (a batch in its box). With Inngest's
+ * limits (8 in all, 3 per workspace), one connection with several flows
+ * can therefore hold at most one of its workspace's 3 slots. Oldest
+ * pending event first.
+ *
+ * A run dispatched but not yet claiming is not seen here; the singleton per
+ * flow and the per-workspace limit still bound it.
+ */
 export async function flowsWithPendingBoxWebhooks(
   limit = 500,
+  now: Date = new Date(),
 ): Promise<
   Array<{ flowId: string; workspaceId: string; connectionId: string }>
 > {
+  const busy = new Set(
+    (
+      (await WebhookEvent.distinct("dataSourceId", {
+        status: "processing",
+        lane: "box",
+        claimedAt: { $gte: new Date(now.getTime() - BOX_STALE_CLAIM_MS) },
+      })) as unknown[]
+    ).map(String),
+  );
   const rows = (await WebhookEvent.aggregate([
     { $match: { status: "pending", lane: "box" } },
     {
@@ -175,19 +196,33 @@ export async function flowsWithPendingBoxWebhooks(
         _id: "$flowId",
         workspaceId: { $first: "$workspaceId" },
         dataSourceId: { $first: "$dataSourceId" },
+        oldest: { $min: "$receivedAt" },
       },
     },
+    { $sort: { oldest: 1 } },
     { $limit: limit },
   ])) as Array<{
     _id: Types.ObjectId;
     workspaceId: Types.ObjectId;
     dataSourceId?: Types.ObjectId;
   }>;
-  return rows.map(row => ({
-    flowId: String(row._id),
-    workspaceId: String(row.workspaceId),
-    connectionId: String(row.dataSourceId ?? row._id),
-  }));
+  const out: Array<{
+    flowId: string;
+    workspaceId: string;
+    connectionId: string;
+  }> = [];
+  const taken = new Set<string>();
+  for (const row of rows) {
+    const connectionId = String(row.dataSourceId ?? row._id);
+    if (busy.has(connectionId) || taken.has(connectionId)) continue;
+    taken.add(connectionId);
+    out.push({
+      flowId: String(row._id),
+      workspaceId: String(row.workspaceId),
+      connectionId,
+    });
+  }
+  return out;
 }
 
 /**
@@ -244,6 +279,28 @@ export async function retryFailedBoxWebhooks(
     { $sort: { oldest: 1 } },
     { $limit: options.workspaces ?? 50 },
   ])) as Array<{ _id: Types.ObjectId; ids: Types.ObjectId[] }>;
+  // A stale claim with no attempt left is never retried: it fails for good
+  // instead of staying `processing` forever.
+  await WebhookEvent.updateMany(
+    {
+      lane: "box",
+      status: "processing",
+      attempts: { $gte: FINAL_ATTEMPTS },
+      claimedAt: { $lt: new Date(now - BOX_STALE_CLAIM_MS) },
+    },
+    {
+      $set: {
+        status: "failed",
+        applyStatus: "failed",
+        processedAt: new Date(now),
+        applyError: {
+          code: BOX_CODES.staleClaim,
+          message: "The run holding this event died, and no attempt is left",
+        },
+      },
+      $unset: { boxClaim: "" },
+    },
+  );
   const ids = groups.flatMap(group => group.ids);
   if (ids.length === 0) return { retried: 0, workspaces: 0 };
   await WebhookEvent.updateMany(

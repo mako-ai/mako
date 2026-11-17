@@ -228,3 +228,41 @@ void test("a base64 secret decodes strictly, to at least 16 bytes", () => {
   assert.equal(keyOf("0f".repeat(15), "hex"), null, "15 bytes is too short");
   assert.equal(keyOf("short", "utf8"), null);
 });
+
+void test("a declared timestamp must be signed: an unsigned window is refused", () => {
+  // The repro: only the body signed, with a 300 s window on x-ts. A 1-year-old
+  // body replayed with a fresh x-ts would pass the window and the signature.
+  const unsigned = {
+    scheme: "hmac-sha256",
+    secretEncoding: "utf8",
+    signedPayload: ["body"],
+    signatureHeader: "x-sig",
+    signatureEncoding: "hex",
+    timestampHeader: "x-ts",
+    toleranceSeconds: 300,
+  };
+  assert.equal(declaredWebhookVerification(spec(unsigned)), null);
+  assert.equal(
+    declaredWebhookVerification(
+      spec({ ...unsigned, signedPayload: ["header:x-other", "body"] }),
+    ),
+    null,
+  );
+  const signed = declaredWebhookVerification(
+    spec({ ...unsigned, signedPayload: ["header:x-ts", "body"] }),
+  )!;
+  const secret = "s3cret-s3cret-s3cret";
+  const body = JSON.stringify({ id: "evt_old" });
+  const sentLastYear = String(1763290800 - 365 * 86400);
+  const signature = createHmac("sha256", secret)
+    .update(sentLastYear + body)
+    .digest("hex");
+  // The old signature with a fresh timestamp no longer verifies.
+  const result = verifyDeclaredWebhook(signed, {
+    payload: body,
+    headers: { "x-ts": "1763290800", "x-sig": signature },
+    secret,
+    now: SENT,
+  });
+  assert.equal(result.valid, false);
+});

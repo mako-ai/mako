@@ -11,10 +11,13 @@
  * Isolation between connections:
  * - one run per flow at a time (singleton, skip): a flow's events apply in
  *   order, and a stuck run never piles up behind itself;
- * - concurrency 8 in all and 3 per workspace: a slow or hostile connector
- *   holds at most one slot (its flow's), in its own workspace;
+ * - concurrency 8 in all and 3 per workspace, and the dispatcher sends at
+ *   most one run per connection, none while one holds a claim: a connection
+ *   with several flows still holds at most 1 of its workspace's 3 slots;
  * - a failed or timed-out batch ends the run, so a hostile connector costs
- *   one batch timeout (60 s) per dispatch, never more.
+ *   one batch timeout (60 s) per dispatch. A slow but valid connector, whose
+ *   batches each finish just inside the timeout, holds its slot for up to
+ *   8 batches × 60 s = 8 minutes per run.
  */
 import { inngest } from "../client";
 import { loggers } from "../../logging";
@@ -73,8 +76,9 @@ export const connectorWebhookBatchFunction = inngest.createFunction(
     timeouts: { finish: "15m" },
     singleton: { key: "event.data.flowId", mode: "skip" },
     // At most 8 batch runs at once in all, under the E2B box ceiling, and
-    // 3 per workspace. Inngest allows 2 concurrency limits; per-flow order
-    // comes from the singleton above.
+    // 3 per workspace. Inngest allows 2 concurrency limits: one run per
+    // connection is the dispatcher's job (flowsWithPendingBoxWebhooks), and
+    // per-flow order comes from the singleton above.
     concurrency: [{ limit: 8 }, { key: "event.data.workspaceId", limit: 3 }],
     triggers: { event: CONNECTOR_WEBHOOK_BATCH_EVENT },
   },

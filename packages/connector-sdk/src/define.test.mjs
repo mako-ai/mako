@@ -166,3 +166,22 @@ test("a replay window needs its header and its tolerance together, within a day"
   const ok = define({ ...closeVerification, timestampHeader: "close-sig-timestamp", toleranceSeconds: 300 });
   assert.equal(ok.spec().mako.webhooks.verification.toleranceSeconds, 300);
 });
+
+test("a declared timestamp must be part of the signed payload", () => {
+  assert.throws(
+    () =>
+      defineConnector({
+        ...webhookBase(),
+        webhooks: {
+          handleBatch: () => [],
+          verification: {
+            ...closeVerification,
+            signedPayload: ["body"],
+            timestampHeader: "x-ts",
+            toleranceSeconds: 300,
+          },
+        },
+      }),
+    /must include "header:x-ts"/,
+  );
+});

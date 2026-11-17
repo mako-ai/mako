@@ -78,6 +78,13 @@ export function validateWebhookVerification(verification) {
   if (!parts.includes("body")) {
     problems.push('webhooks.verification.signedPayload must include "body"');
   }
+  // A window on an unsigned timestamp stops nothing: a replay sends the old
+  // body with a fresh header. Mako refuses such a declaration too.
+  if (typeof v.timestampHeader === "string" && !parts.includes(`header:${v.timestampHeader}`)) {
+    problems.push(
+      `webhooks.verification.signedPayload must include "header:${v.timestampHeader}" when timestampHeader is declared`,
+    );
+  }
   for (const part of parts) {
     const ok =
       part === "body" ||

@@ -81,6 +81,12 @@ export function declaredWebhookVerification(
     return null;
   }
   if (!parts.includes("body")) return null;
+  // A window on a timestamp the signature does not cover is no window: a
+  // replay would carry an old body with a fresh header. The timestamp must
+  // be signed.
+  if (hasTimestamp && !parts.includes(`header:${v.timestampHeader}`)) {
+    return null;
+  }
   for (const part of parts) {
     if (part === "body") continue;
     if (
