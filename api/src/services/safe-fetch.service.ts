@@ -134,6 +134,8 @@ async function resolveAndValidateHostname(
 
 const POOL_MAX_AGENTS = 100;
 const POOL_IDLE_MS = 30_000;
+/** Sockets one agent (one host on one IP) may hold; more requests wait. */
+const POOL_MAX_SOCKETS = 32;
 
 type PinnedAgent = InstanceType<UndiciModule["Agent"]>;
 
@@ -142,6 +144,8 @@ interface PinnedAgentOptions {
   assertIp?: (ip: string) => void;
   /** How long an idle socket stays open for the next request. */
   idleMs?: number;
+  /** Most sockets the agent opens; requests past it wait for a free one. */
+  maxSockets?: number;
   /** Extra TLS options (tests: a self-signed CA). */
   tls?: Record<string, unknown>;
 }
@@ -162,6 +166,7 @@ export function createPinnedAgent(
   return new undici.Agent({
     keepAliveTimeout: idleMs,
     keepAliveMaxTimeout: idleMs,
+    connections: options.maxSockets ?? POOL_MAX_SOCKETS,
     connect: {
       ...options.tls,
       lookup(
@@ -244,6 +249,49 @@ function pooledAgent(
 ): PinnedAgent {
   pinnedAgentPool ??= createPinnedAgentPool(undici);
   return pinnedAgentPool.get(url, resolved.address, resolved.family);
+}
+
+/** Methods sent again after a stale socket: they change nothing. */
+const RETRIED_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/**
+ * Error codes of a socket the service closed: a kept-alive socket it had
+ * already dropped (the race every connection pool has), or a reset.
+ */
+const CLOSED_SOCKET_CODES = new Set(["ECONNRESET", "EPIPE", "UND_ERR_SOCKET"]);
+
+function isClosedSocketError(error: unknown): boolean {
+  for (let current = error, depth = 0; depth < 5; depth++) {
+    if (!current || typeof current !== "object") return false;
+    const { code, cause } = current as { code?: unknown; cause?: unknown };
+    if (typeof code === "string" && CLOSED_SOCKET_CODES.has(code)) return true;
+    current = cause;
+  }
+  return false;
+}
+
+/**
+ * Run `attempt`, and once more when it failed on a closed socket, for a
+ * method that changes nothing (GET, HEAD, OPTIONS) and a caller still
+ * waiting. A write is never sent twice: the service may have received it.
+ */
+export async function retryClosedSocketOnce<T>(
+  method: string,
+  signal: AbortSignal,
+  attempt: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await attempt();
+  } catch (error) {
+    if (
+      signal.aborted ||
+      !RETRIED_METHODS.has(method.toUpperCase()) ||
+      !isClosedSocketError(error)
+    ) {
+      throw error;
+    }
+    return attempt();
+  }
 }
 
 let undiciModulePromise: Promise<UndiciModule> | undefined;
@@ -446,23 +494,25 @@ export async function safeRequest(
   );
   try {
     const undici = await loadUndici();
-    const response = await undici.fetch(url.toString(), {
-      method: options.method,
-      redirect: "manual",
-      signal,
-      headers: stripBlockedRequestHeaders(options.headers),
-      body: options.body,
-      dispatcher: pooledAgent(undici, url, resolved),
+    return await retryClosedSocketOnce(options.method, signal, async () => {
+      const response = await undici.fetch(url.toString(), {
+        method: options.method,
+        redirect: "manual",
+        signal,
+        headers: stripBlockedRequestHeaders(options.headers),
+        body: options.body,
+        dispatcher: pooledAgent(undici, url, resolved),
+      });
+      const headers: Record<string, string> = {};
+      response.headers.forEach((value, name) => {
+        headers[name] = value;
+      });
+      return {
+        status: response.status,
+        headers,
+        body: await readBodyWithLimit(response, options.maxBytes ?? 10_000_000),
+      };
     });
-    const headers: Record<string, string> = {};
-    response.headers.forEach((value, name) => {
-      headers[name] = value;
-    });
-    return {
-      status: response.status,
-      headers,
-      body: await readBodyWithLimit(response, options.maxBytes ?? 10_000_000),
-    };
   } finally {
     cleanup();
   }
