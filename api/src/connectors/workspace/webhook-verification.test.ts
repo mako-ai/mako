@@ -665,3 +665,23 @@ void test("the Calendly folder's declaration agrees with the in-process check on
     Date.now = realNow;
   }
 });
+
+void test("a repeated signature key matches on any of its values, as Stripe sends while a secret rolls", () => {
+  const declaration = declaredWebhookVerification(spec(calendlyDeclaration))!;
+  const t = Math.floor(Date.now() / 1000);
+  const body = JSON.stringify({ event: "invitee.created" });
+  const sign = (key: string) =>
+    createHmac("sha256", key).update(`${t}.${body}`).digest("hex");
+  const oldSig = sign("old-signing-key-0123456789abcdef");
+  const newSig = sign(CALENDLY_KEY);
+  const check = (header: string) =>
+    verifyDeclaredWebhook(declaration, {
+      payload: body,
+      headers: { "calendly-webhook-signature": header },
+      secret: CALENDLY_KEY,
+    }).valid;
+  assert.equal(check(`t=${t},v1=${newSig},v1=${oldSig}`), true);
+  assert.equal(check(`t=${t},v1=${oldSig},v1=${newSig}`), true);
+  assert.equal(check(`t=${t},v1=${oldSig},v1=${oldSig}`), false);
+  assert.equal(check(`t=${t},v1=,v1=${oldSig}`), false);
+});

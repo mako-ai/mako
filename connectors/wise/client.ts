@@ -167,6 +167,23 @@ export function parseRetryAfter(
 const RETRYABLE_STATUS = (status: number) =>
   status === 429 || (status >= 500 && status < 600);
 
+/** A 429, a 5xx, a network failure or a timed-out attempt: worth a later try. */
+export function isTransientError(error: unknown): boolean {
+  return error instanceof WiseHttpError
+    ? RETRYABLE_STATUS(error.status)
+    : isNetworkError(error);
+}
+
+/**
+ * One request's limits. A webhook fill runs inside a box command that is
+ * killed at 60 s, so it asks for one attempt (`once`) that ends with its
+ * budget (`timeoutMs`), and answers a transient failure `deferred`.
+ */
+export interface GetOptions {
+  once?: boolean;
+  timeoutMs?: number;
+}
+
 export type Params = Record<string, string | number | undefined | null>;
 
 export interface WiseClient {
@@ -175,6 +192,7 @@ export interface WiseClient {
     path: string,
     params?: Params,
     headers?: Record<string, string>,
+    options?: GetOptions,
   ): Promise<T>;
 }
 
@@ -194,12 +212,18 @@ export function createWiseClient(options: WiseClientOptions): WiseClient {
   const sleep = options.sleep ?? defaultSleep;
   const random = options.random ?? Math.random;
   const log = options.log ?? (() => {});
-  let waited = 0;
+  /**
+   * When this process first backed off. The budget is wall-clock time from
+   * there: requests running at once (Calendly's invitee waves) wait side by
+   * side, so adding their sleeps up would overcount.
+   */
+  let backoffStartedAt: number | undefined;
 
   async function get<T>(
     path: string,
     params?: Params,
     extraHeaders?: Record<string, string>,
+    getOptions?: GetOptions,
   ): Promise<T> {
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(params ?? {})) {
@@ -222,7 +246,15 @@ export function createWiseClient(options: WiseClientOptions): WiseClient {
       try {
         const response = await fetch(url, {
           ...init,
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          signal: AbortSignal.timeout(
+            Math.max(
+              1,
+              Math.min(
+                REQUEST_TIMEOUT_MS,
+                getOptions?.timeoutMs ?? REQUEST_TIMEOUT_MS,
+              ),
+            ),
+          ),
         });
         const text = await response.text();
         let data: unknown = text;
@@ -240,7 +272,7 @@ export function createWiseClient(options: WiseClientOptions): WiseClient {
       const status = error instanceof WiseHttpError ? error.status : undefined;
       const retryable =
         status === undefined ? isNetworkError(error) : RETRYABLE_STATUS(status);
-      if (retry >= MAX_RETRIES || !retryable) throw error;
+      if (retry >= MAX_RETRIES || !retryable || getOptions?.once) throw error;
 
       const fromHeader =
         error instanceof WiseHttpError
@@ -252,13 +284,15 @@ export function createWiseClient(options: WiseClientOptions): WiseClient {
           : Math.floor(
               random() * Math.min(MAX_DELAY_MS, BASE_DELAY_MS * 2 ** retry),
             );
+      const nowMs = Date.now();
+      backoffStartedAt ??= nowMs;
+      const waited = nowMs - backoffStartedAt;
       if (waited + delayMs > MAX_TOTAL_WAIT_MS) {
         log(
           `Wise API GET ${path} -> ${status ?? String(error)}; ${waited} ms already spent waiting, giving the chunk back`,
         );
         throw error;
       }
-      waited += delayMs;
       log(
         `Wise API rate limited or server error, retrying: GET ${path} -> ${status ?? String(error)}; retry ${retry + 1}/${MAX_RETRIES} in ${delayMs} ms`,
       );

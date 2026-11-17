@@ -38,7 +38,8 @@ const INCREMENTAL_MODES = ["native", "client-filter", "created-anchor"];
  *   `signatureEncoding`, after an optional `signaturePrefix` (`sha256=`).
  * - `signatureParam`: the signature header is `key=value` pairs joined by
  *   commas (`t=1492774577,v1=5257a8...`, Calendly and Stripe); the
- *   signature is this key's value. `timestampParam` names the send time.
+ *   signature is this key's value; it may repeat, and any one may match.
+ *   `timestampParam` names the send time.
  * - `timestampHeader` or `timestampParam`, with `toleranceSeconds`: the send
  *   time in Unix seconds and the window around now it must fall in. It
  *   must be signed.

@@ -13,7 +13,8 @@
  * `rsa-sha256` against public keys the connector declares (Wise), which
  * needs no secret. A signature header may hold `key=value` pairs
  * (`t=...,v1=...`, Calendly and Stripe): `signatureParam` names the
- * signature and `timestampParam` the send time.
+ * signature, which may repeat (any one may match), and `timestampParam`
+ * the send time.
  *
  * `declaredWebhookDelivery` reads where a delivery's event id and type are
  * (the SDK's `webhooks.delivery`), so a stored event is keyed as the
@@ -364,20 +365,26 @@ function header(
 }
 
 /**
- * `k=v,k=v` → its pairs, keys and values trimmed. A key given twice counts
- * once, the last, as Calendly's own parser reads it. Null when malformed.
+ * `k=v,k=v` → its values per key, keys and values trimmed, in order. A key
+ * may repeat: Stripe sends one `v1` per signing secret while a secret
+ * rolls. Null when nothing parses.
  */
-function headerParams(value: string): Map<string, string> | null {
-  const params = new Map<string, string>();
+function headerParams(value: string): Map<string, string[]> | null {
+  const params = new Map<string, string[]>();
   for (const part of value.split(",")) {
     const at = part.indexOf("=");
     if (at <= 0) continue;
     const key = part.slice(0, at).trim();
     const val = part.slice(at + 1).trim();
-    if (key && val) params.set(key, val);
+    if (!key || !val) continue;
+    params.set(key, [...(params.get(key) ?? []), val]);
   }
   return params.size > 0 ? params : null;
 }
+
+/** The last value of a key, as Calendly's own parser reads `t`. */
+const lastParam = (params: Map<string, string[]> | null, key: string) =>
+  params?.get(key)?.at(-1);
 
 /**
  * The HMAC key, decoded strictly. A secret that does not round-trip in its
@@ -463,24 +470,25 @@ export function verifyDeclaredWebhook(
       error: `Missing ${declaration.signatureHeader} header`,
     };
   }
-  let params: Map<string, string> | null = null;
-  let presented = signatureValue;
+  let params: Map<string, string[]> | null = null;
+  // Every signature the header presents; any one that matches is valid.
+  let presented = [signatureValue];
   if (declaration.signatureParam) {
     params = headerParams(signatureValue);
-    const value = params?.get(declaration.signatureParam);
-    if (!value) {
+    const values = params?.get(declaration.signatureParam);
+    if (!values || values.length === 0 || values.length > 8) {
       return {
         valid: false,
         error: `Malformed ${declaration.signatureHeader} header`,
       };
     }
-    presented = value;
+    presented = values;
   }
 
   if (declaration.timestampHeader || declaration.timestampParam) {
     const sent = declaration.timestampHeader
       ? header(headers, declaration.timestampHeader)
-      : params?.get(declaration.timestampParam as string);
+      : lastParam(params, declaration.timestampParam as string);
     const name = declaration.timestampHeader ?? declaration.timestampParam;
     if (!sent || !/^\d{1,12}$/.test(sent)) {
       return {
@@ -497,7 +505,10 @@ export function verifyDeclaredWebhook(
     }
   }
   const prefix = declaration.signaturePrefix ?? "";
-  if (!presented.startsWith(prefix)) {
+  const given = presented
+    .filter(value => value.startsWith(prefix))
+    .map(value => value.slice(prefix.length));
+  if (given.length === 0) {
     return { valid: false, error: "Invalid signature" };
   }
 
@@ -514,7 +525,7 @@ export function verifyDeclaredWebhook(
       chunks.push(Buffer.from(value, "utf8"));
     } else if (part.startsWith("param:")) {
       const name = part.slice("param:".length);
-      const value = params?.get(name);
+      const value = lastParam(params, name);
       if (value === undefined) {
         return { valid: false, error: `Missing ${name} in the signature` };
       }
@@ -524,7 +535,6 @@ export function verifyDeclaredWebhook(
     }
   }
   const signed = Buffer.concat(chunks);
-  const given = presented.slice(prefix.length);
 
   let matched = false;
   if (declaration.scheme === "hmac-sha256") {
@@ -534,20 +544,26 @@ export function verifyDeclaredWebhook(
         .digest(declaration.signatureEncoding),
       "utf8",
     );
-    const givenBytes = Buffer.from(given, "utf8");
-    matched =
-      expected.length === givenBytes.length &&
-      timingSafeEqual(expected, givenBytes);
+    // Every candidate is compared, in constant time each.
+    for (const candidate of given) {
+      const givenBytes = Buffer.from(candidate, "utf8");
+      if (
+        expected.length === givenBytes.length &&
+        timingSafeEqual(expected, givenBytes)
+      ) {
+        matched = true;
+      }
+    }
   } else {
-    const signature = Buffer.from(given, declaration.signatureEncoding);
-    if (signature.length > 0) {
+    for (const candidate of given) {
+      const signature = Buffer.from(candidate, declaration.signatureEncoding);
+      if (signature.length === 0) continue;
       for (const pem of declaration.publicKeys ?? []) {
         const publicKey = rsaPublicKey(pem);
         if (!publicKey) continue;
         try {
           if (verifySignature("sha256", signed, publicKey, signature)) {
             matched = true;
-            break;
           }
         } catch {
           // A signature this key cannot read: try the next key.

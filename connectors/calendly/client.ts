@@ -115,6 +115,23 @@ export function parseRetryAfter(
 const RETRYABLE_STATUS = (status: number) =>
   status === 429 || (status >= 500 && status < 600);
 
+/** A 429, a 5xx, a network failure or a timed-out attempt: worth a later try. */
+export function isTransientError(error: unknown): boolean {
+  return error instanceof CalendlyHttpError
+    ? RETRYABLE_STATUS(error.status)
+    : isNetworkError(error);
+}
+
+/**
+ * One request's limits. A webhook fill runs inside a box command that is
+ * killed at 60 s, so it asks for one attempt (`once`) that ends with its
+ * budget (`timeoutMs`), and answers a transient failure `deferred`.
+ */
+export interface GetOptions {
+  once?: boolean;
+  timeoutMs?: number;
+}
+
 /**
  * The base URL the token may be sent to: the in-process default, or a
  * configured `api_base_url` (trimmed, no trailing slash). Tenant config
@@ -168,6 +185,7 @@ export interface CalendlyClient {
   get<T = any>(
     path: string,
     params?: Record<string, string | number | undefined | null>,
+    options?: GetOptions,
   ): Promise<T>;
 }
 
@@ -193,11 +211,17 @@ export function createCalendlyClient(
     "content-type": "application/json",
     accept: "application/json",
   };
-  let waited = 0;
+  /**
+   * When this process first backed off. The budget is wall-clock time from
+   * there: requests running at once (Calendly's invitee waves) wait side by
+   * side, so adding their sleeps up would overcount.
+   */
+  let backoffStartedAt: number | undefined;
 
   async function get<T>(
     path: string,
     params?: Record<string, string | number | undefined | null>,
+    getOptions?: GetOptions,
   ): Promise<T> {
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(params ?? {})) {
@@ -212,7 +236,15 @@ export function createCalendlyClient(
         const response = await fetch(url, {
           method: "GET",
           headers,
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          signal: AbortSignal.timeout(
+            Math.max(
+              1,
+              Math.min(
+                REQUEST_TIMEOUT_MS,
+                getOptions?.timeoutMs ?? REQUEST_TIMEOUT_MS,
+              ),
+            ),
+          ),
         });
         const text = await response.text();
         let data: unknown = text;
@@ -236,7 +268,8 @@ export function createCalendlyClient(
         error instanceof CalendlyHttpError ? error.status : undefined;
       const retryable =
         status === undefined ? isNetworkError(error) : RETRYABLE_STATUS(status);
-      if (retry >= MAX_RETRIES || !retryable) throw described(error, path);
+      if (retry >= MAX_RETRIES || !retryable || getOptions?.once)
+        throw described(error, path);
 
       const fromHeader =
         error instanceof CalendlyHttpError
@@ -248,13 +281,15 @@ export function createCalendlyClient(
           : Math.floor(
               random() * Math.min(MAX_DELAY_MS, BASE_DELAY_MS * 2 ** retry),
             );
+      const nowMs = Date.now();
+      backoffStartedAt ??= nowMs;
+      const waited = nowMs - backoffStartedAt;
       if (waited + delayMs > MAX_TOTAL_WAIT_MS) {
         log(
           `Calendly API GET ${path} -> ${status ?? String(error)}; ${waited} ms already spent waiting, giving the chunk back`,
         );
         throw described(error, path);
       }
-      waited += delayMs;
       log(
         `Calendly API rate limited or server error, retrying: GET ${path} -> ${status ?? String(error)}; retry ${retry + 1}/${MAX_RETRIES} in ${delayMs} ms`,
       );

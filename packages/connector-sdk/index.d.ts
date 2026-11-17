@@ -125,8 +125,8 @@ export interface WebhookVerification {
   signaturePrefix?: string;
   /**
    * The signature header is `key=value` pairs joined by commas
-   * (`t=1492774577,v1=5257a8...`); the signature is this key's value. A
-   * key given twice counts once, the last.
+   * (`t=1492774577,v1=5257a8...`); the signature is this key's value. The
+   * key may repeat (Stripe, while a secret rolls): any one value may match.
    */
   signatureParam?: string;
   /**

@@ -55,6 +55,8 @@ let spec: Record<string, any>;
 /** A Calendly that serves objects by path. Every request is recorded. */
 const objects = new Map<string, Record<string, unknown>>();
 const failing = new Set<string>();
+/** Paths answered 429 with `Retry-After: 60`. */
+const limited = new Set<string>();
 const requests: string[] = [];
 let server: http.Server;
 let baseUrl = "";
@@ -127,6 +129,12 @@ before(async () => {
     if (req.headers.authorization !== `Bearer ${TOKEN}`) {
       res.statusCode = 401;
       res.end(JSON.stringify({ title: "Unauthenticated" }));
+      return;
+    }
+    if (limited.has(url.pathname)) {
+      res.statusCode = 429;
+      res.setHeader("retry-after", "60");
+      res.end(JSON.stringify({ title: "Too Many Requests" }));
       return;
     }
     if (failing.has(url.pathname)) {
@@ -315,6 +323,73 @@ void test("a read that fails holds the whole event back, for a retry, never unfi
     assert.match(outcomes[0].reason, /HTTP 400/);
   } finally {
     failing.delete(eventPath);
+  }
+});
+
+void test("a rate-limited fill read is deferred after one attempt, never slept into the box timeout", async () => {
+  const [created] = local(buildWebhookEvents());
+  const eventPath = new URL(created.rawPayload.payload.scheduled_event.uri)
+    .pathname;
+  limited.add(eventPath);
+  requests.length = 0;
+  const started = Date.now();
+  try {
+    const outcomes = await runBatch([created]);
+    assert.equal(outcomes[0].outcome, "deferred");
+    assert.match(outcomes[0].reason, /429/);
+  } finally {
+    limited.delete(eventPath);
+  }
+  // One request, no 60 s Retry-After sleep.
+  assert.deepEqual(
+    requests.filter(r => r.startsWith(`GET ${eventPath}`)),
+    [`GET ${eventPath}`],
+  );
+  assert.ok(Date.now() - started < 30_000);
+});
+
+void test("parallel reads share a wall-clock backoff budget, not a sum of their sleeps", async () => {
+  const { createCalendlyClient } = await import(
+    pathToFileURL(path.join(FOLDER, "client.ts")).href
+  );
+  const paths = Array.from({ length: 8 }, (_, i) => `/limited/${i}`);
+  for (const p of paths) limited.add(p);
+  const slept: number[] = [];
+  let release = () => {};
+  const arrived = new Promise<void>(resolve => (release = resolve));
+  const client = createCalendlyClient({
+    token: TOKEN,
+    baseUrl,
+    log: () => {},
+    // Every path gets its 429 before any sleep ends; then Calendly answers
+    // (404 here, so each get throws). A request that gives up instead of
+    // sleeping never arrives, and the wait ends after 2 s.
+    sleep: (ms: number) => {
+      slept.push(ms);
+      if (slept.length === paths.length) {
+        for (const p of paths) limited.delete(p);
+        release();
+      }
+      return Promise.race([
+        arrived,
+        new Promise<void>(resolve => setTimeout(resolve, 2_000)),
+      ]).then(() => {
+        for (const p of paths) limited.delete(p);
+      });
+    },
+  });
+  try {
+    const results = await Promise.allSettled(paths.map(p => client.get(p)));
+    // All 8 waited their 60 s side by side and were retried: none gave the
+    // chunk back for a budget that only a sum of sleeps (480 s) would pass.
+    assert.equal(slept.length, 8);
+    assert.ok(slept.every(ms => ms === 60_000));
+    for (const r of results) {
+      assert.equal(r.status, "rejected");
+      assert.match(String((r as PromiseRejectedResult).reason), /404/);
+    }
+  } finally {
+    for (const p of paths) limited.delete(p);
   }
 });
 

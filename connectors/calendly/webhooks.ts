@@ -26,8 +26,10 @@
  * - 404 (deleted since): the record is dropped. An event left with no
  *   record is `skipped`.
  * - Budget spent: the event is `deferred`, retried later uncounted.
- * - Any other failure, after the client's retries: `extract_failed`. Mako
- *   retries it up to its usual 5 attempts.
+ * - Each fill read is one attempt, ending with the budget: the box command
+ *   is killed at 60 s. A 429, 5xx, network error or timeout is `deferred`.
+ * - Any other failure: `extract_failed`. Mako retries it up to its usual 5
+ *   attempts.
  *
  * A partial record is never answered unfilled.
  */
@@ -41,6 +43,7 @@ import type {
 } from "@makoai/connector-sdk";
 import {
   CalendlyHttpError,
+  isTransientError,
   calendlyRelativePath,
   uuidFromUri,
   withId,
@@ -291,7 +294,7 @@ const missingOf = (
 async function fillRecord(
   deps: CalendlyWebhookDeps,
   record: WebhookChangeRecord,
-  budgetSpent: () => boolean,
+  remainingMs: () => number,
 ): Promise<Filled> {
   const spec = CALENDLY_WEBHOOK_FILL[record.entity];
   const payload = record.payload;
@@ -319,7 +322,7 @@ async function fillRecord(
       reason: `Not a Calendly ${record.entity} URI: ${JSON.stringify(payload.uri).slice(0, 120)}`,
     };
   }
-  if (budgetSpent()) {
+  if (remainingMs() <= 0) {
     return {
       kind: "deferred",
       reason: `Calendly fill budget for this batch is spent; ${record.entity} ${uuid} waits for a retry`,
@@ -328,8 +331,10 @@ async function fillRecord(
 
   let fetched: Record<string, unknown>;
   try {
-    const response = (await deps.api.get(`${spec.path}${uuid}`)) as
-      { resource?: Record<string, unknown> } | undefined;
+    const response = (await deps.api.get(`${spec.path}${uuid}`, undefined, {
+      once: true,
+      timeoutMs: remainingMs(),
+    })) as { resource?: Record<string, unknown> } | undefined;
     fetched = withId(response?.resource ?? {});
   } catch (error) {
     if (error instanceof CalendlyHttpError && error.status === 404) {
@@ -337,6 +342,16 @@ async function fillRecord(
         `Calendly ${record.entity} ${uuid} is gone; skipping its upsert`,
       );
       return { kind: "gone" };
+    }
+    // Rate limited, a 5xx, a slow socket: not now. Deferred, so a busy
+    // vendor never uses up the event's attempts.
+    if (isTransientError(error)) {
+      return {
+        kind: "deferred",
+        reason: `Calendly could not be read now; ${record.entity} waits for a retry: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
     }
     const status =
       error instanceof CalendlyHttpError ? ` (HTTP ${error.status})` : "";
@@ -362,7 +377,9 @@ export async function handleCalendlyWebhookBatch(
   const now = deps.now ?? (() => Date.now());
   const budgetMs = deps.budgetMs ?? CALENDLY_WEBHOOK_FILL_BUDGET_MS;
   const startedAt = now();
-  const budgetSpent = () => now() - startedAt >= budgetMs;
+  // What is left of the budget: each fill read is one attempt that ends
+  // with it, so a batch answers before its box command is killed.
+  const remainingMs = () => budgetMs - (now() - startedAt);
 
   const out: WebhookOutcome[] = [];
   for (const outcome of outcomes) {
@@ -374,7 +391,7 @@ export async function handleCalendlyWebhookBatch(
     let gone = 0;
     let stop: WebhookOutcome | null = null;
     for (const record of outcome.records as WebhookChangeRecord[]) {
-      const filled = await fillRecord(deps, record, budgetSpent);
+      const filled = await fillRecord(deps, record, remainingMs);
       if (filled.kind === "record") records.push(filled.record);
       else if (filled.kind === "gone") gone++;
       else {

@@ -39,13 +39,39 @@ const CAPABILITIES: Record<string, { update: boolean; delete: boolean }> = {
   calendly: { update: false, delete: false },
 };
 
+/** Wise's production and sandbox API hosts, as the folder allows them. */
+const WISE_HOSTS = new Set([
+  "api.wise.com",
+  "api.transferwise.com",
+  "api.sandbox.transferwise.tech",
+  "sandbox.transferwise.tech",
+  "api.sandbox.wise.com",
+  "sandbox.wise.com",
+]);
+
+/** `value` when it is an https URL on a Wise host (no path tricks), else undefined. */
+function wiseHostUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "https:" || !WISE_HOSTS.has(url.hostname)) {
+      return undefined;
+    }
+    if (url.username || url.password || url.port) return undefined;
+    return `https://${url.hostname}`;
+  } catch {
+    return undefined;
+  }
+}
+
 const credential = (config: Record<string, unknown>, key: string) =>
   typeof config[key] === "string" ? (config[key] as string) : "";
 
 /**
  * The config a built-in connector provisions with: the credential (and
- * Wise's profile), never `api_base_url`, so the key goes only to the
- * vendor's own host. Throws when the credential is missing.
+ * Wise's profile), and `api_base_url` only when it is one of Wise's own
+ * HTTPS hosts, so the key goes only to the vendor. Throws when the
+ * credential is missing.
  */
 export function builtInProvisioningConfig(
   slug: "wise" | "calendly",
@@ -55,7 +81,13 @@ export function builtInProvisioningConfig(
     const apiKey = credential(config, "api_key");
     if (!apiKey.trim()) throw new Error("Wise API token not configured");
     const profileId = credential(config, "profile_id");
-    return { api_key: apiKey, ...(profileId ? { profile_id: profileId } : {}) };
+    const baseUrl = wiseHostUrl(config.api_base_url);
+    return {
+      api_key: apiKey,
+      ...(profileId ? { profile_id: profileId } : {}),
+      // A sandbox connection provisions in the sandbox, as in-process.
+      ...(baseUrl ? { api_base_url: baseUrl } : {}),
+    };
   }
   const token = credential(config, "access_token");
   if (!token.trim()) throw new Error("Calendly access token not configured");

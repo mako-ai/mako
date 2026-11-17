@@ -28,7 +28,9 @@
  * - 404 (gone since): the record is dropped; an event left with none is
  *   `skipped`.
  * - Budget spent: `deferred`, retried later without counting the attempt.
- * - Any other failure, after the client's retries: `extract_failed`.
+ * - Each fill read is one attempt, ending with the budget: the box command
+ *   is killed at 60 s. A 429, 5xx, network error or timeout is `deferred`.
+ * - Any other failure: `extract_failed`.
  *
  * A partial record is never answered unfilled.
  */
@@ -40,7 +42,7 @@ import type {
   WebhookOutcome,
   WebhookVerification,
 } from "@makoai/connector-sdk";
-import { type WiseClient, WiseHttpError } from "./client.ts";
+import { type WiseClient, WiseHttpError, isTransientError } from "./client.ts";
 import { withStringId } from "./records.ts";
 import {
   WISE_PRODUCTION_PUBLIC_KEY,
@@ -226,7 +228,7 @@ const isAbsent = (payload: Row, field: string) =>
 async function fillRecord(
   deps: WiseWebhookDeps,
   record: WebhookChangeRecord,
-  budgetSpent: () => boolean,
+  remainingMs: () => number,
 ): Promise<Filled> {
   const spec = WISE_WEBHOOK_FILL[record.entity];
   const payload =
@@ -241,7 +243,7 @@ async function fillRecord(
   }
   const path = spec.path(payload, record.recordId);
   if (typeof path !== "string") return { kind: "failed", reason: path.error };
-  if (budgetSpent()) {
+  if (remainingMs() <= 0) {
     return {
       kind: "deferred",
       reason: `Wise fill budget for this batch is spent; ${record.entity} ${record.recordId} waits for a retry`,
@@ -250,7 +252,10 @@ async function fillRecord(
 
   let object: Row;
   try {
-    const fetched = await deps.api.get(path);
+    const fetched = await deps.api.get(path, undefined, undefined, {
+      once: true,
+      timeoutMs: remainingMs(),
+    });
     object =
       fetched && typeof fetched === "object" && !Array.isArray(fetched)
         ? (fetched as Row)
@@ -261,6 +266,16 @@ async function fillRecord(
         `Wise ${record.entity} ${record.recordId} is gone; skipping its upsert`,
       );
       return { kind: "gone" };
+    }
+    // Rate limited, a 5xx, a slow socket: not now. Deferred, so a busy
+    // vendor never uses up the event's attempts.
+    if (isTransientError(error)) {
+      return {
+        kind: "deferred",
+        reason: `Wise could not be read now; ${record.entity} waits for a retry: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
     }
     return {
       kind: "failed",
@@ -297,7 +312,9 @@ export async function handleWiseWebhookBatch(
   const now = deps.now ?? (() => Date.now());
   const budgetMs = deps.budgetMs ?? WISE_WEBHOOK_FILL_BUDGET_MS;
   const startedAt = now();
-  const budgetSpent = () => now() - startedAt >= budgetMs;
+  // What is left of the budget: each fill read is one attempt that ends
+  // with it, so a batch answers before its box command is killed.
+  const remainingMs = () => budgetMs - (now() - startedAt);
 
   const out: WebhookOutcome[] = [];
   for (const outcome of outcomes) {
@@ -309,7 +326,7 @@ export async function handleWiseWebhookBatch(
     let gone = 0;
     let stop: WebhookOutcome | null = null;
     for (const record of outcome.records as WebhookChangeRecord[]) {
-      const filled = await fillRecord(deps, record, budgetSpent);
+      const filled = await fillRecord(deps, record, remainingMs);
       if (filled.kind === "record") records.push(filled.record);
       else if (filled.kind === "gone") gone++;
       else {

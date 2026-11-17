@@ -235,6 +235,28 @@ void test("the provisioned built-ins never take a base URL from the connection",
     builtInProvisioningConfig("calendly", { ...evil, access_token: "t" }),
     { access_token: "t" },
   );
+  // Wise's own sandbox is kept, so a sandbox connection provisions there.
+  assert.deepEqual(
+    builtInProvisioningConfig("wise", {
+      api_key: "k",
+      api_base_url: "https://api.sandbox.transferwise.tech/",
+    }),
+    { api_key: "k", api_base_url: "https://api.sandbox.transferwise.tech" },
+  );
+  for (const url of [
+    "http://api.sandbox.transferwise.tech",
+    "https://api.wise.com.attacker.example",
+    "https://user:pw@api.wise.com",
+    "https://api.wise.com:8443",
+    "http://127.0.0.1:9000",
+  ]) {
+    assert.equal(
+      builtInProvisioningConfig("wise", { api_key: "k", api_base_url: url })
+        .api_base_url,
+      undefined,
+      url,
+    );
+  }
 });
 
 void test("flag on: boxed Wise updates and deletes; boxed Calendly only creates", () => {

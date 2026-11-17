@@ -288,6 +288,32 @@ void test("a read that fails holds the event back for a retry, never unfilled", 
   assert.match(outcome.reason, /59000400.*HTTP 400/);
 });
 
+void test("a rate-limited fill read is deferred after one attempt, never retried into the box timeout", async () => {
+  const token = "wise_test_webhooks_ratelimit";
+  const event = storedEvent(
+    {
+      event_type: "transfers#state-change",
+      schema_version: "2.0.0",
+      sent_at: "2026-11-16T10:00:01Z",
+      data: {
+        resource: { type: "transfer", id: 59_000_401, profile_id: 1 },
+        current_state: "processing",
+      },
+    },
+    "d-limited",
+  );
+  const result = await connector(token).runWebhookBatch(
+    { events: [event] },
+    { timeoutMs: 60_000 },
+  );
+  assert.equal(result.exitCode, 0, result.stderr);
+  const [outcome] = outcomesOf(result);
+  assert.equal(outcome.outcome, "deferred");
+  assert.match(outcome.reason, /429/);
+  // One attempt: the client's retry policy does not run inside a fill.
+  assert.equal(server.requests(token).length, 1);
+});
+
 void test("an id that is not a Wise id is refused before any request", async () => {
   const token = "wise_test_badids";
   const transfer = (id: string, n: number) =>
