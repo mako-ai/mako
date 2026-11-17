@@ -81,11 +81,13 @@ least 20.
    export OLD_KEY_SHA256="$(gcloud secrets versions access "$OLD_VERSION" --secret=E2B_API_KEY --project=mako-ai-dev | tr -d '\n' | shasum -a 256 | cut -d' ' -f1)"
    echo "$OLD_KEY_SHA256"   # a hash, not the key; write it in the change log
    ```
-4. Record the `mako-prod` key's hash too. Rollback step 3 drains `mako-prod`
-   with the drain script, which refuses any key but the one this hash names.
+4. Record the `mako-prod` key's version and hash too. Rollback step 3 drains
+   `mako-prod` with the drain script, which refuses any key but the one this
+   hash names. Rollback adds a newer version, so it loads this one by number.
    ```bash
-   export PROD_KEY_SHA256="$(gcloud secrets versions access latest --secret=E2B_API_KEY --project=mako-ai-prod | tr -d '\n' | shasum -a 256 | cut -d' ' -f1)"
-   echo "$PROD_KEY_SHA256"   # a hash, not the key; write it in the change log
+   export PROD_VERSION="$(gcloud secrets versions list E2B_API_KEY --project=mako-ai-prod --filter=state:enabled --sort-by=~createTime --limit=1 --format='value(name.basename())')"
+   export PROD_KEY_SHA256="$(gcloud secrets versions access "$PROD_VERSION" --secret=E2B_API_KEY --project=mako-ai-prod | tr -d '\n' | shasum -a 256 | cut -d' ' -f1)"
+   echo "$PROD_VERSION $PROD_KEY_SHA256"   # a hash, not the key; write both in the change log
    ```
 5. Add a new version of `mako-ai-dev`'s `E2B_API_KEY` with the `mako-dev` key.
 
@@ -97,6 +99,19 @@ print the same hash as `OLD_KEY_SHA256`.
 ```bash
 gcloud run services describe mako --project=mako-ai-prod --region=europe-west1 --format=json \
   | jq -r '.spec.template.spec.containers[0].env[] | select(.name=="E2B_API_KEY") | .value' \
+  | tr -d '\n' | shasum -a 256 | cut -d' ' -f1
+```
+
+Since 17 Nov 2026 Cloud Run holds `E2B_API_KEY` as a Secret Manager reference
+pinned to one version, so the command above prints the hash of `null`. Use
+this one wherever the runbook says "the step 2 hash command". It prints the
+pinned reference, then the hash of that version:
+
+```bash
+ref="$(gcloud run services describe mako --project=mako-ai-prod --region=europe-west1 --format=json \
+  | jq -r '.spec.template.spec.containers[0].env[] | select(.name=="E2B_API_KEY") | .valueFrom.secretKeyRef | "\(.name):\(.key)"')"
+echo "$ref"   # E2B_API_KEY:<version>
+gcloud secrets versions access "${ref#*:}" --secret=E2B_API_KEY --project=mako-ai-prod \
   | tr -d '\n' | shasum -a 256 | cut -d' ' -f1
 ```
 
@@ -190,6 +205,12 @@ by hand from that box before step 12.
 
 ## Step 6. Swap the GitHub secrets (Joan)
 
+Since 17 Nov 2026 the deploys read `E2B_API_KEY` from Secret Manager, not
+from GitHub. Production reads `mako-ai-prod`, previews read `mako-ai-dev`.
+Each deploy pins the newest enabled version (`E2B_API_KEY=E2B_API_KEY:<n>`),
+so a new version changes nothing until the next deploy. The GitHub secrets
+below are unused.
+
 - Production environment secret `E2B_API_KEY` = `mako-prod` key.
 - Repo-level secret `E2B_API_KEY` = `mako-dev` key. PR previews read this one.
 
@@ -223,8 +244,8 @@ step 5 dry run prints no `foreign-origin` box started after this point.
 
 ## Step 7. Deploy production
 
-Cloud Run holds the key as a literal env var, so nothing changes until a
-deploy. Record the revision that is live now, then deploy master:
+Cloud Run holds the key pinned to one Secret Manager version, so nothing
+changes until a deploy. Record the revision that is live now, then deploy master:
 
 ```bash
 export OLD_REVISION="$(gcloud run services describe mako --project=mako-ai-prod --region=europe-west1 --format='value(status.latestReadyRevisionName)')"
@@ -396,19 +417,25 @@ cherry-pick what they want.
 
 Rollback works for the 7 days of the drain, while the old boxes still exist.
 
-1. Put the old key back on the production environment:
+1. Put the old key back as the newest version of `mako-ai-prod`'s secret.
+   Running instances keep their pinned version. The step 2 redeploy pins
+   this one:
    ```bash
    gcloud secrets versions access "$OLD_VERSION" --secret=E2B_API_KEY --project=mako-ai-dev \
-     | gh secret set E2B_API_KEY --env production
+     | gcloud secrets versions add E2B_API_KEY --project=mako-ai-prod --data-file=-
    ```
 2. Redeploy as in step 7. Record `OLD_REVISION` and `SWAP_TIME` again. If
    step 3 used another name, also run
    `gh variable delete APPS_E2B_TEMPLATE_PROD --env production`.
 3. Wait for the drain as in step 10. Gate 3 uses the drain script with the
-   `mako-ai-prod` key and `--expect-key-sha256 "$PROD_KEY_SHA256"` (recorded
-   in step 2), because `mako-prod` is now the account being left.
-4. Save what only the `mako-prod` boxes hold. Run step 11 with the
-   `mako-ai-prod` key.
+   `mako-prod` key and `--expect-key-sha256 "$PROD_KEY_SHA256"` (recorded
+   in step 2), because `mako-prod` is now the account being left. Load that
+   key by number. `latest` is the old key after step 1:
+   ```bash
+   export E2B_API_KEY="$(gcloud secrets versions access "$PROD_VERSION" --secret=E2B_API_KEY --project=mako-ai-prod)"
+   ```
+4. Save what only the `mako-prod` boxes hold. Run step 11 with the same
+   `$PROD_VERSION` key.
 
 Check: the step 2 hash command prints `OLD_KEY_SHA256` again. New sessions
 show up in the old project. Old paused boxes resume where they were, because
