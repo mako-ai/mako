@@ -13,7 +13,7 @@ on:
         required: false
         type: string
       rebuild_db:
-        description: "Rebuild ephemeral database from production"
+        description: "Rebuild ephemeral database from the staging database (a nightly copy of production)"
         required: false
         type: boolean
         default: true
