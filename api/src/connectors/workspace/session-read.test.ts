@@ -15,6 +15,23 @@ const sandbox = vi.hoisted(() => ({
   scratch: vi.fn(() => "/scratch"),
 }));
 
+const logs = vi.hoisted(() => ({
+  warn: vi.fn(),
+  error: vi.fn(),
+}));
+
+vi.mock("../../logging", () => {
+  const logger = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: (...args: unknown[]) => logs.warn(...args),
+    error: (...args: unknown[]) => logs.error(...args),
+  };
+  return {
+    loggers: new Proxy({}, { get: () => () => logger }),
+  };
+});
+
 vi.mock("../../apps/sandbox/provider", () => ({
   getSandboxProvider: () => sandbox,
   isSandboxGone: (error: unknown) =>
@@ -26,7 +43,7 @@ import {
   boxSessionTransport,
   type SessionHandle,
 } from "./session-read";
-import { forgetPreparedBox, hidepidOffRunCount } from "./sync-box";
+import { forgetPreparedBox, noteHidepidOff } from "./sync-box";
 
 const encode = (text: string) => new TextEncoder().encode(text);
 const line = (value: unknown) => `${JSON.stringify(value)}\n`;
@@ -376,13 +393,54 @@ describe("read session transport", () => {
     await expect(start(transport)).rejects.toThrow(/hidepid/);
     expect(sandbox.readFile).not.toHaveBeenCalled();
 
-    const before = hidepidOffRunCount();
-    const second = setup();
-    replies.start = () => result("MAKO_HIDEPID off\nMAKO_SESSION ready 1 10\n");
-    sandbox.readFile.mockResolvedValue(encode(STATE));
-    const { outcome } = await start(second.transport);
-    expect(outcome).toMatchObject({ kind: "batch", seq: 1 });
-    expect(hidepidOffRunCount()).toBe(before + 1);
+    // A box that cannot remount: every run is logged with hidepidOff, so
+    // Cloud Logging counts them, not once per box.
+    for (let i = 0; i < 2; i++) {
+      logs.warn.mockClear();
+      const next = setup();
+      replies.start = () =>
+        result("MAKO_HIDEPID off\nMAKO_SESSION ready 1 10\n");
+      sandbox.readFile.mockResolvedValue(encode(STATE));
+      const { outcome } = await start(next.transport);
+      expect(outcome).toMatchObject({ kind: "batch", seq: 1 });
+      const hidepid = logs.warn.mock.calls.filter(
+        ([, fields]) => (fields as { hidepidOff?: boolean })?.hidepidOff,
+      );
+      expect(hidepid).toHaveLength(1);
+      expect(hidepid[0][1]).toMatchObject({
+        hidepidOff: true,
+        capable: false,
+        sandboxId: "sbx-1",
+        what: "session",
+      });
+    }
+  });
+
+  it("logs a chunk box that could remount /proc and did not as an error, every run", async () => {
+    const ctx = { sessionKey: "connector-sync:v2:wsx" };
+    logs.error.mockClear();
+    logs.warn.mockClear();
+    expect(noteHidepidOff("MAKO_CHUNK 10 0\n", ctx, "sbx-9", "chunk")).toBe(
+      null,
+    );
+    for (let i = 0; i < 2; i++) {
+      expect(
+        noteHidepidOff(
+          "MAKO_HIDEPID off capable\nMAKO_CHUNK 10 0\n",
+          ctx,
+          "sbx-9",
+          "chunk",
+        ),
+      ).toBe("off-capable");
+    }
+    expect(logs.error).toHaveBeenCalledTimes(2);
+    expect(logs.error.mock.calls[0][1]).toMatchObject({
+      hidepidOff: true,
+      capable: true,
+      sandboxId: "sbx-9",
+      what: "chunk",
+    });
+    expect(logs.warn).not.toHaveBeenCalled();
   });
 
   it("retries a UID collision with a fresh user, but never an account it cannot lock", async () => {

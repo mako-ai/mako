@@ -185,9 +185,9 @@ fi`;
 }
 
 /**
- * The line a box without hidepid prints: `MAKO_HIDEPID off`. Its own
- * prefix, never a command's last marker. The API logs it (sync-box.ts
- * `noteHidepidOff`).
+ * The line a box without hidepid prints: `MAKO_HIDEPID off`, or `MAKO_HIDEPID
+ * off capable` when root could have remounted /proc. Its own prefix, never a
+ * command's last marker. The API logs it (sync-box.ts `noteHidepidOff`).
  */
 export const HIDEPID_MARKER = "MAKO_HIDEPID";
 
@@ -197,8 +197,12 @@ export const HIDEPID_MARKER = "MAKO_HIDEPID";
  */
 export const CAN_REMOUNT_PROC_CHECK = `[ "$(( 0x$(awk '/^CapEff:/ { print $2 }' /proc/self/status 2>/dev/null) >> 21 & 1 ))" = 1 ] 2>/dev/null`;
 
-/** Shell that succeeds when /proc is mounted with hidepid. */
-export const HIDEPID_CHECK = `awk '$2 == "/proc" && $3 == "proc" && $4 ~ /(^|,)hidepid=(2|invisible)(,|$)/ { found = 1 } END { exit !found }' /proc/mounts 2>/dev/null`;
+/**
+ * Shell that succeeds when /proc, as processes see it, has hidepid. Only the
+ * last /proc entry counts: a plain proc mount stacked on top hides the one
+ * below, and any earlier line with hidepid would otherwise pass.
+ */
+export const HIDEPID_CHECK = `awk '$2 == "/proc" { t = $3; o = $4 } END { exit !(t == "proc" && o ~ /(^|,)hidepid=(2|invisible)(,|$)/) }' /proc/self/mounts 2>/dev/null`;
 
 /** Root: create the run user and its directories. Fails closed. */
 export function setupScript(l: RunLayout): string {
@@ -437,8 +441,12 @@ ${setupScript(l)}
   echo "${CHUNK_MARKER} setup-failed"
   exit ${SETUP_FAILED_EXIT}
 fi
-# Without hidepid, other runs read this run's argv: the API logs it.
-${HIDEPID_CHECK} || echo "${HIDEPID_MARKER} off"
+# Without hidepid, other runs read this run's argv: the API logs it, as an
+# error when root could have remounted /proc (never refused yet: prod
+# flows run as chunks).
+if ! ${HIDEPID_CHECK}; then
+  if ${CAN_REMOUNT_PROC_CHECK}; then echo "${HIDEPID_MARKER} off capable"; else echo "${HIDEPID_MARKER} off"; fi
+fi
 staged=1
 ${moves}
 rm -rf ${inbox}

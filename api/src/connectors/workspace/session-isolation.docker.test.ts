@@ -18,6 +18,8 @@ import { randomBytes } from "node:crypto";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  HIDEPID_CHECK,
+  chunkScript,
   ISOLATED_INCOMING,
   ISOLATED_RUNS,
   incomingPath,
@@ -851,6 +853,48 @@ suite(
       );
       const closed = await inCapable("", closeScript(s.id));
       expect(closed.stdout).toContain("MAKO_SESSION closed 0");
+    }, 60_000);
+
+    it("sees through a plain /proc stacked on the hidepid one", async () => {
+      // hidepid is on from the case above; a plain proc mount on top of it
+      // shows every process again.
+      expect(
+        (await inCapable("mount -t proc proc /proc && echo stacked")).stdout,
+      ).toContain("stacked");
+      // The old check passed on any /proc line with hidepid.
+      const anyLine = await inCapable(
+        `awk '$2 == "/proc" && $3 == "proc" && $4 ~ /hidepid=(2|invisible)/ { found = 1 } END { exit !found }' /proc/mounts && echo fooled`,
+      );
+      expect(anyLine.stdout).toContain("fooled");
+      expect((await inCapable(`${HIDEPID_CHECK} || echo off`)).stdout).toBe(
+        "off\n",
+      );
+
+      // A remount that fails now: the session start is refused ...
+      await inCapable(
+        "printf '#!/bin/sh\\nexit 32\\n' > /usr/local/sbin/mount && chmod 0755 /usr/local/sbin/mount",
+      );
+      const s = layout();
+      const out = await startIn(s);
+      expect(out.code).toBe(95);
+      expect(out.stdout).toContain("MAKO_SESSION hidepid-refused");
+      expect((await inCapable(`id -u ${s.run.user}`)).code).not.toBe(0);
+
+      // ... and a chunk run says the box could have remounted, for the API
+      // to log as an error.
+      const l = runLayout(
+        randomBytes(8).toString("hex"),
+        `mkc${randomBytes(6).toString("hex")}`,
+        700_000 + Math.floor(Math.random() * 100_000),
+      );
+      const chunk = await inCapable(chunkScript(l, [], "true", 1024));
+      expect(chunk.stdout).toContain("MAKO_HIDEPID off capable");
+      expect(chunk.stdout).toMatch(/MAKO_CHUNK \S+ 0/);
+
+      await inCapable("rm -f /usr/local/sbin/mount && umount /proc");
+      expect((await inCapable(`${HIDEPID_CHECK} && echo on`)).stdout).toBe(
+        "on\n",
+      );
     }, 60_000);
   },
 );

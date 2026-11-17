@@ -244,7 +244,7 @@ deadline=$(( $(date +%s) * 1000 + ${limits.maxAgeMs} ))
 # Its sleep runs as a child it waits on, so the kill below ends both: a
 # subshell killed during a plain sleep leaves that sleep running as root.
 ( exec </dev/null >/dev/null 2>&1
-  trap '[ -n "\${nap:-}" ] && kill "$nap" 2>/dev/null; exit 0' TERM
+  trap 'kill $(jobs -p) 2>/dev/null; exit 0' TERM
   sleep ${hardStop} & nap=$!
   wait "$nap" && bash cleanup.sh ) &
 backstop=$!
