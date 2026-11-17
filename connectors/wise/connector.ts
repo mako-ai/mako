@@ -270,10 +270,10 @@ export default defineConnector<WiseConfig>({
         title: "SCA Private Key",
         description:
           "Optional. PEM private key whose public key is registered in Wise (Settings → API tokens → Manage public keys). Wise asks for it (strong customer authentication) before it serves balance statements on some profiles.",
-        // A secret: encrypted, and rendered as a password field. The form
-        // translation has no encrypted textarea (in-process: textarea, 6 rows).
+        // A secret, rendered as an encrypted 6-row textarea, as in-process.
         airbyte_secret: true,
         multiline: true,
+        rows: 6,
         order: 2,
       },
       api_base_url: {

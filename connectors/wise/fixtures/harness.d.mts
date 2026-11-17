@@ -176,7 +176,6 @@ export function compareEntitySchema(
   policy: boolean;
   ok: boolean;
 };
-export const FORM_DIFFS: Record<string, { type: [string, string] }>;
 export function compareForm(
   inProcessFields: any[],
   folderFields: any[],

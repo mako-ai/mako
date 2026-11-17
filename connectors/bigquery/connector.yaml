@@ -1,0 +1,11 @@
+# BigQuery, as a connector folder (RFC connector-runtime, iteration 5).
+#
+# Production still runs the in-process connector in api/src/connectors/bigquery.
+# No flow uses this folder. The parity harness in fixtures/ holds the two to
+# the same output.
+runtime: node
+entry: connector.ts
+page:
+  vendor: Google BigQuery
+  category: warehouse
+  docs: https://cloud.google.com/bigquery/docs/reference/rest

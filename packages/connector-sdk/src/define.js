@@ -200,7 +200,29 @@ export function defineConnector(definition) {
     );
   }
 
-  const entities = definition.entities;
+  const entities = definition.entities ?? {};
+  const queryEntities = definition.queryEntities;
+
+  /**
+   * The connection's query list, for a connector whose entities are its
+   * user's queries (GraphQL, BigQuery): one entity per item of
+   * `config.queries` with a name. Mako puts a flow's queries there too.
+   */
+  const queryItems = config => {
+    if (!queryEntities) return [];
+    const list = config?.queries;
+    if (!Array.isArray(list)) return [];
+    return list.filter(
+      item => item && typeof item === "object" && typeof item.name === "string" && item.name !== "",
+    );
+  };
+  const namesFor = config => [...Object.keys(entities), ...queryItems(config).map(item => item.name)];
+  const entityFor = (name, config) => {
+    if (Object.hasOwn(entities, name)) return entities[name];
+    // The first query with the name, as an in-process `find` picks it.
+    const item = queryItems(config).find(candidate => candidate.name === name);
+    return item ? queryEntities.entity(item) : undefined;
+  };
 
   return {
     __makoConnector: 1,
@@ -250,6 +272,19 @@ export function defineConnector(definition) {
                 },
               }
             : {}),
+          // Entities named by the user's own queries: where the list lives
+          // (the credential form, or each flow) and, for a flow, the form of
+          // one query. Mako reads it to list a connection's entities and to
+          // render the flow form, without running anything.
+          ...(queryEntities
+            ? {
+                queryEntities: {
+                  source: queryEntities.source,
+                  ...(queryEntities.incremental ? { incremental: queryEntities.incremental } : {}),
+                  ...(queryEntities.form ? { form: queryEntities.form } : {}),
+                },
+              }
+            : {}),
         },
       };
     },
@@ -278,17 +313,24 @@ export function defineConnector(definition) {
      */
     async discover(ctx) {
       const streams = [];
-      for (const [name, entity] of Object.entries(entities)) {
+      for (const name of namesFor(ctx.config)) {
+        const entity = entityFor(name, ctx.config);
         const schema = entity.discoverSchema
           ? await entity.discoverSchema(ctx)
           : entity.schema;
         const stream = {
           name,
-          json_schema: schemaToJsonSchema(schema),
+          // An untyped entity (a user's query, whose columns nobody declared)
+          // says so: Mako then writes its rows as they come, without a schema
+          // that would turn every undeclared column into a string.
+          json_schema: entity.untyped
+            ? { type: "object", additionalProperties: true }
+            : schemaToJsonSchema(schema),
           supported_sync_modes: entity.cursorField
             ? ["full_refresh", "incremental"]
             : ["full_refresh"],
         };
+        if (entity.untyped) stream.mako_untyped = true;
         if (entity.primaryKey)
           stream.source_defined_primary_key = entity.primaryKey.map(k => [k]);
         if (entity.cursorField) {
@@ -323,8 +365,9 @@ export function defineConnector(definition) {
     },
     hasWebhooks: () => Boolean(definition.webhooks),
 
-    entityNames: () => Object.keys(entities),
-    entity: name => entities[name],
+    /** Every entity: the declared ones, then one per query in `config`. */
+    entityNames: config => namesFor(config),
+    entity: (name, config) => entityFor(name, config),
   };
 }
 
@@ -421,11 +464,14 @@ function validateDefinition(definition) {
     }
   }
 
-  const entities = definition.entities;
+  if (definition.queryEntities !== undefined) {
+    problems.push(...validateQueryEntities(definition));
+  }
+  const entities = definition.entities ?? (definition.queryEntities ? {} : undefined);
   if (
     !entities ||
     typeof entities !== "object" ||
-    Object.keys(entities).length === 0
+    (Object.keys(entities).length === 0 && !definition.queryEntities)
   ) {
     problems.push("at least one entity is required");
     return problems;
@@ -474,6 +520,44 @@ function validateDefinition(definition) {
       problems.push(
         `entity "${name}": cursorField "${entity.cursorField}" is not a field in its schema`,
       );
+    }
+  }
+  return problems;
+}
+
+const QUERY_SOURCES = ["connection", "flow"];
+
+/**
+ * `queryEntities`: one entity per query the user writes. `source` says where
+ * the list lives: `connection` (a `queries` array in the credential form,
+ * which the connector declares in `config.properties`) or `flow` (each flow
+ * holds its own list; `form` describes one query for the flow form).
+ */
+function validateQueryEntities(definition) {
+  const q = definition.queryEntities;
+  const problems = [];
+  if (!q || typeof q !== "object") return ["queryEntities must be an object"];
+  if (!QUERY_SOURCES.includes(q.source)) {
+    problems.push(`queryEntities.source must be one of ${QUERY_SOURCES.join(", ")}`);
+  }
+  if (typeof q.entity !== "function") {
+    problems.push("queryEntities.entity(query) must be a function returning an entity definition");
+  }
+  if (q.incremental !== undefined && !INCREMENTAL_MODES.includes(q.incremental)) {
+    problems.push(`queryEntities.incremental must be one of ${INCREMENTAL_MODES.join(", ")}`);
+  }
+  if (q.source === "connection") {
+    const property = definition.config?.properties?.queries;
+    if (!property || property.type !== "array" || property.items?.type !== "object") {
+      problems.push(
+        'queryEntities.source "connection" needs config.properties.queries: { type: "array", items: { type: "object", properties } }',
+      );
+    }
+  }
+  if (q.source === "flow") {
+    const items = q.form?.items;
+    if (!items || typeof items !== "object" || !items.properties || typeof items.properties !== "object") {
+      problems.push('queryEntities.source "flow" needs form.items.properties, the fields of one query');
     }
   }
   return problems;

@@ -141,7 +141,16 @@ export async function resolveEntitySchema(params: {
     });
     throw new SchemaResolutionError(params.entity, params.context, err);
   }
-  if (!schema && isWorkspaceConnector(connector, sourceType)) {
+  // A stream the catalog declares untyped (a user's query) has no schema on
+  // purpose; any other null from a workspace connector is a broken catalog.
+  const untyped =
+    !schema &&
+    (await (
+      connector as { declaresUntypedSchema?: (e: string) => Promise<boolean> }
+    )
+      ?.declaresUntypedSchema?.(params.entity)
+      .catch(() => false));
+  if (!schema && !untyped && isWorkspaceConnector(connector, sourceType)) {
     throw new SchemaResolutionError(
       params.entity,
       params.context,

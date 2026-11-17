@@ -1004,31 +1004,20 @@ export function compareEntitySchema(inProcess, folder, ignore = new Set()) {
   };
 }
 
-/**
- * The form fields where the folder differs from in-process on purpose:
- * the SDK's form translation renders a secret as a password field, and has
- * no encrypted textarea. `sca_private_key` is encrypted on both sides.
- */
-export const FORM_DIFFS = {
-  sca_private_key: { type: ["textarea", "password"] },
-};
-
 /** `getConfigSchema().fields` against the form built from the folder's spec. */
 export function compareForm(inProcessFields, folderFields) {
-  const shape = (field, side) => ({
+  const shape = field => ({
     name: field.name,
     label: field.label,
-    type:
-      FORM_DIFFS[field.name]?.type?.[side] === field.type
-        ? "(known difference)"
-        : field.type,
+    type: field.type,
+    rows: field.rows,
     required: Boolean(field.required),
     default: field.default,
     helperText: field.helperText,
     encrypted: Boolean(field.encrypted || field.type === "password"),
   });
-  const a = inProcessFields.map(f => shape(f, 0));
-  const b = folderFields.map(f => shape(f, 1));
+  const a = inProcessFields.map(shape);
+  const b = folderFields.map(shape);
   return { ok: canonicalJson(a) === canonicalJson(b), inProcess: a, folder: b };
 }
 

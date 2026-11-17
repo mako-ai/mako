@@ -639,7 +639,11 @@ async function describeBundle(input: {
   )
     .map(stream => stream?.name)
     .filter((name): name is string => typeof name === "string");
-  if (streams.length === 0) {
+  // A connector whose entities are its user's queries (GraphQL, BigQuery)
+  // has none until a query exists.
+  const queryEntities = (specMessage.mako as { queryEntities?: unknown })
+    ?.queryEntities;
+  if (streams.length === 0 && !queryEntities) {
     throw new Error("discover returned no streams.");
   }
 

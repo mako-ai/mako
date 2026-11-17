@@ -7,10 +7,7 @@
  * usable yet rather than hiding it.
  */
 import { listConnectorDefinitions, loadConnectorDefinition } from "./resolver";
-import {
-  connectionSpecificationToForm,
-  type FormSchema,
-} from "./spec-translation";
+import { specToForm, type FormSchema } from "./spec-translation";
 import { ConnectorDefinition } from "../../database/workspace-schema";
 import {
   WORKSPACE_TYPE_PREFIX,
@@ -129,9 +126,7 @@ export async function workspaceConnectorForm(
     workspaceId,
     slugFromType(type),
   );
-  return connectionSpecificationToForm(
-    (definition.spec as any)?.connectionSpecification,
-  );
+  return specToForm(definition.spec as any);
 }
 
 /**

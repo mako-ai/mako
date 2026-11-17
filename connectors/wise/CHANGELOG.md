@@ -4,6 +4,9 @@ Releases of `mako/wise`. Not released yet: no tag, no registry entry.
 
 ## 1.0.0 (unreleased)
 
+- `sca_private_key` renders as an encrypted 6-row textarea, as in-process.
+  The form translation now maps a multi-line secret to one.
+
 - The in-process Wise connector ported to `@makoai/connector-sdk`, with the
   same 7 entities, schemas, requests, pagination, chunk positions, retry
   policy and SCA signing, on `fetch` with no dependency.

@@ -255,3 +255,87 @@ test("an event id may come from a header or from several body paths", () => {
   assert.throws(() => defineHooks(rsaVerification, { eventIdPath: Array(5).fill("a") }), /eventIdPath must be/);
   assert.throws(() => defineHooks(rsaVerification, { eventIdHeader: "X-Id" }), /eventIdHeader must be/);
 });
+
+const queryConnector = (source = "flow", extra = {}) =>
+  defineConnector({
+    name: "gql",
+    version: "1.0.0",
+    config: {
+      properties:
+        source === "connection"
+          ? {
+              queries: {
+                type: "array",
+                items: { type: "object", properties: { name: { type: "string" } } },
+              },
+            }
+          : {},
+    },
+    queryEntities: {
+      source,
+      incremental: "client-filter",
+      ...(source === "flow"
+        ? { form: { label: "Queries", required: true, items: { required: ["name"], properties: { name: { type: "string" } } } } }
+        : {}),
+      entity: query => ({
+        untyped: true,
+        async *read() {
+          yield { records: [{ id: query.name }], hasMore: false };
+        },
+      }),
+    },
+    ...extra,
+  });
+
+test("query entities: one entity per named query in config, after the declared ones", () => {
+  const connector = queryConnector("flow", { entities: { fixed: entity } });
+  const config = { queries: [{ name: "a" }, { query: "no name" }, { name: "b" }, { name: "" }] };
+  assert.deepEqual(connector.entityNames(config), ["fixed", "a", "b"]);
+  assert.deepEqual(connector.entityNames(), ["fixed"]);
+  assert.equal(connector.entity("fixed", config), entity);
+  assert.equal(typeof connector.entity("b", config).read, "function");
+  assert.equal(connector.entity("missing", config), undefined);
+});
+
+test("query entities: no declared entity is needed, and the spec says where the list lives", () => {
+  const connector = queryConnector("flow");
+  const spec = connector.spec();
+  assert.deepEqual(spec.mako.entities, {});
+  assert.equal(spec.mako.queryEntities.source, "flow");
+  assert.equal(spec.mako.queryEntities.incremental, "client-filter");
+  assert.equal(spec.mako.queryEntities.form.label, "Queries");
+});
+
+test("query entities: discover marks an untyped stream so Mako keeps the row types", async () => {
+  const connector = queryConnector("connection");
+  const streams = await connector.discover({ config: { queries: [{ name: "events" }] } });
+  assert.deepEqual(streams, [
+    {
+      name: "events",
+      json_schema: { type: "object", additionalProperties: true },
+      supported_sync_modes: ["full_refresh"],
+      mako_untyped: true,
+    },
+  ]);
+});
+
+test("query entities: a bad declaration is refused", () => {
+  assert.throws(
+    () =>
+      defineConnector({
+        name: "bq",
+        version: "1",
+        config: { properties: {} },
+        queryEntities: { source: "connection", entity: () => entity },
+      }),
+    /needs config.properties.queries/,
+  );
+  assert.throws(
+    () => defineConnector({ name: "gql", version: "1", queryEntities: { source: "flow", entity: () => entity } }),
+    /needs form.items.properties/,
+  );
+  assert.throws(
+    () => defineConnector({ name: "gql", version: "1", queryEntities: { source: "elsewhere" } }),
+    /queryEntities.source must be one of/,
+  );
+});

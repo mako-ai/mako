@@ -71,8 +71,6 @@ defers the event, and any other failure fails it for a retry.
 - Webhook rows are filled (above). In-process writes the extraction's
   nulls, which overwrite every column the event lacks.
 - `api_base_url` must be a Wise host over https or a loopback address.
-- `sca_private_key` is a password field in the form, not a textarea. It is
-  encrypted on both.
 - Each request times out after 60 s, and one process waits at most 4
   minutes in backoff, because a box ends a command after 10 minutes.
 - The box path reads a transfer's zone-less `created` as the API's local
