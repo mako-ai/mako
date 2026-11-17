@@ -172,3 +172,51 @@ describe("DestinationWriter ensureSchemaForWrite", () => {
     expect(ensured2).toEqual(["public"]);
   });
 });
+
+/**
+ * The nightly ip_intel.crm_asns failure (2026-10-30 → 2026-11-16): the
+ * BigQuery swap committed and dropped staging, then the writer's second
+ * DROP of the staging name hit "exceeded quota for table update operations".
+ * The thrown error failed the Inngest step after the swap, so each retry
+ * swapped against a missing staging table until the retries ran out.
+ */
+describe("DestinationWriter finalize after a committed swap", () => {
+  it("does not fail the sync when the post-swap staging drop is rejected", async () => {
+    const driver = new BigQueryDatabaseDriver();
+    let swaps = 0;
+    driver.swapStagingTable = async () => {
+      swaps++;
+      return { success: true };
+    };
+    driver.dropTable = async () => ({
+      success: false,
+      error:
+        "Job exceeded rate limits: Your table exceeded quota for table update operations.",
+    });
+    const { writer } = makeWriter(driver, "bigquery", {
+      tableName: "crm_asns",
+      schema: "ip_intel",
+    });
+
+    writer.markStagingActive();
+    await expect(writer.finalize()).resolves.toBeUndefined();
+    expect(swaps).toBe(1);
+  });
+
+  it("still fails the sync when the swap itself fails", async () => {
+    const driver = new BigQueryDatabaseDriver();
+    driver.swapStagingTable = async () => ({
+      success: false,
+      error: "Staging table mako_internal.crm_asns_staging not found",
+    });
+    const { writer } = makeWriter(driver, "bigquery", {
+      tableName: "crm_asns",
+      schema: "ip_intel",
+    });
+
+    writer.markStagingActive();
+    await expect(writer.finalize()).rejects.toThrow(
+      "Failed to swap staging table: Staging table mako_internal.crm_asns_staging not found",
+    );
+  });
+});

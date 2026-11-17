@@ -22,6 +22,7 @@ import {
   TablePartitioning,
 } from "../../databases/driver";
 import { databaseRegistry } from "../../databases/registry";
+import { loggers } from "../../logging";
 import {
   ConnectionConfig,
   databaseConnectionService,
@@ -35,6 +36,8 @@ import {
 } from "./mongo-target";
 import { applyTypeCoercionsToSchema } from "./type-coercion";
 import type { DestinationConfig, WriteOptions, WriteResult } from "./types";
+
+const log = loggers.sync("destination-writer");
 
 /**
  * Unified destination writer that handles both MongoDB and SQL destinations
@@ -593,17 +596,35 @@ export class DestinationWriter {
     }
 
     // Post-swap safety: ensure staging table name is cleaned up as well.
-    // Some drivers already consume/drop staging during swap, so this is idempotent.
+    // Some drivers already consume/drop staging during swap, so this is
+    // idempotent, and best-effort: the swap above has committed the new rows.
+    // Throwing here fails the step after the staging table is gone, so every
+    // retry re-runs the swap against a missing staging table and fails until
+    // the retries run out. BigQuery rejects this second DDL on the same table
+    // within seconds ("exceeded quota for table update operations"); the next
+    // full sync drops the staging name before it writes anyway.
     if (this.driver.dropTable) {
-      const dropResult = await this.driver.dropTable(
-        this.connection,
-        stagingName,
-        { schema: stagingSchema },
-      );
-      if (!dropResult.success) {
-        throw new Error(
-          `Failed to drop staging table after swap: ${dropResult.error || "Unknown error"}`,
+      try {
+        const dropResult = await this.driver.dropTable(
+          this.connection,
+          stagingName,
+          { schema: stagingSchema },
         );
+        if (!dropResult.success) {
+          log.warn("Could not drop staging table after a successful swap", {
+            table: tableName,
+            stagingTable: stagingName,
+            stagingSchema,
+            error: dropResult.error,
+          });
+        }
+      } catch (error) {
+        log.warn("Could not drop staging table after a successful swap", {
+          table: tableName,
+          stagingTable: stagingName,
+          stagingSchema,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
   }

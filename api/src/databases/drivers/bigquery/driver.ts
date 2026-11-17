@@ -165,6 +165,20 @@ export class BigQueryDatabaseDriver extends BigQueryBatchWriteDriver {
     const backupName = `${originalTableName}_backup_${Date.now()}`;
     const fullBackup = `${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(backupName)}`;
 
+    // A missing staging table means there is nothing to swap in: a retry of
+    // a swap that already committed (and dropped staging), or a run that never
+    // wrote. Stop before touching the original. Backing it up, dropping it and
+    // restoring it with CTAS would lose its partitioning and leak the backup.
+    const stagingExists = await this.tableExists(database, stagingTableName, {
+      schema: stagingDataset,
+    });
+    if (!stagingExists) {
+      return {
+        success: false,
+        error: `Staging table ${stagingDataset}.${stagingTableName} not found; the original ${dataset}.${originalTableName} was left as it is`,
+      };
+    }
+
     const originalExists = await this.tableExists(database, originalTableName, {
       schema: dataset,
     });
@@ -219,11 +233,20 @@ export class BigQueryDatabaseDriver extends BigQueryBatchWriteDriver {
       options,
     );
     if (!swapResult.success) {
-      // Restore from backup
-      await this.executeQuery(
+      // Restore from backup, then drop the backup once the restore landed.
+      // OR REPLACE: step 3 may have created an empty original before its
+      // INSERT failed, and a plain CREATE would then fail on "Already Exists".
+      const restoreResult = await this.executeQuery(
         database,
-        `CREATE TABLE ${fullOriginal} AS SELECT * FROM ${fullBackup};`,
+        `CREATE OR REPLACE TABLE ${fullOriginal} AS SELECT * FROM ${fullBackup};`,
       );
+      if (!restoreResult.success) {
+        return {
+          success: false,
+          error: `Failed to create new table: ${swapResult.error}; restoring ${dataset}.${originalTableName} also failed (${restoreResult.error}), its rows are kept in ${dataset}.${backupName}`,
+        };
+      }
+      await this.executeQuery(database, `DROP TABLE IF EXISTS ${fullBackup};`);
       return {
         success: false,
         error: `Failed to create new table: ${swapResult.error}`,
