@@ -21,6 +21,9 @@
  * box itself and is allowed.
  */
 
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
+
 export const REQUEST_TIMEOUT_MS = 30_000;
 export const MAX_RETRIES = 3;
 const MAX_ERROR_BODY = 2_000;
@@ -116,7 +119,14 @@ function v4Blocked(host: string): boolean {
 }
 
 /** An IPv6 address's 8 groups, `::` expanded; null when it is not one. */
-function v6Groups(host: string): number[] | null {
+function v6Groups(address: string): number[] | null {
+  // A dotted IPv4 tail (`::ffff:169.254.169.254`, as a resolver may write
+  // it) is the last two groups.
+  const host = address.replace(
+    /(\d+)\.(\d+)\.(\d+)\.(\d+)$/,
+    (_, a, b, c, d) =>
+      `${((+a << 8) | +b).toString(16)}:${((+c << 8) | +d).toString(16)}`,
+  );
   const [head, tail, ...rest] = host.split("::");
   if (rest.length > 0) return null;
   const parse = (part: string | undefined) =>
@@ -179,18 +189,49 @@ export function checkEndpoint(endpoint: string): URL {
     host === "metadata" ||
     host === "metadata.google.internal" ||
     host.endsWith(".internal");
-  const v6Blocked =
-    host.includes(":") &&
-    (/^f[cd]/.test(host) ||
-      /^fe[89ab]/.test(host) ||
-      host === "::" ||
-      v4Blocked(embeddedV4(host) ?? ""));
-  if (metadata || v4Blocked(host) || v6Blocked) {
+  if (metadata || addressBlocked(host)) {
     throw new Error(
       `The GraphQL endpoint points at a private or metadata address: ${host}`,
     );
   }
   return url;
+}
+
+/**
+ * A private, link-local, CGNAT or unspecified address, in IPv4 or IPv6
+ * form (an IPv4 inside IPv6 included). Loopback is not: it reaches only
+ * the box.
+ */
+export function addressBlocked(address: string): boolean {
+  const host = address.toLowerCase();
+  if (!host.includes(":")) return v4Blocked(host);
+  return (
+    /^f[cd]/.test(host) ||
+    /^fe[89ab]/.test(host) ||
+    host === "::" ||
+    v4Blocked(embeddedV4(host) ?? "")
+  );
+}
+
+/**
+ * Every address a host name resolves to, checked. A literal was checked by
+ * `checkEndpoint`. A name pointing at a private address (`10.0.0.5` behind a
+ * public DNS name) fails here, before any request carries the headers.
+ */
+export async function checkResolved(
+  url: URL,
+  resolve: (host: string) => Promise<Array<{ address: string }>> = host =>
+    lookup(host, { all: true, verbatim: true }),
+): Promise<void> {
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  if (isIP(host)) return;
+  const addresses = await resolve(host);
+  const blocked = addresses.find(a => addressBlocked(a.address));
+  if (blocked) {
+    throw new Error(
+      `The GraphQL endpoint ${host} resolves to a private or metadata address: ${blocked.address}`,
+    );
+  }
 }
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -201,7 +242,27 @@ export interface GraphqlResponse {
   [key: string]: unknown;
 }
 
+/** A redirect: refused, never followed, never retried. */
+export class GraphqlRedirectError extends Error {
+  constructor(url: string) {
+    super(
+      `The GraphQL endpoint ${url} answered with a redirect. Set the endpoint to the URL it redirects to.`,
+    );
+    this.name = "GraphqlRedirectError";
+  }
+}
+
+function isRedirect(error: unknown): boolean {
+  const cause = (error as { cause?: { message?: unknown } })?.cause;
+  return (
+    error instanceof TypeError &&
+    typeof cause?.message === "string" &&
+    /redirect/i.test(cause.message)
+  );
+}
+
 export class GraphqlClient {
+  private resolved = false;
   private readonly url: string;
   private readonly headers: Record<string, string>;
   private readonly log: (message: string) => void;
@@ -218,6 +279,15 @@ export class GraphqlClient {
 
   /** One POST; the body as JSON, or the raw text when it is not JSON. */
   async post(body: unknown, timeoutMs = REQUEST_TIMEOUT_MS): Promise<unknown> {
+    if (!this.resolved) {
+      try {
+        await checkResolved(new URL(this.url));
+      } catch (error) {
+        // A name that does not resolve is a network failure, as in-process.
+        throw isNetworkFailure(error) ? new GraphqlNetworkError(error) : error;
+      }
+      this.resolved = true;
+    }
     let response: Response;
     try {
       response = await fetch(this.url, {
@@ -225,8 +295,11 @@ export class GraphqlClient {
         headers: this.headers,
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutMs),
+        // A redirect could lead anywhere, the checks above notwithstanding.
+        redirect: "error",
       });
     } catch (error) {
+      if (isRedirect(error)) throw new GraphqlRedirectError(this.url);
       throw isNetworkFailure(error) ? new GraphqlNetworkError(error) : error;
     }
     let text: string;

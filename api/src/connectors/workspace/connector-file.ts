@@ -223,5 +223,24 @@ export function validateSpec(
         "marked secret, and the credential would be stored in plaintext.",
     };
   }
+  // A flow's queries (`mako.queryEntities.form`) are stored unencrypted with
+  // the flow. A field marked secret there would be a credential in
+  // plaintext: refuse the spec, as the SDK does.
+  const form = (spec as { mako?: { queryEntities?: { form?: unknown } } }).mako
+    ?.queryEntities?.form as
+    | { items?: { properties?: Record<string, Record<string, unknown>> } }
+    | undefined;
+  const secret = Object.entries(form?.items?.properties ?? {}).find(
+    ([, field]) => field?.airbyte_secret === true || field?.secret === true,
+  );
+  if (secret) {
+    return {
+      ok: false,
+      reason:
+        `The flow query field "${secret[0]}" is marked secret, but a flow's ` +
+        "queries are stored unencrypted. Put the secret in " +
+        "`config.properties`, which is encrypted.",
+    };
+  }
   return { ok: true };
 }

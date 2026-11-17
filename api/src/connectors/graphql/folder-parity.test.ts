@@ -22,6 +22,7 @@
  */
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { GraphQLConnector } from "./connector";
@@ -48,6 +49,7 @@ import {
   runFolderCommand,
   runParity,
   startReplayServer,
+  testConfig,
   type Comparison,
   type GraphqlTestConfig,
   type ReplayServer,
@@ -438,4 +440,49 @@ void test("an unknown query entity fails the read, even with no query at all", a
       /has no entity "no_such_query"/,
     );
   }
+});
+
+void test("a redirect is refused once, never followed or retried", async () => {
+  const token = "gql_test_folder_check_redirect";
+  const { queries: _queries, ...connection } = testConfig(token, server);
+  const result = await runFolderCommand("check", { config: connection });
+  const status = result.messages.find(m => m.type === "CONNECTION_STATUS");
+  assert.equal(status?.connectionStatus?.status, "FAILED");
+  assert.match(status?.connectionStatus?.message ?? "", /redirect/);
+  assert.equal(server.requests(token).length, 1);
+});
+
+void test("a host name that resolves to a private address is refused before any request", () => {
+  // `checkResolved` with a stub resolver, in the folder's own runtime.
+  const script = `
+    import { checkResolved } from ${JSON.stringify(path.join(FOLDER, "client.ts"))};
+    const answers = {
+      "internal.example.test": [{ address: "93.184.216.34" }, { address: "10.1.2.3" }],
+      "mapped.example.test": [{ address: "::ffff:169.254.169.254" }],
+      "public.example.test": [{ address: "93.184.216.34" }, { address: "2606:2800::1" }],
+      "loopback.example.test": [{ address: "127.0.0.1" }],
+    };
+    const out = {};
+    for (const host of Object.keys(answers)) {
+      try {
+        await checkResolved(new URL("https://" + host + "/graphql"), async h => answers[h]);
+        out[host] = "allowed";
+      } catch (error) {
+        out[host] = error.message;
+      }
+    }
+    console.log(JSON.stringify(out));
+  `;
+  const out = JSON.parse(
+    execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+      encoding: "utf8",
+    }),
+  );
+  assert.match(
+    out["internal.example.test"],
+    /resolves to a private.*10\.1\.2\.3/,
+  );
+  assert.match(out["mapped.example.test"], /resolves to a private/);
+  assert.equal(out["public.example.test"], "allowed");
+  assert.equal(out["loopback.example.test"], "allowed");
 });

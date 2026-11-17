@@ -471,6 +471,26 @@ describe("a spec that does not say what its fields are", () => {
     ).toEqual({ ok: true });
   });
 
+  it("is blocked when a flow query field is marked secret, since flows store queries in plaintext", () => {
+    const spec = (field: Record<string, unknown>) => ({
+      connectionSpecification: { properties: {} },
+      mako: {
+        queryEntities: {
+          source: "flow",
+          form: {
+            items: { properties: { query: { type: "string" }, token: field } },
+          },
+        },
+      },
+    });
+    for (const flag of [{ airbyte_secret: true }, { secret: true }]) {
+      const result = validateSpec(spec({ type: "string", ...flag }));
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toContain('"token"');
+    }
+    expect(validateSpec(spec({ type: "string" }))).toEqual({ ok: true });
+  });
+
   it("throws rather than returning an empty credential form", () => {
     expect(() => connectionSpecificationToForm({ type: "object" })).toThrow(
       /properties/,
