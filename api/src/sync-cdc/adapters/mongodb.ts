@@ -12,6 +12,7 @@ import {
   selectLatestChangePerRecord,
   withSyncedAt,
 } from "../normalization";
+import { stripUndefined } from "../sparse-rows";
 import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
 import type { Collection, Db, MongoClient } from "mongodb";
@@ -201,9 +202,11 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
       } else {
         const filter = this.buildKeyFilter(params.layout.keyColumns, row);
         ops.push({
-          replaceOne: {
+          updateOne: {
             filter,
-            replacement: row,
+            // $set, not a replace: a field the row lacks keeps its stored
+            // value (sparse-rows.ts).
+            update: { $set: stripUndefined(row) },
             upsert: true,
           },
         });
@@ -234,9 +237,11 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
         } else {
           const filter = this.buildKeyFilter(params.layout.keyColumns, row);
           ops.push({
-            replaceOne: {
+            updateOne: {
               filter,
-              replacement: row,
+              // $set, not a replace: a field the row lacks keeps its stored
+              // value (sparse-rows.ts).
+              update: { $set: stripUndefined(row) },
               upsert: true,
             },
           });
@@ -304,9 +309,11 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
       }
       const filter = this.buildKeyFilter(params.layout.keyColumns, row);
       return {
-        replaceOne: {
+        updateOne: {
           filter,
-          replacement: row,
+          // $set, not a replace: a field the row lacks keeps its stored
+          // value (sparse-rows.ts).
+          update: { $set: stripUndefined(row) },
           upsert: true,
         },
       };
