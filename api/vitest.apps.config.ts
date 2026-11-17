@@ -29,6 +29,8 @@ export default defineConfig({
       "src/apps/bindings.service.test.ts",
       "src/apps/env.service.test.ts",
       "src/apps/cloud-repo.service.test.ts",
+      // Concurrent restores of one repo: 0 errors, one valid mirror.
+      "src/apps/cloud-repo/clone-race.test.ts",
       "src/apps/adversarial.test.ts",
       "src/agent-lib/tools/apps-tools-workflow-target.test.ts",
       "src/apps/git-endpoint.test.ts",

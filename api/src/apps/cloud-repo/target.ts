@@ -4,6 +4,7 @@
  */
 import { resolveRepoToken } from "../../integrations/github/app-auth";
 import { getWorkspaceRepo } from "../../services/workspace-repos.service";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { runGit } from "../git";
@@ -90,7 +91,54 @@ export function authArgs(token: string | undefined): string[] {
   return ["-c", `http.extraheader=Authorization: Basic ${basic}`];
 }
 
-/** `git clone --mirror` into the workspace's repo slot + serving config. */
+/**
+ * Longest one `git clone --mirror` may run. runGit's 30 s default killed
+ * rollout clones: on 2026-11-17 at 10:52, about 10 fresh instances cloned
+ * the same repo from GitHub at once, and 4 of them hit 30 s. A clone alone
+ * takes 11 to 14 s.
+ */
+export const REPO_CLONE_TIMEOUT_MS = 120_000;
+/** Clone attempts per restore before the error reaches the callers. */
+export const REPO_CLONE_ATTEMPTS = 2;
+/** A killed clone's git children can still write into its temp dir. */
+const ORPHAN_SWEEP_DELAY_MS = 60_000;
+
+function cloneTimeoutMs(): number {
+  const raw = Number(process.env.APPS_REPO_CLONE_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : REPO_CLONE_TIMEOUT_MS;
+}
+
+/**
+ * A temp dir no other clone uses. `process.pid` alone is 1 in every Cloud
+ * Run container, so `.cloning-1` was shared by every clone of the repo on
+ * the instance, and a clone killed on timeout left it behind for the next.
+ */
+function cloneTempDir(repoDir: string): string {
+  return `${repoDir}.cloning-${process.pid}-${randomBytes(6).toString("hex")}`;
+}
+
+function isDestinationTaken(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "ENOTEMPTY" || code === "EEXIST" || code === "ENOTDIR";
+}
+
+async function removeTempDir(tmp: string, failed: boolean): Promise<void> {
+  await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+  if (!failed) return;
+  // After a timeout kill, git's helpers (remote-https, index-pack) may still
+  // be writing here. Sweep once more after they have died.
+  setTimeout(() => {
+    void fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+  }, ORPHAN_SWEEP_DELAY_MS).unref();
+}
+
+/**
+ * `git clone --mirror` into the workspace's repo slot + serving config.
+ *
+ * The clone lands in its own temp dir and the rename is the only commit
+ * point. A repo slot that another clone filled meanwhile is a success: both
+ * came from the same mirror.
+ */
 export async function cloneMirrorInto(
   workspaceId: string,
   url: string,
@@ -99,16 +147,13 @@ export async function cloneMirrorInto(
 ): Promise<void> {
   const repoDir = repoDirFor(workspaceId);
   await fs.mkdir(path.dirname(repoDir), { recursive: true });
-  const tmp = `${repoDir}.cloning-${process.pid}`;
+  const tmp = cloneTempDir(repoDir);
+  let failed = true;
   try {
-    await runGit([
-      ...authArgs(token),
-      "clone",
-      "--mirror",
-      "--quiet",
-      url,
-      tmp,
-    ]);
+    await runGit(
+      [...authArgs(token), "clone", "--mirror", "--quiet", url, tmp],
+      { timeoutMs: cloneTimeoutMs() },
+    );
     // Same serving config initRepo applies to freshly-created repos.
     await runGit(["-C", tmp, "config", "transfer.hideRefs", "refs/mako/"]);
     await runGit([
@@ -118,13 +163,73 @@ export async function cloneMirrorInto(
       "uploadpack.allowAnySHA1InWant",
       "true",
     ]);
-    await fs.rename(tmp, repoDir);
+    try {
+      await fs.rename(tmp, repoDir);
+    } catch (error) {
+      if (!isDestinationTaken(error) || !(await repoExists(repoDir))) {
+        throw error;
+      }
+      failed = false;
+      logger.info("Apps local repo already restored by another clone", {
+        workspaceId,
+        repo: label,
+      });
+      return;
+    }
+    failed = false;
     logger.info("Apps local repo restored from its mirror", {
       workspaceId,
       repo: label,
     });
   } finally {
-    await fs.rm(tmp, { recursive: true, force: true });
+    await removeTempDir(tmp, failed);
+  }
+}
+
+/**
+ * Run `fn` as the workspace's only clone on this instance. A caller that
+ * arrives while one runs awaits it instead of starting a second.
+ */
+export function singleFlightClone(
+  workspaceId: string,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const existing = cloneInFlight.get(workspaceId);
+  if (existing) return existing;
+  const run: Promise<void> = fn().finally(() => {
+    if (cloneInFlight.get(workspaceId) === run) {
+      cloneInFlight.delete(workspaceId);
+    }
+  });
+  cloneInFlight.set(workspaceId, run);
+  return run;
+}
+
+async function restoreFromMirror(workspaceId: string): Promise<void> {
+  const repoDir = repoDirFor(workspaceId);
+  for (let attempt = 1; ; attempt++) {
+    // A clone that finished between the caller's check and this flight
+    // starting already did the work.
+    if (await repoExists(repoDir)) return;
+    const target = await resolveReadableMirrorTarget(workspaceId);
+    if (!target) return;
+    const token = await tokenFor(target);
+    try {
+      await cloneMirrorInto(
+        workspaceId,
+        remoteUrl(target.owner, target.repo),
+        token,
+        `${target.owner}/${target.repo}`,
+      );
+      return;
+    } catch (error) {
+      if (attempt >= REPO_CLONE_ATTEMPTS) throw error;
+      logger.warn("Apps local repo clone failed; retrying", {
+        workspaceId,
+        attempt,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }
 
@@ -138,9 +243,10 @@ export async function cloneMirrorInto(
  * the full state on demand. Workspaces without any mirror are left alone —
  * on a stateful host their local repo simply still exists.
  *
- * Serialized per workspace so concurrent requests don't race the clone.
+ * Single-flight per workspace: a request that arrives during the boot warm
+ * awaits the warm's clone. The storage is per instance (tmpfs, no shared
+ * volume), so an in-process lock covers every clone of a repo slot.
  */
-
 export async function ensureLocalRepo(workspaceId: string): Promise<void> {
   const repoDir = repoDirFor(workspaceId);
   if (await repoExists(repoDir)) {
@@ -154,21 +260,7 @@ export async function ensureLocalRepo(workspaceId: string): Promise<void> {
     }
     return;
   }
-  const existing = cloneInFlight.get(workspaceId);
-  if (existing) return existing;
-  const run = (async () => {
-    const target = await resolveReadableMirrorTarget(workspaceId);
-    if (!target) return;
-    const token = await tokenFor(target);
-    await cloneMirrorInto(
-      workspaceId,
-      remoteUrl(target.owner, target.repo),
-      token,
-      `${target.owner}/${target.repo}`,
-    );
-  })().finally(() => cloneInFlight.delete(workspaceId));
-  cloneInFlight.set(workspaceId, run);
-  return run;
+  await singleFlightClone(workspaceId, () => restoreFromMirror(workspaceId));
 }
 
 // Per-workspace push serialization. Two pushes to the SAME remote at once
