@@ -90,6 +90,13 @@ export async function getMaxTrackingValue(
       signal: options?.signal,
     });
 
+    // Drivers report a failed query as `{ success: false }` rather than
+    // throwing. It must not read as "no data": a poll would then treat a
+    // warehouse hiccup as an empty table and re-read the whole entity.
+    if (!result.success) {
+      return { success: false, error: result.error || "Query failed" };
+    }
+
     if (result.success && result.data && result.data.length > 0) {
       const maxValue = result.data[0].max_value;
       if (maxValue !== null && maxValue !== undefined) {
