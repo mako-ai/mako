@@ -193,7 +193,7 @@ app.get("/health", c => {
 });
 
 // Startup check (Cloud Run startup probe): 503 while the boot repo warm
-// clones the 5 hottest repos, capped at 25 s from process start
+// clones the 5 hottest repos, capped at 90 s from the warm's start
 // (apps/cloud-repo/warm-boot.ts). `/health` stays the
 // plain liveness answer.
 app.get("/health/ready", c => {

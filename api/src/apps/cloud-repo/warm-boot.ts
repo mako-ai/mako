@@ -10,10 +10,15 @@
  * sandbox used, or an app opened), most recent first. It clones the 5 most
  * recent while `/health/ready` answers 503, and the rest in the background
  * once the instance is ready. The Cloud Run startup probe reads
- * `/health/ready`. The wait is capped at REPO_WARM_MAX_WAIT_MS from process
+ * `/health/ready`. The wait is capped at REPO_WARM_MAX_WAIT_MS from the warm's
  * start: past it the instance reports ready and the clones go on in the
- * background, as every clone did before. New capacity in a spike must not
- * arrive a minute late.
+ * background, as every clone did before.
+ *
+ * The cap used to be 25 s from process start. Boot alone takes 18 s or more
+ * before the warm starts, and a clone takes 11 to 14 s. On 2026-11-17 at
+ * 13:17 an autoscaled instance passed the cap at 25 s, took traffic, and
+ * finished its clone at 29.7 s: 7 requests got 503 in between. 90 s from the
+ * warm's start plus a 111 s worst boot stays inside the probe's 240 s.
  *
  * Memory: the repos live on tmpfs (the instance's 4 GiB). A repo GitHub
  * sizes over REPO_WARM_MAX_REPO_BYTES is never warmed, and the warm stops
@@ -36,8 +41,8 @@ const logger = loggers.api("apps");
 
 const MB = 1024 * 1024;
 
-/** Longest the startup check waits, counted from process start. */
-export const REPO_WARM_MAX_WAIT_MS = 25_000;
+/** Longest the startup check waits, counted from the warm's start. */
+export const REPO_WARM_MAX_WAIT_MS = 90_000;
 /** Workspaces the startup check waits for; the rest warm after it. */
 export const REPO_WARM_GATE_WORKSPACES = 5;
 /** A workspace counts as hot when used within this window. */
@@ -201,11 +206,6 @@ export function repoWarmReady(now = Date.now()): boolean {
   return !warm || warm.done || now >= warm.deadline;
 }
 
-/** When this process started, in epoch ms. */
-function processStartMs(): number {
-  return Date.now() - process.uptime() * 1000;
-}
-
 /**
  * Start the boot warm, when enabled. Never throws; never blocks the boot.
  * Resolves when every clone, gated or background, has ended.
@@ -213,14 +213,14 @@ function processStartMs(): number {
 export function startRepoWarmOnBoot({
   maxWaitMs = REPO_WARM_MAX_WAIT_MS,
   gate = REPO_WARM_GATE_WORKSPACES,
-  startedAt = processStartMs(),
+  startedAt = Date.now(),
   listHot = hotWorkspaceIds,
   sizeOf = githubRepoSize,
   ensure = ensureLocalRepo,
 }: {
   maxWaitMs?: number;
   gate?: number;
-  /** Epoch ms the wait is counted from (process start). */
+  /** Epoch ms the wait is counted from (the warm's start). */
   startedAt?: number;
   listHot?: () => Promise<string[]>;
   sizeOf?: RepoSizeOf;

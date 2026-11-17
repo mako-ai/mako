@@ -62,19 +62,19 @@ async function readyWaitsOnlyForTheGate() {
   assert.deepEqual([...cloned].sort(), ids, "the rest warm in the background");
 }
 
-async function readyAtTheCapFromProcessStart() {
+async function readyAtTheCapFromWarmStart() {
   resetRepoWarmForTests();
-  assert.equal(REPO_WARM_MAX_WAIT_MS, 25_000);
-  // The process started 20 s ago: 5 s of the 25 s cap are left.
-  const startedAt = Date.now() - 20_000;
+  assert.equal(REPO_WARM_MAX_WAIT_MS, 90_000);
+  const before = Date.now();
   void startRepoWarmOnBoot({
-    startedAt,
     listHot: async () => ["ws1"],
     sizeOf: small,
     ensure: () => new Promise(() => {}), // a clone that never ends
   });
-  assert.equal(repoWarmReady(startedAt + 24_000), false);
-  assert.equal(repoWarmReady(startedAt + 25_001), true, "cap passed: ready");
+  // 13:17 on 2026-11-17: a clone still running 30 s in must hold the gate.
+  assert.equal(repoWarmReady(before + 30_000), false, "30 s in: warming");
+  assert.equal(repoWarmReady(before + 89_000), false, "89 s in: warming");
+  assert.equal(repoWarmReady(Date.now() + 90_001), true, "cap passed: ready");
 }
 
 async function sizeBudget() {
@@ -143,7 +143,7 @@ async function failuresDoNotStopTheWarm() {
 
 (async () => {
   await readyWaitsOnlyForTheGate();
-  await readyAtTheCapFromProcessStart();
+  await readyAtTheCapFromWarmStart();
   await sizeBudget();
   await failuresDoNotStopTheWarm();
   console.info("boot repo warm tests passed");
