@@ -16,9 +16,14 @@ export interface Scenario {
   name: string;
   maxIterations: number;
   since?: string;
-  /** Rows per page on the offset lists; the default is 100 on both sides. */
+  /**
+   * Rows per page (`__page_size` / `batchSize`). The offset lists default to
+   * 100 on both sides; on Search the folder pages by it, in-process ignores it.
+   */
   pageSize?: number;
   rateLimited?: boolean;
+  /** Search runs read from the emulator and are compared on rows only. */
+  searchRowsOnly?: boolean;
 }
 export const SCENARIOS: Scenario[];
 export const RATE_LIMIT_SCENARIO: Scenario;
@@ -59,6 +64,12 @@ export interface SourceTimestamps {
 
 export interface Comparison {
   rows: [number, number];
+  /** Rows read twice, in-process and folder. */
+  duplicates: [number, number];
+  /** Compared on rows only (a `searchRowsOnly` scenario's Search entity). */
+  rowsOnly?: boolean;
+  /** Every Search page asked for at most the scenario's page size. */
+  pageSizeHonoured?: boolean;
   keys: boolean;
   order: boolean;
   columns: boolean;
@@ -102,6 +113,11 @@ export function requestKey(
 ): string;
 export function requestHash(key: string): string;
 export function loadCassettes(dir?: string): Map<string, unknown>;
+export function isSearchEntity(entity: string): boolean;
+export function searchLimits(requests: string[]): number[];
+export function startRecordingServer(
+  dataset: unknown,
+): Promise<FixtureServer & { recorded: Map<string, unknown> }>;
 export function startReplayServer(
   interactions?: Map<string, unknown>,
 ): Promise<ReplayServer>;

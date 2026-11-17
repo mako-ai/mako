@@ -332,6 +332,13 @@ void test("every entity reads the same rows, timestamps, chunks and requests", a
   );
   // Two rows a page: the offset lists resume from an offset.
   assert.equal(find("small-pages", "users").chunks[0], 4);
+  // Two rows a page on Search too (`__page_size`), in-process stays at 200:
+  // same 215 leads, nothing twice, in 108 one-page chunks instead of 12.
+  const smallLeads = find("small-pages", "leads");
+  assert.ok(smallLeads.rowsOnly && smallLeads.pageSizeHonoured);
+  assert.deepEqual(smallLeads.rows, [215, 215]);
+  assert.deepEqual(smallLeads.duplicates, [0, 0]);
+  assert.ok(smallLeads.chunks[1] > smallLeads.chunks[0]);
   // Rows without a time field fall back to the sync time on both sides.
   assert.equal(find("default", "lead_statuses").timestampFallbacks, 6);
 });

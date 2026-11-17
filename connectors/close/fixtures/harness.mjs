@@ -47,7 +47,10 @@ export const FIXTURE_NOW = "2026-11-16T12:00:00.000Z";
 /** The incremental anchor of the `since` scenario. */
 export const SINCE = "2026-09-01T00:00:00.000Z";
 
-/** Close's own Search page; the in-process connector ignores batch size. */
+/**
+ * Close's own Search page. The in-process connector ignores batch size on
+ * Search; the folder pages by `__page_size` when one is set.
+ */
 export const SEARCH_PAGE_SIZE = 200;
 /** The emulator refuses a request naming more custom selectors than this. */
 export const SELECTOR_CEILING = 50;
@@ -60,13 +63,29 @@ export const CURSOR_ROW_LIMIT = { "activity.call": 200, default: 10_000 };
 export const SCENARIOS = [
   // One page per chunk: every page boundary is a chunk boundary.
   { name: "chunked", maxIterations: 1 },
-  // Two rows a page on the offset lists, one page per chunk.
-  { name: "small-pages", maxIterations: 1, pageSize: 2 },
+  // Two rows a page, one page per chunk. The offset lists page by 2 on
+  // both sides. On Search the folder pages by 2 too and in-process stays at
+  // 200, so those runs differ in requests and chunks by design: the folder
+  // reads from the emulator (`dataset.mjs`) and is held to the same rows,
+  // in the same order, with no row lost or read twice (`rowsOnly`).
+  { name: "small-pages", maxIterations: 1, pageSize: 2, searchRowsOnly: true },
   // The engine's default chunk of 10 pages.
   { name: "default", maxIterations: 10 },
   // Incremental: `date_updated` windows from `since`.
   { name: "since", maxIterations: 10, since: SINCE },
 ];
+
+/** Leads, contacts, opportunities and activities go through the Search API. */
+export const isSearchEntity = entity =>
+  ["leads", "contacts", "opportunities"].includes(entity) ||
+  entity.startsWith("activities:");
+
+/** The `_limit` of every Search request in a request log. */
+export function searchLimits(requests) {
+  return requests
+    .filter(key => key.startsWith("POST /data/search/ "))
+    .map(key => JSON.parse(key.slice("POST /data/search/ ".length))._limit);
+}
 
 /** A scenario where every request is answered 429 once before it succeeds. */
 export const RATE_LIMIT_SCENARIO = {
@@ -740,6 +759,12 @@ export function compareRuns(inProcess, folder, sourceTs) {
   const folderColumns = columnsOf(folder.rows);
   const result = {
     rows: [inProcess.rows.length, folder.rows.length],
+    // Rows read twice. The cursor-limit restart re-reads the row it stopped
+    // on, on both sides; anything more on the folder side is a bug.
+    duplicates: [
+      inIds.length - new Set(inIds).size,
+      folderIds.length - new Set(folderIds).size,
+    ],
     keys: sameList([...new Set(inIds)].sort(), [...new Set(folderIds)].sort()),
     order: sameList(inIds, folderIds),
     columns: sameList(inColumns, folderColumns),
@@ -756,6 +781,7 @@ export function compareRuns(inProcess, folder, sourceTs) {
   };
   result.ok =
     result.rows[0] === result.rows[1] &&
+    result.duplicates[0] === result.duplicates[1] &&
     result.keys &&
     result.order &&
     result.columns &&
@@ -799,6 +825,12 @@ export async function runParity({
     for (const entity of entities) jobs.push({ entity, scenario });
   }
   const results = [];
+  // The Close emulator, for runs whose requests the cassettes cannot hold.
+  let emulator;
+  const emulated = () =>
+    (emulator ??= import("./dataset.mjs").then(({ buildDataset }) =>
+      startRecordingServer(buildDataset()),
+    ));
   const work = async ({ entity, scenario }) => {
     const options = {
       entity,
@@ -832,7 +864,12 @@ export async function runParity({
     // else the SDK runner driven directly (`parity.mjs`).
     // Schemas are compared on their own: the box path's `discover` reads
     // every entity's custom fields at once, so it is not part of a read.
-    const boxed = makeBoxed?.({ api_key: folderKey, __base_url: server.url });
+    const rowsOnly = Boolean(scenario.searchRowsOnly && isSearchEntity(entity));
+    const folderServer = rowsOnly ? await emulated() : server;
+    const boxed = makeBoxed?.({
+      api_key: folderKey,
+      __base_url: folderServer.url,
+    });
     const folder = await run("folder", () =>
       boxed
         ? readBoxed(boxed, options)
@@ -840,13 +877,32 @@ export async function runParity({
             ...options,
             config: {
               api_key: folderKey,
-              __base_url: server.url,
+              __base_url: folderServer.url,
               ...(scenario.pageSize ? { __page_size: scenario.pageSize } : {}),
             },
           }),
     );
-    folder.requests = server.requests(folderKey);
+    folder.requests = folderServer.requests(folderKey);
     const comparison = compareRuns(inProcess, folder, sourceTs);
+    if (rowsOnly) {
+      // Same rows, same order, nothing read twice more than in-process, and
+      // pages of at most `pageSize` (probes ask for 1).
+      const limits = searchLimits(folder.requests);
+      comparison.rowsOnly = true;
+      comparison.pageSizeHonoured =
+        limits.length > 0 &&
+        limits.every(limit => limit <= scenario.pageSize) &&
+        limits.includes(scenario.pageSize);
+      comparison.ok =
+        comparison.rows[0] === comparison.rows[1] &&
+        comparison.duplicates[1] === comparison.duplicates[0] &&
+        comparison.keys &&
+        comparison.order &&
+        comparison.columns &&
+        comparison.checksumMismatches.length === 0 &&
+        comparison.timestampMismatches.length === 0 &&
+        comparison.pageSizeHonoured;
+    }
     const error = inProcess.error ?? folder.error;
     results.push({
       entity,
@@ -858,11 +914,15 @@ export async function runParity({
     });
   };
   const queue = [...jobs];
-  await Promise.all(
-    Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
-      while (queue.length > 0) await work(queue.shift());
-    }),
-  );
+  try {
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+        while (queue.length > 0) await work(queue.shift());
+      }),
+    );
+  } finally {
+    if (emulator) await (await emulator).close();
+  }
   const order = new Map(
     jobs.map((job, i) => [`${job.scenario.name}/${job.entity}`, i]),
   );
@@ -931,11 +991,17 @@ export function formatReport(results) {
         problems.push(`${r.checksumMismatches.length} checksums`);
       if (r.timestampMismatches.length)
         problems.push(`${r.timestampMismatches.length} source timestamps`);
-      if (!r.chunkStates) problems.push("chunk states");
-      if (!r.requestsEqual) problems.push("requests");
+      if (r.duplicates[1] !== r.duplicates[0])
+        problems.push(`${r.duplicates[1]}/${r.duplicates[0]} duplicates`);
+      if (r.rowsOnly) {
+        if (!r.pageSizeHonoured) problems.push("page size");
+      } else {
+        if (!r.chunkStates) problems.push("chunk states");
+        if (!r.requestsEqual) problems.push("requests");
+      }
       if (r.error) problems.push(`error (${r.error})`);
       cells.push(
-        `${r.rows[0]}/${r.rows[1]}, ${r.chunks[0]}/${r.chunks[1]}, ${r.requests[0]}/${r.requests[1]}, ${r.ok ? "match" : `DIFF ${problems.join(", ")}`}`,
+        `${r.rows[0]}/${r.rows[1]}, ${r.chunks[0]}/${r.chunks[1]}, ${r.requests[0]}/${r.requests[1]}, ${r.ok ? (r.rowsOnly ? "same rows" : "match") : `DIFF ${problems.join(", ")}`}`,
       );
     }
     lines.push(cells.join(" | "));
