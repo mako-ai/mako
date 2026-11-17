@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { WebhookEnrichmentRetryError } from "../../connectors/base/BaseConnector";
-import { buildWebhookCdcRecords } from "./webhook-flow";
+import { buildWebhookCdcRecords, loadWebhookConnector } from "./webhook-flow";
 
 const extracted = {
   entity: "leads",
@@ -56,9 +56,54 @@ async function testOtherErrorsStillApplyExtractedRecords() {
   assert.equal(result.records[0].recordId, "lead_1");
 }
 
+/**
+ * The ingest connector gets the decrypted credential. Built from the raw
+ * row, Close got ciphertext as its key and answered 401 to every fill read.
+ */
+async function testWebhookConnectorGetsTheDecryptedConfig() {
+  const row = {
+    _id: "src_1",
+    name: "pl_close",
+    type: "close",
+    workspaceId: "ws_1",
+    config: { api_key: "enc:ciphertext" },
+    toObject() {
+      const { toObject: _drop, ...plain } = this as any;
+      return plain;
+    },
+  } as any;
+  let built: any;
+  const connector = await loadWebhookConnector(row, {
+    getSourceConnection: async id => {
+      assert.equal(id, "src_1");
+      return { connection: { api_key: "api_plaintext" } };
+    },
+    getConnectorFor: connection => {
+      built = connection;
+      return { ok: true } as any;
+    },
+  });
+  assert.deepEqual(connector, { ok: true });
+  assert.equal(built.config.api_key, "api_plaintext");
+  assert.equal(built.type, "close");
+  assert.equal(built.name, "pl_close");
+  assert.equal(built.workspaceId, "ws_1");
+  // The stored row is left as it was.
+  assert.equal(row.config.api_key, "enc:ciphertext");
+
+  const gone = await loadWebhookConnector(row, {
+    getSourceConnection: async () => null,
+    getConnectorFor: () => {
+      throw new Error("must not build a connector without its credential");
+    },
+  });
+  assert.equal(gone, null);
+}
+
 async function main() {
   await testRetryErrorsApplyNothing();
   await testOtherErrorsStillApplyExtractedRecords();
+  await testWebhookConnectorGetsTheDecryptedConfig();
 }
 
 main().catch(error => {

@@ -7,6 +7,8 @@ import {
   CdcEntityState,
 } from "../../database/workspace-schema";
 import { connectorRegistry } from "../../connectors/registry";
+import { sourceConnectionManager } from "../../sync/database-data-source-manager";
+import type { ISourceConnection } from "../../database/models/source-connections";
 import { loggers } from "../../logging";
 import {
   WebhookEnrichmentRetryError,
@@ -545,6 +547,45 @@ function buildMaterializeEvents(
   }));
 }
 
+/**
+ * The flow's connector, holding the connection's decrypted credential.
+ *
+ * Source-connection configs are stored encrypted (the route encrypts them
+ * by the connector's schema) and the Mongoose model hands them back as
+ * stored. A connector built from the raw row sends ciphertext as its API
+ * key: since #1314 every Close webhook fill read got a 401, so every
+ * lead, contact, opportunity, email and thread event failed. The config
+ * comes from the source connection manager, as every sync read gets it.
+ * Null when the connection or its connector is gone.
+ */
+export async function loadWebhookConnector(
+  sourceConnection: ISourceConnection,
+  deps: {
+    getSourceConnection: (
+      id: string,
+    ) => Promise<{ connection: unknown } | null>;
+    getConnectorFor: (connection: ISourceConnection) => BaseConnector | null;
+  } = {
+    getSourceConnection: id => sourceConnectionManager.getSourceConnection(id),
+    getConnectorFor: connection =>
+      connectorRegistry.getConnectorFor(connection),
+  },
+): Promise<BaseConnector | null> {
+  const decrypted = await deps.getSourceConnection(
+    String(sourceConnection._id),
+  );
+  if (!decrypted) return null;
+  // A Mongoose document in the ingest; a plain row in tests.
+  const row: Record<string, unknown> =
+    typeof sourceConnection.toObject === "function"
+      ? sourceConnection.toObject()
+      : { ...(sourceConnection as object) };
+  return deps.getConnectorFor({
+    ...row,
+    config: decrypted.connection,
+  } as unknown as ISourceConnection);
+}
+
 // How many pending WebhookEvents the cron ingests per run, GLOBALLY across all
 // flows. The effective ingest ceiling is roughly
 //   CDC_INGEST_BATCH_LIMIT / (scheduler cron interval).
@@ -646,7 +687,36 @@ export async function ingestPendingWebhookEvents(logger: {
       continue;
     }
 
-    const connector = connectorRegistry.getConnectorFor(sourceConnection);
+    // Decrypting a workspace connector's config loads its definition, which
+    // throws when the definition is missing or blocked. That fails this
+    // flow's events only; every other flow in the batch still ingests.
+    let connector: BaseConnector | null;
+    try {
+      connector = await loadWebhookConnector(sourceConnection);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("Could not load the connector for a webhook flow", {
+        flowId,
+        type: sourceConnection.type,
+        error: message,
+      });
+      await WebhookEvent.updateMany(
+        { _id: { $in: events.map(e => e._id) } },
+        {
+          $set: {
+            status: "failed",
+            applyStatus: "failed",
+            processedAt: new Date(),
+            applyError: {
+              code: "CONNECTOR_LOAD_FAILED",
+              message: `Could not load the ${sourceConnection.type} connector: ${message}`,
+            },
+          },
+        },
+      );
+      totalFailed += events.length;
+      continue;
+    }
     if (!connector) {
       logger.warn("Connector not found for data source", {
         flowId,

@@ -86,6 +86,11 @@ export class CloseConnector extends BaseConnector {
   private webhookFillApi: AxiosInstance | null = null;
   /** Read time webhook fills may spend on this instance (one flow, one run). */
   private readonly webhookFillBudget = new CloseWebhookFillBudget();
+  /** Objects webhook fills already read on this instance (one run). */
+  private readonly webhookFillCache = new Map<
+    string,
+    Record<string, unknown>
+  >();
   private activeLogCallback?: (
     level: CloseLogLevel,
     message: string,
@@ -517,6 +522,7 @@ export class CloseConnector extends BaseConnector {
         shouldFill: record => options.isEntityEnabled(record.entity),
         // One instance serves one flow for one ingest run.
         budget: this.webhookFillBudget,
+        cache: this.webhookFillCache,
       },
     );
   }

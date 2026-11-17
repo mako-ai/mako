@@ -681,6 +681,11 @@ export async function fillCloseWebhookPartialRecords<T extends FillableRecord>(
   options: {
     shouldFill?: (record: T) => boolean;
     budget?: CloseWebhookFillBudget;
+    /**
+     * Objects already read in this run, by entity, id and fields. A bulk
+     * edit sends many events for one object, and one read serves them all.
+     */
+    cache?: Map<string, Record<string, unknown>>;
   } = {},
 ): Promise<T[]> {
   const shouldFill = options.shouldFill ?? (() => true);
@@ -700,6 +705,12 @@ export async function fillCloseWebhookPartialRecords<T extends FillableRecord>(
     const missing = spec.fields.filter(field => !(field in payload));
     if (missing.length === 0) {
       out.push(record);
+      continue;
+    }
+    const cacheKey = `${record.entity}\u0000${record.recordId}\u0000${missing.join(",")}`;
+    const cached = options.cache?.get(cacheKey);
+    if (cached) {
+      out.push({ ...record, payload: fillMissing(payload, missing, cached) });
       continue;
     }
     if (options.budget?.exhausted()) {
@@ -743,13 +754,22 @@ export async function fillCloseWebhookPartialRecords<T extends FillableRecord>(
       );
     }
 
-    const filled: Record<string, unknown> = { ...payload };
-    for (const field of missing) {
-      // A field Close omits from the object too is stored as NULL, as a
-      // backfill would store it.
-      filled[field] = field in fetched ? fetched[field] : null;
-    }
-    out.push({ ...record, payload: filled });
+    options.cache?.set(cacheKey, fetched);
+    out.push({ ...record, payload: fillMissing(payload, missing, fetched) });
   }
   return out;
+}
+
+function fillMissing(
+  payload: Record<string, unknown>,
+  missing: readonly string[],
+  fetched: Record<string, unknown>,
+): Record<string, unknown> {
+  const filled: Record<string, unknown> = { ...payload };
+  for (const field of missing) {
+    // A field Close omits from the object too is stored as NULL, as a
+    // backfill would store it.
+    filled[field] = field in fetched ? fetched[field] : null;
+  }
+  return filled;
 }

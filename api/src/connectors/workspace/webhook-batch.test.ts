@@ -51,6 +51,7 @@ import {
   retryFailedInlineWebhooks,
 } from "../../inngest/functions/webhook-flow";
 import { connectorRegistry } from "../registry";
+import { sourceConnectionManager } from "../../sync/database-data-source-manager";
 import {
   BOX_CODES,
   cutBatch,
@@ -335,6 +336,61 @@ describe("ingress", () => {
 });
 
 describe("the inline cron", () => {
+  it("fails only the flow whose connector cannot load; other flows still apply", async () => {
+    const load = vi
+      .spyOn(sourceConnectionManager, "getSourceConnection")
+      .mockImplementation(async id => {
+        if (id === String(conn)) throw new Error("definition is blocked");
+        return { connection: { api_key: "api_key_other" } } as never;
+      });
+    const build = vi
+      .spyOn(connectorRegistry, "getConnectorFor")
+      .mockReturnValue({
+        getWebhookEventMapping: () => ({ entity: "leads" }),
+        extractWebhookCdcRecords: (raw: any) => [
+          {
+            entity: "leads",
+            recordId: raw.data.id,
+            operation: "upsert",
+            payload: { id: raw.data.id },
+          },
+        ],
+        enrichWebhookCdcRecords: async (records: unknown[]) => records,
+      } as never);
+    try {
+      const inline = (fid: Types.ObjectId, eventId: string) =>
+        WebhookEvent.create({
+          flowId: fid,
+          workspaceId: ws,
+          eventId,
+          eventType: "lead.updated",
+          status: "pending",
+          rawPayload: { data: { id: `lead_${eventId}` } },
+        });
+      const broken = await inline(flowId, "inline_broken");
+      const healthy = await inline(otherFlowId, "inline_healthy");
+
+      const logger = { info: () => {}, warn: () => {} };
+      const result = await ingestPendingWebhookEvents(logger);
+
+      expect(result.failed).toBe(1);
+      expect(await WebhookEvent.findById(broken._id).lean()).toMatchObject({
+        status: "failed",
+        applyError: { code: "CONNECTOR_LOAD_FAILED" },
+      });
+      const appended = mocks.appendNormalizedEvents.mock.calls.map(
+        ([call]) => call.flowId,
+      );
+      expect(appended).toEqual([String(otherFlowId)]);
+      const after = await WebhookEvent.findById(healthy._id).lean();
+      expect(after?.status).not.toBe("failed");
+      expect(after?.applyError).toBeFalsy();
+    } finally {
+      load.mockRestore();
+      build.mockRestore();
+    }
+  });
+
   it("never claims a box-lane event", async () => {
     const box = await boxEvent();
     await WebhookEvent.create({

@@ -1891,6 +1891,32 @@ async function testFillBudgetDefersOncePerRunTimeIsSpent() {
   );
 }
 
+async function testOneReadServesEveryEventOfAnObjectInARun() {
+  const connector = createConnector();
+  const calls = stubCloseGet(connector, () => ({
+    id: "lead_1",
+    contacts: [],
+    opportunities: [],
+    tasks: [],
+    html_url: "https://app.close.com/lead/lead_1/",
+    integration_links: [],
+    primary_email: null,
+    primary_phone: null,
+  }));
+
+  // A bulk edit: three events for one lead in one ingest run.
+  for (let i = 0; i < 3; i++) {
+    const [record] = await connector.enrichWebhookCdcRecords(
+      connector.extractWebhookCdcRecords(leadUpdatedWebhook(), "lead.updated"),
+      allEntities,
+    );
+    const payload = record.payload as Record<string, unknown>;
+    assert.equal(payload.html_url, "https://app.close.com/lead/lead_1/");
+    assert.equal(payload.name, "Michal");
+  }
+  assert.equal(calls.length, 1);
+}
+
 async function main() {
   testCloseApiErrorResponseIsFormattedForLogs();
   await testWebhookSignatureVerification();
@@ -1934,6 +1960,7 @@ async function main() {
   await testFillSkipsRecordsThatNeedNoRead();
   await testFailedReadNeverAppliesThePartialRecord();
   await testFillBudgetDefersOncePerRunTimeIsSpent();
+  await testOneReadServesEveryEventOfAnObjectInARun();
 }
 
 main().catch(error => {
