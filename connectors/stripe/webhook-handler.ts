@@ -18,13 +18,18 @@
  *   It passes through untouched, with no request.
  * - An upsert that lacks a column a list row always has
  *   (`STRIPE_WEBHOOK_FILL_FIELDS`), or a thin event that only names its
- *   object (`related_object`), gets one GET of that object. Only absent
- *   keys are filled; the webhook's own values win. A column the object
- *   omits too is NULL, as a backfill stores it.
+ *   object (`related_object`), gets one GET of that object. The fetched
+ *   object is the row, over the event's keys. It is at least as new as the
+ *   event, so a fill that runs late (deferred, retried) never writes stale
+ *   values over a newer event's row. A Stripe row's time is its `created`,
+ *   which never moves, so the last write wins. A column the object omits
+ *   too is NULL, as a backfill stores it.
  * - 404 (deleted since): the record is dropped and the event `skipped`.
  *   Its delete event follows.
- * - Fill budget spent: the event is `deferred`, retried without counting.
- * - Any other failure: `extract_failed`, retried up to Mako's 5 attempts.
+ * - Fill budget spent, 429, 5xx or no answer: the event is `deferred`.
+ *   Mako refunds the attempt, up to its 5 deferrals, so a Stripe incident
+ *   does not use up the event's retries.
+ * - Any other 4xx: `extract_failed`, retried up to Mako's 5 attempts.
  */
 import Stripe from "stripe";
 import type {
@@ -59,7 +64,8 @@ export const STRIPE_WEBHOOK_VERIFICATION: WebhookVerification = {
  * Columns of the schema that Stripe returns only when asked to `expand`
  * them, at API version 2023-10-16. Neither a list row nor a webhook payload
  * has them, so their absence never makes a payload partial.
- * `payment_intents.charges` left the object in 2022-11-15. Balance
+ * `charges.refunds` and `payment_intents.charges` left their objects in
+ * 2022-11-15. Balance
  * transactions and early fraud warnings have no `metadata`.
  */
 export const STRIPE_NOT_RETURNED: Readonly<Record<string, readonly string[]>> =
@@ -68,6 +74,7 @@ export const STRIPE_NOT_RETURNED: Readonly<Record<string, readonly string[]>> =
     plans: ["tiers"],
     prices: ["tiers", "currency_options"],
     coupons: ["applies_to", "currency_options"],
+    charges: ["refunds"],
     payment_intents: ["charges"],
     early_fraud_warnings: ["metadata"],
   };
@@ -120,6 +127,12 @@ export const STRIPE_WEBHOOK_FILL_FIELDS: Readonly<
 export const STRIPE_WEBHOOK_FILL_BUDGET_MS = 40_000;
 
 /**
+ * One fill GET's deadline, with no network retry. A GET started just inside
+ * the budget still ends by 50 s, under the 60 s batch limit.
+ */
+export const STRIPE_WEBHOOK_FILL_TIMEOUT_MS = 10_000;
+
+/**
  * An object id that may go into a request path. Stripe's own ids are
  * `<prefix>_<alphanumerics>`; coupons and plans may carry a merchant's id,
  * so any printable id is let through, but never `.` or `..` (the SDK
@@ -129,7 +142,10 @@ const SAFE_ID = /^[\x21-\x7e]{1,255}$/;
 const safeId = (id: string) => SAFE_ID.test(id) && id !== "." && id !== "..";
 
 export interface StripeWebhookDeps {
-  /** A client on the connection's key. */
+  /**
+   * A client on the connection's key, with STRIPE_WEBHOOK_FILL_TIMEOUT_MS
+   * and no network retries.
+   */
   stripe: () => Stripe;
   log: (message: string) => void;
   budgetMs?: number;
@@ -242,12 +258,13 @@ async function fillRecord(
       return { kind: "gone" };
     }
     const status = (error as { statusCode?: number })?.statusCode;
-    return {
-      kind: "failed",
-      reason: `Could not read Stripe ${record.entity} ${record.recordId}${
-        status ? ` (HTTP ${status})` : ""
-      }: ${error instanceof Error ? error.message : String(error)}`,
-    };
+    const reason = `Could not read Stripe ${record.entity} ${record.recordId}${
+      status ? ` (HTTP ${status})` : ""
+    }: ${error instanceof Error ? error.message : String(error)}`;
+    // Stripe's side, or no answer: wait, without spending an attempt.
+    const transient =
+      typeof status !== "number" || status === 429 || status >= 500;
+    return { kind: transient ? "deferred" : "failed", reason };
   }
   const object = isObject(fetched) ? fetched : {};
   // Stripe answers a deleted customer with `{ id, object, deleted: true }`.
@@ -258,9 +275,11 @@ async function fillRecord(
     return { kind: "gone" };
   }
 
-  // The webhook's own keys win; the object fills only what is absent. A
-  // thin event has no keys of its own but its id, so it takes the object.
-  const filled: Record<string, unknown> = thin ? { ...object } : { ...payload };
+  // The fetched object wins: it is at least as new as the event. The
+  // event's keys stay only where the object has none.
+  const filled: Record<string, unknown> = thin
+    ? { ...object }
+    : { ...payload, ...object };
   for (const field of fields) {
     if (!(field in filled))
       filled[field] = field in object ? object[field] : null;

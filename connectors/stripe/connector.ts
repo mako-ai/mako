@@ -30,7 +30,10 @@ import type {
 } from "@makoai/connector-sdk";
 import { listStripePage } from "./lists.ts";
 import { STRIPE_ENTITY_SCHEMA_MAP, stripeJsonSchema } from "./schema.ts";
-import { stripeWebhookDefinition } from "./webhook-handler.ts";
+import {
+  STRIPE_WEBHOOK_FILL_TIMEOUT_MS,
+  stripeWebhookDefinition,
+} from "./webhook-handler.ts";
 
 /** Pinned: it decides the shape of every record. Same as the in-process one. */
 const STRIPE_API_VERSION = "2023-10-16" as Stripe.LatestApiVersion;
@@ -131,10 +134,14 @@ function hostConfig(
   }
 }
 
-function stripeClient(ctx: Context<StripeConfig>): Stripe {
+function stripeClient(
+  ctx: Context<StripeConfig>,
+  options: Pick<Stripe.StripeConfig, "timeout" | "maxNetworkRetries"> = {},
+): Stripe {
   if (!ctx.config.api_key) throw new Error("Stripe API key is required");
   return new Stripe(ctx.config.api_key, {
     apiVersion: STRIPE_API_VERSION,
+    ...options,
     ...hostConfig(ctx.config.api_base_url, message => ctx.log(message)),
   });
 }
@@ -237,7 +244,11 @@ export default defineConnector<StripeConfig>({
   ),
   // Verified by Mako's API, handled here in batches (webhook-handler.ts).
   webhooks: stripeWebhookDefinition<StripeConfig>(ctx => ({
-    stripe: () => stripeClient(ctx),
+    stripe: () =>
+      stripeClient(ctx, {
+        timeout: STRIPE_WEBHOOK_FILL_TIMEOUT_MS,
+        maxNetworkRetries: 0,
+      }),
     log: message => ctx.log(message),
   })),
 });

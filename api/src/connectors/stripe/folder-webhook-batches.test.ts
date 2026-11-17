@@ -78,6 +78,8 @@ let spec: Record<string, any>;
 /** A Stripe that serves objects by path. Every request is recorded. */
 const objects = new Map<string, Record<string, unknown>>();
 const failing = new Set<string>();
+const limited = new Set<string>();
+const refusing = new Set<string>();
 const requests: string[] = [];
 const endpoints: Array<Record<string, any>> = [];
 let server: http.Server;
@@ -130,6 +132,16 @@ function serve(
   }
   if (failing.has(route)) {
     return send(500, { error: { type: "api_error", message: "Boom" } });
+  }
+  if (limited.has(route)) {
+    return send(429, {
+      error: { type: "rate_limit_error", message: "Slow down" },
+    });
+  }
+  if (refusing.has(route)) {
+    return send(400, {
+      error: { type: "invalid_request_error", message: "No" },
+    });
   }
   const object = objects.get(route);
   if (!object) {
@@ -477,13 +489,14 @@ void test("every event type applies the same row on both paths, with no request"
   assert.deepEqual(requests, [], "a whole payload costs no request");
 });
 
-void test("a partial upsert is filled by one GET; the webhook's values win; deletes cost none", async () => {
+void test("a partial upsert takes its fetched object, which wins over the event; deletes cost none", async () => {
   const rowsOf = rowsByEntity();
   const sub = structuredClone(rowsOf.subscriptions[0]);
   const customer = structuredClone(rowsOf.customers[0]);
   objects.set(`/v1/subscriptions/${sub.id}`, {
     ...sub,
-    status: "from GET, must not win",
+    // Newer than the event: a late fill must not write the event's status.
+    status: "canceled",
     // Stripe leaves this one out too: stored as NULL, as a backfill would.
     pause_collection: undefined,
   });
@@ -517,10 +530,11 @@ void test("a partial upsert is filled by one GET; the webhook's values win; dele
 
   const filledSub = rows[0]![0].payload;
   assert.deepEqual(filledSub.items, sub.items);
-  assert.equal(filledSub.status, "active");
+  assert.equal(filledSub.status, "canceled");
   assert.equal(filledSub.pause_collection, null);
   const filledCustomer = rows[1]![0].payload;
-  assert.equal(filledCustomer.email, "new@example.test");
+  // The fetched object is as new as the event or newer: it wins.
+  assert.equal(filledCustomer.email, customer.email);
   assert.equal(filledCustomer.name, customer.name);
   assert.equal(filledCustomer.created, customer.created);
   // Includable columns stay absent: Stripe never returns them unexpanded.
@@ -571,9 +585,11 @@ void test("a thin event, which only names its object, takes the whole object", a
   assert.deepEqual(requests, [`GET /v1/invoices/${invoice.id}`]);
 });
 
-void test("404 or a deleted object skips; a failed read holds the event for a retry", async () => {
+void test("404 or a deleted object skips; Stripe's errors defer; a 400 fails for a retry", async () => {
   const charge = structuredClone(rowsByEntity().charges[0]);
   failing.add("/v1/charges/ch_broken");
+  limited.add("/v1/charges/ch_limited");
+  refusing.add("/v1/charges/ch_refused");
   objects.set("/v1/customers/cus_gone_since", {
     id: "cus_gone_since",
     object: "customer",
@@ -583,7 +599,15 @@ void test("404 or a deleted object skips; a failed read holds the event for a re
     "charge.updated",
     "charge.updated",
     "customer.updated",
+    "charge.updated",
+    "charge.updated",
   ]);
+  for (const [i, id] of [
+    [3, "ch_limited"],
+    [4, "ch_refused"],
+  ] as const) {
+    events[i].rawPayload.data.object = { id, object: "charge", amount: 1 };
+  }
   events[0].rawPayload.data.object = {
     id: "ch_missing",
     object: "charge",
@@ -602,10 +626,22 @@ void test("404 or a deleted object skips; a failed read holds the event for a re
   const { outcomes } = await folderRows(events);
   assert.deepEqual(
     outcomes.map(o => o.outcome),
-    ["skipped", "extract_failed", "skipped"],
+    ["skipped", "deferred", "skipped", "deferred", "extract_failed"],
   );
   assert.match(outcomes[0].reason, /404/);
   assert.match(outcomes[1].reason, /ch_broken.*HTTP 500/);
+  assert.match(outcomes[3].reason, /ch_limited.*HTTP 429/);
+  assert.match(outcomes[4].reason, /ch_refused.*HTTP 400/);
+});
+
+void test("a charge without `refunds`, as Stripe sends it since 2022-11-15, makes no request", async () => {
+  const [event] = buildWebhookEvents(["charge.succeeded"]);
+  delete event.rawPayload.data.object.refunds;
+  requests.length = 0;
+  const { outcomes, rows } = await folderRows([event]);
+  assert.equal(outcomes[0].outcome, "records");
+  assert.equal("refunds" in rows[0]![0].payload, false);
+  assert.deepEqual(requests, []);
 });
 
 void test("past the fill budget, events are deferred, never answered partial", async () => {
