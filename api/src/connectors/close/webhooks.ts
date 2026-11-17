@@ -3,12 +3,13 @@
  * payload extraction, signature verification and subscription provisioning.
  */
 import axios, { AxiosInstance } from "axios";
-import type {
-  ProvisionWebhookOptions,
-  ProvisionWebhookResult,
-  WebhookEventMapping,
-  WebhookHandlerOptions,
-  WebhookVerificationResult,
+import {
+  WebhookEnrichmentRetryError,
+  type ProvisionWebhookOptions,
+  type ProvisionWebhookResult,
+  type WebhookEventMapping,
+  type WebhookHandlerOptions,
+  type WebhookVerificationResult,
 } from "../base/BaseConnector";
 import {
   hmacHex,
@@ -619,6 +620,44 @@ type FillableRecord = {
 };
 
 /**
+ * How long one ingest run may spend reading Close objects for one flow.
+ * Webhook ingest is one serial loop across every workspace, so an unbounded
+ * fill would let one bulk edit stall every other flow's webhooks. At the
+ * fill client's 100 ms gate pause plus ~200 ms per read, 30 s is ~100 reads
+ * per flow per 5-minute run (~29k a day). Records past the budget wait for
+ * a later run (WebhookEnrichmentRetryError `defer`).
+ */
+export const CLOSE_WEBHOOK_FILL_BUDGET_MS = Math.max(
+  parseInt(process.env.CLOSE_WEBHOOK_FILL_BUDGET_MS || "30000", 10) || 30000,
+  1000,
+);
+
+/** Gate pause after each fill read (see CloseConnector.getWebhookFillClient). */
+export const CLOSE_WEBHOOK_FILL_MIN_DELAY_MS = 100;
+
+/** Wall-clock budget for fill reads, shared by one connector instance. */
+export class CloseWebhookFillBudget {
+  private spentMs = 0;
+  constructor(
+    private readonly limitMs: number = CLOSE_WEBHOOK_FILL_BUDGET_MS,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
+
+  exhausted(): boolean {
+    return this.spentMs >= this.limitMs;
+  }
+
+  async spend<T>(work: () => Promise<T>): Promise<T> {
+    const startedAt = this.now();
+    try {
+      return await work();
+    } finally {
+      this.spentMs += this.now() - startedAt;
+    }
+  }
+}
+
+/**
  * Complete partial webhook upserts with the fields Close leaves out (see
  * CLOSE_WEBHOOK_FILL_FIELDS), so applying the record never NULLs them.
  *
@@ -628,17 +667,23 @@ type FillableRecord = {
  * endpoint has 240) and the client waits at the key's shared rate gate.
  * Only absent keys are filled: the webhook's own values win.
  *
- * A record whose object is gone (404: deleted or merged after the event)
- * is dropped; its delete event follows. A record the fetch fails for is
- * also dropped, never applied partial: the row keeps its previous full
- * values, and the next resync reads the change (its window is on
- * `date_updated`, which the update moved).
+ * A partial record is never returned unfilled:
+ * - 404 (object deleted or merged after the event): the record is dropped.
+ *   Its delete event follows.
+ * - Budget spent: WebhookEnrichmentRetryError `defer`. The event waits for
+ *   the retry cron (every 30 min) and keeps its retry count.
+ * - Any other failure (after the client's retries): `fail`. The event is
+ *   marked failed and the retry cron takes it again.
  */
 export async function fillCloseWebhookPartialRecords<T extends FillableRecord>(
   api: () => AxiosInstance,
   records: T[],
-  shouldFill: (record: T) => boolean = () => true,
+  options: {
+    shouldFill?: (record: T) => boolean;
+    budget?: CloseWebhookFillBudget;
+  } = {},
 ): Promise<T[]> {
+  const shouldFill = options.shouldFill ?? (() => true);
   const out: T[] = [];
   for (const record of records) {
     const spec = shouldFill(record)
@@ -657,20 +702,23 @@ export async function fillCloseWebhookPartialRecords<T extends FillableRecord>(
       out.push(record);
       continue;
     }
-
-    try {
-      const response = await api().get(
-        `${spec.path}${encodeURIComponent(record.recordId)}/`,
-        { params: { _fields: missing.join(",") } },
+    if (options.budget?.exhausted()) {
+      throw new WebhookEnrichmentRetryError(
+        `Close fill budget for this run is spent; ${record.entity} ${record.recordId} waits for the next run`,
+        "defer",
       );
-      const fetched = (response?.data ?? {}) as Record<string, unknown>;
-      const filled: Record<string, unknown> = { ...payload };
-      for (const field of missing) {
-        // A field Close omits from the object too is stored as NULL, as a
-        // backfill would store it.
-        filled[field] = field in fetched ? fetched[field] : null;
-      }
-      out.push({ ...record, payload: filled });
+    }
+
+    let fetched: Record<string, unknown>;
+    try {
+      const read = () =>
+        api().get(`${spec.path}${encodeURIComponent(record.recordId)}/`, {
+          params: { _fields: missing.join(",") },
+        });
+      const response = options.budget
+        ? await options.budget.spend(read)
+        : await read();
+      fetched = (response?.data ?? {}) as Record<string, unknown>;
     } catch (error) {
       const status = axios.isAxiosError(error)
         ? error.response?.status
@@ -682,16 +730,26 @@ export async function fillCloseWebhookPartialRecords<T extends FillableRecord>(
         });
         continue;
       }
-      logger.warn(
-        "Could not read the full Close object for a webhook upsert; skipping it until the next resync",
-        {
-          entity: record.entity,
-          recordId: record.recordId,
-          status,
-          error: error instanceof Error ? error.message : String(error),
-        },
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("Could not read the full Close object for a webhook upsert", {
+        entity: record.entity,
+        recordId: record.recordId,
+        status,
+        error: message,
+      });
+      throw new WebhookEnrichmentRetryError(
+        `Could not read Close ${record.entity} ${record.recordId}${status ? ` (HTTP ${status})` : ""}: ${message}`,
+        "fail",
       );
     }
+
+    const filled: Record<string, unknown> = { ...payload };
+    for (const field of missing) {
+      // A field Close omits from the object too is stored as NULL, as a
+      // backfill would store it.
+      filled[field] = field in fetched ? fetched[field] : null;
+    }
+    out.push({ ...record, payload: filled });
   }
   return out;
 }

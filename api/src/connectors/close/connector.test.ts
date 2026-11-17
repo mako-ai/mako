@@ -11,7 +11,14 @@ import {
   closeActivitySearchFields,
   splitCloseSearchFieldSelection,
 } from "./schema";
-import { MAKO_SYSTEM_FIELDS } from "../base/BaseConnector";
+import {
+  MAKO_SYSTEM_FIELDS,
+  WebhookEnrichmentRetryError,
+} from "../base/BaseConnector";
+import {
+  CloseWebhookFillBudget,
+  fillCloseWebhookPartialRecords,
+} from "./webhooks";
 import { throttledRequest } from "../rate-gate";
 import { callableFor } from "../../connections/callable";
 
@@ -1582,7 +1589,7 @@ function stubCloseGet(
   handler: (url: string, params: Record<string, unknown>) => unknown,
 ) {
   const calls: Array<{ url: string; params: Record<string, unknown> }> = [];
-  (connector as any).closeApi = {
+  (connector as any).webhookFillApi = {
     get: async (url: string, config?: { params?: Record<string, unknown> }) => {
       const params = config?.params ?? {};
       calls.push({ url, params });
@@ -1796,11 +1803,12 @@ async function testFillSkipsRecordsThatNeedNoRead() {
 }
 
 /**
- * A failed read never lets the partial row through: a 404 (lead deleted or
- * merged since) and an error after the client's retries both drop it.
+ * A failed read never lets the partial row through. A 404 (lead deleted or
+ * merged since) drops it. Any other failure after the client's retries
+ * fails the event, so the retry cron takes it again.
  */
-async function testFailedReadDropsThePartialRecord() {
-  for (const status of [404, 500]) {
+async function testFailedReadNeverAppliesThePartialRecord() {
+  const failing = (status: number) => {
     const connector = createConnector();
     stubCloseGet(connector, () => {
       throw Object.assign(new Error(`HTTP ${status}`), {
@@ -1808,17 +1816,79 @@ async function testFailedReadDropsThePartialRecord() {
         response: { status, data: {} },
       });
     });
-    const records = connector.extractWebhookCdcRecords(
+    return connector;
+  };
+  const lead = () =>
+    createConnector().extractWebhookCdcRecords(
       leadUpdatedWebhook(),
       "lead.updated",
     );
-    assert.equal(records.length, 1);
-    assert.deepEqual(
-      await connector.enrichWebhookCdcRecords(records, allEntities),
-      [],
-      `status ${status}`,
-    );
-  }
+
+  assert.deepEqual(
+    await failing(404).enrichWebhookCdcRecords(lead(), allEntities),
+    [],
+  );
+  await assert.rejects(
+    failing(500).enrichWebhookCdcRecords(lead(), allEntities),
+    (error: unknown) =>
+      error instanceof WebhookEnrichmentRetryError &&
+      error.mode === "fail" &&
+      /HTTP 500/.test(error.message),
+  );
+}
+
+/**
+ * One bulk edit must not stall every flow's webhook ingest: once a run has
+ * spent its read budget, further partial records defer to the next run.
+ * Records that need no read still pass.
+ */
+async function testFillBudgetDefersOncePerRunTimeIsSpent() {
+  let clock = 0;
+  const budget = new CloseWebhookFillBudget(1_000, () => clock);
+  const api = {
+    get: async () => {
+      clock += 600;
+      return { data: { contacts: [] } };
+    },
+  } as any;
+  const connector = createConnector();
+  const lead = connector.extractWebhookCdcRecords(
+    leadUpdatedWebhook(),
+    "lead.updated",
+  );
+  const deleted = connector.extractWebhookCdcRecords(
+    {
+      event: {
+        id: "ev_d",
+        object_type: "lead",
+        action: "deleted",
+        object_id: "lead_9",
+        date_updated: "2026-11-17T06:00:00.000Z",
+        data: { id: "lead_9" },
+      },
+    },
+    "lead.deleted",
+  );
+
+  // 600 ms, then 1,200 ms: both reads run, the second one crosses 1 s.
+  assert.equal(
+    (await fillCloseWebhookPartialRecords(() => api, lead, { budget })).length,
+    1,
+  );
+  assert.equal(
+    (await fillCloseWebhookPartialRecords(() => api, lead, { budget })).length,
+    1,
+  );
+  assert.equal(budget.exhausted(), true);
+  await assert.rejects(
+    fillCloseWebhookPartialRecords(() => api, lead, { budget }),
+    (error: unknown) =>
+      error instanceof WebhookEnrichmentRetryError && error.mode === "defer",
+  );
+  assert.deepEqual(
+    await fillCloseWebhookPartialRecords(() => api, deleted, { budget }),
+    deleted,
+  );
 }
 
 async function main() {
@@ -1862,7 +1932,8 @@ async function main() {
   await testLeadWebhookIsFilledFromTheRestLead();
   await testPartialEntitiesAskForTheirMissingColumns();
   await testFillSkipsRecordsThatNeedNoRead();
-  await testFailedReadDropsThePartialRecord();
+  await testFailedReadNeverAppliesThePartialRecord();
+  await testFillBudgetDefersOncePerRunTimeIsSpent();
 }
 
 main().catch(error => {
