@@ -47,6 +47,7 @@ import {
   selectedEntitiesFromFlowBody,
   validateWriteMode,
 } from "./flow-write-validation.service";
+import { resyncLastRunAt } from "./resync-schedule";
 
 const logger = loggers.inngest("flow");
 
@@ -208,13 +209,18 @@ export async function buildNewFlow(params: {
     const enabled = Boolean(sched.enabled);
     const cron = typeof sched.cron === "string" ? sched.cron.trim() : "";
     if (enabled && cron) {
-      flowData.backfillSchedule = {
+      const next = {
         enabled: true,
         cron,
         timezone:
           typeof sched.timezone === "string" && sched.timezone.trim()
             ? sched.timezone.trim()
             : "UTC",
+      };
+      // A new resync first runs at its next tick (resync-schedule.ts).
+      flowData.backfillSchedule = {
+        ...next,
+        lastRunAt: resyncLastRunAt(undefined, next),
       };
     }
   }
@@ -726,15 +732,19 @@ export async function applyFlowUpdate(params: {
     const sched = body.backfillSchedule || {};
     const enabled = Boolean(sched.enabled);
     const cron = typeof sched.cron === "string" ? sched.cron.trim() : "";
-    flow.backfillSchedule = {
+    const next = {
       enabled,
       cron: enabled ? cron : flow.backfillSchedule?.cron,
       timezone:
         typeof sched.timezone === "string" && sched.timezone.trim()
           ? sched.timezone.trim()
           : flow.backfillSchedule?.timezone || "UTC",
+    };
+    flow.backfillSchedule = {
+      ...next,
       entities: flow.backfillSchedule?.entities,
-      lastRunAt: flow.backfillSchedule?.lastRunAt,
+      // A new or changed resync first runs at its next tick.
+      lastRunAt: resyncLastRunAt(flow.backfillSchedule, next),
     };
   }
 

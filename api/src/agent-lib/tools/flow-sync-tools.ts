@@ -39,6 +39,7 @@ import { syncFlowWebhookSubscription } from "../../services/flow-webhook-subscri
 import { generateWebhookEndpoint } from "../../utils/webhook.utils";
 import { workspaceService } from "../../services/workspace.service";
 import { cdcBackfillService } from "../../sync-cdc/backfill";
+import { resyncLastRunAt } from "../../services/resync-schedule";
 
 const OBJECT_ID = /^[0-9a-f]{24}$/i;
 const RECENT_EXECUTIONS = 5;
@@ -404,12 +405,16 @@ export function createFlowSyncTools({
               return failure("Scheduled resync requires syncEngine=cdc");
             }
             const on = resync !== "off";
-            flow.backfillSchedule = {
+            const next = {
               enabled: on,
               cron: on ? resync.trim() : flow.backfillSchedule?.cron,
               timezone: tz || flow.backfillSchedule?.timezone || "UTC",
+            };
+            flow.backfillSchedule = {
+              ...next,
               entities: flow.backfillSchedule?.entities,
-              lastRunAt: flow.backfillSchedule?.lastRunAt,
+              // A new or changed resync first runs at its next tick.
+              lastRunAt: resyncLastRunAt(flow.backfillSchedule, next),
             };
           }
 
