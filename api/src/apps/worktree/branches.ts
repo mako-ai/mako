@@ -11,10 +11,12 @@ import {
   updateRefCas,
   type GitAuthor,
 } from "../repository.service";
-import { WORKFLOWS_DIR } from "../app-paths";
+import { CONNECTOR_FOLDERS_DIR, WORKFLOWS_DIR } from "../app-paths";
 import { workspaceService } from "../../services/workspace.service";
 import {
+  CONNECTORS_ADMIN_ONLY,
   WORKFLOWS_ADMIN_ONLY,
+  mayChangeConnectors,
   mayChangeWorkflows,
 } from "../../workflows/policy";
 
@@ -233,22 +235,37 @@ export async function mergeBranchToMain(
   if (branchHead === mainHead) {
     return { merged: false, reason: "Already up to date" };
   }
-  // Main is where workflows go live. The git endpoint lets only admins push
-  // workflow changes; the merge, which does not run hooks, asks the same.
+  // Main is where workflows go live and where connector code gets its
+  // connections' keys. The git endpoint lets only admins push changes to
+  // either; the merge, which does not run hooks, asks the same.
   if (actorUserId) {
-    const { stdout } = await runGit([
-      // Three dots: what the branch changed since it left main, not what
-      // main changed meanwhile.
-      ...["-C", repoDir, "diff", "--name-only", `${mainHead}...${branchHead}`],
-      ...["--", `${WORKFLOWS_DIR}/`],
-    ]);
-    if (stdout.trim()) {
+    const changed = async (dir: string) => {
+      const { stdout } = await runGit([
+        // Three dots: what the branch changed since it left main, not what
+        // main changed meanwhile.
+        ...[
+          "-C",
+          repoDir,
+          "diff",
+          "--name-only",
+          `${mainHead}...${branchHead}`,
+        ],
+        ...["--", `${dir}/`],
+      ]);
+      return Boolean(stdout.trim());
+    };
+    const workflows = await changed(WORKFLOWS_DIR);
+    const connectors = await changed(CONNECTOR_FOLDERS_DIR);
+    if (workflows || connectors) {
       const member = await workspaceService.getMember(
         scope.workspaceId,
         actorUserId,
       );
-      if (!mayChangeWorkflows(member?.role)) {
+      if (workflows && !mayChangeWorkflows(member?.role)) {
         throw new WorktreeConflictError(WORKFLOWS_ADMIN_ONLY);
+      }
+      if (connectors && !mayChangeConnectors(member?.role)) {
+        throw new WorktreeConflictError(CONNECTORS_ADMIN_ONLY);
       }
     }
   }

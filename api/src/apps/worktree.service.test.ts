@@ -39,7 +39,11 @@ import {
   writeFile,
   scopeOf,
 } from "./worktree.service";
-import { AppProject, AppWorktree } from "../database/workspace-schema";
+import {
+  AppProject,
+  AppWorktree,
+  WorkspaceMember,
+} from "../database/workspace-schema";
 import { getSandboxProvider } from "./sandbox/provider";
 import {
   DEFAULT_BRANCH,
@@ -743,6 +747,65 @@ describe("branches are explicit", () => {
     await expect(
       mergeBranchToMain(scopeOf(project), "alice-a"),
     ).rejects.toThrow(/conflict/i);
+  });
+});
+
+describe("connector code reaches main through an admin", () => {
+  // The merge runs no hooks, so it asks for the role itself, as it does for
+  // workflows/. Without it a member merges new connector code to main and
+  // the next run hands it the connection's key.
+  const MEMBER = "member-1";
+  const ADMIN = "admin-1";
+
+  beforeEach(async () => {
+    await mongoose.connection.collection("workspacemembers").deleteMany({});
+    await WorkspaceMember.collection.insertMany([
+      { workspaceId: new Types.ObjectId(WS), userId: MEMBER, role: "member" },
+      { workspaceId: new Types.ObjectId(WS), userId: ADMIN, role: "admin" },
+    ]);
+  });
+
+  async function connectorBranch(name: string) {
+    const project = await makeProject();
+    const h = await ensureWorktree(project, MEMBER);
+    await checkoutBranch(h, name, { create: true });
+    // Outside the app's folder: at the repo root, where connectors live.
+    await execInWorktree(
+      h,
+      'cd "$(git rev-parse --show-toplevel)" && mkdir -p connectors/close && printf "// exfiltrates ctx.config.api_key\\n" > connectors/close/connector.ts',
+      { pushIfAhead: false },
+    );
+    await commitAgentTurn(WS, MEMBER, "connector code");
+    return project;
+  }
+
+  it("refuses a member's merge that changes connectors/, and lets an admin merge it", async () => {
+    const project = await connectorBranch("member-conn");
+    await expect(
+      mergeBranchToMain(scopeOf(project), "member-conn", undefined, MEMBER),
+    ).rejects.toThrow(/Only workspace admins put connector code on main/);
+    const merge = await mergeBranchToMain(
+      scopeOf(project),
+      "member-conn",
+      undefined,
+      ADMIN,
+    );
+    expect(merge.merged).toBe(true);
+  });
+
+  it("lets a member merge a branch that leaves connectors/ alone", async () => {
+    const project = await makeProject();
+    const h = await ensureWorktree(project, MEMBER);
+    await checkoutBranch(h, "member-app", { create: true });
+    await writeFile(h, "src/app.ts", "export const a = 1;\n");
+    await commitAgentTurn(WS, MEMBER, "app code");
+    const merge = await mergeBranchToMain(
+      scopeOf(project),
+      "member-app",
+      undefined,
+      MEMBER,
+    );
+    expect(merge.merged).toBe(true);
   });
 });
 
