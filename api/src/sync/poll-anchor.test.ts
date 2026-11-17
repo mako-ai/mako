@@ -10,16 +10,19 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  * timestamp, both minus the overlap.
  */
 
-const { maxByColumn, getMaxTrackingValue, fetchEntityChunk } = vi.hoisted(
-  () => {
+const { maxByColumn, probeError, getMaxTrackingValue, fetchEntityChunk } =
+  vi.hoisted(() => {
     const maxByColumn: Record<string, string | undefined> = {};
+    // When set, every destination probe fails with this error.
+    const probeError: { value?: string } = {};
     return {
       maxByColumn,
+      probeError,
       getMaxTrackingValue: vi.fn(
-        async (_conn: unknown, _table: string, column: string) => ({
-          success: true,
-          maxValue: maxByColumn[column],
-        }),
+        async (_conn: unknown, _table: string, column: string) =>
+          probeError.value
+            ? { success: false, error: probeError.value }
+            : { success: true, maxValue: maxByColumn[column] },
       ),
       fetchEntityChunk: vi.fn(async (_opts: { since?: Date }) => ({
         totalProcessed: 0,
@@ -27,8 +30,7 @@ const { maxByColumn, getMaxTrackingValue, fetchEntityChunk } = vi.hoisted(
         hasMore: false,
       })),
     };
-  },
-);
+  });
 vi.mock("../services/destination-writer.service", async () => ({
   ...(await vi.importActual<object>("../services/destination-writer.service")),
   getMaxTrackingValue,
@@ -119,16 +121,52 @@ describe("incremental poll anchor", () => {
     // A webhook wrote the newest row at 14:59: both maxima sit there.
     maxByColumn._syncedAt = "2026-11-17T14:59:30.000Z";
     maxByColumn._mako_source_ts = "2026-11-17T14:58:00.000Z";
+    delete probeError.value;
   });
 
-  it("uses the poll cursor and never reads the destination", async () => {
+  it("uses the poll cursor; the destination is only checked for rows", async () => {
     await performSyncChunk({
       ...pollOptions,
       logger,
       pollCursor: { since: "2026-11-17T13:50:00.000Z", overlapMs: 600_000 },
     });
     expect(sinceOfFirstFetch()?.toISOString()).toBe("2026-11-17T13:50:00.000Z");
-    expect(getMaxTrackingValue).not.toHaveBeenCalled();
+    expect(getMaxTrackingValue.mock.calls.map(c => c[2])).toEqual([
+      "_syncedAt",
+    ]);
+  });
+
+  it("a poll cursor on record still fetches everything into an empty live table", async () => {
+    delete maxByColumn._mako_source_ts;
+    delete maxByColumn._syncedAt;
+    await performSyncChunk({
+      ...pollOptions,
+      logger,
+      pollCursor: { since: "2026-11-17T13:50:00.000Z" },
+    });
+    expect(sinceOfFirstFetch()).toBeUndefined();
+  });
+
+  it("a poll cursor on record still fetches everything into a missing live table", async () => {
+    probeError.value =
+      "Not found: Table realadvisor-prod:pl_close_crm_shadow.call_activities";
+    await performSyncChunk({
+      ...pollOptions,
+      logger,
+      pollCursor: { since: "2026-11-17T13:50:00.000Z" },
+    });
+    expect(sinceOfFirstFetch()).toBeUndefined();
+  });
+
+  it("a transient destination error keeps the poll cursor, with a warning", async () => {
+    probeError.value = "socket hang up";
+    await performSyncChunk({
+      ...pollOptions,
+      logger,
+      pollCursor: { since: "2026-11-17T13:50:00.000Z" },
+    });
+    expect(sinceOfFirstFetch()?.toISOString()).toBe("2026-11-17T13:50:00.000Z");
+    expect(logs.some(l => l.level === "warn")).toBe(true);
   });
 
   it("without a poll cursor, anchors on MAX(_mako_source_ts) minus the overlap", async () => {
@@ -139,6 +177,7 @@ describe("incremental poll anchor", () => {
     });
     expect(sinceOfFirstFetch()?.toISOString()).toBe("2026-11-17T14:48:00.000Z");
     expect(getMaxTrackingValue.mock.calls.map(c => c[2])).toEqual([
+      "_syncedAt",
       "_mako_source_ts",
     ]);
   });
@@ -152,8 +191,8 @@ describe("incremental poll anchor", () => {
     });
     expect(sinceOfFirstFetch()?.toISOString()).toBe("2026-11-17T14:49:30.000Z");
     expect(getMaxTrackingValue.mock.calls.map(c => c[2])).toEqual([
-      "_mako_source_ts",
       "_syncedAt",
+      "_mako_source_ts",
     ]);
     expect(
       logs.some(

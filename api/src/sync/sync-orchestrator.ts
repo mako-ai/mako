@@ -152,6 +152,13 @@ function camelToSnake(str: string): string {
   return str.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
 }
 
+/** A destination error that means the table does not exist (yet). */
+export function isMissingTableError(error: unknown): boolean {
+  return /not found|does not exist|doesn't exist|no such table|unknown table/i.test(
+    String(error ?? ""),
+  );
+}
+
 /**
  * Get per-entity table name for connector -> SQL destinations.
  * Sub-types use snake_case: activities:Call → call_activities,
@@ -498,14 +505,18 @@ async function performSyncChunkSql(
   const pollSince = options.pollCursor?.since
     ? new Date(options.pollCursor.since)
     : undefined;
-  if (anchorIncremental && pollSince && !Number.isNaN(pollSince.getTime())) {
-    lastSyncDate = pollSince;
-    logger?.log(
-      "info",
-      `Incremental poll: syncing ${entity} updated since ${pollSince.toISOString()} (poll cursor)`,
-    );
-  } else if (anchorIncremental) {
+  const hasPollSince = Boolean(pollSince && !Number.isNaN(pollSince.getTime()));
+  if (anchorIncremental) {
     const overlapMs = options.pollCursor?.overlapMs ?? pollOverlapMsFromEnv();
+    const overlapMin = Math.round(overlapMs / 60_000);
+    // The destination is always asked first: an empty or missing live table
+    // (dropped, or the flow pointed at a new table) needs a full fetch even
+    // when a poll cursor is on record, or older history never arrives.
+    let destination:
+      | { kind: "rows"; maxSyncedAt: string }
+      | { kind: "empty"; reason: string }
+      | { kind: "unknown"; reason: string };
+    let maxOf: ((column: string) => Promise<string | undefined>) | undefined;
     try {
       const { getMaxTrackingValue } =
         await import("../services/destination-writer.service");
@@ -514,38 +525,74 @@ async function performSyncChunkSql(
       const destConn = await DatabaseConnection.findOne(
         inWorkspace(tableDestination.connectionId, options.workspaceId),
       );
-      if (destConn) {
-        const maxOf = async (column: string) => {
-          const result = await getMaxTrackingValue(
+      if (!destConn) {
+        destination = { kind: "unknown", reason: "destination not found" };
+      } else {
+        const probe = (column: string) =>
+          getMaxTrackingValue(
             destConn,
             entityTableName,
             column,
             tableDestination.schema,
             tableDestination.database,
           );
-          return result.success ? result.maxValue : undefined;
+        maxOf = async column => {
+          const r = await probe(column);
+          return r.success ? r.maxValue : undefined;
         };
-        const maxSourceTs = await maxOf("_mako_source_ts");
-        const fallback = destinationFallbackSince({
-          maxSourceTs,
-          maxSyncedAt: maxSourceTs ? undefined : await maxOf("_syncedAt"),
-          overlapMs,
-        });
-        if (fallback) {
-          lastSyncDate = fallback.since;
-          logger?.log(
-            fallback.column === "_syncedAt" ? "warn" : "info",
-            fallback.column === "_syncedAt"
-              ? `Incremental poll: ${entity} has no _mako_source_ts; anchoring on MAX(_syncedAt) minus ${Math.round(overlapMs / 60_000)} min: ${fallback.since.toISOString()}`
-              : `Incremental poll: no poll cursor on record for ${entity}; anchoring on MAX(_mako_source_ts) minus ${Math.round(overlapMs / 60_000)} min: ${fallback.since.toISOString()}`,
-          );
+        const synced = await probe("_syncedAt");
+        if (synced.success) {
+          destination = synced.maxValue
+            ? { kind: "rows", maxSyncedAt: synced.maxValue }
+            : { kind: "empty", reason: "the live table is empty" };
+        } else if (isMissingTableError(synced.error)) {
+          destination = { kind: "empty", reason: "the live table is missing" };
+        } else {
+          destination = { kind: "unknown", reason: String(synced.error) };
         }
       }
     } catch (err) {
+      destination = { kind: "unknown", reason: String(err) };
+    }
+
+    if (destination.kind === "empty") {
+      logger?.log(
+        "info",
+        `Incremental poll: ${destination.reason} for ${entity}; fetching everything`,
+      );
+    } else if (hasPollSince && pollSince) {
+      lastSyncDate = pollSince;
+      if (destination.kind === "unknown") {
+        logger?.log(
+          "warn",
+          `Could not read the destination for ${entity} (${destination.reason}); using the poll cursor`,
+        );
+      }
+      logger?.log(
+        "info",
+        `Incremental poll: syncing ${entity} updated since ${pollSince.toISOString()} (poll cursor)`,
+      );
+    } else if (destination.kind === "unknown") {
       logger?.log(
         "warn",
-        `Could not get incremental anchor from SQL destination: ${err}`,
+        `Could not get incremental anchor from SQL destination: ${destination.reason}`,
       );
+    } else if (maxOf) {
+      const maxSourceTs = await maxOf("_mako_source_ts").catch(() => undefined);
+      const fallback = destinationFallbackSince({
+        maxSourceTs,
+        maxSyncedAt: maxSourceTs ? undefined : destination.maxSyncedAt,
+        overlapMs,
+      });
+      if (fallback) {
+        lastSyncDate = fallback.since;
+        logger?.log(
+          fallback.column === "_syncedAt" ? "warn" : "info",
+          fallback.column === "_syncedAt"
+            ? `Incremental poll: ${entity} has no _mako_source_ts; anchoring on MAX(_syncedAt) minus ${overlapMin} min: ${fallback.since.toISOString()}`
+            : `Incremental poll: no poll cursor on record for ${entity}; anchoring on MAX(_mako_source_ts) minus ${overlapMin} min: ${fallback.since.toISOString()}`,
+        );
+      }
     }
   }
 
