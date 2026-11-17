@@ -23,7 +23,11 @@ import {
   type FetchOptions,
   type FetchState,
   type IncrementalCapabilities,
+  type ProvisionWebhookOptions,
+  type ProvisionWebhookResult,
   type ResumableFetchOptions,
+  type UpdateWebhookSubscriptionOptions,
+  type WebhookCapabilities,
   type WebhookHandlerOptions,
   type WebhookVerificationResult,
 } from "../base/BaseConnector";
@@ -65,6 +69,10 @@ import { connectorBoxLeasesEnabled } from "./boxes/config";
 import { getBoxScheduler } from "./boxes/scheduler";
 import { connectorSessionReadsEnabled } from "./session-config";
 import { connectorWebhookBatchesEnabled } from "./webhook-config";
+import {
+  hasWebhookProvisioner,
+  webhookProvisionerFor,
+} from "./webhook-provisioners";
 import {
   declaredWebhookVerification,
   verifyDeclaredWebhook,
@@ -1260,6 +1268,61 @@ export class SandboxedConnector extends BaseConnector {
       headers: options.headers,
       secret: options.secret,
     });
+  }
+
+  /**
+   * Provider subscriptions, made by the API with the connection's key
+   * (webhook-provisioners.ts), for a folder whose vendor Mako knows. The
+   * signing secret the vendor returns goes onto the flow, never to a box.
+   * Both "update" and "create" adopt a subscription already on the URL, so
+   * provisioning on save never makes a duplicate.
+   */
+  supportsWebhookProvisioning(): boolean {
+    return connectorWebhookBatchesEnabled() && hasWebhookProvisioner(this.slug);
+  }
+
+  supportsWebhookSubscriptionUpdate(): boolean {
+    return this.supportsWebhookProvisioning();
+  }
+
+  getWebhookCapabilities(): WebhookCapabilities {
+    const provisioning = this.supportsWebhookProvisioning();
+    return {
+      supported: this.supportsWebhooks(),
+      provisioning: {
+        supported: provisioning,
+        providerLabel: this.getMetadata().name,
+        storesSecretAutomatically: provisioning,
+      },
+      secretHelpText: "Enter the webhook signing secret from your provider",
+    };
+  }
+
+  async createWebhookSubscription(
+    options: ProvisionWebhookOptions,
+  ): Promise<ProvisionWebhookResult> {
+    return (await this.webhookProvisioner()).create(options);
+  }
+
+  async updateWebhookSubscription(
+    options: UpdateWebhookSubscriptionOptions,
+  ): Promise<ProvisionWebhookResult | null> {
+    return (await this.webhookProvisioner()).update(options);
+  }
+
+  /** Refused unless the flag is on and the folder declares a scheme Mako runs. */
+  private async webhookProvisioner() {
+    if (!this.supportsWebhookProvisioning()) {
+      throw new Error(
+        `The connector "${this.slug}" cannot provision webhooks here.`,
+      );
+    }
+    if (!declaredWebhookVerification((await this.definition()).spec)) {
+      throw new Error(
+        `The connector "${this.slug}" declares no webhook verification Mako can run.`,
+      );
+    }
+    return webhookProvisionerFor(this.slug, this.config());
   }
 
   /** The entities the indexed connector declares, once loaded. */

@@ -558,6 +558,38 @@ export async function provisionCloseWebhook(
 }
 
 /**
+ * Adopt the Close webhook already on `options.endpointUrl`: set its events
+ * and return its id and signing key. Resolves to null when none targets the
+ * URL, so the caller creates one. Boxed Close connectors use it
+ * (workspace/webhook-provisioners.ts); the built-in keeps its button.
+ */
+export async function adoptCloseWebhook(
+  api: AxiosInstance,
+  options: ProvisionWebhookOptions,
+  eventsForEntities: (entities: string[]) => string[],
+): Promise<ProvisionWebhookResult | null> {
+  let list: Array<Record<string, unknown>>;
+  try {
+    const response = await api.get("/webhook/");
+    list = Array.isArray(response?.data)
+      ? response.data
+      : Array.isArray(response?.data?.data)
+        ? response.data.data
+        : [];
+  } catch (error) {
+    throw new Error(
+      `Failed to list Close webhook subscriptions: ${describeProvisioningError(error)}`,
+      { cause: error },
+    );
+  }
+  const onUrl = list.some(
+    item => item?.url === options.endpointUrl && webhookIdOf(item),
+  );
+  if (!onUrl) return null;
+  return provisionCloseWebhook(api, options, eventsForEntities);
+}
+
+/**
  * Columns a Close webhook leaves out of an object's payload, per entity.
  *
  * Close event payloads are the object's own row without its expansions:
