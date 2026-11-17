@@ -19,7 +19,10 @@ import { createRouter } from "../openapi/core";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import { DEFAULT_BRANCH, readBlob } from "../apps/repository.service";
 import { CONNECTORS_DIR } from "../connectors/workspace/resolver";
-import { canOrganizeWorkspaceTree } from "../apps/app-authorization";
+import {
+  CONNECTORS_ADMIN_ONLY,
+  mayChangeConnectors,
+} from "../workflows/policy";
 import {
   connectorGitScope,
   restoreConnectorTo,
@@ -71,10 +74,11 @@ registerGitHistoryRoutes<GitHistoryEntity & { slug: string }>(
       if (!(await connectorFolderAtMain(workspaceId, slug))) {
         return fail(c, 404, "Connector not found");
       }
-      // Restoring commits code that runs with the workspace's credentials:
-      // the same editing role that may reorganise the workspace tree.
-      if (write && !canOrganizeWorkspaceTree(c.get("memberRole"))) {
-        return fail(c, 403, "Only workspace editors can restore a connector");
+      // Restoring commits code onto main that runs with its connections'
+      // keys: an owner or admin, as for every other way connector code
+      // reaches main (workflows/policy.ts).
+      if (write && !mayChangeConnectors(c.get("memberRole"))) {
+        return fail(c, 403, CONNECTORS_ADMIN_ONLY);
       }
       return {
         scope: connectorGitScope(workspaceId, slug),

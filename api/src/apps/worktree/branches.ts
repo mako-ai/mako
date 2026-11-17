@@ -11,14 +11,7 @@ import {
   updateRefCas,
   type GitAuthor,
 } from "../repository.service";
-import { CONNECTOR_FOLDERS_DIR, WORKFLOWS_DIR } from "../app-paths";
-import { workspaceService } from "../../services/workspace.service";
-import {
-  CONNECTORS_ADMIN_ONLY,
-  WORKFLOWS_ADMIN_ONLY,
-  mayChangeConnectors,
-  mayChangeWorkflows,
-} from "../../workflows/policy";
+import { assertMayLandOnMain } from "./main-gate";
 
 import {
   freshenBeforeMainWrite,
@@ -237,37 +230,15 @@ export async function mergeBranchToMain(
   }
   // Main is where workflows go live and where connector code gets its
   // connections' keys. The git endpoint lets only admins push changes to
-  // either; the merge, which does not run hooks, asks the same.
+  // either; the merge, which does not run hooks, asks the same
+  // (main-gate.ts). Three dots: what the branch changed since it left main.
   if (actorUserId) {
-    const changed = async (dir: string) => {
-      const { stdout } = await runGit([
-        // Three dots: what the branch changed since it left main, not what
-        // main changed meanwhile.
-        ...[
-          "-C",
-          repoDir,
-          "diff",
-          "--name-only",
-          `${mainHead}...${branchHead}`,
-        ],
-        ...["--", `${dir}/`],
-      ]);
-      return Boolean(stdout.trim());
-    };
-    const workflows = await changed(WORKFLOWS_DIR);
-    const connectors = await changed(CONNECTOR_FOLDERS_DIR);
-    if (workflows || connectors) {
-      const member = await workspaceService.getMember(
-        scope.workspaceId,
-        actorUserId,
-      );
-      if (workflows && !mayChangeWorkflows(member?.role)) {
-        throw new WorktreeConflictError(WORKFLOWS_ADMIN_ONLY);
-      }
-      if (connectors && !mayChangeConnectors(member?.role)) {
-        throw new WorktreeConflictError(CONNECTORS_ADMIN_ONLY);
-      }
-    }
+    await assertMayLandOnMain({
+      repoDir,
+      range: `${mainHead}...${branchHead}`,
+      workspaceId: scope.workspaceId,
+      actorUserId,
+    });
   }
 
   // Fast-forward when main is an ancestor of the branch.
