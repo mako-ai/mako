@@ -29,6 +29,7 @@ import {
   getBoxState,
   markBoxOffline,
   patchBoxState,
+  probePreview,
   resetBoxStateStoreForTests,
 } from "./box-state.service";
 
@@ -290,5 +291,55 @@ describe("box reports right after an offline broadcast", () => {
     });
     expect(state.status).toBe("online");
     expect((await getBoxState(key))?.branch).toBe("main");
+  });
+});
+
+describe("probePreview", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const answer = (status: number, body: string) =>
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(body, { status })),
+    );
+
+  it("reports a served preview as reachable", async () => {
+    answer(200, "<html></html>");
+    expect(await probePreview("https://5173-box.example/")).toEqual({
+      reachable: true,
+    });
+  });
+
+  it("blames E2B's edge for its traffic-token 403", async () => {
+    answer(
+      403,
+      '{"sandboxId":"i1","message":"Sandbox is secured with traffic access token"}',
+    );
+    expect(await probePreview("https://5173-box.example/")).toEqual({
+      reachable: false,
+      blockedBy: "e2b-traffic-token",
+    });
+  });
+
+  it("blames the dev server for vite's blocked-host 403", async () => {
+    answer(403, "Blocked request. This host is not allowed.");
+    expect(await probePreview("https://5173-box.example/")).toEqual({
+      reachable: false,
+      blockedBy: "host",
+    });
+  });
+
+  it("counts a network failure as reachable", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("offline");
+      }),
+    );
+    expect(await probePreview("https://5173-box.example/")).toEqual({
+      reachable: true,
+    });
   });
 });

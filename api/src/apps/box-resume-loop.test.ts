@@ -113,6 +113,7 @@ vi.mock("./box-state.service", () => ({
         },
   ),
   probeReachable: vi.fn(async () => true),
+  probePreview: vi.fn(async () => ({ reachable: true })),
   forgetBoxState: vi.fn(),
   markBoxOffline: vi.fn(),
   patchBoxState: vi.fn(),

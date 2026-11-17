@@ -4,7 +4,7 @@
  */
 import { api, unwrapBody } from "../../api";
 import { appRootOf, devServerKeyMatches } from "./helpers";
-import type { AppEnvVar } from "./types";
+import type { AppEnvVar, PreviewBlock } from "./types";
 import type { AppsSlice } from "./slice";
 
 type Keys =
@@ -161,7 +161,12 @@ export const createAppsBoxSlice: AppsSlice<Keys> = (set, get) => ({
           "/api/workspaces/{workspaceId}/apps/{id}/dev-preview/status",
           { params: { path: { workspaceId, id: appId } } },
         ),
-      ) as { serving?: boolean; url?: string; reachable?: boolean };
+      ) as {
+        serving?: boolean;
+        url?: string;
+        reachable?: boolean;
+        blockedBy?: PreviewBlock;
+      };
       // Stale probe vs offline push: the push wins (§13.11). A response
       // computed before the box died must not repaint dead-sandbox URLs.
       if (get().boxStatus === "offline") return;
@@ -171,7 +176,7 @@ export const createAppsBoxSlice: AppsSlice<Keys> = (set, get) => ({
         // in another tab, another browser, or before a reload that lost
         // client state). Show it — do not make the user "start" a thing
         // that is running.
-        get().markDevServing(appId, url, body.reachable);
+        get().markDevServing(appId, url, body.reachable, body.blockedBy);
         return;
       }
       if (body.serving === false) get().markDevDown(appId);
@@ -180,7 +185,7 @@ export const createAppsBoxSlice: AppsSlice<Keys> = (set, get) => ({
     }
   },
 
-  markDevServing: (appId, url, reachable) => {
+  markDevServing: (appId, url, reachable, blockedBy) => {
     try {
       localStorage.setItem(`apps-devurl:${appId}`, url);
     } catch {
@@ -197,10 +202,15 @@ export const createAppsBoxSlice: AppsSlice<Keys> = (set, get) => ({
           builtAt: Date.now(),
           mode: "dev",
           reachable,
+          blockedBy,
         };
         s.viewMode[appId] = "preview";
-      } else if (current && current.reachable !== reachable) {
+      } else if (
+        current &&
+        (current.reachable !== reachable || current.blockedBy !== blockedBy)
+      ) {
         current.reachable = reachable;
+        current.blockedBy = blockedBy;
       }
     });
   },
@@ -297,7 +307,12 @@ export const createAppsBoxSlice: AppsSlice<Keys> = (set, get) => ({
       for (const app of apps) {
         const entry = servers.find(d => devServerKeyMatches(d.slug, app));
         if (entry?.url) {
-          get().markDevServing(app.id, entry.url, entry.reachable);
+          get().markDevServing(
+            app.id,
+            entry.url,
+            entry.reachable,
+            entry.blockedBy,
+          );
         } else get().markDevDown(app.id);
       }
     }

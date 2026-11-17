@@ -13,7 +13,7 @@ import { boxCtx, type WorktreeHandle } from "../worktree.service";
 import { loggers } from "../../logging";
 import { sh } from "../box";
 import { ensureBoxAgent } from "../box-agent";
-import { getBoxState } from "../box-state.service";
+import { getBoxState, type PreviewBlock } from "../box-state.service";
 
 import {
   PORTS_REGISTRY,
@@ -152,9 +152,12 @@ export async function discoverDevServers(
  * The url lets a fresh browser (no client-side state at all) walk up to an
  * app whose server is already running and just show it.
  */
-export async function devServerStatus(
-  handle: WorktreeHandle,
-): Promise<{ serving: boolean; url?: string; reachable?: boolean }> {
+export async function devServerStatus(handle: WorktreeHandle): Promise<{
+  serving: boolean;
+  url?: string;
+  reachable?: boolean;
+  blockedBy?: PreviewBlock;
+}> {
   const provider = getSandboxProvider();
   const ctx = boxCtx(handle);
   // Snapshot first (pushed by the box; expires unless refreshed): no exec.
@@ -166,7 +169,12 @@ export async function devServerStatus(
     const url =
       entry.url ?? (await provider.peekPublicUrlForPort(ctx, entry.port));
     if (!url) return { serving: false };
-    return { serving: true, url, reachable: entry.reachable };
+    return {
+      serving: true,
+      url,
+      reachable: entry.reachable,
+      blockedBy: entry.blockedBy,
+    };
   }
   if (!(await boxIsRunning(ctx))) return { serving: false };
   const port = await devPort(handle, provider, ctx, { allocate: false });
