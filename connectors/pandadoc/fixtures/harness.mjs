@@ -234,6 +234,10 @@ async function startServer(answer) {
       res.end(JSON.stringify(response.body));
     });
   });
+  // Node closes an idle keep-alive socket after 5 s. A loaded machine can
+  // leave a folder's socket idle that long, and its next request then meets
+  // a reset and is retried: one request more than in-process, by accident.
+  server.keepAliveTimeout = 120_000;
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
   return {
