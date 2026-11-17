@@ -71,7 +71,7 @@ export interface IFlowParityCheck {
   /** The live-update window: changes in [start, end) on the live side. */
   window?: { start: Date; end: Date; coverageMinutes: number };
   /** The shadow's failures in the freshness window. Any one blocks the gate. */
-  errors?: {
+  failures?: {
     failedRuns: number;
     failedEntities: string[];
     failedWebhookEvents: number;
@@ -156,7 +156,7 @@ const FlowParityCheckSchema = new Schema<IFlowParityCheck>(
     cutoff: Date,
     window: { start: Date, end: Date, coverageMinutes: Number },
     twin: { slug: String, sourceSha: String },
-    errors: {
+    failures: {
       failedRuns: Number,
       failedEntities: [String],
       failedWebhookEvents: Number,

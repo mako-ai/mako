@@ -1259,7 +1259,7 @@ describe("parity", () => {
         now: () => now,
       },
     });
-    expect(failed.errors).toMatchObject({ failedRuns: 1 });
+    expect(failed.failures).toMatchObject({ failedRuns: 1 });
     expect(failed.reasons.join(" ")).toMatch(
       /1 shadow run failed in the window/,
     );

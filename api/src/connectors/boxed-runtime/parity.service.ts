@@ -575,20 +575,20 @@ export async function runParityCheck(input: {
 
     // Errors in the freshness window: any failed shadow run, entity or
     // webhook batch since the window opened blocks the gate.
-    const errors = await shadowErrorsSince(shadow._id, window.start);
-    if (errors.failedRuns > 0) {
+    const failures = await shadowErrorsSince(shadow._id, window.start);
+    if (failures.failedRuns > 0) {
       reasons.push(
-        `${errors.failedRuns} shadow run${errors.failedRuns === 1 ? "" : "s"} failed in the window`,
+        `${failures.failedRuns} shadow run${failures.failedRuns === 1 ? "" : "s"} failed in the window`,
       );
     }
-    if (errors.failedEntities.length > 0) {
+    if (failures.failedEntities.length > 0) {
       reasons.push(
-        `Shadow entities failed in the window: ${errors.failedEntities.join(", ")}`,
+        `Shadow entities failed in the window: ${failures.failedEntities.join(", ")}`,
       );
     }
-    if (errors.failedWebhookEvents > 0) {
+    if (failures.failedWebhookEvents > 0) {
       reasons.push(
-        `${errors.failedWebhookEvents} shadow webhook event${errors.failedWebhookEvents === 1 ? "" : "s"} failed in the window`,
+        `${failures.failedWebhookEvents} shadow webhook event${failures.failedWebhookEvents === 1 ? "" : "s"} failed in the window`,
       );
     }
 
@@ -596,7 +596,7 @@ export async function runParityCheck(input: {
       status: "done",
       cutoff,
       window,
-      errors,
+      failures,
       twin: {
         slug: shadow.boxedApproval?.slug ?? "",
         sourceSha: shadow.boxedApproval?.sourceSha,
