@@ -26,19 +26,23 @@ const LEGACY_KEY = { jobId: 1, eventId: 1 } as const;
  */
 export async function up(db: Db): Promise<void> {
   const collection = db.collection(COLLECTION);
-  let indexes: { key: Record<string, unknown>; name?: string }[];
-  try {
-    indexes = await indexesOf(collection);
-  } catch {
-    return; // NamespaceNotFound: nothing to drop.
-  }
+  // indexesOf answers [] for a missing collection and rethrows anything
+  // else, so a failed read fails the migration instead of marking it run.
+  const indexes = await indexesOf(collection);
   const target = JSON.stringify(LEGACY_KEY);
   const legacy = indexes.find(index => JSON.stringify(index.key) === target);
   if (!legacy?.name) {
     log.info("Legacy index absent, skipping", { collection: COLLECTION });
     return;
   }
-  await collection.dropIndex(legacy.name);
+  try {
+    await collection.dropIndex(legacy.name);
+  } catch (error) {
+    // Dropped in between (by hand, or by another runner): already done.
+    if ((error as { codeName?: string })?.codeName !== "IndexNotFound") {
+      throw error;
+    }
+  }
   log.info("Dropped legacy index", {
     collection: COLLECTION,
     name: legacy.name,

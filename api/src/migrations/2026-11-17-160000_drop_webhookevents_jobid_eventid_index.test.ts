@@ -51,3 +51,30 @@ void test("drops the legacy index, keeps flow dedup, and is idempotent", async (
   assert.ok(!names.includes("jobId_1_eventId_1"));
   assert.ok(names.includes("flowId_1_eventId_1"));
 });
+
+void test("is a no-op with no collection, or with the index already dropped by hand", async () => {
+  const empty = client.db("empty");
+  await up(empty);
+  const handDropped = client.db("by-hand");
+  const events = handDropped.collection("webhookevents");
+  await events.createIndex({ flowId: 1, eventId: 1 }, { unique: true });
+  await up(handDropped);
+  assert.ok(
+    (await events.indexes()).some(i => i.name === "flowId_1_eventId_1"),
+  );
+});
+
+void test("fails, rather than passing as run, when the indexes cannot be read", async () => {
+  const broken = {
+    collection: () => ({
+      listIndexes: () => ({
+        toArray: async () => {
+          throw Object.assign(new Error("connection reset"), {
+            codeName: "HostUnreachable",
+          });
+        },
+      }),
+    }),
+  } as unknown as Db;
+  await assert.rejects(up(broken), /connection reset/);
+});
