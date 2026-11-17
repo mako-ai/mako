@@ -21,6 +21,9 @@ export default defineConfig({
       // Its browser half: opt-in (SHARE_ORIGIN_PLAYWRIGHT), headless.
       "src/apps/share-app-origin.browser.test.ts",
       "src/apps/worktree.service.test.ts",
+      // Doors onto main without a hook: merge and publish, workflows/ and
+      // connectors/ need an admin.
+      "src/apps/worktree/main-gate.test.ts",
       "src/apps/workspace-repo.test.ts",
       "src/apps/workspace-prompt.test.ts",
       "src/migrations/2026-09-02-110000_workspace_self_directive_to_git.test.ts",

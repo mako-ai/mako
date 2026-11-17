@@ -410,6 +410,19 @@ export abstract class BaseConnector {
   }
 
   /**
+   * The event id and type of a verified box-lane delivery, when the
+   * connector knows where they sit. Undefined: the route's own fallbacks.
+   */
+  webhookEventIdentity?(
+    event: unknown,
+    rawBody: string,
+    headers?: Record<string, string | string[] | undefined>,
+  ): { eventId: string; eventType?: string } | undefined;
+
+  /** Request headers that carry the webhook secret itself, never stored. */
+  webhookSecretHeaders?(): string[];
+
+  /**
    * Check if connector can provision provider webhooks automatically.
    */
   supportsWebhookProvisioning(): boolean {

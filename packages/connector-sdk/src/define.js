@@ -27,26 +27,119 @@ const INCREMENTAL_MODES = ["native", "client-filter", "created-anchor"];
  * stored: the secret never reaches a box, so no connector code can check a
  * signature. A connector says which scheme its vendor uses instead.
  *
- * - `scheme`: only `hmac-sha256` for now.
+ * - `scheme`: `hmac-sha256`, or `shared-secret` for a vendor that sends
+ *   the secret itself in a header instead of a signature (Claap).
  * - `secretEncoding`: how the stored secret becomes the HMAC key.
  * - `signedPayload`: the parts signed, in order. `body` is the raw request
  *   body, `header:<name>` a request header, `literal:<text>` fixed text.
  * - `signatureHeader`: the header carrying the signature, in
  *   `signatureEncoding`, after an optional `signaturePrefix` (`sha256=`).
+ * - `signatureQuery`: a query parameter that carries the signature instead
+ *   (PandaDoc's `?signature=`). It is read first; the header is the fallback.
+ * - `secretHeader` (`shared-secret` only): the header that carries the
+ *   secret, compared in constant time.
+ *
+ * `stripe-v1` is Stripe's scheme, which one header carries whole:
+ * `t=<unix seconds>,v1=<hex>[,v1=<hex>...]`, each `v1` an HMAC-SHA256 of
+ * `<t>.<raw body>` under the secret's UTF-8 bytes. It declares only
+ * `signatureHeader`, `secretEncoding: "utf8"` and `toleranceSeconds`; the
+ * signed bytes are fixed by the scheme, and the timestamp is always signed.
  */
-export const WEBHOOK_VERIFICATION_SCHEMES = ["hmac-sha256"];
+export const WEBHOOK_VERIFICATION_SCHEMES = ["hmac-sha256", "stripe-v1", "shared-secret", "rsa-sha256"];
+const RSA_KEYS = new Set(["scheme", "publicKeys", "signatureHeader", "signatureEncoding", "testNotification"]);
+const PEM_PUBLIC_KEY = /^-----BEGIN PUBLIC KEY-----\n?[A-Za-z0-9+/=\s]{64,4096}\n?-----END PUBLIC KEY-----\n?$/;
+const EVENT_TYPE = /^[A-Za-z0-9_.:#-]{1,64}$/;
+
+/**
+ * A vendor that signs the raw body with its own RSA keys (Wise): no secret,
+ * the vendor's public keys declared as data, any one of which may verify.
+ * `testNotification` names the vendor's unsigned test ping, which Mako
+ * answers and stores under `eventType` with no payload.
+ */
+function validateRsa(v) {
+  const problems = [];
+  for (const key of Object.keys(v)) {
+    if (!RSA_KEYS.has(key)) problems.push(`webhooks.verification.${key} is not part of the rsa-sha256 scheme`);
+  }
+  if (
+    !Array.isArray(v.publicKeys) ||
+    v.publicKeys.length === 0 ||
+    v.publicKeys.length > 4 ||
+    v.publicKeys.some(key => typeof key !== "string" || !PEM_PUBLIC_KEY.test(key.trim() + "\n"))
+  ) {
+    problems.push("webhooks.verification.publicKeys must list 1 to 4 PEM public keys");
+  }
+  if (typeof v.signatureHeader !== "string" || !HEADER_NAME.test(v.signatureHeader)) {
+    problems.push("webhooks.verification.signatureHeader must be a lowercase header name");
+  }
+  if (!SIGNATURE_ENCODINGS.includes(v.signatureEncoding)) {
+    problems.push(`webhooks.verification.signatureEncoding must be one of ${SIGNATURE_ENCODINGS.join(", ")}`);
+  }
+  if (v.testNotification !== undefined) {
+    const t = v.testNotification;
+    if (
+      !t ||
+      typeof t !== "object" ||
+      typeof t.header !== "string" ||
+      !HEADER_NAME.test(t.header) ||
+      typeof t.value !== "string" ||
+      t.value.length === 0 ||
+      t.value.length > 64 ||
+      typeof t.eventType !== "string" ||
+      !EVENT_TYPE.test(t.eventType)
+    ) {
+      problems.push("webhooks.verification.testNotification must be { header, value, eventType }");
+    }
+  }
+  return problems;
+}
+const STRIPE_V1_KEYS = new Set(["scheme", "signatureHeader", "secretEncoding", "toleranceSeconds"]);
+
+function validateStripeV1(v) {
+  const problems = [];
+  for (const key of Object.keys(v)) {
+    if (!STRIPE_V1_KEYS.has(key)) {
+      problems.push(`webhooks.verification.${key} is not part of the stripe-v1 scheme`);
+    }
+  }
+  if (typeof v.signatureHeader !== "string" || !HEADER_NAME.test(v.signatureHeader)) {
+    problems.push("webhooks.verification.signatureHeader must be a lowercase header name");
+  }
+  if (v.secretEncoding !== "utf8") {
+    problems.push('webhooks.verification.secretEncoding must be "utf8" for stripe-v1');
+  }
+  if (!Number.isSafeInteger(v.toleranceSeconds) || v.toleranceSeconds < 1 || v.toleranceSeconds > 86400) {
+    problems.push("webhooks.verification.toleranceSeconds must be a whole number from 1 to 86400");
+  }
+  return problems;
+}
 const SECRET_ENCODINGS = ["hex", "base64", "utf8"];
 const SIGNATURE_ENCODINGS = ["hex", "base64"];
 const HEADER_NAME = /^[a-z0-9-]{1,64}$/;
+const QUERY_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+/** A dotted path into a delivery's JSON body: `eventId`, `event.type`, `0.event`. */
+const BODY_PATH = /^[A-Za-z0-9_]{1,64}(\.[A-Za-z0-9_]{1,64}){0,7}$/;
 
 export function validateWebhookVerification(verification) {
   if (!verification || typeof verification !== "object") {
     return ["webhooks.verification must be an object"];
   }
-  const problems = [];
   const v = verification;
+  if (v.scheme === "stripe-v1") return validateStripeV1(v);
+  if (v.scheme === "rsa-sha256") return validateRsa(v);
+  const problems = [];
   if (!WEBHOOK_VERIFICATION_SCHEMES.includes(v.scheme)) {
     problems.push(`webhooks.verification.scheme must be one of ${WEBHOOK_VERIFICATION_SCHEMES.join(", ")}`);
+    return problems;
+  }
+  if (v.scheme === "shared-secret") {
+    if (typeof v.secretHeader !== "string" || !HEADER_NAME.test(v.secretHeader)) {
+      problems.push("webhooks.verification.secretHeader must be a lowercase header name");
+    }
+    return problems;
+  }
+  if (v.signatureQuery !== undefined && (typeof v.signatureQuery !== "string" || !QUERY_NAME.test(v.signatureQuery))) {
+    problems.push("webhooks.verification.signatureQuery must be a query parameter name");
   }
   if (!SECRET_ENCODINGS.includes(v.secretEncoding)) {
     problems.push(`webhooks.verification.secretEncoding must be one of ${SECRET_ENCODINGS.join(", ")}`);
@@ -151,6 +244,9 @@ export function defineConnector(definition) {
                 webhooks: {
                   verification: definition.webhooks.verification,
                   ...(definition.webhooks.events ? { events: [...definition.webhooks.events] } : {}),
+                  ...(definition.webhooks.eventIdPath ? { eventIdPath: definition.webhooks.eventIdPath } : {}),
+                  ...(definition.webhooks.eventIdHeader ? { eventIdHeader: definition.webhooks.eventIdHeader } : {}),
+                  ...(definition.webhooks.eventTypePath ? { eventTypePath: definition.webhooks.eventTypePath } : {}),
                 },
               }
             : {}),
@@ -210,12 +306,19 @@ export function defineConnector(definition) {
      * handler maps each event to change records, re-fetching what a partial
      * payload lacks with `ctx` (the connection's credential, never the
      * webhook secret). Mako filters, stamps and writes the records.
+     * `options.enabledEntities`, when Mako sends it, lists the entities the
+     * flow syncs, so a handler can skip work whose records would be dropped.
      */
-    async handleWebhooks(ctx, events) {
+    async handleWebhooks(ctx, events, options = {}) {
       if (!definition.webhooks) {
         throw new Error(`The connector "${definition.name}" declares no webhooks.`);
       }
-      const outcomes = await definition.webhooks.handleBatch(ctx, events);
+      const enabledEntities = Array.isArray(options.enabledEntities)
+        ? options.enabledEntities.filter(e => typeof e === "string")
+        : undefined;
+      const outcomes = await definition.webhooks.handleBatch(ctx, events, {
+        ...(enabledEntities ? { enabledEntities } : {}),
+      });
       return checkWebhookOutcomes(events, outcomes);
     },
     hasWebhooks: () => Boolean(definition.webhooks),
@@ -299,6 +402,21 @@ function validateDefinition(definition) {
         (!Array.isArray(webhooks.events) || webhooks.events.some(e => typeof e !== "string"))
       ) {
         problems.push("webhooks.events must be an array of event names");
+      }
+      if (webhooks.eventTypePath !== undefined && (typeof webhooks.eventTypePath !== "string" || !BODY_PATH.test(webhooks.eventTypePath))) {
+        problems.push('webhooks.eventTypePath must be a dotted path into the body, like "event.id"');
+      }
+      // One path, or up to 4 whose values join with ":" (Calendly's id is
+      // its `created_at` and the payload's `uri`).
+      const idPaths = Array.isArray(webhooks.eventIdPath) ? webhooks.eventIdPath : [webhooks.eventIdPath];
+      if (
+        webhooks.eventIdPath !== undefined &&
+        (idPaths.length === 0 || idPaths.length > 4 || idPaths.some(p => typeof p !== "string" || !BODY_PATH.test(p)))
+      ) {
+        problems.push('webhooks.eventIdPath must be a dotted path into the body, like "event.id", or a list of 1 to 4');
+      }
+      if (webhooks.eventIdHeader !== undefined && (typeof webhooks.eventIdHeader !== "string" || !HEADER_NAME.test(webhooks.eventIdHeader))) {
+        problems.push("webhooks.eventIdHeader must be a lowercase header name");
       }
     }
   }

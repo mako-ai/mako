@@ -63,6 +63,7 @@ import {
   resolveLiveFlowRow,
   syncFlowsFromRepo,
 } from "./flow-sync.service";
+import { isCronDue } from "./cron-due";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -261,6 +262,62 @@ describe("markers, reverts, and resolution", () => {
     expect(
       (stub.definitionInvalid as { reason?: string } | undefined)?.reason,
     ).toBe("unparseable flow file");
+  });
+});
+
+describe("a resync schedule runs first at its next tick", () => {
+  it("set by a new file, changed by an edit, kept by an unrelated edit", async () => {
+    const due = (row: { backfillSchedule?: any }) =>
+      isCronDue({
+        cron: row.backfillSchedule?.cron,
+        timezone: row.backfillSchedule?.timezone,
+        lastRunAt: row.backfillSchedule?.lastRunAt ?? null,
+      });
+
+    const t0 = Date.now();
+    await push({ "flows/resync.yml": flowYaml("Resync") });
+    await syncFlowsFromRepo(WS, "user-42");
+    let row = await Flow.findOne({ workspaceId: WS, slug: "resync" }).lean();
+    const born = row!.backfillSchedule!.lastRunAt!;
+    expect(born.getTime()).toBeGreaterThanOrEqual(t0 - 1000);
+    expect(due(row!)).toBe(false);
+
+    // Run it once, an hour ago.
+    const ranAt = new Date(Date.now() - 3_600_000);
+    await Flow.collection.updateOne(
+      { slug: "resync" },
+      { $set: { "backfillSchedule.lastRunAt": ranAt } },
+    );
+
+    // An edit that leaves the resync alone keeps its last run.
+    await push({ "flows/resync.yml": flowYaml("Resync renamed") });
+    await syncFlowsFromRepo(WS, "user-42");
+    row = await Flow.findOne({ workspaceId: WS, slug: "resync" }).lean();
+    expect(row!.name).toBe("Resync renamed");
+    expect(row!.backfillSchedule!.lastRunAt).toEqual(ranAt);
+
+    // Hourly, counted from the run an hour ago, is overdue at once. The
+    // edit counts it from now instead.
+    expect(isCronDue({ cron: "0 * * * *", lastRunAt: ranAt })).toBe(true);
+    const t1 = Date.now();
+    await push({
+      "flows/resync.yml": flowYaml("Resync renamed").replace(
+        "  cron: 0 3 * * *",
+        "  cron: 0 * * * *",
+      ),
+    });
+    await syncFlowsFromRepo(WS, "user-42");
+    row = await Flow.findOne({ workspaceId: WS, slug: "resync" }).lean();
+    expect(row!.backfillSchedule!.cron).toBe("0 * * * *");
+    expect(row!.backfillSchedule!.lastRunAt!.getTime()).toBeGreaterThanOrEqual(
+      t1 - 1000,
+    );
+    expect(
+      isCronDue({
+        cron: "0 * * * *",
+        lastRunAt: row!.backfillSchedule!.lastRunAt!,
+      }),
+    ).toBe(false);
   });
 });
 

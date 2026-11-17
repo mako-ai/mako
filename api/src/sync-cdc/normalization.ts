@@ -13,6 +13,13 @@ const VOLATILE_BACKFILL_IDEMPOTENCY_FIELDS = new Set([
   "_mako_webhook_event_id",
 ]);
 
+/**
+ * Every row a sync writes carries these. A row without them lands in live
+ * with NULLs the CDC merge cannot order (see bigquery-sql.ts: a NULL
+ * `_mako_source_ts` sorts as 1970), so the Parquet build refuses it.
+ */
+export const SYNC_REQUIRED_TIMESTAMP_COLUMNS = ["_syncedAt", "_mako_source_ts"];
+
 export function normalizePayloadKeys(
   payload?: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -122,29 +129,60 @@ type ComparableChange = {
   recordId: string;
   sourceTs: Date | string;
   ingestSeq: number;
+  operation?: string;
+  payload?: Record<string, unknown> | null;
 };
 
+function isNewerChange(a: ComparableChange, b: ComparableChange): boolean {
+  const aTs = new Date(a.sourceTs).getTime();
+  const bTs = new Date(b.sourceTs).getTime();
+  return aTs > bTs || (aTs === bTs && a.ingestSeq > b.ingestSeq);
+}
+
+/**
+ * The newest change per record. When the newest is an upsert, the keys it
+ * lacks are filled from the upserts before it (back to the last delete), so
+ * a webhook's field survives a later poll of the same record in one batch.
+ * A key the newest upsert carries, even as null, wins (sparse-rows.ts).
+ */
 export function selectLatestChangePerRecord<T extends ComparableChange>(
   events: T[],
 ): T[] {
-  const latestByRecord = new Map<string, T>();
+  const byRecord = new Map<string, T[]>();
   for (const event of events) {
-    const current = latestByRecord.get(event.recordId);
-    if (!current) {
-      latestByRecord.set(event.recordId, event);
-      continue;
-    }
-    const currentTs = new Date(current.sourceTs).getTime();
-    const nextTs = new Date(event.sourceTs).getTime();
-    if (nextTs > currentTs) {
-      latestByRecord.set(event.recordId, event);
-      continue;
-    }
-    if (nextTs === currentTs && event.ingestSeq > current.ingestSeq) {
-      latestByRecord.set(event.recordId, event);
-    }
+    const list = byRecord.get(event.recordId);
+    if (list) list.push(event);
+    else byRecord.set(event.recordId, [event]);
   }
-  return Array.from(latestByRecord.values());
+
+  const result: T[] = [];
+  for (const list of byRecord.values()) {
+    let latest = list[0];
+    for (const event of list) {
+      if (isNewerChange(event, latest)) latest = event;
+    }
+    if (list.length === 1 || latest.operation !== "upsert" || !latest.payload) {
+      result.push(latest);
+      continue;
+    }
+    const ordered = [...list].sort((a, b) =>
+      isNewerChange(a, b) ? 1 : isNewerChange(b, a) ? -1 : 0,
+    );
+    let merged: Record<string, unknown> = {};
+    for (const event of ordered) {
+      if (event.operation === "delete") {
+        merged = {};
+        continue;
+      }
+      if (event.operation !== "upsert" || !event.payload) continue;
+      for (const [key, value] of Object.entries(event.payload)) {
+        if (value !== undefined) merged[key] = value;
+      }
+      if (event === latest) break;
+    }
+    result.push({ ...latest, payload: merged });
+  }
+  return result;
 }
 
 function camelToSnake(str: string): string {
@@ -308,6 +346,9 @@ export function normalizePayloadBySchema(
   const warnings: CoercionWarning[] = [];
 
   for (const [key, value] of Object.entries(payload)) {
+    // An undefined value is an absent key, as JSON makes it at the box
+    // boundary: the writer leaves that column alone (sparse-rows.ts).
+    if (value === undefined) continue;
     const fieldSchema = schema.fields[key];
     if (fieldSchema) {
       const coerced = coerceValue(value, fieldSchema.type);

@@ -102,7 +102,36 @@ export interface EntityDefinition<Config = Record<string, unknown>> {
  * How Mako verifies a delivery's signature, in its API, before storing it.
  * Data, never code: the signing secret stays in Mako and no box sees it.
  */
-export interface WebhookVerification {
+/**
+ * Stripe's scheme: `t=<unix seconds>,v1=<hex>[,v1=...]` in one header, each
+ * `v1` an HMAC-SHA256 of `<t>.<raw body>` under the secret's UTF-8 bytes.
+ * The timestamp is always signed; `toleranceSeconds` (1 to 86400) bounds it.
+ */
+export interface StripeV1WebhookVerification {
+  scheme: "stripe-v1";
+  /** Lowercase name of the header, e.g. `"stripe-signature"`. */
+  signatureHeader: string;
+  secretEncoding: "utf8";
+  toleranceSeconds: number;
+}
+
+export type WebhookVerification =
+  | HmacWebhookVerification
+  | StripeV1WebhookVerification
+  | SharedSecretWebhookVerification
+  | RsaWebhookVerification;
+
+/**
+ * A vendor that does not sign: it sends the secret itself in a header
+ * (Claap's `X-Claap-Webhook-Secret`). Mako compares it in constant time.
+ */
+export interface SharedSecretWebhookVerification {
+  scheme: "shared-secret";
+  /** Lowercase name of the header that carries the secret. */
+  secretHeader: string;
+}
+
+export interface HmacWebhookVerification {
   scheme: "hmac-sha256";
   /** How the stored signing secret becomes the HMAC key. */
   secretEncoding: "hex" | "base64" | "utf8";
@@ -114,6 +143,11 @@ export interface WebhookVerification {
   /** Lowercase name of the header that carries the signature. */
   signatureHeader: string;
   signatureEncoding: "hex" | "base64";
+  /**
+   * A query parameter that carries the signature (PandaDoc's `?signature=`).
+   * Read first; `signatureHeader` is the fallback.
+   */
+  signatureQuery?: string;
   /** Text before the signature in its header, e.g. `"sha256="`. */
   signaturePrefix?: string;
   /**
@@ -123,6 +157,14 @@ export interface WebhookVerification {
    */
   timestampHeader?: string;
   toleranceSeconds?: number;
+}
+
+export interface WebhookBatchOptions {
+  /**
+   * The entities the flow syncs, when Mako sends them. Records for any
+   * other entity are dropped anyway; a handler may skip the work.
+   */
+  enabledEntities?: string[];
 }
 
 /** One stored delivery, as Mako hands it to `handleBatch`. */
@@ -160,10 +202,44 @@ export type WebhookOutcome =
   /** Not now, e.g. a request budget is spent. Retried later, the attempt not counted. */
   | { eventId: string; outcome: "deferred"; reason?: string };
 
+/**
+ * A vendor that signs the raw body with its own RSA keys (Wise). No secret:
+ * the public keys are declared here, and a signature any one verifies is
+ * valid.
+ */
+export interface RsaWebhookVerification {
+  scheme: "rsa-sha256";
+  /** 1 to 4 PEM public keys (SPKI). */
+  publicKeys: string[];
+  /** Lowercase name of the header with the signature of the raw body. */
+  signatureHeader: string;
+  signatureEncoding: "hex" | "base64";
+  /**
+   * The vendor's unsigned test ping: a delivery whose `header` equals
+   * `value` (ignoring case) is answered and stored under `eventType` with
+   * no payload, so a handler answers it `unmapped`.
+   */
+  testNotification?: { header: string; value: string; eventType: string };
+}
+
 export interface WebhookDefinition<Config = Record<string, unknown>> {
   verification: WebhookVerification;
   /** Every event type the connector handles, for subscribing at the vendor. */
   events?: string[];
+  /**
+   * Where a delivery's event id sits in its JSON body, as a dotted path
+   * (`"eventId"`, `"event.id"`). Mako dedupes deliveries on it. Without it,
+   * or when the path holds no id, Mako uses `id`, then `event.id`, then a
+   * SHA-1 of the raw body.
+   */
+  eventIdPath?: string | string[];
+  /**
+   * A header carrying the vendor's delivery id (Wise's `x-delivery-id`).
+   * Read before `eventIdPath`. A list of paths joins their values with ":".
+   */
+  eventIdHeader?: string;
+  /** Where the event type sits, as a dotted path (`"event.type"`, `"0.event"`). */
+  eventTypePath?: string;
   /**
    * A batch in, one outcome per event out, in the same order. Runs in a box
    * with the connection's credential in `ctx.config`, so a handler can
@@ -172,6 +248,7 @@ export interface WebhookDefinition<Config = Record<string, unknown>> {
   handleBatch(
     ctx: Context<Config>,
     events: WebhookEvent[],
+    options: WebhookBatchOptions,
   ): Promise<WebhookOutcome[]> | WebhookOutcome[];
 }
 
@@ -201,7 +278,11 @@ export interface Connector {
   entityNames(): string[];
   entity(name: string): EntityDefinition | undefined;
   hasWebhooks(): boolean;
-  handleWebhooks(ctx: Context, events: WebhookEvent[]): Promise<WebhookOutcome[]>;
+  handleWebhooks(
+    ctx: Context,
+    events: WebhookEvent[],
+    options?: WebhookBatchOptions,
+  ): Promise<WebhookOutcome[]>;
 }
 
 export function defineConnector<Config = Record<string, unknown>>(

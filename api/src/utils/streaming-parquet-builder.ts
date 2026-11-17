@@ -1,7 +1,7 @@
 import os from "os";
 import path from "path";
 import { promises as fsPromises } from "fs";
-import { DuckDBInstance } from "@duckdb/node-api";
+import { DuckDBInstance, type DuckDBAppender } from "@duckdb/node-api";
 import { loggers } from "../logging";
 import { DEFAULT_PARQUET_ROW_LIMIT, fmtRows } from "./parquet-row-limit";
 import {
@@ -13,8 +13,14 @@ import {
 
 const logger = loggers.api("streaming-parquet-builder");
 
-/** Max rows per INSERT VALUES clause to cap peak JS heap (SQL string materialization). */
-const INSERT_MICRO_BATCH_ROWS = 120;
+/**
+ * Rows appended to the staging table before they are cast into `_data`. Small
+ * enough that the synchronous appends stay a few milliseconds on the event
+ * loop and the staging table stays a few megabytes.
+ */
+const STAGE_FLUSH_ROWS = 2048;
+/** Staged text that forces an early flush (UTF-16 units, about 8 MB). */
+const STAGE_FLUSH_CHARS = 4 * 1024 * 1024;
 const DEFAULT_DUCKDB_MEMORY_LIMIT_MB = 512;
 const DEFAULT_DUCKDB_THREADS = 1;
 
@@ -25,6 +31,27 @@ function parsePositiveInt(
   if (!rawValue) return fallback;
   const parsed = Number.parseInt(rawValue, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function duckDbMemoryLimitMb(): number {
+  return parsePositiveInt(
+    process.env.SYNC_PARQUET_DUCKDB_MEMORY_LIMIT_MB,
+    DEFAULT_DUCKDB_MEMORY_LIMIT_MB,
+  );
+}
+
+/**
+ * Bytes of rows one Parquet build can hold: a quarter of the DuckDB memory
+ * limit (128 MiB at the default 512 MB).
+ *
+ * DuckDB reads a column 2,048 rows at a time, and the strings of those rows
+ * go into one allocation that doubles as it grows. 1,000 Close meetings of
+ * 286 KB ask for one 512 MiB block and fail at the 512 MB limit; 500 of them
+ * ask for 256 MiB and pass. A build under a quarter of the limit stays under
+ * half of it at its peak.
+ */
+export function parquetBuildByteBudget(): number {
+  return Math.floor((duckDbMemoryLimitMb() * 1024 * 1024) / 4);
 }
 
 // ---------------------------------------------------------------------------
@@ -70,6 +97,13 @@ export interface StreamingParquetOptions {
    */
   countRowsUpTo?: number;
   fields?: FieldMeta[];
+  /**
+   * Columns every row must carry as a valid timestamp (the sync writers pass
+   * `_syncedAt` and `_mako_source_ts`). They are typed TIMESTAMP whatever
+   * `fields` says, and a row whose value is missing or unparseable fails the
+   * build with MissingRowTimestampError, so it never reaches a destination.
+   */
+  requiredTimestampColumns?: string[];
   onBatchInserted?: (totalRows: number) => Promise<void>;
   /**
    * Codec and row-group options for the COPY. Default SNAPPY: the CDC and
@@ -77,6 +111,35 @@ export interface StreamingParquetOptions {
    * `appBindingParquetWriteOptions()`.
    */
   writeOptions?: ParquetWriteOptions;
+}
+
+/**
+ * A row reached the Parquet build without a valid value in a column the
+ * caller marked required (`requiredTimestampColumns`). The build stops and
+ * writes nothing: a NULL `_mako_source_ts` or `_syncedAt` in live is a row
+ * the CDC merge and incremental anchors cannot order.
+ */
+export class MissingRowTimestampError extends Error {
+  readonly column: string;
+  readonly rowsMissing: number;
+  constructor(column: string, rowsMissing: number) {
+    super(
+      `${rowsMissing} row(s) have no valid "${column}" timestamp. ` +
+        `Nothing was written: a row without it cannot be ordered by the CDC merge.`,
+    );
+    this.name = "MissingRowTimestampError";
+    this.column = column;
+    this.rowsMissing = rowsMissing;
+  }
+}
+
+function isValidTimestamp(value: unknown): boolean {
+  if (value instanceof Date) return !Number.isNaN(value.getTime());
+  if (typeof value === "string" || typeof value === "number") {
+    if (value === "") return false;
+    return !Number.isNaN(new Date(value).getTime());
+  }
+  return false;
 }
 
 /**
@@ -200,56 +263,70 @@ function inferColumnFromBatch(
 // Value escaping (type-aware)
 // ---------------------------------------------------------------------------
 
-function escapeDuckDBValue(
+/**
+ * The text DuckDB casts to the column's type, or null for SQL NULL. Rows reach
+ * DuckDB through an appender into an all-VARCHAR staging table and one
+ * `INSERT ... SELECT CAST(...)` per slice. They used to travel as an
+ * `INSERT INTO _data VALUES (...)` statement per 120 rows, and parsing that
+ * SQL text cost about 20 times the CPU of everything else in a build.
+ */
+export function duckDBCellText(
   value: unknown,
   duckdbType: DuckDBColumnType,
-): string {
-  if (value === null || value === undefined) return "NULL";
+): string | null {
+  if (value === null || value === undefined) return null;
 
   switch (duckdbType) {
     case "BIGINT":
     case "DOUBLE": {
-      if (typeof value === "number") return String(value);
+      if (typeof value === "number") {
+        return isNaN(value) ? null : String(value);
+      }
       if (typeof value === "bigint") return String(value);
       const n = Number(value);
-      return isNaN(n) ? "NULL" : String(n);
+      return isNaN(n) ? null : String(n);
     }
     case "BOOLEAN": {
       if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
       if (value === "true" || value === 1) return "TRUE";
       if (value === "false" || value === 0) return "FALSE";
-      return "NULL";
+      return null;
     }
     case "TIMESTAMP": {
       if (value instanceof Date) {
         const ts = value.getTime();
-        return isNaN(ts) ? "NULL" : `'${value.toISOString()}'`;
+        return isNaN(ts) ? null : value.toISOString();
       }
       if (typeof value === "string" || typeof value === "number") {
         const d = new Date(value as string | number);
-        return isNaN(d.getTime()) ? "NULL" : `'${d.toISOString()}'`;
+        return isNaN(d.getTime()) ? null : d.toISOString();
       }
-      return "NULL";
+      return null;
     }
     default: {
-      // DuckDB VARCHAR cannot store \u0000, and an embedded NUL truncates the
-      // SQL at the napi/C++ boundary — the parser then sees an unterminated
-      // '...' literal. Strip NULs at the boundary before the single-quote
-      // escape so connector payloads with inlined binary (e.g. Close emails
-      // with embedded PNG bytes) don't kill the whole batch.
+      // DuckDB VARCHAR cannot store \u0000: connector payloads with inlined
+      // binary (e.g. Close emails with embedded PNG bytes) would otherwise
+      // fail the whole batch, so NULs are stripped below.
+      // A Date in an untyped column goes out as plain ISO 8601, which every
+      // destination casts back to a timestamp. JSON.stringify would wrap it
+      // in quotes ("\"2026-…Z\""), and BigQuery's SAFE_CAST turns that into
+      // NULL (17 Nov 2026: 11,165 PT Close leads lost their dates).
       const raw =
-        typeof value === "object" && value !== null
-          ? // MongoDB/BSON scalars (ObjectId, Decimal128, Long, Binary, ...)
-            // stringify to their canonical form via toString(); nested
-            // documents/arrays fall back to JSON. Matches arrow-serializer.
-            "_bsontype" in (value as Record<string, unknown>) &&
-            typeof (value as { toString?: unknown }).toString === "function"
-            ? String(value)
-            : JSON.stringify(value)
-          : String(value);
+        value instanceof Date
+          ? Number.isNaN(value.getTime())
+            ? ""
+            : value.toISOString()
+          : typeof value === "object" && value !== null
+            ? // MongoDB/BSON scalars (ObjectId, Decimal128, Long, Binary, ...)
+              // stringify to their canonical form via toString(); nested
+              // documents/arrays fall back to JSON. Matches arrow-serializer.
+              "_bsontype" in (value as Record<string, unknown>) &&
+              typeof (value as { toString?: unknown }).toString === "function"
+              ? String(value)
+              : JSON.stringify(value)
+            : String(value);
       // eslint-disable-next-line no-control-regex
-      const stripped = raw.replace(/\u0000/g, "");
-      return `'${stripped.replace(/'/g, "''")}'`;
+      return raw === undefined ? null : raw.replace(/\u0000/g, "");
     }
   }
 }
@@ -303,10 +380,7 @@ export async function buildParquetFromBatches(
 
   const instance = await DuckDBInstance.create(dbPath);
   const connection = await instance.connect();
-  const duckDbMemoryLimitMb = parsePositiveInt(
-    process.env.SYNC_PARQUET_DUCKDB_MEMORY_LIMIT_MB,
-    DEFAULT_DUCKDB_MEMORY_LIMIT_MB,
-  );
+  const memoryLimitMb = duckDbMemoryLimitMb();
   const duckDbThreads = parsePositiveInt(
     process.env.SYNC_PARQUET_DUCKDB_THREADS,
     DEFAULT_DUCKDB_THREADS,
@@ -322,10 +396,35 @@ export async function buildParquetFromBatches(
   let tableCreated = false;
   let columns: string[] = [];
   let columnTypeMap = new Map<string, DuckDBColumnType>();
+  const requiredTs = options.requiredTimestampColumns ?? [];
+  let appender: DuckDBAppender | null = null;
+  let castStageSql = "";
+
+  /**
+   * (Re)build the staging table for the current columns. The appender is
+   * bound to the table's columns, so a new column means a new appender.
+   * Called only between slices, when the staging table is empty.
+   */
+  const resetStage = async () => {
+    appender?.closeSync();
+    appender = null;
+    await connection.run(
+      `CREATE OR REPLACE TEMP TABLE _stage (${columns
+        .map(col => `${escapeIdentifier(col)} VARCHAR`)
+        .join(", ")})`,
+    );
+    appender = await connection.createAppender("_stage", "main", "temp");
+    castStageSql = `INSERT INTO _data SELECT ${columns
+      .map(
+        col =>
+          `CAST(${escapeIdentifier(col)} AS ${columnTypeMap.get(col) ?? "VARCHAR"})`,
+      )
+      .join(", ")} FROM _stage`;
+  };
 
   try {
     await connection.run(`PRAGMA threads=${duckDbThreads}`);
-    await connection.run(`PRAGMA memory_limit='${duckDbMemoryLimitMb}MB'`);
+    await connection.run(`PRAGMA memory_limit='${memoryLimitMb}MB'`);
     await connection.run(
       `PRAGMA temp_directory='${os.tmpdir().replace(/'/g, "''")}'`,
     );
@@ -373,6 +472,9 @@ export async function buildParquetFromBatches(
         const schema = resolveColumnSchema(options.fields ?? [], batch);
         columns = schema.columns;
         columnTypeMap = schema.typeMap;
+        for (const col of requiredTs) {
+          if (columnTypeMap.has(col)) columnTypeMap.set(col, "TIMESTAMP");
+        }
 
         const colDefs = columns.map(
           col =>
@@ -380,6 +482,7 @@ export async function buildParquetFromBatches(
         );
         await connection.run(`CREATE TABLE _data (${colDefs.join(", ")})`);
         tableCreated = true;
+        await resetStage();
       } else {
         const newCols: string[] = [];
         const existingSet = new Set(columns);
@@ -393,39 +496,66 @@ export async function buildParquetFromBatches(
         }
         if (newCols.length > 0) {
           for (const col of newCols) {
-            const colType = inferColumnFromBatch(col, batch);
+            const colType = requiredTs.includes(col)
+              ? "TIMESTAMP"
+              : inferColumnFromBatch(col, batch);
             columnTypeMap.set(col, colType);
             await connection.run(
               `ALTER TABLE _data ADD COLUMN ${escapeIdentifier(col)} ${colType}`,
             );
           }
           columns.push(...newCols);
+          await resetStage();
         }
       }
 
-      let insertedInThisCall = 0;
-      for (
-        let offset = 0;
-        offset < batch.length;
-        offset += INSERT_MICRO_BATCH_ROWS
-      ) {
-        const room = limit - totalRows - insertedInThisCall;
-        if (room <= 0) break;
-        const sliceLen = Math.min(
-          INSERT_MICRO_BATCH_ROWS,
-          batch.length - offset,
-          room,
-        );
-        const slice = batch.slice(offset, offset + sliceLen);
-        const valueRows = slice.map(
-          row =>
-            `(${columns.map(col => escapeDuckDBValue(row[col], columnTypeMap.get(col) ?? "VARCHAR")).join(", ")})`,
-        );
-        await connection.run(
-          `INSERT INTO _data VALUES ${valueRows.join(", ")}`,
-        );
-        insertedInThisCall += slice.length;
+      for (const col of requiredTs) {
+        let missing = 0;
+        for (const row of batch) if (!isValidTimestamp(row[col])) missing++;
+        if (missing > 0) throw new MissingRowTimestampError(col, missing);
       }
+
+      if (!appender) await resetStage();
+      const stage = appender as unknown as DuckDBAppender;
+      const columnTypes = columns.map(
+        col => columnTypeMap.get(col) ?? "VARCHAR",
+      );
+      // Cast what is staged into _data. Flushed by row count and by text
+      // size, so a batch of very large cells (emails with inlined files) never
+      // sits whole in the appender's buffer.
+      const take = Math.min(batch.length, Math.max(0, limit - totalRows));
+      let stagedRows = 0;
+      let stagedChars = 0;
+      const flushStage = async () => {
+        if (stagedRows === 0) return;
+        stage.flushSync();
+        await connection.run(castStageSql);
+        await connection.run("TRUNCATE _stage");
+        stagedRows = 0;
+        stagedChars = 0;
+      };
+      for (let r = 0; r < take; r++) {
+        const row = batch[r];
+        for (let c = 0; c < columns.length; c++) {
+          const text = duckDBCellText(row[columns[c]], columnTypes[c]);
+          if (text === null) {
+            stage.appendNull();
+          } else {
+            stage.appendVarchar(text);
+            stagedChars += text.length;
+          }
+        }
+        stage.endRow();
+        stagedRows++;
+        if (
+          stagedRows >= STAGE_FLUSH_ROWS ||
+          stagedChars >= STAGE_FLUSH_CHARS
+        ) {
+          await flushStage();
+        }
+      }
+      await flushStage();
+      const insertedInThisCall = take;
 
       totalRows += insertedInThisCall;
 
@@ -492,7 +622,7 @@ export async function buildParquetFromBatches(
       rowGroupSize: writeOptions.rowGroupSize,
       encodeDurationMs,
       parquetPath,
-      duckDbMemoryLimitMb,
+      duckDbMemoryLimitMb: memoryLimitMb,
       duckDbThreads,
     });
 
@@ -509,6 +639,11 @@ export async function buildParquetFromBatches(
       encodeDurationMs,
     };
   } finally {
+    try {
+      (appender as DuckDBAppender | null)?.closeSync();
+    } catch {
+      /* best-effort */
+    }
     try {
       connection.closeSync();
     } catch {

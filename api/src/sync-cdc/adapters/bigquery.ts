@@ -36,6 +36,7 @@ import {
   buildLivePartitionFilter,
   buildLivePartitionProbeQuery,
   buildMergeStatement,
+  liveTableCreateColumns,
   escId,
   sqlString,
 } from "./bigquery-sql";
@@ -55,6 +56,7 @@ import {
   expireStagingTable,
   loadParquetToStaging,
 } from "./bigquery-load";
+import { ABSENT_COLUMNS_FIELD } from "../sparse-rows";
 import {
   bqLog as log,
   fullTableName,
@@ -117,6 +119,7 @@ function coerceToDate(value: unknown): Date | null {
 
 export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   readonly destinationType = "bigquery";
+  readonly honoursAbsentColumns = true;
 
   constructor(private readonly config: BigQueryAdapterConfig) {}
 
@@ -402,8 +405,17 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
     // Always query staging schema (ephemeral table, not cacheable) but try
     // to reuse cached live schema to avoid the INFORMATION_SCHEMA round-trip.
-    const { stagingCols, liveCols, liveTypes, schemaCacheHit, cachedLive } =
-      await discoverMergeSchemas(target, liveTable, stagingTable);
+    const {
+      stagingCols: stagedCols,
+      liveCols,
+      liveTypes,
+      schemaCacheHit,
+      cachedLive,
+    } = await discoverMergeSchemas(target, liveTable, stagingTable);
+    // `_mako_absent_cols` steers the MERGE (sparse-rows.ts). It is not data:
+    // keep it off the live table and out of plain INSERTs.
+    const stagingCols = new Set(stagedCols);
+    stagingCols.delete(ABSENT_COLUMNS_FIELD);
 
     if (stagingCols.size === 0) {
       log.info("Staging table not found or empty, nothing to merge", {
@@ -418,7 +430,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       await createLiveTableFromStaging(
         target,
         layout,
-        Array.from(stagingCols),
+        liveTableCreateColumns(stagingCols, entitySchema),
         entitySchema,
         { liveCols, liveTypes },
       );
@@ -508,7 +520,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           fullStaging,
           columns: allColumns,
           keyColumns,
-          stagingCols,
+          stagingCols: stagedCols,
           liveTypes,
           entitySchema,
           livePartitionFilter,

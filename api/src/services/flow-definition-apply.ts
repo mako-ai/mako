@@ -12,6 +12,7 @@ import { loggers } from "../logging";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
 import type { FlowFile } from "./flow-config-files";
 import { approvalFingerprint } from "../connectors/boxed-runtime/approval";
+import { resyncLastRunAt } from "./resync-schedule";
 
 const logger = loggers.api("flow-sync");
 
@@ -210,7 +211,17 @@ function applyDefinitionFields(doc: IFlow, file: FlowFile): string | null {
   }
 
   // Schedules: cron + timezone only. `backfillSchedule.lastRunAt` is a
-  // scheduler claim (`isCronDue` reads it) and must survive a file edit.
+  // scheduler claim (`isCronDue` reads it) and survives a file edit that
+  // leaves the resync timing alone. A new, changed or re-enabled resync
+  // starts counting now, so it first runs at its next tick (resync-schedule.ts).
+  const resyncBefore = doc.backfillSchedule
+    ? {
+        enabled: doc.backfillSchedule.enabled,
+        cron: doc.backfillSchedule.cron,
+        timezone: doc.backfillSchedule.timezone,
+        lastRunAt: doc.backfillSchedule.lastRunAt,
+      }
+    : undefined;
   doc.schedule = {
     ...(doc.schedule ?? {}),
     enabled: Boolean(file.schedule),
@@ -223,6 +234,11 @@ function applyDefinitionFields(doc: IFlow, file: FlowFile): string | null {
     cron: file.backfillSchedule?.cron,
     timezone: file.backfillSchedule?.timezone,
     entities: file.backfillSchedule?.entities,
+    lastRunAt: resyncLastRunAt(resyncBefore, {
+      enabled: Boolean(file.backfillSchedule),
+      cron: file.backfillSchedule?.cron,
+      timezone: file.backfillSchedule?.timezone,
+    }),
   } as IFlow["backfillSchedule"];
 
   // Enabled-ness and the provider subscription id. The endpoint is inbound

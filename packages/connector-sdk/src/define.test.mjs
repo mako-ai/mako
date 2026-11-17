@@ -126,7 +126,7 @@ test("webhooks need a handler and a verification Mako can run as data", () => {
   );
   const withVerification = verification =>
     defineConnector({ ...webhookBase(), webhooks: { handleBatch: () => [], verification } });
-  assert.throws(() => withVerification({ ...closeVerification, scheme: "md5" }), /scheme must be one of hmac-sha256/);
+  assert.throws(() => withVerification({ ...closeVerification, scheme: "md5" }), /scheme must be one of hmac-sha256, stripe-v1/);
   assert.throws(
     () => withVerification({ ...closeVerification, signedPayload: ["header:close-sig-timestamp"] }),
     /must include "body"/,
@@ -184,4 +184,74 @@ test("a declared timestamp must be part of the signed payload", () => {
       }),
     /must include "header:x-ts"/,
   );
+});
+
+test("stripe-v1 declares a header, a UTF-8 secret and a window, nothing else", () => {
+  const define = verification => defineConnector({ ...webhookBase(), webhooks: { handleBatch: () => [], verification } });
+  const stripe = {
+    scheme: "stripe-v1",
+    signatureHeader: "stripe-signature",
+    secretEncoding: "utf8",
+    toleranceSeconds: 300,
+  };
+  assert.deepEqual(define(stripe).spec().mako.webhooks.verification, stripe);
+  assert.throws(() => define({ ...stripe, toleranceSeconds: undefined }), /from 1 to 86400/);
+  assert.throws(() => define({ ...stripe, toleranceSeconds: 86_401 }), /from 1 to 86400/);
+  assert.throws(() => define({ ...stripe, secretEncoding: "hex" }), /"utf8" for stripe-v1/);
+  assert.throws(() => define({ ...stripe, signatureHeader: "Stripe-Signature" }), /lowercase header name/);
+  assert.throws(() => define({ ...stripe, signedPayload: ["body"] }), /signedPayload is not part of the stripe-v1 scheme/);
+  assert.throws(() => define({ ...stripe, scheme: "stripe-v2" }), /scheme must be one of hmac-sha256, stripe-v1/);
+});
+
+const TEST_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvO8vXV+JksBzZAY6GhSO
+XdoTCfhXaaiZ+qAbtaDBiu2AGkGVpmEygFmWP4Li9m5+Ni85BhVvZOodM9epgW3F
+bA5Q1SexvAF1PPjX4JpMstak/QhAgl1qMSqEevL8cmUeTgcMuVWCJmlge9h7B1CS
+D4rtlimGZozG39rUBDg6Qt2K+P4wBfLblL0k4C4YUdLnpGYEDIth+i8XsRpFlogx
+CAFyH9+knYsDbR43UJ9shtc42Ybd40Afihj8KnYKXzchyQ42aC8aZ/h5hyZ28yVy
+Oj3Vos0VdBIs/gAyJ/4yyQFCXYte64I7ssrlbGRaco4nKF3HmaNhxwyKyJafz19e
+HwIDAQAB
+-----END PUBLIC KEY-----`;
+
+const rsaVerification = {
+  scheme: "rsa-sha256",
+  publicKeys: [TEST_PUBLIC_KEY],
+  signatureHeader: "x-signature-sha256",
+  signatureEncoding: "base64",
+};
+const defineHooks = (verification, extra = {}) =>
+  defineConnector({
+    name: "hooks",
+    version: "1.0.0",
+    entities: { items: { schema: { id: "string" }, async *read() {} } },
+    webhooks: { handleBatch: () => [], verification, ...extra },
+  });
+
+test("rsa-sha256 declares public keys, no secret, and an optional test ping", () => {
+  assert.equal(defineHooks(rsaVerification).spec().mako.webhooks.verification.scheme, "rsa-sha256");
+  assert.throws(() => defineHooks({ ...rsaVerification, publicKeys: [] }), /1 to 4 PEM public keys/);
+  assert.throws(() => defineHooks({ ...rsaVerification, publicKeys: ["not a key"] }), /1 to 4 PEM public keys/);
+  assert.throws(
+    () => defineHooks({ ...rsaVerification, publicKeys: Array(5).fill(TEST_PUBLIC_KEY) }),
+    /1 to 4 PEM public keys/,
+  );
+  assert.throws(() => defineHooks({ ...rsaVerification, secretEncoding: "hex" }), /not part of the rsa-sha256 scheme/);
+  const ping = { header: "x-test-notification", value: "true", eventType: "wise#test-notification" };
+  assert.deepEqual(
+    defineHooks({ ...rsaVerification, testNotification: ping }).spec().mako.webhooks.verification.testNotification,
+    ping,
+  );
+  assert.throws(
+    () => defineHooks({ ...rsaVerification, testNotification: { ...ping, header: "X Test" } }),
+    /testNotification must be/,
+  );
+});
+
+test("an event id may come from a header or from several body paths", () => {
+  const ok = defineHooks(rsaVerification, { eventIdHeader: "x-delivery-id", eventIdPath: ["created_at", "payload.uri"] });
+  assert.equal(ok.spec().mako.webhooks.eventIdHeader, "x-delivery-id");
+  assert.deepEqual(ok.spec().mako.webhooks.eventIdPath, ["created_at", "payload.uri"]);
+  assert.throws(() => defineHooks(rsaVerification, { eventIdPath: [] }), /eventIdPath must be/);
+  assert.throws(() => defineHooks(rsaVerification, { eventIdPath: Array(5).fill("a") }), /eventIdPath must be/);
+  assert.throws(() => defineHooks(rsaVerification, { eventIdHeader: "X-Id" }), /eventIdHeader must be/);
 });

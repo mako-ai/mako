@@ -10,6 +10,8 @@ import {
   buildParquetFromBatches,
   type FieldMeta,
 } from "../../utils/streaming-parquet-builder";
+import { SYNC_REQUIRED_TIMESTAMP_COLUMNS } from "../normalization";
+import { prepareSparseBatch } from "../sparse-rows";
 import { canLabelLoadJobs } from "./bigquery-load-labels";
 import {
   bqLog as log,
@@ -27,24 +29,34 @@ const STAGING_TTL_MS = 24 * 60 * 60 * 1000;
  * Without the schema fields every column defaults to VARCHAR and Date values
  * get JSON.stringify'd with extra quotes, which then SAFE_CAST to NULL on the
  * live side — wiping timestamps on update.
+ *
+ * Only columns that at least one record carries enter staging, even when
+ * every value is null. A schema column no record carries stays out, so the
+ * MERGE leaves it alone. Rows that lack a staged column carry it in
+ * `_mako_absent_cols` (see sparse-rows.ts). The schema still types every
+ * staged column.
  */
 export function buildCdcParquet(
   entity: string,
   records: Record<string, unknown>[],
   entitySchema: ConnectorEntitySchema | undefined,
 ) {
+  const { rows, presentColumns } = prepareSparseBatch(records);
   const schemaFields: FieldMeta[] | undefined = entitySchema
-    ? Object.entries(entitySchema.fields).map(([name, f]) => ({
-        name,
-        type: f.type,
-      }))
+    ? Object.entries(entitySchema.fields)
+        .filter(([name]) => presentColumns.has(name))
+        .map(([name, f]) => ({
+          name,
+          type: f.type,
+        }))
     : undefined;
 
   return buildParquetFromBatches({
     filenameBase: `cdc-${entity}`,
     fields: schemaFields,
+    requiredTimestampColumns: SYNC_REQUIRED_TIMESTAMP_COLUMNS,
     streamBatches: async insertBatch => {
-      await insertBatch(records);
+      await insertBatch(rows);
     },
   });
 }

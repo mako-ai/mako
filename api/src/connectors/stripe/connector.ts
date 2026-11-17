@@ -25,6 +25,7 @@ import {
   resolveStripeProvisionEvents,
   stripeSupportedWebhookEvents,
   stripeWebhookEventMapping,
+  stripeWebhookEventsForEntities,
   updateStripeWebhookEndpoints,
   verifyStripeWebhook,
 } from "./webhooks";
@@ -35,7 +36,7 @@ const logger = loggers.connector("stripe");
 // webhook provisioning stay in sync. It decides the shape of every synced
 // record, so it stays pinned when the SDK's own default moves (the SDK types
 // only know its newest version, hence the cast).
-const STRIPE_API_VERSION = "2023-10-16" as Stripe.LatestApiVersion;
+export const STRIPE_API_VERSION = "2023-10-16" as Stripe.LatestApiVersion;
 
 const STRIPE_DEFAULT_HOST = "api.stripe.com";
 
@@ -415,15 +416,7 @@ export class StripeConnector extends BaseConnector {
    * (no explicit selection — subscribe to everything).
    */
   getWebhookEventsForEntities(entities: string[]): string[] {
-    if (entities.length === 0) {
-      return this.getSupportedWebhookEvents();
-    }
-
-    const entitySet = new Set(entities.map(e => e.toLowerCase()));
-    return this.getSupportedWebhookEvents().filter(eventType => {
-      const mapping = this.getWebhookEventMapping(eventType);
-      return mapping ? entitySet.has(mapping.entity.toLowerCase()) : false;
-    });
+    return stripeWebhookEventsForEntities(entities);
   }
 
   /**

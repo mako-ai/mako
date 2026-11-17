@@ -8,6 +8,7 @@ import type {
   ConnectorEntitySchema,
   ConnectorLogicalType,
 } from "../../connectors/base/BaseConnector";
+import { ABSENT_COLUMNS_FIELD, absentColumnNeedle } from "../sparse-rows";
 import type { CdcEntityLayout } from "./registry";
 
 // ---------------------------------------------------------------------------
@@ -157,11 +158,18 @@ export function buildMergeStatement(p: BuildMergeStatementParams): string {
       ? `${escId("_mako_ingest_seq")} DESC`
       : "1";
 
+  // Sparse rows (sparse-rows.ts): a staging row lists the columns it lacks
+  // in `_mako_absent_cols`. The marker never reaches the live table.
+  const hasAbsentMarker = stagingCols.has(ABSENT_COLUMNS_FIELD);
+
   // USING subquery: SELECT staging columns (cast to live types) with dedup by
   // key keeping the newest record per ordering expression.
-  const stagingSelectCols = effectiveStagingCols
-    .map(c => buildColumnSelectExpr(c, escId, entitySchema, liveTypes.get(c)))
-    .join(", ");
+  const stagingSelectCols = [
+    ...effectiveStagingCols.map(c =>
+      buildColumnSelectExpr(c, escId, entitySchema, liveTypes.get(c)),
+    ),
+    ...(hasAbsentMarker ? [escId(ABSENT_COLUMNS_FIELD)] : []),
+  ].join(", ");
 
   const usingSubquery = `(SELECT ${stagingSelectCols} FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${orderExpr}) = 1)`;
 
@@ -189,9 +197,16 @@ export function buildMergeStatement(p: BuildMergeStatementParams): string {
       ? ` AND COALESCE(__stg.${escId("_mako_ingest_seq")}, -1) >= COALESCE(__live.${escId("_mako_ingest_seq")}, -1)`
       : "";
 
+  // A column a staging row lacks keeps its live value. A column it carries
+  // as NULL is cleared. Without the marker every staged column is carried.
+  const updateExpr = (c: string) =>
+    hasAbsentMarker
+      ? `IF(STRPOS(IFNULL(__stg.${escId(ABSENT_COLUMNS_FIELD)}, ''), ${sqlString(absentColumnNeedle(c))}) > 0, __live.${escId(c)}, __stg.${escId(c)})`
+      : `__stg.${escId(c)}`;
+
   const matchedClause =
     updateColumns.length > 0
-      ? `WHEN MATCHED${matchedGuard} THEN UPDATE SET ${updateColumns.map(c => `${escId(c)} = __stg.${escId(c)}`).join(", ")}`
+      ? `WHEN MATCHED${matchedGuard} THEN UPDATE SET ${updateColumns.map(c => `${escId(c)} = ${updateExpr(c)}`).join(", ")}`
       : "";
 
   // WHEN NOT MATCHED — INSERT all live columns; columns missing from staging
@@ -380,6 +395,26 @@ export function buildBigQueryRepartitionStatements(params: {
     dropLive: `DROP TABLE ${params.fullLive}`,
     rename: `ALTER TABLE ${params.fullTmp} RENAME TO ${escId(params.liveName)}`,
   };
+}
+
+/**
+ * Columns for a brand-new live table: the staged columns plus every entity
+ * schema field. Staging holds only the columns the first batch carried
+ * (sparse-rows.ts), so a sparse first batch would otherwise create a table
+ * without the partition field and fail its own PARTITION BY.
+ */
+export function liveTableCreateColumns(
+  stagingCols: Iterable<string>,
+  entitySchema: ConnectorEntitySchema | undefined,
+): string[] {
+  const cols = new Set<string>(stagingCols);
+  // Records reach staging through normalizePayloadKeys (`.` → `_`). Schema
+  // names get the same treatment: BigQuery rejects `.` in a column name.
+  for (const name of Object.keys(entitySchema?.fields ?? {})) {
+    cols.add(name.replace(/\./g, "_"));
+  }
+  cols.delete(ABSENT_COLUMNS_FIELD);
+  return [...cols];
 }
 
 /** `CREATE TABLE IF NOT EXISTS` for a live table typed by the schema contract. */

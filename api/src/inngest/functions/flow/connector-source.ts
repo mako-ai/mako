@@ -20,6 +20,7 @@ import {
   cdcBackfillCheckpointService,
   syncMachineService,
 } from "../../../sync-cdc/sync-state";
+import type { FetchState } from "../../../connectors/base/BaseConnector";
 import { syncBackfillEntityFunction } from "../sync-entity";
 import {
   completeExecutionStep,
@@ -330,15 +331,22 @@ export async function runConnectorSourceFlow(
 
     let entityCompleted = false;
     let invocationIndex = 0;
+    let resumeState: FetchState | undefined;
     while (!entityCompleted) {
       const result = (await step.invoke(
         `sync-entity-${safeEntityStepId}-${invocationIndex}`,
         {
           function: syncBackfillEntityFunction,
-          data: entityPayload,
+          data: {
+            ...entityPayload,
+            ...(resumeState ? { resumeState } : {}),
+          },
         },
-      )) as { completed: boolean; rowsWritten: number };
+      )) as { completed: boolean; rowsWritten: number; state?: FetchState };
       entityCompleted = result.completed;
+      // A poll that yielded hands back its fetch state; the next invocation
+      // resumes from it (backfills resume from their checkpoint instead).
+      resumeState = result.state;
       entityStatsMap[entity] = result.rowsWritten;
       invocationIndex++;
       if (invocationIndex > 100) {

@@ -11,3 +11,15 @@ export const mayChangeWorkflows = (role?: string | null): boolean =>
 
 export const WORKFLOWS_ADMIN_ONLY =
   "Only workspace admins put workflows on main and switch them on; test yours in the sandbox and ask an admin.";
+
+/**
+ * Connector folders: code on main runs in a box with the keys of the
+ * connections that use it. A member landing new code there could read those
+ * keys, so `connectors/` reaches main the way `workflows/` does: through an
+ * owner or admin, at the git endpoint and at a merge. Members still change
+ * connectors on branches.
+ */
+export const mayChangeConnectors = mayChangeWorkflows;
+
+export const CONNECTORS_ADMIN_ONLY =
+  "Only workspace admins put connector code on main: it runs with the keys of the connections that use it. Push a branch and ask an admin to merge.";

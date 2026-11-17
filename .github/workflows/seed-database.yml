@@ -58,6 +58,8 @@ jobs:
     name: Seed ${{ matrix.target }} from Production
     needs: setup
     runs-on: ubuntu-latest
+    # PROD_DATABASE_URL is a `production` environment secret (master only).
+    environment: production
     strategy:
       fail-fast: false
       matrix:

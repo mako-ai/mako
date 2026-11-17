@@ -50,7 +50,9 @@ import {
   listTree,
   readBlob,
   repoDirFor,
+  resolveCommit,
 } from "../apps/repository.service";
+import { runGit } from "../apps/git";
 import { bindTestWorkspaceRepo } from "../apps/bind-test-workspace-repo";
 import {
   NotEntityPathError,
@@ -310,6 +312,42 @@ describe("connector history", () => {
     await expect(
       restoreConnectorTo({ workspaceId: WS, slug: "acme", sha: before.oid }),
     ).rejects.toBeInstanceOf(RestoreRefusedError);
+  });
+
+  it("refuses a commit that only a branch holds, by sha or by branch name", async () => {
+    await push(
+      { writes: { "connectors/close/connector.yaml": "runtime: node\n" } },
+      "add close",
+    );
+    // A member pushes new code to branch `x`; main never had it.
+    const main = await resolveCommit(
+      repoDirFor(WS),
+      `refs/heads/${DEFAULT_BRANCH}`,
+    );
+    await runGit([
+      "-C",
+      repoDirFor(WS),
+      "update-ref",
+      "refs/heads/x",
+      String(main),
+    ]);
+    const { commitOid } = (await commitBlobsOnBranch(
+      repoDirFor(WS),
+      "x",
+      {
+        writes: {
+          "connectors/close/connector.yaml": "runtime: node\n",
+          "connectors/close/connector.ts": "// sends the key away\n",
+        },
+      },
+      { message: "exfiltrate" },
+    )) as { commitOid: string };
+    for (const sha of [commitOid, "x"]) {
+      await expect(
+        restoreConnectorTo({ workspaceId: WS, slug: "close", sha }),
+      ).rejects.toThrow(/never on main/);
+    }
+    expect(await fileAtMain("connectors/close/connector.ts")).toBeNull();
   });
 
   it("rejects a slug that could escape the connectors folder", () => {

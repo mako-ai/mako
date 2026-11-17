@@ -896,5 +896,38 @@ suite(
         "on\n",
       );
     }, 60_000);
+
+    it("sees through a hidepid /proc moved beneath a plain one", async () => {
+      // hidepid is on from the case above. Turn it off on the live /proc,
+      // then slide a hidepid proc mount UNDER it with move_mount(2)
+      // MOVE_MOUNT_BENEATH (Linux 6.5+, root only). Processes still see the
+      // plain /proc on top, but the hidepid mount is listed last.
+      const plain = await inCapable(
+        "mount -o remount,hidepid=0 /proc && mkdir -p /mnt/hp && mount -t proc -o hidepid=invisible proc /mnt/hp && echo ok",
+      );
+      expect(plain.stdout, plain.stderr).toContain("ok");
+      // syscall 429 is move_mount on x86_64 and arm64; 0x200 is
+      // MOVE_MOUNT_BENEATH; -100 is AT_FDCWD.
+      const beneath = await inCapable(
+        `python3 -c 'import ctypes; libc = ctypes.CDLL(None, use_errno=True); r = libc.syscall(429, -100, b"/mnt/hp", -100, b"/proc", 0x200); print("beneath" if r == 0 else "errno %d" % ctypes.get_errno())'`,
+      );
+      expect(beneath.stdout, beneath.stderr).toBe("beneath\n");
+      // No cleanup: the hidepid mount sits under the container's own /proc
+      // and cannot be unmounted without taking that one off first. This is
+      // the suite's last case and afterAll removes the container.
+      // The top /proc is plain: a non-root user sees root's processes.
+      expect(
+        (await inCapable("su -s /bin/sh user -c 'ls -ld /proc/1' && echo seen"))
+          .stdout,
+      ).toContain("seen");
+      // The old check read the last /proc line of /proc/self/mounts.
+      const lastLine = await inCapable(
+        `awk '$2 == "/proc" { t = $3; o = $4 } END { exit !(t == "proc" && o ~ /(^|,)hidepid=(2|invisible)(,|$)/) }' /proc/self/mounts && echo fooled`,
+      );
+      expect(lastLine.stdout).toContain("fooled");
+      expect((await inCapable(`${HIDEPID_CHECK} || echo off`)).stdout).toBe(
+        "off\n",
+      );
+    }, 60_000);
   },
 );

@@ -181,6 +181,8 @@ vi.mock("./connector-registry", () => ({
 let staging: string[] = [];
 let live: string[] = [];
 let loadCalls = 0;
+/** Rows in each Parquet file a load received. */
+let loadSizes: number[] = [];
 /** Load calls (1-based) that fail, as BigQuery rejected the 13 Nov loads. */
 let failingLoadCalls = new Set<number>();
 let mergeCalls = 0;
@@ -238,6 +240,7 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
       );
     }
     const ids = await idsInParquet(filePath);
+    loadSizes.push(ids.length);
     staging.push(...ids);
     return { loaded: ids.length };
   }) as any,
@@ -272,6 +275,7 @@ vi.mock("../sync-cdc/adapters/registry", async () => {
 });
 
 import {
+  flushBatchSizeAfterMemoryError,
   getTempCollectionCount,
   performBulkFlush,
   performOverwriteTruncate,
@@ -383,6 +387,7 @@ describe("bulk backfill lands every row exactly once", () => {
     staging = [];
     live = [];
     loadCalls = 0;
+    loadSizes = [];
     failingLoadCalls = new Set();
     mergeCalls = 0;
     mergesThatThrowAfterCommit = new Set();
@@ -491,6 +496,61 @@ describe("bulk backfill lands every row exactly once", () => {
     },
     60_000,
   );
+});
+
+describe("bulk flush batch bytes", () => {
+  it("a flush batch ends at its byte budget, and every row still lands once", async () => {
+    collections.clear();
+    staging = [];
+    live = [];
+    loadSizes = [];
+    failingLoadCalls = new Set();
+    mergesThatFail = new Set();
+    mergesThatThrowAfterCommit = new Set();
+    failingPrepareCalls = new Set();
+    // Wide rows: ~2 KB each, nested like Close meeting attendees. A 10 KB
+    // budget fits 5 of them, against 50 rows per batch by count.
+    sourceRows = Array.from({ length: 120 }, (_, i) => ({
+      id: `lead_${String(i).padStart(4, "0")}`,
+      date_created: SAME_DAY,
+      date_updated: SAME_DAY,
+      attendees: Array.from({ length: 20 }, (_, k) => ({
+        email: `person${k}@agence.fr`,
+        name: `Person ${k} of meeting ${i}`,
+        status: "yes",
+      })),
+    }));
+    process.env.SYNC_BULK_FLUSH_BATCH_BYTES = "10000";
+    try {
+      await runEntity("append_dedup", 1_000);
+    } finally {
+      delete process.env.SYNC_BULK_FLUSH_BATCH_BYTES;
+    }
+    expectEveryRowExactlyOnce();
+    expect(loadSizes.length).toBeGreaterThanOrEqual(120 / 6);
+    expect(Math.max(...loadSizes)).toBeLessThanOrEqual(6);
+  }, 60_000);
+});
+
+describe("flush batch size after a DuckDB memory error", () => {
+  const next = (batchSize: number, rowsRead: number) =>
+    flushBatchSizeAfterMemoryError({ batchSize, rowsRead, minBatchSize: 100 });
+
+  it("halves a batch the row cap ended, down to the floor", () => {
+    expect(next(2000, 2000)).toBe(1000);
+    expect(next(150, 150)).toBe(100);
+    expect(next(100, 100)).toBeNull();
+  });
+
+  it("halves a batch the byte budget ended past the floor", () => {
+    // 2 MB rows: the 128 MiB budget ends the batch at 64 rows.
+    expect(next(2000, 64)).toBe(32);
+    expect(next(100, 64)).toBe(32);
+    // The retry after that: 32 rows, below the floor already.
+    expect(next(32, 32)).toBe(16);
+    expect(next(2000, 2)).toBe(1);
+    expect(next(2000, 1)).toBeNull();
+  });
 });
 
 describe("bulk buffer writes", () => {

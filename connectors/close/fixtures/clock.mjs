@@ -17,7 +17,17 @@ if (process.env.MAKO_FIXTURE_FAST_TIMERS === "1") {
   const realSetTimeout = globalThis.setTimeout;
   globalThis.setTimeout = Object.assign(
     (fn, ms, ...args) =>
-      realSetTimeout(fn, typeof ms === "number" && ms < 5000 ? 0 : ms, ...args),
+      realSetTimeout(
+        fn,
+        // fetch's own keep-alive timer is under 5 s too: firing it at once
+        // closes sockets as they are reused ("fetch failed").
+        typeof ms === "number" &&
+          ms < 5000 &&
+          !/undici/.test(new Error().stack ?? "")
+          ? 0
+          : ms,
+        ...args,
+      ),
     realSetTimeout,
   );
 }

@@ -17,6 +17,8 @@ import {
   setPublishedSha,
 } from "./deployment.service";
 import { markDeployStage } from "./deploy-progress";
+import { assertMayLandOnMain } from "./worktree/main-gate";
+import { WorktreeConflictError } from "./worktree/repo";
 import { updateRefCas } from "./repository.service";
 import {
   PUBLISH_ACTOR,
@@ -32,7 +34,7 @@ import {
 /** A refusal: the HTTP status and body fields the route answers with. */
 export interface PublishRefusal {
   ok: false;
-  status: 404 | 409 | 422 | 502;
+  status: 403 | 404 | 409 | 422 | 502;
   error: string;
   output?: string;
 }
@@ -117,6 +119,23 @@ export async function publishApp(
     return { ok: false, status: 409, error: trial.reason ?? "Merge failed" };
   }
   const sha = trial.sha;
+
+  // Publishing moves main without a hook. What it lands under workflows/
+  // or connectors/ needs an owner or admin, as at every door onto main
+  // (main-gate.ts). Two dots: what the promoted commit changes on main.
+  try {
+    await assertMayLandOnMain({
+      repoDir: handle.repoDir,
+      range: `${expectedMain}..${sha}`,
+      workspaceId,
+      actorUserId: opts.userId,
+    });
+  } catch (error) {
+    if (error instanceof WorktreeConflictError) {
+      return { ok: false, status: 403, error: error.message };
+    }
+    throw error;
+  }
 
   // Move main to the merge NOW and mirror it, BEFORE building. The build
   // target is then a real, durable, fetchable ref — not a dangling commit
