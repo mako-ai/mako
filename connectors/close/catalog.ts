@@ -118,6 +118,7 @@ export const CLOSE_SEARCH_BASE_FIELDS: Record<string, string[]> = {
     "status_id",
     "status_label",
     "source",
+    "first_source",
     "addresses",
     "url",
     "html_url",

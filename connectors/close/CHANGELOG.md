@@ -25,3 +25,10 @@ Releases of `mako/close`. Not released yet: no tag, no registry entry.
 - Meeting `notetaker_states` stays webhook-only: Close's REST API omits it
   from `/activity/meeting/`, `/activity/meeting/{id}/` and Search, even
   when `_fields` names it.
+- `leads` gets `source` on polls and backfills. Close's Search leaves
+  `source` out even when `_fields` names it. Search now requests the smart
+  field `first_source`, which holds the same value, and stores it as
+  `source`. An explicit `source` wins, so webhook payloads keep theirs. On
+  `ch_close`, 300 of 300 leads searched by `source` (100 each of `import`,
+  `api`, `ui`) had the same `first_source`. The in-process connector does
+  the same.
