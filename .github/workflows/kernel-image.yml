@@ -35,9 +35,9 @@ jobs:
     name: Build + publish kernel image
     runs-on: ubuntu-latest
     # Master runs push to the prod registry, so they take the prod deployer
-    # from the `production` environment (master only). PR runs get the
-    # dev-only preview deployer.
-    environment: ${{ github.event_name == 'pull_request' && 'preview' || 'production' }}
+    # from the `production` environment (master only). PR runs and manual
+    # runs from other branches get the dev-only preview deployer.
+    environment: ${{ github.ref == 'refs/heads/master' && 'production' || 'preview' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -87,7 +87,7 @@ jobs:
           done
 
       - name: Publish to prod registry
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/master'
         run: |
           for TAG in "${{ steps.reg.outputs.sha }}" latest; do
             docker tag kernel:${{ steps.reg.outputs.sha }} ${{ steps.reg.outputs.prod }}:${TAG}
@@ -95,7 +95,7 @@ jobs:
           done
 
       - name: Summary
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/master'
         run: |
           {
             echo "### Kernel image published :whale:"

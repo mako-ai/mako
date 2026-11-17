@@ -498,6 +498,19 @@ jobs:
           fi
           echo "Source database name: $SOURCE_DB_NAME"
 
+          # The nightly seed drops staging and restores it over several
+          # minutes. Refuse a source caught mid-seed or left empty by a failed
+          # seed: `migrations` is restored last and rewritten by the seed's
+          # final migrate step.
+          for col in workspaces migrations; do
+            count=$(mongosh "$STAGING_DATABASE_URL" --quiet --eval "db.getCollection('${col}').estimatedDocumentCount()")
+            if ! [ "${count:-0}" -gt 0 ] 2>/dev/null; then
+              echo "::error title=Staging DB incomplete::Source collection ${col} is empty (${count}). The nightly seed (seed-database.yml) may be running or may have failed. Re-run once it finishes."
+              exit 1
+            fi
+            echo "Source ${col}: ${count} documents"
+          done
+
           # Dump from staging and restore to ephemeral database using archive pipe
           # This approach preserves namespace metadata correctly for remapping
           # Exclude large collections that aren't needed for PR preview testing
