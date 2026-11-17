@@ -81,6 +81,16 @@ export interface Comparison {
   chunkStates: boolean;
   requests: [number, number];
   requestsEqual: boolean;
+  /** What the folder read beyond in-process on purpose (`FOLDER_ONLY`). */
+  folderOnly?: FolderOnly;
+  ok: boolean;
+}
+
+export interface FolderOnly {
+  rows: number;
+  columns: string[];
+  requests: number;
+  /** The extras are there, as declared. */
   ok: boolean;
 }
 
@@ -140,7 +150,22 @@ export function compareRuns(
   inProcess: Run,
   folder: Run,
   sourceTs?: SourceTimestamps,
+  entity?: string,
 ): Comparison;
+export const FOLDER_ONLY: Record<
+  string,
+  {
+    row?: (row: Record<string, unknown>) => boolean;
+    columns?: string[];
+    schemaFields?: string[];
+    request?: (key: string) => boolean;
+    check?: (extras: unknown) => boolean;
+  }
+>;
+export function withoutFolderOnly(
+  entity: string | undefined,
+  run: Run,
+): { run: Run; folderOnly?: FolderOnly };
 export function runParity(options: {
   entities: string[];
   makeInProcess: (config: CloseTestConfig) => any;
@@ -176,6 +201,8 @@ export function compareEntitySchema(
   fieldDiffs: string[];
   keyColumns: boolean;
   policy: boolean;
+  /** `FOLDER_ONLY` schema fields the folder should declare and does not. */
+  folderOnlyMissing: string[];
   ok: boolean;
 };
 export function compareForm(

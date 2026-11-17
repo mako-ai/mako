@@ -46,9 +46,10 @@ export async function* readOffsetList(
 }
 
 /**
- * Every custom field of every type, each tagged with its type, in one batch:
- * the in-process connector reads all 4 endpoints in a single chunk. An
- * endpoint that fails is skipped, as in-process.
+ * Every custom field of every type, each tagged with its type, in one batch,
+ * as the in-process connector reads its 4 endpoints in a single chunk. The
+ * folder reads 6 (see `CLOSE_CUSTOM_FIELD_ENDPOINTS`). An endpoint that
+ * fails is skipped, as in-process.
  */
 export async function readAllCustomFields(
   api: CloseClient,
