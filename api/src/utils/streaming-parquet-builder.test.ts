@@ -649,7 +649,13 @@ function legacySqlLiteral(value: unknown, type: string): string {
     }
     default: {
       const raw =
-        typeof value === "object" ? JSON.stringify(value) : String(value);
+        value instanceof Date
+          ? Number.isNaN(value.getTime())
+            ? ""
+            : value.toISOString()
+          : typeof value === "object"
+            ? JSON.stringify(value)
+            : String(value);
       // eslint-disable-next-line no-control-regex
       return `'${raw.replace(/\u0000/g, "").replace(/'/g, "''")}'`;
     }
@@ -682,6 +688,8 @@ async function testAppenderMatchesLegacyInsertText() {
     { i: 9007199254740991, d: 0.1 + 0.2, b: null, t: null, s: [1, 2] },
     { i: 12345678901234n, d: 12345678901234n, b: undefined, s: "NULL" },
     { i: null, d: null, s: "line\nbreak\ttab \\ back" },
+    { i: 3, s: new Date("2026-11-17T15:32:19.000Z") },
+    { i: 4, s: new Date(NaN) },
     { i: true, d: false, b: 2, t: "0001-01-01T00:00:00Z", s: "x".repeat(5000) },
     { i: 1e15, d: -1e300, b: true, t: "9999-12-31T23:59:59.999Z", s: " " },
   ];

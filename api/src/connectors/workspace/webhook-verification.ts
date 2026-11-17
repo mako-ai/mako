@@ -12,7 +12,18 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import type { WebhookVerificationResult } from "../base/BaseConnector";
 
 export type DeclaredWebhookVerification =
-  DeclaredHmacVerification | DeclaredStripeV1Verification;
+  | DeclaredHmacVerification
+  | DeclaredStripeV1Verification
+  | DeclaredSharedSecretVerification;
+
+/**
+ * A vendor that sends the secret itself in a header (Claap). Compared in
+ * constant time with the flow's secret, which must be MIN_SECRET_BYTES long.
+ */
+export interface DeclaredSharedSecretVerification {
+  scheme: "shared-secret";
+  secretHeader: string;
+}
 
 /**
  * Stripe's scheme: one header, `t=<unix seconds>,v1=<hex>[,v1=<hex>...]`.
@@ -34,6 +45,8 @@ export interface DeclaredHmacVerification {
   signatureHeader: string;
   signatureEncoding: "hex" | "base64";
   signaturePrefix?: string;
+  /** A query parameter carrying the signature, read before the header. */
+  signatureQuery?: string;
   /**
    * A header carrying the send time in Unix seconds, and how far from now
    * it may be. Declared together. When declared, a delivery without the
@@ -50,6 +63,8 @@ export const MIN_SECRET_BYTES = 16;
 export const MAX_TOLERANCE_SECONDS = 24 * 60 * 60;
 
 const HEADER_NAME = /^[a-z0-9-]{1,64}$/;
+const QUERY_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+const BODY_PATH = /^[A-Za-z0-9_]{1,64}(\.[A-Za-z0-9_]{1,64}){0,7}$/;
 
 /**
  * The declaration in an indexed spec, or null when there is none or it is
@@ -63,7 +78,19 @@ export function declaredWebhookVerification(
     ?.webhooks?.verification as Record<string, unknown> | undefined;
   if (!v || typeof v !== "object") return null;
   if (v.scheme === "stripe-v1") return declaredStripeV1(v);
+  if (v.scheme === "shared-secret") {
+    return typeof v.secretHeader === "string" &&
+      HEADER_NAME.test(v.secretHeader)
+      ? { scheme: "shared-secret", secretHeader: v.secretHeader }
+      : null;
+  }
   if (v.scheme !== "hmac-sha256") return null;
+  if (
+    v.signatureQuery !== undefined &&
+    (typeof v.signatureQuery !== "string" || !QUERY_NAME.test(v.signatureQuery))
+  ) {
+    return null;
+  }
   if (!["hex", "base64", "utf8"].includes(v.secretEncoding as string)) {
     return null;
   }
@@ -132,6 +159,9 @@ export function declaredWebhookVerification(
       v.signatureEncoding as DeclaredHmacVerification["signatureEncoding"],
     ...(typeof v.signaturePrefix === "string"
       ? { signaturePrefix: v.signaturePrefix }
+      : {}),
+    ...(typeof v.signatureQuery === "string"
+      ? { signatureQuery: v.signatureQuery }
       : {}),
     ...(hasTimestamp
       ? {
@@ -300,6 +330,8 @@ export function verifyDeclaredWebhook(
   options: {
     payload: string;
     headers: Record<string, string | string[] | undefined>;
+    /** The request's query string, for a signature sent as a parameter. */
+    query?: Record<string, string | string[] | undefined>;
     secret?: string;
     /** The time now, for the replay window. */
     now?: Date;
@@ -310,14 +342,22 @@ export function verifyDeclaredWebhook(
   }
   const { payload, headers, secret } = options;
   if (!secret) return { valid: false, error: "Missing webhook secret" };
+  if (declaration.scheme === "shared-secret") {
+    return verifySharedSecret(declaration, { payload, headers, secret });
+  }
   const key = keyOf(secret, declaration.secretEncoding);
   if (!key) return { valid: false, error: "The webhook secret is malformed" };
 
-  const presented = header(headers, declaration.signatureHeader);
+  const fromQuery = declaration.signatureQuery
+    ? single(options.query?.[declaration.signatureQuery])
+    : undefined;
+  const presented = fromQuery || header(headers, declaration.signatureHeader);
   if (!presented) {
     return {
       valid: false,
-      error: `Missing ${declaration.signatureHeader} header`,
+      error: declaration.signatureQuery
+        ? `Missing ${declaration.signatureQuery} parameter or ${declaration.signatureHeader} header`
+        : `Missing ${declaration.signatureHeader} header`,
     };
   }
   if (declaration.timestampHeader) {
@@ -356,11 +396,15 @@ export function verifyDeclaredWebhook(
       hmac.update(part.slice("literal:".length));
     }
   }
+  // Hex compares case-insensitively, as the in-process checks do
+  // (timingSafeEqualHex); base64 is case-sensitive.
+  const fold = (text: string) =>
+    declaration.signatureEncoding === "hex" ? text.toLowerCase() : text;
   const expected = Buffer.from(
-    hmac.digest(declaration.signatureEncoding),
+    fold(hmac.digest(declaration.signatureEncoding)),
     "utf8",
   );
-  const given = Buffer.from(presented.slice(prefix.length), "utf8");
+  const given = Buffer.from(fold(presented.slice(prefix.length)), "utf8");
   if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
     return { valid: false, error: "Invalid signature" };
   }
@@ -369,4 +413,78 @@ export function verifyDeclaredWebhook(
   } catch {
     return { valid: false, error: "Invalid JSON payload" };
   }
+}
+
+function single(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) return value.length > 0 ? value[0] : undefined;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * The secret itself in a header, compared in constant time. The flow's
+ * secret must be at least MIN_SECRET_BYTES long: a short one is guessable.
+ */
+function verifySharedSecret(
+  declaration: DeclaredSharedSecretVerification,
+  options: {
+    payload: string;
+    headers: Record<string, string | string[] | undefined>;
+    secret: string;
+  },
+): WebhookVerificationResult {
+  const expected = Buffer.from(options.secret, "utf8");
+  if (expected.length < MIN_SECRET_BYTES) {
+    return { valid: false, error: "The webhook secret is malformed" };
+  }
+  const presented = header(options.headers, declaration.secretHeader);
+  if (!presented) {
+    return {
+      valid: false,
+      error: `Missing ${declaration.secretHeader} header`,
+    };
+  }
+  const given = Buffer.from(presented, "utf8");
+  if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
+    return { valid: false, error: "Invalid webhook secret" };
+  }
+  try {
+    return { valid: true, event: JSON.parse(options.payload) };
+  } catch {
+    return { valid: false, error: "Invalid JSON payload" };
+  }
+}
+
+/**
+ * Where the connector says a delivery's event id and type sit in its body
+ * (the SDK's `webhooks.eventIdPath` / `eventTypePath`), from the indexed
+ * spec. Paths that are not plain dotted names are ignored.
+ */
+export function declaredWebhookIdentity(spec: unknown): {
+  eventIdPath?: string;
+  eventTypePath?: string;
+} {
+  const w = (spec as { mako?: { webhooks?: Record<string, unknown> } })?.mako
+    ?.webhooks;
+  const ok = (value: unknown): value is string =>
+    typeof value === "string" && BODY_PATH.test(value);
+  return {
+    ...(ok(w?.eventIdPath) ? { eventIdPath: w.eventIdPath } : {}),
+    ...(ok(w?.eventTypePath) ? { eventTypePath: w.eventTypePath } : {}),
+  };
+}
+
+/** The string or number at a dotted path of a parsed body, as a string. */
+export function valueAtPath(body: unknown, path: string): string | undefined {
+  let node: unknown = body;
+  for (const part of path.split(".")) {
+    if (node === null || typeof node !== "object") return undefined;
+    if (!Object.prototype.hasOwnProperty.call(node, part)) return undefined;
+    node = (node as Record<string, unknown>)[part];
+  }
+  if (typeof node === "string" && node.length > 0 && node.length <= 512) {
+    return node;
+  }
+  return typeof node === "number" && Number.isFinite(node)
+    ? String(node)
+    : undefined;
 }

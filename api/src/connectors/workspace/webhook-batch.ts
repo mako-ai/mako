@@ -40,6 +40,7 @@ import { sourceConnectionManager } from "../../sync/database-data-source-manager
 import { hasCdcDestinationAdapter } from "../../sync-cdc/adapters/registry";
 import { cdcIngestService } from "../../sync-cdc/ingest";
 import { normalizePayloadKeys } from "../../sync-cdc/normalization";
+import { isEntityEnabledForFlow } from "../../sync-cdc/entity-selection";
 import {
   shapeWebhookCdcRecords,
   type WebhookCdcRecord,
@@ -65,7 +66,10 @@ const logger = loggers.connector();
 export interface WebhookBatchRunner {
   declaredEntities(): Promise<string[]>;
   runWebhookBatch(
-    batch: { events: Array<Record<string, unknown>> },
+    batch: {
+      events: Array<Record<string, unknown>>;
+      enabledEntities?: string[];
+    },
     options: { timeoutMs: number },
   ): Promise<RunResult>;
 }
@@ -839,7 +843,12 @@ async function runBatch(input: {
       if (events.length === 0) return { next: "more", ...totals };
     }
   }
-  const batch = { events: events.map(wireEvent) };
+  // The entities the flow syncs, so a handler can skip work whose records
+  // would be dropped here anyway (Claap's transcript downloads).
+  const enabledEntities = [...declared].filter(entity =>
+    isEntityEnabledForFlow(flow, entity, entity.split(":")[0]),
+  );
+  const batch = { events: events.map(wireEvent), enabledEntities };
 
   // One box run per batch, never more: a failure ends the run. With more
   // than one event, nobody knows which event caused it, so none is blamed:

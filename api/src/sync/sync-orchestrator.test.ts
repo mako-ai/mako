@@ -31,9 +31,18 @@ vi.mock("../database/workspace-schema", () => ({
   },
 }));
 
+// A built-in source whose connector declares no schema (the BaseConnector
+// default): the merge runs with default key columns.
+const BUILTIN_SOURCE = { id: "ds1", name: "rest", type: "rest", active: true };
 vi.mock("./database-data-source-manager", () => ({
   sourceConnectionManager: {
-    getSourceConnection: vi.fn().mockResolvedValue(null),
+    getSourceConnection: vi.fn(),
+  },
+}));
+
+vi.mock("./connector-registry", () => ({
+  syncConnectorRegistry: {
+    getConnectorFor: vi.fn(async () => ({ resolveSchema: async () => null })),
   },
 }));
 
@@ -75,6 +84,12 @@ import {
   performSyncChunk,
 } from "./sync-orchestrator";
 import { sourceConnectionManager } from "./database-data-source-manager";
+
+beforeEach(() => {
+  vi.mocked(sourceConnectionManager.getSourceConnection).mockResolvedValue(
+    BUILTIN_SOURCE as any,
+  );
+});
 
 const baseOptions = {
   dataSourceId: "ds1",
@@ -277,8 +292,12 @@ describe("source connection lookups are scoped to the flow's workspace", () => {
     expect(lookup).toHaveBeenCalledWith("ds1", "ws1");
   });
 
-  it("the staging merge looks the connection up in the flow's workspace", async () => {
-    await performRescueAndPrepareStaging(rescueOptions);
+  it("the staging merge looks the connection up in the flow's workspace, and a miss fails the merge", async () => {
+    // Without the connection there is no schema (no key columns): the merge
+    // step fails and retries instead of merging on default keys.
+    await expect(performRescueAndPrepareStaging(rescueOptions)).rejects.toThrow(
+      "source connection ds1 not found",
+    );
     expect(lookup).toHaveBeenCalled();
     for (const call of lookup.mock.calls) expect(call).toEqual(["ds1", "ws1"]);
   });

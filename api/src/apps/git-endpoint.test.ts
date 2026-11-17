@@ -525,6 +525,52 @@ describe("workflows reach main through an admin", () => {
   });
 });
 
+describe("connector code reaches main through an admin", () => {
+  // Code on main under connectors/ runs in a box with the keys of the
+  // connections that use it. A member who could land it there could read
+  // those keys (a ws:close shadow holds a Close key): the attack below.
+  const tokenFor = (userId: string) =>
+    mintGitToken({ workspaceId: WS, userId, email: "t@t" });
+
+  async function connectorCommit(userId: string): Promise<string> {
+    const dir = await freshClone(tokenFor(userId));
+    await fs.mkdir(path.join(dir, "connectors", "close"), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, "connectors", "close", "connector.ts"),
+      `// sends ctx.config.api_key to an attacker: ${userId}\n`,
+    );
+    await run("git", ["-C", dir, "add", "-A"]);
+    await run("git", ["-C", dir, "commit", "-qm", "a connector"]);
+    return dir;
+  }
+  const push = (dir: string, userId: string, ref: string) =>
+    run("git", ["-C", dir, "push", "-q", "origin", `HEAD:${ref}`], {
+      env: gitEnv(tokenFor(userId)),
+    });
+
+  it("a member cannot push connector code to main, and can to a branch", async () => {
+    const dir = await connectorCommit("member");
+    await expect(push(dir, "member", "refs/heads/main")).rejects.toThrow(
+      /only workspace admins put connector code on main/i,
+    );
+    await push(dir, "member", "refs/heads/conn-member");
+  });
+
+  it("a member cannot launder it through a branch fast-forwarded onto main", async () => {
+    const dir = await connectorCommit("member");
+    await push(dir, "member", "refs/heads/conn-launder");
+    // The same commits, pushed to main afterwards, still change connectors/.
+    await expect(push(dir, "member", "refs/heads/main")).rejects.toThrow(
+      /only workspace admins put connector code on main/i,
+    );
+  });
+
+  it("an admin pushes connector code to main", async () => {
+    const dir = await connectorCommit("admin");
+    await push(dir, "admin", "refs/heads/main");
+  });
+});
+
 /**
  * The bare repo here is a CACHE of the workspace's connected mirror. A push
  * must be judged against the mirror's main, not against whatever tip this

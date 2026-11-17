@@ -37,6 +37,8 @@ export default defineConfig({
       "src/sync/sync-orchestrator.test.ts",
       // Bulk backfill: every row lands once, through a failed staging load.
       "src/sync/bulk-flush-row-loss.test.ts",
+      // A failed schema resolution never leads to a schema-less flush.
+      "src/sync/schemaless-flush.test.ts",
       "src/utils/bigquery-emulator.test.ts",
       // Per-run Unix users in e2bdev/base under Docker; RUN_DB_INTEGRATION=1.
       "src/connectors/workspace/run-isolation.docker.test.ts",
