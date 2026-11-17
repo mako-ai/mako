@@ -1,6 +1,7 @@
 import { promises as fs } from "fs";
 import { inWorkspace } from "../utils/workspace-scope";
 import { syncConnectorRegistry } from "./connector-registry";
+import { applyFlowRuntimeById } from "../connectors/boxed-runtime/runtime";
 import { sourceConnectionManager } from "./database-data-source-manager";
 import {
   SyncLogger,
@@ -264,14 +265,20 @@ export async function performSyncChunk(
   const syncMode = isIncremental ? "incremental" : "full";
 
   try {
-    // Get the data source
-    const sourceConnection = await sourceConnectionManager.getSourceConnection(
+    // Get the data source. A flow that runs boxed (a shadow, or switched)
+    // reads it through its folder twin (connectors/boxed-runtime); with
+    // CONNECTOR_BOXED_SWITCH off this returns the source unchanged.
+    const storedConnection = await sourceConnectionManager.getSourceConnection(
       dataSourceId,
       options.workspaceId,
     );
-    if (!sourceConnection) {
+    if (!storedConnection) {
       throw new Error(`Data source '${dataSourceId}' not found`);
     }
+    const sourceConnection = await applyFlowRuntimeById(
+      storedConnection,
+      options.flowId,
+    );
 
     if (!sourceConnection.active) {
       throw new Error(`Data source '${sourceConnection.name}' is not active`);

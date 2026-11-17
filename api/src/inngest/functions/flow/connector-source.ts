@@ -9,6 +9,7 @@ import { Flow, type IFlow } from "../../../database/workspace-schema";
 import { withHeartbeat } from "../../../services/flow-execution-tracking";
 import { syncConnectorRegistry } from "../../../sync/connector-registry";
 import { sourceConnectionManager } from "../../../sync/database-data-source-manager";
+import { applyFlowRuntime } from "../../../connectors/boxed-runtime/runtime";
 import {
   forceDrainCdcFlow,
   markCdcBackfillCompletedForFlow,
@@ -81,19 +82,26 @@ export function selectEntitiesToSync(params: {
   return availableEntities;
 }
 
-/** The decrypted source connection and its connector, or a throw. */
+/**
+ * The decrypted source connection and its connector, or a throw. A flow that
+ * runs boxed (a shadow, or `runtime: boxed`) gets its folder twin on the
+ * same connection (connectors/boxed-runtime); every other flow, the
+ * connection's own connector, as before.
+ */
 async function loadConnector(
+  flow: IFlow,
   dataSourceId: string,
   workspaceId: string,
   queries?: unknown[],
 ) {
-  const sourceConnection = await sourceConnectionManager.getSourceConnection(
+  const stored = await sourceConnectionManager.getSourceConnection(
     dataSourceId,
     workspaceId,
   );
-  if (!sourceConnection) {
+  if (!stored) {
     throw new Error(`Data source not found: ${dataSourceId}`);
   }
+  const sourceConnection = await applyFlowRuntime(stored, flow);
 
   // Inject flow queries into sourceConnection for GraphQL/PostHog connectors
   // The registry maps connection -> config when creating the connector
@@ -143,6 +151,7 @@ export async function runConnectorSourceFlow(
     "check-chunking-support",
     async () => {
       const { sourceConnection, connector } = await loadConnector(
+        flow,
         dataSourceId.toString(),
         String(flow.workspaceId),
       );
@@ -191,6 +200,7 @@ export async function runConnectorSourceFlow(
   // Get entities to sync
   const entitiesToSync = await step.run("get-entities-to-sync", async () => {
     const { connector } = await loadConnector(
+      flow,
       dataSourceId.toString(),
       String(flow.workspaceId),
       flow.queries,

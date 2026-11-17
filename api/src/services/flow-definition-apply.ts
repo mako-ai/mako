@@ -253,6 +253,12 @@ export function applyDefinition(doc: IFlow, file: FlowFile): string | null {
       keysetDirection: file.pagination.keysetDirection,
     } as IFlow["paginationConfig"];
   }
+  // Which code reads the connection (connectors/boxed-runtime). Absent in
+  // the file means built-in: unset, so the row matches what the file says.
+  doc.connectorRuntime = file.runtime === "boxed" ? "boxed" : undefined;
+  doc.boxedConnector = file.boxedConnector || undefined;
+  doc.shadowOf = file.shadowOf ? new Types.ObjectId(file.shadowOf) : undefined;
+
   if (file.conflict) {
     doc.conflictConfig = {
       ...(doc.conflictConfig ?? {}),

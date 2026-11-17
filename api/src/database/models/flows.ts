@@ -235,6 +235,31 @@ export interface IFlow extends Document {
     boxBatchSize?: number;
   };
   entityFilter?: string[]; // Optional: specific entities to sync (for connector sources)
+  /**
+   * Which code reads a built-in connection for this flow (RFC
+   * connector-runtime §10, iteration 5). `builtin` (absent) runs the
+   * in-process connector. `boxed` runs the workspace's folder twin
+   * (`ws:<boxedConnector ?? connection type>`) in a box with the SAME
+   * connection's credential. Honoured only with CONNECTOR_BOXED_SWITCH on
+   * (connectors/boxed-runtime). Definition: in `flows/<slug>.yml`.
+   */
+  connectorRuntime?: "builtin" | "boxed";
+  /** The folder slug a boxed run uses; absent = the connection's type. */
+  boxedConnector?: string;
+  /**
+   * Set on a shadow flow: the live flow it mirrors. A shadow reads the live
+   * flow's connection through its folder twin and writes to its own
+   * dataset; it never writes the live one (assertShadowIsolated).
+   */
+  shadowOf?: Types.ObjectId;
+  /**
+   * Who allowed this flow's connection to be read by a folder twin, and
+   * which twin. Set only by an owner/admin action (flow_update runtime,
+   * flow_shadow start), never from `flows/<slug>.yml`: a repo push alone
+   * cannot hand a built-in connection's key to workspace code. A boxed run
+   * needs it, for the twin it names. Runtime bookkeeping, not in the file.
+   */
+  boxedApproval?: { by: string; at: Date; slug: string };
   queries?: IFlowQuery[]; // Queries for GraphQL/PostHog connectors
   syncMode: "full" | "incremental";
   /**
@@ -482,6 +507,17 @@ const FlowSchema = new Schema<IFlow>(
       boxBatchSize: Number,
     },
     entityFilter: [String],
+    connectorRuntime: { type: String, enum: ["builtin", "boxed"] },
+    boxedConnector: {
+      type: String,
+      trim: true,
+      match: /^[a-z0-9][a-z0-9_-]*$/,
+    },
+    shadowOf: { type: Schema.Types.ObjectId, ref: "Flow" },
+    boxedApproval: {
+      type: new Schema({ by: String, at: Date, slug: String }, { _id: false }),
+      required: false,
+    },
     queries: [
       {
         name: { type: String, required: true },

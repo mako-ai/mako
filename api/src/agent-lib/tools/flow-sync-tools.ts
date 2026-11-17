@@ -26,6 +26,7 @@ import {
   CdcEntityState,
   Flow,
   FlowExecution,
+  FlowParityCheck,
   type IFlow,
 } from "../../database/workspace-schema";
 import { flowToFile } from "../../services/flow-config-files";
@@ -39,6 +40,17 @@ import { syncFlowWebhookSubscription } from "../../services/flow-webhook-subscri
 import { generateWebhookEndpoint } from "../../utils/webhook.utils";
 import { workspaceService } from "../../services/workspace.service";
 import { cdcBackfillService } from "../../sync-cdc/backfill";
+import { connectorBoxedSwitchEnabled } from "../../connectors/boxed-runtime/config";
+import { parityGate } from "../../connectors/boxed-runtime/parity.service";
+import {
+  BoxedRuntimeError,
+  runtimeStatus,
+  startShadow,
+  stopShadow,
+  switchFlowRuntime,
+} from "../../connectors/boxed-runtime/shadow.service";
+import { inngest } from "../../inngest/client";
+import { CONNECTOR_PARITY_CHECK_EVENT } from "../../inngest/functions/connector-parity";
 
 const OBJECT_ID = /^[0-9a-f]{24}$/i;
 const RECENT_EXECUTIONS = 5;
@@ -221,7 +233,7 @@ export function createFlowSyncTools({
 
     flow_status: tool({
       description:
-        "How a sync is doing, per entity: mode (steady / backfill), backlog, consecutive failures and the last error, last materialised, last backfill, lifetime events and rows; plus its last runs. Use it after flow_backfill or flow_update, and to find a sync that went quiet.",
+        "How a sync is doing, per entity: mode (steady / backfill), backlog, consecutive failures and the last error, last materialised, last backfill, lifetime events and rows; plus its last runs. `runtime` says which code reads the connection (builtin or boxed), its boxed shadow and whether the switch gate is open. Use it after flow_backfill, flow_update or flow_shadow, and to find a sync that went quiet.",
       inputSchema: z.object({
         flow: flowRef,
         executions: z
@@ -254,11 +266,17 @@ export function createFlowSyncTools({
               "status success startedAt completedAt duration error.message",
             )
             .lean();
+          // Which code reads the connection, the shadow and the switch
+          // gate (connectors/boxed-runtime). Never fails the status.
+          const runtime = await runtimeStatus(flow).catch(error => ({
+            error: error instanceof Error ? error.message : String(error),
+          }));
           return {
             success: true,
             id: flowIdStr,
             name: flow.name ?? flow.slug,
             triggers: triggersOf(flow),
+            runtime,
             state: flow.syncState,
             entities: states.map(s => ({
               entity: s.entity,
@@ -325,7 +343,7 @@ export function createFlowSyncTools({
 
     flow_update: tool({
       description:
-        'Change what starts a sync — only the three trigger controls: `poll` (a cron, or "off"), `webhook` ("on" / "off"; on gives the sync its webhook URL and installs or adopts the provider subscription where the connector can; polling keeps running), `resync` (a cron for the periodic full re-read, or "off"). Writes flows/<slug>.yml on main, then saves. Owner or admin.',
+        'Change what starts a sync — the three trigger controls: `poll` (a cron, or "off"), `webhook` ("on" / "off"; on gives the sync its webhook URL and installs or adopts the provider subscription where the connector can; polling keeps running), `resync` (a cron for the periodic full re-read, or "off"). Or, alone, `runtime`: "boxed" runs the same sync and dataset through the connection\'s folder twin in a box (needs CONNECTOR_BOXED_SWITCH and an open parity gate, see flow_shadow; `force` skips the gate), "builtin" switches back at once. Writes flows/<slug>.yml on main, then saves. Owner or admin.',
       inputSchema: z.object({
         flow: flowRef,
         poll: z.string().optional().describe('Cron for polling, or "off"'),
@@ -340,18 +358,69 @@ export function createFlowSyncTools({
           .describe(
             "IANA timezone for the crons given (default: as before, else UTC)",
           ),
+        runtime: z
+          .enum(["builtin", "boxed"])
+          .optional()
+          .describe(
+            "Which code reads the connection. Pass it alone. boxed: the folder twin in a box; builtin: the in-process connector",
+          ),
+        force: z
+          .boolean()
+          .optional()
+          .describe(
+            "With runtime: boxed, switch even though the parity gate is closed",
+          ),
       }),
-      execute: async ({ flow: ref, poll, webhook, resync, timezone }) => {
+      execute: async ({
+        flow: ref,
+        poll,
+        webhook,
+        resync,
+        timezone,
+        runtime,
+        force,
+      }) => {
         try {
           if (
             poll === undefined &&
             webhook === undefined &&
-            resync === undefined
+            resync === undefined &&
+            runtime === undefined
           ) {
-            return failure("Nothing to change: pass poll, webhook or resync");
+            return failure(
+              "Nothing to change: pass poll, webhook, resync or runtime",
+            );
           }
           if (!(await mayChange())) {
             return failure("Owner/admin role required");
+          }
+          if (runtime !== undefined) {
+            if (
+              poll !== undefined ||
+              webhook !== undefined ||
+              resync !== undefined
+            ) {
+              return failure("Pass runtime alone, without trigger changes");
+            }
+            await assertFlowRepo(workspaceId);
+            const flow = await findFlow(workspaceId, ref);
+            const switched = await switchFlowRuntime({
+              flow,
+              target: runtime,
+              force,
+              userId,
+            });
+            return {
+              success: true,
+              id: flow._id.toString(),
+              runtime: switched.runtime,
+              changed: switched.changed,
+              forced: switched.forced,
+              relanedWebhookEvents: switched.relaned,
+              gate: switched.gate
+                ? { open: switched.gate.open, reasons: switched.gate.reasons }
+                : null,
+            };
           }
           for (const [name, value] of [
             ["poll", poll],
@@ -450,6 +519,130 @@ export function createFlowSyncTools({
             id: flow._id.toString(),
             triggers: triggersOf(flow),
             ...(warning ? { warning } : {}),
+          };
+        } catch (error) {
+          return failure(error);
+        }
+      },
+    }),
+
+    flow_shadow: tool({
+      description:
+        "Run a sync's boxed shadow, to migrate it from its built-in connector to the connection's folder twin (ws:<slug>, or mako/<slug> installed by reference). `start`: a second sync on the SAME connection, run in a box with the same credential, writing <dataset>_shadow, polling on the live cadence and receiving a copy of the live webhook deliveries; its full-history backfill starts at once. `check`: run a parity check now (every row: keys, field checksums, top differing fields, and the last 2 h of live updates with the shadow's lag); read it with flow_parity. `stop`: stop polling; the shadow's data stays. Needs CONNECTOR_BOXED_SWITCH. Owner or admin.",
+      inputSchema: z.object({
+        flow: flowRef.describe(
+          "The LIVE sync (its id, name or slug), not the shadow",
+        ),
+        action: z.enum(["start", "check", "stop"]),
+        poll: z
+          .string()
+          .optional()
+          .describe(
+            "start: the shadow's poll cron (default: the live sync's, else every 15 minutes)",
+          ),
+        timezone: z.string().optional(),
+      }),
+      execute: async ({ flow: ref, action, poll, timezone }) => {
+        try {
+          if (!(await mayChange())) {
+            return failure("Owner/admin role required");
+          }
+          if (!connectorBoxedSwitchEnabled()) {
+            return failure("CONNECTOR_BOXED_SWITCH is off in this deployment");
+          }
+          if (poll !== undefined && !isCron(poll)) {
+            return failure(`poll: "${poll}" is not a cron (5 or 6 fields)`);
+          }
+          const live = await findFlow(workspaceId, ref);
+          if (live.shadowOf) {
+            return failure("That sync is a shadow; name its live sync instead");
+          }
+          if (action === "check") {
+            const shadow = await Flow.findOne({
+              workspaceId: live.workspaceId,
+              shadowOf: live._id,
+            }).sort({ createdAt: -1 });
+            if (!shadow) return failure("No shadow: start one first");
+            await inngest.send({
+              name: CONNECTOR_PARITY_CHECK_EVENT,
+              data: { shadowFlowId: String(shadow._id), trigger: "manual" },
+            });
+            return {
+              success: true,
+              id: live._id.toString(),
+              shadowId: String(shadow._id),
+              check: "queued; read it with flow_parity in a few minutes",
+            };
+          }
+          await assertFlowRepo(workspaceId);
+          if (action === "stop") {
+            const stopped = await stopShadow({ live, userId });
+            return stopped
+              ? { success: true, id: live._id.toString(), ...stopped }
+              : failure("No shadow to stop");
+          }
+          const started = await startShadow({ live, userId, poll, timezone });
+          return { success: true, id: live._id.toString(), ...started };
+        } catch (error) {
+          return failure(
+            error instanceof BoxedRuntimeError ? error.message : error,
+          );
+        }
+      },
+    }),
+
+    flow_parity: tool({
+      description:
+        "A sync's parity against its boxed shadow: the switch gate (open or not, and why), and the latest checks. Per entity: rows on each side, keys on both / live only / shadow only, rows with differing fields, both checksums, the fields that differ most with samples, and the live-update window (updates matched, missing, shadow lag p50/p95). Name the live sync or its shadow.",
+      inputSchema: z.object({
+        flow: flowRef,
+        checks: z
+          .number()
+          .int()
+          .min(1)
+          .max(20)
+          .optional()
+          .describe("How many recent checks to show (default 1)"),
+      }),
+      execute: async ({ flow: ref, checks }) => {
+        try {
+          const named = await findFlow(workspaceId, ref);
+          const live = named.shadowOf
+            ? await Flow.findOne({
+                _id: named.shadowOf,
+                workspaceId: named.workspaceId,
+              })
+            : named;
+          if (!live) return failure("The shadow's live sync no longer exists");
+          const gate = await parityGate(live);
+          const rows = gate.shadowFlowId
+            ? await FlowParityCheck.find({
+                workspaceId: live.workspaceId,
+                shadowFlowId: new Types.ObjectId(gate.shadowFlowId),
+              })
+                .sort({ startedAt: -1 })
+                .limit(checks ?? 1)
+                .lean()
+            : [];
+          return {
+            success: true,
+            id: live._id.toString(),
+            shadowId: gate.shadowFlowId,
+            gate: { open: gate.open, reasons: gate.reasons },
+            checks: rows.map(c => ({
+              id: String(c._id),
+              trigger: c.trigger,
+              status: c.status,
+              startedAt: c.startedAt,
+              finishedAt: c.finishedAt ?? null,
+              cutoff: c.cutoff ?? null,
+              window: c.window ?? null,
+              shadowBackfillCompletedAt: c.shadowBackfillCompletedAt ?? null,
+              clean: c.clean,
+              reasons: c.reasons,
+              error: c.error ?? null,
+              entities: c.entities,
+            })),
           };
         } catch (error) {
           return failure(error);

@@ -63,4 +63,20 @@ export const SYNC_CAPABILITIES: readonly SyncCapabilityDefinition[] = [
     surfaces: EXTERNAL_MCP_ONLY,
     resultKind: "data",
   }),
+  // A boxed shadow of a sync: a second sync on the same connection, writing
+  // its own dataset, plus on-demand parity checks. Gated like flow_backfill.
+  define({
+    name: "flow_shadow",
+    risk: "write",
+    minimumWorkspaceRole: "admin",
+    requiredGrant: "warehouse-write",
+    surfaces: EXTERNAL_MCP_ONLY,
+    resultKind: "run",
+  }),
+  define({
+    name: "flow_parity",
+    risk: "read",
+    surfaces: EXTERNAL_MCP_ONLY,
+    resultKind: "data",
+  }),
 ];

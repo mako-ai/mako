@@ -53,6 +53,12 @@ import {
   SandboxedConnector,
   isWorkspaceConnectorType,
 } from "./SandboxedConnector";
+import { BOXED_CAPABLE_TYPES } from "../boxed-runtime/config";
+import {
+  applyFlowRuntime,
+  boxedTwinFor,
+  type FlowRuntimeFields,
+} from "../boxed-runtime/runtime";
 import {
   connectorWebhookBatchesEnabled,
   webhookBatchLimits,
@@ -73,27 +79,54 @@ export interface WebhookBatchRunner {
 export type WebhookBatchRunnerFactory = (
   connectionId: string,
   workspaceId: string,
+  /** The flow the batch is for: a boxed built-in flow reads through its twin. */
+  flow?: FlowRuntimeFields,
 ) => Promise<WebhookBatchRunner>;
 
 /**
  * The connection's connector, built the way a read builds it: the decrypted
  * credential from the source connection manager, through the sync registry.
+ * A built-in connection's flow that runs boxed (a shadow, or switched) gets
+ * its folder twin, with the same credential (connectors/boxed-runtime).
  */
 const defaultRunner: WebhookBatchRunnerFactory = async (
   connectionId,
   workspaceId,
+  flow,
 ) => {
-  const config = await sourceConnectionManager.getSourceConnection(
+  const stored = await sourceConnectionManager.getSourceConnection(
     connectionId,
     workspaceId,
   );
-  if (!config) throw new Error(`Data source not found: ${connectionId}`);
+  if (!stored) throw new Error(`Data source not found: ${connectionId}`);
+  const config = flow ? await applyFlowRuntime(stored, flow) : stored;
   const connector = await syncConnectorRegistry.getConnectorFor(config);
   if (!(connector instanceof SandboxedConnector)) {
     throw new Error(`Connection ${connectionId} is not a workspace connector`);
   }
   return connector;
 };
+
+/**
+ * Hand a flow's pending box-lane events, verified for this connection, to
+ * the inline lane (a switch back to the built-in connector). Returns how
+ * many moved. Events for another connection stay and are dropped.
+ */
+export async function relaneBoxEventsToInline(
+  flowId: Types.ObjectId,
+  connectionId: Types.ObjectId,
+): Promise<number> {
+  const result = await WebhookEvent.updateMany(
+    {
+      flowId,
+      dataSourceId: connectionId,
+      lane: "box",
+      status: "pending",
+    },
+    { $unset: { lane: 1, dataSourceId: 1, boxClaim: 1, claimedAt: 1 } },
+  );
+  return result.modifiedCount ?? 0;
+}
 
 /** Codes a box-lane event can end with, besides the inline cron's own. */
 export const BOX_CODES = {
@@ -578,7 +611,33 @@ export async function processBoxWebhookBatch(input: {
     return emptyResult("stop", "missing dependency");
   }
 
-  if (!isWorkspaceConnectorType(connection.type)) {
+  // A built-in connection's flow that runs its folder twin (a shadow, or
+  // `runtime: boxed`) is boxed here too (connectors/boxed-runtime).
+  const boxedTwin = boxedTwinFor(flow, connection.type);
+  if (
+    !boxedTwin &&
+    !isWorkspaceConnectorType(connection.type) &&
+    !flow.shadowOf &&
+    BOXED_CAPABLE_TYPES.has(connection.type)
+  ) {
+    // The flow was switched back to its built-in connector (or the switch
+    // flag went off). Its pending box-lane events were verified for this
+    // flow and this connection: they go to the inline lane, where the
+    // built-in connector applies them, instead of being dropped.
+    const relaned = await relaneBoxEventsToInline(
+      flowId,
+      connection._id as Types.ObjectId,
+    );
+    await endPending(
+      { flowId },
+      "completed",
+      "dropped",
+      BOX_CODES.connectionChanged,
+      "The flow's connection changed after this event was received",
+    );
+    return emptyResult("stop", `runtime is builtin; ${relaned} to inline`);
+  }
+  if (!boxedTwin && !isWorkspaceConnectorType(connection.type)) {
     // The flow moved to an in-process connector. Its box-lane events were
     // verified for, and pinned to, a workspace connection: they are dropped,
     // never handed to another connection. The new connector's own webhook
@@ -689,6 +748,7 @@ export async function processBoxWebhookBatch(input: {
     runner = await (input.runner ?? defaultRunner)(
       String(connection._id),
       String(flow.workspaceId),
+      flow,
     );
     declared = new Set(await runner.declaredEntities());
   } catch (error) {
@@ -700,7 +760,18 @@ export async function processBoxWebhookBatch(input: {
       failed: claimed.length,
     };
   }
-  const secret: unknown = flow.webhookConfig?.secret;
+  // A shadow's events are copies of its live flow's deliveries: the
+  // secret kept out of the batch is the live flow's.
+  const secret: unknown = flow.shadowOf
+    ? (
+        (await Flow.findOne({
+          _id: flow.shadowOf,
+          workspaceId: flow.workspaceId,
+        })
+          .select("webhookConfig.secret")
+          .lean()) as { webhookConfig?: { secret?: unknown } } | null
+      )?.webhookConfig?.secret
+    : flow.webhookConfig?.secret;
 
   const result = await runBatch({
     flow,

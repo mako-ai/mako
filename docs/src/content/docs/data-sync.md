@@ -179,16 +179,29 @@ resync:
 
 ### Driving syncs from an agent or the terminal
 
-Over MCP (external clients only), five tools cover syncs:
+Over MCP (external clients only), seven tools cover syncs:
 
 | Tool | What it does |
 |------|--------------|
 | `flow_list` / `flow_read` | List syncs, or read one as its `flows/<slug>.yml` shape (never credentials or webhook secrets), with its triggers |
 | `flow_status` | Per-entity CDC state (mode, backlog, failures, last materialised) plus the last executions |
 | `flow_backfill` | Start (or resume) a backfill, optionally for some entities |
-| `flow_update` | Change the three trigger controls (poll, webhook, resync) and commit the flow file |
+| `flow_update` | Change the three trigger controls (poll, webhook, resync) and commit the flow file; or, alone, `runtime: boxed \| builtin` |
+| `flow_shadow` | `start`, `check` or `stop` a sync's boxed shadow (below) |
+| `flow_parity` | The switch gate and the latest parity checks of a sync against its shadow |
 
-A sync is addressed by id, name or slug, or any unique short name (`wise`, `fr_close`). The two writes need the `warehouse:write` grant and an owner or admin role; the reads need neither.
+A sync is addressed by id, name or slug, or any unique short name (`wise`, `fr_close`). The three writes need the `warehouse:write` grant and an owner or admin role; the reads need neither.
+
+### Moving a sync to its folder connector
+
+A sync on a built-in connection (Close, Stripe, PandaDoc, Calendly, Claap, Wise, PostHog) can run the connection's folder twin in a box instead: `ws:<slug>` from the workspace's `connectors/<slug>/`, or `mako/<slug>` installed there by reference. It uses the same connection and the same key. Behind `CONNECTOR_BOXED_SWITCH`, off by default.
+
+1. `flow_shadow` `start`: a second sync on the same connection writes `<dataset>_shadow`. Its full-history backfill starts at once. It polls on the live cadence and gets a copy of each verified webhook delivery.
+2. Parity checks run hourly, or now with `flow_shadow` `check`. Each compares every row: keys on both sides, a checksum over every field, the fields that differ most with samples, and the last 2 h of live updates with the shadow's lag.
+3. `flow_parity` shows the gate. It opens on a clean check under 90 minutes old that covers 2 h of live updates after the backfill.
+4. `flow_update` `runtime: boxed` switches the sync. It keeps its id, dataset, cursors and vendor subscription. `runtime: builtin` switches back in one call.
+
+The flow file records it as `runtime: boxed` (and `shadow_of: <id>` on a shadow). A shadow never writes the live dataset: a run whose destination matches its live sync fails before it reads.
 
 The CLI wraps the same tools:
 
