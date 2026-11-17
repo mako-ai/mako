@@ -191,6 +191,26 @@ export interface IncrementalCapabilities {
 
 export type NormalizedCdcRecord = Omit<NormalizedCdcEvent, "runId">;
 
+/**
+ * Thrown by `enrichWebhookCdcRecords` when an event must not be applied
+ * now, and must not be applied without its enrichment either.
+ *
+ * - `defer`: the connector chose to wait (e.g. its per-run request budget
+ *   is spent). The event is parked for the retry cron, and the attempt is
+ *   not counted.
+ * - `fail`: the enrichment failed (e.g. the provider kept answering 5xx).
+ *   The event is marked `failed`, and the retry cron picks it up again.
+ */
+export class WebhookEnrichmentRetryError extends Error {
+  constructor(
+    message: string,
+    readonly mode: "defer" | "fail",
+  ) {
+    super(message);
+    this.name = "WebhookEnrichmentRetryError";
+  }
+}
+
 export type ConnectorLogicalType =
   "string" | "number" | "integer" | "boolean" | "timestamp" | "json";
 
@@ -507,7 +527,9 @@ export abstract class BaseConnector {
    * valid (e.g. Claap transcripts behind 24-hour signed URLs). Receives the
    * extracted records and which entities the flow syncs, and returns the full
    * list (the originals plus any fetched records). The webhook processor keeps
-   * the original records if this throws. Default: unchanged.
+   * the original records if this throws, except for a
+   * WebhookEnrichmentRetryError, which defers or fails the event instead.
+   * Default: unchanged.
    */
   async enrichWebhookCdcRecords(
     records: NormalizedCdcRecord[],

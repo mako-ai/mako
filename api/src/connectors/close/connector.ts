@@ -57,7 +57,10 @@ import {
   closeSupportedWebhookEvents,
   closeWebhookEventMapping,
   closeWebhookEventsForEntities,
+  CLOSE_WEBHOOK_FILL_MIN_DELAY_MS,
+  CloseWebhookFillBudget,
   extractCloseWebhookData,
+  fillCloseWebhookPartialRecords,
   provisionCloseWebhook,
   verifyCloseWebhook,
 } from "./webhooks";
@@ -80,6 +83,9 @@ export class CloseConnector extends BaseConnector {
   private customSelectorBatchSize = CLOSE_SEARCH_CUSTOM_SELECTOR_BATCH;
 
   private closeApi: AxiosInstance | null = null;
+  private webhookFillApi: AxiosInstance | null = null;
+  /** Read time webhook fills may spend on this instance (one flow, one run). */
+  private readonly webhookFillBudget = new CloseWebhookFillBudget();
   private activeLogCallback?: (
     level: CloseLogLevel,
     message: string,
@@ -178,6 +184,29 @@ export class CloseConnector extends BaseConnector {
     }
 
     return { valid: errors.length === 0, errors };
+  }
+
+  /**
+   * Client for webhook fill reads: the same key's gate and retry policy as
+   * sync, with a 100 ms pause instead of the bulk 500 ms. Webhook ingest is
+   * one serial loop across every workspace, and these are single-object
+   * GETs (Close allows tens per second per key), so the long pause would
+   * only make every other flow wait.
+   */
+  private getWebhookFillClient(): AxiosInstance {
+    if (!this.webhookFillApi) {
+      if (!this.sourceConnection.config.api_key) {
+        throw new Error("Close API key not configured");
+      }
+      this.webhookFillApi = createCloseClient({
+        apiKey: this.sourceConnection.config.api_key,
+        minDelayMs: CLOSE_WEBHOOK_FILL_MIN_DELAY_MS,
+        emitLog: (level, message, metadata) =>
+          this.emitSyncLog(level, message, metadata),
+        sleep: ms => this.sleep(ms),
+      });
+    }
+    return this.webhookFillApi;
   }
 
   private getCloseClient(): AxiosInstance {
@@ -467,6 +496,29 @@ export class CloseConnector extends BaseConnector {
         record.changeId ||
         `${eventType || "close.event"}:${record.entity}:${record.recordId}:${sourceTs.toISOString()}`,
     }));
+  }
+
+  /**
+   * Close webhook payloads leave out an object's expansions (a lead's
+   * contacts, opportunities and tasks, an email's quoted bodies, …). Read
+   * them from the REST object before the record is applied, so a webhook
+   * upsert never NULLs them (see fillCloseWebhookPartialRecords).
+   */
+  async enrichWebhookCdcRecords(
+    records: NormalizedCdcRecord[],
+    options: { isEntityEnabled: (entity: string) => boolean },
+  ): Promise<NormalizedCdcRecord[]> {
+    return fillCloseWebhookPartialRecords(
+      () => this.getWebhookFillClient(),
+      records,
+      {
+        // The flow drops records of entities it does not sync; never spend a
+        // request on them.
+        shouldFill: record => options.isEntityEnabled(record.entity),
+        // One instance serves one flow for one ingest run.
+        budget: this.webhookFillBudget,
+      },
+    );
   }
 
   normalizeBackfillRecord(

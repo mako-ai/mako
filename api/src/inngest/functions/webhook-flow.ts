@@ -8,7 +8,10 @@ import {
 } from "../../database/workspace-schema";
 import { connectorRegistry } from "../../connectors/registry";
 import { loggers } from "../../logging";
-import type { BaseConnector } from "../../connectors/base/BaseConnector";
+import {
+  WebhookEnrichmentRetryError,
+  type BaseConnector,
+} from "../../connectors/base/BaseConnector";
 import { Types } from "mongoose";
 import { hasCdcDestinationAdapter } from "../../sync-cdc/adapters/registry";
 import { isEntityEnabledForFlow } from "../../sync-cdc/entity-selection";
@@ -62,9 +65,12 @@ type WebhookCdcRecord = {
  *
  * The connector's async `enrichWebhookCdcRecords` runs between extraction and
  * the filter (e.g. Claap downloads transcripts the payload only links to). If
- * it throws, the extracted records are applied on their own.
+ * it throws, the extracted records are applied on their own. A
+ * WebhookEnrichmentRetryError instead returns `retry`: the caller defers or
+ * fails the event and applies nothing (e.g. Close, whose partial payloads
+ * would NULL columns if applied unfilled).
  */
-async function buildWebhookCdcRecords(params: {
+export async function buildWebhookCdcRecords(params: {
   connector: BaseConnector;
   sourceConnection: { id: string; name: string };
   flow: Parameters<typeof isEntityEnabledForFlow>[0];
@@ -74,7 +80,11 @@ async function buildWebhookCdcRecords(params: {
     rawPayload: unknown;
     receivedAt: Date | string;
   };
-}): Promise<{ records: WebhookCdcRecord[]; extractedCount: number }> {
+}): Promise<{
+  records: WebhookCdcRecord[];
+  extractedCount: number;
+  retry?: { mode: "defer" | "fail"; message: string };
+}> {
   const { connector, sourceConnection, flow, webhookEvent } = params;
 
   const extractedRecords = (
@@ -94,6 +104,13 @@ async function buildWebhookCdcRecords(params: {
         })
       ).filter(record => record != null);
     } catch (error) {
+      if (error instanceof WebhookEnrichmentRetryError) {
+        return {
+          records: [],
+          extractedCount: extractedRecords.length,
+          retry: { mode: error.mode, message: error.message },
+        };
+      }
       webhookFlowLogger.warn(
         "Webhook record enrichment failed; applying extracted records only",
         {
@@ -684,7 +701,7 @@ async function ingestPendingWebhookEvents(logger: {
 
       // Fan out into every entity the connector emits for this event
       // (e.g. Calendly invitee.created -> invitees + scheduled_events).
-      const { records, extractedCount } = await buildWebhookCdcRecords({
+      const { records, extractedCount, retry } = await buildWebhookCdcRecords({
         connector,
         sourceConnection: {
           id: sourceConnection.id,
@@ -698,6 +715,46 @@ async function ingestPendingWebhookEvents(logger: {
           receivedAt: webhookEvent.receivedAt,
         },
       });
+
+      if (retry?.mode === "defer") {
+        // The connector chose to wait (e.g. its request budget for this run
+        // is spent). Parked as `failed` with the attempt uncounted, so
+        // webhookRetryFunction re-queues it without using up its retries.
+        // Not `pending`: the oldest pending events fill every run's batch,
+        // so a large deferred backlog would starve every other flow.
+        await WebhookEvent.updateOne(
+          { _id: webhookEvent._id },
+          {
+            $set: {
+              status: "failed",
+              applyError: { code: "ENRICH_DEFERRED", message: retry.message },
+            },
+            $inc: { attempts: -1 },
+          },
+        );
+        continue;
+      }
+
+      if (retry?.mode === "fail") {
+        // Enrichment failed and the event must not be applied without it.
+        // `failed` hands it to webhookRetryFunction.
+        flowFailed++;
+        totalFailed++;
+        await WebhookEvent.updateOne(
+          { _id: webhookEvent._id },
+          {
+            $set: {
+              status: "failed",
+              applyStatus: "failed",
+              processedAt: new Date(),
+              applyError: { code: "ENRICH_FAILED", message: retry.message },
+              processingDurationMs:
+                Date.now() - new Date(webhookEvent.receivedAt).getTime(),
+            },
+          },
+        );
+        continue;
+      }
 
       if (extractedCount === 0) {
         // Mapping existed but the connector produced no usable record:
