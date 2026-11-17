@@ -181,15 +181,17 @@ describe("MERGE ordering guard: full-read skew tolerance", () => {
     instance.closeSync();
   });
 
-  const guardOf = (fullRead: boolean | undefined) => {
+  const guardOf = (fullRead: boolean | undefined, softDelete = false) => {
+    const extra = softDelete ? ["_mako_deleted_at"] : [];
     const sql = buildMergeStatement(
       params({
-        columns: ["id", "name", "_mako_source_ts"],
-        stagingCols: new Set(["id", "name", "_mako_source_ts"]),
+        columns: ["id", "name", "_mako_source_ts", ...extra],
+        stagingCols: new Set(["id", "name", "_mako_source_ts", ...extra]),
         liveTypes: new Map([
           ["id", "INT64"],
           ["name", "STRING"],
           ["_mako_source_ts", "TIMESTAMP"],
+          ["_mako_deleted_at", "TIMESTAMP"],
         ]),
         fullRead,
       }),
@@ -202,10 +204,15 @@ describe("MERGE ordering guard: full-read skew tolerance", () => {
     fullRead: boolean | undefined,
     incoming: string,
     stored: string,
+    liveDeletedAt?: string,
   ) => {
-    const predicate = guardOf(fullRead)
+    const predicate = guardOf(fullRead, liveDeletedAt !== undefined)
       .replaceAll("__stg.`_mako_source_ts`", `TIMESTAMPTZ '${incoming}+00'`)
       .replaceAll("__live.`_mako_source_ts`", `TIMESTAMPTZ '${stored}+00'`)
+      .replaceAll(
+        "__live.`_mako_deleted_at`",
+        liveDeletedAt ? `TIMESTAMPTZ '${liveDeletedAt}+00'` : "NULL",
+      )
       .replaceAll("TIMESTAMP('", "bq_timestamp('");
     const rows = (
       await conn.runAndReadAll(`SELECT (${predicate}) AS wins`)
@@ -232,6 +239,16 @@ describe("MERGE ordering guard: full-read skew tolerance", () => {
   it("newer rows win either way", async () => {
     expect(await wins(true, "2026-11-17 09:28:28.000", STORED)).toBe(true);
     expect(await wins(false, "2026-11-17 09:28:28.000", STORED)).toBe(true);
+  });
+
+  it("a soft-deleted live row keeps the strict guard against a full read", async () => {
+    // Updated at .465, deleted at .865 (a Close lead merge); the backfill
+    // read the record in between. It must not undelete the row.
+    expect(await wins(true, "2026-11-17 09:28:27.465", STORED, STORED)).toBe(
+      false,
+    );
+    // A live (not deleted) row with the same column still gets the window.
+    expect(await wins(true, "2026-11-17 09:28:27.465", STORED, "")).toBe(true);
   });
 
   it("only a full read shifts the live side by 1 s", () => {

@@ -122,7 +122,9 @@ export interface BuildMergeStatementParams {
    * resync), not a webhook or an incremental poll. Such a row also wins
    * against a live row up to {@link FULL_READ_SKEW_SECONDS} newer: a webhook
    * can stamp a version a few ms ahead of what the API later returns for it,
-   * and that row must stay repairable by the next full read.
+   * and that row must stay repairable by the next full read. A soft-deleted
+   * live row keeps the strict guard: no later poll would revive a wrongly
+   * undeleted record.
    */
   fullRead?: boolean;
 }
@@ -199,8 +201,14 @@ export function buildMergeStatement(p: BuildMergeStatementParams): string {
   const hasIngestOrdering =
     hasStagingIngestSeq && !keyColumns.includes("_mako_ingest_seq");
   const liveSourceTs = `COALESCE(__live.${escId("_mako_source_ts")}, TIMESTAMP('1970-01-01 00:00:00 UTC'))`;
+  const skewedLiveSourceTs = `TIMESTAMP_SUB(${liveSourceTs}, INTERVAL ${FULL_READ_SKEW_SECONDS} SECOND)`;
+  const liveGuardTs = !fullRead
+    ? liveSourceTs
+    : liveColsSet.has("_mako_deleted_at")
+      ? `IF(__live.${escId("_mako_deleted_at")} IS NULL, ${skewedLiveSourceTs}, ${liveSourceTs})`
+      : skewedLiveSourceTs;
   const matchedGuard = hasSourceOrdering
-    ? ` AND COALESCE(__stg.${escId("_mako_source_ts")}, TIMESTAMP('1970-01-01 00:00:00 UTC')) >= ${fullRead ? `TIMESTAMP_SUB(${liveSourceTs}, INTERVAL ${FULL_READ_SKEW_SECONDS} SECOND)` : liveSourceTs}`
+    ? ` AND COALESCE(__stg.${escId("_mako_source_ts")}, TIMESTAMP('1970-01-01 00:00:00 UTC')) >= ${liveGuardTs}`
     : hasIngestOrdering
       ? ` AND COALESCE(__stg.${escId("_mako_ingest_seq")}, -1) >= COALESCE(__live.${escId("_mako_ingest_seq")}, -1)`
       : "";
