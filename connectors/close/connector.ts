@@ -10,7 +10,10 @@
  * - Search API entities (leads, contacts, opportunities, 10 activity types):
  *   the in-process window position, see `search.ts`.
  * - Offset lists (users, groups, 5 lookups): `{ offset }`, see `lists.ts`.
- * - `custom_fields`: one batch, no state.
+ *   Users also get `is_active` from the organization's memberships, and a
+ *   deactivated user is marked deleted (see `memberships.ts`).
+ * - `custom_fields`: one batch, no state. Every custom-field type Close
+ *   lists, activity and custom-object fields included (see `lists.ts`).
  * - `custom_objects`: nothing, as in-process (Close needs a lead id per
  *   request, so it is webhook-only).
  *
@@ -42,6 +45,7 @@ import {
 import { type CloseClient, createCloseClient } from "./client.ts";
 import { CloseCustomFieldCache } from "./custom-fields.ts";
 import { readAllCustomFields, readOffsetList } from "./lists.ts";
+import { readMembershipStatus, withMembershipStatus } from "./memberships.ts";
 import { closeBaseFields, closeJsonSchema } from "./schema.ts";
 import {
   CLOSE_SEARCH_CUSTOM_SELECTOR_BATCH,
@@ -245,6 +249,11 @@ function entity(
         return;
       }
 
+      // Deactivation lives on the memberships, not on `/user/`.
+      const membership =
+        kind === "users"
+          ? await readMembershipStatus(closeClient(ctx))
+          : undefined;
       const endpoint =
         kind === "users"
           ? "/user/"
@@ -262,7 +271,10 @@ function entity(
           ? { extraParams: { _fields: "id,name,members,organization_id" } }
           : {}),
       })) {
-        yield { ...batch, state: withSince(state, batch.state) };
+        const records = membership
+          ? withMembershipStatus(batch.records, membership)
+          : batch.records;
+        yield { ...batch, records, state: withSince(state, batch.state) };
       }
     },
   };

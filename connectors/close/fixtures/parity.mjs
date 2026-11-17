@@ -86,7 +86,10 @@ const sourceTs = {
 const tag = entity => entity.replace(/[^a-zA-Z0-9_]/g, "-");
 
 async function record() {
-  const { buildDataset } = await import(path.join(here, "dataset.mjs"));
+  const { ORG, buildDataset } = await import(path.join(here, "dataset.mjs"));
+  const { CLOSE_MEMBERSHIP_FIELDS } = await import(
+    path.join(here, "../memberships.ts")
+  );
   const server = await startRecordingServer(buildDataset());
   const byFile = new Map();
   const keep = (file, apiKey) => {
@@ -133,6 +136,22 @@ async function record() {
       throw new Error(`check failed while recording: ${check.details}`);
     }
     keep("me", checkKey);
+    // What only the folder asks for (`FOLDER_ONLY`): in-process never sends
+    // these, so they are recorded by hand, from the same emulator.
+    const folderOnlyKey = "api_test_record_folder_only";
+    const auth = `Basic ${Buffer.from(`${folderOnlyKey}:`).toString("base64")}`;
+    for (const route of [
+      "/me/",
+      `/organization/${ORG}/?_fields=${CLOSE_MEMBERSHIP_FIELDS}`,
+      "/custom_field/activity/",
+      "/custom_field/custom_object_type/",
+    ]) {
+      const response = await fetch(`${server.url}${route}`, {
+        headers: { authorization: auth },
+      });
+      if (!response.ok) throw new Error(`${route}: ${response.status}`);
+    }
+    keep("folder_only", folderOnlyKey);
   } finally {
     await server.close();
   }

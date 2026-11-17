@@ -1,7 +1,8 @@
 /**
  * Close entity schemas, field for field the same as the in-process
- * connector's (`api/src/connectors/close/schema.ts`). The parity harness in
- * `fixtures/` fails if the two drift.
+ * connector's (`api/src/connectors/close/schema.ts`), plus the folder-only
+ * columns the harness declares in `FOLDER_ONLY` (`users.is_active`). The
+ * parity harness in `fixtures/` fails if the two drift otherwise.
  *
  * Mako's system columns (`_mako_*`, `_syncedAt`, `is_deleted`, ...) are not
  * declared here: the box path adds them (PR 1284 merges them in
@@ -392,6 +393,8 @@ const USER: Fields = {
   date_created: "timestamp",
   date_updated: "timestamp",
   organizations: "json",
+  // Folder only: from the organization's memberships (`memberships.ts`).
+  is_active: "boolean",
 };
 
 const CUSTOM_FIELD: Fields = {

@@ -550,7 +550,21 @@ export function buildDataset() {
   };
   for (const lead of leads) delete lead._owner;
 
+  // `GET /organization/{id}/`: users 6 and 7 are deactivated. `/user/`
+  // still lists them, as Close does.
+  const membership = (user, i) => ({
+    id: closeId("memb", i + 1),
+    user_id: user.id,
+    role_id: "user",
+  });
+  const organization = {
+    id: ORG,
+    memberships: users.slice(0, 5).map(membership),
+    inactive_memberships: users.slice(5).map((u, i) => membership(u, i + 5)),
+  };
+
   return {
+    organization,
     me: {
       id: users[0].id,
       first_name: "User",

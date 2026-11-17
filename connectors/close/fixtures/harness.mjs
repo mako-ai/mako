@@ -95,6 +95,74 @@ export const RATE_LIMIT_SCENARIO = {
 };
 export const RATE_LIMIT_ENTITIES = ["users", "leads", "activities:Call"];
 
+/**
+ * What the folder reads on purpose that in-process gets only from webhooks.
+ * A poll-only connection (the box has no webhooks yet) needs it to match
+ * what a webhook-fed in-process connection holds in the warehouse.
+ *
+ * Per entity: the extra rows (`row`), columns (`columns`), schema fields
+ * (`schemaFields`) and requests (`request`). The comparison leaves them out
+ * of the folder's run, holds the rest to in-process exactly, and checks the
+ * extras are there (`folderOnlyOk`):
+ * - `custom_fields`: activity and custom-object fields, which in-process
+ *   writes from `custom_fields.activity.*` / `custom_fields.custom_object.*`
+ *   webhooks (with `custom_field_type` null).
+ * - `users`: `is_active` from the organization's memberships, and a
+ *   deactivated user marked deleted, which in-process writes from the
+ *   `membership.deactivated` webhook.
+ */
+export const FOLDER_ONLY = {
+  custom_fields: {
+    row: row => ["activity", "custom_object"].includes(row.custom_field_type),
+    request: key =>
+      key === "GET /custom_field/activity/" ||
+      key === "GET /custom_field/custom_object_type/",
+    check: ({ rows }) => rows > 0,
+  },
+  users: {
+    columns: ["is_active", "is_deleted", "_mako_deleted_at"],
+    schemaFields: ["is_active"],
+    request: key => key === "GET /me/" || key.startsWith("GET /organization/"),
+    check: ({ requests, folderRows }) =>
+      requests > 0 &&
+      folderRows.every(row => "is_active" in row) &&
+      folderRows.every(
+        row => (row.is_active === false) === (row.is_deleted === true),
+      ) &&
+      // Set on deactivated users, null on every other one (an upsert only
+      // writes the columns a batch carries, so null clears a stale mark).
+      folderRows.every(
+        row =>
+          "_mako_deleted_at" in row &&
+          (row._mako_deleted_at != null) === (row.is_active === false),
+      ),
+  },
+};
+
+/** The folder run without its `FOLDER_ONLY` extras, and what was dropped. */
+export function withoutFolderOnly(entity, run) {
+  const extra = FOLDER_ONLY[entity];
+  if (!extra) return { run, folderOnly: undefined };
+  const rows = run.rows.filter(row => !extra.row?.(row));
+  const columns = extra.columns ?? [];
+  const stripped = rows.map(row => {
+    if (!columns.some(column => column in row)) return row;
+    const copy = { ...row };
+    for (const column of columns) delete copy[column];
+    return copy;
+  });
+  const requests = (run.requests ?? []).filter(key => !extra.request?.(key));
+  const folderOnly = {
+    rows: run.rows.length - rows.length,
+    columns: columns.filter(column => rows.some(row => column in row)),
+    requests: (run.requests ?? []).length - requests.length,
+  };
+  folderOnly.ok = Boolean(
+    extra.check?.({ ...folderOnly, folderRows: rows }) ?? true,
+  );
+  return { run: { ...run, rows: stripped, requests }, folderOnly };
+}
+
 /** Environment for a folder process: frozen clock, short timers. */
 export function folderEnv() {
   const preload = `--import ${pathToFileURL(CLOCK).href}`;
@@ -342,6 +410,12 @@ function emulate(dataset, method, rawUrl, body) {
         })),
       },
     };
+  }
+  if (
+    method === "GET" &&
+    route === `/organization/${dataset.organization.id}/`
+  ) {
+    return { status: 200, body: dataset.organization };
   }
   if (method === "POST" && route === "/data/search/") {
     return search(dataset, body ?? {});
@@ -731,7 +805,8 @@ const sameList = (a, b) =>
  * Every comparison for one entity and scenario. `ok` is the conjunction.
  * `sourceTs` maps a row to its resolved source times, one list per side.
  */
-export function compareRuns(inProcess, folder, sourceTs) {
+export function compareRuns(inProcess, rawFolder, sourceTs, entity) {
+  const { run: folder, folderOnly } = withoutFolderOnly(entity, rawFolder);
   const inIds = inProcess.rows.map(row => String(row.id));
   const folderIds = folder.rows.map(row => String(row.id));
   const checksumMismatches = [];
@@ -778,8 +853,10 @@ export function compareRuns(inProcess, folder, sourceTs) {
       canonicalJson(strip(folder.chunks)),
     requests: [inProcess.requests?.length ?? 0, folder.requests?.length ?? 0],
     requestsEqual: sameList(inProcess.requests ?? [], folder.requests ?? []),
+    ...(folderOnly ? { folderOnly } : {}),
   };
   result.ok =
+    (folderOnly?.ok ?? true) &&
     result.rows[0] === result.rows[1] &&
     result.duplicates[0] === result.duplicates[1] &&
     result.keys &&
@@ -883,7 +960,7 @@ export async function runParity({
           }),
     );
     folder.requests = folderServer.requests(folderKey);
-    const comparison = compareRuns(inProcess, folder, sourceTs);
+    const comparison = compareRuns(inProcess, folder, sourceTs, entity);
     if (rowsOnly) {
       // Same rows, same order, nothing read twice more than in-process, and
       // pages of at most `pageSize` (probes ask for 1).
@@ -894,6 +971,7 @@ export async function runParity({
         limits.every(limit => limit <= scenario.pageSize) &&
         limits.includes(scenario.pageSize);
       comparison.ok =
+        (comparison.folderOnly?.ok ?? true) &&
         comparison.rows[0] === comparison.rows[1] &&
         comparison.duplicates[1] === comparison.duplicates[0] &&
         comparison.keys &&
@@ -999,9 +1077,13 @@ export function formatReport(results) {
         if (!r.chunkStates) problems.push("chunk states");
         if (!r.requestsEqual) problems.push("requests");
       }
+      if (r.folderOnly && !r.folderOnly.ok) problems.push("folder-only extras");
       if (r.error) problems.push(`error (${r.error})`);
+      const extras = r.folderOnly
+        ? ` (+${r.folderOnly.rows} rows, +${r.folderOnly.columns.length} columns, +${r.folderOnly.requests} requests folder-only)`
+        : "";
       cells.push(
-        `${r.rows[0]}/${r.rows[1]}, ${r.chunks[0]}/${r.chunks[1]}, ${r.requests[0]}/${r.requests[1]}, ${r.ok ? (r.rowsOnly ? "same rows" : "match") : `DIFF ${problems.join(", ")}`}`,
+        `${r.rows[0]}/${r.rows[1]}, ${r.chunks[0]}/${r.chunks[1]}, ${r.requests[0]}/${r.requests[1]}, ${r.ok ? (r.rowsOnly ? "same rows" : "match") : `DIFF ${problems.join(", ")}`}${extras}`,
       );
     }
     lines.push(cells.join(" | "));
@@ -1031,15 +1113,22 @@ export function formatScale(results, scenario = "default") {
  * The in-process `ConnectorEntitySchema` against the folder's stream as the
  * engine translates it. Fields in `ignore` (Mako's system columns) are left
  * out. The in-process Close schemas declare no key columns, so the engine
- * merges on its default `["id"]`; the folder declares `["id"]`.
+ * merges on its default `["id"]`; the folder declares `["id"]`. The
+ * folder's `FOLDER_ONLY` schema fields are left out of its side, and must be
+ * there.
  */
 export function compareEntitySchema(inProcess, folder, ignore = new Set()) {
   const names = schema =>
     Object.keys(schema?.fields ?? {})
       .filter(name => !ignore.has(name))
       .sort();
+  const folderOnly =
+    FOLDER_ONLY[inProcess?.entity ?? folder?.entity]?.schemaFields ?? [];
   const inNames = names(inProcess);
-  const folderNames = names(folder);
+  const folderNames = names(folder).filter(name => !folderOnly.includes(name));
+  const folderOnlyMissing = folderOnly.filter(
+    name => !(name in (folder?.fields ?? {})),
+  );
   const nullable = field => field.nullable ?? !field.required;
   const fieldDiffs = [];
   for (const name of inNames) {
@@ -1069,7 +1158,9 @@ export function compareEntitySchema(inProcess, folder, ignore = new Set()) {
     fieldDiffs,
     keyColumns,
     policy,
+    folderOnlyMissing,
     ok:
+      folderOnlyMissing.length === 0 &&
       missing.length === 0 &&
       extra.length === 0 &&
       fieldDiffs.length === 0 &&

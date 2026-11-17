@@ -65,11 +65,20 @@ export const CLOSE_LOOKUP_ENDPOINTS: Record<string, string> = {
   outcomes: "/outcome/",
 };
 
+/**
+ * Every custom-field list `custom_fields` reads, each row tagged with its
+ * type. In-process reads the first 4 and gets activity and custom-object
+ * fields only from `custom_fields.activity.*` and
+ * `custom_fields.custom_object.*` webhooks, with `custom_field_type` null.
+ * The folder reads all 6, so a poll alone has them, typed.
+ */
 export const CLOSE_CUSTOM_FIELD_ENDPOINTS = [
   { endpoint: "/custom_field/lead/", type: "lead" },
   { endpoint: "/custom_field/contact/", type: "contact" },
   { endpoint: "/custom_field/opportunity/", type: "opportunity" },
   { endpoint: "/custom_field/shared/", type: "shared" },
+  { endpoint: "/custom_field/activity/", type: "activity" },
+  { endpoint: "/custom_field/custom_object_type/", type: "custom_object" },
 ];
 
 const SEARCH_OBJECT_TYPES: Record<string, string> = {
