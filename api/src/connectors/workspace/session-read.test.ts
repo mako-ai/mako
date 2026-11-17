@@ -26,7 +26,7 @@ import {
   boxSessionTransport,
   type SessionHandle,
 } from "./session-read";
-import { forgetPreparedBox } from "./sync-box";
+import { forgetPreparedBox, hidepidOffRunCount } from "./sync-box";
 
 const encode = (text: string) => new TextEncoder().encode(text);
 const line = (value: unknown) => `${JSON.stringify(value)}\n`;
@@ -367,6 +367,22 @@ describe("read session transport", () => {
       result("MAKO_SESSION box-unclean abc\n", { exitCode: 96 });
     await expect(start(transport)).rejects.toThrow(/killed/);
     expect(onCleanupFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a box that could hide processes and does not, and counts one that cannot", async () => {
+    const { transport } = setup();
+    replies.start = () =>
+      result("MAKO_SESSION hidepid-refused\n", { exitCode: 95 });
+    await expect(start(transport)).rejects.toThrow(/hidepid/);
+    expect(sandbox.readFile).not.toHaveBeenCalled();
+
+    const before = hidepidOffRunCount();
+    const second = setup();
+    replies.start = () => result("MAKO_HIDEPID off\nMAKO_SESSION ready 1 10\n");
+    sandbox.readFile.mockResolvedValue(encode(STATE));
+    const { outcome } = await start(second.transport);
+    expect(outcome).toMatchObject({ kind: "batch", seq: 1 });
+    expect(hidepidOffRunCount()).toBe(before + 1);
   });
 
   it("retries a UID collision with a fresh user, but never an account it cannot lock", async () => {

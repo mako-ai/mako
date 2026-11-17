@@ -603,8 +603,9 @@ env MAKO_KEY="$key" sleep 600`,
     const quiet = await hidden(waitScript(s.id, 2, 0, 500));
     expect(quiet.stderr).toBe("");
     expect(started.stderr).not.toMatch(/No such file/);
-    // Docker cannot remount /proc: the start says so.
-    expect(started.stdout).toContain("MAKO_SESSION hidepid-off");
+    // Docker drops CAP_SYS_ADMIN, so /proc stays as it is: the start says
+    // so and goes on (a box that could remount is refused, below).
+    expect(started.stdout).toContain("MAKO_HIDEPID off");
     // The scan reads real argv: it saw the connector's own process each time.
     expect(scanned).toBeGreaterThan(100);
     expect(connectors).toBeGreaterThanOrEqual(20);
@@ -707,4 +708,149 @@ env MAKO_KEY="$key" sleep 600`,
     expect(await alive(wrapper)).toBe(false);
     await expectGone(s);
   }, 120_000);
+
+  it("leaves no backstop sleep behind once a session ends", async () => {
+    // A deadline no other case uses, so its backstop's sleep is ours alone.
+    const maxAgeMs = 433_000;
+    const nap = `sleep ${Math.ceil(maxAgeMs / 1000) + 60}`;
+    const naps = async () =>
+      (await cmdlines()).filter(p => p.argv.trim() === nap).length;
+    const sessions = [layout(), layout(), layout()];
+    for (const s of sessions) {
+      const out = await start(
+        s,
+        `key=$(cat "$1"); hello; record a; state 1 true
+env MAKO_KEY="$key" sleep 600`,
+        { limits: { maxAgeMs } },
+      );
+      expect(marker(out), out.stderr).toMatch(/^ready 1 /);
+    }
+    // The probe sees each live backstop.
+    expect(await naps()).toBe(3);
+    // Closed while running, and one that ended on its own.
+    expect(marker(await hidden(closeScript(sessions[0].id)))).toBe("closed 0");
+    expect(marker(await hidden(closeScript(sessions[1].id)))).toBe("closed 0");
+    await root(
+      `runuser -u ${sessions[2].run.user} -- kill -9 -1 2>/dev/null; true`,
+    );
+    expect(await wait(sessions[2], 2, 1)).toMatch(/^ended /);
+    expect(marker(await hidden(closeScript(sessions[2].id)))).toBe("closed 0");
+    await sleep(300);
+    expect(await naps()).toBe(0);
+    for (const s of sessions) await expectGone(s);
+  }, 120_000);
 });
+
+/**
+ * A box whose root holds CAP_SYS_ADMIN, as on E2B: /proc can be remounted
+ * with hidepid, so a box without it is refused, never run open.
+ */
+suite(
+  "connector read sessions where root can remount /proc (Docker, CAP_SYS_ADMIN)",
+  () => {
+    let capable = "";
+    const inCapable = async (script: string, env?: string): Promise<Sh> => {
+      const args = ["exec"];
+      if (env !== undefined) args.push("-e", `${HIDDEN_COMMAND_ENV}=${env}`);
+      args.push(
+        capable,
+        "bash",
+        "-c",
+        env !== undefined ? HIDDEN_COMMAND_SHIM : script,
+      );
+      try {
+        const { stdout, stderr } = await run("docker", args, {
+          timeout: 60_000,
+          maxBuffer: 64 * 1024 * 1024,
+        });
+        return { code: 0, stdout, stderr };
+      } catch (error) {
+        const e = error as { code?: number; stdout?: string; stderr?: string };
+        return {
+          code: typeof e.code === "number" ? e.code : 1,
+          stdout: e.stdout ?? "",
+          stderr: e.stderr ?? "",
+        };
+      }
+    };
+
+    beforeAll(async () => {
+      const { stdout } = await run("docker", [
+        "run",
+        "-d",
+        "--rm",
+        "--init",
+        "--cap-add",
+        "SYS_ADMIN",
+        // Docker's AppArmor profile denies mount even with the capability
+        // (the CI runner has one): a start there is refused, as it should be.
+        "--security-opt",
+        "apparmor=unconfined",
+        IMAGE,
+        "sleep",
+        "infinity",
+      ]);
+      capable = stdout.trim();
+      await inCapable(
+        "id user >/dev/null 2>&1 || useradd -m -s /bin/bash user",
+      );
+      const prepared = await inCapable(prepareBoxScript());
+      expect(prepared.stdout.trim()).toBe("");
+    }, 180_000);
+
+    afterAll(async () => {
+      if (capable) await run("docker", ["rm", "-f", capable]).catch(() => {});
+    });
+
+    const startIn = async (s: SessionLayout) => {
+      const config = `${s.run.dir}/config.json`;
+      await inCapable(
+        `umask 022; mkdir -p ${shellQuote(`${ISOLATED_INCOMING}/${s.id}`)} && printf %s sk_x > ${shellQuote(incomingPath(s.id, "config.json"))}`,
+      );
+      const command = `sh -c ${shellQuote(`${PRELUDE}\nhello; record a; state 1 false`)} connector ${shellQuote(connectorInput(config))}`;
+      return inCapable(
+        "",
+        startScript({
+          layout: s,
+          inputs: [config],
+          command,
+          node: (await inCapable("command -v node")).stdout.trim(),
+          limits: LIMITS,
+          waitMs: 20_000,
+        }),
+      );
+    };
+
+    it("refuses a start when the remount fails, and creates nothing", async () => {
+      // A mount that always fails, first on root's PATH.
+      await inCapable(
+        "printf '#!/bin/sh\\nexit 32\\n' > /usr/local/sbin/mount && chmod 0755 /usr/local/sbin/mount",
+      );
+      const s = layout();
+      const out = await startIn(s);
+      expect(out.code).toBe(95);
+      expect(out.stdout).toContain("MAKO_SESSION hidepid-refused");
+      expect((await inCapable(`id -u ${s.run.user}`)).code).not.toBe(0);
+      expect(
+        (
+          await inCapable(
+            `ls -d ${shellQuote(s.dir)} ${shellQuote(s.run.dir)} ${shellQuote(`${ISOLATED_INCOMING}/${s.id}`)} 2>/dev/null`,
+          )
+        ).stdout,
+      ).toBe("");
+    }, 60_000);
+
+    it("remounts /proc with hidepid and starts", async () => {
+      await inCapable("rm -f /usr/local/sbin/mount");
+      const s = layout();
+      const out = await startIn(s);
+      expect(out.stdout, out.stderr).toMatch(/MAKO_SESSION ready 1 /);
+      expect(out.stdout).not.toContain("MAKO_HIDEPID off");
+      expect((await inCapable("grep ' /proc ' /proc/mounts")).stdout).toMatch(
+        /hidepid=(2|invisible)/,
+      );
+      const closed = await inCapable("", closeScript(s.id));
+      expect(closed.stdout).toContain("MAKO_SESSION closed 0");
+    }, 60_000);
+  },
+);
