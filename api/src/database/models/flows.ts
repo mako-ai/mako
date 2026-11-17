@@ -266,7 +266,7 @@ export interface IFlow extends Document {
   /**
    * Connector flows: entities synced at once. Unset uses
    * BACKFILL_ENTITY_PARALLELISM (default 3); 1 syncs them one at a time.
-   * Capped by BACKFILL_ENTITY_PARALLELISM_MAX (inngest/functions/flow/
+   * Capped at MAX_ENTITY_PARALLELISM (inngest/functions/flow/
    * entity-parallelism.ts).
    */
   entityParallelism?: number;

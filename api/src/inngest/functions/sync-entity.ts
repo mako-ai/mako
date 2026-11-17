@@ -26,10 +26,7 @@ import {
   resolveEntityPartitioning,
   resolveEntityClustering,
 } from "../../sync-cdc/adapters/registry";
-import {
-  boxedEntityRunLimit,
-  entityParallelismCeiling,
-} from "./flow/entity-parallelism";
+import { boxedEntityRunLimit } from "./flow/entity-parallelism";
 
 /**
  * Max steps to use before yielding back to the parent for re-invocation.
@@ -60,7 +57,8 @@ export interface SyncBackfillEntityPayload {
   queries?: unknown[];
   /**
    * Second concurrency key (flow/entity-parallelism.ts): one shared key for
-   * every workspace connector run, a key of its own for every other run.
+   * workspace connector runs under box leases, a key of its own for every
+   * other run.
    */
   runConcurrencyKey?: string;
 }
@@ -93,12 +91,18 @@ export const syncBackfillEntityFunction = inngest.createFunction(
     id: "sync-backfill-entity",
     name: "Sync Backfill Entity",
     // Several entities of one flow sync at once; the parent decides how
-    // many (flow/entity-parallelism.ts). These are backstops: the most any
-    // one flow may run, and the most workspace-connector runs overall so
-    // leased boxes stay under the E2B account ceiling. Read once, when the
-    // function registers.
+    // many (flow/entity-parallelism.ts).
+    // 1. One run per flow + entity, ever. Buffer, staging and checkpoint
+    //    names carry no run id, so an orphaned child of a cancelled or
+    //    failed run must block a new one for the same entity (#1318).
+    // 2. Under box leases, workspace-connector runs share one key so leased
+    //    boxes stay under the E2B account ceiling; every other run has a
+    //    key of its own. Read once, when the function registers.
     concurrency: [
-      { limit: entityParallelismCeiling(), key: "event.data.flowId" },
+      {
+        limit: 1,
+        key: 'event.data.flowId + ":" + event.data.entity',
+      },
       { limit: boxedEntityRunLimit(), key: "event.data.runConcurrencyKey" },
     ],
     retries: 3,

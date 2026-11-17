@@ -12,6 +12,8 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { getEntityTableName } from "../../../sync/sync-orchestrator";
+import { syncBackfillEntityFunction } from "../sync-entity";
 import {
   collidingEntities,
   defaultEntityParallelism,
@@ -449,7 +451,6 @@ void test("parallelism: env default, per-flow override, ceiling and limits", () 
   withEnv(
     {
       BACKFILL_ENTITY_PARALLELISM: undefined,
-      BACKFILL_ENTITY_PARALLELISM_MAX: undefined,
     },
     () => {
       assert.equal(defaultEntityParallelism(), 3);
@@ -498,8 +499,28 @@ void test("parallelism: env default, per-flow override, ceiling and limits", () 
         resolveEntityParallelism({ ...base, entities: ["a-b", "a_b", "c"] }),
         {
           parallelism: 1,
-          limitedBy: "buffer-collision",
+          limitedBy: "name-collision",
         },
+      );
+      // Entities that would write one destination table run one at a time:
+      // `activities:Call` and `call_activities` are both `call_activities`.
+      const tableNameOf = (entity: string) =>
+        getEntityTableName("close", entity);
+      assert.deepEqual(
+        resolveEntityParallelism({
+          ...base,
+          entities: ["activities:Call", "call_activities", "leads"],
+          tableNameOf,
+        }),
+        { parallelism: 1, limitedBy: "name-collision" },
+      );
+      assert.deepEqual(
+        resolveEntityParallelism({
+          ...base,
+          entities: ["activities:Call", "activities:Email", "leads"],
+          tableNameOf,
+        }),
+        { parallelism: 3 },
       );
     },
   );
@@ -509,7 +530,6 @@ void test("parallelism: env default, per-flow override, ceiling and limits", () 
   withEnv(
     {
       BACKFILL_ENTITY_PARALLELISM: "10",
-      BACKFILL_ENTITY_PARALLELISM_MAX: undefined,
     },
     () => {
       assert.equal(
@@ -530,16 +550,45 @@ void test("per-entity keys: buffers, step ids and concurrency keys", () => {
     "custom.lead",
     "custom_lead",
   ]);
-  assert.equal(
-    entityRunConcurrencyKey({ flowId: "f1", entity: "leads", boxed: true }),
-    "connector-box",
+  const key = (
+    flowId: string,
+    entity: string,
+    boxed: boolean,
+    leasesEnabled: boolean,
+  ) => entityRunConcurrencyKey({ flowId, entity, boxed, leasesEnabled });
+  // Leased boxes count against the E2B account: one shared pool.
+  assert.equal(key("f1", "leads", true, true), "connector-box");
+  assert.equal(key("f2", "deals", true, true), "connector-box");
+  // Sessions mode: one box per workspace, so no cross-tenant pool.
+  assert.equal(key("f1", "leads", true, false), "entity:f1:leads");
+  assert.equal(key("f1", "leads", false, true), "entity:f1:leads");
+});
+
+void test("per-entity table collisions are found, case-insensitively", () => {
+  const tableNameOf = (entity: string) => getEntityTableName("", entity);
+  assert.deepEqual(
+    collidingEntities(["Leads", "leads", "contacts"], tableNameOf),
+    ["Leads", "leads"],
   );
-  assert.equal(
-    entityRunConcurrencyKey({ flowId: "f2", entity: "deals", boxed: true }),
-    "connector-box",
+  assert.deepEqual(
+    collidingEntities(["activities:Call", "call_activities"], tableNameOf),
+    ["activities:Call", "call_activities"],
   );
-  assert.equal(
-    entityRunConcurrencyKey({ flowId: "f1", entity: "leads", boxed: false }),
-    "entity:f1:leads",
-  );
+  assert.deepEqual(collidingEntities(ENTITIES, tableNameOf), []);
+});
+
+void test("sync-backfill-entity: one run per flow + entity, ever", () => {
+  const opts = (
+    syncBackfillEntityFunction as unknown as {
+      opts: { concurrency: Array<{ limit: number; key: string }> };
+    }
+  ).opts;
+  assert.equal(opts.concurrency.length, 2);
+  // An orphaned child of a cancelled run blocks a new one for the same
+  // entity: buffer and staging names carry no run id (#1318).
+  assert.deepEqual(opts.concurrency[0], {
+    limit: 1,
+    key: 'event.data.flowId + ":" + event.data.entity',
+  });
+  assert.equal(opts.concurrency[1].key, "event.data.runConcurrencyKey");
 });

@@ -922,9 +922,11 @@ jobs:
       # own config (DISABLE_WEBHOOK_PROCESSING).
       CONNECTOR_WEBHOOK_BATCHES: ${{ vars.CONNECTOR_WEBHOOK_BATCHES_PROD || 'false' }}
       # Entities of one connector flow synced at once (inngest/functions/flow/
-      # entity-parallelism.ts). 1 syncs them one at a time, the old behaviour;
-      # changing it is `gh variable set` plus a redeploy.
-      BACKFILL_ENTITY_PARALLELISM: ${{ vars.BACKFILL_ENTITY_PARALLELISM_PROD || '3' }}
+      # entity-parallelism.ts). Ships as 1, the old one-at-a-time behaviour,
+      # until a 3-lane backfill is verified on a staging or preview Inngest
+      # app; then `gh variable set BACKFILL_ENTITY_PARALLELISM_PROD --body 3`
+      # plus a redeploy.
+      BACKFILL_ENTITY_PARALLELISM: ${{ vars.BACKFILL_ENTITY_PARALLELISM_PROD || '1' }}
       # Apps cloud repos (Mako-hosted GitHub storage under mako-ai-cloud).
       # Production: the workspace's own GitHub repo is the only durable store
       # (apps.md §17) — no repo, no app/console saves.

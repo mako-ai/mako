@@ -21,6 +21,7 @@ import {
   syncMachineService,
 } from "../../../sync-cdc/sync-state";
 import { syncBackfillEntityFunction } from "../sync-entity";
+import { getEntityTableName } from "../../../sync/sync-orchestrator";
 import {
   boxLeaseConfig,
   connectorBoxLeasesEnabled,
@@ -272,12 +273,21 @@ export async function runConnectorSourceFlow(
     });
   }
 
+  const leasesEnabled = connectorBoxLeasesEnabled();
   const parallelismDecision = resolveEntityParallelism({
     entities: entitiesToSync,
     flowOverride: flow.entityParallelism,
     boxed,
-    leasesEnabled: connectorBoxLeasesEnabled(),
+    leasesEnabled,
     maxLeasesPerConnection: boxLeaseConfig().maxPerConnection,
+    tableNameOf: entity =>
+      getEntityTableName(
+        String(
+          (flow.tableDestination as { tableName?: unknown } | undefined)
+            ?.tableName ?? "",
+        ),
+        entity,
+      ),
   });
   const { parallelism } = parallelismDecision;
   logger.info("Entity parallelism for this run", {
@@ -375,6 +385,7 @@ export async function runConnectorSourceFlow(
         flowId: flowId.toString(),
         entity,
         boxed,
+        leasesEnabled,
       }),
     };
 

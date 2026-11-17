@@ -9,20 +9,22 @@
  * current one finishes.
  *
  * Knobs, read at call time:
- * - BACKFILL_ENTITY_PARALLELISM: entities per flow at once. Default 3. 1 runs
- *   them one at a time, exactly as before.
- * - a flow's own `entityParallelism` overrides it, up to the ceiling.
- * - BACKFILL_ENTITY_PARALLELISM_MAX: the ceiling, and the per-flow concurrency
- *   limit `sync-backfill-entity` registers with Inngest. Default 6.
+ * - BACKFILL_ENTITY_PARALLELISM: entities per flow at once. Code default 3;
+ *   production ships 1 (deploy-app.yml) until a 3-lane backfill is verified.
+ *   1 runs them one at a time, exactly as before.
+ * - a flow's own `entityParallelism` overrides it, up to
+ *   MAX_ENTITY_PARALLELISM (6).
  * - BACKFILL_BOXED_ENTITY_LIMIT: workspace (`ws:`) connector entity runs at
- *   once across all flows. Default: CONNECTOR_BOX_ACCOUNT_CEILING minus
- *   CONNECTOR_BOX_APP_RESERVE (18), so leased boxes stay under the E2B account
- *   ceiling and runs queue in Inngest instead of timing out in the box queue.
+ *   once across all flows, under box leases only. Default:
+ *   CONNECTOR_BOX_ACCOUNT_CEILING minus CONNECTOR_BOX_APP_RESERVE (18), so
+ *   leased boxes stay under the E2B account ceiling and runs queue in Inngest
+ *   instead of timing out in the box queue.
  */
 import { boxLeaseConfig } from "../../../connectors/workspace/boxes/config";
 
 export const DEFAULT_ENTITY_PARALLELISM = 3;
-export const DEFAULT_ENTITY_PARALLELISM_CEILING = 6;
+/** The most entities of one flow that ever sync at once. */
+export const MAX_ENTITY_PARALLELISM = 6;
 
 function positiveIntEnv(name: string): number | undefined {
   const raw = process.env[name];
@@ -39,19 +41,14 @@ export function defaultEntityParallelism(): number {
 }
 
 /**
- * The most entities of one flow that may ever sync at once. Also the
- * per-flow concurrency limit of `sync-backfill-entity`, so it never sits
- * below the default.
+ * The most entities of one flow that may sync at once: the larger of
+ * MAX_ENTITY_PARALLELISM and the default, so the default always applies.
  */
 export function entityParallelismCeiling(): number {
-  return Math.max(
-    positiveIntEnv("BACKFILL_ENTITY_PARALLELISM_MAX") ??
-      DEFAULT_ENTITY_PARALLELISM_CEILING,
-    defaultEntityParallelism(),
-  );
+  return Math.max(MAX_ENTITY_PARALLELISM, defaultEntityParallelism());
 }
 
-/** Workspace-connector entity runs at once, across every flow. */
+/** Workspace-connector entity runs at once across every flow, under leases. */
 export function boxedEntityRunLimit(): number {
   const explicit = positiveIntEnv("BACKFILL_BOXED_ENTITY_LIMIT");
   if (explicit) return explicit;
@@ -68,28 +65,49 @@ export function entityBufferKey(entity: string): string {
   return entity.replace(/[^a-zA-Z0-9]/g, "_");
 }
 
-/** Entities that would share a buffer collection with another entity. */
-export function collidingEntities(entities: string[]): string[] {
-  const byKey = new Map<string, string[]>();
-  for (const entity of entities) {
-    const key = entityBufferKey(entity);
-    byKey.set(key, [...(byKey.get(key) ?? []), entity]);
+/**
+ * Entities that would share a buffer collection, or a destination table
+ * (and with it the staging table named after it), with another entity.
+ * `tableNameOf` is the orchestrator's `getEntityTableName` for the flow;
+ * table names compare case-insensitively, as some destinations fold case.
+ */
+export function collidingEntities(
+  entities: string[],
+  tableNameOf?: (entity: string) => string,
+): string[] {
+  const colliding = new Set<string>();
+  const keys: Array<(entity: string) => string> = [entityBufferKey];
+  if (tableNameOf) keys.push(entity => tableNameOf(entity).toLowerCase());
+  for (const keyOf of keys) {
+    const byKey = new Map<string, string[]>();
+    for (const entity of entities) {
+      const key = keyOf(entity);
+      byKey.set(key, [...(byKey.get(key) ?? []), entity]);
+    }
+    for (const group of byKey.values()) {
+      if (group.length > 1) group.forEach(entity => colliding.add(entity));
+    }
   }
-  return [...byKey.values()].filter(group => group.length > 1).flat();
+  return entities.filter(entity => colliding.has(entity));
 }
 
 /**
- * The second concurrency key of `sync-backfill-entity`. Every workspace
- * connector run shares one key, so BACKFILL_BOXED_ENTITY_LIMIT caps them
- * together. Every other run gets a key of its own, which that limit never
- * reaches: built-in connectors keep no global cap.
+ * The second concurrency key of `sync-backfill-entity`. Under box leases,
+ * every workspace-connector run holds a box of the E2B account while it
+ * runs, so those runs share one key and BACKFILL_BOXED_ENTITY_LIMIT keeps
+ * them under the account ceiling. Every other run gets a key of its own,
+ * which that limit never reaches. That includes workspace connectors in
+ * sessions mode, where a workspace has one sync box however many entities
+ * read, so there is no ceiling to protect, and a shared key would only let
+ * one tenant's backfill hold every other tenant's syncs.
  */
 export function entityRunConcurrencyKey(params: {
   flowId: string;
   entity: string;
   boxed: boolean;
+  leasesEnabled: boolean;
 }): string {
-  return params.boxed
+  return params.boxed && params.leasesEnabled
     ? "connector-box"
     : `entity:${params.flowId}:${params.entity}`;
 }
@@ -97,14 +115,15 @@ export function entityRunConcurrencyKey(params: {
 export interface EntityParallelismDecision {
   parallelism: number;
   /** Why it is below what was asked, if it is. */
-  limitedBy?: "entities" | "ceiling" | "box-leases" | "buffer-collision";
+  limitedBy?: "entities" | "ceiling" | "box-leases" | "name-collision";
 }
 
 /**
  * Lanes for one run: the flow's override or the default, within the
  * ceiling and the entity count. A workspace connector under box leases
  * keeps one of its connection's lease slots free for check, discover and
- * webhooks. Entities that would share a buffer run one at a time.
+ * webhooks. Entities that would share a buffer or a destination table run
+ * one at a time.
  */
 export function resolveEntityParallelism(params: {
   entities: string[];
@@ -112,6 +131,8 @@ export function resolveEntityParallelism(params: {
   boxed: boolean;
   leasesEnabled: boolean;
   maxLeasesPerConnection: number;
+  /** The destination table an entity writes, for the collision check. */
+  tableNameOf?: (entity: string) => string;
 }): EntityParallelismDecision {
   const override = params.flowOverride;
   const asked =
@@ -133,9 +154,12 @@ export function resolveEntityParallelism(params: {
       limitedBy = "box-leases";
     }
   }
-  if (parallelism > 1 && collidingEntities(params.entities).length > 0) {
+  if (
+    parallelism > 1 &&
+    collidingEntities(params.entities, params.tableNameOf).length > 0
+  ) {
     parallelism = 1;
-    limitedBy = "buffer-collision";
+    limitedBy = "name-collision";
   }
   const count = Math.max(1, params.entities.length);
   if (parallelism > count) {
