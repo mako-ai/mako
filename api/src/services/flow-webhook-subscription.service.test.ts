@@ -13,10 +13,11 @@ import {
 } from "./flow-webhook-subscription.service";
 
 const FLOW_ID = new Types.ObjectId();
-/** A save by an owner/admin: it may create a subscription. */
-const OWNER = { mayProvision: true };
 const DATA_SOURCE_ID = new Types.ObjectId();
 const ENDPOINT = "https://mako.example/api/webhooks/ws/flow";
+
+/** A save by an owner/admin: it may create a subscription. */
+const OWNER = { mayProvision: true };
 
 function webhookFlow(overrides: Record<string, unknown> = {}) {
   return {
@@ -227,6 +228,40 @@ async function testReportsMissingSubscriptionAndProviderErrors() {
     (await syncFlowWebhookSubscription(webhookFlow(), OWNER)).status,
     "skipped",
   );
+}
+
+/** A repo push (any writer) never creates a subscription; it may retarget. */
+async function testRepoPushNeverProvisions() {
+  const creates: UpdateCall[] = [];
+  const { calls } = stubProvider(async () => null, true, {
+    creates,
+    create: async () => ({
+      providerWebhookId: "we_new",
+      endpointUrl: ENDPOINT,
+      signingSecret: "whsec_new",
+    }),
+  });
+  const result = await syncFlowWebhookSubscription(
+    webhookFlow({
+      webhookConfig: { endpoint: ENDPOINT, secret: "", enabled: true },
+    }),
+    { mayProvision: false },
+  );
+  assert.deepEqual(result, {
+    status: "skipped",
+    reason: PROVISION_NEEDS_ADMIN,
+  });
+  // A caller that passes no options gets the same fail-safe answer.
+  const silent = await syncFlowWebhookSubscription(
+    webhookFlow({
+      webhookConfig: { endpoint: ENDPOINT, secret: "", enabled: true },
+    }),
+  );
+  assert.deepEqual(silent, {
+    status: "skipped",
+    reason: PROVISION_NEEDS_ADMIN,
+  });
+  assert.equal(calls.length + creates.length, 0);
 }
 
 async function testRemoveDeletesThroughTheConnector() {
@@ -467,40 +502,6 @@ async function testConnectorsWithoutLookupAreNeverProvisionedOnSave() {
   assert.equal(calls.length + creates.length, 0);
 }
 
-/** A repo push (any writer) never creates a subscription; it may retarget. */
-async function testRepoPushNeverProvisions() {
-  const creates: UpdateCall[] = [];
-  const { calls } = stubProvider(async () => null, true, {
-    creates,
-    create: async () => ({
-      providerWebhookId: "we_new",
-      endpointUrl: ENDPOINT,
-      signingSecret: "whsec_new",
-    }),
-  });
-  const result = await syncFlowWebhookSubscription(
-    webhookFlow({
-      webhookConfig: { endpoint: ENDPOINT, secret: "", enabled: true },
-    }),
-    { mayProvision: false },
-  );
-  assert.deepEqual(result, {
-    status: "skipped",
-    reason: PROVISION_NEEDS_ADMIN,
-  });
-  // A caller that passes no options gets the same fail-safe answer.
-  const silent = await syncFlowWebhookSubscription(
-    webhookFlow({
-      webhookConfig: { endpoint: ENDPOINT, secret: "", enabled: true },
-    }),
-  );
-  assert.deepEqual(silent, {
-    status: "skipped",
-    reason: PROVISION_NEEDS_ADMIN,
-  });
-  assert.equal(calls.length + creates.length, 0);
-}
-
 async function main() {
   testEntitySignatureIgnoresOrderAndDisabled();
   await testScheduledFlowWithWebhooksOnIsSynced();
@@ -513,9 +514,9 @@ async function main() {
   await testFailedCommitLeavesIndexUntouched();
   await testUnchangedIdIsNotRewritten();
   await testReportsMissingSubscriptionAndProviderErrors();
+  await testRepoPushNeverProvisions();
   await testRemoveDeletesThroughTheConnector();
   await testWiseFlowRetargetsThroughTheService();
-  await testRepoPushNeverProvisions();
 }
 
 main().catch((error: unknown) => {
