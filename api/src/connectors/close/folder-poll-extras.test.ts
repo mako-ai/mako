@@ -41,14 +41,10 @@ let createCloseClient: (options: {
   baseUrl: string;
   minDelayMs: number;
 }) => Client;
-let readMembershipStatus: (
-  api: Client,
-  log: (message: string) => void,
-) => Promise<Map<string, boolean> | null>;
+let readMembershipStatus: (api: Client) => Promise<Map<string, boolean>>;
 let withMembershipStatus: (
   records: unknown[],
-  status: Map<string, boolean> | null,
-  readAt: string,
+  status: Map<string, boolean>,
 ) => Row[];
 let readAllCustomFields: (
   api: Client,
@@ -82,13 +78,11 @@ after(async () => {
   await server?.close();
 });
 
-const READ_AT = "2026-11-16T12:00:00.000Z";
-
 void test("users: is_active from the memberships, deactivated users marked deleted", async () => {
   const api = client("api_test_memberships");
-  const status = await readMembershipStatus(api, () => {});
+  const status = await readMembershipStatus(api);
   const users = dataset.lists["/user/"];
-  const rows = withMembershipStatus(users, status, READ_AT);
+  const rows = withMembershipStatus(users, status);
 
   assert.equal(rows.length, 7);
   const inactive = new Set(
@@ -99,7 +93,12 @@ void test("users: is_active from the memberships, deactivated users marked delet
     const deactivated = inactive.has(String(row.id));
     assert.equal(row.is_active, !deactivated, String(row.id));
     assert.equal(row.is_deleted, deactivated ? true : undefined);
-    assert.equal(row._mako_deleted_at, deactivated ? READ_AT : undefined);
+    // The user's own `date_updated`: stable from one poll to the next. Null
+    // on every other user, so a reactivation clears the mark.
+    assert.equal(
+      row._mako_deleted_at,
+      deactivated ? users[i].date_updated : null,
+    );
     // Real data stays: a deactivated user keeps name and email.
     assert.equal(row.first_name, users[i].first_name);
     assert.equal(row.email, users[i].email);
@@ -117,16 +116,20 @@ void test("users: a user in neither membership list has is_active null", () => {
   const rows = withMembershipStatus(
     [{ id: "user_other" }, { id: "user_a" }],
     new Map([["user_a", true]]),
-    READ_AT,
   );
   assert.deepEqual(rows, [
-    { id: "user_other", is_active: null },
-    { id: "user_a", is_active: true },
+    { id: "user_other", is_active: null, _mako_deleted_at: null },
+    { id: "user_a", is_active: true, _mako_deleted_at: null },
   ]);
-  // No membership data at all (a key that may not read the organization).
-  assert.deepEqual(withMembershipStatus([{ id: "user_a" }], null, READ_AT), [
-    { id: "user_a", is_active: null },
-  ]);
+});
+
+void test("users: the deleted mark is the same on every poll", () => {
+  const user = { id: "user_b", date_updated: "2026-09-25T08:00:44+00:00" };
+  const status = new Map([["user_b", false]]);
+  const first = withMembershipStatus([user], status);
+  const second = withMembershipStatus([user], status);
+  assert.deepEqual(first, second);
+  assert.equal(first[0]._mako_deleted_at, user.date_updated);
 });
 
 /** A Close that answers `/me/` and fails `/organization/` with `status`. */
@@ -149,26 +152,19 @@ async function failingClose(status: number) {
   };
 }
 
-void test("users: a forbidden organization leaves the status unknown, a 401 fails the chunk", async () => {
-  const forbidden = await failingClose(403);
-  try {
-    const logs: string[] = [];
-    const status = await readMembershipStatus(
-      client("api_test_forbidden", forbidden.url),
-      m => logs.push(m),
-    );
-    assert.equal(status, null);
-    assert.match(logs.join("\n"), /403/);
-  } finally {
-    await forbidden.close();
-  }
-  const unauthorized = await failingClose(401);
-  try {
-    await assert.rejects(
-      readMembershipStatus(client("api_test_401", unauthorized.url), () => {}),
-    );
-  } finally {
-    await unauthorized.close();
+void test("users: a membership read that fails fails the chunk, 403 and 404 included", async () => {
+  // A row without the status would reset is_deleted to false in the
+  // warehouse, un-deleting every deactivated user.
+  for (const status of [401, 403, 404]) {
+    const close = await failingClose(status);
+    try {
+      await assert.rejects(
+        readMembershipStatus(client(`api_test_${status}`, close.url)),
+        String(status),
+      );
+    } finally {
+      await close.close();
+    }
   }
 });
 
@@ -178,28 +174,34 @@ void test("users: the deleted mark reaches the warehouse columns through the box
     json_schema: closeJsonSchema("users"),
   } as any);
   assert.equal(schema.fields.is_active?.type, "boolean");
+  const DEACTIVATED_AT = "2026-09-25T08:00:44.000Z";
   const [active, deactivated] = withMembershipStatus(
-    [{ id: "user_a" }, { id: "user_b", first_name: "B" }],
+    [
+      { id: "user_a" },
+      { id: "user_b", first_name: "B", date_updated: DEACTIVATED_AT },
+    ],
     new Map([
       ["user_a", true],
       ["user_b", false],
     ]),
-    READ_AT,
   ).map(row => normalizePayloadBySchema(row, schema).payload);
 
+  // Every column on the active row too, so an upsert clears a stale mark.
   assert.equal(active.is_active, true);
   assert.equal(active.is_deleted, false);
-  assert.equal(active._mako_deleted_at ?? null, null);
+  assert.ok("_mako_deleted_at" in active);
+  assert.equal(active._mako_deleted_at, null);
+  assert.equal(active.deleted_at, null);
 
   assert.equal(deactivated.is_active, false);
   assert.equal(deactivated.is_deleted, true);
   assert.equal(
     new Date(deactivated._mako_deleted_at as string).toISOString(),
-    READ_AT,
+    DEACTIVATED_AT,
   );
   assert.equal(
     new Date(deactivated.deleted_at as string).toISOString(),
-    READ_AT,
+    DEACTIVATED_AT,
   );
   assert.equal(deactivated.first_name, "B");
 });
@@ -238,7 +240,9 @@ void test("the harness holds the folder's extras apart and requires them", () =>
     requests: ["GET /user/?_limit=100&_skip=0"],
   };
   const folder = {
-    rows: [{ id: "u1", first_name: "A", is_active: true }],
+    rows: [
+      { id: "u1", first_name: "A", is_active: true, _mako_deleted_at: null },
+    ],
     chunks: [],
     requests: [
       "GET /me/",
@@ -251,7 +255,7 @@ void test("the harness holds the folder's extras apart and requires them", () =>
   assert.deepEqual(run.requests, inProcess.requests);
   assert.deepEqual(folderOnly, {
     rows: 0,
-    columns: ["is_active"],
+    columns: ["is_active", "_mako_deleted_at"],
     requests: 2,
     ok: true,
   });

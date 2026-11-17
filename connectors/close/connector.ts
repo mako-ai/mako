@@ -252,12 +252,7 @@ function entity(
       // Deactivation lives on the memberships, not on `/user/`.
       const membership =
         kind === "users"
-          ? {
-              status: await readMembershipStatus(closeClient(ctx), message =>
-                ctx.log(message),
-              ),
-              readAt: new Date(Date.now()).toISOString(),
-            }
+          ? await readMembershipStatus(closeClient(ctx))
           : undefined;
       const endpoint =
         kind === "users"
@@ -277,11 +272,7 @@ function entity(
           : {}),
       })) {
         const records = membership
-          ? withMembershipStatus(
-              batch.records,
-              membership.status,
-              membership.readAt,
-            )
+          ? withMembershipStatus(batch.records, membership)
           : batch.records;
         yield { ...batch, records, state: withSince(state, batch.state) };
       }

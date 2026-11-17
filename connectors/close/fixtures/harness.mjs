@@ -128,6 +128,13 @@ export const FOLDER_ONLY = {
       folderRows.every(row => "is_active" in row) &&
       folderRows.every(
         row => (row.is_active === false) === (row.is_deleted === true),
+      ) &&
+      // Set on deactivated users, null on every other one (an upsert only
+      // writes the columns a batch carries, so null clears a stale mark).
+      folderRows.every(
+        row =>
+          "_mako_deleted_at" in row &&
+          (row._mako_deleted_at != null) === (row.is_active === false),
       ),
   },
 };

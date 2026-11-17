@@ -17,9 +17,11 @@ Releases of `mako/close`. Not released yet: no tag, no registry entry.
   from webhooks, untyped; a poll now has them, with `custom_field_type`
   `activity` or `custom_object`.
 - `users` reads the organization's memberships. Every user gets
-  `is_active`. A deactivated user is marked deleted (`is_deleted`,
-  `_mako_deleted_at` at read time), as the `membership.deactivated` webhook
-  does in-process, but keeps name and email.
+  `is_active`. A deactivated user is marked deleted (`is_deleted`, and
+  `_mako_deleted_at` = its `date_updated`, stable across polls), as the
+  `membership.deactivated` webhook does in-process, but keeps name and
+  email. Other users carry `_mako_deleted_at` null, so a reactivation
+  clears the mark. A failed membership read fails the chunk.
 - Meeting `notetaker_states` stays webhook-only: Close's REST API omits it
   from `/activity/meeting/`, `/activity/meeting/{id}/` and Search, even
   when `_fields` names it.
