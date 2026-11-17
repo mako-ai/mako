@@ -39,6 +39,7 @@ export default defineConfig({
       // Per-run Unix users in e2bdev/base under Docker; RUN_DB_INTEGRATION=1.
       "src/connectors/workspace/run-isolation.docker.test.ts",
       "src/connectors/workspace/session-isolation.docker.test.ts",
+      "src/connectors/workspace/webhook-batch.docker.test.ts",
     ],
     exclude: [
       "**/node_modules/**",

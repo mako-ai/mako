@@ -125,7 +125,7 @@ export function startReplayServer(
   interactions?: Map<string, { status: number; body: unknown }>,
 ): Promise<ReplayServer>;
 export function runFolderCommand(
-  command: "spec" | "check" | "discover" | "read",
+  command: "spec" | "check" | "discover" | "read" | "webhook",
   options?: {
     config?: Record<string, unknown>;
     catalog?: unknown;

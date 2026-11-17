@@ -105,3 +105,52 @@ test("spec carries each entity's layout and incremental mode for Mako to index",
     /incremental must be one of/,
   );
 });
+
+const webhookBase = () => ({
+  name: "hooks",
+  version: "1.0.0",
+  entities: { items: { schema: { id: "string" }, async *read() {} } },
+});
+const closeVerification = {
+  scheme: "hmac-sha256",
+  secretEncoding: "hex",
+  signedPayload: ["header:close-sig-timestamp", "body"],
+  signatureHeader: "close-sig-hash",
+  signatureEncoding: "hex",
+};
+
+test("webhooks need a handler and a verification Mako can run as data", () => {
+  assert.throws(
+    () => defineConnector({ ...webhookBase(), webhooks: { verification: closeVerification } }),
+    /webhooks.handleBatch/,
+  );
+  const withVerification = verification =>
+    defineConnector({ ...webhookBase(), webhooks: { handleBatch: () => [], verification } });
+  assert.throws(() => withVerification({ ...closeVerification, scheme: "md5" }), /scheme must be one of hmac-sha256/);
+  assert.throws(
+    () => withVerification({ ...closeVerification, signedPayload: ["header:close-sig-timestamp"] }),
+    /must include "body"/,
+  );
+  assert.throws(
+    () => withVerification({ ...closeVerification, signedPayload: ["body", "env:SECRET"] }),
+    /"body", "header:<name>" or "literal:<text>"/,
+  );
+  const ok = withVerification(closeVerification);
+  assert.deepEqual(ok.spec().mako.webhooks, { verification: closeVerification });
+  assert.equal(ok.hasWebhooks(), true);
+  assert.equal(defineConnector(webhookBase()).spec().mako.webhooks, undefined);
+});
+
+test("a webhook outcome must name its own event, in order", async () => {
+  const connector = defineConnector({
+    ...webhookBase(),
+    webhooks: {
+      verification: closeVerification,
+      handleBatch: (_ctx, events) => events.map(e => ({ eventId: `${e.eventId}x`, outcome: "unmapped" })),
+    },
+  });
+  await assert.rejects(
+    connector.handleWebhooks({}, [{ eventId: "a", eventType: "t", rawPayload: {} }]),
+    /must name event "a"/,
+  );
+});

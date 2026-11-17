@@ -21,6 +21,67 @@ const ENTITY_NAME = /^[a-z][a-z0-9_-]*(:[A-Za-z][A-Za-z0-9]*)?$/;
 // What a read does with `state.mako.since`, in Mako's words (IncrementalMode).
 const INCREMENTAL_MODES = ["native", "client-filter", "created-anchor"];
 
+/**
+ * How Mako checks a webhook's signature, as data. Mako verifies every
+ * delivery in its API, with the flow's signing secret, before anything is
+ * stored: the secret never reaches a box, so no connector code can check a
+ * signature. A connector says which scheme its vendor uses instead.
+ *
+ * - `scheme`: only `hmac-sha256` for now.
+ * - `secretEncoding`: how the stored secret becomes the HMAC key.
+ * - `signedPayload`: the parts signed, in order. `body` is the raw request
+ *   body, `header:<name>` a request header, `literal:<text>` fixed text.
+ * - `signatureHeader`: the header carrying the signature, in
+ *   `signatureEncoding`, after an optional `signaturePrefix` (`sha256=`).
+ */
+export const WEBHOOK_VERIFICATION_SCHEMES = ["hmac-sha256"];
+const SECRET_ENCODINGS = ["hex", "base64", "utf8"];
+const SIGNATURE_ENCODINGS = ["hex", "base64"];
+const HEADER_NAME = /^[a-z0-9-]{1,64}$/;
+
+export function validateWebhookVerification(verification) {
+  if (!verification || typeof verification !== "object") {
+    return ["webhooks.verification must be an object"];
+  }
+  const problems = [];
+  const v = verification;
+  if (!WEBHOOK_VERIFICATION_SCHEMES.includes(v.scheme)) {
+    problems.push(`webhooks.verification.scheme must be one of ${WEBHOOK_VERIFICATION_SCHEMES.join(", ")}`);
+  }
+  if (!SECRET_ENCODINGS.includes(v.secretEncoding)) {
+    problems.push(`webhooks.verification.secretEncoding must be one of ${SECRET_ENCODINGS.join(", ")}`);
+  }
+  if (!SIGNATURE_ENCODINGS.includes(v.signatureEncoding)) {
+    problems.push(`webhooks.verification.signatureEncoding must be one of ${SIGNATURE_ENCODINGS.join(", ")}`);
+  }
+  if (typeof v.signatureHeader !== "string" || !HEADER_NAME.test(v.signatureHeader)) {
+    problems.push("webhooks.verification.signatureHeader must be a lowercase header name");
+  }
+  if (v.signaturePrefix !== undefined && (typeof v.signaturePrefix !== "string" || v.signaturePrefix.length > 32)) {
+    problems.push("webhooks.verification.signaturePrefix must be a short string");
+  }
+  const parts = v.signedPayload;
+  if (!Array.isArray(parts) || parts.length === 0 || parts.length > 8) {
+    problems.push("webhooks.verification.signedPayload must list 1 to 8 parts");
+    return problems;
+  }
+  if (!parts.includes("body")) {
+    problems.push('webhooks.verification.signedPayload must include "body"');
+  }
+  for (const part of parts) {
+    const ok =
+      part === "body" ||
+      (typeof part === "string" && part.startsWith("header:") && HEADER_NAME.test(part.slice(7))) ||
+      (typeof part === "string" && part.startsWith("literal:") && part.length <= 72);
+    if (!ok) {
+      problems.push(
+        `webhooks.verification.signedPayload part ${JSON.stringify(part)} must be "body", "header:<name>" or "literal:<text>"`,
+      );
+    }
+  }
+  return problems;
+}
+
 export function defineConnector(definition) {
   const problems = validateDefinition(definition);
   if (problems.length > 0) {
@@ -66,6 +127,16 @@ export function defineConnector(definition) {
               },
             ]),
           ),
+          // Webhooks, as data Mako reads without running the connector: how
+          // to verify a delivery, and the events the connector handles.
+          ...(definition.webhooks
+            ? {
+                webhooks: {
+                  verification: definition.webhooks.verification,
+                  ...(definition.webhooks.events ? { events: [...definition.webhooks.events] } : {}),
+                },
+              }
+            : {}),
         },
       };
     },
@@ -116,6 +187,22 @@ export function defineConnector(definition) {
       return streams;
     },
 
+    /**
+     * `webhook`: a batch of stored, already verified deliveries in, one
+     * outcome per event out, in order. Mako hands the batch to a box; the
+     * handler maps each event to change records, re-fetching what a partial
+     * payload lacks with `ctx` (the connection's credential, never the
+     * webhook secret). Mako filters, stamps and writes the records.
+     */
+    async handleWebhooks(ctx, events) {
+      if (!definition.webhooks) {
+        throw new Error(`The connector "${definition.name}" declares no webhooks.`);
+      }
+      const outcomes = await definition.webhooks.handleBatch(ctx, events);
+      return checkWebhookOutcomes(events, outcomes);
+    },
+    hasWebhooks: () => Boolean(definition.webhooks),
+
     entityNames: () => Object.keys(entities),
     entity: name => entities[name],
   };
@@ -126,6 +213,37 @@ export function tableNameOf(name) {
   if (!name.includes(":")) return name;
   const [parent, type] = name.split(":");
   return `${type.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase()}_${parent}`;
+}
+
+const WEBHOOK_OUTCOMES = ["records", "unmapped", "extract_failed", "skipped"];
+
+/**
+ * A handler's answer, checked before it is written: one outcome per event,
+ * in the batch's order, each naming its own event. Mako checks it again on
+ * its side; this is where an author learns about the mistake.
+ */
+function checkWebhookOutcomes(events, outcomes) {
+  if (!Array.isArray(outcomes)) {
+    throw new Error("webhooks.handleBatch must return an array, one outcome per event");
+  }
+  if (outcomes.length !== events.length) {
+    throw new Error(`webhooks.handleBatch returned ${outcomes.length} outcomes for ${events.length} events`);
+  }
+  return outcomes.map((outcome, i) => {
+    const eventId = events[i]?.eventId;
+    if (!outcome || outcome.eventId !== eventId) {
+      throw new Error(
+        `webhooks.handleBatch outcome ${i} must name event ${JSON.stringify(eventId)}, in the batch's order`,
+      );
+    }
+    if (!WEBHOOK_OUTCOMES.includes(outcome.outcome)) {
+      throw new Error(`webhooks.handleBatch outcome for ${eventId} must be one of ${WEBHOOK_OUTCOMES.join(", ")}`);
+    }
+    if (outcome.outcome === "records" && !Array.isArray(outcome.records)) {
+      throw new Error(`webhooks.handleBatch outcome for ${eventId} has no records array`);
+    }
+    return outcome;
+  });
 }
 
 function validateDefinition(definition) {
@@ -147,6 +265,24 @@ function validateDefinition(definition) {
       problems.push(
         `config.required lists "${required}" but config.properties has no such field`,
       );
+    }
+  }
+
+  if (definition.webhooks !== undefined) {
+    const webhooks = definition.webhooks;
+    if (!webhooks || typeof webhooks !== "object") {
+      problems.push("webhooks must be an object");
+    } else {
+      if (typeof webhooks.handleBatch !== "function") {
+        problems.push("webhooks.handleBatch(ctx, events) must be a function");
+      }
+      problems.push(...validateWebhookVerification(webhooks.verification));
+      if (
+        webhooks.events !== undefined &&
+        (!Array.isArray(webhooks.events) || webhooks.events.some(e => typeof e !== "string"))
+      ) {
+        problems.push("webhooks.events must be an array of event names");
+      }
     }
   }
 

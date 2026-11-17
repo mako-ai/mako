@@ -161,7 +161,7 @@ jobs:
         # GitHub's ubuntu runners have Docker.
         env:
           RUN_CONNECTOR_ISOLATION_DOCKER: "1"
-        run: pnpm --filter api exec vitest run --config vitest.destinations.config.ts src/connectors/workspace/run-isolation.docker.test.ts src/connectors/workspace/session-isolation.docker.test.ts
+        run: pnpm --filter api exec vitest run --config vitest.destinations.config.ts src/connectors/workspace/run-isolation.docker.test.ts src/connectors/workspace/session-isolation.docker.test.ts src/connectors/workspace/webhook-batch.docker.test.ts
 
       - name: Agent tools tests
         run: pnpm --filter @mako/agent-tools run test

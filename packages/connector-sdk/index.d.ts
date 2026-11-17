@@ -98,6 +98,74 @@ export interface EntityDefinition<Config = Record<string, unknown>> {
   read(ctx: Context<Config>, state: Record<string, unknown>): AsyncGenerator<ReadBatch>;
 }
 
+/**
+ * How Mako verifies a delivery's signature, in its API, before storing it.
+ * Data, never code: the signing secret stays in Mako and no box sees it.
+ */
+export interface WebhookVerification {
+  scheme: "hmac-sha256";
+  /** How the stored signing secret becomes the HMAC key. */
+  secretEncoding: "hex" | "base64" | "utf8";
+  /**
+   * The signed bytes, in order: `"body"` (the raw request body),
+   * `"header:<lowercase name>"` or `"literal:<text>"`. Must include `"body"`.
+   */
+  signedPayload: string[];
+  /** Lowercase name of the header that carries the signature. */
+  signatureHeader: string;
+  signatureEncoding: "hex" | "base64";
+  /** Text before the signature in its header, e.g. `"sha256="`. */
+  signaturePrefix?: string;
+}
+
+/** One stored delivery, as Mako hands it to `handleBatch`. */
+export interface WebhookEvent {
+  /** The vendor's event id, unique within the flow. Echo it back. */
+  eventId: string;
+  eventType: string;
+  rawPayload: unknown;
+  /** When Mako received it, ISO 8601. */
+  receivedAt?: string;
+}
+
+/** One row change. Mako stamps `_dataSourceId`, `_syncedAt` and filters by entity. */
+export interface WebhookChangeRecord {
+  /** A declared entity. Records for any other entity are dropped. */
+  entity: string;
+  recordId: string;
+  operation: "upsert" | "delete";
+  /** The whole row, as `read` emits it. A partial row writes NULLs: re-fetch it. */
+  payload: Record<string, unknown>;
+  /** The change's time, ISO 8601. Defaults to the row's own time. */
+  sourceTs?: string;
+  /** Idempotency key; the vendor's event id is a good one. */
+  changeId?: string;
+}
+
+export type WebhookOutcome =
+  | { eventId: string; outcome: "records"; records: WebhookChangeRecord[] }
+  /** The connector does not handle this event type: nothing to write. */
+  | { eventId: string; outcome: "unmapped" }
+  /** A handled type whose payload yielded no record: Mako marks it failed. */
+  | { eventId: string; outcome: "extract_failed"; reason?: string }
+  /** Nothing to write on purpose, e.g. a re-fetch found the row gone. */
+  | { eventId: string; outcome: "skipped"; reason?: string };
+
+export interface WebhookDefinition<Config = Record<string, unknown>> {
+  verification: WebhookVerification;
+  /** Every event type the connector handles, for subscribing at the vendor. */
+  events?: string[];
+  /**
+   * A batch in, one outcome per event out, in the same order. Runs in a box
+   * with the connection's credential in `ctx.config`, so a handler can
+   * re-fetch a row whose payload is partial.
+   */
+  handleBatch(
+    ctx: Context<Config>,
+    events: WebhookEvent[],
+  ): Promise<WebhookOutcome[]> | WebhookOutcome[];
+}
+
 export interface ConnectorDefinition<Config = Record<string, unknown>> {
   /** Lowercase slug; the connector's identity. */
   name: string;
@@ -112,6 +180,8 @@ export interface ConnectorDefinition<Config = Record<string, unknown>> {
   /** Throw with the vendor's message, or return false, when the credential is bad. */
   check?(ctx: Context<Config>): Promise<unknown>;
   entities: Record<string, EntityDefinition<Config>>;
+  /** Webhook deliveries, verified by Mako and handed over in batches. */
+  webhooks?: WebhookDefinition<Config>;
 }
 
 export interface Connector {
@@ -121,6 +191,8 @@ export interface Connector {
   discover(ctx: Context): Promise<Array<Record<string, unknown>>>;
   entityNames(): string[];
   entity(name: string): EntityDefinition | undefined;
+  hasWebhooks(): boolean;
+  handleWebhooks(ctx: Context, events: WebhookEvent[]): Promise<WebhookOutcome[]>;
 }
 
 export function defineConnector<Config = Record<string, unknown>>(

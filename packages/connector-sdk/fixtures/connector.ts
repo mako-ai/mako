@@ -47,4 +47,50 @@ export default defineConnector({
       },
     },
   },
+  webhooks: {
+    verification: {
+      scheme: "hmac-sha256",
+      secretEncoding: "utf8",
+      signedPayload: ["header:x-fixture-timestamp", "literal:.", "body"],
+      signatureHeader: "x-fixture-signature",
+      signatureEncoding: "hex",
+      signaturePrefix: "sha256=",
+    },
+    events: ["person.updated", "person.deleted"],
+    // A partial payload carries only the id: the row is "re-fetched" from
+    // the fixture's data, as a real handler would call its API.
+    async handleBatch(ctx, events) {
+      if (ctx.config.wrongCount) return events.slice(1);
+      if (ctx.config.throwInHandler) throw new Error("vendor said 500");
+      return events.map(event => {
+        const id = (event.rawPayload as { id?: string } | null)?.id;
+        if (event.eventType !== "person.updated" && event.eventType !== "person.deleted") {
+          return { eventId: event.eventId, outcome: "unmapped" as const };
+        }
+        if (!id) return { eventId: event.eventId, outcome: "extract_failed" as const };
+        if (event.eventType === "person.deleted") {
+          return {
+            eventId: event.eventId,
+            outcome: "records" as const,
+            records: [{ entity: "people", recordId: id, operation: "delete" as const, payload: { id } }],
+          };
+        }
+        const row = PEOPLE.find(p => p.id === id);
+        if (!row) return { eventId: event.eventId, outcome: "skipped" as const, reason: "gone" };
+        return {
+          eventId: event.eventId,
+          outcome: "records" as const,
+          records: [
+            {
+              entity: "people",
+              recordId: id,
+              operation: "upsert" as const,
+              payload: { ...row, apiKeySeen: ctx.config.apiKey === "good-key" },
+              changeId: event.eventId,
+            },
+          ],
+        };
+      });
+    },
+  },
 });

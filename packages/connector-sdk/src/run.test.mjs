@@ -343,3 +343,85 @@ function strip(messages) {
     m.type === "RECORD" ? { ...m, record: { ...m.record, emitted_at: 0 } } : m,
   );
 }
+
+const webhookEvent = (eventId, eventType, rawPayload) => ({
+  eventId,
+  eventType,
+  rawPayload,
+  receivedAt: "2026-11-17T08:00:00.000Z",
+});
+
+test("spec declares the webhook verification as data, so Mako verifies without running code", async () => {
+  const [message] = await protocol(["spec"]);
+  assert.deepEqual(message.spec.mako.webhooks, {
+    verification: {
+      scheme: "hmac-sha256",
+      secretEncoding: "utf8",
+      signedPayload: ["header:x-fixture-timestamp", "literal:.", "body"],
+      signatureHeader: "x-fixture-signature",
+      signatureEncoding: "hex",
+      signaturePrefix: "sha256=",
+    },
+    events: ["person.updated", "person.deleted"],
+  });
+});
+
+test("webhook answers one WEBHOOK line per event, in the batch's order", async () => {
+  const dir = tmp();
+  const config = writeJson(dir, "config.json", { apiKey: "good-key" });
+  const batch = writeJson(dir, "batch.json", {
+    events: [
+      webhookEvent("ev1", "person.updated", { id: "p2" }),
+      webhookEvent("ev2", "invoice.paid", { id: "x" }),
+      webhookEvent("ev3", "person.updated", {}),
+      webhookEvent("ev4", "person.deleted", { id: "p3" }),
+      webhookEvent("ev5", "person.updated", { id: "p999" }),
+    ],
+  });
+  const messages = await protocol(["webhook", "--config", config, "--batch", batch]);
+  assert.deepEqual(
+    messages.map(m => m.type),
+    ["WEBHOOK", "WEBHOOK", "WEBHOOK", "WEBHOOK", "WEBHOOK"],
+  );
+  const outcomes = messages.map(m => m.webhook);
+  assert.deepEqual(
+    outcomes.map(o => [o.eventId, o.outcome]),
+    [
+      ["ev1", "records"],
+      ["ev2", "unmapped"],
+      ["ev3", "extract_failed"],
+      ["ev4", "records"],
+      ["ev5", "skipped"],
+    ],
+  );
+  // The handler re-fetched the whole row, with the connection's credential.
+  assert.equal(outcomes[0].records[0].payload.email, "person2@example.com");
+  assert.equal(outcomes[0].records[0].payload.apiKeySeen, true);
+  assert.equal(outcomes[3].records[0].operation, "delete");
+});
+
+test("webhook fails as a TRACE error when the handler answers for the wrong events", async () => {
+  const dir = tmp();
+  const config = writeJson(dir, "config.json", { apiKey: "good-key", wrongCount: true });
+  const batch = writeJson(dir, "batch.json", {
+    events: [webhookEvent("ev1", "person.updated", { id: "p1" }), webhookEvent("ev2", "person.updated", { id: "p2" })],
+  });
+  const messages = await protocol(["webhook", "--config", config, "--batch", batch], { expectFailure: true });
+  assert.equal(messages.some(m => m.type === "WEBHOOK"), false);
+  const trace = messages.find(m => m.type === "TRACE");
+  assert.match(trace.trace.error.message, /returned 1 outcomes for 2 events/);
+});
+
+test("webhook fails as a TRACE error when the handler throws, with no partial answer", async () => {
+  const dir = tmp();
+  const config = writeJson(dir, "config.json", { apiKey: "good-key", throwInHandler: true });
+  const batch = writeJson(dir, "batch.json", { events: [webhookEvent("ev1", "person.updated", { id: "p1" })] });
+  const messages = await protocol(["webhook", "--config", config, "--batch", batch], { expectFailure: true });
+  assert.deepEqual(messages.map(m => m.type), ["TRACE"]);
+  assert.match(messages[0].trace.error.message, /vendor said 500/);
+});
+
+test("webhook without a batch file fails loudly", async () => {
+  const messages = await protocol(["webhook"], { expectFailure: true });
+  assert.match(messages.find(m => m.type === "TRACE").trace.error.message, /--batch/);
+});

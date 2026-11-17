@@ -18,6 +18,7 @@ import {
   emitSpec,
   emitState,
   emitTraceError,
+  emitWebhookOutcome,
 } from "./protocol.js";
 
 export function parseArgs(argv) {
@@ -215,7 +216,24 @@ export async function run(argv = process.argv.slice(2)) {
     return 0;
   }
 
-  throw new Error(`Unknown command "${command}". Expected spec, check, discover or read.`);
+  if (command === "webhook") {
+    // A batch of stored, verified deliveries, as Mako writes it:
+    // `{ events: [{ eventId, eventType, rawPayload, receivedAt }] }`. The
+    // webhook's signing secret is never in it, nor in `--config`.
+    if (!options.batch) throw new Error("webhook needs --batch <file>");
+    const batch = readJson(options.batch);
+    const events = Array.isArray(batch?.events) ? batch.events : null;
+    if (!events) throw new Error("The webhook batch has no events array.");
+    const ctx = createContext({ config, log });
+    const outcomes = await connector.handleWebhooks(ctx, events);
+    for (const outcome of outcomes) {
+      emitWebhookOutcome(outcome);
+      if (process.stdout.writableNeedDrain) await once(process.stdout, "drain");
+    }
+    return 0;
+  }
+
+  throw new Error(`Unknown command "${command}". Expected spec, check, discover, read or webhook.`);
 }
 
 /**

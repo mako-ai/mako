@@ -14,6 +14,10 @@ import {
   cdcMaterializeSchedulerFunction,
 } from "./functions/webhook-flow";
 import {
+  connectorWebhookBatchDispatchFunction,
+  connectorWebhookBatchFunction,
+} from "./functions/connector-webhook-batch";
+import {
   appsBindingMaterializeFunction,
   appsBindingSchedulerFunction,
 } from "./functions/apps-binding-refresh";
@@ -92,6 +96,8 @@ const allWebhookFunctions = [
   webhookRetryFunction,
   cdcMaterializeFunction,
   cdcMaterializeSchedulerFunction,
+  connectorWebhookBatchDispatchFunction,
+  connectorWebhookBatchFunction,
 ];
 
 /**
@@ -173,6 +179,8 @@ export {
   webhookRetryFunction,
   cdcMaterializeFunction,
   cdcMaterializeSchedulerFunction,
+  connectorWebhookBatchDispatchFunction,
+  connectorWebhookBatchFunction,
   appsBindingMaterializeFunction,
   appsBindingJobFunction,
   appsBindingJobSweeperFunction,

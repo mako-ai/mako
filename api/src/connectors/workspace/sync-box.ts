@@ -118,7 +118,13 @@ export interface RunResult {
   timedOut: boolean;
 }
 
-export type ConnectorCommand = "spec" | "check" | "discover" | "read";
+export type ConnectorCommand =
+  | "spec"
+  | "check"
+  | "discover"
+  | "read"
+  // A batch of stored, verified webhook events (webhook-batch.ts).
+  | "webhook";
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -664,6 +670,8 @@ export async function runConnectorCommand(input: {
   config?: Record<string, unknown>;
   catalog?: Record<string, unknown>;
   state?: Record<string, unknown> | unknown[];
+  /** A `webhook` command's events (`--batch`). Never holds a signing secret. */
+  batch?: Record<string, unknown>;
   maxIterations?: number;
   /**
    * A `read` stops after the page that takes its records past this many
@@ -686,6 +694,7 @@ export async function runConnectorCommand(input: {
     ["config", input.config],
     ["catalog", input.catalog],
     ["state", input.state],
+    ["batch", input.batch],
   ] as const) {
     if (value === undefined) continue;
     inputs.push({

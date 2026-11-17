@@ -37,7 +37,7 @@ const CDC_MATERIALIZE_CONCURRENCY_PER_FLOW = Math.max(
   1,
 );
 
-type WebhookCdcRecord = {
+export type WebhookCdcRecord = {
   entity: string;
   recordId: string;
   operation: "upsert" | "delete";
@@ -122,6 +122,37 @@ export async function buildWebhookCdcRecords(params: {
     }
   }
 
+  return {
+    records: shapeWebhookCdcRecords({
+      rawRecords,
+      sourceConnection,
+      flow,
+      webhookEvent,
+    }),
+    extractedCount: extractedRecords.length,
+  };
+}
+
+/**
+ * Connector records -> the CDC records the flow writes: the flow's entity
+ * selection applied, `_dataSourceId`/`_dataSourceName`/`_syncedAt` stamped,
+ * and a stable changeId. Shared by the inline cron and box-lane batches
+ * (connectors/workspace/webhook-batch.ts), so the two cannot drift.
+ */
+export function shapeWebhookCdcRecords(params: {
+  rawRecords: Array<{
+    entity: string;
+    recordId?: unknown;
+    operation?: string;
+    payload?: unknown;
+    sourceTs?: unknown;
+    changeId?: unknown;
+  }>;
+  sourceConnection: { id: string; name: string };
+  flow: Parameters<typeof isEntityEnabledForFlow>[0];
+  webhookEvent: { eventId: string; receivedAt: Date | string };
+}): WebhookCdcRecord[] {
+  const { rawRecords, sourceConnection, flow, webhookEvent } = params;
   const receivedAt = new Date(webhookEvent.receivedAt);
   const out: WebhookCdcRecord[] = [];
 
@@ -175,7 +206,7 @@ export async function buildWebhookCdcRecords(params: {
     });
   }
 
-  return { records: out, extractedCount: extractedRecords.length };
+  return out;
 }
 
 /**
@@ -513,12 +544,16 @@ const CDC_INGEST_BATCH_LIMIT = Math.max(
  * Ingest pending WebhookEvents into CdcChangeEvents, grouped by flow.
  * Returns the number of events ingested.
  */
-async function ingestPendingWebhookEvents(logger: {
+export async function ingestPendingWebhookEvents(logger: {
   info: (...args: any[]) => void;
   warn: (...args: any[]) => void;
 }): Promise<{ ingested: number; dropped: number; failed: number }> {
+  // Box-lane events are a boxed connector's: batch runs handle them
+  // (connectors/workspace/webhook-batch.ts). `lane: null` keeps a box
+  // backlog out of this global scan ({ status, lane, receivedAt } index).
   const pendingEvents = await WebhookEvent.find({
     status: "pending",
+    lane: null,
   })
     .sort({ receivedAt: 1 })
     .limit(CDC_INGEST_BATCH_LIMIT)

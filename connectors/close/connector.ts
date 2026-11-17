@@ -28,7 +28,8 @@
  * Search pages also shrink by themselves when one is too large for a chunk
  * (see `search.ts`).
  *
- * The webhook half is in `webhooks.ts`, exported below as `webhook`.
+ * The webhook half is in `webhooks.ts`, exported below as `webhook`. The
+ * SDK's `webhooks` definition, which a box runs, is in `webhook-handler.ts`.
  */
 import { defineConnector } from "@makoai/connector-sdk";
 import type {
@@ -61,6 +62,7 @@ import {
   handleWebhookBatch,
   verifyCloseWebhook,
 } from "./webhooks.ts";
+import { closeWebhookDefinition } from "./webhook-handler.ts";
 
 interface CloseConfig {
   api_key: string;
@@ -317,6 +319,13 @@ export default defineConnector<CloseConfig>({
     return true;
   },
   entities: ENTITIES,
+  // Verified by Mako's API, handled here in batches (webhook-handler.ts).
+  webhooks: closeWebhookDefinition<CloseConfig>(ctx => ({
+    api: closeClient(ctx),
+    customFields: customFields(ctx),
+    selectorBudget,
+    log: message => ctx.log(message),
+  })),
 });
 
 /**
