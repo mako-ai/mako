@@ -95,7 +95,7 @@ describe("connector boxes on E2B", () => {
   });
 
   it("opens a person's app box to public traffic so previews load", async () => {
-    const sessionKey = "6846e6a01b05af0948070582:user_abc";
+    const sessionKey = "6846e6a01b05af0948070582:9f2c41d07ab3e65";
     await e2bSandboxProvider.exec({ sessionKey }, "true");
     expect(e2b.Sandbox.create).toHaveBeenCalledWith(
       expect.anything(),
@@ -104,6 +104,16 @@ describe("connector boxes on E2B", () => {
         network: { allowPublicTraffic: true },
       }),
     );
+  });
+
+  it("keeps the traffic token on a system actor's box", async () => {
+    const sessionKey = "6846e6a01b05af0948070582:api-key";
+    await e2bSandboxProvider.exec({ sessionKey }, "true");
+    const calls = e2b.Sandbox.create.mock.calls as unknown as Array<
+      [unknown, { metadata?: unknown; network?: unknown }]
+    >;
+    expect(calls[0]?.[1]?.metadata).toEqual({ makoAppsSessionKey: sessionKey });
+    expect(calls[0]?.[1]?.network).toBeUndefined();
   });
 
   it("still creates app sessions on demand", async () => {
@@ -281,9 +291,18 @@ describe("a pinned call when this process holds a handle to another box", () => 
 
 describe("allowsPublicTraffic", () => {
   it.each([
-    ["6846e6a01b05af0948070582:ut8p3kq", true],
-    ["6846e6a01b05af0948070582:1aa042bc", true],
+    // Person actors: 15-char ids (hex today, base36 for older accounts)
+    // and legacy 24-hex ids.
+    ["6846e6a01b05af0948070582:9f2c41d07ab3e65", true],
+    ["6846e6a01b05af0948070582:ut8p3kqz1m0abcd", true],
+    ["6846e6a01b05af0948070582:6846e6a01b05af0948070583", true],
+    // System and malformed actors keep the traffic token.
     ["6846e6a01b05af0948070582:publish", false],
+    ["6846e6a01b05af0948070582:api-key", false],
+    ["6846e6a01b05af0948070582:ut8p3kq", false],
+    ["6846e6a01b05af0948070582:1aa042bc", false],
+    ["6846e6a01b05af0948070582:UT8P3KQZ1M0ABCD", false],
+    ["6846e6a01b05af0948070582:9f2c41d07ab3e65:x", false],
     ["connector-box:cbx_1", false],
     ["connector-build:6846e6a01b05af0948070582:b1", false],
     ["connector-sync:v2:6846e6a01b05af0948070582", false],
