@@ -198,11 +198,17 @@ export const HIDEPID_MARKER = "MAKO_HIDEPID";
 export const CAN_REMOUNT_PROC_CHECK = `[ "$(( 0x$(awk '/^CapEff:/ { print $2 }' /proc/self/status 2>/dev/null) >> 21 & 1 ))" = 1 ] 2>/dev/null`;
 
 /**
- * Shell that succeeds when /proc, as processes see it, has hidepid. Only the
- * last /proc entry counts: a plain proc mount stacked on top hides the one
- * below, and any earlier line with hidepid would otherwise pass.
+ * Shell that succeeds when /proc, as processes see it, has hidepid.
+ *
+ * It reads /proc/self/mountinfo and takes the one /proc entry that no other
+ * /proc entry names as its parent: the top of the stack, the mount processes
+ * see. A plain proc stacked on a hidepid one is the top, so it fails. The
+ * line order of /proc/self/mounts cannot be trusted: a mount moved beneath
+ * the top (move_mount MOVE_MOUNT_BENEATH, root only) is listed last but sits
+ * under it. Zero or several candidates fail closed. Fields: $1 mount id, $2
+ * parent id, $5 mount point; after " - " come fstype, source, super options.
  */
-export const HIDEPID_CHECK = `awk '$2 == "/proc" { t = $3; o = $4 } END { exit !(t == "proc" && o ~ /(^|,)hidepid=(2|invisible)(,|$)/) }' /proc/self/mounts 2>/dev/null`;
+export const HIDEPID_CHECK = `awk '$5 == "/proc" { m[$1] = $0; p[$2] = 1 } END { for (i in m) if (!(i in p)) { n++; t = m[i] } if (n != 1) exit 1; sub(/.* - /, "", t); split(t, f, " "); exit !(f[1] == "proc" && f[3] ~ /(^|,)hidepid=(2|invisible)(,|$)/) }' /proc/self/mountinfo 2>/dev/null`;
 
 /** Root: create the run user and its directories. Fails closed. */
 export function setupScript(l: RunLayout): string {
