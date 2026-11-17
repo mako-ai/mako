@@ -27,13 +27,13 @@ Each flow run:
 
 Each flow entity runs with one of five sync/write mode combinations:
 
-| Mode                                | Fetches                                      | Writes                                                                                     |
-| ----------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| **Incremental \| Append + Deduped** | New or updated records since the last cursor | Upsert by primary key — one deduplicated row per record                                    |
-| **Incremental \| Append**           | New or updated records since the last cursor | Every version added as a new row (history)                                                 |
-| **Full Refresh \| Deduped**         | Everything, each run                         | Upsert by primary key (reconciles drift)                                                   |
-| **Full Refresh \| Append**          | Everything, each run                         | All rows appended — accumulates a snapshot per run                                         |
-| **Full Refresh \| Overwrite**       | Everything, each run                         | Destination cleared once at the start of the run, then written — ends up an exact snapshot |
+| Mode | Fetches | Writes |
+|------|---------|--------|
+| **Incremental \| Append + Deduped** | New or updated records since the last cursor | Upsert by primary key — one deduplicated row per record |
+| **Incremental \| Append** | New or updated records since the last cursor | Every version added as a new row (history) |
+| **Full Refresh \| Deduped** | Everything, each run | Upsert by primary key (reconciles drift) |
+| **Full Refresh \| Append** | Everything, each run | All rows appended — accumulates a snapshot per run |
+| **Full Refresh \| Overwrite** | Everything, each run | Destination cleared once at the start of the run, then written — ends up an exact snapshot |
 
 Connectors declare **incremental capabilities** per entity (`full-support`, `created-anchor`, `client-filter`, or `none`), and the flow form only offers honest combinations — an entity whose API can't see updates to old records (e.g. Wise transfers) won't pretend to support true incremental sync, and the connector's warning is surfaced in the UI. Webhook-applied CDC events respect the flow's write mode: append flows append, deduped flows merge.
 
@@ -50,11 +50,11 @@ In addition to scheduled batch syncing, Mako supports experimental Change Data C
 
 A sync has three independent controls that decide what starts it. There is no flow "type" any more — the triggers are the whole story (older files that still say `type: webhook` or `type: scheduled` keep working, but `type` is never written).
 
-| Control      | What it does                                                                                                                                                                                                         |
-| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Poll**     | Re-reads the source on a cron (or `off`). Polling runs whenever it is on.                                                                                                                                            |
+| Control | What it does |
+|---------|--------------|
+| **Poll** | Re-reads the source on a cron (or `off`). Polling runs whenever it is on. |
 | **Webhooks** | The source pushes changes to the sync's inbound URL. Webhooks only add speed on top of polling — they never switch polling off. Any sync can take webhooks; the URL is minted when you turn them on and never moves. |
-| **Resync**   | The periodic full re-read that repairs whatever live updates missed. It is also what makes a new sync start. Set a cron, or `off` to run a backfill only on demand.                                                  |
+| **Resync** | The periodic full re-read that repairs whatever live updates missed. It is also what makes a new sync start. Set a cron, or `off` to run a backfill only on demand. |
 
 For connectors that can look a subscription up by URL (Stripe, Wise), saving a sync with webhooks on **provisions the subscription for you**: it adopts one already pointing at the URL and creates one only if none exists. A refusal is shown on the sync and polling carries on. Close, PandaDoc, Calendly and Claap keep the explicit **Create in …** button.
 
@@ -117,6 +117,7 @@ The **Backfill Panel** shows destination row totals next to CDC progress. Counts
 
 For BigQuery and PostgreSQL destinations, Mako batches all entity counts into a single metadata query and caches the result briefly. Missing destination tables are shown as `0` rows.
 
+
 ## Job Queue
 
 Flows run on [Inngest](https://www.inngest.com/), a job queue that handles:
@@ -142,7 +143,7 @@ Cursor, etc.) uses to add, edit, or remove flows without touching the UI.
   Renaming a file is a delete-plus-create (new stream, new webhook URL if
   applicable); the in-file `name:` field is the free-to-change display name.
 - **Credentials never live in the file.** A flow names its source
-  _connection_ by ObjectId (`source.connection_id`) — a connection is a
+  *connection* by ObjectId (`source.connection_id`) — a connection is a
   credential configured with a connector, and a connector is code (a built-in
   such as `stripe`, or `ws:<slug>` for one your workspace ships under
   `connectors/<slug>/`, see [Connectors](/connectors/)). Webhook secrets and
@@ -169,10 +170,10 @@ Files are written in format 2: `live` (`poll`, `timezone`, `webhook`) and `resyn
 
 ```yaml
 live:
-  poll: "off" # a cron, or off
-  webhook: "on" # on | off
+  poll: 'off'        # a cron, or off
+  webhook: 'on'      # on | off
 resync:
-  cron: 0 3 * * * # or `resync: off`
+  cron: 0 3 * * *    # or `resync: off`
   timezone: UTC
 ```
 
