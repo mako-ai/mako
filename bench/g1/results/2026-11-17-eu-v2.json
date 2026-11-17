@@ -1,0 +1,853 @@
+{
+  "runId": "g1v2-mwkclyqr",
+  "date": "2026-11-17T07:05:50.063Z",
+  "e2bSdkVersion": "2.55.0",
+  "template": "mako-apps",
+  "accountCap": 10,
+  "host": {
+    "platform": "linux 6.1.0-55-cloud-amd64 x64",
+    "cpus": "Intel(R) Xeon(R) CPU @ 2.20GHz",
+    "node": "v24.22.1"
+  },
+  "params": {
+    "chunks": 30,
+    "n": 10,
+    "pageSize": 100,
+    "maxIterations": 10,
+    "maxBytes": 16777216
+  },
+  "offWarm": {
+    "fixed-1k": {
+      "chunkMs": {
+        "n": 30,
+        "p50": 268.4,
+        "p95": 295.3,
+        "p99": 300,
+        "min": 257,
+        "max": 300,
+        "mean": 271
+      },
+      "rowsPerChunk": {
+        "n": 30,
+        "p50": 1000,
+        "p95": 1000,
+        "p99": 1000,
+        "min": 1000,
+        "max": 1000,
+        "mean": 1000
+      },
+      "rowsPerSecond": 3690,
+      "overCapRetries": 0,
+      "calls": {
+        "writeFiles": {
+          "perChunk": 1,
+          "p50": 11.2,
+          "p95": 13.7
+        },
+        "exec:rm": {
+          "perChunk": 1,
+          "p50": 22.3,
+          "p95": 28.4
+        },
+        "exec:chunk": {
+          "perChunk": 1,
+          "p50": 223.5,
+          "p95": 252.7
+        },
+        "readFile": {
+          "perChunk": 1,
+          "p50": 25.3,
+          "p95": 31.6
+        }
+      }
+    },
+    "call": {
+      "chunkMs": {
+        "n": 30,
+        "p50": 365.3,
+        "p95": 420.2,
+        "p99": 425.3,
+        "min": 348.3,
+        "max": 425.3,
+        "mean": 376.8
+      },
+      "rowsPerChunk": {
+        "n": 30,
+        "p50": 1000,
+        "p95": 1000,
+        "p99": 1000,
+        "min": 1000,
+        "max": 1000,
+        "mean": 1000
+      },
+      "rowsPerSecond": 2654,
+      "overCapRetries": 0,
+      "calls": {
+        "writeFiles": {
+          "perChunk": 1,
+          "p50": 13.4,
+          "p95": 22.8
+        },
+        "exec:rm": {
+          "perChunk": 1,
+          "p50": 23.9,
+          "p95": 32
+        },
+        "exec:chunk": {
+          "perChunk": 1,
+          "p50": 257.9,
+          "p95": 269.1
+        },
+        "readFile": {
+          "perChunk": 1,
+          "p50": 75.5,
+          "p95": 121
+        }
+      }
+    },
+    "email": {
+      "chunkMs": {
+        "n": 30,
+        "p50": 473.5,
+        "p95": 520.6,
+        "p99": 616.3,
+        "min": 437.1,
+        "max": 616.3,
+        "mean": 482.7
+      },
+      "rowsPerChunk": {
+        "n": 30,
+        "p50": 600,
+        "p95": 600,
+        "p99": 600,
+        "min": 500,
+        "max": 600,
+        "mean": 573.3
+      },
+      "rowsPerSecond": 1188,
+      "overCapRetries": 0,
+      "calls": {
+        "writeFiles": {
+          "perChunk": 1,
+          "p50": 11.9,
+          "p95": 18.8
+        },
+        "exec:rm": {
+          "perChunk": 1,
+          "p50": 25.3,
+          "p95": 50.8
+        },
+        "exec:chunk": {
+          "perChunk": 1,
+          "p50": 297,
+          "p95": 305.8
+        },
+        "readFile": {
+          "perChunk": 1,
+          "p50": 119,
+          "p95": 147.8
+        }
+      }
+    },
+    "providerExecNoopMs": {
+      "n": 30,
+      "p50": 17.3,
+      "p95": 20.5,
+      "p99": 23.2,
+      "min": 15.8,
+      "max": 23.2,
+      "mean": 17.6
+    }
+  },
+  "phaseSeconds": {
+    "off-warm": 39.9,
+    "boot": 6.6,
+    "off-cold": 23.2,
+    "on-warm": 41.9,
+    "on-cold": 74.3,
+    "parallel": 212.5
+  },
+  "boot": {
+    "call:nodeStartMs": {
+      "n": 10,
+      "p50": 25.3,
+      "p95": 30.4,
+      "p99": 30.4,
+      "min": 24.2,
+      "max": 30.4,
+      "mean": 25.8
+    },
+    "call:specMs": {
+      "n": 10,
+      "p50": 89.4,
+      "p95": 96.6,
+      "p99": 96.6,
+      "min": 87.3,
+      "max": 96.6,
+      "mean": 90.9
+    },
+    "call:readMs": {
+      "n": 10,
+      "p50": 139.3,
+      "p95": 148.2,
+      "p99": 148.2,
+      "min": 136.4,
+      "max": 148.2,
+      "mean": 140.9
+    },
+    "call:useraddUserdelMs": {
+      "n": 10,
+      "p50": 20.8,
+      "p95": 21.2,
+      "p99": 21.2,
+      "min": 19.5,
+      "max": 21.2,
+      "mean": 20.6
+    },
+    "call:bytes": {
+      "n": 10,
+      "p50": 9564057,
+      "p95": 9564057,
+      "p99": 9564057,
+      "min": 9564057,
+      "max": 9564057,
+      "mean": 9564057
+    },
+    "email:nodeStartMs": {
+      "n": 10,
+      "p50": 24.6,
+      "p95": 29.2,
+      "p99": 29.2,
+      "min": 23.9,
+      "max": 29.2,
+      "mean": 26.1
+    },
+    "email:specMs": {
+      "n": 10,
+      "p50": 90.5,
+      "p95": 96.9,
+      "p99": 96.9,
+      "min": 88,
+      "max": 96.9,
+      "mean": 91.2
+    },
+    "email:readMs": {
+      "n": 10,
+      "p50": 184.1,
+      "p95": 192,
+      "p99": 192,
+      "min": 175.5,
+      "max": 192,
+      "mean": 185
+    },
+    "email:useraddUserdelMs": {
+      "n": 10,
+      "p50": 21.2,
+      "p95": 22.2,
+      "p99": 22.2,
+      "min": 20.7,
+      "max": 22.2,
+      "mean": 21.4
+    },
+    "email:bytes": {
+      "n": 10,
+      "p50": 20435391,
+      "p95": 20435391,
+      "p99": 20435391,
+      "min": 20435391,
+      "max": 20435391,
+      "mean": 20435391
+    }
+  },
+  "offCold": {
+    "newBoxFirstChunk": [
+      {
+        "prepareMs": 4643,
+        "firstChunkMs": 638,
+        "totalMs": 5281,
+        "prepareCalls": 17
+      },
+      {
+        "prepareMs": 3779,
+        "firstChunkMs": 631,
+        "totalMs": 4409,
+        "prepareCalls": 17
+      },
+      {
+        "prepareMs": 3627,
+        "firstChunkMs": 650,
+        "totalMs": 4277,
+        "prepareCalls": 17
+      }
+    ],
+    "afterPause": {
+      "chunkMs": {
+        "n": 10,
+        "p50": 623.7,
+        "p95": 1396.1,
+        "p99": 1396.1,
+        "min": 609.8,
+        "max": 1396.1,
+        "mean": 722.4
+      },
+      "rowsPerChunk": {
+        "n": 10,
+        "p50": 1000,
+        "p95": 1000,
+        "p99": 1000,
+        "min": 1000,
+        "max": 1000,
+        "mean": 1000
+      },
+      "rowsPerSecond": 1384,
+      "overCapRetries": 0,
+      "calls": {
+        "writeFiles": {
+          "perChunk": 1,
+          "p50": 149,
+          "p95": 856.2
+        },
+        "exec:chunk": {
+          "perChunk": 1,
+          "p50": 355.4,
+          "p95": 437
+        },
+        "readFile": {
+          "perChunk": 1,
+          "p50": 93.3,
+          "p95": 121.4
+        }
+      }
+    }
+  },
+  "onWarm": {
+    "firstChunkFreshConnection": {
+      "ms": 8495,
+      "calls": [
+        "exec:rm 57",
+        "lifecycle:create 235",
+        "exec:ping 50",
+        "exec:marker-check 18",
+        "writeFile 21",
+        "writeFile 10",
+        "writeFile 15",
+        "writeFile 11",
+        "writeFile 11",
+        "writeFile 10",
+        "writeFile 10",
+        "writeFile 9",
+        "writeFile 11",
+        "exec:install-node 4798",
+        "writeFile 18",
+        "exec:marker-check 19",
+        "writeFile 10",
+        "writeFile 15",
+        "exec:other 20",
+        "writeFile 11",
+        "lifecycle:snapshot 1499",
+        "exec:other 209",
+        "writeFiles 10",
+        "exec:chunk 1035",
+        "readFile 404"
+      ]
+    },
+    "fixed-1k": {
+      "chunkMs": {
+        "n": 30,
+        "p50": 260.9,
+        "p95": 277,
+        "p99": 298.5,
+        "min": 254.3,
+        "max": 298.5,
+        "mean": 264.3
+      },
+      "rowsPerChunk": {
+        "n": 30,
+        "p50": 1000,
+        "p95": 1000,
+        "p99": 1000,
+        "min": 1000,
+        "max": 1000,
+        "mean": 1000
+      },
+      "rowsPerSecond": 3784,
+      "overCapRetries": 0,
+      "calls": {
+        "writeFiles": {
+          "perChunk": 1,
+          "p50": 10.6,
+          "p95": 13.9
+        },
+        "exec:rm": {
+          "perChunk": 1,
+          "p50": 23.1,
+          "p95": 28.1
+        },
+        "exec:chunk": {
+          "perChunk": 1,
+          "p50": 221.9,
+          "p95": 233.8
+        },
+        "readFile": {
+          "perChunk": 1,
+          "p50": 20.9,
+          "p95": 24.9
+        }
+      }
+    },
+    "call": {
+      "chunkMs": {
+        "n": 30,
+        "p50": 356.5,
+        "p95": 394.8,
+        "p99": 440.3,
+        "min": 334.2,
+        "max": 440.3,
+        "mean": 364.1
+      },
+      "rowsPerChunk": {
+        "n": 30,
+        "p50": 1000,
+        "p95": 1000,
+        "p99": 1000,
+        "min": 1000,
+        "max": 1000,
+        "mean": 1000
+      },
+      "rowsPerSecond": 2747,
+      "overCapRetries": 0,
+      "calls": {
+        "writeFiles": {
+          "perChunk": 1,
+          "p50": 11.8,
+          "p95": 17.3
+        },
+        "exec:rm": {
+          "perChunk": 1,
+          "p50": 25.2,
+          "p95": 35.1
+        },
+        "exec:chunk": {
+          "perChunk": 1,
+          "p50": 258,
+          "p95": 276
+        },
+        "readFile": {
+          "perChunk": 1,
+          "p50": 70.1,
+          "p95": 105.8
+        }
+      }
+    },
+    "email": {
+      "chunkMs": {
+        "n": 30,
+        "p50": 481.4,
+        "p95": 511,
+        "p99": 558.7,
+        "min": 438.9,
+        "max": 558.7,
+        "mean": 484
+      },
+      "rowsPerChunk": {
+        "n": 30,
+        "p50": 600,
+        "p95": 600,
+        "p99": 600,
+        "min": 500,
+        "max": 600,
+        "mean": 563.3
+      },
+      "rowsPerSecond": 1164,
+      "overCapRetries": 0,
+      "calls": {
+        "writeFiles": {
+          "perChunk": 1,
+          "p50": 11.3,
+          "p95": 21.6
+        },
+        "exec:rm": {
+          "perChunk": 1,
+          "p50": 25.7,
+          "p95": 33.8
+        },
+        "exec:chunk": {
+          "perChunk": 1,
+          "p50": 296.1,
+          "p95": 314.9
+        },
+        "readFile": {
+          "perChunk": 1,
+          "p50": 120.5,
+          "p95": 159.5
+        }
+      }
+    }
+  },
+  "onCold": {
+    "newConnection": {
+      "chunkMs": {
+        "n": 3,
+        "p50": 6555,
+        "p95": 6925.6,
+        "p99": 6925.6,
+        "min": 5927,
+        "max": 6925.6,
+        "mean": 6469.2
+      },
+      "rowsPerChunk": {
+        "n": 3,
+        "p50": 1000,
+        "p95": 1000,
+        "p99": 1000,
+        "min": 1000,
+        "max": 1000,
+        "mean": 1000
+      },
+      "rowsPerSecond": 155,
+      "overCapRetries": 0,
+      "calls": {
+        "exec:rm": {
+          "perChunk": 0.3,
+          "p50": 28.1,
+          "p95": 28.1
+        },
+        "lifecycle:create": {
+          "perChunk": 1,
+          "p50": 206.4,
+          "p95": 525.9
+        },
+        "exec:ping": {
+          "perChunk": 1,
+          "p50": 50.1,
+          "p95": 53.1
+        },
+        "exec:marker-check": {
+          "perChunk": 2,
+          "p50": 19.9,
+          "p95": 22.9
+        },
+        "writeFile": {
+          "perChunk": 13,
+          "p50": 11.4,
+          "p95": 24.8
+        },
+        "exec:install-node": {
+          "perChunk": 1,
+          "p50": 3973.9,
+          "p95": 4151.3
+        },
+        "exec:other": {
+          "perChunk": 2,
+          "p50": 20.4,
+          "p95": 239.3
+        },
+        "lifecycle:snapshot": {
+          "perChunk": 1,
+          "p50": 1090.3,
+          "p95": 1097.3
+        },
+        "writeFiles": {
+          "perChunk": 1,
+          "p50": 11.8,
+          "p95": 12.1
+        },
+        "exec:chunk": {
+          "perChunk": 1,
+          "p50": 567.2,
+          "p95": 861.2
+        },
+        "readFile": {
+          "perChunk": 1,
+          "p50": 107.8,
+          "p95": 334.7
+        }
+      }
+    },
+    "afterPause": {
+      "chunkMs": {
+        "n": 10,
+        "p50": 690.7,
+        "p95": 5101.5,
+        "p99": 5101.5,
+        "min": 676.3,
+        "max": 5101.5,
+        "mean": 1142.2
+      },
+      "rowsPerChunk": {
+        "n": 10,
+        "p50": 1000,
+        "p95": 1000,
+        "p99": 1000,
+        "min": 1000,
+        "max": 1000,
+        "mean": 1000
+      },
+      "rowsPerSecond": 876,
+      "overCapRetries": 0,
+      "calls": {
+        "exec:ping": {
+          "perChunk": 1,
+          "p50": 203,
+          "p95": 335.1
+        },
+        "exec:marker-check": {
+          "perChunk": 2,
+          "p50": 22,
+          "p95": 34.5
+        },
+        "writeFiles": {
+          "perChunk": 1,
+          "p50": 11.4,
+          "p95": 29.2
+        },
+        "exec:chunk": {
+          "perChunk": 1,
+          "p50": 327.6,
+          "p95": 344.5
+        },
+        "readFile": {
+          "perChunk": 1,
+          "p50": 65.6,
+          "p95": 97.8
+        }
+      }
+    },
+    "restoreFromTemplate": {
+      "chunkMs": {
+        "n": 10,
+        "p50": 2678.6,
+        "p95": 6170.3,
+        "p99": 6170.3,
+        "min": 884.3,
+        "max": 6170.3,
+        "mean": 3381.9
+      },
+      "rowsPerChunk": {
+        "n": 10,
+        "p50": 1000,
+        "p95": 1000,
+        "p99": 1000,
+        "min": 1000,
+        "max": 1000,
+        "mean": 1000
+      },
+      "rowsPerSecond": 296,
+      "overCapRetries": 0,
+      "calls": {
+        "lifecycle:create": {
+          "perChunk": 1,
+          "p50": 622.6,
+          "p95": 1567.8
+        },
+        "exec:ping": {
+          "perChunk": 1,
+          "p50": 82.5,
+          "p95": 458.6
+        },
+        "exec:marker-check": {
+          "perChunk": 2,
+          "p50": 21.2,
+          "p95": 777
+        },
+        "exec:other": {
+          "perChunk": 1,
+          "p50": 60.4,
+          "p95": 1163
+        },
+        "writeFiles": {
+          "perChunk": 1,
+          "p50": 22.8,
+          "p95": 186.7
+        },
+        "exec:chunk": {
+          "perChunk": 1,
+          "p50": 1638.1,
+          "p95": 2866
+        },
+        "readFile": {
+          "perChunk": 1,
+          "p50": 101.5,
+          "p95": 133.3
+        }
+      }
+    },
+    "templates": 5
+  },
+  "parallel": {
+    "on:call:1": {
+      "k": 1,
+      "wallS": 11.6,
+      "rows": 30000,
+      "rowsPerSecond": 2591,
+      "chunkMs": {
+        "n": 30,
+        "p50": 376.9,
+        "p95": 426.2,
+        "p99": 440.9,
+        "min": 358.4,
+        "max": 440.9,
+        "mean": 385.9
+      }
+    },
+    "on:call:2": {
+      "k": 2,
+      "wallS": 11.4,
+      "rows": 60000,
+      "rowsPerSecond": 5271,
+      "chunkMs": {
+        "n": 60,
+        "p50": 374.8,
+        "p95": 404.9,
+        "p99": 450,
+        "min": 350.1,
+        "max": 450,
+        "mean": 375.1
+      }
+    },
+    "on:call:4": {
+      "k": 4,
+      "wallS": 13,
+      "rows": 120000,
+      "rowsPerSecond": 9236,
+      "chunkMs": {
+        "n": 120,
+        "p50": 421.5,
+        "p95": 486.3,
+        "p99": 574.8,
+        "min": 361.8,
+        "max": 623.5,
+        "mean": 427.5
+      }
+    },
+    "on:call:8": {
+      "k": 8,
+      "wallS": 18.8,
+      "rows": 240000,
+      "rowsPerSecond": 12735,
+      "chunkMs": {
+        "n": 240,
+        "p50": 607.1,
+        "p95": 733.6,
+        "p99": 863.6,
+        "min": 425.3,
+        "max": 969.6,
+        "mean": 613.8
+      }
+    },
+    "on:email:1": {
+      "k": 1,
+      "wallS": 14.6,
+      "rows": 17200,
+      "rowsPerSecond": 1180,
+      "chunkMs": {
+        "n": 30,
+        "p50": 483.2,
+        "p95": 513.9,
+        "p99": 514.7,
+        "min": 458.4,
+        "max": 514.7,
+        "mean": 485.9
+      }
+    },
+    "on:email:2": {
+      "k": 2,
+      "wallS": 15.9,
+      "rows": 34100,
+      "rowsPerSecond": 2147,
+      "chunkMs": {
+        "n": 60,
+        "p50": 523.6,
+        "p95": 580.8,
+        "p99": 616.3,
+        "min": 457.2,
+        "max": 616.3,
+        "mean": 523.2
+      }
+    },
+    "on:email:4": {
+      "k": 4,
+      "wallS": 17.5,
+      "rows": 68700,
+      "rowsPerSecond": 3924,
+      "chunkMs": {
+        "n": 120,
+        "p50": 566.5,
+        "p95": 692.5,
+        "p99": 773.4,
+        "min": 463.5,
+        "max": 839.5,
+        "mean": 574.9
+      }
+    },
+    "on:email:8": {
+      "k": 8,
+      "wallS": 28.8,
+      "rows": 137300,
+      "rowsPerSecond": 4759,
+      "chunkMs": {
+        "n": 240,
+        "p50": 937.3,
+        "p95": 1105,
+        "p99": 1274.6,
+        "min": 487,
+        "max": 1410.4,
+        "mean": 942.4
+      }
+    },
+    "off:call:1": {
+      "k": 1,
+      "wallS": 13.3,
+      "rows": 30000,
+      "rowsPerSecond": 2256,
+      "chunkMs": {
+        "n": 30,
+        "p50": 438,
+        "p95": 478.4,
+        "p99": 478.6,
+        "min": 410.1,
+        "max": 478.6,
+        "mean": 443.3
+      }
+    },
+    "off:call:2": {
+      "k": 2,
+      "wallS": 14.4,
+      "rows": 60000,
+      "rowsPerSecond": 4170,
+      "chunkMs": {
+        "n": 60,
+        "p50": 469.9,
+        "p95": 513.4,
+        "p99": 610.4,
+        "min": 438.9,
+        "max": 610.4,
+        "mean": 475.4
+      }
+    },
+    "off:call:4": {
+      "k": 4,
+      "wallS": 22.8,
+      "rows": 120000,
+      "rowsPerSecond": 5271,
+      "chunkMs": {
+        "n": 120,
+        "p50": 740.4,
+        "p95": 891.1,
+        "p99": 1039.9,
+        "min": 492,
+        "max": 1089.4,
+        "mean": 748
+      }
+    }
+  },
+  "cleanup": {
+    "sessionKeys": 27,
+    "sandboxesSeen": 26,
+    "killedConfirmed": 26,
+    "leftUnderRunKeys": 0,
+    "snapshots": 13,
+    "snapshotsLeft": 0
+  },
+  "totalSeconds": 407
+}

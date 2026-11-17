@@ -51,6 +51,17 @@ gcloud secrets versions access 2 --secret E2B_API_KEY --project mako-ai-dev | \
   gcloud compute ssh <vm> --command 'IFS= read -r E2B_API_KEY; export E2B_API_KEY; cd ~/mako/api && APPS_E2B_TEMPLATE=mako-apps ./node_modules/.bin/tsx ../bench/g1/run-v2.mts'
 ```
 
+To measure E2B's EU region, use the `mako-eu` project. Its key is
+`E2B_API_KEY_EU` in Secret Manager project `mako-ai-dev`. EU projects answer
+only on their own domain, so set `E2B_DOMAIN=e2b-juliett.dev` with the key.
+On a VM, give its service account `secretAccessor` on that one secret and read
+the key there:
+
+```bash
+export E2B_API_KEY="$(gcloud secrets versions access latest --secret=E2B_API_KEY_EU --project=mako-ai-dev)"
+E2B_DOMAIN=e2b-juliett.dev APPS_E2B_TEMPLATE=mako-apps ./node_modules/.bin/tsx ../bench/g1/run-v2.mts
+```
+
 ## Re-run the first benchmark (`run.mts`)
 
 **Use an E2B team that serves no app sessions.** The local-development key

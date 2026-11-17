@@ -1,5 +1,146 @@
 # G1 results: E2B box overhead for connector chunks
 
+## Third run, 17 Nov 2026: E2B EU (europe-west1) against us-west-1
+
+EU boxes cut a round trip from 173 ms to 17 ms, and a warm `call` chunk from 882 ms to 365 ms. Raw resume and lease resume pass 1 s. Snapshot restore misses 1 s at p95 by 20 ms. The 300 ms chunk target passes for 1 KB rows and fails for Close-sized rows.
+
+Runs, all from one GCE e2-standard-4 VM in `europe-west1-b`, master c13ab8ce2, template `mako-apps` (2 vCPU, 2,048 MB), `e2b` 2.55.0. EU and US ran minutes apart on the same VM and code:
+
+| Run | E2B project, region | When (UTC) | Raw numbers |
+| --- | --- | --- | --- |
+| Raw SDK (`run.mts --phases create,pause,snapshot,exec`) | `mako-dev`, us-west-1 | 06:57–07:00 | [`results/2026-11-17-eu-baseline-us-west-1-raw.json`](./results/2026-11-17-eu-baseline-us-west-1-raw.json) |
+| Raw SDK, same phases | `mako-eu`, EU (`E2B_DOMAIN=e2b-juliett.dev`) | 07:04–07:06 | [`results/2026-11-17-eu-raw.json`](./results/2026-11-17-eu-raw.json) |
+| Chunk path (`run-v2.mts`), flag off and on | `mako-eu`, EU | 07:05–07:12 | [`results/2026-11-17-eu-v2.json`](./results/2026-11-17-eu-v2.json) |
+| Chunk path, flag off and on | `mako-dev`, us-west-1 | 07:13–07:28 | [`results/2026-11-17-eu-baseline-us-west-1-v2.json`](./results/2026-11-17-eu-baseline-us-west-1-v2.json) |
+
+The US chunk path was re-run because master changed since 16 Nov. PR 1303 removed the `ping` and the 2 marker checks from a warm flag-on chunk, so flag on now costs 915 ms on US, not 1,392 ms.
+
+### The EU project
+
+- E2B serves each region from its own API domain. EU-West-1 is `e2b-juliett.dev` (docs.e2b.dev/client, read 17 Nov 2026). A project and its key belong to one region. The EU key fails on `api.e2b.app` with "Cannot get the team for the given API key".
+- The SDK reads the domain from `E2B_DOMAIN`. It is already in the SDK's `supportedDomains`, so commands use the `sandbox.e2b-juliett.dev` proxy like US boxes use `sandbox.e2b.app`.
+- An EU box's egress IP geolocates to Brussels on Google (AS396982), the same metro as `europe-west1`.
+- `mako-apps` was built in `mako-eu` with `E2B_DOMAIN=e2b-juliett.dev pnpm --filter api run apps:build-template`. Template `modykw6f7096ymjf2dan`, build `8b00de4b-bbad-4bd7-89fe-d03269bb7f27`. The runbook smoke test passed: Node v24.22.1, pnpm 10.33.3, `app-dir-ok`, 2 vCPU, 1,982 MB.
+
+### Verdict per target
+
+| Target | us-west-1 (17 Nov) | EU | Verdict in EU |
+| --- | --- | --- | --- |
+| Snapshot restore under 1 s at p95 | `Sandbox.create(snapshotId)` p95 1,672 ms | p95 1,020 ms, p50 496 ms | **Fail**, by 20 ms |
+| | Raw resume of a paused box p95 707 ms | p95 248 ms | **Pass** |
+| | Lease resume (the `ping` that resumes) p95 1,266 ms | p95 335 ms | **Pass** |
+| | Lease restore from template (`lifecycle.create`) p95 2,555 ms | p95 1,568 ms | **Fail** |
+| Per-chunk overhead under 300 ms | Warm `call` 882 ms p50 flag off, 915 ms flag on | `fixed-1k` 268 / 295 ms p50 / p95 flag off, 261 / 277 ms flag on | **Pass** for 1 KB rows |
+| | | `call` 365 / 420 ms flag off, 357 / 395 ms flag on. `email` 474 / 521 ms, 481 / 511 ms | **Fail**, 57–181 ms over at p50 |
+| ES backfill within 1.5× of 3 h 54 min | 1.23× flag off (16 Nov) | 1.10× flag off and flag on at p50, 1.11× at p95 | **Pass** |
+
+### Before and after, same VM, same code
+
+#### One round trip
+
+| Measure | us-west-1 p50 / p95 | EU p50 / p95 | Change at p50 |
+| --- | --- | --- | --- |
+| No-op through `provider.exec` (`run-v2`, warm box) | 173 / 196 | 17 / 21 | 10× faster |
+| No-op through `provider.exec` (`run.mts`) | 176 / 641 | 20 / 23 | 9× |
+| No-op on a held handle (`commands.run`) | 174 / 197 | 19 / 24 | 9× |
+| `Sandbox.connect` on a running box | 188 / 720 | 16 / 22 | 12× |
+| Small file write on a held handle | 188 / 720 | 11 / 14 | 17× |
+
+#### Warm chunk, 1,000 rows (`email`: 573 mean under the 16 MiB byte budget), 30 chunks each
+
+| Path | `fixed-1k` us / EU | `call` us / EU | `email` us / EU |
+| --- | --- | --- | --- |
+| Flag off, p50 | 786 / 268 | 882 / 365 | 940 / 474 |
+| Flag off, p95 | 1,260 / 295 | 1,088 / 420 | 1,084 / 521 |
+| Flag on, p50 | 812 / 261 | 915 / 357 | 1,019 / 481 |
+| Flag on, p95 | 903 / 277 | 1,084 / 395 | 1,125 / 511 |
+
+#### Box lifecycle (raw SDK, n = 20, fork n = 10)
+
+| Measure | us-west-1 p50 / p95 | EU p50 / p95 |
+| --- | --- | --- |
+| Cold create from template | 571 / 1,088 | 391 / 533 |
+| Cold create to first command | 806 / 1,854 | 457 / 716 |
+| Pause, memory kept | 512 / 869 | 172 / 325 |
+| Resume (`Sandbox.connect` on a paused box) | 514 / 707 | 125 / 248 |
+| Resume to first command | 710 / 887 | 148 / 270 |
+| Restore from snapshot (`Sandbox.create(snapshotId)`) | 984 / 1,672 | 496 / 1,020 |
+| Restore to first command | 1,312 / 2,141 | 636 / 1,319 |
+| Restore, then a 1-page read | 713 / 1,141 | 741 / 2,707 |
+| `fork()` of a running box | 1,159 / 2,189 | 505 / 2,302 |
+
+#### Cold chunk paths (`run-v2`)
+
+| Start | us-west-1 p50 / p95 | EU p50 / p95 |
+| --- | --- | --- |
+| Flag off, new sync box: create, Node download, SDK, folder, first chunk (3 runs) | 16,957 (12,179–17,366) | 4,409 (4,277–5,281) |
+| Flag off, chunk on a paused sync box (resume inside) | 1,838 / 2,849 | 624 / 1,396 |
+| Flag on, new connection: create, Node download, SDK writes, snapshot, chunk (n = 3) | 12,721 / 18,730 | 6,555 / 6,926 |
+| Flag on, chunk after the idle box paused (n = 10) | 2,474 / 3,456 | 691 / 5,102 |
+| Flag on, chunk after the box died (restore from template, n = 10) | 5,085 / 6,369 | 2,679 / 6,170 |
+
+The EU flag-on after-pause p95 is 1 slow chunk of 10. Its resume `ping` stayed under 335 ms, so the time went elsewhere in that chunk. The cause is not isolated. Node's download still costs 3,974 ms of an EU new connection. It belongs in the template (point 3 of the second run).
+
+### Where an EU warm chunk's time goes (`call`, flag off, 365 ms p50)
+
+| Part | ms | Share | Source |
+| --- | --- | --- | --- |
+| Write the inputs (`writeFiles`) | 13 | 4% | provider trace |
+| Exec round trip | 17 | 5% | `providerExecNoopMs` |
+| Read the bounded output back (`readFile`, 9.6 MB) | 76 | 21% | provider trace |
+| **Transport** | **106** | **29%** | |
+| Connector boot: Node start and SDK import | 89 | 24% | `boot` phase |
+| Connector work: generate and serialise 10 pages | 50 | 14% | `boot` read 139 ms minus boot |
+| Per-run isolation: user, run directory, kill loop, bound, cleanup | 102 | 28% | exec 258 ms minus 17 ms round trip minus 139 ms process |
+| Client: parse 1,000 records and `onBatch` | 18 | 5% | remainder |
+
+Transport fell from 600 ms (65%) on us-west-1 to 106 ms (29%). The box's own work is now 241 ms, or 66% of the chunk. To reach 300 ms for Close-sized rows, cut that work next. A long-lived connector process saves up to 89 ms of boot. A run user that outlives one chunk saves part of the 102 ms of isolation. Together they would bring `call` near 200–250 ms.
+
+### Parallel throughput (warm boxes, 30 chunks per box)
+
+| Boxes | `call` rows/s us / EU | `email` rows/s us / EU | `call` chunk p50 us / EU |
+| --- | --- | --- | --- |
+| 1 connection, flag on | 1,070 / 2,591 | 569 / 1,180 | 921 / 377 ms |
+| 2 connections | 2,138 / 5,271 | 1,141 / 2,147 | 870 / 375 ms |
+| 4 connections | 4,260 / 9,236 | 2,155 / 3,924 | 876 / 422 ms |
+| 8 connections | 8,382 / 12,735 | 4,006 / 4,759 | 894 / 607 ms |
+| 1 sync box, 1 chunk at a time, flag off | 574 / 2,256 | – | 1,588 / 438 ms |
+| 1 sync box, 2 chunks at once | 1,314 / 4,170 | – | 1,513 / 470 ms |
+| 1 sync box, 4 chunks at once | 2,583 / 5,271 | – | 1,529 / 740 ms |
+
+EU throughput scales 4.9× from 1 to 8 boxes for calls, against 7.8× on us-west-1. EU chunk latency rises from 377 ms to 607 ms at 8 boxes. The 4 vCPU client parses 12,735 rows per second at that point, so the client is the likely limit. This run does not separate client from box.
+
+### ES backfill, extrapolated
+
+Same method as the second run: 14,046 s of vendor time, plus 1,441 email chunks and 1,986 other chunks at the measured EU `email` and `call` chunk times.
+
+| Path (EU) | Added | Total | vs 3 h 54 min | Cost, 2 vCPU/2 GiB |
+| --- | --- | --- | --- | --- |
+| Flag off, p50 | 23 min | 4 h 18 min | 1.10× | $0.57 |
+| Flag off, p95 | 26 min | 4 h 21 min | 1.11× | $0.58 |
+| Flag on, p50 | 23 min | 4 h 17 min | 1.10× | $0.57 |
+| Flag on, p95 | 25 min | 4 h 19 min | 1.11× | $0.58 |
+
+Cost uses the US prices from the first run. EU prices were not checked.
+
+### Boxes created and killed
+
+| Run | Created | Killed or deleted |
+| --- | --- | --- |
+| Key and domain probe, template smoke test (EU) | 2 boxes | 2 |
+| Raw SDK, EU | 53 boxes, 1 snapshot | 53, 1 |
+| `run-v2`, EU | 26 boxes, 13 snapshots | 26, 13 |
+| Raw SDK smoke run from a laptop, then the VM run, us-west-1 | 9 + 53 boxes, 2 snapshots | 62, 2 |
+| `run-v2`, us-west-1 | 27 boxes, 13 snapshots | 27, 13 |
+
+After the runs, the account check showed 0 boxes and 0 snapshots in both `mako-eu` and `mako-dev`.
+
+### How the third run was made
+
+- The VM `g1-bench-eu` ran as a dedicated service account. That account held `secretAccessor` on `E2B_API_KEY_EU` only and read the key into the process environment on the VM. The `mako-dev` key reached the VM over ssh stdin, as in the README. Neither key was printed or written to a file.
+- The VM, its service account and the secret binding were deleted after the run.
+- `run.mts`'s raw-SDK phases ran on master. They import `sync-box.ts`, but these 4 phases call none of the internals that 3608123c1 changed.
+
 ## Second run, 16 Nov 2026 evening: after PR 1278 and PR 1284 (master 3608123c1)
 
 A warm chunk is 4.3–4.6× faster than on the old path, and the ES backfill target now passes. Per-chunk overhead and snapshot restore still fail.

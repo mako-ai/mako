@@ -1,0 +1,199 @@
+{
+  "runId": "g1-mwkckc3l",
+  "date": "2026-11-17T07:04:32.839Z",
+  "e2bSdkVersion": "2.55.0",
+  "template": "mako-apps",
+  "host": {
+    "platform": "linux 6.1.0-55-cloud-amd64 x64",
+    "cpus": "Intel(R) Xeon(R) CPU @ 2.20GHz",
+    "node": "v24.22.1"
+  },
+  "params": {
+    "n": 20,
+    "chunks": 30,
+    "pageSize": 100,
+    "maxIterations": 10
+  },
+  "boxSize": {
+    "cpuCount": 2,
+    "memoryMB": 2048,
+    "template": "mako-apps"
+  },
+  "create": {
+    "createMs": {
+      "n": 20,
+      "p50": 390.6,
+      "p95": 533.2,
+      "p99": 665.4,
+      "min": 70.5,
+      "max": 665.4,
+      "mean": 332.7
+    },
+    "firstCommandMs": {
+      "n": 20,
+      "p50": 64.3,
+      "p95": 175.4,
+      "p99": 198.7,
+      "min": 31.8,
+      "max": 198.7,
+      "mean": 73.8
+    },
+    "createToFirstCommandMs": {
+      "n": 20,
+      "p50": 457.1,
+      "p95": 716.2,
+      "p99": 749.8,
+      "min": 102.3,
+      "max": 749.8,
+      "mean": 406.5
+    }
+  },
+  "phaseSeconds": {
+    "create": 8.9,
+    "pause": 8.2,
+    "snapshot": 48.9,
+    "exec": 7.7
+  },
+  "pause": {
+    "pauseMs": {
+      "n": 20,
+      "p50": 172.3,
+      "p95": 325.3,
+      "p99": 682.8,
+      "min": 145.1,
+      "max": 682.8,
+      "mean": 203.4
+    },
+    "resumeMs": {
+      "n": 20,
+      "p50": 124.9,
+      "p95": 247.9,
+      "p99": 633,
+      "min": 111.2,
+      "max": 633,
+      "mean": 156
+    },
+    "firstCommandAfterResumeMs": {
+      "n": 20,
+      "p50": 22.5,
+      "p95": 29.6,
+      "p99": 46.2,
+      "min": 20,
+      "max": 46.2,
+      "mean": 23.7
+    },
+    "resumeToFirstCommandMs": {
+      "n": 20,
+      "p50": 147.6,
+      "p95": 270.4,
+      "p99": 653.9,
+      "min": 134.9,
+      "max": 653.9,
+      "mean": 179.7
+    }
+  },
+  "snapshot": {
+    "createSnapshotMs": 824,
+    "restoreCreateMs": {
+      "n": 20,
+      "p50": 495.9,
+      "p95": 1019.5,
+      "p99": 1076,
+      "min": 83,
+      "max": 1076,
+      "mean": 499.4
+    },
+    "restoreFirstCommandMs": {
+      "n": 20,
+      "p50": 112.4,
+      "p95": 299.1,
+      "p99": 437.9,
+      "min": 40,
+      "max": 437.9,
+      "mean": 142.8
+    },
+    "restoreToFirstCommandMs": {
+      "n": 20,
+      "p50": 636.2,
+      "p95": 1318.6,
+      "p99": 1368.8,
+      "min": 123.8,
+      "max": 1368.8,
+      "mean": 642.2
+    },
+    "oneRowPageReadAfterRestoreMs": {
+      "n": 20,
+      "p50": 740.9,
+      "p95": 2707,
+      "p99": 2924.8,
+      "min": 154.8,
+      "max": 2924.8,
+      "mean": 873.5
+    },
+    "fork": {
+      "forkMs": {
+        "n": 10,
+        "p50": 505,
+        "p95": 2302.2,
+        "p99": 2302.2,
+        "min": 424.5,
+        "max": 2302.2,
+        "mean": 943.3
+      },
+      "forkToFirstCommandMs": {
+        "n": 10,
+        "p50": 559.2,
+        "p95": 2751.4,
+        "p99": 2751.4,
+        "min": 472.1,
+        "max": 2751.4,
+        "mean": 1058.4
+      }
+    },
+    "forkError": null
+  },
+  "exec": {
+    "providerExecNoopMs": {
+      "n": 50,
+      "p50": 19.8,
+      "p95": 22.5,
+      "p99": 24,
+      "min": 17,
+      "max": 24,
+      "mean": 20.1
+    },
+    "rawCommandNoopMs": {
+      "n": 50,
+      "p50": 18.7,
+      "p95": 23.9,
+      "p99": 28.7,
+      "min": 16.7,
+      "max": 28.7,
+      "mean": 19.3
+    },
+    "sandboxConnectMs": {
+      "n": 50,
+      "p50": 15.8,
+      "p95": 21.7,
+      "p99": 23.3,
+      "min": 12.4,
+      "max": 23.3,
+      "mean": 16.4
+    },
+    "rawSmallFileWriteMs": {
+      "n": 50,
+      "p50": 10.9,
+      "p95": 13.8,
+      "p99": 15.1,
+      "min": 9.4,
+      "max": 15.1,
+      "mean": 11.2
+    }
+  },
+  "boxes": {
+    "created": 53,
+    "killed": 53,
+    "leftRunning": []
+  },
+  "totalSeconds": 74
+}
