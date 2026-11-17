@@ -73,9 +73,12 @@ export const SYNC_CAPABILITIES: readonly SyncCapabilityDefinition[] = [
     surfaces: EXTERNAL_MCP_ONLY,
     resultKind: "run",
   }),
+  // Parity samples carry warehouse values (a differing field's live and
+  // shadow value): gated like a query (`query:read`).
   define({
     name: "flow_parity",
     risk: "read",
+    requiresQueryAccess: true,
     surfaces: EXTERNAL_MCP_ONLY,
     resultKind: "data",
   }),

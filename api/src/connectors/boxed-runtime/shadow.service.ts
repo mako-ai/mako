@@ -18,7 +18,9 @@
 import { Types } from "mongoose";
 import {
   Flow,
+  FlowExecution,
   SourceConnection,
+  type IBoxedApproval,
   type IFlow,
 } from "../../database/workspace-schema";
 import { commitFlowFile } from "../../services/flow-config.service";
@@ -34,7 +36,61 @@ import { connectorWebhookBatchesEnabled } from "../workspace/webhook-config";
 import { declaredWebhookVerification } from "../workspace/webhook-verification";
 import { BOXED_CAPABLE_TYPES, connectorBoxedSwitchEnabled } from "./config";
 import { parityGate, shadowOf, type ParityGate } from "./parity.service";
-import { configForTwin, twinSlug } from "./runtime";
+import {
+  approvalBinding,
+  boxedTwinFor,
+  isTwinApproved,
+  configForTwin,
+  twinPin,
+  twinSlug,
+} from "./runtime";
+import { cdcSyncStateService } from "../../sync-cdc/sync-state";
+
+/**
+ * An owner/admin's approval of exactly this: the kind, the twin and the
+ * code it runs (its source hash), bound to the flow's connection,
+ * destination and live flow as they stand now (runtime.ts isTwinApproved).
+ */
+export function newApproval(
+  flow: IFlow,
+  kind: "shadow" | "switch",
+  twin: { slug: string; pin: { sourceSha?: string; registryHash?: string } },
+  userId?: string,
+): IBoxedApproval {
+  return {
+    by: userId ?? "system",
+    at: new Date(),
+    kind,
+    slug: twin.slug,
+    ...approvalBinding(flow),
+    ...twin.pin,
+  };
+}
+
+/**
+ * A switch never hands one runtime's cursor to the other. Refused while a
+ * run is in flight (its chunk state is the old runtime's), and every
+ * stored backfill cursor is dropped, so a resumed backfill restarts its
+ * entities from the start; the merge by key absorbs the overlap.
+ */
+async function assertNoRunInFlight(flow: IFlow): Promise<void> {
+  const running = await FlowExecution.countDocuments({
+    flowId: flow._id,
+    status: "running",
+  });
+  if (running > 0 || flow.backfillState?.status === "running") {
+    throw new BoxedRuntimeError(
+      "A run of this flow is in flight; its cursor belongs to the current runtime. Switch when it ends (flow_status).",
+    );
+  }
+}
+
+async function dropBackfillCursors(flow: IFlow): Promise<void> {
+  await cdcSyncStateService.clearBackfillCursorsForFlow({
+    workspaceId: String(flow.workspaceId),
+    flowId: String(flow._id),
+  });
+}
 
 type FlowDoc = InstanceType<typeof Flow>;
 
@@ -57,6 +113,7 @@ export async function checkTwin(flow: IFlow): Promise<{
   slug: string;
   connectionType: string;
   webhooks: boolean;
+  pin: { sourceSha?: string; registryHash?: string };
 }> {
   if (!connectorBoxedSwitchEnabled()) {
     throw new BoxedRuntimeError("CONNECTOR_BOXED_SWITCH is off");
@@ -107,6 +164,7 @@ export async function checkTwin(flow: IFlow): Promise<{
     slug,
     connectionType: type,
     webhooks: Boolean(declaredWebhookVerification(definition.spec)),
+    pin: twinPin(definition),
   };
 }
 
@@ -209,20 +267,16 @@ export async function startShadow(input: {
       deleteMode: live.deleteMode,
       batchSize: live.batchSize,
       syncEngine: "cdc",
-      connectorRuntime: "boxed",
+      // A shadow is boxed by `shadowOf` alone (runtime.ts boxedKind).
       boxedConnector: live.boxedConnector,
       shadowOf: live._id,
       createdBy: input.userId ?? "system",
     }) as FlowDoc;
     created = true;
   }
-  // The owner/admin's approval for this twin to read the connection.
-  shadow.boxedApproval = {
-    by: input.userId ?? "system",
-    at: new Date(),
-    slug: twin.slug,
-  };
-
+  // The owner/admin's approval for this twin, this code, this connection
+  // and this destination.
+  shadow.boxedApproval = newApproval(shadow, "shadow", twin, input.userId);
   await commitAndSave(shadow, input.userId);
   const run = await cdcBackfillService.startBackfill(
     workspaceId,
@@ -288,6 +342,9 @@ export async function switchFlowRuntime(input: {
 
   if (target === "builtin") {
     if (current !== "builtin" || flow.boxedApproval) {
+      // `force` switches back even mid-run: the way out stays one call.
+      if (!input.force) await assertNoRunInFlight(flow);
+      await dropBackfillCursors(flow);
       flow.connectorRuntime = undefined;
       // Boxing again needs a fresh owner/admin approval.
       flow.boxedApproval = undefined;
@@ -327,19 +384,22 @@ export async function switchFlowRuntime(input: {
       `The parity gate is closed: ${gate.reasons.join("; ")}`,
     );
   }
-  const approved = flow.boxedApproval?.slug === twin.slug;
-  if (current !== "boxed" || !approved) {
+  const approved =
+    current === "boxed" &&
+    boxedTwinFor(flow, twin.connectionType) === twin.slug &&
+    flow.boxedApproval?.sourceSha === twin.pin.sourceSha;
+  if (!approved) {
+    if (current !== "boxed") {
+      await assertNoRunInFlight(flow);
+      await dropBackfillCursors(flow);
+    }
     flow.connectorRuntime = "boxed";
-    flow.boxedApproval = {
-      by: input.userId ?? "system",
-      at: new Date(),
-      slug: twin.slug,
-    };
+    flow.boxedApproval = newApproval(flow, "switch", twin, input.userId);
     await commitAndSave(flow, input.userId);
   }
   return {
     runtime: "boxed",
-    changed: current !== "boxed" || !approved,
+    changed: !approved,
     gate,
     forced: !gate.open,
     relaned: 0,
@@ -349,7 +409,15 @@ export async function switchFlowRuntime(input: {
 /** What flow_status shows about runtime, shadow and gate. */
 export async function runtimeStatus(flow: IFlow) {
   const wants = flow.connectorRuntime === "boxed" || Boolean(flow.shadowOf);
-  const approved = Boolean(flow.boxedApproval?.slug);
+  const type = (
+    (await SourceConnection.findOne({
+      _id: flow.dataSourceId,
+      workspaceId: flow.workspaceId,
+    })
+      .select("type")
+      .lean()) as { type?: string } | null
+  )?.type;
+  const approved = Boolean(type && isTwinApproved(flow, twinSlug(flow, type)));
   const effective =
     connectorBoxedSwitchEnabled() && wants && approved ? "boxed" : "builtin";
   const base = {
@@ -358,11 +426,16 @@ export async function runtimeStatus(flow: IFlow) {
     flag: connectorBoxedSwitchEnabled(),
     boxedConnector: flow.boxedConnector ?? null,
     approval: flow.boxedApproval
-      ? { slug: flow.boxedApproval.slug, at: flow.boxedApproval.at }
+      ? {
+          kind: flow.boxedApproval.kind,
+          slug: flow.boxedApproval.slug,
+          at: flow.boxedApproval.at,
+          standing: approved,
+        }
       : null,
     ...(wants && !approved
       ? {
-          note: "runtime: boxed is in the flow file without an owner/admin approval; run flow_update runtime=boxed to approve it",
+          note: "boxing is asked for without a standing owner/admin approval (none, or the connection, destination, live flow or twin changed since); run flow_update runtime=boxed or flow_shadow start",
         }
       : {}),
   };

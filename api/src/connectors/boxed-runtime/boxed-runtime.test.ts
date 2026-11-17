@@ -20,8 +20,11 @@ import {
 } from "../../services/flow-config-files";
 import { applyDefinition } from "../../services/flow-definition-apply";
 import {
+  approvalBinding,
+  boxedKind,
   boxedTwinFor,
   configForTwin,
+  isTwinCodeAllowed,
   sameDestination,
   type FlowRuntimeFields,
 } from "./runtime";
@@ -32,7 +35,12 @@ import {
   comparableColumns,
   readSummaryRow,
 } from "./parity-sql";
-import { entityReasons, parityCutoff, parityWindow } from "./parity.service";
+import {
+  assertSafeName,
+  entityReasons,
+  parityCutoff,
+  parityWindow,
+} from "./parity.service";
 import { shadowDataset } from "./shadow.service";
 
 const KEY = "sk_live_never_in_a_message";
@@ -43,44 +51,89 @@ const spec = {
   },
 };
 
-// 1. Which flows run boxed: the flag, a built-in type in scope, a setting,
-//    and an owner/admin approval for that twin.
+// 1. Which flows run boxed: the flag, a built-in type in scope, the kind,
+//    and a standing owner/admin approval bound to this flow.
 {
   process.env.CONNECTOR_BOXED_SWITCH = "true";
-  const ok = (slug: string) => ({ by: "u", at: new Date(), slug });
-  const boxed = (slug = "close") => ({
-    connectorRuntime: "boxed" as const,
-    boxedApproval: ok(slug),
+  const conn = new Types.ObjectId();
+  const db = new Types.ObjectId();
+  const live = new Types.ObjectId();
+  const flow = (extra: Record<string, unknown> = {}) =>
+    ({
+      dataSourceId: conn,
+      destinationDatabaseId: db,
+      tableDestination: { connectionId: db, schema: "pl_close", tableName: "" },
+      ...extra,
+    }) as any;
+  const approve = (f: any, slug = "close") => ({
+    ...f,
+    boxedApproval: {
+      by: "u",
+      at: new Date(),
+      kind: boxedKind(f),
+      slug,
+      ...approvalBinding(f),
+      sourceSha: "s1",
+    },
   });
+  const boxed = (slug = "close", extra = {}) =>
+    approve(flow({ connectorRuntime: "boxed", ...extra }), slug);
   assert.equal(boxedTwinFor(boxed(), "close"), "close");
   assert.equal(boxedTwinFor(boxed("stripe"), "stripe"), "stripe");
   assert.equal(
-    boxedTwinFor({ ...boxed("close-v2"), boxedConnector: "close-v2" }, "close"),
+    boxedTwinFor(boxed("close-v2", { boxedConnector: "close-v2" }), "close"),
     "close-v2",
   );
-  assert.equal(
-    boxedTwinFor(
-      { shadowOf: new Types.ObjectId(), boxedApproval: ok("wise") },
-      "wise",
-    ),
+  const shadow = approve(
+    flow({
+      shadowOf: live,
+      tableDestination: { connectionId: db, schema: "pl_close_shadow" },
+    }),
     "wise",
   );
   assert.equal(
-    boxedTwinFor({ connectorRuntime: "boxed" }, "close"),
+    boxedTwinFor(shadow, "wise"),
+    "wise",
+    "a shadow by shadowOf alone",
+  );
+  assert.equal(
+    boxedTwinFor(flow({ connectorRuntime: "boxed" }), "close"),
     null,
     "a file alone, with no approval, boxes nothing",
   );
   assert.equal(
-    boxedTwinFor({ ...boxed("close"), boxedConnector: "evil" }, "close"),
+    boxedTwinFor({ ...boxed(), boxedConnector: "evil" }, "close"),
     null,
     "the approval names the twin it allows",
   );
   assert.equal(
-    boxedTwinFor({ boxedApproval: ok("close") }, "close"),
+    boxedTwinFor({ ...boxed(), dataSourceId: new Types.ObjectId() }, "close"),
     null,
-    "builtin by default",
+    "bound to the connection",
   );
-  assert.equal(boxedTwinFor({ connectorRuntime: "builtin" }, "close"), null);
+  assert.equal(
+    boxedTwinFor(
+      { ...boxed(), tableDestination: { connectionId: db, schema: "other" } },
+      "close",
+    ),
+    null,
+    "bound to the destination",
+  );
+  const { shadowOf: _drop, ...unshadowed } = shadow;
+  assert.equal(
+    boxedTwinFor({ ...unshadowed, connectorRuntime: "boxed" }, "wise"),
+    null,
+    "a shadow's approval never boxes a live flow",
+  );
+  assert.equal(
+    boxedTwinFor({ ...boxed(), shadowOf: live }, "close"),
+    null,
+    "a switch approval never boxes a shadow",
+  );
+  assert.equal(
+    boxedTwinFor({ ...boxed(), connectorRuntime: "builtin" }, "close"),
+    null,
+  );
   assert.equal(boxedTwinFor(boxed(), "ws:close"), null, "already boxed");
   assert.equal(boxedTwinFor(boxed("rest"), "rest"), null, "not in scope");
   assert.equal(boxedTwinFor(boxed(), undefined), null);
@@ -91,6 +144,94 @@ const spec = {
   assert.equal(boxedTwinFor(boxed(), "close"), null, "flag off");
   delete process.env.CONNECTOR_BOXED_SWITCH;
   assert.equal(boxedTwinFor(boxed(), "close"), null, "flag unset");
+
+  // The code the key may reach.
+  const folder = (sourceSha: string, registry?: any) => ({
+    sourceSha,
+    registry,
+  });
+  assert.equal(
+    isTwinCodeAllowed(folder("s1"), { sourceSha: "s1" }, "close"),
+    true,
+  );
+  assert.equal(
+    isTwinCodeAllowed(folder("s2"), { sourceSha: "s1" }, "close"),
+    false,
+  );
+  assert.equal(isTwinCodeAllowed(folder("s2"), undefined, "close"), false);
+  assert.equal(
+    isTwinCodeAllowed(
+      folder("s9", { slug: "close", hash: "h" }),
+      { sourceSha: "s1" },
+      "close",
+    ),
+    true,
+    "Mako's registry connector for the same type",
+  );
+  assert.equal(
+    isTwinCodeAllowed(
+      folder("s9", { slug: "evil", hash: "h" }),
+      { sourceSha: "s1" },
+      "close",
+    ),
+    false,
+  );
+
+  // A file edit voids an approval when it moves what it is bound to.
+  const row = new Flow({
+    workspaceId: new Types.ObjectId(),
+    createdBy: "u",
+    sourceType: "connector",
+    dataSourceId: conn,
+    destinationDatabaseId: db,
+    tableDestination: { connectionId: db, schema: "pl_close", tableName: "" },
+    connectorRuntime: "boxed",
+    name: "pl_close",
+  }) as unknown as IFlow;
+  const fileOf = (f: IFlow) => {
+    const parsed = parseFlowFileResult(serializeFlowFile(flowToFile(f)));
+    assert.ok(parsed.ok);
+    return (parsed as { ok: true; file: any }).file;
+  };
+  const approveRow = () => {
+    row.boxedApproval = approve(row).boxedApproval;
+  };
+  approveRow();
+  const renamed = fileOf(row);
+  renamed.name = "pl_close renamed";
+  assert.equal(applyDefinition(row, renamed), null);
+  assert.ok(row.boxedApproval, "a rename keeps the approval");
+  for (const edit of [
+    (f: any) => (f.destination.table.schema = "elsewhere"),
+    (f: any) => (f.source.connectionId = String(new Types.ObjectId())),
+    (f: any) => (f.boxedConnector = "evil"),
+    (f: any) => (f.shadowOf = String(live)),
+    (f: any) => delete f.runtime,
+  ]) {
+    approveRow();
+    row.tableDestination = {
+      connectionId: db,
+      schema: "pl_close",
+      tableName: "",
+    } as any;
+    row.dataSourceId = conn;
+    row.connectorRuntime = "boxed";
+    row.boxedConnector = undefined;
+    row.shadowOf = undefined;
+    approveRow();
+    const file = fileOf(row);
+    edit(file);
+    assert.equal(applyDefinition(row, file), null);
+    assert.equal(row.boxedApproval, undefined, `voided by ${edit.toString()}`);
+  }
+}
+
+// 1b. Parity refuses names that are not plain before building SQL.
+{
+  assert.doesNotThrow(() => assertSafeName("dataset", "pl_close_shadow"));
+  for (const bad of ["x`", "x\\", "a.b", "a b", "x\\` OR 1=1 --", ""]) {
+    assert.throws(() => assertSafeName("dataset", bad), /not plain/);
+  }
 }
 
 // 2. The twin gets the declared keys only; a missing required key is named,

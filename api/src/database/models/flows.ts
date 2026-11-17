@@ -134,6 +134,26 @@ export interface ISyncStateMeta {
   lastErrorMessage?: string;
 }
 
+/** An owner/admin's approval for a flow to run a folder twin. */
+export interface IBoxedApproval {
+  by: string;
+  at: Date;
+  /** `shadow`: this shadow may run boxed. `switch`: this live flow may. */
+  kind: "shadow" | "switch";
+  /** The twin's folder slug. */
+  slug: string;
+  /** Bound to: the connection, the destination tables, the live flow. */
+  connectionId: string;
+  destination: string;
+  shadowOf?: string;
+  /**
+   * The code approved: the folder's source hash. A registry connector
+   * whose registry slug is the connection's type needs no pin (Mako-built).
+   */
+  sourceSha?: string;
+  registryHash?: string;
+}
+
 /**
  * Flow model interface (data sync flow configuration)
  */
@@ -254,12 +274,14 @@ export interface IFlow extends Document {
   shadowOf?: Types.ObjectId;
   /**
    * Who allowed this flow's connection to be read by a folder twin, and
-   * which twin. Set only by an owner/admin action (flow_update runtime,
-   * flow_shadow start), never from `flows/<slug>.yml`: a repo push alone
-   * cannot hand a built-in connection's key to workspace code. A boxed run
-   * needs it, for the twin it names. Runtime bookkeeping, not in the file.
+   * exactly what they allowed. Set only by an owner/admin action
+   * (flow_update runtime, flow_shadow start), never from
+   * `flows/<slug>.yml`, and cleared by applyDefinition when the file moves
+   * anything it is bound to. A boxed run needs every field to still hold
+   * (connectors/boxed-runtime/runtime.ts `boxedTwinFor`, `assertTwinPinned`).
+   * Runtime bookkeeping, not in the file.
    */
-  boxedApproval?: { by: string; at: Date; slug: string };
+  boxedApproval?: IBoxedApproval;
   queries?: IFlowQuery[]; // Queries for GraphQL/PostHog connectors
   syncMode: "full" | "incremental";
   /**
@@ -515,7 +537,20 @@ const FlowSchema = new Schema<IFlow>(
     },
     shadowOf: { type: Schema.Types.ObjectId, ref: "Flow" },
     boxedApproval: {
-      type: new Schema({ by: String, at: Date, slug: String }, { _id: false }),
+      type: new Schema(
+        {
+          by: String,
+          at: Date,
+          kind: { type: String, enum: ["shadow", "switch"] },
+          slug: String,
+          connectionId: String,
+          destination: String,
+          shadowOf: String,
+          sourceSha: String,
+          registryHash: String,
+        },
+        { _id: false },
+      ),
       required: false,
     },
     queries: [

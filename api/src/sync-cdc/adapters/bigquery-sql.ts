@@ -92,8 +92,13 @@ function buildColumnSelectExpr(
   return `${buildCastExpression(colRef, targetType)} AS ${colRef}`;
 }
 
-/** A backtick-quoted BigQuery identifier. */
-export const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
+/**
+ * A backtick-quoted BigQuery identifier. Backslashes are escaped before
+ * backticks: BigQuery reads `\` inside a quoted identifier as an escape,
+ * so a name ending in `\` would otherwise escape the closing backtick.
+ */
+export const escId = (id: string) =>
+  `\`${id.replace(/\\/g, "\\\\").replace(/`/g, "\\`")}\``;
 
 // ---------------------------------------------------------------------------
 // Pure MERGE statement builder.

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   bigQueryStagingTableName,
   buildCreateLiveTableStatement,
+  escId,
   sqlString,
 } from "./bigquery-sql";
 import type { CdcEntityLayout } from "./registry";
@@ -60,5 +61,18 @@ describe("bigquery-sql helpers", () => {
     expect(bigQueryStagingTableName("t", "flow_1", "stg_x")).toBe(
       "t__flow1__stg_x",
     );
+  });
+});
+
+describe("escId", () => {
+  it("quotes a plain name", () => {
+    expect(escId("leads")).toBe("`leads`");
+  });
+
+  it("escapes a backtick and a backslash, so neither ends the identifier", () => {
+    expect(escId("a`b")).toBe("`a\\`b`");
+    // A trailing backslash would otherwise escape the closing backtick.
+    expect(escId("x\\")).toBe("`x\\\\`");
+    expect(escId("x\\` OR 1=1 --")).toBe("`x\\\\\\` OR 1=1 --`");
   });
 });

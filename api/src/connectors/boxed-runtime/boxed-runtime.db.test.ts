@@ -60,6 +60,7 @@ import {
   CdcEntityState,
   DatabaseConnection,
   Flow,
+  FlowExecution,
   FlowParityCheck,
   SourceConnection,
   WebhookEvent,
@@ -69,7 +70,14 @@ import { connectorRegistry } from "../registry";
 import { sourceConnectionManager } from "../../sync/database-data-source-manager";
 import { processBoxWebhookBatch } from "../workspace/webhook-batch";
 import type { RunResult } from "../workspace/sync-box";
-import { applyFlowRuntime, applyFlowRuntimeById } from "./runtime";
+import {
+  applyFlowRuntime,
+  applyFlowRuntimeById,
+  approvalBinding,
+  boxedKind,
+} from "./runtime";
+import { syncConnectorRegistry } from "../../sync/connector-registry";
+import { cdcSyncStateService } from "../../sync-cdc/sync-state";
 import { parityGate, runParityCheck } from "./parity.service";
 import { startShadow, stopShadow, switchFlowRuntime } from "./shadow.service";
 
@@ -107,12 +115,16 @@ afterAll(async () => {
   await mongo.stop();
 });
 
-const approved = (slug = "close") => ({
-  boxedApproval: { by: "owner", at: new Date(), slug },
+/** Marks a flow for an owner/admin approval of this twin, bound as the code binds it. */
+const approved = (slug = "close", sourceSha = "source-sha") => ({
+  __approve: { slug, sourceSha },
 });
 
 async function makeFlow(extra: Record<string, unknown> = {}) {
   const _id = new Types.ObjectId();
+  const { __approve, ...fields } = extra as {
+    __approve?: { slug: string; sourceSha: string };
+  } & Record<string, unknown>;
   await Flow.collection.insertOne({
     _id,
     workspaceId: ws,
@@ -133,8 +145,26 @@ async function makeFlow(extra: Record<string, unknown> = {}) {
       secret: SECRET,
       endpoint: `/api/webhooks/${ws}/${_id}`,
     },
-    ...extra,
+    ...fields,
   });
+  if (__approve) {
+    const row = (await Flow.findById(_id).lean()) as any;
+    await Flow.collection.updateOne(
+      { _id },
+      {
+        $set: {
+          boxedApproval: {
+            by: "owner",
+            at: new Date(),
+            kind: boxedKind(row),
+            slug: __approve.slug,
+            ...approvalBinding(row),
+            sourceSha: __approve.sourceSha,
+          },
+        },
+      },
+    );
+  }
   return _id;
 }
 
@@ -283,6 +313,208 @@ describe("runtime", () => {
         await lean(id),
       ),
     ).rejects.not.toThrow(new RegExp(KEY));
+  });
+});
+
+describe("review attacks", () => {
+  const def = (extra: Record<string, unknown> = {}) => ({
+    slug: "close",
+    sha: "sha",
+    sourceSha: "source-sha",
+    entry: "connector.ts",
+    runtime: "node",
+    entities: ["leads"],
+    spec: CLOSE_SPEC,
+    status: "indexed",
+    ...extra,
+  });
+
+  it("1. refuses the key to code pushed after the approval", async () => {
+    const id = await makeFlow({ connectorRuntime: "boxed", ...approved() });
+    mocks.loadConnectorDefinition.mockResolvedValue(
+      def({ sourceSha: "pushed-by-a-member" }),
+    );
+    await expect(applyFlowRuntime(decrypted(), await lean(id))).rejects.toThrow(
+      /changed since an owner\/admin approved it/,
+    );
+  });
+
+  it("1. refuses a folder that names itself after another registry connector", async () => {
+    const id = await makeFlow({ connectorRuntime: "boxed", ...approved() });
+    mocks.loadConnectorDefinition.mockResolvedValue(
+      def({
+        sourceSha: "other",
+        registry: {
+          ref: "mako/evil@1",
+          slug: "evil",
+          version: "1.0.0",
+          hash: "h",
+          sha256: "s",
+        },
+      }),
+    );
+    await expect(applyFlowRuntime(decrypted(), await lean(id))).rejects.toThrow(
+      /changed since/,
+    );
+  });
+
+  it("1. accepts Mako's registry connector for the same type at any hash", async () => {
+    const id = await makeFlow({ connectorRuntime: "boxed", ...approved() });
+    mocks.loadConnectorDefinition.mockResolvedValue(
+      def({
+        sourceSha: "registry-upgrade",
+        registry: {
+          ref: "mako/close@1",
+          slug: "close",
+          version: "1.1.0",
+          hash: "h2",
+          sha256: "s",
+        },
+      }),
+    );
+    const out = await applyFlowRuntime(decrypted(), await lean(id));
+    expect(out.type).toBe("ws:close");
+  });
+
+  it("1. re-checks the code where the box loads it, so a push after the check is refused", async () => {
+    const id = await makeFlow({ connectorRuntime: "boxed", ...approved() });
+    const rewritten = await applyFlowRuntime(decrypted(), await lean(id));
+    expect(rewritten.boxedPin).toEqual({
+      connectionType: "close",
+      sourceSha: "source-sha",
+    });
+    mocks.loadConnectorDefinition.mockResolvedValue(
+      def({ sourceSha: "pushed-between-check-and-run" }),
+    );
+    await expect(
+      syncConnectorRegistry.getConnectorFor(rewritten),
+    ).rejects.toThrow(/changed since/);
+  });
+
+  it("1. sends a switched flow's deliveries to built-in ingress once its twin's code changed", async () => {
+    const spy = vi.spyOn(connectorRegistry, "getConnectorFor").mockReturnValue({
+      supportsWebhooks: () => true,
+      webhookDelivery: () => "inline",
+      verifyWebhook: async ({ payload }: { payload: string }) => ({
+        valid: true,
+        event: JSON.parse(payload),
+      }),
+    } as never);
+    const id = await makeFlow({ connectorRuntime: "boxed", ...approved() });
+    mocks.loadConnectorDefinition.mockResolvedValue(
+      def({
+        sourceSha: "pushed",
+        spec: CLOSE_SPEC,
+      }),
+    );
+    const body = JSON.stringify({ event: { id: "ev_pushed" } });
+    const res = await webhookRoutes.request(`/webhooks/${ws}/${id}`, {
+      method: "POST",
+      body,
+      headers: { "content-type": "application/json" },
+    });
+    expect(res.status).toBe(200);
+    expect(
+      (await WebhookEvent.findOne({ eventId: "ev_pushed" }).lean())?.lane,
+    ).toBeUndefined();
+    expect(spy).toHaveBeenCalled();
+  });
+
+  it("2. voids the approval when the destination moves under it", async () => {
+    const id = await makeFlow({ connectorRuntime: "boxed", ...approved() });
+    await Flow.collection.updateOne(
+      { _id: id },
+      { $set: { "tableDestination.schema": "somewhere_else" } },
+    );
+    const source = decrypted();
+    expect(await applyFlowRuntime(source, await lean(id))).toBe(source);
+  });
+
+  it("2. a shadow's approval never boxes a flow whose file dropped shadow_of", async () => {
+    const live = await makeFlow();
+    const shadow = await makeFlow({
+      shadowOf: live,
+      ...approved(),
+      tableDestination: {
+        connectionId: db,
+        schema: "pl_close_shadow",
+        tableName: "",
+      },
+    });
+    // The file drops `shadow_of:`, says `runtime: boxed` and points at live.
+    await Flow.collection.updateOne(
+      { _id: shadow },
+      {
+        $unset: { shadowOf: 1 },
+        $set: {
+          connectorRuntime: "boxed",
+          tableDestination: {
+            connectionId: db,
+            schema: "pl_close",
+            tableName: "",
+          },
+        },
+      },
+    );
+    const source = decrypted();
+    expect(await applyFlowRuntime(source, await lean(shadow))).toBe(source);
+  });
+
+  it("5. a chunk naming another workspace's flow id runs as before", async () => {
+    const foreignWs = new Types.ObjectId();
+    const foreign = new Types.ObjectId();
+    await Flow.collection.insertOne({
+      _id: foreign,
+      workspaceId: foreignWs,
+      dataSourceId: conn,
+      connectorRuntime: "boxed",
+    });
+    const source = decrypted();
+    expect(await applyFlowRuntimeById(source, String(foreign))).toBe(source);
+  });
+
+  it("cursors: refuses a switch while a run is in flight, and drops stored backfill cursors on a switch", async () => {
+    const id = await makeFlow();
+    await FlowExecution.collection.insertOne({
+      flowId: id,
+      workspaceId: ws,
+      status: "running",
+      startedAt: new Date(),
+      success: false,
+      logs: [],
+    });
+    await expect(
+      switchFlowRuntime({
+        flow: (await Flow.findById(id))!,
+        target: "boxed",
+        force: true,
+      }),
+    ).rejects.toThrow(/in flight/);
+    await FlowExecution.collection.deleteMany({ flowId: id });
+
+    await cdcSyncStateService.saveBackfillCursor({
+      workspaceId: String(ws),
+      flowId: String(id),
+      entity: "leads",
+      cursor: {
+        totalProcessed: 10,
+        iterationsInChunk: 1,
+        hasMore: true,
+        metadata: { builtin: "page-2" },
+      } as any,
+    });
+    await switchFlowRuntime({
+      flow: (await Flow.findById(id))!,
+      target: "boxed",
+      force: true,
+    });
+    expect(
+      await cdcSyncStateService.loadBackfillCursor({
+        workspaceId: String(ws),
+        flowId: String(id),
+        entity: "leads",
+      }),
+    ).toBeUndefined();
   });
 });
 
@@ -523,8 +755,16 @@ describe("shadow and switch", () => {
     const shadow = await lean(new Types.ObjectId(out.shadowFlowId));
     expect(String(shadow.dataSourceId)).toBe(String(conn));
     expect(String(shadow.shadowOf)).toBe(String(id));
-    expect(shadow.connectorRuntime).toBe("boxed");
-    expect(shadow.boxedApproval).toMatchObject({ by: "u", slug: "close" });
+    // Boxed by shadowOf alone; no runtime a file could carry to live.
+    expect(shadow.connectorRuntime).toBeUndefined();
+    expect(shadow.boxedApproval).toMatchObject({
+      by: "u",
+      kind: "shadow",
+      slug: "close",
+      connectionId: String(conn),
+      shadowOf: String(id),
+      sourceSha: "source-sha",
+    });
     expect(shadow.tableDestination.schema).toBe("pl_close_shadow");
     expect(shadow.schedule).toMatchObject({ enabled: true, cron: "0 * * * *" });
     expect(shadow.webhookConfig?.endpoint).toBeUndefined();
@@ -735,6 +975,24 @@ describe("parity", () => {
     const gate = await parityGate({ _id: live, workspaceId: ws }, now);
     expect(gate.open).toBe(false);
     expect(gate.reasons.join(" ")).toMatch(/3 of 98 rows differ/);
+  });
+
+  it("4. refuses a dataset name that is not plain, before any SQL", async () => {
+    const now = new Date("2026-11-17T12:00:00Z");
+    const { shadow } = await shadowPair(new Date("2026-11-17T09:00:00Z"));
+    await Flow.collection.updateOne(
+      { _id: shadow },
+      { $set: { "tableDestination.schema": "x\\` OR 1=1 --" } },
+    );
+    const { query, sqls } = fakeQuery(summary());
+    const check = await runParityCheck({
+      shadowFlowId: String(shadow),
+      trigger: "manual",
+      deps: { query, keyColumns: async () => ["id"], now: () => now },
+    });
+    expect(check.status).toBe("error");
+    expect(check.error).toMatch(/dataset name/);
+    expect(sqls).toHaveLength(0);
   });
 
   it("keeps the gate closed until the window covers 2 h after the backfill", async () => {

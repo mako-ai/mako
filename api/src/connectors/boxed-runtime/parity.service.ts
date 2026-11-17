@@ -99,6 +99,23 @@ export const defaultParityDeps: ParityDeps = {
 
 const MINUTE = 60_000;
 
+/**
+ * Names that reach parity SQL. They come from flow files and from the
+ * warehouse, so each is checked before any SQL is built, on top of the
+ * quoting (escId).
+ */
+export const SAFE_NAME = /^[A-Za-z0-9_]+$/;
+/** A GCP project id, optionally domain-scoped (`example.com:proj`). */
+export const SAFE_PROJECT = /^[A-Za-z0-9.:-]+$/;
+
+export function assertSafeName(kind: string, name: string): void {
+  if (!SAFE_NAME.test(name)) {
+    throw new Error(
+      `The ${kind} name ${JSON.stringify(name.slice(0, 80))} is not plain letters, digits and underscores; parity does not query it`,
+    );
+  }
+}
+
 /** When the shadow's full-history backfill completed, or null. */
 export async function shadowBackfillCompletedAt(
   shadow: Pick<IFlow, "_id" | "backfillState">,
@@ -281,6 +298,11 @@ export async function runParityCheck(input: {
     if (liveDataset === shadowDataset) {
       throw new Error("The shadow and live flows write the same dataset");
     }
+    if (!SAFE_PROJECT.test(project)) {
+      throw new Error("The destination project id is not a plain project id");
+    }
+    assertSafeName("dataset", liveDataset);
+    assertSafeName("dataset", shadowDataset);
 
     const backfillCompletedAt = await shadowBackfillCompletedAt(shadow);
     const cutoff = parityCutoff({
@@ -309,6 +331,8 @@ export async function runParityCheck(input: {
 
     const columnsOf = async (dataset: string, tables: string[]) => {
       const out = new Map<string, string[]>();
+      // An unsafe table name is refused per entity below, never queried.
+      tables = tables.filter(table => SAFE_NAME.test(table));
       if (tables.length === 0) return out;
       const rows = await deps.query(
         destination,
@@ -376,8 +400,12 @@ export async function runParityCheck(input: {
             `table ${!lc ? `${liveDataset}.${liveTable}` : `${shadowDataset}.${shadowTable}`} not found`,
           );
         }
+        assertSafeName("table", liveTable);
+        assertSafeName("table", shadowTable);
+        for (const column of [...lc, ...sc]) assertSafeName("column", column);
         const cols = comparableColumns(lc, sc);
         const keyColumns = await deps.keyColumns(live, entity);
+        for (const key of keyColumns) assertSafeName("key column", key);
         const missingKey = keyColumns.filter(k => !cols.common.includes(k));
         if (missingKey.length) {
           throw new Error(`key column ${missingKey.join(", ")} missing`);

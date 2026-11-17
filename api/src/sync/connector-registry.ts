@@ -44,6 +44,7 @@ function asSourceConnection(
     config: connection.connection,
     settings: connection.settings,
     workspaceId: connection.workspaceId,
+    ...(connection.boxedPin ? { boxedPin: connection.boxedPin } : {}),
   } as unknown as ISourceConnection;
 }
 

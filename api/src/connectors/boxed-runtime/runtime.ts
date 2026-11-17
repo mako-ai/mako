@@ -34,6 +34,17 @@ import {
 import { connectorWebhookBatchesEnabled } from "../workspace/webhook-config";
 import { declaredWebhookVerification } from "../workspace/webhook-verification";
 import { BOXED_CAPABLE_TYPES, connectorBoxedSwitchEnabled } from "./config";
+import { isTwinCodeAllowed, twinCodeRefusal } from "./twin-code";
+import {
+  approvalBinding,
+  boxedKind,
+  destinationKey,
+  destinationOf,
+} from "./approval";
+
+export { approvalBinding, boxedKind, destinationKey };
+
+export { isTwinCodeAllowed, twinCodeRefusal };
 
 const logger = loggers.connector();
 
@@ -68,7 +79,7 @@ export const FLOW_RUNTIME_PROJECTION = {
 export function wantsBoxed(
   flow: Pick<IFlow, "connectorRuntime" | "shadowOf">,
 ): boolean {
-  return flow.connectorRuntime === "boxed" || Boolean(flow.shadowOf);
+  return boxedKind(flow) !== null;
 }
 
 /** The folder a boxed run of this flow uses: `boxedConnector`, else the type. */
@@ -79,29 +90,47 @@ export function twinSlug(
   return flow.boxedConnector?.trim() || connectionType;
 }
 
+type ApprovalFields = Pick<
+  IFlow,
+  | "connectorRuntime"
+  | "shadowOf"
+  | "boxedConnector"
+  | "boxedApproval"
+  | "dataSourceId"
+  | "destinationDatabaseId"
+  | "destinationDatabaseName"
+  | "tableDestination"
+>;
+
 /**
- * Whether an owner/admin approved this twin for this flow's connection
- * (`boxedApproval`, set by flow_update or flow_shadow, never by a file).
+ * Whether an owner/admin approved THIS: the kind (shadow or switch), the
+ * twin, the connection, the destination tables and the live flow, as they
+ * stand now. Set by flow_update or flow_shadow, never by a file; any of
+ * these moved by a file edit voids it.
  */
-export function isTwinApproved(
-  flow: Pick<IFlow, "boxedApproval">,
-  slug: string,
-): boolean {
-  return flow.boxedApproval?.slug === slug;
+export function isTwinApproved(flow: ApprovalFields, slug: string): boolean {
+  const approval = flow.boxedApproval;
+  const kind = boxedKind(flow);
+  if (!approval || !kind) return false;
+  const now = approvalBinding(flow);
+  return (
+    approval.kind === kind &&
+    approval.slug === slug &&
+    approval.connectionId === now.connectionId &&
+    approval.destination === now.destination &&
+    (approval.shadowOf ?? "") === (now.shadowOf ?? "")
+  );
 }
 
 /**
  * The twin's slug when this flow, on a connection of this type, runs boxed
  * now; null when it runs as before. Null for a `ws:` connection (already
  * boxed), for a type outside the built-ins in scope, with the flag off, and
- * without an owner/admin approval for that twin: a `runtime: boxed` pushed
- * in a file alone changes nothing.
+ * without a standing owner/admin approval: a `runtime: boxed` pushed in a
+ * file alone changes nothing.
  */
 export function boxedTwinFor(
-  flow: Pick<
-    IFlow,
-    "connectorRuntime" | "shadowOf" | "boxedConnector" | "boxedApproval"
-  >,
+  flow: ApprovalFields,
   connectionType: string | undefined,
 ): string | null {
   if (!connectorBoxedSwitchEnabled()) return null;
@@ -110,6 +139,16 @@ export function boxedTwinFor(
   if (!wantsBoxed(flow)) return null;
   const slug = twinSlug(flow, connectionType);
   return isTwinApproved(flow, slug) ? slug : null;
+}
+
+/** The code an approval pins, from the twin's indexed definition. */
+export function twinPin(
+  definition: Pick<LoadedConnector, "sourceSha" | "registry">,
+): { sourceSha?: string; registryHash?: string } {
+  return {
+    sourceSha: definition.sourceSha,
+    ...(definition.registry ? { registryHash: definition.registry.hash } : {}),
+  };
 }
 
 /**
@@ -153,16 +192,6 @@ export function configForTwin(
     );
   }
   return out;
-}
-
-function destinationOf(flow: FlowRuntimeFields) {
-  const table = flow.tableDestination;
-  return {
-    connection: String(table?.connectionId ?? flow.destinationDatabaseId ?? ""),
-    database: String(table?.database ?? flow.destinationDatabaseName ?? ""),
-    schema: String(table?.schema ?? ""),
-    prefix: String(table?.tableName ?? ""),
-  };
 }
 
 /** Whether two flows write the same tables. */
@@ -243,11 +272,20 @@ export async function applyFlowRuntime(
   await assertShadowIsolated(flow);
   const workspaceId = source.workspaceId ?? String(flow.workspaceId);
   const definition = await loadConnectorDefinition(workspaceId, slug);
+  if (!isTwinCodeAllowed(definition, flow.boxedApproval, source.type)) {
+    throw new Error(twinCodeRefusal(slug));
+  }
   return {
     ...source,
     workspaceId,
     type: `${WORKSPACE_TYPE_PREFIX}${slug}`,
     connection: configForTwin(source.connection, definition.spec, slug),
+    // Checked again where the box loads the definition, so a push between
+    // this check and the run cannot swap the code (SandboxedConnector).
+    boxedPin: {
+      connectionType: source.type,
+      sourceSha: flow.boxedApproval?.sourceSha,
+    },
   };
 }
 
@@ -261,7 +299,14 @@ export async function applyFlowRuntimeById(
 ): Promise<SourceConnectionConfig> {
   if (!connectorBoxedSwitchEnabled() || !flowId) return source;
   if (!Types.ObjectId.isValid(flowId)) return source;
-  const flow = (await Flow.findById(flowId)
+  // The flow's own workspace only: a chunk naming another workspace's flow
+  // id finds nothing and runs as before.
+  const flow = (await Flow.findOne({
+    _id: new Types.ObjectId(flowId),
+    workspaceId: source.workspaceId
+      ? new Types.ObjectId(String(source.workspaceId))
+      : null,
+  })
     .select(FLOW_RUNTIME_PROJECTION)
     .lean()) as FlowRuntimeFields | null;
   return flow ? applyFlowRuntime(source, flow) : source;
@@ -297,14 +342,7 @@ async function webhookCapableTwin(
  * front, and this keeps a file edit from cutting a flow's webhooks off.
  */
 export async function boxedWebhookConnector(
-  flow: Pick<
-    IFlow,
-    | "connectorRuntime"
-    | "shadowOf"
-    | "boxedConnector"
-    | "boxedApproval"
-    | "workspaceId"
-  >,
+  flow: ApprovalFields & Pick<IFlow, "workspaceId">,
   connection: {
     _id: unknown;
     name?: string;
@@ -316,7 +354,14 @@ export async function boxedWebhookConnector(
   const slug = boxedTwinFor(flow, connection.type);
   if (!slug) return null;
   const workspaceId = String(flow.workspaceId);
-  if (!(await webhookCapableTwin(workspaceId, slug))) return null;
+  const twin = await webhookCapableTwin(workspaceId, slug);
+  if (!twin) return null;
+  if (!isTwinCodeAllowed(twin, flow.boxedApproval, connection.type)) {
+    logger.warn("Switched flow's twin code changed; built-in ingress", {
+      slug,
+    });
+    return null;
+  }
   const connector = new SandboxedConnector({
     _id: connection._id,
     name: connection.name,

@@ -57,6 +57,9 @@ import {
   shouldBundle,
 } from "./bundle/bundle.service";
 import { connectorRegistryEnabled } from "./registry/flag";
+import { isTwinCodeAllowed, twinCodeRefusal } from "../boxed-runtime/twin-code";
+
+type BoxedPin = { connectionType: string; sourceSha?: string };
 import { prepareRegistryConnector } from "./registry/registry.service";
 import {
   connectorRuntimeId,
@@ -397,7 +400,16 @@ export class SandboxedConnector extends BaseConnector {
   /** The indexed definition, loaded once per instance. */
   protected async definition(): Promise<LoadedConnector> {
     if (!this.loaded) {
-      this.loaded = await loadConnectorDefinition(this.workspaceId, this.slug);
+      const loaded = await loadConnectorDefinition(this.workspaceId, this.slug);
+      // A built-in connection read by its folder twin carries the code its
+      // approval allows (connectors/boxed-runtime). Checked on the very
+      // definition this instance runs, so a push after the runtime check
+      // cannot hand the key to other code.
+      const pin = (this.sourceConnection as { boxedPin?: BoxedPin }).boxedPin;
+      if (pin && !isTwinCodeAllowed(loaded, pin, pin.connectionType)) {
+        throw new NonRetriableError(twinCodeRefusal(this.slug));
+      }
+      this.loaded = loaded;
     }
     return this.loaded;
   }
