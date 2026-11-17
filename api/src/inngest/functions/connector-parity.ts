@@ -11,6 +11,7 @@
  */
 import { inngest } from "../client";
 import {
+  CONNECTOR_PARITY_CHECK_EVENT,
   connectorBoxedSwitchEnabled,
   PARITY_CRON,
 } from "../../connectors/boxed-runtime/config";
@@ -19,7 +20,7 @@ import {
   runParityCheck,
 } from "../../connectors/boxed-runtime/parity.service";
 
-export const CONNECTOR_PARITY_CHECK_EVENT = "connector/parity.check";
+export { CONNECTOR_PARITY_CHECK_EVENT };
 
 export const connectorParitySchedulerFunction = inngest.createFunction(
   {

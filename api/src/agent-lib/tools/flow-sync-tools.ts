@@ -40,7 +40,10 @@ import { syncFlowWebhookSubscription } from "../../services/flow-webhook-subscri
 import { generateWebhookEndpoint } from "../../utils/webhook.utils";
 import { workspaceService } from "../../services/workspace.service";
 import { cdcBackfillService } from "../../sync-cdc/backfill";
-import { connectorBoxedSwitchEnabled } from "../../connectors/boxed-runtime/config";
+import {
+  CONNECTOR_PARITY_CHECK_EVENT,
+  connectorBoxedSwitchEnabled,
+} from "../../connectors/boxed-runtime/config";
 import { parityGate } from "../../connectors/boxed-runtime/parity.service";
 import {
   BoxedRuntimeError,
@@ -50,7 +53,6 @@ import {
   switchFlowRuntime,
 } from "../../connectors/boxed-runtime/shadow.service";
 import { inngest } from "../../inngest/client";
-import { CONNECTOR_PARITY_CHECK_EVENT } from "../../inngest/functions/connector-parity";
 
 const OBJECT_ID = /^[0-9a-f]{24}$/i;
 const RECENT_EXECUTIONS = 5;

@@ -50,3 +50,6 @@ export const PARITY_GATE = {
 
 /** How often the scheduled parity check runs for each active shadow. */
 export const PARITY_CRON = "20 * * * *";
+
+/** The Inngest event that runs one parity check (inngest/functions/connector-parity.ts). */
+export const CONNECTOR_PARITY_CHECK_EVENT = "connector/parity.check";

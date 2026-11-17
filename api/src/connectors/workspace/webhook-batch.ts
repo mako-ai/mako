@@ -54,6 +54,7 @@ import {
   isWorkspaceConnectorType,
 } from "./SandboxedConnector";
 import { BOXED_CAPABLE_TYPES } from "../boxed-runtime/config";
+import { relaneBoxEventsToInline } from "../boxed-runtime/relane";
 import {
   applyFlowRuntime,
   boxedTwinFor,
@@ -106,27 +107,6 @@ const defaultRunner: WebhookBatchRunnerFactory = async (
   }
   return connector;
 };
-
-/**
- * Hand a flow's pending box-lane events, verified for this connection, to
- * the inline lane (a switch back to the built-in connector). Returns how
- * many moved. Events for another connection stay and are dropped.
- */
-export async function relaneBoxEventsToInline(
-  flowId: Types.ObjectId,
-  connectionId: Types.ObjectId,
-): Promise<number> {
-  const result = await WebhookEvent.updateMany(
-    {
-      flowId,
-      dataSourceId: connectionId,
-      lane: "box",
-      status: "pending",
-    },
-    { $unset: { lane: 1, dataSourceId: 1, boxClaim: 1, claimedAt: 1 } },
-  );
-  return result.modifiedCount ?? 0;
-}
 
 /** Codes a box-lane event can end with, besides the inline cron's own. */
 export const BOX_CODES = {

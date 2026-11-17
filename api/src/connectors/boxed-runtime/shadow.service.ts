@@ -27,7 +27,7 @@ import { listFlowDefinitionsAtMain } from "../../services/flow-sync.service";
 import { hasWebhookTrigger } from "../../services/flow-triggers.service";
 import { cdcBackfillService } from "../../sync-cdc/backfill";
 import { sourceConnectionManager } from "../../sync/database-data-source-manager";
-import { relaneBoxEventsToInline } from "../workspace/webhook-batch";
+import { relaneBoxEventsToInline } from "./relane";
 import { loadConnectorDefinition } from "../workspace/resolver";
 import { isWorkspaceConnectorType } from "../workspace/SandboxedConnector";
 import { connectorWebhookBatchesEnabled } from "../workspace/webhook-config";
