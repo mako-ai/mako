@@ -22,6 +22,7 @@ import { Collection } from "mongodb";
 import { Types } from "mongoose";
 import { ProgressReporter } from "./progress-reporter";
 import axios from "axios";
+import { NonRetriableError } from "inngest";
 import { loggers } from "../logging";
 import { LEGACY_ENGINE_REMOVED } from "../services/flow-triggers.service";
 import {
@@ -335,7 +336,13 @@ export async function performSyncChunk(
     logger?.log("error", errorMsg, {
       stack: error instanceof Error ? error.stack : undefined,
     });
-    const wrappedError = new Error(errorMsg);
+    // A refusal that must not be retried (a run whose runtime can no longer
+    // hold, connectors/boxed-runtime) stays non-retriable: Inngest decides
+    // from the error that reaches it, and a plain wrapper would retry it.
+    const wrappedError =
+      error instanceof NonRetriableError
+        ? new NonRetriableError(errorMsg, { cause: error })
+        : new Error(errorMsg);
     (wrappedError as Error & { cause?: unknown }).cause = error;
     throw wrappedError;
   }

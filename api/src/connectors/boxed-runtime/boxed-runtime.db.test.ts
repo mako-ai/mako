@@ -24,6 +24,7 @@ import {
   vi,
 } from "vitest";
 import mongoose, { Types } from "mongoose";
+import { NonRetriableError } from "inngest";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
 const mocks = vi.hoisted(() => ({
@@ -81,6 +82,7 @@ import {
   boxedKind,
 } from "./runtime";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
+import { performSyncChunk } from "../../sync/sync-orchestrator";
 import { parityGate, runParityCheck } from "./parity.service";
 import { startShadow, stopShadow, switchFlowRuntime } from "./shadow.service";
 
@@ -515,6 +517,19 @@ describe("review round 2", () => {
     await expect(
       applyFlowRuntimeById(source, String(id), "boxed"),
     ).rejects.toThrow(/can no longer run boxed/);
+    // Through the chunk path, the refusal stays non-retriable: Inngest must
+    // stop the run, not retry it.
+    const failure = await performSyncChunk({
+      dataSourceId: String(conn),
+      destinationId: String(db),
+      flowId: String(id),
+      workspaceId: String(ws),
+      entity: "leads",
+      isIncremental: true,
+      connectorRuntime: "boxed",
+    }).catch(error => error);
+    expect(failure).toBeInstanceOf(NonRetriableError);
+    expect(String(failure.message)).toMatch(/can no longer run boxed/);
     // Decided boxed, then the flag went off: the same.
     const again = await makeFlow({ connectorRuntime: "boxed", ...approved() });
     process.env.CONNECTOR_BOXED_SWITCH = "false";
