@@ -41,6 +41,8 @@ import { BOXED_CAPABLE_TYPES, connectorBoxedSwitchEnabled } from "./config";
 import { parityGate, shadowOf, type ParityGate } from "./parity.service";
 import {
   approvalBinding,
+  assertDatasetFree,
+  destinationKey,
   isTwinApproved,
   configForTwin,
   twinPin,
@@ -207,18 +209,56 @@ export async function startShadow(input: {
     DEFAULT_SHADOW_POLL;
   const timezone = input.timezone?.trim() || live.schedule?.timezone || "UTC";
 
+  // Everything that decides what the shadow reads and where it writes comes
+  // from the live flow, on create and on every start: a shadow row a file
+  // edited (another dataset, write mode, queries) is rebuilt, never kept.
+  const table = live.tableDestination;
+  const fromLive = {
+    sourceType: "connector" as const,
+    dataSourceId: live.dataSourceId,
+    destinationDatabaseId: live.destinationDatabaseId,
+    destinationDatabaseName: live.destinationDatabaseName,
+    tableDestination: {
+      connectionId: table.connectionId,
+      database: table.database,
+      schema: dataset,
+      tableName: table.tableName,
+      createIfNotExists: true,
+      partitioning: table.partitioning,
+      clustering: table.clustering,
+    },
+    entityFilter: live.entityFilter,
+    entityLayouts: live.entityLayouts,
+    queries: live.queries,
+    syncMode: "incremental" as const,
+    writeMode: live.writeMode,
+    deleteMode: live.deleteMode,
+    batchSize: live.batchSize,
+    syncEngine: "cdc" as const,
+    boxedConnector: live.boxedConnector,
+    connectorRuntime: undefined,
+    replaces: undefined,
+    backfillSchedule: { enabled: false },
+  };
+
   let shadow: FlowDoc;
   let created = false;
   if (existing) {
     shadow = existing;
-    // Already running this very twin and code, and backfilling or backfilled:
-    // a repeated `start` changes nothing and never restarts the backfill.
+    const before = shadowSettingsKey(shadow);
+    shadow.set(fromLive);
+    const unchanged = shadowSettingsKey(shadow) === before;
+    // Already running this very twin, code and setup, and backfilling or
+    // backfilled: a repeated `start` changes nothing and never restarts the
+    // backfill.
     const status = shadow.backfillState?.status;
     if (
+      unchanged &&
       shadow.schedule?.enabled &&
-      (shadow.boxedConnector ?? "") === (live.boxedConnector ?? "") &&
       isTwinApproved(shadow, twin.slug) &&
       shadow.boxedApproval?.sourceSha === twin.pin.sourceSha &&
+      (shadow.boxedApproval?.registryHash ?? "") ===
+        (twin.pin.registryHash ?? "") &&
       (status === "running" || status === "completed")
     ) {
       return {
@@ -230,9 +270,8 @@ export async function startShadow(input: {
         webhooksMirrored,
       };
     }
-    // Resumed, or the twin changed: the shadow runs the live flow's twin,
-    // and its evidence starts again from a full backfill.
-    shadow.boxedConnector = live.boxedConnector;
+    // Resumed, rebuilt or a new twin: evidence starts again from a full
+    // backfill.
     shadow.schedule = { enabled: true, cron: pollCron, timezone };
   } else {
     const name = `${(live.name ?? live.slug ?? "flow").slice(0, 180)} (shadow)`;
@@ -241,40 +280,24 @@ export async function startShadow(input: {
       name,
       new Set((await listFlowDefinitionsAtMain(workspaceId)).map(d => d.slug)),
     );
-    const table = live.tableDestination;
     shadow = new Flow({
       workspaceId: live.workspaceId,
       name,
       slug,
-      sourceType: "connector",
-      dataSourceId: live.dataSourceId,
-      destinationDatabaseId: live.destinationDatabaseId,
-      destinationDatabaseName: live.destinationDatabaseName,
-      tableDestination: {
-        connectionId: table.connectionId,
-        database: table.database,
-        schema: dataset,
-        tableName: table.tableName,
-        createIfNotExists: true,
-        partitioning: table.partitioning,
-        clustering: table.clustering,
-      },
+      ...fromLive,
       schedule: { enabled: true, cron: pollCron, timezone },
-      backfillSchedule: { enabled: false },
-      entityFilter: live.entityFilter,
-      entityLayouts: live.entityLayouts,
-      queries: live.queries,
-      syncMode: "incremental",
-      writeMode: live.writeMode,
-      deleteMode: live.deleteMode,
-      batchSize: live.batchSize,
-      syncEngine: "cdc",
-      // A shadow is boxed by `shadowOf` alone (runtime.ts boxedKind).
-      boxedConnector: live.boxedConnector,
       shadowOf: live._id,
       createdBy: input.userId ?? "system",
     }) as FlowDoc;
     created = true;
+  }
+  // No other flow may write the shadow's dataset.
+  try {
+    await assertDatasetFree(shadow);
+  } catch (error) {
+    throw new BoxedRuntimeError(
+      error instanceof Error ? error.message : String(error),
+    );
   }
   // The owner/admin's approval for this twin, this code, this connection
   // and this destination.
@@ -288,11 +311,26 @@ export async function startShadow(input: {
   return {
     shadowFlowId: String(shadow._id),
     slug: shadow.slug ?? "",
-    dataset,
+    // The dataset the shadow row actually writes.
+    dataset: shadow.tableDestination?.schema ?? dataset,
     created,
     backfillRunId: run.runId,
     webhooksMirrored,
   };
+}
+
+/** What the shadow reads and writes, as one string, to tell a rebuild. */
+function shadowSettingsKey(flow: IFlow): string {
+  return JSON.stringify([
+    destinationKey(flow),
+    String(flow.dataSourceId ?? ""),
+    flow.writeMode ?? "",
+    flow.deleteMode ?? "",
+    flow.syncMode ?? "",
+    flow.boxedConnector ?? "",
+    JSON.parse(JSON.stringify(flow.queries ?? [])),
+    JSON.parse(JSON.stringify(flow.entityFilter ?? [])),
+  ]);
 }
 
 /** Stop a shadow: polling off, copies of deliveries stop. Its data stays. */
@@ -334,6 +372,8 @@ export interface SwitchResult {
   forced: boolean;
   /** Forwarded events handed back to the built-in flow on a switch back. */
   relaned: number;
+  /** On a switch to boxed: the twin and the exact code the approval pins. */
+  approved?: { slug: string; sourceSha?: string; registryHash?: string };
 }
 
 /** The twin flow a paused built-in flow was switched to, or null. */
@@ -391,6 +431,19 @@ export async function switchFlowRuntime(input: {
     throw new BoxedRuntimeError("No shadow: start one with flow_shadow");
   }
   const twin = await checkTwin(shadow);
+  // `force` skips the parity gate only. The code that gets the key is always
+  // code an owner/admin approved: the shadow's standing approval must name
+  // this twin at this very code.
+  const standing =
+    isTwinApproved(shadow, twin.slug) &&
+    (shadow.boxedApproval?.sourceSha ?? "") === (twin.pin.sourceSha ?? "") &&
+    (shadow.boxedApproval?.registryHash ?? "") ===
+      (twin.pin.registryHash ?? "");
+  if (!standing) {
+    throw new BoxedRuntimeError(
+      `The shadow has no standing approval for ${twin.slug} at ${(twin.pin.registryHash ?? twin.pin.sourceSha ?? "").slice(0, 12)}. Run flow_shadow start: it approves the current code and backfills again.`,
+    );
+  }
   if (hasWebhookTrigger(live)) {
     if (!connectorWebhookBatchesEnabled()) {
       throw new BoxedRuntimeError(
@@ -406,6 +459,7 @@ export async function switchFlowRuntime(input: {
   const gate = await parityGate(live, input.now, {
     slug: twin.slug,
     sourceSha: twin.pin.sourceSha,
+    registryHash: twin.pin.registryHash,
   });
   if (!gate.open && !input.force) {
     throw new BoxedRuntimeError(
@@ -480,6 +534,11 @@ export async function switchFlowRuntime(input: {
     gate,
     forced: !gate.open,
     relaned: 0,
+    approved: {
+      slug: twin.slug,
+      sourceSha: shadow.boxedApproval?.sourceSha,
+      registryHash: shadow.boxedApproval?.registryHash,
+    },
   };
 }
 

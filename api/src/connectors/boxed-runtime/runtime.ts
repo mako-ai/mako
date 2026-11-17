@@ -239,6 +239,43 @@ export async function assertShadowIsolated(
       "The shadow writes the live flow's dataset. A shadow must write its own (<dataset>_shadow).",
     );
   }
+  await assertDatasetFree(flow);
+}
+
+/**
+ * A shadow's dataset is its own: no other flow in the workspace may write
+ * it (a production dataset named in a shadow's file, say). Checked across
+ * every flow, on every shadow run and at `flow_shadow start`.
+ */
+export async function assertDatasetFree(
+  flow: Pick<
+    FlowRuntimeFields,
+    | "_id"
+    | "workspaceId"
+    | "destinationDatabaseId"
+    | "destinationDatabaseName"
+    | "tableDestination"
+  >,
+): Promise<void> {
+  const others = (await Flow.find({
+    workspaceId: flow.workspaceId,
+    _id: { $ne: flow._id },
+  })
+    .select({
+      name: 1,
+      destinationDatabaseId: 1,
+      destinationDatabaseName: 1,
+      tableDestination: 1,
+    })
+    .lean()) as Array<FlowRuntimeFields & { name?: string }>;
+  const clash = others.find(other =>
+    sameDestination(flow as FlowRuntimeFields, other),
+  );
+  if (clash) {
+    throw new Error(
+      `The shadow's dataset ${flow.tableDestination?.schema ?? ""} is written by another flow (${clash.name ?? String(clash._id)}). A shadow writes a dataset of its own.`,
+    );
+  }
 }
 
 async function assertReplacementStands(flow: FlowRuntimeFields) {
@@ -285,6 +322,13 @@ export async function applyFlowRuntime(
   }
   const slug = boxedTwinFor(flow, source.type);
   if (!slug) {
+    // A promoted twin writes the live dataset only as the approved twin: it
+    // never falls back to the built-in connector.
+    if (flow.replaces) {
+      throw new NonRetriableError(
+        "This flow replaced a built-in flow, and it has no standing owner/admin approval to run its folder twin (or CONNECTOR_BOXED_SWITCH is off). It does not run. Switch back with flow_update runtime=builtin on the built-in flow, or approve again.",
+      );
+    }
     if (flow.shadowOf) {
       throw new Error(
         BOXED_CAPABLE_TYPES.has(source.type)
@@ -310,6 +354,7 @@ export async function applyFlowRuntime(
     boxedPin: {
       connectionType: source.type,
       sourceSha: flow.boxedApproval?.sourceSha,
+      registryHash: flow.boxedApproval?.registryHash,
     },
   };
 }

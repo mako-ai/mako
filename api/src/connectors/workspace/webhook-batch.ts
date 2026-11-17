@@ -598,6 +598,11 @@ export async function processBoxWebhookBatch(input: {
   // A built-in connection's flow that runs its folder twin (a shadow, or
   // `runtime: boxed`) is boxed here too (connectors/boxed-runtime).
   const boxedTwin = boxedTwinFor(flow, connection.type);
+  if (!boxedTwin && flow.replaces) {
+    // A promoted twin that cannot run boxed now: its forwarded events wait
+    // in its lane (a switch back moves them to the built-in flow).
+    return emptyResult("stop", "promoted twin cannot run boxed now");
+  }
   if (
     !boxedTwin &&
     !isWorkspaceConnectorType(connection.type) &&

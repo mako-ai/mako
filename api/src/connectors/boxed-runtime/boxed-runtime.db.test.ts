@@ -121,14 +121,18 @@ afterAll(async () => {
 });
 
 /** Marks a flow for an owner/admin approval of this twin, bound as the code binds it. */
-const approved = (slug = "close", sourceSha = "source-sha") => ({
-  __approve: { slug, sourceSha },
+const approved = (
+  slug = "close",
+  sourceSha = "source-sha",
+  registryHash?: string,
+) => ({
+  __approve: { slug, sourceSha, registryHash },
 });
 
 async function makeFlow(extra: Record<string, unknown> = {}) {
   const _id = new Types.ObjectId();
   const { __approve, ...fields } = extra as {
-    __approve?: { slug: string; sourceSha: string };
+    __approve?: { slug: string; sourceSha: string; registryHash?: string };
   } & Record<string, unknown>;
   await Flow.collection.insertOne({
     _id,
@@ -165,6 +169,9 @@ async function makeFlow(extra: Record<string, unknown> = {}) {
             slug: __approve.slug,
             ...approvalBinding(row),
             sourceSha: __approve.sourceSha,
+            ...(__approve.registryHash
+              ? { registryHash: __approve.registryHash }
+              : {}),
           },
         },
       },
@@ -365,28 +372,36 @@ describe("review attacks", () => {
     );
   });
 
-  it("1. accepts Mako's registry connector for the same type at any hash", async () => {
-    const id = await makeFlow({ connectorRuntime: "boxed", ...approved() });
-    mocks.loadConnectorDefinition.mockResolvedValue(
+  it("L1. pins a registry twin to its approved hash: an upgrade needs a new approval", async () => {
+    const reg = (hash: string) =>
       def({
-        sourceSha: "registry-upgrade",
+        sourceSha: `yaml-${hash}`,
         registry: {
           ref: "mako/close@1",
           slug: "close",
-          version: "1.1.0",
-          hash: "h2",
+          version: "1",
+          hash,
           sha256: "s",
         },
-      }),
+      });
+    const id = await makeFlow({
+      connectorRuntime: "boxed",
+      ...approved("close", "yaml-h1", "h1"),
+    });
+    mocks.loadConnectorDefinition.mockResolvedValue(reg("h1"));
+    expect((await applyFlowRuntime(decrypted(), await lean(id))).type).toBe(
+      "ws:close",
     );
-    const out = await applyFlowRuntime(decrypted(), await lean(id));
-    expect(out.type).toBe("ws:close");
+    mocks.loadConnectorDefinition.mockResolvedValue(reg("h2"));
+    await expect(applyFlowRuntime(decrypted(), await lean(id))).rejects.toThrow(
+      /changed since/,
+    );
   });
 
   it("1. re-checks the code where the box loads it, so a push after the check is refused", async () => {
     const id = await makeFlow({ connectorRuntime: "boxed", ...approved() });
     const rewritten = await applyFlowRuntime(decrypted(), await lean(id));
-    expect(rewritten.boxedPin).toEqual({
+    expect(rewritten.boxedPin).toMatchObject({
       connectionType: "close",
       sourceSha: "source-sha",
     });
@@ -596,6 +611,108 @@ describe("review round 2", () => {
   });
 });
 
+describe("re-review", () => {
+  it("H1. a member's file cannot make a flow a shadow, and a shadow row pointed at another flow's dataset is refused and rebuilt", async () => {
+    const live = await makeFlow();
+    // Another flow writes `stripe_prod`.
+    await makeFlow({
+      tableDestination: {
+        connectionId: db,
+        schema: "stripe_prod",
+        tableName: "",
+      },
+    });
+    // A shadow row as a member's edit would leave it: a foreign dataset and
+    // its own write settings.
+    const shadow = await makeFlow({
+      shadowOf: live,
+      ...approved(),
+      tableDestination: {
+        connectionId: db,
+        schema: "stripe_prod",
+        tableName: "",
+      },
+      writeMode: "overwrite",
+      deleteMode: "hard",
+      queries: [{ name: "x", query: "select 1" }],
+    });
+    await expect(
+      applyFlowRuntime(decrypted(), await lean(shadow)),
+    ).rejects.toThrow(/written by another flow/);
+    const out = await startShadow({
+      live: (await Flow.findById(live))!,
+      userId: "u",
+    });
+    expect(out.shadowFlowId).toBe(String(shadow));
+    expect(out.dataset).toBe("pl_close_shadow");
+    const rebuilt = await lean(shadow);
+    expect(rebuilt.tableDestination.schema).toBe("pl_close_shadow");
+    // The live flow's write settings (unset, so the defaults), not the
+    // edited ones.
+    expect(rebuilt.writeMode ?? "append_dedup").toBe("append_dedup");
+    expect(rebuilt.deleteMode).not.toBe("hard");
+    expect(rebuilt.queries ?? []).toEqual([]);
+    expect(mocks.startBackfill).toHaveBeenCalledTimes(1);
+  });
+
+  it("H1. refuses to start a shadow whose dataset another flow writes", async () => {
+    const live = await makeFlow();
+    await makeFlow({
+      tableDestination: {
+        connectionId: db,
+        schema: "pl_close_shadow",
+        tableName: "",
+      },
+    });
+    await expect(
+      startShadow({ live: (await Flow.findById(live))!, userId: "u" }),
+    ).rejects.toThrow(/written by another flow/);
+  });
+
+  it("M1. force skips the gate, never the approval: refused for other code; the result names the code it pinned", async () => {
+    const live = await makeFlow();
+    await startShadow({ live: (await Flow.findById(live))!, userId: "u" });
+    // New code lands in the twin's folder after the shadow was approved.
+    mocks.loadConnectorDefinition.mockResolvedValue({
+      slug: "close",
+      sha: "sha2",
+      sourceSha: "pushed",
+      entry: "connector.ts",
+      runtime: "node",
+      entities: ["leads"],
+      spec: CLOSE_SPEC,
+      status: "indexed",
+    });
+    await expect(
+      switchFlowRuntime({
+        flow: (await Flow.findById(live))!,
+        target: "boxed",
+        force: true,
+      }),
+    ).rejects.toThrow(/no standing approval for close/);
+    // Back to the approved code: force switches, and says what it pinned.
+    mocks.loadConnectorDefinition.mockResolvedValue({
+      slug: "close",
+      sha: "sha",
+      sourceSha: "source-sha",
+      entry: "connector.ts",
+      runtime: "node",
+      entities: ["leads"],
+      spec: CLOSE_SPEC,
+      status: "indexed",
+    });
+    const out = await switchFlowRuntime({
+      flow: (await Flow.findById(live))!,
+      target: "boxed",
+      force: true,
+    });
+    expect(out).toMatchObject({
+      forced: true,
+      approved: { slug: "close", sourceSha: "source-sha" },
+    });
+  });
+});
+
 describe("shadow isolation", () => {
   it("refuses a shadow that writes its live flow's dataset", async () => {
     const live = await makeFlow();
@@ -714,15 +831,40 @@ describe("ingress", () => {
     expect(String(forwarded!.dataSourceId)).toBe(String(conn));
   });
 
-  it("forwards to the twin's inline lane when it cannot run boxed (flag off)", async () => {
+  it("M2. forwards to the twin's box lane even when it cannot run boxed; the twin refuses to run, never falls back", async () => {
     builtinVerifies();
     const { live, twin } = await switchedPair();
     process.env.CONNECTOR_BOXED_SWITCH = "false";
     const body = JSON.stringify({ event: { id: "ev_fwd_off" } });
     expect((await deliver(live, body)).status).toBe(200);
     const forwarded = await WebhookEvent.findOne({ flowId: twin }).lean();
-    expect(forwarded?.eventId).toBe("ev_fwd_off");
-    expect(forwarded?.lane).toBeUndefined();
+    expect(forwarded).toMatchObject({ eventId: "ev_fwd_off", lane: "box" });
+    // Flag off: the twin refuses, it does not run the built-in connector.
+    await expect(
+      applyFlowRuntime(decrypted(), await lean(twin)),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    // Flag on, approval voided: the same.
+    process.env.CONNECTOR_BOXED_SWITCH = "true";
+    await Flow.collection.updateOne(
+      { _id: twin },
+      { $unset: { boxedApproval: 1 } },
+    );
+    const refused = await applyFlowRuntime(decrypted(), await lean(twin)).catch(
+      e => e,
+    );
+    expect(refused).toBeInstanceOf(NonRetriableError);
+    expect(String(refused.message)).toMatch(/does not run/);
+    // Its box-lane events wait, never re-laned to built-in code.
+    const result = await processBoxWebhookBatch({
+      flowId: String(twin),
+      runner: async () => {
+        throw new Error("no box");
+      },
+    });
+    expect(result.reason).toMatch(/cannot run boxed/);
+    expect(
+      (await WebhookEvent.findOne({ eventId: "ev_fwd_off" }).lean())?.lane,
+    ).toBe("box");
   });
 
   it("refuses a delivery to a paused flow whose named twin does not name it back", async () => {

@@ -600,6 +600,7 @@ export async function runParityCheck(input: {
       twin: {
         slug: shadow.boxedApproval?.slug ?? "",
         sourceSha: shadow.boxedApproval?.sourceSha,
+        registryHash: shadow.boxedApproval?.registryHash,
       },
       shadowBackfillCompletedAt: backfillCompletedAt,
       entities: results,
@@ -656,7 +657,7 @@ export async function parityGate(
    * evidence about THAT code: a clean check of `close` opens no gate for
    * `close-v2`, nor for `close` after new code was pushed.
    */
-  expectTwin?: { slug: string; sourceSha?: string },
+  expectTwin?: { slug: string; sourceSha?: string; registryHash?: string },
 ): Promise<ParityGate> {
   const shadow = await shadowOf(live);
   if (!shadow) {
@@ -689,7 +690,8 @@ export async function parityGate(
     if (
       expectTwin &&
       (check.twin?.slug !== expectTwin.slug ||
-        (check.twin?.sourceSha ?? "") !== (expectTwin.sourceSha ?? ""))
+        (check.twin?.sourceSha ?? "") !== (expectTwin.sourceSha ?? "") ||
+        (check.twin?.registryHash ?? "") !== (expectTwin.registryHash ?? ""))
     ) {
       reasons.push(
         `The latest check ran ${check.twin?.slug || "another twin"}${check.twin?.sourceSha ? ` at ${check.twin.sourceSha.slice(0, 8)}` : ""}; the switch would run ${expectTwin.slug}${expectTwin.sourceSha ? ` at ${expectTwin.sourceSha.slice(0, 8)}` : ""}. Restart the shadow and check again`,

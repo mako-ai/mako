@@ -77,7 +77,7 @@ export interface IFlowParityCheck {
     failedWebhookEvents: number;
   };
   /** The twin the shadow ran (its approval): slug and folder source hash. */
-  twin?: { slug: string; sourceSha?: string };
+  twin?: { slug: string; sourceSha?: string; registryHash?: string };
   /** When the shadow's full-history backfill completed, as this check saw it. */
   shadowBackfillCompletedAt?: Date | null;
   entities: IFlowParityEntity[];
@@ -155,7 +155,7 @@ const FlowParityCheckSchema = new Schema<IFlowParityCheck>(
     finishedAt: Date,
     cutoff: Date,
     window: { start: Date, end: Date, coverageMinutes: Number },
-    twin: { slug: String, sourceSha: String },
+    twin: { slug: String, sourceSha: String, registryHash: String },
     failures: {
       failedRuns: Number,
       failedEntities: [String],

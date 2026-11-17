@@ -293,8 +293,10 @@ function applyDefinitionFields(doc: IFlow, file: FlowFile): string | null {
   // the file means built-in: unset, so the row matches what the file says.
   doc.connectorRuntime = file.runtime === "boxed" ? "boxed" : undefined;
   doc.boxedConnector = file.boxedConnector || undefined;
-  doc.shadowOf = file.shadowOf ? new Types.ObjectId(file.shadowOf) : undefined;
-  doc.replaces = file.replaces ? new Types.ObjectId(file.replaces) : undefined;
+  // `shadow_of:` and `replaces:` are Mongo-only: set by an owner/admin's
+  // flow_shadow or switch, written to the file for reading, and never set
+  // or changed from it. A member's file cannot make a flow a shadow of, or
+  // a replacement for, another flow.
 
   if (file.conflict) {
     doc.conflictConfig = {

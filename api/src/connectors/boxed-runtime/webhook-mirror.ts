@@ -14,10 +14,8 @@
 import { Types } from "mongoose";
 import { loggers } from "../../logging";
 import { Flow, WebhookEvent } from "../../database/workspace-schema";
-import { connectorWebhookBatchesEnabled } from "../workspace/webhook-config";
 import {
   FLOW_RUNTIME_PROJECTION,
-  boxedTwinFor,
   shadowTakesWebhooks,
   shadowsToMirror,
   type FlowRuntimeFields,
@@ -107,16 +105,15 @@ export async function forwardTargetOf(flow: {
 }
 
 /**
- * The lane a forwarded delivery takes: the box lane when the twin runs
- * boxed and webhook batches are on; else inline, where the built-in code
- * applies it (the twin runs built-in with the switch flag off).
+ * The lane a forwarded delivery takes: always the twin's box lane. A twin
+ * that cannot run boxed right now (approval voided, flag off) refuses to
+ * run, and its events wait there until it can, or until a switch back hands
+ * them to the built-in flow. Never the inline lane: built-in code must not
+ * write the live dataset while the built-in flow is paused.
  */
 export function forwardLane(
-  target: FlowRuntimeFields,
-  connectionType: string,
-): "box" | "inline" {
-  return connectorWebhookBatchesEnabled() &&
-    boxedTwinFor(target, connectionType)
-    ? "box"
-    : "inline";
+  _target: FlowRuntimeFields,
+  _connectionType: string,
+): "box" {
+  return "box";
 }

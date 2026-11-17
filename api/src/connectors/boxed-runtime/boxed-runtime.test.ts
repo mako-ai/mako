@@ -163,16 +163,34 @@ const spec = {
   assert.equal(
     isTwinCodeAllowed(
       folder("s9", { slug: "close", hash: "h" }),
-      { sourceSha: "s1" },
+      { sourceSha: "s1", registryHash: "h" },
       "close",
     ),
     true,
-    "Mako's registry connector for the same type",
+    "Mako's registry connector for the same type, at the approved hash",
+  );
+  assert.equal(
+    isTwinCodeAllowed(
+      folder("s9", { slug: "close", hash: "h2" }),
+      { sourceSha: "s1", registryHash: "h" },
+      "close",
+    ),
+    false,
+    "a registry upgrade needs a new approval",
+  );
+  assert.equal(
+    isTwinCodeAllowed(
+      folder("s9", { slug: "close", hash: "h" }),
+      { sourceSha: "s1" },
+      "close",
+    ),
+    false,
+    "an approval without a registry hash never covers a registry twin",
   );
   assert.equal(
     isTwinCodeAllowed(
       folder("s9", { slug: "evil", hash: "h" }),
-      { sourceSha: "s1" },
+      { sourceSha: "s1", registryHash: "h" },
       "close",
     ),
     false,
@@ -206,7 +224,6 @@ const spec = {
     (f: any) => (f.destination.table.schema = "elsewhere"),
     (f: any) => (f.source.connectionId = String(new Types.ObjectId())),
     (f: any) => (f.boxedConnector = "evil"),
-    (f: any) => (f.shadowOf = String(live)),
     (f: any) => delete f.runtime,
   ]) {
     approveRow();
@@ -343,14 +360,27 @@ const spec = {
     }) as unknown as IFlow;
     assert.equal(applyDefinition(doc, parsed.file), null);
     assert.equal(doc.connectorRuntime, "boxed");
-    assert.equal(String(doc.shadowOf), String(live));
+    // `shadow_of:` and `replaces:` are Mongo-only: a file never sets them.
+    assert.equal(doc.shadowOf, undefined, "a file never makes a shadow");
+    const kept = new Flow({
+      workspaceId: base.workspaceId,
+      createdBy: "u",
+      shadowOf: live,
+    }) as unknown as IFlow;
+    const other = new Types.ObjectId();
+    applyDefinition(kept, {
+      ...parsed.file,
+      shadowOf: String(other),
+      replaces: String(other),
+    });
+    assert.equal(String(kept.shadowOf), String(live), "nor changes one");
+    assert.equal(kept.replaces, undefined, "nor sets replaces");
     // A file that drops `runtime:` switches the row back to built-in.
     const back = parseFlowFileResult(plain);
     assert.ok(back.ok);
     if (back.ok) {
       applyDefinition(doc, back.file);
       assert.equal(doc.connectorRuntime, undefined);
-      assert.equal(doc.shadowOf, undefined);
     }
   }
   const bad = (extra: string) =>

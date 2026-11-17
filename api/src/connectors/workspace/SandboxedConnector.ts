@@ -60,7 +60,11 @@ import {
 import { connectorRegistryEnabled } from "./registry/flag";
 import { isTwinCodeAllowed, twinCodeRefusal } from "../boxed-runtime/twin-code";
 
-type BoxedPin = { connectionType: string; sourceSha?: string };
+type BoxedPin = {
+  connectionType: string;
+  sourceSha?: string;
+  registryHash?: string;
+};
 import { prepareRegistryConnector } from "./registry/registry.service";
 import {
   connectorRuntimeId,

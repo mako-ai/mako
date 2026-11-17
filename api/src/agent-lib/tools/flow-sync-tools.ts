@@ -420,6 +420,8 @@ export function createFlowSyncTools({
               changed: switched.changed,
               forced: switched.forced,
               writerFlowId: switched.writerFlowId,
+              // The twin and exact code the approval pins (forced or not).
+              ...(switched.approved ? { approved: switched.approved } : {}),
               relanedWebhookEvents: switched.relaned,
               gate: switched.gate
                 ? { open: switched.gate.open, reasons: switched.gate.reasons }

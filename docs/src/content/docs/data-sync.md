@@ -201,7 +201,7 @@ A sync on a built-in connection (Close, Stripe, PandaDoc, Calendly, Claap, Wise,
 3. `flow_parity` shows the gate. It opens on a check under 60 minutes old with 4 results. Every compared key is on both sides. Every live column exists in the shadow. No row has a value on live and NULL on the shadow. In the last 30 minutes after the backfill, every live update reached the shadow and no shadow run, entity or webhook batch failed. Other value differences are listed with samples and do not block.
 4. `flow_update` `runtime: boxed` on the built-in sync switches it. The shadow then writes the live dataset, with the live poll cadence and resync cron. The built-in sync is paused: poll, webhook and resync are off, and their crons are kept. Its webhook URL forwards each verified delivery to the shadow, so the vendor subscription does not change. `runtime: builtin` switches back in one call.
 
-The flow file records `shadow_of: <id>` on a shadow, and `runtime: boxed` with `replaces: <id>` on a switched twin. A shadow never writes the live dataset: a run whose destination matches its live sync fails before it reads. A paused built-in sync never runs.
+The flow file shows `shadow_of: <id>` on a shadow, and `runtime: boxed` with `replaces: <id>` on a switched twin. Only `flow_shadow` and `flow_update` set `shadow_of` and `replaces`; a file edit never sets or changes them. A shadow never writes the live dataset: a run whose destination matches its live sync fails before it reads. A paused built-in sync never runs.
 
 The CLI wraps the same tools:
 

@@ -5,19 +5,23 @@
 import type { LoadedConnector } from "../workspace/resolver";
 
 /**
- * Whether the twin's code is code the key may reach: Mako's registry
- * connector for this very type (built by Mako, installed by reference), or
- * the exact folder an owner/admin approved. A push of new code to
- * `connectors/<slug>/` changes the folder's source hash, and the next run
- * is refused until someone approves again.
+ * Whether the twin's code is the code an owner/admin approved for this
+ * connection: Mako's registry connector for this very type at the approved
+ * bundle hash, or the exact workspace folder approved (its source hash). A
+ * push of new code to `connectors/<slug>/`, or a registry upgrade, changes
+ * the hash, and the next run is refused until someone approves again.
  */
 export function isTwinCodeAllowed(
   definition: Pick<LoadedConnector, "sourceSha" | "registry">,
-  pin: { sourceSha?: string } | undefined,
+  pin: { sourceSha?: string; registryHash?: string } | undefined,
   connectionType: string,
 ): boolean {
-  if (definition.registry && definition.registry.slug === connectionType) {
-    return true;
+  if (definition.registry) {
+    return (
+      definition.registry.slug === connectionType &&
+      Boolean(pin?.registryHash) &&
+      definition.registry.hash === pin?.registryHash
+    );
   }
   return Boolean(pin?.sourceSha) && definition.sourceSha === pin?.sourceSha;
 }
