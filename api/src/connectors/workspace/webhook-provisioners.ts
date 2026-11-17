@@ -17,6 +17,7 @@ import type Stripe from "stripe";
 import type {
   ProvisionWebhookOptions,
   ProvisionWebhookResult,
+  UpdateWebhookSubscriptionOptions,
 } from "../base/BaseConnector";
 import { STRIPE_API_VERSION } from "../stripe/connector";
 import {
@@ -32,7 +33,7 @@ export interface WebhookProvisioner {
   create(options: ProvisionWebhookOptions): Promise<ProvisionWebhookResult>;
   /** Adopt the subscription on the URL and set its events; null when none. */
   update(
-    options: ProvisionWebhookOptions,
+    options: UpdateWebhookSubscriptionOptions,
   ): Promise<ProvisionWebhookResult | null>;
 }
 
