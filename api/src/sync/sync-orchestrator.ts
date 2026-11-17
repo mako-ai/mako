@@ -207,6 +207,12 @@ export interface SyncChunkOptions {
   syncEngine?: string;
   backfillRunId?: string;
   /**
+   * This run reads the source in full (a backfill or a resync), not as an
+   * incremental poll. Its staged rows may overwrite a live row stamped up to
+   * 1 s later (FULL_READ_SKEW_SECONDS in sync-cdc/adapters/bigquery-sql.ts).
+   */
+  fullRead?: boolean;
+  /**
    * Explicit fetch scope for a CDC backfill chunk, decided once per entity
    * and run by sync-cdc/backfill-fetch-mode.ts. When present it replaces the
    * `_syncedAt` incremental anchor below:
@@ -1453,7 +1459,10 @@ export async function performRescueAndPrepareStaging(
   let rescued = 0;
   if (isDedup || !opts?.dedupOnly) {
     try {
-      rescued = (await performStagingMerge(options)).written;
+      // Leftover staging may come from an earlier run of another kind (a
+      // poll), so it merges under the strict ordering guard.
+      rescued = (await performStagingMerge({ ...options, fullRead: false }))
+        .written;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (!STAGING_CONTAINER_MISSING.test(message)) {
@@ -1562,7 +1571,7 @@ export async function performStagingMerge(
     } as any,
     flowId,
     entitySchema ?? undefined,
-    { stagingSuffix: "backfill_staging" },
+    { stagingSuffix: "backfill_staging", fullRead: options.fullRead },
   );
 }
 

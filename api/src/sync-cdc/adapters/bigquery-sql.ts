@@ -117,7 +117,18 @@ export interface BuildMergeStatementParams {
    * key is in staging, or the MERGE would insert duplicates.
    */
   livePartitionFilter?: string;
+  /**
+   * The staged rows come from a full read of the source (a backfill or a
+   * resync), not a webhook or an incremental poll. Such a row also wins
+   * against a live row up to {@link FULL_READ_SKEW_SECONDS} newer: a webhook
+   * can stamp a version a few ms ahead of what the API later returns for it,
+   * and that row must stay repairable by the next full read.
+   */
+  fullRead?: boolean;
 }
+
+/** How far behind the live `_mako_source_ts` a full-read row may be and still win. */
+export const FULL_READ_SKEW_SECONDS = 1;
 
 /**
  * Build the BigQuery CDC MERGE statement that materializes a deduplicated
@@ -135,6 +146,7 @@ export function buildMergeStatement(p: BuildMergeStatementParams): string {
     liveTypes,
     entitySchema,
     livePartitionFilter,
+    fullRead,
   } = p;
 
   // Only consider staging cols that also exist on live (an ALTER TABLE add may
@@ -186,8 +198,9 @@ export function buildMergeStatement(p: BuildMergeStatementParams): string {
     hasStagingSourceTs && !keyColumns.includes("_mako_source_ts");
   const hasIngestOrdering =
     hasStagingIngestSeq && !keyColumns.includes("_mako_ingest_seq");
+  const liveSourceTs = `COALESCE(__live.${escId("_mako_source_ts")}, TIMESTAMP('1970-01-01 00:00:00 UTC'))`;
   const matchedGuard = hasSourceOrdering
-    ? ` AND COALESCE(__stg.${escId("_mako_source_ts")}, TIMESTAMP('1970-01-01 00:00:00 UTC')) >= COALESCE(__live.${escId("_mako_source_ts")}, TIMESTAMP('1970-01-01 00:00:00 UTC'))`
+    ? ` AND COALESCE(__stg.${escId("_mako_source_ts")}, TIMESTAMP('1970-01-01 00:00:00 UTC')) >= ${fullRead ? `TIMESTAMP_SUB(${liveSourceTs}, INTERVAL ${FULL_READ_SKEW_SECONDS} SECOND)` : liveSourceTs}`
     : hasIngestOrdering
       ? ` AND COALESCE(__stg.${escId("_mako_ingest_seq")}, -1) >= COALESCE(__live.${escId("_mako_ingest_seq")}, -1)`
       : "";
