@@ -82,6 +82,9 @@ let otherFlowId: Types.ObjectId;
 beforeAll(async () => {
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
+  // Build the real indexes first, so every test meets them (the unique
+  // { workspaceId, slug } on flows, the webhookevents lane index).
+  await Promise.all([Flow.init(), WebhookEvent.init()]);
 }, 120_000);
 
 afterAll(async () => {
@@ -94,6 +97,8 @@ async function makeFlow(dataSourceId: Types.ObjectId, extra = {}) {
   await Flow.collection.insertOne({
     _id,
     workspaceId: ws,
+    // Unique per workspace once Mongoose's index build lands.
+    slug: `flow-${_id}`,
     type: "webhook",
     dataSourceId,
     destinationDatabaseId: db,
