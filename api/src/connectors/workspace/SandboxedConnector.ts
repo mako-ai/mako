@@ -105,6 +105,46 @@ const CREATE_DEFAULT_RATE_LIMIT_MS = 200;
 export const CHUNK_BYTE_BUDGET = Math.floor(MAX_CONNECTOR_PROTOCOL_BYTES / 2);
 
 /**
+ * How far a chunk's page cap may grow past the engine's `maxIterations`.
+ * A chunk of small pages (Close Search after a shrink: 10 rows, ~1 MB per
+ * 10 pages) spends most of its time on per-chunk host work, not on reading.
+ * While a chunk uses under a quarter of CHUNK_BYTE_BUDGET, the next one
+ * asks for twice the pages, up to this factor. The byte budget still ends
+ * every chunk, so a run of large pages cannot cross the protocol cap.
+ */
+export const CHUNK_PAGES_MAX_FACTOR = 8;
+
+/**
+ * A chunk that took longer than this does not grow the next one: twice its
+ * pages must stay well inside the box's 10-minute command timeout, and a
+ * slow source gains nothing from longer chunks.
+ */
+export const CHUNK_GROW_MAX_MS = 2 * 60 * 1000;
+
+/**
+ * The page cap for the next chunk, from this chunk's cap, bytes and time.
+ * Doubles while a chunk that ran to its cap used under a quarter of the
+ * byte budget in under CHUNK_GROW_MAX_MS; halves, never below `base`, when
+ * a chunk reached the budget or ran past that time.
+ */
+export function nextChunkPages(
+  base: number,
+  pages: number,
+  bytes: number,
+  ranToCap: boolean,
+  elapsedMs: number,
+): number {
+  const max = base * CHUNK_PAGES_MAX_FACTOR;
+  if (bytes >= CHUNK_BYTE_BUDGET || elapsedMs > CHUNK_GROW_MAX_MS) {
+    return Math.max(base, Math.floor(pages / 2));
+  }
+  if (ranToCap && bytes * 4 < CHUNK_BYTE_BUDGET) {
+    return Math.min(max, pages * 2);
+  }
+  return Math.min(max, Math.max(base, pages));
+}
+
+/**
  * A record's own time, from its declared cursor field first, then from the
  * update and creation fields APIs commonly use. Unix epochs count, in seconds
  * or milliseconds: Stripe sends `created` as seconds, and the base resolver
@@ -967,6 +1007,17 @@ export class SandboxedConnector extends BaseConnector {
       }
     }
 
+    // The engine's cap, scaled by what earlier chunks of this read used
+    // (`chunkPages`, engine-owned state). Not after an over-cap retry.
+    const basePages = maxIterations;
+    if (maxIterations > 1) {
+      const carried = Number(previous?.chunkPages);
+      if (Number.isInteger(carried) && carried > basePages) {
+        maxIterations = Math.min(carried, basePages * CHUNK_PAGES_MAX_FACTOR);
+      }
+    }
+    const planned = maxIterations;
+
     const base = withoutSession(previous?.metadata);
     const maxBytes = CHUNK_BYTE_BUDGET;
     const read = () =>
@@ -985,6 +1036,7 @@ export class SandboxedConnector extends BaseConnector {
     // page. If one page alone is over the cap, no budget can help: fail at
     // once, and tell Inngest not to replay the same read.
     let result: RunResult;
+    const startedAt = Date.now();
     for (;;) {
       try {
         result = await read();
@@ -1013,6 +1065,19 @@ export class SandboxedConnector extends BaseConnector {
     }
     const state = await this.applyRead(result, options, maxIterations);
     if (sessionUnsupported) state.readSession = { unsupported: true };
+    if (maxIterations === planned && planned > 1) {
+      const bytes = recordBytes(result, options.entity);
+      const pages = nextChunkPages(
+        basePages,
+        planned,
+        bytes,
+        // A chunk with more to read and bytes to spare ended on its page
+        // cap (the SDK ends a chunk on pages, bytes or the end of data).
+        state.hasMore,
+        Date.now() - startedAt,
+      );
+      if (state.hasMore && pages > basePages) state.chunkPages = pages;
+    }
     return state;
   }
 
@@ -1574,4 +1639,16 @@ export class SandboxedConnector extends BaseConnector {
       supportedEntities: this.getAvailableEntities(),
     };
   }
+}
+
+/** Bytes of one chunk's records for `entity`, as JSON. */
+function recordBytes(result: RunResult, entity: string): number {
+  let bytes = 0;
+  for (const message of result.messages) {
+    if (message.type !== "RECORD") continue;
+    const record = message.record as { stream?: string; data?: unknown };
+    if (record?.stream !== entity) continue;
+    bytes += Buffer.byteLength(JSON.stringify(record.data ?? null));
+  }
+  return bytes;
 }
