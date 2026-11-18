@@ -111,4 +111,32 @@ describe("PUT /databases/{id}/writers in the app", () => {
     });
     expect(events[0].actor).toBeTruthy();
   });
+
+  it("records allowAgentWrites switched on and off, and nothing for another edit", async () => {
+    const db = await DatabaseConnection.create({
+      workspaceId: WS,
+      name: "Agents",
+      type: "postgresql",
+      connection: { host: "localhost", database: "a" },
+      createdBy: "owner",
+    });
+    const put = (body: object) =>
+      app.request(`/api/workspaces/${WS}/databases/${db._id}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    expect((await put({ allowAgentWrites: true })).status).toBe(200);
+    // Unchanged, then a rename: neither is an access change.
+    expect((await put({ allowAgentWrites: true })).status).toBe(200);
+    expect((await put({ name: "Agents 2" })).status).toBe(200);
+    expect((await put({ allowAgentWrites: false })).status).toBe(200);
+    const events = await ConnectionAccessEvent.find({ connectionId: db._id })
+      .sort({ at: 1 })
+      .lean();
+    expect(events.map(e => [e.actor, e.via, e.changes])).toEqual([
+      ["owner", "app", { agentWrites: true }],
+      ["owner", "app", { agentWrites: false }],
+    ]);
+  });
 });

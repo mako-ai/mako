@@ -1,7 +1,7 @@
 /**
  * One change to who may use a connection, wherever it was made: the app's
- * Access tab (the writers and managers routes) or MCP
- * (set_connection_access). Who made it, on which connection, and what was
+ * Access tab (the writers and managers routes), a database connection's
+ * `allowAgentWrites` switch, or MCP (set_connection_access). Who made it, on which connection, and what was
  * added or removed. A writers entry records who added it, but a removal
  * leaves nothing on the connection: this is where it stays. Kept: the
  * volume is a handful per workspace, and the question it answers ("who let
@@ -30,6 +30,11 @@ export interface ConnectionAccessChanges {
   managers?: ListChange;
   /** The switch as it is after the change. */
   liveReads?: boolean;
+  /**
+   * A database connection's `allowAgentWrites` as it is after the change:
+   * on, any credential with the `query:write` scope writes through it.
+   */
+  agentWrites?: boolean;
 }
 
 export interface IConnectionAccessEvent {
@@ -38,7 +43,8 @@ export interface IConnectionAccessEvent {
   kind: "database" | "source";
   /** The user id of the person signed in, or of the credential's owner. */
   actor: string;
-  via: "app" | "mcp";
+  /** `api`: a REST call made with an API key. */
+  via: "app" | "mcp" | "api";
   changes: ConnectionAccessChanges;
   at: Date;
 }
@@ -49,7 +55,7 @@ const ConnectionAccessEventSchema = new Schema<IConnectionAccessEvent>(
     connectionId: { type: Schema.Types.ObjectId, required: true },
     kind: { type: String, enum: ["database", "source"], required: true },
     actor: { type: String, required: true },
-    via: { type: String, enum: ["app", "mcp"], required: true },
+    via: { type: String, enum: ["app", "mcp", "api"], required: true },
     changes: { type: Schema.Types.Mixed, required: true },
     at: { type: Date, default: () => new Date() },
   },
@@ -101,6 +107,9 @@ function withoutEmpty(
     ...(changes.liveReads !== undefined
       ? { liveReads: changes.liveReads }
       : {}),
+    ...(changes.agentWrites !== undefined
+      ? { agentWrites: changes.agentWrites }
+      : {}),
   };
 }
 
@@ -115,7 +124,7 @@ export async function recordAccessChange(event: {
   connectionId: string | Types.ObjectId;
   kind: "database" | "source";
   actor: string;
-  via: "app" | "mcp";
+  via: "app" | "mcp" | "api";
   changes: ConnectionAccessChanges;
 }): Promise<void> {
   const changes = withoutEmpty(event.changes);
