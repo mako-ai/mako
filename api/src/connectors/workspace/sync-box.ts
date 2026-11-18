@@ -288,7 +288,7 @@ export const TREE_MANIFEST = ".files-sha256";
  */
 export function verifyTreeShell(): string {
   return `sha256_check() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum -c --status "$1" 2>/dev/null; else shasum -a 256 -c --status "$1" 2>/dev/null; fi
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum -c --status "$1" >/dev/null 2>&1; else shasum -a 256 -c --status "$1" >/dev/null 2>&1; fi
 }
 verify_tree() {
   test -f "$1/.materialized" || return 1
