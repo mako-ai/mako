@@ -532,7 +532,8 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       // before them, writing them twice in append mode. It is saved only
       // when the buffer is empty: a flush that stopped early leaves rows
       // there, and a cursor past them would skip them on a resume.
-      const writtenBefore = totalWrittenForEntity + (rescuedInFlush || 0);
+      const writtenBefore =
+        totalWrittenForEntity + (Number(rescuedInFlush) || 0);
       const flushedState = state;
       const applied = (await step.run(
         `flush-apply-${safeEntityStepId}-${flushIndex}`,
@@ -559,13 +560,19 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             }
             return { written, left };
           }),
-      )) as { written: number; left: number };
+      )) as { written?: unknown; left?: unknown } | null;
       stepsUsed++;
       flushIndex++;
 
-      totalWrittenForEntity = applied.written;
+      // A step memoized by an earlier deploy returned nothing (null): it
+      // merged, but saved no cursor and counted nothing. Keep the count and
+      // the resume point as they were; the next complete flush saves.
+      const written = Number(applied?.written);
+      const left = Number(applied?.left);
+      if (!Number.isFinite(written) || !Number.isFinite(left)) return false;
+      totalWrittenForEntity = written;
       if (state) state = withRowsWritten(state, totalWrittenForEntity);
-      if (applied.left > 0) return false;
+      if (left > 0) return false;
       resumePoint = state;
       return true;
     };
@@ -893,7 +900,8 @@ export const syncBackfillEntityFunction = inngest.createFunction(
               return mergeResult.written;
             }),
         );
-        totalWrittenForEntity += (rescuedInFinal || 0) + (mergedFinal || 0);
+        totalWrittenForEntity +=
+          (Number(rescuedInFinal) || 0) + (Number(mergedFinal) || 0);
       }
 
       if (executionId) {

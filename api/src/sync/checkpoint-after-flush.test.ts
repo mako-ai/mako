@@ -356,6 +356,11 @@ async function invoke(params: {
   cancelAt?: string;
   /** Cancel the step that follows this one. */
   cancelAfter?: string;
+  /**
+   * Steps memoized by the pre-#1366 code: they ran, and their recorded
+   * result is null (the old flush-apply returned nothing).
+   */
+  legacyNullSteps?: string[];
   tableName?: string;
   poll?: boolean;
   interleave?: boolean;
@@ -369,6 +374,7 @@ async function invoke(params: {
         await new Promise(resolve => setImmediate(resolve));
       }
       const out = await fn();
+      if (params.legacyNullSteps?.includes(id)) return null;
       // Inngest stores step output as JSON.
       return out === undefined ? undefined : JSON.parse(JSON.stringify(out));
     },
@@ -618,5 +624,43 @@ describe("a backfill checkpoint never runs ahead of the flushed rows", () => {
     await invoke({ runId: "run-A" });
     expect(chunkStartOffsets[0]).toBe(10_000);
     expectEveryRowExactlyOnce();
+  }, 120_000);
+
+  it("a pre-#1366 checkpoint (no scope) is ignored: the entity starts fresh", async () => {
+    sourceRows = rows(12_000);
+    // The document a pre-#1366 run left: flow + entity, cursor, no scope.
+    entityStates.push({
+      workspaceId: WORKSPACE_ID,
+      flowId: FLOW_ID,
+      entity: ENTITY,
+      backfillCursor: {
+        totalProcessed: 5_000,
+        hasMore: true,
+        iterationsInChunk: 10,
+        metadata: { offset: 5_000, rowsWrittenTotal: null },
+      },
+    });
+    const result = await invoke({ runId: "run-A" });
+    expect(chunkStartOffsets[0]).toBe(0);
+    expectEveryRowExactlyOnce();
+    expect(result.rowsWritten).toBe(12_000);
+  }, 120_000);
+
+  it("an in-flight flush-apply result without `written` does not fail the run", async () => {
+    // Deploy of #1366 at 01:29 UTC on 18 Nov: 4 keyed backfills replayed
+    // flush-apply results memoized by the old code (null) and failed with
+    // "Cannot read properties of null (reading 'written')".
+    sourceRows = rows(25_000);
+    const result = await invoke({
+      runId: "run-A",
+      legacyNullSteps: [
+        "flush-merge-opportunities-0",
+        "flush-apply-opportunities-0",
+      ],
+    });
+    expect(result.completed).toBe(true);
+    expectEveryRowExactlyOnce();
+    // The legacy flush counted nothing; the later flushes count theirs.
+    expect(result.rowsWritten).toBe(15_000);
   }, 120_000);
 });
