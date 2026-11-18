@@ -36,30 +36,63 @@ const log = loggers.sync("cdc.consumer");
 
 /**
  * Marks a paused flow's pending webhook-sourced change events of one entity
- * as dropped (FLOW_PAUSED), so materialization never applies them. Returns
- * how many were parked.
+ * as dropped (FLOW_PAUSED), so materialization never applies them, and marks
+ * their WebhookEvents dropped too, so the event log and the orphan reconciler
+ * never report them as applied. `appliedAt` puts the change events under the
+ * 7-day dropped-events TTL. Returns how many were parked.
  */
 export async function parkPausedFlowWebhookEvents(params: {
   flowId: string;
   entity: string;
 }): Promise<number> {
-  const result = await CdcChangeEvent.updateMany(
+  const parkable = await CdcChangeEvent.find(
     {
       flowId: new Types.ObjectId(params.flowId),
       entity: params.entity,
       sourceKind: "webhook",
       materializationStatus: { $in: ["pending", "failed"] },
     },
+    { _id: 1, webhookEventId: 1 },
+  ).lean();
+  if (parkable.length === 0) return 0;
+
+  const failure = {
+    code: FLOW_PAUSED_CODE,
+    message: "The flow's webhook is switched off; event parked",
+  };
+  const result = await CdcChangeEvent.updateMany(
+    {
+      _id: { $in: parkable.map(event => event._id) },
+      materializationStatus: { $in: ["pending", "failed"] },
+    },
     {
       $set: {
         materializationStatus: "dropped",
-        materializationError: {
-          code: FLOW_PAUSED_CODE,
-          message: "The flow's webhook is switched off; event parked",
-        },
+        materializationError: failure,
+        appliedAt: new Date(),
       },
     },
   );
+
+  const webhookEventIds = Array.from(
+    new Set(
+      parkable
+        .map(event => event.webhookEventId)
+        .filter(
+          (eventId): eventId is string =>
+            typeof eventId === "string" && Types.ObjectId.isValid(eventId),
+        ),
+    ),
+  );
+  if (webhookEventIds.length > 0) {
+    await WebhookEvent.updateMany(
+      { _id: { $in: webhookEventIds.map(id => new Types.ObjectId(id)) } },
+      {
+        $set: { applyStatus: "dropped", applyError: failure },
+        $unset: { appliedAt: "" },
+      },
+    );
+  }
   return result.modifiedCount ?? 0;
 }
 

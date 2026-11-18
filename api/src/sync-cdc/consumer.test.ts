@@ -35,9 +35,19 @@ vi.mock("../database/workspace-schema", () => ({
   },
   CdcChangeEvent: {
     countDocuments: vi.fn(() => Promise.resolve(0)),
+    find: vi.fn(() => ({
+      lean: () =>
+        Promise.resolve([
+          { _id: "e1", webhookEventId: "507f1f77bcf86cd799439021" },
+          { _id: "e2", webhookEventId: "507f1f77bcf86cd799439021" },
+          { _id: "e3" },
+        ]),
+    })),
     updateMany: vi.fn(() => Promise.resolve({ modifiedCount: 3 })),
   },
-  WebhookEvent: {},
+  WebhookEvent: {
+    updateMany: vi.fn(() => Promise.resolve({ modifiedCount: 1 })),
+  },
 }));
 
 const ensureLiveTable = vi.fn().mockResolvedValue(undefined);
@@ -66,7 +76,7 @@ vi.mock("./event-store", () => ({
 
 import { CdcConsumerService } from "./consumer";
 import { buildCdcEntityLayout } from "./adapters/registry";
-import { CdcChangeEvent } from "../database/workspace-schema";
+import { CdcChangeEvent, WebhookEvent } from "../database/workspace-schema";
 
 describe("CdcConsumerService.materializeEntity — writeMode propagation (bug B3)", () => {
   beforeEach(() => {
@@ -120,7 +130,15 @@ describe("CdcConsumerService.materializeEntity — paused flow", () => {
   const updateMany = CdcChangeEvent.updateMany as unknown as ReturnType<
     typeof vi.fn
   >;
-  beforeEach(() => updateMany.mockClear());
+  const find = CdcChangeEvent.find as unknown as ReturnType<typeof vi.fn>;
+  const webhookUpdateMany = WebhookEvent.updateMany as unknown as ReturnType<
+    typeof vi.fn
+  >;
+  beforeEach(() => {
+    updateMany.mockClear();
+    find.mockClear();
+    webhookUpdateMany.mockClear();
+  });
 
   it("parks the paused flow's pending webhook events before reading", async () => {
     flowDoc.webhookConfig = { enabled: false };
@@ -130,8 +148,11 @@ describe("CdcConsumerService.materializeEntity — paused flow", () => {
         flowId: FLOW_ID,
         entity: "users",
       });
+      expect(find).toHaveBeenCalledTimes(1);
       expect(updateMany).toHaveBeenCalledTimes(1);
-      const [filter, update] = updateMany.mock.calls[0] as [any, any];
+      const [filter] = find.mock.calls[0] as [any];
+      const [byId, update] = updateMany.mock.calls[0] as [any, any];
+      expect(byId._id).toEqual({ $in: ["e1", "e2", "e3"] });
       // Webhook events only: an operator's backfill of a paused flow applies.
       expect(filter).toMatchObject({
         entity: "users",
@@ -142,6 +163,20 @@ describe("CdcConsumerService.materializeEntity — paused flow", () => {
       expect(update.$set).toMatchObject({
         materializationStatus: "dropped",
         materializationError: { code: "FLOW_PAUSED" },
+      });
+      // appliedAt puts parked events under the 7-day dropped-events TTL.
+      expect(update.$set.appliedAt).toBeInstanceOf(Date);
+      // Their WebhookEvents say dropped, so the orphan reconciler never
+      // reports them applied. One id, deduplicated; e3 has none.
+      expect(webhookUpdateMany).toHaveBeenCalledTimes(1);
+      const [webhookFilter, webhookUpdate] = webhookUpdateMany.mock
+        .calls[0] as [any, any];
+      expect(webhookFilter._id.$in.map(String)).toEqual([
+        "507f1f77bcf86cd799439021",
+      ]);
+      expect(webhookUpdate.$set).toMatchObject({
+        applyStatus: "dropped",
+        applyError: { code: "FLOW_PAUSED" },
       });
     } finally {
       delete flowDoc.webhookConfig;
