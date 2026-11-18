@@ -285,6 +285,41 @@ export interface BlobMutation {
   writes?: Record<string, string>;
   /** repo-relative paths to remove; absent paths are ignored. */
   deletes?: string[];
+  /**
+   * Rename a file or a whole folder. Every entry keeps its blob and its
+   * mode (binary files and executables move untouched). Applied first,
+   * against the head being committed on; a source that is not there throws.
+   */
+  moves?: Array<{ from: string; to: string }>;
+  /** Folders (or files) to remove with everything under them. */
+  deletePrefixes?: string[];
+}
+
+/** Every blob (or submodule) at or under `rel` in `commit`'s tree. */
+async function treeEntriesUnder(
+  repoDir: string,
+  commit: string,
+  rel: string,
+): Promise<Array<{ mode: string; oid: string; path: string }>> {
+  const { stdout } = await runGit([
+    "-C",
+    repoDir,
+    "ls-tree",
+    "-r",
+    "-z",
+    commit,
+    "--",
+    rel,
+  ]);
+  return stdout
+    .split("\0")
+    .filter(Boolean)
+    .map(line => {
+      const tab = line.indexOf("\t");
+      const [mode, , oid] = line.slice(0, tab).split(" ");
+      return { mode, oid, path: line.slice(tab + 1) };
+    })
+    .filter(e => e.path === rel || e.path.startsWith(`${rel}/`));
 }
 
 /** The branch is no longer at the head a commit was judged against. */
@@ -333,6 +368,13 @@ export async function commitBlobsOnBranch(
     ([rel, contents]) => [assertSafeRelPath(rel), contents] as const,
   );
   const deletes = (mutation.deletes ?? []).map(p => assertSafeRelPath(p));
+  const moves = (mutation.moves ?? []).map(m => ({
+    from: assertSafeRelPath(m.from),
+    to: assertSafeRelPath(m.to),
+  }));
+  const deletePrefixes = (mutation.deletePrefixes ?? []).map(p =>
+    assertSafeRelPath(p),
+  );
   // Blobs first: they are content-addressed, so writing them before knowing
   // the head is safe and keeps the CAS window short.
   const oids = new Map<string, string>();
@@ -343,11 +385,49 @@ export async function commitBlobsOnBranch(
     );
     oids.set(rel, stdout.trim());
   }
-  const indexInfo =
-    [
-      ...deletes.map(rel => `0 ${ZERO_OID}\t${rel}`),
-      ...writes.map(([rel]) => `100644 ${oids.get(rel)}\t${rel}`),
-    ].join("\n") + "\n";
+  /**
+   * The index lines for this mutation on `head`: moves, then folder
+   * deletes, then deletes, then writes; the last word on a path wins.
+   * Removals go first so a file can become a folder and back.
+   */
+  const indexInfoAt = async (head: string): Promise<string> => {
+    const final = new Map<string, { mode: string; oid: string } | null>();
+    for (const move of moves) {
+      const entries = await treeEntriesUnder(repoDir, head, move.from);
+      if (entries.length === 0) {
+        throw new Error(`Cannot move ${move.from}: it is not on ${branch}`);
+      }
+      for (const e of entries) final.set(e.path, null);
+      for (const e of entries) {
+        final.set(`${move.to}${e.path.slice(move.from.length)}`, {
+          mode: e.mode,
+          oid: e.oid,
+        });
+      }
+    }
+    for (const prefix of deletePrefixes) {
+      for (const e of await treeEntriesUnder(repoDir, head, prefix)) {
+        final.set(e.path, null);
+      }
+      for (const rel of final.keys()) {
+        if (rel === prefix || rel.startsWith(`${prefix}/`)) {
+          final.set(rel, null);
+        }
+      }
+    }
+    for (const rel of deletes) final.set(rel, null);
+    for (const [rel] of writes) {
+      final.set(rel, { mode: "100644", oid: oids.get(rel)! });
+    }
+    const lines: string[] = [];
+    for (const [rel, entry] of final) {
+      if (!entry) lines.push(`0 ${ZERO_OID}\t${rel}`);
+    }
+    for (const [rel, entry] of final) {
+      if (entry) lines.push(`${entry.mode} ${entry.oid}\t${rel}`);
+    }
+    return lines.join("\n") + "\n";
+  };
 
   for (let attempt = 0; attempt < 3; attempt++) {
     const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
@@ -355,6 +435,7 @@ export async function commitBlobsOnBranch(
     if (options.expectedHead && head !== options.expectedHead) {
       throw new BranchMovedError(branch, options.expectedHead, head);
     }
+    const indexInfo = await indexInfoAt(head);
     const headTree = await treeOfCommit(repoDir, head);
     const indexFile = path.join(
       os.tmpdir(),

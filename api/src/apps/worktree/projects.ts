@@ -24,11 +24,11 @@ import { loadOwnerDirectory } from "../user-handles.service";
 
 import { createAppsScaffold } from "../scaffold";
 import { authorForUser } from "../workspace-consoles/authors";
+import { queueMirrorPush } from "../cloud-repo.service";
 import {
-  mirrorPushDefaultBranchNow,
-  resolveMirrorTarget,
-  queueMirrorPush,
-} from "../cloud-repo.service";
+  DurableMainWriteError,
+  commitToMainDurably,
+} from "../cloud-repo/durable-main";
 import { repoForWorkspace, appRootFor, WorktreeConflictError } from "./repo";
 import { pokeApp } from "./push";
 import { AppFolderError, isWithin } from "./folders";
@@ -240,8 +240,7 @@ export async function createProject(input: {
   // Git first (#956): do not init a local-only repo that then lets consoles,
   // dbt, and prompt writes skip the 412. A GitHub binding (or a test that
   // already seeded the bare repo) is required.
-  const repoDir = await requireWorkspaceRepo(input.workspaceId);
-  const mirror = await resolveMirrorTarget(input.workspaceId);
+  await requireWorkspaceRepo(input.workspaceId);
   const target: AppFolderTarget = input.folder ?? {
     scope: "workspace",
     folderSegments: [],
@@ -283,7 +282,12 @@ export async function createProject(input: {
   // §10 monorepo: commit the scaffold under its folder onto main. The row's
   // id goes into the manifest: that is the app's identity from here on,
   // whatever folder it is later filed under.
-  let scaffoldCommit: { commitOid: string; previousHead: string } | null;
+  //
+  // Durable tier (§13.17): the connected repo. When one is bound, the commit
+  // must land on it before this returns — on serverless hosts the local repo
+  // is an ephemeral cache. commitToMainDurably pushes main alone and retries
+  // when GitHub's main moved meanwhile. Hosts without a binding (dev,
+  // previews) stay local-only.
   try {
     const scaffold = createAppsScaffold({
       title: project.title,
@@ -300,9 +304,8 @@ export async function createProject(input: {
     const author =
       input.author ??
       (input.userId ? await authorForUser(input.userId) : undefined);
-    scaffoldCommit = await commitFilesOnBranch(
-      repoDir,
-      DEFAULT_BRANCH,
+    await commitToMainDurably(
+      input.workspaceId,
       { writes: prefixed },
       {
         message: scaffoldCommitMessage(title, appPath, input.userId),
@@ -310,46 +313,19 @@ export async function createProject(input: {
       },
     );
   } catch (error) {
-    // Don't leave a content-less project behind.
+    // Don't leave a content-less project behind. A failed durable write has
+    // already moved local main back where it was.
     await AppProject.deleteOne({
       _id: project._id,
       workspaceId: project.workspaceId,
     });
-    throw error;
-  }
-  // Durable tier (§13.17): the connected repo. When one is bound, the
-  // durable push is REQUIRED — on serverless hosts the local repo is an
-  // ephemeral cache. Hosts without a binding (dev, previews) stay local-only.
-  try {
-    if (mirror) {
-      await mirrorPushDefaultBranchNow(input.workspaceId);
-    }
-  } catch (error) {
-    await AppProject.deleteOne({
-      _id: project._id,
-      workspaceId: project.workspaceId,
-    });
-    // Roll the scaffold commit back so the repo matches the docs. The CAS
-    // returns false (it does not throw) when main moved on meanwhile; that
-    // leaves the scaffold on a tip the mirror never received — say so.
-    const rolledBack = await updateRefCas(
-      repoDir,
-      `refs/heads/${DEFAULT_BRANCH}`,
-      scaffoldCommit.previousHead,
-      scaffoldCommit.commitOid,
-    ).catch(() => false);
-    if (!rolledBack) {
-      logger.warn("Apps scaffold rollback skipped: main moved on", {
-        projectId: project._id.toString(),
-        commit: scaffoldCommit.commitOid,
-      });
-    }
+    if (!(error instanceof DurableMainWriteError)) throw error;
     logger.error("Apps creation aborted: durable push failed", {
       projectId: project._id.toString(),
-      error: error instanceof Error ? error.message : String(error),
+      error: error.message,
     });
     throw new Error(
-      `Could not store the app durably (GitHub push failed): ${error instanceof Error ? error.message : String(error)}`,
+      `Could not store the app durably (GitHub push failed): ${error.message}`,
       { cause: error },
     );
   }
