@@ -301,10 +301,7 @@ export async function* readCloseSearch(
         if (pageSize > MIN_SEARCH_PAGE_SIZE && bytes > byteBudget) {
           // Drop the page and read it again, smaller, from the same
           // cursor: nothing about the position has moved yet.
-          const next = Math.max(
-            MIN_SEARCH_PAGE_SIZE,
-            Math.floor(pageSize / 2),
-          );
+          const next = Math.max(MIN_SEARCH_PAGE_SIZE, Math.floor(pageSize / 2));
           ctx.log(
             `Close page of ${data.length} ${entity} rows is ${bytes} bytes, over the ${byteBudget}-byte page budget; ${pageSize} -> ${next} rows per page`,
           );
