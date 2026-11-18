@@ -181,18 +181,24 @@ shadcn setup and needs a variant the kit does not offer.
 From SDK 2.17 the kit owns the All rule. Don't wrap `MultiSelect` with your
 own All logic, and don't override `.mk-ms-*` classes to change its trigger.
 
-- Pass `[]` or every value for "All". Both tick the All row and untick every
-  option. A click under All selects only that option.
-- The trigger reads the All label, the one label, or "N selected"
-  (`formatMany` changes the last).
+- Pass `[]` or every value for "All". From SDK 2.20 every row is ticked
+  under All; unticking one leaves All partial (–); a click on a full All
+  unticks every row (a draft that emits nothing, trigger "None"); a click on
+  a partial All ticks every row.
+- Trees: options with `children` are groups that tick their leaves and
+  expand in place. Several filters in one menu: render `FilterItems` (the
+  same rows) in each submenu. Never copy a NestedFilterMenu into an app:
+  `MultiSelect` takes its props (`selected`, `label`, `summary`,
+  `triggerClassName`, `probes`, `sizeTo`), and `filterToParam` /
+  `filterFromParam` / `filterText` replace `nestedfilter.ts`.
+- The trigger reads the All label, the one label, "N selected" (flat;
+  `formatMany` changes it) or the picked parts (tree), at a fixed width.
 - One dropdown open at a time. Kit popovers close each other. A Radix menu
   calls `closePopovers()` from `@makoai/app-sdk/ui` in
   `onOpenChange={o => o && closePopovers()}`, with `modal={false}`.
 - Ticks are white on `--brand` from SDK 2.18. Don't override `.mk-ms-box`.
 - `MultiSelect` can sit inside a `<label>` from SDK 2.18.
-- An app-side menu draws its ticks with the kit `Checkbox`
-  (`checked` true / false / "mixed") and follows the same rule with
-  `multiSelectState` / `multiSelectToggle` / `multiSelectText`.
+- An app-side menu renders `FilterItems`, so its rows tick like the kit's.
 
 Multi-select filters (countries, teams, …) are a `DropdownMenu`, not a chip
 row: trigger shows the selection summary (`All countries` / `FR, CH`), the
