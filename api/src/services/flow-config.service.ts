@@ -217,6 +217,8 @@ export interface FlowDefinitionDrift {
   differs: string[];
   /** Why the row is not in sync, in words; absent when it is. */
   reason?: string;
+  /** Why nothing was compared (no bound repo, no main). */
+  skippedReason?: string;
 }
 
 /**
@@ -238,9 +240,12 @@ export async function flowDefinitionDrift(
   };
   if (!flow.slug) return none;
   const repoDir = await boundRepoDirIfExists(flow.workspaceId.toString());
-  if (!repoDir) return none;
+  if (!repoDir) {
+    // Read-only: no bound repo means no file to compare with.
+    return { ...none, skippedReason: "no connected repo" };
+  }
   const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
-  if (!head) return none;
+  if (!head) return { ...none, skippedReason: `no ${DEFAULT_BRANCH} branch` };
   const filePath = flowFilePath(flow.slug);
   const blobAtMain = await blobIdAt(repoDir, head, filePath);
   if (!blobAtMain) {
