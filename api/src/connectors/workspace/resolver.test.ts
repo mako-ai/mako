@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const cache = vi.hoisted(() => ({ present: false }));
+const cache = vi.hoisted(() => ({ present: false, fetchesUntilPresent: 1 }));
 const ensureCommitLocally = vi.hoisted(() =>
   vi.fn(async () => {
-    cache.present = true;
+    cache.fetchesUntilPresent--;
+    if (cache.fetchesUntilPresent <= 0) cache.present = true;
   }),
 );
 vi.mock("../../apps/cloud-repo.service", () => ({ ensureCommitLocally }));
@@ -29,6 +30,7 @@ import { readConnectorFolder } from "./resolver";
 
 beforeEach(() => {
   cache.present = false;
+  cache.fetchesUntilPresent = 1;
   ensureCommitLocally.mockClear();
 });
 describe("pinned connector source on a stale API replica", () => {
@@ -39,5 +41,22 @@ describe("pinned connector source on a stale API replica", () => {
     expect(Buffer.from(files.get("connector.ts") ?? []).toString()).toBe(
       "code",
     );
+  });
+
+  it("reads again once when the commit lands just after the first fetch", async () => {
+    // The row's commit reaches the mirror a moment after it was indexed.
+    cache.fetchesUntilPresent = 2;
+    const commit = "b".repeat(40);
+    const files = await readConnectorFolder("workspace", "acme", commit);
+    expect(ensureCommitLocally).toHaveBeenCalledTimes(2);
+    expect(files.has("connector.ts")).toBe(true);
+  });
+
+  it("throws on a second miss, so the sync step retries", async () => {
+    cache.fetchesUntilPresent = 99;
+    await expect(
+      readConnectorFolder("workspace", "acme", "c".repeat(40)),
+    ).rejects.toThrow(/not a tree object/);
+    expect(ensureCommitLocally).toHaveBeenCalledTimes(2);
   });
 });

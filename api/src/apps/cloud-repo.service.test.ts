@@ -748,6 +748,52 @@ describe("ensureCommitLocally", () => {
     ).resolves.toBeDefined();
   });
 
+  it("fetches a commit parked off main on the mirror (a diverged tip)", async () => {
+    // 17 Nov 2026: an instance indexed connectors at its local main, then lost
+    // the race to the mirror. The tip was parked under refs/mako/diverged/*
+    // and pushed there, never to main. Other instances read the indexed sha
+    // and failed `git ls-tree` with `fatal: not a tree object`.
+    const remoteDir = await makeBareRemote("acme", "parked");
+    state.binding = { owner: "acme", repo: "parked" };
+    await initRepo(repoDirFor(workspaceId), { "apps/a/mako.json": "{}" });
+    await adoptConnectedRepo(workspaceId, state.binding);
+    const base = await headOf(remoteDir);
+    const parkedSha = await commitFiles(
+      remoteDir,
+      { "connectors/acme/connector.ts": "export {}\n" },
+      "local commit that lost the race",
+    );
+    // Park it the way fetchFromCloud does, and move main back off it.
+    await runGit([
+      "-C",
+      remoteDir,
+      "update-ref",
+      `refs/mako/diverged/main/${parkedSha.slice(0, 12)}`,
+      parkedSha,
+    ]);
+    await runGit([
+      "-C",
+      remoteDir,
+      "update-ref",
+      `refs/heads/${DEFAULT_BRANCH}`,
+      base as string,
+    ]);
+
+    await expect(ensureCommitLocally(workspaceId, parkedSha)).resolves.toBe(
+      true,
+    );
+
+    const { stdout } = await runGit([
+      "-C",
+      repoDirFor(workspaceId),
+      "ls-tree",
+      "-r",
+      "--name-only",
+      parkedSha,
+    ]);
+    expect(stdout).toContain("connectors/acme/connector.ts");
+  });
+
   it("does not fetch when the commit is already here", async () => {
     await makeBareRemote("acme", "already");
     state.binding = { owner: "acme", repo: "already" };

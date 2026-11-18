@@ -155,7 +155,17 @@ export async function readConnectorFolder(
     throw new Error(`Workspace ${workspaceId} has no repository`);
   }
   const prefix = `${CONNECTORS_DIR}/${slug}/`;
-  const entries = await listTree(repoDir, commit);
+  const entries = await listTree(repoDir, commit).catch(async error => {
+    if (!MISSING_OBJECT.test(String((error as Error)?.message ?? error))) {
+      throw error;
+    }
+    // The commit can reach the mirror a moment after the row naming it was
+    // indexed (its mirror push is in flight). Fetch again and read once more;
+    // a second miss throws, and the sync step retries.
+    await new Promise(resolve => setTimeout(resolve, MISSING_OBJECT_RETRY_MS));
+    await ensureCommitLocally(workspaceId, commit);
+    return listTree(repoDir, commit);
+  });
   const wanted = entries.filter(entry => entry.path.startsWith(prefix));
 
   if (wanted.length === 0) {
@@ -178,6 +188,11 @@ export async function readConnectorFolder(
   }
   return files;
 }
+
+/** git's answers for a commit this repo does not hold (yet). */
+const MISSING_OBJECT =
+  /not a tree object|bad object|not a valid object name|could not get object|unknown revision/i;
+const MISSING_OBJECT_RETRY_MS = 2_000;
 
 /** Bytes a set of tree entries would occupy, from git's own sizes. */
 function folderBytes(entries: Array<{ size: number }>): number {
