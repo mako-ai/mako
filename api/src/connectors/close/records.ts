@@ -131,6 +131,11 @@ export function normalizeCloseLeadRecord(
     }
   }
 
+  // Search never returns `source`. Its `first_source` holds the same value.
+  if (record && !("source" in record) && "first_source" in record) {
+    normalized.source = record.first_source;
+  }
+
   flattenCloseCustomFields(normalized);
 
   const contactIds = extractLeadContactIds(record);

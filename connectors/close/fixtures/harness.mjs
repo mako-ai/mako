@@ -439,6 +439,16 @@ function project(row, fields) {
   return out;
 }
 
+/**
+ * Close's Search leaves `source` out of a lead even when `_fields` names it.
+ * It answers the smart field `first_source` with the same value.
+ */
+function searchRow(objectType, row, fields) {
+  if (objectType !== "lead") return project(row, fields);
+  const { source, ...rest } = row;
+  return project({ ...rest, first_source: source }, fields);
+}
+
 function listPage(route, items, query) {
   // Without `_fields`, `/group/` omits name and members, as Close does.
   const fields = query._fields
@@ -541,7 +551,7 @@ function search(dataset, body) {
   return {
     status: 200,
     body: {
-      data: page.map(row => project(row, fields)),
+      data: page.map(row => searchRow(objectType, row, fields)),
       cursor: next
         ? Buffer.from(
             JSON.stringify({ s: signature, o: offset + limit }),
