@@ -57,6 +57,8 @@ const objects = new Map<string, Record<string, unknown>>();
 const failing = new Set<string>();
 /** Paths answered 403, as for a token of another organization. */
 const forbidden = new Set<string>();
+/** Paths answered 401, as for a revoked token. */
+const unauthorized = new Set<string>();
 /** Paths answered 429 with `Retry-After: 60`. */
 const limited = new Set<string>();
 const requests: string[] = [];
@@ -137,6 +139,11 @@ before(async () => {
       res.statusCode = 429;
       res.setHeader("retry-after", "60");
       res.end(JSON.stringify({ title: "Too Many Requests" }));
+      return;
+    }
+    if (unauthorized.has(url.pathname)) {
+      res.statusCode = 401;
+      res.end(JSON.stringify({ title: "Unauthenticated", message: "No" }));
       return;
     }
     if (forbidden.has(url.pathname)) {
@@ -355,6 +362,20 @@ void test("a 403 fill read lands the record without the keys it could not read",
     );
   } finally {
     forbidden.delete(eventPath);
+  }
+});
+
+void test("a 401 fill read fails the event loudly, never a partial row", async () => {
+  const [created] = local(buildWebhookEvents());
+  const eventPath = new URL(created.rawPayload.payload.scheduled_event.uri)
+    .pathname;
+  unauthorized.add(eventPath);
+  try {
+    const outcomes = await runBatch([created]);
+    assert.equal(outcomes[0].outcome, "extract_failed");
+    assert.match(outcomes[0].reason, /HTTP 401/);
+  } finally {
+    unauthorized.delete(eventPath);
   }
 });
 
