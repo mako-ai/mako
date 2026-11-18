@@ -64,9 +64,8 @@ type FlowRequestBody = Record<string, any>;
 export async function buildNewFlow(params: {
   workspaceId: string;
   body: FlowRequestBody;
-  requestBaseUrl: string;
 }) {
-  const { workspaceId, body, requestBaseUrl } = params;
+  const { workspaceId, body } = params;
   // TODO: Get userId from authentication
   const userId = "system";
   // Webhooks on at creation: `webhookConfig.enabled`, or the retired
@@ -323,7 +322,6 @@ export async function buildNewFlow(params: {
     const webhookEndpoint = generateWebhookEndpoint(
       workspaceId,
       new Types.ObjectId().toString(),
-      requestBaseUrl,
     );
     // Webhook secret must be provided by the user (from Stripe/Close)
     const webhookSecret = body.webhookSecret || "";
@@ -387,7 +385,6 @@ export async function buildNewFlow(params: {
     flow.webhookConfig.endpoint = generateWebhookEndpoint(
       workspaceId,
       flow._id.toString(),
-      requestBaseUrl,
     );
   }
 
@@ -459,9 +456,8 @@ export async function applyFlowUpdate(params: {
   workspaceId: string;
   flow: FlowDocument;
   body: FlowRequestBody;
-  requestBaseUrl: string;
 }): Promise<string[]> {
-  const { workspaceId, flow, body, requestBaseUrl } = params;
+  const { workspaceId, flow, body } = params;
   // Update common fields. Under the unified trigger model any flow may
   // carry a poll schedule (hybrid trigger set), not only type=scheduled.
   if (body.schedule) {
@@ -757,7 +753,6 @@ export async function applyFlowUpdate(params: {
       endpoint: generateWebhookEndpoint(
         workspaceId as string,
         flow._id.toString(),
-        requestBaseUrl,
       ),
       enabled: true,
     } as typeof flow.webhookConfig;
@@ -768,10 +763,12 @@ export async function applyFlowUpdate(params: {
     flow.webhookConfig.endpoint = generateWebhookEndpoint(
       workspaceId as string,
       flow._id.toString(),
-      requestBaseUrl,
     );
-    if (body.webhookSecret !== undefined) {
-      flow.webhookConfig.secret = body.webhookSecret;
+    // A save may set the signing secret (pasted from the provider), never
+    // clear it: an empty secret reads as "never provisioned", and the next
+    // save would provision again.
+    if (typeof body.webhookSecret === "string" && body.webhookSecret.trim()) {
+      flow.webhookConfig.secret = body.webhookSecret.trim();
     }
     if (body.webhookConfig) {
       if (body.webhookConfig.enabled !== undefined) {

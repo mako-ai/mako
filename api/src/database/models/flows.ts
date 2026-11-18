@@ -225,6 +225,11 @@ export interface IFlow extends Document {
      * Cleared on success. Polling carries on regardless.
      */
     provisionError?: { message: string; at: Date } | null;
+    /**
+     * Set while flow_webhook_provision creates the subscription: the atomic
+     * claim that keeps two concurrent calls from creating two.
+     */
+    provisioningAt?: Date | null;
     totalReceived: number;
     enabled: boolean;
     /**
@@ -483,6 +488,7 @@ const FlowSchema = new Schema<IFlow>(
         message: String,
         at: Date,
       },
+      provisioningAt: Date,
       totalReceived: {
         type: Number,
         default: 0,

@@ -15,7 +15,9 @@ import {
 const FLOW_ID = new Types.ObjectId();
 const WORKSPACE_ID = new Types.ObjectId();
 const DATA_SOURCE_ID = new Types.ObjectId();
-const ENDPOINT = "https://mako.example/api/webhooks/ws/flow";
+// The URL is the server's (generateWebhookEndpoint), so the test server's.
+process.env.WEBHOOK_PUBLIC_BASE_URL = "https://mako.example";
+const ENDPOINT = `https://mako.example/api/webhooks/${WORKSPACE_ID}/${FLOW_ID}`;
 
 /** A save by an owner/admin: it may create a subscription. */
 const OWNER = { mayProvision: true };
@@ -566,7 +568,7 @@ async function testConnectionLookupsAreScopedToTheWorkspace() {
   lookups.length = 0;
   for (const endpoint of [
     `https://mako.example/api/webhooks/${WORKSPACE_ID}/${new Types.ObjectId()}`,
-    ENDPOINT,
+    "https://mako.example/api/webhooks/ws/flow",
   ]) {
     const skipped = await removeFlowWebhookSubscription({
       flowId: String(FLOW_ID),

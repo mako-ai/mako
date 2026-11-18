@@ -36,6 +36,10 @@ import {
   hasWebhookTrigger,
   isWebhookFlow,
 } from "../../services/flow-triggers.service";
+import {
+  persistProvisionedWebhook,
+  provisionFlowWebhook,
+} from "../../services/flow-webhook-provision.service";
 import { syncFlowWebhookSubscription } from "../../services/flow-webhook-subscription.service";
 import { generateWebhookEndpoint } from "../../utils/webhook.utils";
 import { workspaceService } from "../../services/workspace.service";
@@ -50,6 +54,8 @@ import {
 
 const OBJECT_ID = /^[0-9a-f]{24}$/i;
 const RECENT_EXECUTIONS = 5;
+/** A provisioning claim older than this is taken to have died. */
+const PROVISION_CLAIM_MS = 10 * 60 * 1000;
 
 const failure = (error: unknown) => ({
   success: false as const,
@@ -412,6 +418,105 @@ export function createFlowSyncTools({
             id: result.flowId,
             cancelled: result.executions,
             backfill: result.backfill,
+          };
+        } catch (error) {
+          return failure(error);
+        }
+      },
+    }),
+
+    flow_webhook_provision: tool({
+      description:
+        "Create the provider-side webhook subscription of a sync, as the Triggers step's \"Create in …\" button does: the subscription points at this deployment's webhook URL (server configuration, never a stored or requested host), its signing secret is stored on the sync and never returned, flows/<slug>.yml is committed. Idempotent: a sync that already has a subscription id or a secret reports it and creates nothing; a subscription already on the URL is adopted where the connector can find it. The webhook trigger must be on (flow_update webhook=on). Owner or admin.",
+      inputSchema: z.object({ flow: flowRef }),
+      execute: async ({ flow: ref }) => {
+        try {
+          if (!(await mayChange())) {
+            return failure("Owner/admin role required");
+          }
+          await assertFlowRepo(workspaceId);
+          const found = await findFlow(workspaceId, ref);
+          if (!hasWebhookTrigger(found)) {
+            return failure(
+              "The sync's webhook trigger is off. Turn it on with flow_update (webhook: on) first.",
+            );
+          }
+          const existing = (f: IFlow) => ({
+            success: true as const,
+            id: f._id.toString(),
+            status: "existing" as const,
+            endpoint: f.webhookConfig?.endpoint ?? null,
+            providerWebhookId: f.webhookConfig?.providerWebhookId ?? null,
+          });
+          // The claim: only a sync with no subscription id, no secret and no
+          // provisioning in flight (or one stale for 10 minutes) is taken,
+          // atomically, so concurrent calls and retries create one at most.
+          const stale = new Date(Date.now() - PROVISION_CLAIM_MS);
+          const flow = await Flow.findOneAndUpdate(
+            {
+              _id: found._id,
+              workspaceId: new Types.ObjectId(workspaceId),
+              "webhookConfig.providerWebhookId": { $in: [null, ""] },
+              "webhookConfig.secret": { $in: [null, ""] },
+              $or: [
+                { "webhookConfig.provisioningAt": null },
+                { "webhookConfig.provisioningAt": { $lt: stale } },
+              ],
+            },
+            { $set: { "webhookConfig.provisioningAt": new Date() } },
+            { returnDocument: "after" },
+          );
+          if (!flow) {
+            const current = await Flow.findById(found._id);
+            if (
+              current?.webhookConfig?.providerWebhookId ||
+              current?.webhookConfig?.secret
+            ) {
+              return existing(current);
+            }
+            return failure(
+              "Another provisioning of this sync is in progress; check flow_read in a minute.",
+            );
+          }
+          const release = { "webhookConfig.provisioningAt": null };
+          let provisioned;
+          try {
+            provisioned = await provisionFlowWebhook({
+              workspaceId,
+              flow,
+              body: { adopt: true },
+            });
+          } catch (error) {
+            await Flow.updateOne({ _id: flow._id }, { $set: release });
+            throw error;
+          }
+          const { endpoint, created, webhookConfig, connectorType } =
+            provisioned;
+          // The row first: the subscription exists at the provider now.
+          await persistProvisionedWebhook(flow, release);
+          if (webhookConfig) webhookConfig.provisioningAt = null;
+          const committed = await commitFlowFile(flow, userId);
+          if (!committed.ok) {
+            return failure(
+              `The subscription ${created.providerWebhookId} is saved on the sync, but flows/<slug>.yml could not be committed: ${committed.error ?? "unknown error"}. Saving the flow again commits it.`,
+            );
+          }
+          if (committed.sourceBlobSha) {
+            flow.sourceBlobSha = committed.sourceBlobSha;
+          }
+          await flow.save();
+          if (!webhookConfig.secret) {
+            return failure(
+              `The ${connectorType} webhook subscription ${created.providerWebhookId} exists, but the provider did not return a signing secret (an adopted endpoint never shows it again). Paste it into the sync's Webhook Secret field.`,
+            );
+          }
+          return {
+            success: true,
+            id: flow._id.toString(),
+            status: "created" as const,
+            vendor: connectorType,
+            endpoint,
+            providerWebhookId: created.providerWebhookId,
           };
         } catch (error) {
           return failure(error);

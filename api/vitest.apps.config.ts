@@ -107,6 +107,8 @@ export default defineConfig({
       "src/connectors/probe.service.test.ts",
       // Cancel a sync's runs: the route's and flow_cancel's one step.
       "src/services/flow-cancel.service.test.ts",
+      // flow_webhook_provision: the "Create in …" step over MCP, idempotent.
+      "src/agent-lib/tools/flow-webhook-provision-tool.test.ts",
       "src/agent-lib/tools/connector-tools.test.ts",
       // Source connections over MCP: plain settings and access, update,
       // delete; the app's permission rules, no secret in or out.
