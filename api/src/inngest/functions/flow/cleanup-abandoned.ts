@@ -4,6 +4,7 @@ import { Types } from "mongoose";
 import { syncMachineService } from "../../../sync-cdc/sync-state";
 import { cdcBackfillService } from "../../../sync-cdc/backfill";
 import { EXECUTION_HEARTBEAT_STALE_MS } from "../../../services/flow-execution-tracking";
+import { infraResumeDue } from "./infra-failure";
 
 // Cleanup function for abandoned flows
 export const cleanupAbandonedFlowsFunction = inngest.createFunction(
@@ -237,6 +238,9 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
           status: "running",
         });
         if (hasRunningExec) continue;
+        // A platform failure does not use up an attempt; it waits 1, 2,
+        // 4 … 30 min before the next resume instead (infra-failure.ts).
+        if (!infraResumeDue(cdcFlow.backfillState, now)) continue;
 
         try {
           const restartResult = await cdcBackfillService.startBackfill(
@@ -244,7 +248,11 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
             fId,
             {
               reuseExistingRunId: true,
-              reason: `Auto-resumed interrupted backfill (attempt ${failures + 1}/${MAX_CONSECUTIVE_FAILURES})`,
+              reason: `Auto-resumed interrupted backfill (attempt ${failures + 1}/${MAX_CONSECUTIVE_FAILURES}${
+                cdcFlow.backfillState?.infraFailures
+                  ? `; ${cdcFlow.backfillState.infraFailures} platform failures not counted`
+                  : ""
+              })`,
             },
           );
           logger.info("Auto-restarted interrupted CDC backfill", {
