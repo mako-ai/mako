@@ -18,7 +18,11 @@ import {
   ConnectorDefinition,
   type IConnectorDefinition,
 } from "../../database/workspace-schema";
-import { blobOid } from "../../apps/repository.service";
+import { blobOid, repoDirFor, repoExists } from "../../apps/repository.service";
+import {
+  ensureLocalRepo,
+  freshenForServe,
+} from "../../apps/cloud-repo.service";
 import { loggers } from "../../logging";
 import {
   isValidSlug,
@@ -90,30 +94,58 @@ const EMPTY: ConnectorSyncResult = {
   skipped: [],
 };
 
+/**
+ * Why a pass runs. A push re-indexes every changed or unsettled row. A retry
+ * (the index-retry cron) re-indexes only `retrying` rows that are due, so a
+ * connector blocked by its own code is not rebuilt every 30 minutes.
+ */
+export type ReconcilePass = { kind: "push" } | { kind: "retry"; now: Date };
+
+const PUSH_PASS: ReconcilePass = { kind: "push" };
+
+/** A push asked for while a retry runs must still get a full pass. */
+function widerPass(
+  a: ReconcilePass | undefined,
+  b: ReconcilePass,
+): ReconcilePass {
+  return a?.kind === "push" || b.kind === "push" ? PUSH_PASS : b;
+}
+
 /** Coalesce concurrent pushes without losing the newest tree in the burst. */
 const inFlight = new Map<string, Promise<ConnectorSyncResult>>();
-const rerunRequested = new Set<string>();
+const rerunRequested = new Map<string, ReconcilePass>();
 
 export function syncConnectorsFromRepo(
   workspaceId: string,
   actorUserId?: string,
+  pass: ReconcilePass = PUSH_PASS,
 ): Promise<ConnectorSyncResult> {
   const existing = inFlight.get(workspaceId);
   if (existing) {
     // The active pass may already have resolved main. Remember this push and
     // read main again after it completes instead of acknowledging stale work.
-    rerunRequested.add(workspaceId);
+    rerunRequested.set(
+      workspaceId,
+      widerPass(rerunRequested.get(workspaceId), pass),
+    );
     return existing;
   }
   const work = (async () => {
+    let current = pass;
     for (;;) {
       try {
-        const result = await reconcile(workspaceId, actorUserId);
-        if (!rerunRequested.delete(workspaceId)) return result;
+        const result = await reconcile(workspaceId, actorUserId, current);
+        const next = rerunRequested.get(workspaceId);
+        if (!next) return result;
+        rerunRequested.delete(workspaceId);
+        current = next;
       } catch (error) {
         // A failed old pass must not consume a newer push. Retry when one is
         // pending; otherwise preserve the original failure for the caller.
-        if (!rerunRequested.delete(workspaceId)) throw error;
+        const next = rerunRequested.get(workspaceId);
+        if (!next) throw error;
+        rerunRequested.delete(workspaceId);
+        current = next;
       }
     }
   })();
@@ -127,7 +159,8 @@ export function syncConnectorsFromRepo(
 
 async function reconcile(
   workspaceId: string,
-  _actorUserId?: string,
+  _actorUserId: string | undefined,
+  pass: ReconcilePass,
 ): Promise<ConnectorSyncResult> {
   const { commit, slugs, filesBySlug, oversized, nodeModules } =
     await listConnectorFoldersAtMain(workspaceId);
@@ -241,6 +274,7 @@ async function reconcile(
         file: parsed.value,
         row,
         loadCatalog,
+        pass,
       });
       result[outcome]++;
       continue;
@@ -279,7 +313,7 @@ async function reconcile(
     const bundled = plan.kind === "npm" && hasDependencies(files);
 
     const sourceSha = sourceShaOf(files);
-    if (row && row.sourceSha === sourceSha && isSettled(row)) {
+    if (row && row.sourceSha === sourceSha && isSettled(row, pass)) {
       // Unchanged content: keep the row, and with it a `verified` status that
       // a real connection test earned. Re-running spec here would demote it.
       // `entry` is still backfilled: a row indexed before it was stored
@@ -365,28 +399,21 @@ async function reconcile(
         slug,
         reason,
       });
-      // A failed build is the connector's own; anything else may be the
-      // platform's, which retries instead of blocking.
-      const outcome =
+      // A build can fail on the platform too (the npm registry, the bundler
+      // install), so it goes through the same classifier: those retry, and
+      // the connector's own build errors (esbuild, dependency resolution)
+      // block with the failed build recorded.
+      const outcome = await failIndex(
+        workspaceId,
+        slug,
+        commit,
+        sourceSha,
+        reason,
+        rowBySlug.get(slug),
         error instanceof BundleBuildError
-          ? (await block(
-              workspaceId,
-              slug,
-              commit,
-              sourceSha,
-              reason,
-              rowBySlug.get(slug),
-              { status: "failed", hash: error.hash, error: error.reason },
-            ),
-            "blocked" as const)
-          : await failIndex(
-              workspaceId,
-              slug,
-              commit,
-              sourceSha,
-              reason,
-              rowBySlug.get(slug),
-            );
+          ? { status: "failed", hash: error.hash, error: error.reason }
+          : undefined,
+      );
       result[outcome]++;
     }
   }
@@ -561,8 +588,9 @@ async function indexReference(input: {
   file: ConnectorFile;
   row: IConnectorDefinition | undefined;
   loadCatalog: () => Promise<RegistryCatalog>;
+  pass: ReconcilePass;
 }): Promise<"created" | "updated" | "unchanged" | "blocked" | "retrying"> {
-  const { workspaceId, slug, commit, files, file, row } = input;
+  const { workspaceId, slug, commit, files, file, row, pass } = input;
   const reference = file.source!;
   const folderSha = sourceShaOf(files);
 
@@ -578,7 +606,7 @@ async function indexReference(input: {
     });
     // A storage outage is not a broken connector. A row that already runs a
     // resolved version keeps running it; only a first install is refused.
-    if (row && row.registry && isSettled(row)) return "unchanged";
+    if (row && row.registry && isSettled(row, pass)) return "unchanged";
     return failIndex(
       workspaceId,
       slug,
@@ -608,7 +636,7 @@ async function indexReference(input: {
     `${folderSha}\nregistry:${resolution.slug}@${resolution.version}:${resolution.hash}`,
   );
 
-  if (row && row.sourceSha === sourceSha && isSettled(row)) {
+  if (row && row.sourceSha === sourceSha && isSettled(row, pass)) {
     // Same version: keep the row and its `verified`. Only what is newer than
     // it may have changed, which is news, not new code.
     const previous = row.registry;
@@ -736,11 +764,20 @@ const CLEAR_RETRY = {
 } as const;
 
 /**
- * A row whose content needs no new indexing pass: neither blocked (a new
- * push may fix it) nor waiting on a retry (the retry has to run spec again).
+ * A row whose unchanged content needs no new indexing pass.
+ *
+ * On a push, `blocked` and `retrying` rows index again: a push may follow a
+ * platform fix. On a retry pass only a `retrying` row that is due does; a
+ * `blocked` row waits for a push, and a retry not yet due waits its turn.
  */
-function isSettled(row: IConnectorDefinition): boolean {
-  return row.status !== "blocked" && row.status !== "retrying";
+function isSettled(row: IConnectorDefinition, pass: ReconcilePass): boolean {
+  if (row.status === "blocked") return pass.kind === "retry";
+  if (row.status === "retrying") {
+    if (pass.kind === "push") return false;
+    const due = row.nextIndexRetryAt?.getTime() ?? 0;
+    return due > pass.now.getTime();
+  }
+  return true;
 }
 
 /**
@@ -804,24 +841,42 @@ async function failIndex(
  */
 export async function retryDueConnectorIndexing(
   now: Date = new Date(),
-): Promise<{ workspaces: number; failed: number }> {
+): Promise<{ workspaces: number; failed: number; skipped: number }> {
   const workspaceIds: unknown[] = await ConnectorDefinition.distinct(
     "workspaceId",
     { status: "retrying", nextIndexRetryAt: { $lte: now } },
   );
   let failed = 0;
+  let skipped = 0;
   for (const id of workspaceIds) {
+    const workspaceId = String(id);
     try {
-      await syncConnectorsFromRepo(String(id));
+      // This cron runs on whichever instance Inngest calls, and local repos
+      // are a per-instance cache: restore it and read the mirror's main, as
+      // the workflow deploy does (workflows/on-push.ts). Reconciling an old
+      // or absent tree would delete or rewrite rows from stale source.
+      await ensureLocalRepo(workspaceId);
+      if (!(await repoExists(repoDirFor(workspaceId)))) {
+        skipped++;
+        logger.warn("Connector index retry skipped: no repo on this instance", {
+          workspaceId,
+        });
+        continue;
+      }
+      await freshenForServe(workspaceId, 0);
+      await syncConnectorsFromRepo(workspaceId, undefined, {
+        kind: "retry",
+        now,
+      });
     } catch (error) {
       failed++;
       logger.error("Connector index retry failed", {
-        workspaceId: String(id),
+        workspaceId,
         error: error instanceof Error ? error.message : String(error),
       });
     }
   }
-  return { workspaces: workspaceIds.length, failed };
+  return { workspaces: workspaceIds.length, failed, skipped };
 }
 
 async function block(

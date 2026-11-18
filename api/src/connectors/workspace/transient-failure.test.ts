@@ -20,6 +20,13 @@ describe("isTransientIndexFailure", () => {
     "Could not install the connector Node runtime: curl: (28) timed out",
     "Timed out while installing the connector runtime.",
     "Could not read the connector registry to resolve mako/stripe@^1: 503",
+    // A bundle build the platform failed.
+    "Build failed: Could not install the bundler: timed out",
+    "Build failed: npm ci timed out after 5 minutes.",
+    "Build failed: npm ci failed: npm error code ETIMEDOUT\nnpm error network request to https://registry.npmjs.org/date-fns failed",
+    "Build failed: npm ci failed: npm error code EAI_AGAIN\nnpm error request to https://registry.npmjs.org/ failed, reason: getaddrinfo EAI_AGAIN",
+    "Build failed: npm ci failed: npm error code ECONNRESET",
+    "Build failed: npm ci failed: npm error code E503\nnpm error 503 Service Unavailable",
   ])("retries on the platform's error: %s", message => {
     expect(isTransientIndexFailure(message)).toBe(true);
   });
@@ -31,6 +38,11 @@ describe("isTransientIndexFailure", () => {
     "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/var/lib/mako-connectors/runtime/versions/afaf3869/connectors/acme@abc/helpers.ts' imported from /var/lib/mako-connectors/runtime/versions/afaf3869/connectors/acme@abc/connector.ts",
     "SyntaxError: Unexpected token '}'",
     "The connector timed out.",
+    // A bundle build the connector failed.
+    'Build failed: esbuild failed: Could not resolve "date-fns"',
+    "Build failed: esbuild timed out after 2 minutes.",
+    "Build failed: npm ci failed: npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/no-such-pkg",
+    "Build failed: npm ci failed: npm error code EUSAGE\nnpm error `npm ci` can only install packages when your package.json and package-lock.json are in sync.",
     "",
   ])("blocks on the connector's own error: %s", message => {
     expect(isTransientIndexFailure(message)).toBe(false);

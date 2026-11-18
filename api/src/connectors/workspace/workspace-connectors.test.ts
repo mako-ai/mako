@@ -22,6 +22,24 @@ import {
 } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+
+// Real code, observed: the index retry must read the mirror's main first.
+const cloudRepo = vi.hoisted(() => ({ calls: [] as string[] }));
+vi.mock("../../apps/cloud-repo.service", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../../apps/cloud-repo.service")>();
+  return {
+    ...actual,
+    ensureLocalRepo: vi.fn(async (workspaceId: string) => {
+      cloudRepo.calls.push(`ensure:${workspaceId}`);
+      return actual.ensureLocalRepo(workspaceId);
+    }),
+    freshenForServe: vi.fn(async (workspaceId: string, intervalMs?: number) => {
+      cloudRepo.calls.push(`freshen:${workspaceId}:${intervalMs}`);
+      return actual.freshenForServe(workspaceId, intervalMs);
+    }),
+  };
+});
 import {
   ConnectorDefinition,
   type ISourceConnection,
@@ -566,11 +584,14 @@ describe("a connector whose index hits a platform error", () => {
     await expect(retryDueConnectorIndexing(new Date(before))).resolves.toEqual({
       workspaces: 0,
       failed: 0,
+      skipped: 0,
     });
-    // Due: the retry indexes it, with no push.
+    // Due: the retry reads the mirror's main, then indexes it, with no push.
+    cloudRepo.calls.length = 0;
     await expect(
       retryDueConnectorIndexing(new Date(next + 1)),
-    ).resolves.toEqual({ workspaces: 1, failed: 0 });
+    ).resolves.toEqual({ workspaces: 1, failed: 0, skipped: 0 });
+    expect(cloudRepo.calls).toEqual([`ensure:${WS}`, `freshen:${WS}:0`]);
     const indexed = await ConnectorDefinition.findOne({
       workspaceId: WS,
       slug: "acme",
@@ -603,6 +624,34 @@ describe("a connector whose index hits a platform error", () => {
     const wait = (row?.nextIndexRetryAt?.getTime() ?? 0) - Date.now();
     expect(wait).toBeGreaterThan(110_000);
     expect(wait).toBeLessThanOrEqual(120_000);
+  }, 120_000);
+
+  it("skips a workspace whose repo this instance cannot restore, and leaves the row", async () => {
+    await push({
+      "connectors/acme/connector.yaml": "runtime: node\n",
+      "connectors/acme/connector.ts": CONNECTOR_TS,
+    });
+    const provider = getSandboxProvider();
+    const spy = vi
+      .spyOn(provider, "exec")
+      .mockRejectedValueOnce(new Error(ENVD));
+    try {
+      await syncConnectorsFromRepo(WS);
+    } finally {
+      spy.mockRestore();
+    }
+    // A fresh instance: no local repo, and no mirror to restore it from.
+    await fs.rm(repoDirFor(WS), { recursive: true, force: true });
+
+    await expect(
+      retryDueConnectorIndexing(new Date(Date.now() + 61_000)),
+    ).resolves.toEqual({ workspaces: 1, failed: 0, skipped: 1 });
+    const row = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "acme",
+    }).lean();
+    expect(row?.status).toBe("retrying");
+    expect(row?.indexRetryAttempts).toBe(1);
   }, 120_000);
 });
 

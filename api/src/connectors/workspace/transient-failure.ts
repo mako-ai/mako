@@ -31,6 +31,12 @@ const TRANSIENT_PATTERNS: RegExp[] = [
   /Timed out while installing the connector (?:Node )?runtime/,
   // Object storage (registry catalog, bundles) was down, not wrong.
   /Could not read the connector registry/,
+  // A bundle build that the platform failed: the pinned esbuild install,
+  // or npm ci that timed out or lost the registry. esbuild errors and
+  // dependency resolution (E404, ERESOLVE) are the connector's and block.
+  /Could not install the bundler/,
+  /npm ci timed out after/,
+  /npm ci failed:[\s\S]*\b(?:ETIMEDOUT|ESOCKETTIMEDOUT|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ENOTFOUND|EPIPE|ERR_SOCKET_TIMEOUT|E50[0234])\b/,
 ];
 
 /** Is this indexing failure the platform's, so it must retry, not block? */
