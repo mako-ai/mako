@@ -18,6 +18,7 @@ import { forceDrainCdcFlow } from "../../../sync-cdc/backfill";
 import { syncMachineService } from "../../../sync-cdc/sync-state";
 import { createDbSourceWriter } from "./database-source";
 import type { FlowRunContext } from "./run-context";
+import { isInfrastructureFailure } from "./infra-failure";
 
 type FlowRunError = Error & { code?: unknown };
 
@@ -207,6 +208,20 @@ export async function handleFlowRunFailure(
   throw error;
 }
 
+/** The counter a failed backfill bumps: platform failures do not count. */
+export function backfillFailureUpdate(message: string | undefined) {
+  if (isInfrastructureFailure(message)) {
+    return {
+      $inc: { "backfillState.infraFailures": 1 },
+      $set: { "backfillState.lastInfraFailureAt": new Date() },
+    };
+  }
+  return {
+    $inc: { "backfillState.consecutiveFailures": 1 },
+    $set: { "backfillState.infraFailures": 0 },
+  };
+}
+
 async function releaseCdcBackfillGate(
   ctx: FlowRunContext,
   flowRef: IFlow,
@@ -257,10 +272,9 @@ async function releaseCdcBackfillGate(
   });
   await step.run("mark-cdc-backfill-interrupted", async () => {
     // cdc-transition-fail already set status=error via the state
-    // machine. Only bump the failure counter here.
-    await Flow.findByIdAndUpdate(flowId, {
-      $inc: { "backfillState.consecutiveFailures": 1 },
-    });
+    // machine. Only bump a failure counter here: the platform's own
+    // failures never use up a resume attempt (infra-failure.ts).
+    await Flow.findByIdAndUpdate(flowId, backfillFailureUpdate(error.message));
   });
   await step.run("drain-cdc-on-failure", async () => {
     await forceDrainCdcFlow({

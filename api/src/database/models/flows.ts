@@ -274,6 +274,12 @@ export interface IFlow extends Document {
     startedAt?: Date;
     completedAt?: Date;
     consecutiveFailures?: number;
+    /**
+     * Platform failures in a row (infra-failure.ts). They do not count
+     * toward the resume cap; they space out the next resume instead.
+     */
+    infraFailures?: number;
+    lastInfraFailureAt?: Date;
     scope?: {
       mode: "all" | "subset";
       entities?: string[];
@@ -643,6 +649,8 @@ const FlowSchema = new Schema<IFlow>(
       startedAt: Date,
       completedAt: Date,
       consecutiveFailures: { type: Number, default: 0 },
+      infraFailures: { type: Number, default: 0 },
+      lastInfraFailureAt: Date,
       scope: {
         mode: {
           type: String,

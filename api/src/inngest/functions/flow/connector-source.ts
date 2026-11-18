@@ -473,7 +473,10 @@ async function finishCdcBackfill(
     // completedAt, and unset runId. Only reset the failure counter
     // and clear checkpoint data here.
     await Flow.findByIdAndUpdate(flowId, {
-      $set: { "backfillState.consecutiveFailures": 0 },
+      $set: {
+        "backfillState.consecutiveFailures": 0,
+        "backfillState.infraFailures": 0,
+      },
     });
     if (cdcBackfillRunId) {
       await cdcBackfillCheckpointService.clearRun({
