@@ -75,6 +75,37 @@ assert.equal(
   assert.equal(d?.since.toISOString(), at("10:50:00").toISOString());
 }
 
+{
+  // No stamp: the last successful run of the entity anchors the poll.
+  const d = decidePollSince({
+    lastSuccessfulRunStartedAt: at("04:00:48"),
+    runStartedAt: new Date("2026-11-18T04:01:15Z"),
+    overlapMs: 10 * MIN,
+  });
+  assert.equal(d?.since.toISOString(), at("03:50:48").toISOString());
+  assert.equal(d?.anchorKind, "run");
+}
+{
+  // A stamp wins over the run fallback, even an older one.
+  const d = decidePollSince({
+    lastPollRunStartedAt: at("12:00:00"),
+    lastSuccessfulRunStartedAt: at("14:00:00"),
+    runStartedAt: at("15:00:00"),
+    overlapMs: 10 * MIN,
+  });
+  assert.equal(d?.anchorKind, "poll");
+  assert.equal(d?.since.toISOString(), at("11:50:00").toISOString());
+}
+assert.equal(
+  decidePollSince({
+    lastSuccessfulRunStartedAt: at("15:00:00"),
+    runStartedAt: at("15:00:00"),
+    overlapMs: 10 * MIN,
+  }),
+  null,
+  "this run itself is never its own anchor",
+);
+
 // ── destinationFallbackSince ─────────────────────────────────────────
 assert.deepEqual(
   destinationFallbackSince({

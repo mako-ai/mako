@@ -187,6 +187,19 @@ function testNormalizeBackfillRecordTsParityWithWebhook() {
   assert.equal(backfill?.sourceTs.getTime(), webhook.sourceTs.getTime());
 }
 
+function testPendingChargeHasItsCreateEvent() {
+  // A SEPA/ACH charge is created pending and settles days later. Without
+  // charge.pending it reached the table only on settlement (ES, 2026-11-17).
+  const connector = createConnector();
+  assert.deepEqual(connector.getWebhookEventMapping("charge.pending"), {
+    entity: "charges",
+    operation: "upsert",
+  });
+  const events = connector.getSupportedWebhookEvents();
+  assert.ok(events.includes("charge.pending"));
+  assert.ok(events.includes("payment_intent.processing"));
+}
+
 function testDisputeEventsMapToDisputesEntity() {
   const connector = createConnector();
   assert.deepEqual(connector.getWebhookEventMapping("charge.dispute.created"), {
@@ -248,9 +261,12 @@ function testWebhookEventsForEntities() {
     .getWebhookEventsForEntities(["payment_intents"])
     .sort();
   assert.deepEqual(piEvents, [
+    "payment_intent.amount_capturable_updated",
     "payment_intent.canceled",
     "payment_intent.created",
     "payment_intent.payment_failed",
+    "payment_intent.processing",
+    "payment_intent.requires_action",
     "payment_intent.succeeded",
   ]);
 
@@ -698,6 +714,7 @@ async function main() {
   await testResolveSchema();
   await testSubscriptionsBackfillRequestsAllStatuses();
   testNormalizeBackfillRecordTsParityWithWebhook();
+  testPendingChargeHasItsCreateEvent();
   testDisputeEventsMapToDisputesEntity();
   testPriceEventsMapToPricesEntity();
   testNoLegacySubscriptionWebhookEvents();

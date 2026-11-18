@@ -110,6 +110,119 @@ async function main(): Promise<void> {
     assert.equal(noExec.runStartedAt, undefined);
     assert.equal(noExec.since, "2026-11-17T14:50:00.000Z");
 
+    // ── No stamp: the last successful run that synced the entity ──
+    // ES Stripe, 2026-11-18: charges had no stamp at the 04:01 poll. The
+    // previous day's 04:00 run synced charges; that is the anchor, not the
+    // newest webhook row.
+    {
+      const flowOid = new Types.ObjectId();
+      const flow2 = String(flowOid);
+      const run = async (
+        startedAt: string,
+        extra: Record<string, unknown> = {},
+      ) => {
+        const _id = new Types.ObjectId();
+        await Flow.db.collection("flow_executions").insertOne({
+          _id,
+          flowId: flowOid,
+          startedAt: new Date(startedAt),
+          status: "completed",
+          success: true,
+          stats: { syncedEntities: ["charges", "customers"] },
+          ...extra,
+        });
+        return String(_id);
+      };
+      // Webhooks materialized charges, so its entity state exists.
+      await cdcSyncStateService.advanceConsumerCursor({
+        workspaceId,
+        flowId: flow2,
+        entity: "charges",
+        lastIngestSeq: 7,
+        rowsAppliedDelta: 1,
+      });
+      await run("2026-11-16T04:01:40Z");
+      await run("2026-11-17T04:00:48Z");
+      // Later runs that do not count: failed, or another entity only.
+      await run("2026-11-17T10:00:00Z", { status: "failed", success: false });
+      await run("2026-11-17T12:00:00Z", {
+        stats: { syncedEntities: ["balance_transactions"] },
+      });
+      const current = await run("2026-11-18T04:01:15Z", {
+        status: "running",
+        success: false,
+        stats: {},
+      });
+      const resolved = await resolvePollCursorForEntity({
+        flowId: flow2,
+        entity: "charges",
+        executionId: current,
+        overlapMs: 10 * MIN,
+      });
+      assert.equal(resolved.since, "2026-11-17T03:50:48.000Z");
+      assert.match(resolved.reason, /last successful run/);
+
+      // An entity no run ever synced: destination fallback.
+      const none = await resolvePollCursorForEntity({
+        flowId: flow2,
+        entity: "refunds",
+        executionId: current,
+        overlapMs: 10 * MIN,
+      });
+      assert.equal(none.since, undefined);
+
+      // A reset or resync deleted the entity state: no run from before the
+      // wipe anchors the poll; the destination does.
+      const reset = await resolvePollCursorForEntity({
+        flowId: flow2,
+        entity: "customers",
+        executionId: current,
+        overlapMs: 10 * MIN,
+      });
+      assert.equal(reset.since, undefined);
+
+      // A backfill started after the reset and failed part way: its cursor
+      // and backfill mode remain, so the old run still does not anchor.
+      await CdcEntityState.updateOne(
+        { flowId: flowOid, entity: "customers" },
+        {
+          $set: {
+            workspaceId: new Types.ObjectId(workspaceId),
+            mode: "backfill",
+            backfillCursor: { page: 3 },
+          },
+        },
+        { upsert: true },
+      );
+      const midBackfill = await resolvePollCursorForEntity({
+        flowId: flow2,
+        entity: "customers",
+        executionId: current,
+        overlapMs: 10 * MIN,
+      });
+      assert.equal(midBackfill.since, undefined);
+
+      // Once stamped, the stamp wins.
+      await stampPollRunStartedAt({
+        workspaceId,
+        flowId: flow2,
+        entity: "charges",
+        runStartedAt: "2026-11-18T04:01:15Z",
+      });
+      const next = await run("2026-11-19T04:00:00Z", {
+        status: "running",
+        success: false,
+        stats: {},
+      });
+      const stampedNext = await resolvePollCursorForEntity({
+        flowId: flow2,
+        entity: "charges",
+        executionId: next,
+        overlapMs: 10 * MIN,
+      });
+      assert.equal(stampedNext.since, "2026-11-18T03:51:15.000Z");
+    }
+
     console.log("poll-cursor-resolver.db.test.ts: all assertions passed");
   } finally {
     await mongoose.disconnect();

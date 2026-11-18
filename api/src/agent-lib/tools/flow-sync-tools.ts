@@ -428,7 +428,7 @@ export function createFlowSyncTools({
 
     flow_webhook_provision: tool({
       description:
-        "Create the provider-side webhook subscription of a sync, as the Triggers step's \"Create in …\" button does: the subscription points at this deployment's webhook URL (server configuration, never a stored or requested host), its signing secret is stored on the sync and never returned, flows/<slug>.yml is committed. Idempotent: a sync that already has a subscription id or a secret reports it and creates nothing; a subscription already on the URL is adopted where the connector can find it. The webhook trigger must be on (flow_update webhook=on). Owner or admin.",
+        "Create the provider-side webhook subscription of a sync, as the Triggers step's \"Create in …\" button does: the subscription points at this deployment's webhook URL (server configuration, never a stored or requested host), its signing secret is stored on the sync and never returned, flows/<slug>.yml is committed. Idempotent: a sync that already has a subscription creates nothing; where the connector can update one (Stripe, Wise), its event list is set again to what the sync's entities need (status: updated), so a new Mako event list reaches an existing endpoint, keeping its signing secret; otherwise it is reported (status: existing). A subscription already on the URL is adopted where the connector can find it. The webhook trigger must be on (flow_update webhook=on). Owner or admin.",
       inputSchema: z.object({ flow: flowRef }),
       execute: async ({ flow: ref }) => {
         try {
@@ -460,6 +460,34 @@ export function createFlowSyncTools({
               current?.webhookConfig?.providerWebhookId ||
               current?.webhookConfig?.secret
             ) {
+              // Already provisioned. With its secret on record, set the
+              // provider's event list again from the sync's entities: a new
+              // Mako event list (or entity) reaches an existing endpoint.
+              // An update in place, idempotent, never a create; the signing
+              // secret stays. Without a secret, report it untouched.
+              if (!current.webhookConfig?.secret) return existing(current);
+              const sync = await syncFlowWebhookSubscription(current, {
+                mayProvision: false,
+              });
+              if (sync.status === "updated") {
+                return {
+                  success: true as const,
+                  id: current._id.toString(),
+                  status: "updated" as const,
+                  endpoint: current.webhookConfig?.endpoint ?? null,
+                  providerWebhookId: sync.providerWebhookId,
+                };
+              }
+              if (sync.status === "failed") {
+                return failure(
+                  `The sync's webhook subscription could not be updated: ${sync.error}`,
+                );
+              }
+              if (sync.status === "not_found") {
+                return failure(
+                  "The sync holds a signing secret, but no provider webhook subscription points at its URL. Re-create it from the Triggers step.",
+                );
+              }
               return existing(current);
             }
             return failure(

@@ -39,12 +39,18 @@ const EVENTS: Array<[event: string, mapping: WebhookEventMapping]> = [
   ["customer.subscription.created", upsert("subscriptions")],
   ["customer.subscription.updated", upsert("subscriptions")],
   ["customer.subscription.deleted", remove("subscriptions")],
+  ["customer.subscription.paused", upsert("subscriptions")],
+  ["customer.subscription.resumed", upsert("subscriptions")],
   // Charges/Payments
   ["charge.succeeded", upsert("charges")],
   ["charge.failed", upsert("charges")],
   ["charge.captured", upsert("charges")],
   ["charge.refunded", upsert("charges")],
   ["charge.updated", upsert("charges")],
+  // An async charge (SEPA, ACH) is created pending and settles days later:
+  // charge.pending is its create event. charge.expired ends an uncaptured one.
+  ["charge.pending", upsert("charges")],
+  ["charge.expired", upsert("charges")],
   // Disputes (status lost/won/open + amount for revenue netting)
   ["charge.dispute.created", upsert("disputes")],
   ["charge.dispute.updated", upsert("disputes")],
@@ -56,12 +62,17 @@ const EVENTS: Array<[event: string, mapping: WebhookEventMapping]> = [
   ["payment_intent.payment_failed", upsert("payment_intents")],
   ["payment_intent.created", upsert("payment_intents")],
   ["payment_intent.canceled", upsert("payment_intents")],
+  ["payment_intent.processing", upsert("payment_intents")],
+  ["payment_intent.requires_action", upsert("payment_intents")],
+  ["payment_intent.amount_capturable_updated", upsert("payment_intents")],
   // Invoices
   ["invoice.created", upsert("invoices")],
   ["invoice.finalized", upsert("invoices")],
   ["invoice.paid", upsert("invoices")],
   ["invoice.payment_failed", upsert("invoices")],
   ["invoice.updated", upsert("invoices")],
+  ["invoice.voided", upsert("invoices")],
+  ["invoice.marked_uncollectible", upsert("invoices")],
   ["invoice.deleted", remove("invoices")],
   // Products
   ["product.created", upsert("products")],
@@ -85,6 +96,7 @@ const EVENTS: Array<[event: string, mapping: WebhookEventMapping]> = [
   // Refunds (`charge.refund.updated` carries a Refund object)
   ["refund.created", upsert("refunds")],
   ["refund.updated", upsert("refunds")],
+  ["refund.failed", upsert("refunds")],
   ["charge.refund.updated", upsert("refunds")],
   // Credit notes
   ["credit_note.created", upsert("credit_notes")],
