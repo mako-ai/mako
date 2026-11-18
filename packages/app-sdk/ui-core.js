@@ -411,15 +411,16 @@ export function filterNormalize(options, picked) {
   const known = new Set(leaves);
   const out = leaves.filter(v => set.has(v));
   const unknown = [...set].filter(v => !known.has(v));
-  if (leaves.length > 0 && out.length === leaves.length) return [];
+  if (leaves.length > 0 && out.length === leaves.length && !unknown.length) return [];
   return [...out, ...unknown];
 }
 
 /** A node's tick: "on" when every leaf under it is picked, "mixed" when some are, "off" when none (or in the draft). */
 export function filterTick(node, selected, none = false) {
-  if (none) return "off";
-  if (!selected.length) return "on";
   const ls = filterLeavesOf(node);
+  // A group with no children yet (still loading) picks nothing: never "on".
+  if (none || !ls.length) return "off";
+  if (!selected.length) return "on";
   const on = ls.filter(v => selected.includes(v)).length;
   return on === ls.length ? "on" : on ? "mixed" : "off";
 }
@@ -518,15 +519,16 @@ export function filterToParam(options, selectedIn, defaultsIn = []) {
 }
 
 /**
- * A URL value back to a selection. Unknown values drop out; `legacy` maps
- * former values onto node values first. Missing or empty: the default.
+ * A URL value back to a selection. `legacy` maps former values onto node
+ * values first. Values the options don't list are kept (a URL pick read
+ * before its options load stays a pick). Missing or empty: the default.
  */
 export function filterFromParam(options, raw, defaults = [], legacy = {}) {
   if (raw == null || raw === "") return defaults;
   if (raw === "all") return [];
   const picked = raw.split(",").flatMap(v => {
     const node = filterFind(options, legacy[v] ?? v);
-    return node ? filterLeavesOf(node) : [];
+    return node ? filterLeavesOf(node) : [v];
   });
   if (!picked.length) return defaults;
   return filterNormalize(options, picked);

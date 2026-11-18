@@ -800,7 +800,7 @@ export function FilterItems({
       h(Checkbox, { checked: asChecked(tick) }),
       dot(node),
       h("span", { className: "mk-ms-label" }, node.label),
-      showOnly && h("button", { type: "button", className: "mk-ms-only", tabIndex: -1, onClick: only(node) }, "Only"),
+      showOnly && filterLeavesOf(node).length > 0 && h("button", { type: "button", className: "mk-ms-only", tabIndex: -1, onClick: only(node) }, "Only"),
     );
     return group ? [el, ...node.children.flatMap(c => row(c, depth + 1))] : [el];
   };

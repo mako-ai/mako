@@ -781,3 +781,20 @@ test("filterNormalize keeps values the options don't list; filterToParam normali
   assert.equal(c.filterToParam(tree, ["fr", "es"], ["fr"]), "all");
   assert.equal(c.filterToParam(tree, ["es", "PT"]), "es,PT");
 });
+
+test("unlisted values survive a full tick and the URL; an empty group is never on (review of #1388)", async () => {
+  const c = await import("./ui-core.js");
+  const ab = [{ value: "a", label: "A" }, { value: "b", label: "B" }];
+  // [a, X] plus a tick on b: every listed leaf, but X stays, so not All.
+  const r = c.filterToggle(ab, ["a", "X"], ab[1]);
+  assert.deepEqual(r.selected, ["a", "b", "X"]);
+  assert.equal(c.filterToParam(ab, r.selected), "a,b,X");
+  // A URL pick read before the options load stays a pick.
+  assert.deepEqual(c.filterFromParam([], "PT"), ["PT"]);
+  assert.deepEqual(c.filterFromParam(ab, "a,x"), ["a", "x"]);
+  // A group still loading its children.
+  const loading = { value: "g", label: "G", children: [] };
+  assert.equal(c.filterTick(loading, []), "off");
+  assert.equal(c.filterTick(loading, ["a"]), "off");
+});
+

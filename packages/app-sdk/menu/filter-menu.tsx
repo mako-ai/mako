@@ -104,11 +104,14 @@ export function FilterMenuItems(props: FilterMenuItemsProps) {
     e.stopPropagation();
     emit(filterNormalize(options, filterLeavesOf(node)));
   };
-  const onlyButton = (node: FilterMenuOption) => (
-    <span role="button" tabIndex={-1} className="mk-fm-only" onClick={only(node)} onPointerUp={e => e.stopPropagation()}>
-      Only
-    </span>
-  );
+  // A group with no children yet picks nothing: no Only, and its box is inert.
+  const empty = (node: FilterMenuOption) => filterLeavesOf(node).length === 0;
+  const onlyButton = (node: FilterMenuOption) =>
+    empty(node) ? null : (
+      <span role="button" tabIndex={-1} className="mk-fm-only" onClick={only(node)} onPointerUp={e => e.stopPropagation()}>
+        Only
+      </span>
+    );
 
   const leafRow = (node: FilterMenuOption) => {
     const st = tick(node);
@@ -142,11 +145,12 @@ export function FilterMenuItems(props: FilterMenuItemsProps) {
       role="checkbox"
       aria-checked={st === "on" ? true : st === "mixed" ? "mixed" : false}
       aria-label={`All ${node.label}`}
+      aria-disabled={empty(node) || undefined}
       className="flex"
       onClick={e => {
         e.preventDefault();
         e.stopPropagation();
-        flip(node);
+        if (!empty(node)) flip(node);
       }}
       onPointerUp={e => e.stopPropagation()}
     >
