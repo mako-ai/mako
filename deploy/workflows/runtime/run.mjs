@@ -2,9 +2,10 @@
 // command, the same code as on their laptop (the CLI's workflow files are
 // installed next to this file, in cli/). Started detached by Mako
 // (api/src/workflows/sandbox.ts); the run's result is the command's own JSON
-// file, which Mako reads back. Before it runs, `workflows/` is typechecked
-// the way the worker's build does: code that would not deploy fails the run
-// with its type errors instead.
+// file, which Mako reads back. Before it runs, the workflow and the shared
+// code it uses are typechecked the way the worker's build does: code that
+// would not deploy fails the run with its type errors instead. Other
+// workflows' folders are left out (build.mjs `typecheckCheckout`).
 //
 //   node run.mjs <workflow> <base64 of the JSON input> <result file>
 //
@@ -18,7 +19,7 @@ import { workflow } from "./cli/workflow.js";
 const [name, encodedInput, out] = process.argv.slice(2);
 const input = Buffer.from(encodedInput ?? "", "base64").toString() || "{}";
 const startedAt = new Date();
-const typeErrors = typecheckCheckout(process.env.WORKFLOWS_ROOT);
+const typeErrors = typecheckCheckout(process.env.WORKFLOWS_ROOT, name);
 if (typeErrors) {
   console.log(typeErrors);
   writeFileSync(
