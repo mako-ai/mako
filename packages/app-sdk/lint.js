@@ -10,7 +10,7 @@
 // Usage: npx mako-app-lint [app dir …] [--warn]. Exit 1 on findings unless
 // --warn. A line ending in `// mako-lint-ignore utc-display` is skipped (a
 // date key the helpers cannot build, with the reason on the line above).
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -72,4 +72,6 @@ function main(argv) {
   return total && !warn ? 1 : 0;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) process.exit(main(process.argv.slice(2)));
+// Installed bins run through a symlink (node_modules/.bin, pnpm's .pnpm
+// store); import.meta.url is resolved and argv[1] is not, so compare real paths.
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) process.exit(main(process.argv.slice(2)));

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -56,4 +56,13 @@ test("the CLI exits 1 on findings and 0 with --warn", () => {
   const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
   assert.equal(pkg.bin["mako-app-lint"], "./lint.js");
   assert.ok(pkg.files.includes("lint.js"));
+});
+
+test("the CLI runs through a symlinked bin, as npm and pnpm install it", () => {
+  const dir = app({ "src/a.ts": "d.getUTCDay()" });
+  const link = path.join(mkdtempSync(path.join(tmpdir(), "lint-bin-")), "mako-app-lint");
+  symlinkSync(new URL("./lint.js", import.meta.url).pathname, link);
+  const out = execFileSync(process.execPath, [link, dir, "--warn"], { encoding: "utf8" });
+  assert.match(out, /utc-display/);
+  assert.throws(() => execFileSync(process.execPath, [link, dir], { stdio: "pipe" }));
 });
