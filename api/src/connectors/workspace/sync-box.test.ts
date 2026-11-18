@@ -29,7 +29,10 @@ import {
   runtimeManifest,
   RUNTIME_MANIFEST,
   swapRuntimeShell,
+  TREE_MANIFEST,
+  treeManifest,
   verifyRuntimeShell,
+  verifyTreeShell,
 } from "./sync-box";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -411,6 +414,142 @@ describe("workspace connector runtime installation", () => {
  * The check itself, run by a real shell against a real directory: the
  * 2026-11-18 box held a marker, bin/ and package.json but no src/run.js.
  */
+describe("connector folder materialization", () => {
+  const ctx = { sessionKey: "connector-sync:test" };
+  const files = () =>
+    new Map([
+      ["connector.yaml", new TextEncoder().encode("runtime: node\n")],
+      ["connector.ts", new TextEncoder().encode("export default 1;\n")],
+    ]);
+  beforeEach(() => {
+    sandbox.exec.mockReset();
+    sandbox.writeFile.mockReset();
+    sandbox.writeFiles.mockReset();
+  });
+
+  it("reuses a folder only when its marker and every hash check out", async () => {
+    sandbox.exec.mockResolvedValue({ ...result("yes\n"), sandboxId: "sbx_1" });
+    const loader = vi.fn(async () => files());
+    await materializeConnector({
+      ctx,
+      runtimeId: "runtime",
+      slug: "close",
+      sourceSha: "9436ddc2",
+      files: loader,
+    });
+    const [check] = sandbox.exec.mock.calls.map(([, c]) => String(c));
+    expect(check).toContain(TREE_MANIFEST);
+    expect(check).toContain("sha256_check");
+    expect(loader).not.toHaveBeenCalled();
+    expect(sandbox.writeFiles).not.toHaveBeenCalled();
+  });
+
+  it("stages, verifies and swaps in a folder, pinned to the checked box", async () => {
+    sandbox.exec.mockResolvedValue({ ...result("no\n"), sandboxId: "sbx_1" });
+    await materializeConnector({
+      ctx,
+      runtimeId: "runtime",
+      slug: "close",
+      sourceSha: "9436ddc2",
+      files: files(),
+    });
+    const written = sandbox.writeFiles.mock.calls[0]?.[1] as Array<{
+      path: string;
+    }>;
+    expect(written.map(f => f.path.split("/").at(-1)).sort()).toEqual(
+      [TREE_MANIFEST, "connector.ts", "connector.yaml"].sort(),
+    );
+    expect(sandbox.writeFiles.mock.calls[0]?.[2]).toMatchObject({
+      expectSandboxId: "sbx_1",
+    });
+    const swap = String(sandbox.exec.mock.calls[1]?.[1]);
+    expect(swap).toContain('verify_tree "$stage" "$id"');
+    expect(swap).toContain('mv "$stage" "$dir"');
+    expect(sandbox.exec.mock.calls[1]?.[2]).toMatchObject({
+      expectSandboxId: "sbx_1",
+    });
+    expect(sandbox.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("fails, and swaps nothing in, when the box is replaced mid-copy", async () => {
+    sandbox.exec.mockResolvedValue({ ...result("no\n"), sandboxId: "sbx_1" });
+    sandbox.writeFiles.mockRejectedValueOnce(
+      Object.assign(new Error("Sandbox sbx_1 was replaced or is gone."), {
+        name: "SandboxNotFoundError",
+      }),
+    );
+    await expect(
+      materializeConnector({
+        ctx,
+        runtimeId: "runtime",
+        slug: "close",
+        sourceSha: "9436ddc2",
+        files: files(),
+      }),
+    ).rejects.toThrow(/replaced or is gone/);
+    expect(sandbox.exec).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a path that escapes the folder", async () => {
+    sandbox.exec.mockResolvedValue({ ...result("no\n"), sandboxId: "sbx_1" });
+    await expect(
+      materializeConnector({
+        ctx,
+        runtimeId: "runtime",
+        slug: "close",
+        sourceSha: "9436ddc2",
+        files: new Map([["../../evil.ts", new Uint8Array()]]),
+      }),
+    ).rejects.toThrow(/escapes the connector directory/);
+  });
+});
+
+describe("verify_tree against a real connector folder", () => {
+  let dir = "";
+  const id = "9436ddc2";
+  const files = new Map([
+    ["connector.yaml", new TextEncoder().encode("runtime: node\n")],
+    ["connector.ts", new TextEncoder().encode("export default 1;\n")],
+  ]);
+  beforeEach(() => {
+    dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "mako-folder-"));
+    for (const [name, bytes] of files) {
+      fs.writeFileSync(nodePath.join(dir, name), bytes);
+    }
+    fs.writeFileSync(nodePath.join(dir, TREE_MANIFEST), treeManifest(files));
+    fs.writeFileSync(nodePath.join(dir, ".materialized"), id);
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const verify = () =>
+    execFileSync(
+      "bash",
+      [
+        "-c",
+        `${verifyTreeShell()}\nverify_tree "$1" "$2" && echo yes || echo no`,
+        "verify",
+        dir,
+        id,
+      ],
+      { encoding: "utf8" },
+    ).trim();
+
+  it("accepts a complete folder", () => {
+    expect(verify()).toBe("yes");
+  });
+
+  it("rejects a marker over a folder without connector.ts", () => {
+    fs.rmSync(nodePath.join(dir, "connector.ts"));
+    expect(verify()).toBe("no");
+  });
+
+  it("rejects a folder an older API wrote, with no manifest", () => {
+    fs.rmSync(nodePath.join(dir, TREE_MANIFEST));
+    expect(verify()).toBe("no");
+  });
+});
+
 describe("verify_runtime against a real runtime root", () => {
   let root = "";
   const runtimeId = "runtime-test";
@@ -805,12 +944,14 @@ describe("per-run Unix users on providers with real users", () => {
       files: new Map([["connector.ts", new TextEncoder().encode("x")]]),
     });
 
-    for (const call of sandbox.writeFile.mock.calls) {
-      expect(call[1]).toMatch(
-        /^\/var\/lib\/mako-connectors\/runtime\/versions\//,
+    const writes = sandbox.writeFiles.mock.calls;
+    expect(writes).toHaveLength(1);
+    for (const file of writes[0]?.[1] as Array<{ path: string }>) {
+      expect(file.path).toMatch(
+        /^\/var\/lib\/mako-connectors\/runtime\/versions\/runtime\/connectors\/acme@abc\.staging-/,
       );
-      expect(call[3]).toEqual({ asRoot: true });
     }
+    expect(writes[0]?.[2]).toMatchObject({ asRoot: true });
     expect(
       calls().some(
         c =>

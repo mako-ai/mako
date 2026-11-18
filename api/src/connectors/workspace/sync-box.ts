@@ -265,21 +265,6 @@ function boxOwner(): { asRoot: true } | undefined {
   return runsIsolated() ? { asRoot: true } : undefined;
 }
 
-/** Write a file the way the box expects: as root when runs are isolated. */
-function writeBoxFile(
-  ctx: SandboxExecContext,
-  remotePath: string,
-  bytes: Uint8Array,
-  owner: { asRoot: true } | undefined = boxOwner(),
-  pin: { expectSandboxId?: string } = {},
-): Promise<void> {
-  const provider = getSandboxProvider();
-  const options = { ...owner, ...pin };
-  return Object.keys(options).length > 0
-    ? provider.writeFile(ctx, remotePath, bytes, options)
-    : provider.writeFile(ctx, remotePath, bytes);
-}
-
 function execOptions(
   options: Omit<SandboxExecOptions, "asRoot">,
 ): SandboxExecOptions {
@@ -290,12 +275,146 @@ function runtimeNode(ctx: SandboxExecContext, runtimeId: string): string {
   return path.posix.join(runtimeRoot(ctx, runtimeId), "node", "bin", "node");
 }
 
+/** Lists every file's sha256 in a materialized connector or bundle folder. */
+export const TREE_MANIFEST = ".files-sha256";
+
+/**
+ * Shell lines that define `verify_tree <dir> <id>`: the marker names `id` and
+ * every file in the folder's manifest matches its sha256.
+ *
+ * A marker alone is not proof. On 2026-11-18 at 13:40 UTC a box held
+ * `connectors/close@9436ddc2/.materialized` without `connector.ts`, and
+ * every ws:close run failed for 26 minutes.
+ */
+export function verifyTreeShell(): string {
+  return `sha256_check() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum -c --status "$1" 2>/dev/null; else shasum -a 256 -c --status "$1" 2>/dev/null; fi
+}
+verify_tree() {
+  test -f "$1/.materialized" || return 1
+  grep -Fqx "$2" "$1/.materialized" || return 1
+  test -f "$1/${TREE_MANIFEST}" || return 1
+  (cd "$1" && sha256_check ${TREE_MANIFEST}) || return 1
+}`;
+}
+
+/**
+ * Put a folder of files at `dir` in the box, atomically, once per `id`.
+ *
+ * The check verifies the marker and every file's hash, so a folder left
+ * half-written (by a box swap mid-copy, or by an older API) is rewritten.
+ * A miss writes into a private staging folder pinned to the box the check
+ * ran in, verifies it there, and swaps it in under a lock. A box swap fails
+ * the write instead of finishing it in another box.
+ */
+async function installVerifiedTree(input: {
+  ctx: SandboxExecContext;
+  dir: string;
+  id: string;
+  what: string;
+  files: () => Promise<Map<string, Uint8Array>>;
+  /** Parents to open for traversal by run users, on isolated boxes. */
+  parents: string[];
+}): Promise<void> {
+  const { ctx, dir, id, what } = input;
+  const provider = getSandboxProvider();
+  const check = await provider.exec(
+    ctx,
+    `${verifyTreeShell()}
+verify_tree ${shellQuote(dir)} ${shellQuote(id)} && echo yes || echo no`,
+    execOptions({ timeoutMs: 30_000 }),
+  );
+  if (check.stdout.trim() === "yes") return;
+  const pin = check.sandboxId ? { expectSandboxId: check.sandboxId } : {};
+
+  const files = await input.files();
+  const stage = `${dir}.staging-${randomBytes(6).toString("hex")}`;
+  const staged: Array<{ path: string; bytes: Uint8Array }> = [];
+  for (const [relative, bytes] of files) {
+    // A path from the repo tree must not escape the directory it is being
+    // written into. Nothing in a normal connector folder ever contains "..",
+    // so this only ever fires on something built to escape.
+    const target = path.posix.normalize(path.posix.join(stage, relative));
+    if (!target.startsWith(`${stage}/`)) {
+      throw new Error(
+        `Refusing to write ${relative}: it escapes the connector directory`,
+      );
+    }
+    staged.push({ path: target, bytes });
+  }
+  staged.push({
+    path: path.posix.join(stage, TREE_MANIFEST),
+    bytes: new TextEncoder().encode(treeManifest(files)),
+  });
+  const fileOptions: SandboxFileOptions = { ...boxOwner(), ...pin };
+  if (provider.writeFiles) {
+    await provider.writeFiles(ctx, staged, fileOptions);
+  } else {
+    for (const file of staged) {
+      await provider.writeFile(ctx, file.path, file.bytes, fileOptions);
+    }
+  }
+
+  const swap = await provider.exec(
+    ctx,
+    `set -eu
+dir=${shellQuote(dir)}
+stage=${shellQuote(stage)}
+id=${shellQuote(id)}
+trap 'rm -rf "$stage"' EXIT
+${verifyTreeShell()}
+printf '%s' "$id" > "$stage/.materialized"
+if ! verify_tree "$stage" "$id"; then
+  echo "The staged ${what} failed its check: a file is missing or changed." >&2
+  exit 1
+fi${
+      runsIsolated()
+        ? `
+# Root wrote these; every run user must read them and none may change them.
+# The parents are opened for traversal only.
+chmod -R a+rX,go-w "$stage"
+chmod a+rX,go-w ${input.parents.map(shellQuote).join(" ")}`
+        : ""
+    }
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$dir.lock"
+  flock -w 60 9
+fi
+if verify_tree "$dir" "$id"; then exit 0; fi
+discard="$dir.discard-$$"
+if test -e "$dir" || test -L "$dir"; then mv "$dir" "$discard"; fi
+mv "$stage" "$dir"
+rm -rf "$discard"`,
+    { ...execOptions({ timeoutMs: 60_000 }), ...pin },
+  );
+  if (swap.timedOut) throw new Error(`Timed out while writing the ${what}.`);
+  if (swap.exitCode !== 0) {
+    const detail = (swap.stderr || swap.stdout).trim().slice(0, 2000);
+    throw new Error(
+      `Could not write the ${what}${detail ? `: ${detail}` : "."}`,
+    );
+  }
+}
+
+/** The manifest `sha256sum -c` reads, with paths relative to the folder. */
+export function treeManifest(files: Map<string, Uint8Array>): string {
+  return [...files.keys()]
+    .sort()
+    .map(name => {
+      const digest = createHash("sha256")
+        .update(files.get(name) as Uint8Array)
+        .digest("hex");
+      return `${digest}  ${name}\n`;
+    })
+    .join("");
+}
+
 /**
  * Put the connector's files in the box.
  *
  * Idempotent by sha: the directory name carries it, so an unchanged connector
  * is written once and reused across chunks, and a changed one can never be
- * served from a stale copy.
+ * served from a stale copy. Verified by hash, not by marker alone.
  */
 export async function materializeConnector(input: {
   ctx: SandboxExecContext;
@@ -306,54 +425,19 @@ export async function materializeConnector(input: {
   files: Map<string, Uint8Array> | (() => Promise<Map<string, Uint8Array>>);
 }): Promise<string> {
   const { ctx, runtimeId, slug, sourceSha } = input;
-  const provider = getSandboxProvider();
   const dir = connectorDir(ctx, runtimeId, slug, sourceSha);
-
-  const marker = path.posix.join(dir, ".materialized");
-  const check = await provider.exec(
+  const loader = input.files;
+  await installVerifiedTree({
     ctx,
-    `test -f ${shellQuote(marker)} && echo yes || echo no`,
-    execOptions({ timeoutMs: 30_000 }),
-  );
-  if (check.stdout.trim() === "yes") return dir;
-  // Every later write lands in the box this check ran in, or fails: an
-  // unpinned write could follow the session key to another box mid-copy and
-  // leave a marker over a partial folder there.
-  const pin = check.sandboxId ? { expectSandboxId: check.sandboxId } : {};
-
-  const files =
-    typeof input.files === "function" ? await input.files() : input.files;
-  for (const [relative, bytes] of files) {
-    // A path from the repo tree must not escape the directory it is being
-    // written into. Nothing in a normal connector folder ever contains "..",
-    // so this only ever fires on something built to escape.
-    const target = path.posix.normalize(path.posix.join(dir, relative));
-    if (!target.startsWith(`${dir}/`)) {
-      throw new Error(
-        `Refusing to write ${relative}: it escapes the connector directory`,
-      );
-    }
-    await writeBoxFile(ctx, target, bytes, boxOwner(), pin);
-  }
-  if (runsIsolated()) {
-    // Root wrote these; every run user must read them and none may change
-    // them. The parents are opened for traversal only.
-    await mustSucceed(
-      provider.exec(
-        ctx,
-        `chmod a+rX,go-w ${shellQuote(path.posix.dirname(dir))} ${shellQuote(path.posix.dirname(path.posix.dirname(dir)))} && chmod -R a+rX,go-w ${shellQuote(dir)}`,
-        { ...execOptions({ timeoutMs: 30_000 }), ...pin },
-      ),
-      "open the connector folder to run users",
-    );
-  }
-  await writeBoxFile(
-    ctx,
-    marker,
-    new TextEncoder().encode(sourceSha),
-    boxOwner(),
-    pin,
-  );
+    dir,
+    id: sourceSha,
+    what: `connector folder ${slug}@${sourceSha}`,
+    files: async () => (typeof loader === "function" ? loader() : loader),
+    parents: [
+      path.posix.dirname(dir),
+      path.posix.dirname(path.posix.dirname(dir)),
+    ],
+  });
   return dir;
 }
 
@@ -629,17 +713,6 @@ ${swapRuntimeShell()}`,
   }
 }
 
-async function mustSucceed(
-  pending: Promise<{ exitCode: number; stderr: string; stdout: string }>,
-  what: string,
-): Promise<void> {
-  const result = await pending;
-  if (result.exitCode !== 0) {
-    const detail = (result.stderr || result.stdout).trim().slice(0, 2000);
-    throw new Error(`Could not ${what}${detail ? `: ${detail}` : "."}`);
-  }
-}
-
 /** The run's cleanup failed: the box may still hold its credential or code. */
 export class RunCleanupError extends Error {
   constructor(message: string) {
@@ -739,39 +812,19 @@ export async function installConnectorBundle(input: {
   load: () => Promise<Uint8Array>;
 }): Promise<{ dir: string; entry: string }> {
   const { ctx, runtimeId, slug, hash } = input;
-  const provider = getSandboxProvider();
   const dir = path.posix.join(
     runtimeRoot(ctx, runtimeId),
     "bundles",
     `${slug}@${hash}`,
   );
-  const marker = path.posix.join(dir, ".materialized");
-  const check = await provider.exec(
+  await installVerifiedTree({
     ctx,
-    `test -f ${shellQuote(marker)} && echo yes || echo no`,
-    execOptions({ timeoutMs: 30_000 }),
-  );
-  if (check.stdout.trim() !== "yes") {
-    const bytes = await input.load();
-    await writeBoxFile(
-      ctx,
-      path.posix.join(dir, CONNECTOR_BUNDLE_ENTRY),
-      bytes,
-    );
-    if (runsIsolated()) {
-      // Root wrote it; every run user reads it and none may change it.
-      await mustSucceed(
-        provider.exec(
-          ctx,
-          `chmod a+rX,go-w ${shellQuote(path.posix.dirname(dir))} && chmod -R a+rX,go-w ${shellQuote(dir)}`,
-          execOptions({ timeoutMs: 30_000 }),
-        ),
-        "open the connector bundle to run users",
-      );
-    }
-    // Written last, as for the runtime: a half-written bundle is rewritten.
-    await writeBoxFile(ctx, marker, new TextEncoder().encode(hash));
-  }
+    dir,
+    id: hash,
+    what: `connector bundle ${slug}@${hash}`,
+    files: async () => new Map([[CONNECTOR_BUNDLE_ENTRY, await input.load()]]),
+    parents: [path.posix.dirname(dir)],
+  });
   return { dir, entry: CONNECTOR_BUNDLE_ENTRY };
 }
 
