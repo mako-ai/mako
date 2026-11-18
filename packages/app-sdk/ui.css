@@ -286,6 +286,11 @@ button, input, select, textarea { font-family: inherit; }
 .mk-ms-value { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
 /* The trigger reads "All", the one selected label, or "N selected". */
 .mk-ms-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The trigger is as wide as its longest probe (every label it can show): picks never move the bar. */
+.mk-ms-fit { display: inline-grid; grid-template-columns: minmax(0, auto); min-width: 0; text-align: left; }
+.mk-ms-fit > * { grid-area: 1 / 1; white-space: nowrap; }
+.mk-ms-probe { visibility: hidden; height: 0; overflow: hidden; }
+.mk-ms-fit > .mk-ms-text { width: 0; min-width: 100%; }
 .mk-ms-caret { color: var(--muted-foreground); flex-shrink: 0; transition: transform .15s ease; }
 .mk-ms-trigger.open .mk-ms-caret { transform: rotate(180deg); }
 .mk-ms-menu {
@@ -301,7 +306,19 @@ button, input, select, textarea { font-family: inherit; }
 }
 .mk-ms-opt:hover, .mk-ms-opt:focus-visible { background: var(--accent); outline: none; }
 .mk-ms-opt.active { font-weight: 500; }
-.mk-ms-label { flex: 1; }
+.mk-ms-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* FilterItems: the rows of one filter, in a MultiSelect or an app's own menu. */
+.mk-ms-items { display: flex; flex-direction: column; gap: 1px; }
+.mk-ms-all { font-weight: 500; }
+.mk-ms-group .mk-ms-label { font-weight: 500; }
+.mk-ms-expand {
+  appearance: none; border: 0; background: transparent; color: var(--muted-foreground);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; margin: -3px -4px -3px 0; border-radius: var(--mk-radius-sm); flex: none;
+}
+.mk-ms-expand svg { transition: transform .15s var(--mk-ease); }
+.mk-ms-expand.open svg { transform: rotate(90deg); }
+.mk-ms-expand:hover { color: var(--foreground); background: var(--muted); }
 /* The kit's one checkbox (Checkbox, MultiSelect rows): theme tokens only. */
 .mk-ms-box {
   display: inline-flex; align-items: center; justify-content: center;

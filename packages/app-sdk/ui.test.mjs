@@ -534,7 +534,7 @@ test("MultiSelect trigger: All for an empty or full value, the one label, N sele
   assert.match(box(false), /class="mk-ms-box"[^>]*><\/span>/);
 });
 
-test("MultiSelect inside a <label>: two option clicks tick both and the menu stays open", async t => {
+test("MultiSelect inside a <label>: two option clicks untick both and the menu stays open", async t => {
   let React, client, JSDOM;
   try {
     React = await import("react");
@@ -581,7 +581,8 @@ test("MultiSelect inside a <label>: two option clicks tick both and the menu sta
     await React.act(() => row.querySelector(".mk-ms-label").dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true })));
     assert.ok(menu(), `the menu stays open after the ${label} click`);
   }
-  assert.deepEqual(value, ["ES", "IT"]);
+  // 2.20 All rule: under All every row is ticked, so the two clicks untick ES and IT.
+  assert.deepEqual(value, ["CH"]);
   assert.deepEqual(prevented, [true, true], "an option click is cancelled, so the label never re-clicks the trigger");
   await React.act(() => root.unmount());
 
@@ -605,4 +606,161 @@ test("ui.css: ticks in --brand (fallback --primary); a pointer on buttons, Radix
     assert.ok(pointer.slice(pointer.lastIndexOf(":is(")).includes(sel), `${sel} gets a pointer`);
   }
   assert.match(pointer, /:not\(:disabled, \[aria-disabled="true"\], \[data-disabled\]\) \{\s*$/);
+});
+
+test("filter tree: ticks, toggles, the All rule and the none draft", async () => {
+  const c = await import("./ui-core.js");
+  const flat = ["barometer", "a", "b", "c", "d", "e"].map(v => ({ value: v, label: v }));
+  // Nothing filtered: every row ticked, All ticked.
+  assert.equal(c.filterAllTick([]), "on");
+  assert.equal(c.filterTick(flat[1], []), "on");
+  // Untick Barometer from All: the other 5, All partial.
+  const r1 = c.filterToggle(flat, [], flat[0]);
+  assert.deepEqual(r1, { none: false, selected: ["a", "b", "c", "d", "e"] });
+  assert.equal(c.filterAllTick(r1.selected), "mixed");
+  assert.equal(c.filterTick(flat[0], r1.selected), "off");
+  // A partial All ticks every row; a full All goes to the draft and keeps the selection.
+  assert.deepEqual(c.filterToggleAll(r1.selected), { none: false, selected: [] });
+  assert.deepEqual(c.filterToggleAll([]), { none: true, selected: [] });
+  // The draft: nothing ticked; a tick picks that row alone; All ticks every row.
+  assert.equal(c.filterAllTick([], true), "off");
+  assert.equal(c.filterTick(flat[2], [], true), "off");
+  assert.deepEqual(c.filterToggle(flat, [], flat[2], true), { none: false, selected: ["b"] });
+  assert.deepEqual(c.filterToggleAll([], true), { none: false, selected: [] });
+  // Unticking the last row is the draft too, with the selection unchanged.
+  assert.deepEqual(c.filterToggle(flat, ["b"], flat[2]), { none: true, selected: ["b"] });
+  // Ticking the last missing row is All.
+  assert.deepEqual(c.filterToggle(flat, ["a", "b", "c", "d", "e"], flat[0]), { none: false, selected: [] });
+  // Every value given (emptyMeansAll: false callers) normalizes to All.
+  assert.deepEqual(c.filterNormalize(flat, flat.map(o => o.value)), []);
+});
+
+test("filter tree: groups tick their leaves, text, and URL params round-trip", async () => {
+  const c = await import("./ui-core.js");
+  const tree = [
+    { value: "humans", label: "Humans" },
+    { value: "bots", label: "Bots", children: [
+      { value: "openai", label: "OpenAI", children: [{ value: "gptbot", label: "GPTBot" }, { value: "oai", label: "OAI-SearchBot" }] },
+      { value: "bing", label: "Bingbot" },
+    ] },
+  ];
+  assert.deepEqual(c.filterLeaves(tree), ["humans", "gptbot", "oai", "bing"]);
+  const r = c.filterToggle(tree, [], tree[1]);
+  assert.deepEqual(r.selected, ["humans"]);
+  assert.equal(c.filterText(tree, r.selected, "All traffic"), "Humans");
+  const partial = ["humans", "gptbot"];
+  assert.equal(c.filterTick(tree[1], partial), "mixed");
+  assert.equal(c.filterText(tree, partial, "All traffic"), "Humans + Bots: GPTBot");
+  assert.equal(c.filterText(tree, ["gptbot", "oai"], "All traffic"), "OpenAI");
+  assert.equal(c.filterToParam(tree, ["gptbot", "oai", "bing"]), "bots");
+  assert.deepEqual(c.filterFromParam(tree, "bots"), ["gptbot", "oai", "bing"]);
+  assert.equal(c.filterToParam(tree, ["humans"], ["humans"]), "");
+  assert.equal(c.filterToParam(tree, [], ["humans"]), "all");
+  assert.deepEqual(c.filterFromParam(tree, "all", ["humans"]), []);
+  assert.deepEqual(c.filterFromParam(tree, null, ["humans"]), ["humans"]);
+  // Flat lists read "N selected".
+  const flat = [{ value: "ch", label: "CH" }, { value: "fr", label: "FR" }, { value: "it", label: "IT" }];
+  assert.equal(c.filterText(flat, ["ch", "fr"], "All"), "2 selected");
+});
+
+test("MultiSelect: rows ticked under All, untick = partial, full All = none (no emit), partial All = All", async t => {
+  let React, client, JSDOM;
+  try {
+    React = await import("react");
+    client = await import("react-dom/client");
+    ({ JSDOM } = await import("jsdom"));
+  } catch (e) {
+    t.skip("react or jsdom not installed here: " + e.message);
+    return;
+  }
+  const dom = new JSDOM("<!doctype html><body><div id=root></div></body>");
+  const win = dom.window;
+  win.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  const keys = ["window", "document", "Node", "Element", "HTMLElement", "MouseEvent", "Event", "KeyboardEvent"];
+  const saved = keys.map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]);
+  for (const k of keys) Object.defineProperty(globalThis, k, { value: k === "window" ? win : win[k], configurable: true, writable: true });
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  t.after(() => {
+    for (const [k, d] of saved) d ? Object.defineProperty(globalThis, k, d) : delete globalThis[k];
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  });
+  const ui = await import("./ui.js");
+  const h = React.createElement;
+  const CAMPAIGNS = ["Barometer", "Spring", "Summer", "Autumn", "Winter", "Reactivation"];
+  for (const emptyMeansAll of [true, false]) {
+    let value = null;
+    const emits = [];
+    function App() {
+      const [v, setV] = React.useState(emptyMeansAll ? [] : CAMPAIGNS);
+      value = v;
+      return h(ui.MultiSelect, { options: CAMPAIGNS, value: v, onChange: n => (emits.push(n), setV(n)), allLabel: "All campaigns", emptyMeansAll });
+    }
+    const root = client.createRoot(win.document.getElementById("root"));
+    await React.act(() => root.render(h(App)));
+    await React.act(() => win.document.querySelector(".mk-ms-trigger").click());
+    const rows = () => [...win.document.querySelectorAll('[role="option"]')];
+    const ticks = () => rows().map(r => `${r.getAttribute("aria-checked")}:${r.textContent}`);
+    const click = async text => React.act(() => rows().find(r => r.textContent === text).click());
+    const trigger = () => win.document.querySelector(".mk-ms-text").textContent;
+    assert.deepEqual(ticks(), ["true:All campaigns", ...CAMPAIGNS.map(c => `true:${c}`)], "under All every row is ticked");
+    await click("Barometer");
+    assert.deepEqual(value, CAMPAIGNS.slice(1));
+    assert.deepEqual(ticks(), ["mixed:All campaigns", "false:Barometer", ...CAMPAIGNS.slice(1).map(c => `true:${c}`)]);
+    assert.equal(trigger(), "5 selected");
+    await click("All campaigns");
+    assert.deepEqual(value, emptyMeansAll ? [] : CAMPAIGNS, "a partial All ticks every row");
+    const n = emits.length;
+    await click("All campaigns");
+    assert.equal(emits.length, n, "a full All click emits nothing");
+    assert.deepEqual(ticks(), ["false:All campaigns", ...CAMPAIGNS.map(c => `false:${c}`)], "a full All unticks every row");
+    assert.equal(trigger(), "None");
+    await click("Summer");
+    assert.deepEqual(value, ["Summer"], "from none a tick picks that row alone");
+    assert.deepEqual(ticks(), ["mixed:All campaigns", ...CAMPAIGNS.map(c => `${c === "Summer"}:${c}`)]);
+    await React.act(() => root.unmount());
+  }
+});
+
+test("FilterItems: a group row ticks its leaves and expands in place", async t => {
+  let React, client, JSDOM;
+  try {
+    React = await import("react");
+    client = await import("react-dom/client");
+    ({ JSDOM } = await import("jsdom"));
+  } catch (e) {
+    t.skip("react or jsdom not installed here: " + e.message);
+    return;
+  }
+  const dom = new JSDOM("<!doctype html><body><div id=root></div></body>");
+  const win = dom.window;
+  const keys = ["window", "document", "Node", "Element", "HTMLElement", "MouseEvent", "Event"];
+  const saved = keys.map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]);
+  for (const k of keys) Object.defineProperty(globalThis, k, { value: k === "window" ? win : win[k], configurable: true, writable: true });
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  t.after(() => {
+    for (const [k, d] of saved) d ? Object.defineProperty(globalThis, k, d) : delete globalThis[k];
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  });
+  const ui = await import("./ui.js");
+  const h = React.createElement;
+  const tree = [{ value: "humans", label: "Humans" }, { value: "bots", label: "Bots", children: [{ value: "gptbot", label: "GPTBot" }, { value: "bing", label: "Bingbot" }] }];
+  let value = null;
+  function App() {
+    const [v, setV] = React.useState([]);
+    value = v;
+    return h(ui.FilterItems, { options: tree, selected: v, onChange: setV, allLabel: "All traffic" });
+  }
+  const root = client.createRoot(win.document.getElementById("root"));
+  await React.act(() => root.render(h(App)));
+  const rows = () => [...win.document.querySelectorAll('[role="option"]')];
+  const row = text => rows().find(r => r.querySelector(".mk-ms-label").textContent === text);
+  assert.equal(row("GPTBot"), undefined, "a fully picked group starts collapsed");
+  await React.act(() => row("Bots").querySelector(".mk-ms-expand").click());
+  assert.ok(row("GPTBot"), "the chevron expands the group in place");
+  await React.act(() => row("GPTBot").click());
+  assert.deepEqual(value, ["humans", "bing"]);
+  assert.equal(row("Bots").getAttribute("aria-checked"), "mixed");
+  await React.act(() => row("Bots").click());
+  assert.deepEqual(value, [], "a partial group click ticks the group: every leaf picked is All");
+  await React.act(() => root.unmount());
 });

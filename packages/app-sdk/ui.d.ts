@@ -69,19 +69,66 @@ export interface MultiSelectOption<V extends string = string> {
   label: string;
   /** A colour swatch shown next to the label (e.g. a chart series colour). */
   color?: string;
+  /** What the option covers, shown on hover. */
+  title?: string;
+  /** A group (2.20): its row ticks every leaf under it and expands in place. */
+  children?: ReadonlyArray<MultiSelectOption<V>>;
 }
 
-export interface MultiSelectProps<V extends string = string> {
+/** A node's tick in a filter tree. */
+export type FilterTick = "on" | "mixed" | "off";
+
+/**
+ * The rows of one filter (2.20): All, a separator, one tri-state row per
+ * option, groups expanding in place. Use it in an app's own composite menu
+ * (several filters in one dropdown); MultiSelect renders it in its popover.
+ * Drop-in for the apps' NestedFilterItems (`selected` = `value`).
+ */
+export interface FilterItemsProps<V extends string = string> {
   options: ReadonlyArray<V | MultiSelectOption<V>>;
-  /**
-   * The selected values. Empty, or every option, means "All": the All row is
-   * ticked and every option row unticked. Under All a click on an option
-   * selects only that option; unticking the last option, or ticking the last
-   * missing one, returns to All.
-   */
-  value: readonly V[];
+  /** The selected leaf values; empty or every leaf = All. */
+  value?: readonly V[];
+  /** Alias of `value` (NestedFilterItems). */
+  selected?: readonly V[];
   onChange: (next: V[]) => void;
   allLabel?: string;
+  emptyMeansAll?: boolean;
+  showOnly?: boolean;
+  /** The "nothing ticked" draft, when the parent shows it; else FilterItems keeps it. */
+  none?: boolean;
+  onNoneChange?: (none: boolean) => void;
+  className?: string;
+  "aria-label"?: string;
+}
+export function FilterItems<V extends string = string>(props: FilterItemsProps<V>): React.ReactElement;
+
+export interface MultiSelectProps<V extends string = string> {
+  /** Strings, options, or groups with `children` (2.20): a flat list is a one-level tree. */
+  options: ReadonlyArray<V | MultiSelectOption<V>>;
+  /**
+   * The selected leaf values. Empty, or every leaf, means "All". The All rule
+   * (2.20): under All every row is ticked; unticking one leaves All partial
+   * (–); a click on a full All unticks every row (a draft that emits
+   * nothing: the trigger reads `noneLabel` and the first tick picks that row
+   * alone); a click on a partial All ticks every row.
+   */
+  value?: readonly V[];
+  /** Alias of `value` (drop-in for NestedFilterMenu). */
+  selected?: readonly V[];
+  onChange: (next: V[]) => void;
+  allLabel?: string;
+  /** Trigger text while nothing is ticked. Default "None". */
+  noneLabel?: string;
+  /** Replaces the trigger text. */
+  summary?: string;
+  /** The texts the trigger's width is fixed to. Default: All, top-level labels, "N selected", none. */
+  sizeTo?: readonly string[];
+  /** More texts the width also fits. */
+  probes?: readonly string[];
+  /** A class on the trigger button (e.g. a fixed width). */
+  triggerClassName?: string;
+  /** Alias of `aria-label` (NestedFilterMenu). */
+  label?: string;
   /**
    * What All emits. true (default): []. false: every option's value.
    * Both spellings display as All either way.
@@ -105,6 +152,46 @@ export function MultiSelect<V extends string = string>(props: MultiSelectProps<V
  * coloured from theme tokens. Use it for the rows of an app's own menus.
  */
 export function Checkbox(props: { checked?: boolean | "mixed"; className?: string }): React.ReactElement;
+
+/** Every leaf value under a filter tree, in menu order. */
+export function filterLeaves<V extends string>(options: ReadonlyArray<MultiSelectOption<V>>): V[];
+/** The leaves under a node (a leaf is its own). */
+export function filterLeavesOf<V extends string>(node: MultiSelectOption<V>): V[];
+/** The node with `value` anywhere in the tree. */
+export function filterFind<V extends string>(options: ReadonlyArray<MultiSelectOption<V>>, value: V): MultiSelectOption<V> | undefined;
+/** A selection in menu order; [] when it holds every leaf. */
+export function filterNormalize<V extends string>(options: ReadonlyArray<MultiSelectOption<V>>, picked: Iterable<V>): V[];
+/** A node's tick; `none` = the nothing-ticked draft. */
+export function filterTick<V extends string>(node: MultiSelectOption<V>, selected: readonly V[], none?: boolean): FilterTick;
+/** The All row's tick. */
+export function filterAllTick(selected: readonly string[], none?: boolean): FilterTick;
+/** A click on All: full → the draft; partial or draft → every row. */
+export function filterToggleAll<V extends string>(selected: readonly V[], none?: boolean): { none: boolean; selected: V[] };
+/** A click on a node; leaving nothing ticked returns the draft with the selection unchanged. */
+export function filterToggle<V extends string>(
+  options: ReadonlyArray<MultiSelectOption<V>>,
+  selected: readonly V[],
+  node: MultiSelectOption<V>,
+  none?: boolean,
+): { none: boolean; selected: V[] };
+/** The one node whose leaves are exactly the pick. */
+export function filterPickedNode<V extends string>(options: ReadonlyArray<MultiSelectOption<V>>, selected: readonly V[]): MultiSelectOption<V> | undefined;
+/** Trigger text: All label, the one node, "N selected" (flat), or the picked parts (tree). */
+export function filterText<V extends string>(
+  options: ReadonlyArray<MultiSelectOption<V>>,
+  selected: readonly V[],
+  allLabel?: string,
+  many?: (n: number) => string,
+): string;
+/** URL value: "" for the default, "all", else whole groups by value and partial ones by children. */
+export function filterToParam<V extends string>(options: ReadonlyArray<MultiSelectOption<V>>, selected: readonly V[], defaults?: readonly V[]): string;
+/** A URL value back to a selection; `legacy` maps former values first. */
+export function filterFromParam<V extends string>(
+  options: ReadonlyArray<MultiSelectOption<V>>,
+  raw: string | null | undefined,
+  defaults?: readonly V[],
+  legacy?: Record<string, string>,
+): V[];
 
 /** Where a MultiSelect stands: `all` when the value is empty or holds every option (then `selected` is empty). */
 export function multiSelectState<V extends string>(
