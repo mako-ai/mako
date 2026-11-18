@@ -3,9 +3,10 @@
  *
  * A box never sees a webhook signing secret (webhook-batch.ts), so it cannot
  * create the subscription that returns one. The API does it here, with the
- * connection's own key, through the same vendor code as the built-in
- * connector. The secret goes straight onto `flow.webhookConfig.secret`
- * (flow-webhook-subscription.service.ts) and nowhere else.
+ * connection's own key, through the vendor code in ../vendor-webhooks/ (one
+ * module per vendor). The secret goes straight onto
+ * `flow.webhookConfig.secret` (flow-webhook-subscription.service.ts) and
+ * nowhere else.
  *
  * Close, PandaDoc, Claap, Stripe, Wise and Calendly, keyed by the folder's slug. A folder of that name
  * gets the vendor's provisioning only if it also declares a verification
@@ -20,14 +21,14 @@ import type {
   ProvisionWebhookResult,
   UpdateWebhookSubscriptionOptions,
 } from "../base/BaseConnector";
-import { STRIPE_API_VERSION } from "../stripe/connector";
 import {
+  STRIPE_API_VERSION,
   createStripeWebhookEndpoint,
   resolveStripeProvisionEvents,
   stripeSupportedWebhookEvents,
   stripeWebhookEventsForEntities,
   updateStripeWebhookEndpoints,
-} from "../stripe/webhooks";
+} from "../vendor-webhooks/stripe";
 
 export interface WebhookProvisioner {
   /** Create the subscription (or adopt one already on the URL). */
@@ -47,13 +48,13 @@ type ProvisionerFactory = (
 interface ProvisionerEntry {
   factory: ProvisionerFactory;
   /**
-   * Whether `update` retargets the subscription in place, as the built-in
-   * connector's `supportsWebhookSubscriptionUpdate`. False: Mako creates.
+   * Whether `update` retargets the subscription in place (the boxed
+   * connector's `supportsWebhookSubscriptionUpdate`). False: Mako creates.
    */
   canUpdate: boolean;
   /** Whether `delete` removes the subscriptions of a deleted flow. */
   canDelete?: boolean;
-  /** As the built-in connector's `getWebhookCapabilities()`. */
+  /** What the boxed connector's `getWebhookCapabilities()` reports. */
   storesSecretAutomatically: boolean;
   secretHelpText?: string;
   actionHint?: string;
@@ -94,10 +95,10 @@ function wiseHostUrl(value: unknown): string | undefined {
 }
 
 /**
- * The config a built-in connector provisions with: the credential (and
- * Wise's profile), and `api_base_url` only when it is one of Wise's own
- * HTTPS hosts, so the key goes only to the vendor. Throws when the
- * credential is missing.
+ * The config Wise and Calendly provision with: the credential (and Wise's
+ * profile), and `api_base_url` only when it is one of Wise's own HTTPS
+ * hosts, so the key goes only to the vendor. Throws when the credential is
+ * missing.
  */
 export function builtInProvisioningConfig(
   slug: "wise" | "calendly",
@@ -125,29 +126,14 @@ const PROVISIONERS: Record<string, ProvisionerEntry> = {
     storesSecretAutomatically: true,
     factory: async config => {
       const apiKey = apiKeyOf(config, "Close");
-      const { createCloseClient } = await import("../close/client");
-      const {
-        adoptCloseWebhook,
-        closeWebhookEventsForEntities,
-        provisionCloseWebhook,
-      } = await import("../close/webhooks");
-      const api = createCloseClient({
-        apiKey,
-        minDelayMs: 500,
-        emitLog: () => {},
-        sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
-      });
-      return {
-        create: options =>
-          provisionCloseWebhook(api, options, closeWebhookEventsForEntities),
-        update: options =>
-          adoptCloseWebhook(api, options, closeWebhookEventsForEntities),
-      };
+      const { closeWebhookProvisioning } =
+        await import("../vendor-webhooks/close");
+      return closeWebhookProvisioning(apiKey);
     },
   },
-  // The built-in connector's own `createWebhookSubscription`, on a
-  // connection that holds only the key: PandaDoc's default base URL, the
-  // same triggers and payload sections, and the `shared_key` it returns.
+  // PandaDoc's subscription create on the key alone: PandaDoc's default
+  // base URL, the flow's triggers with the rich payload sections, and the
+  // `shared_key` it returns.
   pandadoc: {
     canUpdate: false,
     storesSecretAutomatically: true,
@@ -155,17 +141,9 @@ const PROVISIONERS: Record<string, ProvisionerEntry> = {
       "Enter the webhook subscription Shared Key from the PandaDoc Developer Dashboard (used to verify the HMAC signature).",
     factory: async config => {
       const apiKey = apiKeyOf(config, "PandaDoc");
-      const { PandaDocConnector } = await import("../pandadoc/connector");
-      const connector = new PandaDocConnector({
-        id: "webhook-provisioning",
-        name: "PandaDoc",
-        type: "pandadoc",
-        config: { api_key: apiKey },
-      } as never);
-      return {
-        create: options => connector.createWebhookSubscription(options),
-        update: async () => null,
-      };
+      const { pandaDocWebhookProvisioning } =
+        await import("../vendor-webhooks/pandadoc");
+      return pandaDocWebhookProvisioning(apiKey);
     },
   },
   // Claap's `provisionClaapWebhook`, which adopts (and retargets) the
@@ -178,20 +156,12 @@ const PROVISIONERS: Record<string, ProvisionerEntry> = {
     actionHint: "(copy the secret into this form if Claap shows it once)",
     factory: async config => {
       const apiKey = apiKeyOf(config, "Claap");
-      const { ClaapConnector } = await import("../claap/connector");
-      const connector = new ClaapConnector({
-        id: "webhook-provisioning",
-        name: "Claap",
-        type: "claap",
-        config: { api_key: apiKey },
-      } as never);
-      return {
-        create: options => connector.createWebhookSubscription(options),
-        update: async () => null,
-      };
+      const { claapWebhookProvisioning } =
+        await import("../vendor-webhooks/claap");
+      return claapWebhookProvisioning(apiKey);
     },
   },
-  // The built-in connector itself, on the token and profile, plus
+  // Wise's profile subscriptions on the token and profile, plus
   // `api_base_url` only when it is Wise's own host (a sandbox connection
   // provisions in the sandbox). Profile subscriptions on every profile it
   // syncs; Wise signs with its RSA keys, so the "secret" names the key set.
@@ -204,37 +174,22 @@ const PROVISIONERS: Record<string, ProvisionerEntry> = {
     secretHelpText:
       'Wise signs webhooks with its RSA public keys, not a shared secret: this field only names the key set — "production" (or blank) or "sandbox". Creating the webhook in Wise fills it in.',
     factory: async config => {
-      const { WiseConnector } = await import("../wise/connector");
-      const connector = new WiseConnector({
-        id: "webhook-provisioning",
-        name: "Wise",
-        type: "wise",
-        config: builtInProvisioningConfig("wise", config),
-      } as never);
-      return {
-        create: options => connector.createWebhookSubscription(options),
-        update: options => connector.updateWebhookSubscription(options),
-        delete: options => connector.deleteWebhookSubscription(options),
-      };
+      const provisioningConfig = builtInProvisioningConfig("wise", config);
+      const { wiseWebhookProvisioning } =
+        await import("../vendor-webhooks/wise");
+      return wiseWebhookProvisioning(provisioningConfig);
     },
   },
-  // The built-in's organization-scoped `createWebhookSubscription` on the
-  // token alone (api.calendly.com). Calendly returns the signing key.
+  // Calendly's organization-scoped subscription create on the token alone
+  // (api.calendly.com). Calendly returns the signing key.
   calendly: {
     canUpdate: false,
     storesSecretAutomatically: true,
     factory: async config => {
-      const { CalendlyConnector } = await import("../calendly/connector");
-      const connector = new CalendlyConnector({
-        id: "webhook-provisioning",
-        name: "Calendly",
-        type: "calendly",
-        config: builtInProvisioningConfig("calendly", config),
-      } as never);
-      return {
-        create: options => connector.createWebhookSubscription(options),
-        update: async () => null,
-      };
+      const provisioningConfig = builtInProvisioningConfig("calendly", config);
+      const { calendlyWebhookProvisioning } =
+        await import("../vendor-webhooks/calendly");
+      return calendlyWebhookProvisioning(provisioningConfig);
     },
   },
   stripe: {
@@ -252,8 +207,7 @@ const PROVISIONERS: Record<string, ProvisionerEntry> = {
 };
 
 /**
- * Stripe's provisioning on a given client, as the built-in connector does
- * it: create an endpoint for the flow's events, or retarget the one already
+ * Stripe's provisioning on a given client: create an endpoint for the flow's events, or retarget the one already
  * on the URL. The endpoint is pinned to the API version the folder reads,
  * so a delivery's object has a list row's shape. Stripe returns the signing
  * secret on create only.

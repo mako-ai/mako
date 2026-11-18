@@ -8,6 +8,7 @@ import { connectorRegistry } from "../connectors/registry";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
+import { isBuiltinTwinType } from "../connectors/twins/types";
 import {
   listWorkspaceConnectors,
   workspaceConnectorForm,
@@ -377,21 +378,13 @@ connectorRoutes.openapi(
       return fail(c, 404, "Icon not found");
     }
 
-    let iconPath = path.resolve(
-      __dirname,
-      "..",
-      "connectors",
-      type,
-      "icon.svg",
-    );
+    // A deleted built-in keeps its icon under connectors/twins/icons/.
+    const iconParts = isBuiltinTwinType(type)
+      ? ["connectors", "twins", "icons", `${type}.svg`]
+      : ["connectors", type, "icon.svg"];
+    let iconPath = path.resolve(__dirname, "..", ...iconParts);
     if (!fs.existsSync(iconPath)) {
-      iconPath = path.resolve(
-        process.cwd(),
-        "src",
-        "connectors",
-        type,
-        "icon.svg",
-      );
+      iconPath = path.resolve(process.cwd(), "src", ...iconParts);
     }
 
     if (!fs.existsSync(iconPath)) {

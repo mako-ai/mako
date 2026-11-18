@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import type { AxiosInstance } from "axios";
-import { adoptCloseWebhook } from "../close/webhooks";
+import { adoptCloseWebhook } from "../vendor-webhooks/close";
 import { SandboxedConnector } from "./SandboxedConnector";
 import {
   builtInProvisioningConfig,
@@ -193,14 +193,14 @@ void test("a folder that declares no verification is refused before any call", a
   );
 });
 
-void test("PandaDoc and Claap folders provision as their built-ins do, create only", () => {
+void test("PandaDoc and Claap folders provision create only", () => {
   process.env.CONNECTOR_WEBHOOK_BATCHES = "true";
   const pandadoc = new SpecConnector("ws:pandadoc", VERIFYING_SPEC);
   const claap = new SpecConnector("ws:claap", VERIFYING_SPEC);
   const close = new SpecConnector("ws:close", VERIFYING_SPEC);
   assert.equal(pandadoc.supportsWebhookProvisioning(), true);
   assert.equal(claap.supportsWebhookProvisioning(), true);
-  // The built-ins have no in-place update; Close's adopt stays.
+  // No in-place update; Close adopts the webhook on the URL.
   assert.equal(pandadoc.supportsWebhookSubscriptionUpdate(), false);
   assert.equal(claap.supportsWebhookSubscriptionUpdate(), false);
   assert.equal(close.supportsWebhookSubscriptionUpdate(), true);
@@ -229,7 +229,7 @@ void test("a shared-secret folder names its secret header for redaction", () => 
   assert.deepEqual(close.webhookSecretHeaders(), []);
 });
 
-void test("Wise and Calendly provision as their built-ins: Wise updates and deletes, Calendly only creates", async () => {
+void test("Wise updates and deletes, Calendly only creates", async () => {
   process.env.CONNECTOR_WEBHOOK_BATCHES = "true";
   await assert.rejects(
     () => webhookProvisionerFor("wise", {}),
@@ -260,7 +260,7 @@ void test("Wise and Calendly provision as their built-ins: Wise updates and dele
   );
 });
 
-void test("the provisioned built-ins take the credential, and only Wise's own hosts as base URL", () => {
+void test("Wise and Calendly provision with the credential, and only Wise's own hosts as base URL", () => {
   const evil = { api_base_url: "https://attacker.example" };
   assert.deepEqual(
     builtInProvisioningConfig("wise", {
@@ -275,7 +275,7 @@ void test("the provisioned built-ins take the credential, and only Wise's own ho
     builtInProvisioningConfig("calendly", { ...evil, access_token: "t" }),
     { access_token: "t" },
   );
-  // A sandbox connection provisions in Wise's sandbox, as in-process.
+  // A sandbox connection provisions in Wise's sandbox.
   assert.deepEqual(
     builtInProvisioningConfig("wise", {
       api_key: "k",

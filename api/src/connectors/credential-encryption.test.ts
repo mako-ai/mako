@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
+import { BUILTIN_TWIN_TYPES } from "./twins/types";
 import { join } from "node:path";
 
 import { syncConnectorRegistry } from "../sync/connector-registry";
@@ -44,11 +45,13 @@ const NOT_A_SECRET: Record<string, string> = {
 };
 
 function connectorTypes(): string[] {
-  return readdirSync(CONNECTORS_DIR, { withFileTypes: true })
+  const directories = readdirSync(CONNECTORS_DIR, { withFileTypes: true })
     .filter(entry => entry.isDirectory() && entry.name !== "base")
     .map(entry => entry.name)
-    .filter(name => existsSync(join(CONNECTORS_DIR, name, "connector.ts")))
-    .sort();
+    .filter(name => existsSync(join(CONNECTORS_DIR, name, "connector.ts")));
+  // The deleted built-ins keep their stored credentials, encrypted by the
+  // frozen schema their registry twin answers with (connectors/twins).
+  return [...new Set([...directories, ...BUILTIN_TWIN_TYPES])].sort();
 }
 
 async function main() {

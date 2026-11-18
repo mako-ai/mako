@@ -11,8 +11,14 @@ import {
   isWorkspaceConnectorType,
   SandboxedConnector,
 } from "./workspace/SandboxedConnector";
+import { BUILTIN_TWIN_CATALOG } from "./twins/builtin-catalog";
+import { registryTwinClass } from "./twins/RegistryTwinConnector";
+import { BUILTIN_TWIN_TYPES } from "./twins/types";
 
 const logger = loggers.connector();
+
+/** Directories here that hold shared code, not a connector. */
+const NON_CONNECTOR_DIRS = new Set(["base", "twins", "vendor-webhooks"]);
 
 // Type for connector constructor
 type ConnectorConstructor = new (
@@ -83,7 +89,9 @@ class ConnectorRegistry {
       // Get all subdirectories (potential connector folders)
       const entries = fs.readdirSync(connectorsDir, { withFileTypes: true });
       const connectorDirs = entries
-        .filter(entry => entry.isDirectory() && entry.name !== "base")
+        .filter(
+          entry => entry.isDirectory() && !NON_CONNECTOR_DIRS.has(entry.name),
+        )
         .map(entry => entry.name);
 
       logger.info("Discovering connectors", { directory: connectorsDir });
@@ -99,12 +107,35 @@ class ConnectorRegistry {
         }
       }
 
+      this.registerBuiltinTwins();
+
       this.initialized = true;
       logger.info("Connector registry initialized", {
         connectorCount: this.connectors.size,
       });
     } catch (error) {
       logger.error("Failed to initialize connector registry", { error });
+    }
+  }
+
+  /**
+   * The deleted built-ins (`close`, `stripe`, …): each type stays in the
+   * catalog with the metadata it had, and its connections run the registry
+   * twin in a box (connectors/twins).
+   */
+  private registerBuiltinTwins() {
+    for (const type of BUILTIN_TWIN_TYPES) {
+      const entry = BUILTIN_TWIN_CATALOG[type];
+      this.register({
+        type,
+        connector: registryTwinClass(type),
+        metadata: {
+          ...entry.metadata,
+          supportedEntities: [...entry.metadata.supportedEntities],
+          webhook: entry.webhook as WebhookCapabilities,
+          incremental: entry.incremental as IncrementalCapabilities,
+        },
+      });
     }
   }
 

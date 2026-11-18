@@ -11,6 +11,12 @@ import {
 } from "../connectors/workspace/SandboxedConnector";
 import { loadConnectorDefinition } from "../connectors/workspace/resolver";
 import { specToForm } from "../connectors/workspace/spec-translation";
+import { BUILTIN_TWIN_CATALOG } from "../connectors/twins/builtin-catalog";
+import { registryTwinClass } from "../connectors/twins/RegistryTwinConnector";
+import {
+  BUILTIN_TWIN_TYPES,
+  isBuiltinTwinType,
+} from "../connectors/twins/types";
 
 const logger = loggers.sync("connector-registry");
 
@@ -55,6 +61,8 @@ type ConnectorMetadata = ConnectorRegistryEntry["metadata"];
  * none. Throws when the directory cannot be imported.
  */
 async function importConnectorClass(type: string): Promise<any | undefined> {
+  // A deleted built-in has no directory: its class is the registry twin.
+  if (isBuiltinTwinType(type)) return registryTwinClass(type);
   const mod = await import(`../connectors/${type}`);
   const exportKey = Object.keys(mod).find(k => k.endsWith("Connector"));
   return exportKey ? (mod as Record<string, unknown>)[exportKey] : undefined;
@@ -159,8 +167,24 @@ class SyncConnectorRegistry {
       const connectorsDir = path.join(__dirname, "../connectors");
       const entries = fs.readdirSync(connectorsDir, { withFileTypes: true });
       const connectorDirs = entries
-        .filter(entry => entry.isDirectory() && entry.name !== "base")
+        .filter(
+          entry =>
+            entry.isDirectory() &&
+            !["base", "twins", "vendor-webhooks"].includes(entry.name),
+        )
         .map(entry => entry.name);
+
+      for (const type of BUILTIN_TWIN_TYPES) {
+        const metadata = BUILTIN_TWIN_CATALOG[type].metadata;
+        this.register({
+          type,
+          connectorClass: registryTwinClass(type),
+          metadata: {
+            ...metadata,
+            supportedEntities: [...metadata.supportedEntities],
+          },
+        });
+      }
 
       for (const dirName of connectorDirs) {
         const dirPath = path.join(connectorsDir, dirName);
@@ -224,6 +248,14 @@ class SyncConnectorRegistry {
       // async and its callers go on to ask `getAvailableEntities()`, which is
       // synchronous by contract and would otherwise answer "no entities" for a
       // connector that has them.
+      await connector.loadDefinition();
+      return connector;
+    }
+
+    if (isBuiltinTwinType(connection.type)) {
+      // A deleted built-in: the same connection, run as its registry twin.
+      const Twin = registryTwinClass(connection.type);
+      const connector = new Twin(asSourceConnection(connection));
       await connector.loadDefinition();
       return connector;
     }

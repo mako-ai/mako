@@ -54,6 +54,7 @@ import {
   SandboxedConnector,
   isWorkspaceConnectorType,
 } from "./SandboxedConnector";
+import { isBuiltinTwinType } from "../twins/types";
 import {
   connectorWebhookBatchesEnabled,
   webhookBatchLimits,
@@ -582,7 +583,12 @@ export async function processBoxWebhookBatch(input: {
     return emptyResult("stop", "missing dependency");
   }
 
-  if (!isWorkspaceConnectorType(connection.type)) {
+  // A deleted built-in type (`close`, …) runs its registry twin in a box,
+  // so its box-lane events are this connection's, as for a `ws:` one.
+  if (
+    !isWorkspaceConnectorType(connection.type) &&
+    !isBuiltinTwinType(connection.type)
+  ) {
     // The flow moved to an in-process connector. Its box-lane events were
     // verified for, and pinned to, a workspace connection: they are dropped,
     // never handed to another connection. The new connector's own webhook

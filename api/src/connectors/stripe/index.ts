@@ -1,1 +1,0 @@
-export { StripeConnector } from "./connector";

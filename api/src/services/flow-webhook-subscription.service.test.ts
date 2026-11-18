@@ -4,7 +4,7 @@ import { Types } from "mongoose";
 import { Flow } from "../database/workspace-schema";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
-import { WiseConnector } from "../connectors/wise/connector";
+import { wiseWebhookProvisioning } from "../connectors/vendor-webhooks/wise";
 import {
   flowEntitySignature,
   PROVISION_NEEDS_ADMIN,
@@ -311,7 +311,8 @@ async function testRemoveDeletesThroughTheConnector() {
 }
 
 /**
- * The real Wise connector behind the generic service: enabling `transfers`
+ * Wise's real provisioning (vendor-webhooks/wise.ts, what a boxed Wise
+ * connector delegates to) behind the generic service: enabling `transfers`
  * on a flow provisioned for `balance_updates` subscribes the transfer events
  * on the same URL and commits the new id set to the flow file.
  */
@@ -324,13 +325,7 @@ async function testWiseFlowRetargetsThroughTheService() {
     },
   ];
   let next = 1;
-  const connector = new WiseConnector({
-    id: String(DATA_SOURCE_ID),
-    name: "Wise",
-    type: "wise",
-    config: { api_key: "t", profile_id: "10" },
-  } as any);
-  (connector as any).wiseApi = {
+  const wise = wiseWebhookProvisioning({ api_key: "t", profile_id: "10" }, {
     get: async () => ({ data: [...subscriptions] }),
     post: async (_path: string, body: Record<string, unknown>) => {
       const created = { id: `t${next++}`, ...body };
@@ -338,6 +333,13 @@ async function testWiseFlowRetargetsThroughTheService() {
       return { data: created };
     },
     delete: async () => ({ data: undefined }),
+  } as any);
+  // A boxed Wise connector, as SandboxedConnector exposes the provisioner.
+  const connector = {
+    supportsWebhookProvisioning: () => true,
+    supportsWebhookSubscriptionUpdate: () => true,
+    createWebhookSubscription: wise.create,
+    updateWebhookSubscription: wise.update,
   };
   (sourceConnectionManager as any).getSourceConnection = async () => ({
     id: String(DATA_SOURCE_ID),

@@ -655,7 +655,12 @@ async function indexReference(input: {
   }
 }
 
-async function runRegistrySpec(
+/**
+ * Run `spec` on one resolved registry version in the workspace's sync box.
+ * Exported for built-in twins (connectors/twins), which resolve a registry
+ * version without a folder in the workspace repo.
+ */
+export async function runRegistrySpec(
   workspaceId: string,
   resolution: RegistryResolution,
 ): Promise<

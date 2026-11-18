@@ -171,7 +171,7 @@ Used by sync orchestrator (`normalizePayloadBySchema`), CDC consumer, and `GET .
 
 ## Tests
 
-Mirror `api/src/connectors/close/connector.test.ts`:
+Mirror `api/src/connectors/gcs/connector.test.ts`:
 
 ```bash
 tsx api/src/connectors/<name>/connector.test.ts
@@ -198,8 +198,8 @@ Live smoke (credentials in UI/env only, never commit):
 
 - Base: `api/src/connectors/base/BaseConnector.ts`
 - Registry: `api/src/connectors/registry.ts`
-- Complex reference: `api/src/connectors/close/connector.ts`, `close/schema.ts`, `close/connector.test.ts`
-- Simple reference: `api/src/connectors/stripe/connector.ts`
+- In-process reference: `api/src/connectors/gcs/connector.ts`, `gcs/schema.ts`, `gcs/connector.test.ts`
+- Vendor connectors are folders now: `connectors/close/` (complex) and `connectors/stripe/` (simple) at the repo root, run in boxes (`api/src/connectors/twins/README` section in `api/src/connectors/README.md`)
 - Webhook route: `api/src/routes/webhooks.ts`
 - Endpoint helper: `api/src/utils/webhook.utils.ts`
 - Rules: `.cursor/rules/15-connector-agnostic.mdc`

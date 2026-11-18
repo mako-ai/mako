@@ -16,7 +16,7 @@ This separation allows reusing the same connection credentials for multiple tran
 
 ## Structure
 
-Connectors live in `api/src/connectors/<source-name>`. Each connector must have:
+In-process connectors live in `api/src/connectors/<source-name>`. New vendor connectors should be connector folders instead (see [Workspace-Authored Connectors](#workspace-authored-connectors)): Stripe, Close, Claap, Calendly, PandaDoc, Wise and PostHog moved out of the API to `connectors/<slug>/` and the registry. Each in-process connector must have:
 
 1.  `connector.ts`: The implementation extending `BaseConnector`.
 2.  `index.ts`: Exports the connector and metadata.
@@ -303,6 +303,7 @@ Infrastructure the publish job needs, per environment:
   The writer then cannot delete or replace a bundle or a source. The code
   also creates them with `ifGenerationMatch: 0`. The same 2 bindings work on
   the shared artifact bucket if a dedicated one is not created.
+
 - Required reviewers on both environments, and a tag ruleset that limits
   who may push `connector-*` tags.
 

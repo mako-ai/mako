@@ -657,7 +657,7 @@ export class SandboxedConnector extends BaseConnector {
     }
   }
 
-  private config(): Record<string, unknown> {
+  protected config(): Record<string, unknown> {
     return (this.sourceConnection.config ?? {}) as Record<string, unknown>;
   }
 

@@ -111,8 +111,9 @@ jobs:
       - name: Install workflows runtime packages
         run: npm install --prefix deploy/workflows/runtime --no-audit --no-fund
 
-      # The connectors/<slug>/fixtures parity tests run each folder with its own
-      # dependencies, installed from its own lockfile, as a box would.
+      # API tests that run a connectors/<slug>/ folder (registry gate, webhook
+      # verification, the Close folder tests in connectors/twins) run it with
+      # its own dependencies, installed from its own lockfile, as a box would.
       - name: Install connector folder packages
         run: |
           npm ci --prefix connectors/stripe --no-audit --no-fund --ignore-scripts

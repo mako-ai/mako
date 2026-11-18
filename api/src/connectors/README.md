@@ -25,14 +25,14 @@ Two words, two things — decided 2026-09-02 (mako#954), because until then
 
 Where the vocabulary is already applied:
 
-| Surface | Connector (code) | Connection (credential) |
-| --- | --- | --- |
-| Agent / MCP tools | `list_connectors`, `inspect_connector({ connector })` | `list_connections` (both kinds, `kind` + `connector` on every row), `inspect_connection`, `probe_connection` |
-| Flow files | `source.type: connector` | `source.connection_id`, `destination.connection_id` (`connector_id` is the pre-2026-09 key and still parses) |
-| CLI | `mako connector test <path>` | `mako connection probe <id\|name>` |
-| REST | `/api/connectors` catalog | `/api/workspaces/:wid/connections/sources` (source connections); `/api/workspaces/:wid/connectors` is the deprecated alias. Database connections stay under `/databases`. |
-| Docs / skills | `docs/connectors.md` (Vocabulary note), `flows-as-code` skill, the workspace `AGENTS.md` template, the MCP handshake instructions | same |
-| TypeScript models | `ConnectorDefinition`, `connectorRegistry`, `connectorCatalogStore` | `SourceConnection` / `ISourceConnection` (Mongo collection still `connectors`); `SourceConnectionConfig` / `sourceConnectionManager`; UI `SourceConnectionExplorer` / `Form` / `Tab` |
+| Surface           | Connector (code)                                                                                                                  | Connection (credential)                                                                                                                                                              |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Agent / MCP tools | `list_connectors`, `inspect_connector({ connector })`                                                                             | `list_connections` (both kinds, `kind` + `connector` on every row), `inspect_connection`, `probe_connection`                                                                         |
+| Flow files        | `source.type: connector`                                                                                                          | `source.connection_id`, `destination.connection_id` (`connector_id` is the pre-2026-09 key and still parses)                                                                         |
+| CLI               | `mako connector test <path>`                                                                                                      | `mako connection probe <id\|name>`                                                                                                                                                   |
+| REST              | `/api/connectors` catalog                                                                                                         | `/api/workspaces/:wid/connections/sources` (source connections); `/api/workspaces/:wid/connectors` is the deprecated alias. Database connections stay under `/databases`.            |
+| Docs / skills     | `docs/connectors.md` (Vocabulary note), `flows-as-code` skill, the workspace `AGENTS.md` template, the MCP handshake instructions | same                                                                                                                                                                                 |
+| TypeScript models | `ConnectorDefinition`, `connectorRegistry`, `connectorCatalogStore`                                                               | `SourceConnection` / `ISourceConnection` (Mongo collection still `connectors`); `SourceConnectionConfig` / `sourceConnectionManager`; UI `SourceConnectionExplorer` / `Form` / `Tab` |
 
 Where it is **not yet** applied — left with a reason:
 
@@ -65,28 +65,38 @@ connectors/
 │   ├── pagination.ts        # Offset and next-token page loops
 │   ├── incremental.ts       # Date windows, the client-side `since` filter
 │   └── webhook-signature.ts # Raw body, HMAC, constant-time compare
-├── stripe/
-├── close/
-├── claap/
-├── calendly/
-├── pandadoc/
-├── wise/
-├── posthog/
-├── graphql/
-├── bigquery/
-├── rest/
+├── rest/ custom_api/ gcs/   # In-process connectors still in the API
+├── twins/                   # Deleted built-ins, run as their registry twins (below)
+├── vendor-webhooks/         # API-side webhook provisioning for boxed connectors
+├── workspace/               # Folder connectors in boxes (SandboxedConnector, registry)
 ├── registry.ts              # Runtime connector discovery for the API server
-└── README.md               # This file
+└── README.md                # This file
 ```
 
-Each connector directory follows the same shape: `connector.ts` (implementation),
-`index.ts` (exports the `XxxConnector` class), `icon.svg`, and usually
-`connector.test.ts` + `schema.ts` for typed entity schemas. Larger connectors
-keep `connector.ts` as the public class and split the work into sibling
-modules (e.g. `client.ts`, `fetchers.ts`, `webhooks.ts`) that read the
-instance through a small context object, so a client or `sleep` stubbed on
-the instance in tests is the one they use. Reuse `base/` before writing
-another retry loop, header lookup, pagination loop or signature compare.
+### Built-in types without in-process code (registry twins)
+
+Close, Stripe, PandaDoc, Claap, PostHog, Wise and Calendly have no code in
+the API any more. Their code is the folder in Mako's `connectors/<slug>/`,
+published to the connector registry as `mako/<slug>`. A connection stored
+with the bare type (`close`, …) keeps that type. Both registries resolve it
+to `RegistryTwinConnector` (`twins/`), a `SandboxedConnector` on the same
+connection read as `ws:<type>`:
+
+1. The workspace's own `connectors/<type>/` folder when it has one, which is
+   the code its switched flows already run.
+2. Otherwise `mako/<type>@1` from the registry (needs
+   `CONNECTOR_REGISTRY_ENABLED`). Its `spec` runs once per bundle hash.
+
+`twins/builtin-catalog.ts` freezes what the deleted classes reported:
+metadata, webhook and incremental capabilities, and the static config
+schema. The schema is what stored credentials were encrypted by, so it
+never changes. Webhook subscriptions that a box cannot create (it never
+sees the signing secret) are created in the API by `vendor-webhooks/`.
+
+Each in-process connector directory follows the same shape: `connector.ts`
+(implementation), `index.ts` (exports the `XxxConnector` class), `icon.svg`,
+and usually `connector.test.ts`. Reuse `base/` before writing another retry
+loop, header lookup, pagination loop or signature compare.
 
 ## Creating a New Connector
 
@@ -163,36 +173,9 @@ All sensitive configuration data (API keys, passwords, etc.) is encrypted before
 ## Available Connectors
 
 See the [SaaS Connectors](/connectors/) docs page for the full, up-to-date
-table of connectors and entities. Summary:
-
-### Stripe
-
-- Syncs payment data from Stripe
-- Supported entities: customers, subscriptions, disputes, charges, invoices, products, prices, plans, payment intents, balance_transactions, payouts, payout_balance_transactions, refunds, credit_notes, customer_balance_transactions, invoice_items, subscription_schedules, coupons, promotion_codes, checkout_sessions, setup_intents, early_fraud_warnings
-- Required config: `api_key`
-- Supports backfill and CDC webhooks (auto-provisioning)
-
-### Close
-
-- Syncs CRM data from Close
-- Supported entities: leads, opportunities, activities (10+ sub-types), contacts, users, custom_fields
-- Required config: `api_key`
-
-### Claap, Calendly, PandaDoc
-
-- Fixed-entity connectors with backfill + CDC webhook support (auto-provisioned where the provider allows it)
-
-### Wise
-
-- Syncs Wise (TransferWise) financial data
-- Supported entities: profiles, balances, balance_updates, transfers, recipients, activities
-- Required config: `api_key` (personal API token); optional `profile_id`, `api_base_url` (sandbox)
-- Webhooks verified with Wise's RSA-SHA256 public keys. "Create in Wise" provisions profile-level subscriptions (`/v3/profiles/{id}/subscriptions`, one per event, on every synced profile; reused when they exist, removed when the flow is deleted). Wise only lets a token allowed to manage the profile's webhooks do this (OAuth user token, or a full-access personal token); otherwise the error says how to create them by hand. `balances#account-state-change` and `profiles#state-change` are application-level only, so `balances` / `profiles` cannot be fed by a profile subscription
-
-### PostHog
-
-- Hybrid connector: built-in REST entities (surveys, survey_responses, feature_flags, experiments, annotations) plus dynamic HogQL query entities configured on the Flow
-- Required config: `project_id`, `api_key`
+table of connectors and entities. Stripe, Close, Claap, Calendly, PandaDoc,
+Wise and PostHog are documented with their folders in `connectors/<slug>/`
+at the repo root.
 
 ### GraphQL
 

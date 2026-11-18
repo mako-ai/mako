@@ -2,9 +2,10 @@
  * Webhook signatures of workspace connectors, checked in the API from the
  * scheme the connector declares as data.
  *
- * The Close folder's declaration must accept and refuse exactly what the
- * in-process `verifyCloseWebhook` does, on the same deliveries. Declarations
- * the API cannot run fail closed.
+ * The Close, Wise and Calendly folders' declarations must accept exactly the
+ * fixture deliveries the in-process checks accepted when they were deleted
+ * (2026-11-18), and refuse the rest. Declarations the API cannot run fail
+ * closed.
  *
  * Run: node --import tsx src/connectors/workspace/webhook-verification.test.ts
  */
@@ -20,7 +21,6 @@ import {
   verifyDeclaredWebhook,
   declaredEventId,
 } from "./webhook-verification";
-import { verifyCloseWebhook } from "../close/webhooks";
 import {
   ensureFolderInstalled,
   runFolderCommand,
@@ -47,7 +47,19 @@ before(async () => {
   assert.ok(CLOSE_WEBHOOK_VERIFICATION, "the Close folder declares one");
 });
 
-void test("the Close declaration agrees with the in-process check on every delivery", () => {
+/** The deliveries the deleted in-process checks accepted, by fixture name. */
+const ACCEPTED = {
+  close: ["valid"],
+  wise: [
+    "valid",
+    "valid, no delivery id",
+    "test notification, unsigned",
+    "test notification, badly signed, odd case",
+  ],
+  calendly: ["valid", "valid, spaces after commas"],
+};
+
+void test("the Close declaration accepts exactly what the in-process check did", () => {
   const declaration = declaredWebhookVerification(
     spec(CLOSE_WEBHOOK_VERIFICATION),
   );
@@ -55,17 +67,13 @@ void test("the Close declaration agrees with the in-process check on every deliv
   const [event] = buildWebhookEvents(["lead.updated"]);
   const deliveries = buildDeliveries(event.rawPayload);
   assert.ok(deliveries.length >= 6);
-  let valid = 0;
-  for (const delivery of deliveries) {
-    const ours = verifyDeclaredWebhook(declaration, { ...delivery, now: SENT });
-    const theirs = verifyCloseWebhook(delivery);
-    assert.equal(ours.valid, theirs.valid, delivery.name);
-    if (ours.valid) {
-      valid++;
-      assert.deepEqual(ours.event, theirs.event);
-    }
-  }
-  assert.equal(valid, 1);
+  const accepted = deliveries
+    .filter(
+      delivery =>
+        verifyDeclaredWebhook(declaration, { ...delivery, now: SENT }).valid,
+    )
+    .map(delivery => delivery.name);
+  assert.deepEqual(accepted, ACCEPTED.close);
 });
 
 void test("headers are matched case-insensitively, as a proxy may rewrite them", () => {
@@ -359,8 +367,8 @@ void test("where an event id and type sit is read from the spec, plain paths onl
 });
 
 // ---------------------------------------------------------------------------
-// Wise (rsa-sha256) and Calendly (stripe-v1), each against its in-process
-// check, on the folders' own fixture deliveries and declarations.
+// Wise (rsa-sha256) and Calendly (stripe-v1), each against what its deleted
+// in-process check accepted, on the folders' own fixture deliveries.
 // ---------------------------------------------------------------------------
 
 async function folderSpec(slug: "wise" | "calendly") {
@@ -374,15 +382,16 @@ async function folderSpec(slug: "wise" | "calendly") {
   return run.messages.find((m: any) => m.type === "SPEC")?.spec;
 }
 
-void test("the Wise declaration agrees with the in-process check, with Wise's own keys", async () => {
-  const { verifyWiseWebhook, wiseWebhookPublicKeys } =
-    await import("../wise/webhooks");
+void test("the Wise declaration accepts what the in-process check did, with Wise's own keys", async () => {
   const fixtures =
     await import("../../../../connectors/wise/fixtures/webhook-events.mjs");
   const wise = await folderSpec("wise");
   const declared = wise.mako.webhooks.verification;
-  // Wise's production and sandbox keys, in the built-in's order.
-  assert.deepEqual(declared.publicKeys, wiseWebhookPublicKeys(false));
+  // Wise's production and sandbox keys, as the built-in held them.
+  assert.equal(declared.publicKeys.length, 2);
+  for (const key of declared.publicKeys) {
+    assert.match(key, /^-----BEGIN PUBLIC KEY-----/);
+  }
   // The fixtures are signed by a per-run key: swap it in on both sides.
   const testKey = fixtures.TEST_WEBHOOK_KEYS.publicKey;
   const declaration = declaredWebhookVerification(
@@ -391,17 +400,10 @@ void test("the Wise declaration agrees with the in-process check, with Wise's ow
   assert.ok(declaration);
   const deliveries = fixtures.buildDeliveries();
   assert.equal(deliveries.length, 9);
-  let valid = 0;
-  for (const d of deliveries) {
-    const ours = verifyDeclaredWebhook(declaration, d);
-    const theirs = verifyWiseWebhook(
-      { payload: d.payload, headers: d.headers, secret: "production" },
-      () => [testKey],
-    );
-    assert.equal(ours.valid, theirs.valid, d.name);
-    if (ours.valid) valid++;
-  }
-  assert.equal(valid, 4);
+  const accepted = deliveries
+    .filter((d: any) => verifyDeclaredWebhook(declaration, d).valid)
+    .map((d: any) => d.name);
+  assert.deepEqual(accepted, ACCEPTED.wise);
   // A key that is not RSA, or junk, makes the declaration unrunnable.
   for (const publicKeys of [[], ["junk"], Array(5).fill(testKey)]) {
     assert.equal(
@@ -411,8 +413,7 @@ void test("the Wise declaration agrees with the in-process check, with Wise's ow
   }
 });
 
-void test("Calendly's header is Stripe's: stripe-v1 agrees with the in-process check", async () => {
-  const { verifyCalendlyWebhook } = await import("../calendly/webhooks");
+void test("Calendly's header is Stripe's: stripe-v1 accepts what the in-process check did", async () => {
   const fixtures =
     await import("../../../../connectors/calendly/fixtures/webhook-events.mjs");
   const calendly = await folderSpec("calendly");
@@ -426,23 +427,13 @@ void test("Calendly's header is Stripe's: stripe-v1 agrees with the in-process c
   const deliveries = fixtures.buildDeliveries(body);
   assert.equal(deliveries.length, 10);
   const at = fixtures.DELIVERY_TIMESTAMP * 1000;
-  const realNow = Date.now;
-  Date.now = () => at; // the in-process check reads the clock itself
-  try {
-    let valid = 0;
-    for (const d of deliveries) {
-      const ours = verifyDeclaredWebhook(declaration!, {
-        ...d,
-        now: new Date(at),
-      });
-      const theirs = verifyCalendlyWebhook(d);
-      assert.equal(ours.valid, theirs.valid, d.name);
-      if (ours.valid) valid++;
-    }
-    assert.equal(valid, 2);
-  } finally {
-    Date.now = realNow;
-  }
+  const accepted = deliveries
+    .filter(
+      (d: any) =>
+        verifyDeclaredWebhook(declaration!, { ...d, now: new Date(at) }).valid,
+    )
+    .map((d: any) => d.name);
+  assert.deepEqual(accepted, ACCEPTED.calendly);
 });
 
 void test("an event id comes from a declared header, one path, or several joined", () => {
