@@ -27,6 +27,8 @@ import {
   it,
   vi,
 } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
@@ -106,7 +108,14 @@ vi.mock("../../services/workspace.service", () => ({
 }));
 
 import { Flow, SourceConnection } from "../../database/workspace-schema";
-import { applyFlowUpdate } from "../../services/flow-mutation.service";
+import {
+  applyFlowUpdate,
+  secretChange,
+} from "../../services/flow-mutation.service";
+import {
+  PROVISION_CLAIM_MS,
+  claimWebhookProvision,
+} from "../../services/flow-webhook-provision.service";
 import { syncFlowWebhookSubscription } from "../../services/flow-webhook-subscription.service";
 import { createFlowSyncTools } from "./flow-sync-tools";
 
@@ -312,5 +321,76 @@ describe("a save never moves or empties the webhook", () => {
     });
     expect(result).toMatchObject({ status: "updated" });
     expect(state.subs.get("we_1")).toBe(serverUrl(WS, id));
+  });
+});
+
+describe('the provisioning claim (tool and "Create in …" route)', () => {
+  it("lets one of two concurrent claims through", async () => {
+    const id = await makeFlow();
+    const claims = await Promise.all(
+      [1, 2, 3].map(() =>
+        claimWebhookProvision({
+          flowId: id,
+          workspaceId: WS.toString(),
+          unprovisionedOnly: false,
+        }),
+      ),
+    );
+    expect(claims.filter(Boolean)).toHaveLength(1);
+  });
+
+  it("lets the route re-provision a provisioned flow, not the tool", async () => {
+    const id = await makeFlow({ secret: "whsec_x", providerWebhookId: "s1" });
+    const args = { flowId: id, workspaceId: WS.toString() };
+    expect(
+      await claimWebhookProvision({ ...args, unprovisionedOnly: true }),
+    ).toBeNull();
+    expect(
+      await claimWebhookProvision({ ...args, unprovisionedOnly: false }),
+    ).not.toBeNull();
+  });
+
+  it("retakes a stale claim, never another workspace's flow", async () => {
+    const id = await makeFlow({
+      provisioningAt: new Date(Date.now() - PROVISION_CLAIM_MS - 1000),
+    });
+    expect(
+      await claimWebhookProvision({
+        flowId: id,
+        workspaceId: WS_THEIRS.toString(),
+        unprovisionedOnly: false,
+      }),
+    ).toBeNull();
+    expect(
+      await claimWebhookProvision({
+        flowId: id,
+        workspaceId: WS.toString(),
+        unprovisionedOnly: false,
+      }),
+    ).not.toBeNull();
+  });
+});
+
+describe("only an owner or admin changes the signing secret", () => {
+  it("counts a new secret as a change, a re-sent or empty one not", () => {
+    expect(secretChange({ webhookSecret: "whsec_new" }, "whsec_old")).toBe(
+      true,
+    );
+    expect(secretChange({ webhookSecret: "whsec_new" }, undefined)).toBe(true);
+    expect(secretChange({ webhookSecret: " whsec_old " }, "whsec_old")).toBe(
+      false,
+    );
+    expect(secretChange({ webhookSecret: "" }, "whsec_old")).toBe(false);
+    expect(secretChange({}, "whsec_old")).toBe(false);
+  });
+
+  it("gates both the create and the update route on it", () => {
+    const crud = readFileSync(
+      join(__dirname, "../../routes/flows/crud.ts"),
+      "utf8",
+    );
+    // POST / and PUT /{flowId}: each refuses a non-admin secret change.
+    expect(crud.match(/secretChange\(/g)).toHaveLength(2);
+    expect(crud.match(/fail\(c, 403, SECRET_NEEDS_ADMIN\)/g)).toHaveLength(2);
   });
 });

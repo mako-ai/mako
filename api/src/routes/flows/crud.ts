@@ -11,6 +11,8 @@ import {
   buildNewFlow,
   finishFlowCreate,
   finishFlowUpdate,
+  SECRET_NEEDS_ADMIN,
+  secretChange,
   webhookStateBefore,
 } from "../../services/flow-mutation.service";
 import { FlowRequestError } from "../../services/flow-request-error";
@@ -36,6 +38,15 @@ import {
   thrownMessage,
   type FlowRouter,
 } from "./shared";
+
+async function isOwnerOrAdmin(
+  workspaceId: string,
+  userId: string | undefined,
+): Promise<boolean> {
+  return userId
+    ? workspaceService.hasRole(workspaceId, userId, ["owner", "admin"])
+    : false;
+}
 
 export function registerCrudRoutes(flowRoutes: FlowRouter): void {
   // GET /api/workspaces/:workspaceId/flows - List all flows
@@ -100,6 +111,12 @@ export function registerCrudRoutes(flowRoutes: FlowRouter): void {
         // that would have nowhere durable to live (RFC #904 decision 1).
         await assertFlowRepo(workspaceId);
         const body = await c.req.json();
+        if (
+          secretChange(body, undefined) &&
+          !(await isOwnerOrAdmin(workspaceId, c.get("user")?.id))
+        ) {
+          return fail(c, 403, SECRET_NEEDS_ADMIN);
+        }
 
         const {
           flow,
@@ -198,6 +215,13 @@ export function registerCrudRoutes(flowRoutes: FlowRouter): void {
         // Entities before this edit: a change re-targets the provider-side
         // webhook subscription after save (see flow-webhook-subscription).
         const before = webhookStateBefore(flow);
+        // Only an owner/admin save may create a provider subscription or
+        // change the signing secret.
+        const userId = c.get("user")?.id;
+        const mayProvision = await isOwnerOrAdmin(workspaceId, userId);
+        if (secretChange(body, flow.webhookConfig?.secret) && !mayProvision) {
+          return fail(c, 403, SECRET_NEEDS_ADMIN);
+        }
 
         const syncConfigWarnings = await applyFlowUpdate({
           workspaceId,
@@ -210,14 +234,6 @@ export function registerCrudRoutes(flowRoutes: FlowRouter): void {
           if (failed) return failed;
         }
         await flow.save();
-        // Only an owner/admin save may create a provider subscription.
-        const userId = c.get("user")?.id;
-        const mayProvision = userId
-          ? await workspaceService.hasRole(workspaceId, userId, [
-              "owner",
-              "admin",
-            ])
-          : false;
         await finishFlowUpdate({
           flow,
           before,
