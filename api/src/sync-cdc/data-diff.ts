@@ -27,6 +27,11 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { Types } from "mongoose";
+import { loadTwinDefinition } from "../connectors/twins/resolve";
+import {
+  isBuiltinTwinType,
+  type BuiltinTwinType,
+} from "../connectors/twins/types";
 
 import {
   ConnectorDefinition,
@@ -373,6 +378,9 @@ async function connectorCodeHash(
   workspaceId: string,
   type: string,
 ): Promise<string> {
+  // A deleted built-in (`close`, …) runs its registry twin: the code is the
+  // workspace's own folder of that slug, else mako/<type> in the registry.
+  if (isBuiltinTwinType(type)) return twinCodeHash(workspaceId, type);
   if (!type.startsWith("ws:")) return `${type}@${await builtInCodeHash(type)}`;
   const row = await ConnectorDefinition.findOne({
     workspaceId: new Types.ObjectId(workspaceId),
@@ -383,6 +391,29 @@ async function connectorCodeHash(
   if (!row) return type;
   const code = row.registry?.hash ?? row.build?.hash ?? row.sourceSha;
   return `${type}@${row.runtime}:${code}`;
+}
+
+async function twinCodeHash(
+  workspaceId: string,
+  type: BuiltinTwinType,
+): Promise<string> {
+  const row = await ConnectorDefinition.findOne({
+    workspaceId: new Types.ObjectId(workspaceId),
+    slug: type,
+  })
+    .select("runtime sourceSha build.hash registry.hash")
+    .lean();
+  if (row) {
+    const code = row.registry?.hash ?? row.build?.hash ?? row.sourceSha;
+    return `${type}@${row.runtime}:${code}`;
+  }
+  try {
+    const loaded = await loadTwinDefinition(workspaceId, type);
+    return `${type}@registry:${loaded.registry?.version}:${loaded.registry?.hash}`;
+  } catch {
+    // Nothing resolvable: the run fails on its own; the fingerprint stays put.
+    return `${type}@unresolved`;
+  }
 }
 
 export async function flowFingerprint(flow: IFlow): Promise<{

@@ -281,7 +281,9 @@ async function main() {
       { reasons: [] },
     );
     const stamped = await Flow.findById(flowId).lean();
-    assert.match(stamped!.dataDiffFingerprint!.code!, /^close@[0-9a-f]{16}$/);
+    // `close` runs its registry twin; with no folder and no registry here
+    // the fingerprint says so, and stays the same between runs.
+    assert.equal(stamped!.dataDiffFingerprint!.code, "close@unresolved");
     assert.equal(await FlowDataDiff.countDocuments(), 0);
     assert.equal(await compareFlowDataDiff({ flowId: id }), null);
 
@@ -316,7 +318,7 @@ async function main() {
     // 4. New connector code between two plain runs opens a check.
     await Flow.updateOne(
       { _id: flowId },
-      { $set: { "dataDiffFingerprint.code": "close@0000000000000000" } },
+      { $set: { "dataDiffFingerprint.code": "close@node:0000000000000000" } },
     );
     assert.deepEqual(
       await prepareFlowDataDiff({ flowId: id, entities, backfill: false }),
