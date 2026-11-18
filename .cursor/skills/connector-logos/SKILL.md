@@ -78,8 +78,8 @@ Sources that worked:
 python3 -I .cursor/skills/connector-logos/scripts/sanitize.py raw/<slug>/logo.svg stage/<slug>.svg
 ```
 
-The script removes `<script>`, `<foreignObject>`, `<image>`, `<a>` and every `on*` attribute.
-It also removes any `href` or `url()` that points outside the file, plus foreign-namespace attributes.
+The script removes `<script>`, `<foreignObject>`, `<image>`, `<a>`, the animation elements (`<set>`, `<animate>` and kin) and every `on*` attribute.
+It also removes any `href` or `url()` that points outside the file, in any letter case, plus foreign-namespace attributes. It keeps `class`, so `<style>` rules still apply.
 It drops the root `width` and `height`, and derives a `viewBox` from them when one is missing.
 Reject any file that still needs an embedded raster to look right.
 
@@ -91,7 +91,7 @@ Reject any file that still needs an embedded raster to look right.
 - Take the symbol and drop the wordmark.
 - Use the vendor's colours.
 - Put a black mark on a dark tile so it stays visible on dark pages. GitHub uses `#24292f`, Vercel and Intercom use black.
-- A vendor that ships a separate dark-mode logo gets both, switched by `@media (prefers-color-scheme: dark)`. PostHog and OpenAI do this. It follows the viewer's OS, not the app theme.
+- A vendor that ships a separate dark-mode logo gets both, switched by `@media (prefers-color-scheme: dark)`. PostHog and OpenAI do this. ThemeContext sets `color-scheme` on `<html>`, so the switch follows the app theme in an `<img>`.
 - Keep the file under 8 KB. The 26 icons shipped on 18 Nov are all under 4.2 KB.
 - A sub-connector of one vendor reuses that vendor's icon file. close-meetings and close-tasks copy `connectors/close/icon.svg`.
 

@@ -7,8 +7,11 @@ SVGNS = "http://www.w3.org/2000/svg"
 XL = "http://www.w3.org/1999/xlink"
 ET.register_namespace("", SVGNS)
 ET.register_namespace("xlink", XL)
-DROP = {"script", "foreignObject", "image", "iframe", "embed", "object", "a", "title", "desc", "metadata"}
-DROP_ATTR = {"class", "role", "aria-hidden", "enable-background"}
+DROP = {
+    "script", "foreignObject", "image", "iframe", "embed", "object", "a", "title", "desc", "metadata",
+    "animate", "set", "animateMotion", "animateTransform", "animateColor", "discard",
+}
+DROP_ATTR = {"role", "aria-hidden", "enable-background"}
 
 
 def local(tag):
@@ -27,11 +30,11 @@ def clean(el):
             del el.attrib[k]
         elif lk == "href" and not v.startswith("#"):
             del el.attrib[k]  # external href or data: URI
-        elif "url(" in v and not re.fullmatch(r"[^()]*url\(#[^)]+\)[^()]*", v):
+        elif "url(" in v.lower() and not re.fullmatch(r"[^()]*url\(#[^)]+\)[^()]*", v, re.I):
             del el.attrib[k]  # url() that points outside the file
         elif k.startswith("{") and not k.startswith("{" + XL):
             del el.attrib[k]  # foreign-namespace attributes (Inkscape, rdf, ...)
-    if local(el.tag) == "style" and re.search(r"@import|url\((?!#)", el.text or ""):
+    if local(el.tag) == "style" and re.search(r"@import|url\((?!['\"]?#)", el.text or "", re.I):
         el.text = ""
 
 
