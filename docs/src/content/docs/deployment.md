@@ -26,6 +26,8 @@ docker run -p 8080:8080 \
 
 The image bundles both the API and the pre-built React frontend. The API serves the frontend from `/public`.
 
+The runtime stage runs as the unprivileged `node` user (uid 1000) with no compilers. pnpm comes from the `packageManager` pin, production dependencies are installed with a frozen lockfile in a separate stage, and code is root-owned. The only writable in-image path is `api/.data`, the default for the filesystem artifact store; mount a volume there (or use GCS) if you rely on it.
+
 CI (`deploy-app.yml`) builds once on the runner with `pnpm run build:ci`, then packages with `USE_PREBUILT=1` and BuildKit registry cache so apt/dbt/pnpm layers are reused across deploys.
 
 ### Docker Compose (Development)
@@ -89,6 +91,9 @@ Set these in Cloud Run's environment configuration (`deploy.sh` generates the se
 | `LANGFUSE_TRACING_ENVIRONMENT` | Optional    | Trace environment label (defaults to `NODE_ENV`) |
 | `API_RATE_LIMIT_MODE`          | Optional    | Per-caller API budget: `shadow` (default, logs who would be refused), `enforce` (429 + `Retry-After`), or `off`. The Cloud Run deploy workflow sets `enforce` |
 | `API_RATE_LIMIT_PER_MINUTE`    | Optional    | Cost units per caller per minute (default `1200`) |
+| `TRUSTED_PROXY_HOPS`           | Optional    | How many proxies in front of the API append to `x-forwarded-for` (default `1`, Cloud Run's front end). The client IP used for rate limits is `cf-connecting-ip` if present, else the entry that many hops from the end of `x-forwarded-for`, else the socket peer. The first entry is client-typed and never trusted |
+| `QUERY_EXECUTE_MAX_ROWS`       | Optional    | Row cap for the query execute routes (default `50000`). A cut result comes back with `truncated`, `rowCount` and `rowLimit` set |
+| `FLOW_EXECUTION_RETENTION_DAYS` | Optional   | Days a finished sync run (`flow_executions`) is kept before a TTL index expires it (default `90`). Running executions never expire. The API updates the index on boot when the value changes |
 | `EDGE_ORIGIN_SECRET`           | Optional    | When set, requests must carry `x-mako-edge: <secret>` (set by a Cloudflare Transform Rule) so the `*.run.app` URL cannot bypass Cloudflare. Logs only until `EDGE_ORIGIN_CHECK=enforce` |
 | `APPS_LIFECYCLE_ENFORCE`       | Optional    | Enforces the daily [app lifecycle job](/apps/#app-lifecycle-stale-and-archived-apps) (stale notices, archiving, paused schedules): `all` or a comma-separated list of workspace ids. Unset = dry run, the job only logs its plan |
 | `PARQUET_COMPRESSION`          | Optional    | Codec for app binding parquet: `ZSTD` (default, level 3) or `SNAPPY`. CDC and sync loads always write SNAPPY. An invalid value stops the API at boot; existing files stay readable |
