@@ -186,28 +186,45 @@ const PAGE = 50;
 let sourceRows: Doc[] = [];
 let chunkStartOffsets: number[] = [];
 
+/**
+ * When set, the fake grows its page cap the way SandboxedConnector does:
+ * it reads `chunkPages` from the engine's state, uses it as its cap, and
+ * hands back twice that (up to 8x the engine's) for the next chunk.
+ */
+let growChunkPages = false;
+/** Per chunk: the `chunkPages` the engine handed in, and the pages read. */
+let chunkCaps: Array<{ carried: number | undefined; pages: number }> = [];
+
 const fakeConnector = {
   supportsResumableFetching: () => true,
   resolveSchema: async () => null,
   fetchEntityChunk: async (o: {
-    state?: { metadata?: { offset?: number } };
+    state?: { metadata?: { offset?: number }; chunkPages?: number };
     maxIterations?: number;
     onBatch: (rows: Doc[]) => Promise<void>;
   }) => {
     let offset = o.state?.metadata?.offset ?? 0;
     chunkStartOffsets.push(offset);
+    const base = o.maxIterations ?? 10;
+    const carried = o.state?.chunkPages;
+    const cap = growChunkPages ? Math.min(carried ?? base, base * 8) : base;
     let iterations = 0;
-    while (iterations < (o.maxIterations ?? 10) && offset < sourceRows.length) {
+    while (iterations < cap && offset < sourceRows.length) {
       const page = sourceRows.slice(offset, offset + PAGE);
       await o.onBatch(page);
       offset += page.length;
       iterations++;
     }
+    chunkCaps.push({ carried, pages: iterations });
+    const hasMore = offset < sourceRows.length;
     return {
       totalProcessed: offset,
-      hasMore: offset < sourceRows.length,
+      hasMore,
       iterationsInChunk: iterations,
       metadata: { offset },
+      ...(growChunkPages && hasMore
+        ? { chunkPages: Math.min(cap * 2, base * 8) }
+        : {}),
     };
   },
 };
@@ -450,6 +467,8 @@ describe("a backfill checkpoint never runs ahead of the flushed rows", () => {
     failingMerges = new Set();
     mergeCalls = 0;
     leftoverOnCleanup = [];
+    growChunkPages = false;
+    chunkCaps = [];
   });
 
   it.each(["append_dedup", "append"] as const)(
@@ -662,5 +681,46 @@ describe("a backfill checkpoint never runs ahead of the flushed rows", () => {
     expectEveryRowExactlyOnce();
     // The legacy flush counted nothing; the later flushes count theirs.
     expect(result.rowsWritten).toBe(15_000);
+  }, 120_000);
+});
+
+describe("an engine-owned chunkPages survives the checkpoint", () => {
+  beforeEach(() => {
+    collections.clear();
+    entityStates = [];
+    staging = new Map();
+    live = [];
+    chunkStartOffsets = [];
+    writeModeOfRun = "append_dedup";
+    failingMerges = new Set();
+    mergeCalls = 0;
+    leftoverOnCleanup = [];
+    growChunkPages = true;
+    chunkCaps = [];
+  });
+
+  it("save -> load -> the resumed chunk reads with the grown cap", async () => {
+    // Chunks grow 10 -> 20 -> 40 -> 80 pages (500 -> 4,000 rows). The
+    // 10,000-row flush saves the cursor; the run is cancelled after it.
+    sourceRows = rows(40_000);
+    await expect(
+      invoke({ runId: "run-A", cancelAt: "sync-opportunities-chunk-6" }),
+    ).rejects.toBeInstanceOf(Cancelled);
+    expect(chunkCaps.slice(0, 4).map(c => c.pages)).toEqual([10, 20, 40, 80]);
+
+    // Saved: the whole FetchState, chunkPages included (CdcEntityState).
+    const saved = entityStates.find(d => d.entity === ENTITY)?.backfillCursor;
+    expect(saved?.hasMore).toBe(true);
+    expect(saved?.chunkPages).toBe(80);
+    const savedOffset = saved?.metadata?.offset;
+
+    // Loaded: the resumed run's first chunk gets chunkPages back and uses it.
+    chunkCaps = [];
+    chunkStartOffsets = [];
+    const result = await invoke({ runId: "run-A" });
+    expect(chunkStartOffsets[0]).toBe(savedOffset);
+    expect(chunkCaps[0]).toEqual({ carried: 80, pages: 80 });
+    expect(result.completed).toBe(true);
+    expectEveryRowExactlyOnce();
   }, 120_000);
 });

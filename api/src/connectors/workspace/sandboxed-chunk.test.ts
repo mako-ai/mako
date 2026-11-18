@@ -14,7 +14,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   CHUNK_BYTE_BUDGET,
+  CHUNK_GROW_MAX_MS,
+  CHUNK_PAGES_MAX_FACTOR,
   SandboxedConnector,
+  nextChunkPages,
   readState,
   recordTimestamp,
 } from "./SandboxedConnector";
@@ -458,4 +461,88 @@ void test("a user's own __ keys never reach the box: Mako's keys are Mako's", as
     __page_size: 10,
     __requested_page_size: 10,
   });
+});
+
+const record = (data: unknown) => ({
+  type: "RECORD",
+  record: { stream: "rows", data },
+});
+
+void test("the page cap doubles while chunks use little of the byte budget, up to its factor", () => {
+  const small = 1024 * 1024;
+  assert.equal(nextChunkPages(10, 10, small, true, 5_000), 20);
+  assert.equal(nextChunkPages(10, 40, small, true, 5_000), 80);
+  assert.equal(
+    nextChunkPages(10, 80, small, true, 5_000),
+    10 * CHUNK_PAGES_MAX_FACTOR,
+  );
+  // The last chunk of an entity, or one that ended early: no growth.
+  assert.equal(nextChunkPages(10, 20, small, false, 5_000), 20);
+  // A quarter of the budget or more: kept.
+  assert.equal(nextChunkPages(10, 40, CHUNK_BYTE_BUDGET / 4, true, 5_000), 40);
+  // The budget reached, or a slow chunk: halved, never below the base.
+  assert.equal(nextChunkPages(10, 40, CHUNK_BYTE_BUDGET, true, 5_000), 20);
+  assert.equal(nextChunkPages(10, 40, small, true, CHUNK_GROW_MAX_MS + 1), 20);
+  assert.equal(nextChunkPages(10, 10, CHUNK_BYTE_BUDGET, true, 5_000), 10);
+});
+
+void test("a chunk of small pages asks the next chunk for twice the pages", async () => {
+  const box = make();
+  box.answers.push(
+    ok([record({ id: 1 }), state({ cursor: "c1" }, true)]),
+    ok([record({ id: 2 }), state({ cursor: "c2" }, true)]),
+    ok([record({ id: 3 }), state({ cursor: "c3" }, false)]),
+  );
+  const first = await box.fetchEntityChunk({
+    entity: "rows",
+    onBatch: noop,
+    maxIterations: 10,
+  });
+  assert.equal(first.chunkPages, 20);
+  const second = await box.fetchEntityChunk({
+    entity: "rows",
+    state: JSON.parse(JSON.stringify(first)),
+    onBatch: noop,
+    maxIterations: 10,
+  });
+  assert.equal(second.chunkPages, 40);
+  const third = await box.fetchEntityChunk({
+    entity: "rows",
+    state: second,
+    onBatch: noop,
+    maxIterations: 10,
+  });
+  assert.deepEqual(
+    box.calls.map(c => c.options.maxIterations),
+    [10, 20, 40],
+  );
+  // The byte budget is unchanged: it still ends every chunk.
+  assert.ok(box.calls.every(c => c.options.maxBytes === CHUNK_BYTE_BUDGET));
+  // The last chunk carries no cap forward.
+  assert.equal(third.chunkPages, undefined);
+});
+
+void test("a carried page cap never passes its factor, and an over-cap retry reads one page", async () => {
+  const box = make();
+  box.answers.push(
+    tooLarge(),
+    ok([record({ id: 1 }), state({ cursor: "c1" }, true)]),
+  );
+  const next = await box.fetchEntityChunk({
+    entity: "rows",
+    state: {
+      totalProcessed: 0,
+      hasMore: true,
+      iterationsInChunk: 10,
+      chunkPages: 10_000,
+    },
+    onBatch: noop,
+    maxIterations: 10,
+  });
+  assert.deepEqual(
+    box.calls.map(c => c.options.maxIterations),
+    [10 * CHUNK_PAGES_MAX_FACTOR, 1],
+  );
+  // After a one-page retry the cap starts again from the engine's.
+  assert.equal(next.chunkPages, undefined);
 });

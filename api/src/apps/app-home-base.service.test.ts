@@ -38,6 +38,7 @@ import {
   invalidateAppsHomeBase,
   listHomeDiscoveryApps,
   loadHomeBase,
+  settleAppsHomeBase,
   usageStatsFrom,
   visibleHomeAppIds,
 } from "./app-home-base.service";
@@ -177,7 +178,10 @@ describe("freshness", () => {
     first.builtAt = Date.now() - FRESH_MS - 1;
     // Served as is, never waited on.
     expect(await loadHomeBase(WS)).toBe(first);
-    await expect.poll(() => loadHomeBase(WS)).not.toBe(first);
+    // Wait for the rebuild that serve started, not a 1 s polling window: the
+    // rebuild fetches the mirror, which a loaded machine took longer to do.
+    await settleAppsHomeBase(WS);
+    expect(await loadHomeBase(WS)).not.toBe(first);
   });
 
   it("rebuilds when main moves on this instance", async () => {

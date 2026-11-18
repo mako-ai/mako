@@ -726,6 +726,14 @@ export async function readBoxed(
         records += batch.length;
       },
     });
+    // Pin the page cap. SandboxedConnector grows the next chunk's cap
+    // (`state.chunkPages`, up to 8x) when a chunk used little of its
+    // byte budget; the in-process side has no such growth, so chunk
+    // counts and boundary requests would differ by design. Unpinned,
+    // the folder read the same rows and checksums (PR #1386); the cap
+    // math is tested in api/src/connectors/workspace/sandboxed-chunk.test.ts.
+    const { chunkPages: _grown, ...pinned } = state;
+    state = pinned;
     chunks.push({
       position: positionOf(state.metadata?.stream?.stream_state),
       hasMore: state.hasMore,

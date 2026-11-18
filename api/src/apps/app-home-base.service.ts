@@ -241,6 +241,15 @@ function compute(
 }
 
 /**
+ * Wait for the workspace's background rebuild, if one is running (a stale
+ * serve starts one and returns without it). Never throws: a failed rebuild
+ * leaves the last base in place, as the caller would see it.
+ */
+export async function settleAppsHomeBase(workspaceId: string): Promise<void> {
+  await inFlight.get(workspaceId)?.run.catch(() => undefined);
+}
+
+/**
  * The workspace's home base: memoized, single-flight, stale-while-
  * revalidate (see the file comment). `now` is for tests.
  */

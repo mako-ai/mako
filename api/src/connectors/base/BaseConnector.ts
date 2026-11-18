@@ -42,6 +42,13 @@ export interface FetchState {
    * reaches `metadata` alone. Persisted with the rest of the state.
    */
   readSession?: unknown;
+
+  /**
+   * Engine-owned: a boxed connector's page cap for its next chunk, when
+   * earlier chunks used little of the byte budget (SandboxedConnector).
+   * Persisted with the rest of the state.
+   */
+  chunkPages?: number;
 }
 
 // Options for fetching data

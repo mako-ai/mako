@@ -201,7 +201,11 @@ class FilesystemArtifactStore implements ArtifactStore {
     const startedAt = Date.now();
     const targetPath = this.resolvePath(key);
     await fsPromises.mkdir(path.dirname(targetPath), { recursive: true });
-    await fsPromises.writeFile(targetPath, buffer);
+    // Write beside the target, then rename: a reader that sees the file
+    // (exists, get) always reads whole bytes, never a half-written file.
+    const tmpPath = `${targetPath}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    await fsPromises.writeFile(tmpPath, buffer);
+    await fsPromises.rename(tmpPath, targetPath);
     await fsPromises.writeFile(
       `${targetPath}.meta.json`,
       JSON.stringify({ contentType, ...(metadata || {}) }, null, 2),
