@@ -23,7 +23,7 @@
  *    snapshot is made before that file crosses into the API process, so tenant
  *    code still cannot turn a large batch into an API heap exhaustion.
  */
-import { randomBytes, randomInt } from "node:crypto";
+import { createHash, randomBytes, randomInt } from "node:crypto";
 import {
   abandonScript,
   CHUNK_MARKER,
@@ -271,10 +271,12 @@ function writeBoxFile(
   remotePath: string,
   bytes: Uint8Array,
   owner: { asRoot: true } | undefined = boxOwner(),
+  pin: { expectSandboxId?: string } = {},
 ): Promise<void> {
   const provider = getSandboxProvider();
-  return owner
-    ? provider.writeFile(ctx, remotePath, bytes, owner)
+  const options = { ...owner, ...pin };
+  return Object.keys(options).length > 0
+    ? provider.writeFile(ctx, remotePath, bytes, options)
     : provider.writeFile(ctx, remotePath, bytes);
 }
 
@@ -314,6 +316,10 @@ export async function materializeConnector(input: {
     execOptions({ timeoutMs: 30_000 }),
   );
   if (check.stdout.trim() === "yes") return dir;
+  // Every later write lands in the box this check ran in, or fails: an
+  // unpinned write could follow the session key to another box mid-copy and
+  // leave a marker over a partial folder there.
+  const pin = check.sandboxId ? { expectSandboxId: check.sandboxId } : {};
 
   const files =
     typeof input.files === "function" ? await input.files() : input.files;
@@ -327,7 +333,7 @@ export async function materializeConnector(input: {
         `Refusing to write ${relative}: it escapes the connector directory`,
       );
     }
-    await writeBoxFile(ctx, target, bytes);
+    await writeBoxFile(ctx, target, bytes, boxOwner(), pin);
   }
   if (runsIsolated()) {
     // Root wrote these; every run user must read them and none may change
@@ -336,12 +342,18 @@ export async function materializeConnector(input: {
       provider.exec(
         ctx,
         `chmod a+rX,go-w ${shellQuote(path.posix.dirname(dir))} ${shellQuote(path.posix.dirname(path.posix.dirname(dir)))} && chmod -R a+rX,go-w ${shellQuote(dir)}`,
-        execOptions({ timeoutMs: 30_000 }),
+        { ...execOptions({ timeoutMs: 30_000 }), ...pin },
       ),
       "open the connector folder to run users",
     );
   }
-  await writeBoxFile(ctx, marker, new TextEncoder().encode(sourceSha));
+  await writeBoxFile(
+    ctx,
+    marker,
+    new TextEncoder().encode(sourceSha),
+    boxOwner(),
+    pin,
+  );
   return dir;
 }
 
@@ -402,24 +414,88 @@ export async function ensureBundle(input: {
   return { runtimeId, dir, entry: input.entry };
 }
 
-/** Is this exact SDK present and completely materialized in the box? */
+/** Lists every SDK file's sha256, relative to the runtime root. */
+export const RUNTIME_MANIFEST = ".sdk-sha256";
+
+/** Where the SDK package sits inside a runtime root. */
+const SDK_PACKAGE_DIR = "node_modules/@makoai/connector-sdk";
+
+/**
+ * Shell lines that define `verify_runtime <root> <runtimeId>`.
+ *
+ * A runtime is usable only if all three hold: the marker names this
+ * runtime, every SDK file matches the manifest's sha256, and the pinned Node
+ * can import the SDK's entry (which imports every `src/` module). A marker
+ * alone is not proof: on 2026-11-18 a box held the marker, `bin/` and
+ * `package.json` but no `src/run.js`, and every connector start failed
+ * with ERR_MODULE_NOT_FOUND for 7 minutes.
+ */
+export function verifyRuntimeShell(): string {
+  return `sha256_check() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum -c --status "$1" 2>/dev/null; else shasum -a 256 -c --status "$1" 2>/dev/null; fi
+}
+verify_runtime() {
+  test -f "$1/.materialized" || return 1
+  grep -Fqx "$2" "$1/.materialized" || return 1
+  test -f "$1/${RUNTIME_MANIFEST}" || return 1
+  (cd "$1" && sha256_check ${RUNTIME_MANIFEST}) || return 1
+  test -x "$1/node/bin/node" || return 1
+  "$1/node/bin/node" --input-type=module -e 'await import(process.argv[1])' "$1/${SDK_PACKAGE_DIR}/index.js" >/dev/null 2>&1 || return 1
+}`;
+}
+
+/** The manifest `sha256sum -c` reads: one `<hex>  <path>` line per SDK file. */
+export function runtimeManifest(files: Map<string, Uint8Array>): string {
+  return [...files.keys()]
+    .sort()
+    .map(name => {
+      const digest = createHash("sha256")
+        .update(files.get(name) as Uint8Array)
+        .digest("hex");
+      return `${digest}  ${SDK_PACKAGE_DIR}/${name}\n`;
+    })
+    .join("");
+}
+
+/**
+ * Is this exact SDK present, complete and importable in the box?
+ *
+ * Checks the files and an import, not just the marker, so a root left
+ * half-written by an older API (or by anything else) is reinstalled instead
+ * of being reused forever.
+ */
 export async function hasConnectorRuntime(
   ctx: SandboxExecContext,
   runtimeId: string,
 ): Promise<boolean> {
   const provider = getSandboxProvider();
-  const marker = path.posix.join(runtimeRoot(ctx, runtimeId), ".materialized");
+  const root = runtimeRoot(ctx, runtimeId);
   // The box is tenant-controlled, so do not read even this marker into the API
   // process. `exec` bounds output and only returns the comparison result.
   const result = await provider.exec(
     ctx,
-    `test -f ${shellQuote(marker)} && grep -Fqx ${shellQuote(runtimeId)} ${shellQuote(marker)} && echo yes || echo no`,
+    `${verifyRuntimeShell()}
+verify_runtime ${shellQuote(root)} ${shellQuote(runtimeId)} && echo yes || echo no`,
     execOptions({ timeoutMs: 30_000 }),
   );
   return result.stdout.trim() === "yes";
 }
 
-/** Install the SDK into the box's runtime root from a set of files. */
+/**
+ * Install the SDK into the box's runtime root from a set of files.
+ *
+ * Atomic per box. Every file, the pinned Node and the marker go into a
+ * private staging directory first. The staged runtime must pass the same
+ * check `hasConnectorRuntime` runs (hashes and an import of the SDK) before a
+ * `mv` puts it in place, under a lock. A failed or interrupted install leaves
+ * the previous root untouched and never writes a marker for a partial one.
+ *
+ * Pinned to one sandbox. When several boxes exist for one session key, the
+ * E2B provider kills all but one, and an unpinned installer whose box died
+ * mid-upload would carry on in the survivor: the rest of the files and the
+ * marker landed there without `src/`. Every call after the first is pinned
+ * to the box the first one ran in, so a box swap fails the install instead.
+ */
 export async function installConnectorRuntime(
   ctx: SandboxExecContext,
   runtimeId: string,
@@ -427,14 +503,37 @@ export async function installConnectorRuntime(
 ): Promise<void> {
   const provider = getSandboxProvider();
   const root = runtimeRoot(ctx, runtimeId);
-  const base = path.posix.join(
-    root,
-    "node_modules",
-    "@makoai",
-    "connector-sdk",
+  const stage = `${root}.staging-${randomBytes(6).toString("hex")}`;
+  const base = path.posix.join(stage, SDK_PACKAGE_DIR);
+
+  const mkdir = await provider.exec(
+    ctx,
+    `mkdir -p ${shellQuote(base)}`,
+    execOptions({ timeoutMs: 30_000 }),
   );
-  for (const [relative, bytes] of files) {
-    await writeBoxFile(ctx, path.posix.join(base, relative), bytes);
+  if (mkdir.exitCode !== 0) {
+    throw new Error(
+      `Could not stage the connector runtime: ${(mkdir.stderr || mkdir.stdout).trim().slice(0, 2000)}`,
+    );
+  }
+  const pin = mkdir.sandboxId ? { expectSandboxId: mkdir.sandboxId } : {};
+  const fileOptions: SandboxFileOptions = { ...boxOwner(), ...pin };
+  const staged = [
+    ...[...files].map(([relative, bytes]) => ({
+      path: path.posix.join(base, relative),
+      bytes,
+    })),
+    {
+      path: path.posix.join(stage, RUNTIME_MANIFEST),
+      bytes: new TextEncoder().encode(runtimeManifest(files)),
+    },
+  ];
+  if (provider.writeFiles) {
+    await provider.writeFiles(ctx, staged, fileOptions);
+  } else {
+    for (const file of staged) {
+      await provider.writeFile(ctx, file.path, file.bytes, fileOptions);
+    }
   }
 
   // E2B templates are independently versioned and cannot be assumed to carry
@@ -442,13 +541,15 @@ export async function installConnectorRuntime(
   // the API heap), pin the version, and verify Node's published checksum before
   // it becomes executable. The local provider reuses a compatible host Node so
   // development on macOS does not install a Linux binary.
-  const node = runtimeNode(ctx, runtimeId);
-  const installNode = await provider.exec(
+  const install = await provider.exec(
     ctx,
     `set -eu
 runtime_root=${shellQuote(root)}
-runtime_node=${shellQuote(node)}
-if test -x "$runtime_node"; then exit 0; fi
+stage=${shellQuote(stage)}
+runtime_id=${shellQuote(runtimeId)}
+trap 'rm -rf "$stage"' EXIT
+${verifyRuntimeShell()}
+runtime_node="$stage/node/bin/node"
 platform="$(uname -s)"
 if test "$platform" = Linux; then
   case "$(uname -m)" in
@@ -457,11 +558,11 @@ if test "$platform" = Linux; then
     *) echo "Unsupported connector runtime architecture: $(uname -m)" >&2; exit 1 ;;
   esac
   archive="node-v${CONNECTOR_NODE_VERSION}-linux-$node_arch.tar.xz"
-  download="$runtime_root/$archive"
-  mkdir -p "$runtime_root/node"
+  download="$stage/$archive"
+  mkdir -p "$stage/node"
   curl -fsSL --retry 3 "https://nodejs.org/dist/v${CONNECTOR_NODE_VERSION}/$archive" -o "$download"
   printf '%s  %s\n' "$expected" "$download" | sha256sum -c -
-  tar -xJf "$download" -C "$runtime_root/node" --strip-components=1
+  tar -xJf "$download" -C "$stage/node" --strip-components=1
   rm -f "$download"
 else
   system_node="$(command -v node || true)"
@@ -470,32 +571,40 @@ else
   mkdir -p "$(dirname "$runtime_node")"
   ln -sf "$system_node" "$runtime_node"
 fi
-"$runtime_node" -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 6)) process.exit(1)'${
+"$runtime_node" -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 6)) process.exit(1)'
+printf '%s' "$runtime_id" > "$stage/.materialized"
+if ! verify_runtime "$stage" "$runtime_id"; then
+  echo "The staged connector runtime failed its check: an SDK file is missing or changed, or the SDK does not import." >&2
+  exit 1
+fi${
       runsIsolated()
         ? `
 # Run users read and execute this tree; none of them may change it.
-chmod -R a+rX,go-w "$runtime_root"
+chmod -R a+rX,go-w "$stage"
 chmod a+rX,go-w "$(dirname "$runtime_root")" "$(dirname "$(dirname "$runtime_root")")" ${shellQuote(ISOLATED_ROOT)}`
         : ""
-    }`,
-    execOptions({ timeoutMs: 120_000 }),
+    }
+# Swap in under a lock: two installers in one box must not interleave.
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$runtime_root.lock"
+  flock -w 60 9
+fi
+if verify_runtime "$runtime_root" "$runtime_id"; then exit 0; fi
+discard="$runtime_root.discard-$$"
+if test -e "$runtime_root" || test -L "$runtime_root"; then mv "$runtime_root" "$discard"; fi
+mv "$stage" "$runtime_root"
+rm -rf "$discard"`,
+    { ...execOptions({ timeoutMs: 120_000 }), ...pin },
   );
-  if (installNode.timedOut) {
-    throw new Error("Timed out while installing the connector Node runtime.");
+  if (install.timedOut) {
+    throw new Error("Timed out while installing the connector runtime.");
   }
-  if (installNode.exitCode !== 0) {
-    const detail = (installNode.stderr || installNode.stdout).trim();
+  if (install.exitCode !== 0) {
+    const detail = (install.stderr || install.stdout).trim();
     throw new Error(
-      `Could not install the connector Node runtime${detail ? `: ${detail.slice(0, 2000)}` : "."}`,
+      `Could not install the connector runtime${detail ? `: ${detail.slice(0, 2000)}` : "."}`,
     );
   }
-  // Written last: a killed or failed upload is retried rather than mistaken for
-  // a complete runtime on the next invocation.
-  await writeBoxFile(
-    ctx,
-    path.posix.join(root, ".materialized"),
-    new TextEncoder().encode(runtimeId),
-  );
 }
 
 async function mustSucceed(
