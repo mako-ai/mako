@@ -195,7 +195,7 @@ Flags log at warn under the `api.flow-data-diff` category, so a log alert can pa
 
 ### Driving syncs from an agent or the terminal
 
-Over MCP (external clients only), seven tools cover syncs:
+Over MCP (external clients only), eight tools cover syncs:
 
 | Tool | What it does |
 |------|--------------|
