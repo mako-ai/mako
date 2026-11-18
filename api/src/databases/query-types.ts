@@ -64,6 +64,12 @@ export const QUERY_NOT_FOUND = "Query not found or already completed";
  * Used consistently across all database drivers
  */
 export interface QueryExecuteOptions {
+  /**
+   * Cap on how long an engine may wait for a sleeping server to wake before
+   * it runs the query (ClickHouse Cloud). Interactive callers that hold an
+   * HTTP request open (schema tree, autocomplete) pass a short cap.
+   */
+  maxWakeTimeoutMs?: number;
   /** Set once checkConnectionWrite ran at an outer entry point. */
   writeChecked?: boolean;
   /**

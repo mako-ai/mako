@@ -236,4 +236,21 @@ describe("connectClickHouse", () => {
     ).rejects.toThrow(/ENOTFOUND/);
     expect(server.pings).toHaveLength(1);
   });
+
+  it("keeps retrying a temporary DNS failure (EAI_AGAIN)", async () => {
+    const server = fakeServer({
+      wakesAt: Number.POSITIVE_INFINITY,
+      error: "getaddrinfo EAI_AGAIN abc.europe-west4.gcp.clickhouse.cloud",
+    });
+    await expect(
+      connectClickHouse(
+        CLOUD,
+        buildClickHouseClientConfig(CLOUD),
+        undefined,
+        server.deps,
+        { maxWakeTimeoutMs: CLICKHOUSE_INTERACTIVE_WAKE_TIMEOUT_MS },
+      ),
+    ).rejects.toThrow(/did not answer within 60 s/);
+    expect(server.pings.length).toBeGreaterThan(1);
+  });
 });

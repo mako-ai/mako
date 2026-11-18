@@ -30,13 +30,14 @@ export const CLICKHOUSE_WAKE_MAX_DELAY_MS = 30_000;
 export const CLICKHOUSE_INTERACTIVE_WAKE_TIMEOUT_MS = 60_000;
 
 /**
- * Errors a sleeping ClickHouse Cloud service never produces: the hostname does
- * not resolve. Waking cannot fix them, so the wake loop fails at once.
+ * An error a sleeping ClickHouse Cloud service never produces: the hostname
+ * does not exist (ENOTFOUND). Waking cannot fix it, so the wake loop fails at
+ * once. EAI_AGAIN (the resolver did not answer in time) is temporary and stays
+ * retryable.
  */
 export function isDnsLookupError(error: Error): boolean {
-  const code = (error as NodeJS.ErrnoException).code;
-  if (code === "ENOTFOUND" || code === "EAI_AGAIN") return true;
-  return /\b(ENOTFOUND|EAI_AGAIN)\b/.test(error.message);
+  if ((error as NodeJS.ErrnoException).code === "ENOTFOUND") return true;
+  return /\bENOTFOUND\b/.test(error.message);
 }
 
 /** Whether a ClickHouse URL points at a serverless service that idles. */

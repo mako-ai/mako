@@ -275,6 +275,8 @@ export class ClickHouseEngine implements QueryEngine {
         database,
         config,
         abortController.signal,
+        defaultConnectDeps,
+        { maxWakeTimeoutMs: options?.maxWakeTimeoutMs },
       );
 
       let data: unknown[];
