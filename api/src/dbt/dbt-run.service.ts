@@ -362,7 +362,11 @@ export async function recordCompletedAdhocDbtRun(params: {
   sourceBranch?: string;
   deferToProduction?: boolean;
   startedAt: Date;
-  result: Pick<AdhocDbtResult, "success" | "exitCode" | "logs" | "stepResults">;
+  result: Pick<
+    AdhocDbtResult,
+    "success" | "exitCode" | "logs" | "stepResults"
+  > &
+    Partial<Pick<AdhocDbtResult, "warnings">>;
 }): Promise<IDbtRun | null> {
   try {
     const completedAt = new Date();
@@ -393,6 +397,9 @@ export async function recordCompletedAdhocDbtRun(params: {
         line: line.line.slice(0, 2000) || " ",
       })),
       stepResults: params.result.stepResults,
+      ...(params.result.warnings?.length
+        ? { warnings: params.result.warnings }
+        : {}),
     });
   } catch (error) {
     logger.warn("Failed to record completed ad-hoc dbt run", {

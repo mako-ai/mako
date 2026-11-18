@@ -17,6 +17,7 @@ import {
 } from "../database/workspace-schema";
 import {
   getCheckoutBranch,
+  classifySkippedFiles,
   loadWorkingTreeContents,
 } from "./dbt-working-tree.service";
 import { applyLocalOverlay, type LocalOverlay } from "./local-overlay";
@@ -53,6 +54,12 @@ export interface DbtProjectSnapshot {
   environment: IDbtEnvironment;
   files: Array<{ path: string; content: string }>;
   profile: RenderedProfile;
+  /**
+   * Files of the tree the loader skipped that dbt does not read. Every run
+   * result carries them (log lines + `warnings`), so a skip is never silent.
+   * Skipped files dbt reads throw DbtTreeFilesSkippedError instead.
+   */
+  warnings: string[];
 }
 
 export async function loadDbtProjectSnapshot(params: {
@@ -126,19 +133,34 @@ export async function loadDbtProjectSnapshot(params: {
       params.branch ?? (await getCheckoutBranch(project, params.userId)),
     );
   }
-  const files = overlay
-    ? applyLocalOverlay(
-        overlay.baseSha
-          ? await loadWorkingTreeContents(project, { commit: overlay.baseSha })
-          : [],
-        overlay,
-      )
+  const tree = overlay
+    ? overlay.baseSha
+      ? await loadWorkingTreeContents(project, {
+          commit: overlay.baseSha,
+          deferSkipped: true,
+        })
+      : { files: [], warnings: [] }
     : await loadWorkingTreeContents(
         project,
         params.commit
           ? { commit: params.commit }
           : { userId: params.userId, branch: params.branch },
       );
+  let files = tree.files;
+  let warnings = tree.warnings;
+  if (overlay) {
+    // Judge the base commit's skipped files against the merged tree: a file
+    // the overlay deletes or replaces is no longer in the run, and the
+    // overlay's own dbt_project.yml decides which paths dbt reads.
+    const merged = applyLocalOverlay(tree.files, overlay);
+    const deleted = new Set(overlay.deletes);
+    const stillSkipped = (tree.skipped ?? []).filter(
+      f => !deleted.has(f.path) && !(f.path in overlay.files),
+    );
+    const judged = classifySkippedFiles(merged, stillSkipped);
+    files = judged.files;
+    warnings = judged.warnings;
+  }
   if (!files.some(f => f.path === "dbt_project.yml")) {
     throw new Error(
       "No dbt project found: the workspace repo has no dbt/dbt_project.yml on this branch",
@@ -148,7 +170,7 @@ export async function loadDbtProjectSnapshot(params: {
   // Environment vars (environment.vars) are injected as `--vars` by runDbt for
   // every command, so callers just forward snapshot.environment.vars.
 
-  return { project, environment, files, profile };
+  return { project, environment, files, profile, warnings };
 }
 
 /**
@@ -179,11 +201,19 @@ export async function loadDbtDeferState(project: {
 
 export interface AdhocDbtResult {
   success: boolean;
+  /** Skipped tree files dbt does not read (see DbtProjectSnapshot). */
+  warnings: string[];
   exitCode: number;
   logs: DbtLogLine[];
   stepResults: ReturnType<typeof parseStepResults>;
   compiledSql?: string;
   raw: DbtRunResult;
+}
+
+/** One `warn` log line per skipped-file warning, ahead of dbt's own output. */
+export function warningLogLines(warnings: string[]): DbtLogLine[] {
+  const ts = new Date();
+  return warnings.map(line => ({ ts, level: "warn", line: `[mako] ${line}` }));
 }
 
 function findCompiledSql(
@@ -322,8 +352,9 @@ export async function runAdhocDbtCommand(params: {
         });
         return {
           success: true,
+          warnings: snapshot.warnings,
           exitCode: 0,
-          logs: [],
+          logs: warningLogLines(snapshot.warnings),
           stepResults: [],
           compiledSql: engineResult.compiled_sql ?? undefined,
           raw: {
@@ -421,8 +452,12 @@ export async function runAdhocDbtCommand(params: {
   const commandResult = raw.commandResults[0];
   return {
     success: raw.success,
+    warnings: snapshot.warnings,
     exitCode: commandResult?.exitCode ?? 1,
-    logs: commandResult?.logLines ?? [],
+    logs: [
+      ...warningLogLines(snapshot.warnings),
+      ...(commandResult?.logLines ?? []),
+    ],
     stepResults: parseStepResults(commandResult?.runResults),
     compiledSql: findCompiledSql(raw, params.select),
     raw,
