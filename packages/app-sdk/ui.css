@@ -311,14 +311,6 @@ button, input, select, textarea { font-family: inherit; }
 .mk-ms-items { display: flex; flex-direction: column; gap: 1px; }
 .mk-ms-all { font-weight: 500; }
 .mk-ms-group .mk-ms-label { font-weight: 500; }
-.mk-ms-expand {
-  appearance: none; border: 0; background: transparent; color: var(--muted-foreground);
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px; margin: -3px -4px -3px 0; border-radius: var(--mk-radius-sm); flex: none;
-}
-.mk-ms-expand svg { transition: transform .15s var(--mk-ease); }
-.mk-ms-expand.open svg { transform: rotate(90deg); }
-.mk-ms-expand:hover { color: var(--foreground); background: var(--muted); }
 /* The kit's one checkbox (Checkbox, MultiSelect rows): theme tokens only. */
 .mk-ms-box {
   display: inline-flex; align-items: center; justify-content: center;
@@ -336,6 +328,12 @@ button, input, select, textarea { font-family: inherit; }
 }
 .mk-ms-opt:hover .mk-ms-only, .mk-ms-opt:focus-within .mk-ms-only { visibility: visible; }
 .mk-ms-only:hover { color: var(--foreground); background: var(--muted); }
+/* FilterMenu (@makoai/app-sdk/menu): the "Only" action shows on the hovered or highlighted row, as in the apps' NestedFilterMenu. */
+.mk-fm-only { visibility: hidden; font-size: 12px; color: var(--muted-foreground); padding: 0 4px; border-radius: 4px; cursor: pointer; }
+.mk-fm-only:hover { color: var(--foreground); background: var(--muted); }
+.mk-fm-row:hover .mk-fm-only, .mk-fm-row:focus .mk-fm-only, .mk-fm-row[data-highlighted] .mk-fm-only { visibility: visible; }
+/* The phone Filters menu: a group row that opens in place (drill) keeps its chevron at the end. */
+.mk-fm-drill { padding-right: 4px; }
 @media (max-width: 640px) {
   .mk-ms-trigger { height: 38px; }
   .mk-ms-opt { padding: 10px 8px; }

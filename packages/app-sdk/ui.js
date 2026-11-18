@@ -123,8 +123,6 @@ const IconMinus = ({ size = 11 }) =>
   svg(size, 3.2, [h("line", { key: "l", x1: 6, y1: 12, x2: 18, y2: 12 })]);
 const IconChevron = ({ className }) =>
   svg(12, 2.2, [h("polyline", { key: "p", points: "6 9 12 15 18 9" })], className);
-const IconChevronRight = ({ className }) =>
-  svg(14, 2.2, [h("polyline", { key: "p", points: "9 6 15 12 9 18" })], className);
 const IconX = ({ size = 16 }) =>
   svg(size, 2, [h("path", { key: "p", d: "M18 6 6 18M6 6l12 12" })]);
 const IconRefresh = () =>
@@ -728,9 +726,9 @@ const asChecked = t => (t === "on" ? true : t === "mixed" ? "mixed" : false);
  * ticks and toggles alike.
  *
  * Options are strings, `{ value, label, color }`, or groups with `children`
- * (a flat list is a one-level tree). A group row ticks its whole group,
- * shows a dash when part of it is picked, and expands in place (open by
- * default when partly picked).
+ * (a flat list is a one-level tree). A group row ticks its whole group and
+ * shows a dash when part of it is picked; its children follow it, indented.
+ * A tree that needs hover submenus is a FilterMenu (`@makoai/app-sdk/menu`).
  *
  * The All rule (2.20): with nothing filtered (`value` empty or holding every
  * option) every row is ticked. Unticking one leaves All in the partial (–)
@@ -760,16 +758,6 @@ export function FilterItems({
   const [ownNone, setOwnNone] = React.useState(false);
   const none = noneProp ?? ownNone;
   const setNone = onNoneChange ?? setOwnNone;
-  const [open, setOpen] = React.useState(() => {
-    const out = new Set();
-    const walk = list =>
-      list.forEach(o => {
-        if (o.children && filterTick(o, selected) === "mixed") out.add(o.value);
-        if (o.children) walk(o.children);
-      });
-    walk(tree);
-    return out;
-  });
   const emit = next => {
     setNone(false);
     onChange(next.length ? next : multiSelectAll(leaves, emptyMeansAll));
@@ -783,20 +771,12 @@ export function FilterItems({
     e.stopPropagation();
     emit(filterNormalize(tree, filterLeavesOf(node)));
   };
-  const expand = (node, to) =>
-    setOpen(prev => {
-      const next = new Set(prev);
-      if (to ?? !next.has(node.value)) next.add(node.value);
-      else next.delete(node.value);
-      return next;
-    });
   const dot = o => (o.color ? h("span", { className: "mk-ms-swatch", style: { background: o.color } }) : null);
   const allTick = filterAllTick(selected, none);
 
   const row = (node, depth) => {
     const tick = filterTick(node, selected, none);
     const group = Boolean(node.children);
-    const isOpen = group && open.has(node.value);
     const el = h(
       "div",
       {
@@ -804,7 +784,6 @@ export function FilterItems({
         role: "option",
         "aria-selected": tick === "on",
         "aria-checked": asChecked(tick),
-        "aria-expanded": group ? isOpen : undefined,
         tabIndex: 0,
         title: node.title,
         className: cx("mk-ms-opt", tick !== "off" && "active", group && "mk-ms-group"),
@@ -815,10 +794,6 @@ export function FilterItems({
             e.preventDefault();
             e.stopPropagation();
             flip(node);
-          } else if (group && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
-            e.preventDefault();
-            e.stopPropagation();
-            expand(node, e.key === "ArrowRight");
           }
         },
       },
@@ -826,23 +801,8 @@ export function FilterItems({
       dot(node),
       h("span", { className: "mk-ms-label" }, node.label),
       showOnly && h("button", { type: "button", className: "mk-ms-only", tabIndex: -1, onClick: only(node) }, "Only"),
-      group &&
-        h(
-          "button",
-          {
-            type: "button",
-            className: cx("mk-ms-expand", isOpen && "open"),
-            "aria-label": `${isOpen ? "Collapse" : "Expand"} ${node.label}`,
-            tabIndex: -1,
-            onClick: e => {
-              e.stopPropagation();
-              expand(node);
-            },
-          },
-          h(IconChevronRight),
-        ),
     );
-    return isOpen ? [el, ...node.children.flatMap(c => row(c, depth + 1))] : [el];
+    return group ? [el, ...node.children.flatMap(c => row(c, depth + 1))] : [el];
   };
 
   return h(
@@ -949,8 +909,9 @@ export function MultiSelect({
         h(
           "span",
           { className: "mk-ms-fit" },
-          ...sizes.map((t, i) => h("span", { key: i, className: "mk-ms-probe", "aria-hidden": "true" }, t)),
+          // The text first: a grid's baseline is its first item's, and the probes are 0 px tall.
           h("span", { key: "text", className: "mk-ms-text" }, text),
+          ...sizes.map((t, i) => h("span", { key: i, className: "mk-ms-probe", "aria-hidden": "true" }, t)),
         ),
       ),
       h(IconChevron, { className: "mk-ms-caret" }),

@@ -185,12 +185,18 @@ own All logic, and don't override `.mk-ms-*` classes to change its trigger.
   under All; unticking one leaves All partial (–); a click on a full All
   unticks every row (a draft that emits nothing, trigger "None"); a click on
   a partial All ticks every row.
-- Trees: options with `children` are groups that tick their leaves and
-  expand in place. Several filters in one menu: render `FilterItems` (the
-  same rows) in each submenu. Never copy a NestedFilterMenu into an app:
-  `MultiSelect` takes its props (`selected`, `label`, `summary`,
-  `triggerClassName`, `probes`, `sizeTo`), and `filterToParam` /
-  `filterFromParam` / `filterText` replace `nestedfilter.ts`.
+- Trees (options with `children`, e.g. Traffic › Crawlers › OpenAI): use
+  `FilterMenu` from `@makoai/app-sdk/menu`. It is the apps' former
+  NestedFilterMenu on stock shadcn `DropdownMenu`: a group opens as a hover
+  submenu that starts with "All <group>", each row has an "Only" action,
+  and the All rule is the one above. In an app's own toolbar menu (several
+  filters in one dropdown, the phone Filters menu) render
+  `FilterMenuItems` in each submenu; `drill` / `root` open a group in place
+  on a phone. Never copy a NestedFilterMenu, a DropdownMenu or a Checkbox
+  into an app. `filterToParam` / `filterFromParam` / `filterText` /
+  `filterLeaves` (from `/ui`) replace `nestedfilter.ts`. The app's CSS
+  needs `@source "../node_modules/@makoai/app-sdk/menu";` so Tailwind
+  sees the menu's classes.
 - The trigger reads the All label, the one label, "N selected" (flat;
   `formatMany` changes it) or the picked parts (tree), at a fixed width.
 - One dropdown open at a time. Kit popovers close each other. A Radix menu

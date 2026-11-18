@@ -405,8 +405,10 @@ app gets a generated letter mark.
 warm `--canvas`, `#527df2` `--brand`, `--positive`/`--warning`/`--negative`,
 `--chart-1…5`; light and dark), and `@makoai/app-sdk/ui` is the dashboard kit
 every workspace app was re-forking: `PageHeader`, `Card`, `KpiRow` /
-`KpiTile`, `Button`, `StatusDot`, `MultiSelect` (filters, flat or tree; owns the tri-state All rule
-and one-open-at-a-time, so never wrap it; `FilterItems` for composite menus), `FreshnessBadge`
+`KpiTile`, `Button`, `StatusDot`, `MultiSelect` (flat filters; owns the tri-state All rule
+and one-open-at-a-time, so never wrap it; `FilterItems` for composite menus);
+`@makoai/app-sdk/menu` for trees with hover submenus (`FilterMenu`,
+`FilterMenuItems`) and stock shadcn `DropdownMenu` / `Checkbox`, `FreshnessBadge`
 (data age per source), `RefreshAllButton` (rebuild every binding, with a
 progress modal), `DataTable` (sortable, paged list with CSV export; SDK ≥ 2.11,
 rules in `references/ui-toolkit.md` "Tables"). Import `@makoai/app-sdk/ui.css` before the app's own CSS.

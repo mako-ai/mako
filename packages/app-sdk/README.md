@@ -438,8 +438,9 @@ Before 2.20, All showed ticked over unticked rows and a click under All
 selected only that option.
 
 **Groups (2.20).** An option with `children` is a group: its row ticks every
-leaf under it, shows a dash when some are picked, and expands in place (open
-by default when partly picked). A flat list is a one-level tree. The value is
+leaf under it and shows a dash when some are picked; its children follow it,
+indented. A tree that needs hover submenus (Traffic → Bots → GPTBot) is a
+`FilterMenu` from `@makoai/app-sdk/menu` (below). A flat list is a one-level tree. The value is
 always leaf values. `filterToParam` / `filterFromParam` turn a selection into
 a URL value and back ("bots" for a whole group, its picked children for a
 partial one).
@@ -454,13 +455,19 @@ an app's own menu that folds several filters into one dropdown on a phone.
 </DropdownMenuSubContent>
 ```
 
-**Replacing an app's NestedFilterMenu.** `MultiSelect` takes its props:
-`selected` (= `value`), `label` (= `aria-label`), `summary`,
-`triggerClassName`, `probes` and `sizeTo`. `FilterItems` replaces
-`NestedFilterItems`. The `nestedfilter.ts` helpers are `filterLeaves`,
-`filterLeavesOf`, `filterFind`, `filterNormalize`, `filterTick`,
-`filterToggle`, `filterText` (summarize), `filterPickedNode`,
-`filterToParam`, `filterFromParam`. Delete the app's copies.
+**Replacing an app's NestedFilterMenu: `FilterMenu`.** See "Menus" below:
+`FilterMenu` and `FilterMenuItems` from `@makoai/app-sdk/menu` take
+NestedFilterMenu's props (`label`, `options`, `selected`, `onChange`,
+`allLabel`, `summary`, `triggerClassName`, `probes`, `sizeTo`; `drill` and
+`root` on the items). For a flat filter, `MultiSelect` takes the same
+props. The `nestedfilter.ts` helpers are `filterLeaves`, `filterLeavesOf`,
+`filterFind`, `filterNormalize`, `filterTick`, `filterToggle`,
+`filterText` (summarize), `filterPickedNode`, `filterToParam`,
+`filterFromParam`, all from `/ui`. Delete the app's copies.
+
+A value the options don't list (a URL pick before the options load, or a
+market missing from this date range) stays in the selection: the trigger
+reads it ("PT"), All shows partial, and the next tick keeps it.
 
 **Trigger.** It reads the All label, the one picked label (a leaf or a whole
 group), "3 selected" for a flat list, or the picked parts for a tree
@@ -499,6 +506,40 @@ shadcn's `cursor-default` on menu items. Disabled ones (`:disabled`,
 Pure helpers for app-side menus: `multiSelectState(value, optionValues)`,
 `multiSelectToggle(value, optionValues, v, emptyMeansAll)`,
 `multiSelectText(value, options, allLabel, formatMany)`.
+
+### Menus: `@makoai/app-sdk/menu` (2.20)
+
+Stock shadcn/ui `DropdownMenu` (every part, hover submenus included) and
+`Checkbox` (new-york, as shipped; the Checkbox adds the indeterminate dash),
+plus the `FilterMenu` built on them. Never copy these into an app: a
+missing part or prop is an SDK pull request.
+
+```tsx
+import { FilterMenu, FilterMenuItems } from "@makoai/app-sdk/menu";
+import { filterFromParam, filterToParam } from "@makoai/app-sdk/ui";
+
+const traffic = filterFromParam(TRAFFIC, params.get("traffic"));
+<FilterMenu label="Traffic" allLabel="All traffic" options={TRAFFIC}
+  selected={traffic} onChange={v => setParam("traffic", filterToParam(TRAFFIC, v))} />
+```
+
+- A group opens as a hover submenu (or with →) that starts with
+  "All <group>"; its own checkbox ticks the whole group without opening it.
+- Every row has an "Only" action on hover. Rows carry no hover text: a
+  filter's definitions belong in its label's info note.
+- The All rule and the "None" draft are `MultiSelect`'s (above).
+- `FilterMenuItems` is the rows alone, for an app's own toolbar menu. On a
+  phone, `drill={{ open: node => … }}` opens a group in place and
+  `root={node}` lists that group's rows.
+
+The folder ships TypeScript source; the app's Vite compiles it. It needs
+the shadcn stack an app already has (`radix-ui`, `lucide-react`, `clsx`,
+`tailwind-merge`, optional peers of the SDK) and Tailwind must see its
+classes. Add one line to the app's CSS, after the Tailwind imports:
+
+```css
+@source "../node_modules/@makoai/app-sdk/menu";
+```
 
 ### Chart tooltips: `TableTooltip` (2.10+, every series from 2.15)
 

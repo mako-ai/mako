@@ -399,12 +399,20 @@ export function filterFind(options, value) {
   return undefined;
 }
 
-/** A selection in menu order; [] when it holds every leaf. Unknown values drop out. */
+/**
+ * A selection in menu order; [] when it holds every leaf. Values the options
+ * don't list (a URL pick before its options load, or one the current date
+ * range lacks) are kept at the end, so the trigger never reads "All" over
+ * filtered data and the next tick does not drop them.
+ */
 export function filterNormalize(options, picked) {
   const set = new Set(picked);
   const leaves = filterLeaves(options);
+  const known = new Set(leaves);
   const out = leaves.filter(v => set.has(v));
-  return out.length === leaves.length ? [] : out;
+  const unknown = [...set].filter(v => !known.has(v));
+  if (leaves.length > 0 && out.length === leaves.length) return [];
+  return [...out, ...unknown];
 }
 
 /** A node's tick: "on" when every leaf under it is picked, "mixed" when some are, "off" when none (or in the draft). */
@@ -465,6 +473,7 @@ export function filterText(options, selected, allLabel = "All", many = n => `${n
   if (!selected.length) return allLabel;
   const one = filterPickedNode(options, selected);
   if (one) return one.label;
+  if (selected.length === 1) return selected[0]; // one value the options don't list (yet)
   if (!options.some(o => o.children)) return many(selected.length);
   const parts = list =>
     list.flatMap(o => {
@@ -472,14 +481,17 @@ export function filterText(options, selected, allLabel = "All", many = n => `${n
       if (st === "on") return [o.label];
       return st === "mixed" && o.children ? parts(o.children) : [];
     });
-  return options
-    .flatMap(o => {
+  // A value the options don't list (yet) reads as itself, never as All or "".
+  const unknown = selected.filter(v => !filterFind(options, v));
+  return [
+    ...options.flatMap(o => {
       const st = filterTick(o, selected);
       if (st === "on") return [o.label];
       if (st === "mixed" && o.children) return [`${o.label}: ${parts(o.children).join(", ")}`];
       return [];
-    })
-    .join(" + ");
+    }),
+    ...unknown,
+  ].join(" + ");
 }
 
 const sameSet = (a, b) => a.length === b.length && a.every(v => b.includes(v));
@@ -489,7 +501,10 @@ const sameSet = (a, b) => a.length === b.length && a.every(v => b.includes(v));
  * leaf (when the default is narrower), else a whole group by its own value
  * and a partial one by its picked children, comma-separated.
  */
-export function filterToParam(options, selected, defaults = []) {
+export function filterToParam(options, selectedIn, defaultsIn = []) {
+  // All emitted as every leaf (emptyMeansAll false) compares as [].
+  const selected = filterNormalize(options, selectedIn);
+  const defaults = filterNormalize(options, defaultsIn);
   if (sameSet(selected, defaults)) return "";
   if (!selected.length) return "all";
   const walk = list =>
@@ -498,7 +513,8 @@ export function filterToParam(options, selected, defaults = []) {
       if (st === "on") return [o.value];
       return st === "mixed" && o.children ? walk(o.children) : [];
     });
-  return walk(options).join(",");
+  const unknown = selected.filter(v => !filterFind(options, v));
+  return [...walk(options), ...unknown].join(",");
 }
 
 /**

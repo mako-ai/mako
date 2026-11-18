@@ -721,7 +721,7 @@ test("MultiSelect: rows ticked under All, untick = partial, full All = none (no 
   }
 });
 
-test("FilterItems: a group row ticks its leaves and expands in place", async t => {
+test("FilterItems: a group row ticks its leaves; its children follow it", async t => {
   let React, client, JSDOM;
   try {
     React = await import("react");
@@ -754,13 +754,30 @@ test("FilterItems: a group row ticks its leaves and expands in place", async t =
   await React.act(() => root.render(h(App)));
   const rows = () => [...win.document.querySelectorAll('[role="option"]')];
   const row = text => rows().find(r => r.querySelector(".mk-ms-label").textContent === text);
-  assert.equal(row("GPTBot"), undefined, "a fully picked group starts collapsed");
-  await React.act(() => row("Bots").querySelector(".mk-ms-expand").click());
-  assert.ok(row("GPTBot"), "the chevron expands the group in place");
+  assert.ok(row("GPTBot"), "a group's children follow it");
+  assert.equal(win.document.querySelector(".mk-ms-expand"), null, "no in-place expander: hover submenus are FilterMenu's");
   await React.act(() => row("GPTBot").click());
   assert.deepEqual(value, ["humans", "bing"]);
   assert.equal(row("Bots").getAttribute("aria-checked"), "mixed");
   await React.act(() => row("Bots").click());
   assert.deepEqual(value, [], "a partial group click ticks the group: every leaf picked is All");
   await React.act(() => root.unmount());
+});
+
+test("filterNormalize keeps values the options don't list; filterToParam normalizes All (review of #1383)", async () => {
+  const c = await import("./ui-core.js");
+  const tree = [{ value: "fr", label: "France" }, { value: "es", label: "Spain" }];
+  // Options still loading: a restored pick stays a pick, not All.
+  assert.deepEqual(c.filterNormalize([], ["PT"]), ["PT"]);
+  assert.deepEqual(c.filterNormalize([], []), []);
+  // Options without PT for this date range: PT is kept at the end.
+  assert.deepEqual(c.filterNormalize(tree, ["PT", "es"]), ["es", "PT"]);
+  assert.equal(c.filterText(tree, ["PT"], "All markets"), "PT");
+  assert.equal(c.filterAllTick(c.filterNormalize(tree, ["PT"])), "mixed", "All is not ticked over a PT filter");
+  // Unticking Spain keeps PT.
+  assert.deepEqual(c.filterToggle(tree, ["es", "PT"], tree[1]).selected, ["PT"]);
+  // emptyMeansAll={false}: All arrives as every leaf and writes "" (the default), not "fr,es".
+  assert.equal(c.filterToParam(tree, ["fr", "es"]), "");
+  assert.equal(c.filterToParam(tree, ["fr", "es"], ["fr"]), "all");
+  assert.equal(c.filterToParam(tree, ["es", "PT"]), "es,PT");
 });

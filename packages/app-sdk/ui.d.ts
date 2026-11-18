@@ -71,7 +71,7 @@ export interface MultiSelectOption<V extends string = string> {
   color?: string;
   /** What the option covers, shown on hover. */
   title?: string;
-  /** A group (2.20): its row ticks every leaf under it and expands in place. */
+  /** A group (2.20): its row ticks every leaf under it; hover submenus: FilterMenu in `@makoai/app-sdk/menu`. */
   children?: ReadonlyArray<MultiSelectOption<V>>;
 }
 
@@ -80,7 +80,7 @@ export type FilterTick = "on" | "mixed" | "off";
 
 /**
  * The rows of one filter (2.20): All, a separator, one tri-state row per
- * option, groups expanding in place. Use it in an app's own composite menu
+ * option, a group's children indented under it. Use it in an app's own composite menu
  * (several filters in one dropdown); MultiSelect renders it in its popover.
  * Drop-in for the apps' NestedFilterItems (`selected` = `value`).
  */
