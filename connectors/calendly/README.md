@@ -56,6 +56,8 @@ Calendly's payloads leave columns out, so a row a webhook writes first
 would land without them. So the handler fills a partial scheduled event or event type from
 `GET /scheduled_events/<uuid>` or `GET /event_types/<uuid>`. Only the
 columns the payload lacks or sends null are filled. A 404 drops the record.
+A 401 or 403 (a token that may not read the object) lands the record without
+the columns it lacks, so live values stay and no NULL is written.
 Other failures retry the event. Invitee payloads are whole and cost no
 request.
 
