@@ -78,6 +78,9 @@ async function fetchCommitFromCloud(
     ...authArgs(token),
     "fetch",
     "--quiet",
+    // Never touch the shared FETCH_HEAD: fetchFromCloud reads it as the
+    // mirror's main, and a concurrent sha fetch would hand it this commit.
+    "--no-write-fetch-head",
     remoteUrl(target.owner, target.repo),
     sha,
   ]);
