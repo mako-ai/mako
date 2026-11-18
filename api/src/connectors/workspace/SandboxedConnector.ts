@@ -657,8 +657,17 @@ export class SandboxedConnector extends BaseConnector {
     }
   }
 
+  /**
+   * The connection's own config, without any `__` key. Those keys are Mako's
+   * (`__page_size`, `__connection_id`, ...): a value a user saved, typed in an
+   * unsaved test or passed to a probe must never stand in for one. Mako adds
+   * its own below, after this.
+   */
   private config(): Record<string, unknown> {
-    return (this.sourceConnection.config ?? {}) as Record<string, unknown>;
+    const raw = (this.sourceConnection.config ?? {}) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(raw).filter(([key]) => !key.startsWith("__")),
+    );
   }
 
   /**

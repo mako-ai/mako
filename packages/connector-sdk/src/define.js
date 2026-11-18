@@ -558,6 +558,16 @@ function validateQueryEntities(definition) {
     const items = q.form?.items;
     if (!items || typeof items !== "object" || !items.properties || typeof items.properties !== "object") {
       problems.push('queryEntities.source "flow" needs form.items.properties, the fields of one query');
+    } else {
+      // A flow's queries are stored in plaintext with the flow: a secret
+      // there would be a credential nobody encrypts. It belongs in config.
+      for (const [name, field] of Object.entries(items.properties)) {
+        if (field?.airbyte_secret === true || field?.secret === true) {
+          problems.push(
+            `queryEntities.form field "${name}" is marked secret, but a flow's queries are stored unencrypted. Put the secret in config.properties.`,
+          );
+        }
+      }
     }
   }
   return problems;

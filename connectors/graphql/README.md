@@ -59,11 +59,15 @@ of `__rate_limit_delay_ms` (200 ms by default) follows each page.
 
 ## Not replicated
 
-- The in-process SSRF guard checks every resolved address and every
-  redirect hop. The folder checks the endpoint's host once: no metadata
-  name (a trailing dot included), no private or link-local IP literal,
-  also as IPv4 inside IPv6 (`::ffff:`, `::`, `64:ff9b::`). IPv4 loopback
-  is allowed, since it reaches only the box. A box sits outside Mako's network.
+- The in-process SSRF guard pins the address it checked to the socket. The
+  folder checks the endpoint's host, then every address its name resolves
+  to, before the first request: no metadata name (a trailing dot
+  included), no private, link-local or CGNAT address, also as IPv4 inside
+  IPv6 (`::ffff:`, `::`, `64:ff9b::`). `fetch` resolves the name again, so
+  a DNS answer that changes between the two is not caught. IPv4 loopback
+  is allowed, since it reaches only the box. A box sits outside Mako's
+  network.
+- A redirect is refused. In-process follows it, checking each hop.
 - `settings.timeout_ms` and `settings.max_retries` are not read: 30 s and 3
   retries, the in-process defaults.
 - The in-process capability carries a warning text about `$since`. The

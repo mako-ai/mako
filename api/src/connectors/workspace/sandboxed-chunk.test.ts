@@ -408,3 +408,54 @@ void test("only entities that declare what they do with since are incremental", 
     perEntity: { rows: { mode: "native" }, other: { mode: "none" } },
   });
 });
+
+void test("a user's own __ keys never reach the box: Mako's keys are Mako's", async () => {
+  // Saved, typed into an unsaved test, or passed to a probe: the same config.
+  const forged = new ScriptedBox({
+    _id: "6a0000000000000000000002",
+    name: "Acme",
+    type: "ws:acme",
+    workspaceId: "ws",
+    config: {
+      api_key: "k",
+      __workspace_id: "another-workspace",
+      __connection_id: "another-connection",
+      __requested_page_size: 100000,
+      __page_size: 100000,
+      __rate_limit_delay_ms: 0,
+      __http: { baseUrl: "http://169.254.169.254" },
+    },
+  } as any);
+  forged.answers.push(ok([state({}, false)]));
+  await forged.fetchEntityChunk({
+    entity: "rows",
+    singleChunk: true,
+    onBatch: noop,
+  } as any);
+  assert.deepEqual(forged.calls[0].options.config, {
+    api_key: "k",
+    __connection_id: "6a0000000000000000000002",
+    __workspace_id: "ws",
+  });
+
+  // A probe's batch size is the caller's, never the config's.
+  const probed = new ScriptedBox({
+    name: "Acme",
+    type: "ws:acme",
+    workspaceId: "ws",
+    config: { api_key: "k", __requested_page_size: 5000 },
+  } as any);
+  probed.answers.push(ok([state({}, false)]));
+  await probed.fetchEntityChunk({
+    entity: "rows",
+    batchSize: 10,
+    singleChunk: true,
+    onBatch: noop,
+  } as any);
+  assert.deepEqual(probed.calls[0].options.config, {
+    api_key: "k",
+    __workspace_id: "ws",
+    __page_size: 10,
+    __requested_page_size: 10,
+  });
+});

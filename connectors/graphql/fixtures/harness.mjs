@@ -198,6 +198,10 @@ async function startServer(answer) {
             ? graphqlError(429, "rate limit exceeded")
             : graphqlError(503, "upstream unavailable");
         if (seen === 0) headers = { "retry-after": "0" };
+      } else if (token.includes("_redirect")) {
+        // A redirect toward the metadata address: the folder must refuse it.
+        response = { status: 307, body: {} };
+        headers = { location: "http://169.254.169.254/computeMetadata/v1/" };
       } else if (token.includes("_errors")) {
         response = {
           status: 200,

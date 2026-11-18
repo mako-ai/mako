@@ -339,3 +339,21 @@ test("query entities: a bad declaration is refused", () => {
     /queryEntities.source must be one of/,
   );
 });
+
+test("query entities: a flow query field marked secret is refused, since flows store queries in plaintext", () => {
+  for (const flag of [{ airbyte_secret: true }, { secret: true }]) {
+    assert.throws(
+      () =>
+        defineConnector({
+          name: "gql",
+          version: "1",
+          queryEntities: {
+            source: "flow",
+            form: { items: { properties: { token: { type: "string", ...flag } } } },
+            entity: () => entity,
+          },
+        }),
+      /field "token" is marked secret/,
+    );
+  }
+});
