@@ -432,7 +432,9 @@ const SDK_PACKAGE_DIR = "node_modules/@makoai/connector-sdk";
  */
 export function verifyRuntimeShell(): string {
   return `sha256_check() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum -c --status "$1" 2>/dev/null; else shasum -a 256 -c --status "$1" 2>/dev/null; fi
+  # GNU sha256sum still prints "<file>: FAILED open or read" on stdout for a
+  # missing file under --status; the exit status alone is the answer.
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum -c --status "$1" >/dev/null 2>&1; else shasum -a 256 -c --status "$1" >/dev/null 2>&1; fi
 }
 verify_runtime() {
   test -f "$1/.materialized" || return 1
