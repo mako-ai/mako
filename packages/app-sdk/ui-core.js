@@ -370,6 +370,171 @@ export function multiSelectText(value, options, allLabel = "All", many = n => `$
 }
 
 // ---------------------------------------------------------------------------
+// Filter trees (2.20): the model behind FilterItems and MultiSelect
+// ---------------------------------------------------------------------------
+// Options form a tree ({ value, label, children? }); a flat list is a one-level
+// tree. A selection is a list of leaf values, and [] means every leaf (All).
+// Groups never sit in a selection: a group is ticked when all its leaves are.
+// `none` is the open menu's "nothing ticked" draft: a click on a full All
+// unticks every row. It emits nothing (an empty filter still means
+// everything): the data keeps its selection until a row is ticked.
+
+/** Every leaf value under `options`, in menu order. */
+export function filterLeaves(options) {
+  return options.flatMap(o => (o.children ? filterLeaves(o.children) : [o.value]));
+}
+
+/** The leaves under a node (a leaf is its own). */
+export function filterLeavesOf(node) {
+  return node.children ? filterLeaves(node.children) : [node.value];
+}
+
+/** The node with `value` anywhere in the tree. */
+export function filterFind(options, value) {
+  for (const o of options) {
+    if (o.value === value) return o;
+    const hit = o.children && filterFind(o.children, value);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+/**
+ * A selection in menu order; [] when it holds every leaf. Values the options
+ * don't list (a URL pick before its options load, or one the current date
+ * range lacks) are kept at the end, so the trigger never reads "All" over
+ * filtered data and the next tick does not drop them.
+ */
+export function filterNormalize(options, picked) {
+  const set = new Set(picked);
+  const leaves = filterLeaves(options);
+  const known = new Set(leaves);
+  const out = leaves.filter(v => set.has(v));
+  const unknown = [...set].filter(v => !known.has(v));
+  if (leaves.length > 0 && out.length === leaves.length && !unknown.length) return [];
+  return [...out, ...unknown];
+}
+
+/** A node's tick: "on" when every leaf under it is picked, "mixed" when some are, "off" when none (or in the draft). */
+export function filterTick(node, selected, none = false) {
+  const ls = filterLeavesOf(node);
+  // A group with no children yet (still loading) picks nothing: never "on".
+  if (none || !ls.length) return "off";
+  if (!selected.length) return "on";
+  const on = ls.filter(v => selected.includes(v)).length;
+  return on === ls.length ? "on" : on ? "mixed" : "off";
+}
+
+/** The All row's tick: "on" with every leaf picked, "mixed" with some, "off" in the draft. */
+export function filterAllTick(selected, none = false) {
+  return none ? "off" : selected.length ? "mixed" : "on";
+}
+
+/**
+ * A click on All. Full All goes to the draft ({ none: true }); a partial All
+ * or the draft ticks every row ({ selected: [] }).
+ */
+export function filterToggleAll(selected, none = false) {
+  return filterAllTick(selected, none) === "on" ? { none: true, selected } : { none: false, selected: [] };
+}
+
+/**
+ * A click on a node: off when all its leaves are ticked, else on. From the
+ * draft a tick picks that node alone. When the click leaves nothing ticked
+ * the result is the draft ({ none: true }) and the selection is unchanged.
+ */
+export function filterToggle(options, selected, node, none = false) {
+  const ls = filterLeavesOf(node);
+  if (none) return { none: false, selected: filterNormalize(options, ls) };
+  const current = selected.length ? selected : filterLeaves(options);
+  const next = filterTick(node, selected) === "on" ? current.filter(v => !ls.includes(v)) : [...current, ...ls];
+  return next.length ? { none: false, selected: filterNormalize(options, next) } : { none: true, selected };
+}
+
+/** The one node whose leaves are exactly the pick (a leaf, or a whole group), else undefined. */
+export function filterPickedNode(options, selected) {
+  const want = new Set(selected);
+  const walk = list => {
+    for (const o of list) {
+      const ls = filterLeavesOf(o);
+      if (ls.length === want.size && ls.every(v => want.has(v))) return o;
+      if (o.children && ls.some(v => want.has(v))) return walk(o.children);
+    }
+    return undefined;
+  };
+  return walk(options);
+}
+
+/**
+ * The trigger text: the All label; the one picked node's label ("404 Not
+ * found", a whole group "OpenAI"); for a flat list "N selected" (`many(n)`);
+ * for a tree its picked parts ("Pages + Assets: Images").
+ */
+export function filterText(options, selected, allLabel = "All", many = n => `${n} selected`) {
+  if (!selected.length) return allLabel;
+  const one = filterPickedNode(options, selected);
+  if (one) return one.label;
+  if (selected.length === 1) return selected[0]; // one value the options don't list (yet)
+  if (!options.some(o => o.children)) return many(selected.length);
+  const parts = list =>
+    list.flatMap(o => {
+      const st = filterTick(o, selected);
+      if (st === "on") return [o.label];
+      return st === "mixed" && o.children ? parts(o.children) : [];
+    });
+  // A value the options don't list (yet) reads as itself, never as All or "".
+  const unknown = selected.filter(v => !filterFind(options, v));
+  return [
+    ...options.flatMap(o => {
+      const st = filterTick(o, selected);
+      if (st === "on") return [o.label];
+      if (st === "mixed" && o.children) return [`${o.label}: ${parts(o.children).join(", ")}`];
+      return [];
+    }),
+    ...unknown,
+  ].join(" + ");
+}
+
+const sameSet = (a, b) => a.length === b.length && a.every(v => b.includes(v));
+
+/**
+ * The URL value of a selection: "" for the filter's default, "all" for every
+ * leaf (when the default is narrower), else a whole group by its own value
+ * and a partial one by its picked children, comma-separated.
+ */
+export function filterToParam(options, selectedIn, defaultsIn = []) {
+  // All emitted as every leaf (emptyMeansAll false) compares as [].
+  const selected = filterNormalize(options, selectedIn);
+  const defaults = filterNormalize(options, defaultsIn);
+  if (sameSet(selected, defaults)) return "";
+  if (!selected.length) return "all";
+  const walk = list =>
+    list.flatMap(o => {
+      const st = filterTick(o, selected);
+      if (st === "on") return [o.value];
+      return st === "mixed" && o.children ? walk(o.children) : [];
+    });
+  const unknown = selected.filter(v => !filterFind(options, v));
+  return [...walk(options), ...unknown].join(",");
+}
+
+/**
+ * A URL value back to a selection. `legacy` maps former values onto node
+ * values first. Values the options don't list are kept (a URL pick read
+ * before its options load stays a pick). Missing or empty: the default.
+ */
+export function filterFromParam(options, raw, defaults = [], legacy = {}) {
+  if (raw == null || raw === "") return defaults;
+  if (raw === "all") return [];
+  const picked = raw.split(",").flatMap(v => {
+    const node = filterFind(options, legacy[v] ?? v);
+    return node ? filterLeavesOf(node) : [v];
+  });
+  if (!picked.length) return defaults;
+  return filterNormalize(options, picked);
+}
+
+// ---------------------------------------------------------------------------
 // One open popover at a time
 // ---------------------------------------------------------------------------
 let openPopoverClose = null;

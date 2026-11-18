@@ -22,6 +22,18 @@ import {
   csvToTsv,
   defaultColumnWidth,
   formatSeconds as fmtSecs,
+  filterAllTick,
+  filterFind,
+  filterFromParam,
+  filterLeaves,
+  filterLeavesOf,
+  filterNormalize,
+  filterPickedNode,
+  filterText,
+  filterTick,
+  filterToggle,
+  filterToggleAll,
+  filterToParam,
   multiSelectAll,
   multiSelectState,
   multiSelectText,
@@ -49,6 +61,18 @@ export {
   csvDate,
   csvToTsv,
   defaultColumnWidth,
+  filterAllTick,
+  filterFind,
+  filterFromParam,
+  filterLeaves,
+  filterLeavesOf,
+  filterNormalize,
+  filterPickedNode,
+  filterText,
+  filterTick,
+  filterToggle,
+  filterToggleAll,
+  filterToParam,
   multiSelectState,
   multiSelectText,
   multiSelectToggle,
@@ -687,44 +711,180 @@ export function Checkbox({ checked = false, className }) {
   );
 }
 
+function toNode(o) {
+  const n = toOption(o);
+  return n.children ? { ...n, children: n.children.map(toNode) } : n;
+}
+
+const asChecked = t => (t === "on" ? true : t === "mixed" ? "mixed" : false);
+
 /**
- * Multi-select filter (shadcn combobox look). Controlled: `value` is the
- * selected values, `onChange` gets the next array.
+ * The rows of a multi-select filter, without trigger or popover: the All row,
+ * a separator, then every option with a tri-state checkbox. MultiSelect
+ * renders them in its popover; an app renders them in its own composite menu
+ * (several filters folded into one dropdown on a phone), so every filter
+ * ticks and toggles alike.
  *
- * The All rule: nothing is filtered when `value` is empty or holds every
- * option. The All row is then ticked and every option row unticked. A click
- * on an option under All selects only that option. Unticking the last
- * option, or ticking the last missing one, returns to All. The trigger reads
- * the All label, the one selected label, or "N selected".
+ * Options are strings, `{ value, label, color }`, or groups with `children`
+ * (a flat list is a one-level tree). A group row ticks its whole group and
+ * shows a dash when part of it is picked; its children follow it, indented.
+ * A tree that needs hover submenus is a FilterMenu (`@makoai/app-sdk/menu`).
  *
- * `emptyMeansAll` (default true) only picks what All emits: [] by default,
- * every option's value when false.
+ * The All rule (2.20): with nothing filtered (`value` empty or holding every
+ * option) every row is ticked. Unticking one leaves All in the partial (–)
+ * state. A click on a full All unticks every row; a click on a partial All
+ * ticks every row. "Nothing ticked" is a draft: it emits nothing, the data
+ * keeps its selection until a row is ticked, and the first tick picks that
+ * row alone. Pass `none` / `onNoneChange` to show the draft elsewhere (the
+ * trigger); otherwise FilterItems keeps it.
  */
-export function MultiSelect({
+export function FilterItems({
   options,
-  value,
+  value: valueProp,
+  selected: selectedProp,
   onChange,
   allLabel = "All",
   emptyMeansAll = true,
   showOnly = false,
-  formatMany,
-  align = "start",
+  none: noneProp,
+  onNoneChange,
   className,
   "aria-label": ariaLabel,
 }) {
+  const value = valueProp ?? selectedProp;
+  const tree = options.map(toNode);
+  const leaves = filterLeaves(tree);
+  const selected = filterNormalize(tree, value ?? []);
+  const [ownNone, setOwnNone] = React.useState(false);
+  const none = noneProp ?? ownNone;
+  const setNone = onNoneChange ?? setOwnNone;
+  const emit = next => {
+    setNone(false);
+    onChange(next.length ? next : multiSelectAll(leaves, emptyMeansAll));
+  };
+  const apply = r => {
+    if (r.none) setNone(true);
+    else emit(r.selected);
+  };
+  const flip = node => apply(filterToggle(tree, selected, node, none));
+  const only = node => e => {
+    e.stopPropagation();
+    emit(filterNormalize(tree, filterLeavesOf(node)));
+  };
+  const dot = o => (o.color ? h("span", { className: "mk-ms-swatch", style: { background: o.color } }) : null);
+  const allTick = filterAllTick(selected, none);
+
+  const row = (node, depth) => {
+    const tick = filterTick(node, selected, none);
+    const group = Boolean(node.children);
+    const el = h(
+      "div",
+      {
+        key: node.value,
+        role: "option",
+        "aria-selected": tick === "on",
+        "aria-checked": asChecked(tick),
+        tabIndex: 0,
+        title: node.title,
+        className: cx("mk-ms-opt", tick !== "off" && "active", group && "mk-ms-group"),
+        style: depth ? { paddingLeft: 8 + depth * 20 } : undefined,
+        onClick: () => flip(node),
+        onKeyDown: e => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            e.stopPropagation();
+            flip(node);
+          }
+        },
+      },
+      h(Checkbox, { checked: asChecked(tick) }),
+      dot(node),
+      h("span", { className: "mk-ms-label" }, node.label),
+      showOnly && filterLeavesOf(node).length > 0 && h("button", { type: "button", className: "mk-ms-only", tabIndex: -1, onClick: only(node) }, "Only"),
+    );
+    return group ? [el, ...node.children.flatMap(c => row(c, depth + 1))] : [el];
+  };
+
+  return h(
+    "div",
+    { className: cx("mk-ms-items", className), role: "listbox", "aria-multiselectable": true, "aria-label": ariaLabel },
+    h(
+      "div",
+      {
+        role: "option",
+        "aria-selected": allTick === "on",
+        "aria-checked": asChecked(allTick),
+        tabIndex: 0,
+        className: cx("mk-ms-opt", "mk-ms-all", allTick !== "off" && "active"),
+        onClick: () => apply(filterToggleAll(selected, none)),
+        onKeyDown: e => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            e.stopPropagation();
+            apply(filterToggleAll(selected, none));
+          }
+        },
+      },
+      h(Checkbox, { checked: asChecked(allTick) }),
+      h("span", { className: "mk-ms-label" }, allLabel),
+    ),
+    h("div", { className: "mk-ms-sep" }),
+    ...tree.flatMap(o => row(o, 0)),
+  );
+}
+
+/**
+ * Multi-select filter (shadcn combobox look) around FilterItems. Controlled:
+ * `value` is the selected leaf values, `onChange` gets the next array. See
+ * FilterItems for the All rule. `emptyMeansAll` (default true) only picks
+ * what All emits: [] by default, every leaf's value when false.
+ *
+ * The trigger reads the All label, the one picked label (a leaf or a whole
+ * group), "N selected" for a flat list (`formatMany`), the picked parts for a
+ * tree ("Pages + Assets: Images"), or `noneLabel` while nothing is ticked;
+ * `summary` replaces that text. Its width is fixed to the longest of
+ * `sizeTo` (default: the All label, the top-level labels, "N selected" and
+ * the none label) plus `probes`, so a pick never moves the layout; a longer
+ * text ends in an ellipsis and stays whole in the title.
+ *
+ * Drop-in for the apps' NestedFilterMenu: `selected` = `value`, `label` =
+ * `aria-label`, `triggerClassName`, `summary`, `probes`, `sizeTo`.
+ */
+export function MultiSelect({
+  options,
+  value: valueProp,
+  selected: selectedProp,
+  onChange,
+  allLabel = "All",
+  noneLabel = "None",
+  emptyMeansAll = true,
+  showOnly = false,
+  formatMany,
+  summary,
+  sizeTo,
+  probes = [],
+  align = "start",
+  className,
+  triggerClassName,
+  label,
+  "aria-label": ariaLabelProp,
+}) {
+  const value = valueProp ?? selectedProp;
+  const ariaLabel = ariaLabelProp ?? label;
   const [open, setOpen] = React.useState(false);
+  const [none, setNone] = React.useState(false);
   const ref = React.useRef(null);
   usePopover(open, setOpen, ref, align);
-  const opts = options.map(toOption);
-  const values = opts.map(o => o.value);
-  const { all: allOn, selected } = multiSelectState(value, values);
-  const text = multiSelectText(value, opts, allLabel, formatMany);
-  const single = selected.length === 1 ? opts.find(o => o.value === selected[0]) : null;
-
-  const toggle = v => onChange(multiSelectToggle(value, values, v, emptyMeansAll));
-  const all = () => onChange(multiSelectAll(values, emptyMeansAll));
-  const dot = o =>
-    o?.color ? h("span", { className: "mk-ms-swatch", style: { background: o.color } }) : null;
+  React.useEffect(() => {
+    if (!open) setNone(false);
+  }, [open]);
+  const tree = options.map(toNode);
+  const selected = filterNormalize(tree, value ?? []);
+  const many = formatMany ?? (n => `${n} selected`);
+  const text = none ? noneLabel : (summary ?? filterText(tree, selected, allLabel, many));
+  const sizes = [...(sizeTo ?? [allLabel, ...tree.map(o => o.label), many(filterLeaves(tree).length), noneLabel]), ...probes];
+  const single = selected.length ? filterPickedNode(tree, selected) : null;
+  const dot = o => (o?.color ? h("span", { className: "mk-ms-swatch", style: { background: o.color } }) : null);
 
   return h(
     "div",
@@ -733,69 +893,43 @@ export function MultiSelect({
       "button",
       {
         type: "button",
-        className: cx("mk-ms-trigger", open && "open"),
+        className: cx("mk-ms-trigger", open && "open", triggerClassName),
         "aria-haspopup": "listbox",
         "aria-expanded": open,
         "aria-label": ariaLabel,
         title: selected.length > 1
-          ? selected.map(v => opts.find(o => o.value === v)?.label ?? v).join(", ")
-          : undefined,
+          ? selected.map(v => filterFind(tree, v)?.label ?? v).join(", ")
+          : text,
         onClick: () => setOpen(o => !o),
       },
-      h("span", { className: "mk-ms-value" }, dot(single), h("span", { className: "mk-ms-text" }, text)),
+      h(
+        "span",
+        { className: "mk-ms-value" },
+        none ? null : dot(single),
+        h(
+          "span",
+          { className: "mk-ms-fit" },
+          // The text first: a grid's baseline is its first item's, and the probes are 0 px tall.
+          h("span", { key: "text", className: "mk-ms-text" }, text),
+          ...sizes.map((t, i) => h("span", { key: i, className: "mk-ms-probe", "aria-hidden": "true" }, t)),
+        ),
+      ),
       h(IconChevron, { className: "mk-ms-caret" }),
     ),
     open &&
       h(
         "div",
-        {
-          className: "mk-pop mk-ms-menu",
-          role: "listbox",
-          "aria-multiselectable": true,
-          onClick: cancelLabelActivation,
-        },
-        h(
-          "button",
-          { type: "button", className: cx("mk-ms-opt", allOn && "active"), "aria-pressed": allOn, onClick: all },
-          h(Checkbox, { checked: allOn }),
-          h("span", { className: "mk-ms-label" }, allLabel),
-        ),
-        h("div", { className: "mk-ms-sep" }),
-        ...opts.map(o => {
-          const on = selected.includes(o.value);
-          return h(
-            "div",
-            {
-              key: o.value,
-              role: "option",
-              "aria-selected": on,
-              tabIndex: 0,
-              className: cx("mk-ms-opt", on && "active"),
-              onClick: () => toggle(o.value),
-              onKeyDown: e => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  toggle(o.value);
-                }
-              },
-            },
-            h(Checkbox, { checked: on }),
-            dot(o),
-            h("span", { className: "mk-ms-label" }, o.label),
-            showOnly &&
-              h(
-                "button",
-                {
-                  type: "button",
-                  className: "mk-ms-only",
-                  onClick: e => {
-                    e.stopPropagation();
-                    onChange(multiSelectToggle([], values, o.value, emptyMeansAll));
-                  },
-                },
-                "Only",
-              ),
-          );
+        { className: "mk-pop mk-ms-menu", onClick: cancelLabelActivation },
+        h(FilterItems, {
+          options: tree,
+          value,
+          onChange,
+          allLabel,
+          emptyMeansAll,
+          showOnly,
+          none,
+          onNoneChange: setNone,
+          "aria-label": ariaLabel,
         }),
       ),
   );
