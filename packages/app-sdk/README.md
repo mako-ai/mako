@@ -388,8 +388,9 @@ import {
 <MultiSelect options={["CH", "ES", "IT"]} value={countries} onChange={setCountries} allLabel="All countries" />
 ```
 
-- `MultiSelect` — controlled (`value` / `onChange`). Options are strings or
-  `{ value, label, color }`; `showOnly` adds an "Only" button per row. On
+- `MultiSelect` — controlled (`value` / `onChange`). Options are strings,
+  `{ value, label, color }`, or groups with `children`; `showOnly` adds an
+  "Only" button per row. `FilterItems` is its rows alone. On
   phones the menu is a bottom sheet. See "MultiSelect: the All rule" below.
 - `FreshnessBadge` — presentational: the app decides what fresh means and
   passes `tone` (`ok` / `warn` / `bad`, or `green` / `amber` / `red`), a
@@ -420,18 +421,54 @@ import {
   and declare it once (`src/vite-env.d.ts`):
   `declare const __APP_BINDING_NAMES__: string[];`
 
-### MultiSelect: the All rule and one open popover (2.17+)
+### MultiSelect: the All rule and one open popover (2.17+, tri-state from 2.20)
 
-**All.** Nothing is filtered when `value` is empty or holds every option. The
-All row is then ticked and every option row unticked, whichever of the two the
-app passes. A click on an option under All selects only that option.
-Unticking the last option, or ticking the last missing one, returns to All.
+**All (2.20).** Nothing is filtered when `value` is empty or holds every
+option, and then every row is ticked, All included. Unticking one row leaves
+All in the partial (–) state. A click on a full All unticks every row; a
+click on a partial All ticks every row. "Nothing ticked" is a draft: it emits
+nothing (an empty filter still means everything), the trigger reads
+`noneLabel` ("None"), the first tick picks that row alone, and closing the
+menu keeps the last selection. Unticking the last row gives the same draft.
 `emptyMeansAll` (default `true`) only sets what All emits: `[]`, or every
-option's value when `false`.
+option's value when `false`. No prop changed: an app gets the rule by
+updating the SDK.
 
-**Trigger.** It reads the All label, the one selected label, or "3 selected".
-`formatMany={n => `${n} markets`}` changes the last one. The trigger's `title`
-lists the selected labels. Chips and `maxChips` are gone.
+Before 2.20, All showed ticked over unticked rows and a click under All
+selected only that option.
+
+**Groups (2.20).** An option with `children` is a group: its row ticks every
+leaf under it, shows a dash when some are picked, and expands in place (open
+by default when partly picked). A flat list is a one-level tree. The value is
+always leaf values. `filterToParam` / `filterFromParam` turn a selection into
+a URL value and back ("bots" for a whole group, its picked children for a
+partial one).
+
+**Composite menus: `FilterItems` (2.20).** The rows without the trigger, for
+an app's own menu that folds several filters into one dropdown on a phone.
+`MultiSelect` renders the same rows, so every filter ticks alike.
+
+```tsx
+<DropdownMenuSubContent>
+  <FilterItems options={TRAFFIC} value={traffic} onChange={setTraffic} allLabel="All traffic" showOnly />
+</DropdownMenuSubContent>
+```
+
+**Replacing an app's NestedFilterMenu.** `MultiSelect` takes its props:
+`selected` (= `value`), `label` (= `aria-label`), `summary`,
+`triggerClassName`, `probes` and `sizeTo`. `FilterItems` replaces
+`NestedFilterItems`. The `nestedfilter.ts` helpers are `filterLeaves`,
+`filterLeavesOf`, `filterFind`, `filterNormalize`, `filterTick`,
+`filterToggle`, `filterText` (summarize), `filterPickedNode`,
+`filterToParam`, `filterFromParam`. Delete the app's copies.
+
+**Trigger.** It reads the All label, the one picked label (a leaf or a whole
+group), "3 selected" for a flat list, or the picked parts for a tree
+("Humans + Bots: GPTBot"). `formatMany={n => `${n} markets`}` changes "N
+selected"; `summary` replaces the text. Its width is fixed to the longest of
+`sizeTo` (default: All, the top-level labels, "N selected" and "None") plus
+`probes`, so a pick never moves the bar. The `title` lists the selected
+labels. Chips and `maxChips` are gone.
 
 **Checkbox.** `Checkbox` (`checked`: `true` / `false` / `"mixed"`) is the
 kit's one checkbox. From 2.18 it ticks white on `--brand` (`--primary` when a
