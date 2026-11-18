@@ -284,6 +284,8 @@ export function buildDataset() {
         urls: [],
         integration_links: [],
         timezone: "Europe/Warsaw",
+        timezone_source: n % 2 === 0 ? "phone" : "address",
+        lead_suggestions_operation_id: n % 4 === 0 ? `lsop_${pad(n)}` : null,
         custom: customValues(
           [...customFields.contact, ...customFields.shared.slice(0, 4)],
           random,
@@ -353,7 +355,8 @@ export function buildDataset() {
       expected_value: n * 500,
       annualized_expected_value: n * 500,
       confidence: 50,
-      note: "",
+      note: n % 4 === 0 ? `Opportunity note ${pad(n)}` : "",
+      note_html: n % 4 === 0 ? `<p>Opportunity note ${pad(n)}</p>` : "",
       date_won: status.type === "won" ? closeTs(created + 5 * DAY) : null,
       date_lost: status.type === "lost" ? closeTs(created + 5 * DAY) : null,
       created_by_name: `User ${pad((n % 7) + 1)}`,

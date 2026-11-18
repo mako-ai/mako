@@ -9,6 +9,7 @@ import {
   ACTIVITY_SCHEMA_MAP,
   buildCloseSearchFieldSelection,
   closeActivitySearchFields,
+  WEBHOOK_ONLY_SEARCH_FIELDS,
   splitCloseSearchFieldSelection,
 } from "./schema";
 import {
@@ -1453,8 +1454,15 @@ async function testActivitySearchRequestsEverySchemaColumn() {
     if (entity === "activities:CustomActivity") {
       assert.ok(expected.includes("custom.cf_OnbStep9x"));
     }
-    const missing = [...expected].filter(c => !fullFields.includes(c));
+    const webhookOnly = WEBHOOK_ONLY_SEARCH_FIELDS[entity] ?? [];
+    const missing = [...expected].filter(
+      c => !fullFields.includes(c) && !webhookOnly.includes(c),
+    );
     assert.deepEqual(missing, [], `${entity}: schema columns not requested`);
+    for (const column of webhookOnly) {
+      assert.ok(column in schema!.fields, `${entity}: ${column} stays typed`);
+      assert.ok(!fullFields.includes(column), `${entity}: ${column} not read`);
+    }
     assert.deepEqual(
       fullFields.filter(f => !f.startsWith("custom.")),
       closeActivitySearchFields(entity),

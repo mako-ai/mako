@@ -32,3 +32,11 @@ Releases of `mako/close`. Not released yet: no tag, no registry entry.
   `ch_close`, 300 of 300 leads searched by `source` (100 each of `import`,
   `api`, `ui`) had the same `first_source`. The in-process connector does
   the same.
+- Search reads 3 more fields, as the workspace copy prod runs does:
+  opportunity `note_html`, contact `timezone_source` and contact
+  `lead_suggestions_operation_id`. `note_html` and
+  `lead_suggestions_operation_id` are new schema columns, in both
+  connectors. The in-process connector requests the same 3 fields.
+- Meeting `calendar_event_link` is webhook-only on Search. Close answers
+  it with null there, so a poll wrote null over the webhook value. The
+  column stays in the schema. Both connectors leave it out of `_fields`.
