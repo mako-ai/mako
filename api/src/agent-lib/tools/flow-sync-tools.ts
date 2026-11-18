@@ -654,7 +654,10 @@ export function createFlowSyncTools({
           let warning: string | undefined;
           if (
             isWebhookFlow(flow) &&
-            (!webhookOnBefore || !flow.webhookConfig?.secret)
+            (!webhookOnBefore ||
+              // Switched off by this call: pause the provider subscription.
+              !hasWebhookTrigger(flow) ||
+              !flow.webhookConfig?.secret)
           ) {
             // flow_update is owner/admin only (mayChange above).
             const sync = await syncFlowWebhookSubscription(flow, {

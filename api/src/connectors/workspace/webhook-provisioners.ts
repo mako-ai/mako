@@ -16,6 +16,7 @@
 import type Stripe from "stripe";
 import type {
   DeleteWebhookSubscriptionOptions,
+  PauseWebhookSubscriptionOptions,
   ProvisionWebhookOptions,
   ProvisionWebhookResult,
   UpdateWebhookSubscriptionOptions,
@@ -38,6 +39,11 @@ export interface WebhookProvisioner {
   ): Promise<ProvisionWebhookResult | null>;
   /** Remove every subscription on the URL; only where `canDelete`. */
   delete?(options: DeleteWebhookSubscriptionOptions): Promise<number>;
+  /**
+   * Pause or resume the subscription(s) on the URL; how many changed.
+   * Absent: the vendor's subscriptions cannot be paused from here.
+   */
+  setPaused?(options: PauseWebhookSubscriptionOptions): Promise<number>;
 }
 
 type ProvisionerFactory = (
@@ -53,6 +59,8 @@ interface ProvisionerEntry {
   canUpdate: boolean;
   /** Whether `delete` removes the subscriptions of a deleted flow. */
   canDelete?: boolean;
+  /** As the built-in connector's `supportsWebhookSubscriptionPause`. */
+  canPause?: boolean;
   /** As the built-in connector's `getWebhookCapabilities()`. */
   storesSecretAutomatically: boolean;
   secretHelpText?: string;
@@ -122,6 +130,7 @@ export function builtInProvisioningConfig(
 const PROVISIONERS: Record<string, ProvisionerEntry> = {
   close: {
     canUpdate: true,
+    canPause: true,
     storesSecretAutomatically: true,
     factory: async config => {
       const apiKey = apiKeyOf(config, "Close");
@@ -130,6 +139,7 @@ const PROVISIONERS: Record<string, ProvisionerEntry> = {
         adoptCloseWebhook,
         closeWebhookEventsForEntities,
         provisionCloseWebhook,
+        setCloseWebhookPaused,
       } = await import("../close/webhooks");
       const api = createCloseClient({
         apiKey,
@@ -142,6 +152,7 @@ const PROVISIONERS: Record<string, ProvisionerEntry> = {
           provisionCloseWebhook(api, options, closeWebhookEventsForEntities),
         update: options =>
           adoptCloseWebhook(api, options, closeWebhookEventsForEntities),
+        setPaused: options => setCloseWebhookPaused(api, options),
       };
     },
   },

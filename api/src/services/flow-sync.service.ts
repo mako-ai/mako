@@ -735,7 +735,9 @@ export async function syncFlowsFromRepo(
       if (
         isWebhookFlow(doc as IFlow) &&
         (flowEntitySignature(doc as IFlow) !== entitySignatureBefore ||
-          !webhookOnBefore)
+          !webhookOnBefore ||
+          // Switched off by this push: pause the provider subscription.
+          !hasWebhookTrigger(doc as IFlow))
       ) {
         webhookResyncs.push(doc as IFlow);
       }

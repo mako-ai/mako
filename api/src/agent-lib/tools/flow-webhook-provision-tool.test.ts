@@ -61,6 +61,7 @@ vi.mock("../../sync/connector-registry", () => ({
       supportsWebhooks: () => true,
       supportsWebhookProvisioning: () => true,
       supportsWebhookSubscriptionUpdate: () => state.canUpdate,
+      supportsWebhookSubscriptionPause: () => false,
       createWebhookSubscription: async ({
         endpointUrl,
       }: {
