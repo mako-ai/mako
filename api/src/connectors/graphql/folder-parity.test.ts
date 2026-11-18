@@ -461,6 +461,8 @@ void test("a host name that resolves to a private address is refused before any 
       "mapped.example.test": [{ address: "::ffff:169.254.169.254" }],
       "public.example.test": [{ address: "93.184.216.34" }, { address: "2606:2800::1" }],
       "loopback.example.test": [{ address: "127.0.0.1" }],
+      "localhost": [{ address: "::1" }, { address: "127.0.0.1" }],
+      "v6loop.example.test": [{ address: "0:0:0:0:0:0:0:1" }],
     };
     const out = {};
     for (const host of Object.keys(answers)) {
@@ -485,4 +487,7 @@ void test("a host name that resolves to a private address is refused before any 
   assert.match(out["mapped.example.test"], /resolves to a private/);
   assert.equal(out["public.example.test"], "allowed");
   assert.equal(out["loopback.example.test"], "allowed");
+  // IPv6 loopback is loopback, not the IPv4-compatible 0.0.0.1.
+  assert.equal(out["localhost"], "allowed");
+  assert.equal(out["v6loop.example.test"], "allowed");
 });

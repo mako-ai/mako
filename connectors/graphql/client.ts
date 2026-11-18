@@ -205,6 +205,9 @@ export function checkEndpoint(endpoint: string): URL {
 export function addressBlocked(address: string): boolean {
   const host = address.toLowerCase();
   if (!host.includes(":")) return v4Blocked(host);
+  const groups = v6Groups(host);
+  // ::1 is loopback, not the IPv4-compatible 0.0.0.1: it reaches only the box.
+  if (groups?.slice(0, 7).every(g => g === 0) && groups[7] === 1) return false;
   return (
     /^f[cd]/.test(host) ||
     /^fe[89ab]/.test(host) ||

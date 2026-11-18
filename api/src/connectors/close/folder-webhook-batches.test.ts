@@ -116,7 +116,13 @@ class BoxlessClose extends SandboxedConnector {
     options: Parameters<SandboxedConnector["run"]>[1],
   ): Promise<RunResult> {
     handed.push({ command, options });
-    return runFolder(command, { config: options.config, batch: options.batch });
+    // SandboxedConnector drops every `__` key a connection's config holds,
+    // so the test's local Close URL is added back here, where the box would be.
+    const baseUrl = (this.sourceConnection.config as any).__base_url;
+    return runFolder(command, {
+      config: options.config && { ...options.config, __base_url: baseUrl },
+      batch: options.batch,
+    });
   }
 }
 
