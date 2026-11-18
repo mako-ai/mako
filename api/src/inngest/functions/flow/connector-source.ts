@@ -20,6 +20,7 @@ import {
 } from "../../../sync-cdc/data-diff";
 import { resolveConfiguredEntities } from "../../../sync-cdc/entity-selection";
 import {
+  backfillCheckpointScope,
   cdcBackfillCheckpointService,
   syncMachineService,
 } from "../../../sync-cdc/sync-state";
@@ -181,7 +182,14 @@ export async function runConnectorSourceFlow(
         return cdcBackfillCheckpointService.listCompletedEntities({
           workspaceId: String(flow.workspaceId),
           flowId: String(flow._id),
-          runId,
+          scope: backfillCheckpointScope({
+            runId,
+            destinationId: String(flow.destinationDatabaseId),
+            tableDestination: flow.tableDestination as unknown as Record<
+              string,
+              unknown
+            >,
+          }),
         });
       },
     )) as string[];
@@ -471,7 +479,6 @@ async function finishCdcBackfill(
       await cdcBackfillCheckpointService.clearRun({
         workspaceId: String(flow.workspaceId),
         flowId: String(flow._id),
-        runId: cdcBackfillRunId,
       });
     }
   });

@@ -41,6 +41,8 @@ export default defineConfig({
       "src/sync/poll-anchor.test.ts",
       // Bulk backfill: every row lands once, through a failed staging load.
       "src/sync/bulk-flush-row-loss.test.ts",
+      // A checkpoint never runs ahead of the flushed rows; a new run starts fresh.
+      "src/sync/checkpoint-after-flush.test.ts",
       // A failed schema resolution never leads to a schema-less flush.
       "src/sync/schemaless-flush.test.ts",
       "src/utils/bigquery-emulator.test.ts",

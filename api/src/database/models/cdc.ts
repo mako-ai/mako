@@ -181,6 +181,11 @@ export interface ICdcEntityState extends Document {
   lastEnqueuedAt?: Date;
   mergeIntervalSeconds: number;
   backfillCursor?: Record<string, unknown>;
+  /**
+   * The backfill run and destination `backfillCursor` belongs to
+   * (backfillCheckpointScope). A cursor of another scope is never resumed.
+   */
+  backfillCursorScope?: string;
   consecutiveFailures: number;
   lastFailedAt?: Date;
   lastFailureError?: string;
@@ -226,6 +231,7 @@ const CdcEntityStateSchema = new Schema<ICdcEntityState>(
     lastEnqueuedAt: Date,
     mergeIntervalSeconds: { type: Number, default: 300 },
     backfillCursor: Schema.Types.Mixed,
+    backfillCursorScope: String,
     consecutiveFailures: { type: Number, default: 0 },
     lastFailedAt: Date,
     lastFailureError: String,

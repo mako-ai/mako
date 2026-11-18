@@ -5,6 +5,7 @@ import {
   performRescueAndPrepareStaging as performRescueAndPrepareStagingOrchestrated,
   performOverwriteTruncate as performOverwriteTruncateOrchestrated,
   getTempCollectionCount as getTempCollectionCountOrchestrated,
+  discardBulkBuffer as discardBulkBufferOrchestrated,
   performStagingMerge as performStagingMergeOrchestrated,
   performStagingCleanup as performStagingCleanupOrchestrated,
   SyncChunkOptions,
@@ -63,6 +64,13 @@ export function getTempCollectionCount(
   entity: string,
 ): Promise<number> {
   return getTempCollectionCountOrchestrated(flowId, entity);
+}
+
+export function discardBulkBuffer(
+  flowId: string,
+  entity: string,
+): Promise<number> {
+  return discardBulkBufferOrchestrated(flowId, entity);
 }
 
 export async function performStagingMerge(

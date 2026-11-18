@@ -781,11 +781,11 @@ async function performSyncChunkSql(
                 // Inngest retries it from the last saved state.
                 timeoutMS: BUFFER_WRITE_TIMEOUT_MS,
               });
-              runningRowsWritten += processedRecords.length;
+              // Buffered, not written: the caller adds the rows its flush
+              // merges into the destination (sync-entity.ts).
               logger?.log("info", "Buffered batch to MongoDB temp collection", {
                 entity,
                 fetchedCount: batch.length,
-                totalProcessed: runningRowsWritten,
                 writeMode: "bulk-buffer",
               });
               return;
@@ -838,7 +838,14 @@ async function performSyncChunkSql(
 
   const completed = !fetchState.hasMore;
 
-  if (completed) {
+  if (useBulkPath) {
+    // Bulk path: rows are in the buffer; the flush reports what it merged.
+    if (completed) progressReporter.reportComplete();
+    logger?.log(
+      "info",
+      `📊 ${entity} chunk buffered (${fetchState.totalProcessed} fetched so far)`,
+    );
+  } else if (completed) {
     progressReporter.reportComplete();
 
     const fetchWriteDelta = fetchState.totalProcessed - runningRowsWritten;
@@ -1526,6 +1533,22 @@ export async function performRescueAndPrepareStaging(
 // swallowing it would drop the staged rows.
 const STAGING_CONTAINER_MISSING =
   /not found: dataset|was not found in location/i;
+
+/**
+ * Empty an entity's flush buffer. sync-entity.ts saves a resume cursor only
+ * when the buffer is empty, so rows found here at the start of an invocation
+ * lie past the cursor (a cancelled or failed attempt) and are fetched again.
+ */
+export async function discardBulkBuffer(
+  flowId: string,
+  entity: string,
+): Promise<number> {
+  const { deletedCount } = await bulkBufferCollection(
+    flowId,
+    entity,
+  ).deleteMany({});
+  return deletedCount ?? 0;
+}
 
 export function getTempCollectionCount(
   flowId: string,
