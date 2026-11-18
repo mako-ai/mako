@@ -5,6 +5,15 @@ import {
 } from "../../driver";
 import { IDatabaseConnection } from "../../../database/workspace-schema";
 import { executeCheckedQuery } from "../../checked-query";
+import { CLICKHOUSE_INTERACTIVE_WAKE_TIMEOUT_MS } from "./config";
+
+/**
+ * Schema-tree and autocomplete reads hold the browser's request open: wait at
+ * most 60 s for a sleeping ClickHouse Cloud service, not the 10-min default.
+ */
+const INTERACTIVE = {
+  maxWakeTimeoutMs: CLICKHOUSE_INTERACTIVE_WAKE_TIMEOUT_MS,
+};
 import type { QueryExecuteOptions, QueryResult } from "../../query-types";
 import { clickHouseEngine } from "./engine";
 
@@ -32,7 +41,11 @@ export class ClickHouseDatabaseDriver implements DatabaseDriver {
     database: IDatabaseConnection,
   ): Promise<DatabaseTreeNode[]> {
     // List all databases in the ClickHouse server
-    const result = await executeCheckedQuery(database, "SHOW DATABASES");
+    const result = await executeCheckedQuery(
+      database,
+      "SHOW DATABASES",
+      INTERACTIVE,
+    );
 
     if (!result.success || !result.data) {
       return [];
@@ -74,6 +87,7 @@ export class ClickHouseDatabaseDriver implements DatabaseDriver {
          FROM system.tables 
          WHERE database = '${dbName.replace(/'/g, "''")}'
          ORDER BY name`,
+        INTERACTIVE,
       );
 
       if (!result.success || !result.data) {
@@ -106,6 +120,7 @@ export class ClickHouseDatabaseDriver implements DatabaseDriver {
          WHERE database = '${databaseName.replace(/'/g, "''")}' 
            AND table = '${tableName.replace(/'/g, "''")}'
          ORDER BY position`,
+        INTERACTIVE,
       );
 
       if (!result.success || !result.data) {
@@ -151,6 +166,7 @@ export class ClickHouseDatabaseDriver implements DatabaseDriver {
        FROM system.columns 
        WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')
        ORDER BY database, table, position`,
+      INTERACTIVE,
     );
 
     if (!result.success || !result.data) {

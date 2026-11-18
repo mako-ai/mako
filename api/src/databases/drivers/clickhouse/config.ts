@@ -5,6 +5,72 @@ export const CLICKHOUSE_MAX_RETRIES = 3;
 export const CLICKHOUSE_RETRY_BASE_DELAY_MS = 1000;
 
 /**
+ * Serverless ClickHouse (ClickHouse Cloud) idles after a few minutes and wakes
+ * on the next request, which takes 2 to 9 minutes (measured on 2026-11-18).
+ * A query sent while it wakes used to hit the 120 s request timeout and fail
+ * ("Timeout error."), so a scheduled binding build failed on most wakes.
+ *
+ * Before a query, Mako now sends `SELECT 1` until the server answers, for up
+ * to the connection's wake timeout: `wake_timeout_ms` on the connection, else
+ * 10 minutes for a `*.clickhouse.cloud` host, else 0 (the old 3 quick
+ * retries). Each attempt waits at most 30 s and the pause between attempts
+ * grows from 2 s to 30 s.
+ */
+export const CLICKHOUSE_WAKE_TIMEOUT_SETTING = "wake_timeout_ms";
+export const CLICKHOUSE_SERVERLESS_WAKE_TIMEOUT_MS = 10 * 60_000;
+export const CLICKHOUSE_WAKE_ATTEMPT_TIMEOUT_MS = 30_000;
+export const CLICKHOUSE_WAKE_BASE_DELAY_MS = 2_000;
+export const CLICKHOUSE_WAKE_MAX_DELAY_MS = 30_000;
+/**
+ * "Test connection" (and the verify-before-save on create and update) holds an
+ * HTTP request open while it waits, so it gets a short budget: a sleeping
+ * service usually answers within it, and a wrong host or a blocked IP fails in
+ * about a minute instead of hanging behind the proxy's own timeout.
+ */
+export const CLICKHOUSE_INTERACTIVE_WAKE_TIMEOUT_MS = 60_000;
+
+/**
+ * An error a sleeping ClickHouse Cloud service never produces: the hostname
+ * does not exist (ENOTFOUND). Waking cannot fix it, so the wake loop fails at
+ * once. EAI_AGAIN (the resolver did not answer in time) is temporary and stays
+ * retryable.
+ */
+export function isDnsLookupError(error: Error): boolean {
+  if ((error as NodeJS.ErrnoException).code === "ENOTFOUND") return true;
+  return /\bENOTFOUND\b/.test(error.message);
+}
+
+/** Whether a ClickHouse URL points at a serverless service that idles. */
+export function isServerlessClickHouseUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "clickhouse.cloud" || host.endsWith(".clickhouse.cloud");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * How long to keep waking the server before failing (0: do not wait).
+ * `wake_timeout_ms` on the connection wins; forms may store it as a string.
+ */
+export function resolveClickHouseWakeTimeoutMs(
+  database: IDatabaseConnection,
+  url: string,
+): number {
+  const raw = (database.connection as Record<string, unknown> | undefined)?.[
+    CLICKHOUSE_WAKE_TIMEOUT_SETTING
+  ];
+  if (raw !== null && raw !== undefined && String(raw).trim() !== "") {
+    const value = Number(raw);
+    if (Number.isFinite(value) && value >= 0) return Math.floor(value);
+  }
+  return isServerlessClickHouseUrl(url)
+    ? CLICKHOUSE_SERVERLESS_WAKE_TIMEOUT_MS
+    : 0;
+}
+
+/**
  * Parse a JDBC-style ClickHouse URL and return connection config
  * Supports formats:
  * - jdbc:clickhouse://host:port?user=default&password=xxx&ssl=true
