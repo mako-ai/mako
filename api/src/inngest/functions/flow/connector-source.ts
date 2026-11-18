@@ -14,6 +14,10 @@ import {
   markCdcBackfillCompletedForFlow,
   purgeSoftDeletesAfterBackfill,
 } from "../../../sync-cdc/backfill";
+import {
+  compareFlowDataDiff,
+  prepareFlowDataDiff,
+} from "../../../sync-cdc/data-diff";
 import { resolveConfiguredEntities } from "../../../sync-cdc/entity-selection";
 import {
   cdcBackfillCheckpointService,
@@ -249,6 +253,19 @@ export async function runConnectorSourceFlow(
     });
   }
 
+  // Data-diff baseline: a backfill, or a run whose connector, connector code
+  // or destination changed since the last one, records per-column non-null
+  // counts first (sync-cdc/data-diff.ts). Never fails the run.
+  await step.run("data-diff-baseline", () =>
+    withHeartbeat(executionId, () =>
+      prepareFlowDataDiff({
+        flowId: String(flowId),
+        entities: entitiesToSync,
+        backfill: isCdcBackfill,
+      }),
+    ),
+  );
+
   // Process each entity via fan-out to child functions.
   // Each child gets its own 1000-step Inngest budget.
   for (const entity of entitiesToSync) {
@@ -351,6 +368,18 @@ export async function runConnectorSourceFlow(
   if (isCdcBackfill) {
     await finishCdcBackfill(ctx, flow);
   }
+
+  // Data-diff comparison: counts again and flags columns that lost values,
+  // when a baseline is open. Never fails the run.
+  await step.run("data-diff-compare", () =>
+    withHeartbeat(executionId, async () => {
+      const diff = await compareFlowDataDiff({
+        flowId: String(flowId),
+        executionId,
+      });
+      return { compared: Boolean(diff), flagged: diff?.flagged.length ?? 0 };
+    }),
+  );
 
   await markFlowSucceeded(ctx, "connector-before-success-mark");
 

@@ -20,6 +20,7 @@ import {
   resolveConfiguredEntities,
 } from "../entity-selection";
 import { getCdcEventStore } from "../event-store";
+import { openFlowDataDiff } from "../data-diff";
 import { cdcLiveTableName, cdcStageTableName } from "../normalization";
 
 import { assertCanStartBackfill } from "./execution-guard";
@@ -193,6 +194,14 @@ export async function deleteDestinationTables(
   const schema = flow.tableDestination.schema;
   const stageSchema = driver.getStagingSchema?.(schema) ?? schema;
   const flowId = flow._id.toString();
+
+  // Count what the tables hold before they go, for the data-diff check the
+  // refilling backfill closes.
+  await openFlowDataDiff({
+    flow,
+    entities: enabledEntities,
+    reasons: ["resync"],
+  });
 
   const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
   for (const entity of enabledEntities) {

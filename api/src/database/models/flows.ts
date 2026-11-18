@@ -281,6 +281,18 @@ export interface IFlow extends Document {
     trigger?: "scheduled" | "manual";
   };
 
+  /**
+   * What the last run wrote with: the source connection, a hash of its
+   * connector code, and the destination tables. A change between two runs
+   * opens a data-diff check (sync-cdc/data-diff.ts). Runtime bookkeeping,
+   * never in the flow file.
+   */
+  dataDiffFingerprint?: {
+    source?: string;
+    code?: string;
+    destination?: string;
+  };
+
   lastRunAt?: Date;
   /**
    * When the poll scheduler last dispatched this flow (its atomic claim).
@@ -634,6 +646,11 @@ const FlowSchema = new Schema<IFlow>(
         entities: [String],
       },
       trigger: { type: String, enum: ["scheduled", "manual"] },
+    },
+    dataDiffFingerprint: {
+      source: String,
+      code: String,
+      destination: String,
     },
     lastRunAt: Date,
     lastScheduledDispatchAt: Date,

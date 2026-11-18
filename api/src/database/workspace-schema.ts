@@ -30,6 +30,7 @@ export * from "./models/query-runs";
 export * from "./models/notifications";
 export * from "./models/chats";
 export * from "./models/flows";
+export * from "./models/flow-data-diffs";
 export * from "./models/webhooks";
 export * from "./models/cdc";
 export * from "./models/notebooks";
