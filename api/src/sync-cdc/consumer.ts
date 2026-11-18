@@ -27,8 +27,41 @@ import { syncConnectorRegistry } from "../sync/connector-registry";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import type { ConnectorEntitySchema } from "../connectors/base/BaseConnector";
 import { ensureFlowDerivedCache } from "../services/flow-sync.service";
+import {
+  FLOW_PAUSED_CODE,
+  isWebhookPaused,
+} from "../services/flow-triggers.service";
 
 const log = loggers.sync("cdc.consumer");
+
+/**
+ * Marks a paused flow's pending webhook-sourced change events of one entity
+ * as dropped (FLOW_PAUSED), so materialization never applies them. Returns
+ * how many were parked.
+ */
+export async function parkPausedFlowWebhookEvents(params: {
+  flowId: string;
+  entity: string;
+}): Promise<number> {
+  const result = await CdcChangeEvent.updateMany(
+    {
+      flowId: new Types.ObjectId(params.flowId),
+      entity: params.entity,
+      sourceKind: "webhook",
+      materializationStatus: { $in: ["pending", "failed"] },
+    },
+    {
+      $set: {
+        materializationStatus: "dropped",
+        materializationError: {
+          code: FLOW_PAUSED_CODE,
+          message: "The flow's webhook is switched off; event parked",
+        },
+      },
+    },
+  );
+  return result.modifiedCount ?? 0;
+}
 
 export class CdcConsumerService {
   async materializeEntity(params: {
@@ -60,6 +93,23 @@ export class CdcConsumerService {
     }
     if (!flow.tableDestination?.connectionId) {
       return { skipped: true, reason: "missing table destination" as const };
+    }
+
+    // The apply step refuses webhook events of a paused flow, whatever lane
+    // or retry path queued them: they are parked as dropped before the read
+    // below. Backfill events still apply (an operator re-read is deliberate).
+    if (isWebhookPaused(flow)) {
+      const parked = await parkPausedFlowWebhookEvents({
+        flowId: params.flowId,
+        entity: params.entity,
+      });
+      if (parked > 0) {
+        log.warn("Parked webhook events of a paused flow", {
+          flowId: params.flowId,
+          entity: params.entity,
+          parked,
+        });
+      }
     }
 
     const destination = await DatabaseConnection.findOne(

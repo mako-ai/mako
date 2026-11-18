@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const FLOW_ID = "507f1f77bcf86cd799439011";
 
-const flowDoc = {
+const flowDoc: Record<string, unknown> = {
   _id: FLOW_ID,
   syncEngine: "cdc",
   streamState: "active",
@@ -33,7 +33,10 @@ vi.mock("../database/workspace-schema", () => ({
   CdcEntityState: {
     findOne: vi.fn(() => ({ lean: () => Promise.resolve(null) })),
   },
-  CdcChangeEvent: { countDocuments: vi.fn(() => Promise.resolve(0)) },
+  CdcChangeEvent: {
+    countDocuments: vi.fn(() => Promise.resolve(0)),
+    updateMany: vi.fn(() => Promise.resolve({ modifiedCount: 3 })),
+  },
   WebhookEvent: {},
 }));
 
@@ -63,6 +66,7 @@ vi.mock("./event-store", () => ({
 
 import { CdcConsumerService } from "./consumer";
 import { buildCdcEntityLayout } from "./adapters/registry";
+import { CdcChangeEvent } from "../database/workspace-schema";
 
 describe("CdcConsumerService.materializeEntity — writeMode propagation (bug B3)", () => {
   beforeEach(() => {
@@ -109,5 +113,51 @@ describe("CdcConsumerService.materializeEntity — writeMode propagation (bug B3
       spy.mockRestore();
     }
     flowDoc.writeMode = "append";
+  });
+});
+
+describe("CdcConsumerService.materializeEntity — paused flow", () => {
+  const updateMany = CdcChangeEvent.updateMany as unknown as ReturnType<
+    typeof vi.fn
+  >;
+  beforeEach(() => updateMany.mockClear());
+
+  it("parks the paused flow's pending webhook events before reading", async () => {
+    flowDoc.webhookConfig = { enabled: false };
+    try {
+      await new CdcConsumerService().materializeEntity({
+        workspaceId: "ws1",
+        flowId: FLOW_ID,
+        entity: "users",
+      });
+      expect(updateMany).toHaveBeenCalledTimes(1);
+      const [filter, update] = updateMany.mock.calls[0] as [any, any];
+      // Webhook events only: an operator's backfill of a paused flow applies.
+      expect(filter).toMatchObject({
+        entity: "users",
+        sourceKind: "webhook",
+        materializationStatus: { $in: ["pending", "failed"] },
+      });
+      expect(String(filter.flowId)).toBe(FLOW_ID);
+      expect(update.$set).toMatchObject({
+        materializationStatus: "dropped",
+        materializationError: { code: "FLOW_PAUSED" },
+      });
+    } finally {
+      delete flowDoc.webhookConfig;
+    }
+  });
+
+  it("parks nothing while the webhook is on, or when the flag was never set", async () => {
+    for (const webhookConfig of [{ enabled: true }, undefined]) {
+      flowDoc.webhookConfig = webhookConfig;
+      await new CdcConsumerService().materializeEntity({
+        workspaceId: "ws1",
+        flowId: FLOW_ID,
+        entity: "users",
+      });
+    }
+    delete flowDoc.webhookConfig;
+    expect(updateMany).not.toHaveBeenCalled();
   });
 });

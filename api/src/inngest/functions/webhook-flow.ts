@@ -23,6 +23,10 @@ import {
   resolveSourceTimestamp,
 } from "../../sync-cdc/normalization";
 import { cdcIngestService } from "../../sync-cdc/ingest";
+import {
+  FLOW_PAUSED_CODE,
+  isWebhookPaused,
+} from "../../services/flow-triggers.service";
 import { cdcConsumerService } from "../../sync-cdc/consumer";
 import { cdcBackfillService } from "../../sync-cdc/backfill";
 import { cleanupStalePendingCdcEvents } from "../../sync-cdc/cdc-stale-pending-cleanup";
@@ -663,6 +667,29 @@ export async function ingestPendingWebhookEvents(logger: {
       continue;
     }
     const flow: any = flowDoc.toObject();
+
+    // A paused flow (webhook switched off) applies none of its stored events.
+    // Without this, events parked as failed (ENRICH_DEFERRED keeps attempts
+    // uncounted) came back every 30 min through webhookRetryFunction and were
+    // replayed into a destination another flow now owns.
+    if (isWebhookPaused(flow)) {
+      await WebhookEvent.updateMany(
+        { _id: { $in: events.map(e => e._id) } },
+        {
+          $set: {
+            status: "completed",
+            applyStatus: "dropped",
+            processedAt: new Date(),
+            applyError: {
+              code: FLOW_PAUSED_CODE,
+              message: `Flow ${flowId} has its webhook switched off; stored events are not applied`,
+            },
+          },
+        },
+      );
+      totalDropped += events.length;
+      continue;
+    }
 
     const sourceConnection = await SourceConnection.findOne(
       inWorkspace(flow.dataSourceId, flow.workspaceId),

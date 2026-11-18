@@ -38,6 +38,10 @@ import { loggers } from "../../logging";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
 import { sourceConnectionManager } from "../../sync/database-data-source-manager";
 import { hasCdcDestinationAdapter } from "../../sync-cdc/adapters/registry";
+import {
+  FLOW_PAUSED_CODE,
+  isWebhookPaused,
+} from "../../services/flow-triggers.service";
 import { cdcIngestService } from "../../sync-cdc/ingest";
 import { normalizePayloadKeys } from "../../sync-cdc/normalization";
 import { isEntityEnabledForFlow } from "../../sync-cdc/entity-selection";
@@ -559,6 +563,18 @@ export async function processBoxWebhookBatch(input: {
       `Flow ${input.flowId} no longer exists`,
     );
     return emptyResult("stop", "flow not found");
+  }
+  if (isWebhookPaused(flow)) {
+    // Paused flow: its stored events are parked, not applied (see
+    // isWebhookPaused). Another flow may own the destination by now.
+    await endPending(
+      { flowId },
+      "completed",
+      "dropped",
+      FLOW_PAUSED_CODE,
+      `Flow ${input.flowId} has its webhook switched off; stored events are not applied`,
+    );
+    return emptyResult("stop", "flow webhook paused");
   }
   const [connection, database]: any[] = await Promise.all([
     // Scoped to the flow's workspace (flow-connection-scope.ts).

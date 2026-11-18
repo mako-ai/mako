@@ -7,6 +7,7 @@ import {
   deriveTriggerSet,
   hasAnyTrigger,
   hasWebhookTrigger,
+  isWebhookPaused,
   resolveDefaultSyncEngine,
 } from "./flow-triggers.service";
 
@@ -201,7 +202,23 @@ function testIsWebhookFlow() {
   );
 }
 
+function testIsWebhookPaused() {
+  // Only an explicit false pauses: a missing flag is Mongoose's default flow.
+  assert.equal(isWebhookPaused({ webhookConfig: { enabled: false } }), true);
+  assert.equal(
+    isWebhookPaused({
+      webhookConfig: { enabled: false, endpoint: "/api/webhooks/w/f" },
+    }),
+    true,
+  );
+  assert.equal(isWebhookPaused({ webhookConfig: { enabled: true } }), false);
+  assert.equal(isWebhookPaused({ webhookConfig: {} }), false);
+  assert.equal(isWebhookPaused({}), false);
+  assert.equal(isWebhookPaused({ webhookConfig: null }), false);
+}
+
 function main() {
+  testIsWebhookPaused();
   testIsWebhookFlow();
   testScheduledFlowTriggerSet();
   testWebhookFlowWithMongooseScheduleDefault();

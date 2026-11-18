@@ -419,6 +419,130 @@ describe("the inline cron", () => {
   });
 });
 
+describe("a paused flow (webhook switched off)", () => {
+  const logger = { info: () => {}, warn: () => {} };
+  const inline = (fid: Types.ObjectId, eventId: string, extra = {}) =>
+    WebhookEvent.create({
+      flowId: fid,
+      workspaceId: ws,
+      eventId,
+      eventType: "lead.updated",
+      status: "pending",
+      rawPayload: { data: { id: `lead_${eventId}` } },
+      ...extra,
+    });
+
+  it("parks its stored inline events instead of applying them", async () => {
+    await Flow.collection.updateOne(
+      { _id: flowId },
+      { $set: { "webhookConfig.enabled": false } },
+    );
+    const stored = await inline(flowId, "paused_inline");
+
+    const result = await ingestPendingWebhookEvents(logger);
+
+    expect(result.ingested).toBe(0);
+    expect(mocks.appendNormalizedEvents).not.toHaveBeenCalled();
+    expect(await WebhookEvent.findById(stored._id).lean()).toMatchObject({
+      status: "completed",
+      applyStatus: "dropped",
+      applyError: { code: "FLOW_PAUSED" },
+    });
+  });
+
+  it("ends the deferred-retry loop: a revived ENRICH_DEFERRED event is parked, not replayed", async () => {
+    await Flow.collection.updateOne(
+      { _id: flowId },
+      { $set: { "webhookConfig.enabled": false } },
+    );
+    // Parked as failed with the attempt uncounted, as ENRICH_DEFERRED does.
+    const deferred = await inline(flowId, "paused_deferred", {
+      status: "failed",
+      applyStatus: "pending",
+      attempts: 0,
+      applyError: { code: "ENRICH_DEFERRED", message: "budget" },
+    });
+
+    await retryFailedInlineWebhooks(logger);
+    expect((await WebhookEvent.findById(deferred._id).lean())?.status).toBe(
+      "pending",
+    );
+    await ingestPendingWebhookEvents(logger);
+
+    expect(mocks.appendNormalizedEvents).not.toHaveBeenCalled();
+    const after = await WebhookEvent.findById(deferred._id).lean();
+    expect(after).toMatchObject({
+      status: "completed",
+      applyStatus: "dropped",
+      applyError: { code: "FLOW_PAUSED" },
+    });
+    // A dropped event is terminal: the next retry pass leaves it alone.
+    await retryFailedInlineWebhooks(logger);
+    expect((await WebhookEvent.findById(deferred._id).lean())?.status).toBe(
+      "completed",
+    );
+  });
+
+  it("still applies another flow's events in the same pass", async () => {
+    await Flow.collection.updateOne(
+      { _id: flowId },
+      { $set: { "webhookConfig.enabled": false } },
+    );
+    const load = vi
+      .spyOn(sourceConnectionManager, "getSourceConnection")
+      .mockResolvedValue({ connection: { api_key: "k" } } as never);
+    const build = vi
+      .spyOn(connectorRegistry, "getConnectorFor")
+      .mockReturnValue({
+        getWebhookEventMapping: () => ({ entity: "leads" }),
+        extractWebhookCdcRecords: (raw: any) => [
+          {
+            entity: "leads",
+            recordId: raw.data.id,
+            operation: "upsert",
+            payload: { id: raw.data.id },
+          },
+        ],
+        enrichWebhookCdcRecords: async (records: unknown[]) => records,
+      } as never);
+    try {
+      await inline(flowId, "paused_one");
+      await inline(otherFlowId, "live_one");
+      await ingestPendingWebhookEvents(logger);
+      const appended = mocks.appendNormalizedEvents.mock.calls.map(
+        ([call]) => call.flowId,
+      );
+      expect(appended).toEqual([String(otherFlowId)]);
+    } finally {
+      load.mockRestore();
+      build.mockRestore();
+    }
+  });
+
+  it("parks its box-lane events without starting a box", async () => {
+    await Flow.collection.updateOne(
+      { _id: flowId },
+      { $set: { "webhookConfig.enabled": false } },
+    );
+    const stored = await boxEvent();
+    const runner = fakeRunner(events => ok(events.map(e => leadOutcome(e))));
+
+    const result = await processBoxWebhookBatch({
+      flowId: String(flowId),
+      runner: runner.factory,
+    });
+
+    expect(result.reason).toBe("flow webhook paused");
+    expect(runner.calls).toHaveLength(0);
+    expect(mocks.appendNormalizedEvents).not.toHaveBeenCalled();
+    expect(await WebhookEvent.findById(stored._id).lean()).toMatchObject({
+      status: "completed",
+      applyStatus: "dropped",
+      applyError: { code: "FLOW_PAUSED" },
+    });
+  });
+});
+
 describe("a batch", () => {
   it("hands the box one flow's events for its own connection, and writes their records", async () => {
     const mine = [await boxEvent(), await boxEvent()];
