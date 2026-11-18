@@ -55,6 +55,7 @@ import {
   type WorkflowRun,
   type WorkflowRunSummary,
 } from "../store/workflowsStore";
+import { useConsoleStore } from "../store/consoleStore";
 import { useUIStore } from "../store/uiStore";
 import { formatDuration, formatUsd } from "../utils/format";
 import { formatRelativeTimeCompact } from "../utils/relative-time";
@@ -275,9 +276,13 @@ function RunDialog({
 function RunsView({
   workspaceId,
   workflowId,
+  tabId,
+  runId,
 }: {
   workspaceId: string;
   workflowId: string;
+  tabId: string;
+  runId?: string;
 }) {
   const overview = useWorkflowsStore(s => s.overviewByWorkspace[workspaceId]);
   const fetchOverview = useWorkflowsStore(s => s.fetchOverview);
@@ -299,7 +304,12 @@ function RunsView({
   const setTriggers = useWorkflowsStore(s => s.setTriggers);
   const retry = useWorkflowsStore(s => s.retry);
 
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  // The selected run lives on the tab, not here: it is part of the tab's URL
+  // (/workflows/:id/runs/:runId), so a run can be linked and survives reload.
+  const selectedRunId = runId ?? null;
+  const updateMetadata = useConsoleStore(s => s.updateMetadata);
+  const setSelectedRunId = (next: string | null) =>
+    updateMetadata(tabId, { workflowId, ...(next && { runId: next }) });
   // The last sandbox run: shown in place of a selected run until one is
   // picked. It is in no list (it ran in the viewer's own sandbox).
   const [sandboxRunId, setSandboxRunId] = useState<string | null>(null);
@@ -337,7 +347,10 @@ function RunsView({
     [ownRuns, overview?.recentRuns, workflowId],
   );
   const selectedSummary: WorkflowRunSummary | undefined =
-    sandboxRun ?? runs.find(run => run.runId === selectedRunId);
+    sandboxRun ??
+    runs.find(run => run.runId === selectedRunId) ??
+    // A linked run older than the recent list: its own fetch describes it.
+    (listedRun?.workflowId === workflowId ? listedRun : undefined);
   const selectedStatus = selectedRun?.status ?? selectedSummary?.status;
   const hasActive = runs.some(run => isActiveRun(run.status));
 
@@ -1180,10 +1193,14 @@ function formatInput(input: string | undefined): string {
 }
 
 export default function WorkflowView({
+  tabId,
   workflowId,
+  runId,
   path,
 }: {
+  tabId: string;
   workflowId?: string;
+  runId?: string;
   path?: string;
 }) {
   const { currentWorkspace } = useWorkspace();
@@ -1191,7 +1208,14 @@ export default function WorkflowView({
   if (!workspaceId) return null;
   if (path) return <FileView workspaceId={workspaceId} path={path} />;
   if (workflowId) {
-    return <RunsView workspaceId={workspaceId} workflowId={workflowId} />;
+    return (
+      <RunsView
+        workspaceId={workspaceId}
+        workflowId={workflowId}
+        tabId={tabId}
+        runId={runId}
+      />
+    );
   }
   return null;
 }

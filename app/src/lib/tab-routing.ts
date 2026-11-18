@@ -73,8 +73,12 @@ export const TAB_DEEP_LINK_PATTERNS = {
   "dbt-runs": /^\/x\/([a-zA-Z0-9-]+)\/runs\/?$/,
   "dbt-console": /^\/x\/([a-zA-Z0-9-]+)\/?$/,
   notebook: /^\/n\/([a-zA-Z0-9-]+)\/?$/,
-  // No deep link yet: a workflow tab is reopened from the explorer.
-  workflow: null,
+  // A workflow is /workflows/:id (its runs) or /workflows/:id/runs/:runId
+  // (one run). A file under workflows/ has its own prefix: a workflow can be
+  // named anything, "file" included, so no segment under /workflows is free.
+  // Groups: 1 workflow id, 2 run id, 3 file path.
+  workflow:
+    /^\/workflows\/([^/?#]+)(?:\/runs\/([^/?#]+))?\/?$|^\/workflow-files\/(.+)$/,
 } as const satisfies Record<NonNullable<TabKind>, RegExp | null>;
 
 /**
@@ -175,8 +179,16 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
       const notebookId = tab.metadata?.notebookId as string | undefined;
       return notebookId ? `/n/${notebookId}` : null;
     }
-    case "workflow":
-      return null;
+    case "workflow": {
+      const workflowId = tab.metadata?.workflowId as string | undefined;
+      const runId = tab.metadata?.runId as string | undefined;
+      const path = tab.metadata?.path as string | undefined;
+      if (workflowId) {
+        const base = `/workflows/${encodeURIComponent(workflowId)}`;
+        return runId ? `${base}/runs/${encodeURIComponent(runId)}` : base;
+      }
+      return path ? `/workflow-files/${encodePathSegments(path)}` : null;
+    }
     default: {
       // Compile-time exhaustiveness: a new TabKind must be handled above.
       const exhaustivenessCheck: never = kind;
