@@ -117,24 +117,44 @@ export function dependencyPlan(
 }
 
 /**
- * Does a folder that passed {@link dependencyPlan} as `npm` install anything?
+ * Does a folder that passed {@link dependencyPlan} as `npm` declare or install
+ * anything?
  *
- * A lockfile whose only entry is the root package installs nothing, so a
- * build would only re-wrap the entry. Such a folder runs its TypeScript entry
- * as it did before bundles existed, flag or not. That keeps a folder that
- * ships `package.json` for its peer dependency on the SDK alone (Close, for
- * one) on the path it already runs on when bundles are turned on.
+ * True when `package.json` (or the lockfile's root entry) declares a
+ * non-empty `dependencies` or `optionalDependencies`, or when the lockfile
+ * installs any package. A folder that ships `package.json` for its peer
+ * dependency on the SDK alone (Close, for one) declares and installs nothing,
+ * so it runs its TypeScript entry as it did before bundles existed, flag or
+ * not. A stale lockfile next to declared dependencies still counts, so it
+ * reaches `npm ci` and is refused there with the fix.
  */
 export function hasDependencies(
   files: ReadonlyMap<string, Uint8Array>,
 ): boolean {
+  const declares = (value: unknown): boolean => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return false;
+    }
+    const record = value as Record<string, unknown>;
+    return ["dependencies", "optionalDependencies"].some(key => {
+      const deps = record[key];
+      return (
+        !!deps &&
+        typeof deps === "object" &&
+        Object.keys(deps as object).length > 0
+      );
+    });
+  };
+  const manifest = parseJsonObject(files.get(PACKAGE_JSON), PACKAGE_JSON);
+  if (typeof manifest === "string" || declares(manifest)) return true;
   const lock = parseJsonObject(files.get(LOCKFILE), LOCKFILE);
   if (typeof lock === "string") return true;
   const packages = lock.packages;
   if (!packages || typeof packages !== "object" || Array.isArray(packages)) {
     return true;
   }
-  return Object.keys(packages).some(key => key !== "");
+  const entries = packages as Record<string, unknown>;
+  return declares(entries[""]) || Object.keys(entries).some(key => key !== "");
 }
 
 function parseJsonObject(

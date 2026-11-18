@@ -456,6 +456,29 @@ describe("the flag", () => {
       expect(hasDependencies(peerOnly)).toBe(false);
       expect(shouldBundle("node", peerOnly)).toBe(false);
       expect(hasDependencies(folder())).toBe(true);
+      // Declared dependencies with a stale lockfile still build, so npm ci
+      // refuses the mismatch with its own message instead of a missing import.
+      const stale = folder({
+        "package.json": '{"dependencies":{"stripe":"14.0.0"}}',
+        "package-lock.json": JSON.stringify({
+          name: "acme",
+          lockfileVersion: 3,
+          requires: true,
+          packages: { "": { name: "acme" } },
+        }),
+      });
+      expect(hasDependencies(stale)).toBe(true);
+      expect(shouldBundle("node", stale)).toBe(true);
+      const optional = folder({
+        "package.json": '{"optionalDependencies":{"fsevents":"2.3.3"}}',
+        "package-lock.json": JSON.stringify({
+          name: "acme",
+          lockfileVersion: 3,
+          requires: true,
+          packages: { "": { name: "acme" } },
+        }),
+      });
+      expect(hasDependencies(optional)).toBe(true);
     } finally {
       if (before === undefined) delete process.env[CONNECTOR_BUNDLES_FLAG];
       else process.env[CONNECTOR_BUNDLES_FLAG] = before;

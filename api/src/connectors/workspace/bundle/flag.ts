@@ -6,6 +6,9 @@
  * as it stands, and a `package.json` in the folder is just another file. On, a
  * folder carrying `package.json` plus `package-lock.json` is built into one
  * `.mjs` per source hash.
+ * A folder whose `package.json` declares no `dependencies` or
+ * `optionalDependencies` and whose lockfile installs nothing (for example,
+ * only a peer dependency on the SDK) also runs without a build.
  *
  * The `node_modules/` guard is not behind this flag: the push reconciler
  * refuses a folder that commits `node_modules/` either way.

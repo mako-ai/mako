@@ -211,6 +211,7 @@ connectors/acme/
 - `@makoai/connector-sdk` is never bundled. The sandbox provides it, at the
   version the hash was computed with.
 - A folder without `package.json` runs exactly as before: no build step.
+- A folder whose `package.json` declares no `dependencies` or `optionalDependencies` and whose lockfile installs nothing (for example, only a peer dependency on the SDK) also runs without a build.
 
 This is behind the `CONNECTOR_BUNDLES_ENABLED` flag while it is rolled out.
 With the flag off, a `package.json` in the folder is just a file and only the
