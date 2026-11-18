@@ -21,8 +21,6 @@ import { databaseConnectionService } from "../../services/database-connection.se
 import { queryExecutionService } from "../../services/query-execution.service";
 import { sqlReadOnlyAccessError } from "../../services/read-only-query.service";
 import { findTopLevelKeyword } from "../../services/sql-query-utils";
-import { AGENT_BIGQUERY_MAX_BYTES_BILLED } from "../../config/long-running-queries";
-import { describeBytesBilledCap } from "../../databases/drivers/bigquery/errors";
 import type { QueryAccess } from "../../auth/api-key-scopes";
 import type { AgentToolExecutionContext } from "../../agents/types";
 import type { ConsoleDataV2 } from "../types";
@@ -1214,14 +1212,10 @@ export async function executeQueryImpl(
   const { database, dialect, databaseName, options } = target;
 
   const safeQuery = appendLimitIfMissing(query, dialect);
-  // A read on BigQuery may bill at most the agent's byte cap. A write by
-  // someone on the writers list is not capped.
-  const bytesCap =
-    dialect === "bigquery" &&
-    AGENT_BIGQUERY_MAX_BYTES_BILLED > 0 &&
-    !isWrite(database.type, query)
-      ? AGENT_BIGQUERY_MAX_BYTES_BILLED
-      : undefined;
+  // The BigQuery engine caps every agent job's bytes and run time
+  // (bigquery/agent-caps.ts). A write by someone on the writers list is not
+  // byte-capped: 0 turns that cap off for this job.
+  const uncapBytes = dialect === "bigquery" && isWrite(database.type, query);
 
   const { executionId, signal, release } = registerAgentExecution(
     toolExecutionContext,
@@ -1242,20 +1236,11 @@ export async function executeQueryImpl(
             executionId: registeredExecutionId,
             signal,
             readOnly: target.readOnly,
-            ...(bytesCap ? { maximumBytesBilled: bytesCap } : {}),
+            ...(uncapBytes ? { maximumBytesBilled: 0 } : {}),
           },
         ),
       { signal, timeoutMs },
     );
-    // BigQuery refused the job for its size: say what to change.
-    const overCap = bytesCap
-      ? describeBytesBilledCap(
-          result?.success ? undefined : result?.error,
-          bytesCap,
-        )
-      : null;
-    if (overCap && result) result.error = overCap;
-
     // Track successful/error query execution (fire-and-forget)
     if (userId) {
       trackSqlExecution({

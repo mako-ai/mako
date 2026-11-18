@@ -101,5 +101,45 @@ export function describeBytesBilledCap(
     Number.isFinite(required) && required > 0
       ? `would bill ${formatBytes(required)}`
       : "would bill more";
-  return `This query ${scan} on BigQuery, over the ${formatBytes(capBytes)} cap on agent and MCP queries, so it did not run and cost nothing. Read fewer bytes: filter on the table's partition column, select only the columns you need, or narrow the date range. For a query that has to read this much, use a console (create_console, run_console): consoles are not capped. An operator can change the cap with AGENT_BIGQUERY_MAX_BYTES_BILLED.`;
+  return `This query ${scan} on BigQuery, over the ${formatBytes(capBytes)} maximumBytesBilled cap on agent and MCP queries, so it did not run and cost nothing. Read fewer bytes: filter on the table's partition column, select only the columns you need, or narrow the date range. To raise the cap, set "agent_max_bytes_billed_gb" on this BigQuery connection (0 turns it off); the default for every connection is AGENT_BIGQUERY_MAX_BYTES_BILLED.`;
+}
+
+function formatDuration(ms: number): string {
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 120) return `${seconds} s`;
+  const minutes = Number((seconds / 60).toFixed(1));
+  return `${minutes} min`;
+}
+
+/**
+ * BigQuery's cancellation of a job past its `jobTimeoutMs`, reworded; null
+ * for any other error. Mako's own "Query timed out after" (its poll gave up)
+ * is not this and is left alone.
+ */
+export function describeJobTimeoutCap(
+  error: string | undefined,
+  timeoutMs: number,
+): string | null {
+  if (
+    !error ||
+    !/job timed out|exceeded the maximum execution time|jobTimeoutMs/i.test(
+      error,
+    )
+  ) {
+    return null;
+  }
+  return `BigQuery cancelled this query after ${formatDuration(timeoutMs)}, the jobTimeoutMs cap on agent and MCP queries, so it stopped holding warehouse slots. Make it cheaper: filter on the table's partition column, aggregate earlier, or narrow the date range. To raise the cap, set "agent_job_timeout_ms" on this BigQuery connection (0 turns it off); the default for every connection is AGENT_BIGQUERY_JOB_TIMEOUT_MS.`;
+}
+
+/** Either cap's rewording for a failed agent job, or null. */
+export function describeAgentCapError(
+  error: string | undefined,
+  caps: { jobTimeoutMs?: number; maximumBytesBilled?: number },
+): string | null {
+  return (
+    (caps.maximumBytesBilled
+      ? describeBytesBilledCap(error, caps.maximumBytesBilled)
+      : null) ??
+    (caps.jobTimeoutMs ? describeJobTimeoutCap(error, caps.jobTimeoutMs) : null)
+  );
 }
