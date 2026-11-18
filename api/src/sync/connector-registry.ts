@@ -256,7 +256,17 @@ class SyncConnectorRegistry {
       // A deleted built-in: the same connection, run as its registry twin.
       const Twin = registryTwinClass(connection.type);
       const connector = new Twin(asSourceConnection(connection));
-      await connector.loadDefinition();
+      try {
+        await connector.loadDefinition();
+      } catch (error) {
+        // The catalog answers stay the built-in's; a run asks again and
+        // fails with this reason.
+        logger.warn("Built-in twin definition unavailable", {
+          type: connection.type,
+          workspaceId: connection.workspaceId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       return connector;
     }
 

@@ -10,6 +10,10 @@
  * the definition comes from differs (./resolve.ts).
  */
 import type { ISourceConnection } from "../../database/workspace-schema";
+import type {
+  IncrementalCapabilities,
+  WebhookCapabilities,
+} from "../base/BaseConnector";
 import { SandboxedConnector } from "../workspace/SandboxedConnector";
 import type { LoadedConnector } from "../workspace/resolver";
 import { BUILTIN_TWIN_CATALOG } from "./builtin-catalog";
@@ -87,13 +91,29 @@ export class RegistryTwinConnector extends SandboxedConnector {
   }
 
   /**
-   * Before the definition loads, answer with the entities the built-in
-   * declared, so a synchronous caller never sees an empty connector.
+   * Before the definition loads (or when it cannot: no folder and no
+   * registry), answer with what the built-in declared, so a catalog or form
+   * never sees an empty connector. A run still needs the definition and
+   * fails with its reason.
    */
   override getAvailableEntities(): string[] {
     return this.loaded
       ? super.getAvailableEntities()
       : [...BUILTIN_TWIN_CATALOG[this.builtinType].metadata.supportedEntities];
+  }
+
+  override getIncrementalCapabilities(): IncrementalCapabilities {
+    if (this.loaded) return super.getIncrementalCapabilities();
+    return structuredClone(
+      BUILTIN_TWIN_CATALOG[this.builtinType].incremental,
+    ) as IncrementalCapabilities;
+  }
+
+  override getWebhookCapabilities(): WebhookCapabilities {
+    if (this.loaded) return super.getWebhookCapabilities();
+    return structuredClone(
+      BUILTIN_TWIN_CATALOG[this.builtinType].webhook,
+    ) as WebhookCapabilities;
   }
 
   override getMetadata(): ReturnType<SandboxedConnector["getMetadata"]> {

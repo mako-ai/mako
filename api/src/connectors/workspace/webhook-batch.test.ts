@@ -953,8 +953,8 @@ describe("a batch", () => {
     await SourceConnection.collection.insertOne({
       _id: inProcess,
       workspaceId: ws,
-      name: "PL Close",
-      type: "close",
+      name: "PL REST",
+      type: "rest",
       config: {},
     });
     await Flow.collection.updateOne(
@@ -979,7 +979,9 @@ describe("a batch", () => {
   it("drops the events of a flow whose connection became an in-process connector", async () => {
     await SourceConnection.collection.updateOne(
       { _id: conn },
-      { $set: { type: "close" } },
+      // `rest` is in-process. `close` is not any more: it runs its
+      // registry twin in a box (connectors/twins), so its events stay.
+      { $set: { type: "rest" } },
     );
     const e = await boxEvent();
     const result = await processBoxWebhookBatch({

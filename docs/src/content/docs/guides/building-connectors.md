@@ -16,7 +16,7 @@ This separation allows reusing the same connection credentials for multiple tran
 
 ## Structure
 
-In-process connectors live in `api/src/connectors/<source-name>`. New vendor connectors should be connector folders instead (see [Workspace-Authored Connectors](#workspace-authored-connectors)): Stripe, Close, Claap, Calendly, PandaDoc, Wise and PostHog moved out of the API to `connectors/<slug>/` and the registry. Each in-process connector must have:
+In-process connectors live in `api/src/connectors/<source-name>`. New vendor connectors should be connector folders instead (see [Workspace-Authored Connectors](#workspace-authored-connectors)): Stripe, Close, Claap, Calendly, PandaDoc, Wise, PostHog, GraphQL and BigQuery moved out of the API to `connectors/<slug>/` and the registry. Each in-process connector must have:
 
 1.  `connector.ts`: The implementation extending `BaseConnector`.
 2.  `index.ts`: Exports the connector and metadata.

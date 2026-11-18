@@ -612,4 +612,215 @@ export const BUILTIN_TWIN_CATALOG = {
       ],
     },
   },
+  graphql: {
+    className: "GraphQLConnector",
+    metadata: {
+      name: "GraphQL",
+      version: "1.0.0",
+      description: "Generic GraphQL API connector",
+      supportedEntities: [],
+    },
+    webhook: {
+      supported: false,
+      provisioning: {
+        supported: false,
+        providerLabel: "GraphQL",
+        storesSecretAutomatically: false,
+      },
+      secretHelpText: "Enter the webhook signing secret from your provider",
+    },
+    incremental: {
+      supported: true,
+      mode: "client-filter",
+      warning:
+        "Incremental client-filters on updated_at/updatedAt/modified_at. Add a $since variable to your GraphQL query for server-side filtering; queries without $since still paginate the full result set.",
+    },
+    configSchema: {
+      fields: [
+        {
+          name: "endpoint",
+          label: "GraphQL Endpoint URL",
+          type: "string",
+          required: true,
+          placeholder: "https://api.example.com/graphql",
+          helperText: "The GraphQL endpoint URL (not encrypted)",
+        },
+        {
+          name: "headers",
+          label: "Custom Headers (JSON)",
+          type: "textarea",
+          required: false,
+          rows: 6,
+          encrypted: true,
+          placeholder:
+            '{\n  "Authorization": "Bearer your-token-here",\n  "X-API-Key": "your-api-key",\n  "x-hasura-admin-secret": "your-hasura-secret",\n  "X-Custom-Header": "custom-value"\n}',
+          helperText:
+            "Authentication and custom headers as JSON (encrypted when saved)",
+        },
+      ],
+      transferQueries: {
+        label: "GraphQL Queries",
+        required: true,
+        fields: [
+          {
+            name: "name",
+            label: "Entity Name",
+            type: "string",
+            required: true,
+            placeholder: "items",
+            helperText: "Name for this entity (used for collection naming)",
+          },
+          {
+            name: "query",
+            label: "GraphQL Query",
+            type: "textarea",
+            required: true,
+            rows: 8,
+            placeholder:
+              "query GetData($limit: Int!, $offset: Int!) {\n  items(limit: $limit, offset: $offset) {\n    id\n    name\n    created_at\n  }\n}",
+            helperText:
+              "Your GraphQL query with pagination support ($limit/$offset or $first/$after)",
+          },
+          {
+            name: "data_path",
+            label: "Data Path",
+            type: "string",
+            required: true,
+            placeholder: "data.items",
+            helperText: "JSONPath to the data array in the response",
+          },
+          {
+            name: "total_count_path",
+            label: "Total Count Path",
+            type: "string",
+            required: false,
+            placeholder: "data.items_aggregate.aggregate.count",
+            helperText: "JSONPath to total count (for progress tracking)",
+          },
+          {
+            name: "has_next_page_path",
+            label: "Has Next Page Path",
+            type: "string",
+            required: false,
+            placeholder: "data.items.pageInfo.hasNextPage",
+            helperText: "JSONPath for cursor-based pagination (optional)",
+          },
+          {
+            name: "cursor_path",
+            label: "Cursor Path",
+            type: "string",
+            required: false,
+            placeholder: "data.items.pageInfo.endCursor",
+            helperText: "JSONPath for next cursor value (optional)",
+          },
+          {
+            name: "batch_size",
+            label: "Batch Size",
+            type: "number",
+            required: false,
+            default: 100,
+            placeholder: "100",
+            helperText: "Number of records per request",
+          },
+        ],
+      },
+    },
+  },
+  bigquery: {
+    className: "BigQueryConnector",
+    metadata: {
+      name: "BigQuery",
+      version: "1.0.0",
+      description: "Connector for Google BigQuery (REST API, service account)",
+      supportedEntities: [],
+    },
+    webhook: {
+      supported: false,
+      provisioning: {
+        supported: false,
+        providerLabel: "BigQuery",
+        storesSecretAutomatically: false,
+      },
+      secretHelpText: "Enter the webhook signing secret from your provider",
+    },
+    incremental: {
+      supported: false,
+      mode: "none",
+    },
+    configSchema: {
+      fields: [
+        {
+          name: "service_account_json",
+          label: "Google Service Account JSON",
+          type: "textarea",
+          required: true,
+          rows: 10,
+          encrypted: true,
+          placeholder:
+            '{\n  "type": "service_account",\n  "project_id": "your-project",\n  "private_key_id": "...",\n  "private_key": "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n",\n  "client_email": "svc@project.iam.gserviceaccount.com",\n  "token_uri": "https://oauth2.googleapis.com/token"\n}',
+          helperText:
+            "Paste the full service account JSON. It will be stored encrypted.",
+        },
+        {
+          name: "project_id",
+          label: "Project ID",
+          type: "string",
+          required: true,
+        },
+        {
+          name: "location",
+          label: "Location (optional)",
+          type: "string",
+          required: false,
+          placeholder: "US",
+        },
+        {
+          name: "api_base_url",
+          label: "API Base URL",
+          type: "string",
+          required: false,
+          default: "https://bigquery.googleapis.com",
+        },
+        {
+          name: "queries",
+          label: "SQL Queries",
+          type: "object_array",
+          required: true,
+          itemFields: [
+            {
+              name: "name",
+              label: "Entity Name",
+              type: "string",
+              required: true,
+              placeholder: "events_7d",
+              helperText: "Name used as entity and collection name",
+            },
+            {
+              name: "query",
+              label: "SQL Query",
+              type: "textarea",
+              required: true,
+              rows: 12,
+              placeholder:
+                "SELECT * FROM `project.dataset.table` WHERE _PARTITIONTIME > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)",
+            },
+            {
+              name: "use_legacy_sql",
+              label: "Use Legacy SQL",
+              type: "checkbox",
+              required: false,
+              default: false,
+            },
+            {
+              name: "batch_size",
+              label: "Batch Size (maxResults)",
+              type: "number",
+              required: false,
+              default: 1000,
+            },
+          ],
+        },
+      ],
+    },
+  },
 } satisfies Record<string, BuiltinTwinEntry>;

@@ -75,7 +75,7 @@ connectors/
 
 ### Built-in types without in-process code (registry twins)
 
-Close, Stripe, PandaDoc, Claap, PostHog, Wise and Calendly have no code in
+Close, Stripe, PandaDoc, Claap, PostHog, Wise, Calendly, GraphQL and BigQuery have no code in
 the API any more. Their code is the folder in Mako's `connectors/<slug>/`,
 published to the connector registry as `mako/<slug>`. A connection stored
 with the bare type (`close`, …) keeps that type. Both registries resolve it

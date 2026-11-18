@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import { RestConnector } from "./rest/connector";
-import { GraphQLConnector } from "./graphql/connector";
-import { BigQueryConnector } from "./bigquery/connector";
 import { GcsConnector } from "./gcs/connector";
 import {
   type IncrementalCapabilities,
@@ -74,26 +72,6 @@ const connectors: Array<{
         id: "ds_rest",
         name: "REST",
         type: "rest",
-        config: {},
-      } as any).getIncrementalCapabilities(),
-  },
-  {
-    label: "graphql",
-    capabilities: () =>
-      new GraphQLConnector({
-        id: "ds_graphql",
-        name: "GraphQL",
-        type: "graphql",
-        config: {},
-      } as any).getIncrementalCapabilities(),
-  },
-  {
-    label: "bigquery",
-    capabilities: () =>
-      new BigQueryConnector({
-        id: "ds_bigquery",
-        name: "BigQuery",
-        type: "bigquery",
         config: {},
       } as any).getIncrementalCapabilities(),
   },

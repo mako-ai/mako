@@ -52,9 +52,11 @@ const SECRETS: Record<string, string[]> = {
   posthog: ["api_key"],
   wise: ["api_key", "sca_private_key"],
   calendly: ["access_token"],
+  graphql: ["headers"],
+  bigquery: ["service_account_json"],
 };
 
-void test("the seven deleted types are twins, and nothing else is", () => {
+void test("the nine deleted types are twins, and nothing else is", () => {
   assert.deepEqual([...BUILTIN_TWIN_TYPES].sort(), Object.keys(SECRETS).sort());
   for (const type of [
     "rest",
@@ -91,6 +93,14 @@ void test("the API registry lists each type and builds its twin", async () => {
     assert.deepEqual(
       connector.getAvailableEntities(),
       BUILTIN_TWIN_CATALOG[type].metadata.supportedEntities,
+    );
+    assert.deepEqual(
+      connector.getIncrementalCapabilities(),
+      BUILTIN_TWIN_CATALOG[type].incremental,
+    );
+    assert.deepEqual(
+      connector.getWebhookCapabilities(),
+      BUILTIN_TWIN_CATALOG[type].webhook,
     );
   }
 });
