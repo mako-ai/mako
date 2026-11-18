@@ -28,8 +28,9 @@ const INFRA_FAILURE_PATTERNS: RegExp[] = [
   /No connector box for this connection after \d+ s/,
   /A new connector box did not answer its first ping/,
   // The worker died: a revision swap, a crash or an instance shutdown.
+  // No bare "SIGTERM" pattern: Mako never writes it into a run error, so
+  // that word only reaches here from a connector's own message or stderr.
   /Flow execution abandoned due to worker crash or timeout/,
-  /\bSIGTERM\b/,
 ];
 
 /** Is this failure the platform's, so it must not use up a resume attempt? */
@@ -62,4 +63,22 @@ export function infraResumeDue(
   return (
     now.getTime() - new Date(at).getTime() >= infraResumeBackoffMs(failures)
   );
+}
+
+/**
+ * The platform-failure streak a restarted backfill keeps. A resume of the
+ * same run (runId reused) keeps it, so the backoff grows 1, 2, 4 … 30 min.
+ * A new run starts at zero.
+ */
+export function carriedInfraBackoff(
+  state:
+    | { infraFailures?: number | null; lastInfraFailureAt?: Date | null }
+    | undefined,
+  reusedRunId: boolean,
+): { infraFailures: number; lastInfraFailureAt?: Date } {
+  if (!reusedRunId) return { infraFailures: 0 };
+  return {
+    infraFailures: state?.infraFailures ?? 0,
+    lastInfraFailureAt: state?.lastInfraFailureAt ?? undefined,
+  };
 }

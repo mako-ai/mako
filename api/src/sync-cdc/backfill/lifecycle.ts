@@ -6,6 +6,7 @@ import * as crypto from "crypto";
 import { Types } from "mongoose";
 import { Flow, FlowExecution } from "../../database/workspace-schema";
 import { inngest } from "../../inngest/client";
+import { carriedInfraBackoff } from "../../inngest/functions/flow/infra-failure";
 import { loggers } from "../../logging";
 import { normalizeEntityList } from "../entity-selection";
 import { getCdcEventStore } from "../event-store";
@@ -111,12 +112,14 @@ export async function startBackfill(
       ? "scheduled"
       : "manual");
   const now = new Date();
+  const infraBackoff = carriedInfraBackoff(flow.backfillState, reusedRunId);
   flow.backfillState = {
     status: "running",
     runId,
     startedAt: reusedRunId ? flow.backfillState?.startedAt || now : now,
     completedAt: undefined,
     consecutiveFailures: previousFailures,
+    ...infraBackoff,
     scope: {
       mode: effectiveScope.length > 0 ? "subset" : "all",
       entities: effectiveScope,

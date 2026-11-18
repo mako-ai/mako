@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  carriedInfraBackoff,
   infraResumeBackoffMs,
   infraResumeDue,
   isInfrastructureFailure,
@@ -20,7 +21,6 @@ const platform = [
   "No connector box for this connection after 120 s. 4 runs are waiting.",
   "A new connector box did not answer its first ping.",
   "Flow execution abandoned due to worker crash or timeout",
-  "Process received SIGTERM",
 ];
 for (const message of platform) {
   assert.equal(isInfrastructureFailure(message), true, message);
@@ -34,6 +34,9 @@ const connector = [
   "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'lodash' imported from /var/lib/mako-connectors/runs/r1/connectors/acme@abc/connector.ts",
   "The connector timed out.",
   "TypeError: Cannot read properties of undefined (reading 'id')",
+  // Mako never writes SIGTERM into a run error; this text is the connector's.
+  "Error: exited with signal SIGTERM",
+  "Process received SIGTERM",
   "",
 ];
 for (const message of connector) {
@@ -82,6 +85,29 @@ assert.ok(
 assert.deepEqual(backfillFailureUpdate("HTTP 401 Unauthorized"), {
   $inc: { "backfillState.consecutiveFailures": 1 },
   $set: { "backfillState.infraFailures": 0 },
+});
+
+// A resume of the same run keeps the streak, so the backoff keeps growing.
+const lastAt = new Date("2026-11-18T10:58:00Z");
+assert.deepEqual(
+  carriedInfraBackoff({ infraFailures: 3, lastInfraFailureAt: lastAt }, true),
+  { infraFailures: 3, lastInfraFailureAt: lastAt },
+);
+assert.equal(
+  infraResumeDue(
+    carriedInfraBackoff({ infraFailures: 3, lastInfraFailureAt: lastAt }, true),
+    now,
+  ),
+  false,
+);
+// A new run starts the streak at zero.
+assert.deepEqual(
+  carriedInfraBackoff({ infraFailures: 3, lastInfraFailureAt: lastAt }, false),
+  { infraFailures: 0 },
+);
+assert.deepEqual(carriedInfraBackoff(undefined, true), {
+  infraFailures: 0,
+  lastInfraFailureAt: undefined,
 });
 
 console.info("infra-failure tests passed");
