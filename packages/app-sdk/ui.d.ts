@@ -482,3 +482,6 @@ export function csvDate(date: Date): string;
 export function csvToTsv(text: string): string;
 /** Download CSV text as a file. Works inside Mako's app frame. */
 export function saveCsv(filename: string, text: string): "downloaded" | "failed";
+
+export { formatDate, formatTime, toDayKey, toInstant } from "./index";
+export type { FormatDateOptions, FormatTimeOptions, TimeValue } from "./index";

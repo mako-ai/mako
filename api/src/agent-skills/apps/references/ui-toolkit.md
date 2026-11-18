@@ -238,3 +238,17 @@ unpkg/CDN, move styles to Tailwind utilities, and replace hand-rolled
 popovers/segmented controls with shadcn `Popover` / `Tabs`. Keep custom SVG
 charts if they are good — restyle their HTML tooltips with utilities. Then
 `pnpm exec tsc -b && pnpm build` must both pass.
+
+## shadcn components and times (SDK 2.21)
+
+- Stock shadcn comes from `@makoai/app-sdk/components` (Badge, Button,
+  Card, Dialog, Input, Popover, Separator, Skeleton, Tabs, Tooltip,
+  DropdownMenu, Checkbox) and `@makoai/app-sdk/menu` (FilterMenu). The app's
+  CSS imports `@makoai/app-sdk/tailwind.css` after Tailwind. Never write a
+  `src/components/ui/` copy; never re-implement a component's hover,
+  keyboard or focus behaviour.
+- Instants: `formatTime(value)`, viewer's zone with its label. Day buckets:
+  `formatDate(day)`, never shifted. Keys: `toDayKey(value)`. No `getUTC*`,
+  `timeZone: "UTC"` or `toISOString().slice` in display code.
+- `npx mako-app-lint` in the app folder checks both rules before a commit.
+

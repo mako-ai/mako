@@ -432,3 +432,41 @@ export function hostShortcutFor(event: {
   altKey: boolean;
   shiftKey: boolean;
 }): "mod+k" | null;
+
+// ---------------------------------------------------------------------------
+// Times and dates (2.21): instants in the viewer's zone, day buckets unshifted
+// ---------------------------------------------------------------------------
+
+/** A time value an app may hold: a Date, epoch ms, epoch µs (bigint), an ISO string, or a zone-less "YYYY-MM-DD[ hh:mm[:ss]]" read as UTC. */
+export type TimeValue = Date | number | bigint | string | null | undefined;
+
+/** Any time value as a Date; null when empty or unparsable. A zone-less string is UTC (DuckDB runs in UTC). */
+export function toInstant(value: TimeValue): Date | null;
+
+/** The UTC calendar day, "YYYY-MM-DD": the key for URL state, joins and maps. Null when unparsable. */
+export function toDayKey(value: TimeValue): string | null;
+
+export interface FormatTimeOptions {
+  /** "auto" (default): the date only when it is not today in the viewer's zone. */
+  date?: boolean | "auto";
+  seconds?: boolean;
+  /** Append the zone's short name ("CET"). Default true. */
+  zoneName?: boolean;
+  locale?: string;
+  /** The viewer's zone by default. Set it only for tests or an explicit "as seen from" view. */
+  timeZone?: string;
+  now?: Date;
+}
+/** An instant in the viewer's zone with its zone label: "14:05 CET", "18 Nov, 14:05 CET". "—" for null. */
+export function formatTime(value: TimeValue, opts?: FormatTimeOptions): string;
+
+export interface FormatDateOptions {
+  /** "auto" (default): the year only when it is not the current year. */
+  year?: boolean | "auto";
+  weekday?: false | "short" | "long";
+  month?: "short" | "long" | "numeric";
+  locale?: string;
+  now?: Date;
+}
+/** A calendar day printed with no zone shift: "18 Nov 2026". "—" for null. */
+export function formatDate(value: TimeValue, opts?: FormatDateOptions): string;
