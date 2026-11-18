@@ -5,6 +5,7 @@
 import axios, { AxiosInstance } from "axios";
 import {
   WebhookEnrichmentRetryError,
+  type PauseWebhookSubscriptionOptions,
   type ProvisionWebhookOptions,
   type ProvisionWebhookResult,
   type WebhookEventMapping,
@@ -632,6 +633,60 @@ export async function adoptCloseWebhook(
     endpointUrl: options.endpointUrl,
     signingSecret,
   };
+}
+
+/**
+ * Pause or resume the Close webhook(s) on `options.endpointUrl`
+ * (`PUT /webhook/<id>/ { status }`). Close retries a refused delivery for
+ * up to 72 hours, so a flow that stopped taking deliveries must stop them
+ * here, not at its receiver. Matches by URL, as adoption does, plus the
+ * stored id; a subscription already in the wanted state is left alone.
+ * Resolves to how many changed.
+ */
+export async function setCloseWebhookPaused(
+  api: AxiosInstance,
+  options: PauseWebhookSubscriptionOptions,
+): Promise<number> {
+  const wanted = options.paused ? "paused" : "active";
+  let list: Array<Record<string, unknown>>;
+  try {
+    const response = await api.get("/webhook/");
+    list = Array.isArray(response?.data)
+      ? response.data
+      : Array.isArray(response?.data?.data)
+        ? response.data.data
+        : [];
+  } catch (error) {
+    throw new Error(
+      `Failed to list Close webhook subscriptions: ${describeProvisioningError(error)}`,
+      { cause: error },
+    );
+  }
+  // Only subscriptions on this flow's own URL: a stored id that now points
+  // elsewhere is someone else's subscription.
+  const targets = list.filter(
+    item =>
+      (item?.url === options.endpointUrl ||
+        item?.endpoint === options.endpointUrl) &&
+      webhookIdOf(item) &&
+      item.status !== wanted,
+  );
+  for (const item of targets) {
+    const webhookId = String(webhookIdOf(item));
+    try {
+      await api.put(`/webhook/${webhookId}/`, { status: wanted });
+    } catch (error) {
+      throw new Error(
+        `Failed to set Close webhook ${webhookId} to ${wanted}: ${describeProvisioningError(error)}`,
+        { cause: error },
+      );
+    }
+    logger.info("Close webhook subscription status set", {
+      webhookId,
+      status: wanted,
+    });
+  }
+  return targets.length;
 }
 
 /**

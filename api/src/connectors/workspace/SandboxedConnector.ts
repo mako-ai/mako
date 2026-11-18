@@ -24,6 +24,7 @@ import {
   type FetchState,
   type IncrementalCapabilities,
   type DeleteWebhookSubscriptionOptions,
+  type PauseWebhookSubscriptionOptions,
   type ProvisionWebhookOptions,
   type ProvisionWebhookResult,
   type ResumableFetchOptions,
@@ -1496,6 +1497,20 @@ export class SandboxedConnector extends BaseConnector {
     options: UpdateWebhookSubscriptionOptions,
   ): Promise<ProvisionWebhookResult | null> {
     return (await this.webhookProvisioner()).update(options);
+  }
+
+  supportsWebhookSubscriptionPause(): boolean {
+    return (
+      this.supportsWebhookProvisioning() &&
+      webhookProvisionerTraits(this.slug)?.canPause === true
+    );
+  }
+
+  async setWebhookSubscriptionPaused(
+    options: PauseWebhookSubscriptionOptions,
+  ): Promise<number> {
+    const provisioner = await this.webhookProvisioner();
+    return provisioner.setPaused ? provisioner.setPaused(options) : 0;
   }
 
   /** Refused unless the flag is on and the folder declares a scheme Mako runs. */

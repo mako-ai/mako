@@ -18,6 +18,13 @@
  * when none exists, so saving twice never makes a duplicate. Connectors that
  * cannot look one up keep the explicit "Create in …" button.
  *
+ * And it pauses: a flow whose webhook trigger is switched off answers 403,
+ * and a provider that is still subscribed keeps sending (Close retries each
+ * refused event for 72 hours). Where the connector can
+ * (`supportsWebhookSubscriptionPause`), switching the trigger off pauses the
+ * subscription at the provider and switching it on resumes it. The
+ * subscription and its signing secret are kept.
+ *
  * Best-effort by design: a provider outage or a revoked key must not fail a
  * flow save or a repo push. Every outcome is returned and logged; a refused
  * provisioning is also stored on the flow (`webhookConfig.provisionError`).
@@ -41,6 +48,8 @@ const logger = loggers.api("flow-webhook-subscription");
 export type FlowWebhookSubscriptionSyncResult =
   | { status: "updated"; providerWebhookId: string }
   | { status: "provisioned"; providerWebhookId: string; adopted: boolean }
+  /** The trigger is off: `count` provider subscriptions were paused. */
+  | { status: "paused"; count: number }
   | { status: "skipped"; reason: string }
   | { status: "not_found" }
   | { status: "failed"; error: string };
@@ -75,7 +84,7 @@ export async function syncFlowWebhookSubscription(
   if (!isWebhookFlow(flow)) {
     return { status: "skipped", reason: "not a webhook flow" };
   }
-  if (!webhook?.enabled || !webhook.endpoint) {
+  if (!webhook?.endpoint) {
     return { status: "skipped", reason: "webhook trigger off" };
   }
   if (!flow.dataSourceId) {
@@ -91,6 +100,44 @@ export async function syncFlowWebhookSubscription(
       return { status: "skipped", reason: "connector not found" };
     }
     const connector = await syncConnectorRegistry.getConnectorFor(source);
+
+    // Trigger off: the receiver refuses every delivery from now on, so stop
+    // them at the provider. Only an explicit `false`: a flow that never had
+    // the field is not "switched off".
+    if (webhook.enabled !== true) {
+      if (
+        webhook.enabled !== false ||
+        !connector?.supportsWebhookSubscriptionPause()
+      ) {
+        return { status: "skipped", reason: "webhook trigger off" };
+      }
+      const count = await connector.setWebhookSubscriptionPaused({
+        endpointUrl: webhook.endpoint,
+        providerWebhookId: webhook.providerWebhookId,
+        paused: true,
+      });
+      logger.info("Provider webhook subscription paused with its trigger", {
+        flowId: String(flow._id),
+        count,
+      });
+      return { status: "paused", count };
+    }
+
+    // Trigger on: a subscription paused by the branch above (or by the
+    // provider, after days of refused deliveries) must deliver again.
+    if (webhook.secret && connector?.supportsWebhookSubscriptionPause()) {
+      const resumed = await connector.setWebhookSubscriptionPaused({
+        endpointUrl: webhook.endpoint,
+        providerWebhookId: webhook.providerWebhookId,
+        paused: false,
+      });
+      if (resumed > 0) {
+        logger.info("Provider webhook subscription resumed with its trigger", {
+          flowId: String(flow._id),
+          count: resumed,
+        });
+      }
+    }
     if (!connector?.supportsWebhookSubscriptionUpdate()) {
       // Close, PandaDoc, Calendly, Claap…: provisioned only by the explicit
       // button, never on save (they cannot find a subscription by URL, so a

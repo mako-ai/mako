@@ -53,6 +53,8 @@ function stubProvider(
     create: (options: UpdateCall) => Promise<unknown>;
     creates: UpdateCall[];
   },
+  /** Absent: the connector cannot pause (as Stripe, Wise). */
+  pause?: { calls: UpdateCall[]; changed?: number; error?: Error },
 ) {
   const calls: UpdateCall[] = [];
   const persisted: unknown[] = [];
@@ -64,6 +66,13 @@ function stubProvider(
   (syncConnectorRegistry as any).getConnectorFor = async () => ({
     supportsWebhookSubscriptionUpdate: () => supportsUpdate,
     supportsWebhookProvisioning: () => Boolean(provision),
+    supportsWebhookSubscriptionPause: () => Boolean(pause),
+    setWebhookSubscriptionPaused: async (options: UpdateCall) => {
+      if (!pause) throw new Error("must not be called");
+      pause.calls.push(options);
+      if (pause.error) throw pause.error;
+      return pause.changed ?? 1;
+    },
     updateWebhookSubscription: async (options: UpdateCall) => {
       calls.push(options);
       return update(options);
@@ -583,6 +592,102 @@ async function testConnectionLookupsAreScopedToTheWorkspace() {
   assert.equal(lookups.length, 0);
 }
 
+/**
+ * A flow whose trigger is off answers 403 to every delivery. A provider
+ * that can be paused is paused, so it stops sending (Close would retry each
+ * refused event for 72 hours); the subscription itself is kept.
+ */
+async function testTriggerOffPausesTheProviderSubscription() {
+  const pause = { calls: [] as UpdateCall[] };
+  const { calls } = stubProvider(
+    async () => {
+      throw new Error("must not be called");
+    },
+    true,
+    undefined,
+    pause,
+  );
+  const off = webhookFlow({
+    webhookConfig: {
+      endpoint: ENDPOINT,
+      secret: "whsec_existing",
+      providerWebhookId: "whsub_1",
+      enabled: false,
+    },
+  });
+  assert.deepEqual(await syncFlowWebhookSubscription(off), {
+    status: "paused",
+    count: 1,
+  });
+  assert.deepEqual(pause.calls, [
+    { endpointUrl: ENDPOINT, providerWebhookId: "whsub_1", paused: true },
+  ]);
+  // Paused, not retargeted: the events are left as they were.
+  assert.equal(calls.length, 0);
+
+  // A provider error is reported, never thrown: the save already happened.
+  stubProvider(async () => null, true, undefined, {
+    calls: [],
+    error: new Error("Close is down"),
+  });
+  assert.deepEqual(await syncFlowWebhookSubscription(off), {
+    status: "failed",
+    error: "Close is down",
+  });
+}
+
+async function testTriggerOffIsLeftAloneWhenItCannotBePaused() {
+  // No endpoint at all: never a webhook flow's subscription to touch.
+  const pause = { calls: [] as UpdateCall[] };
+  stubProvider(async () => null, true, undefined, pause);
+  // `enabled` missing is not "switched off".
+  assert.deepEqual(
+    await syncFlowWebhookSubscription(
+      webhookFlow({ webhookConfig: { endpoint: ENDPOINT, secret: "x" } }),
+    ),
+    { status: "skipped", reason: "webhook trigger off" },
+  );
+  assert.equal(pause.calls.length, 0);
+
+  // A connector without pause (Stripe, Wise): skipped as before.
+  stubProvider(async () => {
+    throw new Error("must not be called");
+  });
+  assert.deepEqual(
+    await syncFlowWebhookSubscription(
+      webhookFlow({
+        webhookConfig: { endpoint: ENDPOINT, secret: "x", enabled: false },
+      }),
+    ),
+    { status: "skipped", reason: "webhook trigger off" },
+  );
+}
+
+async function testTriggerOnResumesBeforeRetargeting() {
+  const pause = { calls: [] as UpdateCall[] };
+  const { calls } = stubProvider(
+    async () => ({ providerWebhookId: "we_old", endpointUrl: ENDPOINT }),
+    true,
+    undefined,
+    pause,
+  );
+  const result = await syncFlowWebhookSubscription(webhookFlow(), OWNER);
+  assert.equal(result.status, "updated");
+  assert.deepEqual(pause.calls, [
+    { endpointUrl: ENDPOINT, providerWebhookId: "we_old", paused: false },
+  ]);
+  assert.equal(calls.length, 1);
+
+  // Never provisioned (no secret): nothing of ours to resume.
+  pause.calls.length = 0;
+  await syncFlowWebhookSubscription(
+    webhookFlow({
+      webhookConfig: { endpoint: ENDPOINT, secret: "", enabled: true },
+    }),
+  );
+  assert.equal(pause.calls.length, 0);
+}
+
 async function main() {
   testEntitySignatureIgnoresOrderAndDisabled();
   await testScheduledFlowWithWebhooksOnIsSynced();
@@ -591,6 +696,9 @@ async function main() {
   await testProvisioningRefusalIsStored();
   await testConnectorsWithoutLookupAreNeverProvisionedOnSave();
   await testSkipsFlowsThatWereNeverProvisioned();
+  await testTriggerOffPausesTheProviderSubscription();
+  await testTriggerOffIsLeftAloneWhenItCannotBePaused();
+  await testTriggerOnResumesBeforeRetargeting();
   await testNewIdIsCommittedToTheFlowFileThenIndexed();
   await testFailedCommitLeavesIndexUntouched();
   await testUnchangedIdIsNotRewritten();

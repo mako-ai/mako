@@ -812,6 +812,8 @@ export async function finishFlowUpdate(params: {
     isWebhookFlow(flow) &&
     (flowEntitySignature(flow) !== entitySignatureBefore ||
       !webhookOnBefore ||
+      // Switched off by this save: pause the provider subscription.
+      !hasWebhookTrigger(flow) ||
       !flow.webhookConfig?.secret)
   ) {
     const webhookSync = await syncFlowWebhookSubscription(flow, {

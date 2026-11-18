@@ -21,6 +21,7 @@ import {
   WebhookEventMapping,
   EntityMetadata,
   NormalizedCdcRecord,
+  PauseWebhookSubscriptionOptions,
   ProvisionWebhookOptions,
   ProvisionWebhookResult,
   type WebhookCapabilities,
@@ -62,6 +63,7 @@ import {
   extractCloseWebhookData,
   fillCloseWebhookPartialRecords,
   provisionCloseWebhook,
+  setCloseWebhookPaused,
   verifyCloseWebhook,
 } from "./webhooks";
 
@@ -430,6 +432,16 @@ export class CloseConnector extends BaseConnector {
     return provisionCloseWebhook(this.getCloseClient(), options, entities =>
       this.getWebhookEventsForEntities(entities),
     );
+  }
+
+  supportsWebhookSubscriptionPause(): boolean {
+    return true;
+  }
+
+  async setWebhookSubscriptionPaused(
+    options: PauseWebhookSubscriptionOptions,
+  ): Promise<number> {
+    return setCloseWebhookPaused(this.getCloseClient(), options);
   }
 
   /**

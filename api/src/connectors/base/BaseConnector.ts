@@ -113,6 +113,15 @@ export interface DeleteWebhookSubscriptionOptions {
   providerWebhookId?: string;
 }
 
+export interface PauseWebhookSubscriptionOptions {
+  /** The flow's inbound URL: every provider subscription POSTing to it. */
+  endpointUrl: string;
+  /** Id stored from an earlier provisioning, when known. */
+  providerWebhookId?: string;
+  /** True stops deliveries at the provider, false starts them again. */
+  paused: boolean;
+}
+
 export interface ProvisionWebhookResult {
   providerWebhookId: string;
   endpointUrl: string;
@@ -503,6 +512,29 @@ export abstract class BaseConnector {
    */
   async deleteWebhookSubscription(
     _options: DeleteWebhookSubscriptionOptions,
+  ): Promise<number> {
+    return 0;
+  }
+
+  /**
+   * Whether `setWebhookSubscriptionPaused` can stop and restart deliveries
+   * at the provider without removing the subscription.
+   */
+  supportsWebhookSubscriptionPause(): boolean {
+    return false;
+  }
+
+  /**
+   * Pause or resume every provider-side subscription that delivers to
+   * `options.endpointUrl`. A flow whose webhook trigger is off answers 403,
+   * and a provider that keeps sending retries each event for days: pausing
+   * stops it at the source and keeps the subscription (and its signing
+   * secret) for when the trigger goes back on. Resolves to how many
+   * subscriptions changed state (0 when none existed or all were already
+   * there).
+   */
+  async setWebhookSubscriptionPaused(
+    _options: PauseWebhookSubscriptionOptions,
   ): Promise<number> {
     return 0;
   }

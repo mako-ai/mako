@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import type { AxiosInstance } from "axios";
-import { adoptCloseWebhook } from "../close/webhooks";
+import { adoptCloseWebhook, setCloseWebhookPaused } from "../close/webhooks";
 import { SandboxedConnector } from "./SandboxedConnector";
 import {
   builtInProvisioningConfig,
@@ -23,6 +23,7 @@ const events = () => ["lead.created", "lead.updated"];
 /** A Close API stand-in: records calls, serves one webhook list. */
 function fakeClose(list: Array<Record<string, unknown>>, putError?: Error) {
   const calls: string[] = [];
+  const bodies: unknown[] = [];
   const api = {
     get: async (path: string) => {
       calls.push(`GET ${path}`);
@@ -30,8 +31,9 @@ function fakeClose(list: Array<Record<string, unknown>>, putError?: Error) {
       const found = list.find(w => path === `/webhook/${String(w.id)}/`);
       return { data: found ?? {} };
     },
-    put: async (path: string) => {
+    put: async (path: string, body?: unknown) => {
       calls.push(`PUT ${path}`);
+      bodies.push(body);
       if (putError) throw putError;
       return { data: {} };
     },
@@ -40,8 +42,63 @@ function fakeClose(list: Array<Record<string, unknown>>, putError?: Error) {
       return { data: { id: "whsub_new", signature_key: "a".repeat(64) } };
     },
   };
-  return { api: api as unknown as AxiosInstance, calls };
+  return { api: api as unknown as AxiosInstance, calls, bodies };
 }
+
+void test("pause sets only the Close webhooks on the flow's URL, and only when they are not paused yet", async () => {
+  const { api, calls, bodies } = fakeClose([
+    { id: "whsub_other", url: "https://elsewhere.test/hook", status: "active" },
+    { id: "whsub_a", url: URL_A, status: "active" },
+    { id: "whsub_dup", endpoint: URL_A, status: "active" },
+    { id: "whsub_done", url: URL_A, status: "paused" },
+  ]);
+  const changed = await setCloseWebhookPaused(api, {
+    endpointUrl: URL_A,
+    // A stored id never widens the match beyond the URL.
+    providerWebhookId: "whsub_other",
+    paused: true,
+  });
+  assert.equal(changed, 2);
+  assert.deepEqual(calls, [
+    "GET /webhook/",
+    "PUT /webhook/whsub_a/",
+    "PUT /webhook/whsub_dup/",
+  ]);
+  assert.deepEqual(bodies, [{ status: "paused" }, { status: "paused" }]);
+});
+
+void test("resume reactivates a paused Close webhook and leaves an active one alone", async () => {
+  const paused = fakeClose([{ id: "whsub_a", url: URL_A, status: "paused" }]);
+  assert.equal(
+    await setCloseWebhookPaused(paused.api, {
+      endpointUrl: URL_A,
+      paused: false,
+    }),
+    1,
+  );
+  assert.deepEqual(paused.bodies, [{ status: "active" }]);
+
+  const active = fakeClose([{ id: "whsub_a", url: URL_A, status: "active" }]);
+  assert.equal(
+    await setCloseWebhookPaused(active.api, {
+      endpointUrl: URL_A,
+      paused: false,
+    }),
+    0,
+  );
+  assert.deepEqual(active.calls, ["GET /webhook/"]);
+});
+
+void test("pause fails, with the reason, when Close refuses the status change", async () => {
+  const { api } = fakeClose(
+    [{ id: "whsub_a", url: URL_A, status: "active" }],
+    new Error("403 forbidden"),
+  );
+  await assert.rejects(
+    () => setCloseWebhookPaused(api, { endpointUrl: URL_A, paused: true }),
+    /whsub_a to paused: 403 forbidden/,
+  );
+});
 
 void test("adopt returns null when no Close webhook targets the URL", async () => {
   const { api, calls } = fakeClose([
