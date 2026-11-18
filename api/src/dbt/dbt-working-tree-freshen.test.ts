@@ -45,6 +45,7 @@ import {
 } from "../apps/repository.service";
 import {
   DbtSaveNotMirroredError,
+  DbtTreeFilesSkippedError,
   listWorkingFiles,
   loadWorkingTreeContents,
   readWorkingFile,
@@ -146,7 +147,7 @@ describe("dbt working tree behind its mirror", () => {
       (await readWorkingFile(project, USER, "models/orders.sql"))?.content,
     ).toBe("select 2\n");
     const tree = await loadWorkingTreeContents(project, {});
-    expect(tree.map(f => f.path)).toContain("models/orders.sql");
+    expect(tree.files.map(f => f.path)).toContain("models/orders.sql");
   });
 
   it("keeps a save made while this instance was behind", async () => {
@@ -226,5 +227,64 @@ describe("dbt working tree behind its mirror", () => {
     ).stdout.trim();
 
     expect(await resolveWorkingTreeCommit(project, {})).toBe(mirrorHead);
+  });
+});
+
+describe("dbt working tree files the loader cannot load", () => {
+  it("loads an 8 MB seed under the default cap", async () => {
+    const seed = "id,name\n" + "1,abcdefghij\n".repeat(700_000);
+    await initRepo(remoteDir, {
+      "dbt/dbt_project.yml": "name: a\n",
+      "dbt/seeds/big.csv": seed,
+    });
+    await ensureLocalRepo(WS.toString());
+    const project = await seedProject();
+    const tree = await loadWorkingTreeContents(project, {});
+    expect(tree.warnings).toEqual([]);
+    expect(tree.files.find(f => f.path === "seeds/big.csv")?.content).toBe(
+      seed,
+    );
+  });
+
+  it("fails on a seed over the cap, naming it", async () => {
+    await initRepo(remoteDir, {
+      "dbt/dbt_project.yml": "name: a\n",
+      "dbt/seeds/big.csv": "x".repeat(200),
+    });
+    await ensureLocalRepo(WS.toString());
+    const project = await seedProject();
+    await expect(
+      loadWorkingTreeContents(project, { maxFileBytes: 100 }),
+    ).rejects.toThrow(
+      /dbt\/seeds\/big\.csv \(200 B\) is over the 100 B per-file limit/,
+    );
+    await expect(
+      loadWorkingTreeContents(project, { maxFileBytes: 100 }),
+    ).rejects.toBeInstanceOf(DbtTreeFilesSkippedError);
+  });
+
+  it("warns on a NUL-byte asset dbt does not read", async () => {
+    await initRepo(remoteDir, {
+      "dbt/dbt_project.yml": "name: a\n",
+      "dbt/assets/logo.png": "png\u0000data",
+    });
+    await ensureLocalRepo(WS.toString());
+    const project = await seedProject();
+    const tree = await loadWorkingTreeContents(project, {});
+    expect(tree.files.map(f => f.path)).toEqual(["dbt_project.yml"]);
+    expect(tree.warnings).toHaveLength(1);
+    expect(tree.warnings[0]).toContain("dbt/assets/logo.png");
+  });
+
+  it("fails on a NUL-byte seed", async () => {
+    await initRepo(remoteDir, {
+      "dbt/dbt_project.yml": "name: a\n",
+      "dbt/seeds/utf16.csv": "i\u0000d\u0000",
+    });
+    await ensureLocalRepo(WS.toString());
+    const project = await seedProject();
+    await expect(loadWorkingTreeContents(project, {})).rejects.toThrow(
+      /dbt\/seeds\/utf16\.csv \(4 B\) is binary/,
+    );
   });
 });

@@ -738,6 +738,15 @@ export default function DbtRunHistory({
               {(selectedRun ?? selectedRunListItem)?.error}
             </Typography>
           )}
+          {(selectedRun ?? selectedRunListItem)?.warnings?.map(warning => (
+            <Typography
+              key={warning}
+              variant="caption"
+              sx={{ color: "warning.main" }}
+            >
+              {warning}
+            </Typography>
+          ))}
           {isActiveSelection && (
             <Tooltip title="Stop this run (terminates the dbt process)">
               <span style={{ marginLeft: "auto" }}>

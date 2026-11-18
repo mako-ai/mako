@@ -455,6 +455,11 @@ export interface IDbtRun extends Document {
     manifest?: string;
   };
   error?: string;
+  /**
+   * Files of the dbt tree the run skipped (too large or binary) that dbt does
+   * not read. Skipped files dbt reads fail the run through `error` instead.
+   */
+  warnings?: string[];
   inngestRunId?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -572,6 +577,7 @@ const DbtRunSchema = new Schema<IDbtRun>(
       manifest: { type: String },
     },
     error: { type: String },
+    warnings: { type: [String], default: undefined },
     inngestRunId: { type: String },
   },
   { collection: "dbt_runs", timestamps: true },

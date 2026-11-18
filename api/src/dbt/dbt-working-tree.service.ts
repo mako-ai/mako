@@ -27,6 +27,7 @@ import {
   queueMirrorPush,
   resolveMirrorTarget,
 } from "../apps/cloud-repo.service";
+import * as yaml from "js-yaml";
 import { loggers } from "../logging";
 import { repoForWorkspace } from "../apps/worktree.service";
 import {
@@ -43,8 +44,18 @@ import {
 /** Repo-relative root of the dbt project inside the workspace repo. */
 export const DBT_ROOT = "dbt";
 
-/** Per-file cap (matches the PUT /files content limit). */
-const MAX_FILE_BYTES = 1_000_000;
+/**
+ * Largest file the run loader hands to dbt. 100 MB is GitHub's hard per-file
+ * limit, so the workspace mirror can never hold a bigger blob anyway.
+ *
+ * It used to be 1 MB, a value inherited from the Mongo file layer (one
+ * document per file, under Mongo's 16 MB BSON cap) that #887 deleted. Since
+ * then the tree is read from git and written to local disk, and
+ * readBlobsBatch already buffers every blob whatever its size, so 1 MB saved
+ * nothing. It silently dropped an 8 MB seed on 18 Nov 2026 and every prod
+ * parse failed for four hours.
+ */
+export const MAX_FILE_BYTES = 100 * 1024 * 1024;
 
 const logger = loggers.api("dbt-working-tree");
 
@@ -363,16 +374,24 @@ export async function renameWorkingFile(
  *  - `commit` set → exactly that commit (a laptop run's base, which must
  *    never silently become another tree: a missing commit throws).
  *  - neither → the default branch (deploy jobs).
- * Binary files and files over the size cap are skipped — dbt trees are text.
+ * Binary files (NUL bytes) and files over MAX_FILE_BYTES are never silently
+ * dropped: one dbt reads throws DbtTreeFilesSkippedError naming each file,
+ * its size and the reason; the rest come back as `warnings` for the run.
  */
 export async function loadWorkingTreeContents(
   project: IDbtProject,
-  opts: { userId?: string; branch?: string; commit?: string } = {},
-): Promise<Array<{ path: string; content: string }>> {
+  opts: {
+    userId?: string;
+    branch?: string;
+    commit?: string;
+    /** Override of MAX_FILE_BYTES, for tests. */
+    maxFileBytes?: number;
+  } = {},
+): Promise<WorkingTreeContents> {
   const repoDir = await repoDirIfExists(project);
   if (repoDir == null) {
     if (opts.commit) throw new RepoRequiredError();
-    return [];
+    return { files: [], warnings: [] };
   }
   let head: string | null;
   if (opts.commit) {
@@ -392,17 +411,168 @@ export async function loadWorkingTreeContents(
     const branch = await resolveBranchOrDefault(repoDir, wanted);
     head = await resolveCommit(repoDir, `refs/heads/${branch}`);
   }
-  if (!head) return [];
+  if (!head) return { files: [], warnings: [] };
   const entries = await listTree(repoDir, head);
   const paths = entries.map(e => e.path).filter(p => projectPathOf(p) !== null);
   const blobs = await readBlobsBatch(repoDir, head, paths);
   const files: Array<{ path: string; content: string }> = [];
+  const skipped: SkippedTreeFile[] = [];
   for (const [repoRelative, buf] of blobs) {
-    if (buf.length > MAX_FILE_BYTES || buf.includes(0)) continue;
     const path = projectPathOf(repoRelative);
-    if (path) files.push({ path, content: buf.toString("utf8") });
+    if (!path) continue;
+    const reason = unreadableReason(buf, opts.maxFileBytes ?? MAX_FILE_BYTES);
+    if (reason) {
+      skipped.push({ path, bytes: buf.length, reason });
+      continue;
+    }
+    files.push({ path, content: buf.toString("utf8") });
   }
-  return files.sort((a, b) => a.path.localeCompare(b.path));
+  return classifySkippedFiles(
+    files.sort((a, b) => a.path.localeCompare(b.path)),
+    skipped,
+    opts.maxFileBytes ?? MAX_FILE_BYTES,
+  );
+}
+
+/** A file of the dbt tree the loader could not hand to dbt as text. */
+export interface SkippedTreeFile {
+  /** Project-relative path (`seeds/big.csv`). */
+  path: string;
+  bytes: number;
+  /** `too_large`: over MAX_FILE_BYTES. `binary`: contains NUL bytes. */
+  reason: "too_large" | "binary";
+}
+
+export interface WorkingTreeContents {
+  files: Array<{ path: string; content: string }>;
+  /**
+   * Skipped files dbt never reads (outside every resource path), one
+   * sentence each. Callers put them on the run result: a skip is never silent.
+   */
+  warnings: string[];
+}
+
+/**
+ * The tree holds files dbt reads but the loader could not load. The run must
+ * stop here: dbt would otherwise fail later with an error that names a
+ * missing node, far from the cause.
+ */
+export class DbtTreeFilesSkippedError extends Error {
+  readonly files: SkippedTreeFile[];
+  constructor(files: SkippedTreeFile[], maxFileBytes: number) {
+    super(
+      `${files.length} dbt file${files.length === 1 ? "" : "s"} could not be loaded, so dbt did not run: ` +
+        files.map(f => describeSkippedFile(f, maxFileBytes)).join("; ") +
+        ". Shrink the file, store it as UTF-8 text, or move it out of the dbt resource paths.",
+    );
+    this.name = "DbtTreeFilesSkippedError";
+    this.files = files;
+  }
+}
+
+function unreadableReason(
+  buf: Buffer,
+  maxFileBytes: number,
+): SkippedTreeFile["reason"] | null {
+  if (buf.length > maxFileBytes) return "too_large";
+  if (buf.includes(0)) return "binary";
+  return null;
+}
+
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export function describeSkippedFile(
+  file: SkippedTreeFile,
+  maxFileBytes: number = MAX_FILE_BYTES,
+): string {
+  const where = `${DBT_ROOT}/${file.path} (${formatBytes(file.bytes)})`;
+  return file.reason === "too_large"
+    ? `${where} is over the ${formatBytes(maxFileBytes)} per-file limit`
+    : `${where} is binary (it contains NUL bytes) and dbt reads text only`;
+}
+
+/** dbt's default resource folders, per dbt_project.yml key. */
+const DBT_RESOURCE_PATH_KEYS: Record<string, string[]> = {
+  "model-paths": ["models"],
+  "seed-paths": ["seeds"],
+  "macro-paths": ["macros"],
+  "snapshot-paths": ["snapshots"],
+  "test-paths": ["tests"],
+  "analysis-paths": ["analyses"],
+  "docs-paths": [],
+};
+
+/**
+ * The folders dbt reads, from dbt_project.yml (its defaults when the file
+ * does not set a key or cannot be parsed).
+ */
+export function dbtResourcePaths(projectYml: string | undefined): string[] {
+  let config: Record<string, unknown> = {};
+  if (projectYml) {
+    try {
+      const parsed = yaml.load(projectYml);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        config = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Unparseable: dbt fails on it with its own error; use the defaults.
+    }
+  }
+  const out = new Set<string>();
+  for (const [key, defaults] of Object.entries(DBT_RESOURCE_PATH_KEYS)) {
+    const value = config[key];
+    const list =
+      Array.isArray(value) && value.every(v => typeof v === "string")
+        ? (value as string[])
+        : defaults;
+    for (const entry of list) {
+      const clean = entry.replace(/^\.\//, "").replace(/\/+$/, "");
+      if (clean && clean !== ".") out.add(clean);
+    }
+  }
+  return [...out];
+}
+
+/**
+ * Whether dbt reads this project-relative path: anything under a resource
+ * folder, and YAML at the project root (dbt_project.yml, packages.yml,
+ * dependencies.yml, selectors.yml).
+ */
+export function dbtReadsPath(path: string, resourcePaths: string[]): boolean {
+  if (!path.includes("/")) return /\.ya?ml$/i.test(path);
+  return resourcePaths.some(root => path.startsWith(`${root}/`));
+}
+
+/**
+ * Fail on skipped files dbt reads; turn the rest into warnings. Exported for
+ * tests.
+ */
+export function classifySkippedFiles(
+  files: Array<{ path: string; content: string }>,
+  skipped: SkippedTreeFile[],
+  maxFileBytes: number = MAX_FILE_BYTES,
+): WorkingTreeContents {
+  if (skipped.length === 0) return { files, warnings: [] };
+  const sorted = [...skipped].sort((a, b) => a.path.localeCompare(b.path));
+  const resourcePaths = dbtResourcePaths(
+    files.find(f => f.path === "dbt_project.yml")?.content,
+  );
+  const needed = sorted.filter(f => dbtReadsPath(f.path, resourcePaths));
+  if (needed.length > 0) {
+    throw new DbtTreeFilesSkippedError(needed, maxFileBytes);
+  }
+  const warnings = sorted.map(
+    f =>
+      `Skipped ${describeSkippedFile(f, maxFileBytes)}. dbt does not read this path, so the run went on without it.`,
+  );
+  logger.warn("dbt working tree skipped files dbt does not read", {
+    skipped: sorted,
+  });
+  return { files, warnings };
 }
 
 /**

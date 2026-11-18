@@ -1329,6 +1329,7 @@ export const createDbtServerTools = (
             completedAt: run.completedAt,
             durationMs: run.durationMs,
             error: run.error,
+            ...(run.warnings?.length ? { warnings: run.warnings } : {}),
             output: run.output,
             ...(queue ? { queue } : {}),
             ...shapeStepResults(run.stepResults ?? [], {

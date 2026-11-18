@@ -327,6 +327,24 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
         </Box>
       )}
 
+      {/* Skipped tree files dbt does not read: shown on every run */}
+      {run?.warnings?.map(warning => (
+        <Box
+          key={warning}
+          sx={{
+            mx: 1,
+            mb: 1,
+            px: 1,
+            py: 0.5,
+            fontSize: "0.72rem",
+            color: "warning.main",
+            borderRadius: "8px",
+          }}
+        >
+          {warning}
+        </Box>
+      ))}
+
       {/* Expandable body: step results + logs */}
       {expanded && hasBody && (
         <Box

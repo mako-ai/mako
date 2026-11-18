@@ -127,6 +127,8 @@ export interface DbtRunItem {
   cancelledBy?: string;
   stepResults?: DbtStepResult[];
   error?: string;
+  /** Tree files the run skipped (too large or binary) that dbt does not read. */
+  warnings?: string[];
   createdAt: string;
   /**
    * Git branch the run's source tree came from (repo-bound projects).

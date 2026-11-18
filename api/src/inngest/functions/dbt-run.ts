@@ -22,7 +22,10 @@ import {
 } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
 import { parseDbtCommand } from "../../dbt/commands";
-import { loadDbtProjectSnapshot } from "../../dbt/dbt-project.service";
+import {
+  loadDbtProjectSnapshot,
+  warningLogLines,
+} from "../../dbt/dbt-project.service";
 import { loadLocalOverlay } from "../../dbt/local-overlay";
 import {
   collectProfileSecrets,
@@ -342,6 +345,15 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             level: "info",
             line: `$ dbt ${parsed.argv.join(" ")}`,
           });
+          // Tree files the loader skipped (dbt does not read them): on the
+          // run log of every command and on the run doc, never silent.
+          if (snapshot.warnings.length > 0) {
+            for (const line of warningLogLines(snapshot.warnings)) onLog(line);
+            await DbtRun.updateOne(
+              { _id: runObjectId },
+              { $addToSet: { warnings: { $each: snapshot.warnings } } },
+            );
+          }
 
           // Retry runs seed the prior run_results.json into target/ so
           // `dbt retry` resumes at the failed/skipped nodes.
