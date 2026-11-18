@@ -23,6 +23,8 @@ const runIntegration =
 
 export default defineConfig({
   test: {
+    // MongoMemoryServer.create() retries a port clash or a slow start (test-support/mongo-memory.ts).
+    setupFiles: ["./test-support/mongo-memory.ts"],
     environment: "node",
     include: [
       "src/databases/**/*.test.ts",
