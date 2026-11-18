@@ -13,7 +13,7 @@ Notebooks are ordered lists of cells that live in your workspace: **SQL** cells 
 | `code` | Managed Python kernel | pandas, polars, numpy, pyarrow, matplotlib, plotly, duckdb, requests, and the `mako` SDK preinstalled |
 | `markdown` | Client | Prose, headings, explanation between analyses |
 
-Kernel state persists across runs — variables and imports carry over, so cells build on each other. Idle kernel sessions are stopped after 15 minutes (`KERNEL_SESSION_IDLE_MS`). Sessions are registered in a shared store (Redis when `REDIS_URL` is set), so in multi-instance deployments every API instance routes execution to the same kernel — no session affinity needed.
+Kernel state persists across runs — variables and imports carry over, so cells build on each other. Idle kernel sessions are stopped after 15 minutes (`KERNEL_SESSION_IDLE_MS`). On GKE, the `kernel-pool-reaper` job (every 5 minutes) then scales the warm kernel pool back to `KERNEL_POOL_MIN_REPLICAS` (default 0) once every kernel on every pod is idle, so the first run after a quiet spell waits a minute or two for a node and pod; set it to 1 to keep one warm pod. Sessions are registered in a shared store (Redis when `REDIS_URL` is set), so in multi-instance deployments every API instance routes execution to the same kernel — no session affinity needed.
 
 ## Reading Workspace Data from Python
 
