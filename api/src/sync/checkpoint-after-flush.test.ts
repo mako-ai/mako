@@ -241,6 +241,11 @@ let writeModeOfRun: "append_dedup" | "append" = "append_dedup";
  */
 let failingMerges = new Set<number>();
 let mergeCalls = 0;
+/**
+ * Rows a flush leaves in the buffer, as when flushBulkBuffer stops early on
+ * an empty parquet: put back into the buffer by the next staging cleanup.
+ */
+let leftoverOnCleanup: Doc[] = [];
 
 const suffixOf = (o?: { stagingSuffix?: string }) =>
   o?.stagingSuffix ?? "backfill_staging";
@@ -274,6 +279,12 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
   }) as any,
   cleanupStaging: (async (_l: unknown, _f: string, o?: any) => {
     staging.set(suffixOf(o), []);
+    if (leftoverOnCleanup.length > 0) {
+      await collection(`backfill_tmp_${FLOW_ID}_${ENTITY}`).insertMany(
+        leftoverOnCleanup,
+      );
+      leftoverOnCleanup = [];
+    }
   }) as any,
   loadStagingFromParquet: (async (
     filePath: string,
@@ -343,13 +354,17 @@ class Cancelled extends Error {}
 async function invoke(params: {
   runId: string;
   cancelAt?: string;
+  /** Cancel the step that follows this one. */
+  cancelAfter?: string;
   tableName?: string;
   poll?: boolean;
   interleave?: boolean;
 }): Promise<{ completed: boolean; rowsWritten: number }> {
+  let cancelNext = false;
   const step = {
     run: async (id: string, fn: () => Promise<unknown>) => {
-      if (id === params.cancelAt) throw new Cancelled(id);
+      if (id === params.cancelAt || cancelNext) throw new Cancelled(id);
+      if (id === params.cancelAfter) cancelNext = true;
       if (params.interleave) {
         await new Promise(resolve => setImmediate(resolve));
       }
@@ -428,6 +443,7 @@ describe("a backfill checkpoint never runs ahead of the flushed rows", () => {
     writeModeOfRun = "append_dedup";
     failingMerges = new Set();
     mergeCalls = 0;
+    leftoverOnCleanup = [];
   });
 
   it.each(["append_dedup", "append"] as const)(
@@ -566,5 +582,41 @@ describe("a backfill checkpoint never runs ahead of the flushed rows", () => {
     // Each execution merged every row it fetched.
     expect(backfill.rowsWritten).toBe(12_000);
     expect(poll.rowsWritten).toBe(12_000);
+  }, 120_000);
+
+  it("a flush that leaves rows in the buffer does not move the cursor past them", async () => {
+    sourceRows = rows(15_000);
+    // The first flush's cleanup finds a row it never staged.
+    leftoverOnCleanup = [{ ...sourceRows[0], _bulkRunId: "run-A" }];
+    await expect(
+      invoke({ runId: "run-A", cancelAt: "sync-opportunities-chunk-26" }),
+    ).rejects.toBeInstanceOf(Cancelled);
+    expect(
+      await cdcBackfillCheckpointService.loadEntityCheckpoint({
+        workspaceId: WORKSPACE_ID,
+        flowId: FLOW_ID,
+        scope: `run-A|dest1|69c2719490eb18199aafa882|fr_close_crm|`,
+        entity: ENTITY,
+      }),
+    ).toBeUndefined();
+
+    chunkStartOffsets = [];
+    await invoke({ runId: "run-A" });
+    expect(chunkStartOffsets[0]).toBe(0);
+    expectEveryRowExactlyOnce();
+  }, 120_000);
+
+  it("append: a cancel right after a merge resumes after the merged rows", async () => {
+    writeModeOfRun = "append";
+    sourceRows = rows(15_000);
+    await expect(
+      invoke({ runId: "run-A", cancelAfter: "flush-apply-opportunities-0" }),
+    ).rejects.toBeInstanceOf(Cancelled);
+    expect(live).toHaveLength(10_000);
+
+    chunkStartOffsets = [];
+    await invoke({ runId: "run-A" });
+    expect(chunkStartOffsets[0]).toBe(10_000);
+    expectEveryRowExactlyOnce();
   }, 120_000);
 });
