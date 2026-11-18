@@ -65,10 +65,12 @@ import {
   flowWebhookResubscribeFunction,
   flowWebhookUnsubscribeFunction,
 } from "./functions/flow-webhook-subscription";
+import { connectorIndexRetryFunction } from "./functions/connector-index-retry";
 import { loggers } from "../logging";
 
 const baseFunctions = [
   flowFunction,
+  connectorIndexRetryFunction,
   manualFlowFunction,
   cancelFlowFunction,
   cleanupAbandonedFlowsFunction,

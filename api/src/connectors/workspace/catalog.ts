@@ -6,7 +6,11 @@
  * never boot a sandbox, and they must be honest about a connector that is not
  * usable yet rather than hiding it.
  */
-import { listConnectorDefinitions, loadConnectorDefinition } from "./resolver";
+import {
+  listConnectorDefinitions,
+  loadConnectorDefinition,
+  retryingMessage,
+} from "./resolver";
 import { specToForm, type FormSchema } from "./spec-translation";
 import { ConnectorDefinition } from "../../database/workspace-schema";
 import {
@@ -23,8 +27,12 @@ export interface WorkspaceConnectorSummary {
   supportedEntities: string[];
   /** False while the connector is blocked, so the picker can grey it out. */
   usable: boolean;
-  status: "indexed" | "verified" | "blocked";
+  status: "indexed" | "verified" | "blocked" | "retrying";
   blockedReason?: string;
+  /** While `retrying`: when indexing runs spec again. */
+  nextRetryAt?: string;
+  /** While `retrying`: platform failures in a row for this source. */
+  retryAttempts?: number;
   /** Why the last connection test failed. A bad key, not a broken connector. */
   lastCheckError?: string;
   /**
@@ -82,13 +90,21 @@ export async function listWorkspaceConnectors(
       description:
         row.status === "blocked"
           ? `Blocked: ${row.blockedReason ?? "this connector failed its last check"}`
-          : row.registry
-            ? `${row.slug} — ${row.registry.ref}, version ${row.registry.version}`
-            : `${row.slug} — from this workspace's repository`,
+          : row.status === "retrying"
+            ? retryingMessage(row.slug, row)
+            : row.registry
+              ? `${row.slug} — ${row.registry.ref}, version ${row.registry.version}`
+              : `${row.slug} — from this workspace's repository`,
       supportedEntities: row.entities ?? [],
-      usable: row.status !== "blocked",
+      usable: row.status !== "blocked" && row.status !== "retrying",
       status: row.status,
       blockedReason: row.blockedReason,
+      ...(row.status === "retrying" && row.nextIndexRetryAt
+        ? {
+            nextRetryAt: new Date(row.nextIndexRetryAt).toISOString(),
+            retryAttempts: row.indexRetryAttempts ?? 1,
+          }
+        : {}),
       lastCheckError: row.lastCheckError,
       ...(row.build
         ? {
@@ -170,6 +186,9 @@ export async function connectorTypeExists(
       ok: false,
       reason: `The connector "${slug}" is blocked: ${row.blockedReason ?? "it failed its last check"}`,
     };
+  }
+  if (row.status === "retrying") {
+    return { ok: false, reason: retryingMessage(slug, row) };
   }
   return { ok: true };
 }

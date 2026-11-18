@@ -114,11 +114,14 @@ vi.mock("../sync-box", async importOriginal => {
 const build = vi.hoisted(() => ({
   calls: 0,
   fail: null as string | null,
+  /** Per-slug failures, over `fail`. */
+  failFor: new Map<string, string>(),
 }));
 vi.mock("./build-box", () => ({
-  buildBundleInBox: vi.fn(async () => {
+  buildBundleInBox: vi.fn(async (input: { slug: string }) => {
     build.calls++;
-    if (build.fail) return { ok: false, reason: build.fail };
+    const fail = build.failFor.get(input.slug) ?? build.fail;
+    if (fail) return { ok: false, reason: fail };
     return { ok: true, bytes: new TextEncoder().encode("export default 1;\n") };
   }),
 }));
@@ -202,6 +205,7 @@ beforeEach(async () => {
   stored.clear();
   build.calls = 0;
   build.fail = null;
+  build.failFor.clear();
   process.env[CONNECTOR_BUNDLES_FLAG] = "true";
 });
 
@@ -331,7 +335,7 @@ describe("the push reconciler with bundles on", () => {
 
   it("rebuilds after a failed build once the folder is pushed again", async () => {
     repo.files.set("acme", folder());
-    build.fail = "npm ci failed: ETIMEDOUT";
+    build.fail = "npm ci failed: npm error code E404";
     await syncConnectorsFromRepo(WS);
     expect((await row())?.status).toBe("blocked");
 
@@ -341,6 +345,66 @@ describe("the push reconciler with bundles on", () => {
     expect(fixed?.status).toBe("indexed");
     expect(fixed?.build?.status).toBe("built");
     expect(fixed?.blockedReason).toBeUndefined();
+  });
+
+  it("retries a build the npm registry failed, instead of blocking", async () => {
+    repo.files.set("acme", folder());
+    build.fail = "npm ci failed: npm error code ETIMEDOUT";
+    const result = await syncConnectorsFromRepo(WS);
+    expect(result).toMatchObject({ retrying: 1, blocked: 0 });
+    const retrying = await row();
+    expect(retrying?.status).toBe("retrying");
+    expect(retrying?.blockedReason).toContain("ETIMEDOUT");
+    expect(retrying?.indexRetryAttempts).toBe(1);
+
+    // The due retry builds it, with no push.
+    build.fail = null;
+    await syncConnectorsFromRepo(WS, undefined, {
+      kind: "retry",
+      now: new Date(Date.now() + 61_000),
+    });
+    const fixed = await row();
+    expect(fixed?.status).toBe("indexed");
+    expect(fixed?.build?.status).toBe("built");
+  });
+
+  it("retries a bundler install that timed out", async () => {
+    repo.files.set("acme", folder());
+    build.fail = "Could not install the bundler: timed out";
+    const result = await syncConnectorsFromRepo(WS);
+    expect(result).toMatchObject({ retrying: 1, blocked: 0 });
+  });
+
+  it("does not rebuild a blocked connector on a retry pass, only the due retry", async () => {
+    // broken: blocked by its own build. acme: retrying on a platform error.
+    repo.files.set("broken", folder());
+    repo.files.set("acme", folder({ "extra.ts": "export {};\n" }));
+    build.failFor.set("broken", 'esbuild failed: Could not resolve "date-fns"');
+    build.failFor.set("acme", "npm ci failed: npm error code EAI_AGAIN");
+    await syncConnectorsFromRepo(WS);
+    expect((await row("broken"))?.status).toBe("blocked");
+    expect((await row("acme"))?.status).toBe("retrying");
+
+    // Not due yet: the retry pass builds nothing.
+    build.calls = 0;
+    build.failFor.delete("acme");
+    await syncConnectorsFromRepo(WS, undefined, {
+      kind: "retry",
+      now: new Date(),
+    });
+    expect(build.calls).toBe(0);
+    expect((await row("acme"))?.status).toBe("retrying");
+
+    // Due: only the retrying connector builds; the blocked one waits for a push.
+    await syncConnectorsFromRepo(WS, undefined, {
+      kind: "retry",
+      now: new Date(Date.now() + 61_000),
+    });
+    expect(build.calls).toBe(1);
+    expect((await row("acme"))?.status).toBe("indexed");
+    const broken = await row("broken");
+    expect(broken?.status).toBe("blocked");
+    expect(broken?.build?.status).toBe("failed");
   });
 
   it("runs a folder without package.json as before: no build, the TypeScript entry", async () => {

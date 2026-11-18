@@ -11,9 +11,35 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+
+// Real code, observed: the index retry must read the mirror's main first.
+const cloudRepo = vi.hoisted(() => ({ calls: [] as string[] }));
+vi.mock("../../apps/cloud-repo.service", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../../apps/cloud-repo.service")>();
+  return {
+    ...actual,
+    ensureLocalRepo: vi.fn(async (workspaceId: string) => {
+      cloudRepo.calls.push(`ensure:${workspaceId}`);
+      return actual.ensureLocalRepo(workspaceId);
+    }),
+    freshenForServe: vi.fn(async (workspaceId: string, intervalMs?: number) => {
+      cloudRepo.calls.push(`freshen:${workspaceId}:${intervalMs}`);
+      return actual.freshenForServe(workspaceId, intervalMs);
+    }),
+  };
+});
 import {
   ConnectorDefinition,
   type ISourceConnection,
@@ -27,6 +53,7 @@ import {
 } from "../../apps/repository.service";
 import {
   recordConnectionCheck,
+  retryDueConnectorIndexing,
   syncConnectorsFromRepo,
 } from "./reconcile.service";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
@@ -502,6 +529,130 @@ describe("a spec that does not say what its fields are", () => {
       fields: [],
     });
   });
+});
+
+// 18 Nov 2026: ws:cloudflare-billing stayed blocked on a sandbox blip during
+// indexing until someone pushed a no-op commit.
+describe("a connector whose index hits a platform error", () => {
+  const ENVD =
+    "[unavailable] The sandbox is running but port is not open: The sandbox is running but envd inside it could not be reached (e.g. its network is down).";
+
+  it("retries with backoff instead of blocking, and indexes on the retry", async () => {
+    await push({
+      "connectors/acme/connector.yaml": "runtime: node\n",
+      "connectors/acme/connector.ts": CONNECTOR_TS,
+    });
+    const provider = getSandboxProvider();
+    const spy = vi
+      .spyOn(provider, "exec")
+      .mockRejectedValueOnce(new Error(ENVD));
+    const before = Date.now();
+    let result;
+    try {
+      result = await syncConnectorsFromRepo(WS);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(result).toMatchObject({ retrying: 1, blocked: 0 });
+
+    const row = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "acme",
+    }).lean();
+    expect(row?.status).toBe("retrying");
+    expect(row?.blockedReason).toContain("envd");
+    expect(row?.indexRetryAttempts).toBe(1);
+    const next = row?.nextIndexRetryAt?.getTime() ?? 0;
+    expect(next - before).toBeGreaterThanOrEqual(59_000);
+    expect(next - before).toBeLessThan(120_000);
+
+    // Shown as retrying with its next attempt, and not runnable meanwhile.
+    const listed = (await listWorkspaceConnectors(WS)).find(
+      c => c.type === "ws:acme",
+    );
+    expect(listed).toMatchObject({
+      status: "retrying",
+      usable: false,
+      retryAttempts: 1,
+      nextRetryAt: row?.nextIndexRetryAt?.toISOString(),
+    });
+    const exists = await connectorTypeExists("ws:acme", WS);
+    expect(exists.ok).toBe(false);
+    if (!exists.ok) expect(exists.reason).toContain("retries on its own");
+
+    // Not due yet: nothing runs.
+    await expect(retryDueConnectorIndexing(new Date(before))).resolves.toEqual({
+      workspaces: 0,
+      failed: 0,
+      skipped: 0,
+    });
+    // Due: the retry reads the mirror's main, then indexes it, with no push.
+    cloudRepo.calls.length = 0;
+    await expect(
+      retryDueConnectorIndexing(new Date(next + 1)),
+    ).resolves.toEqual({ workspaces: 1, failed: 0, skipped: 0 });
+    expect(cloudRepo.calls).toEqual([`ensure:${WS}`, `freshen:${WS}:0`]);
+    const indexed = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "acme",
+    }).lean();
+    expect(indexed?.status).toBe("indexed");
+    expect(indexed?.blockedReason).toBeUndefined();
+    expect(indexed?.indexRetryAttempts).toBeUndefined();
+    expect(indexed?.nextIndexRetryAt).toBeUndefined();
+  }, 120_000);
+
+  it("backs off further on each platform failure of the same source", async () => {
+    await push({
+      "connectors/acme/connector.yaml": "runtime: node\n",
+      "connectors/acme/connector.ts": CONNECTOR_TS,
+    });
+    const provider = getSandboxProvider();
+    const spy = vi.spyOn(provider, "exec").mockRejectedValue(new Error(ENVD));
+    try {
+      await syncConnectorsFromRepo(WS);
+      await retryDueConnectorIndexing(new Date(Date.now() + 61_000));
+    } finally {
+      spy.mockRestore();
+    }
+    const row = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "acme",
+    }).lean();
+    expect(row?.status).toBe("retrying");
+    expect(row?.indexRetryAttempts).toBe(2);
+    const wait = (row?.nextIndexRetryAt?.getTime() ?? 0) - Date.now();
+    expect(wait).toBeGreaterThan(110_000);
+    expect(wait).toBeLessThanOrEqual(120_000);
+  }, 120_000);
+
+  it("skips a workspace whose repo this instance cannot restore, and leaves the row", async () => {
+    await push({
+      "connectors/acme/connector.yaml": "runtime: node\n",
+      "connectors/acme/connector.ts": CONNECTOR_TS,
+    });
+    const provider = getSandboxProvider();
+    const spy = vi
+      .spyOn(provider, "exec")
+      .mockRejectedValueOnce(new Error(ENVD));
+    try {
+      await syncConnectorsFromRepo(WS);
+    } finally {
+      spy.mockRestore();
+    }
+    // A fresh instance: no local repo, and no mirror to restore it from.
+    await fs.rm(repoDirFor(WS), { recursive: true, force: true });
+
+    await expect(
+      retryDueConnectorIndexing(new Date(Date.now() + 61_000)),
+    ).resolves.toEqual({ workspaces: 1, failed: 0, skipped: 1 });
+    const row = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "acme",
+    }).lean();
+    expect(row?.status).toBe("retrying");
+    expect(row?.indexRetryAttempts).toBe(1);
+  }, 120_000);
 });
 
 describe("a connector that cannot run", () => {
