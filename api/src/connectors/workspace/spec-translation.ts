@@ -25,7 +25,14 @@ import {
 export interface FormFieldSchema {
   name: string;
   label: string;
-  type: "string" | "number" | "boolean" | "password" | "textarea" | "select";
+  type:
+    | "string"
+    | "number"
+    | "boolean"
+    | "password"
+    | "textarea"
+    | "select"
+    | "object_array";
   required?: boolean;
   default?: unknown;
   helperText?: string;
@@ -33,10 +40,22 @@ export interface FormFieldSchema {
   options?: Array<{ label: string; value: string | number | boolean }>;
   rows?: number;
   encrypted?: boolean;
+  /** The fields of one item, for an `object_array`. */
+  itemFields?: FormFieldSchema[];
 }
 
 export interface FormSchema {
   fields: FormFieldSchema[];
+  /**
+   * The flow form's query list, for a connector whose entities are each
+   * flow's own queries (`spec.mako.queryEntities.source: "flow"`), in the
+   * shape the in-process GraphQL connector's `getConfigSchema()` gives.
+   */
+  transferQueries?: {
+    label: string;
+    required: boolean;
+    fields: FormFieldSchema[];
+  };
 }
 
 type JsonSchema = Record<string, any>;
@@ -100,7 +119,36 @@ export function connectionSpecificationToForm(
       : [],
   );
 
-  const entries = Object.entries(properties as Record<string, JsonSchema>);
+  return { fields: propertiesToFields(properties, required) };
+}
+
+/**
+ * A whole spec -> the form schema the API serves: the credential form, plus
+ * `transferQueries` when the connector's entities are each flow's queries.
+ */
+export function specToForm(spec: JsonSchema | undefined): FormSchema {
+  const form = connectionSpecificationToForm(spec?.connectionSpecification);
+  const queries = spec?.mako?.queryEntities;
+  if (queries?.source === "flow" && queries.form?.items?.properties) {
+    const items = queries.form.items;
+    form.transferQueries = {
+      label: String(queries.form.label ?? "Queries"),
+      required: queries.form.required === true,
+      fields: propertiesToFields(
+        items.properties,
+        new Set(Array.isArray(items.required) ? items.required : []),
+      ),
+    };
+  }
+  return form;
+}
+
+/** JSON Schema properties -> form fields, in `order`, then declaration order. */
+function propertiesToFields(
+  properties: Record<string, JsonSchema>,
+  required: Set<string>,
+): FormFieldSchema[] {
+  const entries = Object.entries(properties);
   // `order` is how a spec author controls the form; falling back to
   // declaration order keeps a spec without it stable rather than alphabetised.
   entries.sort(([, a], [, b]) => {
@@ -132,19 +180,40 @@ export function connectionSpecificationToForm(
         value,
       }));
     }
-    if (property?.multiline === true) field.rows = 4;
+    if (property?.multiline === true) {
+      field.rows =
+        typeof property.rows === "number" && property.rows > 0
+          ? property.rows
+          : 4;
+    }
     if (secret) field.encrypted = true;
+    if (field.type === "object_array") {
+      const items = property.items ?? {};
+      field.itemFields = propertiesToFields(
+        (items.properties ?? {}) as Record<string, JsonSchema>,
+        new Set(Array.isArray(items.required) ? items.required : []),
+      );
+    }
     fields.push(field);
   }
-  return { fields };
+  return fields;
 }
 
 function formFieldType(
   property: JsonSchema,
   secret: boolean,
 ): FormFieldSchema["type"] {
-  if (secret) return "password";
+  // A multi-line secret (a service-account JSON, a headers object) is an
+  // encrypted textarea: `encrypted` decides encryption, the type only how
+  // it is typed in.
+  if (secret) return property?.multiline === true ? "textarea" : "password";
   if (Array.isArray(property?.enum)) return "select";
+  if (
+    normalizeType(property?.type) === "array" &&
+    normalizeType(property?.items?.type) === "object"
+  ) {
+    return "object_array";
+  }
   if (property?.multiline === true) return "textarea";
   const type = normalizeType(property?.type);
   if (type === "boolean") return "boolean";

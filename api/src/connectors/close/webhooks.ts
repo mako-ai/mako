@@ -652,7 +652,21 @@ export async function adoptCloseWebhook(
  * object before the record is applied.
  */
 export const CLOSE_WEBHOOK_FILL_FIELDS: Readonly<
-  Record<string, { path: string; fields: readonly string[] }>
+  Record<
+    string,
+    {
+      path: string;
+      fields: readonly string[];
+      /**
+       * Read the fields through Search for this object type instead of the
+       * REST object. Close's GET of an email thread returns no
+       * `latest_emails`; Search does.
+       */
+      search?: string;
+      /** Fill a field whose payload value is null or empty, not only absent. */
+      fillEmpty?: boolean;
+    }
+  >
 > = {
   leads: {
     path: "/lead/",
@@ -686,8 +700,16 @@ export const CLOSE_WEBHOOK_FILL_FIELDS: Readonly<
   "activities:EmailThread": {
     path: "/activity/emailthread/",
     fields: ["latest_emails"],
+    search: "activity.email_thread",
+    fillEmpty: true,
   },
 };
+
+const isEmptyFillValue = (value: unknown) =>
+  value === null ||
+  value === undefined ||
+  value === "" ||
+  (Array.isArray(value) && value.length === 0);
 
 type FillableRecord = {
   entity: string;
@@ -779,7 +801,11 @@ export async function fillCloseWebhookPartialRecords<T extends FillableRecord>(
       out.push(record);
       continue;
     }
-    const missing = spec.fields.filter(field => !(field in payload));
+    const missing = spec.fields.filter(
+      field =>
+        !(field in payload) ||
+        (spec.fillEmpty && isEmptyFillValue(payload[field])),
+    );
     if (missing.length === 0) {
       out.push(record);
       continue;
@@ -799,15 +825,54 @@ export async function fillCloseWebhookPartialRecords<T extends FillableRecord>(
 
     let fetched: Record<string, unknown>;
     try {
+      const searchType = spec.search;
       const read = () =>
-        api().get(`${spec.path}${encodeURIComponent(record.recordId)}/`, {
-          params: { _fields: missing.join(",") },
-        });
+        searchType
+          ? api().post("/data/search/", {
+              query: {
+                type: "and",
+                negate: false,
+                queries: [
+                  {
+                    type: "object_type",
+                    object_type: searchType,
+                    negate: false,
+                  },
+                  { type: "id", value: record.recordId, negate: false },
+                ],
+              },
+              _limit: 1,
+              _fields: { [searchType]: ["id", ...missing] },
+            })
+          : api().get(`${spec.path}${encodeURIComponent(record.recordId)}/`, {
+              params: { _fields: missing.join(",") },
+            });
       const response = options.budget
         ? await options.budget.spend(read)
         : await read();
-      fetched = (response?.data ?? {}) as Record<string, unknown>;
+      if (searchType) {
+        const row = (response?.data as { data?: unknown[] } | undefined)
+          ?.data?.[0];
+        if (!row) {
+          // Search answers an empty page, never 404, for an object that is
+          // gone. The REST object tells the two apart: a 404 lands in the
+          // catch below and drops the record (its delete event follows).
+          await api().get(
+            `${spec.path}${encodeURIComponent(record.recordId)}/`,
+            { params: { _fields: "id" } },
+          );
+          // It exists: a new object reaches Search a little after its webhook.
+          throw new WebhookEnrichmentRetryError(
+            `Close ${record.entity} ${record.recordId} is not in Search yet`,
+            "fail",
+          );
+        }
+        fetched = row as Record<string, unknown>;
+      } else {
+        fetched = (response?.data ?? {}) as Record<string, unknown>;
+      }
     } catch (error) {
+      if (error instanceof WebhookEnrichmentRetryError) throw error;
       const status = axios.isAxiosError(error)
         ? error.response?.status
         : undefined;

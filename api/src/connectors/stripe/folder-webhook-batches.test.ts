@@ -351,7 +351,10 @@ function deliveries(payload: string, now: number) {
   const other = sign(now, "whsec_other_0123456789abcdefABCDEF");
   return [
     ["valid", valid, true],
-    ["valid, 299 s old", sign(now - 299), true],
+    // 290, not 299: `now` is taken before the deliveries are verified, and
+    // a slow CI runner spent over 1 s in between, which made 299 s cross
+    // the 300 s window (master and #1349, 17 Nov 2026).
+    ["valid, 290 s old", sign(now - 290), true],
     [
       "two secrets while rolling, the second valid",
       `t=${now},${v1Of(other)},${v1Of(valid)}`,

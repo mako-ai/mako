@@ -166,6 +166,12 @@ export interface ICdcEntityState extends Document {
   lastBackfillRunStartedAt?: Date;
   /** Same, for the last run in which this entity was fetched in FULL. */
   lastFullBackfillRunStartedAt?: Date;
+  /**
+   * Start of the last scheduled poll run in which this entity completed —
+   * the anchor of the next incremental poll. Only polls write it; webhook
+   * writes never move it. See sync-cdc/poll-cursor.ts.
+   */
+  lastPollRunStartedAt?: Date;
   lastIngestSeq: number;
   lastMaterializedSeq: number;
   lastMaterializedAt?: Date;
@@ -175,6 +181,11 @@ export interface ICdcEntityState extends Document {
   lastEnqueuedAt?: Date;
   mergeIntervalSeconds: number;
   backfillCursor?: Record<string, unknown>;
+  /**
+   * The backfill run and destination `backfillCursor` belongs to
+   * (backfillCheckpointScope). A cursor of another scope is never resumed.
+   */
+  backfillCursorScope?: string;
   consecutiveFailures: number;
   lastFailedAt?: Date;
   lastFailureError?: string;
@@ -210,6 +221,7 @@ const CdcEntityStateSchema = new Schema<ICdcEntityState>(
     backfillCompletedAt: Date,
     lastBackfillRunStartedAt: Date,
     lastFullBackfillRunStartedAt: Date,
+    lastPollRunStartedAt: Date,
     lastIngestSeq: { type: Number, default: 0 },
     lastMaterializedSeq: { type: Number, default: 0 },
     lastMaterializedAt: Date,
@@ -219,6 +231,7 @@ const CdcEntityStateSchema = new Schema<ICdcEntityState>(
     lastEnqueuedAt: Date,
     mergeIntervalSeconds: { type: Number, default: 300 },
     backfillCursor: Schema.Types.Mixed,
+    backfillCursorScope: String,
     consecutiveFailures: { type: Number, default: 0 },
     lastFailedAt: Date,
     lastFailureError: String,

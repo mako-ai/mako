@@ -349,6 +349,7 @@ class CdcSyncStateService {
     flowId: string;
     entity: string;
     cursor: FetchState;
+    scope: string;
   }): Promise<void> {
     await CdcEntityState.updateOne(
       {
@@ -362,6 +363,7 @@ class CdcSyncStateService {
           flowId: new Types.ObjectId(params.flowId),
           entity: params.entity,
           backfillCursor: params.cursor as unknown as Record<string, unknown>,
+          backfillCursorScope: params.scope,
           updatedAt: new Date(),
         },
       },
@@ -369,15 +371,18 @@ class CdcSyncStateService {
     );
   }
 
+  /** The entity's cursor, only when it was saved under `scope`. */
   async loadBackfillCursor(params: {
     workspaceId: string;
     flowId: string;
     entity: string;
+    scope: string;
   }): Promise<FetchState | undefined> {
     const state = await CdcEntityState.findOne({
       workspaceId: new Types.ObjectId(params.workspaceId),
       flowId: new Types.ObjectId(params.flowId),
       entity: params.entity,
+      backfillCursorScope: params.scope,
     }).lean();
     return (state?.backfillCursor || undefined) as FetchState | undefined;
   }
@@ -394,18 +399,22 @@ class CdcSyncStateService {
       {
         $unset: {
           backfillCursor: "",
+          backfillCursorScope: "",
         },
       },
     );
   }
 
+  /** Entities whose cursor of `scope` is exhausted. */
   async listCompletedBackfillEntities(params: {
     workspaceId: string;
     flowId: string;
+    scope: string;
   }): Promise<string[]> {
     const rows = await CdcEntityState.find({
       workspaceId: new Types.ObjectId(params.workspaceId),
       flowId: new Types.ObjectId(params.flowId),
+      backfillCursorScope: params.scope,
       "backfillCursor.hasMore": false,
     })
       .select({ entity: 1 })
@@ -519,33 +528,53 @@ function anchorStamps(
     : { lastBackfillRunStartedAt: startedAt };
 }
 
+/**
+ * The scope a backfill checkpoint is saved and resumed under: the backfill
+ * run, and the destination table it writes to. A cursor only resumes the run
+ * that saved it, against the same destination. A new backfill gets a new
+ * runId (startBackfill), so it starts fresh instead of resuming a cancelled
+ * run; pause/resume and recovery reuse the runId and resume. A flow repointed
+ * to another destination starts fresh too.
+ */
+export function backfillCheckpointScope(params: {
+  runId: string;
+  destinationId?: string;
+  tableDestination?: Record<string, unknown> | null;
+}): string {
+  const table = params.tableDestination ?? {};
+  return [
+    params.runId,
+    params.destinationId ?? "",
+    String(table.connectionId ?? ""),
+    String(table.schema ?? ""),
+    String(table.tableName ?? ""),
+  ].join("|");
+}
+
 export const cdcBackfillCheckpointService = {
   listCompletedEntities: async (params: {
     workspaceId: string;
     flowId: string;
-    runId: string;
+    scope: string;
   }) => {
-    return cdcSyncStateService.listCompletedBackfillEntities({
-      workspaceId: params.workspaceId,
-      flowId: params.flowId,
-    });
+    return cdcSyncStateService.listCompletedBackfillEntities(params);
   },
   loadEntityCheckpoint: async (params: {
     workspaceId: string;
     flowId: string;
-    runId: string;
+    scope: string;
     entity: string;
   }) => {
-    return cdcSyncStateService.loadBackfillCursor({
-      workspaceId: params.workspaceId,
-      flowId: params.flowId,
-      entity: params.entity,
-    });
+    return cdcSyncStateService.loadBackfillCursor(params);
   },
+  /**
+   * Save the entity's resume cursor. Callers save only a cursor whose rows
+   * all reached the destination: a resume skips every row before it.
+   */
   saveEntityCheckpoint: async (params: {
     workspaceId: string;
     flowId: string;
-    runId: string;
+    scope: string;
     entity: string;
     fetchState: FetchState;
   }) => {
@@ -554,12 +583,13 @@ export const cdcBackfillCheckpointService = {
       flowId: params.flowId,
       entity: params.entity,
       cursor: params.fetchState,
+      scope: params.scope,
     });
   },
   markEntityCompleted: async (params: {
     workspaceId: string;
     flowId: string;
-    runId: string;
+    scope: string;
     entity: string;
     fetchState?: FetchState;
     /** Rows this backfill run wrote to the destination for this entity. */
@@ -586,6 +616,7 @@ export const cdcBackfillCheckpointService = {
       flowId: params.flowId,
       entity: params.entity,
       cursor,
+      scope: params.scope,
     });
 
     // Backfills write directly via the adapter (applyBatch / staging merge),
@@ -615,11 +646,7 @@ export const cdcBackfillCheckpointService = {
       },
     );
   },
-  clearRun: async (params: {
-    workspaceId: string;
-    flowId: string;
-    runId: string;
-  }) => {
+  clearRun: async (params: { workspaceId: string; flowId: string }) => {
     await cdcSyncStateService.clearBackfillCursorsForFlow({
       workspaceId: params.workspaceId,
       flowId: params.flowId,

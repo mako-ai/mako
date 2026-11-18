@@ -106,6 +106,10 @@ export function normalizeCloseLeadRecord(record: Row): Row {
       normalized[key] = value;
     }
   }
+  // Search never returns `source`. Its `first_source` holds the same value.
+  if (record && !("source" in record) && "first_source" in record) {
+    normalized.source = record.first_source;
+  }
   flattenCloseCustomFields(normalized);
   const contactIds = extractLeadContactIds(record);
   if (contactIds.length > 0) normalized.contact_ids = contactIds;

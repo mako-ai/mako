@@ -2,6 +2,10 @@
  * Resync a CDC flow from scratch (optionally dropping its destination tables),
  * or only a subset of its entities.
  */
+import {
+  bulkBufferName,
+  bulkStagingSuffix,
+} from "../../sync/sync-orchestrator";
 import { inWorkspace } from "../../utils/workspace-scope";
 import { Types } from "mongoose";
 import {
@@ -20,6 +24,7 @@ import {
   resolveConfiguredEntities,
 } from "../entity-selection";
 import { getCdcEventStore } from "../event-store";
+import { openFlowDataDiff } from "../data-diff";
 import { cdcLiveTableName, cdcStageTableName } from "../normalization";
 
 import { assertCanStartBackfill } from "./execution-guard";
@@ -194,6 +199,14 @@ export async function deleteDestinationTables(
   const stageSchema = driver.getStagingSchema?.(schema) ?? schema;
   const flowId = flow._id.toString();
 
+  // Count what the tables hold before they go, for the data-diff check the
+  // refilling backfill closes.
+  await openFlowDataDiff({
+    flow,
+    entities: enabledEntities,
+    reasons: ["resync"],
+  });
+
   const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
   for (const entity of enabledEntities) {
     const liveTable = cdcLiveTableName(tablePrefix, entity, flowId);
@@ -202,7 +215,9 @@ export async function deleteDestinationTables(
       `${liveTable}__stage_changes`,
     ];
     const bulkStagingTable = `${liveTable}__${flowToken}__staging`;
-    const backfillStagingTable = `${liveTable}__${flowToken}__backfill_staging`;
+    const laneStagingTables = [true, false].map(
+      fullRead => `${liveTable}__${flowToken}__${bulkStagingSuffix(fullRead)}`,
+    );
 
     await driver.dropTable(destination, liveTable, { schema });
     for (const stageTable of oldStageTables) {
@@ -211,16 +226,19 @@ export async function deleteDestinationTables(
       });
     }
     await driver.dropTable(destination, bulkStagingTable, { schema });
-    await driver.dropTable(destination, backfillStagingTable, { schema });
+    for (const table of laneStagingTables) {
+      await driver.dropTable(destination, table, { schema });
+    }
   }
 
   const db = Flow.db;
   for (const entity of enabledEntities) {
-    const collName = `backfill_tmp_${flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
-    await db
-      .collection(collName)
-      .drop()
-      .catch(() => undefined);
+    for (const fullRead of [true, false]) {
+      await db
+        .collection(bulkBufferName(flowId, entity, fullRead))
+        .drop()
+        .catch(() => undefined);
+    }
   }
 
   log.info("CDC destination tables dropped during resync", {

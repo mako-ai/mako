@@ -1,6 +1,7 @@
 import { z } from "@hono/zod-openapi";
 import { RepoRequiredError } from "../../apps/config";
 import { fail } from "../lib/respond";
+import { resyncLastRunAt } from "../../services/resync-schedule";
 import {
   ANY_JSON_BODY,
   assertFlowRepo,
@@ -183,12 +184,16 @@ export function registerSettingsRoutes(flowRoutes: FlowRouter): void {
           return fail(c, 400, "Scheduled backfill requires syncEngine=cdc");
         }
 
-        flow.backfillSchedule = {
+        const next = {
           enabled,
           cron: enabled ? cron : flow.backfillSchedule?.cron,
           timezone,
+        };
+        flow.backfillSchedule = {
+          ...next,
           entities: flow.backfillSchedule?.entities,
-          lastRunAt: flow.backfillSchedule?.lastRunAt,
+          // A new or changed resync first runs at its next tick.
+          lastRunAt: resyncLastRunAt(flow.backfillSchedule, next),
         };
         {
           const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);

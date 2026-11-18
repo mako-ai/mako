@@ -1,0 +1,4 @@
+[
+{"request":"GET /organizations/ORG0000000001","status":200,"body":{"resource":{"uri":"https://calendly.local/organizations/ORG0000000001","name":"Fixture Org","plan":"teams","stage":"paid","created_at":"2025-04-27T08:00:00.000000Z","updated_at":"2026-07-13T00:00:00.000000Z"}}},
+{"request":"GET /users/me","status":200,"body":{"resource":{"uri":"https://calendly.local/users/USR0000000001","name":"Owner One","email":"owner.one@example.com","current_organization":"https://calendly.local/organizations/ORG0000000001","created_at":"2025-08-05T08:00:00.000000Z","updated_at":"2026-06-01T08:00:00.000000Z"}}}
+]

@@ -12,17 +12,27 @@ import {
   Flow,
   ITableDestination,
 } from "../database/workspace-schema";
-import { markAbsentColumns, stripUndefined } from "../sync-cdc/sparse-rows";
+import {
+  markAbsentColumns,
+  stripUndefined,
+  withPolledDeleteState,
+} from "../sync-cdc/sparse-rows";
+import { nestedValuesAsJsonText } from "./bulk-buffer-json";
 import {
   buildParquetFromBatches,
   isDuckDBMemoryError,
+  parquetBuildByteBudget,
   type FieldMeta,
 } from "../utils/streaming-parquet-builder";
-import { Collection } from "mongodb";
+import { BSON, Collection } from "mongodb";
 import { Types } from "mongoose";
 import { ProgressReporter } from "./progress-reporter";
 import axios from "axios";
 import { loggers } from "../logging";
+import {
+  destinationFallbackSince,
+  pollOverlapMsFromEnv,
+} from "../sync-cdc/poll-cursor";
 import { LEGACY_ENGINE_REMOVED } from "../services/flow-triggers.service";
 import {
   SandboxedConnector,
@@ -96,6 +106,12 @@ export async function resolveEntitySchema(params: {
   workspaceId: string;
   sourceConnection?: { id?: string; type?: string } | null;
   connector?: { resolveSchema?: (entity: string) => Promise<unknown> } | null;
+  /**
+   * The flow's queries, for a connector whose entities they name (GraphQL,
+   * PostHog): injected into the connection as `performSyncChunk` does, or
+   * the connector built here would not know the entity at all.
+   */
+  queries?: unknown[];
   context: string;
 }): Promise<ConnectorEntitySchema | null> {
   let sourceType = params.sourceConnection?.type;
@@ -117,7 +133,20 @@ export async function resolveEntitySchema(params: {
         );
       }
       sourceType = (ds as { type?: string }).type;
-      connector = await syncConnectorRegistry.getConnectorFor(ds as any);
+      const withQueries =
+        params.queries && params.queries.length > 0
+          ? {
+              ...ds,
+              connection: {
+                ...((ds as { connection?: Record<string, unknown> })
+                  .connection ?? {}),
+                queries: params.queries,
+              },
+            }
+          : ds;
+      connector = await syncConnectorRegistry.getConnectorFor(
+        withQueries as any,
+      );
       if (!connector) {
         throw new Error(`no connector for source type "${sourceType}"`);
       }
@@ -135,7 +164,16 @@ export async function resolveEntitySchema(params: {
     });
     throw new SchemaResolutionError(params.entity, params.context, err);
   }
-  if (!schema && isWorkspaceConnector(connector, sourceType)) {
+  // A stream the catalog declares untyped (a user's query) has no schema on
+  // purpose; any other null from a workspace connector is a broken catalog.
+  const untyped =
+    !schema &&
+    (await (
+      connector as { declaresUntypedSchema?: (e: string) => Promise<boolean> }
+    )
+      ?.declaresUntypedSchema?.(params.entity)
+      .catch(() => false));
+  if (!schema && !untyped && isWorkspaceConnector(connector, sourceType)) {
     throw new SchemaResolutionError(
       params.entity,
       params.context,
@@ -147,6 +185,13 @@ export async function resolveEntitySchema(params: {
 
 function camelToSnake(str: string): string {
   return str.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+}
+
+/** A destination error that means the table does not exist (yet). */
+export function isMissingTableError(error: unknown): boolean {
+  return /not found|does not exist|doesn't exist|no such table|unknown table/i.test(
+    String(error ?? ""),
+  );
 }
 
 /**
@@ -194,6 +239,12 @@ export interface SyncChunkOptions {
   syncEngine?: string;
   backfillRunId?: string;
   /**
+   * This run reads the source in full (a backfill or a resync), not as an
+   * incremental poll. Its staged rows may overwrite a live row stamped up to
+   * 1 s later (FULL_READ_SKEW_SECONDS in sync-cdc/adapters/bigquery-sql.ts).
+   */
+  fullRead?: boolean;
+  /**
    * Explicit fetch scope for a CDC backfill chunk, decided once per entity
    * and run by sync-cdc/backfill-fetch-mode.ts. When present it replaces the
    * `_syncedAt` incremental anchor below:
@@ -203,6 +254,13 @@ export interface SyncChunkOptions {
    * Absent: the historical behaviour (poll anchor on the first chunk).
    */
   backfillFetch?: { mode: "full" } | { mode: "incremental"; since: string };
+  /**
+   * Poll-owned cursor of a scheduled incremental poll, resolved once per
+   * entity and run by sync-cdc/poll-cursor.ts. `since` (when a poll or
+   * backfill stamp exists) replaces the destination anchor; `overlapMs` is
+   * subtracted from the destination fallback too.
+   */
+  pollCursor?: { since?: string; overlapMs?: number };
   entityPartitioning?: {
     type?: "time" | "ingestion";
     field: string;
@@ -455,15 +513,17 @@ async function performSyncChunkSql(
     },
   });
 
-  // Incremental: get last sync date from destination table.
+  // Incremental poll anchor (first chunk only; the connector carries its
+  // cursor in `state` for later chunks).
   //
-  // Historically skipped for CDC because CDC runs were always full webhook
-  // backfills. Under the unified trigger model a scheduled CDC flow polls
-  // with syncMode=incremental, and without an anchor every poll would
-  // re-fetch the entire entity. The CDC live table carries the same
-  // _syncedAt column, so anchor there too. Note: incremental CDC polls are
-  // upsert-only; deletes are reconciled by the periodic full backfill
-  // (backfillSchedule), not by polls.
+  // The anchor is the poll's own cursor (sync-cdc/poll-cursor.ts): the start
+  // of the last completed poll or backfill run of this entity, minus an
+  // overlap. It used to be MAX(_syncedAt) of the live table, Mako's write
+  // time, which webhook writes advance too: a change a webhook missed before
+  // the latest webhook write was never polled again. Without a stamp on
+  // record, the destination is the fallback, on the source timestamp first.
+  // Incremental CDC polls are upsert-only; deletes are reconciled by the
+  // periodic full backfill (backfillSchedule), not by polls.
   const backfillFetch = options.backfillFetch;
   const anchorIncremental =
     !backfillFetch &&
@@ -483,7 +543,21 @@ async function performSyncChunkSql(
       }
     }
   }
+  const pollSince = options.pollCursor?.since
+    ? new Date(options.pollCursor.since)
+    : undefined;
+  const hasPollSince = Boolean(pollSince && !Number.isNaN(pollSince.getTime()));
   if (anchorIncremental) {
+    const overlapMs = options.pollCursor?.overlapMs ?? pollOverlapMsFromEnv();
+    const overlapMin = Math.round(overlapMs / 60_000);
+    // The destination is always asked first: an empty or missing live table
+    // (dropped, or the flow pointed at a new table) needs a full fetch even
+    // when a poll cursor is on record, or older history never arrives.
+    let destination:
+      | { kind: "rows"; maxSyncedAt: string }
+      | { kind: "empty"; reason: string }
+      | { kind: "unknown"; reason: string };
+    let maxOf: ((column: string) => Promise<string | undefined>) | undefined;
     try {
       const { getMaxTrackingValue } =
         await import("../services/destination-writer.service");
@@ -492,27 +566,74 @@ async function performSyncChunkSql(
       const destConn = await DatabaseConnection.findOne(
         inWorkspace(tableDestination.connectionId, options.workspaceId),
       );
-      if (destConn) {
-        const result = await getMaxTrackingValue(
-          destConn,
-          entityTableName,
-          "_syncedAt",
-          tableDestination.schema,
-          tableDestination.database,
-        );
-        if (result.success && result.maxValue) {
-          lastSyncDate = new Date(result.maxValue);
-          logger?.log(
-            "info",
-            `Incremental from SQL: syncing ${entity} after ${lastSyncDate.toISOString()}`,
+      if (!destConn) {
+        destination = { kind: "unknown", reason: "destination not found" };
+      } else {
+        const probe = (column: string) =>
+          getMaxTrackingValue(
+            destConn,
+            entityTableName,
+            column,
+            tableDestination.schema,
+            tableDestination.database,
           );
+        maxOf = async column => {
+          const r = await probe(column);
+          return r.success ? r.maxValue : undefined;
+        };
+        const synced = await probe("_syncedAt");
+        if (synced.success) {
+          destination = synced.maxValue
+            ? { kind: "rows", maxSyncedAt: synced.maxValue }
+            : { kind: "empty", reason: "the live table is empty" };
+        } else if (isMissingTableError(synced.error)) {
+          destination = { kind: "empty", reason: "the live table is missing" };
+        } else {
+          destination = { kind: "unknown", reason: String(synced.error) };
         }
       }
     } catch (err) {
+      destination = { kind: "unknown", reason: String(err) };
+    }
+
+    if (destination.kind === "empty") {
+      logger?.log(
+        "info",
+        `Incremental poll: ${destination.reason} for ${entity}; fetching everything`,
+      );
+    } else if (hasPollSince && pollSince) {
+      lastSyncDate = pollSince;
+      if (destination.kind === "unknown") {
+        logger?.log(
+          "warn",
+          `Could not read the destination for ${entity} (${destination.reason}); using the poll cursor`,
+        );
+      }
+      logger?.log(
+        "info",
+        `Incremental poll: syncing ${entity} updated since ${pollSince.toISOString()} (poll cursor)`,
+      );
+    } else if (destination.kind === "unknown") {
       logger?.log(
         "warn",
-        `Could not get incremental anchor from SQL destination: ${err}`,
+        `Could not get incremental anchor from SQL destination: ${destination.reason}`,
       );
+    } else if (maxOf) {
+      const maxSourceTs = await maxOf("_mako_source_ts").catch(() => undefined);
+      const fallback = destinationFallbackSince({
+        maxSourceTs,
+        maxSyncedAt: maxSourceTs ? undefined : destination.maxSyncedAt,
+        overlapMs,
+      });
+      if (fallback) {
+        lastSyncDate = fallback.since;
+        logger?.log(
+          fallback.column === "_syncedAt" ? "warn" : "info",
+          fallback.column === "_syncedAt"
+            ? `Incremental poll: ${entity} has no _mako_source_ts; anchoring on MAX(_syncedAt) minus ${overlapMin} min: ${fallback.since.toISOString()}`
+            : `Incremental poll: no poll cursor on record for ${entity}; anchoring on MAX(_mako_source_ts) minus ${overlapMin} min: ${fallback.since.toISOString()}`,
+        );
+      }
     }
   }
 
@@ -572,8 +693,9 @@ async function performSyncChunkSql(
   const bulkRunId = options.backfillRunId || options.flowId || "";
   if (useBulkPath && options.flowId) {
     const db = Flow.db;
-    const collName = `backfill_tmp_${options.flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
-    bulkTempCollection = db.collection(collName);
+    bulkTempCollection = db.collection(
+      bulkBufferName(options.flowId, entity, options.fullRead),
+    );
     const isFirstChunk = !state || state.totalProcessed === 0;
     if (isFirstChunk) {
       await bulkTempCollection.deleteMany({});
@@ -621,12 +743,7 @@ async function performSyncChunkSql(
             // Mongo bulk buffer from storing them as null (sparse-rows.ts).
             const keyed = stripUndefined(normalizePayloadKeys(record));
             const normalized = {
-              ...keyed,
-              // A record a source read returns is live unless it says
-              // otherwise. Carry the delete state explicitly: an absent key
-              // would keep a stale soft-delete time on a revived row
-              // (sparse-rows.ts), and deleted_at derives from this one.
-              _mako_deleted_at: keyed._mako_deleted_at ?? null,
+              ...withPolledDeleteState(keyed),
               _dataSourceId: sourceConnection.id,
               _dataSourceName: sourceConnection.name,
               _syncedAt: new Date(),
@@ -652,7 +769,7 @@ async function performSyncChunkSql(
             if (useBulkPath && bulkTempCollection) {
               const enrichedRecords = processedRecords.map(
                 (record: Record<string, unknown>) => ({
-                  ...record,
+                  ...nestedValuesAsJsonText(record, entitySchema),
                   _mako_source_ts: resolveSourceTimestamp(record),
                   _bulkRunId: bulkRunId,
                 }),
@@ -665,11 +782,11 @@ async function performSyncChunkSql(
                 // Inngest retries it from the last saved state.
                 timeoutMS: BUFFER_WRITE_TIMEOUT_MS,
               });
-              runningRowsWritten += processedRecords.length;
+              // Buffered, not written: the caller adds the rows its flush
+              // merges into the destination (sync-entity.ts).
               logger?.log("info", "Buffered batch to MongoDB temp collection", {
                 entity,
                 fetchedCount: batch.length,
-                totalProcessed: runningRowsWritten,
                 writeMode: "bulk-buffer",
               });
               return;
@@ -722,7 +839,14 @@ async function performSyncChunkSql(
 
   const completed = !fetchState.hasMore;
 
-  if (completed) {
+  if (useBulkPath) {
+    // Bulk path: rows are in the buffer; the flush reports what it merged.
+    if (completed) progressReporter.reportComplete();
+    logger?.log(
+      "info",
+      `📊 ${entity} chunk buffered (${fetchState.totalProcessed} fetched so far)`,
+    );
+  } else if (completed) {
     progressReporter.reportComplete();
 
     const fetchWriteDelta = fetchState.totalProcessed - runningRowsWritten;
@@ -823,10 +947,59 @@ function syncMemorySnapshot(): {
  */
 export const BULK_STAGED_FIELD = "_mako_bulk_staged";
 
-function bulkBufferCollection(flowId: string, entity: string): Collection {
-  return Flow.db.collection(
-    `backfill_tmp_${flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`,
+/**
+ * The row cap for the retry after a flush batch failed with a DuckDB memory
+ * error: half the rows the failed attempt read, or null when it cannot get
+ * smaller. `minBatchSize` floors a batch the row cap ended. A batch the byte
+ * budget ended was already below its row cap, so it halves past the floor,
+ * down to 1 row: 2 MB rows end a 128 MiB batch at 64 rows, and a floor of
+ * 100 would only read the same 64 again. So does a batch an earlier byte
+ * cut already shrank below the floor.
+ */
+export function flushBatchSizeAfterMemoryError(params: {
+  batchSize: number;
+  rowsRead: number;
+  minBatchSize: number;
+}): number | null {
+  const attempted = Math.min(
+    params.batchSize,
+    params.rowsRead || params.batchSize,
   );
+  // Below the floor already (an earlier byte cut shrank it there): no floor.
+  const byteCut =
+    attempted < params.batchSize || params.batchSize < params.minBatchSize;
+  const floor = byteCut ? 1 : params.minBatchSize;
+  if (attempted <= floor) return null;
+  return Math.max(floor, Math.floor(attempted / 2));
+}
+
+/**
+ * A backfill (full read) and a poll of the same flow can run at once: Inngest
+ * interleaves their steps. On 17 Nov a PostHog poll and backfill shared one
+ * buffer and one staging table; one run's first chunk emptied the buffer the
+ * other had filled, and 26 survey_responses never landed. Each lane gets its
+ * own buffer and staging table. The full-read lane keeps the historical names.
+ */
+export function bulkBufferName(
+  flowId: string,
+  entity: string,
+  fullRead?: boolean,
+): string {
+  const lane = fullRead === false ? "poll_tmp" : "backfill_tmp";
+  return `${lane}_${flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
+}
+
+/** The staging table suffix of a lane (see bulkBufferName). */
+export function bulkStagingSuffix(fullRead?: boolean): string {
+  return fullRead === false ? "poll_staging" : "backfill_staging";
+}
+
+function bulkBufferCollection(
+  flowId: string,
+  entity: string,
+  fullRead?: boolean,
+): Collection {
+  return Flow.db.collection(bulkBufferName(flowId, entity, fullRead));
 }
 const NOT_STAGED = { [BULK_STAGED_FIELD]: { $ne: true } };
 
@@ -847,6 +1020,7 @@ async function flushBulkBuffer(
   logger?: SyncLogger,
   schemaFields?: FieldMeta[],
   onBatchFlushed?: () => Promise<void>,
+  stagingSuffix: string = bulkStagingSuffix(),
 ): Promise<{ flushed: number }> {
   const initialCount = await tempCollection.countDocuments(NOT_STAGED);
   if (initialCount === 0) return { flushed: 0 };
@@ -856,16 +1030,22 @@ async function flushBulkBuffer(
   if (!loadStagingFromParquet) return { flushed: 0 };
 
   let currentBatchSize = FLUSH_BATCH_SIZE;
+  // Bytes per batch (BSON size of the buffered rows):
+  // SYNC_BULK_FLUSH_BATCH_BYTES, else a quarter of the DuckDB memory limit.
+  const batchBytes =
+    resolvePositiveIntEnv(process.env.SYNC_BULK_FLUSH_BATCH_BYTES, 0) ||
+    parquetBuildByteBudget();
   let totalFlushed = 0;
   let batchNum = 0;
 
   logger?.log(
     "info",
-    `Flushing ${entity} buffer to staging (${initialCount.toLocaleString()} rows, starting batch size ${currentBatchSize.toLocaleString()})`,
+    `Flushing ${entity} buffer to staging (${initialCount.toLocaleString()} rows, batches of up to ${currentBatchSize.toLocaleString()} rows or ${Math.round(batchBytes / 1024 / 1024)} MiB)`,
     {
       entity,
       totalCount: initialCount,
       batchSize: currentBatchSize,
+      batchBytes,
       minBatchSize: MIN_FLUSH_BATCH_SIZE,
       mongoStreamChunk: MONGO_TO_PARQUET_CHUNK,
       memoryBefore: syncMemorySnapshot(),
@@ -903,6 +1083,8 @@ async function flushBulkBuffer(
     );
 
     const tParquetStart = Date.now();
+    let rowsRead = 0;
+    let bytesRead = 0;
 
     let parquet;
     try {
@@ -921,6 +1103,12 @@ async function flushBulkBuffer(
           let buffer: Record<string, unknown>[] = [];
           for await (const doc of cursor) {
             const d = doc as Record<string, unknown>;
+            // The batch ends at its byte budget as well as its row count:
+            // wide rows past the budget fail the build (see
+            // parquetBuildByteBudget). The rows left stay for the next batch.
+            if (rowsRead > 0 && bytesRead >= batchBytes) break;
+            rowsRead++;
+            bytesRead += BSON.calculateObjectSize(d);
             const { _id, ...rest } = d;
             currentChunk.push(_id);
             if (currentChunk.length >= DELETE_CHUNK) {
@@ -944,21 +1132,20 @@ async function flushBulkBuffer(
       });
     } catch (err) {
       if (isDuckDBMemoryError(err)) {
-        const shrunkSize = Math.max(
-          MIN_FLUSH_BATCH_SIZE,
-          Math.floor(currentBatchSize / 2),
-        );
+        const shrunkSize = flushBatchSizeAfterMemoryError({
+          batchSize: currentBatchSize,
+          rowsRead,
+          minBatchSize: MIN_FLUSH_BATCH_SIZE,
+        });
 
-        if (
-          shrunkSize <= MIN_FLUSH_BATCH_SIZE &&
-          currentBatchSize <= MIN_FLUSH_BATCH_SIZE
-        ) {
+        if (shrunkSize === null) {
           logger?.log(
             "error",
-            `${entity} flush: DuckDB memory error at minimum batch size (${currentBatchSize}), cannot shrink further`,
+            `${entity} flush: DuckDB memory error at minimum batch size (${Math.min(currentBatchSize, rowsRead || currentBatchSize)} rows), cannot shrink further`,
             {
               entity,
               batchSize: currentBatchSize,
+              rowsRead,
               minBatchSize: MIN_FLUSH_BATCH_SIZE,
               error: err instanceof Error ? err.message : String(err),
             },
@@ -1016,7 +1203,7 @@ async function flushBulkBuffer(
       for (let attempt = 1; attempt <= LOAD_MAX_RETRIES; attempt++) {
         try {
           await loadStagingFromParquet(parquet.filePath, cdcLayout, flowId, {
-            stagingSuffix: "backfill_staging",
+            stagingSuffix,
             skipDrop: true,
             skipParquetCleanup: true,
           });
@@ -1179,12 +1366,13 @@ export async function performBulkFlush(
 
   if (!cdcAdapter.loadStagingFromParquet) return { flushed: 0 };
 
-  const tempCollection = bulkBufferCollection(flowId, entity);
+  const tempCollection = bulkBufferCollection(flowId, entity, options.fullRead);
 
   const entitySchema = await resolveEntitySchema({
     entity,
     dataSourceId: options.dataSourceId,
     workspaceId: options.workspaceId,
+    queries: options.queries,
     context: "performBulkFlush",
   });
   const cdcLayout = buildCdcEntityLayout({
@@ -1213,6 +1401,7 @@ export async function performBulkFlush(
     options.logger,
     schemaFields,
     onBatchFlushed,
+    bulkStagingSuffix(options.fullRead),
   );
 }
 
@@ -1274,7 +1463,7 @@ export async function performPrepareStaging(
   // A swallowed drop failure would leave the staged rows in staging and
   // load them a second time.
   await cdcAdapter.prepareStaging(cdcLayout, flowId, {
-    stagingSuffix: "backfill_staging",
+    stagingSuffix: bulkStagingSuffix(options.fullRead),
     strict: true,
   });
 
@@ -1283,6 +1472,7 @@ export async function performPrepareStaging(
   const { modifiedCount } = await bulkBufferCollection(
     flowId,
     entity,
+    options.fullRead,
   ).updateMany(
     { [BULK_STAGED_FIELD]: true },
     { $unset: { [BULK_STAGED_FIELD]: "" } },
@@ -1331,7 +1521,15 @@ export async function performRescueAndPrepareStaging(
   let rescued = 0;
   if (isDedup || !opts?.dedupOnly) {
     try {
-      rescued = (await performStagingMerge(options)).written;
+      // A per-flush rescue (dedupOnly) merges rows an earlier attempt of the
+      // same step loaded, so they keep this run's guard. The run-start
+      // rescue may merge an earlier run of another kind (a poll): strict.
+      rescued = (
+        await performStagingMerge({
+          ...options,
+          fullRead: opts?.dedupOnly ? options.fullRead : false,
+        })
+      ).written;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (!STAGING_CONTAINER_MISSING.test(message)) {
@@ -1347,7 +1545,11 @@ export async function performRescueAndPrepareStaging(
     // The staged rows are in live now: release them from the buffer so the
     // drop below does not send them back to be loaded again.
     if (options.flowId) {
-      await bulkBufferCollection(options.flowId, options.entity).deleteMany({
+      await bulkBufferCollection(
+        options.flowId,
+        options.entity,
+        options.fullRead,
+      ).deleteMany({
         [BULK_STAGED_FIELD]: true,
       });
     }
@@ -1363,11 +1565,30 @@ export async function performRescueAndPrepareStaging(
 const STAGING_CONTAINER_MISSING =
   /not found: dataset|was not found in location/i;
 
+/**
+ * Empty an entity's flush buffer. sync-entity.ts saves a resume cursor only
+ * when the buffer is empty, so rows found here at the start of an invocation
+ * lie past the cursor (a cancelled or failed attempt) and are fetched again.
+ */
+export async function discardBulkBuffer(
+  flowId: string,
+  entity: string,
+  fullRead?: boolean,
+): Promise<number> {
+  const { deletedCount } = await bulkBufferCollection(
+    flowId,
+    entity,
+    fullRead,
+  ).deleteMany({});
+  return deletedCount ?? 0;
+}
+
 export function getTempCollectionCount(
   flowId: string,
   entity: string,
+  fullRead?: boolean,
 ): Promise<number> {
-  return bulkBufferCollection(flowId, entity).countDocuments();
+  return bulkBufferCollection(flowId, entity, fullRead).countDocuments();
 }
 
 export async function performStagingMerge(
@@ -1391,6 +1612,7 @@ export async function performStagingMerge(
     sourceConnection,
     dataSourceId: options.dataSourceId,
     workspaceId: options.workspaceId,
+    queries: options.queries,
     context: "performStagingMerge",
   });
   // Resolve the schema first: it can throw (and retry), and a throw after
@@ -1408,7 +1630,7 @@ export async function performStagingMerge(
   const isDedup =
     options.writeMode !== "append" && options.writeMode !== "overwrite";
   if (!isDedup) {
-    await bulkBufferCollection(flowId, entity).deleteMany({
+    await bulkBufferCollection(flowId, entity, options.fullRead).deleteMany({
       [BULK_STAGED_FIELD]: true,
     });
   }
@@ -1440,7 +1662,10 @@ export async function performStagingMerge(
     } as any,
     flowId,
     entitySchema ?? undefined,
-    { stagingSuffix: "backfill_staging" },
+    {
+      stagingSuffix: bulkStagingSuffix(options.fullRead),
+      fullRead: options.fullRead,
+    },
   );
 }
 
@@ -1466,11 +1691,11 @@ export async function performStagingCleanup(
   // buffer before dropping staging, so a crash in between leaves rows a
   // retry can only re-merge from staging (append_dedup) or skip, never load
   // twice from the buffer.
-  const tempCollection = bulkBufferCollection(flowId, entity);
+  const tempCollection = bulkBufferCollection(flowId, entity, options.fullRead);
   await tempCollection.deleteMany({ [BULK_STAGED_FIELD]: true });
 
   await cdcAdapter.cleanupStaging(cdcLayout, flowId, {
-    stagingSuffix: "backfill_staging",
+    stagingSuffix: bulkStagingSuffix(options.fullRead),
   });
 
   // Rows still here were never staged (a flush that stopped early). Keep

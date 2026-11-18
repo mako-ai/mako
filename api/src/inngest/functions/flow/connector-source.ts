@@ -14,11 +14,17 @@ import {
   markCdcBackfillCompletedForFlow,
   purgeSoftDeletesAfterBackfill,
 } from "../../../sync-cdc/backfill";
+import {
+  compareFlowDataDiff,
+  prepareFlowDataDiff,
+} from "../../../sync-cdc/data-diff";
 import { resolveConfiguredEntities } from "../../../sync-cdc/entity-selection";
 import {
+  backfillCheckpointScope,
   cdcBackfillCheckpointService,
   syncMachineService,
 } from "../../../sync-cdc/sync-state";
+import type { FetchState } from "../../../connectors/base/BaseConnector";
 import { syncBackfillEntityFunction } from "../sync-entity";
 import {
   completeExecutionStep,
@@ -176,7 +182,14 @@ export async function runConnectorSourceFlow(
         return cdcBackfillCheckpointService.listCompletedEntities({
           workspaceId: String(flow.workspaceId),
           flowId: String(flow._id),
-          runId,
+          scope: backfillCheckpointScope({
+            runId,
+            destinationId: String(flow.destinationDatabaseId),
+            tableDestination: flow.tableDestination as unknown as Record<
+              string,
+              unknown
+            >,
+          }),
         });
       },
     )) as string[];
@@ -248,6 +261,19 @@ export async function runConnectorSourceFlow(
     });
   }
 
+  // Data-diff baseline: a backfill, or a run whose connector, connector code
+  // or destination changed since the last one, records per-column non-null
+  // counts first (sync-cdc/data-diff.ts). Never fails the run.
+  await step.run("data-diff-baseline", () =>
+    withHeartbeat(executionId, () =>
+      prepareFlowDataDiff({
+        flowId: String(flowId),
+        entities: entitiesToSync,
+        backfill: isCdcBackfill,
+      }),
+    ),
+  );
+
   // Process each entity via fan-out to child functions.
   // Each child gets its own 1000-step Inngest budget.
   for (const entity of entitiesToSync) {
@@ -312,15 +338,22 @@ export async function runConnectorSourceFlow(
 
     let entityCompleted = false;
     let invocationIndex = 0;
+    let resumeState: FetchState | undefined;
     while (!entityCompleted) {
       const result = (await step.invoke(
         `sync-entity-${safeEntityStepId}-${invocationIndex}`,
         {
           function: syncBackfillEntityFunction,
-          data: entityPayload,
+          data: {
+            ...entityPayload,
+            ...(resumeState ? { resumeState } : {}),
+          },
         },
-      )) as { completed: boolean; rowsWritten: number };
+      )) as { completed: boolean; rowsWritten: number; state?: FetchState };
       entityCompleted = result.completed;
+      // A poll that yielded hands back its fetch state; the next invocation
+      // resumes from it (backfills resume from their checkpoint instead).
+      resumeState = result.state;
       entityStatsMap[entity] = result.rowsWritten;
       invocationIndex++;
       if (invocationIndex > 100) {
@@ -343,6 +376,18 @@ export async function runConnectorSourceFlow(
   if (isCdcBackfill) {
     await finishCdcBackfill(ctx, flow);
   }
+
+  // Data-diff comparison: counts again and flags columns that lost values,
+  // when a baseline is open. Never fails the run.
+  await step.run("data-diff-compare", () =>
+    withHeartbeat(executionId, async () => {
+      const diff = await compareFlowDataDiff({
+        flowId: String(flowId),
+        executionId,
+      });
+      return { compared: Boolean(diff), flagged: diff?.flagged.length ?? 0 };
+    }),
+  );
 
   await markFlowSucceeded(ctx, "connector-before-success-mark");
 
@@ -434,7 +479,6 @@ async function finishCdcBackfill(
       await cdcBackfillCheckpointService.clearRun({
         workspaceId: String(flow.workspaceId),
         flowId: String(flow._id),
-        runId: cdcBackfillRunId,
       });
     }
   });

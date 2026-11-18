@@ -4,7 +4,13 @@ import { RepoRequiredError } from "../../apps/config";
 import { Flow, WebhookEvent } from "../../database/workspace-schema";
 import { AuthenticatedContext } from "../../middleware/workspace.middleware";
 import { isWebhookFlow } from "../../services/flow-triggers.service";
-import { provisionFlowWebhook } from "../../services/flow-webhook-provision.service";
+import {
+  RELEASE_PROVISION_CLAIM,
+  claimWebhookProvision,
+  persistProvisionedWebhook,
+  provisionFlowWebhook,
+  releaseWebhookProvision,
+} from "../../services/flow-webhook-provision.service";
 import { fail } from "../lib/respond";
 import {
   ANY_JSON_BODY,
@@ -40,12 +46,33 @@ export function registerWebhooksRoutes(flowRoutes: FlowRouter): void {
 
         const body = await c.req.json().catch(() => ({}));
 
-        const flow = await findFlow(workspaceId, flowId);
-        if (!flow) {
+        const found = await findFlow(workspaceId, flowId);
+        if (!found) {
           return fail(c, 404, "Flow not found");
         }
-        const { endpoint, created, webhookConfig, connectorType } =
-          await provisionFlowWebhook({ workspaceId, flow, body, request: c });
+        // The same atomic claim as flow_webhook_provision: two clicks, or a
+        // click racing the tool, create one subscription.
+        const flow = await claimWebhookProvision({
+          flowId: found._id,
+          workspaceId,
+          unprovisionedOnly: false,
+        });
+        if (!flow) {
+          return fail(
+            c,
+            409,
+            "This flow's webhook is being provisioned already. Try again in a minute.",
+          );
+        }
+        let provisioned;
+        try {
+          provisioned = await provisionFlowWebhook({ workspaceId, flow, body });
+        } catch (error) {
+          await releaseWebhookProvision(flow._id);
+          throw error;
+        }
+        const { endpoint, created, webhookConfig, connectorType } = provisioned;
+        await persistProvisionedWebhook(flow, RELEASE_PROVISION_CLAIM);
         {
           const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
           if (failed) return failed;

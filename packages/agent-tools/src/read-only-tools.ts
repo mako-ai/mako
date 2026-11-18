@@ -53,6 +53,7 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   "flow_list",
   "flow_read",
   "flow_status",
+  "flow_data_diff",
   // Flow form reads + query validation/explanation (read-only by design)
   "get_form_state",
   "list_flow_tabs",

@@ -3,21 +3,24 @@
  * the connector's subscription pointing at the flow's public endpoint, and
  * record the endpoint, signing secret and provider id on `flow.webhookConfig`.
  *
- * The caller persists the flow (file first, then row — RFC #904).
+ * The endpoint is the server's (generateWebhookEndpoint), never a request's
+ * host. The caller persists the flow: `persistProvisionedWebhook` writes the
+ * subscription id and secret to the row first, so a failed commit never
+ * orphans a live subscription; then the file, then the row (RFC #904).
  */
 import { Types } from "mongoose";
 import type { ProvisionWebhookResult } from "../connectors/base/BaseConnector";
-import { SourceConnection, type IFlow } from "../database/workspace-schema";
+import {
+  Flow,
+  SourceConnection,
+  type IFlow,
+} from "../database/workspace-schema";
 import { resolveConfiguredEntities } from "../sync-cdc/entity-selection";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
 import { FlowRequestError } from "./flow-request-error";
-import {
-  isLoopbackOrPrivateHostname,
-  resolveWebhookBaseUrl,
-  type RequestContextLike,
-} from "./flow-webhook-url";
+import { isLoopbackOrPrivateHostname } from "./flow-webhook-url";
 
 /** A provision request body: the loose JSON the Triggers step POSTs. */
 type ProvisionWebhookBody = Record<string, any>;
@@ -26,10 +29,8 @@ export async function provisionFlowWebhook(params: {
   workspaceId: string;
   flow: IFlow;
   body: ProvisionWebhookBody;
-  /** The request, for the public origin the endpoint is minted under. */
-  request: RequestContextLike;
 }) {
-  const { workspaceId, flow, body, request } = params;
+  const { workspaceId, flow, body } = params;
   if (!flow.dataSourceId) {
     throw new FlowRequestError(
       400,
@@ -72,16 +73,7 @@ export async function provisionFlowWebhook(params: {
     );
   }
 
-  const requestedPublicBaseUrl =
-    typeof body.publicBaseUrl === "string" && body.publicBaseUrl.trim()
-      ? body.publicBaseUrl.trim()
-      : undefined;
-
-  const endpoint = generateWebhookEndpoint(
-    workspaceId,
-    flow._id.toString(),
-    resolveWebhookBaseUrl(request, requestedPublicBaseUrl),
-  );
+  const endpoint = generateWebhookEndpoint(workspaceId, flow._id.toString());
   let parsedEndpoint: URL;
   try {
     parsedEndpoint = new URL(endpoint);
@@ -95,7 +87,7 @@ export async function provisionFlowWebhook(params: {
   if (isLoopbackOrPrivateHostname(parsedEndpoint.hostname)) {
     throw new FlowRequestError(
       400,
-      `Generated webhook endpoint is not publicly reachable: ${endpoint}. Open the app through your public tunnel URL before provisioning, or set PUBLIC_URL/BASE_URL to a public HTTPS origin.`,
+      `Generated webhook endpoint is not publicly reachable: ${endpoint}. Set WEBHOOK_PUBLIC_BASE_URL (a public tunnel in development) or BASE_URL to a public HTTPS origin.`,
     );
   }
   const requestedEvents = Array.isArray(body.events)
@@ -111,11 +103,13 @@ export async function provisionFlowWebhook(params: {
   // subscription in place (same URL, same signing secret) instead of
   // creating a second endpoint that would POST with a secret the flow no
   // longer holds. `recreate: true` forces a fresh endpoint, e.g. when the
-  // stored secret is known to be wrong.
+  // stored secret is known to be wrong. `adopt: true` (flow_webhook_provision)
+  // also looks the URL up when the flow holds no secret yet, so a
+  // subscription already there is adopted rather than duplicated.
   const existingSecret = flow.webhookConfig?.secret;
   let created: ProvisionWebhookResult | null = null;
   if (
-    existingSecret &&
+    (existingSecret || body.adopt === true) &&
     body.recreate !== true &&
     connector.supportsWebhookSubscriptionUpdate()
   ) {
@@ -163,4 +157,80 @@ export async function provisionFlowWebhook(params: {
     webhookConfig,
     connectorType: connectorSource.type,
   };
+}
+
+/**
+ * Write a fresh subscription's id, endpoint and secret to the row now, before
+ * the flow file is committed: the provider already holds the subscription,
+ * and a failed commit must not leave the only copy of its secret in memory.
+ */
+export async function persistProvisionedWebhook(
+  flow: IFlow,
+  extra: Record<string, unknown> = {},
+): Promise<void> {
+  const config = flow.webhookConfig;
+  if (!config) return;
+  await Flow.updateOne(
+    { _id: flow._id, workspaceId: flow.workspaceId },
+    {
+      $set: {
+        "webhookConfig.endpoint": config.endpoint,
+        "webhookConfig.providerWebhookId": config.providerWebhookId,
+        ...(config.secret ? { "webhookConfig.secret": config.secret } : {}),
+        ...extra,
+      },
+    },
+  );
+}
+
+/** A provisioning claim older than this is taken to have died. */
+export const PROVISION_CLAIM_MS = 10 * 60 * 1000;
+
+/** The update that releases a claim, for `persistProvisionedWebhook`. */
+export const RELEASE_PROVISION_CLAIM = {
+  "webhookConfig.provisioningAt": null,
+};
+
+/**
+ * Claim the right to create a flow's subscription, atomically: only a flow
+ * with no provisioning in flight (or one stale for PROVISION_CLAIM_MS) is
+ * taken, so concurrent calls and retries create one subscription at most.
+ * `unprovisionedOnly` (flow_webhook_provision) also requires no subscription
+ * id and no secret; the "Create in …" button may re-provision.
+ * Returns the claimed flow, or null when the claim was refused.
+ */
+export async function claimWebhookProvision(params: {
+  flowId: Types.ObjectId | string;
+  workspaceId: string;
+  unprovisionedOnly: boolean;
+}) {
+  const stale = new Date(Date.now() - PROVISION_CLAIM_MS);
+  return Flow.findOneAndUpdate(
+    {
+      _id: new Types.ObjectId(String(params.flowId)),
+      workspaceId: new Types.ObjectId(params.workspaceId),
+      ...(params.unprovisionedOnly
+        ? {
+            "webhookConfig.providerWebhookId": { $in: [null, ""] },
+            "webhookConfig.secret": { $in: [null, ""] },
+          }
+        : {}),
+      $or: [
+        { "webhookConfig.provisioningAt": null },
+        { "webhookConfig.provisioningAt": { $lt: stale } },
+      ],
+    },
+    { $set: { "webhookConfig.provisioningAt": new Date() } },
+    { returnDocument: "after" },
+  );
+}
+
+/** Give a claim back after a failed provisioning. */
+export async function releaseWebhookProvision(
+  flowId: Types.ObjectId | string,
+): Promise<void> {
+  await Flow.updateOne(
+    { _id: new Types.ObjectId(String(flowId)) },
+    { $set: RELEASE_PROVISION_CLAIM },
+  );
 }

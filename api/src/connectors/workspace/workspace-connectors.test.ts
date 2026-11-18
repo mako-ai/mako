@@ -228,6 +228,40 @@ describe("a connector pushed to the workspace repo", () => {
     expect(missing.ok).toBe(false);
   }, 120_000);
 
+  it("offers a query connector's incremental mode before any query exists", async () => {
+    // A GraphQL folder's queries live on the flow: the flow form asks the
+    // catalog for the mode before the connector has a single entity.
+    await ConnectorDefinition.create({
+      workspaceId: new Types.ObjectId(WS),
+      slug: "graphql",
+      sha: "s",
+      sourceSha: "s",
+      entities: [],
+      spec: {
+        mako: {
+          name: "graphql",
+          version: "1.0.0",
+          entities: {},
+          queryEntities: { source: "flow", incremental: "client-filter" },
+        },
+      },
+    });
+    await ConnectorDefinition.create({
+      workspaceId: new Types.ObjectId(WS),
+      slug: "plain",
+      sha: "s",
+      sourceSha: "s",
+      entities: ["rows"],
+      spec: {
+        mako: { name: "plain", version: "1.0.0", entities: { rows: {} } },
+      },
+    });
+    const catalog = await listWorkspaceConnectors(WS);
+    const bySlug = Object.fromEntries(catalog.map(c => [c.type, c]));
+    expect(bySlug["ws:graphql"].queryEntitiesIncremental).toBe("client-filter");
+    expect(bySlug["ws:plain"].queryEntitiesIncremental).toBeUndefined();
+  });
+
   it("cannot be seen or used by another workspace", async () => {
     await push({
       "connectors/acme/connector.yaml": "runtime: node\n",
@@ -435,6 +469,26 @@ describe("a spec that does not say what its fields are", () => {
     expect(
       validateSpec({ connectionSpecification: { properties: {} } }),
     ).toEqual({ ok: true });
+  });
+
+  it("is blocked when a flow query field is marked secret, since flows store queries in plaintext", () => {
+    const spec = (field: Record<string, unknown>) => ({
+      connectionSpecification: { properties: {} },
+      mako: {
+        queryEntities: {
+          source: "flow",
+          form: {
+            items: { properties: { query: { type: "string" }, token: field } },
+          },
+        },
+      },
+    });
+    for (const flag of [{ airbyte_secret: true }, { secret: true }]) {
+      const result = validateSpec(spec({ type: "string", ...flag }));
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toContain('"token"');
+    }
+    expect(validateSpec(spec({ type: "string" }))).toEqual({ ok: true });
   });
 
   it("throws rather than returning an empty credential form", () => {

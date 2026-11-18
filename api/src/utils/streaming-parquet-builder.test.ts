@@ -615,6 +615,197 @@ async function testZstdRoundTrip() {
 // Runner
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Differential test: appender staging vs the INSERT ... VALUES text it replaced
+// ---------------------------------------------------------------------------
+
+/** The SQL literal the builder used to write for one cell (kept as reference). */
+function legacySqlLiteral(value: unknown, type: string): string {
+  if (value === null || value === undefined) return "NULL";
+  switch (type) {
+    case "BIGINT":
+    case "DOUBLE": {
+      if (typeof value === "number") return String(value);
+      if (typeof value === "bigint") return String(value);
+      const n = Number(value);
+      return isNaN(n) ? "NULL" : String(n);
+    }
+    case "BOOLEAN": {
+      if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
+      if (value === "true" || value === 1) return "TRUE";
+      if (value === "false" || value === 0) return "FALSE";
+      return "NULL";
+    }
+    case "TIMESTAMP": {
+      if (value instanceof Date) {
+        const ts = value.getTime();
+        return isNaN(ts) ? "NULL" : `'${value.toISOString()}'`;
+      }
+      if (typeof value === "string" || typeof value === "number") {
+        const d = new Date(value as string | number);
+        return isNaN(d.getTime()) ? "NULL" : `'${d.toISOString()}'`;
+      }
+      return "NULL";
+    }
+    default: {
+      const raw =
+        value instanceof Date
+          ? Number.isNaN(value.getTime())
+            ? ""
+            : value.toISOString()
+          : typeof value === "object"
+            ? JSON.stringify(value)
+            : String(value);
+      // eslint-disable-next-line no-control-regex
+      return `'${raw.replace(/\u0000/g, "").replace(/'/g, "''")}'`;
+    }
+  }
+}
+
+async function testAppenderMatchesLegacyInsertText() {
+  console.log(
+    "  buildParquetFromBatches: appender staging stores what INSERT VALUES text stored",
+  );
+
+  const fields: FieldMeta[] = [
+    { name: "i", type: "INT64" },
+    { name: "d", type: "FLOAT64" },
+    { name: "b", type: "BOOLEAN" },
+    { name: "t", type: "TIMESTAMP" },
+    { name: "s", type: "STRING" },
+  ];
+  const types = ["BIGINT", "DOUBLE", "BOOLEAN", "TIMESTAMP", "VARCHAR"];
+  const names = fields.map(f => f.name);
+
+  const edge: Record<string, unknown>[] = [
+    { i: 0, d: 0, b: true, t: new Date("2026-01-02T03:04:05.678Z"), s: "" },
+    { i: -1, d: -0, b: false, t: "2026-01-02", s: "o'quote ''two''" },
+    { i: 1.5, d: 1.5, b: "true", t: "2026-01-02T03:04:05+02:00", s: "é漢😀" },
+    { i: 2.5, d: 1e21, b: "false", t: 1767323045678, s: "a\u0000b" },
+    { i: -2.5, d: 1e-7, b: 1, t: "not a date", s: 42 },
+    { i: "42", d: "3.25", b: 0, t: new Date(NaN), s: true },
+    { i: " 7 ", d: "abc", b: "yes", t: {}, s: { a: [1, "x'y"], b: null } },
+    { i: 9007199254740991, d: 0.1 + 0.2, b: null, t: null, s: [1, 2] },
+    { i: 12345678901234n, d: 12345678901234n, b: undefined, s: "NULL" },
+    { i: null, d: null, s: "line\nbreak\ttab \\ back" },
+    { i: 3, s: new Date("2026-11-17T15:32:19.000Z") },
+    { i: 4, s: new Date(NaN) },
+    { i: true, d: false, b: 2, t: "0001-01-01T00:00:00Z", s: "x".repeat(5000) },
+    { i: 1e15, d: -1e300, b: true, t: "9999-12-31T23:59:59.999Z", s: " " },
+  ];
+  // More than one staging flush, and a column that only appears later.
+  const bulk = Array.from({ length: 5000 }, (_, k) => ({
+    i: k,
+    d: k / 7,
+    b: k % 2 === 0,
+    t: new Date(1.7e12 + k * 1000),
+    s: `row ${k}`,
+  }));
+  const late = [
+    { i: 1, d: 2, b: true, t: new Date(0), s: "late", extra: "new column" },
+    { i: 2, extra: 5 },
+  ];
+
+  const result = await buildParquetFromBatches({
+    filenameBase: "test-differential",
+    fields,
+    streamBatches: async insertBatch => {
+      await insertBatch(edge);
+      await insertBatch(bulk);
+      await insertBatch(late);
+    },
+  });
+  assert.equal(result.rowCount, edge.length + bulk.length + late.length);
+
+  const instance = await DuckDBInstance.create(":memory:");
+  const conn = await instance.connect();
+  try {
+    await conn.run(
+      `CREATE TABLE legacy (${names.map((n, k) => `"${n}" ${types[k]}`).join(", ")})`,
+    );
+    const insert = async (
+      rows: Record<string, unknown>[],
+      cols: string[],
+      colTypes: string[],
+    ) => {
+      for (let o = 0; o < rows.length; o += 120) {
+        const values = rows
+          .slice(o, o + 120)
+          .map(
+            row =>
+              `(${cols.map((c, k) => legacySqlLiteral(row[c], colTypes[k])).join(", ")})`,
+          );
+        await conn.run(`INSERT INTO legacy VALUES ${values.join(", ")}`);
+      }
+    };
+    await insert(edge, names, types);
+    await insert(bulk, names, types);
+    await conn.run(`ALTER TABLE legacy ADD COLUMN "extra" VARCHAR`);
+    await insert(late, [...names, "extra"], [...types, "VARCHAR"]);
+
+    const file = result.filePath.replace(/'/g, "''");
+    const describe = async (from: string) =>
+      (await (await conn.run(`DESCRIBE SELECT * FROM ${from}`)).getRows()).map(
+        r => `${String(r[0])} ${String(r[1])}`,
+      );
+    assert.deepEqual(
+      await describe(`read_parquet('${file}')`),
+      await describe("legacy"),
+    );
+    const diff = async (a: string, b: string) =>
+      Number(
+        (
+          await (
+            await conn.run(
+              `SELECT COUNT(*) FROM (SELECT * FROM ${a} EXCEPT ALL SELECT * FROM ${b})`,
+            )
+          ).getRows()
+        )[0]?.[0],
+      );
+    assert.equal(await diff(`read_parquet('${file}')`, "legacy"), 0);
+    assert.equal(await diff("legacy", `read_parquet('${file}')`), 0);
+  } finally {
+    conn.closeSync();
+    await fsPromises
+      .rm(result.filePath, { force: true })
+      .catch(() => undefined);
+  }
+}
+
+async function testLargeCellsFlushEarlyAndKeepEveryRow() {
+  console.log(
+    "  buildParquetFromBatches: large cells flush the staging table early, no row lost",
+  );
+  // 40 rows of 1,000,000 characters: ten early flushes inside one batch.
+  const rows = Array.from({ length: 40 }, (_, k) => ({
+    id: k,
+    body: String(k % 10).repeat(1_000_000),
+  }));
+  const result = await buildParquetFromBatches({
+    filenameBase: "test-large-cells",
+    fields: [{ name: "id", type: "INT64" }, { name: "body" }],
+    streamBatches: async insertBatch => {
+      await insertBatch(rows);
+    },
+  });
+  const instance = await DuckDBInstance.create(":memory:");
+  const conn = await instance.connect();
+  try {
+    assert.equal(result.rowCount, 40);
+    const got = await (
+      await conn.run(
+        `SELECT COUNT(*), COUNT(DISTINCT id), MIN(LENGTH(body)), MAX(LENGTH(body)) FROM read_parquet('${result.filePath.replace(/'/g, "''")}')`,
+      )
+    ).getRows();
+    assert.deepEqual(got[0]?.map(Number), [40, 40, 1_000_000, 1_000_000]);
+  } finally {
+    conn.closeSync();
+    await fsPromises
+      .rm(result.filePath, { force: true })
+      .catch(() => undefined);
+  }
+}
+
 async function main() {
   console.log("Running streaming-parquet-builder tests...\n");
 
@@ -648,6 +839,10 @@ async function main() {
   await testRowLimitErrorSurvivesADriverThatWrapsIt();
   console.log("  PASSED");
   await testDefaultCodecIsSnappy();
+  console.log("  PASSED");
+  await testAppenderMatchesLegacyInsertText();
+  console.log("  PASSED");
+  await testLargeCellsFlushEarlyAndKeepEveryRow();
   console.log("  PASSED");
   await testZstdRoundTrip();
   console.log("  PASSED\n");

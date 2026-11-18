@@ -23,6 +23,7 @@ import {
   type FetchOptions,
   type FetchState,
   type IncrementalCapabilities,
+  type DeleteWebhookSubscriptionOptions,
   type ProvisionWebhookOptions,
   type ProvisionWebhookResult,
   type ResumableFetchOptions,
@@ -75,7 +76,9 @@ import {
   webhookProvisionerTraits,
 } from "./webhook-provisioners";
 import {
+  declaredEventId,
   declaredWebhookIdentity,
+  isDeclaredTestNotification,
   declaredWebhookVerification,
   valueAtPath,
   verifyDeclaredWebhook,
@@ -654,8 +657,54 @@ export class SandboxedConnector extends BaseConnector {
     }
   }
 
+  /**
+   * The connection's own config, without any `__` key. Those keys are Mako's
+   * (`__page_size`, `__connection_id`, ...): a value a user saved, typed in an
+   * unsaved test or passed to a probe must never stand in for one. Mako adds
+   * its own below, after this.
+   */
   private config(): Record<string, unknown> {
-    return (this.sourceConnection.config ?? {}) as Record<string, unknown>;
+    const raw = (this.sourceConnection.config ?? {}) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(raw).filter(([key]) => !key.startsWith("__")),
+    );
+  }
+
+  /**
+   * The config every command gets: the connection's, plus which saved
+   * connection and workspace it is, under the SDK's reserved `__` keys. A
+   * connector that labels the jobs it starts (BigQuery's `mako_connector`
+   * and `mako_workspace`) has no other way to learn them. Ids, never a
+   * secret.
+   */
+  private commandConfig(): Record<string, unknown> {
+    const connectionId = this.connectionId();
+    const workspaceId = (this.sourceConnection as { workspaceId?: unknown })
+      .workspaceId;
+    return {
+      ...this.config(),
+      ...(connectionId ? { __connection_id: connectionId } : {}),
+      ...(workspaceId ? { __workspace_id: String(workspaceId) } : {}),
+    };
+  }
+
+  /**
+   * The query entities' names, in the connection's order, for a connector
+   * whose spec declares `queryEntities`: one per item of `config.queries`
+   * with a name. A flow's queries are in the config too (the engine injects
+   * them, as for the in-process GraphQL connector).
+   */
+  private queryEntityNames(): string[] {
+    const declared = (this.loaded?.spec?.mako as any)?.queryEntities;
+    if (!declared || typeof declared !== "object") return [];
+    const list = this.config().queries;
+    if (!Array.isArray(list)) return [];
+    return list
+      .filter(
+        (item: any) =>
+          item && typeof item.name === "string" && item.name !== "",
+      )
+      .map((item: any) => item.name as string);
   }
 
   /**
@@ -690,9 +739,14 @@ export class SandboxedConnector extends BaseConnector {
     const rateLimitDelay =
       positive(options.rateLimitDelay) ??
       chosen(settings.rate_limit_delay_ms, CREATE_DEFAULT_RATE_LIMIT_MS);
+    const requested = positive(options.batchSize);
     return {
-      ...this.config(),
+      ...this.commandConfig(),
       ...(pageSize !== undefined ? { __page_size: pageSize } : {}),
+      // The batch size the caller asked for (a probe), apart from the
+      // connection's setting: a connector whose own per-query page size
+      // ranks between the two (GraphQL) needs to tell them apart.
+      ...(requested !== undefined ? { __requested_page_size: requested } : {}),
       ...(rateLimitDelay !== undefined
         ? { __rate_limit_delay_ms: rateLimitDelay }
         : {}),
@@ -736,7 +790,7 @@ export class SandboxedConnector extends BaseConnector {
 
   async testConnection(): Promise<ConnectionTestResult> {
     try {
-      const result = await this.run("check", { config: this.config() });
+      const result = await this.run("check", { config: this.commandConfig() });
       const failure = failureMessage(result);
       if (failure) return { success: false, message: failure };
 
@@ -772,7 +826,7 @@ export class SandboxedConnector extends BaseConnector {
    * reconciler already stored.
    */
   getAvailableEntities(): string[] {
-    return this.loaded?.entities ?? [];
+    return [...(this.loaded?.entities ?? []), ...this.queryEntityNames()];
   }
 
   getEntityMetadata(): EntityMetadata[] {
@@ -808,7 +862,9 @@ export class SandboxedConnector extends BaseConnector {
 
   private async catalog(): Promise<ProtocolMessage | null> {
     if (this.catalogCache) return this.catalogCache;
-    const result = await this.run("discover", { config: this.config() });
+    const result = await this.run("discover", {
+      config: this.commandConfig(),
+    });
     const failure = failureMessage(result);
     if (failure) throw new Error(`discover failed: ${failure}`);
     this.catalogCache = firstOfType(result.messages, "CATALOG") ?? null;
@@ -821,7 +877,24 @@ export class SandboxedConnector extends BaseConnector {
     if (!Array.isArray(streams)) return null;
     const stream = streams.find((candidate: any) => candidate?.name === entity);
     if (!stream) return null;
+    // An untyped stream (a user's query) has no schema on purpose: rows are
+    // written as they come, as the in-process connector's are. A schema
+    // with no fields would land every column as a string.
+    if (stream.mako_untyped === true) return null;
     return jsonSchemaToEntitySchema(entity, stream);
+  }
+
+  /**
+   * Whether `entity` is a stream the catalog declares untyped, so a null
+   * `resolveSchema` is the answer and not an incomplete discovery.
+   */
+  async declaresUntypedSchema(entity: string): Promise<boolean> {
+    const catalog = await this.catalog();
+    const streams = (catalog?.catalog as any)?.streams;
+    if (!Array.isArray(streams)) return false;
+    return streams.some(
+      (s: any) => s?.name === entity && s?.mako_untyped === true,
+    );
   }
 
   /**
@@ -848,10 +921,20 @@ export class SandboxedConnector extends BaseConnector {
     // a flow whose `entityFilter` points at an entity a later push renamed or
     // removed would otherwise report a successful sync of zero rows forever.
     const declared = this.getAvailableEntities();
-    if (declared.length > 0 && !declared.includes(options.entity)) {
+    // A connector whose entities are queries knows them all from the config:
+    // an empty list means no query, never "anything goes".
+    const queryEntities = Boolean(
+      (this.loaded?.spec?.mako as any)?.queryEntities,
+    );
+    if (
+      (declared.length > 0 || queryEntities) &&
+      !declared.includes(options.entity)
+    ) {
       throw new Error(
         `The connector "${this.slug}" has no entity "${options.entity}". ` +
-          `It offers: ${declared.join(", ")}.`,
+          (declared.length > 0
+            ? `It offers: ${declared.join(", ")}.`
+            : "It offers none: its entities are queries, and this connection or flow has none."),
       );
     }
 
@@ -1207,9 +1290,21 @@ export class SandboxedConnector extends BaseConnector {
     const declared = ((this.loaded?.spec?.mako as any)?.entities ??
       {}) as Record<string, { incremental?: unknown }>;
     const modes = new Set(["native", "client-filter", "created-anchor"]);
+    // Query entities share one mode, which holds before any query exists:
+    // a GraphQL flow's queries are written in the same form that asks
+    // whether it may sync incrementally.
+    const queryMode = (this.loaded?.spec?.mako as any)?.queryEntities
+      ?.incremental;
+    const queryEntityMode =
+      typeof queryMode === "string" && modes.has(queryMode)
+        ? (queryMode as IncrementalCapabilities["mode"])
+        : undefined;
+    const queryNames = new Set(this.queryEntityNames());
     const perEntity: NonNullable<IncrementalCapabilities["perEntity"]> = {};
     for (const name of this.getAvailableEntities()) {
-      const mode = declared[name]?.incremental;
+      const mode =
+        declared[name]?.incremental ??
+        (queryNames.has(name) ? queryEntityMode : undefined);
       perEntity[name] = {
         mode:
           typeof mode === "string" && modes.has(mode)
@@ -1218,6 +1313,9 @@ export class SandboxedConnector extends BaseConnector {
       };
     }
     const supported = Object.values(perEntity).some(e => e.mode !== "none");
+    if (queryEntityMode && Object.keys(declared).length === 0) {
+      return { supported: true, mode: queryEntityMode, perEntity };
+    }
     if (!supported) return { supported: false, mode: "none" };
     return { supported: true, mode: "none", perEntity };
   }
@@ -1288,20 +1386,45 @@ export class SandboxedConnector extends BaseConnector {
   /**
    * The id and type of a verified delivery, for the box lane's stored
    * event. The connector may say where they sit in the body
-   * (`webhooks.eventIdPath` / `eventTypePath`). Otherwise the id is `id`,
+   * (`webhooks.eventIdPath` / `eventTypePath`), or name a header with its
+   * delivery id (`eventIdHeader`). Otherwise the id is `id`,
    * then `event.id`, then a SHA-1 of the raw body, so a vendor's
    * re-delivery of the same body dedupes instead of getting a random id.
    */
   webhookEventIdentity(
     event: unknown,
     rawBody: string,
+    headers: Record<string, string | string[] | undefined> = {},
   ): { eventId: string; eventType?: string } {
-    const { eventIdPath, eventTypePath } = declaredWebhookIdentity(
-      this.loaded?.spec,
-    );
+    const identity = declaredWebhookIdentity(this.loaded?.spec);
+    const { eventTypePath } = identity;
     const e = event as { id?: unknown; event?: { id?: unknown } } | null;
+    // An unsigned test ping never takes a declared id: anyone can send one,
+    // so `x-delivery-id` alone would let it claim a real delivery's slot
+    // and get the real one dropped as a duplicate. `test:<id>`, as in-process.
+    if (
+      isDeclaredTestNotification(
+        declaredWebhookVerification(this.loaded?.spec),
+        headers,
+      )
+    ) {
+      const deliveryId = identity.eventIdHeader
+        ? declaredEventId(
+            { eventIdHeader: identity.eventIdHeader },
+            undefined,
+            headers,
+          )
+        : undefined;
+      return {
+        eventId: deliveryId
+          ? `test:${deliveryId}`
+          : typeof e?.id === "string" && e.id.startsWith("test:")
+            ? e.id
+            : `test:${createHash("sha1").update(rawBody, "utf8").digest("hex")}`,
+      };
+    }
     const eventId =
-      (eventIdPath ? valueAtPath(event, eventIdPath) : undefined) ??
+      declaredEventId(identity, event, headers) ??
       (typeof e?.id === "string" && e.id ? e.id : undefined) ??
       (typeof e?.event?.id === "string" && e.event.id
         ? e.event.id
@@ -1329,6 +1452,20 @@ export class SandboxedConnector extends BaseConnector {
       this.supportsWebhookProvisioning() &&
       webhookProvisionerTraits(this.slug)?.canUpdate === true
     );
+  }
+
+  supportsWebhookSubscriptionDelete(): boolean {
+    return (
+      this.supportsWebhookProvisioning() &&
+      webhookProvisionerTraits(this.slug)?.canDelete === true
+    );
+  }
+
+  async deleteWebhookSubscription(
+    options: DeleteWebhookSubscriptionOptions,
+  ): Promise<number> {
+    const provisioner = await this.webhookProvisioner();
+    return provisioner.delete ? provisioner.delete(options) : 0;
   }
 
   getWebhookCapabilities(): WebhookCapabilities {

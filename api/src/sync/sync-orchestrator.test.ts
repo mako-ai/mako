@@ -81,9 +81,11 @@ import {
   performPrepareStaging,
   performOverwriteTruncate,
   performRescueAndPrepareStaging,
+  performStagingMerge,
   performSyncChunk,
 } from "./sync-orchestrator";
 import { sourceConnectionManager } from "./database-data-source-manager";
+import { syncConnectorRegistry } from "./connector-registry";
 
 beforeEach(() => {
   vi.mocked(sourceConnectionManager.getSourceConnection).mockResolvedValue(
@@ -300,5 +302,40 @@ describe("source connection lookups are scoped to the flow's workspace", () => {
     );
     expect(lookup).toHaveBeenCalled();
     for (const call of lookup.mock.calls) expect(call).toEqual(["ds1", "ws1"]);
+  });
+});
+
+describe("a flow's queries reach the connector the merge resolves its schema from", () => {
+  // A GraphQL folder's entities are the flow's queries: a connector built
+  // from the stored connection alone has no stream for them (#1358 review).
+  const build = vi.mocked(syncConnectorRegistry.getConnectorFor);
+  beforeEach(() => {
+    build.mockClear();
+    vi.mocked(sourceConnectionManager.getSourceConnection).mockResolvedValue({
+      ...BUILTIN_SOURCE,
+      type: "ws:graphql",
+      connection: { endpoint: "https://x.test/graphql" },
+    } as any);
+  });
+
+  it("the staging merge builds the connector with the flow's queries", async () => {
+    const queries = [{ name: "users", query: "{ users { id } }" }];
+    await performStagingMerge({ ...baseOptions, queries }).catch(() => {});
+    expect(build).toHaveBeenCalled();
+    for (const [connection] of build.mock.calls) {
+      expect((connection as any).connection).toEqual({
+        endpoint: "https://x.test/graphql",
+        queries,
+      });
+    }
+  });
+
+  it("without queries the stored connection is used as it is", async () => {
+    await performStagingMerge(baseOptions).catch(() => {});
+    for (const [connection] of build.mock.calls) {
+      expect((connection as any).connection).toEqual({
+        endpoint: "https://x.test/graphql",
+      });
+    }
   });
 });

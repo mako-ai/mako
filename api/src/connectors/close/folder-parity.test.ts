@@ -92,7 +92,15 @@ class BoxlessClose extends SandboxedConnector {
     command: ConnectorCommand,
     options: Parameters<SandboxedConnector["run"]>[1],
   ): Promise<RunResult> {
-    const result = await runFolderCommand(command, options);
+    // SandboxedConnector drops every `__` key a connection's config holds,
+    // so the test's local Close URL is added back here, where the box would be.
+    const baseUrl = (this.sourceConnection.config as any).__base_url;
+    const result = await runFolderCommand(command, {
+      ...options,
+      ...(options.config
+        ? { config: { ...options.config, __base_url: baseUrl } }
+        : {}),
+    });
     return {
       exitCode: result.code ?? 1,
       messages: result.messages as RunResult["messages"],

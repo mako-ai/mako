@@ -10,7 +10,7 @@ import {
   slugFromType,
 } from "../connectors/workspace/SandboxedConnector";
 import { loadConnectorDefinition } from "../connectors/workspace/resolver";
-import { connectionSpecificationToForm } from "../connectors/workspace/spec-translation";
+import { specToForm } from "../connectors/workspace/spec-translation";
 
 const logger = loggers.sync("connector-registry");
 
@@ -126,9 +126,7 @@ class SyncConnectorRegistry {
         workspaceId,
         slugFromType(type),
       );
-      return connectionSpecificationToForm(
-        (definition.spec as any)?.connectionSpecification,
-      );
+      return specToForm(definition.spec as any);
     }
 
     let entry = this.connectors.get(type);

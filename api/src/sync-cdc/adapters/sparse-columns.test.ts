@@ -16,10 +16,15 @@ import {
   ABSENT_COLUMNS_FIELD,
   groupRowsByKeySet,
   markAbsentColumns,
+  withPolledDeleteState,
   writeBatchByKeySet,
 } from "../sparse-rows";
 import { buildCdcParquet } from "./bigquery-load";
-import { buildMergeStatement } from "./bigquery-sql";
+import {
+  buildCreateLiveTableStatement,
+  buildMergeStatement,
+  liveTableCreateColumns,
+} from "./bigquery-sql";
 import { MongoDbDestinationAdapter } from "./mongodb";
 import type { CdcEntityLayout } from "./registry";
 
@@ -392,5 +397,80 @@ describe("MongoDB CDC adapter: sparse rows against a real mongod", () => {
       { id: "a", name: "A2", source: "webhook" },
       { id: "b", name: "B2", source: null },
     ]);
+  });
+});
+
+describe("follow-ups: new live tables and schemaless delete state", () => {
+  it("a sparse first batch creates the live table with every schema field", () => {
+    const partitioned = {
+      ...schema,
+      fields: {
+        ...schema.fields,
+        date_created: { type: "timestamp", nullable: true },
+      },
+    } as ConnectorEntitySchema;
+    // The first batch carries neither date_created (the partition field)
+    // nor calendar_event_link.
+    const cols = liveTableCreateColumns(
+      new Set([
+        "id",
+        "name",
+        "_syncedAt",
+        "_mako_source_ts",
+        ABSENT_COLUMNS_FIELD,
+      ]),
+      partitioned,
+    );
+    expect(cols).toEqual(
+      expect.arrayContaining(["date_created", "calendar_event_link", "source"]),
+    );
+    expect(cols).not.toContain(ABSENT_COLUMNS_FIELD);
+    // A dotted schema name (Close custom fields) maps to the staged name.
+    const dotted = liveTableCreateColumns(new Set(["id", "custom_cf_abc"]), {
+      ...schema,
+      fields: {
+        ...schema.fields,
+        "custom.cf_abc": { type: "string", nullable: true },
+      },
+    } as ConnectorEntitySchema);
+    expect(dotted).toContain("custom_cf_abc");
+    expect(dotted).not.toContain("custom.cf_abc");
+    const ddl = buildCreateLiveTableStatement({
+      fullLive: "`p`.`d`.`leads`",
+      columns: cols,
+      layout: {
+        entity: "leads",
+        tableName: "leads",
+        keyColumns: ["id"],
+        partitioning: { field: "date_created", granularity: "day" },
+      } as unknown as CdcEntityLayout,
+      entitySchema: partitioned,
+    });
+    expect(ddl).toContain("`date_created` TIMESTAMP");
+    expect(ddl).toContain("PARTITION BY TIMESTAMP_TRUNC(`date_created`, DAY)");
+  });
+
+  it("a polled row carries all 3 delete columns, with or without a schema", () => {
+    expect(withPolledDeleteState({ id: "a" })).toEqual({
+      id: "a",
+      _mako_deleted_at: null,
+      deleted_at: null,
+      is_deleted: false,
+    });
+    const when = new Date("2026-11-17T10:00:00Z");
+    expect(withPolledDeleteState({ id: "b", _mako_deleted_at: when })).toEqual({
+      id: "b",
+      _mako_deleted_at: when,
+      deleted_at: when,
+      is_deleted: true,
+    });
+    // A source's own deleted_at / is_deleted wins.
+    expect(
+      withPolledDeleteState({ id: "c", deleted_at: when, is_deleted: true }),
+    ).toMatchObject({
+      _mako_deleted_at: null,
+      deleted_at: when,
+      is_deleted: true,
+    });
   });
 });

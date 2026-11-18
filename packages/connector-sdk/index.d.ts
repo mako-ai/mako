@@ -92,6 +92,12 @@ export interface EntityDefinition<Config = Record<string, unknown>> {
     partitionGranularity?: "day" | "hour" | "month" | "year";
     clusterFields?: string[];
   };
+  /**
+   * Columns nobody declares (a user's own query). Mako then writes rows as
+   * they come, typed by the destination, instead of through a schema that
+   * would land every undeclared column as a string.
+   */
+  untyped?: boolean;
   /** For APIs whose fields differ per account; overrides `schema`. */
   discoverSchema?(ctx: Context<Config>): Promise<EntitySchema> | EntitySchema;
   /** Yield one page at a time. Stop when there is nothing left. */
@@ -118,7 +124,8 @@ export interface StripeV1WebhookVerification {
 export type WebhookVerification =
   | HmacWebhookVerification
   | StripeV1WebhookVerification
-  | SharedSecretWebhookVerification;
+  | SharedSecretWebhookVerification
+  | RsaWebhookVerification;
 
 /**
  * A vendor that does not sign: it sends the secret itself in a header
@@ -201,6 +208,26 @@ export type WebhookOutcome =
   /** Not now, e.g. a request budget is spent. Retried later, the attempt not counted. */
   | { eventId: string; outcome: "deferred"; reason?: string };
 
+/**
+ * A vendor that signs the raw body with its own RSA keys (Wise). No secret:
+ * the public keys are declared here, and a signature any one verifies is
+ * valid.
+ */
+export interface RsaWebhookVerification {
+  scheme: "rsa-sha256";
+  /** 1 to 4 PEM public keys (SPKI). */
+  publicKeys: string[];
+  /** Lowercase name of the header with the signature of the raw body. */
+  signatureHeader: string;
+  signatureEncoding: "hex" | "base64";
+  /**
+   * The vendor's unsigned test ping: a delivery whose `header` equals
+   * `value` (ignoring case) is answered and stored under `eventType` with
+   * no payload, so a handler answers it `unmapped`.
+   */
+  testNotification?: { header: string; value: string; eventType: string };
+}
+
 export interface WebhookDefinition<Config = Record<string, unknown>> {
   verification: WebhookVerification;
   /** Every event type the connector handles, for subscribing at the vendor. */
@@ -211,7 +238,12 @@ export interface WebhookDefinition<Config = Record<string, unknown>> {
    * or when the path holds no id, Mako uses `id`, then `event.id`, then a
    * SHA-1 of the raw body.
    */
-  eventIdPath?: string;
+  eventIdPath?: string | string[];
+  /**
+   * A header carrying the vendor's delivery id (Wise's `x-delivery-id`).
+   * Read before `eventIdPath`. A list of paths joins their values with ":".
+   */
+  eventIdHeader?: string;
   /** Where the event type sits, as a dotted path (`"event.type"`, `"0.event"`). */
   eventTypePath?: string;
   /**
@@ -224,6 +256,33 @@ export interface WebhookDefinition<Config = Record<string, unknown>> {
     events: WebhookEvent[],
     options: WebhookBatchOptions,
   ): Promise<WebhookOutcome[]> | WebhookOutcome[];
+}
+
+/**
+ * Entities named by the user's own queries (GraphQL, BigQuery): one entity
+ * per item of `config.queries` that has a `name`. Mako puts a flow's
+ * queries in `config.queries` too.
+ */
+export interface QueryEntitiesDefinition<Config = Record<string, unknown>> {
+  /**
+   * Where the list lives: `connection`, a `queries` array the connector
+   * declares in `config.properties`; or `flow`, each flow's own list, whose
+   * fields `form` describes.
+   */
+  source: "connection" | "flow";
+  /** What every query entity does with `state.mako.since`. */
+  incremental?: "native" | "client-filter" | "created-anchor";
+  /** The flow form of one query, for `source: "flow"`. */
+  form?: {
+    label?: string;
+    required?: boolean;
+    items: {
+      required?: string[];
+      properties: Record<string, Record<string, unknown>>;
+    };
+  };
+  /** The entity one query defines. */
+  entity(query: Record<string, unknown> & { name: string }): EntityDefinition<Config>;
 }
 
 export interface ConnectorDefinition<Config = Record<string, unknown>> {
@@ -239,7 +298,9 @@ export interface ConnectorDefinition<Config = Record<string, unknown>> {
   };
   /** Throw with the vendor's message, or return false, when the credential is bad. */
   check?(ctx: Context<Config>): Promise<unknown>;
-  entities: Record<string, EntityDefinition<Config>>;
+  /** May be empty, or left out, when `queryEntities` is declared. */
+  entities?: Record<string, EntityDefinition<Config>>;
+  queryEntities?: QueryEntitiesDefinition<Config>;
   /** Webhook deliveries, verified by Mako and handed over in batches. */
   webhooks?: WebhookDefinition<Config>;
 }
@@ -249,8 +310,9 @@ export interface Connector {
   spec(): Record<string, unknown>;
   check(ctx: Context): Promise<{ status: "SUCCEEDED" | "FAILED"; message?: string }>;
   discover(ctx: Context): Promise<Array<Record<string, unknown>>>;
-  entityNames(): string[];
-  entity(name: string): EntityDefinition | undefined;
+  /** The declared entities, then one per query in `config.queries`. */
+  entityNames(config?: Record<string, unknown>): string[];
+  entity(name: string, config?: Record<string, unknown>): EntityDefinition | undefined;
   hasWebhooks(): boolean;
   handleWebhooks(
     ctx: Context,

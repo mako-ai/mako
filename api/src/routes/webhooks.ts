@@ -193,7 +193,7 @@ router.openapi(
       // (PandaDoc posts a bare array, Claap nests the type); without an id
       // the box lane keys on a hash of the body, never a random id.
       const boxIdentity = boxLane
-        ? connector.webhookEventIdentity?.(event, rawBodyText)
+        ? connector.webhookEventIdentity?.(event, rawBodyText, headers)
         : undefined;
 
       const webhookEvent = new WebhookEvent({

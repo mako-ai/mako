@@ -788,7 +788,12 @@ async function main() {
       tools: { name: string; annotations?: { readOnlyHint?: boolean } }[];
     };
     const byName = new Map(tools.map(tool => [tool.name, tool]));
-    for (const read of ["flow_list", "flow_read", "flow_status"]) {
+    for (const read of [
+      "flow_list",
+      "flow_read",
+      "flow_status",
+      "flow_data_diff",
+    ]) {
       assert.ok(byName.has(read), `${read} must be listed for a ${role}`);
       assert.equal(
         byName.get(read)?.annotations?.readOnlyHint,
@@ -796,7 +801,12 @@ async function main() {
         `${read} is a read`,
       );
     }
-    for (const act of ["flow_backfill", "flow_update"]) {
+    for (const act of [
+      "flow_backfill",
+      "flow_cancel",
+      "flow_update",
+      "flow_webhook_provision",
+    ]) {
       assert.equal(
         byName.has(act),
         mayAct,
@@ -812,6 +822,12 @@ async function main() {
       AGENT_CAPABILITY_BY_NAME.get("flow_update")?.requiredGrant,
       "warehouse-write",
     );
+    const cancel = AGENT_CAPABILITY_BY_NAME.get("flow_cancel");
+    assert.equal(cancel?.requiredGrant, "warehouse-write");
+    assert.equal(cancel?.minimumWorkspaceRole, "admin");
+    const provision = AGENT_CAPABILITY_BY_NAME.get("flow_webhook_provision");
+    assert.equal(provision?.requiredGrant, "warehouse-write");
+    assert.equal(provision?.minimumWorkspaceRole, "admin");
   }
 
   // 3a. Warehouse tools: exposed (destructive-annotated) and authorized for

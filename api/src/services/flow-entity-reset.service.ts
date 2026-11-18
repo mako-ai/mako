@@ -5,6 +5,7 @@
  *
  * Refusals are {@link FlowRequestError}s; the routes answer them as-is.
  */
+import { bulkBufferName } from "../sync/sync-orchestrator";
 import { inWorkspace } from "../utils/workspace-scope";
 import { Types } from "mongoose";
 import { asSystem } from "../access/connection-writes";
@@ -17,6 +18,7 @@ import {
 } from "../database/workspace-schema";
 import { databaseRegistry } from "../databases/registry";
 import { cdcBackfillService } from "../sync-cdc/backfill";
+import { openFlowDataDiff } from "../sync-cdc/data-diff";
 import { resolveConfiguredEntities } from "../sync-cdc/entity-selection";
 import { cdcLiveTableName, cdcStageTableName } from "../sync-cdc/normalization";
 import { buildColumnResetQuery } from "./flow-column-reset-sql";
@@ -53,6 +55,18 @@ export async function resetFlowEntity(params: {
     throw new FlowRequestError(400, "Entity reset requires syncEngine=cdc");
   }
   await assertCanStartBackfill(workspaceId, flowId);
+
+  // Count what the table holds before it goes, for the data-diff check the
+  // refilling backfill closes.
+  await openFlowDataDiff({
+    flow: {
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+      tableDestination: flow.tableDestination,
+    },
+    entities: [entity],
+    reasons: ["entity-reset"],
+  });
 
   if (flow.tableDestination?.connectionId && flow.tableDestination?.schema) {
     const destination = await DatabaseConnection.findOne(
@@ -100,11 +114,12 @@ export async function resetFlowEntity(params: {
   await CdcEntityState.deleteMany(scope);
   await CdcChangeEvent.deleteMany(scope);
 
-  const tempCollectionName = `backfill_tmp_${flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
-  await Flow.db
-    .collection(tempCollectionName)
-    .drop()
-    .catch(() => undefined);
+  for (const fullRead of [true, false]) {
+    await Flow.db
+      .collection(bulkBufferName(flowId, entity, fullRead))
+      .drop()
+      .catch(() => undefined);
+  }
 
   invalidateDestinationCounts(workspaceId, flowId);
 

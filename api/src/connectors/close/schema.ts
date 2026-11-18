@@ -355,6 +355,7 @@ export const CONTACT_SCHEMA: Record<string, ConnectorFieldSchema> = {
   organization_id: s(),
   timezone: s(),
   timezone_source: s(),
+  lead_suggestions_operation_id: s(),
   created_by: s(),
   updated_by: s(),
   date_created: ts(),
@@ -385,6 +386,7 @@ export const OPPORTUNITY_SCHEMA: Record<string, ConnectorFieldSchema> = {
   value_formatted: s(),
   value_period: s(),
   note: s(),
+  note_html: s(),
   created_by: s(),
   created_by_name: s(),
   updated_by: s(),
@@ -580,8 +582,18 @@ export const CORE_ENTITY_SCHEMA_MAP: Record<
 const MAKO_SYSTEM_FIELD_NAMES = new Set(Object.keys(MAKO_SYSTEM_FIELDS));
 
 /**
+ * Fields only Close webhooks carry. Search answers them with null, so asking
+ * for them would write null over the webhook value on every poll and resync.
+ * They stay in the schema, so webhook rows keep typing them.
+ */
+export const WEBHOOK_ONLY_SEARCH_FIELDS: Record<string, readonly string[]> = {
+  "activities:Meeting": ["calendar_event_link"],
+};
+
+/**
  * The Search API `_fields` list for one activity subtype: every column its
- * schema declares, minus the columns Mako stamps itself.
+ * schema declares, minus the columns Mako stamps itself and the webhook-only
+ * ones.
  *
  * This is the only definition of what the search path (full backfill and
  * incremental poll alike) asks Close for, so a column added to the schema is
@@ -595,8 +607,9 @@ const MAKO_SYSTEM_FIELD_NAMES = new Set(Object.keys(MAKO_SYSTEM_FIELDS));
 export function closeActivitySearchFields(entity: string): string[] | null {
   const typeSchema = ACTIVITY_SCHEMA_MAP[entity];
   if (!typeSchema) return null;
+  const webhookOnly = new Set(WEBHOOK_ONLY_SEARCH_FIELDS[entity] ?? []);
   return Object.keys({ ...COMMON_ACTIVITY_SCHEMA, ...typeSchema }).filter(
-    field => !MAKO_SYSTEM_FIELD_NAMES.has(field),
+    field => !MAKO_SYSTEM_FIELD_NAMES.has(field) && !webhookOnly.has(field),
   );
 }
 

@@ -70,6 +70,12 @@ drive it.
 - `config.__page_size` and `config.__rate_limit_delay_ms`: the connection's
   batch size and rate-limit delay, when it sets them. Like `__http`, these
   `__` keys come from Mako, never from the credential form.
+- `config.__requested_page_size`: the batch size the caller asked for (a
+  probe), apart from the connection's setting, for a connector whose own
+  per-query page size ranks between the two.
+- `config.__connection_id` and `config.__workspace_id`: which saved
+  connection and workspace this is, for a connector that labels the jobs
+  it starts (BigQuery). Ids, never a secret. Every command gets them.
 - `--max-bytes`: a chunk ends after the page that takes its records past this
   many bytes, as it ends after `--max-iterations` pages. A page is never
   split, so a single page must fit Mako's 32 MiB chunk cap.
@@ -78,6 +84,33 @@ drive it.
   It first prints a `MAKO_SESSION` line once its inputs are read. Each chunk
   restarts `read` from the previous chunk's state, so a connector reads the
   same pages either way. Nothing changes for the connector author.
+
+## Entities from the user's queries
+
+A connector whose entities are queries its user writes (GraphQL, SQL)
+declares `queryEntities` instead of, or next to, `entities`. Each item of
+`config.queries` with a `name` becomes one entity, after the declared ones:
+
+```ts
+queryEntities: {
+  // "connection": a `queries` array the connector declares in
+  // config.properties (BigQuery). "flow": each flow's own list; Mako puts
+  // it in config.queries, and `form` describes one query (GraphQL).
+  source: "flow",
+  incremental: "client-filter",
+  form: { label: "Queries", required: true, items: { required: ["name"], properties: { /* ... */ } } },
+  entity: query => ({
+    // Nobody declared the columns: rows land as they come, typed by the
+    // destination, instead of through a schema that makes them strings.
+    untyped: true,
+    read: (ctx, state) => readQuery(ctx, query),
+  }),
+},
+```
+
+Mako lists the entities from the connection's config without running
+anything, renders the flow form from `form`, and offers `incremental` for
+every query entity.
 
 ## Webhooks
 
@@ -131,6 +164,15 @@ Mako dedupes deliveries on their event id. Say where it sits with
 `eventIdPath` (a dotted path into the JSON body, `"eventId"`, `"event.id"`)
 and where the type sits with `eventTypePath` (`"event.type"`, `"0.event"`).
 Without an id, Mako keys a delivery on a SHA-1 of its raw body.
+`eventIdPath` may also be a list of up to 4 paths whose values join with
+":" (Calendly: `["created_at", "payload.uri"]`). `eventIdHeader` names a
+header with the vendor's delivery id (Wise: `"x-delivery-id"`), read first.
+
+A vendor that signs with its own RSA keys (Wise) declares
+`scheme: "rsa-sha256"` with `publicKeys`, `signatureHeader` and
+`signatureEncoding`. No secret is involved. Its unsigned test ping can be
+declared as `testNotification: { header, value, eventType }`: Mako answers
+it and stores it under `eventType` with no payload.
 
 Mako stores verified deliveries and hands them to `handleBatch` in batches
 (`mako-connector webhook --config config.json --batch batch.json`), with

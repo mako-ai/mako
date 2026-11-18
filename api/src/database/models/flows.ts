@@ -225,6 +225,11 @@ export interface IFlow extends Document {
      * Cleared on success. Polling carries on regardless.
      */
     provisionError?: { message: string; at: Date } | null;
+    /**
+     * Set while flow_webhook_provision creates the subscription: the atomic
+     * claim that keeps two concurrent calls from creating two.
+     */
+    provisioningAt?: Date | null;
     totalReceived: number;
     enabled: boolean;
     /**
@@ -279,6 +284,18 @@ export interface IFlow extends Document {
      * runs started before this field existed: treated as manual (full).
      */
     trigger?: "scheduled" | "manual";
+  };
+
+  /**
+   * What the last run wrote with: the source connection, a hash of its
+   * connector code, and the destination tables. A change between two runs
+   * opens a data-diff check (sync-cdc/data-diff.ts). Runtime bookkeeping,
+   * never in the flow file.
+   */
+  dataDiffFingerprint?: {
+    source?: string;
+    code?: string;
+    destination?: string;
   };
 
   lastRunAt?: Date;
@@ -471,6 +488,7 @@ const FlowSchema = new Schema<IFlow>(
         message: String,
         at: Date,
       },
+      provisioningAt: Date,
       totalReceived: {
         type: Number,
         default: 0,
@@ -634,6 +652,11 @@ const FlowSchema = new Schema<IFlow>(
         entities: [String],
       },
       trigger: { type: String, enum: ["scheduled", "manual"] },
+    },
+    dataDiffFingerprint: {
+      source: String,
+      code: String,
+      destination: String,
     },
     lastRunAt: Date,
     lastScheduledDispatchAt: Date,

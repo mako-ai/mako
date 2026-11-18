@@ -186,7 +186,6 @@ describe("the API update", () => {
         workspaceId: String(WS),
         flow,
         body: { tableDestination: { connectionId: String(FOREIGN_DEST) } },
-        requestBaseUrl: "https://mako.test",
       } as any),
     ).rejects.toMatchObject({
       status: 404,
@@ -207,7 +206,6 @@ describe("the API update", () => {
             query: "select 1",
           },
         },
-        requestBaseUrl: "https://mako.test",
       } as any),
     ).rejects.toMatchObject({
       status: 404,

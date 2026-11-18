@@ -47,6 +47,7 @@ import {
   selectedEntitiesFromFlowBody,
   validateWriteMode,
 } from "./flow-write-validation.service";
+import { resyncLastRunAt } from "./resync-schedule";
 
 const logger = loggers.inngest("flow");
 
@@ -63,9 +64,8 @@ type FlowRequestBody = Record<string, any>;
 export async function buildNewFlow(params: {
   workspaceId: string;
   body: FlowRequestBody;
-  requestBaseUrl: string;
 }) {
-  const { workspaceId, body, requestBaseUrl } = params;
+  const { workspaceId, body } = params;
   // TODO: Get userId from authentication
   const userId = "system";
   // Webhooks on at creation: `webhookConfig.enabled`, or the retired
@@ -208,13 +208,18 @@ export async function buildNewFlow(params: {
     const enabled = Boolean(sched.enabled);
     const cron = typeof sched.cron === "string" ? sched.cron.trim() : "";
     if (enabled && cron) {
-      flowData.backfillSchedule = {
+      const next = {
         enabled: true,
         cron,
         timezone:
           typeof sched.timezone === "string" && sched.timezone.trim()
             ? sched.timezone.trim()
             : "UTC",
+      };
+      // A new resync first runs at its next tick (resync-schedule.ts).
+      flowData.backfillSchedule = {
+        ...next,
+        lastRunAt: resyncLastRunAt(undefined, next),
       };
     }
   }
@@ -317,10 +322,12 @@ export async function buildNewFlow(params: {
     const webhookEndpoint = generateWebhookEndpoint(
       workspaceId,
       new Types.ObjectId().toString(),
-      requestBaseUrl,
     );
     // Webhook secret must be provided by the user (from Stripe/Close)
-    const webhookSecret = body.webhookSecret || "";
+    // The same value secretChange judged: a string, trimmed; anything else
+    // is no secret, so a non-string can never slip past the admin gate.
+    const webhookSecret =
+      typeof body.webhookSecret === "string" ? body.webhookSecret.trim() : "";
 
     flowData.webhookConfig = {
       endpoint: webhookEndpoint,
@@ -381,7 +388,6 @@ export async function buildNewFlow(params: {
     flow.webhookConfig.endpoint = generateWebhookEndpoint(
       workspaceId,
       flow._id.toString(),
-      requestBaseUrl,
     );
   }
 
@@ -453,9 +459,8 @@ export async function applyFlowUpdate(params: {
   workspaceId: string;
   flow: FlowDocument;
   body: FlowRequestBody;
-  requestBaseUrl: string;
 }): Promise<string[]> {
-  const { workspaceId, flow, body, requestBaseUrl } = params;
+  const { workspaceId, flow, body } = params;
   // Update common fields. Under the unified trigger model any flow may
   // carry a poll schedule (hybrid trigger set), not only type=scheduled.
   if (body.schedule) {
@@ -726,15 +731,19 @@ export async function applyFlowUpdate(params: {
     const sched = body.backfillSchedule || {};
     const enabled = Boolean(sched.enabled);
     const cron = typeof sched.cron === "string" ? sched.cron.trim() : "";
-    flow.backfillSchedule = {
+    const next = {
       enabled,
       cron: enabled ? cron : flow.backfillSchedule?.cron,
       timezone:
         typeof sched.timezone === "string" && sched.timezone.trim()
           ? sched.timezone.trim()
           : flow.backfillSchedule?.timezone || "UTC",
+    };
+    flow.backfillSchedule = {
+      ...next,
       entities: flow.backfillSchedule?.entities,
-      lastRunAt: flow.backfillSchedule?.lastRunAt,
+      // A new or changed resync first runs at its next tick.
+      lastRunAt: resyncLastRunAt(flow.backfillSchedule, next),
     };
   }
 
@@ -747,7 +756,6 @@ export async function applyFlowUpdate(params: {
       endpoint: generateWebhookEndpoint(
         workspaceId as string,
         flow._id.toString(),
-        requestBaseUrl,
       ),
       enabled: true,
     } as typeof flow.webhookConfig;
@@ -758,10 +766,12 @@ export async function applyFlowUpdate(params: {
     flow.webhookConfig.endpoint = generateWebhookEndpoint(
       workspaceId as string,
       flow._id.toString(),
-      requestBaseUrl,
     );
-    if (body.webhookSecret !== undefined) {
-      flow.webhookConfig.secret = body.webhookSecret;
+    // A save may set the signing secret (pasted from the provider), never
+    // clear it: an empty secret reads as "never provisioned", and the next
+    // save would provision again.
+    if (typeof body.webhookSecret === "string" && body.webhookSecret.trim()) {
+      flow.webhookConfig.secret = body.webhookSecret.trim();
     }
     if (body.webhookConfig) {
       if (body.webhookConfig.enabled !== undefined) {
@@ -830,4 +840,21 @@ export async function finishFlowUpdate(params: {
     await flow.populate("dataSourceId", "name type");
   }
   await flow.populate("destinationDatabaseId", "name type");
+}
+
+export const SECRET_NEEDS_ADMIN =
+  "Only an owner or admin can change a flow's webhook signing secret.";
+
+/**
+ * The request sets a signing secret other than the one the flow holds. Only
+ * an owner or admin may: the secret decides which signed events the flow
+ * accepts. Re-sending the current secret (a form save) is no change.
+ */
+export function secretChange(
+  body: { webhookSecret?: unknown },
+  current: string | undefined,
+): boolean {
+  const next =
+    typeof body.webhookSecret === "string" ? body.webhookSecret.trim() : "";
+  return next.length > 0 && next !== (current ?? "").trim();
 }

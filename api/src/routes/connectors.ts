@@ -222,7 +222,11 @@ connectorRoutes.openapi(
               description: entry.description,
               supportedEntities: entry.supportedEntities,
               webhook: DEFAULT_WORKSPACE_WEBHOOK,
-              incremental: DEFAULT_WORKSPACE_INCREMENTAL,
+              // Query entities (a folder's GraphQL queries) declare their mode
+              // in the spec, so it is known without a credential.
+              incremental: entry.queryEntitiesIncremental
+                ? { supported: true, mode: entry.queryEntitiesIncremental }
+                : DEFAULT_WORKSPACE_INCREMENTAL,
             })),
           ],
         },

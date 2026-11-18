@@ -73,7 +73,12 @@ export interface CdcDestinationAdapter {
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">,
     flowId: string,
     entitySchema?: ConnectorEntitySchema,
-    options?: { stagingSuffix?: string; knownStagingRowCount?: number },
+    options?: {
+      stagingSuffix?: string;
+      knownStagingRowCount?: number;
+      /** Staged rows come from a backfill or resync (bigquery-sql.ts). */
+      fullRead?: boolean;
+    },
   ): Promise<{ written: number }>;
   cleanupStaging?(
     layout: CdcEntityLayout,

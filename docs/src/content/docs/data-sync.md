@@ -177,15 +177,34 @@ resync:
   timezone: UTC
 ```
 
+### Data-diff checks
+
+A write that can rewrite existing rows gets a before/after check of every destination table. Five events open one:
+
+- a backfill or scheduled resync;
+- an entity reset or a resync that drops tables (counted before the drop);
+- a new source connection for the sync;
+- new connector code (a Mako deploy that changes a built-in connector's directory, or a workspace connector's new build, registry version or runtime);
+- a new destination (the old tables are the baseline).
+
+Before the write, the runtime counts each column's non-null values: one column-list query per destination, then one `COUNT(col)` query per table. After the next successful run it counts again. A column is flagged when it lost more than 10 values and more than 0.5% of its baseline. When the table shrank, each baseline scales down by the same ratio first, so a purge flags only `(rows)`.
+
+On BigQuery, a table over 1 GB is measured on `TABLESAMPLE SYSTEM (10 PERCENT)`, which reads a tenth of the bytes. Its row count stays exact (table metadata), and each column is judged on its share of the rows. Block samples move a column's share a lot between two reads, so a sampled column is flagged only when it lost more than 75% of its share: a column a rewrite emptied, not a partial loss.
+
+Flags log at warn under the `api.flow-data-diff` category, so a log alert can page on them. `flow_status` shows the last check and `flow_data_diff` lists them. Checks stay 180 days. Works on every SQL destination (BigQuery, Postgres, MySQL, ClickHouse). MongoDB destinations are skipped.
+
 ### Driving syncs from an agent or the terminal
 
-Over MCP (external clients only), five tools cover syncs:
+Over MCP (external clients only), eight tools cover syncs:
 
 | Tool | What it does |
 |------|--------------|
 | `flow_list` / `flow_read` | List syncs, or read one as its `flows/<slug>.yml` shape (never credentials or webhook secrets), with its triggers |
-| `flow_status` | Per-entity CDC state (mode, backlog, failures, last materialised) plus the last executions |
+| `flow_status` | Per-entity CDC state (mode, backlog, failures, last materialised), the last executions and the last data-diff check |
+| `flow_data_diff` | The data-diff checks: columns whose non-null count fell after a write that can rewrite rows |
 | `flow_backfill` | Start (or resume) a backfill, optionally for some entities |
+| `flow_cancel` | Cancel every running execution plus a running CDC backfill, or one execution (the backfill keeps its resume point) |
+| `flow_webhook_provision` | Create the provider webhook subscription, as the "Create in …" button does. It reports an existing one (or adopts one on the URL) instead of making a second, and needs the webhook trigger on |
 | `flow_update` | Change the three trigger controls (poll, webhook, resync) and commit the flow file |
 
 A sync is addressed by id, name or slug, or any unique short name (`wise`, `fr_close`). The two writes need the `warehouse:write` grant and an owner or admin role; the reads need neither.
@@ -196,6 +215,7 @@ The CLI wraps the same tools:
 mako sync ls
 mako sync status <name|id>
 mako sync backfill <name|id> [--entity a,b]
+mako sync cancel <name|id> [--execution <id>]
 mako sync set <name|id> [--poll <cron|off>] [--webhook on|off] [--resync <cron|off>] [--tz <zone>]
 ```
 

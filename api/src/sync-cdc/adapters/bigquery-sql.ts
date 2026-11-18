@@ -117,7 +117,20 @@ export interface BuildMergeStatementParams {
    * key is in staging, or the MERGE would insert duplicates.
    */
   livePartitionFilter?: string;
+  /**
+   * The staged rows come from a full read of the source (a backfill or a
+   * resync), not a webhook or an incremental poll. Such a row also wins
+   * against a live row up to {@link FULL_READ_SKEW_SECONDS} newer: a webhook
+   * can stamp a version a few ms ahead of what the API later returns for it,
+   * and that row must stay repairable by the next full read. A soft-deleted
+   * live row keeps the strict guard: no later poll would revive a wrongly
+   * undeleted record.
+   */
+  fullRead?: boolean;
 }
+
+/** How far behind the live `_mako_source_ts` a full-read row may be and still win. */
+export const FULL_READ_SKEW_SECONDS = 1;
 
 /**
  * Build the BigQuery CDC MERGE statement that materializes a deduplicated
@@ -135,6 +148,7 @@ export function buildMergeStatement(p: BuildMergeStatementParams): string {
     liveTypes,
     entitySchema,
     livePartitionFilter,
+    fullRead,
   } = p;
 
   // Only consider staging cols that also exist on live (an ALTER TABLE add may
@@ -186,8 +200,15 @@ export function buildMergeStatement(p: BuildMergeStatementParams): string {
     hasStagingSourceTs && !keyColumns.includes("_mako_source_ts");
   const hasIngestOrdering =
     hasStagingIngestSeq && !keyColumns.includes("_mako_ingest_seq");
+  const liveSourceTs = `COALESCE(__live.${escId("_mako_source_ts")}, TIMESTAMP('1970-01-01 00:00:00 UTC'))`;
+  const skewedLiveSourceTs = `TIMESTAMP_SUB(${liveSourceTs}, INTERVAL ${FULL_READ_SKEW_SECONDS} SECOND)`;
+  const liveGuardTs = !fullRead
+    ? liveSourceTs
+    : liveColsSet.has("_mako_deleted_at")
+      ? `IF(__live.${escId("_mako_deleted_at")} IS NULL, ${skewedLiveSourceTs}, ${liveSourceTs})`
+      : skewedLiveSourceTs;
   const matchedGuard = hasSourceOrdering
-    ? ` AND COALESCE(__stg.${escId("_mako_source_ts")}, TIMESTAMP('1970-01-01 00:00:00 UTC')) >= COALESCE(__live.${escId("_mako_source_ts")}, TIMESTAMP('1970-01-01 00:00:00 UTC'))`
+    ? ` AND COALESCE(__stg.${escId("_mako_source_ts")}, TIMESTAMP('1970-01-01 00:00:00 UTC')) >= ${liveGuardTs}`
     : hasIngestOrdering
       ? ` AND COALESCE(__stg.${escId("_mako_ingest_seq")}, -1) >= COALESCE(__live.${escId("_mako_ingest_seq")}, -1)`
       : "";
@@ -390,6 +411,26 @@ export function buildBigQueryRepartitionStatements(params: {
     dropLive: `DROP TABLE ${params.fullLive}`,
     rename: `ALTER TABLE ${params.fullTmp} RENAME TO ${escId(params.liveName)}`,
   };
+}
+
+/**
+ * Columns for a brand-new live table: the staged columns plus every entity
+ * schema field. Staging holds only the columns the first batch carried
+ * (sparse-rows.ts), so a sparse first batch would otherwise create a table
+ * without the partition field and fail its own PARTITION BY.
+ */
+export function liveTableCreateColumns(
+  stagingCols: Iterable<string>,
+  entitySchema: ConnectorEntitySchema | undefined,
+): string[] {
+  const cols = new Set<string>(stagingCols);
+  // Records reach staging through normalizePayloadKeys (`.` → `_`). Schema
+  // names get the same treatment: BigQuery rejects `.` in a column name.
+  for (const name of Object.keys(entitySchema?.fields ?? {})) {
+    cols.add(name.replace(/\./g, "_"));
+  }
+  cols.delete(ABSENT_COLUMNS_FIELD);
+  return [...cols];
 }
 
 /** `CREATE TABLE IF NOT EXISTS` for a live table typed by the schema contract. */

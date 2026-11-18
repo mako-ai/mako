@@ -1,0 +1,3 @@
+[
+{"request":"POST /bigquery/v2/projects/parity-project/queries {\"labels\":{\"mako_connector\":\"ds_parity\",\"mako_source\":\"connection_test\",\"mako_workspace\":\"ws_parity\"},\"maxResults\":1,\"query\":\"SELECT 1 AS one\",\"useLegacySql\":false}","status":200,"body":{"jobReference":{"projectId":"parity-project","jobId":"job_check","location":"EU"},"schema":{"fields":[{"name":"one","type":"INTEGER"}]},"rows":[{"f":[{"v":"1"}]}],"totalRows":"1","jobComplete":true}}
+]

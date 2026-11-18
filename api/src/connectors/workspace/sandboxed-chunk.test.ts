@@ -211,6 +211,7 @@ void test("the batch size and rate limit the engine knows reach the box's config
   await fromSettings.fetchEntityChunk({ entity: "rows", onBatch: noop });
   assert.deepEqual(fromSettings.calls[0].options.config, {
     api_key: "k",
+    __workspace_id: "ws",
     __page_size: 50,
     __rate_limit_delay_ms: 300,
   });
@@ -224,9 +225,13 @@ void test("the batch size and rate limit the engine knows reach the box's config
     rateLimitDelay: 1,
     onBatch: noop,
   });
+  // A batch size the caller asked for is also passed on its own, apart
+  // from the connection's setting.
   assert.deepEqual(fromOptions.calls[0].options.config, {
     api_key: "k",
+    __workspace_id: "ws",
     __page_size: 2,
+    __requested_page_size: 2,
     __rate_limit_delay_ms: 1,
   });
 
@@ -234,14 +239,37 @@ void test("the batch size and rate limit the engine knows reach the box's config
   const bare = make();
   bare.answers.push(ok([state({}, false)]));
   await bare.fetchEntityChunk({ entity: "rows", onBatch: noop });
-  assert.deepEqual(bare.calls[0].options.config, { api_key: "k" });
+  assert.deepEqual(bare.calls[0].options.config, {
+    api_key: "k",
+    __workspace_id: "ws",
+  });
 
   // The create-time defaults every connection carries are not a choice:
   // they must not override the connector's own defaults.
   const created = make({ sync_batch_size: 100, rate_limit_delay_ms: 200 });
   created.answers.push(ok([state({}, false)]));
   await created.fetchEntityChunk({ entity: "rows", onBatch: noop });
-  assert.deepEqual(created.calls[0].options.config, { api_key: "k" });
+  assert.deepEqual(created.calls[0].options.config, {
+    api_key: "k",
+    __workspace_id: "ws",
+  });
+});
+
+void test("a saved connection's id and workspace reach the box's config", async () => {
+  const saved = new ScriptedBox({
+    _id: "6a0000000000000000000001",
+    name: "Acme",
+    type: "ws:acme",
+    workspaceId: "ws",
+    config: { api_key: "k" },
+  } as any);
+  saved.answers.push(ok([state({}, false)]));
+  await saved.fetchEntityChunk({ entity: "rows", onBatch: noop });
+  assert.deepEqual(saved.calls[0].options.config, {
+    api_key: "k",
+    __connection_id: "6a0000000000000000000001",
+    __workspace_id: "ws",
+  });
 });
 
 void test("a chunk asks for at most half the protocol cap", async () => {
@@ -378,5 +406,56 @@ void test("only entities that declare what they do with since are incremental", 
     supported: true,
     mode: "none",
     perEntity: { rows: { mode: "native" }, other: { mode: "none" } },
+  });
+});
+
+void test("a user's own __ keys never reach the box: Mako's keys are Mako's", async () => {
+  // Saved, typed into an unsaved test, or passed to a probe: the same config.
+  const forged = new ScriptedBox({
+    _id: "6a0000000000000000000002",
+    name: "Acme",
+    type: "ws:acme",
+    workspaceId: "ws",
+    config: {
+      api_key: "k",
+      __workspace_id: "another-workspace",
+      __connection_id: "another-connection",
+      __requested_page_size: 100000,
+      __page_size: 100000,
+      __rate_limit_delay_ms: 0,
+      __http: { baseUrl: "http://169.254.169.254" },
+    },
+  } as any);
+  forged.answers.push(ok([state({}, false)]));
+  await forged.fetchEntityChunk({
+    entity: "rows",
+    singleChunk: true,
+    onBatch: noop,
+  } as any);
+  assert.deepEqual(forged.calls[0].options.config, {
+    api_key: "k",
+    __connection_id: "6a0000000000000000000002",
+    __workspace_id: "ws",
+  });
+
+  // A probe's batch size is the caller's, never the config's.
+  const probed = new ScriptedBox({
+    name: "Acme",
+    type: "ws:acme",
+    workspaceId: "ws",
+    config: { api_key: "k", __requested_page_size: 5000 },
+  } as any);
+  probed.answers.push(ok([state({}, false)]));
+  await probed.fetchEntityChunk({
+    entity: "rows",
+    batchSize: 10,
+    singleChunk: true,
+    onBatch: noop,
+  } as any);
+  assert.deepEqual(probed.calls[0].options.config, {
+    api_key: "k",
+    __workspace_id: "ws",
+    __page_size: 10,
+    __requested_page_size: 10,
   });
 });

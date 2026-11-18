@@ -11,6 +11,7 @@
  *
  * Writes are the routes' own steps, in their order: the backfill is
  * `cdcBackfillService.startBackfill` (POST …/sync-cdc/backfill/start); a
+ * cancel is `cancelFlowRuns` (POST …/cancel); a
  * trigger change sets the fields exactly as PUT /flows/:id (poll, webhook)
  * and POST …/backfill-schedule (resync) do, commits `flows/<slug>.yml`
  * (`commitFlowFile`), then saves. Same role rule too: owner or admin.
@@ -35,10 +36,24 @@ import {
   hasWebhookTrigger,
   isWebhookFlow,
 } from "../../services/flow-triggers.service";
+import {
+  RELEASE_PROVISION_CLAIM,
+  claimWebhookProvision,
+  persistProvisionedWebhook,
+  provisionFlowWebhook,
+  releaseWebhookProvision,
+} from "../../services/flow-webhook-provision.service";
 import { syncFlowWebhookSubscription } from "../../services/flow-webhook-subscription.service";
 import { generateWebhookEndpoint } from "../../utils/webhook.utils";
 import { workspaceService } from "../../services/workspace.service";
 import { cdcBackfillService } from "../../sync-cdc/backfill";
+import { resyncLastRunAt } from "../../services/resync-schedule";
+import { cancelFlowRuns } from "../../services/flow-cancel.service";
+import {
+  DATA_DIFF_MIN_LOST,
+  DATA_DIFF_MIN_RATIO,
+  listFlowDataDiffs,
+} from "../../sync-cdc/data-diff";
 
 const OBJECT_ID = /^[0-9a-f]{24}$/i;
 const RECENT_EXECUTIONS = 5;
@@ -146,6 +161,30 @@ async function findFlow(workspaceId: string, ref: string) {
   throw new Error(`No sync "${ref}" in this workspace. flow_list shows them.`);
 }
 
+type DataDiffRow = Awaited<ReturnType<typeof listFlowDataDiffs>>[number];
+
+/** One data-diff check as flow_status and flow_data_diff show it. */
+export function summarizeDataDiff(check: DataDiffRow, flagLimit?: number) {
+  const flagged = check.flagged ?? [];
+  return {
+    status: check.status,
+    reasons: check.reasons,
+    baselineAt: check.baselineAt,
+    comparedAt: check.comparedAt ?? null,
+    executionId: check.executionId ?? null,
+    ...(check.from ? { baselineFrom: check.from } : {}),
+    tables: (check.tables ?? []).map(t => ({
+      entity: t.entity,
+      table: t.table,
+      rowsBefore: t.before?.rows ?? null,
+      rowsAfter: t.after?.rows ?? null,
+      ...(t.error ? { error: t.error } : {}),
+    })),
+    flaggedCount: flagged.length,
+    flagged: flagLimit === undefined ? flagged : flagged.slice(0, flagLimit),
+  };
+}
+
 /** The same precondition every flow write route checks first. */
 async function assertFlowRepo(workspaceId: string): Promise<void> {
   await requireWorkspaceRepo(workspaceId);
@@ -221,7 +260,7 @@ export function createFlowSyncTools({
 
     flow_status: tool({
       description:
-        "How a sync is doing, per entity: mode (steady / backfill), backlog, consecutive failures and the last error, last materialised, last backfill, lifetime events and rows; plus its last runs. Use it after flow_backfill or flow_update, and to find a sync that went quiet.",
+        "How a sync is doing, per entity: mode (steady / backfill), backlog, consecutive failures and the last error, last materialised, last backfill, lifetime events and rows; its last runs; and its last data-diff check (columns that lost non-null values, see flow_data_diff). Use it after flow_backfill or flow_update, and to find a sync that went quiet.",
       inputSchema: z.object({
         flow: flowRef,
         executions: z
@@ -247,6 +286,7 @@ export function createFlowSyncTools({
           })
             .sort({ entity: 1 })
             .lean();
+          const [lastDiff] = await listFlowDataDiffs(flow._id, 1);
           const runs = await FlowExecution.find({ flowId: flow._id })
             .sort({ startedAt: -1 })
             .limit(executions ?? RECENT_EXECUTIONS)
@@ -272,7 +312,9 @@ export function createFlowSyncTools({
               lifetimeEventsProcessed: s.lifetimeEventsProcessed,
               lifetimeRowsApplied: s.lifetimeRowsApplied,
             })),
+            dataDiff: lastDiff ? summarizeDataDiff(lastDiff, 10) : null,
             executions: runs.map(r => ({
+              id: r._id.toString(),
               status: r.status,
               success: r.success,
               startedAt: r.startedAt,
@@ -280,6 +322,34 @@ export function createFlowSyncTools({
               durationMs: r.duration ?? null,
               error: r.error?.message ?? null,
             })),
+          };
+        } catch (error) {
+          return failure(error);
+        }
+      },
+    }),
+
+    flow_data_diff: tool({
+      description: `The data-diff checks of a sync, newest first. A check records each destination column's non-null count before a write that can rewrite rows (a backfill or resync, an entity reset, a connector, connector-code or destination change) and again after the next successful run. \`flagged\` lists the columns (and "(rows)") that lost more than ${DATA_DIFF_MIN_LOST} values and ${DATA_DIFF_MIN_RATIO * 100}% of their baseline, scaled down when the table shrank. status "open" means the baseline waits for a run.`,
+      inputSchema: z.object({
+        flow: flowRef,
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(20)
+          .optional()
+          .describe("How many checks to show (default 5)"),
+      }),
+      execute: async ({ flow: ref, limit }) => {
+        try {
+          const flow = await findFlow(workspaceId, ref);
+          const checks = await listFlowDataDiffs(flow._id, limit ?? 5);
+          return {
+            success: true,
+            id: flow._id.toString(),
+            name: flow.name ?? flow.slug,
+            checks: checks.map(check => summarizeDataDiff(check)),
           };
         } catch (error) {
           return failure(error);
@@ -316,6 +386,126 @@ export function createFlowSyncTools({
             id: flow._id.toString(),
             runId: run.runId,
             resumed: run.reusedRunId,
+          };
+        } catch (error) {
+          return failure(error);
+        }
+      },
+    }),
+
+    flow_cancel: tool({
+      description:
+        "Cancel a sync's running work: with no `executionId`, every running execution plus its CDC backfill when one is running or paused; with `executionId`, that run only, and a live backfill keeps its state and resume point. Returns what it cancelled. Owner or admin. Follow it with flow_status.",
+      inputSchema: z.object({
+        flow: flowRef,
+        executionId: z
+          .string()
+          .optional()
+          .describe(
+            "Cancel only this run (flow_status lists run ids; default: every running one and the backfill)",
+          ),
+      }),
+      execute: async ({ flow: ref, executionId }) => {
+        try {
+          if (!(await mayChange())) {
+            return failure("Owner/admin role required");
+          }
+          const flow = await findFlow(workspaceId, ref);
+          const result = await cancelFlowRuns(workspaceId, flow, executionId, {
+            cancelBackfill: true,
+          });
+          return {
+            success: true,
+            id: result.flowId,
+            cancelled: result.executions,
+            backfill: result.backfill,
+          };
+        } catch (error) {
+          return failure(error);
+        }
+      },
+    }),
+
+    flow_webhook_provision: tool({
+      description:
+        "Create the provider-side webhook subscription of a sync, as the Triggers step's \"Create in …\" button does: the subscription points at this deployment's webhook URL (server configuration, never a stored or requested host), its signing secret is stored on the sync and never returned, flows/<slug>.yml is committed. Idempotent: a sync that already has a subscription id or a secret reports it and creates nothing; a subscription already on the URL is adopted where the connector can find it. The webhook trigger must be on (flow_update webhook=on). Owner or admin.",
+      inputSchema: z.object({ flow: flowRef }),
+      execute: async ({ flow: ref }) => {
+        try {
+          if (!(await mayChange())) {
+            return failure("Owner/admin role required");
+          }
+          await assertFlowRepo(workspaceId);
+          const found = await findFlow(workspaceId, ref);
+          if (!hasWebhookTrigger(found)) {
+            return failure(
+              "The sync's webhook trigger is off. Turn it on with flow_update (webhook: on) first.",
+            );
+          }
+          const existing = (f: IFlow) => ({
+            success: true as const,
+            id: f._id.toString(),
+            status: "existing" as const,
+            endpoint: f.webhookConfig?.endpoint ?? null,
+            providerWebhookId: f.webhookConfig?.providerWebhookId ?? null,
+          });
+          const flow = await claimWebhookProvision({
+            flowId: found._id,
+            workspaceId,
+            unprovisionedOnly: true,
+          });
+          if (!flow) {
+            const current = await Flow.findById(found._id);
+            if (
+              current?.webhookConfig?.providerWebhookId ||
+              current?.webhookConfig?.secret
+            ) {
+              return existing(current);
+            }
+            return failure(
+              "Another provisioning of this sync is in progress; check flow_read in a minute.",
+            );
+          }
+          let provisioned;
+          try {
+            provisioned = await provisionFlowWebhook({
+              workspaceId,
+              flow,
+              body: { adopt: true },
+            });
+          } catch (error) {
+            await releaseWebhookProvision(flow._id);
+            throw error;
+          }
+          const { endpoint, created, webhookConfig, connectorType } =
+            provisioned;
+          // The row first: the subscription exists at the provider now.
+          await persistProvisionedWebhook(flow, RELEASE_PROVISION_CLAIM);
+          // persistProvisionedWebhook released the claim in the database.
+          // Leave the in-memory path untouched, or flow.save() below would
+          // write null over a claim another request took since.
+          const committed = await commitFlowFile(flow, userId);
+          if (!committed.ok) {
+            return failure(
+              `The subscription ${created.providerWebhookId} is saved on the sync, but flows/<slug>.yml could not be committed: ${committed.error ?? "unknown error"}. Saving the flow again commits it.`,
+            );
+          }
+          if (committed.sourceBlobSha) {
+            flow.sourceBlobSha = committed.sourceBlobSha;
+          }
+          await flow.save();
+          if (!webhookConfig.secret) {
+            return failure(
+              `The ${connectorType} webhook subscription ${created.providerWebhookId} exists, but the provider did not return a signing secret (an adopted endpoint never shows it again). Paste it into the sync's Webhook Secret field.`,
+            );
+          }
+          return {
+            success: true,
+            id: flow._id.toString(),
+            status: "created" as const,
+            vendor: connectorType,
+            endpoint,
+            providerWebhookId: created.providerWebhookId,
           };
         } catch (error) {
           return failure(error);
@@ -404,12 +594,16 @@ export function createFlowSyncTools({
               return failure("Scheduled resync requires syncEngine=cdc");
             }
             const on = resync !== "off";
-            flow.backfillSchedule = {
+            const next = {
               enabled: on,
               cron: on ? resync.trim() : flow.backfillSchedule?.cron,
               timezone: tz || flow.backfillSchedule?.timezone || "UTC",
+            };
+            flow.backfillSchedule = {
+              ...next,
               entities: flow.backfillSchedule?.entities,
-              lastRunAt: flow.backfillSchedule?.lastRunAt,
+              // A new or changed resync first runs at its next tick.
+              lastRunAt: resyncLastRunAt(flow.backfillSchedule, next),
             };
           }
 
