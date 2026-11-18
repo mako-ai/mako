@@ -481,7 +481,9 @@ export function createFlowSyncTools({
             provisioned;
           // The row first: the subscription exists at the provider now.
           await persistProvisionedWebhook(flow, RELEASE_PROVISION_CLAIM);
-          if (webhookConfig) webhookConfig.provisioningAt = null;
+          // persistProvisionedWebhook released the claim in the database.
+          // Leave the in-memory path untouched, or flow.save() below would
+          // write null over a claim another request took since.
           const committed = await commitFlowFile(flow, userId);
           if (!committed.ok) {
             return failure(

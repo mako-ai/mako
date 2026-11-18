@@ -384,6 +384,23 @@ describe("only an owner or admin changes the signing secret", () => {
     expect(secretChange({}, "whsec_old")).toBe(false);
   });
 
+  it("compares with the stored secret trimmed, so a padded one never blocks a member save", () => {
+    expect(secretChange({ webhookSecret: "whsec_x" }, "whsec_x ")).toBe(false);
+    expect(secretChange({ webhookSecret: "whsec_x " }, " whsec_x")).toBe(false);
+  });
+
+  it("stores on create exactly what the gate judged: a trimmed string, never a cast non-string", () => {
+    expect(secretChange({ webhookSecret: 12345678 }, undefined)).toBe(false);
+    const service = readFileSync(
+      join(__dirname, "../../services/flow-mutation.service.ts"),
+      "utf8",
+    );
+    expect(service).toContain(
+      'typeof body.webhookSecret === "string" ? body.webhookSecret.trim() : ""',
+    );
+    expect(service).not.toContain('body.webhookSecret || ""');
+  });
+
   it("gates both the create and the update route on it", () => {
     const crud = readFileSync(
       join(__dirname, "../../routes/flows/crud.ts"),

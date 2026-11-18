@@ -73,7 +73,6 @@ export function registerWebhooksRoutes(flowRoutes: FlowRouter): void {
         }
         const { endpoint, created, webhookConfig, connectorType } = provisioned;
         await persistProvisionedWebhook(flow, RELEASE_PROVISION_CLAIM);
-        webhookConfig.provisioningAt = null;
         {
           const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
           if (failed) return failed;

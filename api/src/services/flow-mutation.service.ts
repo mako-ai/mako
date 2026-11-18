@@ -324,7 +324,10 @@ export async function buildNewFlow(params: {
       new Types.ObjectId().toString(),
     );
     // Webhook secret must be provided by the user (from Stripe/Close)
-    const webhookSecret = body.webhookSecret || "";
+    // The same value secretChange judged: a string, trimmed; anything else
+    // is no secret, so a non-string can never slip past the admin gate.
+    const webhookSecret =
+      typeof body.webhookSecret === "string" ? body.webhookSecret.trim() : "";
 
     flowData.webhookConfig = {
       endpoint: webhookEndpoint,
@@ -853,5 +856,5 @@ export function secretChange(
 ): boolean {
   const next =
     typeof body.webhookSecret === "string" ? body.webhookSecret.trim() : "";
-  return next.length > 0 && next !== (current ?? "");
+  return next.length > 0 && next !== (current ?? "").trim();
 }
