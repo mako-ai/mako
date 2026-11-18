@@ -42,6 +42,8 @@ export default defineConfig({
       "src/connections/describe-request.test.ts",
       "src/connections/google-service-account.test.ts",
       "src/connectors/rate-gate.test.ts",
+      // ClickHouse Cloud wake: wait budget, interactive cap, DNS fails fast.
+      "src/databases/drivers/clickhouse/wake.test.ts",
       "src/routes/source-connection-writers.test.ts",
       // A database connection's writers list, changed in the app.
       "src/routes/database-writers-session.test.ts",

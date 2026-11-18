@@ -23,9 +23,22 @@ import {
   ConnectorOutputTooLargeError,
   MAX_CONNECTOR_PROTOCOL_BYTES,
   MAX_CONNECTOR_PROTOCOL_MESSAGES,
+  hasConnectorRuntime,
   installConnectorRuntime,
   runConnectorCommand,
+  runtimeManifest,
+  RUNTIME_MANIFEST,
+  swapRuntimeShell,
+  TREE_MANIFEST,
+  treeManifest,
+  verifyRuntimeShell,
+  verifyTreeShell,
 } from "./sync-box";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import nodePath from "node:path";
 
 /** What the bounding step prints for a snapshot of `bytes` bytes. */
 const bounded = (bytes: number | "missing") => `MAKO_BOUNDED_OUTPUT ${bytes}\n`;
@@ -280,53 +293,405 @@ describe("workspace connector protocol output", () => {
 });
 
 describe("workspace connector runtime installation", () => {
+  const ctx = { sessionKey: "connector-sync:test" };
+  const sdk = () =>
+    new Map([
+      ["package.json", new TextEncoder().encode("{}")],
+      ["src/run.js", new TextEncoder().encode("export const run = 1;\n")],
+    ]);
+
   beforeEach(() => {
     sandbox.exec.mockReset();
     sandbox.readFile.mockReset();
     sandbox.writeFile.mockReset();
+    sandbox.writeFiles.mockReset();
   });
 
-  it("installs a pinned, checksum-verified Node before writing the marker", async () => {
-    sandbox.exec.mockResolvedValue(result());
+  const execCommands = () =>
+    sandbox.exec.mock.calls.map(([, command]) => String(command));
 
-    await installConnectorRuntime(
-      { sessionKey: "connector-sync:test" },
-      "runtime",
-      new Map([["package.json", new TextEncoder().encode("{}")]]),
+  it("stages every file, then verifies and swaps the runtime in one command", async () => {
+    sandbox.exec.mockResolvedValue({ ...result(), sandboxId: "sbx_1" });
+
+    await installConnectorRuntime(ctx, "runtime", sdk());
+
+    const [mkdir, install] = execCommands();
+    const stage =
+      /mkdir -p '([^']+)\/node_modules\/@makoai\/connector-sdk'/.exec(
+        mkdir ?? "",
+      )?.[1];
+    expect(stage).toMatch(/\/runtime\.staging-[0-9a-f]{12}$/);
+    const written = sandbox.writeFiles.mock.calls[0]?.[1] as Array<{
+      path: string;
+    }>;
+    expect(written.map(file => file.path).sort()).toEqual(
+      [
+        `${stage}/${RUNTIME_MANIFEST}`,
+        `${stage}/node_modules/@makoai/connector-sdk/package.json`,
+        `${stage}/node_modules/@makoai/connector-sdk/src/run.js`,
+      ].sort(),
     );
-
-    const install = String(sandbox.exec.mock.calls[0]?.[1]);
     expect(install).toContain(
       `https://nodejs.org/dist/v${CONNECTOR_NODE_VERSION}/`,
     );
     expect(install).toContain("sha256sum -c -");
-    expect(sandbox.writeFile).toHaveBeenLastCalledWith(
-      { sessionKey: "connector-sync:test" },
-      expect.stringMatching(/\/runtime\/.materialized$/),
-      expect.any(Uint8Array),
+    expect(install).toContain('verify_runtime "$stage" "$runtime_id"');
+    expect(install).toContain("flock -w 60 9");
+    expect(install).toContain('mv "$stage" "$runtime_root"');
+    // The marker is written inside the staged tree, never on its own into
+    // the live root.
+    expect(sandbox.writeFile).not.toHaveBeenCalled();
+    expect(install.indexOf('verify_runtime "$stage"')).toBeLessThan(
+      install.indexOf('mv "$stage" "$runtime_root"'),
     );
   });
 
-  it("does not mark a runtime complete when Node installation fails", async () => {
-    sandbox.exec.mockResolvedValue({
-      ...result(),
-      exitCode: 1,
-      stderr: "curl failed",
+  it("pins every call after the first to the box the install started in", async () => {
+    sandbox.exec.mockResolvedValue({ ...result(), sandboxId: "sbx_1" });
+
+    await installConnectorRuntime(ctx, "runtime", sdk());
+
+    expect(sandbox.writeFiles.mock.calls[0]?.[2]).toMatchObject({
+      expectSandboxId: "sbx_1",
     });
+    expect(sandbox.exec.mock.calls[1]?.[2]).toMatchObject({
+      expectSandboxId: "sbx_1",
+    });
+  });
+
+  it("fails, and swaps nothing in, when the box is replaced mid-install", async () => {
+    sandbox.exec.mockResolvedValue({ ...result(), sandboxId: "sbx_1" });
+    sandbox.writeFiles.mockRejectedValueOnce(
+      Object.assign(new Error("Sandbox sbx_1 was replaced or is gone."), {
+        name: "SandboxNotFoundError",
+      }),
+    );
 
     await expect(
-      installConnectorRuntime(
-        { sessionKey: "connector-sync:test" },
-        "runtime",
-        new Map([["package.json", new TextEncoder().encode("{}")]]),
-      ),
-    ).rejects.toThrow(/curl failed/);
+      installConnectorRuntime(ctx, "runtime", sdk()),
+    ).rejects.toThrow(/replaced or is gone/);
+    expect(execCommands()).toHaveLength(1); // the mkdir; no verify, no swap
+  });
 
+  it("reports a failed staged check or Node install", async () => {
+    sandbox.exec
+      .mockResolvedValueOnce({ ...result(), sandboxId: "sbx_1" })
+      .mockResolvedValueOnce({
+        ...result(),
+        exitCode: 1,
+        stderr: "The staged connector runtime failed its check",
+      });
+
+    await expect(
+      installConnectorRuntime(ctx, "runtime", sdk()),
+    ).rejects.toThrow(/failed its check/);
+  });
+
+  it("checks hashes and an import, not just the marker", async () => {
+    sandbox.exec.mockResolvedValue(result("no\n"));
+
+    await expect(hasConnectorRuntime(ctx, "runtime")).resolves.toBe(false);
+
+    const [check] = execCommands();
+    expect(check).toContain(RUNTIME_MANIFEST);
+    expect(check).toContain("await import(process.argv[1])");
+  });
+
+  it("lists every file with its sha256 in the manifest", () => {
+    const files = sdk();
+    const digest = (name: string) =>
+      createHash("sha256")
+        .update(files.get(name) as Uint8Array)
+        .digest("hex");
+    expect(runtimeManifest(files)).toBe(
+      `${digest("package.json")}  node_modules/@makoai/connector-sdk/package.json\n` +
+        `${digest("src/run.js")}  node_modules/@makoai/connector-sdk/src/run.js\n`,
+    );
+  });
+});
+
+/**
+ * The check itself, run by a real shell against a real directory: the
+ * 2026-11-18 box held a marker, bin/ and package.json but no src/run.js.
+ */
+describe("connector folder materialization", () => {
+  const ctx = { sessionKey: "connector-sync:test" };
+  const files = () =>
+    new Map([
+      ["connector.yaml", new TextEncoder().encode("runtime: node\n")],
+      ["connector.ts", new TextEncoder().encode("export default 1;\n")],
+    ]);
+  beforeEach(() => {
+    sandbox.exec.mockReset();
+    sandbox.writeFile.mockReset();
+    sandbox.writeFiles.mockReset();
+  });
+
+  it("reuses a folder only when its marker and every hash check out", async () => {
+    sandbox.exec.mockResolvedValue({ ...result("yes\n"), sandboxId: "sbx_1" });
+    const loader = vi.fn(async () => files());
+    await materializeConnector({
+      ctx,
+      runtimeId: "runtime",
+      slug: "close",
+      sourceSha: "9436ddc2",
+      files: loader,
+    });
+    const [check] = sandbox.exec.mock.calls.map(([, c]) => String(c));
+    expect(check).toContain(TREE_MANIFEST);
+    expect(check).toContain("sha256_check");
+    expect(loader).not.toHaveBeenCalled();
+    expect(sandbox.writeFiles).not.toHaveBeenCalled();
+  });
+
+  it("stages, verifies and swaps in a folder, pinned to the checked box", async () => {
+    sandbox.exec.mockResolvedValue({ ...result("no\n"), sandboxId: "sbx_1" });
+    await materializeConnector({
+      ctx,
+      runtimeId: "runtime",
+      slug: "close",
+      sourceSha: "9436ddc2",
+      files: files(),
+    });
+    const written = sandbox.writeFiles.mock.calls[0]?.[1] as Array<{
+      path: string;
+    }>;
+    expect(written.map(f => f.path.split("/").at(-1)).sort()).toEqual(
+      [TREE_MANIFEST, "connector.ts", "connector.yaml"].sort(),
+    );
+    expect(sandbox.writeFiles.mock.calls[0]?.[2]).toMatchObject({
+      expectSandboxId: "sbx_1",
+    });
+    const swap = String(sandbox.exec.mock.calls[1]?.[1]);
+    expect(swap).toContain('verify_tree "$stage" "$id"');
+    expect(swap).toContain('mv "$stage" "$dir"');
+    expect(sandbox.exec.mock.calls[1]?.[2]).toMatchObject({
+      expectSandboxId: "sbx_1",
+    });
+    expect(sandbox.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("fails, and swaps nothing in, when the box is replaced mid-copy", async () => {
+    sandbox.exec.mockResolvedValue({ ...result("no\n"), sandboxId: "sbx_1" });
+    sandbox.writeFiles.mockRejectedValueOnce(
+      Object.assign(new Error("Sandbox sbx_1 was replaced or is gone."), {
+        name: "SandboxNotFoundError",
+      }),
+    );
+    await expect(
+      materializeConnector({
+        ctx,
+        runtimeId: "runtime",
+        slug: "close",
+        sourceSha: "9436ddc2",
+        files: files(),
+      }),
+    ).rejects.toThrow(/replaced or is gone/);
+    expect(sandbox.exec).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a path that escapes the folder", async () => {
+    sandbox.exec.mockResolvedValue({ ...result("no\n"), sandboxId: "sbx_1" });
+    await expect(
+      materializeConnector({
+        ctx,
+        runtimeId: "runtime",
+        slug: "close",
+        sourceSha: "9436ddc2",
+        files: new Map([["../../evil.ts", new Uint8Array()]]),
+      }),
+    ).rejects.toThrow(/escapes the connector directory/);
+  });
+});
+
+describe("verify_tree against a real connector folder", () => {
+  let dir = "";
+  const id = "9436ddc2";
+  const files = new Map([
+    ["connector.yaml", new TextEncoder().encode("runtime: node\n")],
+    ["connector.ts", new TextEncoder().encode("export default 1;\n")],
+  ]);
+  beforeEach(() => {
+    dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "mako-folder-"));
+    for (const [name, bytes] of files) {
+      fs.writeFileSync(nodePath.join(dir, name), bytes);
+    }
+    fs.writeFileSync(nodePath.join(dir, TREE_MANIFEST), treeManifest(files));
+    fs.writeFileSync(nodePath.join(dir, ".materialized"), id);
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const verify = () =>
+    execFileSync(
+      "bash",
+      [
+        "-c",
+        `${verifyTreeShell()}\nverify_tree "$1" "$2" && echo yes || echo no`,
+        "verify",
+        dir,
+        id,
+      ],
+      { encoding: "utf8" },
+    ).trim();
+
+  it("accepts a complete folder", () => {
+    expect(verify()).toBe("yes");
+  });
+
+  it("rejects a marker over a folder without connector.ts", () => {
+    fs.rmSync(nodePath.join(dir, "connector.ts"));
+    expect(verify()).toBe("no");
+  });
+
+  it("rejects a folder an older API wrote, with no manifest", () => {
+    fs.rmSync(nodePath.join(dir, TREE_MANIFEST));
+    expect(verify()).toBe("no");
+  });
+});
+
+describe("verify_runtime against a real runtime root", () => {
+  let root = "";
+  const runtimeId = "runtime-test";
+  const files = new Map([
+    ["package.json", new TextEncoder().encode('{"type":"module"}')],
+    [
+      "index.js",
+      new TextEncoder().encode('export { run } from "./src/run.js";\n'),
+    ],
+    ["src/run.js", new TextEncoder().encode("export const run = 1;\n")],
+  ]);
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "mako-runtime-"));
+    const pkg = nodePath.join(root, "node_modules/@makoai/connector-sdk");
+    for (const [name, bytes] of files) {
+      fs.mkdirSync(nodePath.dirname(nodePath.join(pkg, name)), {
+        recursive: true,
+      });
+      fs.writeFileSync(nodePath.join(pkg, name), bytes);
+    }
+    fs.writeFileSync(
+      nodePath.join(root, RUNTIME_MANIFEST),
+      runtimeManifest(files),
+    );
+    fs.mkdirSync(nodePath.join(root, "node/bin"), { recursive: true });
+    fs.symlinkSync(process.execPath, nodePath.join(root, "node/bin/node"));
+    fs.writeFileSync(nodePath.join(root, ".materialized"), `${runtimeId}\n`);
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const verify = () =>
+    execFileSync(
+      "bash",
+      [
+        "-c",
+        `${verifyRuntimeShell()}\nverify_runtime "$1" "$2" && echo yes || echo no`,
+        "verify",
+        root,
+        runtimeId,
+      ],
+      { encoding: "utf8" },
+    ).trim();
+
+  it("accepts a complete runtime", () => {
+    expect(verify()).toBe("yes");
+  });
+
+  it("rejects a marker over a root without src/run.js", () => {
+    fs.rmSync(
+      nodePath.join(root, "node_modules/@makoai/connector-sdk/src/run.js"),
+    );
+    expect(verify()).toBe("no");
+  });
+
+  it("rejects a root whose file differs from the manifest", () => {
+    fs.writeFileSync(
+      nodePath.join(root, "node_modules/@makoai/connector-sdk/src/run.js"),
+      "export const run = 2;\n",
+    );
+    expect(verify()).toBe("no");
+  });
+
+  it("rejects a root written by an older API, with no manifest", () => {
+    fs.rmSync(nodePath.join(root, RUNTIME_MANIFEST));
+    expect(verify()).toBe("no");
+  });
+
+  it("rejects a root whose marker names another runtime", () => {
+    fs.writeFileSync(nodePath.join(root, ".materialized"), "other\n");
+    expect(verify()).toBe("no");
+  });
+});
+
+/**
+ * The swap, run by a real shell: a root that fails its check is replaced,
+ * but the connectors and bundles inside it move into the new root, so runs
+ * holding those paths keep working.
+ */
+describe("swapping a staged runtime into a real root", () => {
+  let dir = "";
+  beforeEach(() => {
+    dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "mako-swap-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const swap = (root: string, stage: string) =>
+    execFileSync(
+      "bash",
+      [
+        "-c",
+        `set -eu\nruntime_root="$1"\nstage="$2"\nruntime_id=rt\nverify_runtime() { return 1; }\n${swapRuntimeShell()}`,
+        "swap",
+        root,
+        stage,
+      ],
+      { encoding: "utf8" },
+    );
+
+  it("keeps the old root's connectors and bundles", () => {
+    const root = nodePath.join(dir, "rt");
+    const stage = nodePath.join(dir, "rt.staging-1");
+    fs.mkdirSync(nodePath.join(root, "connectors/acme@abc"), {
+      recursive: true,
+    });
+    fs.writeFileSync(nodePath.join(root, "connectors/acme@abc/index.js"), "c");
+    fs.mkdirSync(nodePath.join(root, "bundles/acme@def"), { recursive: true });
+    fs.writeFileSync(nodePath.join(root, "bundles/acme@def/index.js"), "b");
+    fs.writeFileSync(nodePath.join(root, "old-sdk"), "old");
+    fs.mkdirSync(stage);
+    fs.writeFileSync(nodePath.join(stage, "new-sdk"), "new");
+
+    swap(root, stage);
+
+    expect(fs.existsSync(stage)).toBe(false);
+    expect(fs.existsSync(nodePath.join(root, "new-sdk"))).toBe(true);
+    expect(fs.existsSync(nodePath.join(root, "old-sdk"))).toBe(false);
     expect(
-      sandbox.writeFile.mock.calls.some(([, file]) =>
-        String(file).endsWith("/.materialized"),
+      fs.readFileSync(
+        nodePath.join(root, "connectors/acme@abc/index.js"),
+        "utf8",
       ),
-    ).toBe(false);
+    ).toBe("c");
+    expect(
+      fs.readFileSync(nodePath.join(root, "bundles/acme@def/index.js"), "utf8"),
+    ).toBe("b");
+    expect(fs.readdirSync(dir).filter(n => n.includes("discard"))).toEqual([]);
+  });
+
+  it("installs into a missing root", () => {
+    const root = nodePath.join(dir, "rt");
+    const stage = nodePath.join(dir, "rt.staging-1");
+    fs.mkdirSync(stage);
+    fs.writeFileSync(nodePath.join(stage, "new-sdk"), "new");
+
+    swap(root, stage);
+
+    expect(fs.existsSync(nodePath.join(root, "new-sdk"))).toBe(true);
   });
 });
 
@@ -579,12 +944,14 @@ describe("per-run Unix users on providers with real users", () => {
       files: new Map([["connector.ts", new TextEncoder().encode("x")]]),
     });
 
-    for (const call of sandbox.writeFile.mock.calls) {
-      expect(call[1]).toMatch(
-        /^\/var\/lib\/mako-connectors\/runtime\/versions\//,
+    const writes = sandbox.writeFiles.mock.calls;
+    expect(writes).toHaveLength(1);
+    for (const file of writes[0]?.[1] as Array<{ path: string }>) {
+      expect(file.path).toMatch(
+        /^\/var\/lib\/mako-connectors\/runtime\/versions\/runtime\/connectors\/acme@abc\.staging-/,
       );
-      expect(call[3]).toEqual({ asRoot: true });
     }
+    expect(writes[0]?.[2]).toMatchObject({ asRoot: true });
     expect(
       calls().some(
         c =>

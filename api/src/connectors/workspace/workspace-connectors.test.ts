@@ -1026,4 +1026,96 @@ describe("the SDK installed in a persistent sync box", () => {
       success: true,
     });
   }, 120_000);
+
+  // 2026-11-18 13:40: a box held connectors/close@<sha>/.materialized
+  // without connector.ts, and every ws:close run failed for 26 minutes.
+  it("rewrites a connector folder whose marker is present but whose entry is gone", async () => {
+    await push({
+      "connectors/acme/connector.yaml": "runtime: node\n",
+      "connectors/acme/connector.ts": CONNECTOR_TS,
+    });
+    await syncConnectorsFromRepo(WS);
+    const ctx = syncBoxContext(WS);
+    const versions = path.join(
+      getSandboxProvider().scratch(ctx),
+      "connector-runtime",
+      "versions",
+    );
+    let folder: string | undefined;
+    for (const runtime of await fs.readdir(versions)) {
+      const connectors = path.join(versions, runtime, "connectors");
+      const names = await fs.readdir(connectors).catch(() => [] as string[]);
+      const name = names.find(
+        n =>
+          n.startsWith("acme@") &&
+          !n.includes(".staging-") &&
+          !n.endsWith(".lock"),
+      );
+      if (name) folder = path.join(connectors, name);
+    }
+    if (!folder) throw new Error("expected a materialized acme folder");
+    await fs.access(path.join(folder, ".materialized"));
+    await fs.rm(path.join(folder, "connector.ts"));
+
+    const connector = new SandboxedConnector(
+      sourceConnectionFor("ws:acme", { apiKey: "secret" }),
+    );
+    await expect(connector.testConnection()).resolves.toMatchObject({
+      success: true,
+    });
+  }, 120_000);
+
+  // 2026-11-18: a box held the marker, bin/ and package.json but no
+  // src/run.js, and every connector start failed with ERR_MODULE_NOT_FOUND.
+  it("reinstalls a runtime whose marker is present but whose src/run.js is gone", async () => {
+    await push({
+      "connectors/acme/connector.yaml": "runtime: node\n",
+      "connectors/acme/connector.ts": CONNECTOR_TS,
+    });
+    await syncConnectorsFromRepo(WS);
+
+    const ctx = syncBoxContext(WS);
+    const versions = path.join(
+      getSandboxProvider().scratch(ctx),
+      "connector-runtime",
+      "versions",
+    );
+    let runtimeId: string | undefined;
+    for (const candidate of await fs.readdir(versions)) {
+      try {
+        const marker = await fs.readFile(
+          path.join(versions, candidate, ".materialized"),
+          "utf8",
+        );
+        if (marker === candidate) {
+          runtimeId = candidate;
+          break;
+        }
+      } catch {
+        continue;
+      }
+    }
+    if (!runtimeId) {
+      throw new Error("expected a materialized connector runtime");
+    }
+
+    await fs.rm(
+      path.join(
+        versions,
+        runtimeId,
+        "node_modules",
+        "@makoai",
+        "connector-sdk",
+        "src",
+        "run.js",
+      ),
+    );
+
+    const connector = new SandboxedConnector(
+      sourceConnectionFor("ws:acme", { apiKey: "secret" }),
+    );
+    await expect(connector.testConnection()).resolves.toMatchObject({
+      success: true,
+    });
+  }, 120_000);
 });

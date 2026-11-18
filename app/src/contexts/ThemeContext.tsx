@@ -114,12 +114,16 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
   // Sync the 'dark' class on <html> for Tailwind/Streamdown CSS variables.
   // useLayoutEffect keeps this aligned with MUI palette before paint (avoids
   // a frame where Streamdown/Tailwind still use light tokens after a toggle).
+  // color-scheme on <html> also drives prefers-color-scheme inside SVG
+  // images (<img src=icon.svg>), so dual-variant connector icons follow the
+  // app toggle instead of the OS.
   useLayoutEffect(() => {
     if (effectiveMode === "dark") {
       document.documentElement.classList.add("dark");
     } else {
       document.documentElement.classList.remove("dark");
     }
+    document.documentElement.style.colorScheme = effectiveMode;
   }, [effectiveMode]);
 
   // Create theme based on effective mode

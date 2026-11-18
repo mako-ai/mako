@@ -287,6 +287,16 @@ export interface BlobMutation {
   deletes?: string[];
 }
 
+/** The branch is no longer at the head a commit was judged against. */
+export class BranchMovedError extends Error {
+  constructor(branch: string, expected: string, found: string) {
+    super(
+      `Branch ${branch} moved from ${expected.slice(0, 9)} to ${found.slice(0, 9)} before the commit`,
+    );
+    this.name = "BranchMovedError";
+  }
+}
+
 /**
  * Commit a set of whole-file writes and deletes onto `branch` with index
  * plumbing only — no clone, no work tree: `hash-object -w` the blobs, load
@@ -306,7 +316,18 @@ export async function commitBlobsOnBranch(
   repoDir: string,
   branch: string,
   mutation: BlobMutation,
-  options: { message: string; author?: GitAuthor; allowEmpty?: boolean },
+  options: {
+    message: string;
+    author?: GitAuthor;
+    allowEmpty?: boolean;
+    /**
+     * Commit only on this head. A writer that judged its mutation against a
+     * head passes it, so a branch that moved meanwhile throws
+     * {@link BranchMovedError} instead of splicing the writes onto a newer
+     * head the mutation never saw.
+     */
+    expectedHead?: string;
+  },
 ): Promise<{ commitOid: string; previousHead: string; unchanged: boolean }> {
   const writes = Object.entries(mutation.writes ?? {}).map(
     ([rel, contents]) => [assertSafeRelPath(rel), contents] as const,
@@ -331,6 +352,9 @@ export async function commitBlobsOnBranch(
   for (let attempt = 0; attempt < 3; attempt++) {
     const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
     if (!head) throw new Error(`Branch ${branch} is missing`);
+    if (options.expectedHead && head !== options.expectedHead) {
+      throw new BranchMovedError(branch, options.expectedHead, head);
+    }
     const headTree = await treeOfCommit(repoDir, head);
     const indexFile = path.join(
       os.tmpdir(),

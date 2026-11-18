@@ -110,12 +110,13 @@ async function readAll(
   entity: string,
   options: { pageSize?: number; pageByteBudget?: number } = {},
   pagesPerChunk = Infinity,
+  startState: SearchState = {},
 ) {
   const apiKey = `api_test_pages_${++keys}`;
   const rows: Row[] = [];
   const states: SearchState[] = [];
   const logs: string[] = [];
-  let state: SearchState = {};
+  let state: SearchState = startState;
   for (let chunk = 0; chunk < 1000; chunk++) {
     const run = context(apiKey, options);
     let pages = 0;
@@ -274,4 +275,48 @@ void test("activities split the same way", async () => {
   assert.deepEqual(ids(split.rows), ids(full.rows));
   assert.equal(duplicates(split.rows), 0);
   assert.ok(searchLimits(split.requests).includes(search.MIN_SEARCH_PAGE_SIZE));
+});
+
+void test("a walk resumed at the floor doubles back up while pages are small", async () => {
+  const full = await readAll("leads");
+  // The production case: a few large rows shrank the page to the floor, and
+  // the state carried 10 into every later chunk.
+  const resumed = await readAll("leads", {}, 1, {
+    pageSize: search.MIN_SEARCH_PAGE_SIZE,
+  });
+
+  assert.deepEqual(ids(resumed.rows), ids(full.rows));
+  assert.equal(duplicates(resumed.rows), 0);
+  const limits = resumed.pages.map(p => p._limit);
+  assert.equal(limits[0], search.MIN_SEARCH_PAGE_SIZE);
+  // Each full page doubles the next one; none shrinks.
+  for (let i = 1; i < limits.length; i++) {
+    assert.ok(limits[i] >= limits[i - 1]);
+    assert.ok(limits[i] <= limits[i - 1] * 2);
+  }
+  assert.ok(Math.max(...limits) >= 4 * search.MIN_SEARCH_PAGE_SIZE);
+  assert.equal(
+    resumed.logs.filter(l => /over the \d+-byte page budget/.test(l)).length,
+    0,
+  );
+});
+
+void test("the page grows only while it stays within half the budget", async () => {
+  const full = await readAll("leads");
+  // 100 rows fit: from 10 the page grows to 20, 40 and 80. 80 rows are over
+  // half the budget, so it stays there and never crosses the budget.
+  const budget = await bytesOfLeads(100);
+  const resumed = await readAll("leads", { pageByteBudget: budget }, 1, {
+    pageSize: search.MIN_SEARCH_PAGE_SIZE,
+  });
+
+  assert.deepEqual(ids(resumed.rows), ids(full.rows));
+  assert.equal(duplicates(resumed.rows), 0);
+  const limits = resumed.pages.map(p => p._limit);
+  assert.ok(Math.max(...limits) <= 80);
+  assert.ok(Math.max(...limits) >= 40);
+  assert.equal(
+    resumed.logs.filter(l => /over the \d+-byte page budget/.test(l)).length,
+    0,
+  );
 });

@@ -87,6 +87,35 @@ function schedulePush(
   return queued;
 }
 
+/**
+ * Run `fn` as this workspace's push: it starts once the running push (if
+ * any) settles, and every push scheduled meanwhile waits for it. A caller
+ * that commits and pushes on its own (`commitToMainDurably`) holds this slot
+ * across its commit, push and undo, so a queued mirror push can never carry
+ * a commit that caller then reports as failed.
+ */
+export async function withExclusivePush<T>(
+  workspaceId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  for (;;) {
+    const running = inFlight.get(workspaceId);
+    if (!running) break;
+    await running.catch(() => undefined);
+  }
+  // No await between the check above and taking the slot.
+  const result = fn();
+  const slot: Promise<void> = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  inFlight.set(workspaceId, slot);
+  void slot.then(() => {
+    if (inFlight.get(workspaceId) === slot) inFlight.delete(workspaceId);
+  });
+  return result;
+}
+
 async function pushDefaultBranchMirror(
   workspaceId: string,
   target: MirrorTarget,

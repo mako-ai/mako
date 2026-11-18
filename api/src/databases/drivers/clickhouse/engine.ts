@@ -15,11 +15,17 @@ import {
   type QueryExecuteOptions,
   type QueryResult,
 } from "../../query-types";
-import { withRetry } from "../../retry";
+import { isRetryableError, withRetry } from "../../retry";
 import {
   buildClickHouseClientConfig,
   CLICKHOUSE_MAX_RETRIES,
   CLICKHOUSE_RETRY_BASE_DELAY_MS,
+  CLICKHOUSE_WAKE_ATTEMPT_TIMEOUT_MS,
+  CLICKHOUSE_WAKE_BASE_DELAY_MS,
+  CLICKHOUSE_INTERACTIVE_WAKE_TIMEOUT_MS,
+  CLICKHOUSE_WAKE_MAX_DELAY_MS,
+  isDnsLookupError,
+  resolveClickHouseWakeTimeoutMs,
 } from "./config";
 
 const logger = loggers.db("clickhouse");
@@ -43,6 +49,148 @@ function cancelled(error: unknown, signal: AbortSignal): boolean {
   );
 }
 
+type ClickHouseClientConfig = ReturnType<typeof buildClickHouseClientConfig>;
+type ClickHouseClient = ReturnType<typeof createClient>;
+
+/** Test seams: the client factory and the clock. */
+export interface ClickHouseConnectDeps {
+  createClient: (config: ClickHouseClientConfig) => ClickHouseClient;
+  now: () => number;
+  sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+}
+
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("Operation cancelled"));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error("Operation cancelled"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+const defaultConnectDeps: ClickHouseConnectDeps = {
+  createClient: config => createClient(config),
+  now: () => Date.now(),
+  sleep: abortableSleep,
+};
+
+/**
+ * One health check. `client.ping()` reports a failure in its result instead of
+ * throwing, so the failure is rethrown here for the retry logic to see it.
+ * `select: true` sends `SELECT 1`, a real query, which wakes an idle
+ * ClickHouse Cloud service.
+ */
+async function pingOrThrow(
+  client: ClickHouseClient,
+  signal?: AbortSignal,
+): Promise<void> {
+  const result = await client.ping({ select: true, abort_signal: signal });
+  if (!result.success) throw result.error;
+}
+
+/**
+ * Open a client that has answered `SELECT 1`.
+ *
+ * With a wake timeout (see resolveClickHouseWakeTimeoutMs), a server that is
+ * asleep or starting is retried until it answers or the timeout runs out:
+ * each attempt waits at most 30 s, and the pause between attempts grows from
+ * 2 s to 30 s. Without one, a failed check is retried 3 times (1, 2, 4 s).
+ * Only the health check is retried, never the caller's query.
+ *
+ * `maxWakeTimeoutMs` caps the wait for callers that hold a request open
+ * ("Test connection"). A hostname that does not resolve fails at once: a
+ * sleeping service never causes a DNS error.
+ */
+export async function connectClickHouse(
+  database: IDatabaseConnection,
+  config: ClickHouseClientConfig,
+  signal?: AbortSignal,
+  deps: ClickHouseConnectDeps = defaultConnectDeps,
+  options: { maxWakeTimeoutMs?: number } = {},
+): Promise<ClickHouseClient> {
+  const resolvedWakeMs = resolveClickHouseWakeTimeoutMs(database, config.url);
+  const wakeTimeoutMs =
+    options.maxWakeTimeoutMs === undefined
+      ? resolvedWakeMs
+      : Math.min(resolvedWakeMs, options.maxWakeTimeoutMs);
+
+  if (wakeTimeoutMs <= 0) {
+    return withRetry(
+      async () => {
+        const client = deps.createClient(config);
+        try {
+          await pingOrThrow(client, signal);
+          return client;
+        } catch (error) {
+          await client.close().catch(() => {});
+          throw error;
+        }
+      },
+      {
+        maxRetries: CLICKHOUSE_MAX_RETRIES,
+        baseDelayMs: CLICKHOUSE_RETRY_BASE_DELAY_MS,
+        signal,
+      },
+    );
+  }
+
+  const startedAt = deps.now();
+  const deadline = startedAt + wakeTimeoutMs;
+  let delayMs = CLICKHOUSE_WAKE_BASE_DELAY_MS;
+  let attempts = 0;
+
+  for (;;) {
+    if (signal?.aborted) throw new Error("Operation cancelled");
+    attempts += 1;
+    const remaining = Math.max(1_000, deadline - deps.now());
+    const probe = deps.createClient({
+      ...config,
+      request_timeout: Math.min(CLICKHOUSE_WAKE_ATTEMPT_TIMEOUT_MS, remaining),
+    });
+    try {
+      await pingOrThrow(probe, signal);
+      await probe.close().catch(() => {});
+      if (attempts > 1) {
+        logger.info("ClickHouse answered after waking", {
+          attempts,
+          waitedMs: deps.now() - startedAt,
+        });
+      }
+      return deps.createClient(config);
+    } catch (error) {
+      await probe.close().catch(() => {});
+      const err = error instanceof Error ? error : new Error(String(error));
+      if (!isRetryableError(err) || isDnsLookupError(err) || signal?.aborted) {
+        throw err;
+      }
+      const left = deadline - deps.now();
+      if (left <= 0) {
+        throw new Error(
+          `ClickHouse did not answer within ${Math.round(wakeTimeoutMs / 1000)} s ` +
+            `(${attempts} attempts; the server may be asleep or starting): ${err.message}`,
+          { cause: error },
+        );
+      }
+      logger.debug("ClickHouse not ready, retrying", {
+        attempt: attempts,
+        error: err.message,
+        delayMs: Math.min(delayMs, left),
+      });
+      await deps.sleep(Math.min(delayMs, left), signal);
+      delayMs = Math.min(delayMs * 2, CLICKHOUSE_WAKE_MAX_DELAY_MS);
+    }
+  }
+}
+
 export class ClickHouseEngine implements QueryEngine {
   readonly runningQueries = new Map<string, RunningClickHouseQuery>();
 
@@ -57,21 +205,16 @@ export class ClickHouseEngine implements QueryEngine {
     try {
       const config = buildClickHouseClientConfig(database);
 
-      // Use retry logic to handle cold starts and transient failures
-      await withRetry(
-        async () => {
-          const client = createClient(config);
-          try {
-            await client.ping();
-          } finally {
-            await client.close();
-          }
-        },
-        {
-          maxRetries: CLICKHOUSE_MAX_RETRIES,
-          baseDelayMs: CLICKHOUSE_RETRY_BASE_DELAY_MS,
-        },
+      // Waits through a serverless wake, capped at 60 s: the caller holds an
+      // HTTP request open. Retries cold starts otherwise.
+      const client = await connectClickHouse(
+        database,
+        config,
+        undefined,
+        defaultConnectDeps,
+        { maxWakeTimeoutMs: CLICKHOUSE_INTERACTIVE_WAKE_TIMEOUT_MS },
       );
+      await client.close();
 
       return { success: true };
     } catch (error) {
@@ -126,24 +269,14 @@ export class ClickHouseEngine implements QueryEngine {
         });
       }
 
-      // Retry only connection establishment, never the query: re-running an
-      // INSERT or ALTER would duplicate its side effects.
-      const client = await withRetry(
-        async () => {
-          const newClient = createClient(config);
-          try {
-            await newClient.ping();
-            return newClient;
-          } catch (error) {
-            await newClient.close().catch(() => {});
-            throw error;
-          }
-        },
-        {
-          maxRetries: CLICKHOUSE_MAX_RETRIES,
-          baseDelayMs: CLICKHOUSE_RETRY_BASE_DELAY_MS,
-          signal: abortController.signal,
-        },
+      // Retry only connection establishment (and a serverless wake), never the
+      // query: re-running an INSERT or ALTER would duplicate its side effects.
+      const client = await connectClickHouse(
+        database,
+        config,
+        abortController.signal,
+        defaultConnectDeps,
+        { maxWakeTimeoutMs: options?.maxWakeTimeoutMs },
       );
 
       let data: unknown[];
