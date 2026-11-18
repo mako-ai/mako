@@ -22,7 +22,9 @@ import {
   CLICKHOUSE_RETRY_BASE_DELAY_MS,
   CLICKHOUSE_WAKE_ATTEMPT_TIMEOUT_MS,
   CLICKHOUSE_WAKE_BASE_DELAY_MS,
+  CLICKHOUSE_INTERACTIVE_WAKE_TIMEOUT_MS,
   CLICKHOUSE_WAKE_MAX_DELAY_MS,
+  isDnsLookupError,
   resolveClickHouseWakeTimeoutMs,
 } from "./config";
 
@@ -103,14 +105,23 @@ async function pingOrThrow(
  * each attempt waits at most 30 s, and the pause between attempts grows from
  * 2 s to 30 s. Without one, a failed check is retried 3 times (1, 2, 4 s).
  * Only the health check is retried, never the caller's query.
+ *
+ * `maxWakeTimeoutMs` caps the wait for callers that hold a request open
+ * ("Test connection"). A hostname that does not resolve fails at once: a
+ * sleeping service never causes a DNS error.
  */
 export async function connectClickHouse(
   database: IDatabaseConnection,
   config: ClickHouseClientConfig,
   signal?: AbortSignal,
   deps: ClickHouseConnectDeps = defaultConnectDeps,
+  options: { maxWakeTimeoutMs?: number } = {},
 ): Promise<ClickHouseClient> {
-  const wakeTimeoutMs = resolveClickHouseWakeTimeoutMs(database, config.url);
+  const resolvedWakeMs = resolveClickHouseWakeTimeoutMs(database, config.url);
+  const wakeTimeoutMs =
+    options.maxWakeTimeoutMs === undefined
+      ? resolvedWakeMs
+      : Math.min(resolvedWakeMs, options.maxWakeTimeoutMs);
 
   if (wakeTimeoutMs <= 0) {
     return withRetry(
@@ -158,7 +169,9 @@ export async function connectClickHouse(
     } catch (error) {
       await probe.close().catch(() => {});
       const err = error instanceof Error ? error : new Error(String(error));
-      if (!isRetryableError(err) || signal?.aborted) throw err;
+      if (!isRetryableError(err) || isDnsLookupError(err) || signal?.aborted) {
+        throw err;
+      }
       const left = deadline - deps.now();
       if (left <= 0) {
         throw new Error(
@@ -192,8 +205,15 @@ export class ClickHouseEngine implements QueryEngine {
     try {
       const config = buildClickHouseClientConfig(database);
 
-      // Waits through a serverless wake; retries cold starts otherwise.
-      const client = await connectClickHouse(database, config);
+      // Waits through a serverless wake, capped at 60 s: the caller holds an
+      // HTTP request open. Retries cold starts otherwise.
+      const client = await connectClickHouse(
+        database,
+        config,
+        undefined,
+        defaultConnectDeps,
+        { maxWakeTimeoutMs: CLICKHOUSE_INTERACTIVE_WAKE_TIMEOUT_MS },
+      );
       await client.close();
 
       return { success: true };

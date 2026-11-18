@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { IDatabaseConnection } from "../../../database/workspace-schema";
 import {
   buildClickHouseClientConfig,
+  CLICKHOUSE_INTERACTIVE_WAKE_TIMEOUT_MS,
   CLICKHOUSE_SERVERLESS_WAKE_TIMEOUT_MS,
   isServerlessClickHouseUrl,
   resolveClickHouseWakeTimeoutMs,
@@ -190,6 +191,49 @@ describe("connectClickHouse", () => {
         deps,
       ),
     ).rejects.toThrow(/cancelled/);
+    expect(server.pings).toHaveLength(1);
+  });
+
+  it("caps the wait for an interactive test at 60 s", async () => {
+    const server = fakeServer({ wakesAt: Number.POSITIVE_INFINITY });
+    await expect(
+      connectClickHouse(
+        CLOUD,
+        buildClickHouseClientConfig(CLOUD),
+        undefined,
+        server.deps,
+        { maxWakeTimeoutMs: CLICKHOUSE_INTERACTIVE_WAKE_TIMEOUT_MS },
+      ),
+    ).rejects.toThrow(/did not answer within 60 s/);
+    // 60 s budget plus at most one 30 s attempt in flight at the deadline.
+    expect(server.stats().now).toBeLessThanOrEqual(60_000 + 30_000);
+  });
+
+  it("still wakes a service that answers inside the interactive cap", async () => {
+    const server = fakeServer({ wakesAt: 20_000 });
+    const client = await connectClickHouse(
+      CLOUD,
+      buildClickHouseClientConfig(CLOUD),
+      undefined,
+      server.deps,
+      { maxWakeTimeoutMs: CLICKHOUSE_INTERACTIVE_WAKE_TIMEOUT_MS },
+    );
+    expect(client).toBeDefined();
+  });
+
+  it("fails at once when the hostname does not resolve", async () => {
+    const server = fakeServer({
+      wakesAt: Number.POSITIVE_INFINITY,
+      error: "getaddrinfo ENOTFOUND wrong.europe-west4.gcp.clickhouse.cloud",
+    });
+    await expect(
+      connectClickHouse(
+        CLOUD,
+        buildClickHouseClientConfig(CLOUD),
+        undefined,
+        server.deps,
+      ),
+    ).rejects.toThrow(/ENOTFOUND/);
     expect(server.pings).toHaveLength(1);
   });
 });

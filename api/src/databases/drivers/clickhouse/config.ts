@@ -21,6 +21,23 @@ export const CLICKHOUSE_SERVERLESS_WAKE_TIMEOUT_MS = 10 * 60_000;
 export const CLICKHOUSE_WAKE_ATTEMPT_TIMEOUT_MS = 30_000;
 export const CLICKHOUSE_WAKE_BASE_DELAY_MS = 2_000;
 export const CLICKHOUSE_WAKE_MAX_DELAY_MS = 30_000;
+/**
+ * "Test connection" (and the verify-before-save on create and update) holds an
+ * HTTP request open while it waits, so it gets a short budget: a sleeping
+ * service usually answers within it, and a wrong host or a blocked IP fails in
+ * about a minute instead of hanging behind the proxy's own timeout.
+ */
+export const CLICKHOUSE_INTERACTIVE_WAKE_TIMEOUT_MS = 60_000;
+
+/**
+ * Errors a sleeping ClickHouse Cloud service never produces: the hostname does
+ * not resolve. Waking cannot fix them, so the wake loop fails at once.
+ */
+export function isDnsLookupError(error: Error): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") return true;
+  return /\b(ENOTFOUND|EAI_AGAIN)\b/.test(error.message);
+}
 
 /** Whether a ClickHouse URL points at a serverless service that idles. */
 export function isServerlessClickHouseUrl(url: string): boolean {
