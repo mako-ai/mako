@@ -115,12 +115,12 @@ On a fresh request the default mode is picked from what you're looking at — th
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Query** (default) | Build and run queries in consoles (SQL, MongoDB), funnels, reports, and analyses                                                                  |
 | **Sync Flow**       | Configure database-to-database sync flows, query templates, and schema mapping                                                                    |
-| **React App**       | Build [React apps](/apps/) wired to workspace data — edit files in a git-backed sandbox, run shell commands, create data bindings                 |
+| **React App**       | Build [React apps](/apps/) wired to workspace data — edit files in a git-backed sandbox, run shell commands, create data bindings; also the [workspace sandbox shell](/mcp-server/#workspace-sandbox-shell) |
 | **Transforms**      | Build and run [dbt transformations](/transforms/) — edit project files, compile, test, and run models against the warehouse                       |
 | **Notebook**        | Build [notebooks](/notebooks/) — add SQL/Python/Markdown cells, run SQL against data sources and Python on the managed kernel, iterate on results |
 | **Explore**         | Read-only investigation across connections, consoles, apps, and memory                                                                            |
 
-`Explore` is read-only by design. Mode ids persist in chat history, so renames stay backward-compatible (the legacy `dbt` mode resolves to `transform`). Enabling a mode adds its tools — modes accumulate across a turn rather than replacing one another.
+`Explore` is read-only by design. Mode ids persist in chat history, so renames stay backward-compatible (the legacy `dbt` mode resolves to `transform`). Transforms and Workflow modes can look at the repo through `sandbox_status` and `sandbox_read_file`; only React App mode gets `sandbox_bash` and `sandbox_write_file`, and each call asks you first. Enabling a mode adds its tools — modes accumulate across a turn rather than replacing one another.
 
 ### Tool Paging
 

@@ -191,6 +191,8 @@ A worker run this way serves one workspace and has **no sandbox**: workflow code
 
 With none of these set, Mako runs without workflows.
 
+On a GKE worker, set `WORKFLOWS_AUTOSCALE=on` on the API and Mako sizes each workspace's worker itself: one pod per 128 steps it has to run, up to 5, and none after 10 minutes without work. Starting a run, deploying a commit and switching a trigger wake a sleeping worker at once; a run started while no pod is up waits queued for about a minute. It is off by default, and then the pods a worker has stay. See `deploy/workflows/README.md`.
+
 ## Bursts and limits
 
 A workflow runs at most 250 of its runs at once; more wait their turn in the order they came, so a thousand webhook calls in a minute become a queue. To choose your own number, declare it, and yours is kept:
