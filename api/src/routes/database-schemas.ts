@@ -60,12 +60,7 @@ const DatabaseTypeSchema = z
 // Each database type exposes a simple schema describing the connection fields
 
 type FieldType =
-  | "string"
-  | "number"
-  | "boolean"
-  | "password"
-  | "textarea"
-  | "select";
+  "string" | "number" | "boolean" | "password" | "textarea" | "select";
 
 interface FieldSchema {
   name: string;
@@ -611,6 +606,26 @@ const DATABASE_SCHEMAS: Record<string, DatabaseSchemaResponse> = {
         type: "string",
         required: false,
         default: "https://bigquery.googleapis.com",
+      },
+      {
+        name: "agent_job_timeout_ms",
+        label: "Agent query timeout (ms, optional)",
+        type: "number",
+        required: false,
+        placeholder: "300000",
+        helperText:
+          "BigQuery cancels an agent or MCP query after this long. Empty: 300000 (5 min). 0: no timeout.",
+        advanced: true,
+      },
+      {
+        name: "agent_max_bytes_billed_gb",
+        label: "Agent query byte cap (GiB, optional)",
+        type: "number",
+        required: false,
+        placeholder: "500",
+        helperText:
+          "BigQuery refuses an agent or MCP read that would bill more, before it runs. Empty: 500 GiB. 0: no cap.",
+        advanced: true,
       },
     ],
   },

@@ -1,16 +1,29 @@
 /**
- * A read-only BigQuery query from an agent tool or the MCP server carries a
- * `maximumBytesBilled`; nothing else does. Pins: the engine sends the cap it
- * is given as the REST API's int64 string, sends none when not given one
- * (consoles, apps, flows, dbt), and BigQuery's refusal is reworded for the
- * caller who has to change the query.
+ * A BigQuery job started for an agent tool or the MCP server carries a
+ * `maximumBytesBilled` and a `jobTimeoutMs`; nothing else does. Pins: the
+ * engine sends an explicit cap as the REST API's int64 string, sends the
+ * agent defaults (or the connection's overrides) when the labels say an
+ * agent asked, sends none for consoles, apps, flows, CDC and schedules, and
+ * BigQuery's refusal is reworded to name the cap and how to raise it.
  *
  * Run: tsx src/services/bigquery-bytes-cap.test.ts
  */
 import assert from "node:assert/strict";
 import { bigQueryEngine } from "../databases/drivers/bigquery/engine";
-import { describeBytesBilledCap } from "../databases/drivers/bigquery/errors";
-import { AGENT_BIGQUERY_MAX_BYTES_BILLED } from "../config/long-running-queries";
+import {
+  describeAgentCapError,
+  describeBytesBilledCap,
+  describeJobTimeoutCap,
+} from "../databases/drivers/bigquery/errors";
+import {
+  isAgentJob,
+  resolveAgentJobCaps,
+} from "../databases/drivers/bigquery/agent-caps";
+import { withQueryLabels } from "./bigquery-labels";
+import {
+  AGENT_BIGQUERY_JOB_TIMEOUT_MS,
+  AGENT_BIGQUERY_MAX_BYTES_BILLED,
+} from "../config/long-running-queries";
 
 type Post = { url: string; body: Record<string, unknown> };
 
@@ -82,17 +95,168 @@ async function testRequestBody(): Promise<void> {
       maximumBytesBilled: 1000000,
     })) as { success: boolean; error?: string };
     assert.equal(refused.success, false);
-    assert.match(refused.error ?? "", /limit for bytes billed/);
-    const readable = describeBytesBilledCap(refused.error, 107374182400);
+    // The engine rewords BigQuery's refusal itself.
+    assert.match(
+      refused.error ?? "",
+      /would bill 200 GiB on BigQuery, over the 1 MiB maximumBytesBilled cap/,
+    );
+    const readable = describeBytesBilledCap(
+      "Query exceeded limit for bytes billed: 1000000. 214748364800 or higher required.",
+      107374182400,
+    );
     assert.ok(readable);
     assert.match(readable, /would bill 200 GiB on BigQuery/);
-    assert.match(readable, /over the 100 GiB cap on agent and MCP queries/);
+    assert.match(
+      readable,
+      /over the 100 GiB maximumBytesBilled cap on agent and MCP queries/,
+    );
+    assert.match(readable, /agent_max_bytes_billed_gb/);
     assert.match(readable, /did not run and cost nothing/);
     assert.match(readable, /partition column/);
     assert.match(readable, /AGENT_BIGQUERY_MAX_BYTES_BILLED/);
+
+    // An agent or MCP job gets both caps by default; the engine rewords
+    // BigQuery's refusal itself.
+    refuse = false;
+    posts.length = 0;
+    await withQueryLabels(
+      { mako_source: "agent", mako_trigger: "mcp", mako_tool: "x" },
+      () => service.executeQuery(database, "SELECT 1", {}),
+    );
+    assert.equal(
+      posts[0].body.maximumBytesBilled,
+      String(AGENT_BIGQUERY_MAX_BYTES_BILLED),
+    );
+    assert.equal(
+      posts[0].body.jobTimeoutMs,
+      String(AGENT_BIGQUERY_JOB_TIMEOUT_MS),
+    );
+
+    // A console the agent runs keeps the caps: mako_tool survives.
+    await withQueryLabels({ mako_tool: "run_console" }, () =>
+      withQueryLabels({ mako_source: "console", mako_trigger: "agent" }, () =>
+        service.executeStreamingQuery(database, "SELECT 1", {
+          onBatch: async () => {},
+        }),
+      ),
+    );
+    assert.equal(
+      posts[1].body.jobTimeoutMs,
+      String(AGENT_BIGQUERY_JOB_TIMEOUT_MS),
+    );
+
+    // A connection's own settings win; 0 turns a cap off.
+    const tuned = {
+      ...database,
+      connection: {
+        ...database.connection,
+        agent_job_timeout_ms: "60000",
+        agent_max_bytes_billed_gb: 0,
+      },
+    };
+    await withQueryLabels({ mako_source: "agent" }, () =>
+      service.executePreviewQuery(tuned, "SELECT 1", {}),
+    );
+    assert.equal(posts[2].body.jobTimeoutMs, "60000");
+    assert.equal("maximumBytesBilled" in posts[2].body, false);
+
+    // An agent write (maximumBytesBilled: 0) keeps the timeout only.
+    await withQueryLabels({ mako_source: "agent" }, () =>
+      service.executeQuery(database, "DELETE FROM t WHERE TRUE", {
+        maximumBytesBilled: 0,
+      }),
+    );
+    assert.equal("maximumBytesBilled" in posts[3].body, false);
+    assert.ok(posts[3].body.jobTimeoutMs);
+
+    // A person's console, CDC and scheduled builds get neither cap.
+    await withQueryLabels(
+      { mako_source: "console", mako_trigger: "user" },
+      () => service.executeQuery(database, "SELECT 1", {}),
+    );
+    await withQueryLabels({ mako_tool: "x", mako_source: "cdc" }, () =>
+      service.executeQuery(database, "SELECT 1", {}),
+    );
+    await withQueryLabels(
+      { mako_source: "app_binding", mako_trigger: "scheduler" },
+      () => service.executeQuery(database, "SELECT 1", {}),
+    );
+    for (const post of posts.slice(4)) {
+      assert.equal("jobTimeoutMs" in post.body, false);
+      assert.equal("maximumBytesBilled" in post.body, false);
+    }
+
+    // A timeout BigQuery enforced comes back naming the cap.
+    refuse = true;
+    const timedOut = (await withQueryLabels({ mako_source: "agent" }, () =>
+      service.executeQuery(
+        { ...database, connection: { ...database.connection } },
+        "SELECT 1",
+        {},
+      ),
+    )) as { success: boolean; error?: string };
+    assert.equal(timedOut.success, false);
+    // The fake refuses with the bytes error: the engine reworded it.
+    assert.match(timedOut.error ?? "", /maximumBytesBilled cap/);
   } finally {
     service.getHttpClient = original;
   }
+}
+
+function testAgentCaps(): void {
+  assert.equal(isAgentJob(undefined), false);
+  assert.equal(isAgentJob({ mako_source: "agent" }), true);
+  assert.equal(isAgentJob({ mako_trigger: "mcp" }), true);
+  assert.equal(isAgentJob({ mako_tool: "run_console" }), true);
+  assert.equal(isAgentJob({ mako_source: "console" }), false);
+  assert.equal(isAgentJob({ mako_tool: "x", mako_source: "flow" }), false);
+  assert.equal(isAgentJob({ mako_tool: "x", mako_trigger: "publish" }), false);
+  assert.deepEqual(
+    resolveAgentJobCaps({
+      connection: { agent_max_bytes_billed_gb: "2" },
+      labels: { mako_source: "agent" },
+    }),
+    {
+      jobTimeoutMs: AGENT_BIGQUERY_JOB_TIMEOUT_MS,
+      maximumBytesBilled: 2 * 1024 ** 3,
+    },
+  );
+  // An explicit positive cap wins and applies outside agent jobs too.
+  assert.deepEqual(
+    resolveAgentJobCaps({
+      connection: {},
+      labels: { mako_source: "console" },
+      explicitBytes: 5,
+    }),
+    { maximumBytesBilled: 5 },
+  );
+  // Invalid settings fall back to the defaults.
+  assert.equal(
+    resolveAgentJobCaps({
+      connection: { agent_job_timeout_ms: "soon" },
+      labels: { mako_source: "agent" },
+    }).jobTimeoutMs,
+    AGENT_BIGQUERY_JOB_TIMEOUT_MS,
+  );
+
+  const timeout = describeJobTimeoutCap(
+    "Job execution was cancelled: Job timed out after 5 min 0 sec",
+    300000,
+  );
+  assert.ok(timeout);
+  assert.match(timeout, /after 5 min, the jobTimeoutMs cap/);
+  assert.match(timeout, /agent_job_timeout_ms/);
+  // Mako's own poll timeout is not BigQuery's cap.
+  assert.equal(
+    describeJobTimeoutCap("Query timed out after 300 seconds", 300000),
+    null,
+  );
+  assert.equal(
+    describeAgentCapError("Query exceeded limit for bytes billed", {
+      jobTimeoutMs: 1000,
+    }),
+    null,
+  );
 }
 
 function testOtherErrors(): void {
@@ -101,22 +265,26 @@ function testOtherErrors(): void {
     describeBytesBilledCap("Syntax error: Unexpected keyword FROM", 1),
     null,
   );
-  // 1 TiB unless the operator sets another cap.
+  // 500 GiB and 5 minutes unless the operator sets others.
   if (process.env.AGENT_BIGQUERY_MAX_BYTES_BILLED === undefined) {
-    assert.equal(AGENT_BIGQUERY_MAX_BYTES_BILLED, 1024 ** 4);
+    assert.equal(AGENT_BIGQUERY_MAX_BYTES_BILLED, 500 * 1024 ** 3);
+  }
+  if (process.env.AGENT_BIGQUERY_JOB_TIMEOUT_MS === undefined) {
+    assert.equal(AGENT_BIGQUERY_JOB_TIMEOUT_MS, 300000);
   }
   assert.match(
     describeBytesBilledCap(
       "Query exceeded limit for bytes billed",
       1024 ** 4,
     ) ?? "",
-    /would bill more on BigQuery, over the 1 TiB cap/,
+    /would bill more on BigQuery, over the 1 TiB maximumBytesBilled cap/,
   );
 }
 
 async function main(): Promise<void> {
   await testRequestBody();
   testOtherErrors();
+  testAgentCaps();
   console.info("bigquery bytes cap tests passed");
 }
 

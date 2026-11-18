@@ -58,17 +58,34 @@ export const AGENT_DIRECT_QUERY_TIMEOUT_MS = envInt(
 );
 
 /**
- * The most bytes one read-only BigQuery query from an agent tool or the MCP
- * server (`sql_execute_query`, `query_metric`) may bill. BigQuery fails the
- * job before it runs when it would bill more, at no charge. 1 TiB by
- * default (6.25 USD at on-demand pricing): BigQuery checks the cap against
- * its upper-bound estimate, which overstates clustered tables, so a tight
- * default would refuse queries that bill little. `0` removes the cap.
- * Consoles, apps, flows and dbt builds are not capped.
+ * The most bytes one read-only BigQuery job started for an agent or the MCP
+ * server may bill, unless its connection sets `agent_max_bytes_billed_gb`.
+ * BigQuery fails the job before it runs when it would bill more, at no
+ * charge. 500 GiB by default: the largest MCP query on realadvisor-prod in
+ * the 7 days to 2026-11-18 billed 236.5 GiB (p99 34.5 GiB, 4,477 jobs), and
+ * BigQuery checks the cap against an upper-bound estimate that overstates
+ * clustered tables. `0` removes the default cap. Consoles run by people,
+ * apps, flows, CDC and dbt builds are not capped.
  */
 export const AGENT_BIGQUERY_MAX_BYTES_BILLED = ((): number => {
-  const fallback = 1024 ** 4;
+  const fallback = 500 * 1024 ** 3;
   const raw = process.env.AGENT_BIGQUERY_MAX_BYTES_BILLED;
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+})();
+
+/**
+ * The BigQuery `jobTimeoutMs` on every job started for an agent or the MCP
+ * server, unless its connection sets `agent_job_timeout_ms`. BigQuery
+ * cancels the job itself after this long, so a slow agent query releases
+ * its reservation slots even when Mako stops polling. 5 minutes by default:
+ * the slowest MCP query on realadvisor-prod in the 7 days to 2026-11-18 ran
+ * 255 s (p99 56 s). `0` removes the default timeout.
+ */
+export const AGENT_BIGQUERY_JOB_TIMEOUT_MS = ((): number => {
+  const fallback = 5 * 60_000;
+  const raw = process.env.AGENT_BIGQUERY_JOB_TIMEOUT_MS;
   if (raw === undefined || raw.trim() === "") return fallback;
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;

@@ -11,6 +11,7 @@
  * the workspace realtime channel.
  */
 import { withQueryLabels } from "./bigquery-labels";
+import { isWrite } from "../access/connection-writes";
 import { Types } from "mongoose";
 import {
   SavedConsole,
@@ -219,6 +220,14 @@ async function runResolvedConsole(args: {
     signal: input.signal,
     bigQueryJobMaxWaitMs: args.bigQueryJobMaxWaitMs,
     readOnly: input.readOnly,
+    // The BigQuery engine caps every agent job's bytes (bigquery/agent-caps.ts).
+    // A console write run with write access is not byte-capped, as in
+    // sql_execute_query: 0 turns that cap off for this job.
+    ...(input.readOnly === false &&
+    database.type === "bigquery" &&
+    isWrite(database.type, savedConsole.code)
+      ? { maximumBytesBilled: 0 }
+      : {}),
   };
 
   let result: {

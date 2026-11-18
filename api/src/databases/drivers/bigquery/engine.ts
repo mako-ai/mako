@@ -31,7 +31,16 @@ import {
   type StreamingQueryResult,
 } from "../../query-types";
 import { BigQueryClients } from "./client";
-import { abandonedSuffix, describeGoogleApiError } from "./errors";
+import {
+  applyAgentJobCaps,
+  resolveAgentJobCaps,
+  type AgentJobCaps,
+} from "./agent-caps";
+import {
+  abandonedSuffix,
+  describeAgentCapError,
+  describeGoogleApiError,
+} from "./errors";
 import {
   flattenSchemaFields,
   mapRowsToObjects,
@@ -125,6 +134,33 @@ export class BigQueryEngine implements QueryEngine {
     });
   }
 
+  /**
+   * The agent caps for a job on this connection (agent-caps.ts): a
+   * BigQuery-enforced timeout and byte cap when the job serves an agent or
+   * the MCP server, plus any byte cap the caller set itself.
+   */
+  private agentJobCaps(
+    database: IDatabaseConnection,
+    options?: Pick<QueryExecuteOptions, "labels" | "maximumBytesBilled">,
+  ): AgentJobCaps {
+    const config = bigQueryConfig(database);
+    return resolveAgentJobCaps({
+      connection: config as Record<string, unknown>,
+      labels: this.jobLabels(database, config.api_base_url, options),
+      explicitBytes: options?.maximumBytesBilled,
+    });
+  }
+
+  /** A failure caused by an agent cap says which cap and how to raise it. */
+  private explainAgentCap<T extends { success: boolean; error?: string }>(
+    result: T,
+    caps: AgentJobCaps,
+  ): T {
+    if (result.success) return result;
+    const explained = describeAgentCapError(result.error, caps);
+    return explained ? { ...result, error: explained } : result;
+  }
+
   async testConnection(
     database: IDatabaseConnection,
   ): Promise<ConnectionTestResult> {
@@ -166,6 +202,19 @@ export class BigQueryEngine implements QueryEngine {
     database: IDatabaseConnection,
     query: DatabaseQuery,
     options?: QueryExecuteOptions,
+  ): Promise<QueryResult> {
+    const caps = this.agentJobCaps(database, options);
+    return this.explainAgentCap(
+      await this.runQuery(database, query, options, caps),
+      caps,
+    );
+  }
+
+  private async runQuery(
+    database: IDatabaseConnection,
+    query: DatabaseQuery,
+    options: QueryExecuteOptions | undefined,
+    caps: AgentJobCaps,
   ): Promise<QueryResult> {
     const executionId = options?.executionId;
     const signal = options?.signal;
@@ -211,11 +260,7 @@ export class BigQueryEngine implements QueryEngine {
       if (configuredLocation) startBody.location = configuredLocation;
       const labels = this.jobLabels(database, api_base_url, options);
       if (labels) startBody.labels = labels;
-      // An int64 travels as a string in the BigQuery REST API.
-      const bytesCap = options?.maximumBytesBilled;
-      if (typeof bytesCap === "number" && bytesCap > 0) {
-        startBody.maximumBytesBilled = String(Math.floor(bytesCap));
-      }
+      applyAgentJobCaps(startBody, caps);
       checkAborted();
       let response = await client.post(
         `/projects/${project_id}/queries`,
@@ -367,6 +412,19 @@ export class BigQueryEngine implements QueryEngine {
     query: string,
     options?: QueryPreviewOptions,
   ): Promise<QueryPreviewResult> {
+    const caps = this.agentJobCaps(database, options);
+    return this.explainAgentCap(
+      await this.runPreviewQuery(database, query, options, caps),
+      caps,
+    );
+  }
+
+  private async runPreviewQuery(
+    database: IDatabaseConnection,
+    query: string,
+    options: QueryPreviewOptions | undefined,
+    caps: AgentJobCaps,
+  ): Promise<QueryPreviewResult> {
     const baseQuery = query.trim().replace(/;\s*$/, "");
     const safety = checkPreviewQuerySafety(baseQuery, "bigquery");
     if (!safety.safe) {
@@ -449,6 +507,7 @@ export class BigQueryEngine implements QueryEngine {
         }
         const labels = this.jobLabels(database, api_base_url, options);
         if (labels) startBody.labels = labels;
+        applyAgentJobCaps(startBody, caps);
 
         response = await client.post(
           `/projects/${project_id}/queries`,
@@ -571,6 +630,19 @@ export class BigQueryEngine implements QueryEngine {
     query: string,
     options: StreamingQueryOptions & QueryExecuteOptions,
   ): Promise<StreamingQueryResult> {
+    const caps = this.agentJobCaps(database, options);
+    return this.explainAgentCap(
+      await this.runStreamingQuery(database, query, options, caps),
+      caps,
+    );
+  }
+
+  private async runStreamingQuery(
+    database: IDatabaseConnection,
+    query: string,
+    options: StreamingQueryOptions & QueryExecuteOptions,
+    caps: AgentJobCaps,
+  ): Promise<StreamingQueryResult> {
     const executionId = options.executionId;
     const signal = options.signal;
 
@@ -621,6 +693,7 @@ export class BigQueryEngine implements QueryEngine {
       }
       const labels = this.jobLabels(database, api_base_url, options);
       if (labels) startBody.labels = labels;
+      applyAgentJobCaps(startBody, caps);
 
       checkAborted();
       let response = await client.post(

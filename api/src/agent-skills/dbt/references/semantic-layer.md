@@ -378,7 +378,7 @@ What `query_metric` and `compile_metric` do and refuse at run time:
   project settings), else the connection dbt builds with. It always runs
   read-only. The result says which: `connectionRole: "read" | "build"`.
 - **BigQuery bytes.** A metric query that would bill more than the agent
-  byte cap (1 TiB unless the operator changed it) is refused before it runs.
+  byte cap (500 GiB unless the connection or operator changed it) is refused before it runs.
   Narrow the time range, or partition the model on its time dimension.
 - **BigQuery time types.** Metrics queried together must have time
   dimensions of ONE type. A DATE-based and a TIMESTAMP-based `metric_time`
