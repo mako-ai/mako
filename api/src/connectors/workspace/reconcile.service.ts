@@ -39,7 +39,11 @@ import {
   type BundleBuildStatus,
 } from "./bundle/bundle.service";
 import { connectorBundlesEnabled } from "./bundle/flag";
-import { dependencyPlan, nodeModulesRefusal } from "./bundle/manifest";
+import {
+  dependencyPlan,
+  hasDependencies,
+  nodeModulesRefusal,
+} from "./bundle/manifest";
 import {
   CONNECTOR_BUNDLE_ENTRY,
   failureMessage,
@@ -268,7 +272,7 @@ async function reconcile(
       result.blocked++;
       continue;
     }
-    const bundled = plan.kind === "npm";
+    const bundled = plan.kind === "npm" && hasDependencies(files);
 
     const sourceSha = sourceShaOf(files);
     if (row && row.sourceSha === sourceSha && row.status !== "blocked") {

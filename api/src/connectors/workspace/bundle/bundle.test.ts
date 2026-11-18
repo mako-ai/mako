@@ -57,6 +57,7 @@ import path from "node:path";
 import {
   dependencyPlan,
   findNodeModules,
+  hasDependencies,
   lockfileProblem,
   nodeModulesRefusal,
 } from "./manifest";
@@ -439,6 +440,45 @@ describe("the flag", () => {
       plain.delete("package-lock.json");
       // No package.json: the TypeScript entry runs as before, flag or not.
       expect(shouldBundle("node", plain)).toBe(false);
+      // package.json for the SDK peer only, and a lockfile that installs
+      // nothing (connectors/close): runs as before too.
+      const peerOnly = folder({
+        "package.json":
+          '{"peerDependencies":{"@makoai/connector-sdk":">=0.1.0"}}',
+        "package-lock.json": JSON.stringify({
+          name: "acme",
+          lockfileVersion: 3,
+          requires: true,
+          packages: { "": { name: "acme" } },
+        }),
+      });
+      expect(dependencyPlan(peerOnly)).toEqual({ kind: "npm" });
+      expect(hasDependencies(peerOnly)).toBe(false);
+      expect(shouldBundle("node", peerOnly)).toBe(false);
+      expect(hasDependencies(folder())).toBe(true);
+      // Declared dependencies with a stale lockfile still build, so npm ci
+      // refuses the mismatch with its own message instead of a missing import.
+      const stale = folder({
+        "package.json": '{"dependencies":{"stripe":"14.0.0"}}',
+        "package-lock.json": JSON.stringify({
+          name: "acme",
+          lockfileVersion: 3,
+          requires: true,
+          packages: { "": { name: "acme" } },
+        }),
+      });
+      expect(hasDependencies(stale)).toBe(true);
+      expect(shouldBundle("node", stale)).toBe(true);
+      const optional = folder({
+        "package.json": '{"optionalDependencies":{"fsevents":"2.3.3"}}',
+        "package-lock.json": JSON.stringify({
+          name: "acme",
+          lockfileVersion: 3,
+          requires: true,
+          packages: { "": { name: "acme" } },
+        }),
+      });
+      expect(hasDependencies(optional)).toBe(true);
     } finally {
       if (before === undefined) delete process.env[CONNECTOR_BUNDLES_FLAG];
       else process.env[CONNECTOR_BUNDLES_FLAG] = before;
