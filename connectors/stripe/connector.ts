@@ -211,7 +211,7 @@ function entity(
 
 export default defineConnector<StripeConfig>({
   name: "stripe",
-  version: "1.1.0",
+  version: "1.2.0",
   title: "Stripe",
   documentationUrl: "https://docs.stripe.com/api",
   config: {
