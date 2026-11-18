@@ -151,6 +151,8 @@ directly); poll
 - The **dev preview** is your branch's working copy, live (vite + HMR) — visible to you while you build.
 - **Publishing** builds a commit on `main` into an immutable deployment; public and shared links serve the **published** build, never a draft, so viewers never see a half-finished edit.
 - **Rollback** repoints the published deployment at an earlier build.
+- **Data at publish time:** only a parquet binding with **no artifact** blocks a release — it is built (4 at a time) before the app goes live. A scheduled binding whose artifact is merely older than its schedule's latest occurrence goes live as-is and is refreshed right behind the release, so a large app no longer waits on rebuilding every binding. A failed after-publish rebuild retries twice, then appears as `bindingRefreshFailures` in `app_publish_status` (the live commit keeps serving the old numbers).
+- **Deploy races:** a deploy repoints the app only if the live commit is still the one it started from, so a deploy overtaken by a newer commit or a rollback stands down. `app_publish` leaves a still-progressing deploy of the same commit alone and reports `alreadyInFlight`; `app_publish_status` shows the current deploy stage. `app_publish` on an app you can only view answers that you have view-only access rather than "not found".
 - History is git history: every commit, by person or agent, is browsable in Source Control.
 - **Live status:** the published chip and `GET /api/workspaces/:wid/apps/:id/publish-state` show the deployed commit (author, time, and subject), publication time, whether app changes on the default branch are still pending, and the most recent deploy error. Reading this status does not start a sandbox.
 

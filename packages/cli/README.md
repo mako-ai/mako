@@ -28,8 +28,8 @@ platform's data looks like before a flow lands it in the warehouse.
 dbt: `mako dbt run -s <selector>` (also `build` / `test`, `--env <name>`,
 `--full-refresh`, `--no-defer`) runs dbt in Mako's runner on this checkout's
 `dbt/` folder — uncommitted edits included, nothing committed — and streams the
-log; the exit code is dbt's. Any `mako login` can run it (member role or
-above): your dbt code runs with the environment's warehouse credentials. It builds your personal
+log; the exit code is dbt's. Needs a `mako login` with the admin or
+owner role (members can only validate): your dbt code runs with the environment's warehouse credentials. It builds your personal
 environment (created on first use) unless you pass `--env`; production is only
 built from `main` by a job.
 
