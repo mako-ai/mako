@@ -1,5 +1,5 @@
 /**
- * test-support/mongo-memory.ts: MongoMemoryServer.create() retries a port
+ * src/test-support/mongo-memory.ts: MongoMemoryServer.create() retries a port
  * clash or a slow start, stops each failed instance, and throws anything else
  * at once. Runs on a fake server class, so it needs no mongod.
  */
@@ -8,7 +8,7 @@ import {
   MONGO_MEMORY_ATTEMPTS,
   MONGO_MEMORY_LAUNCH_TIMEOUT_MS,
   patchMongoMemoryServer,
-} from "../test-support/mongo-memory";
+} from "./test-support/mongo-memory";
 
 function fakeServer(failures: string[]) {
   const seen = { started: 0, stopped: 0, opts: [] as unknown[] };

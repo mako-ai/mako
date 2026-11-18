@@ -31,7 +31,7 @@ const API_ROOT = path.resolve(
 );
 // MongoMemoryServer.create() retries a port clash or a slow start in every file.
 const MONGO_MEMORY_SETUP = pathToFileURL(
-  path.join(API_ROOT, "test-support/mongo-memory.ts"),
+  path.join(API_ROOT, "src/test-support/mongo-memory.ts"),
 ).href;
 
 // Files no runner should pick up, each with its reason. Keep in step with
