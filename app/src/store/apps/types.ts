@@ -46,6 +46,11 @@ export interface AppMeta {
   publicShare?: PublicShareInfo;
   /** Whether live-link viewers can chat with the app (default off). */
   chatEnabled?: boolean;
+  /**
+   * The app's own `icon.svg`/`icon.png` and its blob oid (the cache
+   * version of GET /apps/:id/icon). Absent: the row shows a letter mark.
+   */
+  icon?: { file: string; oid: string };
 }
 
 export interface AppFileEntry {

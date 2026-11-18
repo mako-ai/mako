@@ -42,7 +42,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 27;
+export const WORKSPACE_TEMPLATE_VERSION = 28;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -100,6 +100,13 @@ They win over this file where the two disagree.
   preview of the app's public share (WhatsApp, Slack, LinkedIn ignore SVG),
   which crops to 1200×630 — keep the key content in that centred band.
   Make it look great.
+- **Icon:** \`icon.svg\` (or \`icon.png\`) at the app's root is its
+  favicon and its mark in the Apps explorer. Square, legible at 16 px:
+  one white glyph on a rounded square of one strong colour, e.g.
+  \`<svg viewBox="0 0 32 32"><rect width="32" height="32" rx="7"
+  fill="#527df2"/>…</svg>\`. \`makoData()\` inlines it into
+  \`index.html\` (dev and build) unless the page links its own icon; an
+  app without one gets a letter mark on a colour derived from its id.
 - **Package manager: pnpm.** Use \`pnpm install\`, \`pnpm add <pkg>\`,
   \`pnpm dev\`, \`pnpm build\` — never \`npm install\` in a pnpm app: it
   ignores \`pnpm-lock.yaml\` and writes a competing \`package-lock.json\`.

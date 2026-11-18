@@ -13,7 +13,8 @@ export const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
 // rows left behind by deleted or renamed bindings.
 // 4: rows carry `bindingTables` (which binding reads which table), and
 // `tables` keeps `{{ dbt_schema }}.model` references the extraction dropped.
-export const INDEX_SCHEMA_VERSION = 4;
+// 5: rows carry the app's `icon` (its favicon, shown in the Apps explorer).
+export const INDEX_SCHEMA_VERSION = 5;
 
 export interface AppSchedule {
   binding: string;
@@ -57,6 +58,8 @@ export interface AppIndexRow {
   firstCommitAt?: string;
   /** The app's own thumbnail image at its root (see APP_THUMBNAIL_FILES). */
   thumbnail?: AppThumbnailRef;
+  /** The app's own icon at its root (see APP_ICON_FILES). */
+  icon?: AppThumbnailRef;
 }
 
 export interface AppBindingTables {
@@ -82,6 +85,15 @@ export const APP_THUMBNAIL_FILES = [
   "thumbnail.jpeg",
   "thumbnail.svg",
 ] as const;
+
+/**
+ * The icon convention, the thumbnail's small sibling: `icon.svg` (or
+ * `icon.png`) at the app's root, first match wins. It is the app's favicon
+ * (the SDK's vite plugin inlines it into index.html) and its mark in the Apps
+ * explorer. Square, legible at 16 px. An app without one gets a generated
+ * letter mark in both places.
+ */
+export const APP_ICON_FILES = ["icon.svg", "icon.png"] as const;
 
 export interface AppsIndexSnapshot {
   /** The main commit the rows describe; "" when the workspace has no repo. */

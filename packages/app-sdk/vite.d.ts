@@ -45,6 +45,12 @@ export interface MakoDataOptions {
    * as Mako would for them. Default: MAKO_VIEWER_AS, else yourself.
    */
   viewAs?: string;
+  /**
+   * Link the app's favicon in index.html (dev and build): its `icon.svg` or
+   * `icon.png`, inlined, else a generated letter mark. Skipped when
+   * index.html already has a `<link rel="icon">`. Default: true.
+   */
+  favicon?: boolean;
 }
 
 export interface MakoContext {
@@ -77,8 +83,25 @@ export function normalizeBindingSource(source: string): string;
 export function bindingFingerprint(source: string, dbtEnvironment?: string): string;
 
 /**
+ * The generated favicon of an app without an icon: the title's first letter
+ * on a rounded square, hue from the app id (as Mako's explorer draws it).
+ */
+export function defaultAppIconSvg(app?: { id?: string; title?: string }): string;
+
+/** The app's favicon: its icon.svg / icon.png inlined, else the letter mark. */
+export function appFavicon(appDir: string): {
+  file: "icon.svg" | "icon.png" | null;
+  type: string;
+  href: string;
+};
+
+/** index.html with the favicon linked, unless it already links one. */
+export function injectFavicon(html: string, appDir: string): string;
+
+/**
  * Serve the app's data bindings (`__data/index.json`, `__data/<name>.parquet`)
- * during a local `vite dev`, built by Mako from the local binding files.
+ * during a local `vite dev`, built by Mako from the local binding files, and
+ * link the app's favicon in index.html (dev and build).
  */
 export function makoData(options?: MakoDataOptions): Plugin;
 export default makoData;

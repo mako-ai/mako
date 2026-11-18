@@ -389,6 +389,16 @@ placeholder `thumbnail.svg`. Before designing or replacing one, read
 `references/thumbnails.md` (`read_skill_resource("apps",
 "references/thumbnails.md")`): the recipe, the rules and how to render it.
 
+## Icon (favicon + Apps explorer)
+
+`icon.svg` at the app's root (or `icon.png`) is the app's favicon and its
+mark next to its name in the Apps explorer. Square, legible at 16 px: one
+white glyph on a rounded square of one strong colour
+(`<svg viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="…"/>`
+then the glyph, ~2.25 stroke). `makoData()` inlines it into `index.html` in
+dev and build; do not add a `<link rel="icon">` yourself. Without one, the
+app gets a generated letter mark.
+
 ## Styling & UI components
 
 **Default to the house style.** The SDK injects Mako's theme tokens (stone,

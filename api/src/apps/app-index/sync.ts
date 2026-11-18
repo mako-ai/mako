@@ -85,6 +85,7 @@ export function rowToIndex(
     thumbnail: row.thumbnail
       ? { file: row.thumbnail.file, oid: row.thumbnail.oid }
       : undefined,
+    icon: row.icon ? { file: row.icon.file, oid: row.icon.oid } : undefined,
   };
 }
 
@@ -383,6 +384,7 @@ async function syncNow(
       authorEmail: first?.email || undefined,
       firstCommitAt: first?.at,
       thumbnail: app.thumbnail,
+      icon: app.icon,
     };
   });
 
@@ -423,6 +425,7 @@ async function syncNow(
                 ? new Date(row.firstCommitAt)
                 : null,
               thumbnail: row.thumbnail ?? null,
+              icon: row.icon ?? null,
               indexedSha: sha,
             },
           },

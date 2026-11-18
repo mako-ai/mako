@@ -105,6 +105,7 @@ for (const [route, label] of [
   ["/recent", "apps.recent"],
   ["/search", "apps.search"],
   ["/:id/thumbnail", "apps.thumbnail"],
+  ["/:id/icon", "apps.icon"],
   ["/:id/live", "apps.live"],
   ["/:id/live/", "apps.live"],
 ] as const) {

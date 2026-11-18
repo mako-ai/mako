@@ -19,6 +19,7 @@ import {
   AppSchedule,
   AppBindingTables,
   AppThumbnailRef,
+  APP_ICON_FILES,
   APP_THUMBNAIL_FILES,
 } from "./rows";
 
@@ -37,6 +38,7 @@ export interface DiscoveredApp {
   /** `bindings/<name>.sql` blobs, by binding name. */
   bindingBlobs: Map<string, string>;
   thumbnail?: AppThumbnailRef;
+  icon?: AppThumbnailRef;
 }
 
 export interface Discovery {
@@ -122,6 +124,9 @@ export function discoverApps(records: TreeRecord[]): Discovery {
   const thumbnails = new Map<string, AppThumbnailRef>();
   const thumbRank = (file: string) =>
     (APP_THUMBNAIL_FILES as readonly string[]).indexOf(file);
+  const icons = new Map<string, AppThumbnailRef>();
+  const iconRank = (file: string) =>
+    (APP_ICON_FILES as readonly string[]).indexOf(file);
   for (const r of records) {
     if (r.type !== "blob") continue;
     const app = insideApp(r.path);
@@ -131,6 +136,13 @@ export function discoverApps(records: TreeRecord[]): Discovery {
       const prev = thumbnails.get(app);
       if (!prev || thumbRank(rel) < thumbRank(prev.file)) {
         thumbnails.set(app, { file: rel, oid: r.oid });
+      }
+      continue;
+    }
+    if (iconRank(rel) >= 0) {
+      const prev = icons.get(app);
+      if (!prev || iconRank(rel) < iconRank(prev.file)) {
+        icons.set(app, { file: rel, oid: r.oid });
       }
       continue;
     }
@@ -157,6 +169,7 @@ export function discoverApps(records: TreeRecord[]): Discovery {
       manifestOid: manifestOids.get(dir) ?? "",
       bindingBlobs: bindings.get(dir) ?? new Map(),
       ...(thumbnails.get(dir) ? { thumbnail: thumbnails.get(dir) } : {}),
+      ...(icons.get(dir) ? { icon: icons.get(dir) } : {}),
     });
   }
   apps.sort((a, b) => a.path.localeCompare(b.path));

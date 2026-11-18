@@ -7,6 +7,8 @@ import AccessIcon from "../AccessIcon";
 import { resolveAccessState } from "../access-state";
 import StarToggle from "../starred/StarToggle";
 import type { ResourceTreeNode } from "../ResourceTree";
+import type { AppMeta } from "../../store/apps/types";
+import AppFavicon from "./AppFavicon";
 import { AppIcon, fileIcon, parseNodeId } from "./node-model";
 
 /**
@@ -79,14 +81,22 @@ export function AppRowAdornment({
   );
 }
 
-/** Row icon for the Apps tree: app (with its access overlay), file, folder. */
+/**
+ * Row icon for the Apps tree: app (its favicon, with its access overlay),
+ * file, folder. An app the list does not know (yet) keeps the generic glyph.
+ */
 export function appsTreeItemIcon(
   node: ResourceTreeNode,
   ctx: { isExpanded: boolean } | undefined,
   userId: string | undefined,
+  apps?: { workspaceId: string | undefined; byId: Map<string, AppMeta> },
 ) {
   const parsed = parseNodeId(node.id);
   if (parsed.kind === "app") {
+    const app = apps?.byId.get(parsed.appId);
+    const favicon = app ? (
+      <AppFavicon workspaceId={apps?.workspaceId} app={app} />
+    ) : undefined;
     const state = resolveAccessState(node, userId);
     // The overlay says who can see it, wherever the row sits — a folder
     // header no longer does.
@@ -94,6 +104,7 @@ export function appsTreeItemIcon(
       return (
         <AccessIcon
           Glyph={AppIcon}
+          glyph={favicon}
           state={
             node.access === "private" &&
             node.owner_id === userId &&
@@ -105,7 +116,7 @@ export function appsTreeItemIcon(
         />
       );
     }
-    return <AppIcon size={16} strokeWidth={1.5} />;
+    return favicon ?? <AppIcon size={16} strokeWidth={1.5} />;
   }
   if (parsed.kind === "file") {
     return fileIcon(node.name, node.path ?? node.name);

@@ -42,6 +42,8 @@ export interface ListedApp {
   chatEnabled: boolean;
   duplicateOf?: string;
   verified: boolean;
+  /** The app's `icon.*` and its blob oid (GET /apps/:id/icon?v=<oid>). */
+  icon?: { file: string; oid: string };
 }
 
 export interface AppListing {
@@ -111,6 +113,8 @@ export async function listVisibleApps(
         duplicateOf: folder.duplicateOf,
         // A workspace admin vouched for it (app-lifecycle.service.ts).
         verified: folder.scope === "workspace" && verified.has(folder.id),
+        // Its favicon, for the explorer row; none = a generated letter mark.
+        ...(folder.icon ? { icon: folder.icon } : {}),
       };
     });
   // Folders of the two trees the caller can see: the workspace tree, and

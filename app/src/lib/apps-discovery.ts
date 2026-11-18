@@ -21,6 +21,35 @@ export function appThumbnailUrl(
 }
 
 /**
+ * Where an app's favicon comes from: its own `icon.svg`/`icon.png`, served by
+ * the icon route and versioned by blob oid like the thumbnail. Null when the
+ * app ships none (the explorer draws the letter mark instead, no request).
+ */
+export function appIconUrl(
+  workspaceId: string,
+  app: { id: string; icon?: { oid: string } | null },
+): string | null {
+  if (!app.icon) return null;
+  const base = getApiBasePath(import.meta.env.VITE_API_URL);
+  return `${base}/workspaces/${workspaceId}/apps/${app.id}/icon?v=${encodeURIComponent(app.icon.oid)}`;
+}
+
+/**
+ * The generated favicon of an app that ships no icon: its first letter on
+ * the hue the thumbnail placeholder uses. `@makoai/app-sdk/vite` injects the
+ * same mark into the app's index.html, so the tab and the explorer row
+ * match.
+ */
+export function appLetterMark(app: Pick<DiscoveryApp, "id" | "title">): {
+  letter: string;
+  hue: number;
+} {
+  const { hue } = placeholderFor(app);
+  const first = /[\p{L}\p{N}]/u.exec(app.title)?.[0] ?? "?";
+  return { letter: first.toUpperCase(), hue };
+}
+
+/**
  * A thumbnail URL asking for a card-sized WebP (`w`, snapped server-side to
  * 320/480/640/960/1200). The originals are 1200-wide posters of several
  * hundred KB; a card is ~300 px wide.

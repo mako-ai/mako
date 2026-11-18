@@ -1,5 +1,5 @@
 /**
- * Stored images of an app: app_browse screenshots and its thumbnail.
+ * Stored images of an app: app_browse screenshots, its thumbnail and icon.
  */
 import { createRoute, z } from "@hono/zod-openapi";
 import { eyesShotKey } from "../../apps/eyes.service";
@@ -129,6 +129,62 @@ appsAssetRoutes.openapi(
         : null;
       if (!res) {
         return fail(c, 404, "This app has no thumbnail");
+      }
+      return res;
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsAssetRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/icon",
+    tags: ["Apps"],
+    summary: "The app's own icon (favicon)",
+    description:
+      "The square icon the app ships at its root (icon.svg, or icon.png) as of main: its favicon and its mark in the Apps explorer. GET /apps says which apps have one (and its oid, the cache version). Always the original bytes. Private caching: immutable for a year when `v` names the current blob, revalidate (ETag by oid) otherwise. 404 when the app ships none. SVG is served with a script-free, sandboxed CSP.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      query: z.object({
+        v: z.string().optional().openapi({
+          description: "The icon's blob oid (cache version).",
+        }),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const workspaceId = loaded.project.workspaceId.toString();
+      const appId = loaded.project._id.toString();
+      const row = await timed(
+        "app.lookup",
+        async () =>
+          (await resolveIndexedAppRef(workspaceId, appId)) ??
+          (await resolveAppRef(workspaceId, appId)),
+      );
+      const icon = row?.icon;
+      const { v } = c.req.valid("query");
+      // Same serving as a thumbnail (immutable by oid, inert SVG), minus the
+      // resizing: an icon is a few hundred bytes.
+      const res = icon
+        ? await thumbnailResponse({
+            thumbnail: icon,
+            v,
+            ifNoneMatch: c.req.header("if-none-match"),
+            read: async () => {
+              const repoDir = await boundRepoDirIfExists(workspaceId);
+              return repoDir ? readThumbnailBlob(repoDir, icon) : null;
+            },
+          })
+        : null;
+      if (!res) {
+        return fail(c, 404, "This app has no icon");
       }
       return res;
     } catch (error) {
