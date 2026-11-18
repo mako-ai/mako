@@ -55,6 +55,8 @@ let spec: Record<string, any>;
 /** A Calendly that serves objects by path. Every request is recorded. */
 const objects = new Map<string, Record<string, unknown>>();
 const failing = new Set<string>();
+/** Paths answered 403, as for a token of another organization. */
+const forbidden = new Set<string>();
 /** Paths answered 429 with `Retry-After: 60`. */
 const limited = new Set<string>();
 const requests: string[] = [];
@@ -135,6 +137,11 @@ before(async () => {
       res.statusCode = 429;
       res.setHeader("retry-after", "60");
       res.end(JSON.stringify({ title: "Too Many Requests" }));
+      return;
+    }
+    if (forbidden.has(url.pathname)) {
+      res.statusCode = 403;
+      res.end(JSON.stringify({ title: "Permission Denied", message: "No" }));
       return;
     }
     if (failing.has(url.pathname)) {
@@ -323,6 +330,31 @@ void test("a read that fails holds the whole event back, for a retry, never unfi
     assert.match(outcomes[0].reason, /HTTP 400/);
   } finally {
     failing.delete(eventPath);
+  }
+});
+
+void test("a 403 fill read lands the record without the keys it could not read", async () => {
+  const [created] = local(buildWebhookEvents());
+  const eventPath = new URL(created.rawPayload.payload.scheduled_event.uri)
+    .pathname;
+  forbidden.add(eventPath);
+  try {
+    const outcomes = await runBatch([created]);
+    assert.equal(outcomes[0].outcome, "records");
+    const scheduled = (outcomes[0] as any).records.find(
+      (r: any) => r.entity === "scheduled_events",
+    );
+    assert.ok(scheduled, "the scheduled event still lands");
+    assert.equal("calendar_event" in scheduled.payload, false);
+    for (const [key, value] of Object.entries(scheduled.payload)) {
+      assert.notEqual(value, null, `${key} is never written null`);
+    }
+    assert.ok(
+      (outcomes[0] as any).records.some((r: any) => r.entity === "invitees"),
+      "the invitee still lands",
+    );
+  } finally {
+    forbidden.delete(eventPath);
   }
 });
 
