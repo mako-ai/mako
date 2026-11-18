@@ -131,8 +131,10 @@ export function nextWriters(
 }
 
 /**
- * People decide who writes, in the app: never an API key, MCP client or
- * agent, whatever it is asked.
+ * The REST route takes a person signed in to the app, never an API key. An
+ * MCP client changes the list through set_connection_access
+ * (agent-lib/tools/connection-access-tools.ts), which needs the
+ * connections-access grant and checks the same rights.
  */
 export const WRITERS_IN_APP_ONLY = "Writers can only be changed in the app";
 

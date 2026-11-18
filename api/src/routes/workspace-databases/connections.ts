@@ -3,6 +3,7 @@
  * test a saved connection or an unsaved candidate.
  */
 import { createRoute, z } from "@hono/zod-openapi";
+import { recordAccessChange } from "../../access/connection-access-event";
 import { unifiedAuthMiddleware } from "../../auth/unified-auth.middleware";
 import {
   requireWorkspace,
@@ -490,6 +491,9 @@ connectionRoutes.openapi(
 
       const verifyBeforeSave = body.verifyBeforeSave === true;
 
+      // As it was, for the record of an access change.
+      const agentWritesBefore = database.allowAgentWrites === true;
+
       // Update fields
       if (body.name) database.name = body.name;
       if (typeof body.allowAgentWrites === "boolean") {
@@ -556,6 +560,16 @@ connectionRoutes.openapi(
         database.lastConnectedAt = new Date();
       }
       await database.save();
+      if ((database.allowAgentWrites === true) !== agentWritesBefore) {
+        await recordAccessChange({
+          workspaceId: workspace._id,
+          connectionId: database._id,
+          kind: "database",
+          actor: String(c.get("user")?.id ?? "unknown"),
+          via: c.get("authType") === "session" ? "app" : "api",
+          changes: { agentWrites: database.allowAgentWrites === true },
+        });
+      }
 
       // Every pool/client/connector is cached by connection id alone, so
       // without this an edited host or rotated password keeps being served

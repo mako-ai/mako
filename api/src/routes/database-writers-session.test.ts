@@ -10,6 +10,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { OpenAPIHono } from "@hono/zod-openapi";
+import { ConnectionAccessEvent } from "../access/connection-access-event";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
@@ -98,5 +99,44 @@ describe("PUT /databases/{id}/writers in the app", () => {
     ]);
     // Someone outside the workspace is still refused.
     expect((await put([{ principal: "user:stranger" }])).status).toBe(400);
+    // The change is recorded, with who made it; the refusal is not.
+    const events = await ConnectionAccessEvent.find({
+      connectionId: db._id,
+    }).lean();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      kind: "database",
+      via: "app",
+      changes: { writers: { added: ["user:vic"], removed: [] } },
+    });
+    expect(events[0].actor).toBeTruthy();
+  });
+
+  it("records allowAgentWrites switched on and off, and nothing for another edit", async () => {
+    const db = await DatabaseConnection.create({
+      workspaceId: WS,
+      name: "Agents",
+      type: "postgresql",
+      connection: { host: "localhost", database: "a" },
+      createdBy: "owner",
+    });
+    const put = (body: object) =>
+      app.request(`/api/workspaces/${WS}/databases/${db._id}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    expect((await put({ allowAgentWrites: true })).status).toBe(200);
+    // Unchanged, then a rename: neither is an access change.
+    expect((await put({ allowAgentWrites: true })).status).toBe(200);
+    expect((await put({ name: "Agents 2" })).status).toBe(200);
+    expect((await put({ allowAgentWrites: false })).status).toBe(200);
+    const events = await ConnectionAccessEvent.find({ connectionId: db._id })
+      .sort({ at: 1 })
+      .lean();
+    expect(events.map(e => [e.actor, e.via, e.changes])).toEqual([
+      ["owner", "app", { agentWrites: true }],
+      ["owner", "app", { agentWrites: false }],
+    ]);
   });
 });

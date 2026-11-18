@@ -30,7 +30,8 @@
  * document, because a spread inherits every field added later.
  *
  * It also returns the connection's access settings (live reads, writers),
- * which a person changes in the app's Access tab; an agent only reads them.
+ * which are changed in the app's Access tab or with set_connection_access
+ * (connection-access-tools.ts).
  */
 import { tool } from "ai";
 import { Types } from "mongoose";
@@ -221,7 +222,7 @@ export function sourceConnectionAccess(row: {
     callable: callableFor(row.type ?? "") !== null,
     // Named reads call_connection takes as `operation` (none for most).
     operations: describeOperations(row.type ?? ""),
-    changeIn: `Live reads, live readers and writers are set by one of the connection's managers in the app: ${connectionUiUrl(String(row._id))}, Access tab. They cannot be changed over MCP.`,
+    changeIn: `Live reads, live readers and writers are set by one of the connection's managers (or the workspace owner): with set_connection_access, or in the app at ${connectionUiUrl(String(row._id))}, Access tab.`,
   };
 }
 
@@ -709,7 +710,7 @@ export function createConnectorTools(workspaceId: string) {
           const database = await DatabaseConnection.findOne({
             _id: new Types.ObjectId(connectionId),
             workspaceId: new Types.ObjectId(workspaceId),
-          }).select("_id name type connection allowAgentWrites");
+          }).select("_id name type connection allowAgentWrites writers");
           if (!database) return { error: CONNECTION_NOT_FOUND };
           const db = database as unknown as {
             _id: Types.ObjectId;
@@ -717,12 +718,22 @@ export function createConnectorTools(workspaceId: string) {
             type: string;
             connection?: Record<string, unknown>;
             allowAgentWrites?: boolean;
+            writers?: IConnectionWriter[];
           };
           return {
             ...summarizeConnectionForListing(db),
             kind: "database",
             connector: db.type,
             allowAgentWrites: db.allowAgentWrites === true,
+            // Everyone reads; these people and workflows write.
+            access: {
+              writers: (db.writers ?? []).map(w => ({
+                principal: w.principal,
+                where: w.where ?? null,
+              })),
+              changeIn:
+                "The workspace owner and admins change the writers: with set_connection_access, or in the connection's Access tab in the app.",
+            },
             next: "list_databases / list_tables / inspect_table describe its schema; sql_execute_query queries it; a flow file references this id as destination.connection_id.",
           };
         } catch (error) {

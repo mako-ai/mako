@@ -18,6 +18,10 @@ import {
   writersEditor,
   writersOutsideRefusal,
 } from "../../access/connection-writers-list";
+import {
+  listChange,
+  recordAccessChange,
+} from "../../access/connection-access-event";
 import { callableFor } from "../../connections/callable";
 import { mayWrite } from "../../connections/proxy.service";
 import {
@@ -175,6 +179,14 @@ sourceConnectionWriterRoutes.openapi(
     );
     const outside = await writersOutsideRefusal(workspaceId, writers, stored);
     if (outside) return fail(c, 400, outside);
+    // As they were, for the record of this change.
+    const before = {
+      writers: stored.map(w => w.principal),
+      liveReads: row.liveReads === true,
+      liveReaders: row.liveReaders
+        ? sourceWriters(row.liveReaders).map(w => w.principal)
+        : null,
+    };
     row.writers = nextWriters(stored, writers, userId);
     if (liveReads !== undefined) row.liveReads = liveReads;
     if (liveReaders === null) {
@@ -198,6 +210,36 @@ sourceConnectionWriterRoutes.openapi(
       row.liveReaders = nextWriters(storedReaders, readers, userId);
     }
     await row.save();
+    const readersNow = row.liveReaders
+      ? sourceWriters(row.liveReaders).map(w => w.principal)
+      : null;
+    await recordAccessChange({
+      workspaceId,
+      connectionId: id,
+      kind: "source",
+      actor: userId,
+      via: "app",
+      changes: {
+        writers: listChange(
+          before.writers,
+          row.writers.map(w => w.principal),
+        ),
+        ...((row.liveReads === true) !== before.liveReads
+          ? { liveReads: row.liveReads === true }
+          : {}),
+        liveReaders: {
+          ...listChange(before.liveReaders ?? [], readersNow ?? []),
+          // The list was dropped: everyone reads live again.
+          ...(before.liveReaders !== null && readersNow === null
+            ? { everyone: true }
+            : {}),
+          // A list where everyone read before, even an empty one.
+          ...(before.liveReaders === null && readersNow !== null
+            ? { limited: true }
+            : {}),
+        },
+      },
+    });
     logger.info("Source connection writers changed", {
       workspaceId,
       connectionId: id,

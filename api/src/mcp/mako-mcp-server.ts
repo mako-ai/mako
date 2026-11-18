@@ -49,6 +49,7 @@ import { createVersionHistoryTools } from "../agent-lib/tools/version-history-to
 import { createSkillTools } from "../agent-lib/tools/skill-tools";
 import { createSelfDirectiveTools } from "../agent-lib/tools/self-directive-tool";
 import { createConnectorTools } from "../agent-lib/tools/connector-tools";
+import { createConnectionAccessTools } from "../agent-lib/tools/connection-access-tools";
 import { createConnectionWriteTools } from "../agent-lib/tools/connection-write-tools";
 import { createFlowFileTools } from "../agent-lib/tools/flow-file-tools";
 import { createWorkflowTools } from "../agent-lib/tools/workflow-tools";
@@ -254,6 +255,12 @@ export function buildMakoMcpCandidateTools(
   // Gated by the capability's live minimum role (member); creates source
   // connections only.
   const connectionWriteTools = createConnectionWriteTools(workspaceId, userId);
+  // Who may use a connection: the connections-access grant, and the app's
+  // own rights (owner/admin, or a source connection's managers) in the tool.
+  const connectionAccessTools = createConnectionAccessTools(
+    workspaceId,
+    userId,
+  );
   // The pre-push check for `flows/<slug>.yml` (RFC: agent-authored flows).
   // The agent in that scenario has the WORKSPACE repo checked out, not this
   // monorepo, so `pnpm flows:validate` is not a surface it can reach.
@@ -278,6 +285,7 @@ export function buildMakoMcpCandidateTools(
   return {
     ...connectorTools,
     ...connectionWriteTools,
+    ...connectionAccessTools,
     ...flowFileTools,
     ...flowSyncTools,
     ...workflowTools,
@@ -334,10 +342,11 @@ const EXTERNAL_MCP_IMPLICIT_GRANTS: readonly CapabilityGrant[] = [
  * opted into per key via `members:write` and never conferred by the blanket
  * ACP-desktop grant — otherwise adding a grant to CAPABILITY_GRANTS silently
  * widens that surface, which is exactly what happened when this one was
- * added.
+ * added. `connections-access` changes who may use a credential: the same
+ * reasoning, one level down.
  */
 const ACP_DESKTOP_WITHHELD_GRANTS: ReadonlySet<CapabilityGrant> =
-  new Set<CapabilityGrant>(["members-write"]);
+  new Set<CapabilityGrant>(["members-write", "connections-access"]);
 
 function sessionCapabilityGrants(
   context: MakoMcpContext,
@@ -510,6 +519,7 @@ function capabilityScopeForGrant(
   if (grant === "members-write") return "members:write";
   if (grant === "connections-write") return "connections:write";
   if (grant === "connections-manage") return "connections:manage";
+  if (grant === "connections-access") return "connections:access";
   if (grant === "workflows-run") return "workflows:run";
   return undefined;
 }

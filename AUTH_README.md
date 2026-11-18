@@ -248,20 +248,20 @@ app.get("/api/user/profile", authMiddleware, async c => {
 
 ### Authentication Endpoints
 
-| Method | Endpoint                    | Description                                 | Auth Required |
-| ------ | --------------------------- | ------------------------------------------- | ------------- |
+| Method | Endpoint                     | Description                                 | Auth Required  |
+| ------ | ---------------------------- | ------------------------------------------- | -------------- |
 | POST   | `/api/auth/register`         | Register new user                           | No             |
 | POST   | `/api/auth/login`            | Login with email/password                   | No             |
 | POST   | `/api/auth/logout`           | Logout user                                 | Yes            |
 | GET    | `/api/auth/me`               | Get current user                            | Yes            |
 | POST   | `/api/auth/refresh`          | Refresh session                             | No             |
 | GET    | `/api/auth/google`           | Initiate Google OAuth                       | No             |
-| GET    | `/api/auth/google/callback` | Google OAuth callback                       | No            |
+| GET    | `/api/auth/google/callback`  | Google OAuth callback                       | No             |
 | GET    | `/api/auth/github`           | Initiate GitHub OAuth                       | No             |
-| GET    | `/api/auth/github/callback` | GitHub OAuth callback                       | No            |
-| GET    | `/api/auth/oauth-receive`   | Receive session from production OAuth proxy | No            |
-| POST   | `/api/auth/desktop/code`    | Mint one-time desktop handoff code          | Yes           |
-| GET    | `/api/auth/desktop/complete`| Redeem desktop code, set session cookie     | No (code+PKCE)|
+| GET    | `/api/auth/github/callback`  | GitHub OAuth callback                       | No             |
+| GET    | `/api/auth/oauth-receive`    | Receive session from production OAuth proxy | No             |
+| POST   | `/api/auth/desktop/code`     | Mint one-time desktop handoff code          | Yes            |
+| GET    | `/api/auth/desktop/complete` | Redeem desktop code, set session cookie     | No (code+PKCE) |
 
 ### Request/Response Examples
 
@@ -546,9 +546,18 @@ credential check and deletes it again if the check fails) and the
 `update_connection` / `delete_connection` tools (rename, plain config, remove;
 an explicit per-key scope, carried by OAuth sign-ins;
 only for the connection's managers or the workspace owner, as in the app, and
-never a secret, the address a key is sent to, or the Access tab's live reads
-and writers). Like `warehouse:write` it is carried by every
-OAuth login and is not a default for new API keys.
+never a secret or the address a key is sent to). The `connections:access`
+scope maps to the `connections-access` grant behind `set_connection_access`
+(who may use a connection: a database connection's writers, for the workspace
+owner and admins; a source connection's writers, live reads, live readers and
+managers, for its managers and the workspace owner). Unlike the two above, no
+OAuth login carries `connections:access`: only an API key created with it, and
+every change it makes is kept in `connection_access_events`. The tool never
+adds the key's owner as a writer or a live reader, nor a workflow as either
+(an agent may also be able to deploy and run one): those additions stay in
+the app. Like
+`warehouse:write`, `connections:write` and `connections:manage` are carried by
+every OAuth login and are not defaults for new API keys.
 
 The opt-in `query:write` scope is double-gated: it yields "write-opt-in"
 query access, which `sql_execute_query` resolves per connection — write

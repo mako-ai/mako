@@ -6,7 +6,8 @@ import { type CapabilityGrant } from "@mako/agent-tools";
 
 /**
  * The grants a plan approval may confer. Every capability grant EXCEPT
- * `members-write`, `connections-write` and `connections-manage`: approving a
+ * `members-write`, `connections-write`, `connections-manage` and
+ * `connections-access`: approving a
  * plan is a one-off decision in chat, and neither changing who can reach the
  * workspace nor storing, changing or deleting a credential that came through
  * the agent's context is a decision that should be made that way. Written as
@@ -15,7 +16,10 @@ import { type CapabilityGrant } from "@mako/agent-tools";
  */
 type AcpGrantableCapability = Exclude<
   CapabilityGrant,
-  "members-write" | "connections-write" | "connections-manage"
+  | "members-write"
+  | "connections-write"
+  | "connections-manage"
+  | "connections-access"
 >;
 import { useConsoleStore } from "../store/consoleStore";
 import {

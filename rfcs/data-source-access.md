@@ -26,9 +26,13 @@ writers?: { principal: string; where?: string; addedBy; addedAt }[]
   "Execute anyway") and MCP keys only with `allowAgentWrites`, so an empty
   list matches what people already do; admins and agent chats that wrote
   are refused until listed, and the refusal says how to get added.
-- Owner and admins edit the list, in the app only (not API keys, MCP or
-  agents), the same people who may set `allowAgentWrites` or delete a
-  connection today.
+- Owner and admins edit the list, the same people who may set
+  `allowAgentWrites` or delete a connection today: in the app, or over MCP
+  with `set_connection_access` (an API key with the `connections:access`
+  scope, which no sign-in carries; external MCP only, never the in-product
+  chat; every change is recorded in `connection_access_events`). Over MCP
+  nobody adds themselves or a workflow, as a writer or a live reader: an
+  agent would be opening the connection to itself. The REST route stays app-session only.
 
 ## The check
 
@@ -85,7 +89,7 @@ cover, with **Allow** for each, so whoever is refused is added in one click.
 - A write hidden inside a function call (`SELECT f()` where `f` writes) is
   classified as a read. Reads by anyone not allowed to write anywhere run
   read-only (Postgres, Cloud SQL, Redshift: `BEGIN TRANSACTION
-  READ ONLY` sent with the query in one round trip; MySQL: a read-only
+READ ONLY` sent with the query in one round trip; MySQL: a read-only
   transaction; ClickHouse: `readonly=2`), so the database refuses it.
   BigQuery and D1 `SELECT`s cannot write. MongoDB and SQL Server have no such
   mode: connect with a read-only database user where that matters, as for

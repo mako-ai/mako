@@ -3,6 +3,10 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { SourceConnection } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
 import {
+  listChange,
+  recordAccessChange,
+} from "../../access/connection-access-event";
+import {
   changeRefusal,
   managersOf,
   mayChangeSourceConnection,
@@ -56,8 +60,9 @@ sourceConnectionManagerRoutes.openapi(
     const workspaceId = c.req.param("workspaceId");
     const id = c.req.param("id");
     const user = c.get("user");
-    // People pick who holds a key, in the app: never an API key, MCP client
-    // or agent, whatever it is asked.
+    // This route takes a person signed in to the app, never an API key. An
+    // MCP client goes through set_connection_access, which needs the
+    // connections-access grant and checks the same rights.
     if (c.get("authType") !== "session" || !user?.id) {
       return fail(c, 403, "Managers can only be changed in the app");
     }
@@ -88,6 +93,14 @@ sourceConnectionManagerRoutes.openapi(
     const before = managersOf(row);
     row.set("managers", next);
     await row.save();
+    await recordAccessChange({
+      workspaceId,
+      connectionId: id,
+      kind: "source",
+      actor: user.id,
+      via: "app",
+      changes: { managers: listChange(before, next) },
+    });
     logger.info("Source connection managers changed", {
       workspaceId,
       connectionId: id,
