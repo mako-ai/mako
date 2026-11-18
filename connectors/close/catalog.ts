@@ -146,6 +146,8 @@ export const CLOSE_SEARCH_BASE_FIELDS: Record<string, string[]> = {
     "updated_by",
     "integration_links",
     "timezone",
+    "timezone_source",
+    "lead_suggestions_operation_id",
   ],
   opportunity: [
     "id",
@@ -170,6 +172,7 @@ export const CLOSE_SEARCH_BASE_FIELDS: Record<string, string[]> = {
     "annualized_expected_value",
     "confidence",
     "note",
+    "note_html",
     "date_created",
     "date_updated",
     "date_won",
