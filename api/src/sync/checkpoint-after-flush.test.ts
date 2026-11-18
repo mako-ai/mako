@@ -231,9 +231,24 @@ vi.mock("./connector-registry", () => ({
 
 // ── Fake destination: staging and live as lists of row ids ──────────────
 
-let staging: string[] = [];
+/** Staging tables by suffix: each lane (backfill, poll) has its own. */
+let staging = new Map<string, string[]>();
 let live: string[] = [];
 let writeModeOfRun: "append_dedup" | "append" = "append_dedup";
+/**
+ * Merges of a non-empty staging table (1-based) that fail, as the 17 Nov
+ * schema reads did. Merges of an empty staging table are not counted.
+ */
+let failingMerges = new Set<number>();
+let mergeCalls = 0;
+
+const suffixOf = (o?: { stagingSuffix?: string }) =>
+  o?.stagingSuffix ?? "backfill_staging";
+const stagingOf = (o?: { stagingSuffix?: string }) => {
+  const key = suffixOf(o);
+  if (!staging.has(key)) staging.set(key, []);
+  return staging.get(key) as string[];
+};
 
 async function idsInParquet(filePath: string): Promise<string[]> {
   const instance = await DuckDBInstance.create(":memory:");
@@ -254,24 +269,45 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
   truncateLiveTable: (async () => {
     live = [];
   }) as any,
-  prepareStaging: (async () => {
-    staging = [];
+  prepareStaging: (async (_l: unknown, _f: string, o?: any) => {
+    staging.set(suffixOf(o), []);
   }) as any,
-  cleanupStaging: (async () => {
-    staging = [];
+  cleanupStaging: (async (_l: unknown, _f: string, o?: any) => {
+    staging.set(suffixOf(o), []);
   }) as any,
-  loadStagingFromParquet: (async (filePath: string) => {
+  loadStagingFromParquet: (async (
+    filePath: string,
+    _l: unknown,
+    _f: string,
+    o?: any,
+  ) => {
     const ids = await idsInParquet(filePath);
-    staging.push(...ids);
+    stagingOf(o).push(...ids);
     return { loaded: ids.length };
   }) as any,
-  mergeFromStaging: (async () => {
-    const written = staging.length;
+  mergeFromStaging: (async (
+    _l: unknown,
+    _flow: unknown,
+    _f: string,
+    _s: unknown,
+    o?: any,
+  ) => {
+    const rowsInStaging = stagingOf(o);
+    if (rowsInStaging.length > 0) mergeCalls++;
+    if (rowsInStaging.length > 0 && failingMerges.has(mergeCalls)) {
+      throw new Error("git ls-tree failed: fatal: not a tree object");
+    }
+    const written = rowsInStaging.length;
     if (writeModeOfRun === "append_dedup") {
       const seen = new Set(live);
-      for (const id of new Set(staging)) if (!seen.has(id)) live.push(id);
+      for (const id of new Set(rowsInStaging)) {
+        if (!seen.has(id)) {
+          live.push(id);
+          seen.add(id);
+        }
+      }
     } else {
-      live.push(...staging);
+      live.push(...rowsInStaging);
     }
     return { written };
   }) as any,
@@ -298,17 +334,25 @@ const ENTITY = "opportunities";
 
 class Cancelled extends Error {}
 
-/** One invocation of the entity function; `cancelAt` is a step that never runs. */
+/**
+ * One invocation of the entity function; `cancelAt` is a step that never
+ * runs. `poll` runs a scheduled poll instead of a backfill. `interleave`
+ * yields before each step, so two invocations run their steps in turn, as
+ * Inngest runs two executions of one flow.
+ */
 async function invoke(params: {
   runId: string;
   cancelAt?: string;
   tableName?: string;
+  poll?: boolean;
+  interleave?: boolean;
 }): Promise<{ completed: boolean; rowsWritten: number }> {
-  const stepIds: string[] = [];
   const step = {
     run: async (id: string, fn: () => Promise<unknown>) => {
       if (id === params.cancelAt) throw new Cancelled(id);
-      stepIds.push(id);
+      if (params.interleave) {
+        await new Promise(resolve => setImmediate(resolve));
+      }
       const out = await fn();
       // Inngest stores step output as JSON.
       return out === undefined ? undefined : JSON.parse(JSON.stringify(out));
@@ -332,10 +376,10 @@ async function invoke(params: {
         entity: ENTITY,
         dataSourceId: "69c781737eb58b93e5ac3385",
         workspaceId: WORKSPACE_ID,
-        backfill: true,
-        backfillRunId: params.runId,
-        checkpointEnabled: true,
-        cdcBackfillRunId: params.runId,
+        backfill: !params.poll,
+        backfillRunId: params.poll ? undefined : params.runId,
+        checkpointEnabled: !params.poll,
+        cdcBackfillRunId: params.poll ? undefined : params.runId,
         destinationId: "dest1",
         syncMode: "full",
         writeMode: writeModeOfRun,
@@ -378,10 +422,12 @@ describe("a backfill checkpoint never runs ahead of the flushed rows", () => {
   beforeEach(() => {
     collections.clear();
     entityStates = [];
-    staging = [];
+    staging = new Map();
     live = [];
     chunkStartOffsets = [];
     writeModeOfRun = "append_dedup";
+    failingMerges = new Set();
+    mergeCalls = 0;
   });
 
   it.each(["append_dedup", "append"] as const)(
@@ -460,4 +506,65 @@ describe("a backfill checkpoint never runs ahead of the flushed rows", () => {
       }),
     ).toEqual([]);
   }, 60_000);
+
+  it.each(["append_dedup", "append"] as const)(
+    "%s: a run FAILS in its first merge, then a new backfill: every row lands once",
+    async writeMode => {
+      // PandaDoc CH, 17 Nov 23:53: the merge's schema read failed, the run
+      // failed, and the next run resumed past 2 unflushed pages.
+      writeModeOfRun = writeMode;
+      sourceRows = rows(15_000);
+      // The first flush's merge fails: 10,000 rows staged, none in live.
+      failingMerges = new Set([1]);
+      await expect(invoke({ runId: "run-A" })).rejects.toThrow(
+        /not a tree object/,
+      );
+      expect(live).toHaveLength(0);
+
+      chunkStartOffsets = [];
+      const result = await invoke({ runId: "run-B" });
+      expect(chunkStartOffsets[0]).toBe(0);
+      expectEveryRowExactlyOnce();
+      expect(result.rowsWritten).toBe(15_000);
+    },
+    120_000,
+  );
+
+  it.each(["append_dedup", "append"] as const)(
+    "%s: a run FAILS in its second merge, then recovery resumes the same run: every row lands once",
+    async writeMode => {
+      writeModeOfRun = writeMode;
+      sourceRows = rows(25_000);
+      // The first flush (10,000 rows) lands; the second flush's merge fails
+      // with 10,000 rows staged and the cursor at 10,000.
+      failingMerges = new Set([2]);
+      await expect(invoke({ runId: "run-A" })).rejects.toThrow(
+        /not a tree object/,
+      );
+      expect(live).toHaveLength(10_000);
+
+      chunkStartOffsets = [];
+      const result = await invoke({ runId: "run-A" });
+      expect(chunkStartOffsets[0]).toBe(10_000);
+      expectEveryRowExactlyOnce();
+      expect(result.rowsWritten).toBe(25_000);
+    },
+    120_000,
+  );
+
+  it("a poll running at the same time as a backfill of the same flow: every row lands once", async () => {
+    // PostHog, 17 Nov: a poll and a backfill of one flow shared the buffer;
+    // 26 fetched survey_responses never landed.
+    sourceRows = rows(12_000);
+    const [backfill, poll] = await Promise.all([
+      invoke({ runId: "run-A", interleave: true }),
+      invoke({ runId: "poll", poll: true, interleave: true }),
+    ]);
+    expect(backfill.completed).toBe(true);
+    expect(poll.completed).toBe(true);
+    expectEveryRowExactlyOnce();
+    // Each execution merged every row it fetched.
+    expect(backfill.rowsWritten).toBe(12_000);
+    expect(poll.rowsWritten).toBe(12_000);
+  }, 120_000);
 });

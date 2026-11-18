@@ -142,6 +142,9 @@ export const syncBackfillEntityFunction = inngest.createFunction(
 
     const safeEntityStepId = entity.replace(/[^a-zA-Z0-9_-]/g, "_");
     let stepsUsed = 0;
+    // Backfills and scheduled resyncs read the source in full; polls do not.
+    // The two run in separate buffer and staging lanes (bulkBufferName).
+    const fullRead = Boolean(backfill);
 
     // When checkpointEnabled is true, cdcBackfillRunId is guaranteed
     // by the caller. Narrow to a non-optional string so downstream
@@ -363,8 +366,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         syncEngine,
         entity,
         isIncremental: syncMode === "incremental",
-        // Backfills and scheduled resyncs read the source in full; polls do not.
-        fullRead: Boolean(backfill),
+        fullRead,
         tableDestination,
         deleteMode,
         writeMode,
@@ -386,9 +388,13 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         withHeartbeat(executionId, async () => {
           // Rescue orphaned staging data from a previously crashed invocation
           // before dropping the staging table. A merge failure fails the
-          // step: dropping rows we could not merge would lose them.
+          // step: dropping rows we could not merge would lose them. Keyed
+          // merges only: staged rows lie past the resume cursor, so this
+          // invocation fetches them again, and a plain INSERT of them here
+          // (append / overwrite) would write them twice.
           const { rescued } = await performRescueAndPrepareStaging(
             bulkSyncOptions as any,
+            { dedupOnly: true },
           );
           if (rescued > 0) {
             logExec(
@@ -402,7 +408,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           // still buffered here lie past it: a cancelled or failed attempt
           // fetched them and never flushed them. This invocation fetches
           // them again from the cursor; keeping them would write them twice.
-          const discarded = await discardBulkBuffer(flowId, entity);
+          const discarded = await discardBulkBuffer(flowId, entity, fullRead);
           if (discarded > 0) {
             logExec(
               "info",
@@ -457,7 +463,11 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         `count-temp-${safeEntityStepId}-${label}`,
         () =>
           withHeartbeat(executionId, async () => {
-            const count = await getTempCollectionCount(flowId, entity);
+            const count = await getTempCollectionCount(
+              flowId,
+              entity,
+              fullRead,
+            );
             logger.info("Temp collection row count", {
               flowId,
               entity,
@@ -640,6 +650,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                   }
                 : {}),
               state,
+              fullRead,
               maxIterations: 10,
               logger: syncLogger,
               step,
@@ -765,7 +776,11 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         `count-temp-final-${safeEntityStepId}`,
         () =>
           withHeartbeat(executionId, async () => {
-            const count = await getTempCollectionCount(flowId, entity);
+            const count = await getTempCollectionCount(
+              flowId,
+              entity,
+              fullRead,
+            );
             logger.info("Final temp collection row count before flush", {
               flowId,
               entity,

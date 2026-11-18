@@ -693,8 +693,9 @@ async function performSyncChunkSql(
   const bulkRunId = options.backfillRunId || options.flowId || "";
   if (useBulkPath && options.flowId) {
     const db = Flow.db;
-    const collName = `backfill_tmp_${options.flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
-    bulkTempCollection = db.collection(collName);
+    bulkTempCollection = db.collection(
+      bulkBufferName(options.flowId, entity, options.fullRead),
+    );
     const isFirstChunk = !state || state.totalProcessed === 0;
     if (isFirstChunk) {
       await bulkTempCollection.deleteMany({});
@@ -972,10 +973,33 @@ export function flushBatchSizeAfterMemoryError(params: {
   return Math.max(floor, Math.floor(attempted / 2));
 }
 
-function bulkBufferCollection(flowId: string, entity: string): Collection {
-  return Flow.db.collection(
-    `backfill_tmp_${flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`,
-  );
+/**
+ * A backfill (full read) and a poll of the same flow can run at once: Inngest
+ * interleaves their steps. On 17 Nov a PostHog poll and backfill shared one
+ * buffer and one staging table; one run's first chunk emptied the buffer the
+ * other had filled, and 26 survey_responses never landed. Each lane gets its
+ * own buffer and staging table. The full-read lane keeps the historical names.
+ */
+export function bulkBufferName(
+  flowId: string,
+  entity: string,
+  fullRead?: boolean,
+): string {
+  const lane = fullRead === false ? "poll_tmp" : "backfill_tmp";
+  return `${lane}_${flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
+}
+
+/** The staging table suffix of a lane (see bulkBufferName). */
+export function bulkStagingSuffix(fullRead?: boolean): string {
+  return fullRead === false ? "poll_staging" : "backfill_staging";
+}
+
+function bulkBufferCollection(
+  flowId: string,
+  entity: string,
+  fullRead?: boolean,
+): Collection {
+  return Flow.db.collection(bulkBufferName(flowId, entity, fullRead));
 }
 const NOT_STAGED = { [BULK_STAGED_FIELD]: { $ne: true } };
 
@@ -996,6 +1020,7 @@ async function flushBulkBuffer(
   logger?: SyncLogger,
   schemaFields?: FieldMeta[],
   onBatchFlushed?: () => Promise<void>,
+  stagingSuffix: string = bulkStagingSuffix(),
 ): Promise<{ flushed: number }> {
   const initialCount = await tempCollection.countDocuments(NOT_STAGED);
   if (initialCount === 0) return { flushed: 0 };
@@ -1178,7 +1203,7 @@ async function flushBulkBuffer(
       for (let attempt = 1; attempt <= LOAD_MAX_RETRIES; attempt++) {
         try {
           await loadStagingFromParquet(parquet.filePath, cdcLayout, flowId, {
-            stagingSuffix: "backfill_staging",
+            stagingSuffix,
             skipDrop: true,
             skipParquetCleanup: true,
           });
@@ -1341,7 +1366,7 @@ export async function performBulkFlush(
 
   if (!cdcAdapter.loadStagingFromParquet) return { flushed: 0 };
 
-  const tempCollection = bulkBufferCollection(flowId, entity);
+  const tempCollection = bulkBufferCollection(flowId, entity, options.fullRead);
 
   const entitySchema = await resolveEntitySchema({
     entity,
@@ -1376,6 +1401,7 @@ export async function performBulkFlush(
     options.logger,
     schemaFields,
     onBatchFlushed,
+    bulkStagingSuffix(options.fullRead),
   );
 }
 
@@ -1437,7 +1463,7 @@ export async function performPrepareStaging(
   // A swallowed drop failure would leave the staged rows in staging and
   // load them a second time.
   await cdcAdapter.prepareStaging(cdcLayout, flowId, {
-    stagingSuffix: "backfill_staging",
+    stagingSuffix: bulkStagingSuffix(options.fullRead),
     strict: true,
   });
 
@@ -1446,6 +1472,7 @@ export async function performPrepareStaging(
   const { modifiedCount } = await bulkBufferCollection(
     flowId,
     entity,
+    options.fullRead,
   ).updateMany(
     { [BULK_STAGED_FIELD]: true },
     { $unset: { [BULK_STAGED_FIELD]: "" } },
@@ -1518,7 +1545,11 @@ export async function performRescueAndPrepareStaging(
     // The staged rows are in live now: release them from the buffer so the
     // drop below does not send them back to be loaded again.
     if (options.flowId) {
-      await bulkBufferCollection(options.flowId, options.entity).deleteMany({
+      await bulkBufferCollection(
+        options.flowId,
+        options.entity,
+        options.fullRead,
+      ).deleteMany({
         [BULK_STAGED_FIELD]: true,
       });
     }
@@ -1542,10 +1573,12 @@ const STAGING_CONTAINER_MISSING =
 export async function discardBulkBuffer(
   flowId: string,
   entity: string,
+  fullRead?: boolean,
 ): Promise<number> {
   const { deletedCount } = await bulkBufferCollection(
     flowId,
     entity,
+    fullRead,
   ).deleteMany({});
   return deletedCount ?? 0;
 }
@@ -1553,8 +1586,9 @@ export async function discardBulkBuffer(
 export function getTempCollectionCount(
   flowId: string,
   entity: string,
+  fullRead?: boolean,
 ): Promise<number> {
-  return bulkBufferCollection(flowId, entity).countDocuments();
+  return bulkBufferCollection(flowId, entity, fullRead).countDocuments();
 }
 
 export async function performStagingMerge(
@@ -1596,7 +1630,7 @@ export async function performStagingMerge(
   const isDedup =
     options.writeMode !== "append" && options.writeMode !== "overwrite";
   if (!isDedup) {
-    await bulkBufferCollection(flowId, entity).deleteMany({
+    await bulkBufferCollection(flowId, entity, options.fullRead).deleteMany({
       [BULK_STAGED_FIELD]: true,
     });
   }
@@ -1628,7 +1662,10 @@ export async function performStagingMerge(
     } as any,
     flowId,
     entitySchema ?? undefined,
-    { stagingSuffix: "backfill_staging", fullRead: options.fullRead },
+    {
+      stagingSuffix: bulkStagingSuffix(options.fullRead),
+      fullRead: options.fullRead,
+    },
   );
 }
 
@@ -1654,11 +1691,11 @@ export async function performStagingCleanup(
   // buffer before dropping staging, so a crash in between leaves rows a
   // retry can only re-merge from staging (append_dedup) or skip, never load
   // twice from the buffer.
-  const tempCollection = bulkBufferCollection(flowId, entity);
+  const tempCollection = bulkBufferCollection(flowId, entity, options.fullRead);
   await tempCollection.deleteMany({ [BULK_STAGED_FIELD]: true });
 
   await cdcAdapter.cleanupStaging(cdcLayout, flowId, {
-    stagingSuffix: "backfill_staging",
+    stagingSuffix: bulkStagingSuffix(options.fullRead),
   });
 
   // Rows still here were never staged (a flush that stopped early). Keep

@@ -5,6 +5,7 @@
  *
  * Refusals are {@link FlowRequestError}s; the routes answer them as-is.
  */
+import { bulkBufferName } from "../sync/sync-orchestrator";
 import { inWorkspace } from "../utils/workspace-scope";
 import { Types } from "mongoose";
 import { asSystem } from "../access/connection-writes";
@@ -113,11 +114,12 @@ export async function resetFlowEntity(params: {
   await CdcEntityState.deleteMany(scope);
   await CdcChangeEvent.deleteMany(scope);
 
-  const tempCollectionName = `backfill_tmp_${flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
-  await Flow.db
-    .collection(tempCollectionName)
-    .drop()
-    .catch(() => undefined);
+  for (const fullRead of [true, false]) {
+    await Flow.db
+      .collection(bulkBufferName(flowId, entity, fullRead))
+      .drop()
+      .catch(() => undefined);
+  }
 
   invalidateDestinationCounts(workspaceId, flowId);
 
