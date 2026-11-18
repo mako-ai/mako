@@ -86,6 +86,8 @@ export default defineConfig({
       "src/apps/unregistered-draft-app.test.ts",
       // A binding past the parquet row limit fails its build, never truncates.
       "src/apps/binding-row-limit.test.ts",
+      // The read-only gate reads quotes by the binding's connection.
+      "src/apps/binding-read-only-gate.test.ts",
       // PARQUET_ROW_LIMIT / PARQUET_MAX_ROW_LIMIT and `-- row_limit:`.
       "src/utils/parquet-row-limit.test.ts",
       "src/apps/binding-artifact-format.test.ts",
