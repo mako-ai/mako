@@ -68,6 +68,14 @@ export async function commitFlowFileOrFail(
     slug: flow.slug,
     error: result.error,
   });
+  if (result.conflict) {
+    return fail(
+      c,
+      409,
+      "The flow file at main changed since this flow was read, so nothing was saved. Reload the flow and apply the change again.",
+      { code: "definition_conflict", detail: result.error },
+    );
+  }
   return fail(
     c,
     502,

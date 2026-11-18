@@ -40,13 +40,18 @@ import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
 const state = vi.hoisted(() => ({
+  /** The GitHub App token call fails while set. */
+  tokenFail: false,
   freshenCalls: 0,
   /** Run once, right after the n-th freshen of main (1-based). */
   afterFreshen: new Map<number, () => Promise<void>>(),
 }));
 
 vi.mock("../../integrations/github/app-auth", () => ({
-  resolveRepoToken: async () => undefined,
+  resolveRepoToken: async () => {
+    if (state.tokenFail) throw new Error("token service unavailable");
+    return undefined;
+  },
 }));
 vi.mock("../../inngest/client", () => ({
   inngest: { send: vi.fn(async () => undefined) },
@@ -90,6 +95,9 @@ import {
   SourceConnection,
 } from "../../database/workspace-schema";
 import { syncFlowsFromRepo } from "../../services/flow-sync.service";
+import { commitFlowFile } from "../../services/flow-config.service";
+import { commitToMainDurably } from "../../apps/cloud-repo/durable-main";
+import { mirrorPushNow } from "../../apps/cloud-repo/push";
 import {
   type FlowFile,
   flowFilePath,
@@ -204,6 +212,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   process.env.APPS_CONNECTED_REPO_PUSH = "allow";
+  state.tokenFail = false;
   state.freshenCalls = 0;
   state.afterFreshen.clear();
   WS = new Types.ObjectId().toString();
@@ -383,5 +392,135 @@ describe("flow_update writes main first", () => {
     expect(await head(remoteDir)).toBe(result.commit);
     expect(resyncOn(await remoteFlow("close-a"))).toBe(false);
     expect((await flowStatus("close-a")).definitionAtMain.inSync).toBe(true);
+  });
+  it("TOKEN: a token call that fails leaves no local commit behind", async () => {
+    const localBefore = await head(repoDirFor(WS));
+    const remoteBefore = await head(remoteDir);
+    state.tokenFail = true;
+    const result = await flowUpdate({ flow: "close-a", resync: "off" });
+    state.tokenFail = false;
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/token service unavailable/);
+    // Local main untouched, so no later queued push can carry the change.
+    expect(await head(repoDirFor(WS))).toBe(localBefore);
+    expect(await head(remoteDir)).toBe(remoteBefore);
+    const row = await Flow.findOne({ workspaceId: WS, slug: "close-a" });
+    expect(row?.backfillSchedule?.enabled).toBe(true);
+  });
+
+  it("PUSH QUEUE: a mirror push queued during the write starts after it", async () => {
+    const events: string[] = [];
+    await commitToMainDurably(
+      WS,
+      async () => {
+        void mirrorPushNow(WS).then(() => events.push("mirror push"));
+        await new Promise(r => setTimeout(r, 300));
+        events.push("mutation");
+        return { writes: { "notes/queued.md": "x\n" } };
+      },
+      { message: "durable write" },
+    );
+    events.push("write");
+    await mirrorPushNow(WS);
+    expect(events).toEqual(["mutation", "write", "mirror push"]);
+  });
+
+  it("LOCAL MOVE: main moving locally after the mutation was judged re-judges it", async () => {
+    const local = repoDirFor(WS);
+    const heads: string[] = [];
+    const result = await commitToMainDurably(
+      WS,
+      async ({ head: at }) => {
+        heads.push(at);
+        if (heads.length === 1) {
+          // A box's push lands on this instance between judge and commit.
+          await commitBlobsOnBranch(
+            local,
+            DEFAULT_BRANCH,
+            { writes: { "notes/box.md": "from a box\n" } },
+            { message: "box push" },
+          );
+        }
+        return { writes: { "notes/ours.md": `judged at ${at}\n` } };
+      },
+      { message: "durable write" },
+    );
+    expect(heads).toHaveLength(2);
+    expect(heads[1]).not.toBe(heads[0]);
+    expect(await head(remoteDir)).toBe(result.commitOid);
+    const ours = await readBlob(remoteDir, result.commitOid, "notes/ours.md");
+    expect(ours.contents).toBe(`judged at ${heads[1]}\n`);
+    const box = await readBlob(remoteDir, result.commitOid, "notes/box.md");
+    expect(box.contents).toBe("from a box\n");
+  });
+
+  it("INVALID: flow_update refuses when the file at main is invalid, and leaves it", async () => {
+    const broken = "name: [unclosed\n";
+    await otherWriter({ "flows/close-a.yml": broken });
+    const result = await flowUpdate({ flow: "close-a", webhook: "on" });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/not a valid definition/);
+    const tip = (await head(remoteDir))!;
+    expect((await readBlob(remoteDir, tip, "flows/close-a.yml")).contents).toBe(
+      broken,
+    );
+  });
+
+  it("MISSING: flow_update refuses when a PR deleted the file, and does not recreate it", async () => {
+    await commitBlobsOnBranch(
+      remoteDir,
+      DEFAULT_BRANCH,
+      { deletes: ["flows/close-a.yml"] },
+      { message: "PR: delete close-a" },
+    );
+    const result = await flowUpdate({ flow: "close-a", webhook: "on" });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/not a valid definition/);
+    const after = (await head(remoteDir))!;
+    const { stdout } = await runGit([
+      "-C",
+      remoteDir,
+      "ls-tree",
+      "--name-only",
+      after,
+      "flows/",
+    ]);
+    expect(stdout).not.toMatch(/close-a\.yml/);
+  });
+
+  it("STALE BASE: a save from a row behind main conflicts instead of reverting main", async () => {
+    // A merged PR switches webhooks off; the row has not followed yet.
+    const row = await Flow.findOne({ workspaceId: WS, slug: "close-a" });
+    const theirs = flowToFile(row!);
+    theirs.webhookEnabled = false;
+    const merged = serializeFlowFile(theirs);
+    await otherWriter({ "flows/close-a.yml": merged });
+    // A setting that is not in the file: the row still serializes to B1.
+    const result = await commitFlowFile(row!, "user-1");
+    expect(result.ok).toBe(false);
+    expect(result.conflict).toBe(true);
+    const tip = (await head(remoteDir))!;
+    expect((await readBlob(remoteDir, tip, "flows/close-a.yml")).contents).toBe(
+      merged,
+    );
+  });
+
+  it("STATUS: definitionAtMain compares against the mirror, not a stale cache", async () => {
+    // Instance A landed webhook off on GitHub and saved the row; this
+    // instance's cache still has the old file.
+    const row = await Flow.findOne({ workspaceId: WS, slug: "close-a" });
+    const file = flowToFile(row!);
+    file.webhookEnabled = false;
+    const contents = serializeFlowFile(file);
+    await otherWriter({ "flows/close-a.yml": contents });
+    row!.webhookConfig!.enabled = false;
+    row!.sourceBlobSha = blobOid(contents);
+    await row!.save();
+    const status = await flowStatus("close-a");
+    expect(
+      status.definitionAtMain.inSync,
+      JSON.stringify(status.definitionAtMain),
+    ).toBe(true);
+    expect(status.definitionAtMain.commit).toBe(await head(remoteDir));
   });
 });

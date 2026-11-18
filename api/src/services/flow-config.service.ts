@@ -121,9 +121,10 @@ async function blobIdAt(
  * diverged still carries that commit's blob, and trusting it skipped the
  * write while main kept the old definition.
  *
- * `expectBlobAtMain` makes the write conditional (optimistic concurrency):
- * when the file at main is neither that blob nor already this definition,
- * nothing is written and the result is a conflict.
+ * The write is conditional (optimistic concurrency) on `expectBlobAtMain`,
+ * which defaults to the row's `sourceBlobSha`: when the file at main is
+ * neither that blob nor already this definition (in any format), nothing is
+ * written and the result is a conflict.
  */
 export async function commitFlowFile(
   flow: IFlow,
@@ -139,6 +140,14 @@ export async function commitFlowFile(
   const contents = serializeFlowFile(file);
   const sha = blobOid(contents);
   const filePath = flowFilePath(slug);
+  // Without an expectation from the caller, the row's own blob is it: a row
+  // derived from an older file must not write that file over a newer one at
+  // main (a merged PR the row has not followed yet). A row with no blob (a
+  // new flow) writes unconditionally.
+  const expectBlobAtMain =
+    options.expectBlobAtMain !== undefined
+      ? options.expectBlobAtMain
+      : flow.sourceBlobSha || undefined;
   let blobAtMain = sha;
   try {
     const committed = await commitConfigToMain(
@@ -146,14 +155,6 @@ export async function commitFlowFile(
       async ({ repoDir, head }) => {
         const current = await blobIdAt(repoDir, head, filePath);
         if (current === sha) return null;
-        if (
-          options.expectBlobAtMain !== undefined &&
-          current !== options.expectBlobAtMain
-        ) {
-          throw new FlowFileConflictError(
-            `${filePath} changed on main (${head.slice(0, 9)}) since this flow was read: expected blob ${options.expectBlobAtMain?.slice(0, 9) ?? "none"}, found ${current?.slice(0, 9) ?? "none"}`,
-          );
-        }
         // The file on main may say the same thing in the older words
         // (format 1: `type`, `schedule`, `webhook`, `backfill_schedule`),
         // or with other comments. Then only the format differs: leave it,
@@ -173,6 +174,11 @@ export async function commitFlowFile(
             blobAtMain = current;
             return null;
           }
+        }
+        if (expectBlobAtMain !== undefined && current !== expectBlobAtMain) {
+          throw new FlowFileConflictError(
+            `${filePath} changed on main (${head.slice(0, 9)}) since this flow was read: expected blob ${expectBlobAtMain?.slice(0, 9) ?? "none"}, found ${current?.slice(0, 9) ?? "none"}`,
+          );
         }
         blobAtMain = sha;
         return { writes: { [filePath]: contents } };

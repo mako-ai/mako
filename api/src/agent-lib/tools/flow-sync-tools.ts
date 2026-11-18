@@ -26,6 +26,7 @@ import { z } from "zod";
 import { RepoRequiredError, appsRequireConnectedRepo } from "../../apps/config";
 import {
   freshenBeforeMainWrite,
+  freshenForServe,
   keyedSerial,
   resolveMirrorTarget,
 } from "../../apps/cloud-repo.service";
@@ -338,7 +339,7 @@ export function createFlowSyncTools({
 
     flow_status: tool({
       description:
-        "How a sync is doing, per entity: mode (steady / backfill), backlog, consecutive failures and the last error, last materialised, last backfill, lifetime events and rows; its last runs; its last data-diff check (columns that lost non-null values, see flow_data_diff); and definitionAtMain, whether the database row means what flows/<slug>.yml at main says (inSync false: the next push to main changes the sync). Use it after flow_backfill or flow_update, and to find a sync that went quiet.",
+        "How a sync is doing, per entity: mode (steady / backfill), backlog, consecutive failures and the last error, last materialised, last backfill, lifetime events and rows; its last runs; its last data-diff check (columns that lost non-null values, see flow_data_diff); and definitionAtMain, whether the database row means what flows/<slug>.yml at main says, read after fetching main from the repo, at the `commit` it names (inSync false: the next push to main changes the sync). Use it after flow_backfill or flow_update, and to find a sync that went quiet.",
       inputSchema: z.object({
         flow: flowRef,
         executions: z
@@ -365,6 +366,11 @@ export function createFlowSyncTools({
             .sort({ entity: 1 })
             .lean();
           const [lastDiff] = await listFlowDataDiffs(flow._id, 1);
+          // Compare against the mirror's main, not this instance's cache:
+          // another instance may have pushed the commit this row follows.
+          // Best-effort (a failed fetch compares the cache); `commit` names
+          // the head compared against either way.
+          await freshenForServe(workspaceId, 0).catch(() => undefined);
           const definition = await flowDefinitionDrift(flow).catch(error => ({
             error: error instanceof Error ? error.message : String(error),
           }));
@@ -677,13 +683,24 @@ export function createFlowSyncTools({
               await freshenBeforeMainWrite(workspaceId);
               let flow = await findFlow(workspaceId, ref);
               const synced = await ensureFlowDerivedCache(flow);
+              if (synced === "invalid" || synced === "missing") {
+                // The row no longer follows a valid file at main (and was
+                // just switched off). Writing the row's last good definition
+                // would overwrite or recreate that file blind.
+                const fresh = await Flow.findById(flow._id).lean();
+                const why =
+                  fresh?.definitionInvalid?.reason ??
+                  (synced === "missing"
+                    ? "the file is missing at main"
+                    : "the file at main is invalid");
+                return {
+                  refused: `flows/${flow.slug}.yml at main is not a valid definition of this sync (${why}), so nothing was changed. Fix or restore the file on main first; the sync is off until then.`,
+                } as const;
+              }
               if (synced === "resynced") {
                 flow = (await Flow.findById(flow._id)) ?? flow;
               }
-              const base =
-                (synced === "ok" || synced === "resynced") && flow.sourceBlobSha
-                  ? flow.sourceBlobSha
-                  : undefined;
+              const base = flow.sourceBlobSha || undefined;
               const webhookOnBefore = hasWebhookTrigger(flow);
               const applied = applyTriggerChange(workspaceId, flow, {
                 poll,

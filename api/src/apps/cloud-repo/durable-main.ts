@@ -25,6 +25,7 @@
  */
 import { runGit, GitError } from "../git";
 import {
+  BranchMovedError,
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
   repoDirFor,
@@ -36,6 +37,7 @@ import {
 import { loggers } from "../../logging";
 import { authArgs, remoteUrl, resolveMirrorTarget, tokenFor } from "./target";
 import { fetchFromCloud, freshenBeforeMainWrite } from "./fetch";
+import { withExclusivePush } from "./push";
 import { MIRROR_TRACKING_PREFIX } from "./reconcile";
 
 const logger = loggers.api("apps");
@@ -114,12 +116,16 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Move local main back off a commit that did not land. Best-effort. */
+/**
+ * Move local main back off a commit that did not land. Best-effort: false
+ * when something else committed on top meanwhile (main no longer points at
+ * `commitOid`).
+ */
 async function undoLocal(
   repoDir: string,
   commitOid: string,
   previousHead: string,
-): Promise<void> {
+): Promise<boolean> {
   const undone = await updateRefCas(
     repoDir,
     `refs/heads/${DEFAULT_BRANCH}`,
@@ -127,14 +133,16 @@ async function undoLocal(
     commitOid,
   ).catch(() => false);
   if (!undone) {
-    // Something else committed on top meanwhile. The next freshen sees the
-    // divergence and parks the whole local tip, so this commit cannot reach
-    // the mirror by a later push either.
+    // After a rejection the mirror moved, so the next freshen parks the
+    // whole local tip and this commit does not reach it. After any other
+    // failure the tip on top is a fast-forward of the mirror and would carry
+    // this commit with it: the caller pushes again rather than give up.
     logger.warn("Could not undo a local main commit that did not land", {
       repoDir,
       commitOid,
     });
   }
+  return undone;
 }
 
 /**
@@ -149,20 +157,46 @@ export function commitToMainDurably(
 ): Promise<DurableMainCommit> {
   return withMainWriteLock(workspaceId, async () => {
     const repoDir = repoDirFor(workspaceId);
-    /** Commit locally; null head/mutation = nothing to write. */
+    /**
+     * Commit locally; null head/mutation = nothing to write. A mutation
+     * decided against `head` commits on `head` only: when another local
+     * writer (a box's push, an app save) moved main meanwhile, it is judged
+     * again against the new head rather than spliced onto it.
+     */
     const commitLocally = async () => {
-      const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
-      if (!head) {
-        throw new DurableMainWriteError(`${DEFAULT_BRANCH} is missing`);
+      for (let attempt = 1; attempt <= DURABLE_MAIN_ATTEMPTS; attempt++) {
+        const head = await resolveCommit(
+          repoDir,
+          `refs/heads/${DEFAULT_BRANCH}`,
+        );
+        if (!head) {
+          throw new DurableMainWriteError(`${DEFAULT_BRANCH} is missing`);
+        }
+        if (typeof mutation !== "function") {
+          return commitBlobsOnBranch(
+            repoDir,
+            DEFAULT_BRANCH,
+            mutation,
+            options,
+          );
+        }
+        const resolved = await mutation({ repoDir, head });
+        if (!resolved) {
+          return { commitOid: head, previousHead: head, unchanged: true };
+        }
+        try {
+          return await commitBlobsOnBranch(repoDir, DEFAULT_BRANCH, resolved, {
+            ...options,
+            expectedHead: head,
+          });
+        } catch (error) {
+          if (error instanceof BranchMovedError) continue;
+          throw error;
+        }
       }
-      const resolved =
-        typeof mutation === "function"
-          ? await mutation({ repoDir, head })
-          : mutation;
-      if (!resolved) {
-        return { commitOid: head, previousHead: head, unchanged: true };
-      }
-      return commitBlobsOnBranch(repoDir, DEFAULT_BRANCH, resolved, options);
+      throw new DurableMainWriteError(
+        `local ${DEFAULT_BRANCH} kept moving while the write was judged`,
+      );
     };
     const target = await resolveMirrorTarget(workspaceId);
     if (!target) {
@@ -174,6 +208,26 @@ export function commitToMainDurably(
       };
     }
     const url = remoteUrl(target.owner, target.repo);
+    /** GitHub's main, or null when it cannot be read. */
+    const remoteMain = async (token: string | undefined) =>
+      runGit([
+        "-C",
+        repoDir,
+        ...authArgs(token),
+        "ls-remote",
+        url,
+        `refs/heads/${DEFAULT_BRANCH}`,
+      ])
+        .then(r => r.stdout.trim().split(/\s+/)[0] || null)
+        .catch(() => null);
+    const recordMirrored = (oid: string) =>
+      runGit([
+        "-C",
+        repoDir,
+        "update-ref",
+        `${MIRROR_TRACKING_PREFIX}${DEFAULT_BRANCH}`,
+        oid,
+      ]).catch(() => undefined);
     let lastError: unknown;
     for (let attempt = 1; attempt <= DURABLE_MAIN_ATTEMPTS; attempt++) {
       // First attempt: the shared, coalesced freshen. After a rejection: a
@@ -190,49 +244,69 @@ export function commitToMainDurably(
           );
         }
       }
-      const local = await commitLocally();
+      // The token before the commit: a token we cannot get must not leave a
+      // local commit behind for a later queued push to carry.
       const token = await tokenFor(target);
-      try {
-        // No force: a commit made on GitHub meanwhile rejects this push.
-        // Pushed even when unchanged, so a local main that is ahead of the
-        // mirror (an earlier queued push still pending) is not reported as
-        // durable before it is.
-        await runGit([
-          "-C",
-          repoDir,
-          ...authArgs(token),
-          "push",
-          "--quiet",
-          url,
-          `${local.commitOid}:refs/heads/${DEFAULT_BRANCH}`,
-        ]);
-        await runGit([
-          "-C",
-          repoDir,
-          "update-ref",
-          `${MIRROR_TRACKING_PREFIX}${DEFAULT_BRANCH}`,
-          local.commitOid,
-        ]).catch(() => undefined);
+      // Commit, push and undo hold this workspace's push slot, so no queued
+      // mirror push can read main while it holds a commit that may be undone.
+      const outcome = await withExclusivePush(workspaceId, async () => {
+        const local = await commitLocally();
+        try {
+          // No force: a commit made on GitHub meanwhile rejects this push.
+          // Pushed even when unchanged, so a local main that is ahead of the
+          // mirror (an earlier queued push still pending) is not reported as
+          // durable before it is.
+          await runGit([
+            "-C",
+            repoDir,
+            ...authArgs(token),
+            "push",
+            "--quiet",
+            url,
+            `${local.commitOid}:refs/heads/${DEFAULT_BRANCH}`,
+          ]);
+          await recordMirrored(local.commitOid);
+          return { landed: true as const, local };
+        } catch (error) {
+          const rejected = isRejectedPush(error);
+          // A push that failed without a rejection (a timeout, a 5xx) may
+          // still have landed: ask GitHub before undoing.
+          if (!rejected && (await remoteMain(token)) === local.commitOid) {
+            await recordMirrored(local.commitOid);
+            return { landed: true as const, local };
+          }
+          const undone =
+            local.unchanged ||
+            (await undoLocal(repoDir, local.commitOid, local.previousHead));
+          return { landed: false as const, error, rejected, undone };
+        }
+      });
+      if (outcome.landed) {
         return {
-          commitOid: local.commitOid,
-          changed: !local.unchanged,
+          commitOid: outcome.local.commitOid,
+          changed: !outcome.local.unchanged,
           mirrored: true,
         };
-      } catch (error) {
-        lastError = error;
-        if (!local.unchanged) {
-          await undoLocal(repoDir, local.commitOid, local.previousHead);
-        }
-        if (!isRejectedPush(error)) {
-          throw new DurableMainWriteError(
-            `push to ${target.owner}/${target.repo} main failed: ${messageOf(error)}`,
-          );
-        }
-        logger.info("Main moved on the mirror during a write; retrying", {
-          workspaceId,
-          attempt,
-        });
       }
+      lastError = outcome.error;
+      if (
+        !outcome.rejected &&
+        !outcome.undone &&
+        attempt < DURABLE_MAIN_ATTEMPTS
+      ) {
+        // Our commit is now under another local writer's commit and will
+        // reach the mirror with it: push again so it lands while we wait.
+        continue;
+      }
+      if (!outcome.rejected) {
+        throw new DurableMainWriteError(
+          `push to ${target.owner}/${target.repo} main failed: ${messageOf(outcome.error)}`,
+        );
+      }
+      logger.info("Main moved on the mirror during a write; retrying", {
+        workspaceId,
+        attempt,
+      });
     }
     throw new DurableMainWriteError(
       `main on ${target.owner}/${target.repo} kept moving; ${DURABLE_MAIN_ATTEMPTS} pushes were rejected (last: ${messageOf(lastError)})`,
