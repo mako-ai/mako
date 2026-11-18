@@ -23,10 +23,11 @@
  * from the same cursor, down to `MIN_SEARCH_PAGE_SIZE`. Close's search
  * cursor is an offset (`{"skip": n}`, signed), independent of `_limit`, so
  * the smaller page starts on the same row and its cursor ends where it
- * ends: no row is skipped or read twice. The smaller size is kept for the
- * rest of the walk and carried in the state as `pageSize`, so the next
- * chunk does not read the oversized page again. A shrink counts no
- * iteration and yields nothing.
+ * ends: no row is skipped or read twice. The smaller size is carried in
+ * the state as `pageSize`, so the next chunk does not read the oversized
+ * page again. A shrink counts no iteration and yields nothing. A full page
+ * that serializes to at most half the budget doubles the next page, back
+ * up to the full size, so a few large rows slow only their own stretch.
  */
 import type { ReadBatch } from "@makoai/connector-sdk";
 import {
@@ -296,21 +297,26 @@ export async function* readCloseSearch(
       let records: unknown[] = [];
       if (data.length > 0) {
         records = normalizeCloseSearchBatch(entity, data);
-        if (pageSize > MIN_SEARCH_PAGE_SIZE) {
-          const bytes = serializedBytes(records);
-          if (bytes > byteBudget) {
-            // Drop the page and read it again, smaller, from the same
-            // cursor: nothing about the position has moved yet.
-            const next = Math.max(
-              MIN_SEARCH_PAGE_SIZE,
-              Math.floor(pageSize / 2),
-            );
-            ctx.log(
-              `Close page of ${data.length} ${entity} rows is ${bytes} bytes, over the ${byteBudget}-byte page budget; ${pageSize} -> ${next} rows per page`,
-            );
-            pageSize = next;
-            continue;
-          }
+        const bytes = serializedBytes(records);
+        if (pageSize > MIN_SEARCH_PAGE_SIZE && bytes > byteBudget) {
+          // Drop the page and read it again, smaller, from the same
+          // cursor: nothing about the position has moved yet.
+          const next = Math.max(MIN_SEARCH_PAGE_SIZE, Math.floor(pageSize / 2));
+          ctx.log(
+            `Close page of ${data.length} ${entity} rows is ${bytes} bytes, over the ${byteBudget}-byte page budget; ${pageSize} -> ${next} rows per page`,
+          );
+          pageSize = next;
+          continue;
+        }
+        // A full page at most half the budget: the next page doubles,
+        // back up to the full size. One run of large rows no longer
+        // pins the rest of the walk to the smallest page.
+        if (
+          pageSize < fullPageSize &&
+          data.length >= pageSize &&
+          bytes * 2 <= byteBudget
+        ) {
+          pageSize = Math.min(fullPageSize, pageSize * 2);
         }
       }
       pageCursor = nextCursor;
