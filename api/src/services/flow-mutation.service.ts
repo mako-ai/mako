@@ -324,7 +324,10 @@ export async function buildNewFlow(params: {
       new Types.ObjectId().toString(),
     );
     // Webhook secret must be provided by the user (from Stripe/Close)
-    const webhookSecret = body.webhookSecret || "";
+    // The same value secretChange judged: a string, trimmed; anything else
+    // is no secret, so a non-string can never slip past the admin gate.
+    const webhookSecret =
+      typeof body.webhookSecret === "string" ? body.webhookSecret.trim() : "";
 
     flowData.webhookConfig = {
       endpoint: webhookEndpoint,
@@ -837,4 +840,21 @@ export async function finishFlowUpdate(params: {
     await flow.populate("dataSourceId", "name type");
   }
   await flow.populate("destinationDatabaseId", "name type");
+}
+
+export const SECRET_NEEDS_ADMIN =
+  "Only an owner or admin can change a flow's webhook signing secret.";
+
+/**
+ * The request sets a signing secret other than the one the flow holds. Only
+ * an owner or admin may: the secret decides which signed events the flow
+ * accepts. Re-sending the current secret (a form save) is no change.
+ */
+export function secretChange(
+  body: { webhookSecret?: unknown },
+  current: string | undefined,
+): boolean {
+  const next =
+    typeof body.webhookSecret === "string" ? body.webhookSecret.trim() : "";
+  return next.length > 0 && next !== (current ?? "").trim();
 }

@@ -37,8 +37,11 @@ import {
   isWebhookFlow,
 } from "../../services/flow-triggers.service";
 import {
+  RELEASE_PROVISION_CLAIM,
+  claimWebhookProvision,
   persistProvisionedWebhook,
   provisionFlowWebhook,
+  releaseWebhookProvision,
 } from "../../services/flow-webhook-provision.service";
 import { syncFlowWebhookSubscription } from "../../services/flow-webhook-subscription.service";
 import { generateWebhookEndpoint } from "../../utils/webhook.utils";
@@ -54,8 +57,6 @@ import {
 
 const OBJECT_ID = /^[0-9a-f]{24}$/i;
 const RECENT_EXECUTIONS = 5;
-/** A provisioning claim older than this is taken to have died. */
-const PROVISION_CLAIM_MS = 10 * 60 * 1000;
 
 const failure = (error: unknown) => ({
   success: false as const,
@@ -448,24 +449,11 @@ export function createFlowSyncTools({
             endpoint: f.webhookConfig?.endpoint ?? null,
             providerWebhookId: f.webhookConfig?.providerWebhookId ?? null,
           });
-          // The claim: only a sync with no subscription id, no secret and no
-          // provisioning in flight (or one stale for 10 minutes) is taken,
-          // atomically, so concurrent calls and retries create one at most.
-          const stale = new Date(Date.now() - PROVISION_CLAIM_MS);
-          const flow = await Flow.findOneAndUpdate(
-            {
-              _id: found._id,
-              workspaceId: new Types.ObjectId(workspaceId),
-              "webhookConfig.providerWebhookId": { $in: [null, ""] },
-              "webhookConfig.secret": { $in: [null, ""] },
-              $or: [
-                { "webhookConfig.provisioningAt": null },
-                { "webhookConfig.provisioningAt": { $lt: stale } },
-              ],
-            },
-            { $set: { "webhookConfig.provisioningAt": new Date() } },
-            { returnDocument: "after" },
-          );
+          const flow = await claimWebhookProvision({
+            flowId: found._id,
+            workspaceId,
+            unprovisionedOnly: true,
+          });
           if (!flow) {
             const current = await Flow.findById(found._id);
             if (
@@ -478,7 +466,6 @@ export function createFlowSyncTools({
               "Another provisioning of this sync is in progress; check flow_read in a minute.",
             );
           }
-          const release = { "webhookConfig.provisioningAt": null };
           let provisioned;
           try {
             provisioned = await provisionFlowWebhook({
@@ -487,14 +474,16 @@ export function createFlowSyncTools({
               body: { adopt: true },
             });
           } catch (error) {
-            await Flow.updateOne({ _id: flow._id }, { $set: release });
+            await releaseWebhookProvision(flow._id);
             throw error;
           }
           const { endpoint, created, webhookConfig, connectorType } =
             provisioned;
           // The row first: the subscription exists at the provider now.
-          await persistProvisionedWebhook(flow, release);
-          if (webhookConfig) webhookConfig.provisioningAt = null;
+          await persistProvisionedWebhook(flow, RELEASE_PROVISION_CLAIM);
+          // persistProvisionedWebhook released the claim in the database.
+          // Leave the in-memory path untouched, or flow.save() below would
+          // write null over a claim another request took since.
           const committed = await commitFlowFile(flow, userId);
           if (!committed.ok) {
             return failure(

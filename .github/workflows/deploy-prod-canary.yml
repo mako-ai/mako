@@ -35,6 +35,11 @@ jobs:
       BCRYPT_ROUNDS: ${{ vars.BCRYPT_ROUNDS }}
       CLIENT_URL: https://app-canary.mako.ai
       PRODUCTION_URL: https://app.mako.ai
+      # app-canary shares the production database. Its BASE_URL is
+      # app-canary, so without this every webhook URL it minted (a Stripe
+      # flow saved there re-syncs its subscription) would point production's
+      # provider subscriptions at the canary.
+      WEBHOOK_PUBLIC_BASE_URL: https://app.mako.ai
       DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
       ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
       GH_CLIENT_ID: ${{ vars.GH_CLIENT_ID }}
@@ -173,6 +178,7 @@ jobs:
             --set-env-vars BCRYPT_ROUNDS=${BCRYPT_ROUNDS} \
             --set-env-vars CLIENT_URL=${CLIENT_URL} \
             --set-env-vars PRODUCTION_URL=${PRODUCTION_URL} \
+            --set-env-vars WEBHOOK_PUBLIC_BASE_URL=${WEBHOOK_PUBLIC_BASE_URL} \
             --set-env-vars DASHBOARD_ARTIFACT_PREFIX=dashboard-artifacts/canary \
             --set-env-vars DASHBOARD_ARTIFACT_STORE=gcs \
             --set-env-vars DATABASE_URL=${DATABASE_URL} \

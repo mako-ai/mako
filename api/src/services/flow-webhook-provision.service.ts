@@ -182,3 +182,55 @@ export async function persistProvisionedWebhook(
     },
   );
 }
+
+/** A provisioning claim older than this is taken to have died. */
+export const PROVISION_CLAIM_MS = 10 * 60 * 1000;
+
+/** The update that releases a claim, for `persistProvisionedWebhook`. */
+export const RELEASE_PROVISION_CLAIM = {
+  "webhookConfig.provisioningAt": null,
+};
+
+/**
+ * Claim the right to create a flow's subscription, atomically: only a flow
+ * with no provisioning in flight (or one stale for PROVISION_CLAIM_MS) is
+ * taken, so concurrent calls and retries create one subscription at most.
+ * `unprovisionedOnly` (flow_webhook_provision) also requires no subscription
+ * id and no secret; the "Create in …" button may re-provision.
+ * Returns the claimed flow, or null when the claim was refused.
+ */
+export async function claimWebhookProvision(params: {
+  flowId: Types.ObjectId | string;
+  workspaceId: string;
+  unprovisionedOnly: boolean;
+}) {
+  const stale = new Date(Date.now() - PROVISION_CLAIM_MS);
+  return Flow.findOneAndUpdate(
+    {
+      _id: new Types.ObjectId(String(params.flowId)),
+      workspaceId: new Types.ObjectId(params.workspaceId),
+      ...(params.unprovisionedOnly
+        ? {
+            "webhookConfig.providerWebhookId": { $in: [null, ""] },
+            "webhookConfig.secret": { $in: [null, ""] },
+          }
+        : {}),
+      $or: [
+        { "webhookConfig.provisioningAt": null },
+        { "webhookConfig.provisioningAt": { $lt: stale } },
+      ],
+    },
+    { $set: { "webhookConfig.provisioningAt": new Date() } },
+    { returnDocument: "after" },
+  );
+}
+
+/** Give a claim back after a failed provisioning. */
+export async function releaseWebhookProvision(
+  flowId: Types.ObjectId | string,
+): Promise<void> {
+  await Flow.updateOne(
+    { _id: new Types.ObjectId(String(flowId)) },
+    { $set: RELEASE_PROVISION_CLAIM },
+  );
+}
