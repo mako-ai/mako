@@ -7,8 +7,16 @@
  * member on a database connection, never an admin who is not a manager on a
  * source connection, never a viewer.
  *
- * LISTS — only workspace members and workflows; no viewer as a source writer
- * or a manager. Changes are additions and removals: other entries stay.
+ * LISTS — only workspace members; no viewer as a source writer or a manager.
+ * Changes are additions and removals: other entries stay.
+ *
+ * NO SELF-GRANT — the caller never adds themselves as a writer or a live
+ * reader (by name, or by opening a list that leaves them out to everyone),
+ * and never adds a workflow, which an agent could deploy and run. Removing
+ * is allowed.
+ *
+ * NO SILENT NO-OP — an unknown key, a call that names no change and a
+ * `where` that would limit nothing are refused.
  *
  * Real Mongo (mongodb-memory-server).
  */
@@ -117,7 +125,7 @@ describe("a database connection's writers", () => {
       connectionId: DB.toString(),
       addWriters: [
         { principal: "member2@example.com", where: "mako_out.labels" },
-        { principal: "workflow:*" },
+        { principal: "user:owner1" },
       ],
     });
     expect(result.error).toBeUndefined();
@@ -127,7 +135,7 @@ describe("a database connection's writers", () => {
     expect(stored.map(w => [w.principal, w.where])).toEqual([
       ["user:admin1", "finance"],
       ["user:member2", "mako_out.labels"],
-      ["workflow:*", undefined],
+      ["user:owner1", undefined],
     ]);
     expect(stored[1].addedBy).toBe("admin1");
   });
@@ -236,6 +244,118 @@ describe("a database connection's writers", () => {
     expect((await database())?.writers).toHaveLength(2);
   });
 
+  it("refuses adding a workflow, which an agent could deploy and run; removing one works", async () => {
+    for (const principal of ["workflow:*", "workflow:nightly"]) {
+      const result = await as("owner1")({
+        connectionId: DB.toString(),
+        addWriters: [{ principal }, { principal: "user:member2" }],
+      });
+      expect(result.error).toMatch(/cannot be added as a writer over MCP/);
+      expect(result.error).toContain(principal);
+    }
+    expect((await database())?.writers).toHaveLength(1);
+
+    await DatabaseConnection.updateOne(
+      { _id: DB },
+      { $push: { writers: { principal: "workflow:*", addedBy: "owner1" } } },
+    );
+    const removed = await as("owner1")({
+      connectionId: DB.toString(),
+      removeWriters: [{ principal: "workflow:*" }],
+    });
+    expect(removed.error).toBeUndefined();
+    expect((await database())?.writers?.map(w => w.principal)).toEqual([
+      "user:admin1",
+    ]);
+  });
+
+  it("refuses a `where` that would not limit a writer who writes anywhere", async () => {
+    const id = DB.toString();
+    await as("owner1")({
+      connectionId: id,
+      addWriters: [{ principal: "user:member2" }],
+    });
+    const before = (await database())?.writers;
+
+    // A limited entry next to the broad one limits nothing.
+    const added = await as("owner1")({
+      connectionId: id,
+      addWriters: [{ principal: "member2@example.com", where: "finance" }],
+    });
+    expect(added.error).toMatch(/already writes anywhere/);
+    // Named as the caller named them.
+    expect(added.error).toContain("member2@example.com");
+    expect(added.error).not.toContain("user:member2");
+    // The reverse: there is no limited entry to remove.
+    const removed = await as("owner1")({
+      connectionId: id,
+      removeWriters: [{ principal: "user:member2", where: "finance" }],
+    });
+    expect(removed.error).toMatch(/no `finance` entry to remove/);
+    // Both at once for one principal.
+    const both = await as("owner1")({
+      connectionId: id,
+      addWriters: [
+        { principal: "user:viewer1" },
+        { principal: "user:viewer1", where: "finance" },
+      ],
+    });
+    expect(both.error).toMatch(/both anywhere and limited/);
+    expect((await database())?.writers).toEqual(before);
+
+    // Removing the broad entry in the same call does limit them.
+    const limited = await as("owner1")({
+      connectionId: id,
+      removeWriters: [{ principal: "user:member2" }],
+      addWriters: [{ principal: "user:member2", where: "finance" }],
+    });
+    expect(limited.error).toBeUndefined();
+    expect(limited.changed).toEqual(["writers"]);
+    expect(
+      (await database())?.writers
+        ?.filter(w => w.principal === "user:member2")
+        .map(w => w.where),
+    ).toEqual(["finance"]);
+  });
+
+  it("refuses an unknown key, where the MCP server parses the arguments", () => {
+    const { inputSchema } = (
+      createConnectionAccessTools(WS, "owner1") as unknown as {
+        set_connection_access: {
+          inputSchema: { safeParse: (i: unknown) => { success: boolean } };
+        };
+      }
+    ).set_connection_access;
+    const connectionId = DB.toString();
+    for (const extra of [
+      { writers: [{ principal: "user:member2" }] },
+      { allowAgentWrites: true },
+      { addReader: ["user:member2"] },
+      { addWriters: [{ principal: "user:member2", schema: "finance" }] },
+    ]) {
+      expect(inputSchema.safeParse({ connectionId, ...extra }).success).toBe(
+        false,
+      );
+    }
+    expect(
+      inputSchema.safeParse({
+        connectionId,
+        addWriters: [{ principal: "user:member2", where: "finance" }],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("refuses a call that names no change", async () => {
+    for (const input of [{}, { addWriters: [] }, { kind: "database" }]) {
+      const result = await as("owner1")({
+        connectionId: DB.toString(),
+        ...input,
+      });
+      expect(result.error).toMatch(/Name at least one change/);
+      expect(result.changed).toBeUndefined();
+    }
+  });
+
   it("refuses source-only settings and an unlistable principal", async () => {
     expect(
       (await as("admin1")({ connectionId: DB.toString(), liveReads: true }))
@@ -284,15 +404,94 @@ describe("a source connection's access", () => {
   });
 
   it('`liveReaders: "everyone"` drops the list', async () => {
-    await as("manager1")({
+    await as("owner1")({
       connectionId: SOURCE.toString(),
-      addLiveReaders: ["user:member2"],
+      addLiveReaders: ["user:member2", "user:manager1"],
     });
     const result = await as("manager1")({
       connectionId: SOURCE.toString(),
       liveReaders: "everyone",
     });
     expect(result.access?.liveReaders).toBe("everyone");
+    expect((await source())?.liveReaders).toBeUndefined();
+  });
+
+  it("refuses the caller giving themselves live reads, by name or by opening the list", async () => {
+    const id = SOURCE.toString();
+    await User.collection.insertOne({
+      _id: "manager1",
+      email: "manager1@example.com",
+    } as never);
+    for (const reader of ["user:manager1", "manager1@example.com"]) {
+      const result = await as("manager1")({
+        connectionId: id,
+        liveReads: true,
+        addLiveReaders: [reader],
+      });
+      expect(result.error).toMatch(/cannot add yourself as a live reader/);
+    }
+    // Refused whole: the switch in the same call is not saved either.
+    expect((await source())?.liveReads).not.toBe(true);
+    expect((await source())?.liveReaders).toBeUndefined();
+
+    // A list that leaves the caller out: opening it to everyone adds them.
+    await as("manager1")({
+      connectionId: id,
+      addLiveReaders: ["user:member2"],
+    });
+    const opened = await as("manager1")({
+      connectionId: id,
+      liveReaders: "everyone",
+    });
+    expect(opened.error).toMatch(/granting itself live reads/);
+    expect((await source())?.liveReaders).toHaveLength(1);
+
+    // Someone else adds them; a writer already reads live.
+    const byOwner = await as("owner1")({
+      connectionId: id,
+      addLiveReaders: ["user:manager1"],
+    });
+    expect(byOwner.error).toBeUndefined();
+    await SourceConnection.updateOne(
+      { _id: SOURCE },
+      { $set: { liveReaders: [{ principal: "user:member2" }] } },
+    );
+    await as("owner1")({
+      connectionId: id,
+      addWriters: [{ principal: "user:manager1" }],
+    });
+    const asWriter = await as("manager1")({
+      connectionId: id,
+      liveReaders: "everyone",
+    });
+    expect(asWriter.error).toBeUndefined();
+    expect(asWriter.access?.liveReaders).toBe("everyone");
+  });
+
+  it("refuses a workflow as a writer or a live reader; removing one works", async () => {
+    const id = SOURCE.toString();
+    expect(
+      (
+        await as("manager1")({
+          connectionId: id,
+          addWriters: [{ principal: "workflow:*" }],
+        })
+      ).error,
+    ).toMatch(/cannot be added as a writer over MCP/);
+    expect(
+      (
+        await as("manager1")({
+          connectionId: id,
+          addLiveReaders: ["workflow:send-digest"],
+        })
+      ).error,
+    ).toMatch(/cannot be added as a live reader over MCP/);
+    const removed = await as("manager1")({
+      connectionId: id,
+      removeWriters: [{ principal: "workflow:send-digest" }],
+    });
+    expect(removed.error).toBeUndefined();
+    expect((await source())?.writers).toEqual([]);
     expect((await source())?.liveReaders).toBeUndefined();
   });
 

@@ -552,7 +552,10 @@ scope maps to the `connections-access` grant behind `set_connection_access`
 owner and admins; a source connection's writers, live reads, live readers and
 managers, for its managers and the workspace owner). Unlike the two above, no
 OAuth login carries `connections:access`: only an API key created with it, and
-every change it makes is kept in `connection_access_events`. Like
+every change it makes is kept in `connection_access_events`. The tool never
+adds the key's owner as a writer or a live reader, nor a workflow as either
+(an agent may also be able to deploy and run one): those additions stay in
+the app. Like
 `warehouse:write`, `connections:write` and `connections:manage` are carried by
 every OAuth login and are not defaults for new API keys.
 
