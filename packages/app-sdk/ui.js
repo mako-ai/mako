@@ -52,6 +52,7 @@ import {
   tooltipValueState,
 } from "./ui-core.js";
 
+export { formatDate, formatTime, toDayKey, toInstant } from "./time.js";
 export {
   closePopovers,
   COLUMN_WIDTHS,

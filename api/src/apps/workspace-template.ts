@@ -42,7 +42,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 28;
+export const WORKSPACE_TEMPLATE_VERSION = 29;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -125,6 +125,18 @@ They win over this file where the two disagree.
   \`ui.css\`). The SDK injects the house theme tokens (\`--background\`,
   \`--brand\`, \`--canvas\`, \`--chart-1…5\`, …): style with them and use the
   kit — do not paste token blocks or fork those components into an app.
+- **shadcn/ui comes from the SDK too** (2.21): \`@makoai/app-sdk/components\`
+  (Button, Badge, Card, Dialog, Input, Popover, Separator, Skeleton, Tabs,
+  Tooltip, DropdownMenu, Checkbox) and \`@makoai/app-sdk/menu\` (\`FilterMenu\`:
+  tree filters with hover submenus) ship stock new-york-v4 files. Import
+  \`@makoai/app-sdk/tailwind.css\` after Tailwind in the app's CSS. Never add
+  a \`src/components/ui/\` copy of one of them: a missing component or prop
+  is an SDK pull request.
+- **Times:** instants show in the viewer's zone with a zone label
+  (\`formatTime\`, "14:05 CET"); day buckets print unshifted (\`formatDate\`);
+  date keys come from \`toDayKey\`. No \`getUTC*\`, \`timeZone: "UTC"\` or
+  \`toISOString().slice\` in display code. \`npx mako-app-lint\` in an app
+  flags both rules.
 - \`consoles/<folder>/<name>.sql\` — saved consoles (\`.js\`, \`.mongodb.js\`
   for the other languages); \`users/<handle>/consoles/…\` are private ones.
   Leading \`-- key: value\` lines are metadata (\`connection\`, \`database\`,

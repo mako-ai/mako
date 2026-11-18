@@ -541,6 +541,57 @@ classes. Add one line to the app's CSS, after the Tailwind imports:
 @source "../node_modules/@makoai/app-sdk/menu";
 ```
 
+### shadcn/ui: `@makoai/app-sdk/components` (2.21)
+
+Stock shadcn/ui new-york-v4, as the shadcn registry ships it: `Badge`,
+`Button`, `Card`, `Dialog`, `Input`, `Popover`, `Separator`, `Skeleton`,
+`Tabs`, `Tooltip`, plus `DropdownMenu` and `Checkbox` (one copy, in
+`/menu`, re-exported here). Only the `cn` import path differs from the
+registry. Never keep a `src/components/ui/` copy of one of them; a missing
+component or prop is an SDK pull request.
+
+```css
+/* src/index.css, after Tailwind */
+@import "@makoai/app-sdk/tailwind.css";
+```
+
+`tailwind.css` lets Tailwind see the SDK's classes (`@source`) and maps the
+house tokens onto Tailwind's colour names (`bg-popover`,
+`text-muted-foreground`, `bg-brand`, `--radius-*`). It replaces the
+`@theme inline` block each app pasted. The shadcn stack (`radix-ui`,
+`lucide-react`, `clsx`, `tailwind-merge`, `class-variance-authority`) is an
+optional peer set: apps that import neither `/components` nor `/menu` need
+none of it.
+
+### Times and dates (2.21)
+
+DuckDB runs in UTC, and that stays. Display code decides the zone.
+
+```ts
+import { formatDate, formatTime, toDayKey } from "@makoai/app-sdk";
+
+formatTime(row.updated_at); // "14:05 CET", "17 Nov, 14:05 CET": the viewer's zone, labelled
+formatDate(row.day);        // "18 Nov": a day bucket, never shifted by the viewer's zone
+toDayKey(new Date());       // "2026-11-18": the UTC key for URL state and joins
+```
+
+- `formatTime` reads a zone-less timestamp ("2026-11-18 13:05:00", how
+  DuckDB renders `TIMESTAMP`) as UTC. It shows the date when the instant
+  is not today in the viewer's zone, and the year when it is not this year.
+- `formatDate` takes a "YYYY-MM-DD" string or a parquet `date` (its UTC
+  midnight) and prints that calendar day in every zone.
+- `toInstant` turns any of these, epoch ms or epoch µs (bigint), into a `Date`.
+
+### Lint: `npx mako-app-lint` (2.21)
+
+Run it in an app folder (or pass several). It exits 1 on a finding;
+`--warn` only prints.
+
+- `utc-display`: `getUTC*`, `timeZone: "UTC"` or `toISOString().slice` in
+  `src/`. A date key the helpers cannot build takes
+  `// mako-lint-ignore utc-display` on its line.
+- `local-shadcn`: a `src/components/ui/<name>.tsx` the SDK ships.
+
 ### Chart tooltips: `TableTooltip` (2.10+, every series from 2.15)
 
 Every chart tooltip is a table, never recharts' coloured `name : value` list:

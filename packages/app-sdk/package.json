@@ -1,6 +1,6 @@
 {
   "name": "@makoai/app-sdk",
-  "version": "2.20.0",
+  "version": "2.21.0",
   "description": "Mako app SDK: data bindings (useQuery/useDuckDB), URL state, theme, and the house dashboard kit (/ui).",
   "license": "MIT",
   "repository": {
@@ -19,6 +19,9 @@
   "type": "module",
   "main": "./index.js",
   "types": "./index.d.ts",
+  "bin": {
+    "mako-app-lint": "./lint.js"
+  },
   "exports": {
     ".": {
       "types": "./index.d.ts",
@@ -40,12 +43,19 @@
       "types": "./menu/index.ts",
       "default": "./menu/index.ts"
     },
-    "./ui.css": "./ui.css"
+    "./components": {
+      "types": "./components/index.ts",
+      "default": "./components/index.ts"
+    },
+    "./ui.css": "./ui.css",
+    "./tailwind.css": "./tailwind.css"
   },
   "files": [
     "index.js",
     "index.d.ts",
     "progress.js",
+    "time.js",
+    "lint.js",
     "data-core.js",
     "vite.js",
     "vite.d.ts",
@@ -55,10 +65,13 @@
     "ui-core.js",
     "ui.d.ts",
     "ui.css",
+    "tailwind.css",
     "menu/",
+    "components/",
     "README.md"
   ],
   "peerDependencies": {
+    "class-variance-authority": ">=0.7",
     "clsx": ">=2",
     "lucide-react": ">=0.400",
     "radix-ui": ">=1.4",
@@ -67,6 +80,9 @@
     "tailwind-merge": ">=2"
   },
   "peerDependenciesMeta": {
+    "class-variance-authority": {
+      "optional": true
+    },
     "clsx": {
       "optional": true
     },
@@ -88,6 +104,7 @@
   },
   "devDependencies": {
     "apache-arrow": "17.0.0",
+    "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "esbuild": "^0.28.2",
     "jsdom": "^30.1.2",

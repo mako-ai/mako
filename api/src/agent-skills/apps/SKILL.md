@@ -408,7 +408,9 @@ every workspace app was re-forking: `PageHeader`, `Card`, `KpiRow` /
 `KpiTile`, `Button`, `StatusDot`, `MultiSelect` (flat filters; owns the tri-state All rule
 and one-open-at-a-time, so never wrap it; `FilterItems` for composite menus);
 `@makoai/app-sdk/menu` for trees with hover submenus (`FilterMenu`,
-`FilterMenuItems`) and stock shadcn `DropdownMenu` / `Checkbox`, `FreshnessBadge`
+`FilterMenuItems`); stock shadcn from `@makoai/app-sdk/components` (2.21,
+never a `src/components/ui/` copy); `formatTime` / `formatDate` /
+`toDayKey` for times (2.21), `FreshnessBadge`
 (data age per source), `RefreshAllButton` (rebuild every binding, with a
 progress modal), `DataTable` (sortable, paged list with CSV export; SDK ≥ 2.11,
 rules in `references/ui-toolkit.md` "Tables"). Import `@makoai/app-sdk/ui.css` before the app's own CSS.

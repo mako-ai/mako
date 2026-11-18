@@ -1,0 +1,40 @@
+// @makoai/app-sdk/components (2.21): stock shadcn, one copy per component.
+import assert from "node:assert/strict";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import test from "node:test";
+
+const dir = new URL("./components/", import.meta.url);
+const files = readdirSync(dir).filter(f => f.endsWith(".tsx"));
+
+test("components: the registry's new-york-v4 files, with only the cn import path changed", () => {
+  assert.deepEqual(files.sort(), ["badge.tsx", "button.tsx", "card.tsx", "dialog.tsx", "input.tsx", "popover.tsx", "separator.tsx", "skeleton.tsx", "tabs.tsx", "tooltip.tsx"]);
+  for (const f of files) {
+    const src = readFileSync(new URL(f, dir), "utf8");
+    assert.match(src, /import \{ cn \} from "\.\.\/menu\/utils"/, `${f} imports the one cn`);
+    assert.doesNotMatch(src, /@\/|from "cn"/, `${f} has no app or registry alias left`);
+    assert.match(src, /data-slot=/, `${f} is a v4 component (data-slot)`);
+  }
+});
+
+test("components: DropdownMenu and Checkbox have one copy, in menu/", () => {
+  assert.ok(!existsSync(new URL("dropdown-menu.tsx", dir)));
+  assert.ok(!existsSync(new URL("checkbox.tsx", dir)));
+  const index = readFileSync(new URL("index.ts", dir), "utf8");
+  assert.match(index, /export \* from "\.\.\/menu\/dropdown-menu"/);
+  assert.match(index, /export \{ Checkbox \} from "\.\.\/menu\/checkbox"/);
+  for (const f of files) assert.match(index, new RegExp(`export \\* from "\\./${f.replace(".tsx", "")}"`), `index exports ${f}`);
+});
+
+test("tailwind.css sources both folders and maps the house tokens", () => {
+  const css = readFileSync(new URL("./tailwind.css", import.meta.url), "utf8");
+  assert.match(css, /@source "\.\/components";/);
+  assert.match(css, /@source "\.\/menu";/);
+  for (const token of ["background", "popover", "muted-foreground", "accent", "brand", "chart-1"]) {
+    assert.ok(css.includes(`--color-${token}: var(--${token});`), `maps --${token}`);
+  }
+  const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
+  assert.equal(pkg.exports["./tailwind.css"], "./tailwind.css");
+  assert.equal(pkg.exports["./components"].default, "./components/index.ts");
+  for (const f of ["components/", "menu/", "tailwind.css"]) assert.ok(pkg.files.includes(f), `ships ${f}`);
+  assert.equal(pkg.peerDependenciesMeta["class-variance-authority"]?.optional, true);
+});
