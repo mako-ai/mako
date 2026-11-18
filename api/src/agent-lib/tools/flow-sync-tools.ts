@@ -14,14 +14,21 @@
  * cancel is `cancelFlowRuns` (POST …/cancel); a
  * trigger change sets the fields exactly as PUT /flows/:id (poll, webhook)
  * and POST …/backfill-schedule (resync) do, commits `flows/<slug>.yml`
- * (`commitFlowFile`), then saves. Same role rule too: owner or admin.
+ * (`commitFlowFile`, which lands it on the mirror's main or fails), then
+ * saves. Same role rule too: owner or admin. A trigger change runs one at a
+ * time per workspace, re-reads the row from main first and commits only if
+ * the file at main is still the one the row came from (else it retries).
  */
 import { tool, type ToolSet } from "ai";
 import { Types } from "mongoose";
 import { z } from "zod";
 
 import { RepoRequiredError, appsRequireConnectedRepo } from "../../apps/config";
-import { resolveMirrorTarget } from "../../apps/cloud-repo.service";
+import {
+  freshenBeforeMainWrite,
+  keyedSerial,
+  resolveMirrorTarget,
+} from "../../apps/cloud-repo.service";
 import { requireWorkspaceRepo } from "../../apps/workspace-repo-required";
 import {
   CdcEntityState,
@@ -30,7 +37,11 @@ import {
   type IFlow,
 } from "../../database/workspace-schema";
 import { flowToFile } from "../../services/flow-config-files";
-import { commitFlowFile } from "../../services/flow-config.service";
+import {
+  commitFlowFile,
+  flowDefinitionDrift,
+} from "../../services/flow-config.service";
+import { ensureFlowDerivedCache } from "../../services/flow-sync.service";
 import {
   deriveTriggerSet,
   hasWebhookTrigger,
@@ -193,6 +204,73 @@ async function assertFlowRepo(workspaceId: string): Promise<void> {
   }
 }
 
+/** Attempts of one flow_update when main moves under it (a conflict). */
+export const FLOW_WRITE_ATTEMPTS = 3;
+
+/** One flow definition write per workspace at a time on this instance. */
+const flowWrites = keyedSerial();
+
+/**
+ * flow_update's change, set on the row in memory exactly as PUT /flows/:id
+ * (poll, webhook) and POST …/backfill-schedule (resync) do. Returns a
+ * refusal, or null.
+ */
+function applyTriggerChange(
+  workspaceId: string,
+  flow: IFlow,
+  change: {
+    poll?: string;
+    webhook?: "on" | "off";
+    resync?: string;
+    tz?: string;
+  },
+): string | null {
+  const { poll, webhook, resync, tz } = change;
+  // PUT /flows/:id
+  if (poll !== undefined) {
+    const on = poll !== "off";
+    flow.schedule = {
+      enabled: on,
+      cron: on ? poll.trim() : flow.schedule?.cron,
+      timezone: on
+        ? tz || flow.schedule?.timezone || "UTC"
+        : flow.schedule?.timezone,
+    };
+  }
+  // PUT /flows/:id: switching webhooks on gives any flow its inbound URL
+  // (same formula, minted once); polling is untouched.
+  if (webhook !== undefined) {
+    if (webhook === "on" && !flow.webhookConfig?.endpoint) {
+      flow.webhookConfig = {
+        ...((flow.webhookConfig as unknown as Record<string, unknown>) ?? {}),
+        endpoint: generateWebhookEndpoint(workspaceId, flow._id.toString()),
+        enabled: true,
+      } as typeof flow.webhookConfig;
+    } else if (flow.webhookConfig) {
+      flow.webhookConfig.enabled = webhook === "on";
+    }
+  }
+  // POST …/backfill-schedule
+  if (resync !== undefined) {
+    if (flow.syncEngine !== "cdc") {
+      return "Scheduled resync requires syncEngine=cdc";
+    }
+    const on = resync !== "off";
+    const next = {
+      enabled: on,
+      cron: on ? resync.trim() : flow.backfillSchedule?.cron,
+      timezone: tz || flow.backfillSchedule?.timezone || "UTC",
+    };
+    flow.backfillSchedule = {
+      ...next,
+      entities: flow.backfillSchedule?.entities,
+      // A new or changed resync first runs at its next tick.
+      lastRunAt: resyncLastRunAt(flow.backfillSchedule, next),
+    };
+  }
+  return null;
+}
+
 export function createFlowSyncTools({
   workspaceId,
   userId,
@@ -260,7 +338,7 @@ export function createFlowSyncTools({
 
     flow_status: tool({
       description:
-        "How a sync is doing, per entity: mode (steady / backfill), backlog, consecutive failures and the last error, last materialised, last backfill, lifetime events and rows; its last runs; and its last data-diff check (columns that lost non-null values, see flow_data_diff). Use it after flow_backfill or flow_update, and to find a sync that went quiet.",
+        "How a sync is doing, per entity: mode (steady / backfill), backlog, consecutive failures and the last error, last materialised, last backfill, lifetime events and rows; its last runs; its last data-diff check (columns that lost non-null values, see flow_data_diff); and definitionAtMain, whether the database row means what flows/<slug>.yml at main says (inSync false: the next push to main changes the sync). Use it after flow_backfill or flow_update, and to find a sync that went quiet.",
       inputSchema: z.object({
         flow: flowRef,
         executions: z
@@ -287,6 +365,9 @@ export function createFlowSyncTools({
             .sort({ entity: 1 })
             .lean();
           const [lastDiff] = await listFlowDataDiffs(flow._id, 1);
+          const definition = await flowDefinitionDrift(flow).catch(error => ({
+            error: error instanceof Error ? error.message : String(error),
+          }));
           const runs = await FlowExecution.find({ flowId: flow._id })
             .sort({ startedAt: -1 })
             .limit(executions ?? RECENT_EXECUTIONS)
@@ -313,6 +394,9 @@ export function createFlowSyncTools({
               lifetimeRowsApplied: s.lifetimeRowsApplied,
             })),
             dataDiff: lastDiff ? summarizeDataDiff(lastDiff, 10) : null,
+            // Row vs flows/<slug>.yml at main: inSync false means the next
+            // push to main changes this sync (see `reason`, `differs`).
+            definitionAtMain: definition,
             executions: runs.map(r => ({
               id: r._id.toString(),
               status: r.status,
@@ -543,7 +627,7 @@ export function createFlowSyncTools({
 
     flow_update: tool({
       description:
-        'Change what starts a sync — only the three trigger controls: `poll` (a cron, or "off"), `webhook` ("on" / "off"; on gives the sync its webhook URL and installs or adopts the provider subscription where the connector can; polling keeps running), `resync` (a cron for the periodic full re-read, or "off"). Writes flows/<slug>.yml on main, then saves. Owner or admin.',
+        'Change what starts a sync — only the three trigger controls: `poll` (a cron, or "off"), `webhook` ("on" / "off"; on gives the sync its webhook URL and installs or adopts the provider subscription where the connector can; polling keeps running), `resync` (a cron for the periodic full re-read, or "off"). Commits flows/<slug>.yml to main and pushes it to the workspace repo before saving: a write that does not land saves nothing and returns the cause. The result carries `commit`, the sha at main holding the definition. Owner or admin.',
       inputSchema: z.object({
         flow: flowRef,
         poll: z.string().optional().describe('Cron for polling, or "off"'),
@@ -582,73 +666,71 @@ export function createFlowSyncTools({
             }
           }
           await assertFlowRepo(workspaceId);
-          const flow = await findFlow(workspaceId, ref);
           const tz = timezone?.trim() || undefined;
-
-          // PUT /flows/:id
-          if (poll !== undefined) {
-            const on = poll !== "off";
-            flow.schedule = {
-              enabled: on,
-              cron: on ? poll.trim() : flow.schedule?.cron,
-              timezone: on
-                ? tz || flow.schedule?.timezone || "UTC"
-                : flow.schedule?.timezone,
-            };
-          }
-          // PUT /flows/:id: switching webhooks on gives any flow its inbound
-          // URL (same formula, minted once); polling is untouched.
-          const webhookOnBefore = hasWebhookTrigger(flow);
-          if (webhook !== undefined) {
-            if (webhook === "on" && !flow.webhookConfig?.endpoint) {
-              flow.webhookConfig = {
-                ...((flow.webhookConfig as unknown as Record<
-                  string,
-                  unknown
-                >) ?? {}),
-                endpoint: generateWebhookEndpoint(
-                  workspaceId,
-                  flow._id.toString(),
-                ),
-                enabled: true,
-              } as typeof flow.webhookConfig;
-            } else if (flow.webhookConfig) {
-              flow.webhookConfig.enabled = webhook === "on";
+          // One flow write per workspace at a time on this instance; across
+          // instances the conditional commit below is the arbiter.
+          const outcome = await flowWrites(workspaceId, async () => {
+            for (let attempt = 1; ; attempt++) {
+              // The row first follows main: a row ahead of main (its commit
+              // never landed) or behind it (a merge not yet reconciled) must
+              // not be what this write's whole file is built from.
+              await freshenBeforeMainWrite(workspaceId);
+              let flow = await findFlow(workspaceId, ref);
+              const synced = await ensureFlowDerivedCache(flow);
+              if (synced === "resynced") {
+                flow = (await Flow.findById(flow._id)) ?? flow;
+              }
+              const base =
+                (synced === "ok" || synced === "resynced") && flow.sourceBlobSha
+                  ? flow.sourceBlobSha
+                  : undefined;
+              const webhookOnBefore = hasWebhookTrigger(flow);
+              const applied = applyTriggerChange(workspaceId, flow, {
+                poll,
+                webhook,
+                resync,
+                tz,
+              });
+              if (applied) return { refused: applied } as const;
+              const committed = await commitFlowFile(flow, userId, undefined, {
+                expectBlobAtMain: base,
+              });
+              if (!committed.ok) {
+                if (committed.conflict && attempt < FLOW_WRITE_ATTEMPTS) {
+                  continue;
+                }
+                return {
+                  refused: `The flow definition could not be written to the workspace repo, so nothing was saved: ${committed.error ?? "unknown error"}`,
+                } as const;
+              }
+              if (committed.sourceBlobSha) {
+                flow.sourceBlobSha = committed.sourceBlobSha;
+              }
+              try {
+                await Flow.updateOne(
+                  { _id: flow._id },
+                  { $unset: { definitionInvalid: 1 } },
+                );
+                await flow.save();
+              } catch (error) {
+                // The file is on main; the row follows it now rather than at
+                // the next push.
+                const fresh = await Flow.findById(flow._id);
+                if (fresh) {
+                  await ensureFlowDerivedCache(fresh).catch(() => undefined);
+                }
+                const message =
+                  error instanceof Error ? error.message : String(error);
+                return {
+                  refused: `flows/${flow.slug}.yml was committed (${committed.commitSha}), but saving the sync failed: ${message}. The sync was re-read from the file; check flow_status.`,
+                } as const;
+              }
+              return { flow, committed, webhookOnBefore } as const;
             }
-          }
-          // POST …/backfill-schedule
-          if (resync !== undefined) {
-            if (flow.syncEngine !== "cdc") {
-              return failure("Scheduled resync requires syncEngine=cdc");
-            }
-            const on = resync !== "off";
-            const next = {
-              enabled: on,
-              cron: on ? resync.trim() : flow.backfillSchedule?.cron,
-              timezone: tz || flow.backfillSchedule?.timezone || "UTC",
-            };
-            flow.backfillSchedule = {
-              ...next,
-              entities: flow.backfillSchedule?.entities,
-              // A new or changed resync first runs at its next tick.
-              lastRunAt: resyncLastRunAt(flow.backfillSchedule, next),
-            };
-          }
+          });
+          if ("refused" in outcome) return failure(outcome.refused);
+          const { flow, committed, webhookOnBefore } = outcome;
 
-          const committed = await commitFlowFile(flow, userId);
-          if (!committed.ok) {
-            return failure(
-              `The flow definition could not be written to the workspace repo, so nothing was saved: ${committed.error ?? "unknown error"}`,
-            );
-          }
-          if (committed.sourceBlobSha) {
-            flow.sourceBlobSha = committed.sourceBlobSha;
-          }
-          await Flow.updateOne(
-            { _id: flow._id },
-            { $unset: { definitionInvalid: 1 } },
-          );
-          await flow.save();
           // As PUT: webhooks newly on need a provider subscription (adopted by
           // URL, created only when none exists). Best-effort: polling carries on.
           let warning: string | undefined;
@@ -671,6 +753,11 @@ export function createFlowSyncTools({
             success: true,
             id: flow._id.toString(),
             triggers: triggersOf(flow),
+            // The commit at main that holds this definition (on the mirror
+            // when one is bound): the one written, or main's head when the
+            // file already said this.
+            commit: committed.commitSha ?? null,
+            fileChanged: committed.changed,
             ...(warning ? { warning } : {}),
           };
         } catch (error) {

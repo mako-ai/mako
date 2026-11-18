@@ -105,6 +105,9 @@ export default defineConfig({
       // The live connector probe: its service (bounded, read-only, secrets
       // scrubbed; real Mongo for tenancy) and its tool wiring/gating.
       "src/connectors/probe.service.test.ts",
+      // flow_update lands flows/<slug>.yml on the mirror's main before the
+      // row, or saves nothing: rejected push, races, concurrent calls, drift.
+      "src/agent-lib/tools/flow-update-durable.test.ts",
       // Cancel a sync's runs: the route's and flow_cancel's one step.
       "src/services/flow-cancel.service.test.ts",
       // flow_webhook_provision: the "Create in …" step over MCP, idempotent.

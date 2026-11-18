@@ -33,6 +33,7 @@
  *   reconcile.ts  branch deletions on the mirror
  *   fetch.ts      bringing commits and main in from the mirror
  *   adopt.ts      adopting a newly connected repo, verifying main's tree
+ *   durable-main.ts  a main write that lands on the mirror or fails
  */
 export {
   connectedTierEnabled,
@@ -62,3 +63,14 @@ export {
   ensureWorkspaceRepo,
 } from "./cloud-repo/adopt";
 export type { ConnectedRepoAdoption } from "./cloud-repo/adopt";
+export {
+  DURABLE_MAIN_ATTEMPTS,
+  DurableMainWriteError,
+  commitToMainDurably,
+  keyedSerial,
+  withMainWriteLock,
+} from "./cloud-repo/durable-main";
+export type {
+  DurableMainCommit,
+  MainMutation,
+} from "./cloud-repo/durable-main";

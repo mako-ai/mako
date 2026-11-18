@@ -14,21 +14,27 @@ import type { Types } from "mongoose";
 import { RepoRequiredError } from "../apps/config";
 import { loggers } from "../logging";
 import { authorForUser } from "../apps/workspace-consoles.service";
-import { requireWorkspaceRepo } from "../apps/workspace-repo-required";
 import {
+  boundRepoDirIfExists,
+  requireWorkspaceRepo,
+} from "../apps/workspace-repo-required";
+import {
+  commitToMainDurably,
   connectedTierEnabled,
   freshenBeforeMainWrite,
   resolveMirrorTarget,
   mirrorPushNow,
-  queueMirrorPush,
+  type DurableMainCommit,
+  type MainMutation,
 } from "../apps/cloud-repo.service";
 import {
   DEFAULT_BRANCH,
   blobOid,
-  commitBlobsOnBranch,
   resolveCommit,
+  readBlob,
   type GitAuthor,
 } from "../apps/repository.service";
+import { runGit } from "../apps/git";
 import { Flow, type IFlow } from "../database/workspace-schema";
 import {
   flowFilePath,
@@ -42,22 +48,21 @@ import {
 const logger = loggers.api("flow-config");
 
 /**
- * Commit whole-file writes/deletes onto main and queue the mirror push.
- * Shared by flow saves and history restores (flows, workspace connectors).
+ * Commit whole-file writes/deletes onto main and land them on the mirror
+ * before returning (`commitToMainDurably`): a definition the database then
+ * follows must never exist only in this instance's cache. Throws when the
+ * commit did not land; main is then as it was. Concurrent calls for one
+ * workspace run one at a time. Shared by flow saves and history restores
+ * (flows, workspace connectors).
  */
 export async function commitConfigToMain(
   workspaceId: string,
-  mutation: { writes?: Record<string, string>; deletes?: string[] },
+  mutation: MainMutation,
   message: string,
   author?: GitAuthor,
-): Promise<void> {
-  const repoDir = await requireWorkspaceRepo(workspaceId);
-  await freshenBeforeMainWrite(workspaceId);
-  const result = await commitBlobsOnBranch(repoDir, DEFAULT_BRANCH, mutation, {
-    message,
-    author,
-  });
-  if (!result.unchanged) queueMirrorPush(workspaceId);
+): Promise<DurableMainCommit> {
+  await requireWorkspaceRepo(workspaceId);
+  return commitToMainDurably(workspaceId, mutation, { message, author });
 }
 
 /** Write-through: the file is committed first; the caller then updates the index. */
@@ -67,83 +72,230 @@ export interface FlowFileWriteResult {
   changed: boolean;
   /** Blob sha of the committed (or unchanged) definition. */
   sourceBlobSha?: string;
+  /**
+   * The commit at main that holds this definition: the one written, or, for
+   * an unchanged definition, main's head when it was checked.
+   */
+  commitSha?: string;
   error?: string;
+  /** The file at main moved away from `expectBlobAtMain`; nothing written. */
+  conflict?: boolean;
 }
 
 /**
- * Commit `flows/<slug>.yml` from the in-memory definition.
- * Does not touch Mongo — the caller stamps `sourceBlobSha` and saves after.
+ * `flows/<slug>.yml` on main moved away from the blob a write was based on:
+ * someone else changed the definition first. The caller re-reads and retries.
+ */
+export class FlowFileConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FlowFileConflictError";
+  }
+}
+
+/** The blob id of `relPath` at `head`, or null when the path is absent. */
+async function blobIdAt(
+  repoDir: string,
+  head: string,
+  relPath: string,
+): Promise<string | null> {
+  const { stdout } = await runGit([
+    "-C",
+    repoDir,
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    `${head}:${relPath}`,
+  ]).catch(() => ({ stdout: "" }));
+  return stdout.trim() || null;
+}
+
+/**
+ * Commit `flows/<slug>.yml` from the in-memory definition and land it on the
+ * mirror's main before returning. Does not touch Mongo: the caller stamps
+ * `sourceBlobSha` and saves after, and only when `ok` — so a commit that did
+ * not land never leaves a row that only the database knows about.
+ *
+ * "Unchanged" is judged against the file at main, never against the row's
+ * `sourceBlobSha`: a row stamped by a commit that was later parked as
+ * diverged still carries that commit's blob, and trusting it skipped the
+ * write while main kept the old definition.
+ *
+ * `expectBlobAtMain` makes the write conditional (optimistic concurrency):
+ * when the file at main is neither that blob nor already this definition,
+ * nothing is written and the result is a conflict.
  */
 export async function commitFlowFile(
   flow: IFlow,
   actorUserId?: string,
   messageOverride?: string,
+  options: { expectBlobAtMain?: string | null } = {},
 ): Promise<FlowFileWriteResult> {
   if (!flow.slug || !flow.name?.trim()) {
     return { ok: true, changed: false };
   }
+  const slug = flow.slug;
   const file = flowToFile(flow);
   const contents = serializeFlowFile(file);
   const sha = blobOid(contents);
-  if (flow.sourceBlobSha === sha) {
-    return { ok: true, changed: false, sourceBlobSha: sha };
-  }
-  // The file on main may say the same thing in the older words (format 1:
-  // `type`, `schedule`, `webhook`, `backfill_schedule`). Then nothing changed
-  // but the format: leave it, so a save never rewrites a file for its format
-  // alone. It moves to format 2 the first time its meaning changes.
-  if (
-    flow.sourceBlobSha &&
-    (flow.sourceBlobSha === blobOid(serializeFlowFileV1(file)) ||
-      (await fileAtMainSaysTheSame(flow, file)))
-  ) {
-    return { ok: true, changed: false, sourceBlobSha: flow.sourceBlobSha };
-  }
+  const filePath = flowFilePath(slug);
+  let blobAtMain = sha;
   try {
-    await commitConfigToMain(
+    const committed = await commitConfigToMain(
       flow.workspaceId.toString(),
-      { writes: { [flowFilePath(flow.slug)]: contents } },
-      messageOverride ?? `flow: "${flow.name ?? flow.slug}" (${flow.slug})`,
+      async ({ repoDir, head }) => {
+        const current = await blobIdAt(repoDir, head, filePath);
+        if (current === sha) return null;
+        if (
+          options.expectBlobAtMain !== undefined &&
+          current !== options.expectBlobAtMain
+        ) {
+          throw new FlowFileConflictError(
+            `${filePath} changed on main (${head.slice(0, 9)}) since this flow was read: expected blob ${options.expectBlobAtMain?.slice(0, 9) ?? "none"}, found ${current?.slice(0, 9) ?? "none"}`,
+          );
+        }
+        // The file on main may say the same thing in the older words
+        // (format 1: `type`, `schedule`, `webhook`, `backfill_schedule`),
+        // or with other comments. Then only the format differs: leave it,
+        // so a save never rewrites a file for its format alone. It moves to
+        // format 2 the first time its meaning changes.
+        if (current) {
+          if (current === blobOid(serializeFlowFileV1(file))) {
+            blobAtMain = current;
+            return null;
+          }
+          const atMain = await readBlob(repoDir, head, filePath).catch(
+            () => null,
+          );
+          const parsed =
+            atMain && !atMain.isBinary ? parseFlowFile(atMain.contents) : null;
+          if (parsed && sameFlowMeaning(parsed, file)) {
+            blobAtMain = current;
+            return null;
+          }
+        }
+        blobAtMain = sha;
+        return { writes: { [filePath]: contents } };
+      },
+      messageOverride ?? `flow: "${flow.name ?? slug}" (${slug})`,
       actorUserId ? await authorForUser(actorUserId) : undefined,
     );
-    return { ok: true, changed: true, sourceBlobSha: sha };
+    return {
+      ok: true,
+      changed: committed.changed,
+      sourceBlobSha: blobAtMain,
+      commitSha: committed.commitOid,
+    };
   } catch (error) {
     if (error instanceof RepoRequiredError) throw error;
     const message = error instanceof Error ? error.message : String(error);
     logger.warn("Flow config write-through failed", {
       workspaceId: flow.workspaceId.toString(),
-      slug: flow.slug,
+      slug,
       error: message,
     });
-    return { ok: false, changed: false, error: message };
+    return {
+      ok: false,
+      changed: false,
+      error: message,
+      ...(error instanceof FlowFileConflictError ? { conflict: true } : {}),
+    };
   }
 }
 
+/** How a flow row compares with its `flows/<slug>.yml` on main. */
+export interface FlowDefinitionDrift {
+  /** The commit read (this instance's cache of main); null without a repo. */
+  commit: string | null;
+  /** True when the row means what the file at main says. */
+  inSync: boolean;
+  /** Blob of the file at main; null when the file is missing. */
+  blobAtMain: string | null;
+  /** The blob the row says it was derived from. */
+  rowSourceBlob: string | null;
+  /** Top-level definition keys whose values differ (row vs file). */
+  differs: string[];
+  /** Why the row is not in sync, in words; absent when it is. */
+  reason?: string;
+}
+
 /**
- * The file this row was derived from (its blob is the row's sourceBlobSha) is
- * still the one on main, and it means the same flow as `file` — whatever its
- * format, comments or key spellings. Best-effort: any failure answers false,
- * and the caller writes as before.
+ * Compare a row's definition with the file at main, read-only (no freshen,
+ * no write). A row changed in the database whose file commit never landed —
+ * the next push to main would revert it — shows here as `inSync: false`
+ * with the keys that differ.
  */
-async function fileAtMainSaysTheSame(
+export async function flowDefinitionDrift(
   flow: IFlow,
-  file: ReturnType<typeof flowToFile>,
-): Promise<boolean> {
-  if (!flow.slug || !flow.sourceBlobSha) return false;
-  try {
-    const { readFlowFilesAtMain } = await import("./flow-sync.service");
-    const { files } = await readFlowFilesAtMain(flow.workspaceId.toString(), {
-      freshen: false,
-    });
-    const atMain = files.find(f => f.path === flowFilePath(flow.slug!));
-    if (!atMain || blobOid(atMain.contents) !== flow.sourceBlobSha) {
-      return false;
-    }
-    const parsed = parseFlowFile(atMain.contents);
-    return parsed !== null && sameFlowMeaning(parsed, file);
-  } catch {
-    return false;
+): Promise<FlowDefinitionDrift> {
+  const rowSourceBlob = flow.sourceBlobSha ?? null;
+  const none = {
+    commit: null,
+    inSync: true,
+    blobAtMain: null,
+    rowSourceBlob,
+    differs: [],
+  };
+  if (!flow.slug) return none;
+  const repoDir = await boundRepoDirIfExists(flow.workspaceId.toString());
+  if (!repoDir) return none;
+  const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
+  if (!head) return none;
+  const filePath = flowFilePath(flow.slug);
+  const blobAtMain = await blobIdAt(repoDir, head, filePath);
+  if (!blobAtMain) {
+    return {
+      commit: head,
+      inSync: false,
+      blobAtMain,
+      rowSourceBlob,
+      differs: [],
+      reason: `${filePath} is missing at main`,
+    };
   }
+  const atMain = await readBlob(repoDir, head, filePath).catch(() => null);
+  const parsed =
+    atMain && !atMain.isBinary ? parseFlowFile(atMain.contents) : null;
+  if (!parsed) {
+    return {
+      commit: head,
+      inSync: false,
+      blobAtMain,
+      rowSourceBlob,
+      differs: [],
+      reason: `${filePath} at main does not parse`,
+    };
+  }
+  // Round-trip the row's definition through the file format, so both sides
+  // carry the parser's defaults and empty-field rules.
+  const rowFile = flowToFile(flow);
+  const fromRow = parseFlowFile(serializeFlowFile(rowFile)) ?? rowFile;
+  if (sameFlowMeaning(parsed, fromRow)) {
+    return {
+      commit: head,
+      inSync: true,
+      blobAtMain,
+      rowSourceBlob,
+      differs: [],
+    };
+  }
+  const a = parsed as unknown as Record<string, unknown>;
+  const b = fromRow as unknown as Record<string, unknown>;
+  const differs = [...new Set([...Object.keys(a), ...Object.keys(b)])]
+    .filter(k => k !== "type")
+    .filter(k => JSON.stringify(a[k]) !== JSON.stringify(b[k]))
+    .sort();
+  return {
+    commit: head,
+    inSync: false,
+    blobAtMain,
+    rowSourceBlob,
+    differs,
+    reason:
+      rowSourceBlob === blobAtMain
+        ? "the database row changed without a commit to main; the next push to main reverts it"
+        : "the file at main changed and the row has not followed yet (or the row changed without a commit)",
+  };
 }
 
 /** Remove a deleted flow's file. Throws {@link RepoRequiredError} without a repo. */

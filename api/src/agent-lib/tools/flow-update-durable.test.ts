@@ -1,0 +1,387 @@
+/**
+ * flow_update lands flows/<slug>.yml on the mirror's main before it saves the
+ * row, or saves nothing. Real git (a file:// "GitHub" remote and the
+ * instance's local bare cache) and real Mongo.
+ *
+ * On 2026-11-18 two flow_update calls changed the row while their commits
+ * never reached GitHub: the push was rejected, the next freshen parked the
+ * local commit under refs/mako/diverged/*, and the next merge to main
+ * reconciled the row back from the old file (Stripe PL paused at 05:39 UTC,
+ * webhooks back on at 05:46; FR Close resync off at 01:35 UTC, a scheduled
+ * full backfill at 06:45). What must hold:
+ *
+ *   SHA        — the result names the commit at main holding the definition,
+ *                and that commit is on the remote.
+ *   ROLLBACK   — a push the remote refuses saves nothing: row, remote main
+ *                and local main stay as they were; the error names the cause.
+ *   RACE       — another writer moving main between our fetch and our push
+ *                costs a retry, not a lost write and not a clobber; when it
+ *                changed the same file, the row re-reads it first and the
+ *                final file holds both changes.
+ *   SERIAL     — concurrent flow_update calls on one workspace all land,
+ *                each in its own commit, none undoing another.
+ *   STALE ROW  — a row changed without a commit (the incident's state) is
+ *                reported by flow_status (definitionAtMain.inSync false).
+ */
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import mongoose, { Types } from "mongoose";
+import { MongoMemoryServer } from "mongodb-memory-server";
+
+const state = vi.hoisted(() => ({
+  freshenCalls: 0,
+  /** Run once, right after the n-th freshen of main (1-based). */
+  afterFreshen: new Map<number, () => Promise<void>>(),
+}));
+
+vi.mock("../../integrations/github/app-auth", () => ({
+  resolveRepoToken: async () => undefined,
+}));
+vi.mock("../../inngest/client", () => ({
+  inngest: { send: vi.fn(async () => undefined) },
+}));
+vi.mock("../../services/flow-webhook-subscription.service", () => ({
+  syncFlowWebhookSubscription: vi.fn(async () => ({ status: "existing" })),
+}));
+// The hook another instance's push needs: main moves on the remote right
+// after this instance fetched it.
+vi.mock("../../apps/cloud-repo/fetch", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../../apps/cloud-repo/fetch")>();
+  return {
+    ...actual,
+    freshenBeforeMainWrite: async (workspaceId: string) => {
+      await actual.freshenBeforeMainWrite(workspaceId);
+      state.freshenCalls += 1;
+      const hook = state.afterFreshen.get(state.freshenCalls);
+      if (hook) {
+        state.afterFreshen.delete(state.freshenCalls);
+        await hook();
+      }
+    },
+  };
+});
+
+import { runGit } from "../../apps/git";
+import {
+  DEFAULT_BRANCH,
+  blobOid,
+  commitBlobsOnBranch,
+  initRepo,
+  readBlob,
+  repoDirFor,
+  resolveCommit,
+} from "../../apps/repository.service";
+import { bindTestWorkspaceRepo } from "../../apps/bind-test-workspace-repo";
+import {
+  DatabaseConnection,
+  Flow,
+  SourceConnection,
+} from "../../database/workspace-schema";
+import { syncFlowsFromRepo } from "../../services/flow-sync.service";
+import {
+  type FlowFile,
+  flowFilePath,
+  flowToFile,
+  parseFlowFile,
+  serializeFlowFile,
+} from "../../services/flow-config-files";
+import { createFlowSyncTools } from "./flow-sync-tools";
+
+const CONNECTOR = new Types.ObjectId().toString();
+const DEST = new Types.ObjectId().toString();
+
+let mongo: MongoMemoryServer;
+let tmpRoot: string;
+let remoteDir: string;
+let WS: string;
+
+function flowYaml(name: string): string {
+  return [
+    `name: ${name}`,
+    "type: webhook",
+    "source:",
+    "  type: connector",
+    `  connector_id: ${CONNECTOR}`,
+    "destination:",
+    `  connection_id: ${DEST}`,
+    "  table:",
+    "    schema: raw_close",
+    "    create_if_not_exists: true",
+    "backfill_schedule:",
+    "  cron: 0 3 * * *",
+    "  timezone: UTC",
+    "webhook:",
+    "  enabled: true",
+    "sync:",
+    "  mode: incremental",
+    "  write_mode: append_dedup",
+    "  engine: cdc",
+    "entities:",
+    "  layouts:",
+    "    - entity: leads",
+    "      partitionField: _syncedAt",
+    "      partitionGranularity: day",
+    "      enabled: true",
+    "",
+  ].join("\n");
+}
+
+type ToolResult = Record<string, any>;
+
+async function flowUpdate(input: Record<string, unknown>): Promise<ToolResult> {
+  const tools = createFlowSyncTools({ workspaceId: WS });
+  const exec = (
+    tools.flow_update as unknown as {
+      execute: (i: unknown, o: unknown) => Promise<ToolResult>;
+    }
+  ).execute;
+  return exec(input, { toolCallId: "t", messages: [] });
+}
+
+async function flowStatus(ref: string): Promise<ToolResult> {
+  const tools = createFlowSyncTools({ workspaceId: WS });
+  const exec = (
+    tools.flow_status as unknown as {
+      execute: (i: unknown, o: unknown) => Promise<ToolResult>;
+    }
+  ).execute;
+  return exec({ flow: ref }, { toolCallId: "t", messages: [] });
+}
+
+const head = (dir: string) =>
+  resolveCommit(dir, `refs/heads/${DEFAULT_BRANCH}`);
+
+/** The flow file at the remote's main, parsed. */
+async function remoteFlow(slug: string) {
+  const tip = (await head(remoteDir))!;
+  const blob = await readBlob(remoteDir, tip, flowFilePath(slug));
+  return parseFlowFile(blob.contents)!;
+}
+
+/** A file with no `resync` (backfill schedule) has the periodic resync off. */
+const resyncOn = (f: FlowFile) => !!f.backfillSchedule;
+
+/** Another instance (or a merged PR) commits straight onto GitHub's main. */
+async function otherWriter(writes: Record<string, string>): Promise<void> {
+  await commitBlobsOnBranch(
+    remoteDir,
+    DEFAULT_BRANCH,
+    { writes },
+    { message: "another instance" },
+  );
+}
+
+beforeAll(async () => {
+  tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "flow-update-durable-"));
+  process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
+  process.env.APPS_GITHUB_REMOTE_BASE = `file://${path.join(tmpRoot, "remotes")}`;
+  mongo = await MongoMemoryServer.create();
+  await mongoose.connect(mongo.getUri());
+}, 120_000);
+
+afterAll(async () => {
+  await mongoose.disconnect();
+  await mongo.stop();
+  await fs.rm(tmpRoot, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
+});
+
+beforeEach(async () => {
+  process.env.APPS_CONNECTED_REPO_PUSH = "allow";
+  state.freshenCalls = 0;
+  state.afterFreshen.clear();
+  WS = new Types.ObjectId().toString();
+  await Flow.deleteMany({});
+  await SourceConnection.collection.deleteMany({});
+  await DatabaseConnection.collection.deleteMany({});
+  const workspaceId = new Types.ObjectId(WS);
+  await SourceConnection.collection.insertOne({
+    _id: new Types.ObjectId(CONNECTOR),
+    workspaceId,
+    name: "Close",
+    type: "close",
+  } as any);
+  await DatabaseConnection.collection.insertOne({
+    _id: new Types.ObjectId(DEST),
+    workspaceId,
+    name: "Warehouse",
+    type: "bigquery",
+  } as any);
+  // bindTestWorkspaceRepo binds test-owner/test-repo: that is the remote.
+  remoteDir = path.join(tmpRoot, "remotes", "test-owner", "test-repo.git");
+  await fs.rm(remoteDir, { recursive: true, force: true });
+  await fs.rm(repoDirFor(WS), { recursive: true, force: true });
+  await initRepo(remoteDir, {
+    "README.md": "x\n",
+    "flows/close-a.yml": flowYaml("Close A"),
+    "flows/close-b.yml": flowYaml("Close B"),
+  });
+  await fs.mkdir(path.dirname(repoDirFor(WS)), { recursive: true });
+  await runGit(["clone", "--bare", "--quiet", remoteDir, repoDirFor(WS)]);
+  await bindTestWorkspaceRepo(WS);
+  await syncFlowsFromRepo(WS, "user-1");
+  expect(await Flow.countDocuments({ workspaceId: WS })).toBe(2);
+});
+
+afterEach(() => {
+  delete process.env.APPS_CONNECTED_REPO_PUSH;
+});
+
+describe("flow_update writes main first", () => {
+  it("SHA: returns the commit it pushed, and the remote holds the change", async () => {
+    const result = await flowUpdate({ flow: "close-a", resync: "off" });
+    expect(result.success).toBe(true);
+    expect(result.fileChanged).toBe(true);
+    expect(result.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(await head(remoteDir)).toBe(result.commit);
+    expect(await head(repoDirFor(WS))).toBe(result.commit);
+    expect(resyncOn(await remoteFlow("close-a"))).toBe(false);
+    const row = await Flow.findOne({ workspaceId: WS, slug: "close-a" });
+    expect(row?.backfillSchedule?.enabled).toBe(false);
+    const tip = await readBlob(remoteDir, result.commit, "flows/close-a.yml");
+    expect(row?.sourceBlobSha).toBe(blobOid(tip.contents));
+
+    // Again: nothing to write, main's head is still named.
+    const again = await flowUpdate({ flow: "close-a", resync: "off" });
+    expect(again.success).toBe(true);
+    expect(again.fileChanged).toBe(false);
+    expect(again.commit).toBe(result.commit);
+  });
+
+  it("ROLLBACK: a push the remote refuses saves nothing and says why", async () => {
+    const hook = path.join(remoteDir, "hooks", "pre-receive");
+    await fs.writeFile(
+      hook,
+      "#!/bin/sh\necho 'main is protected' >&2\nexit 1\n",
+    );
+    await fs.chmod(hook, 0o755);
+    const remoteBefore = await head(remoteDir);
+    const localBefore = await head(repoDirFor(WS));
+    const rowBefore = await Flow.findOne({ workspaceId: WS, slug: "close-a" });
+
+    const result = await flowUpdate({
+      flow: "close-a",
+      resync: "off",
+      webhook: "off",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/nothing was saved/);
+    expect(result.error).toMatch(/push to test-owner\/test-repo main failed/);
+    expect(result.error).toMatch(/main is protected/);
+    expect(await head(remoteDir)).toBe(remoteBefore);
+    expect(await head(repoDirFor(WS))).toBe(localBefore);
+    const row = await Flow.findOne({ workspaceId: WS, slug: "close-a" });
+    expect(row?.backfillSchedule?.enabled).toBe(true);
+    expect(row?.webhookConfig?.enabled).toBe(true);
+    expect(row?.sourceBlobSha).toBe(rowBefore?.sourceBlobSha);
+  });
+
+  it("RACE: main moving on GitHub between fetch and push costs a retry, not the write", async () => {
+    // Freshen #1 is flow_update's own, #2 the commit's: move main after it.
+    state.afterFreshen.set(2, () =>
+      otherWriter({ "notes/other.md": "from another instance\n" }),
+    );
+    const result = await flowUpdate({ flow: "close-a", resync: "off" });
+    expect(result.success).toBe(true);
+    expect(await head(remoteDir)).toBe(result.commit);
+    const tip = result.commit as string;
+    expect((await readBlob(remoteDir, tip, "notes/other.md")).contents).toBe(
+      "from another instance\n",
+    );
+    expect(resyncOn(await remoteFlow("close-a"))).toBe(false);
+  });
+
+  it("RACE: another writer changing the same flow file is re-read, not clobbered", async () => {
+    // The other writer switches webhooks off in the file; this call then
+    // switches resync off. Both must survive.
+    const row = await Flow.findOne({ workspaceId: WS, slug: "close-a" });
+    const theirs = flowToFile(row!);
+    theirs.webhookEnabled = false;
+    state.afterFreshen.set(2, () =>
+      otherWriter({ "flows/close-a.yml": serializeFlowFile(theirs) }),
+    );
+    const result = await flowUpdate({ flow: "close-a", resync: "off" });
+    expect(result.success).toBe(true);
+    expect(await head(remoteDir)).toBe(result.commit);
+    const file = await remoteFlow("close-a");
+    expect(resyncOn(file)).toBe(false);
+    expect(file.webhookEnabled).toBe(false);
+    const saved = await Flow.findOne({ workspaceId: WS, slug: "close-a" });
+    expect(saved?.webhookConfig?.enabled).toBe(false);
+    expect(saved?.backfillSchedule?.enabled).toBe(false);
+  });
+
+  it("SERIAL: concurrent calls on one workspace all land, none undoes another", async () => {
+    const before = await head(remoteDir);
+    const results = await Promise.all([
+      flowUpdate({ flow: "close-a", resync: "off" }),
+      flowUpdate({ flow: "close-a", webhook: "off" }),
+      flowUpdate({ flow: "close-b", resync: "0 4 * * *" }),
+      flowUpdate({ flow: "close-b", webhook: "off" }),
+    ]);
+    for (const r of results) expect(r.success, r.error).toBe(true);
+    const shas = results.map(r => r.commit);
+    expect(new Set(shas).size).toBe(4);
+    const { stdout } = await runGit([
+      "-C",
+      remoteDir,
+      "rev-list",
+      "--count",
+      `${before}..${DEFAULT_BRANCH}`,
+    ]);
+    expect(Number(stdout.trim())).toBe(4);
+
+    const a = await remoteFlow("close-a");
+    expect(resyncOn(a)).toBe(false);
+    expect(a.webhookEnabled).toBe(false);
+    const b = await remoteFlow("close-b");
+    expect(b.backfillSchedule?.cron).toBe("0 4 * * *");
+    expect(b.webhookEnabled).toBe(false);
+
+    for (const slug of ["close-a", "close-b"]) {
+      const status = await flowStatus(slug);
+      expect(
+        status.definitionAtMain.inSync,
+        JSON.stringify(status.definitionAtMain),
+      ).toBe(true);
+    }
+  });
+
+  it("STALE ROW: a row changed without a commit shows as drift, and flow_update still writes", async () => {
+    // The incident's state: the row says resync off (and carries the blob of
+    // a commit that never landed); main still says resync on.
+    const row = await Flow.findOne({ workspaceId: WS, slug: "close-a" });
+    row!.backfillSchedule!.enabled = false;
+    const ghost = serializeFlowFile(flowToFile(row!));
+    row!.sourceBlobSha = blobOid(ghost);
+    await row!.save();
+
+    const status = await flowStatus("close-a");
+    expect(status.definitionAtMain.inSync).toBe(false);
+    expect(status.definitionAtMain.differs).toContain("backfillSchedule");
+
+    const result = await flowUpdate({ flow: "close-a", resync: "off" });
+    expect(result.success).toBe(true);
+    expect(result.fileChanged).toBe(true);
+    expect(await head(remoteDir)).toBe(result.commit);
+    expect(resyncOn(await remoteFlow("close-a"))).toBe(false);
+    expect((await flowStatus("close-a")).definitionAtMain.inSync).toBe(true);
+  });
+});
