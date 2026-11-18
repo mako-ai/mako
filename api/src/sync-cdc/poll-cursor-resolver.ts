@@ -46,9 +46,21 @@ export async function resolvePollCursorForEntity(params: {
   const runStartedAt = toDate(
     (execution as { startedAt?: Date } | null)?.startedAt,
   );
+  const hasStamp = Boolean(
+    entityState?.lastPollRunStartedAt || entityState?.lastBackfillRunStartedAt,
+  );
+  const lastSuccessfulRunStartedAt = hasStamp
+    ? null
+    : await lastSuccessfulRunStart({
+        flowId: params.flowId,
+        entity: params.entity,
+        before: runStartedAt,
+        excludeExecutionId: params.executionId,
+      });
   const decision = decidePollSince({
     lastPollRunStartedAt: entityState?.lastPollRunStartedAt,
     lastBackfillRunStartedAt: entityState?.lastBackfillRunStartedAt,
+    lastSuccessfulRunStartedAt,
     runStartedAt,
     overlapMs,
   });
@@ -58,9 +70,43 @@ export async function resolvePollCursorForEntity(params: {
     ...(runStartedAt ? { runStartedAt: runStartedAt.toISOString() } : {}),
     overlapMs,
     reason: decision
-      ? `records updated since ${decision.since.toISOString()} (last completed ${decision.anchorKind} run started ${decision.anchor.toISOString()}, overlap ${overlapMin} min)`
-      : "no completed poll or backfill on record; anchoring on the destination",
+      ? `records updated since ${decision.since.toISOString()} (${
+          decision.anchorKind === "run"
+            ? "no poll stamp yet; last successful run of this entity"
+            : `last completed ${decision.anchorKind} run`
+        } started ${decision.anchor.toISOString()}, overlap ${overlapMin} min)`
+      : "no completed poll, backfill or successful run on record; anchoring on the destination",
   };
+}
+
+/**
+ * The start of the flow's last successful run that synced `entity`, before
+ * `before`. Polls, backfills and resyncs write flow_executions; webhooks
+ * never do, so this cannot run ahead of a change a webhook missed.
+ */
+async function lastSuccessfulRunStart(params: {
+  flowId: string;
+  entity: string;
+  before: Date | null;
+  excludeExecutionId?: string;
+}): Promise<Date | null> {
+  if (!Types.ObjectId.isValid(params.flowId)) return null;
+  const filter: Record<string, unknown> = {
+    flowId: new Types.ObjectId(params.flowId),
+    status: "completed",
+    success: true,
+    "stats.syncedEntities": params.entity,
+    ...(params.before ? { startedAt: { $lt: params.before } } : {}),
+    ...(params.excludeExecutionId &&
+    Types.ObjectId.isValid(params.excludeExecutionId)
+      ? { _id: { $ne: new Types.ObjectId(params.excludeExecutionId) } }
+      : {}),
+  };
+  const run = await Flow.db.collection("flow_executions").findOne(filter, {
+    sort: { startedAt: -1 },
+    projection: { startedAt: 1 },
+  });
+  return toDate((run as { startedAt?: Date } | null)?.startedAt);
 }
 
 /** Stamp this poll's run start once the entity completed. Never moves back. */

@@ -520,8 +520,9 @@ async function performSyncChunkSql(
   // of the last completed poll or backfill run of this entity, minus an
   // overlap. It used to be MAX(_syncedAt) of the live table, Mako's write
   // time, which webhook writes advance too: a change a webhook missed before
-  // the latest webhook write was never polled again. Without a stamp on
-  // record, the destination is the fallback, on the source timestamp first.
+  // the latest webhook write was never polled again. Without a stamp, the
+  // flow's last successful run of the entity anchors it. With neither, the
+  // destination is the last resort, on the source timestamp first.
   // Incremental CDC polls are upsert-only; deletes are reconciled by the
   // periodic full backfill (backfillSchedule), not by polls.
   const backfillFetch = options.backfillFetch;

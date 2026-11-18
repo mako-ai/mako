@@ -9,9 +9,11 @@
  *                never clears the signing secret.
  *   CREATE     — vendor, endpoint and subscription id come back, the secret
  *                never does.
- *   IDEMPOTENT — a sync with a subscription id (even without a secret) is
- *                reported; two concurrent calls create one subscription;
- *                a subscription already on the URL is adopted.
+ *   IDEMPOTENT — a provisioned sync creates nothing: with its secret and an
+ *                updatable connector its event list is set again in
+ *                place, else it is reported; two concurrent calls create
+ *                one subscription; a subscription already on the URL is
+ *                adopted.
  *   PERSIST    — the id and secret reach the row before the git commit, so
  *                a failed commit orphans nothing.
  *   TRIGGER    — a sync whose webhook trigger is off is refused.
@@ -38,6 +40,7 @@ const EVIL = "https://attacker.example";
 const state = vi.hoisted(() => ({
   subs: new Map<string, string>(),
   creates: 0,
+  updates: [] as Array<{ providerWebhookId?: string; endpointUrl: string }>,
   canUpdate: false,
   commitOk: true,
   roles: {} as Record<string, string>,
@@ -80,6 +83,7 @@ vi.mock("../../sync/connector-registry", () => ({
             : undefined) ??
           [...state.subs].find(([, url]) => url === args.endpointUrl)?.[0];
         if (!id) return null;
+        state.updates.push(args);
         state.subs.set(id, args.endpointUrl);
         return { providerWebhookId: id };
       },
@@ -146,6 +150,7 @@ beforeEach(async () => {
   await SourceConnection.collection.deleteMany({});
   state.subs.clear();
   state.creates = 0;
+  state.updates = [];
   state.canUpdate = false;
   state.commitOk = true;
   state.roles = { [ADMIN]: "admin", [MEMBER]: "member" };
@@ -227,6 +232,44 @@ describe("flow_webhook_provision", () => {
     expect(out).toMatchObject({ success: true, status: "existing" });
     expect(out.providerWebhookId).toBe("sub_old");
     expect(state.creates).toBe(0);
+  });
+
+  it("updates a provisioned subscription's events in place, creating none", async () => {
+    state.canUpdate = true;
+    const id = await makeFlow({ secret: "whsec_s", providerWebhookId: "we_1" });
+    state.subs.set("we_1", serverUrl(WS, id));
+
+    const out = await provision(id);
+    expect(out).toMatchObject({
+      success: true,
+      status: "updated",
+      providerWebhookId: "we_1",
+    });
+    expect(state.creates).toBe(0);
+    expect(state.updates).toHaveLength(1);
+    expect(state.updates[0]).toMatchObject({
+      providerWebhookId: "we_1",
+      endpointUrl: serverUrl(WS, id),
+    });
+    expect(JSON.stringify(out)).not.toContain("whsec_");
+    const row = await Flow.findById(id).lean();
+    expect(row?.webhookConfig?.secret).toBe("whsec_s");
+
+    // Again: the same update, still no create.
+    expect(await provision(id)).toMatchObject({ status: "updated" });
+    expect(state.creates).toBe(0);
+    expect(state.updates).toHaveLength(2);
+  });
+
+  it("reports a provisioned subscription its connector cannot update", async () => {
+    const id = await makeFlow({ secret: "whsec_s", providerWebhookId: "s_1" });
+    expect(await provision(id)).toMatchObject({
+      success: true,
+      status: "existing",
+      providerWebhookId: "s_1",
+    });
+    expect(state.creates).toBe(0);
+    expect(state.updates).toHaveLength(0);
   });
 
   it("creates one subscription for two concurrent calls", async () => {

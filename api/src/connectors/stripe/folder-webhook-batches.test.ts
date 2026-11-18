@@ -10,7 +10,7 @@
  * serves single objects, so every request the folder makes is seen.
  *
  * Proven here:
- * - The same 72 events, mapped to the same entity and operation.
+ * - The same 82 events, mapped to the same entity and operation.
  * - The `stripe-v1` declaration accepts and refuses what
  *   `stripe.webhooks.constructEvent` does, on the same deliveries.
  * - Every event type gives the same applied rows on both paths: entity, id,
@@ -302,12 +302,12 @@ const comparable = (record: Record<string, any>) => {
   };
 };
 
-void test("the folder handles the same 72 events, mapped as the built-in maps them", async () => {
+void test("the folder handles the same 82 events, mapped as the built-in maps them", async () => {
   const folder = await import(
     pathToFileURL(path.join(FOLDER, "webhooks.ts")).href
   );
   const events = stripeSupportedWebhookEvents();
-  assert.equal(events.length, 72);
+  assert.equal(events.length, 82);
   assert.deepEqual(folder.stripeSupportedWebhookEvents(), events);
   assert.deepEqual(spec.mako.webhooks.events, events);
   for (const event of [
@@ -488,7 +488,7 @@ void test("every event type applies the same row on both paths, with no request"
     assert.equal(rows[i]![0].entity, entityOfEvent(event.eventType));
     compared++;
   }
-  assert.equal(compared, 72);
+  assert.equal(compared, 82);
   assert.deepEqual(requests, [], "a whole payload costs no request");
 });
 
@@ -754,6 +754,8 @@ void test("provisioning creates the endpoint pinned to 2023-10-16 and returns it
     "invoice.paid",
     "invoice.payment_failed",
     "invoice.updated",
+    "invoice.voided",
+    "invoice.marked_uncollectible",
     "invoice.deleted",
   ]);
 
@@ -772,6 +774,8 @@ void test("provisioning creates the endpoint pinned to 2023-10-16 and returns it
     "charge.captured",
     "charge.refunded",
     "charge.updated",
+    "charge.pending",
+    "charge.expired",
   ]);
 });
 

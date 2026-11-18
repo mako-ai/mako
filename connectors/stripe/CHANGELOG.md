@@ -3,6 +3,18 @@
 Releases of `mako/stripe`. A workspace installs it with
 `source: mako/stripe@1` in `connectors/<slug>/connector.yaml`.
 
+## 1.2.0
+
+- 82 webhook events, up from 72. `charge.pending` is the create event of an
+  async charge (SEPA, ACH): without it, a pending charge arrived only when
+  it settled, days later. Also `charge.expired`,
+  `payment_intent.processing`, `payment_intent.requires_action`,
+  `payment_intent.amount_capturable_updated`, `invoice.voided`,
+  `invoice.marked_uncollectible`, `refund.failed`,
+  `customer.subscription.paused` and `customer.subscription.resumed`.
+- An existing endpoint keeps its old list until its flow is re-provisioned
+  (`flow_webhook_provision`, or "Create in …" on the Triggers step).
+
 ## 1.1.0
 
 - Webhooks. The folder declares Stripe's signature scheme as data
