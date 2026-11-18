@@ -66,6 +66,25 @@ export function hasWebhookTrigger(flow: FlowTriggerFields): boolean {
   );
 }
 
+/**
+ * The flow's webhook trigger was switched off (`webhookConfig.enabled` is
+ * explicitly false): the receiver answers 403, and webhook events it stored
+ * before the switch must not be applied either. A paused flow's queued events
+ * are parked, never materialized: after a cutover the paused flow shares its
+ * destination with the flow that replaced it, and replaying its old events
+ * would overwrite newer rows. Backfill events still apply, so an operator can
+ * re-read a paused flow on purpose.
+ *
+ * Only an explicit `false` counts: Mongoose materializes `enabled: true` on
+ * every flow (see hasWebhookTrigger), so a missing value is never "paused".
+ */
+export function isWebhookPaused(flow: FlowTriggerFields): boolean {
+  return flow.webhookConfig?.enabled === false;
+}
+
+/** The code stored on events parked because their flow's webhook is off. */
+export const FLOW_PAUSED_CODE = "FLOW_PAUSED";
+
 /** The flow has an inbound webhook URL (minted once; providers POST to it). */
 export function hasWebhookEndpoint(flow: FlowTriggerFields): boolean {
   return (

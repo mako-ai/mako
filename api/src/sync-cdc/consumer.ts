@@ -27,8 +27,74 @@ import { syncConnectorRegistry } from "../sync/connector-registry";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import type { ConnectorEntitySchema } from "../connectors/base/BaseConnector";
 import { ensureFlowDerivedCache } from "../services/flow-sync.service";
+import {
+  FLOW_PAUSED_CODE,
+  isWebhookPaused,
+} from "../services/flow-triggers.service";
 
 const log = loggers.sync("cdc.consumer");
+
+/**
+ * Marks a paused flow's pending webhook-sourced change events of one entity
+ * as dropped (FLOW_PAUSED), so materialization never applies them, and marks
+ * their WebhookEvents dropped too, so the event log and the orphan reconciler
+ * never report them as applied. `appliedAt` puts the change events under the
+ * 7-day dropped-events TTL. Returns how many were parked.
+ */
+export async function parkPausedFlowWebhookEvents(params: {
+  flowId: string;
+  entity: string;
+}): Promise<number> {
+  const parkable = await CdcChangeEvent.find(
+    {
+      flowId: new Types.ObjectId(params.flowId),
+      entity: params.entity,
+      sourceKind: "webhook",
+      materializationStatus: { $in: ["pending", "failed"] },
+    },
+    { _id: 1, webhookEventId: 1 },
+  ).lean();
+  if (parkable.length === 0) return 0;
+
+  const failure = {
+    code: FLOW_PAUSED_CODE,
+    message: "The flow's webhook is switched off; event parked",
+  };
+  const result = await CdcChangeEvent.updateMany(
+    {
+      _id: { $in: parkable.map(event => event._id) },
+      materializationStatus: { $in: ["pending", "failed"] },
+    },
+    {
+      $set: {
+        materializationStatus: "dropped",
+        materializationError: failure,
+        appliedAt: new Date(),
+      },
+    },
+  );
+
+  const webhookEventIds = Array.from(
+    new Set(
+      parkable
+        .map(event => event.webhookEventId)
+        .filter(
+          (eventId): eventId is string =>
+            typeof eventId === "string" && Types.ObjectId.isValid(eventId),
+        ),
+    ),
+  );
+  if (webhookEventIds.length > 0) {
+    await WebhookEvent.updateMany(
+      { _id: { $in: webhookEventIds.map(id => new Types.ObjectId(id)) } },
+      {
+        $set: { applyStatus: "dropped", applyError: failure },
+        $unset: { appliedAt: "" },
+      },
+    );
+  }
+  return result.modifiedCount ?? 0;
+}
 
 export class CdcConsumerService {
   async materializeEntity(params: {
@@ -60,6 +126,23 @@ export class CdcConsumerService {
     }
     if (!flow.tableDestination?.connectionId) {
       return { skipped: true, reason: "missing table destination" as const };
+    }
+
+    // The apply step refuses webhook events of a paused flow, whatever lane
+    // or retry path queued them: they are parked as dropped before the read
+    // below. Backfill events still apply (an operator re-read is deliberate).
+    if (isWebhookPaused(flow)) {
+      const parked = await parkPausedFlowWebhookEvents({
+        flowId: params.flowId,
+        entity: params.entity,
+      });
+      if (parked > 0) {
+        log.warn("Parked webhook events of a paused flow", {
+          flowId: params.flowId,
+          entity: params.entity,
+          parked,
+        });
+      }
     }
 
     const destination = await DatabaseConnection.findOne(
