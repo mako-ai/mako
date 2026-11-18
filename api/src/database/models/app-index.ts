@@ -52,6 +52,8 @@ export interface IAppIndexEntry extends Document {
    * Apps home caches it forever under `?v=<oid>`).
    */
   thumbnail?: { file: string; oid: string };
+  /** The app's own `icon.{svg,png}` at its root (its favicon), same shape. */
+  icon?: { file: string; oid: string };
   /** The main commit this row was built from. */
   indexedSha: string;
   createdAt: Date;
@@ -109,6 +111,16 @@ const AppIndexEntrySchema = new Schema<IAppIndexEntry>(
     authorEmail: { type: String },
     firstCommitAt: { type: Date },
     thumbnail: {
+      type: new Schema(
+        {
+          file: { type: String, required: true },
+          oid: { type: String, required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
+    icon: {
       type: new Schema(
         {
           file: { type: String, required: true },

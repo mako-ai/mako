@@ -71,6 +71,7 @@ import {
 } from "./app-discovery.service";
 import { readThumbnailBlob, thumbnailHeaders } from "./app-thumbnail";
 import { runGit } from "./git";
+import { listVisibleApps } from "./app-listing.service";
 import { canReadResource } from "../utils/resource-acl";
 import { up as isolateAppIds } from "../migrations/2026-09-16-190000_app_identity_isolation";
 
@@ -546,6 +547,30 @@ describe("discovery facts", () => {
     expect(svg["Content-Type"]).toBe("image/svg+xml");
     expect(svg["Content-Security-Policy"]).toContain("sandbox");
     expect(svg["Content-Security-Policy"]).toContain("default-src 'none'");
+  });
+
+  it("indexes the app's own icon (svg before png) for the explorer list", async () => {
+    await externalCommit({
+      "apps/a/icon.png": "PNGICON",
+      "apps/a/icon.svg": '<svg xmlns="http://www.w3.org/2000/svg"/>',
+      // Not at the app root: not the app's icon.
+      "apps/Sales/CH/b/src/icon.svg": "nope",
+    });
+    const snapshot = await loadAppsIndex(WS);
+    const a = snapshot.apps.find(x => x.path === "apps/a");
+    expect(a?.icon?.file).toBe("icon.svg");
+    expect(
+      snapshot.apps.find(x => x.path === "apps/Sales/CH/b")?.icon,
+    ).toBeUndefined();
+    const bytes = await readThumbnailBlob(repoDirFor(WS), a!.icon!);
+    expect(bytes?.toString()).toContain("<svg");
+    const listed = await listVisibleApps(WS, USER, "member");
+    expect(listed.apps.find(x => x.path === "apps/a")?.icon?.oid).toBe(
+      a?.icon?.oid,
+    );
+    expect(
+      listed.apps.find(x => x.path === "apps/Sales/CH/b")?.icon,
+    ).toBeUndefined();
   });
 
   it("lists and searches with the list's visibility", async () => {

@@ -5001,6 +5001,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/apps/{id}/icon": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The app's own icon (favicon)
+         * @description The square icon the app ships at its root (icon.svg, or icon.png) as of main: its favicon and its mark in the Apps explorer. GET /apps says which apps have one (and its oid, the cache version). Always the original bytes. Private caching: immutable for a year when `v` names the current blob, revalidate (ETag by oid) otherwise. 404 when the app ships none. SVG is served with a script-free, sandboxed CSP.
+         */
+        get: operations["get_api_workspaces_workspaceId_apps_id_icon"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/repo/status": {
         parameters: {
             query?: never;
@@ -21687,6 +21707,50 @@ export interface operations {
                 v?: string;
                 /** @description Desired width in px; snapped to the nearest of 320, 480, 640, 960, 1200. Omit for the original. */
                 w?: string;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_apps_id_icon: {
+        parameters: {
+            query?: {
+                /** @description The icon's blob oid (cache version). */
+                v?: string;
             };
             header?: never;
             path: {

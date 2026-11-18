@@ -14,6 +14,10 @@
 // cache is keyed by that text, so an edit never serves a parquet built from
 // the old query.
 //
+// It also gives the app its favicon, in dev and in the build: the app's own
+// `icon.svg` (or `icon.png`) inlined as a data URI, else a generated letter
+// mark — unless index.html already links one.
+//
 // Plain ESM, Node built-ins only — like the rest of this package.
 import fs from "node:fs";
 import path from "node:path";
@@ -137,6 +141,89 @@ function readManifestId(appDir) {
   }
 }
 
+function readManifest(appDir) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(appDir, "mako.json"), "utf8"));
+    return raw && typeof raw === "object" ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Favicon
+// ---------------------------------------------------------------------------
+
+/** The icon convention: first match at the app's root wins (as Mako indexes it). */
+const ICON_FILES = [
+  ["icon.svg", "image/svg+xml"],
+  ["icon.png", "image/png"],
+];
+
+/** index.html already links a favicon: leave it alone. */
+const LINKS_ICON = /<link\b[^>]*\brel\s*=\s*["']?(?:shortcut\s+)?icon\b/i;
+
+const escapeXml = (s) =>
+  s.replace(/[<>&"']/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&apos;" })[c]);
+
+/**
+ * The favicon of an app that ships no icon: its title's first letter, white
+ * on a rounded square whose hue comes from the app id — the same hash and
+ * hue Mako's thumbnail placeholder and Apps explorer use, so the tab and the
+ * explorer row match.
+ */
+export function defaultAppIconSvg({ id = "", title = "" } = {}) {
+  let hash = 0;
+  for (const ch of String(id)) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  const hue = hash % 360;
+  const letter = (/[\p{L}\p{N}]/u.exec(String(title))?.[0] ?? "?").toUpperCase();
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">` +
+    `<rect width="32" height="32" rx="7" fill="hsl(${hue} 55% 42%)"/>` +
+    `<text x="16" y="22.5" text-anchor="middle" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="19" font-weight="700" fill="#fff">${escapeXml(letter)}</text>` +
+    `</svg>`
+  );
+}
+
+const svgDataUri = (svg) => `data:image/svg+xml,${encodeURIComponent(svg.trim())}`;
+
+/**
+ * The app's favicon as a `<link rel="icon">` href: its `icon.svg`/`icon.png`
+ * inlined (a data URI needs no asset pipeline and works under any base path),
+ * otherwise defaultAppIconSvg for its manifest id and title.
+ */
+export function appFavicon(appDir) {
+  for (const [file, type] of ICON_FILES) {
+    let bytes;
+    try {
+      bytes = fs.readFileSync(path.join(appDir, file));
+    } catch {
+      continue;
+    }
+    return {
+      file,
+      type,
+      href:
+        type === "image/svg+xml"
+          ? svgDataUri(bytes.toString("utf8"))
+          : `data:${type};base64,${bytes.toString("base64")}`,
+    };
+  }
+  const manifest = readManifest(appDir);
+  const folder = path.basename(path.resolve(appDir));
+  const id = typeof manifest.id === "string" && manifest.id ? manifest.id.toLowerCase() : folder;
+  const title = typeof manifest.title === "string" && manifest.title ? manifest.title : folder;
+  return { file: null, type: "image/svg+xml", href: svgDataUri(defaultAppIconSvg({ id, title })) };
+}
+
+/** index.html with the app's favicon linked, unless it links one already. */
+export function injectFavicon(html, appDir) {
+  if (LINKS_ICON.test(html)) return html;
+  const { type, href } = appFavicon(appDir);
+  const link = `<link rel="icon" type="${type}" href="${href.replace(/"/g, "%22")}" />`;
+  return /<\/head>/i.test(html) ? html.replace(/<\/head>/i, `    ${link}\n  </head>`) : `${link}\n${html}`;
+}
+
 function listBindings(bindingsDir) {
   try {
     return fs
@@ -205,9 +292,17 @@ function phaseHub(first) {
 }
 
 export function makoData(options = {}) {
+  let root = process.cwd();
   return {
     name: "mako-data",
-    apply: "serve",
+    // Serve and build: the data middleware only exists in configureServer
+    // (dev), the favicon goes into both.
+    configResolved(config) {
+      root = config.root;
+    },
+    transformIndexHtml(html) {
+      return options.favicon === false ? html : injectFavicon(html, root);
+    },
     configureServer(server) {
       const appDir = server.config.root;
       const ctx = resolveMakoContext(appDir, options);

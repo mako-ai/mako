@@ -712,7 +712,10 @@ export default function AppsExplorer() {
                     );
                   }}
                   getItemIcon={(node, ctx) =>
-                    appsTreeItemIcon(node, ctx, userId)
+                    appsTreeItemIcon(node, ctx, userId, {
+                      workspaceId,
+                      byId: appById,
+                    })
                   }
                   onItemClick={handleItemClick}
                   shouldFolderClickActivate={node =>

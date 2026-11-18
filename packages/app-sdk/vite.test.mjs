@@ -10,7 +10,15 @@ process.env.MAKO_CREDENTIALS_FILE = path.join(
   fs.mkdtempSync(path.join(os.tmpdir(), "mako-sdk-creds-")),
   "credentials.json",
 );
-const { bindingFingerprint, makoData, normalizeBindingSource, resolveMakoContext } = await import("./vite.js");
+const {
+  appFavicon,
+  bindingFingerprint,
+  defaultAppIconSvg,
+  injectFavicon,
+  makoData,
+  normalizeBindingSource,
+  resolveMakoContext,
+} = await import("./vite.js");
 
 function repo() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mako-sdk-test-"));
@@ -773,4 +781,55 @@ test("snapshot: committed by name without a local file; failures are 404s", asyn
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+const HTML = "<!doctype html>\n<html>\n  <head>\n    <title>x</title>\n  </head>\n  <body></body>\n</html>\n";
+
+test("favicon: the app's icon.svg is inlined into index.html, before icon.png", () => {
+  const { app } = repo();
+  fs.writeFileSync(path.join(app, "icon.png"), Buffer.from([0x89, 0x50]));
+  fs.writeFileSync(path.join(app, "icon.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>\n');
+  const out = injectFavicon(HTML, app);
+  assert.match(out, /<link rel="icon" type="image\/svg\+xml" href="data:image\/svg\+xml,%3Csvg[^"]*%3Crect%2F%3E%3C%2Fsvg%3E" \/>\n  <\/head>/);
+  fs.rmSync(path.join(app, "icon.svg"));
+  assert.equal(appFavicon(app).href, "data:image/png;base64,iVA=");
+});
+
+test("favicon: no icon file gets the letter mark, hue from the manifest id", () => {
+  const { app } = repo();
+  fs.writeFileSync(
+    path.join(app, "mako.json"),
+    JSON.stringify({ id: "65F0AABBCCDDEEFF00112233", title: "  revenue cockpit" }),
+  );
+  const icon = appFavicon(app);
+  assert.equal(icon.file, null);
+  const svg = decodeURIComponent(icon.href.replace("data:image/svg+xml,", ""));
+  assert.equal(svg, defaultAppIconSvg({ id: "65f0aabbccddeeff00112233", title: "revenue cockpit" }));
+  assert.match(svg, />R<\/text>/);
+  // Same hash as Mako's placeholderFor (hash * 31 + code) % 360.
+  let hash = 0;
+  for (const ch of "65f0aabbccddeeff00112233") hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  assert.match(svg, new RegExp(`hsl\\(${hash % 360} 55% 42%\\)`));
+  assert.match(defaultAppIconSvg({ id: "x", title: "<&>" }), />\?<\/text>/);
+});
+
+test("favicon: an index.html that links its own icon is left alone", () => {
+  const { app } = repo();
+  for (const link of ['<link rel="icon" href="./brand/mark.svg" />', "<link href='x.ico' rel='shortcut icon'>", "<link rel=icon href=data:,>"]) {
+    const html = HTML.replace("<title>", `${link}<title>`);
+    assert.equal(injectFavicon(html, app), html);
+  }
+  // An apple-touch-icon is not the favicon.
+  assert.match(injectFavicon(HTML.replace("<title>", '<link rel="apple-touch-icon" href="a.png"><title>'), app), /rel="icon"/);
+});
+
+test("favicon: the plugin links it in dev and build, and favicon: false opts out", () => {
+  const { app } = repo();
+  const plugin = makoData();
+  assert.equal(plugin.apply, undefined);
+  plugin.configResolved({ root: app });
+  assert.match(plugin.transformIndexHtml(HTML), /rel="icon"/);
+  const off = makoData({ favicon: false });
+  off.configResolved({ root: app });
+  assert.equal(off.transformIndexHtml(HTML), HTML);
 });

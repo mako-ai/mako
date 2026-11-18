@@ -29570,6 +29570,94 @@
         "operationId": "get_api_workspaces_workspaceId_apps_id_thumbnail"
       }
     },
+    "/api/workspaces/{workspaceId}/apps/{id}/icon": {
+      "get": {
+        "tags": [
+          "Apps"
+        ],
+        "summary": "The app's own icon (favicon)",
+        "description": "The square icon the app ships at its root (icon.svg, or icon.png) as of main: its favicon and its mark in the Apps explorer. GET /apps says which apps have one (and its oid, the cache version). Always the original bytes. Private caching: immutable for a year when `v` names the current blob, revalidate (ETag by oid) otherwise. 404 when the app ships none. SVG is served with a script-free, sandboxed CSP.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The icon's blob oid (cache version)."
+            },
+            "required": false,
+            "description": "The icon's blob oid (cache version).",
+            "name": "v",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_id_icon"
+      }
+    },
     "/api/workspaces/{workspaceId}/repo/status": {
       "get": {
         "tags": [

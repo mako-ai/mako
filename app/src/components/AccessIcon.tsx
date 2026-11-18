@@ -21,6 +21,7 @@
  * right amount of attention for it. The tooltip always states the access in
  * words, so nothing depends on spotting a 9px glyph.
  */
+import type { ReactNode } from "react";
 import { Box, Tooltip } from "@mui/material";
 import { Globe, User, type LucideIcon } from "lucide-react";
 
@@ -41,6 +42,8 @@ const OVERLAY: Partial<Record<AccessState, LucideIcon>> = {
 interface AccessIconProps {
   /** The entity glyph, from `lib/entity-icons` — never picked ad hoc. */
   Glyph: LucideIcon;
+  /** Drawn instead of `Glyph` when the entity has its own mark (an app's favicon). */
+  glyph?: ReactNode;
   state: AccessState;
   /** Names the kind in the tooltip, e.g. "App · Private — only you". */
   kindLabel: string;
@@ -52,6 +55,7 @@ export default function AccessIcon({
   state,
   kindLabel,
   size = 16,
+  glyph,
 }: AccessIconProps) {
   const Overlay = OVERLAY[state];
   return (
@@ -61,7 +65,7 @@ export default function AccessIcon({
         sx={{ position: "relative", display: "inline-flex", lineHeight: 0 }}
       >
         {/* 1.5 matches the file and folder glyphs sitting beside it. */}
-        <Glyph size={size} strokeWidth={1.5} />
+        {glyph ?? <Glyph size={size} strokeWidth={1.5} />}
         {Overlay ? (
           <Box
             component="span"

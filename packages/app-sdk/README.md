@@ -667,8 +667,18 @@ at once. Once it is older than `revalidateMs` (five minutes), it is also
 rebuilt in the background for the next load. `?refresh` waits for a
 build. A copy from other text is never served: after an edit the cache is never served, however long
 `revalidateMs` is, and while the API is unreachable a stale copy is served
-only if it was built from the same text. It is `apply: "serve"` only —
-production builds never load it.
+only if it was built from the same text. The data middleware runs in
+`vite dev` only; production builds load the plugin for the favicon alone.
+
+### Favicon
+
+`makoData()` also links the app's favicon in `index.html`, in `vite dev` and
+in `vite build`: the app's `icon.svg` (or `icon.png`) at its root, inlined
+as a data URI so it works under any base path. An app without one gets a
+generated letter mark: its `mako.json` title's first letter, white on a
+rounded square whose hue comes from its id, as Mako's Apps explorer draws
+it. An `index.html` that already has a `<link rel="icon">` is left alone;
+`makoData({ favicon: false })` turns it off.
 
 ### dbt models you are still building
 
