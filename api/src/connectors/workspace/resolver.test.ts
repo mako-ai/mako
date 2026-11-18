@@ -26,7 +26,8 @@ vi.mock("./sync-box", () => ({
   hasConnectorRuntime: vi.fn(),
   installConnectorRuntime: vi.fn(),
 }));
-import { readConnectorFolder } from "./resolver";
+import { createHash } from "node:crypto";
+import { readConnectorFolder, runtimeIdOf, RUNTIME_LAYOUT } from "./resolver";
 
 beforeEach(() => {
   cache.present = false;
@@ -58,5 +59,33 @@ describe("pinned connector source on a stale API replica", () => {
       readConnectorFolder("workspace", "acme", "c".repeat(40)),
     ).rejects.toThrow(/not a tree object/);
     expect(ensureCommitLocally).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("runtime id", () => {
+  const files = new Map([
+    ["package.json", new TextEncoder().encode("{}")],
+    ["src/run.js", new TextEncoder().encode("export const run = 1;\n")],
+  ]);
+  /** The id before the manifest layout: Node version and SDK bytes only. */
+  const preManifestId = () => {
+    const hash = createHash("sha256");
+    hash.update("node:22\0");
+    for (const name of [...files.keys()].sort()) {
+      hash.update(name);
+      hash.update("\0");
+      hash.update(files.get(name) as Uint8Array);
+      hash.update("\0");
+    }
+    return hash.digest("hex");
+  };
+
+  it("differs from the id of a root or template without a manifest", () => {
+    expect(RUNTIME_LAYOUT).toBe("manifest-v1");
+    expect(runtimeIdOf(files)).not.toBe(preManifestId());
+  });
+
+  it("is stable for the same SDK bytes", () => {
+    expect(runtimeIdOf(files)).toBe(runtimeIdOf(new Map(files)));
   });
 });
