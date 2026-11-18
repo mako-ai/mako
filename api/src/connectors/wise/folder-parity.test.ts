@@ -192,10 +192,10 @@ void test("same 7 entities in the same order, labels, descriptions and credentia
   ).fields;
   const form = compareForm(WiseConnector.getConfigSchema().fields, folderForm);
   assert.ok(form.ok, JSON.stringify(form, null, 2));
-  // The one known difference: the SCA key is encrypted on both sides, but
-  // the folder's form renders it as a password field, not a textarea.
+  // The SCA key is an encrypted 6-row textarea on both sides.
   const key = folderForm.find(f => f.name === "sca_private_key");
-  assert.equal(key?.type, "password");
+  assert.equal(key?.type, "textarea");
+  assert.equal(key?.rows, 6);
   assert.equal(key?.encrypted, true);
 });
 

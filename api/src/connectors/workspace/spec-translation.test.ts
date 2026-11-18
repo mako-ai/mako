@@ -13,6 +13,7 @@ import {
   jsonSchemaToEntitySchema,
   logicalType,
   primaryKeyOf,
+  specToForm,
 } from "./spec-translation";
 import { MAKO_SYSTEM_FIELDS } from "../base/BaseConnector";
 
@@ -112,6 +113,83 @@ test("enums, numbers, booleans and multiline text each get their control", () =>
  * `applySchemaEncryption` reads as "nothing here is a secret", and the API key
  * then goes to Mongo in plaintext. So the refusal is loud.
  */
+test("a multi-line secret is an encrypted textarea, with its rows", () => {
+  const { fields } = connectionSpecificationToForm({
+    properties: {
+      sa: { type: "string", airbyte_secret: true, multiline: true, rows: 10 },
+      key: { type: "string", airbyte_secret: true },
+    },
+  });
+  assert.deepEqual(
+    fields.map(f => [f.name, f.type, f.encrypted, f.rows]),
+    [
+      ["sa", "textarea", true, 10],
+      ["key", "password", true, undefined],
+    ],
+  );
+});
+
+test("an array of objects is an object_array with its item fields", () => {
+  const { fields } = connectionSpecificationToForm({
+    properties: {
+      queries: {
+        type: "array",
+        title: "SQL Queries",
+        items: {
+          type: "object",
+          required: ["name"],
+          properties: {
+            name: { type: "string", title: "Entity Name" },
+            token: { type: "string", airbyte_secret: true },
+            legacy: { type: "boolean", default: false },
+          },
+        },
+      },
+    },
+  });
+  assert.equal(fields[0].type, "object_array");
+  assert.equal(fields[0].label, "SQL Queries");
+  assert.deepEqual(
+    fields[0].itemFields?.map(f => [f.name, f.type, f.required, f.encrypted]),
+    [
+      ["name", "string", true, undefined],
+      ["token", "password", false, true],
+      ["legacy", "boolean", false, undefined],
+    ],
+  );
+});
+
+test("a flow's query form comes from queryEntities, for source flow only", () => {
+  const spec = (source: string) => ({
+    connectionSpecification: { properties: {} },
+    mako: {
+      queryEntities: {
+        source,
+        form: {
+          label: "GraphQL Queries",
+          required: true,
+          items: {
+            required: ["query"],
+            properties: { query: { type: "string", multiline: true, rows: 8 } },
+          },
+        },
+      },
+    },
+  });
+  const flow = specToForm(spec("flow"));
+  assert.equal(flow.transferQueries?.label, "GraphQL Queries");
+  assert.equal(flow.transferQueries?.required, true);
+  assert.deepEqual(
+    flow.transferQueries?.fields.map(f => [f.name, f.type, f.rows, f.required]),
+    [["query", "textarea", 8, true]],
+  );
+  assert.equal(specToForm(spec("connection")).transferQueries, undefined);
+  assert.equal(
+    specToForm({ connectionSpecification: { properties: {} } }).transferQueries,
+    undefined,
+  );
+});
+
 test("an unreadable spec throws rather than yielding no fields", () => {
   assert.throws(
     () => connectionSpecificationToForm(undefined),

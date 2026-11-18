@@ -106,6 +106,12 @@ export async function resolveEntitySchema(params: {
   workspaceId: string;
   sourceConnection?: { id?: string; type?: string } | null;
   connector?: { resolveSchema?: (entity: string) => Promise<unknown> } | null;
+  /**
+   * The flow's queries, for a connector whose entities they name (GraphQL,
+   * PostHog): injected into the connection as `performSyncChunk` does, or
+   * the connector built here would not know the entity at all.
+   */
+  queries?: unknown[];
   context: string;
 }): Promise<ConnectorEntitySchema | null> {
   let sourceType = params.sourceConnection?.type;
@@ -127,7 +133,20 @@ export async function resolveEntitySchema(params: {
         );
       }
       sourceType = (ds as { type?: string }).type;
-      connector = await syncConnectorRegistry.getConnectorFor(ds as any);
+      const withQueries =
+        params.queries && params.queries.length > 0
+          ? {
+              ...ds,
+              connection: {
+                ...((ds as { connection?: Record<string, unknown> })
+                  .connection ?? {}),
+                queries: params.queries,
+              },
+            }
+          : ds;
+      connector = await syncConnectorRegistry.getConnectorFor(
+        withQueries as any,
+      );
       if (!connector) {
         throw new Error(`no connector for source type "${sourceType}"`);
       }
@@ -145,7 +164,16 @@ export async function resolveEntitySchema(params: {
     });
     throw new SchemaResolutionError(params.entity, params.context, err);
   }
-  if (!schema && isWorkspaceConnector(connector, sourceType)) {
+  // A stream the catalog declares untyped (a user's query) has no schema on
+  // purpose; any other null from a workspace connector is a broken catalog.
+  const untyped =
+    !schema &&
+    (await (
+      connector as { declaresUntypedSchema?: (e: string) => Promise<boolean> }
+    )
+      ?.declaresUntypedSchema?.(params.entity)
+      .catch(() => false));
+  if (!schema && !untyped && isWorkspaceConnector(connector, sourceType)) {
     throw new SchemaResolutionError(
       params.entity,
       params.context,
@@ -1312,6 +1340,7 @@ export async function performBulkFlush(
     entity,
     dataSourceId: options.dataSourceId,
     workspaceId: options.workspaceId,
+    queries: options.queries,
     context: "performBulkFlush",
   });
   const cdcLayout = buildCdcEntityLayout({
@@ -1526,6 +1555,7 @@ export async function performStagingMerge(
     sourceConnection,
     dataSourceId: options.dataSourceId,
     workspaceId: options.workspaceId,
+    queries: options.queries,
     context: "performStagingMerge",
   });
   // Resolve the schema first: it can throw (and retry), and a throw after

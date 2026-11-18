@@ -92,6 +92,12 @@ export interface EntityDefinition<Config = Record<string, unknown>> {
     partitionGranularity?: "day" | "hour" | "month" | "year";
     clusterFields?: string[];
   };
+  /**
+   * Columns nobody declares (a user's own query). Mako then writes rows as
+   * they come, typed by the destination, instead of through a schema that
+   * would land every undeclared column as a string.
+   */
+  untyped?: boolean;
   /** For APIs whose fields differ per account; overrides `schema`. */
   discoverSchema?(ctx: Context<Config>): Promise<EntitySchema> | EntitySchema;
   /** Yield one page at a time. Stop when there is nothing left. */
@@ -252,6 +258,33 @@ export interface WebhookDefinition<Config = Record<string, unknown>> {
   ): Promise<WebhookOutcome[]> | WebhookOutcome[];
 }
 
+/**
+ * Entities named by the user's own queries (GraphQL, BigQuery): one entity
+ * per item of `config.queries` that has a `name`. Mako puts a flow's
+ * queries in `config.queries` too.
+ */
+export interface QueryEntitiesDefinition<Config = Record<string, unknown>> {
+  /**
+   * Where the list lives: `connection`, a `queries` array the connector
+   * declares in `config.properties`; or `flow`, each flow's own list, whose
+   * fields `form` describes.
+   */
+  source: "connection" | "flow";
+  /** What every query entity does with `state.mako.since`. */
+  incremental?: "native" | "client-filter" | "created-anchor";
+  /** The flow form of one query, for `source: "flow"`. */
+  form?: {
+    label?: string;
+    required?: boolean;
+    items: {
+      required?: string[];
+      properties: Record<string, Record<string, unknown>>;
+    };
+  };
+  /** The entity one query defines. */
+  entity(query: Record<string, unknown> & { name: string }): EntityDefinition<Config>;
+}
+
 export interface ConnectorDefinition<Config = Record<string, unknown>> {
   /** Lowercase slug; the connector's identity. */
   name: string;
@@ -265,7 +298,9 @@ export interface ConnectorDefinition<Config = Record<string, unknown>> {
   };
   /** Throw with the vendor's message, or return false, when the credential is bad. */
   check?(ctx: Context<Config>): Promise<unknown>;
-  entities: Record<string, EntityDefinition<Config>>;
+  /** May be empty, or left out, when `queryEntities` is declared. */
+  entities?: Record<string, EntityDefinition<Config>>;
+  queryEntities?: QueryEntitiesDefinition<Config>;
   /** Webhook deliveries, verified by Mako and handed over in batches. */
   webhooks?: WebhookDefinition<Config>;
 }
@@ -275,8 +310,9 @@ export interface Connector {
   spec(): Record<string, unknown>;
   check(ctx: Context): Promise<{ status: "SUCCEEDED" | "FAILED"; message?: string }>;
   discover(ctx: Context): Promise<Array<Record<string, unknown>>>;
-  entityNames(): string[];
-  entity(name: string): EntityDefinition | undefined;
+  /** The declared entities, then one per query in `config.queries`. */
+  entityNames(config?: Record<string, unknown>): string[];
+  entity(name: string, config?: Record<string, unknown>): EntityDefinition | undefined;
   hasWebhooks(): boolean;
   handleWebhooks(
     ctx: Context,

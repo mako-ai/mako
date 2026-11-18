@@ -79,11 +79,11 @@ async function loadConnector(connectorPath) {
  * but a hand-run of the command without one should read everything rather
  * than nothing, because "no catalog" from a human means "show me the lot".
  */
-function selectedStreams(catalog, connector) {
-  if (!catalog?.streams?.length) return connector.entityNames();
+function selectedStreams(catalog, connector, config) {
+  if (!catalog?.streams?.length) return connector.entityNames(config);
   return catalog.streams
     .map(configured => configured.stream?.name)
-    .filter(name => name && connector.entity(name));
+    .filter(name => name && connector.entity(name, config));
 }
 
 function stateFor(state, stream) {
@@ -195,7 +195,7 @@ export async function run(argv = process.argv.slice(2)) {
       );
     }
 
-    for (const name of selectedStreams(catalog, connector)) {
+    for (const name of selectedStreams(catalog, connector, config)) {
       let streamState = stateFor(state, name);
       for (;;) {
         const { latest, exhausted } = await readChunk({
@@ -255,7 +255,7 @@ async function readChunk({
   maxIterations,
   maxBytes,
 }) {
-  const entity = connector.entity(name);
+  const entity = connector.entity(name, config);
   const ctx = createContext({ config, state: streamState, log, entity: name });
   let iterations = 0;
   let bytes = 0;
