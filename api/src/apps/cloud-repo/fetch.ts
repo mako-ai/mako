@@ -39,17 +39,48 @@ const logger = loggers.api("apps");
  * published app, half of its `__data/<name>.parquet` requests 500'd, the
  * other half succeeded, purely by which instance answered.
  *
- * A missing commit is recoverable — it is on the mirror's default branch,
- * since publishing promotes it to main before deploying — so fetch once and
- * look again. Coalesced per (workspace, sha) so a page asking for sixteen
- * bindings at once triggers one fetch, not sixteen.
+ * A missing commit is recoverable — usually it is on the mirror's default
+ * branch, since publishing promotes it to main before deploying — so fetch
+ * the branch and look again. A commit can also be off the branch: an index
+ * row (a connector's `sha`) recorded at an instance's local main that then
+ * lost the race to the mirror. fetchFromCloud parks that tip under
+ * refs/mako/diverged/* and pushes it there, so it stays on the mirror, just
+ * not on main. On 17 Nov 2026 two instances indexed main at such commits
+ * (6a442aff, 1852f545), and for 3 min syncs on other instances failed
+ * `git ls-tree` with `fatal: not a tree object`. So when the branch does not
+ * carry the commit, fetch it by its sha.
+ *
+ * Coalesced per (workspace, sha) so a page asking for sixteen bindings at
+ * once triggers one fetch, not sixteen. Returns false when the branch fetch
+ * failed and the sha fetch did not make up for it.
  */
 const commitFetchInFlight = new Map<string, Promise<boolean>>();
+
+const FULL_SHA = /^[0-9a-f]{40}$/;
 
 async function commitPresent(repoDir: string, sha: string): Promise<boolean> {
   return runGit(["-C", repoDir, "cat-file", "-e", `${sha}^{commit}`])
     .then(() => true)
     .catch(() => false);
+}
+
+/** Fetch one commit by its sha from the mirror, whatever ref holds it. */
+async function fetchCommitFromCloud(
+  workspaceId: string,
+  sha: string,
+): Promise<void> {
+  const target = await resolveReadableMirrorTarget(workspaceId);
+  if (!target) return;
+  const token = await tokenFor(target);
+  await runGit([
+    "-C",
+    repoDirFor(workspaceId),
+    ...authArgs(token),
+    "fetch",
+    "--quiet",
+    remoteUrl(target.owner, target.repo),
+    sha,
+  ]);
 }
 
 export async function ensureCommitLocally(
@@ -65,19 +96,32 @@ export async function ensureCommitLocally(
   const existing = commitFetchInFlight.get(key);
   if (existing) return existing;
   const run = (async () => {
+    let fetched = true;
     try {
       await fetchFromCloud(workspaceId, branch);
-      return true;
     } catch (error) {
       // Not fatal here: the caller's git command produces the real, specific
       // error if the commit is still missing after this.
+      fetched = false;
       logger.warn("Fetch for a missing commit failed", {
         workspaceId,
         sha,
         error: error instanceof Error ? error.message : String(error),
       });
-      return false;
     }
+    if (FULL_SHA.test(sha) && !(await commitPresent(repoDir, sha))) {
+      try {
+        await fetchCommitFromCloud(workspaceId, sha);
+        fetched = true;
+      } catch (error) {
+        logger.warn("Fetch of a missing commit by its sha failed", {
+          workspaceId,
+          sha,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return fetched;
   })().finally(() => commitFetchInFlight.delete(key));
   commitFetchInFlight.set(key, run);
   return run;
