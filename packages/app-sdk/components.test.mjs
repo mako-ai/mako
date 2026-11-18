@@ -7,10 +7,10 @@ const dir = new URL("./components/", import.meta.url);
 const files = readdirSync(dir).filter(f => f.endsWith(".tsx"));
 
 test("components: the registry's new-york-v4 files, with only the cn import path changed", () => {
-  assert.deepEqual(files.sort(), ["badge.tsx", "button.tsx", "card.tsx", "dialog.tsx", "input.tsx", "popover.tsx", "separator.tsx", "skeleton.tsx", "tabs.tsx", "tooltip.tsx"]);
+  assert.deepEqual(files.sort(), ["alert.tsx", "avatar.tsx", "badge.tsx", "button.tsx", "card.tsx", "collapsible.tsx", "dialog.tsx", "input.tsx", "label.tsx", "popover.tsx", "progress.tsx", "select.tsx", "separator.tsx", "sheet.tsx", "skeleton.tsx", "slider.tsx", "switch.tsx", "table.tsx", "tabs.tsx", "toggle-group.tsx", "toggle.tsx", "tooltip.tsx"]);
   for (const f of files) {
     const src = readFileSync(new URL(f, dir), "utf8");
-    assert.match(src, /import \{ cn \} from "\.\.\/menu\/utils"/, `${f} imports the one cn`);
+    if (/\bcn\(/.test(src)) assert.match(src, /import \{ cn \} from "\.\.\/menu\/utils"/, `${f} imports the one cn`);
     assert.doesNotMatch(src, /@\/|from "cn"/, `${f} has no app or registry alias left`);
     assert.match(src, /data-slot=/, `${f} is a v4 component (data-slot)`);
   }

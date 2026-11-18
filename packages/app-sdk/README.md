@@ -543,9 +543,12 @@ classes. Add one line to the app's CSS, after the Tailwind imports:
 
 ### shadcn/ui: `@makoai/app-sdk/components` (2.21)
 
-Stock shadcn/ui new-york-v4, as the shadcn registry ships it: `Badge`,
-`Button`, `Card`, `Dialog`, `Input`, `Popover`, `Separator`, `Skeleton`,
-`Tabs`, `Tooltip`, plus `DropdownMenu` and `Checkbox` (one copy, in
+Stock shadcn/ui new-york-v4, as the shadcn registry ships it: `Alert`,
+`Avatar`, `Badge`, `Button`, `Card`, `Collapsible`, `Dialog`, `Input`,
+`Label`, `Popover`, `Progress`, `Select`, `Separator`, `Sheet`,
+`Skeleton`, `Slider`, `Switch`, `Table`, `Tabs`, `Toggle`, `ToggleGroup`,
+`Tooltip` (2.22 added the 12 from `Alert` to `ToggleGroup` that were not in
+2.21), plus `DropdownMenu` and `Checkbox` (one copy, in
 `/menu`, re-exported here). Only the `cn` import path differs from the
 registry. Never keep a `src/components/ui/` copy of one of them; a missing
 component or prop is an SDK pull request.
