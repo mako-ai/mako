@@ -29,10 +29,12 @@
  * - Budget spent: the event is `deferred`, retried later uncounted.
  * - Each fill read is one attempt, ending with the budget: the box command
  *   is killed at 60 s. A 429, 5xx, network error or timeout is `deferred`.
- * - 401 or 403 (the token may not read the object, e.g. a token from
- *   another Calendly organization than the subscription's): the record
- *   lands without the keys it lacks. An absent key leaves the live column
- *   alone (PR 1347), so the event is never lost and never writes NULLs.
+ * - 403 (the token may not read the object, e.g. a token from another
+ *   Calendly organization than the subscription's): the record lands
+ *   without the keys it lacks. An absent key leaves the live column alone
+ *   (PR 1347), so the event is never lost and never writes NULLs.
+ * - 401 (a revoked or dead token): `extract_failed`, loud, never a partial
+ *   row.
  * - Any other failure: `extract_failed`. Mako retries it up to its usual 5
  *   attempts.
  *
@@ -359,10 +361,9 @@ async function fillRecord(
     }
     // The token may not read this object: retrying cannot help. Land what
     // the webhook carries and leave the unread columns out of the record.
-    if (
-      error instanceof CalendlyHttpError &&
-      (error.status === 401 || error.status === 403)
-    ) {
+    // A 401 is a dead credential: it falls through to `failed` below, so a
+    // revoked token is loud instead of landing partial rows.
+    if (error instanceof CalendlyHttpError && error.status === 403) {
       deps.log(
         `Calendly ${record.entity} ${uuid} is not readable with this token (HTTP ${error.status}); writing the webhook's own columns only`,
       );

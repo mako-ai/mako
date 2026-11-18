@@ -4,8 +4,8 @@ Releases of `mako/calendly`. Not released yet: no tag, no registry entry.
 
 ## 1.0.0 (unreleased)
 
-- A fill read answered 401 or 403 lands the webhook record without the
-  columns it lacks, instead of failing the event. RealAdvisor's token
+- A fill read answered 403 lands the webhook record without the columns it
+  lacks, instead of failing the event. A 401 (a dead token) still fails it. RealAdvisor's token
   belongs to another organization than its subscription: 50 of 60 replayed
   events failed with 403 before this.
 - The in-process Calendly connector ported to `@makoai/connector-sdk`, with
