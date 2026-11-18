@@ -6,13 +6,17 @@ import {
   performRescueAndPrepareStaging,
   performOverwriteTruncate,
   getTempCollectionCount,
+  discardBulkBuffer,
   performStagingMerge,
   performStagingCleanup,
   SyncLogger,
 } from "../../services/sync-executor.service";
 import { FetchState } from "../../connectors/base/BaseConnector";
 import { Types } from "mongoose";
-import { cdcBackfillCheckpointService } from "../../sync-cdc/sync-state";
+import {
+  backfillCheckpointScope,
+  cdcBackfillCheckpointService,
+} from "../../sync-cdc/sync-state";
 import {
   appendExecutionLog,
   touchExecutionHeartbeat as touchHeartbeat,
@@ -36,6 +40,27 @@ import {
  * Leaves headroom below the hard 1000-step Inngest limit.
  */
 const STEP_BUDGET = 900;
+
+/** Rows in the flush buffer that trigger a mid-entity flush. */
+const FLUSH_THRESHOLD_ROWS = 10_000;
+
+/** Rows this run wrote to the destination, carried in the fetch state. */
+function rowsWrittenIn(state: FetchState | undefined): number {
+  const raw = (state?.metadata as Record<string, unknown> | undefined)
+    ?.rowsWrittenTotal;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+function withRowsWritten(state: FetchState, rows: number): FetchState {
+  return {
+    ...state,
+    metadata: {
+      ...((state.metadata as Record<string, unknown> | undefined) ?? {}),
+      rowsWrittenTotal: rows,
+    },
+  };
+}
 
 export interface SyncBackfillEntityPayload {
   flowId: string;
@@ -117,18 +142,27 @@ export const syncBackfillEntityFunction = inngest.createFunction(
 
     const safeEntityStepId = entity.replace(/[^a-zA-Z0-9_-]/g, "_");
     let stepsUsed = 0;
+    // Backfills and scheduled resyncs read the source in full; polls do not.
+    // The two run in separate buffer and staging lanes (bulkBufferName).
+    const fullRead = Boolean(backfill);
 
     // When checkpointEnabled is true, cdcBackfillRunId is guaranteed
     // by the caller. Narrow to a non-optional string so downstream
     // step closures don't need non-null assertions.
-    let checkpointRunId = "";
+    // The checkpoint belongs to this backfill run and this destination: a
+    // new backfill, or the flow repointed elsewhere, starts fresh.
+    let checkpointScope = "";
     if (checkpointEnabled) {
       if (!cdcBackfillRunId) {
         throw new Error(
           "cdcBackfillRunId is required when checkpointEnabled is true",
         );
       }
-      checkpointRunId = cdcBackfillRunId;
+      checkpointScope = backfillCheckpointScope({
+        runId: cdcBackfillRunId,
+        destinationId,
+        tableDestination,
+      });
     }
 
     const logExec = (
@@ -184,7 +218,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           return cdcBackfillCheckpointService.loadEntityCheckpoint({
             workspaceId,
             flowId,
-            runId: checkpointRunId,
+            scope: checkpointScope,
             entity,
           });
         },
@@ -332,8 +366,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         syncEngine,
         entity,
         isIncremental: syncMode === "incremental",
-        // Backfills and scheduled resyncs read the source in full; polls do not.
-        fullRead: Boolean(backfill),
+        fullRead,
         tableDestination,
         deleteMode,
         writeMode,
@@ -355,9 +388,13 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         withHeartbeat(executionId, async () => {
           // Rescue orphaned staging data from a previously crashed invocation
           // before dropping the staging table. A merge failure fails the
-          // step: dropping rows we could not merge would lose them.
+          // step: dropping rows we could not merge would lose them. Keyed
+          // merges only: staged rows lie past the resume cursor, so this
+          // invocation fetches them again, and a plain INSERT of them here
+          // (append / overwrite) would write them twice.
           const { rescued } = await performRescueAndPrepareStaging(
             bulkSyncOptions as any,
+            { dedupOnly: true },
           );
           if (rescued > 0) {
             logExec(
@@ -367,14 +404,28 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             );
           }
 
+          // A resume cursor is saved only with an empty buffer, so rows
+          // still buffered here lie past it: a cancelled or failed attempt
+          // fetched them and never flushed them. This invocation fetches
+          // them again from the cursor; keeping them would write them twice.
+          const discarded = await discardBulkBuffer(flowId, entity, fullRead);
+          if (discarded > 0) {
+            logExec(
+              "info",
+              `Discarded ${discarded} unflushed ${entity} buffer rows; they are fetched again from the last flushed position`,
+              { entity, discarded },
+            );
+          }
+
           // Overwrite mode: clear the live table exactly once, here, before
           // any flush of this run writes. Do NOT call this from the
           // flush-merge/flush-final steps below — they re-run
           // performPrepareStaging per flush cycle, and re-truncating there
           // would wipe rows already written by earlier flushes (bug B1, see
           // docs/sync-modes-hardening-plan.md). A resumed invocation (state
-          // carried over) already truncated in its first invocation.
-          if (!resumeState) {
+          // carried over from a checkpoint or the previous invocation)
+          // already truncated in its first invocation.
+          if (!state) {
             await performOverwriteTruncate(bulkSyncOptions as any);
           }
         }),
@@ -385,33 +436,168 @@ export const syncBackfillEntityFunction = inngest.createFunction(
     // ── Chunk loop ───────────────────────────────────────────────────
     let chunkIndex = 0;
     let completed = false;
-    let totalWrittenForEntity = 0;
+    let totalWrittenForEntity = rowsWrittenIn(state);
+    // The last state whose fetched rows are all in the destination: where a
+    // resume may start. The buffer is empty here (discarded at start).
+    let resumePoint: FetchState | undefined = state;
 
-    while (!completed) {
-      if (stepsUsed >= STEP_BUDGET) {
-        if (checkpointEnabled && state) {
-          const checkpointState = state;
-          await step.run(
-            `save-checkpoint-before-yield-${safeEntityStepId}`,
-            async () => {
+    // Save the resume cursor. Only call it when every row before `state`
+    // reached the destination: the bulk path flushes its buffer first.
+    const saveCheckpoint = async (stepId: string) => {
+      if (!checkpointEnabled || !state) return;
+      const checkpointState = state;
+      await step.run(stepId, async () => {
+        await cdcBackfillCheckpointService.saveEntityCheckpoint({
+          workspaceId,
+          flowId,
+          scope: checkpointScope,
+          entity,
+          fetchState: checkpointState,
+        });
+      });
+      stepsUsed++;
+    };
+
+    // Flush the bulk buffer to the live table when it holds at least
+    // `minRows`, then record the merged rows in `state` and save the cursor.
+    // Returns true when the buffer is empty afterwards: only then does the
+    // saved cursor cover every fetched row.
+    const flushBuffer = async (
+      label: string,
+      minRows: number,
+    ): Promise<boolean> => {
+      if (!useBulkPath || !bulkSyncOptions) return true;
+      const tempCount = await step.run(
+        `count-temp-${safeEntityStepId}-${label}`,
+        () =>
+          withHeartbeat(executionId, async () => {
+            const count = await getTempCollectionCount(
+              flowId,
+              entity,
+              fullRead,
+            );
+            logger.info("Temp collection row count", {
+              flowId,
+              entity,
+              tempCount: count,
+              chunkIndex,
+            });
+            return count;
+          }),
+      );
+      stepsUsed++;
+      if (tempCount === 0) {
+        resumePoint = state;
+        return true;
+      }
+      if (tempCount < minRows) return false;
+
+      const rescuedInFlush = await step.run(
+        `flush-merge-${safeEntityStepId}-${flushIndex}`,
+        () =>
+          withHeartbeat(executionId, async () => {
+            logExec(
+              "info",
+              `Flushing ${entity} buffer batch ${flushIndex} to live (${tempCount} rows in temp)`,
+              { entity, flushIndex, tempCount },
+            );
+            // Retry-safe: a failed attempt may have loaded batches into
+            // staging. Dropping staging puts them back in the flush buffer
+            // (BULK_STAGED_FIELD); keyed (dedup) merges also merge them
+            // first — see performRescueAndPrepareStaging.
+            const { rescued } = await performRescueAndPrepareStaging(
+              bulkSyncOptions as any,
+              { dedupOnly: true },
+            );
+            if (rescued > 0) {
+              logExec(
+                "warn",
+                `Rescued ${rescued} ${entity} staging rows left by a failed flush attempt`,
+                { entity, flushIndex, rescued },
+              );
+            }
+            await performBulkFlush(bulkSyncOptions as any, () =>
+              touchHeartbeat(executionId),
+            );
+            return rescued;
+          }),
+      );
+      stepsUsed++;
+      // The merge is its own step, like merge-final: a retry of a failed
+      // merge re-runs it against the staging table that is still there,
+      // instead of re-entering the flush step, which drops staging.
+      //
+      // The cursor is saved in this same step, right after the merge: a
+      // cancel between two steps would otherwise merge the rows and resume
+      // before them, writing them twice in append mode. It is saved only
+      // when the buffer is empty: a flush that stopped early leaves rows
+      // there, and a cursor past them would skip them on a resume.
+      const writtenBefore = totalWrittenForEntity + (rescuedInFlush || 0);
+      const flushedState = state;
+      const applied = (await step.run(
+        `flush-apply-${safeEntityStepId}-${flushIndex}`,
+        () =>
+          withHeartbeat(executionId, async () => {
+            const result = await performStagingMerge(bulkSyncOptions as any);
+            await performStagingCleanup(bulkSyncOptions as any);
+            const left = await getTempCollectionCount(flowId, entity, fullRead);
+            const written = writtenBefore + result.written;
+            if (left > 0) {
+              logExec(
+                "warn",
+                `${entity}: ${left} rows stayed in the flush buffer; the resume cursor stays at the last complete flush`,
+                { entity, flushIndex, left },
+              );
+            } else if (checkpointEnabled && flushedState) {
               await cdcBackfillCheckpointService.saveEntityCheckpoint({
                 workspaceId,
                 flowId,
-                runId: checkpointRunId,
+                scope: checkpointScope,
                 entity,
-                fetchState: checkpointState,
+                fetchState: withRowsWritten(flushedState, written),
               });
-            },
+            }
+            return { written, left };
+          }),
+      )) as { written: number; left: number };
+      stepsUsed++;
+      flushIndex++;
+
+      totalWrittenForEntity = applied.written;
+      if (state) state = withRowsWritten(state, totalWrittenForEntity);
+      if (applied.left > 0) return false;
+      resumePoint = state;
+      return true;
+    };
+
+    while (!completed) {
+      if (stepsUsed >= STEP_BUDGET) {
+        // Flush before yielding: the next invocation resumes from the saved
+        // cursor (or the returned state) and finds an empty buffer.
+        const bufferEmpty = await flushBuffer("yield", 1);
+        // Direct writes: save here. The bulk path saved in its flush; a
+        // buffer still holding rows keeps the last complete flush's cursor.
+        if (!useBulkPath) {
+          await saveCheckpoint(
+            `save-checkpoint-before-yield-${safeEntityStepId}`,
           );
+        } else if (!bufferEmpty) {
+          logger.warn("Yielding with rows left in the flush buffer", {
+            flowId,
+            entity,
+          });
         }
         logger.info(
           `Entity ${entity} yielding to parent after ${stepsUsed} steps (chunk ${chunkIndex})`,
           { flowId, entity, stepsUsed, chunkIndex },
         );
+        // A poll resumes from the state it returns: hand back the last
+        // fully written one, never a state past rows still buffered.
+        const yieldState = useBulkPath ? resumePoint : state;
         return {
           completed: false,
           rowsWritten: totalWrittenForEntity,
-          ...(!checkpointEnabled && state ? { state } : {}),
+          ...(!checkpointEnabled && yieldState ? { state: yieldState } : {}),
         };
       }
 
@@ -513,6 +699,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                   }
                 : {}),
               state,
+              fullRead,
               maxIterations: 10,
               logger: syncLogger,
               step,
@@ -547,12 +734,13 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                     $set: {
                       lastHeartbeat: new Date(),
                       "stats.currentEntity": entity,
-                      [`stats.entityStatus.${entity}`]: result.completed
-                        ? "completed"
-                        : "syncing",
+                      [`stats.entityStatus.${entity}`]:
+                        result.completed && !useBulkPath
+                          ? "completed"
+                          : "syncing",
                       [`stats.entityStats.${entity}`]: written,
                     },
-                    ...(result.completed
+                    ...(result.completed && !useBulkPath
                       ? { $addToSet: { "stats.syncedEntities": entity } }
                       : {}),
                     $push: {
@@ -561,9 +749,12 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                           {
                             timestamp: new Date(),
                             level: "info",
-                            message: result.completed
-                              ? `${entity} sync completed (${written} written, ${fetched} fetched)`
-                              : `${entity} sync in progress (${written} written, ${fetched} fetched)`,
+                            message:
+                              result.completed && useBulkPath
+                                ? `${entity} fetch completed (${fetched} fetched, ${written} written so far); flushing the rest`
+                                : result.completed
+                                  ? `${entity} sync completed (${written} written, ${fetched} fetched)`
+                                  : `${entity} sync in progress (${written} written, ${fetched} fetched)`,
                             metadata: {
                               flowId,
                               executionId,
@@ -592,85 +783,22 @@ export const syncBackfillEntityFunction = inngest.createFunction(
 
       state = chunkResult.state;
       completed = chunkResult.completed;
+      // Bulk path: the chunk only buffers, so this is what the flushes so far
+      // merged (carried in the state); direct writes count as they land.
       totalWrittenForEntity = Number.isFinite(chunkResult.totalWritten)
         ? chunkResult.totalWritten
         : chunkResult.state.totalProcessed;
 
-      if (checkpointEnabled && chunkIndex % 10 === 9) {
-        await step.run(
+      // Direct writes are in the destination when the chunk step returns.
+      if (!useBulkPath && chunkIndex % 10 === 9) {
+        await saveCheckpoint(
           `save-cdc-backfill-checkpoint-${safeEntityStepId}-${chunkIndex}`,
-          async () => {
-            await cdcBackfillCheckpointService.saveEntityCheckpoint({
-              workspaceId,
-              flowId,
-              runId: checkpointRunId,
-              entity,
-              fetchState: chunkResult.state,
-            });
-          },
         );
-        stepsUsed++;
       }
       chunkIndex++;
 
-      if (useBulkPath && bulkSyncOptions && !completed) {
-        const tempCount = await step.run(
-          `count-temp-${safeEntityStepId}-${chunkIndex}`,
-          () =>
-            withHeartbeat(executionId, async () => {
-              const count = await getTempCollectionCount(flowId, entity);
-              logger.info("Temp collection row count", {
-                flowId,
-                entity,
-                tempCount: count,
-                chunkIndex,
-              });
-              return count;
-            }),
-        );
-        stepsUsed++;
-
-        if (tempCount >= 10_000) {
-          await step.run(`flush-merge-${safeEntityStepId}-${flushIndex}`, () =>
-            withHeartbeat(executionId, async () => {
-              logExec(
-                "info",
-                `Flushing ${entity} buffer batch ${flushIndex} to live (${tempCount} rows in temp)`,
-                { entity, flushIndex, tempCount },
-              );
-              // Retry-safe: a failed attempt may have loaded batches into
-              // staging. Dropping staging puts them back in the flush buffer
-              // (BULK_STAGED_FIELD); keyed (dedup) merges also merge them
-              // first — see performRescueAndPrepareStaging.
-              const { rescued } = await performRescueAndPrepareStaging(
-                bulkSyncOptions as any,
-                { dedupOnly: true },
-              );
-              if (rescued > 0) {
-                logExec(
-                  "warn",
-                  `Rescued ${rescued} ${entity} staging rows left by a failed flush attempt`,
-                  { entity, flushIndex, rescued },
-                );
-              }
-              await performBulkFlush(bulkSyncOptions as any, () =>
-                touchHeartbeat(executionId),
-              );
-            }),
-          );
-          stepsUsed++;
-          // The merge is its own step, like merge-final: a retry of a failed
-          // merge re-runs it against the staging table that is still there,
-          // instead of re-entering the flush step, which drops staging.
-          await step.run(`flush-apply-${safeEntityStepId}-${flushIndex}`, () =>
-            withHeartbeat(executionId, async () => {
-              await performStagingMerge(bulkSyncOptions as any);
-              await performStagingCleanup(bulkSyncOptions as any);
-            }),
-          );
-          stepsUsed++;
-          flushIndex++;
-        }
+      if (!completed) {
+        await flushBuffer(String(chunkIndex), FLUSH_THRESHOLD_ROWS);
       }
 
       if (chunkIndex > 1000) {
@@ -697,7 +825,11 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         `count-temp-final-${safeEntityStepId}`,
         () =>
           withHeartbeat(executionId, async () => {
-            const count = await getTempCollectionCount(flowId, entity);
+            const count = await getTempCollectionCount(
+              flowId,
+              entity,
+              fullRead,
+            );
             logger.info("Final temp collection row count before flush", {
               flowId,
               entity,
@@ -708,54 +840,60 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       );
 
       if (finalRowsInTemp > 0) {
-        await step.run(`flush-final-${safeEntityStepId}`, () =>
-          withHeartbeat(executionId, async () => {
-            logExec(
-              "info",
-              `Flushing ${entity} remaining buffer to staging (${finalRowsInTemp} rows)`,
-              { entity, tempCount: finalRowsInTemp },
-            );
-            // Retry-safe for the same reason as the flush-merge step above.
-            const { rescued } = await performRescueAndPrepareStaging(
-              bulkSyncOptions as any,
-              { dedupOnly: true },
-            );
-            if (rescued > 0) {
+        const rescuedInFinal = await step.run(
+          `flush-final-${safeEntityStepId}`,
+          () =>
+            withHeartbeat(executionId, async () => {
               logExec(
-                "warn",
-                `Rescued ${rescued} ${entity} staging rows left by a failed flush attempt`,
-                { entity, rescued },
+                "info",
+                `Flushing ${entity} remaining buffer to staging (${finalRowsInTemp} rows)`,
+                { entity, tempCount: finalRowsInTemp },
               );
-            }
-            await performBulkFlush(bulkSyncOptions as any, () =>
-              touchHeartbeat(executionId),
-            );
-          }),
+              // Retry-safe for the same reason as the flush-merge step above.
+              const { rescued } = await performRescueAndPrepareStaging(
+                bulkSyncOptions as any,
+                { dedupOnly: true },
+              );
+              if (rescued > 0) {
+                logExec(
+                  "warn",
+                  `Rescued ${rescued} ${entity} staging rows left by a failed flush attempt`,
+                  { entity, rescued },
+                );
+              }
+              await performBulkFlush(bulkSyncOptions as any, () =>
+                touchHeartbeat(executionId),
+              );
+              return rescued;
+            }),
         );
 
-        await step.run(`merge-final-${safeEntityStepId}`, () =>
-          withHeartbeat(executionId, async () => {
-            logExec("info", `Merging ${entity} staging table to live`, {
-              entity,
-            });
-            const mergeResult = await performStagingMerge(
-              bulkSyncOptions as any,
-            );
-            await performStagingCleanup(bulkSyncOptions as any);
-            logExec(
-              "info",
-              `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live, ${mergeResult.written} rows merged)`,
-              { entity, mergedRows: mergeResult.written },
-            );
-            logger.info("Final merge result", {
-              flowId,
-              entity,
-              mergedRows: mergeResult.written,
-              totalFetched,
-              totalWrittenToTemp: totalWrittenForEntity,
-            });
-          }),
+        const mergedFinal = await step.run(
+          `merge-final-${safeEntityStepId}`,
+          () =>
+            withHeartbeat(executionId, async () => {
+              logExec("info", `Merging ${entity} staging table to live`, {
+                entity,
+              });
+              const mergeResult = await performStagingMerge(
+                bulkSyncOptions as any,
+              );
+              await performStagingCleanup(bulkSyncOptions as any);
+              logExec(
+                "info",
+                `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live, ${mergeResult.written} rows merged)`,
+                { entity, mergedRows: mergeResult.written },
+              );
+              logger.info("Final merge result", {
+                flowId,
+                entity,
+                mergedRows: mergeResult.written,
+                totalFetched,
+              });
+              return mergeResult.written;
+            }),
         );
+        totalWrittenForEntity += (rescuedInFinal || 0) + (mergedFinal || 0);
       }
 
       if (executionId) {
@@ -766,8 +904,18 @@ export const syncBackfillEntityFunction = inngest.createFunction(
               $set: {
                 lastHeartbeat: new Date(),
                 [`stats.entityStatus.${entity}`]: "completed",
+                [`stats.entityStats.${entity}`]: totalWrittenForEntity,
               },
               $addToSet: { "stats.syncedEntities": entity },
+            },
+          );
+          logExec(
+            "info",
+            `${entity} sync completed (${totalWrittenForEntity} written, ${totalFetched} fetched)`,
+            {
+              entity,
+              totalWritten: totalWrittenForEntity,
+              totalFetched,
             },
           );
         } catch {
@@ -784,7 +932,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           await cdcBackfillCheckpointService.markEntityCompleted({
             workspaceId,
             flowId,
-            runId: checkpointRunId,
+            scope: checkpointScope,
             entity,
             fetchState: state,
             rowsWritten: totalWrittenForEntity,
