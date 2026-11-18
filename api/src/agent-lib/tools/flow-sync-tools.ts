@@ -36,6 +36,7 @@ import {
   hasWebhookTrigger,
   isWebhookFlow,
 } from "../../services/flow-triggers.service";
+import { provisionFlowWebhook } from "../../services/flow-webhook-provision.service";
 import { syncFlowWebhookSubscription } from "../../services/flow-webhook-subscription.service";
 import { generateWebhookEndpoint } from "../../utils/webhook.utils";
 import { workspaceService } from "../../services/workspace.service";
@@ -412,6 +413,69 @@ export function createFlowSyncTools({
             id: result.flowId,
             cancelled: result.executions,
             backfill: result.backfill,
+          };
+        } catch (error) {
+          return failure(error);
+        }
+      },
+    }),
+
+    flow_webhook_provision: tool({
+      description:
+        "Create the provider-side webhook subscription of a sync, as the Triggers step's \"Create in …\" button does: the subscription points at the sync's webhook URL, its signing secret is stored on the sync (never returned), flows/<slug>.yml is committed. Idempotent: a sync that already holds a signing secret reports its subscription and creates nothing. Owner or admin.",
+      inputSchema: z.object({ flow: flowRef }),
+      execute: async ({ flow: ref }) => {
+        try {
+          if (!(await mayChange())) {
+            return failure("Owner/admin role required");
+          }
+          await assertFlowRepo(workspaceId);
+          const flow = await findFlow(workspaceId, ref);
+          const existing = flow.webhookConfig;
+          if (existing?.secret) {
+            return {
+              success: true,
+              id: flow._id.toString(),
+              status: "existing" as const,
+              endpoint: existing.endpoint,
+              providerWebhookId: existing.providerWebhookId ?? null,
+            };
+          }
+          // The route's own step. Its public origin comes from the sync's
+          // webhook URL when it has one, else from the deployment's env
+          // (generateWebhookEndpoint), as there is no browser request here.
+          const base =
+            existing?.endpoint ||
+            generateWebhookEndpoint(workspaceId, flow._id.toString());
+          const { endpoint, created, webhookConfig, connectorType } =
+            await provisionFlowWebhook({
+              workspaceId,
+              flow,
+              body: {},
+              request: { req: { url: base, header: () => undefined } },
+            });
+          const committed = await commitFlowFile(flow, userId);
+          if (!committed.ok) {
+            return failure(
+              `The subscription ${created.providerWebhookId} was created, but the flow definition could not be written to the workspace repo: ${committed.error ?? "unknown error"}`,
+            );
+          }
+          if (committed.sourceBlobSha) {
+            flow.sourceBlobSha = committed.sourceBlobSha;
+          }
+          await flow.save();
+          if (!webhookConfig.secret) {
+            return failure(
+              `The ${connectorType} webhook subscription ${created.providerWebhookId} was created, but the provider did not return a signing secret. Paste it into the sync's Webhook Secret field.`,
+            );
+          }
+          return {
+            success: true,
+            id: flow._id.toString(),
+            status: "created" as const,
+            vendor: connectorType,
+            endpoint,
+            providerWebhookId: created.providerWebhookId,
           };
         } catch (error) {
           return failure(error);

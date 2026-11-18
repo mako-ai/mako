@@ -71,6 +71,14 @@ export const SYNC_CAPABILITIES: readonly SyncCapabilityDefinition[] = [
     resultKind: "run",
   }),
   define({
+    name: "flow_webhook_provision",
+    risk: "write",
+    minimumWorkspaceRole: "admin",
+    requiredGrant: "warehouse-write",
+    surfaces: EXTERNAL_MCP_ONLY,
+    resultKind: "data",
+  }),
+  define({
     name: "flow_update",
     risk: "write",
     minimumWorkspaceRole: "admin",

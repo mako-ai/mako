@@ -801,7 +801,12 @@ async function main() {
         `${read} is a read`,
       );
     }
-    for (const act of ["flow_backfill", "flow_cancel", "flow_update"]) {
+    for (const act of [
+      "flow_backfill",
+      "flow_cancel",
+      "flow_update",
+      "flow_webhook_provision",
+    ]) {
       assert.equal(
         byName.has(act),
         mayAct,
@@ -820,6 +825,9 @@ async function main() {
     const cancel = AGENT_CAPABILITY_BY_NAME.get("flow_cancel");
     assert.equal(cancel?.requiredGrant, "warehouse-write");
     assert.equal(cancel?.minimumWorkspaceRole, "admin");
+    const provision = AGENT_CAPABILITY_BY_NAME.get("flow_webhook_provision");
+    assert.equal(provision?.requiredGrant, "warehouse-write");
+    assert.equal(provision?.minimumWorkspaceRole, "admin");
   }
 
   // 3a. Warehouse tools: exposed (destructive-annotated) and authorized for
