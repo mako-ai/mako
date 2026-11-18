@@ -204,7 +204,7 @@ Over MCP (external clients only), seven tools cover syncs:
 | `flow_data_diff` | The data-diff checks: columns whose non-null count fell after a write that can rewrite rows |
 | `flow_backfill` | Start (or resume) a backfill, optionally for some entities |
 | `flow_cancel` | Cancel every running execution plus a running CDC backfill, or one execution (the backfill keeps its resume point) |
-| `flow_webhook_provision` | Create the provider webhook subscription, as the "Create in …" button does; reports an existing one instead of making a second |
+| `flow_webhook_provision` | Create the provider webhook subscription, as the "Create in …" button does. It reports an existing one (or adopts one on the URL) instead of making a second, and needs the webhook trigger on |
 | `flow_update` | Change the three trigger controls (poll, webhook, resync) and commit the flow file |
 
 A sync is addressed by id, name or slug, or any unique short name (`wise`, `fr_close`). The two writes need the `warehouse:write` grant and an owner or admin role; the reads need neither.

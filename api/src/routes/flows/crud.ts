@@ -20,7 +20,6 @@ import {
   loadLiveFlows,
 } from "../../services/flow-sync.service";
 import { isWebhookFlow } from "../../services/flow-triggers.service";
-import { getRequestBaseUrl } from "../../services/flow-webhook-url";
 import { teardownFlow } from "../../sync-cdc/flow-reconcile";
 import { generateWebhookEndpoint } from "../../utils/webhook.utils";
 import { workspaceService } from "../../services/workspace.service";
@@ -57,7 +56,6 @@ export function registerCrudRoutes(flowRoutes: FlowRouter): void {
         return bTime - aTime;
       });
       await attachFlowLookups(workspaceId, plains);
-      const requestBaseUrl = getRequestBaseUrl(c);
       const normalizedFlows = plains.map(flow => {
         const projected = projectFlowListItem(flow);
         if (!isWebhookFlow(projected as never) || !projected._id) {
@@ -66,7 +64,6 @@ export function registerCrudRoutes(flowRoutes: FlowRouter): void {
         const endpoint = generateWebhookEndpoint(
           workspaceId,
           String(projected._id),
-          requestBaseUrl,
         );
         return {
           ...projected,
@@ -112,7 +109,6 @@ export function registerCrudRoutes(flowRoutes: FlowRouter): void {
         } = await buildNewFlow({
           workspaceId,
           body,
-          requestBaseUrl: getRequestBaseUrl(c),
         });
 
         {
@@ -161,11 +157,7 @@ export function registerCrudRoutes(flowRoutes: FlowRouter): void {
         const webhookConfig = {
           ...((flow.webhookConfig as Record<string, unknown> | undefined) ??
             {}),
-          endpoint: generateWebhookEndpoint(
-            workspaceId,
-            String(flow._id),
-            getRequestBaseUrl(c),
-          ),
+          endpoint: generateWebhookEndpoint(workspaceId, String(flow._id)),
         };
         flow.webhookConfig = webhookConfig;
       }
@@ -211,7 +203,6 @@ export function registerCrudRoutes(flowRoutes: FlowRouter): void {
           workspaceId,
           flow,
           body,
-          requestBaseUrl: getRequestBaseUrl(c),
         });
 
         {

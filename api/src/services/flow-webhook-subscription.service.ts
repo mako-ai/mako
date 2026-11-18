@@ -32,6 +32,7 @@ import { syncConnectorRegistry } from "../sync/connector-registry";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { commitFlowFile } from "./flow-config.service";
 import { isWebhookFlow } from "./flow-triggers.service";
+import { generateWebhookEndpoint } from "../utils/webhook.utils";
 
 export { flowEntitySignature } from "../sync-cdc/entity-selection";
 
@@ -116,15 +117,21 @@ export async function syncFlowWebhookSubscription(
       return await provisionFlowWebhook(flow, connector, entities, deps);
     }
 
+    // The server's URL, never the stored one: a subscription is only ever
+    // pointed at this deployment.
+    const endpointUrl = generateWebhookEndpoint(
+      String(flow.workspaceId),
+      String(flow._id),
+    );
     const updated = await connector.updateWebhookSubscription({
-      endpointUrl: webhook.endpoint,
+      endpointUrl,
       enabledEntities: entities,
       providerWebhookId: webhook.providerWebhookId,
     });
     if (!updated) {
       logger.warn("No provider webhook subscription found for flow", {
         flowId: String(flow._id),
-        endpoint: webhook.endpoint,
+        endpoint: endpointUrl,
       });
       return { status: "not_found" };
     }
@@ -296,7 +303,10 @@ async function provisionFlowWebhook(
   entities: string[],
   deps: FlowWebhookSubscriptionDeps,
 ): Promise<FlowWebhookSubscriptionSyncResult> {
-  const endpointUrl = flow.webhookConfig?.endpoint ?? "";
+  const endpointUrl = generateWebhookEndpoint(
+    String(flow.workspaceId),
+    String(flow._id),
+  );
   const flowId = String(flow._id);
   try {
     let result = await connector.updateWebhookSubscription({
