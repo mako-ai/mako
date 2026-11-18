@@ -103,6 +103,9 @@ export async function loadConnectorDefinition(
       `The connector "${slug}" is blocked: ${row.blockedReason ?? "it failed its last check"}`,
     );
   }
+  if (row.status === "retrying") {
+    throw new Error(retryingMessage(slug, row));
+  }
   return {
     slug: row.slug,
     runtime: row.runtime,
@@ -422,5 +425,19 @@ async function findSdkRoot(): Promise<string> {
   }
   throw new Error(
     `Cannot find @makoai/connector-sdk. Looked in:\n  ${candidates.join("\n  ")}`,
+  );
+}
+
+/** Why a connector waiting on an indexing retry cannot run yet. */
+export function retryingMessage(
+  slug: string,
+  row: { blockedReason?: string; nextIndexRetryAt?: Date | string },
+): string {
+  const at = row.nextIndexRetryAt
+    ? ` Next attempt at ${new Date(row.nextIndexRetryAt).toISOString()}.`
+    : "";
+  return (
+    `The connector "${slug}" could not be indexed because of a platform error, and indexing retries on its own.${at}` +
+    (row.blockedReason ? ` Last error: ${row.blockedReason}` : "")
   );
 }

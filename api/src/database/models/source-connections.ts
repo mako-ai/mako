@@ -243,6 +243,12 @@ export const SourceConnection = mongoose.model<ISourceConnection>(
  *              bundles on) its dependencies failed to build. `blockedReason`
  *              is shown to whoever pushed it, and the connector cannot back
  *              a flow.
+ *   retrying — `spec` failed on a platform error (a sandbox blip, a box
+ *              lease timeout; connectors/workspace/transient-failure.ts),
+ *              not on the connector's code. Not runnable, like `blocked`,
+ *              but indexing tries again at `nextIndexRetryAt` on its own:
+ *              1, 2, 4 … 30 min, then every 30 min. `blockedReason` holds
+ *              the error.
  *
  * `build` sits next to `status` for a folder that carries a `package.json`
  * while CONNECTOR_BUNDLES_ENABLED is on: the source hash of the last build
@@ -269,8 +275,12 @@ export interface IConnectorDefinition extends Document {
   /** Blob sha of connector.yaml plus the entry file: the idempotence check. */
   sourceSha: string;
   spec?: Record<string, unknown>;
-  status: "indexed" | "verified" | "blocked";
+  status: "indexed" | "verified" | "blocked" | "retrying";
   blockedReason?: string;
+  /** Platform failures in a row for this source, while `retrying`. */
+  indexRetryAttempts?: number;
+  /** When indexing runs spec again, while `retrying`. */
+  nextIndexRetryAt?: Date;
   entities: string[];
   hasIcon: boolean;
   lastCheckedAt?: Date;
@@ -354,11 +364,13 @@ const ConnectorDefinitionSchema = new Schema<IConnectorDefinition>(
     spec: { type: Schema.Types.Mixed },
     status: {
       type: String,
-      enum: ["indexed", "verified", "blocked"],
+      enum: ["indexed", "verified", "blocked", "retrying"],
       default: "indexed",
       required: true,
     },
     blockedReason: { type: String, maxlength: 4000 },
+    indexRetryAttempts: { type: Number },
+    nextIndexRetryAt: { type: Date },
     entities: { type: [String], default: [] },
     hasIcon: { type: Boolean, default: false },
     lastCheckedAt: { type: Date },
@@ -370,6 +382,11 @@ const ConnectorDefinitionSchema = new Schema<IConnectorDefinition>(
 );
 
 ConnectorDefinitionSchema.index({ workspaceId: 1, slug: 1 }, { unique: true });
+// The retry cron's query: only rows waiting on a retry carry the field.
+ConnectorDefinitionSchema.index(
+  { status: 1, nextIndexRetryAt: 1 },
+  { partialFilterExpression: { status: "retrying" } },
+);
 
 export const ConnectorDefinition = mongoose.model<IConnectorDefinition>(
   "ConnectorDefinition",
