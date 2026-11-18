@@ -446,6 +446,35 @@ verify_runtime() {
 }`;
 }
 
+/**
+ * Shell lines that swap a verified `$stage` in as `$runtime_root`, under a
+ * lock so two installers in one box never interleave.
+ *
+ * The root also holds every materialized connector (`connectors/`) and
+ * bundle (`bundles/`). Runs that cached those paths keep using them without
+ * re-verifying the SDK, so the swap carries both folders into the new root
+ * instead of deleting them with the old one.
+ */
+export function swapRuntimeShell(): string {
+  return `if command -v flock >/dev/null 2>&1; then
+  exec 9>"$runtime_root.lock"
+  flock -w 60 9
+fi
+if verify_runtime "$runtime_root" "$runtime_id"; then exit 0; fi
+if test -d "$runtime_root" && ! test -L "$runtime_root"; then
+  for kept in connectors bundles; do
+    if test -d "$runtime_root/$kept" && ! test -L "$runtime_root/$kept"; then
+      rm -rf "$stage/$kept"
+      mv "$runtime_root/$kept" "$stage/$kept"
+    fi
+  done
+fi
+discard="$runtime_root.discard-$$"
+if test -e "$runtime_root" || test -L "$runtime_root"; then mv "$runtime_root" "$discard"; fi
+mv "$stage" "$runtime_root"
+rm -rf "$discard"`;
+}
+
 /** The manifest `sha256sum -c` reads: one `<hex>  <path>` line per SDK file. */
 export function runtimeManifest(files: Map<string, Uint8Array>): string {
   return [...files.keys()]
@@ -586,16 +615,7 @@ chmod -R a+rX,go-w "$stage"
 chmod a+rX,go-w "$(dirname "$runtime_root")" "$(dirname "$(dirname "$runtime_root")")" ${shellQuote(ISOLATED_ROOT)}`
         : ""
     }
-# Swap in under a lock: two installers in one box must not interleave.
-if command -v flock >/dev/null 2>&1; then
-  exec 9>"$runtime_root.lock"
-  flock -w 60 9
-fi
-if verify_runtime "$runtime_root" "$runtime_id"; then exit 0; fi
-discard="$runtime_root.discard-$$"
-if test -e "$runtime_root" || test -L "$runtime_root"; then mv "$runtime_root" "$discard"; fi
-mv "$stage" "$runtime_root"
-rm -rf "$discard"`,
+${swapRuntimeShell()}`,
     { ...execOptions({ timeoutMs: 120_000 }), ...pin },
   );
   if (install.timedOut) {

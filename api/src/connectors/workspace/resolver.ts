@@ -342,22 +342,37 @@ export async function connectorSdkVersion(): Promise<string> {
 let sdkFilesCache: Map<string, Uint8Array> | null = null;
 let sdkRuntimeIdCache: string | null = null;
 
+/**
+ * The on-box layout of a runtime root. Part of the runtime id, so a root or a
+ * snapshot template written in an older layout is never reused or swapped
+ * under runs still using it: the new layout gets a fresh root and template
+ * key, and the old ones age out. Bump it whenever what makes a root valid
+ * changes. manifest-v1 added the `.sdk-sha256` manifest (2026-11-18).
+ */
+export const RUNTIME_LAYOUT = "manifest-v1";
+
 /** Identity of every shipped SDK byte, used as the sandbox runtime directory. */
 function sdkRuntimeId(files: Map<string, Uint8Array>): string {
   if (sdkRuntimeIdCache) return sdkRuntimeIdCache;
+  sdkRuntimeIdCache = runtimeIdOf(files);
+  return sdkRuntimeIdCache;
+}
+
+/** `sdkRuntimeId` without the cache: the Node version, layout and SDK bytes. */
+export function runtimeIdOf(files: Map<string, Uint8Array>): string {
   const hash = createHash("sha256");
   // The executable is part of the runtime contract just as much as the SDK
   // bytes. Bumping it must create a fresh root instead of reusing a marker
   // written for an older Node installation.
   hash.update(`node:${CONNECTOR_NODE_VERSION}\0`);
+  hash.update(`layout:${RUNTIME_LAYOUT}\0`);
   for (const name of [...files.keys()].sort()) {
     hash.update(name);
     hash.update("\0");
     hash.update(files.get(name) as Uint8Array);
     hash.update("\0");
   }
-  sdkRuntimeIdCache = hash.digest("hex");
-  return sdkRuntimeIdCache;
+  return hash.digest("hex");
 }
 
 /** The SDK's shipped files, read from this repository's own package. */

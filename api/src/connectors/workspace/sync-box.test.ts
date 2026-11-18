@@ -28,6 +28,7 @@ import {
   runConnectorCommand,
   runtimeManifest,
   RUNTIME_MANIFEST,
+  swapRuntimeShell,
   verifyRuntimeShell,
 } from "./sync-box";
 import { execFileSync } from "node:child_process";
@@ -483,6 +484,75 @@ describe("verify_runtime against a real runtime root", () => {
   it("rejects a root whose marker names another runtime", () => {
     fs.writeFileSync(nodePath.join(root, ".materialized"), "other\n");
     expect(verify()).toBe("no");
+  });
+});
+
+/**
+ * The swap, run by a real shell: a root that fails its check is replaced,
+ * but the connectors and bundles inside it move into the new root, so runs
+ * holding those paths keep working.
+ */
+describe("swapping a staged runtime into a real root", () => {
+  let dir = "";
+  beforeEach(() => {
+    dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "mako-swap-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const swap = (root: string, stage: string) =>
+    execFileSync(
+      "bash",
+      [
+        "-c",
+        `set -eu\nruntime_root="$1"\nstage="$2"\nruntime_id=rt\nverify_runtime() { return 1; }\n${swapRuntimeShell()}`,
+        "swap",
+        root,
+        stage,
+      ],
+      { encoding: "utf8" },
+    );
+
+  it("keeps the old root's connectors and bundles", () => {
+    const root = nodePath.join(dir, "rt");
+    const stage = nodePath.join(dir, "rt.staging-1");
+    fs.mkdirSync(nodePath.join(root, "connectors/acme@abc"), {
+      recursive: true,
+    });
+    fs.writeFileSync(nodePath.join(root, "connectors/acme@abc/index.js"), "c");
+    fs.mkdirSync(nodePath.join(root, "bundles/acme@def"), { recursive: true });
+    fs.writeFileSync(nodePath.join(root, "bundles/acme@def/index.js"), "b");
+    fs.writeFileSync(nodePath.join(root, "old-sdk"), "old");
+    fs.mkdirSync(stage);
+    fs.writeFileSync(nodePath.join(stage, "new-sdk"), "new");
+
+    swap(root, stage);
+
+    expect(fs.existsSync(stage)).toBe(false);
+    expect(fs.existsSync(nodePath.join(root, "new-sdk"))).toBe(true);
+    expect(fs.existsSync(nodePath.join(root, "old-sdk"))).toBe(false);
+    expect(
+      fs.readFileSync(
+        nodePath.join(root, "connectors/acme@abc/index.js"),
+        "utf8",
+      ),
+    ).toBe("c");
+    expect(
+      fs.readFileSync(nodePath.join(root, "bundles/acme@def/index.js"), "utf8"),
+    ).toBe("b");
+    expect(fs.readdirSync(dir).filter(n => n.includes("discard"))).toEqual([]);
+  });
+
+  it("installs into a missing root", () => {
+    const root = nodePath.join(dir, "rt");
+    const stage = nodePath.join(dir, "rt.staging-1");
+    fs.mkdirSync(stage);
+    fs.writeFileSync(nodePath.join(stage, "new-sdk"), "new");
+
+    swap(root, stage);
+
+    expect(fs.existsSync(nodePath.join(root, "new-sdk"))).toBe(true);
   });
 });
 
