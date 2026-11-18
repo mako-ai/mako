@@ -160,15 +160,15 @@ describe("the gate: mako/stripe@1 installed by reference", () => {
     const published = await publishConnector({
       folder: FOLDER,
       slug: "stripe",
-      version: "1.1.0",
+      version: "1.2.0",
     });
     expect(published.published).toBe(true);
     const catalog = await readCatalog();
     expect(catalog.connectors.stripe.versions[0]).toMatchObject({
-      version: "1.1.0",
+      version: "1.2.0",
       hash: published.hash,
       authType: "api_key",
-      changelog: expect.stringContaining("Webhooks"),
+      changelog: expect.stringContaining("charge.pending"),
     });
     expect(published.entry.entities).toHaveLength(22);
 
@@ -201,7 +201,7 @@ describe("the gate: mako/stripe@1 installed by reference", () => {
     expect(row?.status).toBe("indexed");
     expect(row?.registry).toMatchObject({
       ref: "mako/stripe@1",
-      version: "1.1.0",
+      version: "1.2.0",
       hash: published.hash,
     });
     expect(row?.entities).toEqual(published.entry.entities);
