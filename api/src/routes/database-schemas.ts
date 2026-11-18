@@ -206,6 +206,16 @@ const DATABASE_SCHEMAS: Record<string, DatabaseSchemaResponse> = {
         required: false,
       },
       { name: "ssl", label: "Use SSL/TLS", type: "boolean", default: false },
+      {
+        name: "wake_timeout_ms",
+        label: "Wake timeout (ms, optional)",
+        type: "number",
+        required: false,
+        placeholder: "600000",
+        helperText:
+          "How long Mako keeps retrying a server that is asleep or starting before it fails the query. Empty: 600000 (10 min) for a *.clickhouse.cloud host, which idles and wakes on the first query, else 0. 0: no wake wait (3 quick retries).",
+        advanced: true,
+      },
     ],
   },
   postgresql: {
