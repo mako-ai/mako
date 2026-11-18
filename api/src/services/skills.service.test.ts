@@ -366,21 +366,27 @@ describe("skill tools: hidden files, resources, usage", () => {
     args: unknown,
   ): Promise<T> => (await tool.execute!(args as never, ctx)) as T;
 
-  /** Background usage writes settle: `rows` rows hold `total` counts. */
+  /**
+   * Background usage writes settle: `rows` rows hold `total` counts.
+   * vi.waitFor's 1 s default is too short on a loaded laptop.
+   */
   async function usageRows(total: number) {
-    return vi.waitFor(async () => {
-      const rows = await SkillUsageDaily.find({}).lean();
-      const sum = rows.reduce(
-        (n, row) =>
-          n +
-          (row.loads ?? 0) +
-          (row.resourceReads ?? 0) +
-          (row.relevantHits ?? 0),
-        0,
-      );
-      expect(sum).toBe(total);
-      return rows;
-    });
+    return vi.waitFor(
+      async () => {
+        const rows = await SkillUsageDaily.find({}).lean();
+        const sum = rows.reduce(
+          (n, row) =>
+            n +
+            (row.loads ?? 0) +
+            (row.resourceReads ?? 0) +
+            (row.relevantHits ?? 0),
+          0,
+        );
+        expect(sum).toBe(total);
+        return rows;
+      },
+      { timeout: 15_000, interval: 50 },
+    );
   }
 
   beforeAll(async () => {
