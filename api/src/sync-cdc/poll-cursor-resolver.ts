@@ -32,7 +32,12 @@ export async function resolvePollCursorForEntity(params: {
       flowId: new Types.ObjectId(params.flowId),
       entity: params.entity,
     })
-      .select({ lastPollRunStartedAt: 1, lastBackfillRunStartedAt: 1 })
+      .select({
+        lastPollRunStartedAt: 1,
+        lastBackfillRunStartedAt: 1,
+        mode: 1,
+        backfillCursor: 1,
+      })
       .lean(),
     params.executionId && Types.ObjectId.isValid(params.executionId)
       ? Flow.db
@@ -49,14 +54,25 @@ export async function resolvePollCursorForEntity(params: {
   const hasStamp = Boolean(
     entityState?.lastPollRunStartedAt || entityState?.lastBackfillRunStartedAt,
   );
-  const lastSuccessfulRunStartedAt = hasStamp
-    ? null
-    : await lastSuccessfulRunStart({
-        flowId: params.flowId,
-        entity: params.entity,
-        before: runStartedAt,
-        excludeExecutionId: params.executionId,
-      });
+  // A past run is a safe anchor only while the entity's rows still come
+  // from it. A reset or resync deletes the entity state (and the reset drops
+  // the table); a backfill that started and has not completed leaves its
+  // cursor and backfill mode. In each case a run from before reaches back
+  // past rows the destination no longer holds, or never got: fall back to
+  // the destination instead.
+  const runAnchorSafe =
+    !!entityState &&
+    entityState.mode !== "backfill" &&
+    entityState.backfillCursor == null;
+  const lastSuccessfulRunStartedAt =
+    hasStamp || !runAnchorSafe
+      ? null
+      : await lastSuccessfulRunStart({
+          flowId: params.flowId,
+          entity: params.entity,
+          before: runStartedAt,
+          excludeExecutionId: params.executionId,
+        });
   const decision = decidePollSince({
     lastPollRunStartedAt: entityState?.lastPollRunStartedAt,
     lastBackfillRunStartedAt: entityState?.lastBackfillRunStartedAt,

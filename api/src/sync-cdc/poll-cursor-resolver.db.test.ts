@@ -133,6 +133,14 @@ async function main(): Promise<void> {
         });
         return String(_id);
       };
+      // Webhooks materialized charges, so its entity state exists.
+      await cdcSyncStateService.advanceConsumerCursor({
+        workspaceId,
+        flowId: flow2,
+        entity: "charges",
+        lastIngestSeq: 7,
+        rowsAppliedDelta: 1,
+      });
       await run("2026-11-16T04:01:40Z");
       await run("2026-11-17T04:00:48Z");
       // Later runs that do not count: failed, or another entity only.
@@ -162,6 +170,37 @@ async function main(): Promise<void> {
         overlapMs: 10 * MIN,
       });
       assert.equal(none.since, undefined);
+
+      // A reset or resync deleted the entity state: no run from before the
+      // wipe anchors the poll; the destination does.
+      const reset = await resolvePollCursorForEntity({
+        flowId: flow2,
+        entity: "customers",
+        executionId: current,
+        overlapMs: 10 * MIN,
+      });
+      assert.equal(reset.since, undefined);
+
+      // A backfill started after the reset and failed part way: its cursor
+      // and backfill mode remain, so the old run still does not anchor.
+      await CdcEntityState.updateOne(
+        { flowId: flowOid, entity: "customers" },
+        {
+          $set: {
+            workspaceId: new Types.ObjectId(workspaceId),
+            mode: "backfill",
+            backfillCursor: { page: 3 },
+          },
+        },
+        { upsert: true },
+      );
+      const midBackfill = await resolvePollCursorForEntity({
+        flowId: flow2,
+        entity: "customers",
+        executionId: current,
+        overlapMs: 10 * MIN,
+      });
+      assert.equal(midBackfill.since, undefined);
 
       // Once stamped, the stamp wins.
       await stampPollRunStartedAt({
