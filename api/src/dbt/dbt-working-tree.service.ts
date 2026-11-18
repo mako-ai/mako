@@ -386,6 +386,12 @@ export async function loadWorkingTreeContents(
     commit?: string;
     /** Override of MAX_FILE_BYTES, for tests. */
     maxFileBytes?: number;
+    /**
+     * Return the skipped files unjudged (`skipped`), for a caller that
+     * merges a local overlay first: the overlay can delete or replace a
+     * skipped file, and its own dbt_project.yml decides the resource paths.
+     */
+    deferSkipped?: boolean;
   } = {},
 ): Promise<WorkingTreeContents> {
   const repoDir = await repoDirIfExists(project);
@@ -427,8 +433,10 @@ export async function loadWorkingTreeContents(
     }
     files.push({ path, content: buf.toString("utf8") });
   }
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  if (opts.deferSkipped) return { files, warnings: [], skipped };
   return classifySkippedFiles(
-    files.sort((a, b) => a.path.localeCompare(b.path)),
+    files,
     skipped,
     opts.maxFileBytes ?? MAX_FILE_BYTES,
   );
@@ -450,6 +458,8 @@ export interface WorkingTreeContents {
    * sentence each. Callers put them on the run result: a skip is never silent.
    */
   warnings: string[];
+  /** Unjudged skipped files, only with `deferSkipped`. */
+  skipped?: SkippedTreeFile[];
 }
 
 /**
@@ -544,6 +554,9 @@ export function dbtResourcePaths(projectYml: string | undefined): string[] {
  */
 export function dbtReadsPath(path: string, resourcePaths: string[]): boolean {
   if (!path.includes("/")) return /\.ya?ml$/i.test(path);
+  // dbt only opens these extensions under a resource folder: a .DS_Store, a
+  // diagram or a parquet next to the models is never read.
+  if (!/\.(sql|py|ya?ml|md|csv)$/i.test(path)) return false;
   return resourcePaths.some(root => path.startsWith(`${root}/`));
 }
 

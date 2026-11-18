@@ -57,6 +57,15 @@ describe("dbtReadsPath", () => {
     expect(dbtReadsPath("README.md", roots)).toBe(false);
     expect(dbtReadsPath("seedsextra/x.csv", roots)).toBe(false);
   });
+
+  it("leaves out files under a resource folder that dbt never opens", () => {
+    expect(dbtReadsPath("models/.DS_Store", roots)).toBe(false);
+    expect(dbtReadsPath("models/marts/diagram.png", roots)).toBe(false);
+    expect(dbtReadsPath("seeds/raw.parquet", roots)).toBe(false);
+    expect(dbtReadsPath("seeds/data.xlsx", roots)).toBe(false);
+    expect(dbtReadsPath("models/marts/x.py", roots)).toBe(true);
+    expect(dbtReadsPath("models/marts/_docs.md", roots)).toBe(true);
+  });
 });
 
 describe("classifySkippedFiles", () => {

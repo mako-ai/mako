@@ -17,6 +17,7 @@ import {
 } from "../database/workspace-schema";
 import {
   getCheckoutBranch,
+  classifySkippedFiles,
   loadWorkingTreeContents,
 } from "./dbt-working-tree.service";
 import { applyLocalOverlay, type LocalOverlay } from "./local-overlay";
@@ -134,7 +135,10 @@ export async function loadDbtProjectSnapshot(params: {
   }
   const tree = overlay
     ? overlay.baseSha
-      ? await loadWorkingTreeContents(project, { commit: overlay.baseSha })
+      ? await loadWorkingTreeContents(project, {
+          commit: overlay.baseSha,
+          deferSkipped: true,
+        })
       : { files: [], warnings: [] }
     : await loadWorkingTreeContents(
         project,
@@ -142,7 +146,21 @@ export async function loadDbtProjectSnapshot(params: {
           ? { commit: params.commit }
           : { userId: params.userId, branch: params.branch },
       );
-  const files = overlay ? applyLocalOverlay(tree.files, overlay) : tree.files;
+  let files = tree.files;
+  let warnings = tree.warnings;
+  if (overlay) {
+    // Judge the base commit's skipped files against the merged tree: a file
+    // the overlay deletes or replaces is no longer in the run, and the
+    // overlay's own dbt_project.yml decides which paths dbt reads.
+    const merged = applyLocalOverlay(tree.files, overlay);
+    const deleted = new Set(overlay.deletes);
+    const stillSkipped = (tree.skipped ?? []).filter(
+      f => !deleted.has(f.path) && !(f.path in overlay.files),
+    );
+    const judged = classifySkippedFiles(merged, stillSkipped);
+    files = judged.files;
+    warnings = judged.warnings;
+  }
   if (!files.some(f => f.path === "dbt_project.yml")) {
     throw new Error(
       "No dbt project found: the workspace repo has no dbt/dbt_project.yml on this branch",
@@ -152,7 +170,7 @@ export async function loadDbtProjectSnapshot(params: {
   // Environment vars (environment.vars) are injected as `--vars` by runDbt for
   // every command, so callers just forward snapshot.environment.vars.
 
-  return { project, environment, files, profile, warnings: tree.warnings };
+  return { project, environment, files, profile, warnings };
 }
 
 /**
