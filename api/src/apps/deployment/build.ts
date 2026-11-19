@@ -24,6 +24,7 @@ import {
 import { PublishResult, uploadDeployment } from "./store";
 import { setPublishedSha } from "./pointer";
 import { ensureDeploymentBindings } from "./bindings";
+import { killByEnvScript } from "../sandbox/kill-by-env";
 
 const logger = loggers.api("apps-deployment");
 
@@ -117,16 +118,28 @@ export class PublishBoxLowMemoryError extends Error {
 }
 
 /**
- * Prints `avail <MiB>` after killing build tools (npm, pnpm, node running
- * vite/esbuild/rollup/tsc) older than PUBLISH_ORPHAN_AGE_S. Those outlived
- * every caller: an API instance that died mid-build never kills its tree.
+ * The env var every build command of an app carries, set to the app's id. A
+ * retry finds the previous attempt's processes by it: when a Cloud Run
+ * rollout cuts off the step mid-build (23:30 and 23:51 UTC on 18 Nov 2026),
+ * nothing kills that attempt's npm or vite, and Inngest retries the step into
+ * the same app folder of the same box.
  */
-export const PUBLISH_BOX_MEMORY_SCRIPT = [
-  `ps -eo pid=,etimes=,args= 2>/dev/null | awk -v max=${PUBLISH_ORPHAN_AGE_S} '$2 > max && $0 ~ /(^|[ \\/])(npm|pnpm|npx|vite|esbuild|rollup|tsc)( |$)/ { print $1 }' | while read -r p; do kill -KILL "$p" 2>/dev/null; done`,
-  `awk '/^MemAvailable:/ { print "avail", int($2 / 1024) }' /proc/meminfo`,
-].join("\n");
+export const PUBLISH_BUILD_APP_ENV = "MAKO_BUILD_APP";
 
-/** MemAvailable in MiB from PUBLISH_BOX_MEMORY_SCRIPT, or null if unreadable. */
+/**
+ * Run before every publish-box build. Kills what an earlier attempt to build
+ * THIS app left running, then build tools (npm, pnpm, vite, esbuild, rollup,
+ * tsc) older than PUBLISH_ORPHAN_AGE_S, then prints `avail <MiB>`.
+ */
+export function publishBoxPrepScript(appId: string): string {
+  return [
+    killByEnvScript(PUBLISH_BUILD_APP_ENV, appId),
+    `ps -eo pid=,etimes=,args= 2>/dev/null | awk -v max=${PUBLISH_ORPHAN_AGE_S} '$2 > max && $0 ~ /(^|[ \\/])(npm|pnpm|npx|vite|esbuild|rollup|tsc)( |$)/ { print $1 }' | while read -r p; do kill -KILL "$p" 2>/dev/null; done`,
+    `awk '/^MemAvailable:/ { print "avail", int($2 / 1024) }' /proc/meminfo`,
+  ].join("\n");
+}
+
+/** MemAvailable in MiB from publishBoxPrepScript, or null if unreadable. */
 export function parseAvailableMb(stdout: string): number | null {
   const match = /^avail (\d+)$/m.exec(stdout);
   return match ? Number(match[1]) : null;
@@ -144,9 +157,12 @@ async function ensurePublishBoxMemory(
   exec: Parameters<typeof buildApp>[1],
 ): Promise<void> {
   if (handle.doc.userId !== PUBLISH_ACTOR) return;
-  const result = await exec(handle, PUBLISH_BOX_MEMORY_SCRIPT, {
-    timeoutMs: 30_000,
-  });
+  const result = await exec(
+    handle,
+    publishBoxPrepScript(handleProject(handle)._id.toString()),
+    // As the box user, like the builds it sweeps: their environ is readable.
+    { timeoutMs: 30_000 },
+  );
   const availableMb = parseAvailableMb(result.stdout);
   if (availableMb === null || availableMb >= PUBLISH_BUILD_MIN_FREE_MB) return;
   logger.warn("Publish box low on memory; not starting a build", {
@@ -154,6 +170,18 @@ async function ensurePublishBoxMemory(
     availableMb,
   });
   throw new PublishBoxLowMemoryError(availableMb);
+}
+
+/**
+ * Exit 124 is a command that hit its deadline (e2b-provider). Say so in words
+ * the reconcile reads as an infra failure (isInfraDeployFailure), so a build
+ * starved of CPU retries at the next sweep instead of backing off for 6 h.
+ * Appended, not prepended: recordDeployFailure keeps the message's tail.
+ */
+function timedOutNote(exitCode: number, what: string, seconds: number): string {
+  return exitCode === 124
+    ? `\nTimeoutError: ${what} did not finish in ${seconds} s`
+    : "";
 }
 
 export async function buildApp(
@@ -172,6 +200,7 @@ export async function buildApp(
   // publishable — and the build target excludes secrets by construction, so
   // nothing secret can ever influence a published artifact.
   const env = await resolveAppEnv(handleProject(handle), "build");
+  const tag = { [PUBLISH_BUILD_APP_ENV]: handleProject(handle)._id.toString() };
   // Fresh log per build; `pipefail` so a failing step's exit code survives the
   // `tee`, and `2>&1 | tee` puts the whole stream both on the wire (for the
   // final payload) and in the file the client tails live.
@@ -189,12 +218,12 @@ export async function buildApp(
     // later publish skipped the install forever. Stamp-after-success plus
     // rm -rf on miss makes the tree either complete or absent.
     `set -o pipefail; ( ${INSTALL_IS_FRESH} || (rm -rf node_modules && ${installCommand({ verbose: true })} && touch node_modules/.mako-installed) ) 2>&1 | tee -a ${log}`,
-    { timeoutMs: 300_000 },
+    { timeoutMs: 300_000, env: tag },
   );
   if (install.exitCode !== 0) {
     return {
       ok: false,
-      output: `dependency install failed\n${(install.stdout + install.stderr).slice(-4000)}`,
+      output: `dependency install failed\n${(install.stdout + install.stderr).slice(-4000)}${timedOutNote(install.exitCode, "dependency install", 300)}`,
     };
   }
   // Newest @makoai/* inside the app's declared range, on every build — also
@@ -203,16 +232,16 @@ export async function buildApp(
   await exec(
     handle,
     `set -o pipefail; ( ${updateMakoPackagesCommand()} ) 2>&1 | tee -a ${log}`,
-    { timeoutMs: 120_000 },
+    { timeoutMs: 120_000, env: tag },
   ).catch(() => undefined);
   const build = await exec(
     handle,
     `set -o pipefail; npm run build -- --base=./ 2>&1 | tee -a ${log}`,
-    { timeoutMs: 300_000, env },
+    { timeoutMs: 300_000, env: { ...env, ...tag } },
   );
   return {
     ok: build.exitCode === 0,
-    output: `${(build.stdout + build.stderr).slice(-6000)}`,
+    output: `${(build.stdout + build.stderr).slice(-6000)}${timedOutNote(build.exitCode, "build", 300)}`,
   };
 }
 

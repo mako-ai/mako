@@ -44,6 +44,7 @@ import type {
 import { viteAllowedHostEnv } from "./e2b-domain";
 import { isPersonActorId } from "../actor-id";
 import { commandToRun } from "./hidden-command";
+import { killByEnvScript } from "./kill-by-env";
 
 const logger = loggers.api("apps-e2b");
 
@@ -767,18 +768,9 @@ async function startCommand(
 /** The env var that tags every process one exec started (see execE2b). */
 export const EXEC_ID_ENV = "MAKO_EXEC_ID";
 
-/**
- * Shell that SIGKILLs every process carrying `${EXEC_ID_ENV}=<execId>` in its
- * environment. By tag, not by tree: when a command's deadline passes, envd
- * kills only the top bash, and its children are reparented to init (measured
- * in a real box: 3 of 3 `sleep`s survived). They share envd's process group,
- * so a group kill would take envd down too. The environment is inherited by
- * npm, vite and esbuild alike and survives the reparenting. A STOP pass first,
- * so nothing forks past the KILL pass.
- */
+/** Shell that kills every process one exec started (killByEnvScript). */
 export function killByExecIdScript(execId: string): string {
-  if (!/^[A-Za-z0-9-]+$/.test(execId)) throw new Error("bad exec id");
-  return `for s in STOP KILL; do for p in /proc/[0-9]*; do grep -qzx '${EXEC_ID_ENV}=${execId}' "$p/environ" 2>/dev/null && kill -$s "\${p#/proc/}" 2>/dev/null; done; done; true`;
+  return killByEnvScript(EXEC_ID_ENV, execId);
 }
 
 /**
