@@ -18,7 +18,8 @@ import {
   isDeployInFlight,
   markDeployQueued,
 } from "../../apps/deploy-progress";
-import { NonRetriableError } from "inngest";
+import { NonRetriableError, RetryAfterError } from "inngest";
+import { PublishBoxLowMemoryError } from "../../apps/deployment/build";
 import { inngest } from "../client";
 import { loggers } from "../../logging";
 import { AppProject, type IAppProject } from "../../database/workspace-schema";
@@ -53,22 +54,54 @@ export const APPS_DEPLOY_EVENT = "apps/deploy.requested";
 export const RECONCILE_FAILED_DEPLOY_BACKOFF_MS = 6 * 60 * 60 * 1000;
 
 /**
+ * A failure of the machinery, not of the app: the sandbox, the API instance
+ * or the network gave out. On 18 Nov 2026, 19 deploys failed this way
+ * (e2b deadline_exceeded in a starved publish box, and steps cut off by Mako's
+ * own Cloud Run rollouts at 23:30 and 23:51 UTC). Retrying the same commit is
+ * exactly right for these, so they never start the back-off.
+ */
+const INFRA_FAILURE =
+  /deadline_exceeded|TimeoutError|operation timed out|sandbox[^\n]*(?:not found|not running|unavailable|killed|could not be reached)|\[unavailable\]|ECONNRESET|ECONNREFUSED|EPIPE|socket hang up|Unable to reach|connection (?:reset|refused|closed)|worker (?:lost|died)|PublishBoxLowMemoryError|memory free/i;
+
+export function isInfraDeployFailure(failure: {
+  stage?: string;
+  message?: string;
+}): boolean {
+  // A binding failure is the warehouse query itself, slow or broken: the
+  // 2026-09-14 loop that re-ran one timing-out query 25 times. It backs off
+  // whatever its message says.
+  if (failure.stage === "bindings") return false;
+  return INFRA_FAILURE.test(failure.message ?? "");
+}
+
+/**
  * Should the reconcile skip an app whose last deploy failed? Yes while the
- * failure is recent and nothing in the app's folder changed since the commit
- * that failed — the same content would fail the same way.
+ * failure is recent, nothing in the app's folder changed since the commit
+ * that failed, and the failure was the app's own (a build error, a broken
+ * binding) — the same content would fail the same way. An infra failure
+ * (sandbox, timeout, lost worker) is retried at the next sweep.
  */
 export function shouldBackOffFromFailedDeploy(input: {
-  lastDeployError?: { sha: string; at: Date | string } | null;
+  lastDeployError?: {
+    sha: string;
+    at: Date | string;
+    stage?: string;
+    message?: string;
+  } | null;
   appChangedSinceFailure: boolean;
   now?: Date;
 }): boolean {
   const failure = input.lastDeployError;
   if (!failure || input.appChangedSinceFailure) return false;
+  if (isInfraDeployFailure(failure)) return false;
   const failedAt = new Date(failure.at).getTime();
   if (!Number.isFinite(failedAt)) return false;
   const now = (input.now ?? new Date()).getTime();
   return now - failedAt < RECONCILE_FAILED_DEPLOY_BACKOFF_MS;
 }
+
+/** How long a deploy waits before retrying into a publish box low on memory. */
+export const PUBLISH_BOX_RETRY_AFTER_MS = 2 * 60 * 1000;
 
 export interface AppsDeployEventData {
   workspaceId: string;
@@ -138,6 +171,13 @@ export const appsDeployFunction = inngest.createFunction(
         // backs off and a push that changes the app retries it.
         if (error instanceof DeployBindingsError) {
           throw new NonRetriableError(error.message, { cause: error });
+        }
+        // The shared publish box is out of memory: wait for the builds in it
+        // to finish rather than retrying into the same starved box at once.
+        if (error instanceof PublishBoxLowMemoryError) {
+          throw new RetryAfterError(error.message, PUBLISH_BOX_RETRY_AFTER_MS, {
+            cause: error,
+          });
         }
         throw error;
       }

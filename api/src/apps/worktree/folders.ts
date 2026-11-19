@@ -4,13 +4,12 @@
  */
 import { Types } from "mongoose";
 import { AppProject, type IAppProject } from "../../database/workspace-schema";
-import { loggers } from "../../logging";
 import { requireWorkspaceRepo } from "../workspace-repo-required";
 import { assertSafeRelPath, runGit } from "../git";
 import {
   DEFAULT_BRANCH,
   readBlob,
-  updateRefCas,
+  type BlobMutation,
   type GitAuthor,
 } from "../repository.service";
 import {
@@ -31,20 +30,12 @@ import {
 import { appSdkDependency } from "../app-sdk-package";
 
 import {
-  freshenBeforeMainWrite,
-  mirrorPushNow,
-  resolveMirrorTarget,
-} from "../cloud-repo.service";
+  DurableMainWriteError,
+  commitToMainDurably,
+} from "../cloud-repo/durable-main";
 import { appRootFor } from "./repo";
 import { pokeApp } from "./push";
-import {
-  AppFolderTarget,
-  settleTargetHandle,
-  occupiedPaths,
-  commitFilesOnBranch,
-} from "./projects";
-
-const logger = loggers.api("apps");
+import { AppFolderTarget, settleTargetHandle, occupiedPaths } from "./projects";
 
 // ---------------------------------------------------------------------------
 // Folders: real directories, moved with real commits
@@ -133,53 +124,41 @@ export async function moveWritesUnder(
 /**
  * A lifecycle commit on main that must reach the durable mirror: on
  * serverless hosts the local repo is a cache, so a commit the mirror never
- * received would be a commit that never happened. Rolled back on failure,
- * as createProject does.
+ * received would be a commit that never happened.
+ *
+ * `commitToMainDurably` does the work: it pushes main alone, without force,
+ * and when GitHub's main moved meanwhile it fetches, runs the mutation again
+ * on the new head and pushes again. On 2026-11-18 at 23:30 UTC four app
+ * moves failed instead: this path pushed every local branch at once, and
+ * one rejected main (a merge had just landed) and six stale claude/* branches.
  */
-type MainMutation = Parameters<typeof commitFilesOnBranch>[2];
-
 export async function commitOnMainDurably(
   workspaceId: string,
-  repoDir: string,
   /**
    * The change, or a function computing it. A function runs AFTER the
-   * freshen below, so anything it reads from main (a manifest to stamp, a
-   * package.json to rewrite) is the mirror's current content, not a copy
-   * a laptop push has since replaced.
+   * fetch of main, again on every retry, so anything it reads from main (a
+   * manifest to stamp, a package.json to rewrite) is the mirror's current
+   * content, not a copy a laptop push has since replaced.
    */
-  mutation: MainMutation | (() => Promise<MainMutation>),
+  mutation: BlobMutation | (() => Promise<BlobMutation>),
   options: { message: string; author?: GitAuthor },
 ): Promise<void> {
-  const mirror = await resolveMirrorTarget(workspaceId);
-  // Commit onto the mirror's main, not a stale local copy of it — a laptop
-  // push this instance has not seen would make the result unmirrorable.
-  await freshenBeforeMainWrite(workspaceId);
-  invalidateAppsIndexCache(workspaceId);
-  const commit = await commitFilesOnBranch(
-    repoDir,
-    DEFAULT_BRANCH,
-    typeof mutation === "function" ? await mutation() : mutation,
-    options,
-  );
   try {
-    if (mirror) await mirrorPushNow(workspaceId);
+    await commitToMainDurably(
+      workspaceId,
+      typeof mutation === "function"
+        ? async () => {
+            invalidateAppsIndexCache(workspaceId);
+            return mutation();
+          }
+        : mutation,
+      options,
+    );
   } catch (error) {
-    // The CAS returns false (it does not throw) when main moved on
-    // meanwhile; the commit then stays on a local tip the mirror never got.
-    const rolledBack = await updateRefCas(
-      repoDir,
-      `refs/heads/${DEFAULT_BRANCH}`,
-      commit.previousHead,
-      commit.commitOid,
-    ).catch(() => false);
-    if (!rolledBack) {
-      logger.warn("Apps lifecycle commit rollback skipped: main moved on", {
-        workspaceId,
-        commit: commit.commitOid,
-      });
-    }
+    // A mutation that refuses (an AppFolderError) keeps its own message.
+    if (!(error instanceof DurableMainWriteError)) throw error;
     throw new Error(
-      `Could not store the change durably (GitHub push failed): ${error instanceof Error ? error.message : String(error)}`,
+      `Could not store the change durably (GitHub push failed): ${error.message}`,
       { cause: error },
     );
   }
@@ -235,7 +214,6 @@ export async function moveProject(
   const moves = [{ from, to }];
   await commitOnMainDurably(
     workspaceId,
-    repoDir,
     async () => {
       // Re-check against the freshened main: the folder may have moved or
       // gone in a push this instance had not seen a moment ago.
@@ -355,7 +333,6 @@ export async function archiveProject(
   const moves = [{ from, to }];
   await commitOnMainDurably(
     workspaceId,
-    repoDir,
     async () => {
       const fresh = await loadAppsIndex(workspaceId, { freshen: false });
       if (!fresh.apps.some(a => a.path === from)) {
@@ -439,7 +416,6 @@ export async function restoreArchivedProject(
   const moves = [{ from, to }];
   await commitOnMainDurably(
     workspaceId,
-    repoDir,
     async () => {
       // Against the freshened main: a push may have taken the address.
       await checkTarget(await loadAppsIndex(workspaceId, { freshen: false }));
@@ -475,7 +451,7 @@ export async function createAppFolder(
   if (target.folderSegments.length === 0) {
     throw new AppFolderError("A folder needs a name");
   }
-  const repoDir = await requireWorkspaceRepo(workspaceId);
+  await requireWorkspaceRepo(workspaceId);
   await settleTargetHandle(workspaceId, target);
   const folderPath = folderPathOf(target);
   const snapshot = await loadAppsIndex(workspaceId);
@@ -490,7 +466,6 @@ export async function createAppFolder(
   }
   await commitOnMainDurably(
     workspaceId,
-    repoDir,
     { writes: { [`${folderPath}/${FOLDER_KEEP_FILE}`]: "" } },
     { message: `Create folder ${folderPath}`, author: options.author },
   );
@@ -536,7 +511,6 @@ export async function moveAppFolder(
   const apps = snapshot.apps.filter(a => isWithin(a.path, fromPath));
   await commitOnMainDurably(
     workspaceId,
-    repoDir,
     async () => {
       const fresh = await loadAppsIndex(workspaceId, { freshen: false });
       if (!fresh.folders.includes(fromPath)) {
@@ -562,7 +536,7 @@ export async function deleteAppFolder(
   if (target.folderSegments.length === 0) {
     throw new AppFolderError("The tree roots cannot be deleted");
   }
-  const repoDir = await requireWorkspaceRepo(workspaceId);
+  await requireWorkspaceRepo(workspaceId);
   await settleTargetHandle(workspaceId, target);
   const folderPath = folderPathOf(target);
   const snapshot = await loadAppsIndex(workspaceId);
@@ -578,7 +552,6 @@ export async function deleteAppFolder(
   }
   await commitOnMainDurably(
     workspaceId,
-    repoDir,
     { deletePrefixes: [folderPath] },
     { message: `Delete folder ${folderPath}`, author: options.author },
   );
@@ -613,7 +586,6 @@ export async function stampAppId(
   if (stamped === contents) return;
   await commitOnMainDurably(
     workspaceId,
-    repoDir,
     { writes: { [`${app.path}/${APP_MANIFEST}`]: stamped } },
     { message: `Stamp app id for ${app.path}`, author: options.author },
   );
