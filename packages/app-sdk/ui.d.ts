@@ -71,6 +71,8 @@ export interface MultiSelectOption<V extends string = string> {
   color?: string;
   /** What the option covers, shown on hover. */
   title?: string;
+  /** A count shown muted at the row's right edge (2.28). Search ignores it; the trigger never shows it. A number is formatted (1,234). */
+  count?: number | string;
   /** A group (2.20): its row ticks every leaf under it; hover submenus: FilterMenu in `@makoai/app-sdk/menu`. */
   children?: ReadonlyArray<MultiSelectOption<V>>;
 }
@@ -409,6 +411,12 @@ export interface DataTableColumn<R = any> {
   /** Header hover text, e.g. the column's definition. */
   hint?: string;
   /**
+   * The column's definition behind an "i" button beside its header. The
+   * button sits outside the sort button, so a click on it never sorts. It
+   * opens a popover with the label and this content. Default none.
+   */
+  info?: React.ReactNode;
+  /**
    * The column group's id. Adjacent columns with the same `group` share one
    * label in a header row on top (see `DataTableProps.groups`); ungrouped
    * columns span both header rows.
@@ -466,7 +474,19 @@ export interface DataTableLabels {
   exportTitle: string;
   /** Shown when the browser blocks the CSV download. */
   exportFailed: string;
+  /** An expand chevron's aria-label, per row. Default "Show details". */
+  expand: (row: any) => string;
+  /** An open chevron's aria-label, per row. Default "Hide details". */
+  collapse: (row: any) => string;
+  /** A header "i" button's aria-label. Default "About MRR". */
+  info: (label: string) => string;
 }
+/**
+ * Which rows show their detail row: `true` for every row, or the open rows'
+ * ids, `{ [String(rowKey(row))]: true }`. The shape of TanStack Table's
+ * `ExpandedState`, so one state can drive both.
+ */
+export type DataTableExpanded = true | Record<string, boolean>;
 /** The English defaults of `DataTableLabels`. */
 export const DATA_TABLE_LABELS: DataTableLabels;
 export interface DataTableProps<R = any> {
@@ -533,6 +553,34 @@ export interface DataTableProps<R = any> {
   exportFilename?: string;
   /** Labels and classes for the column groups, by `DataTableColumn.group`. A group not listed shows its id. */
   groups?: readonly DataTableGroup[];
+  /** Header labels wrap to 2 lines instead of ellipsizing on one. The sort icon stays beside them. Default false. */
+  wrapHeaders?: boolean;
+  /**
+   * Makes rows expandable: a chevron in each row's first cell opens a
+   * full-width detail row under it with this content. Enter or Space on the
+   * chevron toggles it. Detail rows never count in the pager, the sort or the
+   * CSV. Give rows a stable `rowKey` (or `id`): the state is keyed by it.
+   */
+  renderExpanded?: (row: R) => React.ReactNode;
+  /** Which rows get a chevron. Default every row. */
+  canExpand?: (row: R) => boolean;
+  /** Controlled open rows; pair with `onExpandedChange`. */
+  expanded?: DataTableExpanded;
+  /** The open rows when uncontrolled. Default `{}`. */
+  defaultExpanded?: DataTableExpanded;
+  onExpandedChange?: (expanded: Record<string, boolean>) => void;
+  /**
+   * A total row pinned to the bottom of the scroll box (a sticky `<tfoot>`),
+   * bold with a rule on top. A row object, or a function of `rows` (the
+   * filtered rows the table got). Each column renders it with its `value`
+   * and `render`. It never sorts or pages and stays out of the CSV unless
+   * `exportTotalRow`. Hidden while there are no rows.
+   */
+  totalRow?: R | ((rows: readonly R[]) => R | null | undefined) | null;
+  /** A click (or Enter or Space) on the total row, e.g. a drill-down. `rowLabel` names it. */
+  onTotalRowClick?: (row: R, event: React.SyntheticEvent) => void;
+  /** Append the total row to the CSV export. Default false. */
+  exportTotalRow?: boolean;
   className?: string;
   style?: React.CSSProperties;
 }

@@ -7,7 +7,7 @@ const dir = new URL("./components/", import.meta.url);
 const files = readdirSync(dir).filter(f => f.endsWith(".tsx"));
 
 test("components: the registry's new-york-v4 files (plus the house filter bar and period picker); changes are the cn import and marked thin props", () => {
-  assert.deepEqual(files.sort(), ["alert.tsx", "avatar.tsx", "badge.tsx", "button.tsx", "calendar.tsx", "card.tsx", "collapsible.tsx", "command.tsx", "dialog.tsx", "filter-bar.tsx", "input.tsx", "label.tsx", "period-picker.tsx", "popover.tsx", "progress.tsx", "select.tsx", "separator.tsx", "sheet.tsx", "skeleton.tsx", "slider.tsx", "switch.tsx", "table.tsx", "tabs.tsx", "toggle-group.tsx", "toggle.tsx", "tooltip.tsx"]);
+  assert.deepEqual(files.sort(), ["alert.tsx", "avatar.tsx", "badge.tsx", "button.tsx", "calendar.tsx", "card.tsx", "collapsible.tsx", "combobox.tsx", "command.tsx", "dialog.tsx", "filter-bar.tsx", "input.tsx", "label.tsx", "period-picker.tsx", "popover.tsx", "progress.tsx", "select.tsx", "separator.tsx", "sheet.tsx", "skeleton.tsx", "slider.tsx", "switch.tsx", "table.tsx", "tabs.tsx", "toggle-group.tsx", "toggle.tsx", "tooltip.tsx"]);
   for (const f of files) {
     const src = readFileSync(new URL(f, dir), "utf8");
     if (/\bcn\(/.test(src)) assert.match(src, /import \{ cn \} from "\.\.\/menu\/utils"/, `${f} imports the one cn`);
@@ -22,7 +22,7 @@ test("components: DropdownMenu and Checkbox have one copy, in menu/", () => {
   const index = readFileSync(new URL("index.ts", dir), "utf8");
   assert.match(index, /export \* from "\.\.\/menu\/dropdown-menu"/);
   assert.match(index, /export \{ Checkbox \} from "\.\.\/menu\/checkbox"/);
-  for (const f of files.filter(f => !["calendar.tsx", "command.tsx"].includes(f))) {
+  for (const f of files.filter(f => !["calendar.tsx", "combobox.tsx", "command.tsx"].includes(f))) {
     assert.match(index, new RegExp(`export \\* from "\\./${f.replace(".tsx", "")}"`), `index exports ${f}`);
   }
 });

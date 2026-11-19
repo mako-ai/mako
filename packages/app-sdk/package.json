@@ -1,6 +1,6 @@
 {
   "name": "@makoai/app-sdk",
-  "version": "2.27.0",
+  "version": "2.28.0",
   "description": "Mako app SDK: data bindings (useQuery/useDuckDB), URL state, theme, and the house dashboard kit (/ui).",
   "license": "MIT",
   "repository": {
@@ -54,6 +54,10 @@
     "./components/command": {
       "types": "./components/command.tsx",
       "default": "./components/command.tsx"
+    },
+    "./components/combobox": {
+      "types": "./components/combobox.tsx",
+      "default": "./components/combobox.tsx"
     },
     "./ui.css": "./ui.css",
     "./tailwind.css": "./tailwind.css"

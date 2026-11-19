@@ -1084,6 +1084,83 @@ test("MultiSelect searchable: search, All, separator, values; typing filters; cm
   await React.act(() => root.unmount());
 });
 
+// Markup of FilterItems and MultiSelect without `count`, rendered by the
+// 2.27.0 ui.js (sha256, first 16 hex), searchable off and on.
+const MARKUP_2_27 = ["ab078fde340fd7ae", "65b9d0d8e9b81d9f", "bcc26beb2d245b88", "bbfabefb95f06723"];
+
+test("option count off: markup identical to 2.27.0, and an undefined or null count equals none", async t => {
+  let React, server, crypto;
+  try {
+    React = await import("react");
+    server = await import("react-dom/server");
+    crypto = await import("node:crypto");
+  } catch (e) {
+    t.skip("react not installed here: " + e.message);
+    return;
+  }
+  const ui = await import("./ui.js");
+  const h = React.createElement;
+  const withCount = (opts, count) => opts.map(o => (typeof o === "string" || count === "omit" ? o : { ...o, count, ...(o.children ? { children: withCount(o.children, count) } : null) }));
+  const tree = [{ value: "humans", label: "Humans" }, { value: "bots", label: "Bots", children: [{ value: "gptbot", label: "GPTBot", title: "OpenAI" }, { value: "bing", label: "Bingbot" }] }];
+  const html = count => [
+    h(ui.FilterItems, { options: ["CH", "ES", "IT"], value: ["ES"], onChange() {}, allLabel: "All markets", showOnly: true }),
+    h(ui.FilterItems, { options: withCount(tree, count), value: ["humans", "gptbot"], onChange() {}, "aria-label": "Traffic" }),
+    h(ui.FilterItems, { options: withCount(tree, count), value: [], onChange() {}, searchable: true, showOnly: true }),
+    h(ui.MultiSelect, { options: withCount([{ value: "ch", label: "Switzerland", color: "#dc2626" }, "ES"], count), value: ["ch"], onChange() {}, allLabel: "All markets", searchable: true }),
+  ].map(el => server.renderToStaticMarkup(el));
+  const hash = s => crypto.createHash("sha256").update(s).digest("hex").slice(0, 16);
+  assert.deepEqual(html("omit").map(hash), MARKUP_2_27);
+  assert.deepEqual(html(undefined), html("omit"));
+  assert.deepEqual(html(null), html("omit"));
+  for (const s of html("omit")) assert.doesNotMatch(s, /mk-ms-count/);
+});
+
+test("option count: muted at the row's end before Only, formatted, never in the trigger or the search", async t => {
+  const env = await jsdomUi(t);
+  if (!env) return;
+  const { React, client, win, ui, h } = env;
+  const OFFICES = [
+    { value: "lyon", label: "Lyon Office", count: 1 },
+    { value: "paris", label: "Paris Office", count: 1234 },
+    { value: "nice", label: "Nice 12", count: "n/a" },
+    { value: "lille", label: "Lille Office" },
+  ];
+  let value = null;
+  function App() {
+    const [v, setV] = React.useState([]);
+    value = v;
+    return h(ui.MultiSelect, { searchable: true, showOnly: true, options: OFFICES, value: v, onChange: setV, allLabel: "All offices" });
+  }
+  const root = client.createRoot(win.document.getElementById("root"));
+  await React.act(() => root.render(h(App)));
+  const doc = win.document;
+  const trigger = doc.querySelector(".mk-ms-trigger");
+  assert.doesNotMatch(trigger.textContent, /1,234|\(1\)/, "the closed trigger's probes are labels only");
+  await React.act(() => trigger.click());
+  const opts = () => [...doc.querySelectorAll('.mk-ms-menu [role="option"]')];
+  const row = label => opts().find(r => r.querySelector(".mk-ms-label").textContent === label);
+  assert.deepEqual(opts().map(r => r.querySelector(".mk-ms-count")?.textContent ?? null), [null, "1", "1,234", "n/a", null], "All has none; a number is formatted; a string stays");
+  const parts = [...row("Paris Office").children].map(c => c.className);
+  assert.deepEqual(parts, ["mk-ms-box on", "mk-ms-label", "mk-ms-count", "mk-ms-only"], "checkbox, label, count, Only");
+  const input = doc.querySelector(".mk-ms-search-input");
+  // react-dom loaded before jsdom watches inputs through a polyfill that only
+  // the first window's input reaches, so call the input's onChange directly.
+  const type = async q => {
+    const props = input[Object.keys(input).find(k => k.startsWith("__reactProps"))];
+    await React.act(() => props.onChange({ target: { value: q } }));
+  };
+  await type("12");
+  assert.deepEqual(opts().map(r => r.querySelector(".mk-ms-label").textContent), ["Nice 12"], "search matches the label, never Paris's 1,234");
+  await type("1");
+  assert.deepEqual(opts().map(r => r.querySelector(".mk-ms-label").textContent), ["Nice 12"], "never Lyon's count of 1");
+  await type("");
+  await React.act(() => row("Paris Office").querySelector(".mk-ms-only").click());
+  assert.deepEqual(value, ["paris"]);
+  assert.equal(doc.querySelector(".mk-ms-text").textContent, "Paris Office", "the trigger shows the label, no count");
+  assert.equal(trigger.title, "Paris Office");
+  await React.act(() => root.unmount());
+});
+
 // ---------------------------------------------------------------------------
 // tooltipSeriesRows absentAsZero/share, TableTooltip colWidth, DataTable groups
 // ---------------------------------------------------------------------------
@@ -1260,4 +1337,251 @@ test("DataTable groups: a 2-row header, labels span their columns, sorting and t
   const css = readFileSync(new URL("./ui.css", import.meta.url), "utf8");
   assert.match(css, /\.mk-dt-table--grouped thead \{ position: sticky; top: 0;/);
   assert.match(css, /\.mk-dt-table--grouped thead th\.mk-dt-pin \{ position: sticky; top: auto; left: 0; \}/);
+});
+
+// ---------------------------------------------------------------------------
+// DataTable wrapHeaders, expandable rows, header info, totalRow (all off by default)
+// ---------------------------------------------------------------------------
+
+test("options off: 6 DataTable fixtures render exactly as SDK 2.27.0, explicit off values too", async t => {
+  const env = await loadReact(t);
+  if (!env) return;
+  const { React, server, ui } = env;
+  const { renderBaselineCases } = await import("./test-support/ui-baseline-2.27.mjs");
+  const baseline = JSON.parse(readFileSync(new URL("./test-support/ui-baseline-2.27.json", import.meta.url), "utf8"));
+  assert.equal(Object.keys(baseline).length, 6);
+  assert.deepEqual(await renderBaselineCases(React, server, ui), baseline);
+  const off = { wrapHeaders: false, renderExpanded: undefined, canExpand: () => true, expanded: undefined, totalRow: undefined, onTotalRowClick: undefined, exportTotalRow: true };
+  assert.deepEqual(await renderBaselineCases(React, server, ui, off), baseline);
+  // A totalRow over no rows renders nothing: the empty fixture stays 2.27's.
+  const emptyWithTotal = await renderBaselineCases(React, server, ui, { totalRow: { id: "t", name: "Total" } });
+  assert.equal(emptyWithTotal.empty, baseline.empty);
+});
+
+function dtFixture() {
+  const rows = [
+    { id: "a", name: "Acme", mrr: 30, note: "in_123 paid" },
+    { id: "b", name: "Beta", mrr: 10, note: null },
+    { id: "c", name: "Cora", mrr: 20, note: "py_9" },
+  ];
+  const columns = [
+    { id: "name", label: "Customer", value: r => r.name, sticky: true },
+    { id: "mrr", label: "MRR", num: true, value: r => r.mrr },
+  ];
+  return { rows, columns };
+}
+
+test("wrapHeaders: one class on the card, CSS clamps the label to 2 lines and keeps the sort icon", async t => {
+  const env = await loadReact(t);
+  if (!env) return;
+  const { React, server, ui } = env;
+  const { rows, columns } = dtFixture();
+  const html = server.renderToStaticMarkup(React.createElement(ui.DataTable, { rows, columns, wrapHeaders: true }));
+  const plain = server.renderToStaticMarkup(React.createElement(ui.DataTable, { rows, columns }));
+  assert.equal(html, plain.replace('class="mk-card mk-dt"', 'class="mk-card mk-dt mk-dt--wrap-heads"'));
+  const css = readFileSync(new URL("./ui.css", import.meta.url), "utf8");
+  assert.match(css, /\.mk-dt--wrap-heads thead \.mk-dt-th-text \{[^}]*-webkit-line-clamp: 2;/);
+  assert.match(css, /\.mk-dt-sort svg \{ flex: none; \}/);
+});
+
+test("expandable rows: chevron in the first cell, a full-width detail row, aria-expanded/controls, canExpand", async t => {
+  const env = await loadReact(t);
+  if (!env) return;
+  const { React, server, ui } = env;
+  const { rows, columns } = dtFixture();
+  const html = server.renderToStaticMarkup(
+    React.createElement(ui.DataTable, {
+      rows,
+      columns,
+      defaultSort: { id: "mrr", dir: "desc" },
+      renderExpanded: r => React.createElement("p", null, `Detail ${r.name}`),
+      canExpand: r => r.note != null,
+      expanded: { a: true, b: true },
+      pageSizes: [2],
+      defaultPageSize: 2,
+    }),
+  );
+  const body = html.match(/<tbody>(.*)<\/tbody>/)[1];
+  // Page 1 of 2 holds Acme (30) and Cora (20): sort and pager count records only.
+  assert.match(html, /<b>1–2<\/b> of <b>3<\/b> rows/);
+  const trs = body.match(/<tr[^>]*>/g);
+  assert.equal(trs.length, 3, "2 records + Acme's detail row");
+  assert.match(trs[0], /class="mk-dt-open"/);
+  assert.match(trs[1], /^<tr class="mk-dt-detail" id="[^"]+-x-a">$/);
+  const id = trs[1].match(/id="([^"]+)"/)[1];
+  assert.match(body, new RegExp(`<button type="button" class="mk-dt-expander" aria-expanded="true" aria-controls="${id}" aria-label="Hide details">`));
+  assert.match(body, /<td colSpan="2"><div class="mk-dt-detail-body"><p>Detail Acme<\/p><\/div><\/td>/);
+  assert.match(body, /aria-expanded="false" aria-label="Show details">/);
+  assert.ok(!body.includes("Detail Cora"));
+  // Beta cannot expand: a spacer, no button, no detail row even though the state says open.
+  const beta = server.renderToStaticMarkup(
+    React.createElement(ui.DataTable, { rows, columns, renderExpanded: () => "x", canExpand: r => r.note != null, expanded: true }),
+  );
+  assert.match(beta, /<td class="mk-dt-pin"><div class="mk-dt-xcell"><span class="mk-dt-expander-none" aria-hidden="true"><\/span><div class="mk-dt-cell" title="Beta">Beta<\/div><\/div><\/td>/);
+  assert.equal((beta.match(/class="mk-dt-detail"/g) ?? []).length, 2);
+});
+
+function withDom(t, JSDOM) {
+  const dom = new JSDOM("<!doctype html><body><div id=root></div></body>");
+  const win = dom.window;
+  win.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  const keys = ["window", "document", "Node", "Element", "HTMLElement", "MouseEvent", "KeyboardEvent", "Event"];
+  const saved = keys.map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]);
+  for (const k of keys) Object.defineProperty(globalThis, k, { value: k === "window" ? win : win[k], configurable: true, writable: true });
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  t.after(() => {
+    for (const [k, d] of saved) d ? Object.defineProperty(globalThis, k, d) : delete globalThis[k];
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  });
+  return win;
+}
+
+async function loadDom(t) {
+  try {
+    const React = await import("react");
+    const client = await import("react-dom/client");
+    const { JSDOM } = await import("jsdom");
+    return { React, client, win: withDom(t, JSDOM) };
+  } catch (e) {
+    t.skip("react or jsdom not installed here: " + e.message);
+    return null;
+  }
+}
+
+test("expandable rows in a browser: the toggle opens and closes, the row click never fires, onExpandedChange gets the state", async t => {
+  const env = await loadDom(t);
+  if (!env) return;
+  const { React, client, win } = env;
+  const ui = await import("./ui.js");
+  const h = React.createElement;
+  const { rows, columns } = dtFixture();
+  const changes = [];
+  const clicks = [];
+  const root = client.createRoot(win.document.getElementById("root"));
+  await React.act(() =>
+    root.render(
+      h(ui.DataTable, {
+        rows,
+        columns,
+        renderExpanded: r => h("span", { className: "detail" }, r.name),
+        onExpandedChange: s => changes.push(s),
+        onRowClick: r => clicks.push(r.id),
+        exportFilename: "x",
+      }),
+    ),
+  );
+  const toggles = () => [...win.document.querySelectorAll(".mk-dt-expander")];
+  assert.equal(toggles().length, 3);
+  await React.act(() => toggles()[1].click());
+  assert.deepEqual(changes, [{ b: true }]);
+  assert.deepEqual(clicks, [], "the toggle is a button: the row ignores its click");
+  const detail = win.document.querySelector("tr.mk-dt-detail");
+  assert.equal(detail.textContent, "Beta");
+  assert.equal(detail.previousElementSibling.querySelector(".mk-dt-cell").textContent, "Beta");
+  assert.equal(toggles()[1].getAttribute("aria-controls"), detail.id);
+  // The footer still counts 3 records with a detail row open.
+  assert.match(win.document.querySelector(".mk-dt-foot span").textContent, /1–3 of 3/);
+  await React.act(() => toggles()[1].click());
+  assert.deepEqual(changes[1], {});
+  assert.equal(win.document.querySelector("tr.mk-dt-detail"), null);
+  await React.act(() => root.unmount());
+});
+
+test("expanded={true} toggles to every expandable row but this one, as TanStack's ExpandedState", async t => {
+  const env = await loadDom(t);
+  if (!env) return;
+  const { React, client, win } = env;
+  const ui = await import("./ui.js");
+  const h = React.createElement;
+  const { rows, columns } = dtFixture();
+  let state = true;
+  const root = client.createRoot(win.document.getElementById("root"));
+  const draw = () => root.render(h(ui.DataTable, { rows, columns, renderExpanded: r => r.name, canExpand: r => r.note != null, expanded: state, onExpandedChange: s => { state = s; draw(); } }));
+  await React.act(() => draw());
+  assert.equal(win.document.querySelectorAll("tr.mk-dt-detail").length, 2);
+  await React.act(() => win.document.querySelector(".mk-dt-expander").click());
+  assert.deepEqual(state, { c: true });
+  await React.act(() => root.unmount());
+});
+
+test("CSV export: detail rows never export; the total row exports only with exportTotalRow", async () => {
+  const { toCsv } = await import("./ui-core.js");
+  const { rows, columns } = dtFixture();
+  // The table exports `sorted` (records only): the same text with any row expanded.
+  assert.equal(toCsv(rows, columns).trim().split("\n").length, 4);
+  const src = readFileSync(new URL("./ui.js", import.meta.url), "utf8");
+  assert.match(src, /toCsv\(exportTotalRow && total \? \[\.\.\.sorted, total\] : sorted, columns\)/);
+});
+
+test("header info: an 'i' button outside the sort button, no nested buttons, a portalled popover that never sorts", async t => {
+  const env = await loadDom(t);
+  if (!env) return;
+  const { React, client, win } = env;
+  const ui = await import("./ui.js");
+  const h = React.createElement;
+  const { rows } = dtFixture();
+  const sorts = [];
+  const columns = [
+    { id: "name", label: "Customer", value: r => r.name },
+    { id: "mrr", label: "MRR", num: true, value: r => r.mrr, info: h("p", null, "Monthly recurring revenue") },
+  ];
+  const root = client.createRoot(win.document.getElementById("root"));
+  await React.act(() => root.render(h(ui.DataTable, { rows, columns, onSortChange: s => sorts.push(s) })));
+  const doc = win.document;
+  assert.equal(doc.querySelectorAll("button button").length, 0, "no nested buttons");
+  const info = doc.querySelector("th .mk-dt-info");
+  assert.equal(info.getAttribute("aria-label"), "About MRR");
+  assert.equal(info.closest(".mk-dt-sort"), null);
+  assert.equal(info.closest(".mk-dt-th-row").firstElementChild.className, "mk-dt-sort");
+  await React.act(() => info.click());
+  assert.deepEqual(sorts, [], "a click on the i never sorts");
+  const pop = doc.querySelector("body > .mk-dt-info-pop");
+  assert.ok(pop, "portalled to <body>, outside the scroll box");
+  assert.equal(pop.getAttribute("role"), "dialog");
+  assert.equal(info.getAttribute("aria-expanded"), "true");
+  assert.equal(info.getAttribute("aria-controls"), pop.id);
+  assert.equal(doc.activeElement, pop, "focus moves into the panel");
+  assert.match(pop.textContent, /MRRMonthly recurring revenue/);
+  // A click inside the panel keeps it open; Escape closes it and focus returns to the i.
+  await React.act(() => pop.querySelector("p").dispatchEvent(new win.MouseEvent("pointerdown", { bubbles: true })));
+  assert.ok(doc.querySelector(".mk-dt-info-pop"));
+  await React.act(() => doc.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  assert.equal(doc.querySelector(".mk-dt-info-pop"), null);
+  assert.equal(doc.activeElement, info);
+  // The sort button next to it still sorts.
+  await React.act(() => doc.querySelectorAll(".mk-dt-sort")[1].click());
+  assert.deepEqual(sorts, [{ id: "mrr", dir: "desc" }]);
+  await React.act(() => root.unmount());
+});
+
+test("totalRow: a pinned <tfoot>, never sorted or paged, the pinned column holds, a click handler drills", async t => {
+  const env = await loadDom(t);
+  if (!env) return;
+  const { React, client, win } = env;
+  const ui = await import("./ui.js");
+  const h = React.createElement;
+  const { rows, columns } = dtFixture();
+  const drills = [];
+  const totalRow = rs => ({ id: "total", name: "Total", mrr: rs.reduce((s, r) => s + r.mrr, 0) });
+  const root = client.createRoot(win.document.getElementById("root"));
+  await React.act(() =>
+    root.render(h(ui.DataTable, { rows, columns, totalRow, onTotalRowClick: r => drills.push(r.mrr), pageSizes: [2], defaultPageSize: 2, defaultSort: { id: "mrr", dir: "asc" } })),
+  );
+  const doc = win.document;
+  const foot = doc.querySelector("table > tfoot > tr.mk-dt-total");
+  assert.ok(foot);
+  assert.deepEqual([...foot.cells].map(c => c.textContent), ["Total", "60"]);
+  assert.equal(foot.cells[0].className, "mk-dt-pin");
+  assert.equal(doc.querySelectorAll("tbody tr").length, 2, "the pager pages records only");
+  assert.match(doc.querySelector(".mk-dt-foot span").textContent, /1–2 of 3/);
+  await React.act(() => doc.querySelectorAll(".mk-dt-sort")[1].click());
+  assert.equal(doc.querySelector("tfoot tr").cells[0].textContent, "Total", "a sort leaves it at the bottom");
+  await React.act(() => foot.click());
+  await React.act(() => foot.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+  assert.deepEqual(drills, [60, 60]);
+  assert.equal(foot.getAttribute("tabindex"), "0");
+  await React.act(() => root.unmount());
+  const css = readFileSync(new URL("./ui.css", import.meta.url), "utf8");
+  assert.match(css, /\.mk-dt-table tfoot td \{\n  position: sticky; bottom: 0;[^}]*font-weight: 600;[^}]*box-shadow: inset 0 1px 0 var\(--border\);/);
+  assert.match(css, /\.mk-dt-table tfoot td\.mk-dt-pin \{ z-index: 3;/);
 });

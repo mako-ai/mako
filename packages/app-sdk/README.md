@@ -472,6 +472,15 @@ The order is search, All, a separator, then the values.
 - `searchPlaceholder` sets the placeholder (default "Search").
 - Without `searchable` the menu is unchanged.
 
+**Counts (2.28).** An option's `count` shows muted at the row's right edge.
+It works in `MultiSelect` and `FilterItems`. Search matches the label only.
+The trigger shows the label only. A number prints with thousands separators
+(1,234). Put the count here, never in the label.
+
+```tsx
+<MultiSelect searchable options={offices.map(o => ({ value: o.id, label: o.name, count: o.n }))} value={office} onChange={setOffice} allLabel="All offices" />
+```
+
 **Replacing an app's NestedFilterMenu: `FilterMenu`.** See "Menus" below:
 `FilterMenu` and `FilterMenuItems` from `@makoai/app-sdk/menu` take
 NestedFilterMenu's props (`label`, `options`, `selected`, `onChange`,
@@ -582,6 +591,29 @@ react-day-picker or cmdk never loads them:
 import { Calendar } from "@makoai/app-sdk/components/calendar";
 import { Command, CommandInput, CommandList } from "@makoai/app-sdk/components/command";
 ```
+
+**Searchable single choice: `Combobox` (2.28).** shadcn's combobox recipe
+(Popover + Command) on its own subpath, since it loads cmdk. A pick closes
+it. Picking the picked row again clears the value to `null`. The trigger
+shows `placeholder` while the value is `null`.
+
+```tsx
+import { Combobox } from "@makoai/app-sdk/components/combobox";
+
+<Combobox
+  aria-label="CSM"
+  placeholder="All CSMs"
+  searchPlaceholder="Filter CSMs..."
+  options={csms.map(r => ({ value: r.csm, label: r.csm, count: r.n, keywords: [r.countries] }))}
+  value={csm}
+  onChange={setCsm}
+/>
+```
+
+- Search matches `label` and `keywords`. It never matches `value` or `count`.
+- `count` shows muted at the row's right edge. The trigger never shows it.
+- `icon` sits before the trigger text. `className` sizes the trigger (default `w-[200px]`).
+- The keys are cmdk's: arrows move, Enter picks, Escape closes.
 
 shadcn's stock components pass refs as props, so they need React 19. On
 React 18 a ref is dropped: a Calendar's arrow keys stop moving focus. Apps
@@ -697,6 +729,12 @@ rows.sort((a, b) => COUNTRY_ORDER.indexOf(a.country) - COUNTRY_ORDER.indexOf(b.c
 
 CH red, FR blue, IT green, ES amber, PT teal, PL rose. Other series in a
 country chart take `--chart-1…5`. Both objects are frozen.
+
+2.28 adds the 6 lead-only markets of dbt seed `markets` (valuation funnel
+only, no agents): DE violet, AT lime, CZ ochre, NL orange, BE fuchsia, GB navy
+(realadvisor.co.uk). `COUNTRY_ORDER` keeps the 6 site markets. The lead-only
+markets follow them in the map's key order, so an app that lists markets from
+data sorts by `COUNTRY_ORDER`, then by key order of `COUNTRY_COLORS`.
 
 ### Times and dates (2.21)
 
@@ -972,6 +1010,40 @@ const COLUMNS: DataTableColumn<Customer>[] = [
   ];
   <DataTable rows={rows} columns={COLUMNS}
     groups={[{ id: "activity", label: "Activity" }, { id: "money", label: "Money", className: "tone-positive" }]} />
+  ```
+- **Wrapped headers.** `wrapHeaders` lets a header label take 2 lines before
+  it ellipsizes. The sort icon stays beside it. Use it for long or translated
+  labels in narrow columns.
+- **Header info.** A column's `info` adds an "i" button after its header
+  label. A click opens a popover with the label and this content. The button
+  sits outside the sort button, so it never sorts. Focus moves into the
+  popover. Escape closes it and returns focus to the "i".
+- **Expandable rows.** `renderExpanded(row)` puts a chevron in each row's
+  first cell. The chevron opens a full-width detail row under its record.
+  Enter or Space on a focused chevron toggles it too. `canExpand(row)` limits
+  which rows get one. The pager, the sort and the CSV count records only. The
+  open rows are uncontrolled (`defaultExpanded`) or controlled (`expanded` +
+  `onExpandedChange`). The state is `{ [rowKey]: true }`, or `true` for every
+  row: TanStack Table's `ExpandedState`. `labels.expand(row)` and
+  `labels.collapse(row)` name the chevron for screen readers.
+
+  ```tsx
+  <DataTable rows={records} columns={COLUMNS} rowKey={r => r.item_id}
+    renderExpanded={r => <RecordFacts row={r} />}
+    canExpand={r => r.detail != null}
+    labels={{ expand: r => `Show details for ${r.item_label}`, collapse: r => `Hide details for ${r.item_label}` }} />
+  ```
+- **Total row.** `totalRow` pins a bold row to the bottom of the scroll box,
+  under a rule. Pass a row object or a function of the filtered `rows`. Each
+  column renders it with its own `value` and `render`. The pinned first
+  column holds in it. It never sorts or pages. It stays out of the CSV unless
+  `exportTotalRow`. `onTotalRowClick(row)` makes it clickable for a
+  drill-down. A `render` can return a button per cell, as on any row.
+
+  ```tsx
+  <DataTable rows={reps} columns={COLUMNS}
+    totalRow={rs => ({ name: "Total", demos: sum(rs, "demos"), cash: sum(rs, "cash") })}
+    onTotalRowClick={() => openDrill(null)} />
   ```
 - Pure helpers for custom tables: `sortRows`, `compareValues`, `nextSort`,
   `pageSlice`, `pageToSync`, `toCsv`, `csvCell`, `csvDate`, `csvToTsv`,
