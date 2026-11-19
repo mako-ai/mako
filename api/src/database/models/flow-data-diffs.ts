@@ -21,8 +21,8 @@ export type FlowDataDiffReason =
 export interface IFlowDataDiffCounts {
   rows: number;
   /**
-   * The table was over 1 GB: `rows` is exact (metadata), each column's
-   * `nonNull` is its share in a 10% block sample times `rows`.
+   * Legacy: a check before whole-table counts measured a table over 1 GB on
+   * a 10% block sample. Its columns are never compared, only `rows`.
    */
   sampled?: boolean;
   columns: { name: string; nonNull: number }[];

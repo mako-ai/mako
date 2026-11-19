@@ -5,8 +5,10 @@
  * non-null values of every column of each destination table (one query per
  * table). After the run, it counts again and flags each column whose non-null
  * count fell by more than DATA_DIFF_MIN_LOST rows and DATA_DIFF_MIN_RATIO of
- * its baseline. A table over 1 GB is measured on a 10% block sample and
- * judged on column shares (see DATA_DIFF_SAMPLE_OVER_BYTES). A table that shrank (a purge, a hard delete) scales each
+ * its baseline. Both counts read the whole table: a sample cannot see a rare
+ * column (see countEntityTables). Mako's own bookkeeping columns
+ * (`_mako_*`, `_syncedAt`, `_dataSourceId`) are left out: a write rewrites
+ * them by design. A table that shrank (a purge, a hard delete) scales each
  * column's baseline down by the same ratio, so a column is flagged only for
  * values lost beyond the rows that went.
  *
@@ -53,18 +55,19 @@ const log = loggers.api("flow-data-diff");
 export const DATA_DIFF_MIN_LOST = 10;
 /** …and more than this share of its baseline (0.5%). */
 export const DATA_DIFF_MIN_RATIO = 0.005;
+
 /**
- * A table over this size is measured on a 10% block sample: its exact row
- * count from metadata, each column's non-null share from the sample, scaled
- * to the rows. Block samples follow write order, so a column's share moves a
- * lot between two samples: up to 72% on `call_activities` for columns over
- * 1% full. A sampled column is flagged only when it lost more than
- * DATA_DIFF_SAMPLED_MIN_RATIO of its share, which still catches a column a
- * rewrite emptied.
+ * Columns Mako writes for its own bookkeeping. A backfill rewrites them by
+ * design (`_mako_ingest_seq` restarts, `_mako_deleted_at` follows the
+ * source's tombstones), so they are neither counted nor flagged.
  */
-export const DATA_DIFF_SAMPLE_OVER_BYTES = 1e9;
-export const DATA_DIFF_SAMPLE_PERCENT = 10;
-export const DATA_DIFF_SAMPLED_MIN_RATIO = 0.75;
+export function isBookkeepingColumn(name: string): boolean {
+  return (
+    name.startsWith("_mako_") ||
+    name === "_syncedAt" ||
+    name === "_dataSourceId"
+  );
+}
 /** An open baseline older than this is stale: a fresh one replaces it. */
 const OPEN_BASELINE_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 /** Tables counted at once on one destination. */
@@ -82,19 +85,12 @@ export function compareCounts(params: {
 }): IFlowDataDiffFlag[] {
   const { entity, table, before, after } = params;
   const flags: IFlowDataDiffFlag[] = [];
-  const sampled = Boolean(before.sampled || after.sampled);
-  const flag = (
-    column: string,
-    was: number,
-    now: number,
-    expected: number,
-    minRatio = DATA_DIFF_MIN_RATIO,
-  ) => {
+  const flag = (column: string, was: number, now: number, expected: number) => {
     const lost = expected - now;
     if (
       lost > DATA_DIFF_MIN_LOST &&
       expected > 0 &&
-      lost / expected > minRatio
+      lost / expected > DATA_DIFF_MIN_RATIO
     ) {
       flags.push({
         entity,
@@ -110,23 +106,20 @@ export function compareCounts(params: {
   };
 
   flag("(rows)", before.rows, after.rows, before.rows);
-  // Exact counts scale the baseline down when the table shrank. Sampled
-  // counts compare ratios: the baseline scales to the new row count either
-  // way, so a column is judged on its share of the rows.
+  // A baseline taken on a sample (before whole-table counts) cannot judge a
+  // column: a 10% block sample put 0 of 18 `deleted_at` values in view.
+  if (before.sampled || after.sampled) return flags;
+  // The baseline scales down when the table shrank.
   const scale =
-    before.rows <= 0
-      ? 1
-      : sampled || after.rows < before.rows
-        ? after.rows / before.rows
-        : 1;
+    before.rows > 0 && after.rows < before.rows ? after.rows / before.rows : 1;
   const afterByName = new Map(after.columns.map(c => [c.name, c.nonNull]));
   for (const column of before.columns) {
+    if (isBookkeepingColumn(column.name)) continue;
     flag(
       column.name,
       column.nonNull,
       afterByName.get(column.name) ?? 0,
       Math.round(column.nonNull * scale),
-      sampled ? DATA_DIFF_SAMPLED_MIN_RATIO : DATA_DIFF_MIN_RATIO,
     );
   }
   return flags;
@@ -211,8 +204,16 @@ async function mapLimit<T, R>(
 
 /**
  * Per-column non-null counts of each entity's live table on `destination`.
- * One column-list query, then one count query per table. A table that does
- * not exist counts as empty; any other failure is the table's `error`.
+ * One column-list query, then one count query per table over the whole table.
+ * A table that does not exist counts as empty; any other failure is the
+ * table's `error`.
+ *
+ * Never sample. A block sample follows write order, so a rare column lands in
+ * view or not by chance: on ch_close_sellers.email_activities (5 GB) a 10%
+ * sample saw 0 of 18 `deleted_at` values and scaled 85 `bulk_email_action_id`
+ * values to 875 (842 real). Before and after then disagree with no value
+ * lost. On BigQuery the whole count bills the table's bytes once per check
+ * (5 GB, about $0.03).
  */
 export async function countEntityTables(params: {
   workspaceId: string;
@@ -263,26 +264,8 @@ export async function countEntityTables(params: {
     const column = String(row.column_name ?? row.COLUMN_NAME ?? "");
     if (!table || !column) continue;
     const list = columnsByTable.get(table) ?? [];
-    list.push(column);
+    if (!isBookkeepingColumn(column)) list.push(column);
     columnsByTable.set(table, list);
-  }
-
-  // Tables over 1 GB: exact rows from metadata, column shares from a sample.
-  const largeRows = new Map<string, number>();
-  const statsSql = driver.tableSampleClause
-    ? driver.buildTableStatsQuery?.(destination.schema, names, { projectId })
-    : undefined;
-  if (statsSql) {
-    const stats = await run(statsSql);
-    const rows = (stats.success ? (stats.data ?? []) : []) as Record<
-      string,
-      unknown
-    >[];
-    for (const row of rows) {
-      if (num(row.size_bytes) > DATA_DIFF_SAMPLE_OVER_BYTES) {
-        largeRows.set(String(row.table_name), num(row.row_count));
-      }
-    }
   }
 
   return mapLimit(
@@ -290,43 +273,23 @@ export async function countEntityTables(params: {
     COUNT_CONCURRENCY,
     async (t): Promise<CountedTable> => {
       const columns = columnsByTable.get(t.table);
-      if (!columns?.length) {
+      if (!columns) {
         return { ...t, counts: EMPTY };
       }
-      const exactRows = largeRows.get(t.table);
-      const sample =
-        exactRows !== undefined
-          ? driver.tableSampleClause?.(DATA_DIFF_SAMPLE_PERCENT)
-          : undefined;
       const result = await run(
-        buildNonNullCountQuery({
-          tableRef: sample
-            ? `${tableRef(t.table)} ${sample}`
-            : tableRef(t.table),
-          columns,
-          quote,
-        }),
+        buildNonNullCountQuery({ tableRef: tableRef(t.table), columns, quote }),
       );
       if (!result.success) {
         return { ...t, error: result.error || "count failed" };
       }
       const row = ((result.data ?? [])[0] ?? {}) as Record<string, unknown>;
-      const counted = num(row.n);
-      const rows = sample ? (exactRows ?? 0) : counted;
-      const nonNull = (value: number) =>
-        !sample
-          ? value
-          : counted > 0
-            ? Math.round((value / counted) * rows)
-            : 0;
       return {
         ...t,
         counts: {
-          rows,
-          ...(sample ? { sampled: true } : {}),
+          rows: num(row.n),
           columns: columns.map((name, i) => ({
             name,
-            nonNull: nonNull(num(row[`c_${i}`])),
+            nonNull: num(row[`c_${i}`]),
           })),
         },
       };

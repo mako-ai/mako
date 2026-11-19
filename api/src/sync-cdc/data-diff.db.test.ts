@@ -3,7 +3,8 @@
  * destination that answers the column-list and COUNT queries from rows held
  * in memory: a backfill that NULLs a column is flagged, a table that shrinks
  * is not, a connector-code or destination change opens a check, a reset's
- * baseline survives the drop, and flow_data_diff / flow_status show it.
+ * baseline survives the drop, a backfill that rewrites some rows of a large
+ * table flags nothing, and flow_data_diff / flow_status show it.
  *
  * Run: tsx src/sync-cdc/data-diff.db.test.ts
  */
@@ -38,8 +39,6 @@ import {
 
 type Row = Record<string, unknown>;
 const tables = new Map<string, Row[]>();
-/** Stored bytes per table, for the sampling path (absent = small). */
-const sizes = new Map<string, number>();
 /** A table whose COUNT fails. */
 const BROKEN: Row[] = [{ id: "x" }];
 const queries: string[] = [];
@@ -54,9 +53,6 @@ const fakeDriver = {
   getChildren: async () => [],
   formatTableRef: (schema: string | undefined, table: string) =>
     `${schema}.${table}`,
-  buildTableStatsQuery: (schema: string, names: string[]) =>
-    `STATS ${schema} ${names.join(",")}`,
-  tableSampleClause: (percent: number) => `SAMPLE${percent}`,
   executeQuery: async (_db: unknown, sql: string) => {
     queries.push(sql);
     const list = sql.match(
@@ -76,30 +72,9 @@ const fakeDriver = {
       }
       return { success: true, data };
     }
-    const stats = sql.match(/^STATS (\S+) (.*)$/);
-    if (stats) {
-      const data = stats[2].split(",").flatMap(name => {
-        const rows = tables.get(`${stats[1]}.${name}`);
-        return rows
-          ? [
-              {
-                table_name: name,
-                row_count: rows.length,
-                size_bytes: sizes.get(`${stats[1]}.${name}`) ?? 1000,
-              },
-            ]
-          : [];
-      });
-      return { success: true, data };
-    }
-    const count = sql.match(/^SELECT (.*) FROM (\S+)( SAMPLE10)?$/);
+    const count = sql.match(/^SELECT (.*) FROM (\S+)$/);
     if (count) {
-      const all = tables.get(count[2]);
-      // A 10% "block" sample: every 10th row.
-      const rows =
-        all && count[3] && all !== BROKEN
-          ? all.filter((_, i) => i % 10 === 0)
-          : all;
+      const rows = tables.get(count[2]);
       if (!rows) return { success: false, error: "Not found: table" };
       if (rows === BROKEN) return { success: false, error: "quota exceeded" };
       const out: Row = { n: rows.length };
@@ -183,34 +158,57 @@ const people = (n: number, emailEvery = 1): Row[] =>
     ["phone", "rare"],
   );
 
-  // Sampled counts compare shares and need a 75% loss: sampling moves a
-  // share a lot, a rewrite that empties a column moves it to zero. The
-  // table doubled: phone kept its 50% share (fine), email fell from 100%
-  // to 50% (noise-sized, fine), fax from 40% to 5% (flagged).
+  // A legacy baseline counted on a 10% sample judges only the rows: the
+  // flow ch-close-sellers-shadow-bigquery-write reported 843 → 0
+  // bulk_email_action_id and 20 → 0 deleted_at from such samples, while the
+  // whole table held 842 and 18 both times.
   assert.deepEqual(
     compareCounts({
-      entity: "contacts",
-      table: "contacts",
+      entity: "email_activities",
+      table: "email_activities",
       before: {
-        rows: 10_000,
+        rows: 278_840,
         sampled: true,
         columns: [
-          { name: "email", nonNull: 10_000 },
-          { name: "phone", nonNull: 5_000 },
-          { name: "fax", nonNull: 4_000 },
+          { name: "bulk_email_action_id", nonNull: 843 },
+          { name: "deleted_at", nonNull: 20 },
         ],
       },
       after: {
-        rows: 20_000,
-        sampled: true,
+        rows: 278_954,
         columns: [
-          { name: "email", nonNull: 10_000 },
-          { name: "phone", nonNull: 10_000 },
-          { name: "fax", nonNull: 1_000 },
+          { name: "bulk_email_action_id", nonNull: 842 },
+          { name: "deleted_at", nonNull: 18 },
         ],
       },
-    }).map(f => [f.column, f.expected, f.lostPct]),
-    [["fax", 8_000, 87.5]],
+    }),
+    [],
+  );
+
+  // Mako's bookkeeping columns change by design and are never flagged:
+  // _mako_ingest_seq went 27,450 → 1,278 on that same backfill.
+  assert.deepEqual(
+    compareCounts({
+      entity: "email_activities",
+      table: "email_activities",
+      before: {
+        rows: 1000,
+        columns: [
+          { name: "_mako_ingest_seq", nonNull: 900 },
+          { name: "_mako_deleted_at", nonNull: 500 },
+          { name: "_syncedAt", nonNull: 1000 },
+          { name: "subject", nonNull: 1000 },
+        ],
+      },
+      after: {
+        rows: 1000,
+        columns: [
+          { name: "_mako_ingest_seq", nonNull: 40 },
+          { name: "subject", nonNull: 1000 },
+        ],
+      },
+    }),
+    [],
   );
 
   // Growth and a 0.4% dip are fine.
@@ -291,8 +289,8 @@ async function main() {
       await prepareFlowDataDiff({ flowId: id, entities, backfill: true }),
       { reasons: ["backfill"] },
     );
-    // One column list, one size lookup, one COUNT per table.
-    assert.equal(queries.length, 4);
+    // One column list, one whole-table COUNT per table.
+    assert.equal(queries.length, 3);
     tables.set("fr.contacts", people(1000, 2));
     tables.set("fr.leads", people(210));
     const diff = await compareFlowDataDiff({ flowId: id, executionId: "e1" });
@@ -425,43 +423,70 @@ async function main() {
       rowsAfter: 210,
     });
 
-    // 9. A table over 1 GB is counted on a 10% sample: exact rows from
-    //    metadata, column shares scaled to them. Emptying the emails is
-    //    flagged; leads, small, is counted in full.
-    tables.set("fr.contacts", people(1000));
+    // 9. A backfill that rewrites a subset of rows of a large table, leaving
+    //    the other rows intact, flags nothing. Rare values sit in one block
+    //    (18 deleted_at in 1,000 rows, as on ch_close_sellers). The rewrite
+    //    touches rows 0-99, restarts _mako_ingest_seq and adds 14 rows.
+    //    Both counts read every row and skip the bookkeeping columns.
+    const activities = (n: number, seq: (i: number) => number | null) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: String(i),
+        email: `p${i}@x.io`,
+        created_at: "2026-01-01",
+        deleted_at: i >= 500 && i < 518 ? "2026-11-01" : null,
+        _mako_ingest_seq: seq(i),
+        _mako_deleted_at: i >= 500 && i < 518 ? "2026-11-01" : null,
+        _syncedAt: "2026-11-18",
+      }));
+    tables.set(
+      "fr.contacts",
+      activities(1000, i => i + 1),
+    );
     tables.set("fr.leads", people(210));
-    sizes.set("fr.contacts", 5e9);
     queries.length = 0;
     await prepareFlowDataDiff({ flowId: id, entities, backfill: true });
     assert.ok(
       queries.includes(
-        "SELECT COUNT(*) AS n, COUNT(`id`) AS c_0, COUNT(`email`) AS c_1, COUNT(`created_at`) AS c_2 FROM fr.contacts SAMPLE10",
+        "SELECT COUNT(*) AS n, COUNT(`id`) AS c_0, COUNT(`email`) AS c_1, COUNT(`created_at`) AS c_2, COUNT(`deleted_at`) AS c_3 FROM fr.contacts",
       ),
     );
-    assert.ok(queries.some(q => q.endsWith("FROM fr.leads")));
-    const sampledOpen = await FlowDataDiff.findOne({
+    const wholeOpen = await FlowDataDiff.findOne({
       flowId,
       status: "open",
     }).lean();
-    assert.deepEqual(sampledOpen!.tables[0].before, {
+    assert.deepEqual(wholeOpen!.tables[0].before, {
       rows: 1000,
-      sampled: true,
       columns: [
         { name: "id", nonNull: 1000 },
         { name: "email", nonNull: 1000 },
         { name: "created_at", nonNull: 1000 },
+        { name: "deleted_at", nonNull: 18 },
       ],
     });
     tables.set(
       "fr.contacts",
-      people(1000).map((r, i) =>
-        Math.floor(i / 10) % 10 < 9 ? { ...r, email: null } : r,
-      ),
+      activities(1014, i => (i < 100 || i >= 1000 ? i + 1 : null)),
     );
-    const sampledDiff = await compareFlowDataDiff({ flowId: id });
+    const subset = await compareFlowDataDiff({ flowId: id });
+    assert.deepEqual(subset!.flagged, []);
+    const subsetRow = await FlowDataDiff.findOne({ flowId })
+      .sort({ createdAt: -1, _id: -1 })
+      .lean();
     assert.deepEqual(
-      sampledDiff!.flagged.map(f => [f.table, f.column, f.before, f.after]),
-      [["contacts", "email", 1000, 100]],
+      subsetRow!.tables[0].after!.columns.find(c => c.name === "deleted_at"),
+      { name: "deleted_at", nonNull: 18 },
+    );
+
+    // 10. A backfill that truly blanks a column of that table is flagged.
+    await prepareFlowDataDiff({ flowId: id, entities, backfill: true });
+    tables.set(
+      "fr.contacts",
+      activities(1014, i => i + 1).map(r => ({ ...r, deleted_at: null })),
+    );
+    const blanked = await compareFlowDataDiff({ flowId: id });
+    assert.deepEqual(
+      blanked!.flagged.map(f => [f.table, f.column, f.before, f.after]),
+      [["contacts", "deleted_at", 18, 0]],
     );
 
     console.info("data-diff.db.test: ok");
