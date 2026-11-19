@@ -45,6 +45,7 @@ import {
   actingPrincipal,
   principalMatches,
   principalsOutsideWorkspace,
+  unidentifiedWriterRefusal,
   viewerPrincipals,
 } from "../access/connection-writes";
 import { operationRequest } from "./operations";
@@ -458,7 +459,7 @@ export async function connectionRequest(
     if (!principal) {
       logger.warn("Refused a connection write by no identified caller", where);
       throw new ConnectionRequestError(
-        `Mako could not tell who is writing to ${row.name}, so the write was refused. Writes need a signed-in person, an API key, or a workflow on the connection's writers list.`,
+        unidentifiedWriterRefusal(row.name),
         403,
       );
     }

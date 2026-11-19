@@ -16,6 +16,7 @@ import { loggers } from "../../logging";
 import { publishRealtimeEvent } from "../../services/realtime.service";
 import {
   getNextScheduledConsoleRunAt,
+  resumedScheduledRun,
   validateScheduledConsoleSchedule,
 } from "../../services/scheduled-query-schedule.service";
 import { workspaceOwnsConnection } from "../../services/consoles/connection-scope";
@@ -371,10 +372,11 @@ function scheduleFields(
     return {
       set: {
         schedule: valid,
-        scheduledRun: {
-          ...(row?.scheduledRun ?? { runCount: 0, consecutiveFailures: 0 }),
-          nextAt: getNextScheduledConsoleRunAt(valid),
-        },
+        // A changed schedule resumes one Mako paused.
+        scheduledRun: resumedScheduledRun(
+          row?.scheduledRun,
+          getNextScheduledConsoleRunAt(valid),
+        ),
       },
       unset: {},
     };

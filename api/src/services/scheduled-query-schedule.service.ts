@@ -1,4 +1,5 @@
 import { CronExpressionParser } from "cron-parser";
+import type { ISavedConsole } from "../database/workspace-schema";
 
 export interface ScheduledConsoleScheduleInput {
   cron?: string | null;
@@ -59,4 +60,28 @@ export function getUpcomingScheduledConsoleRuns(
   });
 
   return Array.from({ length: count }, () => interval.next().toDate());
+}
+
+/**
+ * The `scheduledRun` a console gets when someone sets its schedule. A
+ * schedule Mako paused (services/consoles/schedule-pause.ts) resumes: the
+ * pause clears and both failure counts start over.
+ */
+export function resumedScheduledRun(
+  previous: ISavedConsole["scheduledRun"] | undefined,
+  nextAt: Date,
+): NonNullable<ISavedConsole["scheduledRun"]> {
+  const wasPaused = Boolean(previous?.pausedAt);
+  return {
+    nextAt,
+    lastAt: previous?.lastAt,
+    lastStatus: previous?.lastStatus,
+    lastError: previous?.lastError,
+    lastDurationMs: previous?.lastDurationMs,
+    lastRowsAffected: previous?.lastRowsAffected,
+    lastRowCount: previous?.lastRowCount,
+    runCount: previous?.runCount ?? 0,
+    consecutiveFailures: wasPaused ? 0 : (previous?.consecutiveFailures ?? 0),
+    permanentFailures: wasPaused ? 0 : previous?.permanentFailures,
+  };
 }

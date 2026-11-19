@@ -13,6 +13,7 @@ import { inngest } from "../../inngest";
 import { commitConsoleState } from "../../apps/workspace-consoles.service";
 import {
   getNextScheduledConsoleRunAt,
+  resumedScheduledRun,
   validateScheduledConsoleSchedule,
 } from "../scheduled-query-schedule.service";
 
@@ -42,20 +43,13 @@ export async function setConsoleSchedule(input: {
     timezone: input.timezone,
   });
   const nextAt = getNextScheduledConsoleRunAt(schedule);
-  const previous = savedConsole.scheduledRun;
 
   savedConsole.schedule = schedule;
-  savedConsole.scheduledRun = {
+  // Setting the schedule resumes one Mako paused (schedule-pause.ts).
+  savedConsole.scheduledRun = resumedScheduledRun(
+    savedConsole.scheduledRun,
     nextAt,
-    lastAt: previous?.lastAt,
-    lastStatus: previous?.lastStatus,
-    lastError: previous?.lastError,
-    lastDurationMs: previous?.lastDurationMs,
-    lastRowsAffected: previous?.lastRowsAffected,
-    lastRowCount: previous?.lastRowCount,
-    runCount: previous?.runCount ?? 0,
-    consecutiveFailures: previous?.consecutiveFailures ?? 0,
-  };
+  );
   savedConsole.isSaved = true;
   // The schedule is authored: it lives in the file's front-matter.
   const committed = await commitConsoleState({
