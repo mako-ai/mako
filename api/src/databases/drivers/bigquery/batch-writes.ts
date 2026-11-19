@@ -1,6 +1,7 @@
 import { BatchWriteResult, InsertOptions, UpsertOptions } from "../../driver";
 import { IDatabaseConnection } from "../../../database/workspace-schema";
 import { escapeIdentifier, formatBigQueryValue } from "./sql-values";
+import { nullSafeEquals } from "../../sql-utils";
 import { BigQueryDriverCore } from "./driver-core";
 
 /** Batch INSERT and MERGE (upsert) of rows, chunked under BigQuery's query size limit. */
@@ -448,7 +449,9 @@ export class BigQueryBatchWriteDriver extends BigQueryDriverCore {
 
     // Build MERGE conditions
     const joinConditions = keyColumns
-      .map(k => `T.${escapeIdentifier(k)} = S.${escapeIdentifier(k)}`)
+      .map(k =>
+        nullSafeEquals(`T.${escapeIdentifier(k)}`, `S.${escapeIdentifier(k)}`),
+      )
       .join(" AND ");
 
     // Build update and insert columns

@@ -8,6 +8,7 @@ import type {
   ConnectorEntitySchema,
   ConnectorLogicalType,
 } from "../../connectors/base/BaseConnector";
+import { nullSafeEquals } from "../../databases/sql-utils";
 import { ABSENT_COLUMNS_FIELD, absentColumnNeedle } from "../sparse-rows";
 import type { CdcEntityLayout } from "./registry";
 
@@ -202,7 +203,7 @@ export function buildMergeStatement(p: BuildMergeStatementParams): string {
   // ON clause
   const keyJoin =
     keyColumns
-      .map(k => `__live.${escId(k)} = __stg.${escId(k)}`)
+      .map(k => nullSafeEquals(`__live.${escId(k)}`, `__stg.${escId(k)}`))
       .join(" AND ") +
     (livePartitionFilter ? ` AND (${livePartitionFilter})` : "");
 
@@ -376,7 +377,7 @@ export function buildLivePartitionProbeQuery(p: {
     )
     .join(", ");
   const join = p.keyColumns
-    .map(k => `__live.${escId(k)} = __stg.${escId(k)}`)
+    .map(k => nullSafeEquals(`__live.${escId(k)}`, `__stg.${escId(k)}`))
     .join(" AND ");
   return (
     `SELECT DISTINCT FORMAT_TIMESTAMP('%FT%T', TIMESTAMP_TRUNC(__live.${escId(p.partitionField)}, ${gran}), 'UTC') AS p ` +
