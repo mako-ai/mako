@@ -230,7 +230,8 @@ export async function startReplayServer(interactions = loadCassettes()) {
  * Record: answer from an emulated Stripe over `dataset`, and keep every
  * interaction. Implements only what the connectors call: list endpoints with
  * `limit`, `starting_after`, `created[gte]`, `status`, `payout`, the
- * per-customer balance transactions, and the account.
+ * per-customer balance transactions, an invoice's lines, a subscription's
+ * items, and the account.
  */
 export async function startRecordingServer(dataset) {
   const recorded = new Map();
@@ -259,6 +260,21 @@ function emulate(dataset, rawUrl) {
     return listPage(items, query, url.pathname);
   }
 
+  const invoiceLines = /^invoices\/([^/]+)\/lines$/.exec(route);
+  if (invoiceLines) {
+    const items = dataset.invoiceLines.get(invoiceLines[1]);
+    if (!items)
+      return stripeError(404, "invalid_request_error", "No such invoice");
+    return listPage(items, query, url.pathname);
+  }
+
+  if (route === "subscription_items" && query.subscription) {
+    const items = dataset.subscriptionItems.get(query.subscription);
+    if (!items)
+      return stripeError(404, "invalid_request_error", "No such subscription");
+    return listPage(items, query, url.pathname);
+  }
+
   if (route === "balance_transactions" && query.payout) {
     const items = dataset.payoutTransactions.get(query.payout);
     if (!items)
@@ -283,9 +299,11 @@ function emulate(dataset, rawUrl) {
 }
 
 function listPage(items, query, pathname) {
-  let list = [...items].sort(
-    (a, b) => b.created - a.created || (a.id < b.id ? 1 : -1),
-  );
+  // Newest first, as Stripe lists; an invoice's lines have no `created`
+  // and keep their invoice order.
+  let list = items.every(item => typeof item.created === "number")
+    ? [...items].sort((a, b) => b.created - a.created || (a.id < b.id ? 1 : -1))
+    : [...items];
   const gte = query["created[gte]"];
   if (gte !== undefined)
     list = list.filter(item => item.created >= Number(gte));

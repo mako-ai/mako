@@ -14,7 +14,11 @@
  * - The `stripe-v1` declaration accepts and refuses what
  *   `stripe.webhooks.constructEvent` does, on the same deliveries.
  * - Every event type gives the same applied rows on both paths: entity, id,
- *   operation, payload, source time and change id, with no request.
+ *   operation, payload, source time and change id, with no request. An
+ *   invoice event adds its lines, a subscription event its items.
+ * - A list cut short at 10 is read whole, with the same requests on both
+ *   paths. A failed read holds back the whole event. Children the flow does
+ *   not sync cost nothing.
  * - A partial or thin payload is filled by one GET and never written with
  *   NULLs. A 404 skips, a failure retries, a spent budget defers.
  * - Provisioning creates the endpoint with the connection's key and returns
@@ -456,9 +460,18 @@ void test("a stripe-v1 declaration the API cannot run is refused", () => {
   }
 });
 
-void test("every event type applies the same row on both paths, with no request", async () => {
+/** Rows whose embedded `lines` or `items` are whole: they cost no request. */
+function wholeRows() {
+  const rows = rowsByEntity();
+  const whole = (row: any, key: string) => row?.[key]?.has_more !== true;
+  rows.invoices = rows.invoices.filter((r: any) => whole(r, "lines"));
+  rows.subscriptions = rows.subscriptions.filter((r: any) => whole(r, "items"));
+  return rows;
+}
+
+void test("every event type applies the same rows on both paths, with no request", async () => {
   const types = stripeSupportedWebhookEvents();
-  const events = buildWebhookEvents(types);
+  const events = buildWebhookEvents(types, wholeRows());
   handed.length = 0;
   requests.length = 0;
   const { rows } = await folderRows(events);
@@ -471,6 +484,7 @@ void test("every event type applies the same row on both paths, with no request"
 
   const connector = builtIn();
   let compared = 0;
+  let children = 0;
   for (const [i, event] of events.entries()) {
     const theirs = await buildWebhookCdcRecords({
       connector,
@@ -478,17 +492,26 @@ void test("every event type applies the same row on both paths, with no request"
       flow: {} as never,
       webhookEvent: event,
     });
-    assert.equal(theirs.records.length, 1, event.eventType);
-    assert.equal(rows[i]?.length, 1, event.eventType);
+    const entity = entityOfEvent(event.eventType);
+    // An invoice brings its lines, a subscription its items.
+    const object = event.rawPayload.data.object as any;
+    const expected =
+      1 +
+      (entity === "invoices" ? object.lines.data.length : 0) +
+      (entity === "subscriptions" ? object.items.data.length : 0);
+    assert.equal(theirs.records.length, expected, event.eventType);
+    assert.equal(rows[i]?.length, expected, event.eventType);
     assert.deepEqual(
-      comparable(rows[i]![0]),
-      comparable(theirs.records[0]),
+      rows[i]!.map(comparable),
+      theirs.records.map(comparable),
       event.eventType,
     );
-    assert.equal(rows[i]![0].entity, entityOfEvent(event.eventType));
+    assert.equal(rows[i]![0].entity, entity);
+    children += expected - 1;
     compared++;
   }
   assert.equal(compared, 82);
+  assert.ok(children >= 13, `children: ${children}`);
   assert.deepEqual(requests, [], "a whole payload costs no request");
 });
 
@@ -552,6 +575,160 @@ void test("a partial upsert takes its fetched object, which wins over the event;
     `GET /v1/subscriptions/${sub.id}`,
     `GET /v1/customers/${customer.id}`,
   ]);
+});
+
+void test("an invoice's lines and a subscription's items ride on their events; a long list is read whole", async () => {
+  const rowsOf = rowsByEntity();
+  const invoice = structuredClone(
+    rowsOf.invoices.find((r: any) => r.lines.has_more),
+  );
+  const sub = structuredClone(
+    rowsOf.subscriptions.find((r: any) => r.items.has_more),
+  );
+  assert.ok(invoice && sub, "the dataset holds one long list of each");
+  const allLines = Array.from({ length: 13 }, (_, k) => ({
+    ...invoice.lines.data[0],
+    id: `il_long_${k}`,
+  }));
+  const allItems = Array.from({ length: 12 }, (_, k) => ({
+    ...sub.items.data[0],
+    id: `si_long_${k}`,
+  }));
+  objects.set(`/v1/invoices/${invoice.id}/lines`, {
+    object: "list",
+    data: allLines,
+    has_more: false,
+    url: `/v1/invoices/${invoice.id}/lines`,
+  });
+  objects.set(`/v1/subscription_items`, {
+    object: "list",
+    data: allItems,
+    has_more: false,
+    url: "/v1/subscription_items",
+  });
+
+  const events = buildWebhookEvents(
+    ["invoice.paid", "customer.subscription.updated", "invoice.deleted"],
+    { ...rowsOf, invoices: [invoice], subscriptions: [sub] },
+  );
+  requests.length = 0;
+  const { outcomes, rows } = await folderRows(events);
+  assert.deepEqual(
+    outcomes.map(o => o.outcome),
+    ["records", "records", "records"],
+  );
+  const folderRequests = [...requests];
+  assert.deepEqual(folderRequests, [
+    `GET /v1/invoices/${invoice.id}/lines`,
+    "GET /v1/subscription_items",
+  ]);
+
+  // Lines carry their invoice; items their subscription's period.
+  const lines = rows[0]!.filter(r => r.entity === "invoice_line_items");
+  assert.deepEqual(
+    lines.map(r => r.recordId),
+    allLines.map(l => l.id),
+  );
+  for (const line of lines) {
+    assert.equal(line.payload.invoice, invoice.id);
+    assert.equal(line.payload.invoice_id, invoice.id);
+    assert.equal(line.payload.invoice_created, invoice.created);
+    assert.equal(
+      line.sourceTs.toISOString(),
+      new Date(invoice.created * 1000).toISOString(),
+    );
+    assert.equal(
+      line.changeId,
+      `${events[0].eventId}:invoice_line_items:${line.recordId}`,
+    );
+  }
+  const items = rows[1]!.filter(r => r.entity === "subscription_items");
+  assert.equal(items.length, 12);
+  for (const item of items) {
+    assert.equal(item.payload.subscription, sub.id);
+    assert.equal(item.payload.current_period_end, sub.current_period_end);
+  }
+  // A delete takes its lines with it, from the payload alone.
+  const deleted = rows[2]!;
+  assert.equal(deleted.length, 1 + invoice.lines.data.length);
+  assert.ok(deleted.every(r => r.operation === "delete"));
+
+  // The built-in path: the same rows and the same requests.
+  requests.length = 0;
+  for (const [i, event] of events.entries()) {
+    const theirs = await buildWebhookCdcRecords({
+      connector: builtIn(),
+      sourceConnection: SOURCE,
+      flow: {} as never,
+      webhookEvent: event,
+    });
+    assert.deepEqual(
+      rows[i]!.map(comparable),
+      theirs.records.map(comparable),
+      event.eventType,
+    );
+  }
+  assert.deepEqual(requests, folderRequests);
+});
+
+void test("children the flow does not sync cost no request and no record", async () => {
+  const rowsOf = rowsByEntity();
+  const invoice = rowsOf.invoices.find((r: any) => r.lines.has_more);
+  assert.ok(invoice, "fixture needs an invoice with more lines");
+  const events = buildWebhookEvents(["invoice.paid"], {
+    ...rowsOf,
+    invoices: [invoice],
+  });
+  requests.length = 0;
+  const result = await boxed().runWebhookBatch(
+    { events, enabledEntities: ["invoices"] },
+    { timeoutMs: 60_000 },
+  );
+  const [outcome] = outcomesOf(result);
+  assert.equal(outcome.outcome, "records");
+  assert.deepEqual(
+    outcome.records.map((r: any) => r.entity),
+    ["invoices"],
+  );
+  assert.deepEqual(requests, []);
+
+  const theirs = await buildWebhookCdcRecords({
+    connector: builtIn(),
+    sourceConnection: SOURCE,
+    flow: { entityFilter: ["invoices"] } as never,
+    webhookEvent: events[0],
+  });
+  assert.deepEqual(
+    theirs.records.map(r => r.entity),
+    ["invoices"],
+  );
+  assert.deepEqual(requests, []);
+});
+
+void test("a long list that cannot be read defers the whole event, never half of it", async () => {
+  const rowsOf = rowsByEntity();
+  const invoice = rowsOf.invoices.find((r: any) => r.lines.has_more);
+  assert.ok(invoice, "fixture needs an invoice with more lines");
+  failing.add(`/v1/invoices/${invoice.id}/lines`);
+  try {
+    const events = buildWebhookEvents(["invoice.paid"], {
+      ...rowsOf,
+      invoices: [invoice],
+    });
+    const { outcomes } = await folderRows(events);
+    assert.equal(outcomes[0].outcome, "deferred");
+
+    const theirs = await buildWebhookCdcRecords({
+      connector: builtIn(),
+      sourceConnection: SOURCE,
+      flow: {} as never,
+      webhookEvent: events[0],
+    });
+    assert.equal(theirs.records.length, 0);
+    assert.equal(theirs.retry?.mode, "fail");
+  } finally {
+    failing.delete(`/v1/invoices/${invoice.id}/lines`);
+  }
 });
 
 void test("a thin event, which only names its object, takes the whole object", async () => {

@@ -13,6 +13,7 @@ import type {
 } from "../base/BaseConnector";
 import { rawWebhookBody } from "../base/webhook-signature";
 import { loggers } from "../../logging";
+import { EMBEDDED_CHILD_PARENTS } from "./lists";
 
 const logger = loggers.connector("stripe");
 
@@ -27,8 +28,10 @@ const remove = (entity: string): WebhookEventMapping => ({
 
 /**
  * Every event Mako subscribes to, in subscription order, with the entity it
- * writes. balance_transactions, payout_balance_transactions and
- * customer_balance_transactions have no Stripe events: polled only.
+ * writes. balance_transactions, payout_balance_transactions,
+ * customer_balance_transactions and events have no Stripe events: polled
+ * only. invoice_line_items and subscription_items ride on their parent's
+ * events.
  */
 const EVENTS: Array<[event: string, mapping: WebhookEventMapping]> = [
   // Customers
@@ -156,6 +159,11 @@ export function stripeSupportedWebhookEvents(): string[] {
 export function stripeWebhookEventsForEntities(entities: string[]): string[] {
   if (entities.length === 0) return stripeSupportedWebhookEvents();
   const entitySet = new Set(entities.map(e => e.toLowerCase()));
+  // An invoice's lines and a subscription's items ride on their parent's
+  // events (StripeConnector.enrichWebhookCdcRecords, the folder's handler).
+  for (const [child, parent] of Object.entries(EMBEDDED_CHILD_PARENTS)) {
+    if (entitySet.has(child)) entitySet.add(parent);
+  }
   return EVENTS.filter(([, mapping]) =>
     entitySet.has(mapping.entity.toLowerCase()),
   ).map(([event]) => event);

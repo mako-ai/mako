@@ -4,8 +4,10 @@
  * `api/src/connectors/stripe/webhooks.ts`; the API test
  * `folder-webhook-batches.test.ts` holds the two equal, event for event.
  *
- * balance_transactions, payout_balance_transactions and
- * customer_balance_transactions have no Stripe events: polled only.
+ * balance_transactions, payout_balance_transactions,
+ * customer_balance_transactions and events have no Stripe events: polled
+ * only. invoice_line_items and subscription_items ride on their parent's
+ * events (webhook-handler.ts).
  */
 
 export interface StripeEventMapping {
@@ -151,6 +153,8 @@ export function stripeRecordTimestamp(
 ): string | null {
   for (const candidate of [
     payload.created,
+    // An invoice line has no `created`; it carries its invoice's.
+    payload.invoice_created,
     payload.start_date,
     payload.updated,
   ]) {

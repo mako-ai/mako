@@ -15,11 +15,17 @@ import {
   type WebhookCapabilities,
   type IncrementalCapabilities,
   type ConnectorEntitySchema,
+  WebhookEnrichmentRetryError,
 } from "../base/BaseConnector";
 import Stripe from "stripe";
 import { resolveStripeEntitySchema } from "./schema";
 import { loggers } from "../../logging";
-import { listStripePage } from "./lists";
+import {
+  EMBEDDED_CHILD_PARENTS,
+  childRowsOf,
+  listStripePage,
+  type EmbeddedChildEntity,
+} from "./lists";
 import {
   createStripeWebhookEndpoint,
   resolveStripeProvisionEvents,
@@ -69,6 +75,12 @@ const STRIPE_ENTITIES = [
   "checkout_sessions",
   "setup_intents",
   "early_fraud_warnings",
+  // Rows inside a parent object: an invoice's lines, a subscription's items.
+  // Read with their parent's list page and carried by its webhooks.
+  "invoice_line_items",
+  "subscription_items",
+  // The account's event log. Stripe keeps 30 days; polled only.
+  "events",
 ] as const;
 
 export class StripeConnector extends BaseConnector {
@@ -173,6 +185,8 @@ export class StripeConnector extends BaseConnector {
   protected resolveRecordTimestamp(payload?: Record<string, unknown>): Date {
     const epochCandidates = [
       payload?.created,
+      // An invoice line has no `created`; it carries its invoice's.
+      payload?.invoice_created,
       payload?.start_date,
       (payload as Record<string, unknown> | undefined)?.["updated"],
     ];
@@ -300,6 +314,17 @@ export class StripeConnector extends BaseConnector {
         label: "Early Fraud Warnings",
         layoutSuggestion,
       },
+      {
+        name: "invoice_line_items",
+        label: "Invoice Line Items",
+        layoutSuggestion,
+      },
+      {
+        name: "subscription_items",
+        label: "Subscription Items",
+        layoutSuggestion,
+      },
+      { name: "events", label: "Events", layoutSuggestion },
     ];
   }
 
@@ -506,6 +531,62 @@ export class StripeConnector extends BaseConnector {
       options,
       this.resolveProvisionEvents(options),
     );
+  }
+
+  /**
+   * An invoice event carries the invoice's `lines`, a subscription event its
+   * `items`. When the flow syncs those entities, each child becomes a record
+   * with its parent's operation and change. A list longer than the 10 a
+   * payload embeds is read whole first; a delete uses what it embeds. A
+   * failed read fails the event for a retry, so a parent is never applied
+   * without all of its children.
+   */
+  async enrichWebhookCdcRecords(
+    records: NormalizedCdcRecord[],
+    options: { isEntityEnabled: (entity: string) => boolean },
+  ): Promise<NormalizedCdcRecord[]> {
+    const children = (
+      Object.entries(EMBEDDED_CHILD_PARENTS) as Array<
+        [EmbeddedChildEntity, string]
+      >
+    ).filter(([child]) => options.isEntityEnabled(child));
+    if (children.length === 0) return records;
+
+    const out = [...records];
+    for (const record of records) {
+      for (const [child, parent] of children) {
+        if (record.entity !== parent) continue;
+        let rows: Array<Record<string, unknown>> | null;
+        try {
+          rows = await childRowsOf(
+            this.getStripeClient(),
+            child,
+            (record.payload ?? {}) as Record<string, unknown>,
+            { fetchMore: record.operation === "upsert" },
+          );
+        } catch (error) {
+          throw new WebhookEnrichmentRetryError(
+            `Could not read the ${child} of Stripe ${parent} ${record.recordId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            "fail",
+          );
+        }
+        for (const row of rows ?? []) {
+          if (typeof row.id !== "string" || !row.id) continue;
+          out.push({
+            entity: child,
+            recordId: row.id,
+            operation: record.operation,
+            payload: row,
+            sourceTs: this.resolveRecordTimestamp(row),
+            source: "webhook",
+            changeId: `${record.changeId || record.recordId}:${child}:${row.id}`,
+          });
+        }
+      }
+    }
+    return out;
   }
 
   /**
