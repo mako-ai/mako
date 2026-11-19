@@ -17,6 +17,7 @@ import type {
   AppCommitFileVersions,
 } from "./types";
 import type { AppsSlice } from "./slice";
+import { setBusyRead } from "./helpers";
 
 type Keys =
   | "fetchStatus"
@@ -45,9 +46,10 @@ export const createAppsGitSlice: AppsSlice<Keys> = (set, get) => ({
             path: { workspaceId, id: appId },
           },
         }),
-      ) as { status?: AppStatus | null };
+      ) as { status?: AppStatus | null; busy?: boolean };
       set(s => {
         s.statusByApp[appId] = body.status ?? null;
+        setBusyRead(s.busyReadByApp, appId, "status", body.busy === true);
       });
     } catch {
       // Status is advisory; stale data is acceptable.

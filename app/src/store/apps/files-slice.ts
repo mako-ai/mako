@@ -3,6 +3,7 @@
  */
 import { api, unwrapBody, toErrorMessage as message } from "../../api";
 import { fileKey } from "./runtime";
+import { setBusyRead } from "./helpers";
 import type { AppFileEntry } from "./types";
 import type { AppsSlice } from "./slice";
 
@@ -27,9 +28,11 @@ export const createAppsFilesSlice: AppsSlice<Keys> = (set, get) => ({
         files?: AppFileEntry[];
         truncated?: boolean;
         total?: number;
+        busy?: boolean;
       };
       set(s => {
         s.filesByApp[appId] = body.files ?? [];
+        setBusyRead(s.busyReadByApp, appId, "files", body.busy === true);
         if (body.truncated) {
           s.filesTruncatedByApp[appId] = {
             shown: body.files?.length ?? 0,

@@ -61,8 +61,9 @@ appsFileRoutes.openapi(
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       // A busy server lists the last commit rather than refuse (appPageReads).
+      const busy = servedWithoutSlot(c);
       const listing = await listFiles(loaded.project, loaded.userId, {
-        box: !servedWithoutSlot(c),
+        box: !busy,
       });
       return c.json(
         {
@@ -74,6 +75,9 @@ appsFileRoutes.openapi(
           truncated: listing.truncated,
           total: listing.total,
           offline: listing.offline,
+          // The last commit because the server was busy, not because the box
+          // sleeps. The app page labels it (AppBusyReadNotice).
+          busy: busy && listing.offline,
         },
         200,
       );
@@ -231,11 +235,20 @@ appsFileRoutes.openapi(
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const userId = actorOf(loaded);
       // A busy server answers from the last commit rather than refuse
-      // (appPageReads): `offline: true`, as for a sleeping box.
+      // (appPageReads): `offline: true`, as for a sleeping box, and
+      // `busy: true` so the app page can say why.
+      const busy = servedWithoutSlot(c);
       const status = await worktreeStatus(scopeOf(loaded.project), userId, {
-        box: !servedWithoutSlot(c),
+        box: !busy,
       });
-      return c.json({ success: true as const, status }, 200);
+      return c.json(
+        {
+          success: true as const,
+          status,
+          busy: busy && status?.offline === true,
+        },
+        200,
+      );
     } catch (error) {
       return handleError(c, error);
     }

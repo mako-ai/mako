@@ -84,6 +84,7 @@ import {
   appsTreeItemIcon,
 } from "./apps-explorer/AppRowDecorations";
 import { CreateAppDialog } from "./apps-explorer/CreateAppDialog";
+import { AppBusyReadNotice } from "./apps-explorer/AppBusyReadNotice";
 
 export default function AppsExplorer() {
   const { currentWorkspace } = useWorkspace();
@@ -662,6 +663,7 @@ export default function AppsExplorer() {
               </Typography>
             ) : (
               <>
+                <AppBusyReadNotice appId={activeAppId ?? null} />
                 {activeAppId && filesTruncatedByApp[activeAppId] && (
                   <Typography
                     variant="caption"

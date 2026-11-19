@@ -272,6 +272,12 @@ export interface AppsStore {
    * first files plus this notice instead of crashing the tree.
    */
   filesTruncatedByApp: Record<string, { shown: number; total?: number }>;
+  /**
+   * Which of an app's last reads the server answered from the last commit
+   * because it was too busy to ask the live box (`busy: true`). A sleeping
+   * box is not busy. Each read clears its own flag on the next live answer.
+   */
+  busyReadByApp: Record<string, { files?: true; status?: true }>;
   fileContents: Record<string, { contents: string; dirty: boolean }>;
   selectedFile: Record<string, string | null>;
   statusByApp: Record<string, AppStatus | null>;

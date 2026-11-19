@@ -323,6 +323,7 @@ export const createAppsCatalogSlice: AppsSlice<Keys> = (set, get) => ({
         s.apps = s.apps.filter(a => a.id !== appId);
         delete s.filesByApp[appId];
         delete s.statusByApp[appId];
+        delete s.busyReadByApp[appId];
         delete s.historyByApp[appId];
         delete s.publishStateByApp[appId];
         delete s.terminalByApp[appId];

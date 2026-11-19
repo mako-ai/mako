@@ -20,6 +20,7 @@ export const initialAppsState: AppsState = {
   filesByApp: {},
   staleApps: {},
   filesTruncatedByApp: {},
+  busyReadByApp: {},
   fileContents: {},
   selectedFile: {},
   statusByApp: {},
