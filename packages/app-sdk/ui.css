@@ -215,19 +215,19 @@ button, input, select, textarea { font-family: inherit; }
  * resize a column. The table fills the card; its inline min-width (the sum of
  * the columns) makes it scroll sideways in a narrower card. */
 .mk-dt-table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 13px; }
-.mk-dt-table th, .mk-dt-table td {
+.mk-dt-table th:where(.mk-dt-table > * > tr > *), .mk-dt-table td:where(.mk-dt-table > * > tr > *) {
   padding: 7px 10px; text-align: left; white-space: nowrap; vertical-align: middle; overflow: hidden;
   border-bottom: 1px solid var(--mk-row-line); background: var(--card);
 }
 /* A row tint (rowClassName) sets --mk-dt-row-bg on the <tr>. Every body cell,
  * the pinned one included, paints it, so the tint survives the solid pin. */
-.mk-dt-table tbody td { background: var(--mk-dt-row-bg, var(--card)); }
-.mk-dt-table thead th {
+.mk-dt-table tbody td:where(.mk-dt-table > * > tr > *) { background: var(--mk-dt-row-bg, var(--card)); }
+.mk-dt-table thead th:where(.mk-dt-table > * > tr > *) {
   position: sticky; top: 0; z-index: 2; padding: 0; border-bottom: 0;
   font-size: 12px; font-weight: 500; color: var(--muted-foreground);
   box-shadow: inset 0 -1px 0 var(--border);
 }
-.mk-dt-table thead th.mk-dt-sorted { color: var(--foreground); }
+.mk-dt-table thead th.mk-dt-sorted:where(.mk-dt-table > * > tr > *) { color: var(--foreground); }
 .mk-dt-label { display: flex; padding: 8px 10px; }
 .mk-dt-sort {
   appearance: none; display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; padding: 8px 10px;
@@ -240,28 +240,28 @@ button, input, select, textarea { font-family: inherit; }
 .mk-dt-sort svg { flex: none; }
 .mk-dt-faint { opacity: .35; }
 .mk-dt-table .mk-dt-num { text-align: right; font-variant-numeric: tabular-nums; }
-.mk-dt-table th.mk-dt-num :is(.mk-dt-sort, .mk-dt-label) { justify-content: flex-end; }
+.mk-dt-table th.mk-dt-num:where(.mk-dt-table > * > tr > *) :is(.mk-dt-sort, .mk-dt-label) { justify-content: flex-end; }
 .mk-dt-table .mk-dt-center { text-align: center; }
-.mk-dt-table th.mk-dt-center :is(.mk-dt-sort, .mk-dt-label) { justify-content: center; }
+.mk-dt-table th.mk-dt-center:where(.mk-dt-table > * > tr > *) :is(.mk-dt-sort, .mk-dt-label) { justify-content: center; }
 /* The pinned column: solid background and a hairline on its right edge. */
 .mk-dt-table .mk-dt-pin { position: sticky; left: 0; z-index: 1; box-shadow: inset -1px 0 0 var(--border); }
 /* The corner cell is pinned both ways and keeps BOTH borders: one box-shadow
  * would otherwise override the other and drop the header's bottom rule. */
-.mk-dt-table thead th.mk-dt-pin { z-index: 3; box-shadow: inset -1px 0 0 var(--border), inset 0 -1px 0 var(--border); }
+.mk-dt-table thead th.mk-dt-pin:where(.mk-dt-table > * > tr > *) { z-index: 3; box-shadow: inset -1px 0 0 var(--border), inset 0 -1px 0 var(--border); }
 /* Column groups: a 2-row header. The whole <thead> sticks (two rows of
  * sticky cells would stack at top: 0) and the pinned corner still sticks
  * left. A group label spans its columns, centred, uppercase, with no rule
  * under it. A line runs down the left of each section, head to foot. */
 .mk-dt-table--grouped thead { position: sticky; top: 0; z-index: 2; }
-.mk-dt-table--grouped thead th { position: static; }
-.mk-dt-table--grouped thead th.mk-dt-pin { position: sticky; top: auto; left: 0; }
-.mk-dt-table thead th.mk-dt-group {
+.mk-dt-table--grouped thead th:where(.mk-dt-table > * > tr > *) { position: static; }
+.mk-dt-table--grouped thead th.mk-dt-pin:where(.mk-dt-table > * > tr > *) { position: sticky; top: auto; left: 0; }
+.mk-dt-table thead th.mk-dt-group:where(.mk-dt-table > * > tr > *) {
   height: 26px; padding: 0 10px; text-align: center; box-shadow: none;
   font-size: 11px; font-weight: 600; letter-spacing: .075em; text-transform: uppercase;
 }
 .mk-dt-table .mk-dt-section { border-left: 1px solid var(--border); }
-.mk-dt-table tbody tr:hover > td { background: color-mix(in srgb, var(--muted) 50%, var(--mk-dt-row-bg, var(--card))); }
-.mk-dt-table tbody tr:last-child > td { border-bottom: 0; }
+.mk-dt-table tbody tr:hover > td:where(.mk-dt-table > * > tr > *) { background: color-mix(in srgb, var(--muted) 50%, var(--mk-dt-row-bg, var(--card))); }
+.mk-dt-table tbody tr:last-child > td:where(.mk-dt-table > * > tr > *) { border-bottom: 0; }
 .mk-dt-click { cursor: pointer; }
 .mk-dt-click:focus-visible { outline: none; }
 .mk-dt-click:focus-visible > td { background: color-mix(in srgb, var(--muted) 70%, var(--mk-dt-row-bg, var(--card))); }
@@ -270,7 +270,7 @@ button, input, select, textarea { font-family: inherit; }
 .mk-dt-cell :where(div, p) { overflow: hidden; text-overflow: ellipsis; }
 /* `truncate: false`: the text wraps inside the column; the width still holds. */
 .mk-dt-wrap { white-space: normal; overflow-wrap: anywhere; }
-.mk-dt-table td.mk-dt-empty { text-align: center; color: var(--muted-foreground); padding: 48px 10px; white-space: normal; }
+.mk-dt-table td.mk-dt-empty:where(.mk-dt-table > * > tr > *) { text-align: center; color: var(--muted-foreground); padding: 48px 10px; white-space: normal; }
 /* `wrapHeaders`: a header label takes up to 2 lines instead of one ellipsized
  * line, so a client reads every word. The sort icon keeps its place beside it. */
 .mk-dt--wrap-heads .mk-dt-sort, .mk-dt--wrap-heads .mk-dt-label { white-space: normal; }
@@ -309,23 +309,23 @@ button, input, select, textarea { font-family: inherit; }
 .mk-dt-expander:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
 .mk-dt-expander svg { transform: rotate(-90deg); transition: transform .14s var(--mk-ease); }
 .mk-dt-expander[aria-expanded="true"] svg { transform: none; }
-.mk-dt-table tbody tr.mk-dt-open > td { border-bottom-color: transparent; }
-.mk-dt-table tbody tr.mk-dt-detail > td,
-.mk-dt-table tbody tr.mk-dt-detail:hover > td { padding: 0; white-space: normal; background: color-mix(in srgb, var(--muted) 40%, var(--card)); }
+.mk-dt-table tbody tr.mk-dt-open > td:where(.mk-dt-table > * > tr > *) { border-bottom-color: transparent; }
+.mk-dt-table tbody tr.mk-dt-detail > td:where(.mk-dt-table > * > tr > *),
+.mk-dt-table tbody tr.mk-dt-detail:hover > td:where(.mk-dt-table > * > tr > *) { padding: 0; white-space: normal; background: color-mix(in srgb, var(--muted) 40%, var(--card)); }
 .mk-dt-detail-body { position: sticky; left: 0; padding: 10px 16px 14px 34px; overflow-wrap: anywhere; }
 /* `totalRow`: a <tfoot> pinned to the bottom of the scroll box, bold, with a
  * rule on top. Its first cell stays pinned left with the column. */
-.mk-dt-table tfoot td {
+.mk-dt-table tfoot td:where(.mk-dt-table > * > tr > *) {
   position: sticky; bottom: 0; z-index: 2; border-bottom: 0; font-weight: 600;
   background: var(--card); box-shadow: inset 0 1px 0 var(--border);
 }
-.mk-dt-table tfoot td.mk-dt-pin { z-index: 3; box-shadow: inset -1px 0 0 var(--border), inset 0 1px 0 var(--border); }
-.mk-dt-table tfoot tr.mk-dt-total.mk-dt-click:hover > td,
-.mk-dt-table tfoot tr.mk-dt-total.mk-dt-click:focus-visible > td { background: color-mix(in srgb, var(--muted) 50%, var(--card)); }
+.mk-dt-table tfoot td.mk-dt-pin:where(.mk-dt-table > * > tr > *) { z-index: 3; box-shadow: inset -1px 0 0 var(--border), inset 0 1px 0 var(--border); }
+.mk-dt-table tfoot tr.mk-dt-total.mk-dt-click:hover > td:where(.mk-dt-table > * > tr > *),
+.mk-dt-table tfoot tr.mk-dt-total.mk-dt-click:focus-visible > td:where(.mk-dt-table > * > tr > *) { background: color-mix(in srgb, var(--muted) 50%, var(--card)); }
 /* Section rows (2.30): one cell across the columns, a small muted heading
  * on a tinted band (agent-acquisition-funnel's "Inbound" / "Outbound"). */
-.mk-dt-table tbody tr.mk-dt-section-row > td,
-.mk-dt-table tbody tr.mk-dt-section-row:hover > td {
+.mk-dt-table tbody tr.mk-dt-section-row > td:where(.mk-dt-table > * > tr > *),
+.mk-dt-table tbody tr.mk-dt-section-row:hover > td:where(.mk-dt-table > * > tr > *) {
   padding: 0; background: color-mix(in srgb, var(--muted) 40%, var(--card));
 }
 .mk-dt-section-label {
@@ -337,20 +337,20 @@ button, input, select, textarea { font-family: inherit; }
 .mk-dt-skeleton { display: block; height: 14px; border-radius: calc(var(--radius, .625rem) - 2px); background: var(--accent); animation: mk-skeleton-pulse 2s cubic-bezier(.4, 0, .6, 1) infinite; }
 .mk-dt-table .mk-dt-num .mk-dt-skeleton { margin-left: auto; }
 .mk-dt-table .mk-dt-center .mk-dt-skeleton { margin-inline: auto; }
-.mk-dt-table tbody tr.mk-dt-skeleton-row:hover > td { background: var(--card); }
+.mk-dt-table tbody tr.mk-dt-skeleton-row:hover > td:where(.mk-dt-table > * > tr > *) { background: var(--card); }
 @keyframes mk-skeleton-pulse { 50% { opacity: .5; } }
 .mk-dt-busy { opacity: .5; transition: opacity .15s; }
 /* Column resizing (2.30): a drag handle on each header's right edge, after
  * idx-portal's: a 2px line shows on hover, in brand while dragging. */
-.mk-dt-table--grouped thead th.mk-dt-resizable:not(.mk-dt-pin) { position: relative; }
+.mk-dt-table--grouped thead th.mk-dt-resizable:not(.mk-dt-pin):where(.mk-dt-table > * > tr > *) { position: relative; }
 .mk-dt-resizer { position: absolute; top: 0; right: 0; bottom: 0; z-index: 4; width: 8px; cursor: col-resize; touch-action: none; user-select: none; }
 .mk-dt-resizer::after { content: ""; position: absolute; top: 8px; bottom: 8px; right: 0; width: 2px; border-radius: 1px; background: transparent; }
-.mk-dt-table th:hover > .mk-dt-resizer::after { background: var(--border); }
-.mk-dt-table th > .mk-dt-resizer:hover::after, .mk-dt-resizer--active::after { background: var(--brand); }
+.mk-dt-table th:hover:where(.mk-dt-table > * > tr > *) > .mk-dt-resizer::after { background: var(--border); }
+.mk-dt-table th:where(.mk-dt-table > * > tr > *) > .mk-dt-resizer:hover::after, .mk-dt-resizer--active::after { background: var(--brand); }
 body.mk-dt-col-resizing { cursor: col-resize; user-select: none; }
 /* "onEnd": the handle travels past its header while dragging, so that header
  * stops clipping and paints above its neighbours until release. */
-.mk-dt-table thead th:has(> .mk-dt-resizer--active) { overflow: visible; z-index: 5; }
+.mk-dt-table thead th:has(> .mk-dt-resizer--active):where(.mk-dt-table > * > tr > *) { overflow: visible; z-index: 5; }
 .mk-dt-foot {
   flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;
   padding: 8px 12px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground);

@@ -402,10 +402,10 @@ test("DataTable rowClassName: the class lands on the row, the pinned cell paints
   // The tint reaches the sticky cell: body cells (pin included) paint --mk-dt-row-bg,
   // and the pin rule sets no background of its own that would cover it.
   const css = readFileSync(new URL("./ui.css", import.meta.url), "utf8");
-  assert.match(css, /\.mk-dt-table tbody td \{ background: var\(--mk-dt-row-bg, var\(--card\)\); \}/);
+  assert.match(css, /\.mk-dt-table tbody td(?::where\(\.mk-dt-table > \* > tr > \*\))? \{ background: var\(--mk-dt-row-bg, var\(--card\)\); \}/);
   const pin = css.match(/\.mk-dt-table \.mk-dt-pin \{[^}]*\}/)[0];
   assert.doesNotMatch(pin, /background/);
-  assert.match(css, /tr:hover > td \{ background: color-mix\(in srgb, var\(--muted\) 50%, var\(--mk-dt-row-bg, var\(--card\)\)\); \}/);
+  assert.match(css, /tr:hover > td(?::where\(\.mk-dt-table > \* > tr > \*\))? \{ background: color-mix\(in srgb, var\(--muted\) 50%, var\(--mk-dt-row-bg, var\(--card\)\)\); \}/);
 });
 
 test("DataTable widths: overrides, defaults by kind, grow and calc floors", async t => {
@@ -459,7 +459,7 @@ test("columnLayout and defaultColumnWidth: defaults by kind, the first column gr
 test("ui.css: the DataTable has a fixed layout and keeps the corner's two borders", () => {
   const css = readFileSync(new URL("./ui.css", import.meta.url), "utf8");
   assert.match(css, /\.mk-dt-table \{[^}]*table-layout: fixed/);
-  assert.match(css, /thead th\.mk-dt-pin \{[^}]*inset -1px 0 0 var\(--border\), inset 0 -1px 0 var\(--border\)/);
+  assert.match(css, /thead th\.mk-dt-pin(?::where\(\.mk-dt-table > \* > tr > \*\))? \{[^}]*inset -1px 0 0 var\(--border\), inset 0 -1px 0 var\(--border\)/);
   assert.match(css, /\.mk-dt-sort svg \{ flex: none; \}/);
 });
 
@@ -1336,7 +1336,7 @@ test("DataTable groups: a 2-row header, labels span their columns, sorting and t
   assert.equal((body.match(/<td/g) ?? []).length, 8);
   const css = readFileSync(new URL("./ui.css", import.meta.url), "utf8");
   assert.match(css, /\.mk-dt-table--grouped thead \{ position: sticky; top: 0;/);
-  assert.match(css, /\.mk-dt-table--grouped thead th\.mk-dt-pin \{ position: sticky; top: auto; left: 0; \}/);
+  assert.match(css, /\.mk-dt-table--grouped thead th\.mk-dt-pin(?::where\(\.mk-dt-table > \* > tr > \*\))? \{ position: sticky; top: auto; left: 0; \}/);
 });
 
 // ---------------------------------------------------------------------------
@@ -1582,8 +1582,8 @@ test("totalRow: a pinned <tfoot>, never sorted or paged, the pinned column holds
   assert.equal(foot.getAttribute("tabindex"), "0");
   await React.act(() => root.unmount());
   const css = readFileSync(new URL("./ui.css", import.meta.url), "utf8");
-  assert.match(css, /\.mk-dt-table tfoot td \{\n  position: sticky; bottom: 0;[^}]*font-weight: 600;[^}]*box-shadow: inset 0 1px 0 var\(--border\);/);
-  assert.match(css, /\.mk-dt-table tfoot td\.mk-dt-pin \{ z-index: 3;/);
+  assert.match(css, /\.mk-dt-table tfoot td(?::where\(\.mk-dt-table > \* > tr > \*\))? \{\n  position: sticky; bottom: 0;[^}]*font-weight: 600;[^}]*box-shadow: inset 0 1px 0 var\(--border\);/);
+  assert.match(css, /\.mk-dt-table tfoot td\.mk-dt-pin(?::where\(\.mk-dt-table > \* > tr > \*\))? \{ z-index: 3;/);
 });
 
 // ---------------------------------------------------------------------------
