@@ -5,6 +5,7 @@
  * callers may import either path.
  */
 import type { QueryLabels } from "../services/bigquery-labels";
+import type { BigQueryJobPriority } from "../services/bigquery-job-priority";
 import type { PreviewPageInfo } from "../services/query-pagination.service";
 
 /**
@@ -105,6 +106,13 @@ export interface QueryExecuteOptions {
    * Large MERGE/DML jobs need a higher value or we return a false timeout while BQ keeps running.
    */
   bigQueryJobMaxWaitMs?: number;
+  /**
+   * BigQuery only: the job's priority. Unset: the enclosing
+   * withBigQueryJobPriority context, else INTERACTIVE. Sync writes pass
+   * syncWritePriority() (BATCH). With BATCH, bigQueryJobMaxWaitMs counts
+   * from the job's start, not its creation. See bigquery-job-priority.ts.
+   */
+  priority?: BigQueryJobPriority;
   /**
    * BigQuery only: fail the job rather than bill more than this many bytes
    * (`maximumBytesBilled`). Unset: no cap. Set for agent and MCP reads.

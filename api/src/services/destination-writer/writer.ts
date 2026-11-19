@@ -23,6 +23,7 @@ import {
   TablePartitioning,
 } from "../../databases/driver";
 import { databaseRegistry } from "../../databases/registry";
+import { asSyncWrite } from "../bigquery-job-priority";
 import { loggers } from "../../logging";
 import {
   ConnectionConfig,
@@ -243,7 +244,7 @@ export class DestinationWriter {
    */
   async prepareFullSync(options: WriteOptions = {}): Promise<void> {
     if (this.isTableDestination()) {
-      await this.prepareSqlStaging(options);
+      await asSyncWrite(() => this.prepareSqlStaging(options));
     } else {
       await prepareMongoStaging(this.config, options);
     }
@@ -262,7 +263,7 @@ export class DestinationWriter {
     }
 
     if (this.isTableDestination()) {
-      return this.writeBatchToTable(rows, options);
+      return asSyncWrite(() => this.writeBatchToTable(rows, options));
     } else {
       return writeBatchToMongo(this.config, rows, options, this.stagingActive);
     }
@@ -277,7 +278,7 @@ export class DestinationWriter {
     }
 
     if (this.isTableDestination()) {
-      await this.finalizeSqlSync(options);
+      await asSyncWrite(() => this.finalizeSqlSync(options));
     } else {
       await finalizeMongoSync(this.config, options);
     }
@@ -293,7 +294,7 @@ export class DestinationWriter {
     }
 
     if (this.isTableDestination()) {
-      await this.cleanupSqlStaging(options);
+      await asSyncWrite(() => this.cleanupSqlStaging(options));
     } else {
       await cleanupMongoStaging(this.config, options);
     }
@@ -316,11 +317,11 @@ export class DestinationWriter {
           error: "SQL destination not configured",
         };
       }
-      const result = await this.driver.deleteBatch?.(
-        this.connection,
-        this.config.tableDestination.tableName,
-        keyFilters,
-        this.getInsertOptionsWithLayout(),
+      const { driver, connection } = this;
+      const tableName = this.config.tableDestination.tableName;
+      const layout = this.getInsertOptionsWithLayout();
+      const result = await asSyncWrite(() =>
+        driver.deleteBatch?.(connection, tableName, keyFilters, layout),
       );
       if (!result) {
         return {

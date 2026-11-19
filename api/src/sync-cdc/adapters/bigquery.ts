@@ -62,6 +62,7 @@ import {
   fullTableName,
   retryOnQuota,
   runBigQuery,
+  runBigQueryWrite,
   type BigQueryTarget,
 } from "./bigquery-target";
 
@@ -140,7 +141,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const tmp = `${live}__repart_${Date.now().toString(36)}`;
 
     const run = async (sql: string) => {
-      const r = await runBigQuery(target, sql, {
+      const r = await runBigQueryWrite(target, sql, {
         bigQueryJobMaxWaitMs: 15 * 60 * 1000,
       });
       if (!r.success) throw new Error(r.error || `BigQuery DDL failed: ${sql}`);
@@ -546,7 +547,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const maxWaitMs = mergeMaxWaitMs();
     await retryOnQuota(
       async () => {
-        const mergeResult = await runBigQuery(target, mergeStmt, {
+        const mergeResult = await runBigQueryWrite(target, mergeStmt, {
           bigQueryJobMaxWaitMs: maxWaitMs,
         });
         if (!mergeResult.success) {
@@ -577,7 +578,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   /** Full Refresh | Overwrite: clear the live table (no-op when absent). */
   async truncateLiveTable(layout: CdcEntityLayout): Promise<void> {
     const target = await this.resolveBqClient();
-    const result = await runBigQuery(
+    const result = await runBigQueryWrite(
       target,
       `DELETE FROM ${fullTableName(target, layout.tableName)} WHERE TRUE`,
     );
@@ -802,7 +803,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       }
       await retryOnQuota(
         async () => {
-          const result = await runBigQuery(
+          const result = await runBigQueryWrite(
             target,
             `DELETE FROM ${fullLive} WHERE ${where}`,
           );

@@ -10,6 +10,10 @@ import { loggers } from "../../../logging";
 import { bigQueryJobLabels } from "../../../services/bigquery-labels";
 import { createBigQueryPollBudget } from "../../../services/bigquery-poll-budget";
 import {
+  batchPendingMaxWaitMs,
+  resolveBigQueryJobPriority,
+} from "../../../services/bigquery-job-priority";
+import {
   buildBigQueryCursor,
   checkPreviewQuerySafety,
   decodePreviewCursor,
@@ -77,6 +81,41 @@ interface QueryResponse {
   pageToken?: string;
   errors?: Array<{ reason?: string; message?: string }>;
   numDmlAffectedRows?: string;
+}
+
+/** The longest pause between two jobs.get checks on a queued BATCH job. */
+const BATCH_PENDING_POLL_CAP_MS = 10_000;
+
+/** The part of a jobs.get answer read here. */
+interface BigQueryJobResource {
+  status?: { state?: "PENDING" | "RUNNING" | "DONE" };
+}
+
+/**
+ * A jobs.insert body for a BATCH query, from the jobs.query body the engine
+ * builds: location moves to jobReference, labels and jobTimeoutMs to
+ * configuration, maximumBytesBilled to configuration.query.
+ */
+export function batchJobInsertBody(
+  projectId: string,
+  queryBody: Record<string, unknown>,
+): Record<string, unknown> {
+  const queryConfig: Record<string, unknown> = {
+    query: queryBody.query,
+    useLegacySql: false,
+    priority: "BATCH",
+  };
+  if (queryBody.maximumBytesBilled !== undefined) {
+    queryConfig.maximumBytesBilled = queryBody.maximumBytesBilled;
+  }
+  const configuration: Record<string, unknown> = { query: queryConfig };
+  if (queryBody.labels) configuration.labels = queryBody.labels;
+  if (queryBody.jobTimeoutMs !== undefined) {
+    configuration.jobTimeoutMs = queryBody.jobTimeoutMs;
+  }
+  const jobReference: Record<string, unknown> = { projectId };
+  if (queryBody.location) jobReference.location = queryBody.location;
+  return { jobReference, configuration };
 }
 
 interface RunningJob {
@@ -251,7 +290,11 @@ export class BigQueryEngine implements QueryEngine {
         Math.min(10000, options?.batchSize || 1000),
       );
 
-      // Start the query
+      // Start the query. jobs.query has no priority field, so a BATCH job
+      // goes through jobs.insert and is then read like any other.
+      const priority = isLocalBigQueryEmulator(api_base_url)
+        ? "INTERACTIVE"
+        : resolveBigQueryJobPriority(options?.priority);
       const startBody: Record<string, unknown> = {
         query,
         useLegacySql: false,
@@ -262,12 +305,18 @@ export class BigQueryEngine implements QueryEngine {
       if (labels) startBody.labels = labels;
       applyAgentJobCaps(startBody, caps);
       checkAborted();
-      let response = await client.post(
-        `/projects/${project_id}/queries`,
-        startBody,
-      );
+      let response =
+        priority === "BATCH"
+          ? await client.post(
+              `/projects/${project_id}/jobs`,
+              batchJobInsertBody(project_id, startBody),
+            )
+          : await client.post(`/projects/${project_id}/queries`, startBody);
 
-      let data: QueryResponse = response.data || {};
+      let data: QueryResponse =
+        priority === "BATCH"
+          ? { jobComplete: false, jobReference: response.data?.jobReference }
+          : response.data || {};
       const jobId: string | undefined = data.jobReference?.jobId;
       const jobLocation: string | undefined =
         data.jobReference?.location || configuredLocation;
@@ -299,6 +348,33 @@ export class BigQueryEngine implements QueryEngine {
         60 * 60 * 1000,
       );
       const pollIntervalMs = this.getPollIntervalMs();
+      // A BATCH job may queue before it starts. Its run budget counts from
+      // the start, so a queued sync write is never cancelled as a timeout.
+      if (priority === "BATCH" && jobId) {
+        const pendingMaxMs = batchPendingMaxWaitMs();
+        const started = await this.waitForBatchJobStart({
+          client,
+          projectId: project_id,
+          jobId,
+          location: jobLocation,
+          pendingMaxMs,
+          pollIntervalMs,
+          checkAborted,
+        });
+        if (!started) {
+          const stopped = await this.cancelAbandonedJob({
+            client,
+            projectId: project_id,
+            jobId,
+            location: jobLocation,
+            executionId,
+          });
+          return {
+            success: false,
+            error: `BATCH query still queued after ${pendingMaxMs / 1000} seconds${abandonedSuffix(stopped)}`,
+          };
+        }
+      }
       // A wall-clock deadline: see bigquery-poll-budget.ts for why counting
       // only the sleeps turned 5 minutes into 55.
       const budget = createBigQueryPollBudget(maxWaitMs);
@@ -404,6 +480,48 @@ export class BigQueryEngine implements QueryEngine {
       };
     } finally {
       if (executionId) this.runningJobs.delete(executionId);
+    }
+  }
+
+  /**
+   * Wait while a BATCH job is PENDING (jobs.get). True once it runs or is
+   * done; false when it is still queued after `pendingMaxMs`.
+   */
+  async waitForBatchJobStart(input: {
+    client: AxiosInstance;
+    projectId: string;
+    jobId: string;
+    location?: string;
+    pendingMaxMs: number;
+    pollIntervalMs: number;
+    checkAborted: () => void;
+  }): Promise<boolean> {
+    const deadline = Date.now() + input.pendingMaxMs;
+    const params: Record<string, unknown> = {};
+    if (input.location) params.location = input.location;
+    // Back off to 10 s: dozens of queued sync jobs must not flood jobs.get.
+    let waitMs = input.pollIntervalMs;
+    for (;;) {
+      input.checkAborted();
+      const response = await input.client.get(
+        `/projects/${input.projectId}/jobs/${input.jobId}`,
+        { params },
+      );
+      const state = (response.data as BigQueryJobResource | undefined)?.status
+        ?.state;
+      if (state !== "PENDING") return true;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        logger.warn("BATCH job still pending; giving up", {
+          jobId: input.jobId,
+          pendingMaxMs: input.pendingMaxMs,
+        });
+        return false;
+      }
+      await new Promise(resolve =>
+        setTimeout(resolve, Math.min(waitMs, remaining)),
+      );
+      waitMs = Math.min(waitMs * 2, BATCH_PENDING_POLL_CAP_MS);
     }
   }
 

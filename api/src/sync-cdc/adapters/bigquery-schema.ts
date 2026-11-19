@@ -19,6 +19,7 @@ import {
   fullTableName,
   retryOnQuota,
   runBigQuery,
+  runBigQueryWrite,
   type BigQueryTarget,
 } from "./bigquery-target";
 
@@ -336,10 +337,15 @@ export async function evolveSchemaIfNeeded(
   });
 
   /** One evolution step, retried on quota errors. */
-  const step = (label: string, sql: string, failure: string) =>
+  const step = (
+    label: string,
+    sql: string,
+    failure: string,
+    run: typeof runBigQuery = runBigQuery,
+  ) =>
     retryOnQuota(
       async () => {
-        const r = await runBigQuery(target, sql);
+        const r = await run(target, sql);
         if (!r.success) throw new Error(r.error || failure);
       },
       { label },
@@ -362,6 +368,7 @@ export async function evolveSchemaIfNeeded(
         `evolveSchema:UPDATE(${column})`,
         `UPDATE ${fullLive} SET ${escId(tmpCol)} = ${buildCastExpression(escId(column), expectedType)} WHERE 1=1`,
         "UPDATE cast failed",
+        runBigQueryWrite,
       );
       await step(
         `evolveSchema:RENAME(${column})`,
