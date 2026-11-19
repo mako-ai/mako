@@ -7,7 +7,7 @@ const dir = new URL("./components/", import.meta.url);
 const files = readdirSync(dir).filter(f => f.endsWith(".tsx"));
 
 test("components: the registry's new-york-v4 files; changes are the cn import and marked thin props", () => {
-  assert.deepEqual(files.sort(), ["alert.tsx", "avatar.tsx", "badge.tsx", "button.tsx", "calendar.tsx", "card.tsx", "collapsible.tsx", "command.tsx", "dialog.tsx", "input.tsx", "label.tsx", "popover.tsx", "progress.tsx", "select.tsx", "separator.tsx", "sheet.tsx", "skeleton.tsx", "slider.tsx", "switch.tsx", "table.tsx", "tabs.tsx", "toggle-group.tsx", "toggle.tsx", "tooltip.tsx"]);
+  assert.deepEqual(files.sort(), ["alert.tsx", "avatar.tsx", "badge.tsx", "button.tsx", "calendar.tsx", "card.tsx", "collapsible.tsx", "command.tsx", "dialog.tsx", "input.tsx", "label.tsx", "period-picker.tsx", "popover.tsx", "progress.tsx", "select.tsx", "separator.tsx", "sheet.tsx", "skeleton.tsx", "slider.tsx", "switch.tsx", "table.tsx", "tabs.tsx", "toggle-group.tsx", "toggle.tsx", "tooltip.tsx"]);
   for (const f of files) {
     const src = readFileSync(new URL(f, dir), "utf8");
     if (/\bcn\(/.test(src)) assert.match(src, /import \{ cn \} from "\.\.\/menu\/utils"/, `${f} imports the one cn`);
