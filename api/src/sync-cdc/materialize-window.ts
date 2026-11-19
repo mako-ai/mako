@@ -18,8 +18,12 @@
  * repartition) skip the window.
  */
 
-/** CDC_MATERIALIZE_WINDOW_MS, else 60 s. 0 turns coalescing off. */
-export const DEFAULT_CDC_MATERIALIZE_WINDOW_MS = 60_000;
+/**
+ * CDC_MATERIALIZE_WINDOW_MS, else 300 s. 0 turns coalescing off.
+ * 300 s: on 19 Nov 2026 it cut realadvisor-prod's CDC runs 53% (60 s: 4%,
+ * because the webhook dispatcher already fires once a minute per entity).
+ */
+export const DEFAULT_CDC_MATERIALIZE_WINDOW_MS = 300_000;
 
 /** At most 15 min: a run sleeps inside its 30 min finish timeout. */
 const MAX_CDC_MATERIALIZE_WINDOW_MS = 15 * 60_000;

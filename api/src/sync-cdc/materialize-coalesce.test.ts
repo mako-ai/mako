@@ -495,14 +495,14 @@ describe("late sparse rows: as close to event-time truth as today", () => {
 });
 
 describe("materialize window", () => {
-  it("defaults to 60 s, reads CDC_MATERIALIZE_WINDOW_MS, caps at 15 min", () => {
+  it("defaults to 300 s, reads CDC_MATERIALIZE_WINDOW_MS, caps at 15 min", () => {
     expect(cdcMaterializeWindowMs({})).toBe(DEFAULT_CDC_MATERIALIZE_WINDOW_MS);
-    expect(
-      cdcMaterializeWindowMs({ CDC_MATERIALIZE_WINDOW_MS: "300000" }),
-    ).toBe(300_000);
+    expect(cdcMaterializeWindowMs({ CDC_MATERIALIZE_WINDOW_MS: "60000" })).toBe(
+      60_000,
+    );
     expect(cdcMaterializeWindowMs({ CDC_MATERIALIZE_WINDOW_MS: "0" })).toBe(0);
     expect(cdcMaterializeWindowMs({ CDC_MATERIALIZE_WINDOW_MS: "junk" })).toBe(
-      60_000,
+      300_000,
     );
     expect(
       cdcMaterializeWindowMs({ CDC_MATERIALIZE_WINDOW_MS: "99999999" }),
