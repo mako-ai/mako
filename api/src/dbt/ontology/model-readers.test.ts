@@ -3,6 +3,7 @@ import { extractTables } from "../../apps/app-search";
 import { buildManifestIndex } from "./manifest-index";
 import {
   bindingReadsOf,
+  dbtModelNameOf,
   readerCountsByNode,
   readersOfNode,
   readersOfRelation,
@@ -47,6 +48,22 @@ const APPS = [
     legacy: "select * from analytics_legacy.orders",
   }),
 ];
+
+describe("dbtModelNameOf", () => {
+  it("names the model after the templated schema, quoted or not", () => {
+    expect(dbtModelNameOf("{{ dbt_schema }}.fct_c14__closed_loop")).toBe(
+      "fct_c14__closed_loop",
+    );
+    expect(dbtModelNameOf("`acme-prod.{{dbt_schema}}.Dim_Account`")).toBe(
+      "dim_account",
+    );
+  });
+
+  it("is null for raw tables and bare names", () => {
+    expect(dbtModelNameOf("dbt_prod.dim_account")).toBeNull();
+    expect(dbtModelNameOf("dim_account")).toBeNull();
+  });
+});
 
 describe("referenceReadsNode", () => {
   it("resolves the three ways a binding names a dbt model", () => {

@@ -115,6 +115,16 @@ export function readersOfNode(
 }
 
 /**
+ * The model a reference reads through the templated dbt schema:
+ * `{{ dbt_schema }}.fct_orders` → `fct_orders`. Null for any other reference.
+ */
+export function dbtModelNameOf(reference: string): string | null {
+  const parts = normalizeRelation(reference).split(".");
+  if (parts.length < 2 || !parts.includes(DBT_SCHEMA)) return null;
+  return parts[parts.length - 1] || null;
+}
+
+/**
  * Does a reference name this model through the templated dbt schema?
  * `{{ dbt_schema }}.fct_orders` reads the model `fct_orders` whether or not
  * a manifest knows it yet.
@@ -123,14 +133,8 @@ export function referenceReadsModelName(
   reference: string,
   name: string,
 ): boolean {
-  const parts = normalizeRelation(reference).split(".");
   const model = normalizeRelation(name).split(".").pop();
-  return (
-    !!model &&
-    parts.length >= 2 &&
-    parts.includes(DBT_SCHEMA) &&
-    parts[parts.length - 1] === model
-  );
+  return !!model && dbtModelNameOf(reference) === model;
 }
 
 /**

@@ -413,6 +413,19 @@ export interface IDbtRun extends Document {
     repo: string;
     installationId?: number;
   };
+  /**
+   * App deploys held back until this run finishes (apps/dbt-before-deploy.ts): a
+   * push to main changed dbt models and these apps, whose bindings read dbt
+   * models. Whatever the run's outcome, its end requests their deploys once
+   * (`releasedAt` marks that), so the bindings run against a rebuilt prod.
+   */
+  deploysAfterRun?: {
+    workspaceId: string;
+    appIds: string[];
+    /** The commit of main the push deployed. */
+    sha: string;
+    releasedAt?: Date;
+  };
   startedAt?: Date;
   completedAt?: Date;
   durationMs?: number;
@@ -524,6 +537,18 @@ const DbtRunSchema = new Schema<IDbtRun>(
       ),
       required: false,
     },
+    deploysAfterRun: {
+      type: new Schema(
+        {
+          workspaceId: { type: String, required: true },
+          appIds: { type: [String], default: [] },
+          sha: { type: String, required: true },
+          releasedAt: { type: Date },
+        },
+        { _id: false },
+      ),
+      required: false,
+    },
     startedAt: { type: Date },
     completedAt: { type: Date },
     durationMs: { type: Number },
@@ -585,5 +610,10 @@ const DbtRunSchema = new Schema<IDbtRun>(
 
 DbtRunSchema.index({ workspaceId: 1, projectId: 1, createdAt: -1 });
 DbtRunSchema.index({ jobId: 1, createdAt: -1 }, { sparse: true });
+// One pre-deploy build per pushed commit (apps/dbt-before-deploy.ts).
+DbtRunSchema.index(
+  { "deploysAfterRun.workspaceId": 1, "deploysAfterRun.sha": 1 },
+  { sparse: true },
+);
 
 export const DbtRun = mongoose.model<IDbtRun>("DbtRun", DbtRunSchema);
