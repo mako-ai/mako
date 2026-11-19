@@ -16,10 +16,11 @@
 
 import type { IDbtProject } from "../database/workspace-schema";
 import { RepoRequiredError, appsRequireConnectedRepo } from "../apps/config";
-import { ZERO_OID } from "../apps/git";
+import { ZERO_OID, runGit } from "../apps/git";
 import { commitBranchFor } from "../apps/branch-policy";
 import { authorForUser } from "../apps/workspace-consoles.service";
 import {
+  ensureCommitLocally,
   fetchFromCloud,
   freshenBeforeMainWrite,
   freshenForServe,
@@ -618,4 +619,35 @@ export async function resolveWorkingTreeCommit(
   await freshenBranchForRead(project.workspaceId.toString(), wanted);
   const branch = await resolveBranchOrDefault(repoDir, wanted);
   return resolveCommit(repoDir, `refs/heads/${branch}`);
+}
+
+/**
+ * The committer time of `sha` in the workspace repo, fetched from the mirror
+ * when this instance lacks it. Orders prod manifest promotion: runs pin their
+ * commit at trigger time and Inngest does not finish them in order. Null when
+ * there is no repo or the commit cannot be read.
+ */
+export async function commitTimeOf(
+  project: Pick<IDbtProject, "workspaceId">,
+  sha: string,
+): Promise<Date | null> {
+  try {
+    const repoDir = await repoDirIfExists(project);
+    if (repoDir == null) return null;
+    await ensureCommitLocally(project.workspaceId.toString(), sha);
+    const { stdout } = await runGit([
+      "-C",
+      repoDir,
+      "show",
+      "-s",
+      "--format=%ct",
+      `${sha}^{commit}`,
+    ]);
+    const seconds = Number(stdout.trim());
+    return Number.isFinite(seconds) && seconds > 0
+      ? new Date(seconds * 1000)
+      : null;
+  } catch {
+    return null;
+  }
 }
