@@ -41,6 +41,8 @@ import {
   DBT_AUTO_DISABLE_AFTER_FAILURES,
   finalizeCancelledDbtRun,
   promotesProdManifest,
+  promoteProdManifest,
+  prodManifestOrderKey,
   releaseHeldDeploys,
   triggerDbtJobRun,
 } from "../../dbt/dbt-run.service";
@@ -677,7 +679,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       if (!failed) {
         const finishedRun = await DbtRun.findById(runObjectId)
           .select(
-            "artifactKeys environment gitBranch workingTreeUserId localOverlay deploysAfterRun",
+            "workspaceId createdAt sourceSha artifactKeys environment gitBranch workingTreeUserId localOverlay deploysAfterRun",
           )
           .lean();
         if (finishedRun?.artifactKeys?.manifest) {
@@ -693,15 +695,16 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             finishedRun.environment === resolveProdLikeEnvironmentName(project);
           // Only a build of committed main is prod state: never a laptop
           // overlay, a working tree or a PR head (promotesProdManifest).
+          // Compare-and-set on commit order: an older commit's run that
+          // finishes last must not overwrite a newer manifest.
           if (promotesProdManifest(finishedRun, prodLike)) {
-            await DbtProject.updateOne(
-              { _id: new Types.ObjectId(data.projectId) },
-              {
-                $set: {
-                  lastProdManifestKey: finishedRun.artifactKeys.manifest,
-                },
-              },
-            );
+            await promoteProdManifest({
+              projectId: data.projectId,
+              manifestKey: finishedRun.artifactKeys.manifest,
+              committedAt: await prodManifestOrderKey(finishedRun),
+              sourceSha: finishedRun.sourceSha,
+              runId: data.runId,
+            });
           }
         }
       }

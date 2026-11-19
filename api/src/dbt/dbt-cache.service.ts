@@ -14,8 +14,11 @@
  *      the parsed manifest.
  *   2. dbt_packages/ (+ package-lock.yml) — the installed packages tree.
  *      Caching it lets us skip `dbt deps` (git/registry downloads) when
- *      packages.yml is unchanged. Keyed per (workspace, project) and validated
- *      with a hash of the dependency declarations.
+ *      packages.yml is unchanged. Keyed per (workspace, project) and
+ *      content-addressed by the hash of the dependency declarations
+ *      (`packages/<hash>.tgz`): the key IS the hash, so one atomic put is the
+ *      whole write. Two concurrent writers can never pair one tarball with
+ *      the other's hash, which a separate hash file allowed.
  *
  * Keys live under `dbt-cache/` so they never collide with per-run artifacts
  * (`dbt-artifacts/`).
@@ -50,6 +53,14 @@ function packagesPrefix(scope: DbtCacheScope): string {
 }
 
 const PARTIAL_PARSE_FILE = "partial_parse.msgpack";
+
+/** Where the packages tarball installed from `packagesHash` lives. */
+export function packagesArchiveKey(
+  scope: DbtCacheScope,
+  packagesHash: string,
+): string {
+  return `${packagesPrefix(scope)}/packages/${sanitizeSegment(packagesHash)}.tgz`;
+}
 
 /**
  * sha256 of the dependency declarations, or null when the project declares no
@@ -109,18 +120,15 @@ export async function loadDbtCaches(
   packagesHash: string | null,
 ): Promise<LoadedDbtCaches> {
   const partialParseKey = `${parsePrefix(scope)}/${PARTIAL_PARSE_FILE}`;
-  const hashKey = `${packagesPrefix(scope)}/packages_hash.txt`;
 
-  const [partialParse, cachedHashBuf] = await Promise.all([
+  // The key carries the hash, so whatever sits there was installed from
+  // exactly these declarations. A miss is a cold cache.
+  const [partialParse, packages] = await Promise.all([
     readKey(partialParseKey),
-    packagesHash ? readKey(hashKey) : Promise.resolve(undefined),
+    packagesHash
+      ? readKey(packagesArchiveKey(scope, packagesHash))
+      : Promise.resolve(undefined),
   ]);
-
-  const cachedHash = cachedHashBuf?.toString("utf8").trim();
-  const packagesFresh = Boolean(packagesHash) && cachedHash === packagesHash;
-  const packages = packagesFresh
-    ? await readKey(`${packagesPrefix(scope)}/dbt_packages.tgz`)
-    : undefined;
 
   return { partialParse, packages, packagesFresh: Boolean(packages) };
 }
@@ -150,16 +158,10 @@ export async function savePackagesCache(
   packagesHash: string,
 ): Promise<void> {
   try {
-    const store = getArtifactStore();
-    await store.putBuffer(
+    await getArtifactStore().putBuffer(
       archive,
-      `${packagesPrefix(scope)}/dbt_packages.tgz`,
+      packagesArchiveKey(scope, packagesHash),
       "application/gzip",
-    );
-    await store.putBuffer(
-      Buffer.from(packagesHash, "utf8"),
-      `${packagesPrefix(scope)}/packages_hash.txt`,
-      "text/plain",
     );
   } catch (error) {
     logger.warn("Failed to save dbt packages cache", {
