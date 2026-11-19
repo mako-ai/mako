@@ -264,8 +264,9 @@ async function readSource(
    * explorer polls every 8 s: an exec into a paused box resumes it, and that
    * poll was waking boxes the idle sweep had just paused. Default "present"
    * keeps opening a file showing uncommitted work (and resuming for it).
+   * "never": the last commit, without asking the sandbox anything.
    */
-  liveness: "present" | "running" = "present",
+  liveness: "present" | "running" | "never" = "present",
 ): Promise<
   | { kind: "box"; ctx: SandboxExecContext; handle: WorktreeHandle }
   | { kind: "repo"; repoDir: string; ref: string; appRoot?: string }
@@ -332,6 +333,7 @@ async function readSource(
   const ctx = boxCtx(handle);
   const present = () => getSandboxProvider().hasSession(ctx);
   const live = await (async () => {
+    if (liveness === "never") return false;
     if (liveness !== "running") return present();
     // Fresh: a cached "not running" can be 10 s stale on this instance. And
     // a failed lookup is not "paused": fall back to the old answer rather
@@ -416,14 +418,28 @@ export interface FileListing {
   truncated: boolean;
   /** Total file count when known (always known unless counting failed). */
   total?: number;
+  /** True when this is the last commit, not the sandbox's working copy. */
+  offline: boolean;
 }
 
 export async function listFiles(
   project: IAppProject,
   userId?: string,
+  options: {
+    /**
+     * false: list the last commit without asking the sandbox. For a server
+     * too busy for a sandbox round trip (concurrency-limit.ts, appPageReads).
+     */
+    box?: boolean;
+  } = {},
 ): Promise<FileListing> {
   // A listing is looking, not using: never wake a paused box for it.
-  const source = await readSource(project, userId, undefined, "running");
+  const source = await readSource(
+    project,
+    userId,
+    undefined,
+    options.box === false ? "never" : "running",
+  );
   const root = appRootFor(project);
   if (source.kind === "box") {
     const listing = await boxListFiles(source.ctx, root, LIST_ENTRY_LIMIT);
@@ -435,6 +451,7 @@ export async function listFiles(
       })),
       truncated: listing.truncated,
       total: listing.total,
+      offline: false,
     };
   }
   const prefix = `${root}/`;
@@ -447,6 +464,7 @@ export async function listFiles(
     entries: truncated ? all.slice(0, LIST_ENTRY_LIMIT) : all,
     truncated,
     total: all.length,
+    offline: true,
   };
 }
 

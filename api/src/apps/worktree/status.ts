@@ -154,6 +154,14 @@ export interface WorktreeStatus {
 export async function worktreeStatus(
   scope: RepoScope,
   userId: string,
+  options: {
+    /**
+     * false: never ask the sandbox. The box's own snapshot still answers
+     * when it has one, else the last commit (`offline: true`). For a server
+     * too busy for a sandbox round trip (concurrency-limit.ts, appPageReads).
+     */
+    box?: boolean;
+  } = {},
 ): Promise<WorktreeStatus | null> {
   const repoDir = await repoForWorkspace(scope.workspaceId);
   const doc = await AppWorktree.findOne({
@@ -214,16 +222,20 @@ export async function worktreeStatus(
   // paused box resumes it. A sleeping box reads as offline (last commit).
   // Tri-state: a failed lookup is not "asleep". It answers the old way
   // (present = live) rather than blank the sidebar's changes for one poll.
-  const state = await boxRunState(ctx, { fresh: true }).catch(
-    () => "unknown" as const,
-  );
-  const running =
-    state === "unknown"
-      ? await getSandboxProvider()
-          .hasSession(ctx)
-          .catch(() => false)
-      : state === "running";
-  const live = running && (await boxHasValidCheckout(ctx).catch(() => false));
+  const live =
+    options.box !== false &&
+    (await (async () => {
+      const state = await boxRunState(ctx, { fresh: true }).catch(
+        () => "unknown" as const,
+      );
+      const running =
+        state === "unknown"
+          ? await getSandboxProvider()
+              .hasSession(ctx)
+              .catch(() => false)
+          : state === "running";
+      return running && (await boxHasValidCheckout(ctx).catch(() => false));
+    })());
 
   if (!live) {
     const branchHead = await resolveCommit(repoDir, `refs/heads/${doc.branch}`);

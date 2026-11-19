@@ -33,6 +33,7 @@ import {
   actorOf,
 } from "./shared";
 import { fail } from "../lib/respond";
+import { servedWithoutSlot } from "../../middleware/concurrency-limit";
 
 export const appsFileRoutes = createRouter();
 
@@ -59,7 +60,11 @@ appsFileRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const listing = await listFiles(loaded.project, loaded.userId);
+      // A busy server lists the last commit rather than refuse (appPageReads).
+      const busy = servedWithoutSlot(c);
+      const listing = await listFiles(loaded.project, loaded.userId, {
+        box: !busy,
+      });
       return c.json(
         {
           success: true as const,
@@ -69,6 +74,10 @@ appsFileRoutes.openapi(
           // instead of shipping a response the client dies rendering.
           truncated: listing.truncated,
           total: listing.total,
+          offline: listing.offline,
+          // The last commit because the server was busy, not because the box
+          // sleeps. The app page labels it (AppBusyReadNotice).
+          busy: busy && listing.offline,
         },
         200,
       );
@@ -225,8 +234,21 @@ appsFileRoutes.openapi(
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const userId = actorOf(loaded);
-      const status = await worktreeStatus(scopeOf(loaded.project), userId);
-      return c.json({ success: true as const, status }, 200);
+      // A busy server answers from the last commit rather than refuse
+      // (appPageReads): `offline: true`, as for a sleeping box, and
+      // `busy: true` so the app page can say why.
+      const busy = servedWithoutSlot(c);
+      const status = await worktreeStatus(scopeOf(loaded.project), userId, {
+        box: !busy,
+      });
+      return c.json(
+        {
+          success: true as const,
+          status,
+          busy: busy && status?.offline === true,
+        },
+        200,
+      );
     } catch (error) {
       return handleError(c, error);
     }

@@ -23,9 +23,9 @@ import { sessionManager } from "../auth/session";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { enrichContextWithWorkspace } from "../logging";
 import {
+  appPageReads,
   concurrencyLimit,
   repoWorkPool,
-  shedWhileCloning,
 } from "../middleware/concurrency-limit";
 import { serverTiming, timed } from "../middleware/server-timing";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
@@ -153,9 +153,10 @@ appsRoutes.use("*", async (c: AuthenticatedContext, next) => {
 
 // Git walks and sandbox round trips: capped per instance (2026-10-19 — one
 // slow endpoint here starved the whole service). GET only, so a busy pool
-// never refuses a save.
+// never refuses a save. A read that waits 3 s for a slot answers from the
+// last commit instead of reading the sandbox (appPageReads).
 for (const route of ["/:id/branches", "/:id/files", "/:id/status"]) {
-  appsRoutes.on("GET", route, concurrencyLimit(repoWorkPool, shedWhileCloning));
+  appsRoutes.on("GET", route, concurrencyLimit(repoWorkPool, appPageReads));
 }
 
 // The sub-routers, in the order their routes were always registered: Hono

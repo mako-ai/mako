@@ -72,3 +72,21 @@ export function refreshGitDerivedExplorers(
     );
   }
 }
+
+/**
+ * Record whether one of an app's reads came back `busy` (the last commit,
+ * served because the server had no slot for the live box). Clears the flag
+ * on a live answer, and drops the app's entry once no read is busy.
+ */
+export function setBusyRead(
+  busyReadByApp: Record<string, { files?: true; status?: true }>,
+  appId: string,
+  read: "files" | "status",
+  busy: boolean,
+): void {
+  const entry = busyReadByApp[appId] ?? {};
+  if (busy) entry[read] = true;
+  else delete entry[read];
+  if (entry.files || entry.status) busyReadByApp[appId] = entry;
+  else delete busyReadByApp[appId];
+}
