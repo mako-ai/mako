@@ -389,6 +389,9 @@ function testMoneyMovementEntitiesAvailable() {
     "checkout_sessions",
     "setup_intents",
     "early_fraud_warnings",
+    "invoice_line_items",
+    "subscription_items",
+    "events",
   ]) {
     assert.ok(entities.includes(entity), `${entity} should be syncable`);
   }
@@ -705,6 +708,153 @@ async function testUpdateWebhookSubscriptionReturnsNullWithoutMatch() {
   assert.equal(updates.length, 0);
 }
 
+async function testInvoiceLineItemsWalkInvoices() {
+  const connector = createConnector();
+  const invoiceParams: Array<Record<string, unknown>> = [];
+  const lineCalls: string[] = [];
+  (connector as any).stripe = {
+    invoices: {
+      list: async (params: Record<string, unknown>) => {
+        invoiceParams.push(params);
+        return {
+          data: [
+            {
+              id: "in_short",
+              created: CREATED_EPOCH,
+              lines: { data: [{ id: "il_1" }], has_more: false },
+            },
+            {
+              id: "in_long",
+              created: CREATED_EPOCH + 1,
+              lines: { data: [{ id: "il_2" }], has_more: true },
+            },
+          ],
+          has_more: true,
+        };
+      },
+      listLineItems: (invoiceId: string) => {
+        lineCalls.push(invoiceId);
+        return pagedChildren([{ id: "il_2" }, { id: "il_3" }]);
+      },
+    },
+  };
+
+  const records: Array<Record<string, unknown>> = [];
+  const state = await connector.fetchEntityChunk({
+    entity: "invoice_line_items",
+    since: new Date(CREATED_MS),
+    maxIterations: 1,
+    onBatch: async (batch: Array<Record<string, unknown>>) => {
+      records.push(...batch);
+    },
+  } as any);
+
+  // `since` bounds the invoice walk; only a cut-short list costs a call.
+  assert.deepEqual(invoiceParams[0].created, { gte: CREATED_EPOCH });
+  assert.deepEqual(lineCalls, ["in_long"]);
+  assert.deepEqual(
+    records.map(r => [r.id, r.invoice, r.invoice_id, r.invoice_created]),
+    [
+      ["il_1", "in_short", "in_short", CREATED_EPOCH],
+      ["il_2", "in_long", "in_long", CREATED_EPOCH + 1],
+      ["il_3", "in_long", "in_long", CREATED_EPOCH + 1],
+    ],
+  );
+  // A line's time is its invoice's.
+  assert.equal(
+    connector
+      .normalizeBackfillRecord("invoice_line_items", records[0])
+      ?.sourceTs.getTime(),
+    CREATED_MS,
+  );
+  assert.equal(state.cursor, "in_long");
+  assert.equal(state.hasMore, true);
+}
+
+async function testSubscriptionItemsWalkEverySubscription() {
+  const connector = createConnector();
+  const subParams: Array<Record<string, unknown>> = [];
+  (connector as any).stripe = {
+    subscriptions: {
+      list: async (params: Record<string, unknown>) => {
+        subParams.push(params);
+        return {
+          data: [
+            {
+              id: "sub_1",
+              current_period_start: 10,
+              current_period_end: 20,
+              items: {
+                data: [{ id: "si_1", subscription: "sub_1", created: 5 }],
+                has_more: false,
+              },
+            },
+          ],
+          has_more: false,
+        };
+      },
+    },
+  };
+  const records: Array<Record<string, unknown>> = [];
+  await connector.fetchEntity({
+    entity: "subscription_items",
+    onBatch: async (batch: Array<Record<string, unknown>>) => {
+      records.push(...batch);
+    },
+  } as any);
+  // Canceled subscriptions' items too.
+  assert.equal(subParams[0].status, "all");
+  assert.deepEqual(records, [
+    {
+      id: "si_1",
+      subscription: "sub_1",
+      created: 5,
+      current_period_start: 10,
+      current_period_end: 20,
+    },
+  ]);
+}
+
+async function testEventsListWithCreatedAnchor() {
+  const connector = createConnector();
+  const calls: Array<Record<string, unknown>> = [];
+  (connector as any).stripe = {
+    events: {
+      list: async (params: Record<string, unknown>) => {
+        calls.push(params);
+        return {
+          data: [{ id: "evt_1", created: CREATED_EPOCH }],
+          has_more: false,
+        };
+      },
+    },
+  };
+  await connector.fetchEntity({
+    entity: "events",
+    since: new Date(CREATED_MS),
+    onBatch: async () => {},
+  } as any);
+  assert.deepEqual(calls[0].created, { gte: CREATED_EPOCH });
+}
+
+function testChildEntitiesSubscribeTheirParentEvents() {
+  const connector = createConnector();
+  const lineEvents = connector.getWebhookEventsForEntities([
+    "invoice_line_items",
+  ]);
+  assert.ok(lineEvents.includes("invoice.paid"));
+  assert.ok(lineEvents.every(event => event.startsWith("invoice.")));
+  const itemEvents = connector.getWebhookEventsForEntities([
+    "subscription_items",
+  ]);
+  assert.ok(itemEvents.includes("customer.subscription.updated"));
+  assert.ok(
+    itemEvents.every(event => event.startsWith("customer.subscription.")),
+  );
+  // Events are polled only: nothing to subscribe.
+  assert.deepEqual(connector.getWebhookEventsForEntities(["events"]), []);
+}
+
 async function main() {
   testConfigValidationRequiresApiKey();
   testAvailableEntitiesIncludeModernEntities();
@@ -732,6 +882,10 @@ async function main() {
   await testUpdateWebhookSubscriptionRetargetsInPlace();
   await testUpdateWebhookSubscriptionHandlesDuplicates();
   await testUpdateWebhookSubscriptionReturnsNullWithoutMatch();
+  await testInvoiceLineItemsWalkInvoices();
+  await testSubscriptionItemsWalkEverySubscription();
+  await testEventsListWithCreatedAnchor();
+  testChildEntitiesSubscribeTheirParentEvents();
 }
 
 main().catch((error: unknown) => {

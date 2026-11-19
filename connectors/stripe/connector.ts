@@ -2,7 +2,7 @@
  * Stripe on @makoai/connector-sdk: `spec`, `check`, `discover` and `read`.
  *
  * A port of the in-process connector in `api/src/connectors/stripe/`, with the
- * same 22 entities, schemas, cursors and pagination. Nothing runs it in
+ * same 25 entities, schemas, cursors and pagination. Nothing runs it in
  * production yet. `fixtures/parity.mjs` runs both against the same recorded
  * Stripe responses and compares them entity by entity.
  *
@@ -108,7 +108,19 @@ const ENTITIES: Array<[name: string, label: string, incremental: boolean]> = [
   ["checkout_sessions", "Checkout Sessions", true],
   ["setup_intents", "Setup Intents", true],
   ["early_fraud_warnings", "Early Fraud Warnings", true],
+  // Rows inside a parent object: an invoice's lines, a subscription's items.
+  // Read with their parent's list page, `since` on the parent's `created`,
+  // and carried by the parent's webhooks.
+  ["invoice_line_items", "Invoice Line Items", true],
+  ["subscription_items", "Subscription Items", true],
+  // The account's event log. Stripe keeps 30 days; polled only.
+  ["events", "Events", true],
 ];
+
+/** A line has no `created`: its time is its invoice's. */
+const CURSOR_FIELD: Record<string, string> = {
+  invoice_line_items: "invoice_created",
+};
 
 /**
  * Host, protocol and port from `api_base_url`, as the in-process connector
@@ -166,7 +178,10 @@ function entity(
     label,
     primaryKey: ["id"],
     ...(incremental
-      ? { cursorField: "created", incremental: "created-anchor" as const }
+      ? {
+          cursorField: CURSOR_FIELD[name] ?? "created",
+          incremental: "created-anchor" as const,
+        }
       : {}),
     layout: LAYOUT,
     schema: STRIPE_ENTITY_SCHEMA_MAP[name],
@@ -211,7 +226,7 @@ function entity(
 
 export default defineConnector<StripeConfig>({
   name: "stripe",
-  version: "1.2.0",
+  version: "1.3.0",
   title: "Stripe",
   documentationUrl: "https://docs.stripe.com/api",
   config: {

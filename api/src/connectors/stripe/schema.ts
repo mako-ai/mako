@@ -520,6 +520,65 @@ export const EARLY_FRAUD_WARNING_SCHEMA: Record<string, ConnectorFieldSchema> =
     payment_intent: s(),
   };
 
+/**
+ * An invoice's `lines`, one row per line. A line has no `created`; the
+ * invoice's id and `created` are added (`invoice`, `invoice_id`,
+ * `invoice_created`), as the Airbyte stream had them.
+ */
+export const INVOICE_LINE_ITEM_SCHEMA: Record<string, ConnectorFieldSchema> = {
+  ...COMMON_STRIPE_SCHEMA,
+  amount: i(),
+  amount_excluding_tax: i(),
+  currency: s(),
+  description: s(),
+  discount_amounts: j(),
+  discountable: b(),
+  discounts: j(),
+  invoice: s(),
+  invoice_id: s(),
+  invoice_created: ts(),
+  invoice_item: s(),
+  period: j(),
+  plan: j(),
+  price: j(),
+  proration: b(),
+  proration_details: j(),
+  quantity: i(),
+  subscription: s(),
+  subscription_item: s(),
+  tax_amounts: j(),
+  tax_rates: j(),
+  type: s(),
+  unit_amount_excluding_tax: s(),
+};
+
+/**
+ * A subscription's `items`. The billing period comes from the subscription
+ * at API version 2023-10-16 (`current_period_start`, `current_period_end`).
+ */
+export const SUBSCRIPTION_ITEM_SCHEMA: Record<string, ConnectorFieldSchema> = {
+  ...COMMON_STRIPE_SCHEMA,
+  billing_thresholds: j(),
+  current_period_end: ts(),
+  current_period_start: ts(),
+  discounts: j(),
+  plan: j(),
+  price: j(),
+  quantity: i(),
+  subscription: s(),
+  tax_rates: j(),
+};
+
+/** `GET /v1/events`: every event of the last 30 days, Stripe's retention. */
+export const EVENT_SCHEMA: Record<string, ConnectorFieldSchema> = {
+  ...COMMON_STRIPE_SCHEMA,
+  api_version: s(),
+  data: j(),
+  pending_webhooks: i(),
+  request: j(),
+  type: s(),
+};
+
 export const STRIPE_ENTITY_SCHEMA_MAP: Record<
   string,
   Record<string, ConnectorFieldSchema>
@@ -546,6 +605,9 @@ export const STRIPE_ENTITY_SCHEMA_MAP: Record<
   checkout_sessions: CHECKOUT_SESSION_SCHEMA,
   setup_intents: SETUP_INTENT_SCHEMA,
   early_fraud_warnings: EARLY_FRAUD_WARNING_SCHEMA,
+  invoice_line_items: INVOICE_LINE_ITEM_SCHEMA,
+  subscription_items: SUBSCRIPTION_ITEM_SCHEMA,
+  events: EVENT_SCHEMA,
 };
 
 export function resolveStripeEntitySchema(

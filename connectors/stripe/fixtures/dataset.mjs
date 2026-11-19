@@ -65,6 +65,62 @@ const address = i => ({
   state: null,
 });
 
+/**
+ * An invoice line in Stripe's 2023-10-16 shape. It has no `created` and no
+ * invoice id: the connectors add `invoice`, `invoice_id`, `invoice_created`.
+ */
+const invoiceLine = (invoice, n, value, created) => ({
+  id: `il_fx${invoice}_${pad(n)}`,
+  object: "line_item",
+  amount: value,
+  amount_excluding_tax: value,
+  currency: "eur",
+  description: `1 × Fixture Plan (at €${value / 100} / month)`,
+  discount_amounts: [],
+  discountable: true,
+  discounts: [],
+  invoice_item: null,
+  livemode: false,
+  metadata: {},
+  period: { end: created, start: created - 30 * 86400 },
+  plan: { id: "price_fx0001", object: "plan", amount: value },
+  price: { id: "price_fx0001", object: "price", unit_amount: value },
+  proration: false,
+  proration_details: { credited_items: null },
+  quantity: 1,
+  subscription: `sub_fx${invoice}`,
+  subscription_item: `si_fx${invoice}`,
+  tax_amounts: [],
+  tax_rates: [],
+  type: "subscription",
+  unit_amount_excluding_tax: String(value),
+});
+
+/** A subscription item in Stripe's 2023-10-16 shape: no `livemode`, no period. */
+const subscriptionItem = (subscription, n, created, price) => ({
+  id: n === 1 ? `si_fx${subscription}` : `si_fx${subscription}_${pad(n)}`,
+  object: "subscription_item",
+  billing_thresholds: null,
+  created,
+  discounts: [],
+  metadata: {},
+  plan: { id: price, object: "plan", amount: 5900 },
+  price: { id: price, object: "price", unit_amount: 5900 },
+  quantity: n,
+  subscription: `sub_fx${subscription}`,
+  tax_rates: [],
+});
+
+/** Embedded lists hold 10 rows; the rest is on the child endpoint. */
+const EMBEDDED = 10;
+const embedded = (rows, url) => ({
+  object: "list",
+  data: rows.slice(0, EMBEDDED),
+  has_more: rows.length > EMBEDDED,
+  total_count: rows.length,
+  url,
+});
+
 export function buildDataset() {
   const customers = series(1, 130, (i, r, created) => ({
     ...common("customer", `cus_fx${pad(i)}`, created, r),
@@ -161,6 +217,16 @@ export function buildDataset() {
     "trialing",
     "incomplete_expired",
   ];
+  // One subscription holds 12 items, more than a payload embeds.
+  const subscriptionItemsOf = (i, created) =>
+    Array.from({ length: i === 6 ? 12 : 1 }, (_, k) =>
+      subscriptionItem(
+        pad(i),
+        k + 1,
+        created + k,
+        `price_fx${pad(((i - 1 + k) % 9) + 1)}`,
+      ),
+    );
   const subscriptions = series(5, 30, (i, r, created) => {
     const status = STATUSES[i % STATUSES.length];
     const ended = status === "canceled" || status === "incomplete_expired";
@@ -188,19 +254,10 @@ export function buildDataset() {
       description: null,
       discount: null,
       ended_at: ended ? created + 90 * 86400 : null,
-      items: {
-        object: "list",
-        data: [
-          {
-            id: `si_fx${pad(i)}`,
-            object: "subscription_item",
-            price: { id: `price_fx${pad(((i - 1) % 9) + 1)}` },
-            quantity: 1,
-          },
-        ],
-        has_more: false,
-        url: `/v1/subscription_items?subscription=sub_fx${pad(i)}`,
-      },
+      items: embedded(
+        subscriptionItemsOf(i, created),
+        `/v1/subscription_items?subscription=sub_fx${pad(i)}`,
+      ),
       latest_invoice: `in_fx${pad(i)}`,
       pause_collection: null,
       pending_update: null,
@@ -297,6 +354,13 @@ export function buildDataset() {
     status: pick(r, ["needs_response", "won", "lost"]),
   }));
 
+  // One invoice holds 13 lines, more than a payload embeds.
+  const invoiceLinesOf = (i, total, created) =>
+    i === 5
+      ? Array.from({ length: 13 }, (_, k) =>
+          invoiceLine(pad(i), k + 1, 1000 + k * 100, created),
+        )
+      : [invoiceLine(pad(i), 1, total, created)];
   const invoices = series(8, 40, (i, r, created) => {
     const total = amount(r);
     const paid = i % 9 !== 0;
@@ -327,13 +391,10 @@ export function buildDataset() {
       hosted_invoice_url: `https://invoice.stripe.test/i/in_fx${pad(i)}`,
       invoice_pdf: `https://pay.stripe.test/invoice/in_fx${pad(i)}/pdf`,
       issuer: { type: "self" },
-      lines: {
-        object: "list",
-        data: [{ id: `il_fx${pad(i)}`, object: "line_item", amount: total }],
-        has_more: false,
-        total_count: 1,
-        url: `/v1/invoices/in_fx${pad(i)}/lines`,
-      },
+      lines: embedded(
+        invoiceLinesOf(i, total, created),
+        `/v1/invoices/in_fx${pad(i)}/lines`,
+      ),
       number: `FX${pad(i)}-0001`,
       paid,
       paid_out_of_band: i % 17 === 0,
@@ -679,6 +740,31 @@ export function buildDataset() {
     };
   });
 
+  // The event log: 120 events, more than one page. Stripe keeps 30 days.
+  const EVENT_TYPES = ["invoice.paid", "customer.updated", "charge.succeeded"];
+  const events = series(20, 120, (i, r, created) => {
+    const { metadata: _metadata, ...rest } = common(
+      "event",
+      `evt_fx${pad(i)}`,
+      created,
+      r,
+    );
+    return {
+      ...rest,
+      api_version: "2023-10-16",
+      data: {
+        object: { id: `obj_fx${pad(i)}`, object: "fixture" },
+        ...(i % 2 === 0 && { previous_attributes: { status: "open" } }),
+      },
+      pending_webhooks: i % 3,
+      request: {
+        id: i % 4 === 0 ? `req_fx${pad(i)}` : null,
+        idempotency_key: null,
+      },
+      type: EVENT_TYPES[i % EVENT_TYPES.length],
+    };
+  });
+
   return {
     account: {
       id: "acct_fixture",
@@ -713,7 +799,20 @@ export function buildDataset() {
       "checkout/sessions": checkoutSessions,
       setup_intents: setupIntents,
       "radar/early_fraud_warnings": earlyFraudWarnings,
+      events,
     },
+    invoiceLines: new Map(
+      invoices.map((invoice, k) => [
+        invoice.id,
+        invoiceLinesOf(k + 1, invoice.total, invoice.created),
+      ]),
+    ),
+    subscriptionItems: new Map(
+      subscriptions.map((sub, k) => [
+        sub.id,
+        subscriptionItemsOf(k + 1, sub.created),
+      ]),
+    ),
     payoutTransactions,
     customerBalance,
   };

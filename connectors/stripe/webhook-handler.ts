@@ -42,6 +42,12 @@ import type {
 } from "@makoai/connector-sdk";
 import { STRIPE_ENTITY_SCHEMA_MAP } from "./schema.ts";
 import {
+  EMBEDDED_CHILD_PARENTS,
+  childListIsPartial,
+  childRowsOf,
+  type EmbeddedChildEntity,
+} from "./lists.ts";
+import {
   stripeRecordTimestamp,
   stripeSupportedWebhookEvents,
   stripeWebhookEventMapping,
@@ -77,6 +83,10 @@ export const STRIPE_NOT_RETURNED: Readonly<Record<string, readonly string[]>> =
     charges: ["refunds"],
     payment_intents: ["charges"],
     early_fraud_warnings: ["metadata"],
+    // A line has no `created`; a subscription item has no `livemode`.
+    invoice_line_items: ["created"],
+    subscription_items: ["livemode"],
+    events: ["metadata"],
   };
 
 /** How to GET one object of each entity that has webhook events. */
@@ -292,11 +302,80 @@ async function fillRecord(
   };
 }
 
+type Children =
+  | { kind: "records"; records: WebhookChangeRecord[] }
+  | { kind: "deferred"; reason: string }
+  | { kind: "failed"; reason: string };
+
+/**
+ * An invoice's `lines` and a subscription's `items` as records of their own
+ * entity, with the parent's operation and change id, as the in-process
+ * `enrichWebhookCdcRecords` builds them. Only for the child entities the
+ * flow syncs (all when Mako does not say). A list longer than the 10 a
+ * payload embeds is read whole on an upsert; a delete uses what it embeds.
+ * A failed read defers or fails the whole event, so a parent is never
+ * written without all of its children.
+ */
+async function childRecords(
+  deps: StripeWebhookDeps,
+  parent: WebhookChangeRecord,
+  enabled: (entity: string) => boolean,
+  budgetSpent: () => boolean,
+): Promise<Children> {
+  const records: WebhookChangeRecord[] = [];
+  for (const [child, parentEntity] of Object.entries(
+    EMBEDDED_CHILD_PARENTS,
+  ) as Array<[EmbeddedChildEntity, string]>) {
+    if (parent.entity !== parentEntity || !enabled(child)) continue;
+    const fetchMore =
+      parent.operation === "upsert" &&
+      childListIsPartial(child, parent.payload);
+    if (fetchMore && budgetSpent()) {
+      return {
+        kind: "deferred",
+        reason: `Stripe fill budget for this batch is spent; the ${child} of ${parent.recordId} wait for a retry`,
+      };
+    }
+    let rows: Array<Record<string, unknown>> | null;
+    try {
+      rows = await childRowsOf(deps.stripe(), child, parent.payload, {
+        fetchMore,
+      });
+    } catch (error) {
+      const status = (error as { statusCode?: number })?.statusCode;
+      const reason = `Could not read the ${child} of Stripe ${parentEntity} ${parent.recordId}${
+        status ? ` (HTTP ${status})` : ""
+      }: ${error instanceof Error ? error.message : String(error)}`;
+      const transient =
+        typeof status !== "number" || status === 429 || status >= 500;
+      return { kind: transient ? "deferred" : "failed", reason };
+    }
+    for (const row of rows ?? []) {
+      if (typeof row.id !== "string" || !row.id) continue;
+      const sourceTs = stripeRecordTimestamp(row);
+      records.push({
+        entity: child,
+        recordId: row.id,
+        operation: parent.operation,
+        payload: row,
+        ...(sourceTs ? { sourceTs } : {}),
+        changeId: `${parent.changeId || parent.recordId}:${child}:${row.id}`,
+      });
+    }
+  }
+  return { kind: "records", records };
+}
+
 /** A batch in, one outcome per event out, in order. */
 export async function handleStripeWebhookBatch(
   deps: StripeWebhookDeps,
   events: WebhookEvent[],
+  options: { enabledEntities?: string[] } = {},
 ): Promise<WebhookOutcome[]> {
+  const enabledSet = options.enabledEntities
+    ? new Set(options.enabledEntities)
+    : null;
+  const enabled = (entity: string) => !enabledSet || enabledSet.has(entity);
   const now = deps.now ?? (() => Date.now());
   const budgetMs = deps.budgetMs ?? STRIPE_WEBHOOK_FILL_BUDGET_MS;
   const startedAt = now();
@@ -324,11 +403,25 @@ export async function handleStripeWebhookBatch(
       budgetSpent,
     );
     if (filled.kind === "record") {
-      out.push({
-        eventId: event.eventId,
-        outcome: "records",
-        records: [filled.record],
-      });
+      const children = await childRecords(
+        deps,
+        filled.record,
+        enabled,
+        budgetSpent,
+      );
+      if (children.kind === "records") {
+        out.push({
+          eventId: event.eventId,
+          outcome: "records",
+          records: [filled.record, ...children.records],
+        });
+      } else {
+        out.push({
+          eventId: event.eventId,
+          outcome: children.kind === "deferred" ? "deferred" : "extract_failed",
+          reason: children.reason,
+        });
+      }
     } else if (filled.kind === "gone") {
       out.push({
         eventId: event.eventId,
@@ -359,6 +452,7 @@ export function stripeWebhookDefinition<Config>(
   return {
     verification: STRIPE_WEBHOOK_VERIFICATION,
     events: stripeSupportedWebhookEvents(),
-    handleBatch: (ctx, events) => handleStripeWebhookBatch(deps(ctx), events),
+    handleBatch: (ctx, events, options) =>
+      handleStripeWebhookBatch(deps(ctx), events, options ?? {}),
   };
 }

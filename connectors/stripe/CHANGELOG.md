@@ -3,6 +3,21 @@
 Releases of `mako/stripe`. A workspace installs it with
 `source: mako/stripe@1` in `connectors/<slug>/connector.yaml`.
 
+## 1.3.0
+
+- 3 entities, 25 in all. `invoice_line_items`: an invoice's `lines`, read
+  with each invoice page. A line carries its invoice as `invoice`,
+  `invoice_id` and `invoice_created`, its time. `subscription_items`: a
+  subscription's `items`, read with each subscription page (every status).
+  An item carries `current_period_start` and `current_period_end` from its
+  subscription. A parent embeds 10 children; a longer list costs one more
+  call. `events`: `GET /v1/events`, which Stripe keeps for 30 days.
+- `since` bounds the two child walks by the parent's `created`.
+- Webhooks: an invoice event also writes the invoice's lines, a
+  subscription event its items, with the parent's operation. A list cut
+  short is read whole first. A failed read defers the whole event. Children
+  the flow does not sync cost no request. `events` has no webhook.
+
 ## 1.2.0
 
 - 82 webhook events, up from 72. `charge.pending` is the create event of an

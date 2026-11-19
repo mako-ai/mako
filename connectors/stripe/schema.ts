@@ -490,6 +490,65 @@ const EARLY_FRAUD_WARNING_SCHEMA: Fields = {
   payment_intent: "string",
 };
 
+/**
+ * An invoice's `lines`, one row per line. A line has no `created`; the
+ * invoice's id and `created` are added (`invoice`, `invoice_id`,
+ * `invoice_created`), as the Airbyte stream had them.
+ */
+const INVOICE_LINE_ITEM_SCHEMA: Fields = {
+  ...COMMON_STRIPE_SCHEMA,
+  amount: "integer",
+  amount_excluding_tax: "integer",
+  currency: "string",
+  description: "string",
+  discount_amounts: "json",
+  discountable: "boolean",
+  discounts: "json",
+  invoice: "string",
+  invoice_id: "string",
+  invoice_created: "timestamp",
+  invoice_item: "string",
+  period: "json",
+  plan: "json",
+  price: "json",
+  proration: "boolean",
+  proration_details: "json",
+  quantity: "integer",
+  subscription: "string",
+  subscription_item: "string",
+  tax_amounts: "json",
+  tax_rates: "json",
+  type: "string",
+  unit_amount_excluding_tax: "string",
+};
+
+/**
+ * A subscription's `items`. The billing period comes from the subscription
+ * at API version 2023-10-16 (`current_period_start`, `current_period_end`).
+ */
+const SUBSCRIPTION_ITEM_SCHEMA: Fields = {
+  ...COMMON_STRIPE_SCHEMA,
+  billing_thresholds: "json",
+  current_period_end: "timestamp",
+  current_period_start: "timestamp",
+  discounts: "json",
+  plan: "json",
+  price: "json",
+  quantity: "integer",
+  subscription: "string",
+  tax_rates: "json",
+};
+
+/** `GET /v1/events`: every event of the last 30 days, Stripe's retention. */
+const EVENT_SCHEMA: Fields = {
+  ...COMMON_STRIPE_SCHEMA,
+  api_version: "string",
+  data: "json",
+  pending_webhooks: "integer",
+  request: "json",
+  type: "string",
+};
+
 export const STRIPE_ENTITY_SCHEMA_MAP: Record<string, Fields> = {
   customers: CUSTOMER_SCHEMA,
   subscriptions: SUBSCRIPTION_SCHEMA,
@@ -513,6 +572,9 @@ export const STRIPE_ENTITY_SCHEMA_MAP: Record<string, Fields> = {
   checkout_sessions: CHECKOUT_SESSION_SCHEMA,
   setup_intents: SETUP_INTENT_SCHEMA,
   early_fraud_warnings: EARLY_FRAUD_WARNING_SCHEMA,
+  invoice_line_items: INVOICE_LINE_ITEM_SCHEMA,
+  subscription_items: SUBSCRIPTION_ITEM_SCHEMA,
+  events: EVENT_SCHEMA,
 };
 
 /** Field type -> JSON Schema, as `discover` emits it. */
