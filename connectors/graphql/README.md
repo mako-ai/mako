@@ -8,7 +8,7 @@ yet. The parity harness in `fixtures/` holds the two to the same output.
 
 | Field      | Form                       | Notes                                                                        |
 | ---------- | -------------------------- | ---------------------------------------------------------------------------- |
-| `endpoint` | text, required             | `http` or `https`. A metadata name or a private or link-local IP is refused. |
+| `endpoint` | text, required             | `http` or `https`. A metadata name or a non-public IP is refused. |
 | `headers`  | encrypted textarea, 6 rows | A JSON object of headers, e.g. `Authorization` or `x-hasura-admin-secret`.   |
 
 `check` sends one introspection query (`__schema { queryType { name } }`).
@@ -59,14 +59,15 @@ of `__rate_limit_delay_ms` (200 ms by default) follows each page.
 
 ## Not replicated
 
-- The in-process SSRF guard pins the address it checked to the socket. The
-  folder checks the endpoint's host, then every address its name resolves
-  to, before the first request: no metadata name (a trailing dot
-  included), no private, link-local or CGNAT address, also as IPv4 inside
-  IPv6 (`::ffff:`, `::`, `64:ff9b::`). `fetch` resolves the name again, so
-  a DNS answer that changes between the two is not caught. IPv4 loopback
-  is allowed, since it reaches only the box. A box sits outside Mako's
-  network.
+- The folder sends through the SDK's `safeRequest`. The socket's own
+  lookup checks every address a name resolves to and the connection uses
+  the address it checked, as in-process, so a DNS answer that changes
+  between two lookups finds no window. Only public unicast and loopback
+  pass (loopback reaches only the box): private, link-local, CGNAT,
+  multicast, reserved, documentation, NAT64, 6to4 over a private IPv4,
+  site-local and translated IPv6 forms are blocked, and so is any
+  metadata name (a trailing dot included). The response is capped at
+  100 MB decompressed.
 - A redirect is refused. In-process follows it, checking each hop.
 - `settings.timeout_ms` and `settings.max_retries` are not read: 30 s and 3
   retries, the in-process defaults.
