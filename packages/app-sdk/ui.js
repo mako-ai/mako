@@ -145,6 +145,40 @@ const IconRefresh = () =>
 const PHONE = "(max-width: 640px)";
 
 /**
+ * The closing half of usePopover: one kit popover at a time, Escape, a
+ * pointerdown or focus outside `wrapRef`. A portalled panel passes its own
+ * ref as `panelRef`, so a click inside it counts as inside. `onEscape` runs
+ * after an Escape close (the header info returns focus to its button).
+ */
+function usePopoverDismiss(open, setOpen, wrapRef, panelRef, onEscape) {
+  React.useEffect(() => {
+    if (!open) return undefined;
+    const close = () => setOpen(false);
+    claimPopover(close);
+    const outside = e => {
+      const wrap = wrapRef.current;
+      if (panelRef?.current && e.target instanceof Node && panelRef.current.contains(e.target)) return;
+      if (wrap && e.target instanceof Node && !wrap.contains(e.target)) close();
+    };
+    const onKey = e => {
+      if (e.key === "Escape") {
+        close();
+        onEscape?.();
+      }
+    };
+    document.addEventListener("pointerdown", outside, true);
+    document.addEventListener("focusin", outside, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      releasePopover(close);
+      document.removeEventListener("pointerdown", outside, true);
+      document.removeEventListener("focusin", outside, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, setOpen, wrapRef]); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
+/**
  * One kit popover is open at a time: opening this one closes any other (a
  * module-level registry, see claimPopover). It closes on Escape, on a
  * pointerdown outside it, and when focus moves outside it. Pointerdown, in
@@ -157,27 +191,7 @@ const PHONE = "(max-width: 640px)";
  * phones the popover is a bottom sheet (CSS) and is left alone.
  */
 function usePopover(open, setOpen, wrapRef, align) {
-  React.useEffect(() => {
-    if (!open) return undefined;
-    const close = () => setOpen(false);
-    claimPopover(close);
-    const outside = e => {
-      const wrap = wrapRef.current;
-      if (wrap && e.target instanceof Node && !wrap.contains(e.target)) close();
-    };
-    const onKey = e => {
-      if (e.key === "Escape") close();
-    };
-    document.addEventListener("pointerdown", outside, true);
-    document.addEventListener("focusin", outside, true);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      releasePopover(close);
-      document.removeEventListener("pointerdown", outside, true);
-      document.removeEventListener("focusin", outside, true);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open, setOpen, wrapRef]);
+  usePopoverDismiss(open, setOpen, wrapRef);
 
   React.useLayoutEffect(() => {
     if (!open) return undefined;
@@ -414,6 +428,98 @@ const IconSort = ({ dir }) =>
     dir ? undefined : "mk-dt-faint",
   );
 
+const IconInfo = () =>
+  svg(12, 2, [
+    h("circle", { key: "c", cx: 12, cy: 12, r: 10 }),
+    h("path", { key: "a", d: "M12 16v-4" }),
+    h("path", { key: "b", d: "M12 8h.01" }),
+  ]);
+
+/**
+ * A column's "i" (`column.info`): a button beside the header's sort button,
+ * never inside it, so a click on it never sorts. It opens a kit popover
+ * (`.mk-pop`) portalled to <body>, so the table's scroll box never clips it.
+ * Like a Radix Popover, focus moves into the panel on open and Escape returns
+ * it to the button. A click or focus outside closes it, as every kit popover.
+ */
+function HeaderInfo({ title, label, children }) {
+  const [open, setOpen] = React.useState(false);
+  const wrapRef = React.useRef(null);
+  const panelRef = React.useRef(null);
+  const id = React.useId();
+  const refocus = React.useCallback(() => wrapRef.current?.querySelector("button")?.focus(), []);
+  usePopoverDismiss(open, setOpen, wrapRef, panelRef, refocus);
+
+  React.useLayoutEffect(() => {
+    if (!open) return undefined;
+    const place = () => {
+      const pop = panelRef.current;
+      const btn = wrapRef.current;
+      if (!pop || !btn) return;
+      pop.style.left = "";
+      pop.style.top = "";
+      if (window.matchMedia(PHONE).matches) return;
+      const margin = 8;
+      const r = btn.getBoundingClientRect();
+      const w = pop.offsetWidth;
+      const ht = pop.offsetHeight;
+      const left = Math.min(Math.max(margin, r.left + r.width / 2 - w / 2), window.innerWidth - w - margin);
+      const below = r.bottom + 6;
+      const top = below + ht > window.innerHeight - margin && r.top - 6 - ht >= margin ? r.top - 6 - ht : below;
+      pop.style.left = `${left}px`;
+      pop.style.top = `${top}px`;
+    };
+    place();
+    panelRef.current?.focus({ preventScroll: true });
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open]);
+
+  return h(
+    "span",
+    { className: "mk-dt-info-wrap", ref: wrapRef },
+    h(
+      "button",
+      {
+        type: "button",
+        className: cx("mk-dt-info", open && "open"),
+        "aria-label": label,
+        "aria-haspopup": "dialog",
+        "aria-expanded": open,
+        "aria-controls": open ? id : undefined,
+        onClick: e => {
+          e.stopPropagation();
+          setOpen(o => !o);
+        },
+      },
+      h(IconInfo),
+    ),
+    open &&
+      typeof document !== "undefined" &&
+      createPortal(
+        h(
+          "div",
+          {
+            ref: panelRef,
+            id,
+            className: "mk-pop mk-dt-info-pop",
+            role: "dialog",
+            "aria-label": label,
+            tabIndex: -1,
+            onClick: e => e.stopPropagation(),
+          },
+          title != null && h("strong", { className: "mk-dt-info-title" }, title),
+          h("div", { className: "mk-dt-info-body" }, children),
+        ),
+        document.body,
+      ),
+  );
+}
+
 /** A value that is controlled when `value !== undefined`, local state otherwise. */
 function useControlled(value, initial, onChange) {
   const [local, setLocal] = React.useState(initial);
@@ -452,6 +558,7 @@ export function saveCsv(filename, text) {
 }
 
 const fmtCount = n => n.toLocaleString("en-US");
+const EMPTY_EXPANDED = Object.freeze({});
 
 /**
  * The English text of a DataTable's footer, sort hints and export button.
@@ -477,6 +584,9 @@ export const DATA_TABLE_LABELS = {
   exportCsv: "Export CSV",
   exportTitle: "Export every row on every page, as sorted",
   exportFailed: "The browser blocked the download. Open the app in a new tab and export again.",
+  expand: () => "Show details",
+  collapse: () => "Hide details",
+  info: label => `About ${label}`,
 };
 // A click on a link, button or field inside a row is that control's, not the row's.
 const INTERACTIVE = "a,button,input,select,textarea,label,[role=button]";
@@ -500,6 +610,12 @@ const INTERACTIVE = "a,button,input,select,textarea,label,[role=button]";
  * label or class per group id). Ungrouped columns span both rows. A line
  * separates the sections. Sort, the sticky header and the pinned column work
  * the same.
+ *
+ * Four options, all off by default (the table then renders exactly as 2.27):
+ * `wrapHeaders` lets a header label take 2 lines; `renderExpanded` adds a
+ * chevron in each row's first cell that opens a full-width detail row under
+ * it; a column's `info` adds an "i" popover beside its header; `totalRow`
+ * pins a total row to the bottom of the scroll box.
  */
 export function DataTable({
   rows = [],
@@ -528,6 +644,15 @@ export function DataTable({
   resetKey,
   exportFilename,
   groups,
+  wrapHeaders = false,
+  renderExpanded,
+  canExpand,
+  expanded: expandedProp,
+  defaultExpanded = EMPTY_EXPANDED,
+  onExpandedChange,
+  totalRow,
+  onTotalRowClick,
+  exportTotalRow = false,
   className,
   style,
 }) {
@@ -547,6 +672,35 @@ export function DataTable({
   const sections = React.useMemo(() => new Set(runs?.filter(r => r.start).map(r => r.columns[0].id)), [runs]);
   const { page, pageCount, start, end } = pageSlice(sorted.length, rawPage, pageSize);
   const visible = sorted.slice(start, end);
+
+  // Expandable rows. The state has TanStack Table's ExpandedState shape:
+  // `true` (every row) or `{ [rowId]: true }`, rowId being String(rowKey(row)).
+  // Detail rows are rendered under their parent only: never sorted, paged or
+  // exported, since they are not rows of `sorted`.
+  const expandable = typeof renderExpanded === "function";
+  const [expanded, setExpanded] = useControlled(expandedProp, defaultExpanded, onExpandedChange);
+  const uid = React.useId();
+  const keyOf = (row, i) => (rowKey ? rowKey(row) : (row?.id ?? i));
+  const isOpen = id => expanded === true || !!expanded?.[id];
+  const toggle = id => {
+    let next;
+    if (expanded === true) {
+      next = {};
+      sorted.forEach((r, i) => {
+        if (!canExpand || canExpand(r)) next[String(keyOf(r, i))] = true;
+      });
+    } else next = { ...expanded };
+    if (next[id]) delete next[id];
+    else next[id] = true;
+    setExpanded(next);
+  };
+
+  // The total row: an object, or a function over the rows the table got (the
+  // filtered rows). It never sorts or pages; CSV only with `exportTotalRow`.
+  const total = React.useMemo(
+    () => (typeof totalRow === "function" ? totalRow(rows) : (totalRow ?? null)),
+    [totalRow, rows],
+  );
 
   const goTo = p => {
     if (p !== rawPage) setRawPage(p);
@@ -582,7 +736,7 @@ export function DataTable({
     goTo(1);
   };
   const exportCsv = () => {
-    const res = saveCsv(exportFilename, toCsv(sorted, columns));
+    const res = saveCsv(exportFilename, toCsv(exportTotalRow && total ? [...sorted, total] : sorted, columns));
     setNote(res === "failed" ? L.exportFailed : null);
   };
 
@@ -624,7 +778,14 @@ export function DataTable({
         className: cellClass(col, active && "mk-dt-sorted"),
         "aria-sort": col.sortable === false ? undefined : active ? (sort.dir === "asc" ? "ascending" : "descending") : "none",
       },
-      label,
+      col.info == null
+        ? label
+        : h(
+            "div",
+            { className: "mk-dt-th-row" },
+            label,
+            h(HeaderInfo, { title: col.label, label: L.info(text) }, col.info),
+          ),
     );
   };
 
@@ -662,6 +823,41 @@ export function DataTable({
     const title = typeof v === "string" || typeof v === "number" || typeof v === "bigint" ? String(v) : undefined;
     return h("div", { className: "mk-dt-cell", title: title || undefined }, content);
   };
+  // The first cell of an expandable table: the chevron (or a spacer of its
+  // width, so every first cell lines up) before the cell's content.
+  const firstCell = (col, row, toggleEl) =>
+    h("div", { className: "mk-dt-xcell" }, toggleEl ?? h("span", { className: "mk-dt-expander-none", "aria-hidden": "true" }), cell(col, row));
+  const expander = (row, id, open, detailId) =>
+    h(
+      "button",
+      {
+        type: "button",
+        className: "mk-dt-expander",
+        "aria-expanded": open,
+        "aria-controls": open ? detailId : undefined,
+        "aria-label": open ? L.collapse(row) : L.expand(row),
+        onClick: () => toggle(id),
+      },
+      h(IconChevron),
+    );
+  // A row click (and Enter or Space on the focused row), for body rows and the total row.
+  const clickProps = (handler, row, label) =>
+    handler
+      ? {
+          tabIndex: 0,
+          className: "mk-dt-click",
+          "aria-label": label,
+          onClick: e => {
+            if (!e.target.closest?.(INTERACTIVE)) handler(row, e);
+          },
+          onKeyDown: e => {
+            if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) {
+              e.preventDefault();
+              handler(row, e);
+            }
+          },
+        }
+      : null;
 
   const body = h(
     "tbody",
@@ -669,31 +865,66 @@ export function DataTable({
     visible.length === 0
       ? h("tr", { key: "__empty" }, h("td", { colSpan: columns.length, className: "mk-dt-empty" }, empty))
       : visible.map((row, i) => {
-          const key = rowKey ? rowKey(row) : (row?.id ?? start + i);
-          const click = onRowClick
-            ? {
-                tabIndex: 0,
-                className: "mk-dt-click",
-                "aria-label": rowLabel ? rowLabel(row) : undefined,
-                onClick: e => {
-                  if (!e.target.closest?.(INTERACTIVE)) onRowClick(row, e);
-                },
-                onKeyDown: e => {
-                  if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) {
-                    e.preventDefault();
-                    onRowClick(row, e);
-                  }
-                },
-              }
-            : null;
+          const key = keyOf(row, start + i);
+          const click = clickProps(onRowClick, row, rowLabel ? rowLabel(row) : undefined);
           const rowClass = cx(click?.className, rowClassName?.(row)) || undefined;
-          return h(
+          if (!expandable) {
+            return h(
+              "tr",
+              { key, ...click, className: rowClass },
+              ...columns.map(col => h("td", { key: col.id, className: cellClass(col) || undefined }, cell(col, row))),
+            );
+          }
+          const id = String(key);
+          const can = !canExpand || canExpand(row);
+          const open = can && isOpen(id);
+          const detailId = `${uid}-x-${id.replace(/\s/g, "_")}`;
+          // Always a Fragment, open or not: a tr swapped for a Fragment would
+          // remount the row and drop the chevron's focus.
+          const tr = h(
             "tr",
-            { key, ...click, className: rowClass },
-            ...columns.map(col => h("td", { key: col.id, className: cellClass(col) || undefined }, cell(col, row))),
+            { key: "row", ...click, className: cx(rowClass, open && "mk-dt-open") || undefined },
+            ...columns.map((col, c) =>
+              h(
+                "td",
+                { key: col.id, className: cellClass(col) || undefined },
+                c === 0 ? firstCell(col, row, can ? expander(row, id, open, detailId) : null) : cell(col, row),
+              ),
+            ),
+          );
+          return h(
+            React.Fragment,
+            { key },
+            tr,
+            open &&
+            h(
+              "tr",
+              { key: "detail", className: "mk-dt-detail", id: detailId },
+              h("td", { colSpan: columns.length }, h("div", { className: "mk-dt-detail-body" }, renderExpanded(row))),
+            ),
           );
         }),
   );
+
+  // The pinned total row (a <tfoot> that sticks to the bottom), shown with rows only.
+  const foot =
+    total != null && sorted.length > 0
+      ? h(
+          "tfoot",
+          null,
+          h(
+            "tr",
+            { ...clickProps(onTotalRowClick, total, rowLabel ? rowLabel(total) : undefined), className: cx("mk-dt-total", onTotalRowClick && "mk-dt-click") },
+            ...columns.map((col, c) =>
+              h(
+                "td",
+                { key: col.id, className: cellClass(col) || undefined },
+                c === 0 && expandable ? firstCell(col, total, null) : cell(col, total),
+              ),
+            ),
+          ),
+        )
+      : null;
 
   const footer = h(
     "footer",
@@ -744,7 +975,7 @@ export function DataTable({
       title,
       description,
       actions: actions != null || exportButton ? h(React.Fragment, null, actions, exportButton) : undefined,
-      className: cx("mk-dt", fill && "mk-dt--fill", className),
+      className: cx("mk-dt", fill && "mk-dt--fill", wrapHeaders && "mk-dt--wrap-heads", className),
       style,
     },
     note && h("p", { className: "mk-dt-note", role: "status" }, note),
@@ -761,6 +992,7 @@ export function DataTable({
         ),
         head,
         body,
+        foot,
       ),
     ),
     footer,

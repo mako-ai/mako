@@ -973,6 +973,40 @@ const COLUMNS: DataTableColumn<Customer>[] = [
   <DataTable rows={rows} columns={COLUMNS}
     groups={[{ id: "activity", label: "Activity" }, { id: "money", label: "Money", className: "tone-positive" }]} />
   ```
+- **Wrapped headers.** `wrapHeaders` lets a header label take 2 lines before
+  it ellipsizes. The sort icon stays beside it. Use it for long or translated
+  labels in narrow columns.
+- **Header info.** A column's `info` adds an "i" button after its header
+  label. A click opens a popover with the label and this content. The button
+  sits outside the sort button, so it never sorts. Focus moves into the
+  popover. Escape closes it and returns focus to the "i".
+- **Expandable rows.** `renderExpanded(row)` puts a chevron in each row's
+  first cell. The chevron opens a full-width detail row under its record.
+  Enter or Space on a focused chevron toggles it too. `canExpand(row)` limits
+  which rows get one. The pager, the sort and the CSV count records only. The
+  open rows are uncontrolled (`defaultExpanded`) or controlled (`expanded` +
+  `onExpandedChange`). The state is `{ [rowKey]: true }`, or `true` for every
+  row: TanStack Table's `ExpandedState`. `labels.expand(row)` and
+  `labels.collapse(row)` name the chevron for screen readers.
+
+  ```tsx
+  <DataTable rows={records} columns={COLUMNS} rowKey={r => r.item_id}
+    renderExpanded={r => <RecordFacts row={r} />}
+    canExpand={r => r.detail != null}
+    labels={{ expand: r => `Show details for ${r.item_label}`, collapse: r => `Hide details for ${r.item_label}` }} />
+  ```
+- **Total row.** `totalRow` pins a bold row to the bottom of the scroll box,
+  under a rule. Pass a row object or a function of the filtered `rows`. Each
+  column renders it with its own `value` and `render`. The pinned first
+  column holds in it. It never sorts or pages. It stays out of the CSV unless
+  `exportTotalRow`. `onTotalRowClick(row)` makes it clickable for a
+  drill-down. A `render` can return a button per cell, as on any row.
+
+  ```tsx
+  <DataTable rows={reps} columns={COLUMNS}
+    totalRow={rs => ({ name: "Total", demos: sum(rs, "demos"), cash: sum(rs, "cash") })}
+    onTotalRowClick={() => openDrill(null)} />
+  ```
 - Pure helpers for custom tables: `sortRows`, `compareValues`, `nextSort`,
   `pageSlice`, `pageToSync`, `toCsv`, `csvCell`, `csvDate`, `csvToTsv`,
   `columnLayout`, `columnGroupRuns`.
