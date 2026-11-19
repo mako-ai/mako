@@ -20,6 +20,7 @@ import {
   cdcLiveTableName,
   normalizePayloadBySchema,
   normalizePayloadKeys,
+  segmentAroundDeletes,
 } from "./normalization";
 import { isEntityEnabledForFlow } from "./entity-selection";
 import { cdcSyncStateService } from "./sync-state";
@@ -330,16 +331,23 @@ export class CdcConsumerService {
           })
         : pending;
 
-      const apply = await adapter.applyEvents({
-        events: normalizedEvents,
-        layout,
-        flow: {
-          _id: flow._id,
-          deleteMode: effectiveDeleteMode,
-          dataSourceId: flow.dataSourceId,
-        },
-        entitySchema: entitySchema ?? undefined,
-      });
+      // One applyEvents per segment, in ingest order: a delete never shares
+      // a segment with its record's other events (segmentAroundDeletes), so
+      // the rows do not depend on how events were batched or coalesced.
+      const apply = { applied: 0 };
+      for (const segment of segmentAroundDeletes(normalizedEvents)) {
+        const applied = await adapter.applyEvents({
+          events: segment,
+          layout,
+          flow: {
+            _id: flow._id,
+            deleteMode: effectiveDeleteMode,
+            dataSourceId: flow.dataSourceId,
+          },
+          entitySchema: entitySchema ?? undefined,
+        });
+        apply.applied += applied.applied;
+      }
 
       await eventStore.markEventsApplied(pending.map(event => event.id));
       await this.syncWebhookApplyStatus(

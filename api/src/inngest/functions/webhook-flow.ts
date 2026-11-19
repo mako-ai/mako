@@ -28,6 +28,10 @@ import {
   isWebhookPaused,
 } from "../../services/flow-triggers.service";
 import { cdcConsumerService } from "../../sync-cdc/consumer";
+import {
+  cdcMaterializeWindowMs,
+  coalesceWaitMs,
+} from "../../sync-cdc/materialize-window";
 import { withBoxMemoryWaits } from "./flow/box-memory-wait";
 import { cdcBackfillService } from "../../sync-cdc/backfill";
 import { cleanupStalePendingCdcEvents } from "../../sync-cdc/cdc-stale-pending-cleanup";
@@ -351,11 +355,22 @@ async function runCdcMaterialization(params: {
         flowId: new Types.ObjectId(flowId),
         entity,
       })
-        .select("consecutiveFailures lastFailedAt lastFailureError")
+        .select(
+          "consecutiveFailures lastFailedAt lastFailureError lastMaterializedAt",
+        )
         .lean();
 
+      // Coalescing window (materialize-window.ts): computed here so a replay
+      // sleeps for the same memoized duration.
+      const coalesceMs = coalesceWaitMs({
+        lastMaterializedAt: entityState?.lastMaterializedAt,
+        now: Date.now(),
+        windowMs: cdcMaterializeWindowMs(),
+        force,
+      });
+
       const failures = entityState?.consecutiveFailures || 0;
-      if (failures === 0) return { open: false, failures: 0 };
+      if (failures === 0) return { open: false, failures: 0, coalesceMs };
 
       const lastFailedAt = entityState?.lastFailedAt
         ? new Date(entityState.lastFailedAt).getTime()
@@ -374,7 +389,7 @@ async function runCdcMaterialization(params: {
         };
       }
 
-      return { open: false, failures, halfOpen: true };
+      return { open: false, failures, halfOpen: true, coalesceMs };
     },
   )) as any;
 
@@ -394,6 +409,14 @@ async function runCdcMaterialization(params: {
       consecutiveFailures: circuitCheck.failures,
       retryAfterMs: circuitCheck.retryAfterMs,
     };
+  }
+
+  // Materialize each flow + entity at most once per window. Triggers that
+  // arrive while this run sleeps are skipped by the singleton; their events
+  // stay pending and the first iteration below reads them all.
+  const coalesceMs = Number(circuitCheck.coalesceMs) || 0;
+  if (coalesceMs > 0) {
+    await params.step.sleep("coalesce-window", coalesceMs);
   }
 
   let totalProcessed = 0;
@@ -466,6 +489,7 @@ async function runCdcMaterialization(params: {
       latestIngestSeq: result.latestIngestSeq,
       skipped: result.skipped,
       reason: result.reason,
+      coalescedWaitMs: iteration === 0 ? coalesceMs : 0,
     });
 
     totalProcessed += result.processed || 0;
