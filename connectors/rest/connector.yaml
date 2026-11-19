@@ -1,0 +1,11 @@
+# REST, as a connector folder (RFC connector-runtime).
+#
+# Production still runs the in-process connector in api/src/connectors/rest.
+# No connection or flow uses this folder. The parity harness in fixtures/
+# holds the two to the same output.
+runtime: node
+entry: connector.ts
+page:
+  vendor: REST
+  category: api
+  docs: https://developer.mozilla.org/en-US/docs/Web/HTTP

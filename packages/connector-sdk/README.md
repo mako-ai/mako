@@ -97,6 +97,9 @@ queryEntities: {
   // config.properties (BigQuery). "flow": each flow's own list; Mako puts
   // it in config.queries, and `form` describes one query (GraphQL).
   source: "flow",
+  // Where "connection" keeps the list: `queries` unless `key` says otherwise
+  // (REST keeps its list in `entities`).
+  // key: "entities",
   incremental: "client-filter",
   form: { label: "Queries", required: true, items: { required: ["name"], properties: { /* ... */ } } },
   entity: query => ({
