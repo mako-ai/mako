@@ -147,6 +147,11 @@ export interface StreamingQueryOptions {
   signal?: AbortSignal;
   /** Target database name (for cluster mode) */
   databaseName?: string;
+  /**
+   * The most rows the caller will read. An engine without a native stream
+   * runs the query once with this LIMIT instead of holding all of it.
+   */
+  maxRows?: number;
 }
 
 /** `executeQueryReadingRows`: every batch goes to `onRows` as it is read. */

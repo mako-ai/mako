@@ -46,6 +46,8 @@ export default defineConfig({
       "src/connectors/rate-gate.test.ts",
       // ClickHouse Cloud wake: wait budget, interactive cap, DNS fails fast.
       "src/databases/drivers/clickhouse/wake.test.ts",
+      // Streamed reads run the query once: no OFFSET pages over an unordered result.
+      "src/databases/drivers/clickhouse/stream.test.ts",
       "src/routes/source-connection-writers.test.ts",
       // A database connection's writers list, changed in the app.
       "src/routes/database-writers-session.test.ts",
