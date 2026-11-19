@@ -25,6 +25,8 @@ import { SourceConnection } from "../database/models/source-connections";
 import { Workspace } from "../database/models/workspace";
 import {
   isCredentialFieldName,
+  cli,
+  deps,
   parseCheckArgs,
   runCheck,
 } from "./check-google-credential-types";
@@ -116,8 +118,32 @@ async function main(): Promise<void> {
   assert.equal(isCredentialFieldName("Key-File"), true);
   assert.equal(isCredentialFieldName("api_key"), false);
   assert.deepEqual(parseCheckArgs(["--dry-run"]), { dryRun: true });
+  assert.deepEqual(parseCheckArgs(["--i-understand-this-decrypts"]), {
+    dryRun: false,
+  });
+  assert.throws(() => parseCheckArgs([]), /--dry-run or/);
+  assert.throws(() => parseCheckArgs(["--workspace", "a".repeat(24)]));
   assert.throws(() => parseCheckArgs(["--apply"]));
   assert.throws(() => parseCheckArgs(["--workspace", "nope"]));
+
+  // No flags: usage, exit 2, and nothing is decrypted or connected.
+  const realDecrypt = deps.decrypt;
+  let decryptCalls = 0;
+  deps.decrypt = (v: string) => {
+    decryptCalls += 1;
+    return realDecrypt(v);
+  };
+  const usageErr: string[] = [];
+  const code = await cli(
+    [],
+    { out: l => usageErr.push(l), err: l => usageErr.push(l) },
+    {
+      DATABASE_URL: "mongodb://127.0.0.1:1/never-connected",
+    },
+  );
+  assert.equal(code, 2);
+  assert.ok(usageErr.join("\n").includes("Usage:"));
+  assert.equal(decryptCalls, 0, "no flags must not decrypt");
 
   const mongod = await MongoMemoryServer.create();
   await mongoose.connect(mongod.getUri());
@@ -180,6 +206,36 @@ async function main(): Promise<void> {
           })(),
         },
       },
+      // Legacy rows: the whole `connection` stored as a string.
+      {
+        ...db("bigquery", {}),
+        connection: JSON.stringify(
+          enc({
+            project_id: "p",
+            service_account_json: JSON.stringify(externalAccount),
+          }),
+        ),
+      },
+      {
+        ...db("bigquery", {}),
+        connection: encryptString(
+          JSON.stringify({
+            project_id: "p",
+            service_account_json: JSON.stringify(goodKey),
+          }),
+        ),
+      },
+      { ...db("mysql", {}), connection: "legacy garbage, not JSON" },
+      // Hostile strings in the type and the token_uri host.
+      db("bigquery\tTAB\nNEWLINE", {
+        service_account_json: JSON.stringify(externalAccount),
+      }),
+      db("bigquery", {
+        service_account_json: JSON.stringify({
+          ...goodKey,
+          token_uri: "https://bad_host$.example/x",
+        }),
+      }),
       // Not a Google credential: never decrypted for content.
       db("postgresql", { host: "h", password: "SENTINEL_PRIVATE_KEY_BODY" }),
     ]);
@@ -232,10 +288,17 @@ async function main(): Promise<void> {
     const find = (connType: string, cls: string, detail = "") =>
       rows.find(r => r[3] === connType && r[4] === cls && r[5] === detail);
     assert.equal(lines[0].split("\t").length, 11);
-    assert.equal(find("bigquery", "ok")?.[7], "1");
+    assert.equal(find("bigquery", "ok")?.[7], "2");
     const bad = find("bigquery", "bad_type", "external_account");
     assert.equal(bad?.[6], "yes");
-    assert.match(bad![10], /^[0-9a-f]{24}$/);
+    assert.match(bad![10], /^[0-9a-f]{24},[0-9a-f]{24}$/);
+    assert.equal(find("mysql", "string_config_unparsed")?.[7], "1");
+    assert.equal(find("bigquery", "bad_token_uri", "other")?.[7], "1");
+    assert.equal(
+      find("bigquery TAB NEWLINE", "bad_type", "external_account")?.[7],
+      "1",
+    );
+    assert.ok(lines.every(l => l.split("\t").length === 11));
     assert.equal(find("bigquery", "bad_type", "other")?.[7], "1");
     assert.equal(find("cloudsql-postgres", "has_credential_source")?.[7], "1");
     assert.equal(
@@ -253,8 +316,8 @@ async function main(): Promise<void> {
       false,
     );
     assert.equal(rows[0][1], "Acme Fake Workspace");
-    assert.equal(summary.scanned, 12);
-    assert.equal(summary.bad, 7);
+    assert.equal(summary.scanned, 17);
+    assert.equal(summary.bad, 11);
 
     // Dry run with no key at all: decrypts nothing, so nothing is undecryptable.
     delete process.env.ENCRYPTION_KEY;
@@ -270,12 +333,13 @@ async function main(): Promise<void> {
     assert.ok(!dryText.includes("undecryptable"));
     const dryRows = dry.slice(1).map(l => l.split("\t"));
     assert.ok(dryRows.every(r => r[4] === "candidate"));
-    assert.equal(dryRows.find(r => r[3] === "bigquery")?.[7], "6");
+    assert.equal(dryRows.find(r => r[3] === "bigquery")?.[7], "9");
     assert.ok(!dryRows.some(r => r[3] === "stripe" || r[3] === "postgresql"));
     assert.ok(dryErr[0].startsWith("DRY RUN"));
   } finally {
     await mongoose.disconnect();
     await mongod.stop();
+    deps.decrypt = realDecrypt;
   }
   console.log("check-google-credential-types: ok");
 }

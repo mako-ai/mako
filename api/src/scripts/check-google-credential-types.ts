@@ -9,7 +9,7 @@
  * who could save such a JSON could read server files and send them out.
  *
  *   pnpm --filter api exec tsx src/scripts/check-google-credential-types.ts --dry-run
- *   pnpm --filter api exec tsx src/scripts/check-google-credential-types.ts
+ *   pnpm --filter api exec tsx src/scripts/check-google-credential-types.ts --i-understand-this-decrypts
  *   --workspace <24-hex id>   only that workspace
  *
  * Environment (process only; no .env file is loaded):
@@ -39,6 +39,9 @@ import { DatabaseConnection } from "../database/models/database-connections";
 import { SourceConnection } from "../database/models/source-connections";
 import { Workspace } from "../database/models/workspace";
 
+/** The one decrypt call site; a test swaps it to count calls. */
+export const deps = { decrypt: decryptString };
+
 export type CredentialClass =
   | "ok"
   | "bad_type"
@@ -46,6 +49,7 @@ export type CredentialClass =
   | "has_credential_source"
   | "unparseable"
   | "undecryptable"
+  | "string_config_unparsed"
   | "candidate"; // dry run only
 
 /** Worst first. A connection reports the first class found in its fields. */
@@ -55,6 +59,7 @@ const SEVERITY: CredentialClass[] = [
   "bad_token_uri",
   "unparseable",
   "undecryptable",
+  "string_config_unparsed",
   "ok",
 ];
 
@@ -118,6 +123,8 @@ interface Verdict {
   credentialSource: boolean;
 }
 
+const SAFE_HOST = /^[A-Za-z0-9.-]{1,253}$/;
+
 function tokenHost(uri: unknown): { ok: boolean; host: string } {
   if (typeof uri !== "string") return { ok: false, host: "non_string" };
   try {
@@ -125,7 +132,8 @@ function tokenHost(uri: unknown): { ok: boolean; host: string } {
     const host = url.hostname.toLowerCase();
     return {
       ok: url.protocol === "https:" && GOOGLE_TOKEN_HOSTS.has(host),
-      host: host || "empty",
+      // Only a plain hostname is printed; anything else is "other".
+      host: !host ? "empty" : SAFE_HOST.test(host) ? host : "other",
     };
   } catch {
     return { ok: false, host: "invalid_url" };
@@ -177,7 +185,7 @@ export function classifyParsed(
 
 /** Decrypt every string inside `value` (nested objects included). */
 function decryptDeep(value: unknown): unknown {
-  if (typeof value === "string") return decryptString(value);
+  if (typeof value === "string") return deps.decrypt(value);
   if (Array.isArray(value)) return value.map(decryptDeep);
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
@@ -267,19 +275,49 @@ interface StoredDoc {
   config?: unknown;
 }
 
-/** A stored `connection` can be a JSON string of the object (legacy rows). */
-function containerOf(value: unknown): Record<string, unknown> | undefined {
+const UNPARSED = Symbol("string_config_unparsed");
+type Container = Record<string, unknown> | typeof UNPARSED | undefined;
+
+/**
+ * A stored `connection` or `config` is an object, or (legacy rows) a string:
+ * either JSON of the object, or the whole object encrypted as one value.
+ * Returns UNPARSED when a string yields no object.
+ */
+function containerOf(value: unknown): Container {
   if (value && typeof value === "object") {
     return value as Record<string, unknown>;
   }
-  return undefined;
+  if (typeof value !== "string") return undefined;
+  const asObject = (text: string): Record<string, unknown> | undefined => {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const direct = asObject(value);
+  if (direct) return direct;
+  try {
+    let text: string | null = deps.decrypt(value);
+    const inner = asObject(text);
+    text = null;
+    if (inner) return inner;
+  } catch {
+    // fall through
+  }
+  return UNPARSED;
 }
 
-function isCandidate(kind: Kind, doc: StoredDoc): boolean {
-  const container = containerOf(
-    kind === "database" ? doc.connection : doc.config,
-  );
-  const hasField = candidateFields(container, false).length > 0;
+function isCandidate(
+  kind: Kind,
+  doc: StoredDoc,
+  container: Container,
+): boolean {
+  if (container === UNPARSED) return true;
+  const hasField = !!container && candidateFields(container, false).length > 0;
   if (kind === "database") return DB_TYPES.includes(doc.type) || hasField;
   return (
     SOURCE_TYPES.includes(doc.type) || doc.type.startsWith("ws:") || hasField
@@ -307,6 +345,15 @@ interface Group {
   ids: string[];
 }
 
+export const DECRYPT_FLAG = "--i-understand-this-decrypts";
+
+export const USAGE = `Usage: check-google-credential-types.ts (--dry-run | ${DECRYPT_FLAG}) [--workspace <24-hex id>]
+  --dry-run   count candidates per workspace and type; decrypts nothing
+  ${DECRYPT_FLAG}
+              decrypt every candidate credential in memory and classify it`;
+
+export class UsageError extends Error {}
+
 export interface CheckOptions {
   dryRun: boolean;
   workspace?: string;
@@ -319,11 +366,16 @@ export interface CheckIO {
 
 export function parseCheckArgs(argv: string[]): CheckOptions {
   const opts: CheckOptions = { dryRun: false };
+  let decrypts = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--dry-run") opts.dryRun = true;
+    else if (arg === DECRYPT_FLAG) decrypts = true;
     else if (arg === "--workspace") opts.workspace = argv[++i];
     else throw new Error(`Unknown argument: ${arg}`);
+  }
+  if (!opts.dryRun && !decrypts) {
+    throw new UsageError("Pass --dry-run or " + DECRYPT_FLAG);
   }
   if (opts.workspace !== undefined && !/^[0-9a-f]{24}$/i.test(opts.workspace)) {
     throw new Error("--workspace needs a 24-hex workspace id");
@@ -379,19 +431,38 @@ export async function runCheck(
   for (const [kind, cursor] of sources) {
     for await (const doc of cursor) {
       scanned += 1;
-      if (!isCandidate(kind, doc)) continue;
+      const stored = kind === "database" ? doc.connection : doc.config;
       let verdict: Verdict | null;
       if (opts.dryRun) {
+        // Nothing is decrypted or parsed: a string config counts by type.
+        const typeMatch =
+          kind === "database"
+            ? DB_TYPES.includes(doc.type)
+            : SOURCE_TYPES.includes(doc.type) || doc.type.startsWith("ws:");
+        const objectHit =
+          !!stored &&
+          typeof stored === "object" &&
+          candidateFields(stored as Record<string, unknown>, false).length > 0;
+        if (!typeMatch && !objectHit) continue;
         verdict = { cls: "candidate", detail: "", credentialSource: false };
       } else {
-        const container = containerOf(
-          kind === "database" ? doc.connection : doc.config,
-        );
+        const container = containerOf(stored);
+        if (!isCandidate(kind, doc, container)) continue;
         const scanAll = kind === "source" && doc.type.startsWith("ws:");
         const verdicts: Verdict[] = [];
-        for (const [, value, isCred] of candidateFields(container, scanAll)) {
-          const v = classifyStoredField(value, isCred);
-          if (v) verdicts.push(v);
+        if (container === UNPARSED) {
+          verdicts.push({
+            cls: "string_config_unparsed",
+            detail: "",
+            credentialSource: false,
+          });
+        } else if (container) {
+          for (const [, value, isCred] of candidateFields(container, scanAll)) {
+            const v = classifyStoredField(value, isCred);
+            if (v) verdicts.push(v);
+          }
+          // A config that came from a string holds plaintext secrets.
+          if (typeof stored === "string") scrub(container);
         }
         verdict = worst(verdicts);
       }
@@ -477,7 +548,7 @@ export async function runCheck(
         g.workspaceId,
         (names.get(g.workspaceId) ?? "").replace(/[\t\r\n]+/g, " "),
         g.kind,
-        g.connType,
+        g.connType.replace(/[\t\r\n]+/g, " "),
         g.cls,
         g.detail,
         g.credentialSource ? "yes" : "no",
@@ -496,28 +567,45 @@ export async function runCheck(
   return { scanned, classified, bad };
 }
 
-async function main(): Promise<void> {
-  const opts = parseCheckArgs(process.argv.slice(2));
-  const url = process.env.DATABASE_URL?.trim();
+/** The command line. Returns the exit code; 2 means usage, nothing ran. */
+export async function cli(
+  argv: string[],
+  io: CheckIO,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<number> {
+  let opts: CheckOptions;
+  try {
+    opts = parseCheckArgs(argv);
+  } catch (error) {
+    if (error instanceof UsageError || error instanceof Error) {
+      io.err(error.message);
+      io.err(USAGE);
+    }
+    return 2;
+  }
+  const url = env.DATABASE_URL?.trim();
   if (!url) throw new Error("DATABASE_URL is not set");
-  if (!opts.dryRun && !("ENCRYPTION_KEY" in process.env)) {
+  if (!opts.dryRun && !("ENCRYPTION_KEY" in env)) {
     throw new Error("ENCRYPTION_KEY is not set");
   }
   await mongoose.connect(url);
   try {
-    await runCheck(opts, {
-      out: line => process.stdout.write(`${line}\n`),
-      err: line => process.stderr.write(`${line}\n`),
-    });
+    await runCheck(opts, io);
   } finally {
     await mongoose.disconnect();
   }
+  return 0;
 }
 
 if (require.main === module) {
-  void main().catch(error => {
-    // Name only: a message could echo a connection string.
-    console.error(error instanceof Error ? error.name : "Error");
-    process.exit(1);
-  });
+  void cli(process.argv.slice(2), {
+    out: line => process.stdout.write(`${line}\n`),
+    err: line => process.stderr.write(`${line}\n`),
+  })
+    .then(code => process.exit(code))
+    .catch(error => {
+      // Name only: a message could echo a connection string.
+      console.error(error instanceof Error ? error.name : "Error");
+      process.exit(1);
+    });
 }
