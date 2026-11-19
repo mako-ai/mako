@@ -12,6 +12,7 @@
  * cancel is fire-and-forget. None of these should block or fail the cancel.
  */
 
+import { requireServiceAccount } from "../connections/google-service-account";
 import { BigQuery } from "@google-cloud/bigquery";
 import { loggers } from "../logging";
 import type { DbtLogLine } from "./runner.service";
@@ -82,14 +83,16 @@ export async function cancelBigQueryJobs(params: {
 }): Promise<void> {
   if (!params.credentials || params.jobs.length === 0) return;
 
-  const projectId =
-    params.projectId ?? (params.credentials.project_id as string | undefined);
-
   let bq: BigQuery;
   try {
+    // Validated here: the library only ever sees the email and private key.
+    const key = requireServiceAccount(params.credentials);
     bq = new BigQuery({
-      projectId,
-      credentials: params.credentials as Record<string, string>,
+      projectId: params.projectId ?? key.project_id,
+      credentials: {
+        client_email: key.client_email,
+        private_key: key.private_key,
+      },
     });
   } catch (error) {
     logger.warn("Failed to build BigQuery client for job cancel", { error });

@@ -4,13 +4,16 @@ Releases of `mako/graphql`. Not released yet: no tag, no registry entry.
 
 ## 1.0.0 (unreleased)
 
-- The endpoint check also covers every address the host name resolves to,
-  and a redirect is refused rather than followed.
+- Security: the request goes through `safeRequest` in
+  `@makoai/connector-sdk` 0.2.0. The guard runs inside the socket's own
+  lookup, so DNS rebinding (a public answer for a check, then 169.254.169.254
+  or a private IP for the connection) is refused with no header sent. The
+  separate resolve-then-fetch check is gone. The policy is an allowlist of
+  public unicast and loopback. A redirect is refused rather than followed,
+  and the decompressed response is capped at 100 MB.
 
 - The in-process GraphQL connector ported to `@makoai/connector-sdk`: one
   untyped entity per flow query (`queryEntities`, `source: "flow"`), the
   same credential and query forms, pagination, `$since` and client filter,
   count query, retry policy and `check` probe, on `fetch` with no
   dependency.
-- The endpoint is checked once for metadata names and private or
-  link-local IP literals. In-process guards every resolved address.

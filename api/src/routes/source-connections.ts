@@ -12,6 +12,7 @@
  * connection's surface is in ./source-connections/, mounted below in its
  * original registration order.
  */
+import { serviceAccountConfigRefusal } from "../connections/google-service-account";
 import { createRoute } from "@hono/zod-openapi";
 import { isEncryptedValue } from "../services/crypto.service";
 import { SourceConnection } from "../database/workspace-schema";
@@ -457,9 +458,9 @@ sourceConnectionRoutes.openapi(
           );
           try {
             assertCredentialCharacters(changed, schema);
-            const refusal = callableFor(sourceConnection.type)?.configRefusal?.(
-              newConfig,
-            );
+            const refusal =
+              callableFor(sourceConnection.type)?.configRefusal?.(newConfig) ??
+              serviceAccountConfigRefusal(newConfig);
             if (refusal) throw new SourceConnectionInputError(refusal);
           } catch (error) {
             if (error instanceof SourceConnectionInputError) {

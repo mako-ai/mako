@@ -7,6 +7,7 @@
  * - bigquery-load.ts   Parquet staging loads, expiry, drop
  * - bigquery-target.ts resolved client type, quota retry, logger
  */
+import { googleClientCredentials } from "../../connections/google-service-account";
 import { inWorkspace } from "../../utils/workspace-scope";
 import { BigQuery } from "@google-cloud/bigquery";
 import {
@@ -858,10 +859,9 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       location?: string;
       api_base_url?: string;
     };
-    const credentials =
-      typeof conn.service_account_json === "string"
-        ? JSON.parse(conn.service_account_json)
-        : conn.service_account_json;
+    // Validated at use time: a stored key of another type is refused, and the
+    // client gets the email and private key only.
+    const credentials = googleClientCredentials(conn.service_account_json);
     const projectId = conn.project_id as string;
     const dataset = this.config.tableDestination.schema;
     const connLocation: string | undefined = conn.location;

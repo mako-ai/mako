@@ -26,6 +26,7 @@ import {
   DEFAULT_API_BASE_URL,
   jobLabels,
   serviceAccount,
+  serviceAccountRefusal,
 } from "./client.ts";
 
 const PAGE_SIZE = 100;
@@ -62,17 +63,12 @@ function configErrors(config: BigQueryConfig): string[] {
   if (!config.project_id) errors.push("BigQuery project_id is required");
   if (!config.service_account_json) {
     errors.push("Service account JSON is required");
-  } else if (typeof config.service_account_json === "string") {
-    try {
-      const sa = JSON.parse(config.service_account_json);
-      if (!sa.client_email || !sa.private_key) {
-        errors.push(
-          "Service account JSON must include client_email and private_key",
-        );
-      }
-    } catch {
-      errors.push("Service account JSON must be valid JSON");
-    }
+  } else {
+    const refusal = serviceAccountRefusal(
+      config.service_account_json,
+      config.api_base_url,
+    );
+    if (refusal) errors.push(refusal);
   }
   if (!Array.isArray(config.queries) || config.queries.length === 0) {
     errors.push("At least one SQL query must be configured");
@@ -82,7 +78,7 @@ function configErrors(config: BigQueryConfig): string[] {
 
 function client(config: BigQueryConfig): BigQueryClient {
   return new BigQueryClient(
-    serviceAccount(config.service_account_json),
+    serviceAccount(config.service_account_json, config.api_base_url),
     config.api_base_url,
   );
 }

@@ -4,6 +4,7 @@
  * account's key (a signed JWT exchanged at the token endpoint) and renewed
  * shortly before it expires. A local emulator needs no token.
  */
+import { requireServiceAccount } from "../../../connections/google-service-account";
 import axios, { type AxiosInstance } from "axios";
 import crypto from "crypto";
 import { loggers } from "../../../logging";
@@ -109,11 +110,10 @@ export class BigQueryClients {
       throw new Error("Invalid service_account_json: Content is not an object");
     }
 
-    return {
-      client_email: obj.client_email as string,
-      private_key: obj.private_key as string,
-      token_uri: obj.token_uri || "https://oauth2.googleapis.com/token",
-    };
+    // Validated before anything is signed or sent: only service_account
+    // keys pass, and the token endpoint is Google's.
+    const { client_email, private_key, token_uri } = requireServiceAccount(obj);
+    return { client_email, private_key, token_uri };
   }
 
   private async createGoogleAccessTokenWithExpiry(
