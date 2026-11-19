@@ -66,17 +66,32 @@ export function tooltipValueState(v) {
  * stays as a row with `state: "zero"`; a missing value stays with
  * `value: null` and `state: "missing"`. Render the cells with `tooltipCell`.
  *
+ * `absentAsZero: true` counts a null or absent key as 0: a stack segment
+ * with no rows in a bucket that has data shows a muted "0", not "–". NaN and
+ * ±Infinity stay missing. `share: true` adds `share` to every row: its value
+ * over the sum of the non-missing values, null when the value is missing or
+ * the sum is not above 0. Render it with `tooltipCell(r.share, fmtPct,
+ * { percent: true })`: a zero share shows a muted "0%".
+ *
  * Opt-outs, for a caller that truly needs the pre-2.15 behaviour:
  * `hideEmpty: true` drops zero and missing rows; `byValue: true` sorts
  * non-stacked rows highest value first (missing last).
- * Returns `{ key, label, color, value, state }`.
+ * Returns `{ key, label, color, value, state }`, plus `share` with `share: true`.
  */
-export function tooltipSeriesRows(datum, series, { stacked = false, hideEmpty = false, byValue = false } = {}) {
+export function tooltipSeriesRows(
+  datum,
+  series,
+  { stacked = false, hideEmpty = false, byValue = false, absentAsZero = false, share = false } = {},
+) {
   let rows = series.map(s => {
-    const raw = datum?.[s.key];
+    const raw = absentAsZero && datum?.[s.key] == null ? 0 : datum?.[s.key];
     const state = tooltipValueState(raw);
     return { key: s.key, label: s.label ?? s.key, color: s.color, value: state === "missing" ? null : Number(raw), state };
   });
+  if (share) {
+    const total = rows.reduce((a, r) => a + (r.value ?? 0), 0);
+    rows = rows.map(r => ({ ...r, share: r.value == null || !(total > 0) ? null : r.value / total }));
+  }
   if (hideEmpty) rows = rows.filter(r => r.state === "value");
   if (stacked) return rows.reverse();
   if (!byValue) return rows;
@@ -178,6 +193,27 @@ export function defaultColumnWidth(column, index = 1) {
   if (column?.date) return COLUMN_WIDTHS.date;
   if (column?.sticky || index === 0) return COLUMN_WIDTHS.first;
   return COLUMN_WIDTHS.text;
+}
+
+/**
+ * A DataTable's column groups: each run of adjacent columns with the same
+ * `group` is one group, spanning those columns in the header's top row. A
+ * column with no `group` is its own run (`group: null`) and spans both header
+ * rows. `start` marks a run that follows a column that is not pinned: it
+ * draws the line between sections. Returns null when no column has a `group`
+ * (a one-row header).
+ * Returns `[{ group: string | null, start: boolean, columns: [column, …] }]`.
+ */
+export function columnGroupRuns(columns) {
+  if (!columns.some(c => c.group != null)) return null;
+  const runs = [];
+  columns.forEach((col, i) => {
+    const group = col.group ?? null;
+    const last = runs[runs.length - 1];
+    if (group != null && last?.group === group) last.columns.push(col);
+    else runs.push({ group, start: i > 0 && !columns[i - 1].sticky, columns: [col] });
+  });
+  return runs;
 }
 
 /**

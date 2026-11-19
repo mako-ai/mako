@@ -683,6 +683,29 @@ const SEGMENTS = [ // bottom-up, as stacked; drives the bars, the legend AND the
 - On a chart with an HTML overlay (a donut's centre label), lift the tooltip:
   `<Tooltip wrapperStyle={{ zIndex: 20 }} … />`.
 
+**Stacks: an absent segment is a zero, plus its share.** A stacked bar's
+bucket often has no row for a segment (no 3xx requests that hour). That is a
+zero, not missing data. `absentAsZero: true` turns a null or absent key into a
+muted "0". NaN stays a "–" (a mean the bucket cannot compute). `share: true`
+adds `share` to each row: its value over the sum of the non-missing values,
+null when the value is missing or the sum is 0. `colWidth` on `TableTooltip`
+sets the value columns' minimum width (`"9ch"`, or px as a number). Both
+options are off by default, and with them off the rows are the same as before.
+
+```tsx
+content={tableTooltip((d) => {
+  const rows = tooltipSeriesRows(d, STACKS, { stacked: true, absentAsZero: true, share: true });
+  const total = rows.reduce((a, r) => a + (r.value ?? 0), 0);
+  return {
+    title: d.hour,
+    columns: ["Requests", "% of total"],
+    colWidth: "9ch",
+    rows: rows.map((r) => ({ ...r, cells: [tooltipCell(r.value, fmtInt), tooltipCell(r.share, fmtPct, { percent: true })] })),
+    total: { label: "Total", cells: [tooltipCell(total, fmtInt), total > 0 ? "100%" : tooltipCell(0, fmtPct, { percent: true })] },
+  };
+})}
+```
+
 **Opt-out.** Before 2.15, `tooltipSeriesRows` dropped zero and missing values
 and sorted line charts highest value first. A caller that truly needs that
 passes `{ hideEmpty: true, byValue: true }`. `hideEmpty` drops zero and
@@ -774,8 +797,26 @@ const COLUMNS: DataTableColumn<Customer>[] = [
   midnight exports as `YYYY-MM-DD`, any other Date as a UTC ISO timestamp. For
   your own button: `saveCsv(filename, toCsv(rows, columns))` returns
   `"downloaded"` or `"failed"`.
+- **Column groups.** Give columns a `group` and the header gets a second row
+  on top. Each group's label spans its adjacent columns. Ungrouped columns
+  (the pinned name) span both rows. A line runs down the left of each section.
+  `groups` sets a label and a class per group id; a group not listed shows its
+  id. Sorting, the sticky header and the pinned column work as before. With
+  no `group` on any column the header is one row, as before.
+
+  ```tsx
+  const COLUMNS = [
+    { id: "country", label: "Country", value: r => r.country, sticky: true },
+    { id: "calls", label: "Calls", num: true, value: r => r.calls, group: "activity" },
+    { id: "demos", label: "Demos", num: true, value: r => r.demos, group: "activity" },
+    { id: "cash", label: "Cash", num: true, value: r => r.cash, group: "money" },
+  ];
+  <DataTable rows={rows} columns={COLUMNS}
+    groups={[{ id: "activity", label: "Activity" }, { id: "money", label: "Money", className: "tone-positive" }]} />
+  ```
 - Pure helpers for custom tables: `sortRows`, `compareValues`, `nextSort`,
-  `pageSlice`, `pageToSync`, `toCsv`, `csvCell`, `csvDate`, `csvToTsv`.
+  `pageSlice`, `pageToSync`, `toCsv`, `csvCell`, `csvDate`, `csvToTsv`,
+  `columnLayout`, `columnGroupRuns`.
 
 `ui.css` is plain CSS (no Tailwind needed; it coexists with Tailwind) and
 every kit class is prefixed `mk-`. It also sets the house base: Inter 14px on

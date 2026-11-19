@@ -15,6 +15,7 @@ import {
   claimPopover,
   closePopovers,
   COLUMN_WIDTHS,
+  columnGroupRuns,
   columnLayout,
   compareValues,
   csvCell,
@@ -56,6 +57,7 @@ export { formatDate, formatTime, toDayKey, toInstant } from "./time.js";
 export {
   closePopovers,
   COLUMN_WIDTHS,
+  columnGroupRuns,
   columnLayout,
   compareValues,
   csvCell,
@@ -344,11 +346,16 @@ export function tooltipCell(value, format, opts) {
  * minimum width, then a bold `total` row under a rule. `after` rows follow
  * the total, apart (a value on another axis, such as an average next to a
  * rate). A null or undefined cell shows a muted "–"; "" stays blank.
+ * `colWidth` sets the value columns' minimum width (default 7ch; a number is
+ * px), so the box keeps its size while the pointer moves.
  */
-export function TableTooltip({ title, columns = [], rows = [], total, after, className }) {
+export function TableTooltip({ title, columns = [], rows = [], total, after, className, colWidth }) {
   return h(
     "div",
-    { className: cx("mk-tip", className) },
+    {
+      className: cx("mk-tip", className),
+      style: colWidth == null ? undefined : { "--mk-tip-col": typeof colWidth === "number" ? `${colWidth}px` : colWidth },
+    },
     title != null && h("div", { className: "mk-tip-title" }, title),
     h(
       "table",
@@ -458,6 +465,12 @@ const INTERACTIVE = "a,button,input,select,textarea,label,[role=button]";
  * each column's `width` or a default by kind (see `columnLayout`). The rows
  * on screen never change a width, so sorting, filtering and paging never
  * shift the layout. Cells ellipsize at their width with the full value on hover.
+ *
+ * Column groups: give columns a `group` and the header gets a second row on
+ * top, where each group's label spans its adjacent columns (`groups` sets a
+ * label or class per group id). Ungrouped columns span both rows. A line
+ * separates the sections. Sort, the sticky header and the pinned column work
+ * the same.
  */
 export function DataTable({
   rows = [],
@@ -483,6 +496,7 @@ export function DataTable({
   rowLabel,
   resetKey,
   exportFilename,
+  groups,
   className,
   style,
 }) {
@@ -496,6 +510,8 @@ export function DataTable({
 
   const sorted = React.useMemo(() => sortRows(rows, columns, sort), [rows, columns, sort]);
   const layout = React.useMemo(() => columnLayout(columns), [columns]);
+  const runs = React.useMemo(() => columnGroupRuns(columns), [columns]);
+  const sections = React.useMemo(() => new Set(runs?.filter(r => r.start).map(r => r.columns[0].id)), [runs]);
   const { page, pageCount, start, end } = pageSlice(sorted.length, rawPage, pageSize);
   const visible = sorted.slice(start, end);
 
@@ -538,44 +554,71 @@ export function DataTable({
   };
 
   const cellClass = (col, extra) =>
-    cx(col.num && "mk-dt-num", col.align === "right" && "mk-dt-num", col.align === "center" && "mk-dt-center", col.sticky && "mk-dt-pin", extra);
+    cx(
+      col.num && "mk-dt-num",
+      col.align === "right" && "mk-dt-num",
+      col.align === "center" && "mk-dt-center",
+      col.sticky && "mk-dt-pin",
+      sections.has(col.id) && "mk-dt-section",
+      extra,
+    );
 
-  const head = h(
-    "thead",
-    null,
-    h(
-      "tr",
-      null,
-      ...columns.map(col => {
-        const active = sort?.id === col.id;
-        const text = typeof col.label === "string" ? col.label : col.id;
-        const label =
-          col.sortable === false
-            ? h("span", { className: "mk-dt-label", title: col.hint ?? text }, h("span", { className: "mk-dt-th-text" }, col.label))
-            : h(
-                "button",
-                {
-                  type: "button",
-                  className: "mk-dt-sort",
-                  onClick: () => sortBy(col),
-                  title: `${col.hint ?? text} · click to sort`,
-                },
-                h("span", { className: "mk-dt-th-text" }, col.label),
-                h(IconSort, { dir: active ? sort.dir : null }),
-              );
-        return h(
-          "th",
-          {
-            key: col.id,
-            scope: "col",
-            className: cellClass(col, active && "mk-dt-sorted"),
-            "aria-sort": col.sortable === false ? undefined : active ? (sort.dir === "asc" ? "ascending" : "descending") : "none",
-          },
-          label,
-        );
-      }),
-    ),
-  );
+  // One column's header cell: a sort button (or a plain label). In a grouped
+  // header an ungrouped column spans both rows (`rowSpan` 2).
+  const headCell = (col, rowSpan) => {
+    const active = sort?.id === col.id;
+    const text = typeof col.label === "string" ? col.label : col.id;
+    const label =
+      col.sortable === false
+        ? h("span", { className: "mk-dt-label", title: col.hint ?? text }, h("span", { className: "mk-dt-th-text" }, col.label))
+        : h(
+            "button",
+            {
+              type: "button",
+              className: "mk-dt-sort",
+              onClick: () => sortBy(col),
+              title: `${col.hint ?? text} · click to sort`,
+            },
+            h("span", { className: "mk-dt-th-text" }, col.label),
+            h(IconSort, { dir: active ? sort.dir : null }),
+          );
+    return h(
+      "th",
+      {
+        key: col.id,
+        scope: "col",
+        rowSpan,
+        className: cellClass(col, active && "mk-dt-sorted"),
+        "aria-sort": col.sortable === false ? undefined : active ? (sort.dir === "asc" ? "ascending" : "descending") : "none",
+      },
+      label,
+    );
+  };
+
+  // Column groups: a top row of group labels, each spanning its columns.
+  const groupCell = run => {
+    const info = groups?.find(g => g.id === run.group);
+    const label = info?.label ?? run.group;
+    return h(
+      "th",
+      {
+        key: `__group_${run.columns[0].id}`,
+        scope: "colgroup",
+        colSpan: run.columns.length,
+        className: cx("mk-dt-group", run.start && "mk-dt-section", info?.className),
+        title: typeof label === "string" ? label : undefined,
+      },
+      h("span", { className: "mk-dt-th-text" }, label),
+    );
+  };
+  const head = runs
+    ? h(
+        "thead",
+        null,
+        h("tr", null, ...runs.map(run => (run.group == null ? headCell(run.columns[0], 2) : groupCell(run)))),
+        h("tr", null, ...runs.flatMap(run => (run.group == null ? [] : run.columns.map(col => headCell(col))))),
+      )
+    : h("thead", null, h("tr", null, ...columns.map(col => headCell(col))));
 
   // Every cell ellipsizes at its column's width, with the raw value (text or
   // a number) as the hover title. `truncate: false` wraps instead.
@@ -676,7 +719,7 @@ export function DataTable({
       { className: "mk-dt-scroll", ref: scrollRef, style: !fill && maxHeight != null ? { maxHeight } : undefined },
       h(
         "table",
-        { className: "mk-dt-table", style: { minWidth: layout.minWidth } },
+        { className: cx("mk-dt-table", runs && "mk-dt-table--grouped"), style: { minWidth: layout.minWidth } },
         h(
           "colgroup",
           null,

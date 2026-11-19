@@ -243,6 +243,18 @@ button, input, select, textarea { font-family: inherit; }
 /* The corner cell is pinned both ways and keeps BOTH borders: one box-shadow
  * would otherwise override the other and drop the header's bottom rule. */
 .mk-dt-table thead th.mk-dt-pin { z-index: 3; box-shadow: inset -1px 0 0 var(--border), inset 0 -1px 0 var(--border); }
+/* Column groups: a 2-row header. The whole <thead> sticks (two rows of
+ * sticky cells would stack at top: 0) and the pinned corner still sticks
+ * left. A group label spans its columns, centred, uppercase, with no rule
+ * under it. A line runs down the left of each section, head to foot. */
+.mk-dt-table--grouped thead { position: sticky; top: 0; z-index: 2; }
+.mk-dt-table--grouped thead th { position: static; }
+.mk-dt-table--grouped thead th.mk-dt-pin { position: sticky; top: auto; left: 0; }
+.mk-dt-table thead th.mk-dt-group {
+  height: 26px; padding: 0 10px; text-align: center; box-shadow: none;
+  font-size: 11px; font-weight: 600; letter-spacing: .075em; text-transform: uppercase;
+}
+.mk-dt-table .mk-dt-section { border-left: 1px solid var(--border); }
 .mk-dt-table tbody tr:hover > td { background: color-mix(in srgb, var(--muted) 50%, var(--card)); }
 .mk-dt-table tbody tr:last-child > td { border-bottom: 0; }
 .mk-dt-click { cursor: pointer; }
