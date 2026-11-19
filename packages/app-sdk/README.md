@@ -730,6 +730,12 @@ rows.sort((a, b) => COUNTRY_ORDER.indexOf(a.country) - COUNTRY_ORDER.indexOf(b.c
 CH red, FR blue, IT green, ES amber, PT teal, PL rose. Other series in a
 country chart take `--chart-1…5`. Both objects are frozen.
 
+2.28 adds the 6 lead-only markets of dbt seed `markets` (valuation funnel
+only, no agents): DE violet, AT lime, CZ ochre, NL orange, BE fuchsia, GB navy
+(realadvisor.co.uk). `COUNTRY_ORDER` keeps the 6 site markets. The lead-only
+markets follow them in the map's key order, so an app that lists markets from
+data sorts by `COUNTRY_ORDER`, then by key order of `COUNTRY_COLORS`.
+
 ### Times and dates (2.21)
 
 DuckDB runs in UTC, and that stays. Display code decides the zone.

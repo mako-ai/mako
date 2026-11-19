@@ -408,8 +408,10 @@ export function useTheme(): { theme: "light" | "dark" };
 
 /** A market's lowercase code, in COUNTRY_ORDER. */
 export type CountryCode = "ch" | "fr" | "es" | "it" | "pl" | "pt";
-/** One colour per market (2.27), keyed by lowercase code; `all` is the all-markets line. */
-export const COUNTRY_COLORS: Readonly<Record<CountryCode | "all", string>>;
+/** A lead-only market (2.28): the valuation funnel runs there, no agents. In this order. */
+export type LeadMarketCode = "de" | "at" | "cz" | "nl" | "be" | "gb";
+/** One colour per market (2.27; lead-only markets 2.28), keyed by lowercase code; `all` is the all-markets line. */
+export const COUNTRY_COLORS: Readonly<Record<CountryCode | LeadMarketCode | "all", string>>;
 /** CH, FR, ES, IT, PL, PT (2.27), as lowercase codes. */
 export const COUNTRY_ORDER: readonly CountryCode[];
 

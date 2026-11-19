@@ -38,7 +38,7 @@ import {
  * in a page (or this export) says which SDK a deployed app actually runs.
  * Kept in step with package.json by snapshot.test.mjs.
  */
-export const SDK_VERSION = "2.27.0";
+export const SDK_VERSION = "2.28.0";
 if (typeof window !== "undefined") {
   try {
     window.__MAKO_APP_SDK__ = SDK_VERSION;
@@ -2068,6 +2068,9 @@ if (
 // ---------------------------------------------------------------------------
 // Country colours (2.27): one colour per market in every app, deck and chart,
 // keyed by the lowercase country code. `all` is the all-markets / group line.
+// 2.28 adds the 6 lead-only markets (valuation funnel only since 18-19 Nov
+// 2026), in their order: DE, AT, CZ, NL, BE, GB (realadvisor.co.uk). Their
+// flags repeat the first six's hues, so they take free ones.
 // ---------------------------------------------------------------------------
 export const COUNTRY_COLORS = Object.freeze({
   ch: "#dc2626",
@@ -2076,6 +2079,12 @@ export const COUNTRY_COLORS = Object.freeze({
   es: "#f59e0b",
   pt: "#0891b2",
   pl: "#db2777",
+  de: "#7c3aed",
+  at: "#65a30d",
+  cz: "#a16207",
+  nl: "#ea580c",
+  be: "#c026d3",
+  gb: "#1e40af",
   all: "#475569",
 });
 

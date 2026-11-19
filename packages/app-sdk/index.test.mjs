@@ -405,10 +405,18 @@ test("COUNTRY_COLORS and COUNTRY_ORDER: the house map, frozen, from the root", o
     es: "#f59e0b",
     pt: "#0891b2",
     pl: "#db2777",
+    de: "#7c3aed",
+    at: "#65a30d",
+    cz: "#a16207",
+    nl: "#ea580c",
+    be: "#c026d3",
+    gb: "#1e40af",
     all: "#475569",
   });
   assert.deepEqual([...sdk.COUNTRY_ORDER], ["ch", "fr", "es", "it", "pl", "pt"]);
   for (const c of sdk.COUNTRY_ORDER) assert.match(sdk.COUNTRY_COLORS[c], /^#[0-9a-f]{6}$/, `${c} has a colour`);
-  assert.equal(new Set(Object.values(sdk.COUNTRY_COLORS)).size, 7, "no two markets share a colour");
+  // The lead-only markets follow the site markets, in their order (2.28).
+  assert.deepEqual(Object.keys(sdk.COUNTRY_COLORS).filter(c => c !== "all" && !sdk.COUNTRY_ORDER.includes(c)), ["de", "at", "cz", "nl", "be", "gb"]);
+  assert.equal(new Set(Object.values(sdk.COUNTRY_COLORS)).size, 13, "no two markets share a colour");
   assert.ok(Object.isFrozen(sdk.COUNTRY_COLORS) && Object.isFrozen(sdk.COUNTRY_ORDER));
 });
