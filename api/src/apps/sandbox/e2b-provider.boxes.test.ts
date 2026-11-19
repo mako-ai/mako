@@ -48,7 +48,11 @@ vi.mock("e2b", async importOriginal => ({
   SandboxNotFoundError: e2b.SandboxNotFoundError,
 }));
 
-import { allowsPublicTraffic, e2bSandboxProvider } from "./e2b-provider";
+import {
+  allowsPublicTraffic,
+  e2bSandboxProvider,
+  templateForSession,
+} from "./e2b-provider";
 
 beforeEach(() => {
   process.env.E2B_API_KEY = "test-key-not-real";
@@ -311,5 +315,60 @@ describe("allowsPublicTraffic", () => {
     [":user", false],
   ])("%s -> %s", (key, expected) => {
     expect(allowsPublicTraffic(key)).toBe(expected);
+  });
+});
+
+describe("templateForSession", () => {
+  const saved = {
+    apps: process.env.APPS_E2B_TEMPLATE,
+    connector: process.env.APPS_E2B_CONNECTOR_TEMPLATE,
+  };
+  const restore = (name: string, value: string | undefined) => {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  };
+
+  it("gives connector sync boxes their own 4 GB template when one is set", () => {
+    process.env.APPS_E2B_TEMPLATE = "mako-apps";
+    process.env.APPS_E2B_CONNECTOR_TEMPLATE = "mako-connector-sync";
+    try {
+      expect(templateForSession("connector-sync:v2:ws1")).toBe(
+        "mako-connector-sync",
+      );
+      // Every other box keeps the apps template.
+      expect(templateForSession("ws1:publish")).toBe("mako-apps");
+      expect(templateForSession("connector-box:cbx_1")).toBe("mako-apps");
+      expect(templateForSession("connector-build:ws1:b1")).toBe("mako-apps");
+    } finally {
+      restore("APPS_E2B_TEMPLATE", saved.apps);
+      restore("APPS_E2B_CONNECTOR_TEMPLATE", saved.connector);
+    }
+  });
+
+  it("falls back to the apps template when none is set", () => {
+    process.env.APPS_E2B_TEMPLATE = "mako-apps";
+    process.env.APPS_E2B_CONNECTOR_TEMPLATE = " ";
+    try {
+      expect(templateForSession("connector-sync:v2:ws1")).toBe("mako-apps");
+    } finally {
+      restore("APPS_E2B_TEMPLATE", saved.apps);
+      restore("APPS_E2B_CONNECTOR_TEMPLATE", saved.connector);
+    }
+  });
+
+  it("creates a connector sync box from it", async () => {
+    process.env.APPS_E2B_CONNECTOR_TEMPLATE = "mako-connector-sync";
+    try {
+      await e2bSandboxProvider.exec(
+        { sessionKey: "connector-sync:v2:ws-template" },
+        "true",
+      );
+      expect(e2b.Sandbox.create).toHaveBeenCalledWith(
+        "mako-connector-sync",
+        expect.anything(),
+      );
+    } finally {
+      restore("APPS_E2B_CONNECTOR_TEMPLATE", saved.connector);
+    }
   });
 });

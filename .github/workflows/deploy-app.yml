@@ -209,6 +209,10 @@ jobs:
       # settings change, not a code change (see
       # docs/runbooks/e2b-workspace-migration.md).
       APPS_E2B_TEMPLATE: ${{ vars.APPS_E2B_TEMPLATE || 'mako-apps' }}
+      # Connector sync boxes' own template (4,096 MB, built with
+      # apps:build-connector-template). Empty means APPS_E2B_TEMPLATE, so
+      # this stays off until the template exists in the E2B project.
+      APPS_E2B_CONNECTOR_TEMPLATE: ${{ vars.APPS_E2B_CONNECTOR_TEMPLATE || '' }}
       # E2B region of the key above: e2b.app is us-west-1, e2b-juliett.dev
       # is the EU project. The SDK and Vite's allowed host both follow it.
       # `--set-env-vars` replaces the whole env, so it must be listed here.
@@ -661,6 +665,7 @@ jobs:
             --set-env-vars AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY} \
             --set-env-vars APPS_SANDBOX_PROVIDER=${APPS_SANDBOX_PROVIDER} \
             --set-env-vars APPS_E2B_TEMPLATE=${APPS_E2B_TEMPLATE} \
+            --set-env-vars APPS_E2B_CONNECTOR_TEMPLATE=${APPS_E2B_CONNECTOR_TEMPLATE} \
             --set-env-vars E2B_DOMAIN=${E2B_DOMAIN} \
             --set-env-vars TAVILY_API_KEY=${TAVILY_API_KEY} \
             --set-env-vars LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY} \
@@ -931,6 +936,8 @@ jobs:
       # environment to the repo level, so sharing APPS_E2B_TEMPLATE with
       # previews would hand production the dev template name.
       APPS_E2B_TEMPLATE: ${{ vars.APPS_E2B_TEMPLATE_PROD || 'mako-apps' }}
+      # Its own production variable, for the same reason.
+      APPS_E2B_CONNECTOR_TEMPLATE: ${{ vars.APPS_E2B_CONNECTOR_TEMPLATE_PROD || '' }}
       # E2B region of the production key. Its own variable for the same
       # reason as APPS_E2B_TEMPLATE_PROD: `vars.E2B_DOMAIN` would fall back to
       # the repo level and hand production the preview domain.
@@ -1189,6 +1196,7 @@ jobs:
             --set-env-vars AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY} \
             --set-env-vars APPS_SANDBOX_PROVIDER=${APPS_SANDBOX_PROVIDER} \
             --set-env-vars APPS_E2B_TEMPLATE=${APPS_E2B_TEMPLATE} \
+            --set-env-vars APPS_E2B_CONNECTOR_TEMPLATE=${APPS_E2B_CONNECTOR_TEMPLATE} \
             --set-env-vars E2B_DOMAIN=${E2B_DOMAIN} \
             --set-env-vars CONNECTOR_SESSION_READS=${CONNECTOR_SESSION_READS} \
             --set-env-vars CONNECTOR_WEBHOOK_BATCHES=${CONNECTOR_WEBHOOK_BATCHES} \
