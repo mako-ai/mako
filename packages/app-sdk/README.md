@@ -589,6 +589,35 @@ house tokens onto Tailwind's colour names (`bg-popover`,
 optional peer set: apps that import neither `/components` nor `/menu` need
 none of it.
 
+### Date filters: `PeriodPicker` (2.27)
+
+A date filter reads **‹ Nov 2026 ›**. The arrows step one period. The middle
+opens a picker with the units, the recent periods and a Custom range. The
+period in progress is tinted and says "in progress": its numbers are not
+final.
+
+```tsx
+import { PeriodPicker, clipToday, periodOf, todayIso, type Period } from "@makoai/app-sdk/components";
+
+const [period, setPeriod] = useState<Period>(periodOf("month", todayIso()));
+<PeriodPicker value={period} onChange={setPeriod}
+  units={["week", "month", "quarter", "year"]} min="2024-01-01" label="Hires" />
+
+const { from, to } = clipToday(period); // the month in progress stops at today
+```
+
+- `units` defaults to month, quarter and year. The picker lists 12 weeks,
+  12 months, 8 quarters or 4 years.
+- `custom` is `"month"` (whole months, the default), `"day"` (any days) or
+  `false`. The arrows move a custom range by its own length.
+- ‹ stops at `min`, the first day with data. › stops at today, or at `max`
+  (next month's end for a capacity plan).
+- `periodOf(unit, day)`, `shift(period, k)`, `isCurrent(period)`,
+  `clipToday(period)` and `periodLabel(period)` are the helpers. Dates are
+  "YYYY-MM-DD" UTC day keys, both ends inclusive. Weeks start on Monday.
+- The menu is the stock `Popover`. Focus moves into it on open and back to
+  the middle on Escape.
+
 ### Times and dates (2.21)
 
 DuckDB runs in UTC, and that stays. Display code decides the zone.
