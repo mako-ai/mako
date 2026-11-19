@@ -37,6 +37,7 @@ import {
   buildLivePartitionProbeQuery,
   buildMergeStatement,
   buildStagingAbsentColumnsQuery,
+  resolveMergePartitioning,
   liveTableCreateColumns,
   escId,
   sqlString,
@@ -46,6 +47,7 @@ import {
   createLiveTableFromStaging,
   discoverMergeSchemas,
   evolveSchemaIfNeeded,
+  getLiveTablePartitioning,
   getSchemaCacheKey,
   hashEntitySchema,
   invalidateCachedSchema,
@@ -379,12 +381,22 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     },
   ): Promise<string | undefined> {
     if (process.env.CDC_BQ_MERGE_PARTITION_PRUNE === "off") return undefined;
-    const field = p.layout.partitioning?.field;
-    if (!field) return undefined;
-    if ((p.liveTypes.get(field) || "").toUpperCase() !== "TIMESTAMP") {
-      return undefined;
+    // Prune on the column the live table is partitioned on, which can differ
+    // from the layout (resolveMergePartitioning).
+    const pruneOn = resolveMergePartitioning({
+      table: await getLiveTablePartitioning(target, p.layout.tableName),
+      layout: p.layout.partitioning,
+      liveTypes: p.liveTypes,
+    });
+    if (!pruneOn) return undefined;
+    const { field, granularity } = pruneOn;
+    if (field !== p.layout.partitioning?.field) {
+      log.info("Live table partition column differs from the layout", {
+        liveTable: p.layout.tableName,
+        tableField: field,
+        layoutField: p.layout.partitioning?.field,
+      });
     }
-    const granularity = p.layout.partitioning?.granularity;
     const probe = buildLivePartitionProbeQuery({
       fullLive: p.fullLive,
       fullStaging: p.fullStaging,

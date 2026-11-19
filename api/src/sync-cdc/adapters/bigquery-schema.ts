@@ -10,6 +10,7 @@ import {
   buildCastExpression,
   buildCreateLiveTableStatement,
   escId,
+  type LiveTablePartitioning,
   mapLogicalTypeToBigQuery,
   resolveTargetBqType,
   sqlString,
@@ -68,6 +69,47 @@ export function setCachedSchema(
 
 export function invalidateCachedSchema(key: string): void {
   schemaCache.delete(key);
+  partitioningCache.delete(key);
+}
+
+// The live table's actual time partitioning, cached like the column types.
+const partitioningCache = new Map<
+  string,
+  { value: LiveTablePartitioning | null; fetchedAt: number }
+>();
+
+/**
+ * The live table's `timePartitioning` from the tables API (a metadata read,
+ * never billed). Returns null when the table is not partitioned on a column,
+ * and undefined when the read fails.
+ */
+export async function getLiveTablePartitioning(
+  target: BigQueryTarget,
+  liveTable: string,
+): Promise<LiveTablePartitioning | null | undefined> {
+  const key = getSchemaCacheKey(target.projectId, target.dataset, liveTable);
+  const cached = partitioningCache.get(key);
+  if (cached && Date.now() - cached.fetchedAt <= SCHEMA_CACHE_TTL_MS) {
+    return cached.value;
+  }
+  try {
+    const [metadata] = await target.bq
+      .dataset(target.dataset, { location: target.datasetLocation })
+      .table(liveTable)
+      .getMetadata();
+    const tp = (
+      metadata as { timePartitioning?: { field?: string; type?: string } }
+    ).timePartitioning;
+    const value = tp?.field ? { field: tp.field, type: tp.type } : null;
+    partitioningCache.set(key, { value, fetchedAt: Date.now() });
+    return value;
+  } catch (err) {
+    log.warn("Could not read live table partitioning; using the layout", {
+      liveTable,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return undefined;
+  }
 }
 
 export function hashEntitySchema(schema: ConnectorEntitySchema): string {
