@@ -217,6 +217,9 @@ button, input, select, textarea { font-family: inherit; }
   padding: 7px 10px; text-align: left; white-space: nowrap; vertical-align: middle; overflow: hidden;
   border-bottom: 1px solid var(--mk-row-line); background: var(--card);
 }
+/* A row tint (rowClassName) sets --mk-dt-row-bg on the <tr>. Every body cell,
+ * the pinned one included, paints it, so the tint survives the solid pin. */
+.mk-dt-table tbody td { background: var(--mk-dt-row-bg, var(--card)); }
 .mk-dt-table thead th {
   position: sticky; top: 0; z-index: 2; padding: 0; border-bottom: 0;
   font-size: 12px; font-weight: 500; color: var(--muted-foreground);
@@ -243,11 +246,11 @@ button, input, select, textarea { font-family: inherit; }
 /* The corner cell is pinned both ways and keeps BOTH borders: one box-shadow
  * would otherwise override the other and drop the header's bottom rule. */
 .mk-dt-table thead th.mk-dt-pin { z-index: 3; box-shadow: inset -1px 0 0 var(--border), inset 0 -1px 0 var(--border); }
-.mk-dt-table tbody tr:hover > td { background: color-mix(in srgb, var(--muted) 50%, var(--card)); }
+.mk-dt-table tbody tr:hover > td { background: color-mix(in srgb, var(--muted) 50%, var(--mk-dt-row-bg, var(--card))); }
 .mk-dt-table tbody tr:last-child > td { border-bottom: 0; }
 .mk-dt-click { cursor: pointer; }
 .mk-dt-click:focus-visible { outline: none; }
-.mk-dt-click:focus-visible > td { background: color-mix(in srgb, var(--muted) 70%, var(--card)); }
+.mk-dt-click:focus-visible > td { background: color-mix(in srgb, var(--muted) 70%, var(--mk-dt-row-bg, var(--card))); }
 .mk-dt-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* A render() that returns blocks (a name over its links) ellipsizes each line. */
 .mk-dt-cell :where(div, p) { overflow: hidden; text-overflow: ellipsis; }

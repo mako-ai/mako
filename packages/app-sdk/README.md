@@ -767,6 +767,47 @@ const COLUMNS: DataTableColumn<Customer>[] = [
   focused row); clicks on links and buttons inside a cell stay theirs.
   `rowLabel(row)` names a clickable row for screen readers. `rowKey` defaults
   to `row.id`.
+- **Row tints.** `rowClassName(row)` adds a class to a body row. Set
+  `--mk-dt-row-bg` in that class and every cell paints it, the pinned first
+  column included. Pick an opaque colour so scrolled cells stay behind the
+  pin. Without `rowClassName` rows get no class.
+
+  ```tsx
+  // app.css: .deal-lost { --mk-dt-row-bg: color-mix(in srgb, var(--negative) 12%, var(--card)); }
+  <DataTable rows={deals} columns={COLUMNS} rowClassName={d => (d.status === "lost" ? "deal-lost" : undefined)} />
+  ```
+- **Labels.** `labels` translates every string the table writes itself: the
+  footer, the empty state, the page-size select, the « ‹ › » aria-labels, the
+  sort hint and the export button. Pass any subset. Missing keys keep the
+  English defaults in `DATA_TABLE_LABELS`. Text with numbers is a function
+  that gets raw numbers, so format them in your locale. `noun` still names the
+  rows, and an `empty` prop wins over `labels.empty`.
+
+  ```tsx
+  const fr = (n: number) => n.toLocaleString("fr-FR");
+  const FR: Partial<DataTableLabels> = {
+    range: (from, to, total, noun) => `${fr(from)}–${fr(to)} sur ${fr(total)} ${noun}`,
+    none: noun => `Aucun ${noun.replace(/s$/, "")}`,
+    empty: "Aucune ligne pour ces filtres.",
+    page: (page, pageCount) => `Page ${page} sur ${pageCount}`,
+    perPage: size => `${size} par page`,
+    rowsPerPage: "Lignes par page",
+    first: "Première page",
+    previous: "Page précédente",
+    next: "Page suivante",
+    last: "Dernière page",
+    sortHint: label => `${label} · cliquer pour trier`,
+    exportCsv: "Exporter en CSV",
+    exportTitle: "Exporter toutes les lignes, dans l'ordre du tri",
+    exportFailed: "Le navigateur a bloqué le téléchargement. Ouvrez l'app dans un nouvel onglet.",
+  };
+
+  <DataTable rows={list} columns={COLUMNS} noun="clients" labels={FR} />
+  // footer: 51–100 sur 1 234 clients · 50 par page · « ‹ Page 2 sur 25 › »
+  ```
+
+  The English `range` bolds the two numbers. A custom `range` may return JSX
+  to do the same.
 - **CSV.** `exportFilename` adds an "Export CSV" button that downloads every
   row on every page, as sorted. Mako's app frames allow downloads. Numbers
   export as is. Text starting with `=`, `+`, `-`, `@`, tab or CR gets a

@@ -390,6 +390,43 @@ export interface DataTableColumn<R = any> {
    */
   csv?: false | ((row: R) => unknown);
 }
+/**
+ * Every piece of text a DataTable renders itself: the footer, the pager's
+ * aria-labels, the sort hint and the export button. Text with numbers is a
+ * function that gets the raw numbers, so the app formats them in its locale.
+ */
+export interface DataTableLabels {
+  /** The footer with rows. Default `<b>1–50</b> of <b>312</b> customers`. */
+  range: (from: number, to: number, total: number, noun: string) => React.ReactNode;
+  /** The footer with no rows. Default "No customers". */
+  none: (noun: string) => React.ReactNode;
+  /** The body cell with no rows. Default "No rows match these filters." The `empty` prop wins over it. */
+  empty: React.ReactNode;
+  /** Default "Page 2 of 7". */
+  page: (page: number, pageCount: number) => string;
+  /** One page-size option. Default "50 per page". */
+  perPage: (size: number) => string;
+  /** The page-size select's aria-label. Default "Rows per page". */
+  rowsPerPage: string;
+  /** The « button's aria-label. Default "First page". */
+  first: string;
+  /** The ‹ button's aria-label. Default "Previous page". */
+  previous: string;
+  /** The › button's aria-label. Default "Next page". */
+  next: string;
+  /** The » button's aria-label. Default "Last page". */
+  last: string;
+  /** A sortable header's hover title. Default "MRR · click to sort". */
+  sortHint: (label: string) => string;
+  /** Default "Export CSV". */
+  exportCsv: string;
+  /** The export button's hover title. Default "Export every row on every page, as sorted". */
+  exportTitle: string;
+  /** Shown when the browser blocks the CSV download. */
+  exportFailed: string;
+}
+/** The English defaults of `DataTableLabels`. */
+export const DATA_TABLE_LABELS: DataTableLabels;
 export interface DataTableProps<R = any> {
   /** Default [] (renders the empty state while loading). */
   rows?: readonly R[];
@@ -428,6 +465,12 @@ export interface DataTableProps<R = any> {
   noun?: string;
   /** Shown when there are no rows. Default "No rows match these filters." */
   empty?: React.ReactNode;
+  /**
+   * Override any footer, pager, sort-hint or export text, e.g. French:
+   * `{ page: (p, n) => "Page " + p + " sur " + n }`. Missing keys keep the
+   * English default (`DATA_TABLE_LABELS`). The README has a full French set.
+   */
+  labels?: Partial<DataTableLabels>;
   /** Fill the parent's height; the body scrolls inside the card. */
   fill?: boolean;
   /** Body scroll height when not `fill`. Default 70vh. */
@@ -436,6 +479,14 @@ export interface DataTableProps<R = any> {
   onRowClick?: (row: R, event: React.SyntheticEvent) => void;
   /** The accessible name of a clickable row, e.g. `c => \`Open ${c.name}\``. */
   rowLabel?: (row: R) => string;
+  /**
+   * A class for a body row, e.g. `d => d.status === "lost" ? "deal-lost" : undefined`.
+   * Tint the row by setting `--mk-dt-row-bg` in that class: every cell paints
+   * it, the pinned first column included. Use an opaque colour, such as
+   * `color-mix(in srgb, var(--negative) 12%, var(--card))`, so scrolled cells
+   * stay hidden behind the pin. Default undefined: rows get no class.
+   */
+  rowClassName?: (row: R) => string | undefined;
   /** Adds an "Export CSV" button: downloads every row, as sorted. */
   exportFilename?: string;
   className?: string;
