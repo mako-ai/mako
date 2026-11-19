@@ -20,6 +20,8 @@ const platform = [
   "Connector run cleanup failed: [unavailable] The sandbox is running but port is not open: The sandbox is running but envd inside it could not be reached (e.g. its network is down).",
   "No connector box for this connection after 120 s. 4 runs are waiting.",
   "A new connector box did not answer its first ping.",
+  // The box memory gate, 19 Nov 2026.
+  "The connector box connector-sync:v2:ws1 has 83 MB of memory free; a connector run needs 600 MB. Waiting for the runs in it to finish.",
   "Flow execution abandoned due to worker crash or timeout",
 ];
 for (const message of platform) {

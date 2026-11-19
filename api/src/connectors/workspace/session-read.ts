@@ -32,7 +32,7 @@ import {
   type SandboxExecResult,
 } from "../../apps/sandbox/provider";
 import { loggers } from "../../logging";
-import { incomingPath, runLayout } from "./run-isolation";
+import { incomingPath, lowMemoryMb, runLayout } from "./run-isolation";
 import { sessionLimits } from "./session-config";
 import {
   ackScript,
@@ -50,6 +50,7 @@ import {
   ConnectorOutputTooLargeError,
   MAX_CONNECTOR_PROTOCOL_BYTES,
   connectorCommandLine,
+  connectorBoxLowMemory,
   connectorRuntimeNode,
   forgetPreparedBox,
   noteHidepidOff,
@@ -471,6 +472,13 @@ export function boxSessionTransport(input: {
           throw new Error(
             `The read session ended its start without its report${result.stderr ? `: ${result.stderr.trim().slice(0, 500)}` : "."}`,
           );
+        }
+        // A new session is a new connector process: the memory gate refused
+        // it before any of it existed, and removed its inbox. Pulls of a
+        // running session are never gated.
+        const lowMb = lowMemoryMb(marker);
+        if (lowMb !== null) {
+          throw connectorBoxLowMemory(ctx, pinned, lowMb, "session");
         }
         if (marker === "setup-failed") {
           lastError = (result.stderr || result.stdout).trim().slice(0, 2000);

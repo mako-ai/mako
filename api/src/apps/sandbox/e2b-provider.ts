@@ -29,6 +29,7 @@ import {
   APPS_EXEC_DEFAULT_TIMEOUT_MS,
   APPS_EXEC_MAX_OUTPUT_BYTES,
   APPS_EXEC_MAX_TIMEOUT_MS,
+  appsE2BConnectorTemplateEnv,
   appsE2BTemplateEnv,
 } from "../config";
 import { loggers } from "../../logging";
@@ -51,6 +52,21 @@ const logger = loggers.api("apps-e2b");
 /** Read at call time (not module load) so dotenv ordering can't freeze it. */
 function templateId(): string {
   return appsE2BTemplateEnv()?.trim() || "base";
+}
+
+/**
+ * The template a session's box is created from, when no snapshot overrides
+ * it. Workspace connector sync boxes (`connector-sync:`) run many flow steps
+ * side by side, so they get their own, bigger template when one is
+ * configured (APPS_E2B_CONNECTOR_TEMPLATE, 4,096 MB): on 19 Nov 2026 one
+ * reached 1,899 of 1,982 MB. E2B fixes memory per template, never per create.
+ */
+export function templateForSession(sessionKey: string): string {
+  if (sessionKey.startsWith("connector-sync:")) {
+    const connector = appsE2BConnectorTemplateEnv()?.trim();
+    if (connector) return connector;
+  }
+  return templateId();
 }
 const SANDBOX_USER = "user";
 /**
@@ -398,7 +414,7 @@ async function connectSessionNow(sessionKey: string): Promise<Sandbox> {
     );
   }
   const sandbox = await Sandbox.create(
-    templateOverrides.get(sessionKey) ?? templateId(),
+    templateOverrides.get(sessionKey) ?? templateForSession(sessionKey),
     {
       apiKey: apiKey(),
       timeoutMs: IDLE_TIMEOUT_MS,

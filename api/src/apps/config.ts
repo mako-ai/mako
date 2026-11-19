@@ -47,6 +47,17 @@ export function appsE2BTemplateEnv(): string | undefined {
   return appsEnv("E2B_TEMPLATE");
 }
 
+/**
+ * The E2B template for workspace connector sync boxes
+ * (`connector-sync:v2:<ws>`), undefined = the apps template above. E2B sets a
+ * box's memory in its template, never at create time, so a bigger box is a
+ * template of its own: `pnpm --filter api run apps:build-connector-template`
+ * builds alias mako-connector-sync with 4,096 MB.
+ */
+export function appsE2BConnectorTemplateEnv(): string | undefined {
+  return appsEnv("E2B_CONNECTOR_TEMPLATE");
+}
+
 /** Opt-in for mirror pushes to customer-connected repos. */
 export function appsConnectedRepoPushEnv(): string | undefined {
   return appsEnv("CONNECTED_REPO_PUSH");

@@ -16,6 +16,7 @@
     "test:destinations:watch": "vitest --config vitest.destinations.config.ts",
     "test:apps": "vitest run --config vitest.apps.config.ts",
     "apps:build-template": "tsx src/apps/e2b-template.ts",
+    "apps:build-connector-template": "E2B_TEMPLATE_ALIAS=mako-connector-sync E2B_TEMPLATE_MEMORY_MB=4096 tsx src/apps/e2b-template.ts",
     "test:apps:watch": "vitest --config vitest.apps.config.ts",
     "test:tsx": "node --import tsx scripts/run-tsx-tests.mjs",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives",

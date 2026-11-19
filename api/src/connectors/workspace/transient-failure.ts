@@ -22,6 +22,8 @@ const TRANSIENT_PATTERNS: RegExp[] = [
   /box was replaced during the run/,
   /Connector run cleanup failed/,
   /This box cannot isolate connector runs/,
+  // The box's memory gate refused a new run (ConnectorBoxLowMemoryError).
+  /MB of memory free; a connector run needs/,
   // No box to lease, or a new one never answered.
   /No connector box for this connection after \d+ s/,
   /A new connector box did not answer its first ping/,

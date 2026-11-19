@@ -58,6 +58,7 @@ import {
   incomingPath,
   ISOLATED_INCOMING,
   ISOLATED_ROOT,
+  memoryGateScript,
   setupScript,
   shellQuote,
   stagedPath,
@@ -476,6 +477,9 @@ export function startScript(input: {
 install -d -o root -g root -m 0755 ${shellQuote(ISOLATED_ROOT)}
 install -d -o root -g root -m 0700 ${shellQuote(ISOLATED_SESSIONS)}
 ${reapScript(input.limits.idleMs)}
+# After the reap, which frees what abandoned sessions held: a box out of
+# memory refuses a new session (the caller waits and retries).
+${memoryGateScript(SESSION_MARKER, inbox)}
 # Before anything of this run exists: without hidepid, every user reads the
 # setup's argv. A box whose root could remount /proc and did not is refused.
 ${hideProcessesScript()}

@@ -27,6 +27,9 @@ const INFRA_FAILURE_PATTERNS: RegExp[] = [
   // No box to lease, or a new one never answered.
   /No connector box for this connection after \d+ s/,
   /A new connector box did not answer its first ping/,
+  // The box's memory gate refused a new run (sync-box.ts
+  // ConnectorBoxLowMemoryError): too many runs at once, never this one's.
+  /MB of memory free; a connector run needs/,
   // The worker died: a revision swap, a crash or an instance shutdown.
   // No bare "SIGTERM" pattern: Mako never writes it into a run error, so
   // that word only reaches here from a connector's own message or stderr.
