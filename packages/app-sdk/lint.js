@@ -15,8 +15,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const SDK_COMPONENTS = [
-  "badge", "button", "card", "checkbox", "dialog", "dropdown-menu",
-  "input", "popover", "separator", "skeleton", "tabs", "tooltip",
+  "alert", "avatar", "badge", "button", "card", "checkbox", "collapsible",
+  "dialog", "dropdown-menu", "input", "label", "popover", "progress",
+  "select", "separator", "sheet", "skeleton", "slider", "switch", "table",
+  "tabs", "toggle", "toggle-group", "tooltip",
 ];
 
 const UTC_DISPLAY = /\.getUTC(?:FullYear|Month|Date|Day|Hours|Minutes|Seconds)\(|timeZone:\s*["']UTC["']|toISOString\(\)\s*\.\s*(?:slice|substring|substr)\(/;
