@@ -333,6 +333,16 @@ export class BigQueryEngine implements QueryEngine {
           client,
         });
       }
+      if (jobId && options?.onJobStarted) {
+        try {
+          options.onJobStarted({ jobId, location: jobLocation });
+        } catch (error) {
+          logger.warn("onJobStarted callback threw", {
+            jobId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
 
       // Wait for job completion (interactive default 5m; sync MERGE etc. pass bigQueryJobMaxWaitMs)
       const configuredMax = options?.bigQueryJobMaxWaitMs;

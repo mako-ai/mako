@@ -11,6 +11,7 @@ import { MongoDbDestinationAdapter } from "./mongodb";
 import { PostgreSqlDestinationAdapter } from "./postgresql";
 import { MySqlDestinationAdapter } from "./mysql";
 import { withQueryLabels } from "../../services/bigquery-labels";
+import type { CdcMergePath } from "../table-write-lease";
 
 /** Airbyte-style destination write mode. Default: "append_dedup" (upsert). */
 export type CdcWriteMode = "append_dedup" | "append" | "overwrite";
@@ -78,6 +79,8 @@ export interface CdcDestinationAdapter {
       knownStagingRowCount?: number;
       /** Staged rows come from a backfill or resync (bigquery-sql.ts). */
       fullRead?: boolean;
+      /** The write path: a flush, the final merge or a rescue (table-write-lease.ts). */
+      mergePath?: CdcMergePath;
     },
   ): Promise<{ written: number }>;
   cleanupStaging?(

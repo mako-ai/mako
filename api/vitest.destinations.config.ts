@@ -36,6 +36,8 @@ export default defineConfig({
       "src/sync-cdc/consumer.test.ts",
       // Coalesced materialization lands the same rows as one MERGE per batch.
       "src/sync-cdc/materialize-coalesce.test.ts",
+      // One writer per live table: the lease, and the MERGE races it closes.
+      "src/sync-cdc/table-write-lease.db.test.ts",
       "src/sync-cdc/flow-reconcile.test.ts",
       // The push reactor's create path, against a real repo and the real model.
       "src/services/flow-sync.repo.test.ts",

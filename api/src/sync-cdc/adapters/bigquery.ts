@@ -61,6 +61,18 @@ import {
 } from "./bigquery-load";
 import { ABSENT_COLUMNS_FIELD } from "../sparse-rows";
 import {
+  currentQueryLabels,
+  withQueryLabels,
+} from "../../services/bigquery-labels";
+import {
+  tableWriteLeaseMaxWaitMs,
+  withTableWriteLease,
+  type AcquireTableWriteLeaseOptions,
+  type CdcMergePath,
+  type LeaseJobControl,
+  type TableWriteLease,
+} from "../table-write-lease";
+import {
   bqLog as log,
   fullTableName,
   retryOnQuota,
@@ -91,6 +103,21 @@ interface BigQueryAdapterConfig {
     connectionId: string;
     schema: string;
     tableName: string;
+  };
+  /**
+   * Test seam: runs after the partition probe and before the MERGE, inside
+   * the table write lease. The race tests run a second writer here.
+   */
+  hooks?: {
+    beforeMerge?: (ctx: {
+      liveTable: string;
+      path: CdcMergePath;
+    }) => Promise<void>;
+    /** Shorter lease backoff for tests. */
+    lease?: Pick<
+      AcquireTableWriteLeaseOptions,
+      "backoffMinMs" | "backoffMaxMs"
+    >;
   };
 }
 
@@ -143,11 +170,14 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
     const tmp = `${live}__repart_${Date.now().toString(36)}`;
 
+    let lease: TableWriteLease | undefined;
     const run = async (sql: string) => {
       const r = await runBigQueryWrite(target, sql, {
         bigQueryJobMaxWaitMs: 15 * 60 * 1000,
+        onJobStarted: job => lease?.recordJob(job),
       });
       if (!r.success) throw new Error(r.error || `BigQuery DDL failed: ${sql}`);
+      lease?.markJobDone();
     };
 
     // CREATE OR REPLACE a new-layout table from the current rows, drop the old
@@ -159,9 +189,28 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       liveName: live,
       layout,
     });
-    await run(stmts.createTmp);
-    await run(stmts.dropLive);
-    await run(stmts.rename);
+    // Under the table write lease: a MERGE between the CTAS and the RENAME
+    // would land in the table about to be dropped.
+    await this.underTableWriteLease(
+      target,
+      live,
+      { path: "repartition" },
+      async held => {
+        lease = held;
+        await withQueryLabels(
+          {
+            mako_merge_path: "repartition",
+            mako_lease_wait_ms:
+              held !== undefined ? String(Math.round(held.waitMs)) : undefined,
+          },
+          async () => {
+            await run(stmts.createTmp);
+            await run(stmts.dropLive);
+            await run(stmts.rename);
+          },
+        );
+      },
+    );
 
     invalidateCachedSchema(getSchemaCacheKey(projectId, dataset, live));
     log.info("Repartitioned live table in place", {
@@ -226,9 +275,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         layout: params.layout,
         flow: params.flow,
         entitySchema: params.entitySchema,
-        // Live consumer only: cdc/materialize is a singleton per flow+entity,
-        // so nothing else writes this table between the probe and the MERGE.
-        prunePartitions: true,
+        mergePath: "live",
       });
     }
 
@@ -283,6 +330,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       layout: params.layout,
       flow: params.flow,
       entitySchema: params.entitySchema,
+      mergePath: "poll",
     });
   }
 
@@ -319,10 +367,11 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     options?: {
       stagingSuffix?: string;
       knownStagingRowCount?: number;
-      prunePartitions?: boolean;
       fullRead?: boolean;
       /** The columns some staged row lacks (prepareSparseBatch). Unset: read from staging. */
       absentColumns?: ReadonlySet<string>;
+      /** Which write path merges: the lease wait and the `mako_merge_path` label. Default "final". */
+      mergePath?: CdcMergePath;
     },
   ): Promise<{ written: number }> {
     const stagingTable = bigQueryStagingTableName(
@@ -332,9 +381,10 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     );
     return this.mergeStagingToLive(layout, stagingTable, entitySchema, {
       knownStagingRowCount: options?.knownStagingRowCount,
-      prunePartitions: options?.prunePartitions,
       fullRead: options?.fullRead,
       absentColumns: options?.absentColumns,
+      mergePath: options?.mergePath ?? "final",
+      flowId,
     });
   }
 
@@ -436,12 +486,13 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   private async mergeStagingToLive(
     layout: CdcEntityLayout,
     stagingTable: string,
-    entitySchema?: ConnectorEntitySchema,
-    options?: {
+    entitySchema: ConnectorEntitySchema | undefined,
+    options: {
       knownStagingRowCount?: number;
-      prunePartitions?: boolean;
       fullRead?: boolean;
       absentColumns?: ReadonlySet<string>;
+      mergePath: CdcMergePath;
+      flowId?: string;
     },
   ): Promise<{ written: number }> {
     const target = await this.resolveBqClient();
@@ -543,7 +594,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       }
     }
 
-    const stagingRowCount = options?.knownStagingRowCount ?? 0;
+    const stagingRowCount = options.knownStagingRowCount ?? 0;
 
     // Airbyte-style write modes: "append" inserts staging rows as-is
     // (history accumulates); "overwrite" is handled by truncateLiveTable at
@@ -552,8 +603,26 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const insertCols = allColumns.filter(c => stagingCols.has(c));
     const insertColList = insertCols.map(escId).join(", ");
     const isDedup = writeMode !== "append" && writeMode !== "overwrite";
-    const livePartitionFilter =
-      isDedup && options?.prunePartitions
+    // The MERGE reads from live only the columns some staged row lacks. The
+    // in-memory path knows them. The bulk flush asks staging. This runs
+    // before the lease: it reads staging only.
+    const absentColumns =
+      isDedup && stagedCols.has(ABSENT_COLUMNS_FIELD)
+        ? (options.absentColumns ??
+          (await this.resolveStagingAbsentColumns(
+            target,
+            fullStaging,
+            liveTable,
+          )))
+        : undefined;
+    const path = options.mergePath;
+
+    const runMerge = async (
+      lease: TableWriteLease | undefined,
+    ): Promise<void> => {
+      // Every dedup path prunes. The probe and the MERGE run under the table
+      // write lease, so no other writer moves or inserts a key in between.
+      const livePartitionFilter = isDedup
         ? await this.resolveLivePartitionFilter(target, {
             layout,
             fullLive,
@@ -562,62 +631,80 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
             entitySchema,
           })
         : undefined;
-    // The MERGE reads from live only the columns some staged row lacks. The
-    // in-memory path knows them. The bulk flush asks staging.
-    const absentColumns =
-      isDedup && stagedCols.has(ABSENT_COLUMNS_FIELD)
-        ? (options?.absentColumns ??
-          (await this.resolveStagingAbsentColumns(
-            target,
+      const mergeStmt = !isDedup
+        ? `INSERT INTO ${fullLive} (${insertColList}) SELECT ${insertColList} FROM ${fullStaging}`
+        : buildMergeStatement({
+            fullLive,
             fullStaging,
-            liveTable,
-          )))
-        : undefined;
-    const mergeStmt = !isDedup
-      ? `INSERT INTO ${fullLive} (${insertColList}) SELECT ${insertColList} FROM ${fullStaging}`
-      : buildMergeStatement({
-          fullLive,
-          fullStaging,
-          columns: allColumns,
-          keyColumns,
-          stagingCols: stagedCols,
-          liveTypes,
-          entitySchema,
-          livePartitionFilter,
-          fullRead: options?.fullRead,
-          absentColumns,
-        });
-
-    log.info("Starting staging-to-live MERGE", {
-      liveTable,
-      stagingTable,
-      dataset,
-      stagingRowCount,
-      columnCount: allColumns.length,
-      schemaCacheHit,
-      partitionPruned: livePartitionFilter !== undefined,
-      absentColumns: absentColumns ? [...absentColumns] : undefined,
-    });
-
-    const maxWaitMs = mergeMaxWaitMs();
-    await retryOnQuota(
-      async () => {
-        const mergeResult = await runBigQueryWrite(target, mergeStmt, {
-          bigQueryJobMaxWaitMs: maxWaitMs,
-        });
-        if (!mergeResult.success) {
-          invalidateCachedSchema(liveCacheKey);
-          log.error("BigQuery MERGE failed", {
-            liveTable,
-            stagingTable,
-            error: mergeResult.error,
-            mergePreview: mergeStmt.slice(0, 900),
+            columns: allColumns,
+            keyColumns,
+            stagingCols: stagedCols,
+            liveTypes,
+            entitySchema,
+            livePartitionFilter,
+            fullRead: options.fullRead,
+            absentColumns,
           });
-          throw new Error(mergeResult.error || "BigQuery MERGE failed");
-        }
-      },
-      { label: `mergeStagingToLive:MERGE(${liveTable})` },
-    );
+
+      log.info("Starting staging-to-live MERGE", {
+        liveTable,
+        stagingTable,
+        dataset,
+        stagingRowCount,
+        columnCount: allColumns.length,
+        schemaCacheHit,
+        partitionPruned: livePartitionFilter !== undefined,
+        absentColumns: absentColumns ? [...absentColumns] : undefined,
+        path,
+        leaseWaitMs: lease ? Math.round(lease.waitMs) : undefined,
+      });
+
+      if (isDedup && this.config.hooks?.beforeMerge) {
+        await this.config.hooks.beforeMerge({ liveTable, path });
+      }
+
+      const maxWaitMs = mergeMaxWaitMs();
+      await withQueryLabels(
+        {
+          mako_merge_path: path,
+          mako_lease_wait_ms:
+            lease !== undefined ? String(Math.round(lease.waitMs)) : undefined,
+        },
+        () =>
+          retryOnQuota(
+            async () => {
+              const mergeResult = await runBigQueryWrite(target, mergeStmt, {
+                bigQueryJobMaxWaitMs: maxWaitMs,
+                onJobStarted: job => lease?.recordJob(job),
+              });
+              if (!mergeResult.success) {
+                invalidateCachedSchema(liveCacheKey);
+                log.error("BigQuery MERGE failed", {
+                  liveTable,
+                  stagingTable,
+                  error: mergeResult.error,
+                  mergePreview: mergeStmt.slice(0, 900),
+                });
+                throw new Error(mergeResult.error || "BigQuery MERGE failed");
+              }
+              lease?.markJobDone();
+            },
+            { label: `mergeStagingToLive:MERGE(${liveTable})` },
+          ),
+      );
+    };
+
+    // A plain INSERT (append, overwrite) probes nothing: no lease.
+    if (isDedup) {
+      await this.underTableWriteLease(
+        target,
+        liveTable,
+        { path, flowId: options.flowId },
+        runMerge,
+      );
+    } else {
+      await runMerge(undefined);
+    }
 
     log.info("Merged staging to live via MERGE", {
       liveTable,
@@ -625,6 +712,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       dataset,
       stagingRowCount,
       skippedLiveAdds,
+      path,
     });
 
     return { written: stagingRowCount };
@@ -682,6 +770,68 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
+
+  /** Read and cancel BigQuery jobs for the table write lease. */
+  private leaseJobControl(target: BigQueryTarget): LeaseJobControl {
+    const jobOf = (job: { jobId: string; location?: string }) =>
+      target.bq.job(job.jobId, {
+        location: job.location ?? target.datasetLocation,
+      });
+    return {
+      isDone: async job => {
+        try {
+          const [meta] = await jobOf(job).getMetadata();
+          return (
+            (meta as { status?: { state?: string } })?.status?.state === "DONE"
+          );
+        } catch (err) {
+          // A job BigQuery does not know is not running.
+          if ((err as { code?: number } | null)?.code === 404) return true;
+          throw err;
+        }
+      },
+      cancel: async job => {
+        await jobOf(job).cancel();
+      },
+    };
+  }
+
+  /**
+   * Run `fn` holding the live table's write lease
+   * (sync-cdc/table-write-lease.ts), keyed like the schema cache. Logs the
+   * wait of every write.
+   */
+  private async underTableWriteLease<T>(
+    target: BigQueryTarget,
+    liveTable: string,
+    p: { path: CdcMergePath; flowId?: string },
+    fn: (lease: TableWriteLease | undefined) => Promise<T>,
+  ): Promise<T> {
+    const key = getSchemaCacheKey(target.projectId, target.dataset, liveTable);
+    const flowId = p.flowId ?? currentQueryLabels().mako_flow;
+    return withTableWriteLease(
+      key,
+      {
+        path: p.path,
+        flowId,
+        maxWaitMs: tableWriteLeaseMaxWaitMs(p.path),
+        jobs: this.leaseJobControl(target),
+        ...this.config.hooks?.lease,
+      },
+      async lease => {
+        if (lease) {
+          log.info("Table write lease acquired", {
+            flowId,
+            table: liveTable,
+            dataset: target.dataset,
+            path: p.path,
+            waitMs: Math.round(lease.waitMs),
+          });
+        }
+        return fn(lease);
+      },
+    );
+  }
 
   private async resolveDestination(): Promise<IDatabaseConnection> {
     const doc = await DatabaseConnection.findOne(
@@ -771,8 +921,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     layout: CdcEntityLayout;
     flow: FlowRef;
     entitySchema?: ConnectorEntitySchema;
-    /** Probe live partitions and prune the MERGE (see resolveLivePartitionFilter). */
-    prunePartitions?: boolean;
+    mergePath: CdcMergePath;
   }): Promise<{ written: number }> {
     if (params.records.length === 0) return { written: 0 };
 
@@ -823,8 +972,8 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         {
           stagingSuffix,
           knownStagingRowCount: loadResult.loaded,
-          prunePartitions: params.prunePartitions,
           absentColumns: parquet.absentColumns,
+          mergePath: params.mergePath,
         },
       );
     } finally {

@@ -5,6 +5,7 @@
  */
 import type { BigQuery } from "@google-cloud/bigquery";
 import type { IDatabaseConnection } from "../../database/workspace-schema";
+import type { QueryExecuteOptions } from "../../databases/query-types";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { loggers } from "../../logging";
 import { escId } from "./bigquery-sql";
@@ -35,6 +36,7 @@ export function runBigQuery(
   options: {
     bigQueryJobMaxWaitMs?: number;
     priority?: BigQueryJobPriority;
+    onJobStarted?: QueryExecuteOptions["onJobStarted"];
   } = {},
 ) {
   return databaseConnectionService.executeQuery(target.destination, sql, {
@@ -52,7 +54,10 @@ export function runBigQuery(
 export function runBigQueryWrite(
   target: BigQueryTarget,
   sql: string,
-  options: { bigQueryJobMaxWaitMs?: number } = {},
+  options: {
+    bigQueryJobMaxWaitMs?: number;
+    onJobStarted?: QueryExecuteOptions["onJobStarted"];
+  } = {},
 ) {
   return runBigQuery(target, sql, {
     ...options,
