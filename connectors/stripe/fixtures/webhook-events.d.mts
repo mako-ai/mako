@@ -2,7 +2,7 @@
 
 export const TEST_SIGNING_SECRET: string;
 export const SENT_AT: number;
-export const LIST_PATH: Record<string, string>;
+export const LIST_PATH: Record<string, string | RegExp>;
 
 export function entityOfEvent(eventType: string): string | undefined;
 

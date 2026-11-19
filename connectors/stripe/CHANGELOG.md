@@ -3,6 +3,32 @@
 Releases of `mako/stripe`. A workspace installs it with
 `source: mako/stripe@1` in `connectors/<slug>/connector.yaml`.
 
+## 1.4.0
+
+- `payment_methods`: a 26th entity, as the realadvisor workspace folder has
+  it. Stripe lists payment methods per customer, so it walks customers like
+  `customer_balance_transactions`. `since` bounds the walk by the
+  customer's `created`. 25 customers per page keep a 10-page chunk at 250
+  calls. Columns: the common ones, `customer`, `type`, `billing_details`
+  and one JSON column per method type (`card`, `sepa_debit`, `link`, ...),
+  a superset of the Airbyte stream.
+- 94 webhook events, up from 82. Every event Stripe sends at 2023-10-16 for
+  a synced entity now writes that entity:
+  - `payment_method.attached`, `.updated`, `.automatically_updated` and
+    `.detached`. A detached method keeps its row with `customer` NULL, as
+    Airbyte's `payment_methods` holds it.
+  - `customer.subscription.trial_will_end`, `.pending_update_applied` and
+    `.pending_update_expired`.
+  - `invoice.payment_succeeded`, `.payment_action_required`,
+    `.finalization_failed` and `.sent`.
+  - `payment_intent.partially_funded`.
+- Left out: `invoice.upcoming` has no id. `invoice.overdue`,
+  `invoice.will_be_due`, `invoice.overpaid` and
+  `invoice.payment_attempt_required` are newer than the pinned API version,
+  and Stripe refuses an endpoint that lists one.
+- An existing endpoint keeps its old list until its flow is re-provisioned
+  (`flow_webhook_provision`, or "Create in …" on the Triggers step).
+
 ## 1.3.0
 
 - 3 entities, 25 in all. `invoice_line_items`: an invoice's `lines`, read

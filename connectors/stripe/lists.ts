@@ -5,13 +5,16 @@
  * requests.
  *
  * Every top-level list takes `limit`, `starting_after` and `created[gte]` (for
- * incremental reads). The two nested entities page over their parent list.
+ * incremental reads). The nested entities page over their parent list.
  */
 import type Stripe from "stripe";
 
 /** Stripe caps `autoPagingToArray` at 10,000 items. A single payout or customer
  * never comes close (a payout groups a few days of transactions). */
 const CHILD_LIST_MAX = 10_000;
+
+/** Customers per page for payment_methods: one extra call per customer. */
+export const PAYMENT_METHOD_PARENT_PAGE = 25;
 
 export interface StripePageRequest {
   limit: number;
@@ -170,6 +173,7 @@ export async function childRowsOf(
 export const NESTED_ENTITIES = [
   "payout_balance_transactions",
   "customer_balance_transactions",
+  "payment_methods",
 ] as const;
 
 type NestedEntity = (typeof NESTED_ENTITIES)[number];
@@ -207,6 +211,16 @@ export function listStripePage(
  *   complete, because a payout is created after every transaction it pays.
  * - customer_balance_transactions: listed per customer. Old customers keep
  *   receiving credit, so `since` cannot bound the walk and is ignored.
+ * - payment_methods: listed per customer. `GET /v1/payment_methods` without
+ *   a customer returns Treasury methods only. `since` bounds the customer
+ *   walk by the customer's `created`: a backfill walks every customer, a
+ *   scheduled sync only the new ones. A card attached to an older customer
+ *   arrives by `payment_method.attached` instead. Only attached methods come
+ *   back: a detached one keeps its last row, updated by its webhook.
+ *   A parent page holds at most PAYMENT_METHOD_PARENT_PAGE customers, so a
+ *   10-page chunk makes at most 250 calls and ends well inside the box's
+ *   10-minute command limit. Every page ends in a cursor, so a long walk
+ *   resumes across chunks and runs.
  * Returns the parent cursor as `nextCursor`.
  */
 async function fetchNestedPage(
@@ -234,15 +248,29 @@ async function fetchNestedPage(
     };
   }
 
-  const customers = await stripe.customers.list({
-    limit: options.limit,
-    ...(options.startingAfter && { starting_after: options.startingAfter }),
-  });
+  const paymentMethods = entity === "payment_methods";
+  const customers = await stripe.customers.list(
+    paymentMethods
+      ? listParams({
+          ...options,
+          limit: Math.min(options.limit, PAYMENT_METHOD_PARENT_PAGE),
+        })
+      : {
+          limit: options.limit,
+          ...(options.startingAfter && {
+            starting_after: options.startingAfter,
+          }),
+        },
+  );
   for (const customer of customers.data) {
-    const transactions = await stripe.customers
-      .listBalanceTransactions(customer.id, { limit: 100 })
-      .autoPagingToArray({ limit: CHILD_LIST_MAX });
-    records.push(...transactions);
+    const children = paymentMethods
+      ? await stripe.customers
+          .listPaymentMethods(customer.id, { limit: 100 })
+          .autoPagingToArray({ limit: CHILD_LIST_MAX })
+      : await stripe.customers
+          .listBalanceTransactions(customer.id, { limit: 100 })
+          .autoPagingToArray({ limit: CHILD_LIST_MAX });
+    records.push(...children);
   }
   return {
     data: records,

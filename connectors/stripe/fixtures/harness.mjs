@@ -230,8 +230,8 @@ export async function startReplayServer(interactions = loadCassettes()) {
  * Record: answer from an emulated Stripe over `dataset`, and keep every
  * interaction. Implements only what the connectors call: list endpoints with
  * `limit`, `starting_after`, `created[gte]`, `status`, `payout`, the
- * per-customer balance transactions, an invoice's lines, a subscription's
- * items, and the account.
+ * per-customer balance transactions and payment methods, an invoice's lines,
+ * a subscription's items, and the account.
  */
 export async function startRecordingServer(dataset) {
   const recorded = new Map();
@@ -255,6 +255,14 @@ function emulate(dataset, rawUrl) {
   );
   if (customerBalance) {
     const items = dataset.customerBalance.get(customerBalance[1]);
+    if (!items)
+      return stripeError(404, "invalid_request_error", "No such customer");
+    return listPage(items, query, url.pathname);
+  }
+
+  const paymentMethods = /^customers\/([^/]+)\/payment_methods$/.exec(route);
+  if (paymentMethods) {
+    const items = dataset.paymentMethods.get(paymentMethods[1]);
     if (!items)
       return stripeError(404, "invalid_request_error", "No such customer");
     return listPage(items, query, url.pathname);

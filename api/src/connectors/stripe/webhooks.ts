@@ -32,6 +32,19 @@ const remove = (entity: string): WebhookEventMapping => ({
  * customer_balance_transactions and events have no Stripe events: polled
  * only. invoice_line_items and subscription_items ride on their parent's
  * events.
+ *
+ * Every event Stripe sends for a synced entity at STRIPE_API_VERSION is
+ * here, except 6:
+ * - `invoice.upcoming` previews an invoice that does not exist yet: it has
+ *   no id, so there is no row to write.
+ * - `invoice.overdue`, `invoice.will_be_due` (added in API
+ *   2024-09-30.acacia), `invoice.payment_attempt_required` (2025-10-29.clover)
+ *   and `invoice.overpaid` are absent from the pinned 2023-10-16. Stripe
+ *   versions the `enabled_events` enum, and one refused event fails the
+ *   whole endpoint create or update. Add them with the version bump.
+ * - `invoiceitem.updated`: Stripe refuses it as deprecated (below).
+ * `invoice_payment.paid` carries an InvoicePayment, an object Mako does not
+ * sync.
  */
 const EVENTS: Array<[event: string, mapping: WebhookEventMapping]> = [
   // Customers
@@ -44,6 +57,9 @@ const EVENTS: Array<[event: string, mapping: WebhookEventMapping]> = [
   ["customer.subscription.deleted", remove("subscriptions")],
   ["customer.subscription.paused", upsert("subscriptions")],
   ["customer.subscription.resumed", upsert("subscriptions")],
+  ["customer.subscription.trial_will_end", upsert("subscriptions")],
+  ["customer.subscription.pending_update_applied", upsert("subscriptions")],
+  ["customer.subscription.pending_update_expired", upsert("subscriptions")],
   // Charges/Payments
   ["charge.succeeded", upsert("charges")],
   ["charge.failed", upsert("charges")],
@@ -68,6 +84,7 @@ const EVENTS: Array<[event: string, mapping: WebhookEventMapping]> = [
   ["payment_intent.processing", upsert("payment_intents")],
   ["payment_intent.requires_action", upsert("payment_intents")],
   ["payment_intent.amount_capturable_updated", upsert("payment_intents")],
+  ["payment_intent.partially_funded", upsert("payment_intents")],
   // Invoices
   ["invoice.created", upsert("invoices")],
   ["invoice.finalized", upsert("invoices")],
@@ -76,6 +93,10 @@ const EVENTS: Array<[event: string, mapping: WebhookEventMapping]> = [
   ["invoice.updated", upsert("invoices")],
   ["invoice.voided", upsert("invoices")],
   ["invoice.marked_uncollectible", upsert("invoices")],
+  ["invoice.payment_succeeded", upsert("invoices")],
+  ["invoice.payment_action_required", upsert("invoices")],
+  ["invoice.finalization_failed", upsert("invoices")],
+  ["invoice.sent", upsert("invoices")],
   ["invoice.deleted", remove("invoices")],
   // Products
   ["product.created", upsert("products")],
@@ -134,6 +155,13 @@ const EVENTS: Array<[event: string, mapping: WebhookEventMapping]> = [
   ["setup_intent.setup_failed", upsert("setup_intents")],
   ["setup_intent.requires_action", upsert("setup_intents")],
   ["setup_intent.canceled", upsert("setup_intents")],
+  // Payment methods. `detached` carries the method with `customer: null`:
+  // an upsert, so the row shows it is no longer on file, as Airbyte's
+  // payment_methods keeps it.
+  ["payment_method.attached", upsert("payment_methods")],
+  ["payment_method.updated", upsert("payment_methods")],
+  ["payment_method.automatically_updated", upsert("payment_methods")],
+  ["payment_method.detached", upsert("payment_methods")],
   // Radar early fraud warnings
   ["radar.early_fraud_warning.created", upsert("early_fraud_warnings")],
   ["radar.early_fraud_warning.updated", upsert("early_fraud_warnings")],

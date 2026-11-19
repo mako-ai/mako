@@ -264,6 +264,7 @@ function testWebhookEventsForEntities() {
     "payment_intent.amount_capturable_updated",
     "payment_intent.canceled",
     "payment_intent.created",
+    "payment_intent.partially_funded",
     "payment_intent.payment_failed",
     "payment_intent.processing",
     "payment_intent.requires_action",
@@ -382,6 +383,7 @@ function testMoneyMovementEntitiesAvailable() {
     "refunds",
     "credit_notes",
     "customer_balance_transactions",
+    "payment_methods",
     "invoice_items",
     "subscription_schedules",
     "coupons",
@@ -855,6 +857,113 @@ function testChildEntitiesSubscribeTheirParentEvents() {
   assert.deepEqual(connector.getWebhookEventsForEntities(["events"]), []);
 }
 
+/**
+ * Every Stripe event of a synced entity at API 2023-10-16 is subscribed and
+ * writes that entity (stripe-node 14's `EnabledEvent`, filtered by object).
+ * The ones left out each have a reason (webhooks.ts).
+ */
+function testEveryEventOfASyncedEntityIsHandled() {
+  const connector = createConnector();
+  const added: Array<[string, string]> = [
+    ["customer.subscription.trial_will_end", "subscriptions"],
+    ["customer.subscription.pending_update_applied", "subscriptions"],
+    ["customer.subscription.pending_update_expired", "subscriptions"],
+    ["payment_intent.partially_funded", "payment_intents"],
+    ["invoice.payment_succeeded", "invoices"],
+    ["invoice.payment_action_required", "invoices"],
+    ["invoice.finalization_failed", "invoices"],
+    ["invoice.sent", "invoices"],
+    ["payment_method.attached", "payment_methods"],
+    ["payment_method.updated", "payment_methods"],
+    ["payment_method.automatically_updated", "payment_methods"],
+    // Stripe sends the method with `customer: null`. Airbyte keeps it as a
+    // row with no customer (334 such rows in ch/fr/es/it, 19 Nov 2026).
+    ["payment_method.detached", "payment_methods"],
+  ];
+  for (const [event, entity] of added) {
+    assert.deepEqual(
+      connector.getWebhookEventMapping(event),
+      { entity, operation: "upsert" },
+      event,
+    );
+  }
+  assert.equal(connector.getSupportedWebhookEvents().length, 94);
+  assert.deepEqual(connector.getWebhookEventsForEntities(["payment_methods"]), [
+    "payment_method.attached",
+    "payment_method.updated",
+    "payment_method.automatically_updated",
+    "payment_method.detached",
+  ]);
+  // Newer than the pinned version (Stripe refuses them, failing the whole
+  // endpoint request), or no row to write.
+  for (const left of [
+    "invoice.overdue",
+    "invoice.will_be_due",
+    "invoice.overpaid",
+    "invoice.payment_attempt_required",
+    "invoice.upcoming",
+    "invoice_payment.paid",
+  ]) {
+    assert.equal(connector.getWebhookEventMapping(left), null, left);
+    assert.ok(!connector.getSupportedWebhookEvents().includes(left), left);
+  }
+}
+
+async function testPaymentMethodsWalkCustomersCreatedSince() {
+  const connector = createConnector();
+  const customerParams: Array<Record<string, unknown>> = [];
+  const listedFor: string[] = [];
+  (connector as any).stripe = {
+    customers: {
+      list: async (params: Record<string, unknown>) => {
+        customerParams.push(params);
+        return { data: [{ id: "cus_1" }, { id: "cus_2" }], has_more: true };
+      },
+      listPaymentMethods: (customerId: string) => {
+        listedFor.push(customerId);
+        return pagedChildren(
+          customerId === "cus_1"
+            ? [
+                { id: "pm_1", customer: "cus_1", type: "card" },
+                { id: "pm_2", customer: "cus_1", type: "sepa_debit" },
+              ]
+            : [],
+        );
+      },
+    },
+  };
+
+  const records: Array<Record<string, unknown>> = [];
+  const state = await connector.fetchEntityChunk({
+    entity: "payment_methods",
+    since: new Date(CREATED_MS),
+    batchSize: 100,
+    maxIterations: 1,
+    onBatch: async (batch: Array<Record<string, unknown>>) => {
+      records.push(...batch);
+    },
+  } as any);
+
+  // `since` bounds the customer walk; a page holds at most 25 customers.
+  assert.deepEqual(customerParams[0], {
+    limit: 25,
+    created: { gte: CREATED_EPOCH },
+  });
+  assert.deepEqual(listedFor, ["cus_1", "cus_2"]);
+  assert.deepEqual(
+    records.map(record => record.id),
+    ["pm_1", "pm_2"],
+  );
+  // The cursor walks customers, not the methods inside them.
+  assert.equal(state.cursor, "cus_2");
+  assert.equal(state.hasMore, true);
+  // Created-anchor like the top-level lists, unlike balance transactions.
+  assert.equal(
+    connector.getIncrementalCapabilities().perEntity?.payment_methods,
+    undefined,
+  );
+}
+
 async function main() {
   testConfigValidationRequiresApiKey();
   testAvailableEntitiesIncludeModernEntities();
@@ -879,6 +988,8 @@ async function main() {
   await testPayoutBalanceTransactionsCarryPayoutId();
   await testCustomerBalanceTransactionsIgnoreSince();
   testMoneyMovementWebhookEvents();
+  testEveryEventOfASyncedEntityIsHandled();
+  await testPaymentMethodsWalkCustomersCreatedSince();
   await testUpdateWebhookSubscriptionRetargetsInPlace();
   await testUpdateWebhookSubscriptionHandlesDuplicates();
   await testUpdateWebhookSubscriptionReturnsNullWithoutMatch();
