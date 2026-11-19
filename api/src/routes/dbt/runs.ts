@@ -85,7 +85,7 @@ dbtRunRoutes.get(
       // logsSince = number of log lines the client already has (cursor).
       const logsSince = Number(c.req.query("logsSince")) || 0;
       const logs = run.logs ?? [];
-      // Why a queued run is waiting (the run holding the project's slot).
+      // Why a queued run is waiting (the run holding its lane's slot).
       const queue =
         run.status === "queued" ? await describeQueuedRun(run) : null;
       return c.json({
