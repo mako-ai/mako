@@ -569,6 +569,72 @@ export function buildDataset() {
     customerBalance.set(customer.id, list);
   });
 
+  // Payment methods: every 3rd customer has a card, every 5th a SEPA
+  // mandate too, and customer 9 has 101 cards (two child pages).
+  const paymentMethods = new Map();
+  customers.forEach((customer, index) => {
+    const i = index + 1;
+    const cards = i === 9 ? 101 : i % 3 === 0 ? 1 : 0;
+    const list = [];
+    const base = {
+      object: "payment_method",
+      livemode: false,
+      metadata: {},
+      customer: customer.id,
+      billing_details: {
+        address: customer.address,
+        email: customer.email,
+        name: customer.name,
+        phone: null,
+      },
+    };
+    for (let k = 1; k <= cards; k++) {
+      list.push({
+        ...base,
+        id: `pm_fx${pad(i)}_${pad(k)}`,
+        created: customer.created + k * 3600,
+        type: "card",
+        card: {
+          brand: k % 2 ? "visa" : "mastercard",
+          checks: {
+            address_line1_check: null,
+            address_postal_code_check: null,
+            cvc_check: "pass",
+          },
+          country: "CH",
+          exp_month: 1 + (k % 12),
+          exp_year: 2028,
+          fingerprint: `fpfx${pad(i)}${pad(k)}`,
+          funding: "credit",
+          generated_from: null,
+          last4: String(4000 + k).slice(-4),
+          networks: { available: ["visa"], preferred: null },
+          three_d_secure_usage: { supported: true },
+          wallet: null,
+        },
+      });
+    }
+    if (i % 5 === 0) {
+      list.push({
+        ...base,
+        id: `pm_fx${pad(i)}_sepa`,
+        created: customer.created + 7200,
+        type: "sepa_debit",
+        sepa_debit: {
+          bank_code: "37040044",
+          branch_code: null,
+          country: "DE",
+          fingerprint: `fpfx${pad(i)}sepa`,
+          generated_from: { charge: null, setup_attempt: null },
+          last4: "3000",
+        },
+      });
+    }
+    // Newest first, as Stripe lists them.
+    list.sort((a, b) => b.created - a.created || (a.id < b.id ? 1 : -1));
+    paymentMethods.set(customer.id, list);
+  });
+
   const refunds = series(12, 14, (i, r, created) => ({
     ...common("refund", `re_fx${pad(i)}`, created, r),
     amount: 5900,
@@ -815,5 +881,6 @@ export function buildDataset() {
     ),
     payoutTransactions,
     customerBalance,
+    paymentMethods,
   };
 }

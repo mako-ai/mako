@@ -35,6 +35,7 @@ const OBJECT_OF = [
   ["checkout.session.", "checkout_sessions"],
   ["setup_intent.", "setup_intents"],
   ["radar.early_fraud_warning.", "early_fraud_warnings"],
+  ["payment_method.", "payment_methods"],
 ];
 
 export function entityOfEvent(eventType) {
@@ -62,6 +63,8 @@ export const LIST_PATH = {
   checkout_sessions: "checkout/sessions",
   setup_intents: "setup_intents",
   early_fraud_warnings: "radar/early_fraud_warnings",
+  // Listed per customer: `/v1/customers/<id>/payment_methods`.
+  payment_methods: /^customers\/[^/]+\/payment_methods$/,
 };
 
 /** The cassettes hold no setup intent: one in Stripe's 2023-10-16 shape. */
@@ -99,7 +102,12 @@ export function rowsByEntity(interactions = loadCassettes()) {
     out[entity] = [];
     for (const [request, response] of interactions) {
       const url = request.replace(/^GET /, "");
-      if (!url.startsWith(`/v1/${listPath}?`)) continue;
+      const route = url.replace(/^\/v1\//, "").split("?")[0];
+      const matches =
+        listPath instanceof RegExp
+          ? listPath.test(route)
+          : url.startsWith(`/v1/${listPath}?`);
+      if (!matches) continue;
       for (const row of response.body?.data ?? []) {
         if (row?.object && !out[entity].some(r => r.id === row.id)) {
           out[entity].push(row);

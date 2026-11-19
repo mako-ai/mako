@@ -40,7 +40,10 @@ import type {
   WebhookOutcome,
   WebhookVerification,
 } from "@makoai/connector-sdk";
-import { STRIPE_ENTITY_SCHEMA_MAP } from "./schema.ts";
+import {
+  PAYMENT_METHOD_TYPE_FIELDS,
+  STRIPE_ENTITY_SCHEMA_MAP,
+} from "./schema.ts";
 import {
   EMBEDDED_CHILD_PARENTS,
   childListIsPartial,
@@ -87,6 +90,13 @@ export const STRIPE_NOT_RETURNED: Readonly<Record<string, readonly string[]>> =
     invoice_line_items: ["created"],
     subscription_items: ["livemode"],
     events: ["metadata"],
+    // A payment method holds only its own type's key. `allow_redisplay` and
+    // `radar_options` are newer than the pinned API version.
+    payment_methods: [
+      ...PAYMENT_METHOD_TYPE_FIELDS,
+      "allow_redisplay",
+      "radar_options",
+    ],
   };
 
 /** How to GET one object of each entity that has webhook events. */
@@ -112,6 +122,7 @@ const RETRIEVE: Readonly<
   checkout_sessions: (s, id) => s.checkout.sessions.retrieve(id),
   setup_intents: (s, id) => s.setupIntents.retrieve(id),
   early_fraud_warnings: (s, id) => s.radar.earlyFraudWarnings.retrieve(id),
+  payment_methods: (s, id) => s.paymentMethods.retrieve(id),
 };
 
 /**

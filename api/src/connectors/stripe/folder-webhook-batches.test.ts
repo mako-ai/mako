@@ -10,7 +10,8 @@
  * serves single objects, so every request the folder makes is seen.
  *
  * Proven here:
- * - The same 82 events, mapped to the same entity and operation.
+ * - The same 94 events, mapped to the same entity and operation. A voided
+ *   invoice lands as `void`, a detached payment method with no customer.
  * - The `stripe-v1` declaration accepts and refuses what
  *   `stripe.webhooks.constructEvent` does, on the same deliveries.
  * - Every event type gives the same applied rows on both paths: entity, id,
@@ -306,12 +307,12 @@ const comparable = (record: Record<string, any>) => {
   };
 };
 
-void test("the folder handles the same 82 events, mapped as the built-in maps them", async () => {
+void test("the folder handles the same 94 events, mapped as the built-in maps them", async () => {
   const folder = await import(
     pathToFileURL(path.join(FOLDER, "webhooks.ts")).href
   );
   const events = stripeSupportedWebhookEvents();
-  assert.equal(events.length, 82);
+  assert.equal(events.length, 94);
   assert.deepEqual(folder.stripeSupportedWebhookEvents(), events);
   assert.deepEqual(spec.mako.webhooks.events, events);
   for (const event of [
@@ -327,7 +328,7 @@ void test("the folder handles the same 82 events, mapped as the built-in maps th
   }
   assert.equal(
     new Set(events.map(e => stripeWebhookEventMapping(e)!.entity)).size,
-    19,
+    20,
   );
   assert.deepEqual(spec.mako.webhooks.verification, {
     scheme: "stripe-v1",
@@ -510,9 +511,54 @@ void test("every event type applies the same rows on both paths, with no request
     children += expected - 1;
     compared++;
   }
-  assert.equal(compared, 82);
+  assert.equal(compared, 94);
   assert.ok(children >= 13, `children: ${children}`);
   assert.deepEqual(requests, [], "a whole payload costs no request");
+});
+
+void test("a voided invoice lands as void and a detached payment method with no customer, on both paths", async () => {
+  const rowsOf = wholeRows();
+  const invoice = structuredClone(rowsOf.invoices[0]);
+  invoice.status = "void";
+  const card = structuredClone(
+    rowsOf.payment_methods.find((row: any) => row.type === "card")!,
+  );
+  assert.equal(typeof card.customer, "string");
+  card.customer = null;
+  const events = buildWebhookEvents(
+    ["invoice.voided", "payment_method.detached"],
+    { invoices: [invoice], payment_methods: [card] },
+  );
+  requests.length = 0;
+  const { rows } = await folderRows(events);
+  const connector = builtIn();
+  for (const [i, event] of events.entries()) {
+    const theirs = await buildWebhookCdcRecords({
+      connector,
+      sourceConnection: SOURCE,
+      flow: {} as never,
+      webhookEvent: event,
+    });
+    assert.deepEqual(
+      rows[i]!.map(comparable),
+      theirs.records.map(comparable),
+      event.eventType,
+    );
+  }
+  const [voided] = rows[0]!;
+  assert.equal(voided.entity, "invoices");
+  assert.equal(voided.recordId, invoice.id);
+  assert.equal(voided.operation, "upsert");
+  assert.equal(voided.payload.status, "void");
+  const [detached] = rows[1]!;
+  assert.equal(detached.entity, "payment_methods");
+  assert.equal(detached.recordId, card.id);
+  assert.equal(detached.operation, "upsert");
+  assert.equal(detached.payload.customer, null);
+  assert.equal(detached.payload.type, "card");
+  assert.ok(detached.payload.card, "the card details stay on the row");
+  // A detached method keeps every list column: no fill request.
+  assert.deepEqual(requests, []);
 });
 
 void test("a partial upsert takes its fetched object, which wins over the event; deletes cost none", async () => {
@@ -933,6 +979,10 @@ void test("provisioning creates the endpoint pinned to 2023-10-16 and returns it
     "invoice.updated",
     "invoice.voided",
     "invoice.marked_uncollectible",
+    "invoice.payment_succeeded",
+    "invoice.payment_action_required",
+    "invoice.finalization_failed",
+    "invoice.sent",
     "invoice.deleted",
   ]);
 
