@@ -10,8 +10,13 @@
  *
  * That is all the platform knows about a newcomer. What they should see
  * inside an app is the app's business (`useViewer()` + the warehouse).
+ *
+ * Someone who signs in WITHOUT a link has no workspace in the request, so
+ * nothing above fires; onboarding offers them `findAutoJoinOffers` instead
+ * of making them create a look-alike workspace of their own.
  */
 import { Types } from "mongoose";
+import { User } from "../database/schema";
 import {
   Workspace,
   WorkspaceMember,
@@ -104,4 +109,70 @@ export async function ensureAutoJoin(
     }
     throw error;
   }
+}
+
+export interface AutoJoinOffer {
+  workspaceId: string;
+  workspaceName: string;
+  domain: string;
+  role: "member" | "viewer";
+}
+
+/**
+ * Workspaces the person can join by email domain alone, for onboarding to
+ * offer: the workspace auto-joins their domain, they are not a member yet,
+ * and one of its owners/admins has a verified address on that domain. The
+ * last rule stops a stranger who lists someone else's domain from showing up
+ * in that company's onboarding as a look-alike workspace.
+ */
+export async function findAutoJoinOffers(user: {
+  id: string;
+  email?: string | null;
+}): Promise<AutoJoinOffer[]> {
+  const domain = user.email ? emailDomain(user.email) : null;
+  if (!domain) return [];
+  const workspaces = await Workspace.find({
+    "settings.autoJoin.domains": domain,
+  })
+    .select("name settings.autoJoin")
+    .lean<
+      Array<{
+        _id: Types.ObjectId;
+        name: string;
+        settings?: { autoJoin?: IWorkspaceAutoJoin };
+      }>
+    >();
+  if (workspaces.length === 0) return [];
+
+  const members = await WorkspaceMember.find({
+    workspaceId: { $in: workspaces.map(w => w._id) },
+    $or: [{ userId: user.id }, { role: { $in: ["owner", "admin"] } }],
+  })
+    .select("workspaceId userId")
+    .lean<Array<{ workspaceId: Types.ObjectId; userId: string }>>();
+  const admins = await User.find({
+    _id: { $in: members.map(m => m.userId) },
+    emailVerified: true,
+  })
+    .select("email")
+    .lean<Array<{ _id: string; email: string }>>();
+  const onDomain = new Set(
+    admins.filter(a => emailDomain(a.email) === domain).map(a => a._id),
+  );
+
+  const joined = new Set<string>();
+  const vouched = new Set<string>();
+  for (const m of members) {
+    const ws = m.workspaceId.toString();
+    if (m.userId === user.id) joined.add(ws);
+    else if (onDomain.has(m.userId)) vouched.add(ws);
+  }
+  return workspaces
+    .filter(w => vouched.has(w._id.toString()) && !joined.has(w._id.toString()))
+    .map(w => ({
+      workspaceId: w._id.toString(),
+      workspaceName: w.name,
+      domain,
+      role: w.settings?.autoJoin?.role === "member" ? "member" : "viewer",
+    }));
 }
