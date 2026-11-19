@@ -19,13 +19,13 @@
  * runs inside Mako's network. A box is outside it. The folder still refuses
  * the cloud metadata names and private or link-local IP literals, and every
  * address a name resolves to, on every redirect hop. Loopback reaches only
- * the box and is allowed. A request times out after 30 s; in-process has no
+ * the box and is allowed. A request times out after 120 s; in-process has no
  * timeout, and a chunk's own limit ends it there.
  */
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
-export const REQUEST_TIMEOUT_MS = 30_000;
+export const REQUEST_TIMEOUT_MS = 120_000;
 const MAX_REDIRECTS = 21;
 
 const NETWORK_CODES = new Set([
@@ -95,7 +95,12 @@ export function buildHeaders(raw: unknown): Headers {
     if (parsed && typeof parsed === "object") {
       for (const [name, value] of Object.entries(parsed)) {
         if (value !== undefined && value !== null) {
-          headers.set(name, String(value));
+          try {
+            headers.set(name, String(value));
+          } catch {
+            // The engine's text would quote the value, which is a secret.
+            throw new Error(`Invalid value for header "${name}"`);
+          }
         }
       }
     }
@@ -283,16 +288,26 @@ export function addressBlocked(address: string): boolean {
   );
 }
 
+/** A URL without its credentials, query string and fragment, for messages. */
+function redact(raw: string): string {
+  try {
+    const url = new URL(raw);
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return raw.split(/[?#]/)[0].replace(/\/\/[^/@]*@/, "//");
+  }
+}
+
 /** http or https, never a cloud metadata name or a private IP literal. */
 export function checkUrl(raw: string): URL {
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    throw new Error(`Invalid URL: ${raw}`);
+    throw new Error(`Invalid URL: ${redact(raw)}`);
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error(`The REST API URL must be http or https: ${raw}`);
+    throw new Error(`The REST API URL must be http or https: ${redact(raw)}`);
   }
   const host = url.hostname
     .replace(/^\[|\]$/g, "")

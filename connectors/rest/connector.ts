@@ -30,8 +30,10 @@
  * `updatedAt`, `modified_at` or `modifiedAt` is after `since` are kept, and
  * `updated_after` (ISO 8601) is sent unless a static param already sets it.
  *
- * The first chunk sends one extra request when `total_count_path` is set,
- * as in-process does to report progress. A failure of it is ignored.
+ * The first chunk of a GET entity sends one extra request when
+ * `total_count_path` is set (a POST, PUT, PATCH or DELETE entity sends none;
+ * in-process repeats it), as in-process does to report progress. A failure
+ * of it is ignored.
  */
 import { defineConnector } from "@makoai/connector-sdk";
 import type { Context, ReadBatch } from "@makoai/connector-sdk";
@@ -195,7 +197,9 @@ async function* readEntity(
   let processed = Number(state.totalProcessed ?? 0) || 0;
   let totalCount: unknown = state.totalCount;
 
-  if (first && def.total_count_path) {
+  // GET only: the preview repeats the first request, and repeating a POST
+  // or DELETE would run its side effect twice. (In-process repeats it.)
+  if (first && def.total_count_path && def.method === "GET") {
     try {
       const resp = await performRequest(client, def, {
         page,

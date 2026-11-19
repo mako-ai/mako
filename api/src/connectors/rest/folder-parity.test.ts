@@ -50,6 +50,8 @@ import {
   errorParity,
   formatReport,
   liftSsrfGuard,
+  readFolder,
+  readInProcess,
   runFolderCommand,
   runParity,
   startReplayServer,
@@ -611,4 +613,51 @@ void test("a host name that resolves to a private address is refused before any 
   assert.equal(out["public.example.test"], "allowed");
   assert.equal(out["loopback.example.test"], "allowed");
   assert.equal(out["localhost"], "allowed");
+});
+
+void test("a header value the runtime rejects is named, never quoted", async () => {
+  const result = await runFolderCommand("check", {
+    config: {
+      api_base_url: BASE,
+      headers: JSON.stringify({ "X-Key": "sec\nret-value" }),
+      entities: [{ name: "x", path: "/" }],
+    },
+  });
+  const status = result.messages.find(m => m.type === "CONNECTION_STATUS");
+  assert.equal(status?.connectionStatus?.status, "FAILED");
+  assert.equal(
+    status?.connectionStatus?.message,
+    'Invalid value for header "X-Key"',
+  );
+  assert.doesNotMatch(JSON.stringify(result), /ret-value/);
+});
+
+void test("the count preview runs for a GET entity only: a POST would run twice", async () => {
+  // `search` with a total_count_path, which in-process previews with a
+  // second POST. The folder sends the 3 pages and no preview.
+  const counted = ENTITIES.map(e =>
+    e.name === "search" ? { ...e, total_count_path: "total" } : e,
+  );
+  const token = "rest_test_inprocess_preview_search";
+  const folderToken = "rest_test_folder_preview_search";
+  const config = (t: string) => ({
+    ...testConfig(t, server),
+    entities: counted,
+  });
+  const read = (t: string) =>
+    readInProcess(() => makeInProcess(config(t)), {
+      entity: "search",
+      maxIterations: 10,
+    });
+  const inRun = await read(token);
+  assert.equal(inRun.rows.length, 30);
+  const folderRun = await readFolder({
+    entity: "search",
+    maxIterations: 10,
+    config: { ...config(folderToken), __rate_limit_delay_ms: 1 },
+  });
+  assert.equal(folderRun.rows.length, 30);
+  assert.equal(server.requests(token).length, 4);
+  assert.equal(server.requests(folderToken).length, 3);
+  assert.deepEqual(server.misses, []);
 });

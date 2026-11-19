@@ -141,6 +141,12 @@ export function runFolderCommand(
     env?: Record<string, string>;
   },
 ): Promise<FolderCommandResult>;
+export function readFolder(options: {
+  entity: string;
+  config: Record<string, unknown>;
+  since?: string;
+  maxIterations: number;
+}): Promise<Run>;
 export function readInProcess(
   makeConnector: () => ReadableConnector,
   options: {

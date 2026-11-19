@@ -116,7 +116,6 @@ export const ENTITIES = [
     method: "POST",
     body: JSON.stringify({ q: "flat", filters: { rooms: [2, 3] } }),
     data_path: "hits",
-    total_count_path: "total",
     page_param: "page",
     limit_param: "size",
     batch_size: 12,
