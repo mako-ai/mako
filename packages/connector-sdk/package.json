@@ -1,6 +1,6 @@
 {
   "name": "@makoai/connector-sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Write a Mako connector: check, discover and read, with HTTP retries and pagination handled.",
   "license": "MIT",
   "repository": {
