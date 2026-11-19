@@ -42,6 +42,7 @@ import {
   serializeFlowFile,
   serializeFlowFileV1,
   parseFlowFile,
+  flowMeaning,
   sameFlowMeaning,
 } from "./flow-config-files";
 
@@ -290,10 +291,11 @@ export async function flowDefinitionDrift(
       differs: [],
     };
   }
-  const a = parsed as unknown as Record<string, unknown>;
-  const b = fromRow as unknown as Record<string, unknown>;
+  // The same normalisation as sameFlowMeaning, so `differs` never names a
+  // key whose only difference is how it was stored (layout _id, sync.engine).
+  const a = flowMeaning(parsed);
+  const b = flowMeaning(fromRow);
   const differs = [...new Set([...Object.keys(a), ...Object.keys(b)])]
-    .filter(k => k !== "type")
     .filter(k => JSON.stringify(a[k]) !== JSON.stringify(b[k]))
     .sort();
   return {

@@ -19,6 +19,7 @@ import {
   parseFlowFile,
   serializeFlowFile,
   slugFromFlowFilePath,
+  flowMeaning,
   sameFlowMeaning,
   serializeFlowFileV1,
 } from "./flow-config-files";
@@ -458,4 +459,44 @@ console.log("flow-config-files tests passed");
   assert.equal(both.schedule, null);
   // A real change is not the same meaning.
   assert.ok(!sameFlowMeaning(a, { ...a, webhookEnabled: false }));
+}
+
+// A row's entity layouts carry the _id Mongo gave them; a file written by
+// hand does not. Same flow, no drift (meta-ads-fr, 19 Nov 2026). A real
+// layout change still differs.
+{
+  const fromFile = parseFlowFile(
+    [
+      "name: x",
+      "source:",
+      "  type: connector",
+      "  connection_id: c1",
+      "entities:",
+      "  layouts:",
+      "    - entity: ads_insights",
+      "      partitionField: _syncedAt",
+      "      enabled: true",
+      "",
+    ].join("\n"),
+  )!;
+  const fromRow = {
+    ...fromFile,
+    entityLayouts: (fromFile.entityLayouts ?? []).map(l => ({
+      ...l,
+      _id: "6afd6f70725004efb12e0849",
+    })),
+  };
+  assert.ok(sameFlowMeaning(fromFile, fromRow), "layout _id is not drift");
+  assert.equal(
+    JSON.stringify(flowMeaning(fromFile)),
+    JSON.stringify(flowMeaning(fromRow)),
+  );
+  const changed = {
+    ...fromRow,
+    entityLayouts: (fromRow.entityLayouts ?? []).map(l => ({
+      ...l,
+      enabled: false,
+    })),
+  };
+  assert.ok(!sameFlowMeaning(fromFile, changed), "a layout change is drift");
 }

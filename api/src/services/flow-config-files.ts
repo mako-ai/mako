@@ -221,14 +221,29 @@ function omitEmpty(obj: Record<string, unknown>): Record<string, unknown> {
  * `type` and a connector flow's `sync.engine` (always CDC) are set aside.
  * Format 1 and format 2 of one flow compare equal.
  */
+/**
+ * What a flow definition means, without what only says how it was stored:
+ * the format's `type`, a connector flow's `sync.engine` (CDC is its only
+ * engine) and the `_id` Mongo gives each entity layout. A file written by
+ * hand carries no layout `_id`, the row always does; comparing them must not
+ * report drift (meta-ads-fr, 19 Nov 2026).
+ */
+export function flowMeaning(f: FlowFile): Record<string, unknown> {
+  const { type: _type, ...rest } = f;
+  const o = JSON.parse(JSON.stringify(rest)) as Record<string, any>;
+  if (o.source?.type === "connector" && o.sync) delete o.sync.engine;
+  if (Array.isArray(o.entityLayouts)) {
+    o.entityLayouts = o.entityLayouts.map((layout: unknown) => {
+      if (!layout || typeof layout !== "object") return layout;
+      const { _id: _layoutId, ...kept } = layout as Record<string, unknown>;
+      return kept;
+    });
+  }
+  return sortDeep(o) as Record<string, unknown>;
+}
+
 export function sameFlowMeaning(a: FlowFile, b: FlowFile): boolean {
-  const norm = (f: FlowFile) => {
-    const { type: _type, ...rest } = f;
-    const o = JSON.parse(JSON.stringify(rest)) as Record<string, any>;
-    if (o.source?.type === "connector" && o.sync) delete o.sync.engine;
-    return JSON.stringify(sortDeep(o));
-  };
-  return norm(a) === norm(b);
+  return JSON.stringify(flowMeaning(a)) === JSON.stringify(flowMeaning(b));
 }
 
 function sortDeep(v: unknown): unknown {
