@@ -49,8 +49,11 @@ export function resolveBigQueryJobPriority(
 
 /**
  * How long a BATCH job may sit in PENDING before the caller stops waiting:
- * BQ_BATCH_PENDING_MAX_WAIT_MS, else 30 minutes, at most 6 hours. This wait
+ * BQ_BATCH_PENDING_MAX_WAIT_MS, else 10 minutes, at most 6 hours. This wait
  * is on top of the job's run budget, which counts from the job's start.
+ * 10 minutes keeps a queued MERGE plus its run inside the 15-minute step
+ * limits (connector webhook batches); a longer queue fails the step, and the
+ * step's own retry takes over.
  */
 export function batchPendingMaxWaitMs(): number {
   const fromEnv = Number.parseInt(
@@ -59,5 +62,5 @@ export function batchPendingMaxWaitMs(): number {
   );
   return Number.isFinite(fromEnv) && fromEnv >= 1000
     ? Math.min(fromEnv, 6 * 60 * 60 * 1000)
-    : 30 * 60 * 1000;
+    : 10 * 60 * 1000;
 }
