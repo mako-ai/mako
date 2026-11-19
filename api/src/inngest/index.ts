@@ -56,6 +56,7 @@ import {
 import {
   dbtRunExecutorFunction,
   dbtRunCancelFunction,
+  dbtRunHeldDeploysCapFunction,
   dbtSchedulerFunction,
   dbtRunSweeperFunction,
 } from "./functions/dbt-run";
@@ -87,6 +88,7 @@ const baseFunctions = [
   notificationDeliverFunction,
   dbtRunExecutorFunction,
   dbtRunCancelFunction,
+  dbtRunHeldDeploysCapFunction,
   dbtRunSweeperFunction,
   consoleDescriptionFunction,
   appsThumbnailWarmFunction,
@@ -196,6 +198,7 @@ export {
   scheduledQuerySchedulerFunction,
   dbtRunExecutorFunction,
   dbtRunCancelFunction,
+  dbtRunHeldDeploysCapFunction,
   dbtSchedulerFunction,
   dbtRunSweeperFunction,
   connectorBoxReaperFunction,

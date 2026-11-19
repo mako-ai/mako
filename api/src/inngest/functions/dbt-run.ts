@@ -41,6 +41,7 @@ import {
   DBT_AUTO_DISABLE_AFTER_FAILURES,
   finalizeCancelledDbtRun,
   promotesProdManifest,
+  releaseHeldDeploys,
   triggerDbtJobRun,
 } from "../../dbt/dbt-run.service";
 import { resolveProdLikeEnvironmentName } from "../../dbt/dbt-environments.service";
@@ -259,7 +260,11 @@ export const dbtRunExecutorFunction = inngest.createFunction(
     });
 
     if (!runInfo) {
-      // Already cancelled or duplicate delivery.
+      // Already cancelled or duplicate delivery. A run cancelled while queued
+      // still owes the app deploys it held (a no-op unless it is terminal).
+      await step.run("release-held-deploys", () =>
+        releaseHeldDeploys(runObjectId),
+      );
       return { skipped: true };
     }
 
@@ -672,7 +677,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       if (!failed) {
         const finishedRun = await DbtRun.findById(runObjectId)
           .select(
-            "artifactKeys environment gitBranch workingTreeUserId localOverlay",
+            "artifactKeys environment gitBranch workingTreeUserId localOverlay deploysAfterRun",
           )
           .lean();
         if (finishedRun?.artifactKeys?.manifest) {
@@ -701,6 +706,12 @@ export const dbtRunExecutorFunction = inngest.createFunction(
         }
       }
     });
+
+    // Success, failure or cancel: the run is over, so the app deploys it held
+    // go now. Their bindings then read whatever prod holds after this run.
+    await step.run("release-held-deploys", () =>
+      releaseHeldDeploys(runObjectId),
+    );
 
     // Surface unexpected executor failures (a thrown step rather than a clean
     // non-zero dbt exit) to Inngest after the run doc has been finalized as
@@ -740,7 +751,45 @@ export const dbtRunCancelFunction = inngest.createFunction(
     await step.run("finalize-cancelled", async () => {
       await finalizeCancelledDbtRun(new Types.ObjectId(runId), cancelledBy);
     });
+    await step.run("release-held-deploys", () => releaseHeldDeploys(runId));
     return { runId };
+  },
+);
+
+/**
+ * The longest app deploys wait on a pre-deploy dbt build. A run queued behind
+ * the daily job (24 min on 19 Nov 2026), or one that hangs, must not hold an
+ * app back for longer than this.
+ */
+export const HELD_DEPLOYS_CAP = "60m";
+
+/**
+ * Releases a run's held app deploys after HELD_DEPLOYS_CAP, whatever the run
+ * is doing: a durable step.sleep on the run's own `dbt/run.requested` event,
+ * not a cron. When the run ended first, its finalize already claimed the
+ * release and this is a no-op; when this fires first, finalize's is.
+ */
+export const dbtRunHeldDeploysCapFunction = inngest.createFunction(
+  {
+    id: "dbt-run-held-deploys-cap",
+    name: "Release app deploys held by a dbt run after 60 min",
+    retries: 2,
+    concurrency: { key: "event.data.runId", limit: 1 },
+    triggers: {
+      event: "dbt/run.requested",
+      if: "event.data.holdsDeploys == true",
+    },
+  },
+  async ({ event, step }) => {
+    const data = event.data as DbtRunRequestedEvent & {
+      holdsDeploys?: boolean;
+    };
+    if (!data.holdsDeploys) return { skipped: true };
+    await step.sleep("hold-cap", HELD_DEPLOYS_CAP);
+    const released = await step.run("release-held-deploys", () =>
+      releaseHeldDeploys(data.runId, { anyStatus: true }),
+    );
+    return { runId: data.runId, released };
   },
 );
 
@@ -969,6 +1018,7 @@ export const dbtRunSweeperFunction = inngest.createFunction(
         );
         // Finalized concurrently by the executor or cancel finalizer.
         if (updated.modifiedCount === 0) continue;
+        await releaseHeldDeploys(run._id);
 
         // Mirror finalize-run so job health stats don't silently drift.
         if (run.jobId) {

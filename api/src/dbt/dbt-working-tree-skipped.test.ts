@@ -27,6 +27,15 @@ describe("dbtResourcePaths", () => {
     ]);
   });
 
+  it("narrows to the given dbt_project.yml keys", () => {
+    expect(
+      dbtResourcePaths('name: a\nmodel-paths: ["transform"]\n', [
+        "model-paths",
+        "seed-paths",
+      ]).sort(),
+    ).toEqual(["seeds", "transform"]);
+  });
+
   it("reads custom paths and drops ./ and trailing slashes", () => {
     const paths = dbtResourcePaths(
       'name: a\nseed-paths: ["./data/"]\nmodel-paths: ["transform"]\ndocs-paths: ["docs"]\n',

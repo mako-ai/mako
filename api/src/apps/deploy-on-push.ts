@@ -41,6 +41,7 @@ import {
 import { ensureCommitLocally } from "./cloud-repo.service";
 import { clearDeployProgress, markDeployStage } from "./deploy-progress";
 import { DEFAULT_BRANCH, resolveCommit } from "./repository.service";
+import { holdDeploysForDbtRun, planDbtBeforeDeploy } from "./dbt-before-deploy";
 
 const logger = loggers.api("apps-deploy-on-push");
 
@@ -435,6 +436,11 @@ export async function deployTargetForPush(
  * the `apps-deploy` Inngest function. Returns the app ids enqueued. Nothing is
  * built here — the webhook delivery must return quickly, and on Cloud Run
  * work detached from a request does not reliably run to completion.
+ *
+ * Unless APPS_DBT_BEFORE_DEPLOY=0 rolls it back, a push that also changed dbt models holds
+ * back the apps whose bindings read dbt models until one dbt run rebuilds
+ * the changed models in prod (dbt-before-deploy.ts). They are still returned:
+ * that run's end requests their deploys.
  */
 export async function deployAppsForPush(input: {
   workspaceId: string;
@@ -449,12 +455,29 @@ export async function deployAppsForPush(input: {
   const sha = await deployTargetForPush(repoDir, after);
   const { requestAppDeploys } =
     await import("../inngest/functions/apps-deploy");
-  await requestAppDeploys(workspaceId, appIds, sha, "push");
+  // A plan that cannot be made never blocks a deploy: everything goes now.
+  const plan = await planDbtBeforeDeploy({
+    workspaceId,
+    repoDir,
+    before,
+    after,
+    appIds,
+  }).catch(error => {
+    logger.warn("Could not plan a dbt build before deploy; deploying now", {
+      workspaceId,
+      sha,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  });
+  await requestAppDeploys(workspaceId, plan ? plan.now : appIds, sha, "push");
+  if (plan) await holdDeploysForDbtRun({ workspaceId, sha, plan });
   logger.info("Apps deploys requested from push", {
     workspaceId,
     sha,
     ...(sha !== after ? { staleDelivery: after } : {}),
     apps: appIds.length,
+    ...(plan ? { heldForDbt: plan.held.length } : {}),
   });
   return appIds;
 }

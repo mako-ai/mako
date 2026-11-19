@@ -39,11 +39,16 @@ const TERMINAL_DBT_RUN_STATUSES: ReadonlySet<DbtRunStatus> = new Set([
  * the prod environment (a read-only `dbt test --env prod` is allowed).
  */
 export function promotesProdManifest(
-  run: Pick<IDbtRun, "gitBranch" | "workingTreeUserId" | "localOverlay">,
+  run: Pick<IDbtRun, "gitBranch" | "workingTreeUserId" | "localOverlay"> &
+    Partial<Pick<IDbtRun, "deploysAfterRun">>,
   ranInProdLikeEnvironment: boolean,
 ): boolean {
   if (!ranInProdLikeEnvironment) return false;
   if (run.localOverlay || run.workingTreeUserId) return false;
+  // A pre-deploy build (`state:modified+,+<model>`) builds only the changed
+  // models apps read. Its manifest would mark every OTHER changed model as
+  // built, and the next push's state:modified+ would skip it.
+  if (run.deploysAfterRun) return false;
   return !run.gitBranch || run.gitBranch === "main";
 }
 
@@ -141,6 +146,7 @@ export async function reconcileStaleQueuedRun<T extends ReconcilableRun>(
 
   // modifiedCount === 0 means the executor claimed it first; leave it alone.
   if (res.modifiedCount !== 1) return run;
+  await releaseHeldDeploys(run._id);
 
   logger.warn("dbt run timed out in queued; finalized as error", {
     event: "dbt.run.queue_timeout",
@@ -148,6 +154,19 @@ export async function reconcileStaleQueuedRun<T extends ReconcilableRun>(
     queueTimeoutMs: QUEUE_TIMEOUT_MS,
   });
   return { ...run, status: "error", error, completedAt } as T;
+}
+
+/**
+ * A run reached a terminal status: request the app deploys it held back, if
+ * any. Every path that finalizes a run calls this; the release itself is
+ * claimed once on the run doc. Lazy import: apps code depends on this module.
+ */
+export async function releaseHeldDeploys(
+  runId: Types.ObjectId | string,
+  opts: { anyStatus?: boolean } = {},
+): Promise<string[]> {
+  const { releaseDeploysAfterRun } = await import("../apps/dbt-before-deploy");
+  return releaseDeploysAfterRun(runId, opts);
 }
 
 /** Batch variant — only touches the DB for runs that are actually stale. */
@@ -243,6 +262,13 @@ export async function triggerDbtRun(params: {
    * up redundant work (dbt Cloud skips overlapping scheduled runs likewise).
    */
   skipIfActive?: boolean;
+  /**
+   * Build this commit of `gitBranch` (default: the default branch) instead of
+   * the branch's tip at trigger time. Deploy-on-push passes the pushed sha.
+   */
+  sourceSha?: string;
+  /** App deploys this run's end releases (apps/dbt-before-deploy.ts). */
+  deploysAfterRun?: { workspaceId: string; appIds: string[]; sha: string };
 }): Promise<IDbtRun> {
   // Validate before persisting anything — bad commands never reach a run doc.
   const parsedCommands = parseDbtCommands(params.commands);
@@ -286,12 +312,13 @@ export async function triggerDbtRun(params: {
   // Pin the tree now: building "the branch" per command would build whatever
   // the executing instance last fetched, and could change between commands.
   const sourceSha =
-    project && !params.localOverlay
+    params.sourceSha ??
+    (project && !params.localOverlay
       ? ((await resolveWorkingTreeCommit(project, {
           branch: params.gitBranch,
           userId: params.workingTreeUserId,
         })) ?? undefined)
-      : undefined;
+      : undefined);
 
   const run = await DbtRun.create({
     workspaceId: new Types.ObjectId(params.workspaceId),
@@ -318,6 +345,10 @@ export async function triggerDbtRun(params: {
         }
       : {}),
     ci: params.ci,
+    // On the doc before the event is sent: the executor may finish first.
+    ...(params.deploysAfterRun
+      ? { deploysAfterRun: params.deploysAfterRun }
+      : {}),
   });
 
   try {
@@ -328,6 +359,8 @@ export async function triggerDbtRun(params: {
         projectId: params.projectId,
         runId: run._id.toString(),
         jobId: params.jobId,
+        // Starts the 60-minute cap on held app deploys (dbt-run.ts).
+        ...(params.deploysAfterRun ? { holdsDeploys: true } : {}),
       },
     });
   } catch (sendError) {
