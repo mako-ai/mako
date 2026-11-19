@@ -1585,3 +1585,42 @@ test("totalRow: a pinned <tfoot>, never sorted or paged, the pinned column holds
   assert.match(css, /\.mk-dt-table tfoot td \{\n  position: sticky; bottom: 0;[^}]*font-weight: 600;[^}]*box-shadow: inset 0 1px 0 var\(--border\);/);
   assert.match(css, /\.mk-dt-table tfoot td\.mk-dt-pin \{ z-index: 3;/);
 });
+
+// ---------------------------------------------------------------------------
+// sortDescFirst (2.29): the first click's direction, per column
+// ---------------------------------------------------------------------------
+
+test("nextSort: sortDescFirst sets a column's first direction; left out, numbers stay largest first", async () => {
+  const { nextSort, firstSortDir } = await import("./ui-core.js");
+  const days = { id: "days", num: true, sortDescFirst: false };
+  assert.deepEqual(nextSort(null, days), { id: "days", dir: "asc" }, "soonest renewal first");
+  assert.deepEqual(nextSort({ id: "days", dir: "asc" }, days), { id: "days", dir: "desc" }, "the next click flips");
+  assert.deepEqual(nextSort(null, { id: "name", sortDescFirst: true }), { id: "name", dir: "desc" });
+  assert.equal(firstSortDir({ id: "mrr", num: true }), "desc");
+  assert.equal(firstSortDir({ id: "mrr", num: true, sortDescFirst: undefined }), "desc");
+  assert.equal(firstSortDir({ id: "name" }), "asc");
+});
+
+test("DataTable sortDescFirst: false sorts a number column soonest first on its first click; left out, markup is unchanged", async t => {
+  const env = await loadDom(t);
+  if (!env) return;
+  const { React, client, win } = env;
+  const ui = await import("./ui.js");
+  const server = await import("react-dom/server");
+  const h = React.createElement;
+  const rows = [{ id: 1, name: "A", days: 30 }, { id: 2, name: "B", days: 3 }, { id: 3, name: "C", days: 12 }];
+  const col = extra => [{ id: "name", label: "Customer", value: r => r.name }, { id: "days", label: "Renewal (d)", num: true, value: r => r.days, ...extra }];
+  const html = cols => server.renderToStaticMarkup(h(ui.DataTable, { rows, columns: cols }));
+  assert.equal(html(col({ sortDescFirst: undefined })), html(col({})), "the prop left out renders the same bytes");
+  const sorts = [];
+  const root = client.createRoot(win.document.getElementById("root"));
+  await React.act(() => root.render(h(ui.DataTable, { rows, columns: col({ sortDescFirst: false }), onSortChange: s => sorts.push(s) })));
+  const header = () => win.document.querySelectorAll("th .mk-dt-sort")[1];
+  const firstCol = () => [...win.document.querySelectorAll("tbody tr")].map(tr => tr.textContent);
+  await React.act(() => header().click());
+  assert.deepEqual(sorts.at(-1), { id: "days", dir: "asc" });
+  assert.deepEqual(firstCol(), ["B3", "C12", "A30"]);
+  await React.act(() => header().click());
+  assert.deepEqual(sorts.at(-1), { id: "days", dir: "desc" });
+  await React.act(() => root.unmount());
+});

@@ -1,4 +1,7 @@
 import type * as React from "react";
+import type { FilterLabels } from "./locale.js";
+
+export * from "./locale.js";
 
 /** ok | warn | bad (or green | amber | red), plus loading and neutral. */
 export type Tone =
@@ -110,6 +113,13 @@ export interface FilterItemsProps<V extends string = string> {
   searchPlaceholder?: string;
   /** Shown when no row matches. Default "No match". */
   searchEmpty?: string;
+  /**
+   * BCP 47 tag (2.29), e.g. "fr-CH": All, Only, Search and No match in that
+   * language, from the SDK's strings table; counts format in it. Default English.
+   */
+  locale?: string;
+  /** Override single texts on top of the locale (2.29). The explicit props win. */
+  labels?: Partial<FilterLabels>;
   className?: string;
   "aria-label"?: string;
 }
@@ -161,6 +171,10 @@ export interface MultiSelectProps<V extends string = string> {
   searchPlaceholder?: string;
   /** Default "No match". */
   searchEmpty?: string;
+  /** BCP 47 tag (2.29), e.g. "fr-CH": All, None, "N selected", Only, Search and No match in that language. Default English. */
+  locale?: string;
+  /** Override single texts on top of the locale (2.29). The explicit props win. */
+  labels?: Partial<FilterLabels>;
   className?: string;
   "aria-label"?: string;
 }
@@ -408,6 +422,12 @@ export interface DataTableColumn<R = any> {
   sticky?: boolean;
   /** Default true. */
   sortable?: boolean;
+  /**
+   * The first click's direction (2.29, TanStack Table's name). Default: true
+   * for `num` columns (largest first), false otherwise (A→Z). `false` on a
+   * days-to-renewal column sorts soonest first. The next click flips it.
+   */
+  sortDescFirst?: boolean;
   /** Header hover text, e.g. the column's definition. */
   hint?: string;
   /**
@@ -489,6 +509,8 @@ export interface DataTableLabels {
 export type DataTableExpanded = true | Record<string, boolean>;
 /** The English defaults of `DataTableLabels`. */
 export const DATA_TABLE_LABELS: DataTableLabels;
+/** The labels a DataTable uses for a locale (2.29), `labels` on top. */
+export function dataTableLabels(locale?: string, labels?: Partial<DataTableLabels>): DataTableLabels;
 export interface DataTableProps<R = any> {
   /** Default [] (renders the empty state while loading). */
   rows?: readonly R[];
@@ -533,6 +555,12 @@ export interface DataTableProps<R = any> {
    * English default (`DATA_TABLE_LABELS`). The README has a full French set.
    */
   labels?: Partial<DataTableLabels>;
+  /**
+   * BCP 47 tag (2.29), e.g. "fr-CH": every text above in that language from
+   * the SDK's strings table, the footer's numbers formatted in it, and the
+   * default `noun` translated ("lignes"). `labels` and `noun` win. Default English.
+   */
+  locale?: string;
   /** Fill the parent's height; the body scrolls inside the card. */
   fill?: boolean;
   /** Body scroll height when not `fill`. Default 70vh. */
@@ -606,7 +634,7 @@ export function columnLayout(columns: readonly Pick<DataTableColumn, "id" | "num
 /** A sorted copy: stable, by `value(row)`, empty values (null, "", NaN) last both ways. */
 export function sortRows<R>(rows: readonly R[], columns: readonly DataTableColumn<R>[], sort: DataTableSort | null | undefined): R[];
 /** The sort after a header click: same column flips; a new one starts desc for `num`, else asc. */
-export function nextSort(sort: DataTableSort | null | undefined, column: Pick<DataTableColumn, "id" | "num">): DataTableSort;
+export function nextSort(sort: DataTableSort | null | undefined, column: Pick<DataTableColumn, "id" | "num" | "sortDescFirst">): DataTableSort;
 /** Compare two cell values ascending: numbers, bigints, dates and two numeric strings by value; text A→Z. */
 export function compareValues(a: unknown, b: unknown): number;
 /** Paging math, 1-based and clamped: rows `start` (inclusive) to `end` (exclusive). */

@@ -76,6 +76,8 @@
     "ui.js",
     "ui-core.js",
     "ui.d.ts",
+    "locale.js",
+    "locale.d.ts",
     "ui.css",
     "tailwind.css",
     "menu/",

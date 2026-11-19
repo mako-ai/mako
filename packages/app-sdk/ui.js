@@ -53,7 +53,9 @@ import {
   tooltipSeriesRows,
   tooltipValueState,
 } from "./ui-core.js";
+import { localeLang, localeStrings } from "./locale.js";
 
+export { LOCALES, STRINGS, localeLang, localeStrings } from "./locale.js";
 export { formatDate, formatTime, toDayKey, toInstant } from "./time.js";
 export {
   closePopovers,
@@ -588,6 +590,26 @@ export const DATA_TABLE_LABELS = {
   collapse: () => "Hide details",
   info: label => `About ${label}`,
 };
+/**
+ * DataTable's texts for a locale (2.29), `labels` on top. No locale and no
+ * labels: DATA_TABLE_LABELS itself. A locale also formats the footer's
+ * numbers ("1 234" in fr-CH) and names the rows ("lignes") when `noun` is unset.
+ */
+export function dataTableLabels(locale, labels) {
+  const T = localeLang(locale) === "en" ? null : localeStrings("dataTable", locale);
+  const base = { ...DATA_TABLE_LABELS, rows: "rows" };
+  if (T) {
+    const n = x => x.toLocaleString(locale);
+    Object.assign(base, T, {
+      range: (from, to, total, noun) => [h("b", { key: "r" }, `${n(from)}–${n(to)}`), ` ${T.of} `, h("b", { key: "t" }, n(total)), ` ${noun}`],
+      none: noun => `0 ${noun}`,
+      expand: () => T.expand,
+      collapse: () => T.collapse,
+    });
+    delete base.of;
+  }
+  return labels ? { ...base, ...labels } : base;
+}
 // A click on a link, button or field inside a row is that control's, not the row's.
 const INTERACTIVE = "a,button,input,select,textarea,label,[role=button]";
 
@@ -633,9 +655,10 @@ export function DataTable({
   defaultPageSize = 50,
   onPageSizeChange,
   pageSizes = [25, 50, 100],
-  noun = "rows",
+  noun: nounProp,
   empty: emptyProp,
   labels: labelsProp,
+  locale,
   fill = false,
   maxHeight,
   onRowClick,
@@ -656,8 +679,9 @@ export function DataTable({
   className,
   style,
 }) {
-  const L = labelsProp ? { ...DATA_TABLE_LABELS, ...labelsProp } : DATA_TABLE_LABELS;
+  const L = dataTableLabels(locale, labelsProp);
   const empty = emptyProp ?? L.empty;
+  const noun = nounProp ?? L.rows;
   const [sort, setSort] = useControlled(sortProp, defaultSort, onSortChange);
   const [rawPage, setRawPage] = useControlled(pageProp, 1, onPageChange);
   const [pageSize, setPageSize] = useControlled(pageSizeProp, defaultPageSize, onPageSizeChange);
@@ -1066,17 +1090,23 @@ export function FilterItems({
   value: valueProp,
   selected: selectedProp,
   onChange,
-  allLabel = "All",
+  allLabel: allLabelProp,
   emptyMeansAll = true,
   showOnly = false,
   none: noneProp,
   onNoneChange,
   searchable = false,
-  searchPlaceholder = "Search",
-  searchEmpty = "No match",
+  searchPlaceholder: searchPlaceholderProp,
+  searchEmpty: searchEmptyProp,
+  locale,
+  labels,
   className,
   "aria-label": ariaLabel,
 }) {
+  const L = localeStrings("filter", locale, labels);
+  const allLabel = allLabelProp ?? L.all;
+  const searchPlaceholder = searchPlaceholderProp ?? L.search;
+  const searchEmpty = searchEmptyProp ?? L.noMatch;
   const value = valueProp ?? selectedProp;
   const tree = options.map(toNode);
   const leaves = filterLeaves(tree);
@@ -1191,8 +1221,8 @@ export function FilterItems({
       h(Checkbox, { checked: asChecked(tick) }),
       dot(node),
       h("span", { className: "mk-ms-label" }, node.label),
-      node.count != null && h("span", { className: "mk-ms-count" }, typeof node.count === "number" ? fmtCount(node.count) : node.count),
-      showOnly && filterLeavesOf(node).length > 0 && h("button", { type: "button", className: "mk-ms-only", tabIndex: -1, onClick: only(node) }, "Only"),
+      node.count != null && h("span", { className: "mk-ms-count" }, typeof node.count === "number" ? (locale ? node.count.toLocaleString(locale) : fmtCount(node.count)) : node.count),
+      showOnly && filterLeavesOf(node).length > 0 && h("button", { type: "button", className: "mk-ms-only", tabIndex: -1, onClick: only(node) }, L.only),
     );
     return group ? [el, ...node.children.flatMap(c => row(c, depth + 1))] : [el];
   };
@@ -1290,8 +1320,8 @@ export function MultiSelect({
   value: valueProp,
   selected: selectedProp,
   onChange,
-  allLabel = "All",
-  noneLabel = "None",
+  allLabel: allLabelProp,
+  noneLabel: noneLabelProp,
   emptyMeansAll = true,
   showOnly = false,
   formatMany,
@@ -1302,11 +1332,16 @@ export function MultiSelect({
   searchable = false,
   searchPlaceholder,
   searchEmpty,
+  locale,
+  labels,
   className,
   triggerClassName,
   label,
   "aria-label": ariaLabelProp,
 }) {
+  const L = localeStrings("filter", locale, labels);
+  const allLabel = allLabelProp ?? L.all;
+  const noneLabel = noneLabelProp ?? L.none;
   const value = valueProp ?? selectedProp;
   const ariaLabel = ariaLabelProp ?? label;
   const [open, setOpen] = React.useState(false);
@@ -1318,7 +1353,7 @@ export function MultiSelect({
   }, [open]);
   const tree = options.map(toNode);
   const selected = filterNormalize(tree, value ?? []);
-  const many = formatMany ?? (n => `${n} selected`);
+  const many = formatMany ?? L.many;
   const text = none ? noneLabel : (summary ?? filterText(tree, selected, allLabel, many));
   const sizes = [...(sizeTo ?? [allLabel, ...tree.map(o => o.label), many(filterLeaves(tree).length), noneLabel]), ...probes];
   const single = selected.length ? filterPickedNode(tree, selected) : null;
@@ -1367,6 +1402,8 @@ export function MultiSelect({
           showOnly,
           none,
           onNoneChange: setNone,
+          locale,
+          labels,
           "aria-label": ariaLabel,
           ...(searchable ? { searchable, searchPlaceholder, searchEmpty } : null),
         }),

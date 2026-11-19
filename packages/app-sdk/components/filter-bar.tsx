@@ -13,8 +13,10 @@
 // every width. Two changes from the reference: the sheet sits at z-50 (scrim
 // z-49), so the SDK's Radix popovers (z-50, portalled after it) open above it;
 // and Escape leaves the sheet open when a popover inside it took the key.
+// 2.29: `locale` and `labels` translate Filters, Reset and Done.
 import * as React from "react"
 import { createPortal } from "react-dom"
+import { localeStrings, type FilterBarLabels } from "../locale.js"
 import { cn } from "../menu/utils"
 
 type Entry = { dirty: boolean; reset: () => void }
@@ -50,13 +52,20 @@ function FilterBar({
   children,
   dirty,
   onReset,
+  locale,
+  labels,
   className,
 }: {
   children: React.ReactNode
   dirty: boolean
   onReset: () => void
+  /** Mako thin prop (2.29): BCP 47 tag, e.g. "fr-CH": Filters, Reset and Done in that language. Default English. */
+  locale?: string
+  /** Mako thin prop (2.29): override single texts on top of the locale. */
+  labels?: Partial<FilterBarLabels>
   className?: string
 }) {
+  const L = localeStrings("filterBar", locale, labels)
   const { setSlot, entries } = React.useContext(FilterCtx)
   const active = (dirty ? 1 : 0) + Object.values(entries).filter(e => e.dirty).length
   const [sheet, setSheet] = React.useState(false)
@@ -84,7 +93,7 @@ function FilterBar({
           onClick={() => setSheet(!sheet)}
           className="inline-flex h-[34px] items-center gap-2 rounded-[8px] border border-border bg-card px-3 text-sm font-medium shadow-[0_1px_2px_rgb(0_0_0/.05)]"
         >
-          Filters{" "}
+          {L.filters}{" "}
           {active > 0 && (
             <span
               data-slot="filter-count"
@@ -109,7 +118,7 @@ function FilterBar({
         data-slot="filter-bar"
         data-open={sheet || undefined}
         role="group"
-        aria-label="Filters"
+        aria-label={L.filters}
         className={cn(
           "group/fb flex flex-wrap items-end gap-x-3 gap-y-2.5",
           sheet
@@ -122,14 +131,14 @@ function FilterBar({
           data-slot="filter-sheet-head"
           className="hidden items-center justify-between border-b border-border pt-3 pb-2 font-semibold max-[769px]:group-data-[open]/fb:flex"
         >
-          <span>Filters</span>
+          <span>{L.filters}</span>
           <button
             type="button"
             data-slot="filter-done"
             onClick={() => setSheet(false)}
             className="h-8 rounded-[8px] border-0 bg-brand px-4 font-semibold text-white"
           >
-            Done
+            {L.done}
           </button>
         </div>
         {children}
@@ -139,13 +148,13 @@ function FilterBar({
           data-slot="filter-reset"
           disabled={active === 0}
           onClick={reset}
-          title="Back to the default filters"
+          title={L.resetTitle}
           className="inline-flex h-[34px] items-center gap-1.5 self-end rounded-[8px] border border-border bg-card px-3 text-sm font-medium text-foreground enabled:hover:bg-accent disabled:cursor-default disabled:bg-transparent disabled:text-muted-foreground disabled:opacity-60 max-[769px]:self-start"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden>
             <path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
-          Reset
+          {L.reset}
         </button>
       </div>
     </>
