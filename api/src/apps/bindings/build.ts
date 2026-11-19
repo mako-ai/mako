@@ -190,8 +190,12 @@ export async function buildResolvedBindingParquet(
   // connection runs a pipeline (validated by its driver, columns inferred at
   // runtime), a SQL connection runs SELECT (lexically gated, schema probed).
   // The binding file is language-agnostic; only its target matters.
+  // The gate reads quotes by the connection's own rules: with no dialect it
+  // demands one statement under every reading, and refuses valid BigQuery
+  // such as 'it\'s; ok' (2026-11-18: 2 pro-funnel-health bindings stopped
+  // rebuilding and served stale numbers).
   const isMongo = connection.type === "mongodb";
-  assertReadOnlyMaterializationQuery(code, isMongo ? "mongodb" : undefined);
+  assertReadOnlyMaterializationQuery(code, connection.type);
   const labels = {
     mako_source: "app_binding",
     mako_app: project.slug || project._id.toString(),

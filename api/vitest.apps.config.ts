@@ -13,6 +13,8 @@ import { defineConfig } from "vitest/config";
  */
 export default defineConfig({
   test: {
+    // MongoMemoryServer.create() retries a port clash or a slow start (src/test-support/mongo-memory.ts).
+    setupFiles: ["./src/test-support/mongo-memory.ts"],
     environment: "node",
     include: [
       "src/apps/sharing-routes.test.ts",
@@ -86,6 +88,8 @@ export default defineConfig({
       "src/apps/unregistered-draft-app.test.ts",
       // A binding past the parquet row limit fails its build, never truncates.
       "src/apps/binding-row-limit.test.ts",
+      // The read-only gate reads quotes by the binding's connection.
+      "src/apps/binding-read-only-gate.test.ts",
       // PARQUET_ROW_LIMIT / PARQUET_MAX_ROW_LIMIT and `-- row_limit:`.
       "src/utils/parquet-row-limit.test.ts",
       "src/apps/binding-artifact-format.test.ts",
@@ -108,6 +112,9 @@ export default defineConfig({
       // flow_update lands flows/<slug>.yml on the mirror's main before the
       // row, or saves nothing: rejected push, races, concurrent calls, drift.
       "src/agent-lib/tools/flow-update-durable.test.ts",
+      // App moves, folder writes and app creation land on the mirror's main
+      // while GitHub's main moves, and stale branches cannot fail them.
+      "src/apps/worktree/folders-durable.test.ts",
       // Cancel a sync's runs: the route's and flow_cancel's one step.
       "src/services/flow-cancel.service.test.ts",
       // flow_webhook_provision: the "Create in …" step over MCP, idempotent.
@@ -147,6 +154,8 @@ export default defineConfig({
       "src/apps/app-chat.service.test.ts",
       "src/services/auto-join.service.test.ts",
       "src/apps/deploy-on-push.test.ts",
+      // The publish box memory gate: no build starts into a starved box.
+      "src/apps/deployment/build-memory.test.ts",
       "src/apps/deploy-progress.test.ts",
       // What is live for an app: the published chip and app_publish_status.
       "src/apps/publish-state.test.ts",

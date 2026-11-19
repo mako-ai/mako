@@ -42,9 +42,6 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 const state = vi.hoisted(() => ({
   /** The GitHub App token call fails while set. */
   tokenFail: false,
-  freshenCalls: 0,
-  /** Run once, right after the n-th freshen of main (1-based). */
-  afterFreshen: new Map<number, () => Promise<void>>(),
 }));
 
 vi.mock("../../integrations/github/app-auth", () => ({
@@ -62,20 +59,11 @@ vi.mock("../../services/flow-webhook-subscription.service", () => ({
 // The hook another instance's push needs: main moves on the remote right
 // after this instance fetched it.
 vi.mock("../../apps/cloud-repo/fetch", async importOriginal => {
-  const actual =
-    await importOriginal<typeof import("../../apps/cloud-repo/fetch")>();
-  return {
-    ...actual,
-    freshenBeforeMainWrite: async (workspaceId: string) => {
-      await actual.freshenBeforeMainWrite(workspaceId);
-      state.freshenCalls += 1;
-      const hook = state.afterFreshen.get(state.freshenCalls);
-      if (hook) {
-        state.afterFreshen.delete(state.freshenCalls);
-        await hook();
-      }
-    },
-  };
+  const { withFreshenHook } =
+    await import("../../apps/cloud-repo/durable-main.testkit");
+  return withFreshenHook(
+    await importOriginal<typeof import("../../apps/cloud-repo/fetch")>(),
+  );
 });
 
 import { runGit } from "../../apps/git";
@@ -83,12 +71,16 @@ import {
   DEFAULT_BRANCH,
   blobOid,
   commitBlobsOnBranch,
-  initRepo,
   readBlob,
   repoDirFor,
   resolveCommit,
 } from "../../apps/repository.service";
-import { bindTestWorkspaceRepo } from "../../apps/bind-test-workspace-repo";
+import {
+  commitOnRemoteMain,
+  freshenHooks,
+  resetFreshenHooks,
+  seedMirroredWorkspace,
+} from "../../apps/cloud-repo/durable-main.testkit";
 import {
   DatabaseConnection,
   Flow,
@@ -183,12 +175,7 @@ const resyncOn = (f: FlowFile) => !!f.backfillSchedule;
 
 /** Another instance (or a merged PR) commits straight onto GitHub's main. */
 async function otherWriter(writes: Record<string, string>): Promise<void> {
-  await commitBlobsOnBranch(
-    remoteDir,
-    DEFAULT_BRANCH,
-    { writes },
-    { message: "another instance" },
-  );
+  await commitOnRemoteMain(remoteDir, { writes });
 }
 
 beforeAll(async () => {
@@ -213,8 +200,7 @@ afterAll(async () => {
 beforeEach(async () => {
   process.env.APPS_CONNECTED_REPO_PUSH = "allow";
   state.tokenFail = false;
-  state.freshenCalls = 0;
-  state.afterFreshen.clear();
+  resetFreshenHooks();
   WS = new Types.ObjectId().toString();
   await Flow.deleteMany({});
   await SourceConnection.collection.deleteMany({});
@@ -232,18 +218,11 @@ beforeEach(async () => {
     name: "Warehouse",
     type: "bigquery",
   } as any);
-  // bindTestWorkspaceRepo binds test-owner/test-repo: that is the remote.
-  remoteDir = path.join(tmpRoot, "remotes", "test-owner", "test-repo.git");
-  await fs.rm(remoteDir, { recursive: true, force: true });
-  await fs.rm(repoDirFor(WS), { recursive: true, force: true });
-  await initRepo(remoteDir, {
+  remoteDir = await seedMirroredWorkspace(path.join(tmpRoot, "remotes"), WS, {
     "README.md": "x\n",
     "flows/close-a.yml": flowYaml("Close A"),
     "flows/close-b.yml": flowYaml("Close B"),
   });
-  await fs.mkdir(path.dirname(repoDirFor(WS)), { recursive: true });
-  await runGit(["clone", "--bare", "--quiet", remoteDir, repoDirFor(WS)]);
-  await bindTestWorkspaceRepo(WS);
   await syncFlowsFromRepo(WS, "user-1");
   expect(await Flow.countDocuments({ workspaceId: WS })).toBe(2);
 });
@@ -304,7 +283,7 @@ describe("flow_update writes main first", () => {
 
   it("RACE: main moving on GitHub between fetch and push costs a retry, not the write", async () => {
     // Freshen #1 is flow_update's own, #2 the commit's: move main after it.
-    state.afterFreshen.set(2, () =>
+    freshenHooks.after.set(2, () =>
       otherWriter({ "notes/other.md": "from another instance\n" }),
     );
     const result = await flowUpdate({ flow: "close-a", resync: "off" });
@@ -323,7 +302,7 @@ describe("flow_update writes main first", () => {
     const row = await Flow.findOne({ workspaceId: WS, slug: "close-a" });
     const theirs = flowToFile(row!);
     theirs.webhookEnabled = false;
-    state.afterFreshen.set(2, () =>
+    freshenHooks.after.set(2, () =>
       otherWriter({ "flows/close-a.yml": serializeFlowFile(theirs) }),
     );
     const result = await flowUpdate({ flow: "close-a", resync: "off" });

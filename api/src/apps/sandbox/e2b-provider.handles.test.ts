@@ -42,6 +42,7 @@ import {
   SandboxNotFoundError,
   SandboxNotRunningError,
   SandboxUnreachableError,
+  TimeoutError,
 } from "e2b";
 
 import {
@@ -49,6 +50,8 @@ import {
   heldSandboxCountForTests,
   isBoxConnectionError,
   isSandboxGone,
+  EXEC_ID_ENV,
+  killByExecIdScript,
   neverReachedBox,
   noteSessionPaused,
   resetHeldSandboxesForTests,
@@ -384,6 +387,70 @@ describe("held E2B handles", () => {
     expect(result).toMatchObject({ exitCode: 3, stderr: "bad" });
     expect(box.commands.run).toHaveBeenCalledTimes(2);
     expect(heldSandboxCountForTests()).toBe(1);
+  });
+
+  it("kills every process a timed-out command started, by its exec tag", async () => {
+    // 18 Nov 2026: builds that outlived their timeout held the publish box at
+    // 2,018 of 2,079 MB for 34 min. A deadline must end the processes too.
+    const box = oneBox();
+    const kill = vi.fn(async () => true);
+    box.commands.run.mockImplementationOnce(async () => ({
+      pid: 4242,
+      kill,
+      wait: async () => {
+        throw new TimeoutError("[deadline_exceeded] the operation timed out");
+      },
+    }));
+    const result = await provider.exec(ctx, "npm run build", {
+      timeoutMs: 30_000,
+    });
+    expect(result).toMatchObject({ exitCode: 124, timedOut: true });
+    // The command carried a unique tag; the sweep, as root, aims at it.
+    expect(box.commands.run).toHaveBeenCalledTimes(2);
+    const execId = box.commands.run.mock.calls[0][1].envs[EXEC_ID_ENV];
+    expect(execId).toMatch(/^[0-9a-f-]{36}$/);
+    const [script, options] = box.commands.run.mock.calls[1];
+    expect(script).toBe(killByExecIdScript(execId));
+    expect(options).toMatchObject({ user: "root" });
+    // envd's own kill of the top pid backs the walk up.
+    expect(kill).toHaveBeenCalledTimes(1);
+  });
+
+  it("still kills the top pid when the sweep cannot start", async () => {
+    const box = oneBox();
+    const kill = vi.fn(async () => true);
+    box.commands.run
+      .mockImplementationOnce(async () => ({
+        pid: 7,
+        kill,
+        wait: async () => {
+          throw new TimeoutError("[deadline_exceeded] the operation timed out");
+        },
+      }))
+      .mockImplementationOnce(async () => {
+        throw new TimeoutError("[deadline_exceeded] could not start");
+      });
+    const result = await provider.exec(ctx, "sleep 999", { timeoutMs: 1_000 });
+    expect(result.timedOut).toBe(true);
+    expect(kill).toHaveBeenCalledTimes(1);
+  });
+
+  it("tags each exec uniquely, so a sweep never touches another command", async () => {
+    const box = oneBox();
+    await provider.exec(ctx, "true", { timeoutMs: 30_000 });
+    await provider.exec(ctx, "true", { timeoutMs: 30_000 });
+    const [a, b] = box.commands.run.mock.calls.map(c => c[1].envs[EXEC_ID_ENV]);
+    expect(a).not.toBe(b);
+  });
+
+  it("sweeps by environment, stopping before killing, and refuses odd ids", () => {
+    // envd kills only the top bash on a deadline; its children are reparented
+    // to init and share envd's process group, so neither a tree walk nor a
+    // group kill reaches them. Their inherited environment does.
+    const script = killByExecIdScript("9b2c4d1e-aaaa");
+    expect(script).toContain(`grep -qzx '${EXEC_ID_ENV}=9b2c4d1e-aaaa'`);
+    expect(script).toContain("for s in STOP KILL");
+    expect(() => killByExecIdScript("x'; rm -rf /")).toThrow();
   });
 
   it("opens a terminal through the same path: a stale handle is replaced", async () => {
