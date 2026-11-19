@@ -54,10 +54,14 @@ function SelectContent({
   children,
   position = "item-aligned",
   align = "center",
+  container,
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.Content>) {
+}: React.ComponentProps<typeof SelectPrimitive.Content> & {
+  /** Mako thin prop (2.23): where the list portals, e.g. document.fullscreenElement in a fullscreen deck. */
+  container?: React.ComponentProps<typeof SelectPrimitive.Portal>["container"]
+}) {
   return (
-    <SelectPrimitive.Portal>
+    <SelectPrimitive.Portal container={container}>
       <SelectPrimitive.Content
         data-slot="select-content"
         className={cn(

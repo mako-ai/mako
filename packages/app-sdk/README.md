@@ -558,6 +558,13 @@ component or prop is an SDK pull request.
 @import "@makoai/app-sdk/tailwind.css";
 ```
 
+Thin props (2.23), marked "Mako thin prop" in the source. Stock behaviour
+stays the default:
+
+- `SheetContent closeLabel="Fermer"`: the close button's screen-reader label.
+- `SelectContent container={document.fullscreenElement ?? undefined}`: where
+  the list portals, for a fullscreen page.
+
 `tailwind.css` lets Tailwind see the SDK's classes (`@source`) and maps the
 house tokens onto Tailwind's colour names (`bg-popover`,
 `text-muted-foreground`, `bg-brand`, `--radius-*`). It replaces the
