@@ -48,6 +48,8 @@ export default defineConfig({
       "src/databases/drivers/clickhouse/wake.test.ts",
       // Streamed reads run the query once: no OFFSET pages over an unordered result.
       "src/databases/drivers/clickhouse/stream.test.ts",
+      // Cloud SQL cursor, MySQL stream, capped single read: never OFFSET pages.
+      "src/databases/stream-once.test.ts",
       "src/routes/source-connection-writers.test.ts",
       // A database connection's writers list, changed in the app.
       "src/routes/database-writers-session.test.ts",

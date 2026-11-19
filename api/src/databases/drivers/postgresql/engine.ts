@@ -16,7 +16,6 @@ import {
 import type { IDatabaseConnection } from "../../../database/workspace-schema";
 import { loggers } from "../../../logging";
 import { stripLeadingSqlComments } from "../../../services/query-pagination.service";
-import { StopReading } from "../../../services/query-row-cap";
 import { countTopLevelSemicolons } from "../../../services/sql-query-utils";
 import { ConnectionCache } from "../../connection-cache";
 import type { QueryEngine } from "../../engine";
@@ -35,6 +34,7 @@ import {
   POSTGRES_MAX_RETRIES,
   POSTGRES_RETRY_BASE_DELAY_MS,
 } from "./config";
+import { cursorFailure, readCursorOnClient } from "./cursor";
 import { pgBackendPid } from "./pg-backend-pid";
 import {
   normalizePostgresFields,
@@ -42,9 +42,6 @@ import {
 } from "./pg-type-utils";
 
 const logger = loggers.db("postgresql");
-
-/** Rows a Postgres cursor fetches at a time. */
-const CURSOR_FETCH_ROWS = 1000;
 
 interface RunningPostgresQuery {
   database: IDatabaseConnection;
@@ -291,12 +288,7 @@ export class PostgresEngine implements QueryEngine {
     query: string,
     options: CursorReadOptions,
   ): Promise<QueryResult> {
-    const { executionId, signal, timeoutMs } = options;
-    const fetchRows = Math.max(
-      1,
-      Math.floor(options.fetchRows ?? CURSOR_FETCH_ROWS),
-    );
-    const keepRows = options.keepRows !== false;
+    const { executionId, signal } = options;
     try {
       if (signal?.aborted) return { success: false, error: "Query cancelled" };
       const client = await this.connect(
@@ -304,78 +296,16 @@ export class PostgresEngine implements QueryEngine {
         options.databaseName || database.connection.database,
         signal,
       );
-      let open = false;
       let release: (() => void) | undefined;
       try {
         release = await this.trackQuery(database, client, executionId, signal);
-        await client.query(
-          options.readOnly || options.readOnlyTransaction
-            ? "BEGIN TRANSACTION READ ONLY"
-            : "BEGIN",
-        );
-        open = true;
-        if (timeoutMs) {
-          await client.query(
-            `SET LOCAL statement_timeout = ${Math.max(1, Math.floor(timeoutMs))}`,
-          );
-        }
-        // On its own lines: a trailing `-- comment` cannot eat the rest.
-        await client.query(
-          `DECLARE _mako_rows NO SCROLL CURSOR FOR\n${query}\n`,
-        );
-        const rows: Record<string, unknown>[] = [];
-        let rowCount = 0;
-        let fields: ReturnType<typeof normalizePostgresFields> | undefined;
-        for (;;) {
-          if (signal?.aborted) {
-            return { success: false, error: "Query cancelled" };
-          }
-          // pg reads query_timeout per query; its types do not list it.
-          const batch = await client.query({
-            text: `FETCH ${fetchRows} FROM _mako_rows`,
-            ...(timeoutMs ? { query_timeout: timeoutMs } : {}),
-          } as { text: string });
-          fields ??= normalizePostgresFields(batch.fields);
-          const batchRows = normalizePostgresRows(
-            batch.rows as Record<string, unknown>[],
-            fields,
-          );
-          // StopReading ends the read with what was read (a row cap).
-          let stop = false;
-          if (keepRows || batchRows.length > 0) {
-            try {
-              await options.onRows(batchRows);
-            } catch (error) {
-              if (!(error instanceof StopReading)) throw error;
-              stop = true;
-            }
-          }
-          rowCount += batchRows.length;
-          if (keepRows) rows.push(...batchRows);
-          if (stop || batch.rows.length < fetchRows) break;
-        }
-        await client.query("COMMIT");
-        open = false;
-        return {
-          success: true,
-          data: keepRows ? rows : undefined,
-          rowCount,
-          fields,
-        };
+        return await readCursorOnClient(client, query, options);
       } finally {
-        if (open) await client.query("ROLLBACK").catch(() => undefined);
         if (release) release();
         else client.release();
       }
     } catch (error) {
-      if (cancelled(error, "canceling statement due to user request")) {
-        return { success: false, error: "Query cancelled" };
-      }
-      return {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "PostgreSQL query failed",
-      };
+      return cursorFailure(error);
     }
   }
 
