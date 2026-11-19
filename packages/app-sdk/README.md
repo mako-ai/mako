@@ -558,6 +558,19 @@ component or prop is an SDK pull request.
 @import "@makoai/app-sdk/tailwind.css";
 ```
 
+Calendar and Command (2.24) ship on their own subpaths, so an app without
+react-day-picker or cmdk never loads them:
+
+```ts
+import { Calendar } from "@makoai/app-sdk/components/calendar";
+import { Command, CommandInput, CommandList } from "@makoai/app-sdk/components/command";
+```
+
+shadcn's stock components pass refs as props, so they need React 19. On
+React 18 a ref is dropped: a Calendar's arrow keys stop moving focus. Apps
+that use them run React 19; `mako-app-lint --rules=react-version` flags any
+that does not.
+
 Thin props (2.23), marked "Mako thin prop" in the source. Stock behaviour
 stays the default:
 
@@ -601,6 +614,10 @@ Run it in an app folder (or pass several). It exits 1 on a finding;
   `src/`. A date key the helpers cannot build takes
   `// mako-lint-ignore utc-display` on its line.
 - `local-shadcn`: a `src/components/ui/<name>.tsx` the SDK ships.
+- `react-version` (2.24): React below 19 in an app that uses shadcn
+  (`src/components/ui`, radix-ui, or the SDK's `/components` or `/menu`).
+
+`--rules=react-version` runs only the named rules (2.24).
 
 ### Chart tooltips: `TableTooltip` (2.10+, every series from 2.15)
 
