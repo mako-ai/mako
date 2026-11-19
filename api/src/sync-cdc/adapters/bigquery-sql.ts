@@ -305,6 +305,55 @@ function normalizeGranularity(g: string | undefined): PartitionGranularity {
   return v === "hour" || v === "month" || v === "year" ? v : "day";
 }
 
+/** A live table's time partitioning, as BigQuery reports it (`timePartitioning`). */
+export interface LiveTablePartitioning {
+  /** Absent for ingestion-time partitioning (`_PARTITIONTIME`). */
+  field?: string;
+  /** DAY, HOUR, MONTH or YEAR. */
+  type?: string;
+}
+
+/**
+ * The column and granularity a MERGE can prune the live table on.
+ *
+ * The live table decides, not the flow layout. A layout can name a column the
+ * table is not partitioned on: a second flow writing to an existing table, or
+ * a layout edit never applied with a repartition. A range on a non-partition
+ * column prunes nothing. On 17 Nov 2026 the ES Close shadow flow (layout
+ * `_syncedAt`) started writing to email_activities (partitioned on
+ * `date_created`). Each 1-8 row MERGE then scanned all 31 GiB, against
+ * 0.2-0.5 GiB for the old flow, whose layout named `date_created`.
+ *
+ * `table` undefined means the metadata read failed: fall back to the layout,
+ * which is correct and may prune nothing. `null` means the table is not
+ * time-partitioned on a column. Returns undefined when there is nothing to
+ * prune on.
+ */
+export function resolveMergePartitioning(p: {
+  table: LiveTablePartitioning | null | undefined;
+  layout: CdcEntityLayout["partitioning"];
+  liveTypes: Map<string, string>;
+}): { field: string; granularity: PartitionGranularity } | undefined {
+  let source: { field: string; type?: string } | undefined;
+  if (p.table === undefined) {
+    if (p.layout?.field) {
+      source = { field: p.layout.field, type: p.layout.granularity };
+    }
+  } else if (p.table?.field) {
+    source = { field: p.table.field, type: p.table.type };
+  }
+  if (!source) return undefined;
+  // The filter compares TIMESTAMP literals. A DATE or DATETIME partition
+  // column would need other literals: merge unfiltered.
+  if ((p.liveTypes.get(source.field) || "").toUpperCase() !== "TIMESTAMP") {
+    return undefined;
+  }
+  return {
+    field: source.field,
+    granularity: normalizeGranularity(source.type),
+  };
+}
+
 /**
  * Probe query listing the distinct partition buckets (UTC, `%FT%T`) of live
  * rows whose key appears in staging. Staging keys are cast exactly as the

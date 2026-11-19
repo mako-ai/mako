@@ -1,11 +1,14 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { DuckDBInstance, type DuckDBConnection } from "@duckdb/node-api";
+import { databaseConnectionService } from "../../services/database-connection.service";
 import {
+  BigQueryDestinationAdapter,
   buildLivePartitionFilter,
   buildLivePartitionProbeQuery,
   buildMergeStatement,
   type BuildMergeStatementParams,
 } from "./bigquery";
+import { resolveMergePartitioning } from "./bigquery-sql";
 
 /**
  * Contract tests for the BigQuery CDC MERGE builder. This SQL is
@@ -374,5 +377,154 @@ describe("MERGE partition pruning", () => {
     expect(
       buildLivePartitionFilter({ partitionField: "d", buckets: ["garbage"] }),
     ).toBeUndefined();
+  });
+});
+
+/**
+ * realadvisor-prod, 17-19 Nov 2026: the ES Close shadow flow's layout names
+ * `_syncedAt`, but email_activities is partitioned on `date_created`. The
+ * MERGE got a `_syncedAt` range, which prunes nothing: 16 GiB per 1-8 row
+ * MERGE, against 0.2-0.5 GiB for the old flow, whose layout named
+ * `date_created`. The live table now decides the prune column.
+ */
+describe("MERGE partition pruning follows the live table, not the layout", () => {
+  const types = new Map([
+    ["id", "STRING"],
+    ["date_created", "TIMESTAMP"],
+    ["_syncedAt", "TIMESTAMP"],
+    ["day", "DATE"],
+  ]);
+  const syncedAtLayout = {
+    type: "time" as const,
+    field: "_syncedAt",
+    granularity: "day" as const,
+  };
+
+  it("prunes on the table's column when the layout names another", () => {
+    expect(
+      resolveMergePartitioning({
+        table: { field: "date_created", type: "DAY" },
+        layout: syncedAtLayout,
+        liveTypes: types,
+      }),
+    ).toEqual({ field: "date_created", granularity: "day" });
+  });
+
+  it("takes the table's granularity over the layout's", () => {
+    expect(
+      resolveMergePartitioning({
+        table: { field: "date_created", type: "DAY" },
+        layout: { type: "time", field: "date_created", granularity: "month" },
+        liveTypes: types,
+      }),
+    ).toEqual({ field: "date_created", granularity: "day" });
+  });
+
+  it("prunes a partitioned table whose layout has no partitioning", () => {
+    expect(
+      resolveMergePartitioning({
+        table: { field: "_syncedAt", type: "DAY" },
+        layout: undefined,
+        liveTypes: types,
+      }),
+    ).toEqual({ field: "_syncedAt", granularity: "day" });
+  });
+
+  it("never filters an unpartitioned or ingestion-time table", () => {
+    expect(
+      resolveMergePartitioning({
+        table: null,
+        layout: syncedAtLayout,
+        liveTypes: types,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("falls back to the layout when the metadata read failed", () => {
+    expect(
+      resolveMergePartitioning({
+        table: undefined,
+        layout: syncedAtLayout,
+        liveTypes: types,
+      }),
+    ).toEqual({ field: "_syncedAt", granularity: "day" });
+  });
+
+  it("skips a DATE partition column: the filter uses TIMESTAMP literals", () => {
+    expect(
+      resolveMergePartitioning({
+        table: { field: "day", type: "DAY" },
+        layout: undefined,
+        liveTypes: types,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("the adapter probes and filters on date_created for a _syncedAt layout", async () => {
+    const queries: string[] = [];
+    const spy = vi
+      .spyOn(databaseConnectionService, "executeQuery")
+      .mockImplementation(async (_db, sql) => {
+        queries.push(String(sql));
+        return {
+          success: true,
+          data: [{ p: "2025-05-15T00:00:00" }, { p: "2026-07-09T00:00:00" }],
+        } as never;
+      });
+    try {
+      const adapter = new BigQueryDestinationAdapter({
+        destinationDatabaseId: "db",
+        workspaceId: "ws",
+        tableDestination: {
+          connectionId: "conn",
+          schema: "ds",
+          tableName: "t",
+        },
+      });
+      const target = {
+        bq: {
+          dataset: () => ({
+            table: () => ({
+              getMetadata: async () => [
+                { timePartitioning: { type: "DAY", field: "date_created" } },
+              ],
+            }),
+          }),
+        },
+        projectId: "p",
+        dataset: "ds_prune_test",
+        destination: {},
+        datasetLocation: "europe-west6",
+      };
+      const filter = await (
+        adapter as unknown as {
+          resolveLivePartitionFilter: (
+            t: unknown,
+            p: unknown,
+          ) => Promise<string | undefined>;
+        }
+      ).resolveLivePartitionFilter(target, {
+        layout: {
+          entity: "activities:Email",
+          tableName: "email_activities",
+          keyColumns: ["id"],
+          partitioning: syncedAtLayout,
+        },
+        fullLive: "`p`.`ds`.`email_activities`",
+        fullStaging: "`p`.`ds`.`stg`",
+        liveTypes: types,
+      });
+      expect(queries).toHaveLength(1);
+      expect(queries[0]).toContain(
+        "TIMESTAMP_TRUNC(__live.`date_created`, DAY)",
+      );
+      expect(filter).toBe(
+        "(__live.`date_created` >= TIMESTAMP '2025-05-15 00:00:00 UTC' AND __live.`date_created` < TIMESTAMP '2025-05-16 00:00:00 UTC')" +
+          " OR (__live.`date_created` >= TIMESTAMP '2026-07-09 00:00:00 UTC' AND __live.`date_created` < TIMESTAMP '2026-07-10 00:00:00 UTC')",
+      );
+      expect(filter).not.toContain("_syncedAt");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
