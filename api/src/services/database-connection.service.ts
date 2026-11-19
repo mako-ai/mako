@@ -24,12 +24,22 @@ import {
   type ConnectionContext,
 } from "../databases/drivers/mongodb/engine";
 import { mssqlEngine } from "../databases/drivers/mssql/engine";
+import { mysqlEngine } from "../databases/drivers/mysql/engine";
 import {
   cursorReadable,
   postgresEngine,
 } from "../databases/drivers/postgresql/engine";
 import type { QueryEngine } from "../databases/engine";
-import { allEngines, d1Driver, engineFor } from "../databases/engines";
+import {
+  resolveSingleReadMaxRows,
+  singleReadOverCapError,
+} from "./query-row-cap";
+import {
+  allEngines,
+  cloudSqlDriver,
+  d1Driver,
+  engineFor,
+} from "../databases/engines";
 import { normalizeQueryFields, resultRows } from "../databases/query-fields";
 import {
   QUERY_NOT_FOUND,
@@ -50,6 +60,7 @@ import { loggers } from "../logging";
 import {
   buildPreviewPage,
   checkPreviewQuerySafety,
+  applySqlRowLimit,
   prepareSqlBatchQuery,
   prepareSqlPreviewQuery,
   resolvePreviewPageSize,
@@ -181,7 +192,9 @@ export class DatabaseConnectionService {
     query: string,
     options: CursorReadOptions,
   ): Promise<QueryResult> {
-    return postgresEngine.readCursor(database, query, options);
+    return database.type === "cloudsql-postgres"
+      ? cloudSqlDriver().readCursor(database, query, options)
+      : postgresEngine.readCursor(database, query, options);
   }
 
   private executeBigQueryQuery(
@@ -406,13 +419,16 @@ export class DatabaseConnectionService {
 
     const batchSize = Math.max(1, Math.floor(options.batchSize || 1000));
 
-    // A Postgres read streams through a real server-side cursor: the query
-    // runs ONCE, in one transaction/snapshot, and batches are FETCHed in the
-    // query's own order. (OFFSET pages re-run the query per page and, with
-    // no ORDER BY, may skip or repeat rows between pages.) Same path with
-    // or without readOnly; the cursor's transaction is READ ONLY when asked.
+    // A Postgres or Cloud SQL Postgres read streams through a real
+    // server-side cursor: the query runs ONCE, in one transaction/snapshot,
+    // and batches are FETCHed in the query's own order. (OFFSET pages re-run
+    // the query per page and, with no ORDER BY, may skip or repeat rows
+    // between pages.) Same path with or without readOnly; the cursor's
+    // transaction is READ ONLY when asked.
     const readable =
-      database.type === "postgresql" && typeof query === "string"
+      (database.type === "postgresql" ||
+        database.type === "cloudsql-postgres") &&
+      typeof query === "string"
         ? cursorReadable(query)
         : null;
     if (readable !== null) {
@@ -463,54 +479,57 @@ export class DatabaseConnectionService {
       return { success: true, totalRows: rows.length };
     }
 
-    let totalRows = 0;
-    let offset = 0;
+    // MySQL streams one query's rows (mysql2 query().stream()).
+    if (database.type === "mysql") {
+      return await mysqlEngine.executeStreamingQuery(
+        database,
+        String(query),
+        options,
+      );
+    }
 
+    // Every other SQL engine (D1, MSSQL, Redshift, a Postgres statement the
+    // cursor cannot take) runs the query ONCE, capped at maxRows + 1 rows.
+    // Never OFFSET pages: each page is a separate query, and without an ORDER
+    // BY the pages can overlap and skip rows. A result over the cap fails
+    // the read loudly instead of being cut or held whole.
+    const maxRows = resolveSingleReadMaxRows();
+    let totalRows = 0;
     try {
-      for (;;) {
+      const capped = applySqlRowLimit({
+        query: String(query),
+        databaseType: database.type,
+        limit: maxRows + 1,
+      });
+      const result = await this.executeQuery(database, capped, {
+        databaseName: options.databaseName,
+        databaseId: options.databaseId,
+        executionId: options.executionId,
+        signal: options.signal,
+        readOnly: options.readOnly,
+        actor: options.actor,
+        writeChecked: true,
+        readOnlyTransaction: options.readOnlyTransaction,
+      });
+      if (!result.success) {
+        return { success: false, totalRows, error: result.error };
+      }
+      const rows = resultRows(result.data);
+      if (rows.length > maxRows) {
+        return {
+          success: false,
+          totalRows,
+          error: singleReadOverCapError(database.type, maxRows),
+        };
+      }
+      for (let i = 0; i < rows.length; i += batchSize) {
         if (options.signal?.aborted) {
           return { success: false, totalRows, error: "Query cancelled" };
         }
-
-        const prepared = prepareSqlBatchQuery({
-          query: String(query),
-          databaseType: database.type,
-          batchSize,
-          offset,
-        });
-
-        const result = await this.executeQuery(database, prepared.query, {
-          databaseName: options.databaseName,
-          databaseId: options.databaseId,
-          executionId: options.executionId,
-          signal: options.signal,
-          readOnly: options.readOnly,
-          actor: options.actor,
-          writeChecked: true,
-          readOnlyTransaction: options.readOnlyTransaction,
-        });
-
-        if (!result.success) {
-          return { success: false, totalRows, error: result.error };
-        }
-
-        const rows = Array.isArray(result.data)
-          ? (result.data as Record<string, unknown>[])
-          : [];
-
-        if (rows.length === 0) {
-          break;
-        }
-
-        await options.onBatch(rows);
-        totalRows += rows.length;
-        offset += rows.length;
-
-        if (rows.length < batchSize) {
-          break;
-        }
+        const batch = rows.slice(i, i + batchSize);
+        await options.onBatch(batch);
+        totalRows += batch.length;
       }
-
       return { success: true, totalRows };
     } catch (error) {
       return {

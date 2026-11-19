@@ -26,6 +26,8 @@ import {
 } from "../postgresql/pg-type-utils";
 import { listPostgresTableLevelChildren } from "../postgresql/introspection";
 import { pgBackendPid } from "../postgresql/pg-backend-pid";
+import { cursorFailure, readCursorOnClient } from "../postgresql/cursor";
+import type { CursorReadOptions } from "../../query-types";
 import { buildPostgresTableDefinition } from "../postgresql/table-definition";
 import { escapeSqlLiteral } from "../../sql-utils";
 import { ConnectionCache } from "../../connection-cache";
@@ -348,6 +350,51 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
             ? error.message
             : "Cloud SQL PostgreSQL query failed",
       };
+    }
+  }
+
+  /**
+   * Read `query` through a server-side cursor on one pooled client: the
+   * statement runs once, in one transaction, FETCHed in batches (see
+   * readCursorOnClient). Cancellable by `executionId` and by `signal`; a
+   * client a cancel was sent to is destroyed, not pooled.
+   */
+  async readCursor(
+    database: IDatabaseConnection,
+    query: string,
+    options: CursorReadOptions,
+  ): Promise<QueryResult> {
+    const { executionId, signal } = options;
+    try {
+      if (signal?.aborted) return { success: false, error: "Query cancelled" };
+      const targetDb = options.databaseName;
+      const pool = await this.getConnection(database, targetDb);
+      const client = await pool.connect();
+      const poolKey = `${database._id.toString()}:${targetDb || "default"}`;
+      let cancelSent = false;
+      const pid = executionId || signal ? await pgBackendPid(client) : null;
+      const onAbort = () => {
+        if (cancelSent || typeof pid !== "number") return;
+        cancelSent = true;
+        void pool
+          .query("SELECT pg_cancel_backend($1)", [pid])
+          .catch(error =>
+            logger.warn("Cloud SQL cancel on abort failed", { pid, error }),
+          );
+      };
+      if (executionId && typeof pid === "number") {
+        this.runningQueries.set(executionId, { pid, poolKey, pool });
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+      try {
+        return await readCursorOnClient(client, query, options);
+      } finally {
+        signal?.removeEventListener("abort", onAbort);
+        if (executionId) this.runningQueries.delete(executionId);
+        client.release(cancelSent || signal?.aborted === true);
+      }
+    } catch (error) {
+      return cursorFailure(error);
     }
   }
 

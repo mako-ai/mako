@@ -41,6 +41,36 @@ export function resolveExecuteMaxRows(
 }
 
 /**
+ * Default cap of a streamed read that runs as ONE query with no native
+ * stream (D1, MSSQL, Redshift): the whole result is held in memory, so it is
+ * bounded. STREAM_SINGLE_READ_MAX_ROWS overrides.
+ */
+export const DEFAULT_SINGLE_READ_MAX_ROWS = 100_000;
+
+/** STREAM_SINGLE_READ_MAX_ROWS when a positive integer, else 100,000. */
+export function resolveSingleReadMaxRows(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = env.STREAM_SINGLE_READ_MAX_ROWS;
+  const parsed = raw ? Number(raw) : Number.NaN;
+  return Number.isInteger(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_SINGLE_READ_MAX_ROWS;
+}
+
+/** The failure of a single read whose result passed the cap. */
+export function singleReadOverCapError(
+  databaseType: string,
+  maxRows: number,
+): string {
+  return (
+    `The query returned more than ${maxRows.toLocaleString("en-US")} rows. ` +
+    `A ${databaseType} result is read in one piece, so it is capped there ` +
+    `(STREAM_SINGLE_READ_MAX_ROWS). Aggregate or filter it in SQL.`
+  );
+}
+
+/**
  * Thrown from an `onRows` callback to stop reading without failing: the
  * Postgres cursor read then returns what it read so far.
  */

@@ -2,6 +2,7 @@
  * The MySQL engine: pools (through an SSH tunnel when the connection has
  * one), queries, and cancellation by `KILL QUERY <threadId>`.
  */
+import type { Connection as CoreConnection } from "mysql2";
 import * as mysql from "mysql2/promise";
 import type { IDatabaseConnection } from "../../../database/workspace-schema";
 import { loggers } from "../../../logging";
@@ -15,6 +16,8 @@ import {
   type DatabaseQuery,
   type QueryExecuteOptions,
   type QueryResult,
+  type StreamingQueryOptions,
+  type StreamingQueryResult,
 } from "../../query-types";
 import { withRetry } from "../../retry";
 import {
@@ -223,6 +226,86 @@ export class MySQLEngine implements QueryEngine {
     query: DatabaseQuery,
     options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
+    let result: QueryResult = { success: false };
+    const failed = await this.onConnection(
+      database,
+      options,
+      async connection => {
+        const [rows, fields] = await connection.execute(query as string);
+        const normalizedRows = Array.isArray(rows)
+          ? rows.map(row => normalizeMySQLValue(row))
+          : rows;
+        result = {
+          success: true,
+          data: normalizedRows,
+          fields: normalizeFields(fields) as QueryResult["fields"],
+        };
+        return false;
+      },
+    );
+    return failed ?? result;
+  }
+
+  /**
+   * Run `query` ONCE and hand its rows to `onBatch` in `batchSize` batches
+   * as the server sends them (mysql2's query().stream(), which pauses the
+   * socket while a batch is written). Never pages with LIMIT/OFFSET: without
+   * an ORDER BY, separate queries may return rows in different orders, so
+   * offset pages overlap and skip rows. A throw from `onBatch` stops the read
+   * and the connection is destroyed, not pooled.
+   */
+  async executeStreamingQuery(
+    database: IDatabaseConnection,
+    query: string,
+    options: StreamingQueryOptions & QueryExecuteOptions,
+  ): Promise<StreamingQueryResult> {
+    const batchSize = Math.max(1, Math.floor(options.batchSize || 1000));
+    let totalRows = 0;
+    const failed = await this.onConnection(
+      database,
+      options,
+      async connection => {
+        // The promise wrapper's underlying callback connection streams.
+        const core = connection.connection as unknown as CoreConnection;
+        const stream = core.query(query).stream({ highWaterMark: batchSize });
+        let batch: Record<string, unknown>[] = [];
+        try {
+          for await (const row of stream) {
+            batch.push(normalizeMySQLValue(row) as Record<string, unknown>);
+            if (batch.length >= batchSize) {
+              await options.onBatch(batch);
+              totalRows += batch.length;
+              batch = [];
+            }
+          }
+        } catch (error) {
+          stream.destroy();
+          // Rows still in flight belong to this statement: never pool it.
+          (error as { destroyConnection?: boolean }).destroyConnection = true;
+          throw error;
+        }
+        if (batch.length > 0) {
+          await options.onBatch(batch);
+          totalRows += batch.length;
+        }
+        return false;
+      },
+    );
+    return failed
+      ? { success: false, totalRows, error: failed.error }
+      : { success: true, totalRows };
+  }
+
+  /**
+   * Check out a pooled connection, make it cancellable, open a read-only
+   * transaction when asked, and run `use` on it. Returns a failed result, or
+   * undefined when `use` succeeded.
+   */
+  private async onConnection(
+    database: IDatabaseConnection,
+    options: QueryExecuteOptions | undefined,
+    use: (connection: mysql.PoolConnection) => Promise<boolean>,
+  ): Promise<QueryResult | undefined> {
     const signal = options?.signal;
     const targetDatabase =
       options?.databaseName || database.connection.database;
@@ -240,6 +323,7 @@ export class MySQLEngine implements QueryEngine {
       });
 
       let readOnlyTransactionStarted = false;
+      let destroy = false;
       // Cancellable by executionId (cancelQuery) and by the signal alone.
       const untrack = this.trackQuery(
         database,
@@ -257,26 +341,24 @@ export class MySQLEngine implements QueryEngine {
           await connection.query("START TRANSACTION READ ONLY");
           readOnlyTransactionStarted = true;
         }
-        const [rows, fields] = await connection.execute(query as string);
+        await use(connection);
         if (readOnlyTransactionStarted) {
           await connection.commit();
           readOnlyTransactionStarted = false;
         }
-        const normalizedRows = Array.isArray(rows)
-          ? rows.map(row => normalizeMySQLValue(row))
-          : rows;
-        return {
-          success: true,
-          data: normalizedRows,
-          fields: normalizeFields(fields) as QueryResult["fields"],
-        };
+        return undefined;
+      } catch (error) {
+        destroy =
+          (error as { destroyConnection?: boolean } | null)
+            ?.destroyConnection === true;
+        throw error;
       } finally {
-        if (readOnlyTransactionStarted) {
+        if (readOnlyTransactionStarted && !destroy) {
           await connection.rollback().catch(() => undefined);
         }
         // A connection a KILL was aimed at is retired, not pooled: a KILL
         // still in flight must not land on the next query it runs.
-        if (untrack()) connection.destroy();
+        if (untrack() || destroy) connection.destroy();
         else connection.release();
       }
     } catch (error) {
