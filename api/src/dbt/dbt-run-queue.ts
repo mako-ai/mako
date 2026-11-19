@@ -7,7 +7,9 @@
  * staging job no longer waits behind a 40-minute nightly build. Every other
  * run uses the default lane. Two Inngest concurrency locks enforce it: one
  * keyed on `<projectId>:<lane>`, one keyed on `job:<jobId>` (a run without a
- * job holds `run:<runId>`, which locks nothing else).
+ * job holds `run:<runId>`, which locks nothing else). `claimDbtRunSlot`
+ * checks the same two slots in Mongo before a run starts, so a lapse of the
+ * Inngest locks never starts a second run.
  *
  * A run triggered while another run of its lane holds the slot sits in
  * "queued" with no other signal, so a caller polling it cannot tell "behind a
@@ -160,6 +162,82 @@ export function dbtRunFallbackQueueKeys(event: {
   };
 }
 
+/**
+ * Mongo filter for the runs holding the slot `run` needs: a running run of
+ * its project lane, or a running run of its own job in the other lane. These
+ * are the two Inngest concurrency locks, read from the runs collection.
+ */
+export function dbtRunSlotHolderFilter(run: {
+  _id: Types.ObjectId;
+  projectId: Types.ObjectId;
+  jobId?: Types.ObjectId | null;
+  lane?: DbtRunLane | null;
+}): Record<string, unknown> {
+  const laneFilter = dbtRunLaneFilter(run.lane);
+  return {
+    projectId: run.projectId,
+    status: "running",
+    _id: { $ne: run._id },
+    ...(run.jobId ? { $or: [laneFilter, { jobId: run.jobId }] } : laneFilter),
+  };
+}
+
+export type DbtRunSlotClaim =
+  | { state: "claimed"; run: IDbtRun }
+  | { state: "busy"; holderId: string }
+  | { state: "gone" };
+
+/**
+ * Move a queued run to "running" only when no other run holds its slot.
+ *
+ * The Inngest locks alone let 8 runs of one project lane run together on
+ * 19 Nov 2026: the deploy of #1424 changed the lock keys, and runs created
+ * around the switch ran under no lock. This check reads the runs collection,
+ * so it holds whatever Inngest does with its keys.
+ *
+ * Two runs can claim at the same moment. Each re-reads after its write and
+ * steps back to "queued" when it sees another holder, so at most one keeps
+ * the slot. Both may step back. The caller waits and tries again.
+ */
+export async function claimDbtRunSlot(
+  runId: Types.ObjectId,
+  now: Date = new Date(),
+): Promise<DbtRunSlotClaim> {
+  const queued = await DbtRun.findOne({ _id: runId, status: "queued" })
+    .select("_id projectId jobId lane")
+    .lean();
+  if (!queued) return { state: "gone" };
+
+  const holderOf = async () =>
+    queued.projectId
+      ? DbtRun.findOne(
+          dbtRunSlotHolderFilter({ ...queued, projectId: queued.projectId }),
+        )
+          .select("_id")
+          .lean()
+      : null;
+
+  const before = await holderOf();
+  if (before) return { state: "busy", holderId: before._id.toString() };
+
+  const claimed = await DbtRun.findOneAndUpdate(
+    { _id: runId, status: "queued" },
+    { $set: { status: "running", startedAt: now } },
+    { returnDocument: "after" },
+  ).lean();
+  if (!claimed) return { state: "gone" };
+
+  const after = await holderOf();
+  if (after) {
+    await DbtRun.updateOne(
+      { _id: runId, status: "running" },
+      { $set: { status: "queued" }, $unset: { startedAt: 1 } },
+    );
+    return { state: "busy", holderId: after._id.toString() };
+  }
+  return { state: "claimed", run: claimed as IDbtRun };
+}
+
 /** Runs listed in `queuedAhead`; the count stays exact past it. */
 const MAX_LISTED_AHEAD = 5;
 /** Completed runs of the blocking job sampled for its typical duration. */
@@ -240,12 +318,7 @@ export async function describeQueuedRun(
   const [running, ahead] = await Promise.all([
     // The run holding this lane's slot. A job run also waits on a run of the
     // same job in the other lane (the per-job lock).
-    DbtRun.findOne({
-      projectId: run.projectId,
-      status: "running",
-      _id: { $ne: run._id },
-      ...(run.jobId ? { $or: [laneFilter, { jobId: run.jobId }] } : laneFilter),
-    })
+    DbtRun.findOne(dbtRunSlotHolderFilter({ ...run, projectId: run.projectId }))
       .sort({ startedAt: 1 })
       .select("_id jobId trigger commands createdAt startedAt")
       .lean(),

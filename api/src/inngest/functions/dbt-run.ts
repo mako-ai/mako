@@ -19,6 +19,7 @@ import {
   DbtProject,
   DbtRun,
   type DbtRunStatus,
+  type IDbtRun,
 } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
 import { parseDbtCommand } from "../../dbt/commands";
@@ -47,7 +48,10 @@ import {
   triggerDbtJobRun,
 } from "../../dbt/dbt-run.service";
 import { resolveProdLikeEnvironmentName } from "../../dbt/dbt-environments.service";
-import { dbtRunFallbackQueueKeys } from "../../dbt/dbt-run-queue";
+import {
+  claimDbtRunSlot,
+  dbtRunFallbackQueueKeys,
+} from "../../dbt/dbt-run-queue";
 import {
   registerActiveRun,
   unregisterActiveRun,
@@ -195,6 +199,15 @@ async function readArtifactBuffer(
   }
 }
 
+/** Pause between two claims of a busy project lane. */
+export const DBT_RUN_SLOT_WAIT = "1m";
+/**
+ * 400 claims one minute apart outlast the sweeper's 6 h queued limit, so a
+ * waiting run ends through the sweeper. 2 steps per claim stay under
+ * Inngest's 1,000 steps per run.
+ */
+export const DBT_RUN_SLOT_MAX_CLAIMS = 400;
+
 export const dbtRunExecutorFunction = inngest.createFunction(
   {
     id: "dbt-run-executor",
@@ -253,14 +266,25 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       }
     }
 
-    const runInfo = await step.run("mark-running", async () => {
-      const run = await DbtRun.findOneAndUpdate(
-        { _id: runObjectId, status: "queued" },
-        { $set: { status: "running", startedAt: new Date() } },
-        { returnDocument: "after" },
-      ).lean();
-      if (!run) return null;
-
+    // Start only when no other run holds the project lane (or this job's
+    // slot). Inngest's concurrency keys normally guarantee it, but the deploy
+    // that changed those keys let 8 runs of one lane start together on
+    // 19 Nov 2026. A busy slot means a wait here, then another claim. A run
+    // still queued past the sweeper's 6 h limit turns "error", and the next
+    // claim finds it gone.
+    const markRunning = async (attempt: number) =>
+      step.run(
+        attempt === 0 ? "mark-running" : `mark-running-${attempt}`,
+        async () => {
+          const claim = await claimDbtRunSlot(runObjectId);
+          if (claim.state === "busy") {
+            return { busy: true as const, holderId: claim.holderId };
+          }
+          if (claim.state === "gone") return null;
+          return { busy: false as const, info: await describeRun(claim.run) };
+        },
+      );
+    const describeRun = async (run: IDbtRun) => {
       // Slim CI: resolve the project's last prod manifest so the executor can
       // run `--defer --state`. Applies to (a) scheduled/deploy jobs that opt in
       // via deferToProduction, (b) PR CI runs (unless the project's CI config
@@ -306,10 +330,32 @@ export const dbtRunExecutorFunction = inngest.createFunction(
           : null,
         deferStateKey,
       };
-    });
+    };
+
+    type ClaimResult = Awaited<ReturnType<typeof markRunning>>;
+    let runInfo: Extract<ClaimResult, { busy: false }>["info"] | null = null;
+    for (let attempt = 0; attempt < DBT_RUN_SLOT_MAX_CLAIMS; attempt++) {
+      if (attempt > 0) {
+        await step.sleep(`wait-for-lane-${attempt}`, DBT_RUN_SLOT_WAIT);
+      }
+      const claim = await markRunning(attempt);
+      if (!claim) break;
+      if (!claim.busy) {
+        runInfo = claim.info;
+        break;
+      }
+      if (attempt === 0) {
+        logger.warn("dbt run waits: another run holds its project lane", {
+          runId: data.runId,
+          projectId: data.projectId,
+          holderId: claim.holderId,
+        });
+      }
+    }
 
     if (!runInfo) {
-      // Already cancelled or duplicate delivery. A run cancelled while queued
+      // Already cancelled, duplicate delivery, or the lane stayed busy past
+      // every claim (the sweeper fails it at 6 h). A run cancelled while queued
       // still owes the app deploys it held (a no-op unless it is terminal).
       await step.run("release-held-deploys", () =>
         releaseHeldDeploys(runObjectId),
