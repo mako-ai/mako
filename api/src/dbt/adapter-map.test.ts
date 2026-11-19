@@ -57,13 +57,19 @@ describe("renderDbtProfile secret isolation", () => {
   );
 
   it("bigquery writes the service-account JSON to a keyfile, not profiles.yml", () => {
-    const sa = JSON.stringify({ project_id: "my-proj", private_key: "PK" });
+    const sa = JSON.stringify({
+      type: "service_account",
+      project_id: "my-proj",
+      client_email: "svc@my-proj.iam.gserviceaccount.com",
+      private_key:
+        "-----BEGIN PRIVATE KEY-----\nPK\n-----END PRIVATE KEY-----\n",
+    });
     const { profilesYml, secretEnv, keyfiles } = renderDbtProfile(
       connection("bigquery", { service_account_json: sa }),
       env,
     );
     // Private key never appears in the rendered profile…
-    expect(profilesYml).not.toContain("PK");
+    expect(profilesYml).not.toContain("BEGIN PRIVATE KEY");
     // …the project id is surfaced and the keyfile is referenced via env_var.
     expect(profilesYml).toContain("my-proj");
     expect(profilesYml).toContain("DBT_BQ_KEYFILE");
@@ -71,7 +77,11 @@ describe("renderDbtProfile secret isolation", () => {
     expect(secretEnv.DBT_SECRET_BQ_KEYFILE_JSON).toBeUndefined();
     // …it is written to a keyfile referenced by env_var('DBT_BQ_KEYFILE').
     const keyfile = keyfiles.find(k => k.envVar === "DBT_BQ_KEYFILE");
-    expect(keyfile?.content).toBe(sa);
+    // Only the validated fields, with Google's fixed token endpoint.
+    expect(JSON.parse(keyfile?.content ?? "{}")).toEqual({
+      ...JSON.parse(sa),
+      token_uri: "https://oauth2.googleapis.com/token",
+    });
   });
 
   it("emits the correct adapter package per type", () => {

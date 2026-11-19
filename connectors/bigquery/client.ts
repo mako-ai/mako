@@ -28,14 +28,113 @@ export interface ServiceAccount {
   token_uri: string;
 }
 
-/** `getServiceAccount`: the JSON as a string, or already an object. */
-export function serviceAccount(raw: unknown): ServiceAccount {
+const ACCEPTED_TOKEN_URIS = new Set([
+  DEFAULT_TOKEN_URI,
+  "https://accounts.google.com/o/oauth2/token",
+]);
+
+/** Fields only a non-service-account Google credential carries. */
+const FORBIDDEN_FIELDS = [
+  "credential_source",
+  "token_url",
+  "service_account_impersonation_url",
+  "service_account_impersonation",
+  "executable",
+  "subject_token_type",
+  "audience",
+  "workforce_pool_user_project",
+  "source_credentials",
+  "refresh_token",
+];
+
+/** The message a refused credential carries; never the credential. */
+export const CREDENTIAL_TYPE_NOT_ALLOWED = "credential type not allowed";
+
+/** True for a loopback host, the box's own local server. */
+function isLoopback(url: unknown): boolean {
+  try {
+    const { hostname } = new URL(String(url));
+    return hostname === "127.0.0.1" || hostname === "localhost";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Google's endpoints. A loopback token endpoint passes only when the API
+ * base is loopback too: the local server a test or emulator runs, inside a
+ * box that holds no other credential.
+ */
+function tokenUriAccepted(uri: string, apiBaseUrl: unknown): boolean {
+  if (ACCEPTED_TOKEN_URIS.has(uri)) return true;
+  return isLoopback(uri) && isLoopback(apiBaseUrl);
+}
+
+/**
+ * Why `raw` (the JSON as a string, or an object) is not a plain
+ * service-account key, or null. Mirrors `checkServiceAccount` in
+ * `api/src/connections/google-service-account.ts`.
+ */
+export function serviceAccountRefusal(
+  raw: unknown,
+  apiBaseUrl?: unknown,
+): string | null {
+  let obj: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      return "Service account JSON must be valid JSON";
+    }
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+    return "Service account JSON must be a JSON object";
+  }
+  const key = obj as Record<string, unknown>;
+  if (key.type !== "service_account") {
+    return `Google ${CREDENTIAL_TYPE_NOT_ALLOWED}: only service_account keys are accepted`;
+  }
+  if (FORBIDDEN_FIELDS.some(field => field in key)) {
+    return `Google ${CREDENTIAL_TYPE_NOT_ALLOWED}: the key has fields a service_account key does not`;
+  }
+  if (
+    key.token_uri !== undefined &&
+    (typeof key.token_uri !== "string" ||
+      !tokenUriAccepted(key.token_uri, apiBaseUrl))
+  ) {
+    return `Google ${CREDENTIAL_TYPE_NOT_ALLOWED}: token_uri must be Google's token endpoint`;
+  }
+  if (
+    typeof key.client_email !== "string" ||
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(key.client_email.trim())
+  ) {
+    return "Service account JSON needs a client_email that is an email address";
+  }
+  if (
+    typeof key.private_key !== "string" ||
+    !/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(key.private_key)
+  ) {
+    return "Service account JSON needs a private_key in PEM form";
+  }
+  return null;
+}
+
+/**
+ * `getServiceAccount`: the JSON as a string, or already an object. Refused
+ * with an Error that names no value unless it is a plain service_account key.
+ */
+export function serviceAccount(
+  raw: unknown,
+  apiBaseUrl?: unknown,
+): ServiceAccount {
+  const refusal = serviceAccountRefusal(raw, apiBaseUrl);
+  if (refusal) throw new Error(refusal);
   const obj = (typeof raw === "string" ? JSON.parse(raw) : raw) as Record<
     string,
     string
   >;
   return {
-    client_email: obj.client_email,
+    client_email: obj.client_email.trim(),
     private_key: obj.private_key,
     token_uri: obj.token_uri || DEFAULT_TOKEN_URI,
   };

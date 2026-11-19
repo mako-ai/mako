@@ -6,6 +6,10 @@ import {
   FetchState,
   type IncrementalCapabilities,
 } from "../base/BaseConnector";
+import {
+  requireServiceAccount,
+  serviceAccountConfigRefusal,
+} from "../../connections/google-service-account";
 import axios, { AxiosInstance } from "axios";
 import { bigQueryJobLabels } from "../../services/bigquery-labels";
 import * as crypto from "crypto";
@@ -139,18 +143,8 @@ export class BigQueryConnector extends BaseConnector {
     } else if (
       typeof this.sourceConnection.config.service_account_json === "string"
     ) {
-      try {
-        const sa = JSON.parse(
-          this.sourceConnection.config.service_account_json,
-        );
-        if (!sa.client_email || !sa.private_key) {
-          errors.push(
-            "Service account JSON must include client_email and private_key",
-          );
-        }
-      } catch {
-        errors.push("Service account JSON must be valid JSON");
-      }
+      const refusal = serviceAccountConfigRefusal(this.sourceConnection.config);
+      if (refusal) errors.push(refusal);
     }
 
     if (
@@ -165,12 +159,8 @@ export class BigQueryConnector extends BaseConnector {
 
   private getServiceAccount(): ServiceAccount {
     const raw = this.sourceConnection.config.service_account_json;
-    const obj = typeof raw === "string" ? JSON.parse(raw) : raw;
-    return {
-      client_email: obj.client_email,
-      private_key: obj.private_key,
-      token_uri: obj.token_uri || "https://oauth2.googleapis.com/token",
-    };
+    const { client_email, private_key, token_uri } = requireServiceAccount(raw);
+    return { client_email, private_key, token_uri };
   }
 
   private base64url(input: Buffer | string): string {

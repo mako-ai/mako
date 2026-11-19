@@ -19,6 +19,153 @@ import { JWT } from "google-auth-library";
 export interface ServiceAccountKey {
   client_email: string;
   private_key: string;
+  project_id?: string;
+  /** Google's token endpoint (the key's own only when it names Google's). */
+  token_uri: string;
+}
+
+/** The only token endpoint a key may use; always the one signed against. */
+export const GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token";
+const ACCEPTED_TOKEN_URIS = new Set([
+  GOOGLE_TOKEN_URI,
+  "https://accounts.google.com/o/oauth2/token",
+]);
+
+/**
+ * Fields only a non-service-account credential carries. google-auth-library
+ * follows them (files, URLs, executables, impersonation), so a key holding
+ * any of them is refused whatever its `type` says.
+ */
+const FORBIDDEN_FIELDS = [
+  "credential_source",
+  "token_url",
+  "service_account_impersonation_url",
+  "service_account_impersonation",
+  "executable",
+  "subject_token_type",
+  "audience",
+  "workforce_pool_user_project",
+  "source_credentials",
+  "refresh_token",
+  "quota_project_id_url",
+] as const;
+
+/**
+ * Google's endpoints, plus a loopback address under NODE_ENV=test (the
+ * BigQuery parity harness signs against a local token server).
+ */
+function tokenUriAccepted(uri: string): boolean {
+  if (ACCEPTED_TOKEN_URIS.has(uri)) return true;
+  if (process.env.NODE_ENV !== "test") return false;
+  try {
+    const { hostname } = new URL(uri);
+    return hostname === "127.0.0.1" || hostname === "localhost";
+  } catch {
+    return false;
+  }
+}
+
+/** The message every refused credential carries; never the credential. */
+export const CREDENTIAL_TYPE_NOT_ALLOWED = "credential type not allowed";
+
+export type ServiceAccountCheck =
+  { ok: true; key: ServiceAccountKey } | { ok: false; reason: string };
+
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PEM = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
+
+/**
+ * Checks a stored or pasted Google key (a JSON string or an object) and
+ * returns only what Mako signs with. Only `type: "service_account"` passes.
+ * The reason never repeats a value from the key.
+ */
+export function checkServiceAccount(raw: unknown): ServiceAccountCheck {
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    if (!raw.trim()) {
+      return {
+        ok: false,
+        reason: "Paste the service account's JSON key file.",
+      };
+    }
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return {
+        ok: false,
+        reason: "The service account key must be the JSON key file.",
+      };
+    }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { ok: false, reason: "Paste the service account's JSON key file." };
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (obj.type !== "service_account") {
+    return {
+      ok: false,
+      reason: `Google ${CREDENTIAL_TYPE_NOT_ALLOWED}: only service_account keys are accepted.`,
+    };
+  }
+  if (FORBIDDEN_FIELDS.some(field => field in obj)) {
+    return {
+      ok: false,
+      reason: `Google ${CREDENTIAL_TYPE_NOT_ALLOWED}: the key has fields a service_account key does not.`,
+    };
+  }
+  if (
+    obj.token_uri !== undefined &&
+    (typeof obj.token_uri !== "string" || !tokenUriAccepted(obj.token_uri))
+  ) {
+    return {
+      ok: false,
+      reason: `Google ${CREDENTIAL_TYPE_NOT_ALLOWED}: token_uri must be Google's token endpoint.`,
+    };
+  }
+  const { client_email, private_key, project_id } = obj;
+  if (typeof client_email !== "string" || !EMAIL.test(client_email.trim())) {
+    return {
+      ok: false,
+      reason:
+        "The service account key needs a client_email that is an email address.",
+    };
+  }
+  if (typeof private_key !== "string" || !PEM.test(private_key)) {
+    return {
+      ok: false,
+      reason: "The service account key needs a private_key in PEM form.",
+    };
+  }
+  return {
+    ok: true,
+    key: {
+      client_email: client_email.trim(),
+      private_key,
+      token_uri:
+        typeof obj.token_uri === "string" ? obj.token_uri : GOOGLE_TOKEN_URI,
+      ...(typeof project_id === "string" && project_id ? { project_id } : {}),
+    },
+  };
+}
+
+/** The validated key, or an Error that names the problem and no value. */
+export function requireServiceAccount(raw: unknown): ServiceAccountKey {
+  const checked = checkServiceAccount(raw);
+  if (!checked.ok) throw new Error(checked.reason);
+  return checked.key;
+}
+
+/**
+ * Why a connection config's `service_account_json` cannot be saved, or null
+ * when it is empty or a plain service-account key. For the save routes.
+ */
+export function serviceAccountConfigRefusal(
+  config: Record<string, unknown> | null | undefined,
+): string | null {
+  const raw = config?.service_account_json;
+  if (raw === undefined || raw === null || raw === "") return null;
+  const checked = checkServiceAccount(raw);
+  return checked.ok ? null : checked.reason;
 }
 
 /** What a token is for. */
@@ -32,20 +179,9 @@ export const DEFAULT_GOOGLE_SCOPE =
 
 /** A stored key as JSON, or null when it is not a service-account key. */
 export function parseServiceAccountKey(raw: unknown): ServiceAccountKey | null {
-  if (typeof raw !== "string" || !raw.trim()) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== "object") return null;
-  const { client_email, private_key } = parsed as Record<string, unknown>;
-  if (typeof client_email !== "string" || !client_email.trim()) return null;
-  if (typeof private_key !== "string" || !private_key.includes("PRIVATE KEY")) {
-    return null;
-  }
-  return { client_email: client_email.trim(), private_key };
+  if (typeof raw !== "string") return null;
+  const checked = checkServiceAccount(raw);
+  return checked.ok ? checked.key : null;
 }
 
 /** Why `raw` cannot be saved as a service-account key, or null. */
@@ -53,9 +189,42 @@ export function serviceAccountKeyRefusal(raw: unknown): string | null {
   if (typeof raw !== "string" || !raw.trim()) {
     return "Paste the service account's JSON key file.";
   }
-  return parseServiceAccountKey(raw)
-    ? null
-    : "The service account key must be the JSON key file, with client_email and private_key.";
+  const checked = checkServiceAccount(raw);
+  return checked.ok ? null : checked.reason;
+}
+
+/**
+ * The `credentials` option for Google Cloud client libraries (BigQuery,
+ * Storage): the validated email and key, nothing else. The raw JSON never
+ * reaches a library, which would follow `type`, `credential_source` and
+ * `token_url` from it.
+ */
+export function googleClientCredentials(raw: unknown): {
+  client_email: string;
+  private_key: string;
+} {
+  const { client_email, private_key } = requireServiceAccount(raw);
+  return { client_email, private_key };
+}
+
+/**
+ * Tokens for Google APIs built from a validated key only, never from raw
+ * JSON. The one place in the API that constructs a google-auth client from
+ * tenant input.
+ */
+export function googleJwtClient(
+  raw: unknown,
+  scopes: string[],
+  options: { subject?: string } = {},
+): JWT {
+  const key = requireServiceAccount(raw);
+  return new JWT({
+    email: key.client_email,
+    key: key.private_key,
+    scopes,
+    ...(key.project_id ? { projectId: key.project_id } : {}),
+    ...(options.subject ? { subject: options.subject } : {}),
+  });
 }
 
 type Minter = (
