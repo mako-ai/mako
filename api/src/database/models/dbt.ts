@@ -425,6 +425,10 @@ export interface IDbtRun extends Document {
     /** The commit of main the push deployed. */
     sha: string;
     releasedAt?: Date;
+    /** The 60-minute cap released them while the run was still going. */
+    releasedEarly?: boolean;
+    /** The run then succeeded: the deploys were requested once more. */
+    rereleasedAt?: Date;
   };
   startedAt?: Date;
   completedAt?: Date;
@@ -544,6 +548,8 @@ const DbtRunSchema = new Schema<IDbtRun>(
           appIds: { type: [String], default: [] },
           sha: { type: String, required: true },
           releasedAt: { type: Date },
+          releasedEarly: { type: Boolean },
+          rereleasedAt: { type: Date },
         },
         { _id: false },
       ),

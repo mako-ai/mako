@@ -269,12 +269,28 @@ export async function holdDeploysForDbtRun(input: {
 
 const TERMINAL: DbtRunStatus[] = ["success", "error", "cancelled"];
 
+type HeldDeploys = {
+  workspaceId: string;
+  appIds: string[];
+  sha: string;
+};
+
 /**
  * A dbt run ended: request the app deploys it held, once. Called from every
  * path that finalizes a run (executor, cancel finalizer, sweeper, queue
  * watchdog) and by the 60-minute cap; the first caller claims `releasedAt`
- * atomically, so the others are no-ops. A failed request is logged and unclaimed; the hourly reconcile
- * deploys the apps within the hour.
+ * atomically, so the others are no-ops.
+ *
+ * The cap can fire while the run is still going: those deploys then read the
+ * OLD prod tables and may fail at bindings, and the reconcile backs off from
+ * them for 6 hours. So a cap release of a live run is marked `releasedEarly`,
+ * and when that run later ends in success the terminal path claims
+ * `rereleasedAt` and requests the same deploys once more, against the
+ * rebuilt prod. After an error or a cancel prod did not change: no second
+ * request.
+ *
+ * A failed request is logged and unclaimed; the hourly reconcile deploys the
+ * apps within the hour.
  */
 export async function releaseDeploysAfterRun(
   runId: Types.ObjectId | string,
@@ -282,6 +298,8 @@ export async function releaseDeploysAfterRun(
   opts: { anyStatus?: boolean } = {},
 ): Promise<string[]> {
   const _id = typeof runId === "string" ? new Types.ObjectId(runId) : runId;
+  // One atomic write: claim the release and record whether the run was
+  // still going at that instant (the cap path only).
   const claimed = await DbtRun.findOneAndUpdate(
     {
       _id,
@@ -289,13 +307,64 @@ export async function releaseDeploysAfterRun(
       deploysAfterRun: { $exists: true },
       "deploysAfterRun.releasedAt": { $exists: false },
     },
-    { $set: { "deploysAfterRun.releasedAt": new Date() } },
+    [
+      {
+        $set: {
+          "deploysAfterRun.releasedAt": "$$NOW",
+          ...(opts.anyStatus
+            ? {
+                "deploysAfterRun.releasedEarly": {
+                  $not: [{ $in: ["$status", TERMINAL] }],
+                },
+              }
+            : {}),
+        },
+      },
+    ],
+    { returnDocument: "after", updatePipeline: true },
+  )
+    .select("status deploysAfterRun")
+    .lean();
+  if (claimed?.deploysAfterRun) {
+    return requestHeldDeploys(_id, claimed.deploysAfterRun, {
+      runStatus: claimed.status,
+      claim: "releasedAt",
+      early: claimed.deploysAfterRun.releasedEarly === true,
+    });
+  }
+  if (opts.anyStatus) return [];
+
+  // Released early by the cap, and the run has now built prod: once more.
+  const again = await DbtRun.findOneAndUpdate(
+    {
+      _id,
+      status: "success",
+      "deploysAfterRun.releasedEarly": true,
+      "deploysAfterRun.rereleasedAt": { $exists: false },
+    },
+    { $set: { "deploysAfterRun.rereleasedAt": new Date() } },
     { returnDocument: "after" },
   )
     .select("status deploysAfterRun")
     .lean();
-  const held = claimed?.deploysAfterRun;
-  if (!held || held.appIds.length === 0) return [];
+  if (!again?.deploysAfterRun) return [];
+  return requestHeldDeploys(_id, again.deploysAfterRun, {
+    runStatus: again.status,
+    claim: "rereleasedAt",
+    early: false,
+  });
+}
+
+async function requestHeldDeploys(
+  _id: Types.ObjectId,
+  held: HeldDeploys,
+  ctx: {
+    runStatus: DbtRunStatus;
+    claim: "releasedAt" | "rereleasedAt";
+    early: boolean;
+  },
+): Promise<string[]> {
+  if (held.appIds.length === 0) return [];
   try {
     const [
       { requestAppDeploys },
@@ -316,7 +385,9 @@ export async function releaseDeploysAfterRun(
     logger.info("Released app deploys held for a dbt build", {
       workspaceId: held.workspaceId,
       runId: _id.toString(),
-      runStatus: claimed.status,
+      runStatus: ctx.runStatus,
+      claim: ctx.claim,
+      ...(ctx.early ? { releasedEarly: true } : {}),
       sha,
       apps: held.appIds.length,
     });
@@ -324,11 +395,19 @@ export async function releaseDeploysAfterRun(
   } catch (error) {
     await DbtRun.updateOne(
       { _id },
-      { $unset: { "deploysAfterRun.releasedAt": 1 } },
+      {
+        $unset: {
+          [`deploysAfterRun.${ctx.claim}`]: 1,
+          ...(ctx.claim === "releasedAt"
+            ? { "deploysAfterRun.releasedEarly": 1 }
+            : {}),
+        },
+      },
     ).catch(() => undefined);
     logger.warn("Could not release app deploys held for a dbt build", {
       workspaceId: held.workspaceId,
       runId: _id.toString(),
+      claim: ctx.claim,
       error: error instanceof Error ? error.message : String(error),
     });
     return [];
