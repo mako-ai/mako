@@ -183,6 +183,8 @@ button, input, select, textarea { font-family: inherit; }
   padding: 8px 10px; font-size: 12px; line-height: 1.4; white-space: nowrap;
 }
 .mk-tip-title { font-weight: 600; margin-bottom: 4px; }
+/* `note` (2.30): a muted line under the table, e.g. a click hint. */
+.mk-tip-note { margin-top: 6px; font-size: 11px; color: var(--muted-foreground); white-space: normal; }
 .mk-tip table { border-collapse: collapse; }
 .mk-tip thead th { color: var(--muted-foreground); font-weight: 500; text-align: right; padding-left: 12px; }
 .mk-tip tbody th { text-align: left; font-weight: 400; padding-top: 2px; }
@@ -320,6 +322,35 @@ button, input, select, textarea { font-family: inherit; }
 .mk-dt-table tfoot td.mk-dt-pin { z-index: 3; box-shadow: inset -1px 0 0 var(--border), inset 0 1px 0 var(--border); }
 .mk-dt-table tfoot tr.mk-dt-total.mk-dt-click:hover > td,
 .mk-dt-table tfoot tr.mk-dt-total.mk-dt-click:focus-visible > td { background: color-mix(in srgb, var(--muted) 50%, var(--card)); }
+/* Section rows (2.30): one cell across the columns, a small muted heading
+ * on a tinted band (agent-acquisition-funnel's "Inbound" / "Outbound"). */
+.mk-dt-table tbody tr.mk-dt-section-row > td,
+.mk-dt-table tbody tr.mk-dt-section-row:hover > td {
+  padding: 0; background: color-mix(in srgb, var(--muted) 40%, var(--card));
+}
+.mk-dt-section-label {
+  position: sticky; left: 0; width: max-content; max-width: 100%; padding: 12px 10px 4px;
+  font-size: 11px; font-weight: 600; color: var(--muted-foreground); white-space: normal;
+}
+/* `loading` (2.30): shadcn's Skeleton (bg-accent animate-pulse rounded-md)
+ * in each cell while there are no rows; rows on screen dim instead. */
+.mk-dt-skeleton { display: block; height: 14px; border-radius: calc(var(--radius, .625rem) - 2px); background: var(--accent); animation: mk-skeleton-pulse 2s cubic-bezier(.4, 0, .6, 1) infinite; }
+.mk-dt-table .mk-dt-num .mk-dt-skeleton { margin-left: auto; }
+.mk-dt-table .mk-dt-center .mk-dt-skeleton { margin-inline: auto; }
+.mk-dt-table tbody tr.mk-dt-skeleton-row:hover > td { background: var(--card); }
+@keyframes mk-skeleton-pulse { 50% { opacity: .5; } }
+.mk-dt-busy { opacity: .5; transition: opacity .15s; }
+/* Column resizing (2.30): a drag handle on each header's right edge, after
+ * idx-portal's: a 2px line shows on hover, in brand while dragging. */
+.mk-dt-table--grouped thead th.mk-dt-resizable:not(.mk-dt-pin) { position: relative; }
+.mk-dt-resizer { position: absolute; top: 0; right: 0; bottom: 0; z-index: 4; width: 8px; cursor: col-resize; touch-action: none; user-select: none; }
+.mk-dt-resizer::after { content: ""; position: absolute; top: 8px; bottom: 8px; right: 0; width: 2px; border-radius: 1px; background: transparent; }
+.mk-dt-table th:hover > .mk-dt-resizer::after { background: var(--border); }
+.mk-dt-table th > .mk-dt-resizer:hover::after, .mk-dt-resizer--active::after { background: var(--brand); }
+body.mk-dt-col-resizing { cursor: col-resize; user-select: none; }
+/* "onEnd": the handle travels past its header while dragging, so that header
+ * stops clipping and paints above its neighbours until release. */
+.mk-dt-table thead th:has(> .mk-dt-resizer--active) { overflow: visible; z-index: 5; }
 .mk-dt-foot {
   flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;
   padding: 8px 12px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground);
@@ -347,6 +378,8 @@ button, input, select, textarea { font-family: inherit; }
   transition: background .15s var(--mk-ease), border-color .15s var(--mk-ease);
 }
 .mk-ms-trigger:hover { background: var(--accent); }
+/* `disabled` (2.30): shadcn Button's disabled look (disabled:pointer-events-none disabled:opacity-50). */
+.mk-ms-trigger:disabled { pointer-events: none; opacity: .5; }
 .mk-ms-trigger:focus-visible { outline: none; }
 .mk-ms-trigger.open, .mk-ms-trigger:focus-visible { border-color: var(--ring); box-shadow: var(--mk-ring-focus); }
 .mk-ms-value { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }

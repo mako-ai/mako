@@ -175,6 +175,8 @@ export interface MultiSelectProps<V extends string = string> {
   locale?: string;
   /** Override single texts on top of the locale (2.29). The explicit props win. */
   labels?: Partial<FilterLabels>;
+  /** Disables the trigger as shadcn's Button does (2.30): half opacity, no pointer, not focusable. An open menu closes. */
+  disabled?: boolean;
   className?: string;
   "aria-label"?: string;
 }
@@ -274,6 +276,8 @@ export interface FreshnessBadgeProps {
   action?: React.ReactNode;
   footer?: React.ReactNode;
   align?: "start" | "end";
+  /** BCP 47 tag (2.30), e.g. "fr-CH": the panel's and the source list's screen-reader names in that language. Default English. */
+  locale?: string;
   className?: string;
 }
 export function FreshnessBadge(props: FreshnessBadgeProps): React.ReactElement;
@@ -295,6 +299,12 @@ export interface RefreshAllButtonProps {
   schedule?: string;
   /** Override the rebuild (tests, custom engines). Default refreshBinding. */
   refresh?: (name: string) => Promise<unknown>;
+  /**
+   * BCP 47 tag (2.30), e.g. "fr-CH": the button, the modal, each source's
+   * state and the finish time in that language (STRINGS[lang].refresh).
+   * Default English, exactly as before. `labels` stays the binding names' map.
+   */
+  locale?: string;
   className?: string;
 }
 export function RefreshAllButton(props: RefreshAllButtonProps): React.ReactElement;
@@ -307,6 +317,8 @@ export interface TooltipRow {
   /** A null or undefined cell shows a muted "–"; "" stays blank. */
   cells: React.ReactNode[];
   key?: string;
+  /** A rule above this row (2.30), e.g. an "Ending MRR" line before the total. Default false. */
+  rule?: boolean;
 }
 export interface TableTooltipProps {
   title?: React.ReactNode;
@@ -320,6 +332,8 @@ export interface TableTooltipProps {
   after?: TooltipRow[];
   /** The value columns' minimum width: "9ch", or px as a number. Default 7ch. */
   colWidth?: number | string;
+  /** A muted line under the table (2.30): a caveat, "Click to list the opportunities". */
+  note?: React.ReactNode;
   className?: string;
 }
 /** The house chart tooltip: a table with swatches, right-aligned numbers and a total row. */
@@ -412,6 +426,21 @@ export interface DataTableColumn<R = any> {
   grow?: boolean;
   /** A growing column's floor; defaults to its `width`. Other columns are exactly `width`. */
   minWidth?: number | string;
+  /** TanStack Table's width in px (2.30): the column's width when `width` is unset, and its start width for resizing. */
+  size?: number;
+  /** The narrowest a drag makes the column, px (2.30, TanStack's). Default 20. */
+  minSize?: number;
+  /** The widest a drag makes the column, px (2.30, TanStack's). Default none. */
+  maxSize?: number;
+  /** false: no resize handle on this column (2.30, TanStack's). Default true under `enableColumnResizing`. */
+  enableResizing?: boolean;
+  /**
+   * A class for each body cell (2.30), from the cell's value and row, e.g. a
+   * heat cell: `(v) => v > 0.5 ? "heat-high" : undefined`. Not on the total row.
+   */
+  cellClassName?: string | ((value: any, row: R) => string | undefined);
+  /** An inline style for each body cell (2.30), e.g. a heat colour from the value. Not on the total row. */
+  cellStyle?: React.CSSProperties | ((value: any, row: R) => React.CSSProperties | undefined);
   /**
    * Default true: the cell stays on one line and ellipsizes at the column's
    * width, the raw value (text or number) as its hover title. false wraps the
@@ -500,6 +529,8 @@ export interface DataTableLabels {
   collapse: (row: any) => string;
   /** A header "i" button's aria-label. Default "About MRR". */
   info: (label: string) => string;
+  /** A column resize handle's hover title (2.30). Default "Drag to resize · double-click to reset". */
+  resizeHint: string;
 }
 /**
  * Which rows show their detail row: `true` for every row, or the open rows'
@@ -507,6 +538,18 @@ export interface DataTableLabels {
  * `ExpandedState`, so one state can drive both.
  */
 export type DataTableExpanded = true | Record<string, boolean>;
+/** TanStack Table's SortingState (2.30). DataTable reads the first entry only. */
+export type SortingState = { id: string; desc: boolean }[];
+/** TanStack Table's PaginationState (2.30): a 0-based page index and the page size. */
+export interface PaginationState {
+  pageIndex: number;
+  pageSize: number;
+}
+/** TanStack Table's ColumnSizingState (2.30): dragged widths in px, by column id. */
+export type ColumnSizingState = Record<string, number>;
+/** TanStack Table's Updater and OnChangeFn. DataTable always passes the next value, never a function. */
+export type Updater<T> = T | ((old: T) => T);
+export type OnChangeFn<T> = (updaterOrValue: Updater<T>) => void;
 /** The English defaults of `DataTableLabels`. */
 export const DATA_TABLE_LABELS: DataTableLabels;
 /** The labels a DataTable uses for a locale (2.29), `labels` on top. */
@@ -609,6 +652,55 @@ export interface DataTableProps<R = any> {
   onTotalRowClick?: (row: R, event: React.SyntheticEvent) => void;
   /** Append the total row to the CSV export. Default false. */
   exportTotalRow?: boolean;
+  /**
+   * Server-side sort (2.30, TanStack's): the rows come sorted, the table
+   * never reorders them. A header click still reports the next sort through
+   * `onSortingChange` / `onSortChange`. Default false.
+   */
+  manualSorting?: boolean;
+  /**
+   * Server-side paging (2.30, TanStack's): `rows` is the current page, shown
+   * as given, and `rowCount` the total behind the footer and the pager.
+   * The built-in CSV export is off (the table holds one page). Default false.
+   */
+  manualPagination?: boolean;
+  /** The total row count for `manualPagination` (TanStack's). Without it the pager knows only the pages so far. */
+  rowCount?: number;
+  /** Controlled sort in TanStack's shape (2.30). Wins over `sort`. */
+  sorting?: SortingState;
+  /** Gets `[{ id, desc }]` on a header click (2.30). A `useState` setter works. */
+  onSortingChange?: OnChangeFn<SortingState>;
+  /** Controlled page and size in TanStack's shape (2.30), 0-based. Wins over `page` and `pageSize`. */
+  pagination?: PaginationState;
+  /** Gets `{ pageIndex, pageSize }` once per page or size change (2.30). A `useState` setter works. */
+  onPaginationChange?: OnChangeFn<PaginationState>;
+  /**
+   * The rows are loading (2.30): with no rows, up to 10 skeleton rows (shadcn's
+   * Skeleton) fill the body; with rows, they dim until the next ones land.
+   * The footer counts `rowCount` meanwhile. Default false.
+   */
+  loading?: boolean;
+  /**
+   * A drag handle on each header's right edge (2.30, TanStack's). A double
+   * click resets the column. Widths clamp to `minSize` / `maxSize`. Pointer
+   * only, as TanStack: no keyboard resize. Default false.
+   */
+  enableColumnResizing?: boolean;
+  /** "onEnd" (TanStack's default): the handle moves and the width changes on release. "onChange": the width follows the pointer. */
+  columnResizeMode?: "onChange" | "onEnd";
+  /** Controlled widths `{ [id]: px }` (2.30); pair with `onColumnSizingChange` to keep them per viewer. */
+  columnSizing?: ColumnSizingState;
+  onColumnSizingChange?: OnChangeFn<ColumnSizingState>;
+  /**
+   * Flags section rows (2.30): each renders one cell across every column, a
+   * heading for the rows after it ("Inbound", "Outbound"). Rows sort inside
+   * their section, and section rows stay out of the pager, the footer
+   * count, the CSV and `totalRow`. A section repeats at the top of a page
+   * its rows continue on.
+   */
+  isSectionRow?: (row: R) => boolean;
+  /** A section row's content. Default the first column's `render` (else `value`) of that row. */
+  renderSection?: (row: R) => React.ReactNode;
   className?: string;
   style?: React.CSSProperties;
 }
@@ -627,10 +719,22 @@ export function defaultColumnWidth(column: Pick<DataTableColumn, "num" | "align"
  * The fixed layout a DataTable renders: each `<col>` width (null for a
  * growing column) and the table's min-width, the sum of the columns.
  */
-export function columnLayout(columns: readonly Pick<DataTableColumn, "id" | "num" | "align" | "date" | "sticky" | "width" | "minWidth" | "grow">[]): {
+export function columnLayout(
+  columns: readonly Pick<DataTableColumn, "id" | "num" | "align" | "date" | "sticky" | "width" | "minWidth" | "grow" | "size">[],
+  sizing?: ColumnSizingState,
+): {
   cols: { id: string; width: string | null }[];
   minWidth: string;
+  /** Set when `sizing` left no growing column: the table is exactly `minWidth` wide. */
+  fixed?: true;
 };
+/** A width after a drag (2.30): start + travel, rounded, within `minSize` (default 20) and `maxSize`. */
+export function resizeWidth(column: Pick<DataTableColumn, "minSize" | "maxSize">, startWidth: number, delta: number): number;
+/** Runs of rows split at each section row (2.30). Rows before the first section run with `section: null`. */
+export function splitSections<R>(rows: readonly R[], isSection: (row: R) => boolean): { section: R | null; rows: R[] }[];
+/** TanStack's SortingState as a DataTable sort (first entry only), and back. */
+export function fromSorting(sorting: SortingState | null | undefined): DataTableSort | null;
+export function toSorting(sort: DataTableSort | null | undefined): SortingState;
 /** A sorted copy: stable, by `value(row)`, empty values (null, "", NaN) last both ways. */
 export function sortRows<R>(rows: readonly R[], columns: readonly DataTableColumn<R>[], sort: DataTableSort | null | undefined): R[];
 /** The sort after a header click: same column flips; a new one starts desc for `num`, else asc. */
