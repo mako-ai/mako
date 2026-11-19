@@ -51,7 +51,7 @@ export interface PeriodPickerProps {
 export function PeriodPicker({ value, onChange, units = ["month", "quarter", "year"], custom = "month", min, max, label: labelProp, locale, labels, presets, className }: PeriodPickerProps) {
   const L = localeStrings("period", locale, labels)
   const label = labelProp ?? L.time
-  const text = periodLabel(value, locale)
+  const text = periodLabel(value, locale, labels)
   const wide = !!(locale || presets?.length)
   const today = todayIso()
   const hi = max ?? today
@@ -166,7 +166,7 @@ function PickerMenu({ value, units, custom, min, max, today, L, locale, presets,
                   on ? "border-brand bg-[color-mix(in_srgb,var(--brand)_8%,transparent)] font-semibold" : "hover:bg-accent",
                 )}
                 onClick={() => onPick(p)}>
-                {periodLabel(p, locale)}{live && <small className="text-[10px] font-normal text-muted-foreground">{L.inProgress}</small>}
+                {periodLabel(p, locale, L)}{live && <small className="text-[10px] font-normal text-muted-foreground">{L.inProgress}</small>}
               </button>
             )
           })}

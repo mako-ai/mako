@@ -78,8 +78,8 @@ const month = (s: string, withYear = true) => `${MON[Number(s.slice(5, 7)) - 1]}
  * With a `locale` (2.29) the month names come from Intl in that language
  * ("nov. 2026", "16.–22. Nov 2026"). A preset reads as its name: "Last 28 days", "28 derniers jours".
  */
-export function periodLabel(p: Period, locale?: string): string {
-  if (p.preset) return presetLabel(p.preset, locale);
+export function periodLabel(p: Period, locale?: string, labels?: Parameters<typeof presetLabel>[2]): string {
+  if (p.preset) return presetLabel(p.preset, locale, labels);
   if (locale) return localLabel(p, locale);
   if (p.unit === "year") return p.from.slice(0, 4);
   if (p.unit === "quarter") return `Q${Math.floor(Number(p.from.slice(5, 7)) / 3) + 1} ${p.from.slice(0, 4)}`;
