@@ -18,6 +18,11 @@ export interface RetryOptions {
   retryableErrorPatterns?: RegExp[];
   /** Optional: abort signal to cancel retries */
   signal?: AbortSignal;
+  /**
+   * Optional: a further check on a retryable error, e.g. "no rows were handed
+   * out yet". Both it and the patterns must allow the retry.
+   */
+  shouldRetry?: (error: Error) => boolean;
 }
 
 /**
@@ -148,7 +153,13 @@ export async function withRetry<T>(
   fn: () => Promise<T>,
   options: RetryOptions,
 ): Promise<T> {
-  const { maxRetries, baseDelayMs, retryableErrorPatterns, signal } = options;
+  const {
+    maxRetries,
+    baseDelayMs,
+    retryableErrorPatterns,
+    signal,
+    shouldRetry,
+  } = options;
   let lastError: Error | undefined;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -168,7 +179,10 @@ export async function withRetry<T>(
       }
 
       // Don't retry non-retryable errors
-      if (!isRetryableError(lastError, retryableErrorPatterns)) {
+      if (
+        !isRetryableError(lastError, retryableErrorPatterns) ||
+        (shouldRetry && !shouldRetry(lastError))
+      ) {
         break;
       }
 
