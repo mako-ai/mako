@@ -438,6 +438,19 @@ export class DatabaseConnectionService {
         : { success: false, totalRows: streamed, error: result.error };
     }
 
+    // ClickHouse streams ONE query's rows over its HTTP response. OFFSET
+    // pages re-run the query, and ClickHouse returns an unordered result
+    // (GROUP BY, GROUPING SETS, parallel reads) in a different order each
+    // time, so pages overlap and skip rows (a binding of 8,306 rows came out
+    // with 6,855 distinct keys).
+    if (database.type === "clickhouse" && typeof query === "string") {
+      return await clickHouseEngine.executeStreamingQuery(
+        database,
+        query,
+        options,
+      );
+    }
+
     if (engineFor(database.type)?.nonSql || typeof query !== "string") {
       const result = await this.executeQuery(database, query, options);
       if (!result.success) {

@@ -14,6 +14,8 @@ import {
   type DatabaseQuery,
   type QueryExecuteOptions,
   type QueryResult,
+  type StreamingQueryOptions,
+  type StreamingQueryResult,
 } from "../../query-types";
 import { isRetryableError, withRetry } from "../../retry";
 import {
@@ -51,6 +53,7 @@ function cancelled(error: unknown, signal: AbortSignal): boolean {
 
 type ClickHouseClientConfig = ReturnType<typeof buildClickHouseClientConfig>;
 type ClickHouseClient = ReturnType<typeof createClient>;
+type ClickHouseResultSet = Awaited<ReturnType<ClickHouseClient["query"]>>;
 
 /** Test seams: the client factory and the clock. */
 export interface ClickHouseConnectDeps {
@@ -194,6 +197,10 @@ export async function connectClickHouse(
 export class ClickHouseEngine implements QueryEngine {
   readonly runningQueries = new Map<string, RunningClickHouseQuery>();
 
+  constructor(
+    private readonly deps: ClickHouseConnectDeps = defaultConnectDeps,
+  ) {}
+
   /** Stateless HTTP: there is no connection to hand out. */
   async getConnection(): Promise<null> {
     return null;
@@ -233,6 +240,65 @@ export class ClickHouseEngine implements QueryEngine {
     query: DatabaseQuery,
     options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
+    // JSONEachRow: json() is the row array.
+    const result = await this.runQuery(
+      database,
+      query,
+      options,
+      async rs => (await rs.json()) as unknown[],
+    );
+    if (!result.success) return result;
+    return { success: true, data: result.value, rowCount: result.value.length };
+  }
+
+  /**
+   * Run the query ONCE and hand its rows to `onBatch` in `batchSize` batches
+   * as ClickHouse sends them. Never pages with LIMIT/OFFSET: separate queries
+   * without an ORDER BY return rows in a different order each time (parallel
+   * GROUP BY threads), so offset pages overlap and skip rows.
+   * A throw from `onBatch` stops the read and closes the request, which
+   * cancels the query (cancel_http_readonly_queries_on_client_close).
+   */
+  async executeStreamingQuery(
+    database: IDatabaseConnection,
+    query: string,
+    options: StreamingQueryOptions & QueryExecuteOptions,
+  ): Promise<StreamingQueryResult> {
+    const batchSize = Math.max(1, Math.floor(options.batchSize || 1000));
+    let totalRows = 0;
+    const result = await this.runQuery(database, query, options, async rs => {
+      let batch: Record<string, unknown>[] = [];
+      for await (const rows of rs.stream<Record<string, unknown>>()) {
+        for (const row of rows) {
+          batch.push(row.json());
+          if (batch.length >= batchSize) {
+            await options.onBatch(batch);
+            totalRows += batch.length;
+            batch = [];
+          }
+        }
+      }
+      if (batch.length > 0) {
+        await options.onBatch(batch);
+        totalRows += batch.length;
+      }
+    });
+    return result.success
+      ? { success: true, totalRows }
+      : { success: false, totalRows, error: result.error };
+  }
+
+  /**
+   * Connect (waking a sleeping service), run `query` as JSONEachRow with a
+   * cancellable query_id and the read-only setting, and `read` its result
+   * before the client closes.
+   */
+  private async runQuery<T>(
+    database: IDatabaseConnection,
+    query: DatabaseQuery,
+    options: QueryExecuteOptions | undefined,
+    read: (resultSet: ClickHouseResultSet) => Promise<T>,
+  ): Promise<{ success: true; value: T } | { success: false; error: string }> {
     const executionId = options?.executionId;
     const signal = options?.signal;
     const abortController = new AbortController();
@@ -275,11 +341,10 @@ export class ClickHouseEngine implements QueryEngine {
         database,
         config,
         abortController.signal,
-        defaultConnectDeps,
+        this.deps,
         { maxWakeTimeoutMs: options?.maxWakeTimeoutMs },
       );
 
-      let data: unknown[];
       try {
         // query_id makes the query cancellable (KILL QUERY).
         const resultSet = await client.query({
@@ -296,16 +361,10 @@ export class ClickHouseEngine implements QueryEngine {
           abort_signal: abortController.signal,
         });
 
-        data = await resultSet.json();
+        return { success: true, value: await read(resultSet) };
       } finally {
         await client.close();
       }
-
-      return {
-        success: true,
-        data,
-        rowCount: data.length,
-      };
     } catch (error) {
       if (cancelled(error, abortController.signal)) {
         return { success: false, error: "Query cancelled" };
