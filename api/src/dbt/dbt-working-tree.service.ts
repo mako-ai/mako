@@ -518,9 +518,13 @@ const DBT_RESOURCE_PATH_KEYS: Record<string, string[]> = {
 
 /**
  * The folders dbt reads, from dbt_project.yml (its defaults when the file
- * does not set a key or cannot be parsed).
+ * does not set a key or cannot be parsed). `keys` narrows them to some
+ * dbt_project.yml keys ("model-paths", "seed-paths", ...).
  */
-export function dbtResourcePaths(projectYml: string | undefined): string[] {
+export function dbtResourcePaths(
+  projectYml: string | undefined,
+  keys?: readonly string[],
+): string[] {
   let config: Record<string, unknown> = {};
   if (projectYml) {
     try {
@@ -534,6 +538,7 @@ export function dbtResourcePaths(projectYml: string | undefined): string[] {
   }
   const out = new Set<string>();
   for (const [key, defaults] of Object.entries(DBT_RESOURCE_PATH_KEYS)) {
+    if (keys && !keys.includes(key)) continue;
     const value = config[key];
     const list =
       Array.isArray(value) && value.every(v => typeof v === "string")

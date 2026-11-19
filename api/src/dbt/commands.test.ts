@@ -14,6 +14,20 @@ describe("parseDbtCommand", () => {
     expect(parseDbtCommand("retry").argv).toEqual(["retry"]);
   });
 
+  it("accepts the pre-deploy build: one state:modified+,+model value per model", () => {
+    // apps/dbt-before-deploy.ts preDeployBuildCommand
+    expect(
+      parseDbtCommand(
+        "build --select state:modified+,+fct_a state:modified+,+dim_b",
+      ).argv,
+    ).toEqual([
+      "build",
+      "--select",
+      "state:modified+,+fct_a",
+      "state:modified+,+dim_b",
+    ]);
+  });
+
   it("accepts selector flags including tag and graph operators", () => {
     expect(parseDbtCommand("build --select tag:nightly").argv).toEqual([
       "build",

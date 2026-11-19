@@ -154,6 +154,8 @@ export default defineConfig({
       "src/apps/app-chat.service.test.ts",
       "src/services/auto-join.service.test.ts",
       "src/apps/deploy-on-push.test.ts",
+      // A push changing dbt models: readers deploy after one prod dbt build.
+      "src/apps/dbt-before-deploy.test.ts",
       // The publish box memory gate: no build starts into a starved box.
       "src/apps/deployment/build-memory.test.ts",
       "src/apps/deploy-progress.test.ts",
@@ -204,6 +206,8 @@ export default defineConfig({
       "src/apps/review1190b-slots.test.ts",
       "src/inngest/functions/review1190b-refresh.test.ts",
       "src/inngest/functions/apps-deploy.test.ts",
+      // Cancel, sweep, queued-cancel and the 60-min cap release held deploys once.
+      "src/inngest/functions/dbt-run-held-deploys.test.ts",
       // The hourly reconcile leaves a progressing deploy of main alone.
       "src/inngest/functions/apps-deploy-reconcile.test.ts",
       // A deploy's outcome as a GitHub commit status on the pushed sha.

@@ -428,4 +428,15 @@ describe("promotesProdManifest", () => {
   it("never promotes outside the prod-like environment", () => {
     expect(promotesProdManifest({}, false)).toBe(false);
   });
+
+  it("never promotes a pre-deploy build that holds app deploys", () => {
+    // It builds only changed models apps read: its manifest would hide the
+    // other changed models from the next state:modified+.
+    expect(
+      promotesProdManifest(
+        { deploysAfterRun: { workspaceId: "w", appIds: ["a"], sha: "s" } },
+        true,
+      ),
+    ).toBe(false);
+  });
 });
