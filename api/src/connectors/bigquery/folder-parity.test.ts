@@ -56,6 +56,10 @@ import {
   type ReplayServer,
 } from "../../../../connectors/bigquery/fixtures/harness.mjs";
 
+// The harness signs against a local token server. The key validator accepts a
+// loopback token_uri only under NODE_ENV=test (src/connections/google-service-account.ts).
+process.env.NODE_ENV = "test";
+
 const makeInProcess = (config: Record<string, unknown>) =>
   new BigQueryConnector({
     _id: CONNECTION_ID,

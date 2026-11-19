@@ -1,4 +1,8 @@
 import { createHash } from "crypto";
+import {
+  requireServiceAccount,
+  serviceAccountConfigRefusal,
+} from "../../connections/google-service-account";
 import { Storage, type Bucket, type File } from "@google-cloud/storage";
 import {
   BaseConnector,
@@ -199,18 +203,8 @@ export class GcsConnector extends BaseConnector {
     } else if (
       typeof this.sourceConnection.config.service_account_json === "string"
     ) {
-      try {
-        const sa = JSON.parse(
-          this.sourceConnection.config.service_account_json,
-        );
-        if (!sa.client_email || !sa.private_key) {
-          errors.push(
-            "Service account JSON must include client_email and private_key",
-          );
-        }
-      } catch {
-        errors.push("Service account JSON must be valid JSON");
-      }
+      const refusal = serviceAccountConfigRefusal(this.sourceConnection.config);
+      if (refusal) errors.push(refusal);
     }
 
     if (
@@ -234,11 +228,17 @@ export class GcsConnector extends BaseConnector {
     projectId?: string;
   } {
     const raw = this.sourceConnection.config.service_account_json;
-    const credentials = typeof raw === "string" ? JSON.parse(raw) : raw;
-    const projectId =
-      this.sourceConnection.config.project_id ||
-      (credentials.project_id as string | undefined);
-    return { credentials, projectId };
+    // Validated at use time too: a stored key of another type never reaches
+    // the Storage client, which gets the email and private key only.
+    const key = requireServiceAccount(raw);
+    const projectId = this.sourceConnection.config.project_id || key.project_id;
+    return {
+      credentials: {
+        client_email: key.client_email,
+        private_key: key.private_key,
+      },
+      projectId,
+    };
   }
 
   private getBucketName(): string {
