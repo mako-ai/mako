@@ -715,6 +715,73 @@ phone sheet each control takes the full width. The sheet sits at z-index 50,
 so the Radix popovers of `/components` and `/menu` open above it. Escape
 closes an open popover first and the sheet on the next press.
 
+### Languages: `locale` and `labels` (2.29)
+
+One `locale` prop puts a component's own texts in French, German, Italian,
+Spanish, Polish or Portuguese. Pass a BCP 47 tag such as `"fr-CH"`. The SDK
+matches the language part, so `"fr-CH"` reads French. An unknown language
+reads English. The texts live in one table in the SDK (`STRINGS`), never in
+the app. Month names come from `Intl` in the full locale. Counts and footer
+numbers format in it too.
+
+`labels` overrides single texts on top of the locale. The explicit props that
+already existed (`allLabel`, `noneLabel`, `formatMany`, `searchPlaceholder`,
+`searchEmpty`, `placeholder`, `emptyText`, `label`, `noun`, `empty`) win over
+both. With no `locale` and no `labels`, every component renders byte for byte
+as 2.28.
+
+```tsx
+const LOCALE = "fr-CH";
+<FilterBar locale={LOCALE} dirty={dirty} onReset={reset}>
+  <FilterField label="Période">
+    <PeriodPicker locale={LOCALE} value={period} onChange={setPeriod} presets={["7d", "28d", "mtd", "ytd"]} />
+  </FilterField>
+  <FilterField label="Marché">
+    <MultiSelect locale={LOCALE} options={MARKETS} value={markets} onChange={setMarkets} />
+  </FilterField>
+</FilterBar>
+<DataTable locale={LOCALE} rows={rows} columns={COLUMNS} labels={{ exportCsv: "Exporter" }} />
+```
+
+The components and their `labels` keys:
+
+- **PeriodPicker** (`PeriodPickerLabels`): `time` (the trigger's name when
+  `label` is unset), `previous`, `next`, `menu`, `week`, `month`, `quarter`,
+  `year`, `custom`, `presets` (the presets tab), `inProgress`,
+  `inProgressTitle`, `from`, `to`, `apply`, `quarterLabel(q, year)` ("T4
+  2026" in French), `lastDays(n)`, `mtd`, `qtd`, `ytd`. The period reads
+  "nov. 2026" in fr-CH and "16.–22. Nov 2026" in de-CH.
+- **FilterBar** (`FilterBarLabels`): `filters` (chip, sheet title, aria-label),
+  `reset`, `resetTitle`, `done`.
+- **MultiSelect, FilterItems** (`/ui`) and **FilterMenu, FilterMenuItems**
+  (`/menu`) (`FilterLabels`): `all`, `none`, `many(n)`, `only`, `search`,
+  `noMatch`, `groupAll(label)` ("Bots (tout)", FilterMenu's group row).
+  `allLabel` is optional on FilterMenu now.
+- **Combobox** (`ComboboxLabels`): `placeholder`, `search`, `empty`.
+- **DataTable**: the `DataTableLabels` keys. A locale also formats the
+  footer's numbers and names the rows ("1–50 sur 312 lignes") while `noun` is
+  unset. `dataTableLabels(locale, labels)` returns the full set.
+
+`localeStrings(section, locale, labels)` returns one section for your own
+controls: `localeStrings("filterBar", "de-CH").reset` is "Zurücksetzen".
+
+**Rolling presets.** `presets` on PeriodPicker adds a first tab of windows
+that end today: `"7d"`, `"28d"`, `"90d"`, `"365d"` (any `"<N>d"`) and `"mtd"`,
+`"qtd"`, `"ytd"` (month, quarter and year to date). A pick emits
+`presetPeriod(id)`: `{ unit: "custom", from, to: today, preset: "28d" }`. The
+trigger reads the preset's name ("28 derniers jours"). ‹ from a to-date
+preset goes to the whole unit before it; from N days, to the N days before.
+
+A preset keeps rolling only if the URL holds its id, not its dates. Write
+`period=28d` for a preset and keep `from=&to=` for everything else, so every
+existing link still opens the same range:
+
+```tsx
+const period = presetPeriod(params.get("period")) ?? rangePeriod(params.get("from"), params.get("to"));
+const onChange = (p: Period) =>
+  update(p.preset ? { period: p.preset, from: null, to: null } : { period: null, from: p.from, to: p.to });
+```
+
 ### Country colours: `COUNTRY_COLORS`, `COUNTRY_ORDER` (2.27)
 
 A market has one colour in every app. Keys are lowercase codes.
@@ -908,7 +975,9 @@ const COLUMNS: DataTableColumn<Customer>[] = [
   values (null, "", NaN) sort last both ways. `sticky` (pin the first column),
   `sortable: false`, `hint` (header hover text), `csv` (`false` to leave a
   column out, a function for a readable cell such as a level name). Numeric
-  strings ("1.25", "-10") sort as numbers.
+  strings ("1.25", "-10") sort as numbers. `sortDescFirst` (2.29, TanStack
+  Table's name) sets the first click's direction: `sortDescFirst: false` on a
+  "Renewal (d)" column sorts soonest first. The next click flips it.
 - **Widths: no layout shift.** The table uses `table-layout: fixed` and a
   `<colgroup>`, so a column's width never depends on the rows on screen.
   Sorting, filtering, paging, the empty state and loading all keep the same

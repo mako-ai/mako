@@ -7,11 +7,14 @@
 // Mako thin props (2.28): `count` per option (muted, right-aligned, never
 // searched, never in the trigger), `keywords` per option, `icon` in the trigger.
 // Search matches the label and keywords only, never the value or the count.
+// 2.29: `locale` and `labels` translate the placeholder, search and empty
+// texts, and `locale` formats the counts.
 
 import * as React from "react"
 import { CheckIcon, ChevronsUpDownIcon } from "lucide-react"
 import { defaultFilter } from "cmdk"
 import { cn } from "../menu/utils"
+import { localeStrings, type ComboboxLabels } from "../locale.js"
 import { Button } from "./button"
 import {
   Command,
@@ -32,8 +35,8 @@ export type ComboboxOption<V extends string = string> = {
   keywords?: string[]
 }
 
-const formatCount = (n: number | string) =>
-  typeof n === "number" ? n.toLocaleString("en-US") : n
+const formatCount = (n: number | string, locale = "en-US") =>
+  typeof n === "number" ? n.toLocaleString(locale) : n
 
 // The item's value is the option value (unique); its keywords hold the label
 // first, so the search scores the label and keywords and never the value.
@@ -44,9 +47,11 @@ function Combobox<V extends string = string>({
   options,
   value,
   onChange,
-  placeholder = "Select...",
-  searchPlaceholder = "Search...",
-  emptyText = "No results found.",
+  placeholder: placeholderProp,
+  searchPlaceholder: searchProp,
+  emptyText: emptyProp,
+  locale,
+  labels,
   icon,
   disabled,
   className,
@@ -59,12 +64,20 @@ function Combobox<V extends string = string>({
   placeholder?: string
   searchPlaceholder?: string
   emptyText?: React.ReactNode
+  /** Mako thin prop (2.29): BCP 47 tag, e.g. "fr-CH": the three texts in that language. Default English. */
+  locale?: string
+  /** Mako thin prop (2.29): override single texts on top of the locale. The explicit props win. */
+  labels?: Partial<ComboboxLabels>
   icon?: React.ReactNode
   disabled?: boolean
   className?: string
   contentClassName?: string
   "aria-label"?: string
 }) {
+  const L = localeStrings("combobox", locale, labels)
+  const placeholder = placeholderProp ?? L.placeholder
+  const searchPlaceholder = searchProp ?? L.search
+  const emptyText = emptyProp ?? L.empty
   const [open, setOpen] = React.useState(false)
   const items = options.map((o) =>
     typeof o === "string" ? { value: o, label: o } : o
@@ -115,7 +128,7 @@ function Combobox<V extends string = string>({
                       data-slot="combobox-count"
                       className="text-xs text-muted-foreground tabular-nums"
                     >
-                      {formatCount(o.count)}
+                      {formatCount(o.count, locale)}
                     </span>
                   )}
                   <CheckIcon

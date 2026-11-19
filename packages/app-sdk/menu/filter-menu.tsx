@@ -10,6 +10,9 @@
 // The selection model is the kit's (2.20, `filter*` in ui-core.js): a
 // selection is a list of leaf values, [] means All, and "nothing ticked" is
 // a draft that emits nothing until the next tick.
+//
+// 2.29: `locale` and `labels` translate All, None, Only, "All <group>" and
+// "N selected" from the SDK's strings table (../locale.js).
 import * as React from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
@@ -25,6 +28,7 @@ import {
   filterToggleAll,
   type FilterTick,
 } from "../ui.js";
+import { localeStrings, type FilterLabels } from "../locale.js";
 import { Checkbox } from "./checkbox";
 import {
   DropdownMenu,
@@ -63,8 +67,12 @@ export interface FilterMenuItemsProps {
   selected?: readonly string[];
   value?: readonly string[];
   onChange: (selected: string[]) => void;
-  /** The first row ("All traffic"). */
-  allLabel: string;
+  /** The first row ("All traffic"). Default "All" (`labels.all`). */
+  allLabel?: string;
+  /** Mako thin prop (2.29): BCP 47 tag, e.g. "fr-CH": All, None, Only, "All <group>", "N selected" in that language. Default English. */
+  locale?: string;
+  /** Mako thin prop (2.29): override single texts on top of the locale. The explicit props win. */
+  labels?: Partial<FilterLabels>;
   /** What All emits: [] (default) or every leaf value (false). */
   emptyMeansAll?: boolean;
   /** The "nothing ticked" draft, when the owner shows it (FilterMenu's trigger). Uncontrolled otherwise. */
@@ -86,6 +94,11 @@ export interface FilterMenuItemsProps {
  */
 export function FilterMenuItems(props: FilterMenuItemsProps) {
   const { options, drill, emptyMeansAll = true } = props;
+  const L = localeStrings("filter", props.locale, props.labels);
+  const allLabel = props.allLabel ?? L.all;
+  // English keeps 2.28's two text nodes ("All ", label); a locale writes one string.
+  const translated = props.locale != null || props.labels?.groupAll != null;
+  const groupAllText = (label: string) => (translated ? L.groupAll(label) : <>All {label}</>);
   const selected = filterNormalize(options, props.selected ?? props.value ?? []);
   const [ownNone, setOwnNone] = React.useState(false);
   const none = props.none ?? ownNone;
@@ -109,7 +122,7 @@ export function FilterMenuItems(props: FilterMenuItemsProps) {
   const onlyButton = (node: FilterMenuOption) =>
     empty(node) ? null : (
       <span role="button" tabIndex={-1} className="mk-fm-only" onClick={only(node)} onPointerUp={e => e.stopPropagation()}>
-        Only
+        {L.only}
       </span>
     );
 
@@ -144,7 +157,7 @@ export function FilterMenuItems(props: FilterMenuItemsProps) {
     <span
       role="checkbox"
       aria-checked={st === "on" ? true : st === "mixed" ? "mixed" : false}
-      aria-label={`All ${node.label}`}
+      aria-label={L.groupAll(node.label)}
       aria-disabled={empty(node) || undefined}
       className="flex"
       onClick={e => {
@@ -169,7 +182,7 @@ export function FilterMenuItems(props: FilterMenuItemsProps) {
       }}
     >
       <Tick state={st} />
-      <span className="flex-1">All {node.label}</span>
+      <span className="flex-1">{groupAllText(node.label)}</span>
     </DropdownMenuPrimitive.CheckboxItem>
   );
 
@@ -235,7 +248,7 @@ export function FilterMenuItems(props: FilterMenuItemsProps) {
         }}
       >
         <Tick state={allSt} />
-        <span className="flex-1">{props.allLabel}</span>
+        <span className="flex-1">{allLabel}</span>
       </DropdownMenuPrimitive.CheckboxItem>
       <DropdownMenuSeparator />
       {level(options)}
@@ -268,10 +281,13 @@ export interface FilterMenuProps extends Omit<FilterMenuItemsProps, "none" | "on
 
 /** The filter dropdown: the kit's trigger (`mk-ms-trigger`) over FilterMenuItems. */
 export function FilterMenu(props: FilterMenuProps) {
-  const { options, allLabel, noneLabel = "None" } = props;
+  const { options } = props;
+  const L = localeStrings("filter", props.locale, props.labels);
+  const allLabel = props.allLabel ?? L.all;
+  const noneLabel = props.noneLabel ?? L.none;
   const selected = filterNormalize(options, props.selected ?? props.value ?? []);
   const [none, setNone] = React.useState(false);
-  const text = none ? noneLabel : (props.summary ?? filterText(options, selected, allLabel, props.formatMany));
+  const text = none ? noneLabel : (props.summary ?? filterText(options, selected, allLabel, props.formatMany ?? L.many));
   const probes = [...(props.sizeTo ?? [allLabel, ...options.map(o => o.label)]), ...(props.probes ?? [])];
   return (
     <DropdownMenu
@@ -302,6 +318,8 @@ export function FilterMenu(props: FilterMenuProps) {
           selected={selected}
           onChange={props.onChange}
           allLabel={allLabel}
+          locale={props.locale}
+          labels={props.labels}
           emptyMeansAll={props.emptyMeansAll}
           none={none}
           onNoneChange={setNone}
