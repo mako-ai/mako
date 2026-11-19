@@ -1,10 +1,15 @@
 // Periods for the date filters (2.27): a week, month, quarter or year, or a
 // custom range. Dates are ISO 'YYYY-MM-DD' strings in UTC, both ends
-// inclusive. Pure functions only, no imports. Ported 1:1 from the workspace's
-// apps/attrition-por-cohorte/src/ui/period.ts.
+// inclusive. Pure functions only. Ported 1:1 from the workspace's
+// apps/attrition-por-cohorte/src/ui/period.ts. 2.29: localized labels
+// (`periodLabel(p, locale)`) and rolling presets (`presetPeriod`).
+import { localeStrings } from "../locale.js";
 
 export type Unit = "week" | "month" | "quarter" | "year";
-export type Period = { unit: Unit | "custom"; from: string; to: string };
+/** A rolling preset (2.29): the last N days ("28d") or month, quarter, year to date. All end today. */
+export type PeriodPreset = `${number}d` | "mtd" | "qtd" | "ytd";
+/** `preset` (2.29) marks a range picked as a rolling preset: write it to the URL as `period=28d`. */
+export type Period = { unit: Unit | "custom"; from: string; to: string; preset?: PeriodPreset };
 
 const d = (iso: string) => new Date(iso + "T00:00:00Z");
 const iso = (x: Date) => x.toISOString().slice(0, 10);
@@ -46,6 +51,9 @@ const wholeMonths = (p: Period) => p.from.slice(8) === "01" && addDays(p.to, 1).
 
 /** The period k steps later (k < 0: earlier). A custom range moves by its own length. */
 export function shift(p: Period, k: number): Period {
+  // Month, quarter or year to date steps to the whole unit before (or after) it.
+  const toDate = p.preset && TO_DATE[p.preset as keyof typeof TO_DATE];
+  if (toDate) return shift(periodOf(toDate, p.from), k);
   if (p.unit === "week") return periodOf("week", addDays(p.from, 7 * k));
   if (p.unit !== "custom") return periodOf(p.unit, addMonths(p.from, stepMonths[p.unit] * k));
   if (wholeMonths(p)) {
@@ -65,8 +73,14 @@ const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct
 const day = (s: string, withYear = true) => `${Number(s.slice(8))} ${MON[Number(s.slice(5, 7)) - 1]}${withYear ? ` ${s.slice(0, 4)}` : ""}`;
 const month = (s: string, withYear = true) => `${MON[Number(s.slice(5, 7)) - 1]}${withYear ? ` ${s.slice(0, 4)}` : ""}`;
 
-/** "Nov 2026", "Q4 2026", "2026", "17–23 Nov 2026", "Sep – Nov 2026". */
-export function periodLabel(p: Period): string {
+/**
+ * "Nov 2026", "Q4 2026", "2026", "17–23 Nov 2026", "Sep – Nov 2026".
+ * With a `locale` (2.29) the month names come from Intl in that language
+ * ("nov. 2026", "16.–22. Nov 2026"). A preset reads as its name: "Last 28 days", "28 derniers jours".
+ */
+export function periodLabel(p: Period, locale?: string): string {
+  if (p.preset) return presetLabel(p.preset, locale);
+  if (locale) return localLabel(p, locale);
   if (p.unit === "year") return p.from.slice(0, 4);
   if (p.unit === "quarter") return `Q${Math.floor(Number(p.from.slice(5, 7)) / 3) + 1} ${p.from.slice(0, 4)}`;
   if (p.unit === "month") return month(p.from);
@@ -81,3 +95,38 @@ export function periodLabel(p: Period): string {
 }
 
 export const UNIT_LABEL: Record<Unit, string> = { week: "Week", month: "Month", quarter: "Quarter", year: "Year" };
+
+const TO_DATE = { mtd: "month", qtd: "quarter", ytd: "year" } as const;
+
+/** A preset's dates on `today`: `presetPeriod("28d")` is the 28 days ending today. Null for an unknown id. */
+export function presetPeriod(id: string | null | undefined, today = todayIso()): Period | null {
+  const days = /^([1-9]\d{0,3})d$/.exec(id ?? "");
+  const unit = TO_DATE[id as keyof typeof TO_DATE];
+  if (!days && !unit) return null;
+  const from = days ? addDays(today, 1 - Number(days[1])) : startOf(unit, today);
+  return { unit: "custom", from, to: today, preset: id as PeriodPreset };
+}
+
+/** A preset's name: "Last 28 days", "Month to date"; localized with `locale`. */
+export function presetLabel(id: PeriodPreset, locale?: string, labels?: { lastDays?: (n: number) => string; mtd?: string; qtd?: string; ytd?: string }): string {
+  const L = localeStrings("period", locale, labels);
+  return /^\d+d$/.test(id) ? L.lastDays(Number(id.slice(0, -1))) : L[id as "mtd" | "qtd" | "ytd"];
+}
+
+function localLabel(p: Period, locale: string): string {
+  const fmt = new Intl.DateTimeFormat(locale, { month: "short", timeZone: "UTC" });
+  const de = /^de\b/i.test(locale);
+  const mon = (s: string, withYear = true) => `${fmt.format(d(s))}${withYear ? ` ${s.slice(0, 4)}` : ""}`;
+  const dd = (s: string) => `${Number(s.slice(8))}${de ? "." : ""}`;
+  const dayL = (s: string, withYear = true) => `${dd(s)} ${mon(s, withYear)}`;
+  if (p.unit === "year") return p.from.slice(0, 4);
+  if (p.unit === "quarter") return localeStrings("period", locale).quarterLabel(Math.floor(Number(p.from.slice(5, 7)) / 3) + 1, p.from.slice(0, 4));
+  if (p.unit === "month") return mon(p.from);
+  const sameYear = p.from.slice(0, 4) === p.to.slice(0, 4);
+  if (p.unit === "custom" && wholeMonths(p)) {
+    const last = addDays(p.to, 1 - Number(p.to.slice(8)));
+    return last === p.from ? mon(p.from) : `${mon(p.from, !sameYear)} – ${mon(last)}`;
+  }
+  const sameMonth = sameYear && p.from.slice(5, 7) === p.to.slice(5, 7);
+  return sameMonth ? `${dd(p.from)}–${dayL(p.to)}` : `${dayL(p.from, !sameYear)} – ${dayL(p.to)}`;
+}

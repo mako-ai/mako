@@ -144,9 +144,11 @@ export function compareValues(a, b) {
 
 /**
  * The direction a column sorts in on its first click: numbers largest first
- * (`num: true`), text A→Z.
+ * (`num: true`), text A→Z. `sortDescFirst` (2.29, TanStack's name) overrides
+ * it: false sorts a number or date column smallest (soonest) first.
  */
 export function firstSortDir(column) {
+  if (column?.sortDescFirst != null) return column.sortDescFirst ? "desc" : "asc";
   return column?.num ? "desc" : "asc";
 }
 

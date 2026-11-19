@@ -6,6 +6,8 @@
 // never an app copy. TypeScript source: the app's Vite compiles it, and the
 // app's CSS imports "@makoai/app-sdk/tailwind.css" so Tailwind sees it.
 // One house component sits beside them: the page filter bar (filter-bar.tsx).
+// 2.29: `locale` + `labels` on PeriodPicker, FilterBar, Combobox and FilterMenu
+// read the SDK's one strings table (../locale.js).
 export * from "./alert";
 export * from "./avatar";
 export * from "./badge";
@@ -17,7 +19,8 @@ export * from "./filter-bar";
 export * from "./input";
 export * from "./label";
 export * from "./period-picker";
-export { clipToday, isCurrent, periodLabel, periodOf, shift, todayIso, type Period, type Unit } from "./period";
+export { clipToday, isCurrent, periodLabel, periodOf, presetLabel, presetPeriod, shift, todayIso, type Period, type PeriodPreset, type Unit } from "./period"
+export { LOCALES, STRINGS, localeLang, localeStrings, type ComboboxLabels, type FilterBarLabels, type FilterLabels, type LocaleLang, type PeriodPickerLabels } from "../locale.js";
 export * from "./popover";
 export * from "./progress";
 export * from "./select";
