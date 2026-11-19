@@ -13,6 +13,8 @@ import { defineConfig } from "vitest/config";
  */
 export default defineConfig({
   test: {
+    // MongoMemoryServer.create() retries a port clash or a slow start (src/test-support/mongo-memory.ts).
+    setupFiles: ["./src/test-support/mongo-memory.ts"],
     environment: "node",
     include: [
       "src/apps/sharing-routes.test.ts",

@@ -29,6 +29,10 @@ const API_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
+// MongoMemoryServer.create() retries a port clash or a slow start in every file.
+const MONGO_MEMORY_SETUP = pathToFileURL(
+  path.join(API_ROOT, "src/test-support/mongo-memory.ts"),
+).href;
 
 // Files no runner should pick up, each with its reason. Keep in step with
 // DELIBERATELY_UNCOVERED in src/test-coverage.test.ts.
@@ -165,11 +169,15 @@ if (opts.list) {
 function runOne(file) {
   return new Promise(resolve => {
     const started = Date.now();
-    const child = spawn(process.execPath, ["--import", "tsx", file], {
-      cwd: API_ROOT,
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx", "--import", MONGO_MEMORY_SETUP, file],
+      {
+        cwd: API_ROOT,
+        env: process.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
     const chunks = [];
     child.stdout.on("data", c => chunks.push(c));
     child.stderr.on("data", c => chunks.push(c));
