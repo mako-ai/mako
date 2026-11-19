@@ -26,6 +26,7 @@ import { cdcSyncStateService } from "./sync-state";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import type { ConnectorEntitySchema } from "../connectors/base/BaseConnector";
+import { boxLowMemoryRefusal } from "../apps/sandbox/box-memory";
 import { ensureFlowDerivedCache } from "../services/flow-sync.service";
 import {
   FLOW_PAUSED_CODE,
@@ -187,7 +188,11 @@ export class CdcConsumerService {
         if (conn) {
           connectorSchema = await conn.resolveSchema(params.entity);
         }
-      } catch {
+      } catch (error) {
+        // A box memory refusal is no answer: the materialization waits for
+        // memory (webhook-flow.ts) and never builds a layout without keys.
+        // Thrown before any event is read, so none is marked failed.
+        if (boxLowMemoryRefusal(error)) throw error;
         log.warn("Schema resolution failed for layout key columns", {
           entity: params.entity,
           flowId: params.flowId,

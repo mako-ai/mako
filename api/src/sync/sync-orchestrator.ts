@@ -70,9 +70,13 @@ export class SchemaResolutionError extends Error {
   readonly context: string;
   constructor(entity: string, context: string, cause: unknown) {
     const reason = cause instanceof Error ? cause.message : String(cause);
+    // The cause stays attached: a box memory refusal under it must still
+    // read as one (box-memory.ts boxLowMemoryRefusal), so the step waits
+    // for memory instead of failing the run.
     super(
       `Schema resolution failed for "${entity}" (${context}): ${reason}. ` +
         `The step retries; it never writes rows without the schema.`,
+      { cause },
     );
     this.name = "SchemaResolutionError";
     this.entity = entity;

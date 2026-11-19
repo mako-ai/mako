@@ -459,6 +459,33 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       stepsUsed++;
     };
 
+    // A flush or merge step resolves the entity's schema in the connector
+    // box. When the box's memory gate refuses it, the step sleeps and runs
+    // again, as a chunk does. On 19 Nov 2026 a refused schema resolution
+    // failed a 16-hour backfill. Each wait costs 2 steps.
+    const boxStep = async <T>(id: string, fn: () => Promise<T>): Promise<T> => {
+      const { result, waits } = await withBoxMemoryWaits(step, id, fn, {
+        onWait: (wait, refusal) => {
+          logger.warn("Connector box low on memory; step waits", {
+            flowId,
+            entity,
+            stepId: id,
+            wait,
+            availableMb: refusal.availableMb,
+            retryInMs: refusal.retryInMs,
+          });
+          logExec("warn", refusal.message, {
+            flowId,
+            entity,
+            executionId,
+            wait,
+          });
+        },
+      });
+      stepsUsed += 2 * waits;
+      return result;
+    };
+
     // Flush the bulk buffer to the live table when it holds at least
     // `minRows`, then record the merged rows in `state` and save the cursor.
     // Returns true when the buffer is empty afterwards: only then does the
@@ -493,7 +520,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       }
       if (tempCount < minRows) return false;
 
-      const rescuedInFlush = await step.run(
+      const rescuedInFlush = await boxStep(
         `flush-merge-${safeEntityStepId}-${flushIndex}`,
         () =>
           withHeartbeat(executionId, async () => {
@@ -536,7 +563,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       const writtenBefore =
         totalWrittenForEntity + (Number(rescuedInFlush) || 0);
       const flushedState = state;
-      const applied = (await step.run(
+      const applied = (await boxStep(
         `flush-apply-${safeEntityStepId}-${flushIndex}`,
         () =>
           withHeartbeat(executionId, async () => {
@@ -871,7 +898,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       );
 
       if (finalRowsInTemp > 0) {
-        const rescuedInFinal = await step.run(
+        const rescuedInFinal = await boxStep(
           `flush-final-${safeEntityStepId}`,
           () =>
             withHeartbeat(executionId, async () => {
@@ -899,7 +926,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             }),
         );
 
-        const mergedFinal = await step.run(
+        const mergedFinal = await boxStep(
           `merge-final-${safeEntityStepId}`,
           () =>
             withHeartbeat(executionId, async () => {

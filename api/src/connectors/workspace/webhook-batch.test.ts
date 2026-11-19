@@ -60,7 +60,11 @@ import {
   retryFailedBoxWebhooks,
   type WebhookBatchRunner,
 } from "./webhook-batch";
-import { ConnectorOutputTooLargeError, type RunResult } from "./sync-box";
+import {
+  ConnectorBoxLowMemoryError,
+  ConnectorOutputTooLargeError,
+  type RunResult,
+} from "./sync-box";
 import { WEBHOOK_BATCH_DEFAULTS } from "./webhook-config";
 
 const SECRET = "0f".repeat(32);
@@ -937,6 +941,44 @@ describe("a batch", () => {
       runner: box.factory,
     });
     expect(result).toMatchObject({ next: "stop", reason: "401: key revoked" });
+  });
+
+  it("a full connector box refuses the batch: its events wait unblamed, the batch keeps its size, and the next run writes them", async () => {
+    const lone = await boxEvent();
+    const refusing = fakeRunner(() => {
+      throw new ConnectorBoxLowMemoryError("connector-sync:v2:ws", 573);
+    });
+    // Thrown for the Inngest step to wait on (withBoxMemoryWaits).
+    await expect(
+      processBoxWebhookBatch({
+        flowId: String(flowId),
+        runner: refusing.factory,
+      }),
+    ).rejects.toBeInstanceOf(ConnectorBoxLowMemoryError);
+    // A lone event is never failed for it, and its attempt is refunded.
+    expect(await WebhookEvent.findById(lone._id).lean()).toMatchObject({
+      status: "pending",
+      attempts: 0,
+    });
+    expect(
+      (await WebhookEvent.findById(lone._id).lean())?.applyError,
+    ).toBeUndefined();
+    expect(
+      (await Flow.collection.findOne({ _id: flowId }))?.webhookConfig
+        ?.boxBatchSize,
+    ).toBeUndefined();
+
+    // Memory is back: the same event applies on the first try.
+    const box = fakeRunner(events => ok(events.map(e => leadOutcome(e))));
+    const result = await processBoxWebhookBatch({
+      flowId: String(flowId),
+      runner: box.factory,
+    });
+    expect(result).toMatchObject({ claimed: 1, failed: 0 });
+    expect(await WebhookEvent.findById(lone._id).lean()).toMatchObject({
+      status: "completed",
+      attempts: 1,
+    });
   });
 
   it("an answer over the protocol cap shrinks the next batch, one box run at a time, down to the event that causes it", async () => {

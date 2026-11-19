@@ -1,6 +1,7 @@
 import { inngest } from "../client";
 import { cdcBackfillService } from "../../sync-cdc/backfill";
 import { loggers } from "../../logging";
+import { withBoxMemoryWaits } from "./flow/box-memory-wait";
 
 const log = loggers.inngest();
 
@@ -77,9 +78,14 @@ export const cdcRepartitionFunction = inngest.createFunction(
 
     for (const entity of entities) {
       const safeId = entity.replace(/[^a-zA-Z0-9_-]/g, "_");
-      const result = (await step.run(`repartition-${safeId}`, () =>
-        cdcBackfillService.repartitionEntity({ workspaceId, flowId, entity }),
-      )) as { outcome: "repartitioned" | "missing" | "failed" };
+      // The layout reads the entity's key columns from the connector box. A
+      // memory refusal there sleeps and runs the step again.
+      const { result } = (await withBoxMemoryWaits(
+        step,
+        `repartition-${safeId}`,
+        () =>
+          cdcBackfillService.repartitionEntity({ workspaceId, flowId, entity }),
+      )) as { result: { outcome: "repartitioned" | "missing" | "failed" } };
       if (result.outcome === "repartitioned") repartitioned.push(entity);
       else if (result.outcome === "missing") missing.push(entity);
       else failed.push(entity);

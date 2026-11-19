@@ -55,6 +55,7 @@ import {
 } from "../access/source-connection-access";
 import { mayReadLive } from "../connections/proxy.service";
 import { loggers } from "../logging";
+import { boxLowMemoryRefusal } from "../apps/sandbox/box-memory";
 import { redactSecrets, secretValuesOf } from "../connections/redact";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import {
@@ -81,7 +82,9 @@ export type ProbeErrorCode =
   | "connector_unavailable"
   | "unknown_entity"
   | "forbidden"
-  | "timeout";
+  | "timeout"
+  /** The connector box is full right now: try again in a minute. */
+  | "box_busy";
 
 export class ProbeError extends Error {
   constructor(
@@ -93,7 +96,7 @@ export class ProbeError extends Error {
   }
 
   /** HTTP status the REST route answers with. */
-  get status(): 400 | 403 | 404 | 500 | 504 {
+  get status(): 400 | 403 | 404 | 500 | 503 | 504 {
     switch (this.code) {
       case "invalid_input":
       case "unknown_entity":
@@ -104,10 +107,29 @@ export class ProbeError extends Error {
         return 404;
       case "timeout":
         return 504;
+      case "box_busy":
+        return 503;
       default:
         return 500;
     }
   }
+}
+
+/**
+ * A box memory refusal as a retryable ProbeError (503, code box_busy), or
+ * null. The refusal ran nothing, so it says nothing about the credential:
+ * callers must not treat it as a failed check.
+ */
+export function boxBusyProbeError(error: unknown): ProbeError | null {
+  if (error instanceof ProbeError) {
+    return error.code === "box_busy" ? error : null;
+  }
+  const refusal = boxLowMemoryRefusal(error);
+  if (!refusal) return null;
+  return new ProbeError(
+    "box_busy",
+    `The connector box is busy (${refusal.availableMb} MB of memory free, ${refusal.requiredMb} MB needed). Nothing ran. Try again in a minute.`,
+  );
 }
 
 export interface ProbeInput {
@@ -466,6 +488,8 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
       error.message = redactSecrets(error.message, secrets);
       throw error;
     }
+    const busy = boxBusyProbeError(error);
+    if (busy) throw busy;
     let message = error instanceof Error ? error.message : String(error);
     // A vendor's 4xx body is the actionable part ("Unsupported field",
     // "Invalid cursor", ...); axios only puts the status code in `message`.

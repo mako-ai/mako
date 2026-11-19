@@ -36,6 +36,7 @@ import {
 import { createHash, randomBytes } from "node:crypto";
 import { NonRetriableError } from "inngest";
 import { loggers } from "../../logging";
+import { boxLowMemoryRefusal } from "../../apps/sandbox/box-memory";
 import {
   ensureBundle,
   ConnectorOutputTooLargeError,
@@ -852,6 +853,9 @@ export class SandboxedConnector extends BaseConnector {
           (succeeded ? "Connection successful" : "Connection failed"),
       };
     } catch (error) {
+      // A box memory refusal never ran the check, so it is no verdict on
+      // the credential: thrown, never recorded as a failed check.
+      if (boxLowMemoryRefusal(error)) throw error;
       return {
         success: false,
         message: error instanceof Error ? error.message : String(error),

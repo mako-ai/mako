@@ -64,7 +64,10 @@ import {
   keyLinkUrl,
   newKeyRequest,
 } from "../../connectors/connection-key-request.service";
-import { probeConnection } from "../../connectors/probe.service";
+import {
+  boxBusyProbeError,
+  probeConnection,
+} from "../../connectors/probe.service";
 import {
   SourceConnectionInputError,
   assertConnectorTypeUsable,
@@ -470,6 +473,15 @@ export function createConnectionWriteTools(
             result = (await probeConnection({ workspaceId, connectionId }))
               .check;
           } catch (error) {
+            // A full connector box ran no check: keep the connection.
+            const busy = boxBusyProbeError(error);
+            if (busy) {
+              return {
+                ...identity,
+                check: { skipped: true, message: busy.message },
+                next: `The connector box is busy. Call probe_connection({ connectionId: "${connectionId}" }) in a minute to verify the credential.`,
+              };
+            }
             result = {
               success: false,
               message: error instanceof Error ? error.message : String(error),

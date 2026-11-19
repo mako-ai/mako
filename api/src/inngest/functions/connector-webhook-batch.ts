@@ -31,8 +31,15 @@ import {
   processBoxWebhookBatch,
   type BatchResult,
 } from "../../connectors/workspace/webhook-batch";
+import { withBoxMemoryWaits } from "./flow/box-memory-wait";
 
 const logger = loggers.inngest("connector-webhook-batch");
+
+/**
+ * Box memory waits per run, all batches together: at most 4.5 min, so a run
+ * of 8 one-minute batches still ends inside its 15 min finish timeout.
+ */
+const WEBHOOK_BATCH_MAX_MEMORY_WAITS = 3;
 
 export const CONNECTOR_WEBHOOK_BATCH_EVENT = "connector/webhook.batch";
 
@@ -91,10 +98,37 @@ export const connectorWebhookBatchFunction = inngest.createFunction(
     const totals = { batches: 0, claimed: 0, ingested: 0, failed: 0 };
     let stopReason: string | undefined;
     const { maxBatchesPerRun } = webhookBatchLimits();
+    let memoryWaits = 0;
     for (let i = 0; i < maxBatchesPerRun; i++) {
-      const result = (await step.run(`batch-${i}`, () =>
-        processBoxWebhookBatch({ flowId }),
-      )) as BatchResult;
+      // A box memory refusal put the batch back (attempts refunded): sleep
+      // and take it again. Past the run's wait budget, stop: the dispatcher
+      // sends the flow again within a minute. Nothing fails either way.
+      const { result: batchResult, waits } = await withBoxMemoryWaits(
+        step,
+        `batch-${i}`,
+        () => processBoxWebhookBatch({ flowId }),
+        {
+          maxWaits: Math.max(0, WEBHOOK_BATCH_MAX_MEMORY_WAITS - memoryWaits),
+          onWait: (wait, refusal) =>
+            logger.warn("Connector box low on memory; webhook batch waits", {
+              flowId,
+              batch: i,
+              wait,
+              availableMb: refusal.availableMb,
+            }),
+          giveUp: (refusal): BatchResult => ({
+            next: "stop",
+            claimed: 0,
+            ingested: 0,
+            failed: 0,
+            dropped: 0,
+            applied: 0,
+            reason: refusal.message,
+          }),
+        },
+      );
+      memoryWaits += waits;
+      const result = batchResult as BatchResult;
       totals.batches++;
       totals.claimed += result.claimed;
       totals.ingested += result.ingested;
