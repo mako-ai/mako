@@ -45,6 +45,7 @@ import {
   triggerDbtJobRun,
 } from "../../dbt/dbt-run.service";
 import { resolveProdLikeEnvironmentName } from "../../dbt/dbt-environments.service";
+import { dbtRunFallbackQueueKeys } from "../../dbt/dbt-run-queue";
 import {
   registerActiveRun,
   unregisterActiveRun,
@@ -142,6 +143,13 @@ interface DbtRunRequestedEvent {
   projectId: string;
   runId: string;
   jobId?: string;
+  /**
+   * Concurrency keys (dbtRunQueueKeys): `<projectId>:<lane>` and
+   * `job:<jobId>` or `run:<runId>`. Absent on events sent before lanes.
+   */
+  laneKey?: string;
+  jobKey?: string;
+  holdsDeploys?: boolean;
 }
 
 /**
@@ -190,10 +198,13 @@ export const dbtRunExecutorFunction = inngest.createFunction(
     id: "dbt-run-executor",
     name: "Execute dbt Run",
     retries: 0,
-    concurrency: {
-      key: "event.data.projectId",
-      limit: 1,
-    },
+    concurrency: [
+      // One run at a time per project lane ("default" or "fast"), so a short
+      // scheduled job never waits behind a long build (dbt-run-queue.ts).
+      { key: "event.data.laneKey", limit: 1 },
+      // Never two runs of one job at once, whichever lane each is in.
+      { key: "event.data.jobKey", limit: 1 },
+    ],
     cancelOn: [
       {
         event: "dbt/run.cancel",
@@ -205,6 +216,40 @@ export const dbtRunExecutorFunction = inngest.createFunction(
   async ({ event, step }) => {
     const data = event.data as DbtRunRequestedEvent;
     const runObjectId = new Types.ObjectId(data.runId);
+
+    // An event sent before lanes carries no concurrency keys. Send it again
+    // with the default lane's keys, where it queued before, and stop. The
+    // copy always carries both keys, so this never loops. A run no longer
+    // queued (cancelled while it waited) falls through: mark-running skips it
+    // and releases its held deploys.
+    const fallbackKeys = dbtRunFallbackQueueKeys(data);
+    if (fallbackKeys) {
+      const stillQueued = await step.run(
+        "check-queued-for-requeue",
+        async () => {
+          const run = await DbtRun.findById(runObjectId)
+            .select("status")
+            .lean();
+          return run?.status === "queued";
+        },
+      );
+      if (stillQueued) {
+        // The copy drops holdsDeploys: the original event already started
+        // the 60-minute held-deploys cap.
+        const { holdsDeploys: _holdsDeploys, ...rest } = data;
+        await step.sendEvent("requeue-with-lane-keys", {
+          id: `dbt-run-requeue:${data.runId}`,
+          name: "dbt/run.requested",
+          data: { ...rest, ...fallbackKeys },
+        });
+        logger.info("Requeued a dbt run event that carried no lane keys", {
+          runId: data.runId,
+          projectId: data.projectId,
+          ...fallbackKeys,
+        });
+        return { requeued: true, ...fallbackKeys };
+      }
+    }
 
     const runInfo = await step.run("mark-running", async () => {
       const run = await DbtRun.findOneAndUpdate(
@@ -248,6 +293,8 @@ export const dbtRunExecutorFunction = inngest.createFunction(
         // A laptop run builds in its owner's own warm dir, like a
         // working-tree build: never the shared committed-deploy dir.
         triggeredBy: run.triggeredBy,
+        // Runs that predate lanes ran in the default lane.
+        lane: run.lane ?? "default",
         jobId: run.jobId?.toString(),
         restoreArtifactKeys: run.restoreArtifactKeys
           ? {
@@ -416,6 +463,9 @@ export const dbtRunExecutorFunction = inngest.createFunction(
                   {
                     ...cacheScope,
                     role: "run",
+                    // The fast lane runs alongside the default lane, so it
+                    // builds in its own dir (`<env>__run__fast`).
+                    lane: runInfo.lane,
                     // Working-tree (agent verification) builds materialize a
                     // user's draft overlay — isolate them in a per-user dir so
                     // they can never reconcile the shared committed-deploy dir
@@ -677,7 +727,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       if (!failed) {
         const finishedRun = await DbtRun.findById(runObjectId)
           .select(
-            "artifactKeys environment gitBranch workingTreeUserId localOverlay deploysAfterRun",
+            "artifactKeys environment gitBranch workingTreeUserId localOverlay deploysAfterRun lane",
           )
           .lean();
         if (finishedRun?.artifactKeys?.manifest) {
@@ -863,6 +913,11 @@ export const dbtSchedulerFunction = inngest.createFunction(
  * means the process is gone.
  */
 const DBT_RUN_STALL_MS = 60 * 60 * 1000;
+/**
+ * A queued run waits for its project lane's slot (one run per
+ * `<projectId>:<lane>`) and for its job's slot. 6 h covers a long default
+ * lane backlog. Past it the event is treated as lost.
+ */
 const DBT_RUN_QUEUED_STALL_MS = 6 * 60 * 60 * 1000;
 
 /**
@@ -949,8 +1004,9 @@ export const dbtRunSweeperFunction = inngest.createFunction(
 
       for (const run of activeRuns) {
         if (run.status === "queued") {
-          // Queued runs can legitimately wait behind the per-project
-          // concurrency lock — only sweep clearly lost events.
+          // Queued runs can legitimately wait behind their project lane's
+          // concurrency lock (or a run of the same job in the other lane):
+          // only sweep clearly lost events.
           if (now - run.createdAt.getTime() > DBT_RUN_QUEUED_STALL_MS) {
             abandoned.push({
               run,

@@ -22,6 +22,12 @@ import {
 } from "./dbt-working-tree.service";
 import { parseDbtCommands } from "./commands";
 import { cancelLocalRun } from "./dbt-run-registry";
+import {
+  chooseRunLane,
+  dbtRunLaneFilter,
+  dbtRunQueueKeys,
+  type DbtRunLane,
+} from "./dbt-run-queue";
 import type { AdhocDbtResult } from "./dbt-project.service";
 import { loggers } from "../logging";
 
@@ -40,11 +46,15 @@ const TERMINAL_DBT_RUN_STATUSES: ReadonlySet<DbtRunStatus> = new Set([
  */
 export function promotesProdManifest(
   run: Pick<IDbtRun, "gitBranch" | "workingTreeUserId" | "localOverlay"> &
-    Partial<Pick<IDbtRun, "deploysAfterRun">>,
+    Partial<Pick<IDbtRun, "deploysAfterRun" | "lane">>,
   ranInProdLikeEnvironment: boolean,
 ): boolean {
   if (!ranInProdLikeEnvironment) return false;
   if (run.localOverlay || run.workingTreeUserId) return false;
+  // A fast-lane run (a short scheduled job) runs alongside the default lane.
+  // It builds a slice of the project, and its manifest could land after a
+  // full build's and roll prod state back. Only the default lane promotes.
+  if (run.lane === "fast") return false;
   // A pre-deploy build (`state:modified+,+<model>`) builds only the changed
   // models apps read. Its manifest would mark every OTHER changed model as
   // built, and the next push's state:modified+ would skip it.
@@ -60,9 +70,9 @@ const logger = loggers.api("dbt-run");
 
 /**
  * How long an ad-hoc run may sit in "queued" before the read-side watchdog
- * declares it failed. With no sibling run executing for the project, the
- * executor claims a run within seconds, so anything still queued past this
- * window (and with nothing running ahead of it) means the event was never
+ * declares it failed. With no sibling run executing in the run's lane of the
+ * project, the executor claims a run within seconds, so anything still queued
+ * past this window (and with nothing running ahead of it) means the event was never
  * delivered — worker down, or events not routed to this env (branch/preview).
  *
  * This is a fast, interactive complement to the cron `dbtRunSweeperFunction`,
@@ -77,6 +87,8 @@ type ReconcilableRun = {
   projectId?: Types.ObjectId;
   jobId?: Types.ObjectId;
   status: string;
+  /** Absent on runs that predate lanes: the default lane. */
+  lane?: DbtRunLane | null;
   createdAt?: Date;
   startedAt?: Date;
   error?: string;
@@ -99,9 +111,11 @@ export function isStaleQueued(
  *
  *  - **Ad-hoc only.** Scheduled job runs (jobId set) are left to the cron
  *    sweeper, which mirrors job-health stats; failing them here would drift.
- *  - **No sibling executing.** The executor serializes per project
- *    (concurrency limit 1 / projectId), so a queued run with a peer already
- *    `running` is legitimately waiting its turn — never fail those.
+ *  - **No sibling executing in its lane.** The executor serializes per
+ *    project and lane (concurrency limit 1 / `<projectId>:<lane>`), so a
+ *    queued run with a peer already `running` in the same lane is
+ *    legitimately waiting its turn — never fail those. A peer in the other
+ *    lane does not hold this run's slot.
  *  - **Guarded write** on `status: "queued"`, mutually exclusive with the
  *    executor's `mark-running` claim, so a last-moment pickup is never clobbered.
  *
@@ -119,12 +133,13 @@ export async function reconcileStaleQueuedRun<T extends ReconcilableRun>(
   if (!isStaleQueued(run)) return run;
   // Scheduled job runs are the cron sweeper's responsibility (+ stat mirroring).
   if (run.jobId) return run;
-  // Still waiting behind the per-project concurrency lock? Not a lost event.
+  // Still waiting behind its lane's concurrency lock? Not a lost event.
   if (run.projectId) {
     const peerRunning = await DbtRun.exists({
       projectId: run.projectId,
       status: "running",
       _id: { $ne: run._id },
+      ...dbtRunLaneFilter(run.lane),
     });
     if (peerRunning) return run;
   }
@@ -258,7 +273,7 @@ export async function triggerDbtRun(params: {
   /**
    * When set (scheduled runs), collapse onto an already-active run for the
    * same job instead of stacking a new one — the executor only runs one run
-   * per project at a time, so overlapping schedule ticks would otherwise queue
+   * per job at a time, so overlapping schedule ticks would otherwise queue
    * up redundant work (dbt Cloud skips overlapping scheduled runs likewise).
    */
   skipIfActive?: boolean;
@@ -320,6 +335,13 @@ export async function triggerDbtRun(params: {
         })) ?? undefined)
       : undefined);
 
+  // Short scheduled jobs run in the fast lane; every other run waits in the
+  // default lane (dbt-run-queue.ts).
+  const lane = await chooseRunLane({
+    trigger: params.trigger,
+    jobId: params.jobId,
+  });
+
   const run = await DbtRun.create({
     workspaceId: new Types.ObjectId(params.workspaceId),
     projectId: new Types.ObjectId(params.projectId),
@@ -329,6 +351,7 @@ export async function triggerDbtRun(params: {
     status: "queued",
     trigger: params.trigger,
     triggeredBy: params.triggeredBy,
+    lane,
     gitBranch: params.gitBranch,
     workingTreeUserId: params.workingTreeUserId,
     sourceBranch,
@@ -359,6 +382,13 @@ export async function triggerDbtRun(params: {
         projectId: params.projectId,
         runId: run._id.toString(),
         jobId: params.jobId,
+        // Concurrency keys: one run per project lane, one run per job.
+        ...dbtRunQueueKeys({
+          projectId: params.projectId,
+          runId: run._id.toString(),
+          jobId: params.jobId,
+          lane,
+        }),
         // Starts the 60-minute cap on held app deploys (dbt-run.ts).
         ...(params.deploysAfterRun ? { holdsDeploys: true } : {}),
       },
@@ -490,6 +520,8 @@ export async function triggerDbtRunRetry(params: {
     status: "queued",
     trigger: "manual",
     triggeredBy: params.triggeredBy,
+    // A manual retry waits in the default lane.
+    lane: "default",
     // Resume the same source tree the failed run built — a laptop run's
     // uploaded overlay included (without it the retry would build the
     // default branch under a "local checkout" label).
@@ -523,6 +555,12 @@ export async function triggerDbtRunRetry(params: {
         projectId: source.projectId.toString(),
         runId: run._id.toString(),
         jobId: source.jobId?.toString(),
+        ...dbtRunQueueKeys({
+          projectId: source.projectId.toString(),
+          runId: run._id.toString(),
+          jobId: source.jobId?.toString(),
+          lane: "default",
+        }),
       },
     });
   } catch (sendError) {

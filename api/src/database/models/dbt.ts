@@ -229,6 +229,12 @@ export const GitHubInstallation = mongoose.model<IGitHubInstallation>(
   GitHubInstallationSchema,
 );
 
+/**
+ * Executor lane of a dbt run. Each project runs one invocation at a time per
+ * lane. Short scheduled jobs use "fast"; everything else uses "default".
+ */
+export type DbtRunLane = "default" | "fast";
+
 export interface IDbtJob extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
@@ -264,6 +270,15 @@ export interface IDbtJob extends Document {
   enabled: boolean;
   /** Reserved for Slim CI (--defer against the stored prod manifest). */
   deferToProduction: boolean;
+  /**
+   * Cached executor lane for this job's scheduled runs (dbt-run-queue.ts,
+   * resolveJobLane): "fast" when its median successful run is under 5 min
+   * over at least 5 of its last 20. Recomputed at trigger time after 24 h.
+   */
+  lane?: DbtRunLane;
+  laneEvaluatedAt?: Date;
+  /** Median of the sampled successful runs when `lane` was computed. */
+  laneMedianMs?: number;
   createdBy: string;
   createdAt: Date;
   updatedAt: Date;
@@ -306,6 +321,9 @@ const DbtJobSchema = new Schema<IDbtJob>(
     },
     enabled: { type: Boolean, default: true },
     deferToProduction: { type: Boolean, default: false },
+    lane: { type: String, enum: ["default", "fast"] },
+    laneEvaluatedAt: { type: Date },
+    laneMedianMs: { type: Number },
     createdBy: { type: String, required: true },
   },
   { collection: "dbt_jobs", timestamps: true },
@@ -350,6 +368,11 @@ export interface IDbtRun extends Document {
   trigger: "schedule" | "manual" | "agent" | "ci";
   /** User id for manual triggers, "scheduler" / "agent" / "ci-webhook". */
   triggeredBy: string;
+  /**
+   * Executor lane chosen at trigger time (dbt-run-queue.ts, chooseRunLane).
+   * Absent on runs that predate lanes, which ran in the default lane.
+   */
+  lane?: DbtRunLane;
   /**
    * Branch whose committed base tree the run executes against (repo-bound
    * projects). Unset means the project default branch. CI runs set the PR
@@ -509,6 +532,7 @@ const DbtRunSchema = new Schema<IDbtRun>(
       required: true,
     },
     triggeredBy: { type: String, required: true },
+    lane: { type: String, enum: ["default", "fast"] },
     gitBranch: { type: String },
     workingTreeUserId: { type: String },
     sourceBranch: { type: String },

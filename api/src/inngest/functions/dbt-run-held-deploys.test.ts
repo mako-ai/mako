@@ -231,3 +231,68 @@ describe("the 60-minute cap", () => {
     expect(stored?.deploysAfterRun?.rereleasedAt).toBeUndefined();
   });
 });
+
+describe("executor lanes", () => {
+  it("locks one run per project lane and one run per job", () => {
+    const opts = (
+      dbtRunExecutorFunction as unknown as { options: { concurrency: unknown } }
+    ).options;
+    expect(opts.concurrency).toEqual([
+      { key: "event.data.laneKey", limit: 1 },
+      { key: "event.data.jobKey", limit: 1 },
+    ]);
+  });
+
+  it("requeues an event sent before lanes into the default lane", async () => {
+    const run = await heldRun("queued");
+    const runId = run._id.toString();
+    const projectId = run.projectId.toString();
+
+    const out = await handlerOf(dbtRunExecutorFunction)({
+      event: {
+        data: { workspaceId: ws, projectId, runId, holdsDeploys: true },
+      },
+      step,
+    });
+
+    expect(out).toEqual({
+      requeued: true,
+      laneKey: `${projectId}:default`,
+      jobKey: `run:${runId}`,
+    });
+    expect(step.sendEvent).toHaveBeenCalledTimes(1);
+    expect(step.sendEvent).toHaveBeenCalledWith("requeue-with-lane-keys", {
+      id: `dbt-run-requeue:${runId}`,
+      name: "dbt/run.requested",
+      // holdsDeploys stays off the copy: the original started the cap.
+      data: {
+        workspaceId: ws,
+        projectId,
+        runId,
+        laneKey: `${projectId}:default`,
+        jobKey: `run:${runId}`,
+      },
+    });
+    // The original did not claim the run: the copy will.
+    expect((await DbtRun.findById(run._id).lean())?.status).toBe("queued");
+    expect(requestAppDeploys).not.toHaveBeenCalled();
+  });
+
+  it("an old job-run event keeps its job lock", async () => {
+    const jobId = new Types.ObjectId().toString();
+    const run = await heldRun("queued", { jobId });
+    const projectId = run.projectId.toString();
+
+    const out = await handlerOf(dbtRunExecutorFunction)({
+      event: {
+        data: { workspaceId: ws, projectId, runId: run._id.toString(), jobId },
+      },
+      step,
+    });
+
+    expect(out).toMatchObject({
+      laneKey: `${projectId}:default`,
+      jobKey: `job:${jobId}`,
+    });
+  });
+});

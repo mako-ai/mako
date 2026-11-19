@@ -28,6 +28,7 @@ import { mkdir, readdir, rm, stat, utimes } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { loggers } from "../logging";
+import type { DbtRunLane } from "../database/workspace-schema";
 
 const logger = loggers.app();
 
@@ -71,15 +72,22 @@ export interface ProjectDirScope {
    * Deploy runs (role "run") build committed trees and stay shared.
    */
   userId?: string;
+  /**
+   * Executor lane of a deploy run. A fast-lane run executes alongside the
+   * default lane, so it gets its own dir (`<env>__run__fast`): no shared
+   * files and no shared per-dir mutex with a default-lane build.
+   */
+  lane?: DbtRunLane;
 }
 
 function sanitize(value: string): string {
   return value.replace(/[^\w.-]/g, "_");
 }
 
-function dirFor(scope: ProjectDirScope): string {
+export function dirFor(scope: ProjectDirScope): string {
   const leaf =
     `${sanitize(scope.environment)}__${scope.role}` +
+    (scope.lane === "fast" ? "__fast" : "") +
     (scope.userId ? `__u_${sanitize(scope.userId)}` : "");
   return join(
     WARM_ROOT,
