@@ -624,6 +624,15 @@ Run it in an app folder (or pass several). It exits 1 on a finding;
   anything inside a `<>` fragment: a chart loses its reference lines. The
   fix is `"pnpm": { "overrides": { "react-is": "^19.1.10" } }`.
 
+- `distinct-sum` (2.27, warning): a binding column that is a distinct count
+  (`COUNT(DISTINCT …)`, `uniq…`, `APPROX_COUNT_DISTINCT`) summed in `src/`
+  (`SUM(col)` in DuckDB SQL, or a JS `reduce`/`sum`/`pivot` next to it). One
+  person in several groups counts once per group: visibility-dashboard's unique
+  users read 13% high in Spain (19 Nov 2026). Return the total at the shown
+  grain from the binding (`GROUP BY GROUPING SETS`), or mark a deliberate sum
+  ("user-days") with `// mako-lint-ignore distinct-sum` and the reason.
+  Warnings print and never fail the run.
+
 `--rules=react-version` runs only the named rules (2.24).
 
 ### Chart tooltips: `TableTooltip` (2.10+, every series from 2.15)
