@@ -348,6 +348,9 @@ interface Group {
 export const DECRYPT_FLAG = "--i-understand-this-decrypts";
 
 export const USAGE = `Usage: check-google-credential-types.ts (--dry-run | ${DECRYPT_FLAG}) [--workspace <24-hex id>]
+  --report api-base-url
+              second report: where each BigQuery connection's api_base_url
+              points (google, loopback, private, other, empty); never the URL
   --dry-run   count candidates per workspace and type; decrypts nothing
   ${DECRYPT_FLAG}
               decrypt every candidate credential in memory and classify it`;
@@ -357,6 +360,8 @@ export class UsageError extends Error {}
 export interface CheckOptions {
   dryRun: boolean;
   workspace?: string;
+  /** Default: the credential-type report. */
+  report?: "api-base-url";
 }
 
 export interface CheckIO {
@@ -372,7 +377,12 @@ export function parseCheckArgs(argv: string[]): CheckOptions {
     if (arg === "--dry-run") opts.dryRun = true;
     else if (arg === DECRYPT_FLAG) decrypts = true;
     else if (arg === "--workspace") opts.workspace = argv[++i];
-    else throw new Error(`Unknown argument: ${arg}`);
+    else if (arg === "--report") {
+      if (argv[++i] !== "api-base-url") {
+        throw new UsageError("--report only knows: api-base-url");
+      }
+      opts.report = "api-base-url";
+    } else throw new Error(`Unknown argument: ${arg}`);
   }
   if (!opts.dryRun && !decrypts) {
     throw new UsageError("Pass --dry-run or " + DECRYPT_FLAG);
@@ -567,6 +577,241 @@ export async function runCheck(
   return { scanned, classified, bad };
 }
 
+// ── Second report: where BigQuery connections point ─────────────────────
+
+export type BaseUrlClass =
+  | "google"
+  | "loopback"
+  | "private"
+  | "other"
+  | "empty"
+  | "undecryptable"
+  | "string_config_unparsed"
+  | "candidate"; // dry run only
+
+const LISTED_BASE_URL_CLASSES = new Set<BaseUrlClass>([
+  "loopback",
+  "private",
+  "other",
+  "undecryptable",
+  "string_config_unparsed",
+]);
+
+function ipv4Octets(host: string): number[] | null {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!m) return null;
+  const o = m.slice(1).map(Number);
+  return o.every(n => n <= 255) ? o : null;
+}
+
+function ipv4Class(o: number[]): "loopback" | "private" | null {
+  const [a, b] = o;
+  if (a === 127 || a === 0) return "loopback";
+  if (
+    a === 10 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 169 && b === 254) ||
+    (a === 100 && b >= 64 && b <= 127)
+  ) {
+    return "private";
+  }
+  return null;
+}
+
+/**
+ * Class of an api_base_url. Looks at scheme, host and path only to pick a
+ * class; none of them leaves this function. No DNS lookup.
+ */
+export function classifyBaseUrl(raw: unknown): BaseUrlClass {
+  if (raw === undefined || raw === null) return "empty";
+  if (typeof raw !== "string") return "other";
+  const trimmed = raw.trim();
+  if (!trimmed) return "empty";
+  // The BigQuery client prepends https:// when there is no scheme.
+  const withScheme = /^https?:\/\//i.test(trimmed)
+    ? trimmed
+    : `https://${trimmed}`;
+  let url: URL;
+  try {
+    url = new URL(withScheme);
+  } catch {
+    return "other";
+  }
+  let host = url.hostname.toLowerCase();
+  if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
+  const v4 = ipv4Octets(host);
+  if (v4) return ipv4Class(v4) ?? "other";
+  if (host.includes(":")) {
+    if (host === "::1" || host === "::") return "loopback";
+    // IPv4-mapped (::ffff:a.b.c.d is normalised to ::ffff:xxxx:xxxx).
+    const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
+    if (mapped) {
+      const hi = parseInt(mapped[1], 16);
+      const lo = parseInt(mapped[2], 16);
+      return ipv4Class([hi >> 8, hi & 255, lo >> 8, lo & 255]) ?? "other";
+    }
+    const first = host.split(":")[0];
+    const head = first ? parseInt(first, 16) : 0;
+    if ((head & 0xfe00) === 0xfc00) return "private";
+    if ((head & 0xffc0) === 0xfe80) return "private";
+    return "other";
+  }
+  if (host === "localhost" || host.endsWith(".localhost")) return "loopback";
+  const pathIsEmpty = url.pathname === "/" || url.pathname === "";
+  if (
+    url.protocol === "https:" &&
+    host.endsWith(".googleapis.com") &&
+    pathIsEmpty &&
+    !url.search &&
+    !url.username &&
+    !url.password
+  ) {
+    return "google";
+  }
+  return "other";
+}
+
+function isBigQueryType(kind: Kind, type: string): boolean {
+  return kind === "database"
+    ? type === "bigquery"
+    : type === "bigquery" || (type.startsWith("ws:") && /bigquery/i.test(type));
+}
+
+/** Decrypt api_base_url in memory, classify it, drop it. */
+function classifyStoredBaseUrl(raw: unknown): BaseUrlClass {
+  let text: unknown = null;
+  try {
+    try {
+      text = decryptDeep(raw);
+    } catch {
+      return "undecryptable";
+    }
+    return classifyBaseUrl(text);
+  } finally {
+    scrub(text);
+    text = null;
+  }
+}
+
+/** Second report. Read only. Prints classes and counts, never a URL. */
+export async function runApiBaseUrlReport(
+  opts: CheckOptions,
+  io: CheckIO,
+): Promise<{ scanned: number; classified: number }> {
+  interface BaseGroup {
+    workspaceId: string;
+    kind: Kind;
+    connType: string;
+    cls: BaseUrlClass;
+    count: number;
+    ids: string[];
+  }
+  const groups = new Map<string, BaseGroup>();
+  let scanned = 0;
+  let classified = 0;
+  const filter = opts.workspace
+    ? { workspaceId: new mongoose.Types.ObjectId(opts.workspace) }
+    : {};
+  const sources: Array<[Kind, AsyncIterable<StoredDoc>]> = [
+    [
+      "database",
+      DatabaseConnection.collection.find(filter, {
+        projection: { workspaceId: 1, type: 1, connection: 1 },
+      }) as unknown as AsyncIterable<StoredDoc>,
+    ],
+    [
+      "source",
+      SourceConnection.collection.find(filter, {
+        projection: { workspaceId: 1, type: 1, config: 1 },
+      }) as unknown as AsyncIterable<StoredDoc>,
+    ],
+  ];
+  for (const [kind, cursor] of sources) {
+    for await (const doc of cursor) {
+      scanned += 1;
+      const stored = kind === "database" ? doc.connection : doc.config;
+      if (!isBigQueryType(kind, doc.type)) continue;
+      let cls: BaseUrlClass;
+      if (opts.dryRun) {
+        // Candidates by type only: nothing is decrypted or parsed.
+        cls = "candidate";
+      } else {
+        const container = containerOf(stored);
+        if (container === UNPARSED) cls = "string_config_unparsed";
+        else {
+          cls = classifyStoredBaseUrl(container?.api_base_url);
+          if (typeof stored === "string" && container) scrub(container);
+        }
+      }
+      classified += 1;
+      const workspaceId = doc.workspaceId.toString();
+      const key = [workspaceId, kind, doc.type, cls].join("|");
+      let g = groups.get(key);
+      if (!g) {
+        g = { workspaceId, kind, connType: doc.type, cls, count: 0, ids: [] };
+        groups.set(key, g);
+      }
+      g.count += 1;
+      if (LISTED_BASE_URL_CLASSES.has(cls)) g.ids.push(doc._id.toString());
+    }
+  }
+  const wsIds = [...new Set([...groups.values()].map(g => g.workspaceId))];
+  const names = new Map<string, string>();
+  if (wsIds.length > 0) {
+    const found = await Workspace.collection
+      .find(
+        { _id: { $in: wsIds.map(i => new mongoose.Types.ObjectId(i)) } },
+        { projection: { name: 1 } },
+      )
+      .toArray();
+    for (const r of found) names.set(String(r._id), String(r.name ?? ""));
+  }
+  io.out(
+    [
+      "workspaceId",
+      "workspace",
+      "kind",
+      "connType",
+      "class",
+      "count",
+      "ids",
+    ].join("\t"),
+  );
+  const order = [
+    "other",
+    "private",
+    "loopback",
+    "undecryptable",
+    "string_config_unparsed",
+  ];
+  const rank = (c: string) => (order.includes(c) ? order.indexOf(c) : 99);
+  const sorted = [...groups.values()].sort(
+    (a, b) =>
+      rank(a.cls) - rank(b.cls) ||
+      a.workspaceId.localeCompare(b.workspaceId) ||
+      a.connType.localeCompare(b.connType),
+  );
+  for (const g of sorted) {
+    io.out(
+      [
+        g.workspaceId,
+        (names.get(g.workspaceId) ?? "").replace(/[\t\r\n]+/g, " "),
+        g.kind,
+        g.connType.replace(/[\t\r\n]+/g, " "),
+        g.cls,
+        String(g.count),
+        g.ids.join(","),
+      ].join("\t"),
+    );
+  }
+  io.err(
+    `${opts.dryRun ? "DRY RUN (nothing decrypted). " : ""}` +
+      `base URL report: scanned ${scanned} connections, ${classified} BigQuery candidates.`,
+  );
+  return { scanned, classified };
+}
+
 /** The command line. Returns the exit code; 2 means usage, nothing ran. */
 export async function cli(
   argv: string[],
@@ -590,7 +835,8 @@ export async function cli(
   }
   await mongoose.connect(url);
   try {
-    await runCheck(opts, io);
+    if (opts.report === "api-base-url") await runApiBaseUrlReport(opts, io);
+    else await runCheck(opts, io);
   } finally {
     await mongoose.disconnect();
   }

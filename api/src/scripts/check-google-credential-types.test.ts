@@ -26,6 +26,8 @@ import { Workspace } from "../database/models/workspace";
 import {
   isCredentialFieldName,
   cli,
+  classifyBaseUrl,
+  runApiBaseUrlReport,
   deps,
   parseCheckArgs,
   runCheck,
@@ -336,6 +338,158 @@ async function main(): Promise<void> {
     assert.equal(dryRows.find(r => r[3] === "bigquery")?.[7], "9");
     assert.ok(!dryRows.some(r => r[3] === "stripe" || r[3] === "postgresql"));
     assert.ok(dryErr[0].startsWith("DRY RUN"));
+
+    // ── Second report: api_base_url classes ──
+    const urls: Array<[string, string]> = [
+      ["https://bigquery.googleapis.com", "google"],
+      ["https://bigquery.googleapis.com/", "google"],
+      ["https://bigquery.googleapis.com/evil", "other"],
+      ["http://bigquery.googleapis.com", "other"],
+      ["https://googleapis.com.evil.example", "other"],
+      ["", "empty"],
+      ["localhost:8080", "loopback"],
+      ["http://127.0.0.1:9050/x?token=SECRET", "loopback"],
+      ["http://127.8.9.10", "loopback"],
+      ["http://[::1]:80", "loopback"],
+      ["http://10.1.2.3", "private"],
+      ["http://172.16.0.1", "private"],
+      ["http://172.32.0.1", "other"],
+      ["http://192.168.1.1", "private"],
+      ["http://169.254.169.254/latest", "private"],
+      ["http://100.64.0.1", "private"],
+      ["http://100.128.0.1", "other"],
+      ["http://[fd12:3456::1]", "private"],
+      ["http://[fe80::1]", "private"],
+      ["http://[::ffff:10.0.0.1]", "private"],
+      ["http://2130706433", "loopback"],
+      ["https://evil.example/path", "other"],
+    ];
+    for (const [url, want] of urls) {
+      assert.equal(classifyBaseUrl(url), want, `class of ${want} case`);
+    }
+    assert.equal(classifyBaseUrl(undefined), "empty");
+
+    await DatabaseConnection.collection.deleteMany({});
+    await SourceConnection.collection.deleteMany({});
+    const mk = (type: string, key: "connection" | "config", body: unknown) => ({
+      workspaceId,
+      type,
+      name: type,
+      createdAt: now,
+      updatedAt: now,
+      [key]: enc(body),
+    });
+    await DatabaseConnection.collection.insertMany([
+      mk("bigquery", "connection", { project_id: "p" }),
+      mk("bigquery", "connection", { api_base_url: "" }),
+      mk("bigquery", "connection", {
+        api_base_url: "https://bigquery.googleapis.com",
+      }),
+      mk("bigquery", "connection", {
+        api_base_url: "http://127.0.0.1:9050/x?token=SECRET",
+      }),
+      mk("bigquery", "connection", { api_base_url: "http://10.0.0.5/priv" }),
+      mk("bigquery", "connection", {
+        api_base_url: "https://evil.example/path",
+      }),
+      mk("postgresql", "connection", {
+        api_base_url: "https://evil.example/path",
+      }),
+      { ...mk("bigquery", "connection", {}), connection: "not json at all" },
+      {
+        ...mk("bigquery", "connection", {}),
+        connection: {
+          api_base_url: (() => {
+            process.env.ENCRYPTION_KEY = OTHER_KEY;
+            const v = encryptString("https://evil.example/path");
+            process.env.ENCRYPTION_KEY = TEST_KEY;
+            return v;
+          })(),
+        },
+      },
+    ]);
+    await SourceConnection.collection.insertMany([
+      mk("ws:bigquery", "config", {
+        api_base_url: "http://127.0.0.1:9050/x?token=SECRET",
+      }),
+      mk("ws:bigquery", "config", { project_id: "p" }),
+      mk("stripe", "config", { api_base_url: "https://evil.example/path" }),
+    ]);
+
+    const BASE_SECRETS = [
+      "127.0.0.1",
+      "9050",
+      "token=SECRET",
+      "SECRET",
+      "evil.example",
+      "/path",
+      "10.0.0.5",
+      "googleapis",
+      "api_base_url",
+    ];
+    const baseOut: string[] = [];
+    const baseErr: string[] = [];
+    decryptCalls = 0;
+    const cap2 = captureStreams();
+    try {
+      await runApiBaseUrlReport(
+        { dryRun: false, report: "api-base-url" },
+        { out: l => baseOut.push(l), err: l => baseErr.push(l) },
+      );
+    } finally {
+      cap2.restore();
+    }
+    assert.equal(cap2.restore(), "");
+    const baseText = [...baseOut, ...baseErr].join("\n");
+    for (const secret of BASE_SECRETS) {
+      assert.ok(!baseText.includes(secret), `base-url output leaked ${secret}`);
+    }
+    const baseRows = baseOut.slice(1).map(l => l.split("\t"));
+    assert.ok(baseOut.every(l => l.split("\t").length === 7));
+    const bf = (t: string, c: string) =>
+      baseRows.find(r => r[3] === t && r[4] === c);
+    assert.equal(bf("bigquery", "empty")?.[5], "2");
+    assert.equal(bf("bigquery", "google")?.[5], "1");
+    assert.equal(bf("bigquery", "loopback")?.[5], "1");
+    assert.match(bf("bigquery", "loopback")![6], /^[0-9a-f]{24}$/);
+    assert.equal(bf("bigquery", "private")?.[5], "1");
+    assert.equal(bf("bigquery", "other")?.[5], "1");
+    assert.equal(bf("bigquery", "string_config_unparsed")?.[5], "1");
+    assert.equal(bf("bigquery", "undecryptable")?.[5], "1");
+    assert.equal(bf("ws:bigquery", "loopback")?.[5], "1");
+    assert.equal(bf("ws:bigquery", "empty")?.[5], "1");
+    assert.equal(bf("bigquery", "google")?.[6], "", "google rows list no ids");
+    // postgresql and stripe never appear.
+    assert.ok(!baseRows.some(r => ["postgresql", "stripe"].includes(r[3])));
+
+    // Dry run: candidates by type, no decrypt, no key needed.
+    decryptCalls = 0;
+    delete process.env.ENCRYPTION_KEY;
+    const bdOut: string[] = [];
+    const bdErr: string[] = [];
+    await runApiBaseUrlReport(
+      { dryRun: true, report: "api-base-url" },
+      { out: l => bdOut.push(l), err: l => bdErr.push(l) },
+    );
+    process.env.ENCRYPTION_KEY = TEST_KEY;
+    assert.equal(decryptCalls, 0);
+    const bdRows = bdOut.slice(1).map(l => l.split("\t"));
+    assert.ok(bdRows.every(r => r[4] === "candidate"));
+    assert.equal(bdRows.find(r => r[3] === "bigquery")?.[5], "8");
+    assert.equal(bdRows.find(r => r[3] === "ws:bigquery")?.[5], "2");
+    assert.ok(!bdRows.some(r => ["postgresql", "stripe"].includes(r[3])));
+    const bdText = [...bdOut, ...bdErr].join("\n");
+    for (const secret of BASE_SECRETS) assert.ok(!bdText.includes(secret));
+
+    // The report needs the decrypt flag like the other mode.
+    assert.deepEqual(
+      parseCheckArgs(["--dry-run", "--report", "api-base-url"]),
+      { dryRun: true, report: "api-base-url" },
+    );
+    assert.throws(
+      () => parseCheckArgs(["--report", "api-base-url"]),
+      /--dry-run or/,
+    );
   } finally {
     await mongoose.disconnect();
     await mongod.stop();
