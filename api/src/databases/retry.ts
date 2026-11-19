@@ -23,6 +23,19 @@ export interface RetryOptions {
    * out yet". Both it and the patterns must allow the retry.
    */
   shouldRetry?: (error: Error) => boolean;
+  /**
+   * Optional: up to this share of each delay is added at random (0.5: a
+   * 1 s delay becomes 1 to 1.5 s), so callers that failed together do not
+   * retry together.
+   */
+  jitterRatio?: number;
+  /**
+   * Optional: an epoch-ms deadline. No retry starts whose delay would end
+   * at or after it; the last error is thrown instead.
+   */
+  deadline?: number;
+  /** Optional: called before each wait, e.g. to log the retry at warn. */
+  onRetry?: (retry: { attempt: number; delayMs: number; error: Error }) => void;
 }
 
 /**
@@ -159,6 +172,9 @@ export async function withRetry<T>(
     retryableErrorPatterns,
     signal,
     shouldRetry,
+    jitterRatio = 0,
+    deadline,
+    onRetry,
   } = options;
   let lastError: Error | undefined;
 
@@ -186,8 +202,14 @@ export async function withRetry<T>(
         break;
       }
 
-      // Calculate delay with exponential backoff
-      const delayMs = baseDelayMs * Math.pow(2, attempt);
+      // Calculate delay with exponential backoff (plus jitter, if asked)
+      const delayMs = Math.round(
+        baseDelayMs * Math.pow(2, attempt) * (1 + Math.random() * jitterRatio),
+      );
+      if (deadline !== undefined && Date.now() + delayMs >= deadline) {
+        break;
+      }
+      onRetry?.({ attempt: attempt + 1, delayMs, error: lastError });
       logger.debug("Retry attempt failed, retrying", {
         attempt: attempt + 1,
         maxRetries: maxRetries + 1,

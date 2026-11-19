@@ -4,7 +4,7 @@
  * carries it. Also the three kinds of source connection.
  * No network: the transport is replaced.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Types } from "mongoose";
 import {
   callableFor,
@@ -23,6 +23,7 @@ import {
 } from "./operations";
 import {
   ConnectionRequestError,
+  RETRY,
   callerHeaders,
   formEncode,
   forward,
@@ -1450,5 +1451,150 @@ describe("named operations build reads the profile accepts", () => {
       required: true,
     });
     expect(describeOperations("custom_api")).toEqual([]);
+  });
+});
+
+describe("retry of an idempotent request", () => {
+  const saved = { ...RETRY };
+  beforeEach(() => Object.assign(RETRY, { baseDelayMs: 10, jitterRatio: 0.5 }));
+  afterEach(() => Object.assign(RETRY, saved));
+
+  const timeout = () =>
+    new DOMException(
+      "The operation was aborted due to timeout",
+      "TimeoutError",
+    );
+  const ok = (text: string) => ({
+    status: 200,
+    headers: { "content-type": "application/json" },
+    body: Buffer.from(JSON.stringify({ text })),
+  });
+  const service = () =>
+    connection("custom_api", { base_url: "https://x.example.com", token: KEY });
+
+  it("answers a GET that timed out once after 1 retry", async () => {
+    let calls = 0;
+    setTransportForTests(async () => {
+      calls += 1;
+      if (calls === 1) throw timeout();
+      return ok("found");
+    });
+    const answer = await forward(service(), type("custom_api"), {
+      method: "GET",
+      path: "/auth/me",
+    });
+    expect(calls).toBe(2);
+    expect(answer.status).toBe(200);
+    expect(answer.body).toEqual({ text: "found" });
+  });
+
+  it("sends a POST with an Idempotency-Key again after a 503, same key", async () => {
+    const keys: Array<string | undefined> = [];
+    setTransportForTests(async (_url, options) => {
+      keys.push((options.headers as Record<string, string>)["idempotency-key"]);
+      return keys.length < 3
+        ? { status: 503, headers: {}, body: Buffer.from("busy") }
+        : ok("place");
+    });
+    const answer = await forward(service(), type("custom_api"), {
+      method: "POST",
+      path: "/call/treg.google.serp.local",
+      headers: { "Idempotency-Key": "k1" },
+      body: { q: "agence" },
+    });
+    expect(keys).toEqual(["k1", "k1", "k1"]);
+    expect(answer.status).toBe(200);
+  });
+
+  it("never sends a POST without an Idempotency-Key twice", async () => {
+    let calls = 0;
+    setTransportForTests(async () => {
+      calls += 1;
+      throw timeout();
+    });
+    const error = await forward(service(), type("custom_api"), {
+      method: "POST",
+      path: "/tasks",
+      body: { text: "call back" },
+    }).catch((e: unknown) => e);
+    expect(calls).toBe(1);
+    expect((error as ConnectionRequestError).status).toBe(503);
+
+    calls = 0;
+    setTransportForTests(async () => {
+      calls += 1;
+      return { status: 503, headers: {}, body: Buffer.from("busy") };
+    });
+    const answer = await forward(service(), type("custom_api"), {
+      method: "POST",
+      path: "/tasks",
+      body: { text: "call back" },
+    });
+    expect(calls).toBe(1);
+    expect(answer.status).toBe(503);
+  });
+
+  it("stops after 2 retries and returns the last 502 as it is", async () => {
+    let calls = 0;
+    setTransportForTests(async () => {
+      calls += 1;
+      return { status: 502, headers: {}, body: Buffer.from("bad gateway") };
+    });
+    const answer = await forward(service(), type("custom_api"), {
+      method: "GET",
+      path: "/",
+    });
+    expect(calls).toBe(3);
+    expect(answer.status).toBe(502);
+  });
+
+  it("does not retry a 500 or a refused connection", async () => {
+    let calls = 0;
+    setTransportForTests(async () => {
+      calls += 1;
+      return { status: 500, headers: {}, body: Buffer.from("bug") };
+    });
+    await forward(service(), type("custom_api"), { method: "GET", path: "/" });
+    expect(calls).toBe(1);
+
+    calls = 0;
+    setTransportForTests(async () => {
+      calls += 1;
+      const cause = Object.assign(new Error("refused"), {
+        code: "ECONNREFUSED",
+      });
+      throw new TypeError("fetch failed", { cause });
+    });
+    const error = await forward(service(), type("custom_api"), {
+      method: "GET",
+      path: "/",
+    }).catch((e: unknown) => e);
+    expect(calls).toBe(1);
+    expect((error as Error).message).toMatch(/could not be reached/);
+  });
+
+  it("keeps every attempt and wait inside the deadline", async () => {
+    Object.assign(RETRY, { baseDelayMs: 20, deadlineMs: 300 });
+    const timeouts: number[] = [];
+    setTransportForTests(async (_url, options) => {
+      timeouts.push(options.timeoutMs ?? 0);
+      await new Promise(done => setTimeout(done, options.timeoutMs));
+      throw timeout();
+    });
+    const started = Date.now();
+    const error = await forward(
+      service(),
+      type("custom_api"),
+      { method: "GET", path: "/" },
+      { timeoutMs: 200 },
+    ).catch((e: unknown) => e);
+    const elapsed = Date.now() - started;
+    expect((error as ConnectionRequestError).status).toBe(503);
+    expect((error as Error).message).toMatch(/did not answer/);
+    // The second attempt only gets the time left; a third never starts.
+    expect(timeouts[0]).toBe(200);
+    expect(timeouts.length).toBe(2);
+    expect(timeouts[1]).toBeLessThanOrEqual(80);
+    expect(elapsed).toBeLessThan(300 + 50);
   });
 });

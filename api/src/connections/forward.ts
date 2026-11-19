@@ -16,6 +16,8 @@ import {
 } from "../services/safe-fetch.service";
 import { RateGateBusyError, throttledRequest } from "../connectors/rate-gate";
 import { redactSecrets } from "./redact";
+import { withRetry } from "../databases/retry";
+import { loggers } from "../logging";
 import type { ISourceConnection } from "../database/workspace-schema";
 import {
   applyCredential,
@@ -26,6 +28,8 @@ import {
   type CallableConnection,
   type RequestShape,
 } from "./callable";
+
+const logger = loggers.connector("proxy");
 
 /**
  * A caller mistake, a refusal, or a service Mako could not reach (503): the
@@ -472,9 +476,8 @@ export async function send(
   );
 
   const gate = rateGateOf(callable, connection);
-  let answer: SafeRequestResult;
-  try {
-    answer = await throttledRequest(
+  const attempt = (timeoutMs: number | undefined) =>
+    throttledRequest(
       gate.key,
       () =>
         transport(url.toString(), {
@@ -482,12 +485,17 @@ export async function send(
           headers,
           body,
           signal: options.signal,
-          timeoutMs: options.timeoutMs,
+          timeoutMs,
         }),
       gate.minDelayMs,
       "proxy",
       { signal: options.signal },
     );
+  let answer: SafeRequestResult;
+  try {
+    answer = isIdempotent(request)
+      ? await withRetries(attempt, url, request.method, options)
+      : await attempt(options.timeoutMs);
   } catch (error) {
     if (error instanceof RateGateBusyError) {
       throw new ConnectionRequestError(error.message, 503);
@@ -511,6 +519,118 @@ export async function send(
     );
   }
   return clean(answer, callable, config, sent);
+}
+
+/** Methods that never change anything, so they may be sent twice. */
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/**
+ * Whether `request` may be sent again after an unknown outcome: a safe
+ * method (or a POST read as GET by X-HTTP-Method-Override), or a request
+ * carrying an Idempotency-Key, which the service uses to run it once.
+ */
+export function isIdempotent(request: ResolvedRequest): boolean {
+  if (SAFE_METHODS.has(request.method) && !request.methodOverride) return true;
+  if (request.method === "POST" && request.methodOverride === "GET") {
+    return true;
+  }
+  return Boolean(request.headers["idempotency-key"]?.trim());
+}
+
+/** Answers from the service an idempotent request is sent again on. */
+const RETRY_STATUSES = new Set([502, 503, 504]);
+
+/** safeRequest's own timeout for one attempt. */
+const ATTEMPT_TIMEOUT_MS = 30_000;
+
+/**
+ * Retries of an idempotent request: at most 2, after 1 s then 2 s, each
+ * with up to 50% jitter, and none past `deadlineMs`. 3 attempts of 30 s and
+ * both waits take at most 94.5 s. The runtime route sets no limit of its
+ * own; the worker's fetch waits up to 300 s (undici's headers timeout) and
+ * Cloud Run 3600 s.
+ */
+export const RETRY = {
+  maxRetries: 2,
+  baseDelayMs: 1_000,
+  jitterRatio: 0.5,
+  deadlineMs: 100_000,
+};
+
+/** One attempt that may be worth another: a gateway error or no answer. */
+class TransientAttempt extends Error {
+  constructor(
+    readonly answer: SafeRequestResult | undefined,
+    readonly failure: unknown,
+  ) {
+    super("transient upstream outcome");
+    this.name = "TransientAttempt";
+  }
+}
+
+/**
+ * `attempt` sent again (databases/retry.ts `withRetry`) after a timeout, a
+ * reset or a 502/503/504, within RETRY.deadlineMs; each attempt gets at most
+ * the time left. The last answer or error comes back as one attempt's would.
+ */
+async function withRetries(
+  attempt: (timeoutMs: number) => Promise<SafeRequestResult>,
+  url: URL,
+  method: string,
+  options: { signal?: AbortSignal; timeoutMs?: number },
+): Promise<SafeRequestResult> {
+  const deadline = Date.now() + RETRY.deadlineMs;
+  const perAttempt = options.timeoutMs ?? ATTEMPT_TIMEOUT_MS;
+  try {
+    return await withRetry(
+      async () => {
+        let answer: SafeRequestResult;
+        try {
+          answer = await attempt(
+            Math.max(1, Math.min(perAttempt, deadline - Date.now())),
+          );
+        } catch (error) {
+          // A refused or unresolvable host, a hung-up caller: no retry.
+          const failure = options.signal?.aborted
+            ? null
+            : unreachableReason(error);
+          if (failure?.maybeSent) throw new TransientAttempt(undefined, error);
+          throw error;
+        }
+        if (RETRY_STATUSES.has(answer.status)) {
+          throw new TransientAttempt(answer, undefined);
+        }
+        return answer;
+      },
+      {
+        maxRetries: RETRY.maxRetries,
+        baseDelayMs: RETRY.baseDelayMs,
+        jitterRatio: RETRY.jitterRatio,
+        deadline,
+        retryableErrorPatterns: [/^TransientAttempt: /],
+        shouldRetry: () => !options.signal?.aborted,
+        onRetry: ({ attempt: retry, delayMs, error }) => {
+          const last = error as TransientAttempt;
+          logger.warn("Retrying an idempotent connection request", {
+            host: url.host,
+            method,
+            attempt: retry + 1,
+            maxAttempts: RETRY.maxRetries + 1,
+            delayMs,
+            outcome: last.answer
+              ? `HTTP ${last.answer.status}`
+              : (unreachableReason(last.failure)?.reason ?? "no answer"),
+          });
+        },
+      },
+    );
+  } catch (error) {
+    if (error instanceof TransientAttempt) {
+      if (error.answer) return error.answer;
+      throw error.failure;
+    }
+    throw error;
+  }
 }
 
 /**
