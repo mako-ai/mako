@@ -41,6 +41,7 @@ import { isCronDue, nextCronRunAt } from "../../services/cron-due";
 import { pausedScheduleAppIds } from "../../apps/app-lifecycle.service";
 import { isBindingArtifactReady } from "../../apps/deployment.service";
 import { PUBLISH_ACTOR } from "../../apps/worktree.service";
+import { isResourceExhaustedError } from "../../databases/retry";
 
 import { APPS_BINDING_BUILD_CONCURRENCY } from "./apps-binding-concurrency";
 
@@ -62,6 +63,8 @@ interface MaterializeEventData {
   attempt?: number;
   /** Which release queued it, so a later publish gets new event ids. */
   release?: number;
+  /** The one retry of a scheduled build the warehouse ran out of resources on. */
+  resourceRetry?: boolean;
 }
 
 /**
@@ -290,6 +293,38 @@ async function afterPublishRebuildFailed(
   }
 }
 
+/** Wait before the one retry of a scheduled build that ran out of resources. */
+export const RESOURCE_RETRY_DELAY_MS = 10 * 60 * 1000;
+
+/**
+ * A scheduled build failed on warehouse memory, slots or time. Queue it once
+ * more in 10 minutes. Without this the binding waits for its next cron run,
+ * up to a day of stale data. The retry itself never queues another.
+ */
+async function queueResourceRetry(data: MaterializeEventData): Promise<void> {
+  const now = Date.now();
+  try {
+    await inngest.send({
+      id: `binding-resource-retry-${data.key}-${Math.floor(now / 60_000)}`,
+      name: APPS_BINDING_MATERIALIZE_EVENT,
+      data: {
+        workspaceId: data.workspaceId,
+        projectId: data.projectId,
+        binding: data.binding,
+        key: data.key,
+        resourceRetry: true,
+      } satisfies MaterializeEventData,
+      ts: now + RESOURCE_RETRY_DELAY_MS,
+    });
+  } catch (sendError) {
+    log.warn("Could not queue a binding resource retry", {
+      projectId: data.projectId,
+      binding: data.binding,
+      error: sendError instanceof Error ? sendError.message : String(sendError),
+    });
+  }
+}
+
 /** A later success answers an earlier recorded failure of this binding. */
 async function clearBindingRefreshError(
   projectId: string,
@@ -329,6 +364,18 @@ async function isScheduledBuildMoot(
 }
 
 /**
+ * Is a resource retry moot? Only when a build landed after the failure that
+ * queued it. The failed attempt itself makes the binding look not due.
+ */
+async function isResourceRetryMoot(
+  projectId: string,
+  name: string,
+): Promise<boolean> {
+  const state = await getBindingState(projectId, name);
+  return state?.history?.[0]?.status !== "error";
+}
+
+/**
  * One binding build from an event. A scheduled event is judged by the
  * binding's scheduler state and artifact. An after-publish event is judged by
  * the artifact's write time, because scheduler state is per binding name and a
@@ -359,7 +406,9 @@ export async function runBindingMaterializeEvent(
     // still draining; if a build landed in between, this one is moot.
     const moot = afterPublish
       ? await isBindingArtifactReady(binding, { projectId, sha: at ?? "main" })
-      : await isScheduledBuildMoot(projectId, binding);
+      : data.resourceRetry
+        ? await isResourceRetryMoot(projectId, name)
+        : await isScheduledBuildMoot(projectId, binding);
     if (moot) return { skipped: "not-due" };
     const result = await materializeAppBinding(
       project,
@@ -374,9 +423,13 @@ export async function runBindingMaterializeEvent(
       projectId,
       binding: name,
       afterPublish: afterPublish ?? false,
+      resourceRetry: data.resourceRetry ?? false,
       error: error instanceof Error ? error.message : String(error),
     });
     if (afterPublish) await afterPublishRebuildFailed(project, data, error);
+    else if (!data.resourceRetry && isResourceExhaustedError(error)) {
+      await queueResourceRetry(data);
+    }
     return { ok: false };
   }
 }
@@ -394,7 +447,8 @@ export const appsBindingMaterializeFunction = inngest.createFunction(
     // materializeAppBinding records the failure in the binding's state and
     // the next due check backs off from it; retrying here would re-run a
     // broken warehouse query for nothing. An after-publish rebuild retries a
-    // bounded number of times by sending itself again.
+    // bounded number of times by sending itself again. A scheduled build that
+    // ran out of warehouse resources sends itself once more (queueResourceRetry).
     retries: 0,
     triggers: { event: APPS_BINDING_MATERIALIZE_EVENT },
   },
