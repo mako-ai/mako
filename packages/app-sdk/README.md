@@ -577,6 +577,9 @@ stays the default:
 - `SheetContent closeLabel="Fermer"`: the close button's screen-reader label.
 - `SelectContent container={document.fullscreenElement ?? undefined}`: where
   the list portals, for a fullscreen page.
+- `Badge variant="success" | "warning" | "danger" | "info" | "violet" | "muted"`
+  (2.26): status tones in the house tokens (`--positive`, `--warning`,
+  `--negative`, `--brand`, `--chart-4`). Stock variants are unchanged.
 
 `tailwind.css` lets Tailwind see the SDK's classes (`@source`) and maps the
 house tokens onto Tailwind's colour names (`bg-popover`,

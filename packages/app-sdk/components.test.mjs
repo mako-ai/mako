@@ -48,6 +48,10 @@ test("components: thin props are marked, and stock behaviour stays the default",
   const select = readFileSync(new URL("select.tsx", dir), "utf8");
   assert.match(select, /<SelectPrimitive\.Portal container=\{container\}>/);
   assert.match(select, /position = "item-aligned"/);
+  const badge = readFileSync(new URL("badge.tsx", dir), "utf8");
+  assert.match(badge, /variant = "default"/, "Badge stays stock by default");
+  for (const tone of ["success", "warning", "danger", "info", "violet", "muted"]) assert.match(badge, new RegExp(`\\n {8}${tone}: "`), `Badge tone ${tone}`);
+  assert.doesNotMatch(badge, /(green|amber|red|blue|violet)-\d00/, "tones use the house tokens, never the Tailwind palette");
   for (const f of files) {
     const src = readFileSync(new URL(f, dir), "utf8");
     for (const line of src.split("\n").filter(l => /Mako thin prop/.test(l))) {
