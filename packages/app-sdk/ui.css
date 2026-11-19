@@ -387,6 +387,8 @@ button, input, select, textarea { font-family: inherit; }
 /* Ticked in the brand blue (white tick), --primary where a theme has no --brand. */
 .mk-ms-box.on { background: var(--brand, var(--primary)); border-color: var(--brand, var(--primary)); color: #fff; }
 .mk-ms-swatch { width: 8px; height: 8px; border-radius: 999px; flex-shrink: 0; }
+/* An option's `count` (2.28): muted, right-aligned, tabular figures. */
+.mk-ms-count { flex-shrink: 0; margin-left: auto; font-size: 12px; font-weight: 400; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .mk-ms-sep { height: 1px; background: var(--border); margin: 4px -4px; flex: none; }
 /* MultiSelect `searchable` (2.27): shadcn's CommandInput (36px, a search icon,
  * a hairline under it), pinned at the top while the rows scroll. The

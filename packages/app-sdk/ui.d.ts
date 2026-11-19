@@ -71,6 +71,8 @@ export interface MultiSelectOption<V extends string = string> {
   color?: string;
   /** What the option covers, shown on hover. */
   title?: string;
+  /** A count shown muted at the row's right edge (2.28). Search ignores it; the trigger never shows it. A number is formatted (1,234). */
+  count?: number | string;
   /** A group (2.20): its row ticks every leaf under it; hover submenus: FilterMenu in `@makoai/app-sdk/menu`. */
   children?: ReadonlyArray<MultiSelectOption<V>>;
 }
