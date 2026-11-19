@@ -203,18 +203,6 @@ table of connectors and entities. Summary:
 ### Custom API (`custom_api`)
 Any HTTP or GraphQL API with a stored key (bearer, API key in a header or query string, basic auth, or none). Never synced: no entities, hidden from the flow source picker (`syncable: false`). It is only called, through the connection proxy (`connections/proxy.service.ts`). See the [Calling a Service Live](/connectors/#calling-a-service-live) docs.
 
-### Google Cloud Storage (`gcs`)
-
-Import CSV files from a GCS bucket. Credentials (service account + bucket) live
-on the data source; folder prefixes live on the flow via `transferQueries`.
-
-- Sync discovers objects under a prefix matching a glob (default `*.csv`)
-- Incremental runs only process objects with `updated > since` (new/changed files)
-- Each row is tagged with `_source_key` / `_source_generation` / `_source_updated_at`
-
-Required config: `service_account_json`, `bucket`  
-Flow folders: `name`, `prefix`, `glob`, CSV options
-
 ## Future Connectors
 
 The architecture supports easy addition of new connectors such as:

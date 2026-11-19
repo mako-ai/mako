@@ -548,7 +548,7 @@ export function createConnectorTools(workspaceId: string) {
   return {
     list_connectors: tool({
       description: [
-        "List the CONNECTORS available to this workspace — the code a connection is configured with: built-in ones (Stripe, Close, PostHog, GCS, …) and the workspace's own (`ws:<slug>`, from `connectors/<slug>/` in its repo).",
+        "List the CONNECTORS available to this workspace — the code a connection is configured with: built-in ones (Stripe, Close, PostHog, …) and the workspace's own (`ws:<slug>`, from `connectors/<slug>/` in its repo).",
         "Each entry carries the entities it can sync, whether incremental pulls are honest, and the `connections` already configured with it (id + name — never a credential). A workspace connector also carries `status` (indexed, verified, blocked with `blockedReason`, or retrying: a platform error during indexing, with `blockedReason`, `nextRetryAt` and `retryAttempts`; it indexes again on its own) and, when its folder has a package.json, `build` (built or failed, with npm's or esbuild's `error`).",
         "When the connector registry is on, Mako's own connectors also appear as `mako/<slug>` (`source: registry`) with their `versions`, `authType`, `changelog` and `install` line; a workspace connector installed from one (`source: mako/<slug>@<range>` in its connector.yaml) carries `registry` with the version it runs and any `upgradeAvailable`.",
         "This is the catalog of what CAN be connected. For what IS connected, call list_connections (databases and sources), and inspect_connection / probe_connection for one of them.",

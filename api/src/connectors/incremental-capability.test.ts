@@ -9,7 +9,6 @@ import { GraphQLConnector } from "./graphql/connector";
 import { PosthogConnector } from "./posthog/connector";
 import { BigQueryConnector } from "./bigquery/connector";
 import { WiseConnector } from "./wise/connector";
-import { GcsConnector } from "./gcs/connector";
 import {
   BaseConnector,
   type IncrementalCapabilities,
@@ -173,16 +172,6 @@ const connectors: Array<{
         name: "Wise",
         type: "wise",
         config: { api_key: "test-token" },
-      } as any),
-  },
-  {
-    label: "gcs",
-    make: () =>
-      new GcsConnector({
-        id: "ds_gcs",
-        name: "GCS",
-        type: "gcs",
-        config: { bucket: "test-bucket", service_account_json: "{}" },
       } as any),
   },
 ];
