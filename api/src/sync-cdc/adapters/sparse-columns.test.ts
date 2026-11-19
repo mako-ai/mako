@@ -14,6 +14,7 @@ import {
 } from "../normalization";
 import {
   ABSENT_COLUMNS_FIELD,
+  collectAbsentColumns,
   groupRowsByKeySet,
   markAbsentColumns,
   withPolledDeleteState,
@@ -23,6 +24,7 @@ import { buildCdcParquet } from "./bigquery-load";
 import {
   buildCreateLiveTableStatement,
   buildMergeStatement,
+  buildStagingAbsentColumnsQuery,
   liveTableCreateColumns,
 } from "./bigquery-sql";
 import { MongoDbDestinationAdapter } from "./mongodb";
@@ -190,6 +192,139 @@ describe("BigQuery staging: sparse columns", () => {
       ",source,calendar_event_link,",
     );
     expect(marked[1][ABSENT_COLUMNS_FIELD]).toBe(",calendar_event_link,");
+  });
+});
+
+/**
+ * realadvisor-prod, 17-19 Nov 2026: CDC bytes went from 0.7-1.2 TiB a day to
+ * 20 TiB after #1347. Its MERGE wrote `IF(absent, __live.col, __stg.col)` for
+ * every column, and BigQuery bills a MERGE for every live column it names.
+ * ES email_activities went from 0.3 GiB to 16 GiB per MERGE. The MERGE now
+ * names on live only the keys, the guard columns, and the columns some row
+ * of the batch lacks.
+ */
+describe("BigQuery MERGE: live columns read", () => {
+  const dataCols = Array.from({ length: 12 }, (_, i) => `col_${i}`);
+  const columns = [
+    "id",
+    ...dataCols,
+    "_mako_source_ts",
+    "_mako_deleted_at",
+    "_syncedAt",
+    "date_created",
+  ];
+  const liveTypes = new Map(
+    columns.map(c => [
+      c,
+      c === "_mako_source_ts" ||
+      c === "_mako_deleted_at" ||
+      c === "_syncedAt" ||
+      c === "date_created"
+        ? "TIMESTAMP"
+        : "STRING",
+    ]),
+  );
+  const merge = (
+    absentColumns: ReadonlySet<string> | undefined,
+    extra: { fullRead?: boolean; marker?: boolean } = {},
+  ) =>
+    buildMergeStatement({
+      fullLive: "`p`.`d`.`email_activities`",
+      fullStaging: "`p`.`d`.`email_activities_stg`",
+      columns,
+      keyColumns: ["id"],
+      stagingCols: new Set([
+        ...columns,
+        ...(extra.marker === false ? [] : [ABSENT_COLUMNS_FIELD]),
+      ]),
+      liveTypes,
+      livePartitionFilter:
+        "__live.`date_created` >= TIMESTAMP '2026-11-01 00:00:00 UTC'",
+      fullRead: extra.fullRead,
+      absentColumns,
+    });
+  const liveRefs = (sql: string) =>
+    [...new Set([...sql.matchAll(/__live\.`([^`]+)`/g)].map(m => m[1]))].sort();
+
+  it("a batch with no absent column reads only the key, the guard and the partition column", () => {
+    const sql = merge(new Set());
+    expect(liveRefs(sql)).toEqual(["_mako_source_ts", "date_created", "id"]);
+    expect(sql).not.toContain("STRPOS");
+    expect(sql).not.toContain(ABSENT_COLUMNS_FIELD);
+    // Byte-identical to the statement for an unmarked staging table.
+    expect(sql).toBe(merge(undefined, { marker: false }));
+  });
+
+  it("a batch with 2 absent columns reads those 2 and nothing else", () => {
+    const sql = merge(new Set(["col_3", "col_7"]));
+    expect(liveRefs(sql)).toEqual([
+      "_mako_source_ts",
+      "col_3",
+      "col_7",
+      "date_created",
+      "id",
+    ]);
+    expect(sql).toContain(
+      "`col_3` = IF(STRPOS(IFNULL(__stg.`_mako_absent_cols`, ''), ',col_3,') > 0, __live.`col_3`, __stg.`col_3`)",
+    );
+    expect(sql).toContain("`col_4` = __stg.`col_4`");
+    expect(sql).toContain(
+      "`_mako_absent_cols` FROM `p`.`d`.`email_activities_stg`",
+    );
+  });
+
+  it("a full read adds only the delete stamp the guard needs", () => {
+    expect(liveRefs(merge(new Set(["col_3"]), { fullRead: true }))).toEqual([
+      "_mako_deleted_at",
+      "_mako_source_ts",
+      "col_3",
+      "date_created",
+      "id",
+    ]);
+  });
+
+  it("an absent key column never reads live; it is the join", () => {
+    const sql = merge(new Set(["id"]));
+    expect(sql).not.toContain("STRPOS");
+  });
+
+  it("an unknown absent set keeps every staged column guarded (fallback)", () => {
+    const sql = merge(undefined);
+    for (const c of dataCols) expect(liveRefs(sql)).toContain(c);
+  });
+
+  it("prepareSparseBatch names exactly the columns some row lacks", async () => {
+    const parquet = await buildCdcParquet(
+      "leads",
+      [
+        row({ id: "a", name: "A", source: "web" }),
+        row({ id: "b", name: "B" }),
+        row({ id: "c", calendar_event_link: null }),
+      ],
+      schema,
+    );
+    try {
+      expect([...parquet.absentColumns].sort()).toEqual([
+        "calendar_event_link",
+        "name",
+        "source",
+      ]);
+    } finally {
+      await fs.rm(parquet.filePath, { force: true });
+    }
+    expect(
+      collectAbsentColumns([
+        { id: "a" },
+        { id: "b", [ABSENT_COLUMNS_FIELD]: ",x,y," },
+        { id: "c", [ABSENT_COLUMNS_FIELD]: ",y,z," },
+      ]),
+    ).toEqual(new Set(["x", "y", "z"]));
+  });
+
+  it("the bulk flush reads the absent set from the marker column of staging", () => {
+    expect(buildStagingAbsentColumnsQuery("`p`.`d`.`s`")).toBe(
+      "SELECT DISTINCT c FROM `p`.`d`.`s`, UNNEST(SPLIT(`_mako_absent_cols`, ',')) AS c WHERE `_mako_absent_cols` IS NOT NULL AND c != ''",
+    );
   });
 });
 

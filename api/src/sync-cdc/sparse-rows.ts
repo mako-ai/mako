@@ -69,15 +69,40 @@ export function markAbsentColumns(
   });
 }
 
+/** The columns a marker value (`,a,b,`) lists. */
+export function decodeAbsentColumns(marker: unknown): string[] {
+  if (typeof marker !== "string") return [];
+  return marker.split(",").filter(Boolean);
+}
+
+/**
+ * The columns at least one marked row lacks. The BigQuery MERGE reads the
+ * live value of these columns only: every column it names on the live table
+ * is billed in full, so a batch with no absent column reads no data column.
+ */
+export function collectAbsentColumns(
+  rows: Iterable<Record<string, unknown>>,
+): Set<string> {
+  const absent = new Set<string>();
+  for (const row of rows) {
+    for (const c of decodeAbsentColumns(row[ABSENT_COLUMNS_FIELD])) {
+      absent.add(c);
+    }
+  }
+  return absent;
+}
+
 /**
  * Prepare one in-memory batch for a columnar staging load. Returns the rows
- * (undefined keys dropped, absent columns marked) and the columns at least
- * one row carries. A column that every row lacks stays out of staging; a
- * column that some row carries as `null` stays in.
+ * (undefined keys dropped, absent columns marked), the columns at least one
+ * row carries, and the columns at least one row lacks. A column that every
+ * row lacks stays out of staging; a column that some row carries as `null`
+ * stays in.
  */
 export function prepareSparseBatch(rows: Record<string, unknown>[]): {
   rows: Record<string, unknown>[];
   presentColumns: Set<string>;
+  absentColumns: Set<string>;
 } {
   const stripped = rows.map(stripUndefined);
   const presentColumns = new Set<string>();
@@ -85,9 +110,11 @@ export function prepareSparseBatch(rows: Record<string, unknown>[]): {
     for (const key of Object.keys(row)) presentColumns.add(key);
   }
   presentColumns.delete(ABSENT_COLUMNS_FIELD);
+  const marked = markAbsentColumns(stripped, presentColumns);
   return {
-    rows: markAbsentColumns(stripped, presentColumns),
+    rows: marked,
     presentColumns,
+    absentColumns: collectAbsentColumns(marked),
   };
 }
 

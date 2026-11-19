@@ -34,14 +34,15 @@ const STAGING_TTL_MS = 24 * 60 * 60 * 1000;
  * every value is null. A schema column no record carries stays out, so the
  * MERGE leaves it alone. Rows that lack a staged column carry it in
  * `_mako_absent_cols` (see sparse-rows.ts). The schema still types every
- * staged column.
+ * staged column. `absentColumns` lists the columns some row lacks, so the
+ * MERGE reads only those from the live table.
  */
-export function buildCdcParquet(
+export async function buildCdcParquet(
   entity: string,
   records: Record<string, unknown>[],
   entitySchema: ConnectorEntitySchema | undefined,
 ) {
-  const { rows, presentColumns } = prepareSparseBatch(records);
+  const { rows, presentColumns, absentColumns } = prepareSparseBatch(records);
   const schemaFields: FieldMeta[] | undefined = entitySchema
     ? Object.entries(entitySchema.fields)
         .filter(([name]) => presentColumns.has(name))
@@ -51,7 +52,7 @@ export function buildCdcParquet(
         }))
     : undefined;
 
-  return buildParquetFromBatches({
+  const parquet = await buildParquetFromBatches({
     filenameBase: `cdc-${entity}`,
     fields: schemaFields,
     requiredTimestampColumns: SYNC_REQUIRED_TIMESTAMP_COLUMNS,
@@ -59,6 +60,7 @@ export function buildCdcParquet(
       await insertBatch(rows);
     },
   });
+  return { ...parquet, absentColumns };
 }
 
 /**

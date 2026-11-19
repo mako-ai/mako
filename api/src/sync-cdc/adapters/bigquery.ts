@@ -36,6 +36,7 @@ import {
   buildLivePartitionFilter,
   buildLivePartitionProbeQuery,
   buildMergeStatement,
+  buildStagingAbsentColumnsQuery,
   liveTableCreateColumns,
   escId,
   sqlString,
@@ -318,6 +319,8 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       knownStagingRowCount?: number;
       prunePartitions?: boolean;
       fullRead?: boolean;
+      /** The columns some staged row lacks (prepareSparseBatch). Unset: read from staging. */
+      absentColumns?: ReadonlySet<string>;
     },
   ): Promise<{ written: number }> {
     const stagingTable = bigQueryStagingTableName(
@@ -329,7 +332,33 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       knownStagingRowCount: options?.knownStagingRowCount,
       prunePartitions: options?.prunePartitions,
       fullRead: options?.fullRead,
+      absentColumns: options?.absentColumns,
     });
+  }
+
+  /**
+   * The columns some staging row lists in `_mako_absent_cols`. Returns
+   * undefined when the query fails: the MERGE then reads every staged column
+   * from live, which is correct and costs more.
+   */
+  private async resolveStagingAbsentColumns(
+    target: BigQueryTarget,
+    fullStaging: string,
+    liveTable: string,
+  ): Promise<Set<string> | undefined> {
+    const result = await runBigQuery(
+      target,
+      buildStagingAbsentColumnsQuery(fullStaging),
+    );
+    if (!result.success) {
+      log.warn("Absent-column probe failed; MERGE reads every live column", {
+        liveTable,
+        error: result.error,
+      });
+      return undefined;
+    }
+    const rows = (result.data as Array<{ c?: unknown }> | undefined) || [];
+    return new Set(rows.map(r => String(r.c)));
   }
 
   /**
@@ -400,6 +429,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       knownStagingRowCount?: number;
       prunePartitions?: boolean;
       fullRead?: boolean;
+      absentColumns?: ReadonlySet<string>;
     },
   ): Promise<{ written: number }> {
     const target = await this.resolveBqClient();
@@ -520,6 +550,17 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
             entitySchema,
           })
         : undefined;
+    // The MERGE reads from live only the columns some staged row lacks. The
+    // in-memory path knows them. The bulk flush asks staging.
+    const absentColumns =
+      isDedup && stagedCols.has(ABSENT_COLUMNS_FIELD)
+        ? (options?.absentColumns ??
+          (await this.resolveStagingAbsentColumns(
+            target,
+            fullStaging,
+            liveTable,
+          )))
+        : undefined;
     const mergeStmt = !isDedup
       ? `INSERT INTO ${fullLive} (${insertColList}) SELECT ${insertColList} FROM ${fullStaging}`
       : buildMergeStatement({
@@ -532,6 +573,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           entitySchema,
           livePartitionFilter,
           fullRead: options?.fullRead,
+          absentColumns,
         });
 
     log.info("Starting staging-to-live MERGE", {
@@ -542,6 +584,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       columnCount: allColumns.length,
       schemaCacheHit,
       partitionPruned: livePartitionFilter !== undefined,
+      absentColumns: absentColumns ? [...absentColumns] : undefined,
     });
 
     const maxWaitMs = mergeMaxWaitMs();
@@ -769,6 +812,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           stagingSuffix,
           knownStagingRowCount: loadResult.loaded,
           prunePartitions: params.prunePartitions,
+          absentColumns: parquet.absentColumns,
         },
       );
     } finally {
