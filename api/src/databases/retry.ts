@@ -108,6 +108,39 @@ export function isRetryableError(
 }
 
 /**
+ * The warehouse ran out of memory, slots or time for one query. The same
+ * query can pass a few minutes later, once the cluster's other load is gone.
+ * On 19 Nov 2026, 3 scheduled ClickHouse bindings hit "memory limit exceeded
+ * ... OvercommitTracker" and served day-old data.
+ */
+const RESOURCE_EXHAUSTED_ERROR_PATTERNS: RegExp[] = [
+  // ClickHouse
+  /MEMORY_LIMIT_EXCEEDED/i,
+  /memory limit exceeded/i,
+  /OvercommitTracker/i,
+  /Code: 241/i, // MEMORY_LIMIT_EXCEEDED
+  /TIMEOUT_EXCEEDED/i,
+  /Code: 159/i, // TIMEOUT_EXCEEDED
+  // BigQuery
+  /Resources exceeded/i,
+  // Postgres
+  /out of memory/i,
+  /statement timeout/i,
+  // Generic timeouts
+  /timeout/i,
+  /timed out/i,
+];
+
+/**
+ * Did a query fail because the warehouse lacked resources (memory, slots,
+ * time)? Errors the classifier above calls permanent never match.
+ */
+export function isResourceExhaustedError(error: unknown): boolean {
+  const err = error instanceof Error ? error : new Error(String(error));
+  return isRetryableError(err, RESOURCE_EXHAUSTED_ERROR_PATTERNS);
+}
+
+/**
  * Execute a function with retry logic and exponential backoff
  * Used for transient connection failures and cold starts
  */
