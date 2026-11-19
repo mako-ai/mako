@@ -42,6 +42,8 @@ export default defineConfig({
       "src/apps/workspace-consoles.service.test.ts",
       // A console never stores or runs another workspace's connection.
       "src/services/consoles/connection-scope.test.ts",
+      // A schedule Mako refuses to let write pauses after 3 runs.
+      "src/services/consoles/schedule-pause.test.ts",
       "src/apps/workspace-skills.service.test.ts",
       // Skill loads per day behind list_skills' loads30d / lastLoadedAt.
       "src/services/skill-usage.service.test.ts",

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { SavedConsole } from "../../database/workspace-schema";
 import {
   getNextScheduledConsoleRunAt,
+  resumedScheduledRun,
   validateScheduledConsoleSchedule,
 } from "../../services/scheduled-query-schedule.service";
 
@@ -81,18 +82,11 @@ export function createScheduleQueryTool(options: ScheduleQueryToolOptions) {
           const nextAt = getNextScheduledConsoleRunAt(schedule);
 
           savedConsole.schedule = schedule;
-          savedConsole.scheduledRun = {
+          // Setting the schedule resumes one Mako paused.
+          savedConsole.scheduledRun = resumedScheduledRun(
+            savedConsole.scheduledRun,
             nextAt,
-            lastAt: savedConsole.scheduledRun?.lastAt,
-            lastStatus: savedConsole.scheduledRun?.lastStatus,
-            lastError: savedConsole.scheduledRun?.lastError,
-            lastDurationMs: savedConsole.scheduledRun?.lastDurationMs,
-            lastRowsAffected: savedConsole.scheduledRun?.lastRowsAffected,
-            lastRowCount: savedConsole.scheduledRun?.lastRowCount,
-            runCount: savedConsole.scheduledRun?.runCount ?? 0,
-            consecutiveFailures:
-              savedConsole.scheduledRun?.consecutiveFailures ?? 0,
-          };
+          );
           savedConsole.isSaved = true;
           await savedConsole.save();
 

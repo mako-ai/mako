@@ -159,6 +159,16 @@ export interface ISavedConsole extends Document {
     lastRowCount?: number;
     runCount: number;
     consecutiveFailures: number;
+    /**
+     * Consecutive failures with one permanent cause (a write refusal):
+     * `lastError` names the cause. Reaching the pause threshold pauses the
+     * schedule (services/consoles/schedule-pause.ts).
+     */
+    permanentFailures?: number;
+    /** Set when Mako paused the schedule; `nextAt` is unset meanwhile. */
+    pausedAt?: Date;
+    /** Why the schedule is paused and how to fix it. */
+    pausedReason?: string;
   };
   /**
    * Explicit-save snapshot counter (optimistic concurrency for the Save
@@ -373,6 +383,15 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
       consecutiveFailures: {
         type: Number,
         default: 0,
+      },
+      permanentFailures: {
+        type: Number,
+      },
+      pausedAt: {
+        type: Date,
+      },
+      pausedReason: {
+        type: String,
       },
     },
     lastExecutedAt: {

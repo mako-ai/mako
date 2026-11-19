@@ -233,6 +233,17 @@ export function decideWrite(
   return { allowed: false, why: "elsewhere", places, target };
 }
 
+/**
+ * Fixed phrases every refusal wording carries, so code that sees only the
+ * message (a scheduled run's error) can tell a refusal from a failure with
+ * isWriteRefusal. The wordings are built from them, so the two cannot drift.
+ */
+const NOT_A_WRITER_MARK =
+  "only the people and workflows an admin allowed can write to it";
+const ONLY_PLACES_MARK = "You can write only to ";
+const UNIDENTIFIED_MARK =
+  "so the write was refused. Writes need a signed-in person";
+
 export function refusal(
   decision: WriteDecision,
   connectionName: string,
@@ -241,12 +252,31 @@ export function refusal(
   const places = decision.places.join(", ");
   switch (decision.why) {
     case "not-a-writer":
-      return `Everyone can read ${connectionName}, but only the people and workflows an admin allowed can write to it. Ask an admin to add you in the connection's Access tab.`;
+      return `Everyone can read ${connectionName}, but ${NOT_A_WRITER_MARK}. Ask an admin to add you in the connection's Access tab.`;
     case "no-target":
-      return `You can write only to ${places} on ${connectionName}. Write one statement that names its table as schema.table.`;
+      return `${ONLY_PLACES_MARK}${places} on ${connectionName}. Write one statement that names its table as schema.table.`;
     case "elsewhere":
-      return `You can write only to ${places} on ${connectionName}, not to ${[decision.target?.schema, decision.target?.table].filter(Boolean).join(".")}.`;
+      return `${ONLY_PLACES_MARK}${places} on ${connectionName}, not to ${[decision.target?.schema, decision.target?.table].filter(Boolean).join(".")}.`;
   }
+}
+
+/** The refusal for a write no person or workflow stands behind. */
+export function unidentifiedWriterRefusal(connectionName: string): string {
+  return `Mako could not tell who is writing to ${connectionName}, ${UNIDENTIFIED_MARK}, an API key, or a workflow on the connection's writers list.`;
+}
+
+/**
+ * Whether `message` is one of this module's write refusals (refusal or
+ * unidentifiedWriterRefusal). Only a person can lift one, by changing the
+ * writers list: the same query run again fails the same way.
+ */
+export function isWriteRefusal(message: string | undefined | null): boolean {
+  if (!message) return false;
+  return (
+    message.includes(NOT_A_WRITER_MARK) ||
+    message.startsWith(ONLY_PLACES_MARK) ||
+    message.includes(UNIDENTIFIED_MARK)
+  );
 }
 
 /**
@@ -365,9 +395,7 @@ export async function checkConnectionWrite(
       connectionId: String(database._id),
       path: getRequestContext()?.path,
     });
-    return {
-      refused: `Mako could not tell who is writing to ${database.name}, so the write was refused. Writes need a signed-in person, an API key, or a workflow on the connection's writers list.`,
-    };
+    return { refused: unidentifiedWriterRefusal(database.name) };
   }
   if (!write) {
     if (!READ_ONLY_TRANSACTION.has(database.type)) return {};

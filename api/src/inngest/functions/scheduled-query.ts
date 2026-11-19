@@ -14,7 +14,10 @@ import { databaseConnectionService } from "../../services/database-connection.se
 import { queryExecutionService } from "../../services/query-execution.service";
 import { loggers } from "../../logging";
 import { getNextScheduledConsoleRunAt } from "../../services/scheduled-query-schedule.service";
-import { emitScheduledQueryTerminalEvent } from "../../services/flow-run-notification.emit";
+import {
+  notifyScheduledRunOutcome,
+  recordScheduledRunOutcome,
+} from "../../services/consoles/schedule-pause";
 import { liveConsoleCode } from "../../apps/workspace-consoles.service";
 import { mapConsoleLanguageToQueryLanguage } from "../../services/console-execution.service";
 import { findWorkspaceConnection } from "../../services/consoles/connection-scope";
@@ -212,7 +215,7 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
         ? undefined
         : result.error || "Unknown error";
 
-      await step.run("finalize-run", async () => {
+      const outcome = await step.run("finalize-run", async () => {
         await ScheduledQueryRun.updateOne(
           { _id: new Types.ObjectId(run.id) },
           {
@@ -238,43 +241,26 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
               )
             : undefined;
 
-        await SavedConsole.updateOne(
-          { _id: new Types.ObjectId(consoleId) },
-          status === "error"
-            ? {
-                $set: {
-                  "scheduledRun.lastAt": completedAt,
-                  "scheduledRun.lastStatus": status,
-                  "scheduledRun.lastError": errorMessage,
-                  "scheduledRun.lastDurationMs": durationMs,
-                  "scheduledRun.lastRowCount": rowCount,
-                  ...(nextAt ? { "scheduledRun.nextAt": nextAt } : {}),
-                },
-                $inc: {
-                  "scheduledRun.runCount": 1,
-                  "scheduledRun.consecutiveFailures": 1,
-                },
-              }
-            : {
-                $set: {
-                  "scheduledRun.lastAt": completedAt,
-                  "scheduledRun.lastStatus": status,
-                  "scheduledRun.lastError": errorMessage,
-                  "scheduledRun.lastDurationMs": durationMs,
-                  "scheduledRun.lastRowCount": rowCount,
-                  "scheduledRun.consecutiveFailures": 0,
-                  ...(nextAt ? { "scheduledRun.nextAt": nextAt } : {}),
-                },
-                $inc: {
-                  "scheduledRun.runCount": 1,
-                },
-              },
-        );
+        // A permanent failure (a write refusal) repeated pauses the
+        // schedule and notifies once (schedule-pause.ts).
+        return recordScheduledRunOutcome({
+          consoleId,
+          error: errorMessage,
+          now: completedAt,
+          fields: {
+            "scheduledRun.lastAt": completedAt,
+            "scheduledRun.lastStatus": status,
+            "scheduledRun.lastError": errorMessage,
+            "scheduledRun.lastDurationMs": durationMs,
+            "scheduledRun.lastRowCount": rowCount,
+            ...(nextAt ? { "scheduledRun.nextAt": nextAt } : {}),
+          },
+        });
       });
       isFinalized = true;
 
       await step.run("emit-scheduled-query-terminal-notification", async () => {
-        await emitScheduledQueryTerminalEvent({
+        await notifyScheduledRunOutcome(outcome, {
           workspaceId,
           consoleId,
           runId: run.id,
@@ -321,7 +307,7 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
       if (isFinalized) {
         throw error;
       }
-      await step.run("finalize-run-error", async () => {
+      const outcome = await step.run("finalize-run-error", async () => {
         const completedAt = new Date();
         const message =
           error instanceof Error ? error.message : "Scheduled query failed";
@@ -335,25 +321,17 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
             },
           },
         );
-        await SavedConsole.updateOne(
-          { _id: new Types.ObjectId(consoleId) },
-          {
-            $set: {
-              "scheduledRun.lastAt": completedAt,
-              "scheduledRun.lastStatus": "error",
-              "scheduledRun.lastError": message,
-            },
-            $inc: {
-              "scheduledRun.runCount": 1,
-              "scheduledRun.consecutiveFailures": 1,
-            },
-          },
-        );
+        return recordScheduledRunOutcome({
+          consoleId,
+          error: message,
+          now: completedAt,
+          fields: { "scheduledRun.lastAt": completedAt },
+        });
       });
       await step.run(
         "emit-scheduled-query-terminal-notification-error",
         async () => {
-          await emitScheduledQueryTerminalEvent({
+          await notifyScheduledRunOutcome(outcome, {
             workspaceId,
             consoleId,
             runId: run.id,
