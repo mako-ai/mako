@@ -618,6 +618,54 @@ const { from, to } = clipToday(period); // the month in progress stops at today
 - The menu is the stock `Popover`. Focus moves into it on open and back to
   the middle on Escape.
 
+### The page filter bar (2.27)
+
+`FilterBar` puts the page-wide filters in one row under the tabs. Each control
+gets a small-caps label over it. `FilterSep` draws the hairline between two
+groups. Reset sits at the end and stays disabled while every filter is at its
+default. The row wraps on a narrow window. At 768px and under the fields fold
+behind one Filters chip that counts the active filters. The chip opens a
+bottom sheet with Done.
+
+A tab adds its own fields with `TabFilters`. They render into the same bar,
+after the page's. `useResettable(id, dirty, reset)` tells Reset and the chip
+about a tab's filter. Wrap the page in `FilterProvider`.
+
+```tsx
+import {
+  FilterBar, FilterField, FilterProvider, FilterSep, TabFilters, useResettable,
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@makoai/app-sdk/components";
+
+function RoleTab() {
+  const [role, setRole] = useState("bdr");
+  useResettable("role", role !== "bdr", () => setRole("bdr"));
+  return (
+    <TabFilters>
+      <FilterSep />
+      <FilterField label="Role" hint="The role at hire">
+        <Select value={role} onValueChange={setRole}>
+          <SelectTrigger aria-label="Role" className="w-[210px]"><SelectValue /></SelectTrigger>
+          <SelectContent>{ROLES.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}</SelectContent>
+        </Select>
+      </FilterField>
+    </TabFilters>
+  );
+}
+
+<FilterProvider>
+  <FilterBar dirty={market !== "ALL"} onReset={() => setMarket("ALL")}>
+    <FilterField label="Market">{/* Select, FilterMenu or MultiSelect */}</FilterField>
+  </FilterBar>
+  {tab === "role" && <RoleTab />}
+</FilterProvider>
+```
+
+The bar holds any control: `Select`, `FilterMenu`, `MultiSelect`. In the
+phone sheet each control takes the full width. The sheet sits at z-index 50,
+so the Radix popovers of `/components` and `/menu` open above it. Escape
+closes an open popover first and the sheet on the next press.
+
 ### Times and dates (2.21)
 
 DuckDB runs in UTC, and that stays. Display code decides the zone.
