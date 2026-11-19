@@ -15,6 +15,7 @@ import {
   claimPopover,
   closePopovers,
   COLUMN_WIDTHS,
+  columnGroupRuns,
   columnLayout,
   compareValues,
   csvCell,
@@ -29,6 +30,7 @@ import {
   filterLeavesOf,
   filterNormalize,
   filterPickedNode,
+  filterSearch,
   filterText,
   filterTick,
   filterToggle,
@@ -56,6 +58,7 @@ export { formatDate, formatTime, toDayKey, toInstant } from "./time.js";
 export {
   closePopovers,
   COLUMN_WIDTHS,
+  columnGroupRuns,
   columnLayout,
   compareValues,
   csvCell,
@@ -124,6 +127,8 @@ const IconMinus = ({ size = 11 }) =>
   svg(size, 3.2, [h("line", { key: "l", x1: 6, y1: 12, x2: 18, y2: 12 })]);
 const IconChevron = ({ className }) =>
   svg(12, 2.2, [h("polyline", { key: "p", points: "6 9 12 15 18 9" })], className);
+const IconSearch = () =>
+  svg(16, 2, [h("circle", { key: "c", cx: 11, cy: 11, r: 8 }), h("path", { key: "p", d: "m21 21-4.3-4.3" })], "mk-ms-search-icon");
 const IconX = ({ size = 16 }) =>
   svg(size, 2, [h("path", { key: "p", d: "M18 6 6 18M6 6l12 12" })]);
 const IconRefresh = () =>
@@ -344,11 +349,16 @@ export function tooltipCell(value, format, opts) {
  * minimum width, then a bold `total` row under a rule. `after` rows follow
  * the total, apart (a value on another axis, such as an average next to a
  * rate). A null or undefined cell shows a muted "–"; "" stays blank.
+ * `colWidth` sets the value columns' minimum width (default 7ch; a number is
+ * px), so the box keeps its size while the pointer moves.
  */
-export function TableTooltip({ title, columns = [], rows = [], total, after, className }) {
+export function TableTooltip({ title, columns = [], rows = [], total, after, className, colWidth }) {
   return h(
     "div",
-    { className: cx("mk-tip", className) },
+    {
+      className: cx("mk-tip", className),
+      style: colWidth == null ? undefined : { "--mk-tip-col": typeof colWidth === "number" ? `${colWidth}px` : colWidth },
+    },
     title != null && h("div", { className: "mk-tip-title" }, title),
     h(
       "table",
@@ -442,6 +452,32 @@ export function saveCsv(filename, text) {
 }
 
 const fmtCount = n => n.toLocaleString("en-US");
+
+/**
+ * The English text of a DataTable's footer, sort hints and export button.
+ * `labels` overrides any of them. Text with numbers is a function.
+ */
+export const DATA_TABLE_LABELS = {
+  range: (from, to, total, noun) => [
+    h("b", { key: "r" }, `${fmtCount(from)}–${fmtCount(to)}`),
+    " of ",
+    h("b", { key: "t" }, fmtCount(total)),
+    ` ${noun}`,
+  ],
+  none: noun => `No ${noun}`,
+  empty: "No rows match these filters.",
+  page: (page, pageCount) => `Page ${page} of ${pageCount}`,
+  perPage: size => `${size} per page`,
+  rowsPerPage: "Rows per page",
+  first: "First page",
+  previous: "Previous page",
+  next: "Next page",
+  last: "Last page",
+  sortHint: label => `${label} · click to sort`,
+  exportCsv: "Export CSV",
+  exportTitle: "Export every row on every page, as sorted",
+  exportFailed: "The browser blocked the download. Open the app in a new tab and export again.",
+};
 // A click on a link, button or field inside a row is that control's, not the row's.
 const INTERACTIVE = "a,button,input,select,textarea,label,[role=button]";
 
@@ -458,6 +494,12 @@ const INTERACTIVE = "a,button,input,select,textarea,label,[role=button]";
  * each column's `width` or a default by kind (see `columnLayout`). The rows
  * on screen never change a width, so sorting, filtering and paging never
  * shift the layout. Cells ellipsize at their width with the full value on hover.
+ *
+ * Column groups: give columns a `group` and the header gets a second row on
+ * top, where each group's label spans its adjacent columns (`groups` sets a
+ * label or class per group id). Ungrouped columns span both rows. A line
+ * separates the sections. Sort, the sticky header and the pinned column work
+ * the same.
  */
 export function DataTable({
   rows = [],
@@ -476,16 +518,21 @@ export function DataTable({
   onPageSizeChange,
   pageSizes = [25, 50, 100],
   noun = "rows",
-  empty = "No rows match these filters.",
+  empty: emptyProp,
+  labels: labelsProp,
   fill = false,
   maxHeight,
   onRowClick,
   rowLabel,
+  rowClassName,
   resetKey,
   exportFilename,
+  groups,
   className,
   style,
 }) {
+  const L = labelsProp ? { ...DATA_TABLE_LABELS, ...labelsProp } : DATA_TABLE_LABELS;
+  const empty = emptyProp ?? L.empty;
   const [sort, setSort] = useControlled(sortProp, defaultSort, onSortChange);
   const [rawPage, setRawPage] = useControlled(pageProp, 1, onPageChange);
   const [pageSize, setPageSize] = useControlled(pageSizeProp, defaultPageSize, onPageSizeChange);
@@ -496,6 +543,8 @@ export function DataTable({
 
   const sorted = React.useMemo(() => sortRows(rows, columns, sort), [rows, columns, sort]);
   const layout = React.useMemo(() => columnLayout(columns), [columns]);
+  const runs = React.useMemo(() => columnGroupRuns(columns), [columns]);
+  const sections = React.useMemo(() => new Set(runs?.filter(r => r.start).map(r => r.columns[0].id)), [runs]);
   const { page, pageCount, start, end } = pageSlice(sorted.length, rawPage, pageSize);
   const visible = sorted.slice(start, end);
 
@@ -534,48 +583,75 @@ export function DataTable({
   };
   const exportCsv = () => {
     const res = saveCsv(exportFilename, toCsv(sorted, columns));
-    setNote(res === "failed" ? "The browser blocked the download. Open the app in a new tab and export again." : null);
+    setNote(res === "failed" ? L.exportFailed : null);
   };
 
   const cellClass = (col, extra) =>
-    cx(col.num && "mk-dt-num", col.align === "right" && "mk-dt-num", col.align === "center" && "mk-dt-center", col.sticky && "mk-dt-pin", extra);
+    cx(
+      col.num && "mk-dt-num",
+      col.align === "right" && "mk-dt-num",
+      col.align === "center" && "mk-dt-center",
+      col.sticky && "mk-dt-pin",
+      sections.has(col.id) && "mk-dt-section",
+      extra,
+    );
 
-  const head = h(
-    "thead",
-    null,
-    h(
-      "tr",
-      null,
-      ...columns.map(col => {
-        const active = sort?.id === col.id;
-        const text = typeof col.label === "string" ? col.label : col.id;
-        const label =
-          col.sortable === false
-            ? h("span", { className: "mk-dt-label", title: col.hint ?? text }, h("span", { className: "mk-dt-th-text" }, col.label))
-            : h(
-                "button",
-                {
-                  type: "button",
-                  className: "mk-dt-sort",
-                  onClick: () => sortBy(col),
-                  title: `${col.hint ?? text} · click to sort`,
-                },
-                h("span", { className: "mk-dt-th-text" }, col.label),
-                h(IconSort, { dir: active ? sort.dir : null }),
-              );
-        return h(
-          "th",
-          {
-            key: col.id,
-            scope: "col",
-            className: cellClass(col, active && "mk-dt-sorted"),
-            "aria-sort": col.sortable === false ? undefined : active ? (sort.dir === "asc" ? "ascending" : "descending") : "none",
-          },
-          label,
-        );
-      }),
-    ),
-  );
+  // One column's header cell: a sort button (or a plain label). In a grouped
+  // header an ungrouped column spans both rows (`rowSpan` 2).
+  const headCell = (col, rowSpan) => {
+    const active = sort?.id === col.id;
+    const text = typeof col.label === "string" ? col.label : col.id;
+    const label =
+      col.sortable === false
+        ? h("span", { className: "mk-dt-label", title: col.hint ?? text }, h("span", { className: "mk-dt-th-text" }, col.label))
+        : h(
+            "button",
+            {
+              type: "button",
+              className: "mk-dt-sort",
+              onClick: () => sortBy(col),
+              title: L.sortHint(col.hint ?? text),
+            },
+            h("span", { className: "mk-dt-th-text" }, col.label),
+            h(IconSort, { dir: active ? sort.dir : null }),
+          );
+    return h(
+      "th",
+      {
+        key: col.id,
+        scope: "col",
+        rowSpan,
+        className: cellClass(col, active && "mk-dt-sorted"),
+        "aria-sort": col.sortable === false ? undefined : active ? (sort.dir === "asc" ? "ascending" : "descending") : "none",
+      },
+      label,
+    );
+  };
+
+  // Column groups: a top row of group labels, each spanning its columns.
+  const groupCell = run => {
+    const info = groups?.find(g => g.id === run.group);
+    const label = info?.label ?? run.group;
+    return h(
+      "th",
+      {
+        key: `__group_${run.columns[0].id}`,
+        scope: "colgroup",
+        colSpan: run.columns.length,
+        className: cx("mk-dt-group", run.start && "mk-dt-section", info?.className),
+        title: typeof label === "string" ? label : undefined,
+      },
+      h("span", { className: "mk-dt-th-text" }, label),
+    );
+  };
+  const head = runs
+    ? h(
+        "thead",
+        null,
+        h("tr", null, ...runs.map(run => (run.group == null ? headCell(run.columns[0], 2) : groupCell(run)))),
+        h("tr", null, ...runs.flatMap(run => (run.group == null ? [] : run.columns.map(col => headCell(col))))),
+      )
+    : h("thead", null, h("tr", null, ...columns.map(col => headCell(col))));
 
   // Every cell ellipsizes at its column's width, with the raw value (text or
   // a number) as the hover title. `truncate: false` wraps instead.
@@ -610,9 +686,10 @@ export function DataTable({
                 },
               }
             : null;
+          const rowClass = cx(click?.className, rowClassName?.(row)) || undefined;
           return h(
             "tr",
-            { key, ...click },
+            { key, ...click, className: rowClass },
             ...columns.map(col => h("td", { key: col.id, className: cellClass(col) || undefined }, cell(col, row))),
           );
         }),
@@ -625,8 +702,8 @@ export function DataTable({
       "span",
       { "aria-live": "polite" },
       sorted.length
-        ? [h("b", { key: "r" }, `${fmtCount(start + 1)}–${fmtCount(end)}`), " of ", h("b", { key: "t" }, fmtCount(sorted.length)), ` ${noun}`]
-        : `No ${noun}`,
+        ? L.range(start + 1, end, sorted.length, noun)
+        : L.none(noun),
     ),
     h(
       "div",
@@ -636,20 +713,20 @@ export function DataTable({
           "select",
           {
             className: "mk-dt-size",
-            "aria-label": "Rows per page",
+            "aria-label": L.rowsPerPage,
             value: pageSize,
             onChange: e => {
               setPageSize(Number(e.target.value));
               goTo(1);
             },
           },
-          ...sizeOptions.map(n => h("option", { key: n, value: n }, `${n} per page`)),
+          ...sizeOptions.map(n => h("option", { key: n, value: n }, L.perPage(n))),
         ),
-      h(Button, { size: "sm", "aria-label": "First page", disabled: page <= 1, onClick: () => goTo(1) }, "«"),
-      h(Button, { size: "sm", "aria-label": "Previous page", disabled: page <= 1, onClick: () => goTo(page - 1) }, "‹"),
-      h("span", { className: "mk-dt-page" }, `Page ${page} of ${pageCount}`),
-      h(Button, { size: "sm", "aria-label": "Next page", disabled: page >= pageCount, onClick: () => goTo(page + 1) }, "›"),
-      h(Button, { size: "sm", "aria-label": "Last page", disabled: page >= pageCount, onClick: () => goTo(pageCount) }, "»"),
+      h(Button, { size: "sm", "aria-label": L.first, disabled: page <= 1, onClick: () => goTo(1) }, "«"),
+      h(Button, { size: "sm", "aria-label": L.previous, disabled: page <= 1, onClick: () => goTo(page - 1) }, "‹"),
+      h("span", { className: "mk-dt-page" }, L.page(page, pageCount)),
+      h(Button, { size: "sm", "aria-label": L.next, disabled: page >= pageCount, onClick: () => goTo(page + 1) }, "›"),
+      h(Button, { size: "sm", "aria-label": L.last, disabled: page >= pageCount, onClick: () => goTo(pageCount) }, "»"),
     ),
   );
 
@@ -657,8 +734,8 @@ export function DataTable({
     exportFilename != null &&
     h(
       Button,
-      { key: "__export", disabled: !sorted.length, onClick: exportCsv, title: "Export every row on every page, as sorted" },
-      "Export CSV",
+      { key: "__export", disabled: !sorted.length, onClick: exportCsv, title: L.exportTitle },
+      L.exportCsv,
     );
 
   return h(
@@ -676,7 +753,7 @@ export function DataTable({
       { className: "mk-dt-scroll", ref: scrollRef, style: !fill && maxHeight != null ? { maxHeight } : undefined },
       h(
         "table",
-        { className: "mk-dt-table", style: { minWidth: layout.minWidth } },
+        { className: cx("mk-dt-table", runs && "mk-dt-table--grouped"), style: { minWidth: layout.minWidth } },
         h(
           "colgroup",
           null,
@@ -717,6 +794,9 @@ function toNode(o) {
   return n.children ? { ...n, children: n.children.map(toNode) } : n;
 }
 
+/** The All row's key in a search's highlight order (never an option value). */
+const ALL_KEY = "\u0000all";
+
 const asChecked = t => (t === "on" ? true : t === "mixed" ? "mixed" : false);
 
 /**
@@ -738,6 +818,13 @@ const asChecked = t => (t === "on" ? true : t === "mixed" ? "mixed" : false);
  * keeps its selection until a row is ticked, and the first tick picks that
  * row alone. Pass `none` / `onNoneChange` to show the draft elsewhere (the
  * trigger); otherwise FilterItems keeps it.
+ *
+ * `searchable` (2.27) puts a search input above the rows, as shadcn's
+ * Command does: it takes focus, filters the rows by label as you type, and
+ * hides All and its separator while a query is typed. Its keys are cmdk's:
+ * ArrowDown/ArrowUp (Ctrl+N/J, Ctrl+P/K) move the highlighted row, Home/End
+ * and Cmd+Arrow jump to the first or last, Enter ticks the highlighted row.
+ * Off (the default), FilterItems renders exactly as before.
  */
 export function FilterItems({
   options,
@@ -749,6 +836,9 @@ export function FilterItems({
   showOnly = false,
   none: noneProp,
   onNoneChange,
+  searchable = false,
+  searchPlaceholder = "Search",
+  searchEmpty = "No match",
   className,
   "aria-label": ariaLabel,
 }) {
@@ -775,7 +865,71 @@ export function FilterItems({
   const dot = o => (o.color ? h("span", { className: "mk-ms-swatch", style: { background: o.color } }) : null);
   const allTick = filterAllTick(selected, none);
 
+  // Search (2.27): cmdk's model. Focus stays in the input; one row is
+  // highlighted (the first after every keystroke) and Enter ticks it.
+  const [query, setQuery] = React.useState("");
+  const [activeKey, setActiveKey] = React.useState(null);
+  const uid = React.useId();
+  const shown = searchable ? filterSearch(tree, query) : null;
+  const keys = [];
+  const runs = new Map();
+  if (searchable) {
+    if (!shown) {
+      keys.push(ALL_KEY);
+      runs.set(ALL_KEY, () => apply(filterToggleAll(selected, none)));
+    }
+    const walk = node => {
+      if (shown && !shown.has(node.value)) return;
+      keys.push(node.value);
+      runs.set(node.value, () => flip(node));
+      node.children?.forEach(walk);
+    };
+    tree.forEach(walk);
+  }
+  const active = keys.includes(activeKey) ? activeKey : keys[0];
+  const rowId = key => `${uid}-o${keys.indexOf(key)}`;
+  const activeId = active === undefined ? undefined : rowId(active);
+  React.useEffect(() => {
+    if (!searchable || !activeId) return;
+    const el = document.getElementById(activeId);
+    if (el && typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "nearest" });
+  }, [searchable, activeId]);
+  const searchProps = key =>
+    searchable
+      ? { id: rowId(key), "data-selected": String(key === active), onPointerMove: () => setActiveKey(key) }
+      : null;
+  const onSearchKey = e => {
+    if (e.defaultPrevented || e.nativeEvent.isComposing || e.keyCode === 229) return;
+    const i = keys.indexOf(active);
+    const go = j => {
+      e.preventDefault();
+      if (j >= 0 && j < keys.length) setActiveKey(keys[j]);
+    };
+    switch (e.key) {
+      case "ArrowDown":
+        return go(e.metaKey ? keys.length - 1 : i + 1);
+      case "ArrowUp":
+        return go(e.metaKey ? 0 : i - 1);
+      case "n":
+      case "j":
+        return e.ctrlKey ? go(i + 1) : undefined;
+      case "p":
+      case "k":
+        return e.ctrlKey ? go(i - 1) : undefined;
+      case "Home":
+        return go(0);
+      case "End":
+        return go(keys.length - 1);
+      case "Enter":
+        e.preventDefault();
+        return runs.get(active)?.();
+      default:
+        return undefined;
+    }
+  };
+
   const row = (node, depth) => {
+    if (shown && !shown.has(node.value)) return [];
     const tick = filterTick(node, selected, none);
     const group = Boolean(node.children);
     const el = h(
@@ -789,6 +943,7 @@ export function FilterItems({
         title: node.title,
         className: cx("mk-ms-opt", tick !== "off" && "active", group && "mk-ms-group"),
         style: depth ? { paddingLeft: 8 + depth * 20 } : undefined,
+        ...searchProps(node.value),
         onClick: () => flip(node),
         onKeyDown: e => {
           if (e.key === "Enter" || e.key === " ") {
@@ -806,10 +961,16 @@ export function FilterItems({
     return group ? [el, ...node.children.flatMap(c => row(c, depth + 1))] : [el];
   };
 
-  return h(
+  const list = h(
     "div",
-    { className: cx("mk-ms-items", className), role: "listbox", "aria-multiselectable": true, "aria-label": ariaLabel },
-    h(
+    {
+      className: cx("mk-ms-items", className),
+      role: "listbox",
+      "aria-multiselectable": true,
+      "aria-label": ariaLabel,
+      ...(searchable ? { id: `${uid}-list` } : null),
+    },
+    !shown && h(
       "div",
       {
         role: "option",
@@ -817,6 +978,7 @@ export function FilterItems({
         "aria-checked": asChecked(allTick),
         tabIndex: 0,
         className: cx("mk-ms-opt", "mk-ms-all", allTick !== "off" && "active"),
+        ...searchProps(ALL_KEY),
         onClick: () => apply(filterToggleAll(selected, none)),
         onKeyDown: e => {
           if (e.key === "Enter" || e.key === " ") {
@@ -829,8 +991,41 @@ export function FilterItems({
       h(Checkbox, { checked: asChecked(allTick) }),
       h("span", { className: "mk-ms-label" }, allLabel),
     ),
-    h("div", { className: "mk-ms-sep" }),
+    !shown && h("div", { className: "mk-ms-sep" }),
     ...tree.flatMap(o => row(o, 0)),
+    shown && keys.length === 0 && h("div", { className: "mk-ms-empty", role: "presentation" }, searchEmpty),
+  );
+  if (!searchable) return list;
+  return h(
+    React.Fragment,
+    null,
+    h(
+      "div",
+      { className: "mk-ms-search" },
+      h(IconSearch),
+      h("input", {
+        type: "text",
+        className: "mk-ms-search-input",
+        autoFocus: true,
+        value: query,
+        placeholder: searchPlaceholder,
+        "aria-label": searchPlaceholder,
+        autoComplete: "off",
+        autoCorrect: "off",
+        spellCheck: false,
+        role: "combobox",
+        "aria-autocomplete": "list",
+        "aria-expanded": true,
+        "aria-controls": `${uid}-list`,
+        "aria-activedescendant": activeId,
+        onChange: e => {
+          setQuery(e.target.value);
+          setActiveKey(null);
+        },
+        onKeyDown: onSearchKey,
+      }),
+    ),
+    list,
   );
 }
 
@@ -850,6 +1045,9 @@ export function FilterItems({
  *
  * Drop-in for the apps' NestedFilterMenu: `selected` = `value`, `label` =
  * `aria-label`, `triggerClassName`, `summary`, `probes`, `sizeTo`.
+ *
+ * `searchable` (2.27) adds FilterItems' search input at the top of the menu:
+ * search, All, a separator, then the values.
  */
 export function MultiSelect({
   options,
@@ -865,6 +1063,9 @@ export function MultiSelect({
   sizeTo,
   probes = [],
   align = "start",
+  searchable = false,
+  searchPlaceholder,
+  searchEmpty,
   className,
   triggerClassName,
   label,
@@ -931,6 +1132,7 @@ export function MultiSelect({
           none,
           onNoneChange: setNone,
           "aria-label": ariaLabel,
+          ...(searchable ? { searchable, searchPlaceholder, searchEmpty } : null),
         }),
       ),
   );

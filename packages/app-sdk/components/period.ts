@@ -1,0 +1,83 @@
+// Periods for the date filters (2.27): a week, month, quarter or year, or a
+// custom range. Dates are ISO 'YYYY-MM-DD' strings in UTC, both ends
+// inclusive. Pure functions only, no imports. Ported 1:1 from the workspace's
+// apps/attrition-por-cohorte/src/ui/period.ts.
+
+export type Unit = "week" | "month" | "quarter" | "year";
+export type Period = { unit: Unit | "custom"; from: string; to: string };
+
+const d = (iso: string) => new Date(iso + "T00:00:00Z");
+const iso = (x: Date) => x.toISOString().slice(0, 10);
+export const addDays = (s: string, n: number) => { const x = d(s); x.setUTCDate(x.getUTCDate() + n); return iso(x); };
+export const addMonths = (s: string, n: number) => {
+  const x = d(s);
+  return iso(new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth() + n, 1)));
+};
+/** Today as a UTC day key, the same string as `toDayKey(new Date())`. */
+export const todayIso = () => new Date().toISOString().slice(0, 10);
+
+/** The first day of the unit that holds a date. Weeks start on Monday. */
+export function startOf(unit: Unit, s: string): string {
+  const x = d(s);
+  const y = x.getUTCFullYear(), m = x.getUTCMonth();
+  if (unit === "week") return addDays(s, -((x.getUTCDay() + 6) % 7));
+  if (unit === "month") return iso(new Date(Date.UTC(y, m, 1)));
+  if (unit === "quarter") return iso(new Date(Date.UTC(y, m - (m % 3), 1)));
+  return `${y}-01-01`;
+}
+const stepMonths: Record<Exclude<Unit, "week">, number> = { month: 1, quarter: 3, year: 12 };
+/** The last day of the unit that starts on `start`. */
+export function endOf(unit: Unit, start: string): string {
+  if (unit === "week") return addDays(start, 6);
+  return addDays(addMonths(start, stepMonths[unit]), -1);
+}
+/** The week, month, quarter or year that holds a date: `periodOf("month", "2026-11-19")`. */
+export const periodOf = (unit: Unit, s: string): Period => {
+  const from = startOf(unit, s);
+  return { unit, from, to: endOf(unit, from) };
+};
+
+// Months between two month starts, for stepping a custom range made of whole months.
+const monthSpan = (from: string, to: string) => {
+  const a = d(from), b = d(to);
+  return (b.getUTCFullYear() - a.getUTCFullYear()) * 12 + b.getUTCMonth() - a.getUTCMonth();
+};
+const wholeMonths = (p: Period) => p.from.slice(8) === "01" && addDays(p.to, 1).slice(8) === "01";
+
+/** The period k steps later (k < 0: earlier). A custom range moves by its own length. */
+export function shift(p: Period, k: number): Period {
+  if (p.unit === "week") return periodOf("week", addDays(p.from, 7 * k));
+  if (p.unit !== "custom") return periodOf(p.unit, addMonths(p.from, stepMonths[p.unit] * k));
+  if (wholeMonths(p)) {
+    const n = monthSpan(p.from, addDays(p.to, 1));
+    return { unit: "custom", from: addMonths(p.from, n * k), to: addDays(addMonths(p.from, n * (k + 1)), -1) };
+  }
+  const days = Math.round((d(p.to).getTime() - d(p.from).getTime()) / 864e5) + 1;
+  return { unit: "custom", from: addDays(p.from, days * k), to: addDays(p.to, days * k) };
+}
+
+/** In progress: today falls inside it, so its numbers are not final yet. */
+export const isCurrent = (p: Period, today = todayIso()) => p.from <= today && today <= p.to;
+/** Up to today: a period in progress stops at today. */
+export const clipToday = (p: Period, today = todayIso()) => ({ from: p.from, to: p.to < today ? p.to : today });
+
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const day = (s: string, withYear = true) => `${Number(s.slice(8))} ${MON[Number(s.slice(5, 7)) - 1]}${withYear ? ` ${s.slice(0, 4)}` : ""}`;
+const month = (s: string, withYear = true) => `${MON[Number(s.slice(5, 7)) - 1]}${withYear ? ` ${s.slice(0, 4)}` : ""}`;
+
+/** "Nov 2026", "Q4 2026", "2026", "17–23 Nov 2026", "Sep – Nov 2026". */
+export function periodLabel(p: Period): string {
+  if (p.unit === "year") return p.from.slice(0, 4);
+  if (p.unit === "quarter") return `Q${Math.floor(Number(p.from.slice(5, 7)) / 3) + 1} ${p.from.slice(0, 4)}`;
+  if (p.unit === "month") return month(p.from);
+  const sameYear = p.from.slice(0, 4) === p.to.slice(0, 4);
+  if (p.unit === "custom" && wholeMonths(p)) {
+    const last = addDays(p.to, 1 - Number(p.to.slice(8)));
+    if (last === p.from) return month(p.from);
+    return `${month(p.from, !sameYear)} – ${month(last)}`;
+  }
+  const sameMonth = sameYear && p.from.slice(5, 7) === p.to.slice(5, 7);
+  return sameMonth ? `${Number(p.from.slice(8))}–${day(p.to)}` : `${day(p.from, !sameYear)} – ${day(p.to)}`;
+}
+
+export const UNIT_LABEL: Record<Unit, string> = { week: "Week", month: "Month", quarter: "Quarter", year: "Year" };

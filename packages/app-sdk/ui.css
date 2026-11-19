@@ -217,6 +217,9 @@ button, input, select, textarea { font-family: inherit; }
   padding: 7px 10px; text-align: left; white-space: nowrap; vertical-align: middle; overflow: hidden;
   border-bottom: 1px solid var(--mk-row-line); background: var(--card);
 }
+/* A row tint (rowClassName) sets --mk-dt-row-bg on the <tr>. Every body cell,
+ * the pinned one included, paints it, so the tint survives the solid pin. */
+.mk-dt-table tbody td { background: var(--mk-dt-row-bg, var(--card)); }
 .mk-dt-table thead th {
   position: sticky; top: 0; z-index: 2; padding: 0; border-bottom: 0;
   font-size: 12px; font-weight: 500; color: var(--muted-foreground);
@@ -243,11 +246,23 @@ button, input, select, textarea { font-family: inherit; }
 /* The corner cell is pinned both ways and keeps BOTH borders: one box-shadow
  * would otherwise override the other and drop the header's bottom rule. */
 .mk-dt-table thead th.mk-dt-pin { z-index: 3; box-shadow: inset -1px 0 0 var(--border), inset 0 -1px 0 var(--border); }
-.mk-dt-table tbody tr:hover > td { background: color-mix(in srgb, var(--muted) 50%, var(--card)); }
+/* Column groups: a 2-row header. The whole <thead> sticks (two rows of
+ * sticky cells would stack at top: 0) and the pinned corner still sticks
+ * left. A group label spans its columns, centred, uppercase, with no rule
+ * under it. A line runs down the left of each section, head to foot. */
+.mk-dt-table--grouped thead { position: sticky; top: 0; z-index: 2; }
+.mk-dt-table--grouped thead th { position: static; }
+.mk-dt-table--grouped thead th.mk-dt-pin { position: sticky; top: auto; left: 0; }
+.mk-dt-table thead th.mk-dt-group {
+  height: 26px; padding: 0 10px; text-align: center; box-shadow: none;
+  font-size: 11px; font-weight: 600; letter-spacing: .075em; text-transform: uppercase;
+}
+.mk-dt-table .mk-dt-section { border-left: 1px solid var(--border); }
+.mk-dt-table tbody tr:hover > td { background: color-mix(in srgb, var(--muted) 50%, var(--mk-dt-row-bg, var(--card))); }
 .mk-dt-table tbody tr:last-child > td { border-bottom: 0; }
 .mk-dt-click { cursor: pointer; }
 .mk-dt-click:focus-visible { outline: none; }
-.mk-dt-click:focus-visible > td { background: color-mix(in srgb, var(--muted) 70%, var(--card)); }
+.mk-dt-click:focus-visible > td { background: color-mix(in srgb, var(--muted) 70%, var(--mk-dt-row-bg, var(--card))); }
 .mk-dt-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* A render() that returns blocks (a name over its links) ellipsizes each line. */
 .mk-dt-cell :where(div, p) { overflow: hidden; text-overflow: ellipsis; }
@@ -322,6 +337,22 @@ button, input, select, textarea { font-family: inherit; }
 .mk-ms-box.on { background: var(--brand, var(--primary)); border-color: var(--brand, var(--primary)); color: #fff; }
 .mk-ms-swatch { width: 8px; height: 8px; border-radius: 999px; flex-shrink: 0; }
 .mk-ms-sep { height: 1px; background: var(--border); margin: 4px -4px; flex: none; }
+/* MultiSelect `searchable` (2.27): shadcn's CommandInput (36px, a search icon,
+ * a hairline under it), pinned at the top while the rows scroll. The
+ * highlighted row is cmdk's data-selected one. */
+.mk-ms-search {
+  position: sticky; top: -4px; z-index: 1; flex: none;
+  display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px; margin: -4px -4px 4px;
+  background: var(--popover); border-bottom: 1px solid var(--border);
+}
+.mk-ms-search-icon { flex-shrink: 0; opacity: .5; }
+.mk-ms-search-input {
+  flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; box-shadow: none;
+  background: transparent; color: var(--foreground); font: inherit; font-size: 14px;
+}
+.mk-ms-search-input::placeholder { color: var(--muted-foreground); }
+.mk-ms-opt[data-selected="true"] { background: var(--accent); }
+.mk-ms-empty { padding: 24px 8px; text-align: center; font-size: 14px; color: var(--muted-foreground); }
 .mk-ms-only {
   appearance: none; border: 0; background: transparent; color: var(--muted-foreground);
   font-size: 12px; font-weight: 500; padding: 0 4px; border-radius: var(--mk-radius-sm); visibility: hidden;

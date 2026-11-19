@@ -31,7 +31,8 @@ test("formatSeconds", () => {
 test("ui.css styles every class ui.js renders", () => {
   const js = readFileSync(new URL("./ui.js", import.meta.url), "utf8");
   const css = readFileSync(new URL("./ui.css", import.meta.url), "utf8");
-  const used = new Set(js.match(/\bmk-[a-z-]+/g));
+  // A custom property ("--mk-tip-col") is not a class.
+  const used = new Set(js.match(/(?<![-\w])mk-[a-z-]+/g));
   // Built dynamically (mk-btn--${variant}, mk-tone-${t}); covered by the
   // concrete variants below.
   for (const prefix of ["mk-btn--", "mk-tone-"]) used.delete(prefix);
@@ -276,6 +277,135 @@ test("DataTable renders sortable headers, a pinned corner, the page and the page
   assert.match(clickable, /<tr tabindex="0" class="mk-dt-click" aria-label="Open Org 0">/i);
   const past = server.renderToStaticMarkup(React.createElement(ui.DataTable, { rows, columns, page: 99 }));
   assert.match(past, /Page 7 of 7/);
+});
+
+async function loadReact(t) {
+  try {
+    return { React: await import("react"), server: await import("react-dom/server"), ui: await import("./ui.js") };
+  } catch (e) {
+    t.skip("react not installed here: " + e.message);
+    return null;
+  }
+}
+
+test("DataTable labels: no labels and labels={} render the English footer exactly as before", async t => {
+  const env = await loadReact(t);
+  if (!env) return;
+  const { React, server, ui } = env;
+  const rows = Array.from({ length: 1234 }, (_, i) => ({ id: i, name: `Org ${i}`, mrr: i }));
+  const columns = [
+    { id: "name", label: "Customer", value: r => r.name },
+    { id: "mrr", label: "MRR", num: true, value: r => r.mrr, hint: "Monthly revenue" },
+  ];
+  const props = { rows, columns, noun: "customers", page: 2, exportFilename: "orgs" };
+  const html = server.renderToStaticMarkup(React.createElement(ui.DataTable, props));
+  // The footer, pager and export button as 2.26 rendered them, byte for byte.
+  const foot =
+    '<footer class="mk-dt-foot"><span aria-live="polite"><b>51–100</b> of <b>1,234</b> customers</span>' +
+    '<div class="mk-dt-nav"><select class="mk-dt-size" aria-label="Rows per page">' +
+    '<option value="25">25 per page</option><option value="50" selected="">50 per page</option><option value="100">100 per page</option></select>';
+  assert.ok(html.includes(foot), "footer start changed");
+  for (const s of [
+    'aria-label="First page"', 'aria-label="Previous page"', 'aria-label="Next page"', 'aria-label="Last page"',
+    '<span class="mk-dt-page">Page 2 of 25</span>',
+    'title="Customer · click to sort"', 'title="Monthly revenue · click to sort"',
+    'title="Export every row on every page, as sorted"', ">Export CSV<",
+  ]) {
+    assert.ok(html.includes(s), s);
+  }
+  assert.equal(server.renderToStaticMarkup(React.createElement(ui.DataTable, { ...props, labels: {} })), html);
+  const empty = server.renderToStaticMarkup(React.createElement(ui.DataTable, { columns, noun: "customers" }));
+  assert.match(empty, /<td colSpan="2" class="mk-dt-empty">No rows match these filters.<\/td>/i);
+  assert.match(empty, /<span aria-live="polite">No customers<\/span>/);
+});
+
+test("DataTable labels: a French set replaces every footer string, partial sets keep English", async t => {
+  const env = await loadReact(t);
+  if (!env) return;
+  const { React, server, ui } = env;
+  const fr = n => n.toLocaleString("fr-FR");
+  const FR = {
+    range: (from, to, total, noun) => `${fr(from)}–${fr(to)} sur ${fr(total)} ${noun}`,
+    none: () => "Aucun client",
+    empty: "Aucune ligne pour ces filtres.",
+    page: (p, n) => `Page ${p} sur ${n}`,
+    perPage: n => `${n} par page`,
+    rowsPerPage: "Lignes par page",
+    first: "Première page",
+    previous: "Page précédente",
+    next: "Page suivante",
+    last: "Dernière page",
+    sortHint: label => `${label} · cliquer pour trier`,
+    exportCsv: "Exporter en CSV",
+    exportTitle: "Exporter toutes les lignes, dans l'ordre du tri",
+  };
+  const rows = Array.from({ length: 1234 }, (_, i) => ({ id: i, name: `Org ${i}` }));
+  const columns = [{ id: "name", label: "Client", value: r => r.name }];
+  const html = server.renderToStaticMarkup(
+    React.createElement(ui.DataTable, { rows, columns, noun: "clients", page: 2, exportFilename: "x", labels: FR }),
+  );
+  const nbsp = fr(1234).slice(1, -3); // fr-FR groups with a narrow no-break space
+  assert.ok(html.includes(`<span aria-live="polite">51–100 sur 1${nbsp}234 clients</span>`), "range");
+  for (const s of [
+    'aria-label="Lignes par page"', '<option value="50" selected="">50 par page</option>',
+    'aria-label="Première page"', 'aria-label="Page précédente"', 'aria-label="Page suivante"', 'aria-label="Dernière page"',
+    '<span class="mk-dt-page">Page 2 sur 25</span>', 'title="Client · cliquer pour trier"',
+    "title=\"Exporter toutes les lignes, dans l&#x27;ordre du tri\"", ">Exporter en CSV<",
+  ]) {
+    assert.ok(html.includes(s), s);
+  }
+  for (const en of ["of", "per page", "Page 2 of", "First page", "Previous page", "Next page", "Last page", "click to sort", "Export CSV"]) {
+    assert.ok(!new RegExp(`\\b${en}\\b`).test(html), `English left: ${en}`);
+  }
+  const empty = server.renderToStaticMarkup(React.createElement(ui.DataTable, { columns, noun: "clients", labels: FR }));
+  assert.match(empty, /class="mk-dt-empty">Aucune ligne pour ces filtres.<\/td>/i);
+  assert.match(empty, /<span aria-live="polite">Aucun client<\/span>/);
+  // The empty prop still wins over labels.empty.
+  const own = server.renderToStaticMarkup(React.createElement(ui.DataTable, { columns, empty: "Rien.", labels: FR }));
+  assert.match(own, /class="mk-dt-empty">Rien.<\/td>/i);
+  // A partial set: French page counter, English everything else.
+  const partial = server.renderToStaticMarkup(
+    React.createElement(ui.DataTable, { rows, columns, labels: { page: FR.page } }),
+  );
+  assert.match(partial, /Page 1 sur 25/);
+  assert.match(partial, /<b>1–50<\/b> of <b>1,234<\/b> rows/);
+  assert.match(partial, /aria-label="Next page"/);
+  assert.equal(ui.DATA_TABLE_LABELS.page(2, 7), "Page 2 of 7");
+});
+
+test("DataTable rowClassName: the class lands on the row, the pinned cell paints its tint, none by default", async t => {
+  const env = await loadReact(t);
+  if (!env) return;
+  const { React, server, ui } = env;
+  const rows = [
+    { id: 1, name: "Acme", status: "lost" },
+    { id: 2, name: "Beta", status: "open" },
+  ];
+  const columns = [
+    { id: "name", label: "Deal", value: r => r.name, sticky: true },
+    { id: "status", label: "Status", value: r => r.status },
+  ];
+  const tint = r => (r.status === "lost" ? "deal-lost" : undefined);
+  const html = server.renderToStaticMarkup(React.createElement(ui.DataTable, { rows, columns, rowClassName: tint }));
+  assert.match(html, /<tr class="deal-lost"><td class="mk-dt-pin">/);
+  assert.match(html, /<tr><td class="mk-dt-pin"><div class="mk-dt-cell" title="Beta">/);
+  // Clickable rows keep mk-dt-click next to the app's class.
+  const click = server.renderToStaticMarkup(
+    React.createElement(ui.DataTable, { rows, columns, rowClassName: tint, onRowClick: () => {} }),
+  );
+  assert.match(click, /<tr tabindex="0" class="mk-dt-click deal-lost">/i);
+  assert.match(click, /<tr tabindex="0" class="mk-dt-click">/i);
+  // Default undefined changes nothing: same markup as rowClassName returning nothing, no class on rows.
+  const plain = server.renderToStaticMarkup(React.createElement(ui.DataTable, { rows, columns }));
+  assert.equal(server.renderToStaticMarkup(React.createElement(ui.DataTable, { rows, columns, rowClassName: () => undefined })), plain);
+  assert.doesNotMatch(plain, /<tr class=/);
+  // The tint reaches the sticky cell: body cells (pin included) paint --mk-dt-row-bg,
+  // and the pin rule sets no background of its own that would cover it.
+  const css = readFileSync(new URL("./ui.css", import.meta.url), "utf8");
+  assert.match(css, /\.mk-dt-table tbody td \{ background: var\(--mk-dt-row-bg, var\(--card\)\); \}/);
+  const pin = css.match(/\.mk-dt-table \.mk-dt-pin \{[^}]*\}/)[0];
+  assert.doesNotMatch(pin, /background/);
+  assert.match(css, /tr:hover > td \{ background: color-mix\(in srgb, var\(--muted\) 50%, var\(--mk-dt-row-bg, var\(--card\)\)\); \}/);
 });
 
 test("DataTable widths: overrides, defaults by kind, grow and calc floors", async t => {
@@ -798,3 +928,336 @@ test("unlisted values survive a full tick and the URL; an empty group is never o
   assert.equal(c.filterTick(loading, ["a"]), "off");
 });
 
+
+test("filterSearch: blank shows every row; a match keeps its ancestors; a matching group keeps its rows", async () => {
+  const c = await import("./ui-core.js");
+  const tree = [
+    { value: "humans", label: "Humans" },
+    { value: "bots", label: "Bots", children: [
+      { value: "openai", label: "OpenAI", children: [{ value: "gptbot", label: "GPTBot" }, { value: "oai", label: "OAI-SearchBot" }] },
+      { value: "bing", label: "Bingbot" },
+    ] },
+  ];
+  assert.equal(c.filterSearch(tree, ""), null);
+  assert.equal(c.filterSearch(tree, "   "), null);
+  assert.deepEqual([...c.filterSearch(tree, " gpt ")].sort(), ["bots", "gptbot", "openai"]);
+  assert.deepEqual([...c.filterSearch(tree, "OPENAI")].sort(), ["bots", "gptbot", "oai", "openai"]);
+  assert.deepEqual([...c.filterSearch(tree, "zzz")], []);
+});
+
+// Markup of FilterItems and MultiSelect without `searchable`, rendered by the
+// 2.26.0 ui.js (sha256, first 16 hex). The prop off changes nothing.
+const MARKUP_2_26 = ["ab078fde340fd7ae", "65b9d0d8e9b81d9f", "bbfabefb95f06723"];
+
+test("MultiSelect searchable off: markup identical to 2.26.0, and false equals omitted", async t => {
+  let React, server, crypto;
+  try {
+    React = await import("react");
+    server = await import("react-dom/server");
+    crypto = await import("node:crypto");
+  } catch (e) {
+    t.skip("react not installed here: " + e.message);
+    return;
+  }
+  const ui = await import("./ui.js");
+  const h = React.createElement;
+  const tree = [{ value: "humans", label: "Humans" }, { value: "bots", label: "Bots", children: [{ value: "gptbot", label: "GPTBot", title: "OpenAI" }, { value: "bing", label: "Bingbot" }] }];
+  const cases = extra => [
+    h(ui.FilterItems, { options: ["CH", "ES", "IT"], value: ["ES"], onChange() {}, allLabel: "All markets", showOnly: true, ...extra }),
+    h(ui.FilterItems, { options: tree, value: ["humans", "gptbot"], onChange() {}, "aria-label": "Traffic", ...extra }),
+    h(ui.MultiSelect, { options: [{ value: "ch", label: "Switzerland", color: "#dc2626" }, "ES"], value: ["ch"], onChange() {}, allLabel: "All markets", ...extra }),
+  ];
+  const html = extra => cases(extra).map(el => server.renderToStaticMarkup(el));
+  const hash = s => crypto.createHash("sha256").update(s).digest("hex").slice(0, 16);
+  assert.deepEqual(html({}).map(hash), MARKUP_2_26);
+  assert.deepEqual(html({ searchable: false }), html({}));
+  for (const s of html({})) assert.doesNotMatch(s, /mk-ms-search|data-selected|<input|combobox/);
+});
+
+async function jsdomUi(t) {
+  let React, client, JSDOM;
+  try {
+    React = await import("react");
+    client = await import("react-dom/client");
+    ({ JSDOM } = await import("jsdom"));
+  } catch (e) {
+    t.skip("react or jsdom not installed here: " + e.message);
+    return null;
+  }
+  const dom = new JSDOM("<!doctype html><body><div id=root></div></body>");
+  const win = dom.window;
+  win.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  const keys = ["window", "document", "Node", "Element", "HTMLElement", "MouseEvent", "Event", "KeyboardEvent"];
+  const saved = keys.map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]);
+  for (const k of keys) Object.defineProperty(globalThis, k, { value: k === "window" ? win : win[k], configurable: true, writable: true });
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  t.after(() => {
+    for (const [k, d] of saved) d ? Object.defineProperty(globalThis, k, d) : delete globalThis[k];
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  });
+  const ui = await import("./ui.js");
+  return { React, client, win, ui, h: React.createElement };
+}
+
+test("MultiSelect searchable off: an open menu has no input, focus stays on the trigger, arrows do nothing", async t => {
+  const env = await jsdomUi(t);
+  if (!env) return;
+  const { React, client, win, ui, h } = env;
+  const root = client.createRoot(win.document.getElementById("root"));
+  await React.act(() => root.render(h(ui.MultiSelect, { options: ["CH", "ES", "IT"], value: [], onChange() {} })));
+  const trigger = win.document.querySelector(".mk-ms-trigger");
+  trigger.focus();
+  await React.act(() => trigger.click());
+  assert.equal(win.document.querySelector(".mk-ms-menu input"), null);
+  assert.equal(win.document.activeElement, trigger);
+  await React.act(() => trigger.dispatchEvent(new win.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+  assert.equal(win.document.querySelectorAll("[data-selected]").length, 0);
+  assert.deepEqual([...win.document.querySelectorAll('[role="option"]')].map(r => r.textContent), ["All", "CH", "ES", "IT"]);
+  await React.act(() => root.unmount());
+});
+
+test("MultiSelect searchable: search, All, separator, values; typing filters; cmdk keys; Enter ticks", async t => {
+  const env = await jsdomUi(t);
+  if (!env) return;
+  const { React, client, win, ui, h } = env;
+  const OWNERS = ["Alice Martin", "Bruno Costa", "Carla Rossi", "Alina Nowak"];
+  let value = null;
+  function App() {
+    const [v, setV] = React.useState([]);
+    value = v;
+    return h(ui.MultiSelect, { searchable: true, options: OWNERS, value: v, onChange: setV, allLabel: "All owners" });
+  }
+  const root = client.createRoot(win.document.getElementById("root"));
+  await React.act(() => root.render(h(App)));
+  await React.act(() => win.document.querySelector(".mk-ms-trigger").click());
+  const doc = win.document;
+  const input = () => doc.querySelector(".mk-ms-search-input");
+  const menu = doc.querySelector(".mk-ms-menu");
+  const order = [...menu.querySelectorAll(".mk-ms-search, .mk-ms-opt, .mk-ms-sep")].map(e => e.className.includes("search") ? "search" : e.className.includes("sep") ? "sep" : e.textContent);
+  assert.deepEqual(order, ["search", "All owners", "sep", ...OWNERS], "search, All, a separator, the values");
+  assert.equal(doc.activeElement, input(), "the input takes focus on open");
+  assert.equal(input().placeholder, "Search");
+  const highlighted = () => doc.querySelector('[data-selected="true"]')?.textContent;
+  assert.equal(highlighted(), "All owners", "the first row is highlighted");
+  assert.equal(input().getAttribute("aria-activedescendant"), doc.querySelector('[data-selected="true"]').id);
+
+  const key = async (k, init = {}) => React.act(() => input().dispatchEvent(new win.KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...init })));
+  await key("ArrowDown");
+  assert.equal(highlighted(), "Alice Martin");
+  await key("j", { ctrlKey: true });
+  assert.equal(highlighted(), "Bruno Costa");
+  await key("End");
+  assert.equal(highlighted(), "Alina Nowak");
+  await key("ArrowDown");
+  assert.equal(highlighted(), "Alina Nowak", "no loop, as cmdk's default");
+  await key("Home");
+  assert.equal(highlighted(), "All owners");
+  await key("ArrowUp");
+  assert.equal(highlighted(), "All owners");
+
+  const type = async q => {
+    const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value").set;
+    await React.act(() => {
+      setter.call(input(), q);
+      input().dispatchEvent(new win.Event("input", { bubbles: true }));
+      // react-dom loaded before jsdom, so it watches text inputs on keyup.
+      input().dispatchEvent(new win.KeyboardEvent("keyup", { key: "x", bubbles: true }));
+    });
+  };
+  const rows = () => [...doc.querySelectorAll('[role="option"]')].map(r => r.textContent);
+  await type("  ALI ");
+  assert.deepEqual(rows(), ["Alice Martin", "Alina Nowak"], "case-insensitive, trimmed; All hides");
+  assert.equal(doc.querySelector(".mk-ms-sep"), null);
+  assert.equal(highlighted(), "Alice Martin", "the first match is highlighted");
+  await key("ArrowDown");
+  await key("Enter");
+  assert.deepEqual(value, ["Alice Martin", "Bruno Costa", "Carla Rossi"], "Enter ticks the highlighted row (the All rule: it unticks Alina)");
+  assert.ok(doc.querySelector(".mk-ms-menu"), "the menu stays open");
+  await type("zzz");
+  assert.deepEqual(rows(), []);
+  assert.equal(doc.querySelector(".mk-ms-empty").textContent, "No match");
+  await type("");
+  assert.deepEqual(rows(), ["All owners", ...OWNERS]);
+  await React.act(() => doc.querySelector(".mk-ms-trigger").click());
+  await React.act(() => doc.querySelector(".mk-ms-trigger").click());
+  assert.equal(input().value, "", "the query clears when the menu closes");
+  await React.act(() => root.unmount());
+});
+
+// ---------------------------------------------------------------------------
+// tooltipSeriesRows absentAsZero/share, TableTooltip colWidth, DataTable groups
+// ---------------------------------------------------------------------------
+
+/** The fixtures behind test-support/ui-baseline-2.26.json, rendered by SDK 2.26.0 before these options existed. */
+async function renderBaseline(React, server, ui) {
+  const h = React.createElement;
+  const series = [{ key: "fr", label: "France", color: "#2563eb" }, { key: "es", label: "Spain", color: "#f59e0b" }, { key: "it", label: "Italy" }];
+  const seriesRows = ui.tooltipSeriesRows({ fr: 120, es: 0, it: null }, series, { stacked: true });
+  const tableTooltip = server.renderToStaticMarkup(
+    h(ui.TableTooltip, {
+      title: "W45",
+      columns: ["Leads"],
+      rows: seriesRows.map(r => ({ ...r, cells: [ui.tooltipCell(r.value)] })),
+      total: { label: "Total", cells: ["120"] },
+    }),
+  );
+  const data = Array.from({ length: 3 }, (_, i) => ({ id: i, name: `Org ${i}`, mrr: i * 10, arr: i * 120 }));
+  const columns = [
+    { id: "name", label: "Customer", value: r => r.name, sticky: true },
+    { id: "mrr", label: "MRR", num: true, value: r => r.mrr },
+    { id: "arr", label: "ARR", num: true, value: r => r.arr, sortable: false },
+  ];
+  const dataTable = server.renderToStaticMarkup(h(ui.DataTable, { rows: data, columns, defaultSort: { id: "mrr", dir: "desc" } }));
+  return { seriesRows, tableTooltip, dataTable, data, columns };
+}
+
+test("options off: tooltipSeriesRows, TableTooltip and DataTable render exactly as SDK 2.26.0", async t => {
+  let React, server, ui;
+  try {
+    React = await import("react");
+    server = await import("react-dom/server");
+    ui = await import("./ui.js");
+  } catch (e) {
+    t.skip("react not installed here: " + e.message);
+    return;
+  }
+  const baseline = JSON.parse(readFileSync(new URL("./test-support/ui-baseline-2.26.json", import.meta.url), "utf8"));
+  const now = await renderBaseline(React, server, ui);
+  assert.deepEqual(JSON.parse(JSON.stringify(now.seriesRows)), baseline.seriesRows);
+  assert.equal(now.tableTooltip, baseline.tableTooltip);
+  assert.equal(now.dataTable, baseline.dataTable);
+  // A `groups` prop with no grouped column changes nothing either.
+  const withGroups = server.renderToStaticMarkup(
+    React.createElement(ui.DataTable, { rows: now.data, columns: now.columns, defaultSort: { id: "mrr", dir: "desc" }, groups: [{ id: "x", label: "X" }] }),
+  );
+  assert.equal(withGroups, baseline.dataTable);
+  // The explicit false options are the defaults.
+  const { tooltipSeriesRows } = await import("./ui-core.js");
+  const series = [{ key: "a" }, { key: "b" }];
+  assert.deepEqual(tooltipSeriesRows({ a: 1 }, series, { absentAsZero: false, share: false }), tooltipSeriesRows({ a: 1 }, series));
+});
+
+test("tooltipSeriesRows absentAsZero + share: every legend row, a muted 0 and 0%, a dash when missing", async () => {
+  const { tooltipSeriesRows, tooltipCellText } = await import("./ui-core.js");
+  const stacks = [
+    { key: "ok", label: "2xx" },
+    { key: "redirect", label: "3xx" },
+    { key: "err", label: "5xx" },
+    { key: "mean", label: "Mean" },
+  ];
+  // A bucket with data where "redirect" has no rows (absent) and "err" is 0; "mean" cannot be computed.
+  const datum = { ok: 300, err: 0, mean: Number.NaN };
+  const rows = tooltipSeriesRows(datum, stacks, { stacked: true, absentAsZero: true, share: true });
+  assert.deepEqual(
+    rows.map(r => [r.key, r.value, r.state, r.share]),
+    [
+      ["mean", null, "missing", null],
+      ["err", 0, "zero", 0],
+      ["redirect", 0, "zero", 0],
+      ["ok", 300, "value", 1],
+    ],
+  );
+  const pct = v => `${Math.round(v * 100)}%`;
+  assert.deepEqual(
+    rows.map(r => [tooltipCellText(r.value, String).text, tooltipCellText(r.share, pct, { percent: true }).text]),
+    [["–", "–"], ["0", "0%"], ["0", "0%"], ["300", "100%"]],
+  );
+  // Without absentAsZero an absent key is missing ("–"); share still adds up over the rest.
+  const plain = tooltipSeriesRows({ ok: 1, err: 3 }, stacks, { share: true });
+  assert.deepEqual(plain.map(r => r.share), [0.25, null, 0.75, null]);
+  // An all-zero bucket: every row stays, shares are missing (no base to divide by).
+  const empty = tooltipSeriesRows({}, stacks, { absentAsZero: true, share: true });
+  assert.equal(empty.length, 4);
+  assert.deepEqual(empty.map(r => [r.state, r.share]), [["zero", null], ["zero", null], ["zero", null], ["zero", null]]);
+});
+
+test("TableTooltip colWidth sets the value columns' minimum width", async t => {
+  let React, server, ui;
+  try {
+    React = await import("react");
+    server = await import("react-dom/server");
+    ui = await import("./ui.js");
+  } catch (e) {
+    t.skip("react not installed here: " + e.message);
+    return;
+  }
+  const tip = colWidth => server.renderToStaticMarkup(React.createElement(ui.TableTooltip, { rows: [], colWidth }));
+  assert.match(tip("9ch"), /^<div class="mk-tip" style="--mk-tip-col:9ch">/);
+  assert.match(tip(72), /^<div class="mk-tip" style="--mk-tip-col:72px">/);
+  assert.match(tip(undefined), /^<div class="mk-tip"><table>/);
+  const css = readFileSync(new URL("./ui.css", import.meta.url), "utf8");
+  assert.match(css, /\.mk-tip td \{[^}]*min-width: var\(--mk-tip-col, 7ch\)/);
+});
+
+test("columnGroupRuns: adjacent columns share a group, ungrouped columns run alone, sections after unpinned columns", async () => {
+  const { columnGroupRuns } = await import("./ui-core.js");
+  assert.equal(columnGroupRuns([{ id: "a" }, { id: "b" }]), null);
+  const runs = columnGroupRuns([
+    { id: "name", sticky: true },
+    { id: "calls", group: "activity" },
+    { id: "demos", group: "activity" },
+    { id: "cash", group: "money" },
+    { id: "note" },
+    { id: "late", group: "activity" },
+  ]);
+  assert.deepEqual(
+    runs.map(r => [r.group, r.start, r.columns.map(c => c.id)]),
+    [
+      [null, false, ["name"]],
+      ["activity", false, ["calls", "demos"]], // after the pinned column: it already draws the line
+      ["money", true, ["cash"]],
+      [null, true, ["note"]],
+      ["activity", true, ["late"]], // not adjacent: a run of its own
+    ],
+  );
+});
+
+test("DataTable groups: a 2-row header, labels span their columns, sorting and the pinned corner still work", async t => {
+  let React, server, ui;
+  try {
+    React = await import("react");
+    server = await import("react-dom/server");
+    ui = await import("./ui.js");
+  } catch (e) {
+    t.skip("react not installed here: " + e.message);
+    return;
+  }
+  const rows = [
+    { id: 1, name: "France", calls: 40, demos: 4, cash: 900 },
+    { id: 2, name: "Spain", calls: 12, demos: 9, cash: 300 },
+  ];
+  const columns = [
+    { id: "name", label: "Country", value: r => r.name, sticky: true },
+    { id: "calls", label: "Calls", num: true, value: r => r.calls, group: "activity" },
+    { id: "demos", label: "Demos", num: true, value: r => r.demos, group: "activity" },
+    { id: "cash", label: "Cash", num: true, value: r => r.cash, group: "money" },
+  ];
+  const html = server.renderToStaticMarkup(
+    React.createElement(ui.DataTable, {
+      rows,
+      columns,
+      defaultSort: { id: "demos", dir: "desc" },
+      groups: [{ id: "activity", label: "Activity", className: "tone-brand" }],
+    }),
+  );
+  assert.match(html, /<table class="mk-dt-table mk-dt-table--grouped"/);
+  const head = html.match(/<thead>(.*)<\/thead>/)[1];
+  assert.equal((head.match(/<tr>/g) ?? []).length, 2);
+  // Row 1: the pinned corner spans both rows, then one cell per group.
+  assert.match(head, /^<tr><th scope="col" rowSpan="2" class="mk-dt-pin" aria-sort="none"><button type="button" class="mk-dt-sort"/);
+  assert.match(head, /<th scope="colgroup" colSpan="2" class="mk-dt-group tone-brand" title="Activity"><span class="mk-dt-th-text">Activity<\/span><\/th>/);
+  // A group not listed in `groups` shows its id, after a section line.
+  assert.match(head, /<th scope="colgroup" colSpan="1" class="mk-dt-group mk-dt-section" title="money">/);
+  // Row 2: the grouped columns, sortable, the sorted one marked.
+  assert.match(head, /<\/tr><tr><th scope="col" class="mk-dt-num" aria-sort="none"><button type="button" class="mk-dt-sort" title="Calls · click to sort">/);
+  assert.match(head, /<th scope="col" class="mk-dt-num mk-dt-sorted" aria-sort="descending">/);
+  assert.match(head, /<th scope="col" class="mk-dt-num mk-dt-section" aria-sort="none">/);
+  // Body: sorted by demos desc (Spain first), the section line on its cells too, 4 cells a row.
+  const body = html.match(/<tbody>(.*)<\/tbody>/)[1];
+  assert.match(body, /^<tr><td class="mk-dt-pin"><div class="mk-dt-cell" title="Spain">Spain<\/div><\/td>/);
+  assert.match(body, /<td class="mk-dt-num mk-dt-section"><div class="mk-dt-cell" title="300">300<\/div><\/td>/);
+  assert.equal((body.match(/<td/g) ?? []).length, 8);
+  const css = readFileSync(new URL("./ui.css", import.meta.url), "utf8");
+  assert.match(css, /\.mk-dt-table--grouped thead \{ position: sticky; top: 0;/);
+  assert.match(css, /\.mk-dt-table--grouped thead th\.mk-dt-pin \{ position: sticky; top: auto; left: 0; \}/);
+});

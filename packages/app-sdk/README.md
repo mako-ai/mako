@@ -455,6 +455,23 @@ an app's own menu that folds several filters into one dropdown on a phone.
 </DropdownMenuSubContent>
 ```
 
+**Search (2.27).** `searchable` puts a search input at the top of the menu.
+The order is search, All, a separator, then the values.
+
+```tsx
+<MultiSelect searchable options={owners} value={owner} onChange={setOwner} allLabel="All owners" showOnly />
+```
+
+- The input takes focus when the menu opens.
+- Typing filters the rows by label, case-insensitive. A group whose label matches keeps all its rows.
+- All and its separator hide while a query is typed. "No match" shows when no row matches (`searchEmpty`).
+- The keys are shadcn Command's (cmdk). ArrowDown and ArrowUp move the highlight. Home and End jump to the ends. Enter ticks the highlighted row.
+- The first row is highlighted after every keystroke, so "type a name, Enter" ticks it.
+- A tick follows the All rule above, as a click does.
+- The query clears when the menu closes.
+- `searchPlaceholder` sets the placeholder (default "Search").
+- Without `searchable` the menu is unchanged.
+
 **Replacing an app's NestedFilterMenu: `FilterMenu`.** See "Menus" below:
 `FilterMenu` and `FilterMenuItems` from `@makoai/app-sdk/menu` take
 NestedFilterMenu's props (`label`, `options`, `selected`, `onChange`,
@@ -589,6 +606,98 @@ house tokens onto Tailwind's colour names (`bg-popover`,
 optional peer set: apps that import neither `/components` nor `/menu` need
 none of it.
 
+### Date filters: `PeriodPicker` (2.27)
+
+A date filter reads **‹ Nov 2026 ›**. The arrows step one period. The middle
+opens a picker with the units, the recent periods and a Custom range. The
+period in progress is tinted and says "in progress": its numbers are not
+final.
+
+```tsx
+import { PeriodPicker, clipToday, periodOf, todayIso, type Period } from "@makoai/app-sdk/components";
+
+const [period, setPeriod] = useState<Period>(periodOf("month", todayIso()));
+<PeriodPicker value={period} onChange={setPeriod}
+  units={["week", "month", "quarter", "year"]} min="2024-01-01" label="Hires" />
+
+const { from, to } = clipToday(period); // the month in progress stops at today
+```
+
+- `units` defaults to month, quarter and year. The picker lists 12 weeks,
+  12 months, 8 quarters or 4 years.
+- `custom` is `"month"` (whole months, the default), `"day"` (any days) or
+  `false`. The arrows move a custom range by its own length.
+- ‹ stops at `min`, the first day with data. › stops at today, or at `max`
+  (next month's end for a capacity plan).
+- `periodOf(unit, day)`, `shift(period, k)`, `isCurrent(period)`,
+  `clipToday(period)` and `periodLabel(period)` are the helpers. Dates are
+  "YYYY-MM-DD" UTC day keys, both ends inclusive. Weeks start on Monday.
+- The menu is the stock `Popover`. Focus moves into it on open and back to
+  the middle on Escape.
+
+### The page filter bar (2.27)
+
+`FilterBar` puts the page-wide filters in one row under the tabs. Each control
+gets a small-caps label over it. `FilterSep` draws the hairline between two
+groups. Reset sits at the end and stays disabled while every filter is at its
+default. The row wraps on a narrow window. At 768px and under the fields fold
+behind one Filters chip that counts the active filters. The chip opens a
+bottom sheet with Done.
+
+A tab adds its own fields with `TabFilters`. They render into the same bar,
+after the page's. `useResettable(id, dirty, reset)` tells Reset and the chip
+about a tab's filter. Wrap the page in `FilterProvider`.
+
+```tsx
+import {
+  FilterBar, FilterField, FilterProvider, FilterSep, TabFilters, useResettable,
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@makoai/app-sdk/components";
+
+function RoleTab() {
+  const [role, setRole] = useState("bdr");
+  useResettable("role", role !== "bdr", () => setRole("bdr"));
+  return (
+    <TabFilters>
+      <FilterSep />
+      <FilterField label="Role" hint="The role at hire">
+        <Select value={role} onValueChange={setRole}>
+          <SelectTrigger aria-label="Role" className="w-[210px]"><SelectValue /></SelectTrigger>
+          <SelectContent>{ROLES.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}</SelectContent>
+        </Select>
+      </FilterField>
+    </TabFilters>
+  );
+}
+
+<FilterProvider>
+  <FilterBar dirty={market !== "ALL"} onReset={() => setMarket("ALL")}>
+    <FilterField label="Market">{/* Select, FilterMenu or MultiSelect */}</FilterField>
+  </FilterBar>
+  {tab === "role" && <RoleTab />}
+</FilterProvider>
+```
+
+The bar holds any control: `Select`, `FilterMenu`, `MultiSelect`. In the
+phone sheet each control takes the full width. The sheet sits at z-index 50,
+so the Radix popovers of `/components` and `/menu` open above it. Escape
+closes an open popover first and the sheet on the next press.
+
+### Country colours: `COUNTRY_COLORS`, `COUNTRY_ORDER` (2.27)
+
+A market has one colour in every app. Keys are lowercase codes.
+
+```ts
+import { COUNTRY_COLORS, COUNTRY_ORDER } from "@makoai/app-sdk";
+
+COUNTRY_COLORS.ch;    // "#dc2626"; `all` is "#475569", the all-markets line
+COUNTRY_ORDER;        // ["ch", "fr", "es", "it", "pl", "pt"]
+rows.sort((a, b) => COUNTRY_ORDER.indexOf(a.country) - COUNTRY_ORDER.indexOf(b.country));
+```
+
+CH red, FR blue, IT green, ES amber, PT teal, PL rose. Other series in a
+country chart take `--chart-1…5`. Both objects are frozen.
+
 ### Times and dates (2.21)
 
 DuckDB runs in UTC, and that stays. Display code decides the zone.
@@ -623,6 +732,15 @@ Run it in an app folder (or pass several). It exits 1 on a finding;
   override. recharts 2 reads chart children with react-is 18, which drops
   anything inside a `<>` fragment: a chart loses its reference lines. The
   fix is `"pnpm": { "overrides": { "react-is": "^19.1.10" } }`.
+
+- `distinct-sum` (2.27, warning): a binding column that is a distinct count
+  (`COUNT(DISTINCT …)`, `uniq…`, `APPROX_COUNT_DISTINCT`) summed in `src/`
+  (`SUM(col)` in DuckDB SQL, or a JS `reduce`/`sum`/`pivot` next to it). One
+  person in several groups counts once per group: visibility-dashboard's unique
+  users read 13% high in Spain (19 Nov 2026). Return the total at the shown
+  grain from the binding (`GROUP BY GROUPING SETS`), or mark a deliberate sum
+  ("user-days") with `// mako-lint-ignore distinct-sum` and the reason.
+  Warnings print and never fail the run.
 
 `--rules=react-version` runs only the named rules (2.24).
 
@@ -682,6 +800,29 @@ const SEGMENTS = [ // bottom-up, as stacked; drives the bars, the legend AND the
   The builder only reads and formats.
 - On a chart with an HTML overlay (a donut's centre label), lift the tooltip:
   `<Tooltip wrapperStyle={{ zIndex: 20 }} … />`.
+
+**Stacks: an absent segment is a zero, plus its share.** A stacked bar's
+bucket often has no row for a segment (no 3xx requests that hour). That is a
+zero, not missing data. `absentAsZero: true` turns a null or absent key into a
+muted "0". NaN stays a "–" (a mean the bucket cannot compute). `share: true`
+adds `share` to each row: its value over the sum of the non-missing values,
+null when the value is missing or the sum is 0. `colWidth` on `TableTooltip`
+sets the value columns' minimum width (`"9ch"`, or px as a number). Both
+options are off by default, and with them off the rows are the same as before.
+
+```tsx
+content={tableTooltip((d) => {
+  const rows = tooltipSeriesRows(d, STACKS, { stacked: true, absentAsZero: true, share: true });
+  const total = rows.reduce((a, r) => a + (r.value ?? 0), 0);
+  return {
+    title: d.hour,
+    columns: ["Requests", "% of total"],
+    colWidth: "9ch",
+    rows: rows.map((r) => ({ ...r, cells: [tooltipCell(r.value, fmtInt), tooltipCell(r.share, fmtPct, { percent: true })] })),
+    total: { label: "Total", cells: [tooltipCell(total, fmtInt), total > 0 ? "100%" : tooltipCell(0, fmtPct, { percent: true })] },
+  };
+})}
+```
 
 **Opt-out.** Before 2.15, `tooltipSeriesRows` dropped zero and missing values
 and sorted line charts highest value first. A caller that truly needs that
@@ -767,6 +908,47 @@ const COLUMNS: DataTableColumn<Customer>[] = [
   focused row); clicks on links and buttons inside a cell stay theirs.
   `rowLabel(row)` names a clickable row for screen readers. `rowKey` defaults
   to `row.id`.
+- **Row tints.** `rowClassName(row)` adds a class to a body row. Set
+  `--mk-dt-row-bg` in that class and every cell paints it, the pinned first
+  column included. Pick an opaque colour so scrolled cells stay behind the
+  pin. Without `rowClassName` rows get no class.
+
+  ```tsx
+  // app.css: .deal-lost { --mk-dt-row-bg: color-mix(in srgb, var(--negative) 12%, var(--card)); }
+  <DataTable rows={deals} columns={COLUMNS} rowClassName={d => (d.status === "lost" ? "deal-lost" : undefined)} />
+  ```
+- **Labels.** `labels` translates every string the table writes itself: the
+  footer, the empty state, the page-size select, the « ‹ › » aria-labels, the
+  sort hint and the export button. Pass any subset. Missing keys keep the
+  English defaults in `DATA_TABLE_LABELS`. Text with numbers is a function
+  that gets raw numbers, so format them in your locale. `noun` still names the
+  rows, and an `empty` prop wins over `labels.empty`.
+
+  ```tsx
+  const fr = (n: number) => n.toLocaleString("fr-FR");
+  const FR: Partial<DataTableLabels> = {
+    range: (from, to, total, noun) => `${fr(from)}–${fr(to)} sur ${fr(total)} ${noun}`,
+    none: noun => `Aucun ${noun.replace(/s$/, "")}`,
+    empty: "Aucune ligne pour ces filtres.",
+    page: (page, pageCount) => `Page ${page} sur ${pageCount}`,
+    perPage: size => `${size} par page`,
+    rowsPerPage: "Lignes par page",
+    first: "Première page",
+    previous: "Page précédente",
+    next: "Page suivante",
+    last: "Dernière page",
+    sortHint: label => `${label} · cliquer pour trier`,
+    exportCsv: "Exporter en CSV",
+    exportTitle: "Exporter toutes les lignes, dans l'ordre du tri",
+    exportFailed: "Le navigateur a bloqué le téléchargement. Ouvrez l'app dans un nouvel onglet.",
+  };
+
+  <DataTable rows={list} columns={COLUMNS} noun="clients" labels={FR} />
+  // footer: 51–100 sur 1 234 clients · 50 par page · « ‹ Page 2 sur 25 › »
+  ```
+
+  The English `range` bolds the two numbers. A custom `range` may return JSX
+  to do the same.
 - **CSV.** `exportFilename` adds an "Export CSV" button that downloads every
   row on every page, as sorted. Mako's app frames allow downloads. Numbers
   export as is. Text starting with `=`, `+`, `-`, `@`, tab or CR gets a
@@ -774,8 +956,26 @@ const COLUMNS: DataTableColumn<Customer>[] = [
   midnight exports as `YYYY-MM-DD`, any other Date as a UTC ISO timestamp. For
   your own button: `saveCsv(filename, toCsv(rows, columns))` returns
   `"downloaded"` or `"failed"`.
+- **Column groups.** Give columns a `group` and the header gets a second row
+  on top. Each group's label spans its adjacent columns. Ungrouped columns
+  (the pinned name) span both rows. A line runs down the left of each section.
+  `groups` sets a label and a class per group id; a group not listed shows its
+  id. Sorting, the sticky header and the pinned column work as before. With
+  no `group` on any column the header is one row, as before.
+
+  ```tsx
+  const COLUMNS = [
+    { id: "country", label: "Country", value: r => r.country, sticky: true },
+    { id: "calls", label: "Calls", num: true, value: r => r.calls, group: "activity" },
+    { id: "demos", label: "Demos", num: true, value: r => r.demos, group: "activity" },
+    { id: "cash", label: "Cash", num: true, value: r => r.cash, group: "money" },
+  ];
+  <DataTable rows={rows} columns={COLUMNS}
+    groups={[{ id: "activity", label: "Activity" }, { id: "money", label: "Money", className: "tone-positive" }]} />
+  ```
 - Pure helpers for custom tables: `sortRows`, `compareValues`, `nextSort`,
-  `pageSlice`, `pageToSync`, `toCsv`, `csvCell`, `csvDate`, `csvToTsv`.
+  `pageSlice`, `pageToSync`, `toCsv`, `csvCell`, `csvDate`, `csvToTsv`,
+  `columnLayout`, `columnGroupRuns`.
 
 `ui.css` is plain CSS (no Tailwind needed; it coexists with Tailwind) and
 every kit class is prefixed `mk-`. It also sets the house base: Inter 14px on

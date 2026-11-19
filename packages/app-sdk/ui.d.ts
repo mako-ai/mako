@@ -97,6 +97,17 @@ export interface FilterItemsProps<V extends string = string> {
   /** The "nothing ticked" draft, when the parent shows it; else FilterItems keeps it. */
   none?: boolean;
   onNoneChange?: (none: boolean) => void;
+  /**
+   * A search input above the rows (2.27), as shadcn's Command: it takes focus,
+   * filters rows by label as you type (a group whose label matches keeps its
+   * rows) and hides All while a query is typed. ArrowDown/ArrowUp move the
+   * highlighted row, Enter ticks it. Default false: no input, rows unchanged.
+   */
+  searchable?: boolean;
+  /** The search input's placeholder and accessible name. Default "Search". */
+  searchPlaceholder?: string;
+  /** Shown when no row matches. Default "No match". */
+  searchEmpty?: string;
   className?: string;
   "aria-label"?: string;
 }
@@ -142,6 +153,12 @@ export interface MultiSelectProps<V extends string = string> {
   maxChips?: number;
   /** Which edge the menu aligns to before flipping. Default "start". */
   align?: "start" | "end";
+  /** A search input at the top of the menu (2.27): search, All, a separator, the values. See FilterItemsProps. */
+  searchable?: boolean;
+  /** Default "Search". */
+  searchPlaceholder?: string;
+  /** Default "No match". */
+  searchEmpty?: string;
   className?: string;
   "aria-label"?: string;
 }
@@ -285,6 +302,8 @@ export interface TableTooltipProps {
   total?: TooltipRow;
   /** Rows after the total, apart: a value on another axis. */
   after?: TooltipRow[];
+  /** The value columns' minimum width: "9ch", or px as a number. Default 7ch. */
+  colWidth?: number | string;
   className?: string;
 }
 /** The house chart tooltip: a table with swatches, right-aligned numbers and a total row. */
@@ -303,6 +322,8 @@ export interface TooltipSeriesRow<K extends string = string> {
   /** null when missing. */
   value: number | null;
   state: TooltipValueState;
+  /** With `share: true`: value ÷ the sum of the non-missing values; null when missing or the sum is not above 0. */
+  share?: number | null;
 }
 export interface TooltipSeriesRowsOptions {
   /** Pass series bottom-up, as drawn; the rows read top segment first. */
@@ -311,6 +332,10 @@ export interface TooltipSeriesRowsOptions {
   hideEmpty?: boolean;
   /** Opt-out: sort non-stacked rows highest value first, missing last (pre-2.15). */
   byValue?: boolean;
+  /** A null or absent key counts as 0 (a muted "0"): a stack segment with no rows in the bucket. NaN stays missing. */
+  absentAsZero?: boolean;
+  /** Adds `share`: value ÷ the sum of the non-missing values; null when missing or the sum is not above 0. */
+  share?: boolean;
 }
 /**
  * Every series of the hovered datum, in a fixed order: stacked = top segment
@@ -384,12 +409,66 @@ export interface DataTableColumn<R = any> {
   /** Header hover text, e.g. the column's definition. */
   hint?: string;
   /**
+   * The column group's id. Adjacent columns with the same `group` share one
+   * label in a header row on top (see `DataTableProps.groups`); ungrouped
+   * columns span both header rows.
+   */
+  group?: string;
+  /**
    * false leaves the column out of CSV; a function exports a readable cell (a
    * level name). Numbers export as is; a Date at local or UTC midnight exports
    * as YYYY-MM-DD, any other Date as a full UTC ISO timestamp.
    */
   csv?: false | ((row: R) => unknown);
 }
+/** A column group's header: its label spans the adjacent columns with `group: id`. */
+export interface DataTableGroup {
+  id: string;
+  label?: React.ReactNode;
+  /** On the group's header cell, e.g. a colour per section. */
+  className?: string;
+}
+/** The header runs of a DataTable's columns; null when no column has a `group`. */
+export function columnGroupRuns<C extends { id: string; group?: string; sticky?: boolean }>(
+  columns: readonly C[],
+): { group: string | null; start: boolean; columns: C[] }[] | null;
+/**
+ * Every piece of text a DataTable renders itself: the footer, the pager's
+ * aria-labels, the sort hint and the export button. Text with numbers is a
+ * function that gets the raw numbers, so the app formats them in its locale.
+ */
+export interface DataTableLabels {
+  /** The footer with rows. Default `<b>1–50</b> of <b>312</b> customers`. */
+  range: (from: number, to: number, total: number, noun: string) => React.ReactNode;
+  /** The footer with no rows. Default "No customers". */
+  none: (noun: string) => React.ReactNode;
+  /** The body cell with no rows. Default "No rows match these filters." The `empty` prop wins over it. */
+  empty: React.ReactNode;
+  /** Default "Page 2 of 7". */
+  page: (page: number, pageCount: number) => string;
+  /** One page-size option. Default "50 per page". */
+  perPage: (size: number) => string;
+  /** The page-size select's aria-label. Default "Rows per page". */
+  rowsPerPage: string;
+  /** The « button's aria-label. Default "First page". */
+  first: string;
+  /** The ‹ button's aria-label. Default "Previous page". */
+  previous: string;
+  /** The › button's aria-label. Default "Next page". */
+  next: string;
+  /** The » button's aria-label. Default "Last page". */
+  last: string;
+  /** A sortable header's hover title. Default "MRR · click to sort". */
+  sortHint: (label: string) => string;
+  /** Default "Export CSV". */
+  exportCsv: string;
+  /** The export button's hover title. Default "Export every row on every page, as sorted". */
+  exportTitle: string;
+  /** Shown when the browser blocks the CSV download. */
+  exportFailed: string;
+}
+/** The English defaults of `DataTableLabels`. */
+export const DATA_TABLE_LABELS: DataTableLabels;
 export interface DataTableProps<R = any> {
   /** Default [] (renders the empty state while loading). */
   rows?: readonly R[];
@@ -428,6 +507,12 @@ export interface DataTableProps<R = any> {
   noun?: string;
   /** Shown when there are no rows. Default "No rows match these filters." */
   empty?: React.ReactNode;
+  /**
+   * Override any footer, pager, sort-hint or export text, e.g. French:
+   * `{ page: (p, n) => "Page " + p + " sur " + n }`. Missing keys keep the
+   * English default (`DATA_TABLE_LABELS`). The README has a full French set.
+   */
+  labels?: Partial<DataTableLabels>;
   /** Fill the parent's height; the body scrolls inside the card. */
   fill?: boolean;
   /** Body scroll height when not `fill`. Default 70vh. */
@@ -436,8 +521,18 @@ export interface DataTableProps<R = any> {
   onRowClick?: (row: R, event: React.SyntheticEvent) => void;
   /** The accessible name of a clickable row, e.g. `c => \`Open ${c.name}\``. */
   rowLabel?: (row: R) => string;
+  /**
+   * A class for a body row, e.g. `d => d.status === "lost" ? "deal-lost" : undefined`.
+   * Tint the row by setting `--mk-dt-row-bg` in that class: every cell paints
+   * it, the pinned first column included. Use an opaque colour, such as
+   * `color-mix(in srgb, var(--negative) 12%, var(--card))`, so scrolled cells
+   * stay hidden behind the pin. Default undefined: rows get no class.
+   */
+  rowClassName?: (row: R) => string | undefined;
   /** Adds an "Export CSV" button: downloads every row, as sorted. */
   exportFilename?: string;
+  /** Labels and classes for the column groups, by `DataTableColumn.group`. A group not listed shows its id. */
+  groups?: readonly DataTableGroup[];
   className?: string;
   style?: React.CSSProperties;
 }

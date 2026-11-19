@@ -38,7 +38,7 @@ import {
  * in a page (or this export) says which SDK a deployed app actually runs.
  * Kept in step with package.json by snapshot.test.mjs.
  */
-export const SDK_VERSION = "2.26.0";
+export const SDK_VERSION = "2.27.0";
 if (typeof window !== "undefined") {
   try {
     window.__MAKO_APP_SDK__ = SDK_VERSION;
@@ -2064,6 +2064,23 @@ if (
     document.head.appendChild(el);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Country colours (2.27): one colour per market in every app, deck and chart,
+// keyed by the lowercase country code. `all` is the all-markets / group line.
+// ---------------------------------------------------------------------------
+export const COUNTRY_COLORS = Object.freeze({
+  ch: "#dc2626",
+  fr: "#2563eb",
+  it: "#16a34a",
+  es: "#f59e0b",
+  pt: "#0891b2",
+  pl: "#db2777",
+  all: "#475569",
+});
+
+/** The order countries take in legends, tables and filters: CH, FR, ES, IT, PL, PT. */
+export const COUNTRY_ORDER = Object.freeze(["ch", "fr", "es", "it", "pl", "pt"]);
 
 // ---------------------------------------------------------------------------
 // Theme — the OS preference; v1 mirrored the host's toggle, a standalone app
