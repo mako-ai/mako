@@ -396,3 +396,19 @@ test("unloadBinding drops a view and its heap copy too", opts, async () => {
   await freshMemory(sdk.DEFAULT_BINDING_MEMORY_BUDGET);
   assert.equal(sdk.DEFAULT_BINDING_MEMORY_BUDGET, 1.5 * 1024 ** 3);
 });
+
+test("COUNTRY_COLORS and COUNTRY_ORDER: the house map, frozen, from the root", opts, () => {
+  assert.deepEqual({ ...sdk.COUNTRY_COLORS }, {
+    ch: "#dc2626",
+    fr: "#2563eb",
+    it: "#16a34a",
+    es: "#f59e0b",
+    pt: "#0891b2",
+    pl: "#db2777",
+    all: "#475569",
+  });
+  assert.deepEqual([...sdk.COUNTRY_ORDER], ["ch", "fr", "es", "it", "pl", "pt"]);
+  for (const c of sdk.COUNTRY_ORDER) assert.match(sdk.COUNTRY_COLORS[c], /^#[0-9a-f]{6}$/, `${c} has a colour`);
+  assert.equal(new Set(Object.values(sdk.COUNTRY_COLORS)).size, 7, "no two markets share a colour");
+  assert.ok(Object.isFrozen(sdk.COUNTRY_COLORS) && Object.isFrozen(sdk.COUNTRY_ORDER));
+});

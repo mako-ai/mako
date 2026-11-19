@@ -322,6 +322,22 @@ button, input, select, textarea { font-family: inherit; }
 .mk-ms-box.on { background: var(--brand, var(--primary)); border-color: var(--brand, var(--primary)); color: #fff; }
 .mk-ms-swatch { width: 8px; height: 8px; border-radius: 999px; flex-shrink: 0; }
 .mk-ms-sep { height: 1px; background: var(--border); margin: 4px -4px; flex: none; }
+/* MultiSelect `searchable` (2.27): shadcn's CommandInput (36px, a search icon,
+ * a hairline under it), pinned at the top while the rows scroll. The
+ * highlighted row is cmdk's data-selected one. */
+.mk-ms-search {
+  position: sticky; top: -4px; z-index: 1; flex: none;
+  display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px; margin: -4px -4px 4px;
+  background: var(--popover); border-bottom: 1px solid var(--border);
+}
+.mk-ms-search-icon { flex-shrink: 0; opacity: .5; }
+.mk-ms-search-input {
+  flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; box-shadow: none;
+  background: transparent; color: var(--foreground); font: inherit; font-size: 14px;
+}
+.mk-ms-search-input::placeholder { color: var(--muted-foreground); }
+.mk-ms-opt[data-selected="true"] { background: var(--accent); }
+.mk-ms-empty { padding: 24px 8px; text-align: center; font-size: 14px; color: var(--muted-foreground); }
 .mk-ms-only {
   appearance: none; border: 0; background: transparent; color: var(--muted-foreground);
   font-size: 12px; font-weight: 500; padding: 0 4px; border-radius: var(--mk-radius-sm); visibility: hidden;

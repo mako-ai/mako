@@ -455,6 +455,23 @@ an app's own menu that folds several filters into one dropdown on a phone.
 </DropdownMenuSubContent>
 ```
 
+**Search (2.27).** `searchable` puts a search input at the top of the menu.
+The order is search, All, a separator, then the values.
+
+```tsx
+<MultiSelect searchable options={owners} value={owner} onChange={setOwner} allLabel="All owners" showOnly />
+```
+
+- The input takes focus when the menu opens.
+- Typing filters the rows by label, case-insensitive. A group whose label matches keeps all its rows.
+- All and its separator hide while a query is typed. "No match" shows when no row matches (`searchEmpty`).
+- The keys are shadcn Command's (cmdk). ArrowDown and ArrowUp move the highlight. Home and End jump to the ends. Enter ticks the highlighted row.
+- The first row is highlighted after every keystroke, so "type a name, Enter" ticks it.
+- A tick follows the All rule above, as a click does.
+- The query clears when the menu closes.
+- `searchPlaceholder` sets the placeholder (default "Search").
+- Without `searchable` the menu is unchanged.
+
 **Replacing an app's NestedFilterMenu: `FilterMenu`.** See "Menus" below:
 `FilterMenu` and `FilterMenuItems` from `@makoai/app-sdk/menu` take
 NestedFilterMenu's props (`label`, `options`, `selected`, `onChange`,
@@ -665,6 +682,21 @@ The bar holds any control: `Select`, `FilterMenu`, `MultiSelect`. In the
 phone sheet each control takes the full width. The sheet sits at z-index 50,
 so the Radix popovers of `/components` and `/menu` open above it. Escape
 closes an open popover first and the sheet on the next press.
+
+### Country colours: `COUNTRY_COLORS`, `COUNTRY_ORDER` (2.27)
+
+A market has one colour in every app. Keys are lowercase codes.
+
+```ts
+import { COUNTRY_COLORS, COUNTRY_ORDER } from "@makoai/app-sdk";
+
+COUNTRY_COLORS.ch;    // "#dc2626"; `all` is "#475569", the all-markets line
+COUNTRY_ORDER;        // ["ch", "fr", "es", "it", "pl", "pt"]
+rows.sort((a, b) => COUNTRY_ORDER.indexOf(a.country) - COUNTRY_ORDER.indexOf(b.country));
+```
+
+CH red, FR blue, IT green, ES amber, PT teal, PL rose. Other series in a
+country chart take `--chart-1…5`. Both objects are frozen.
 
 ### Times and dates (2.21)
 

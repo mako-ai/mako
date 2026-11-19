@@ -798,3 +798,158 @@ test("unlisted values survive a full tick and the URL; an empty group is never o
   assert.equal(c.filterTick(loading, ["a"]), "off");
 });
 
+
+test("filterSearch: blank shows every row; a match keeps its ancestors; a matching group keeps its rows", async () => {
+  const c = await import("./ui-core.js");
+  const tree = [
+    { value: "humans", label: "Humans" },
+    { value: "bots", label: "Bots", children: [
+      { value: "openai", label: "OpenAI", children: [{ value: "gptbot", label: "GPTBot" }, { value: "oai", label: "OAI-SearchBot" }] },
+      { value: "bing", label: "Bingbot" },
+    ] },
+  ];
+  assert.equal(c.filterSearch(tree, ""), null);
+  assert.equal(c.filterSearch(tree, "   "), null);
+  assert.deepEqual([...c.filterSearch(tree, " gpt ")].sort(), ["bots", "gptbot", "openai"]);
+  assert.deepEqual([...c.filterSearch(tree, "OPENAI")].sort(), ["bots", "gptbot", "oai", "openai"]);
+  assert.deepEqual([...c.filterSearch(tree, "zzz")], []);
+});
+
+// Markup of FilterItems and MultiSelect without `searchable`, rendered by the
+// 2.26.0 ui.js (sha256, first 16 hex). The prop off changes nothing.
+const MARKUP_2_26 = ["ab078fde340fd7ae", "65b9d0d8e9b81d9f", "bbfabefb95f06723"];
+
+test("MultiSelect searchable off: markup identical to 2.26.0, and false equals omitted", async t => {
+  let React, server, crypto;
+  try {
+    React = await import("react");
+    server = await import("react-dom/server");
+    crypto = await import("node:crypto");
+  } catch (e) {
+    t.skip("react not installed here: " + e.message);
+    return;
+  }
+  const ui = await import("./ui.js");
+  const h = React.createElement;
+  const tree = [{ value: "humans", label: "Humans" }, { value: "bots", label: "Bots", children: [{ value: "gptbot", label: "GPTBot", title: "OpenAI" }, { value: "bing", label: "Bingbot" }] }];
+  const cases = extra => [
+    h(ui.FilterItems, { options: ["CH", "ES", "IT"], value: ["ES"], onChange() {}, allLabel: "All markets", showOnly: true, ...extra }),
+    h(ui.FilterItems, { options: tree, value: ["humans", "gptbot"], onChange() {}, "aria-label": "Traffic", ...extra }),
+    h(ui.MultiSelect, { options: [{ value: "ch", label: "Switzerland", color: "#dc2626" }, "ES"], value: ["ch"], onChange() {}, allLabel: "All markets", ...extra }),
+  ];
+  const html = extra => cases(extra).map(el => server.renderToStaticMarkup(el));
+  const hash = s => crypto.createHash("sha256").update(s).digest("hex").slice(0, 16);
+  assert.deepEqual(html({}).map(hash), MARKUP_2_26);
+  assert.deepEqual(html({ searchable: false }), html({}));
+  for (const s of html({})) assert.doesNotMatch(s, /mk-ms-search|data-selected|<input|combobox/);
+});
+
+async function jsdomUi(t) {
+  let React, client, JSDOM;
+  try {
+    React = await import("react");
+    client = await import("react-dom/client");
+    ({ JSDOM } = await import("jsdom"));
+  } catch (e) {
+    t.skip("react or jsdom not installed here: " + e.message);
+    return null;
+  }
+  const dom = new JSDOM("<!doctype html><body><div id=root></div></body>");
+  const win = dom.window;
+  win.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  const keys = ["window", "document", "Node", "Element", "HTMLElement", "MouseEvent", "Event", "KeyboardEvent"];
+  const saved = keys.map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]);
+  for (const k of keys) Object.defineProperty(globalThis, k, { value: k === "window" ? win : win[k], configurable: true, writable: true });
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  t.after(() => {
+    for (const [k, d] of saved) d ? Object.defineProperty(globalThis, k, d) : delete globalThis[k];
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  });
+  const ui = await import("./ui.js");
+  return { React, client, win, ui, h: React.createElement };
+}
+
+test("MultiSelect searchable off: an open menu has no input, focus stays on the trigger, arrows do nothing", async t => {
+  const env = await jsdomUi(t);
+  if (!env) return;
+  const { React, client, win, ui, h } = env;
+  const root = client.createRoot(win.document.getElementById("root"));
+  await React.act(() => root.render(h(ui.MultiSelect, { options: ["CH", "ES", "IT"], value: [], onChange() {} })));
+  const trigger = win.document.querySelector(".mk-ms-trigger");
+  trigger.focus();
+  await React.act(() => trigger.click());
+  assert.equal(win.document.querySelector(".mk-ms-menu input"), null);
+  assert.equal(win.document.activeElement, trigger);
+  await React.act(() => trigger.dispatchEvent(new win.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+  assert.equal(win.document.querySelectorAll("[data-selected]").length, 0);
+  assert.deepEqual([...win.document.querySelectorAll('[role="option"]')].map(r => r.textContent), ["All", "CH", "ES", "IT"]);
+  await React.act(() => root.unmount());
+});
+
+test("MultiSelect searchable: search, All, separator, values; typing filters; cmdk keys; Enter ticks", async t => {
+  const env = await jsdomUi(t);
+  if (!env) return;
+  const { React, client, win, ui, h } = env;
+  const OWNERS = ["Alice Martin", "Bruno Costa", "Carla Rossi", "Alina Nowak"];
+  let value = null;
+  function App() {
+    const [v, setV] = React.useState([]);
+    value = v;
+    return h(ui.MultiSelect, { searchable: true, options: OWNERS, value: v, onChange: setV, allLabel: "All owners" });
+  }
+  const root = client.createRoot(win.document.getElementById("root"));
+  await React.act(() => root.render(h(App)));
+  await React.act(() => win.document.querySelector(".mk-ms-trigger").click());
+  const doc = win.document;
+  const input = () => doc.querySelector(".mk-ms-search-input");
+  const menu = doc.querySelector(".mk-ms-menu");
+  const order = [...menu.querySelectorAll(".mk-ms-search, .mk-ms-opt, .mk-ms-sep")].map(e => e.className.includes("search") ? "search" : e.className.includes("sep") ? "sep" : e.textContent);
+  assert.deepEqual(order, ["search", "All owners", "sep", ...OWNERS], "search, All, a separator, the values");
+  assert.equal(doc.activeElement, input(), "the input takes focus on open");
+  assert.equal(input().placeholder, "Search");
+  const highlighted = () => doc.querySelector('[data-selected="true"]')?.textContent;
+  assert.equal(highlighted(), "All owners", "the first row is highlighted");
+  assert.equal(input().getAttribute("aria-activedescendant"), doc.querySelector('[data-selected="true"]').id);
+
+  const key = async (k, init = {}) => React.act(() => input().dispatchEvent(new win.KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...init })));
+  await key("ArrowDown");
+  assert.equal(highlighted(), "Alice Martin");
+  await key("j", { ctrlKey: true });
+  assert.equal(highlighted(), "Bruno Costa");
+  await key("End");
+  assert.equal(highlighted(), "Alina Nowak");
+  await key("ArrowDown");
+  assert.equal(highlighted(), "Alina Nowak", "no loop, as cmdk's default");
+  await key("Home");
+  assert.equal(highlighted(), "All owners");
+  await key("ArrowUp");
+  assert.equal(highlighted(), "All owners");
+
+  const type = async q => {
+    const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value").set;
+    await React.act(() => {
+      setter.call(input(), q);
+      input().dispatchEvent(new win.Event("input", { bubbles: true }));
+      // react-dom loaded before jsdom, so it watches text inputs on keyup.
+      input().dispatchEvent(new win.KeyboardEvent("keyup", { key: "x", bubbles: true }));
+    });
+  };
+  const rows = () => [...doc.querySelectorAll('[role="option"]')].map(r => r.textContent);
+  await type("  ALI ");
+  assert.deepEqual(rows(), ["Alice Martin", "Alina Nowak"], "case-insensitive, trimmed; All hides");
+  assert.equal(doc.querySelector(".mk-ms-sep"), null);
+  assert.equal(highlighted(), "Alice Martin", "the first match is highlighted");
+  await key("ArrowDown");
+  await key("Enter");
+  assert.deepEqual(value, ["Alice Martin", "Bruno Costa", "Carla Rossi"], "Enter ticks the highlighted row (the All rule: it unticks Alina)");
+  assert.ok(doc.querySelector(".mk-ms-menu"), "the menu stays open");
+  await type("zzz");
+  assert.deepEqual(rows(), []);
+  assert.equal(doc.querySelector(".mk-ms-empty").textContent, "No match");
+  await type("");
+  assert.deepEqual(rows(), ["All owners", ...OWNERS]);
+  await React.act(() => doc.querySelector(".mk-ms-trigger").click());
+  await React.act(() => doc.querySelector(".mk-ms-trigger").click());
+  assert.equal(input().value, "", "the query clears when the menu closes");
+  await React.act(() => root.unmount());
+});

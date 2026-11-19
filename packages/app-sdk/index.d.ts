@@ -406,6 +406,13 @@ export function getViewer(): Promise<Viewer | null>;
 
 export function useTheme(): { theme: "light" | "dark" };
 
+/** A market's lowercase code, in COUNTRY_ORDER. */
+export type CountryCode = "ch" | "fr" | "es" | "it" | "pl" | "pt";
+/** One colour per market (2.27), keyed by lowercase code; `all` is the all-markets line. */
+export const COUNTRY_COLORS: Readonly<Record<CountryCode | "all", string>>;
+/** CH, FR, ES, IT, PL, PT (2.27), as lowercase codes. */
+export const COUNTRY_ORDER: readonly CountryCode[];
+
 /**
  * The theme tokens the SDK injects into <head> on import (Mako's house
  * palette: --background, --brand, --canvas, --positive, --chart-1…5, …).
