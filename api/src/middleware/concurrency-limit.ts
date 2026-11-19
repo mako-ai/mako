@@ -28,8 +28,11 @@ export interface ConcurrencyPoolOptions {
 
 export interface ConcurrencyPool {
   readonly name: string;
-  /** Resolves with a release function, or null when no slot freed in time. */
-  acquire(): Promise<(() => void) | null>;
+  /**
+   * Resolves with a release function, or null when no slot freed in time.
+   * `maxWaitMs` overrides the pool's wait for this one request.
+   */
+  acquire(maxWaitMs?: number): Promise<(() => void) | null>;
   readonly max: number;
   readonly active: number;
   readonly waiting: number;
@@ -68,7 +71,7 @@ export function createConcurrencyPool(
     get waiting() {
       return queue.length;
     },
-    acquire() {
+    acquire(maxWaitMs = options.maxWaitMs) {
       if (active < options.max) {
         active++;
         return Promise.resolve(once());
@@ -82,7 +85,7 @@ export function createConcurrencyPool(
           const i = queue.indexOf(waiter);
           if (i >= 0) queue.splice(i, 1);
           resolve(null);
-        }, options.maxWaitMs);
+        }, maxWaitMs);
         queue.push(waiter);
       });
     },
@@ -123,6 +126,23 @@ export interface ConcurrencyLimitOptions {
    * failed anyway). With a free slot the request runs as before.
    */
   shedWhen?: (c: Context) => boolean;
+  /**
+   * For reads that have a cheaper answer than the one the pool guards. When
+   * no slot frees within this many ms, the route runs anyway without a slot.
+   * The request is marked (`servedWithoutSlot`) so the route serves its
+   * cheap answer. Without it, a request that gets no slot answers 503.
+   */
+  degradeAfterMs?: number;
+}
+
+const withoutSlot = new WeakSet<Request>();
+
+/**
+ * True when `concurrencyLimit` ran this request without a slot
+ * (`degradeAfterMs`). The route must then skip its slow path.
+ */
+export function servedWithoutSlot(c: Context): boolean {
+  return withoutSlot.has(c.req.raw);
 }
 
 /** Hono middleware running the request inside `pool`. */
@@ -139,7 +159,18 @@ export function concurrencyLimit(
       return busy(c);
     }
     const waitStart = Date.now();
-    const release = await pool.acquire();
+    const release = await pool.acquire(options.degradeAfterMs);
+    if (!release && options.degradeAfterMs !== undefined) {
+      logger.warn("Concurrency pool full; serving the cheap read", {
+        pool: pool.name,
+        path: c.req.path,
+        active: pool.active,
+        waiting: pool.waiting,
+      });
+      withoutSlot.add(c.req.raw);
+      await next();
+      return;
+    }
     if (!release) {
       logger.warn("Concurrency pool full; refusing request", {
         pool: pool.name,
@@ -181,4 +212,21 @@ export const shedWhileCloning: ConcurrencyLimitOptions = {
     const workspaceId = c.req.param("workspaceId");
     return Boolean(workspaceId && repoCloneInProgress(workspaceId));
   },
+};
+
+/**
+ * The app page's reads: status, files and branches. A slot is a sandbox round
+ * trip. Past this wait the read answers from the last commit instead
+ * (`offline: true`), a local git read of a few ms. The sidebar polls status
+ * every 30 s, so the live view returns on the next poll.
+ *
+ * 19 Nov 2026, two rollouts: one instance got 45 and 60 of these reads at
+ * once (3 per open app). 12 ran for 3 to 18 s each. The rest waited 10 s and
+ * got 503 (12 at 10:35, 27 at 15:26).
+ */
+export const APP_READ_DEGRADE_AFTER_MS = 3_000;
+
+export const appPageReads: ConcurrencyLimitOptions = {
+  ...shedWhileCloning,
+  degradeAfterMs: APP_READ_DEGRADE_AFTER_MS,
 };

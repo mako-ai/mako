@@ -23,6 +23,9 @@ export default defineConfig({
       // Its browser half: opt-in (SHARE_ORIGIN_PLAYWRIGHT), headless.
       "src/apps/share-app-origin.browser.test.ts",
       "src/apps/worktree.service.test.ts",
+      // A full repo-work pool: app-page reads answer from the last commit
+      // after 3 s instead of 503 (19 Nov 2026 rollouts).
+      "src/middleware/concurrency-degrade.test.ts",
       // Doors onto main without a hook: merge and publish, workflows/ and
       // connectors/ need an admin.
       "src/apps/worktree/main-gate.test.ts",

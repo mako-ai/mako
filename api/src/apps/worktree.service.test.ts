@@ -16,7 +16,15 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import {
@@ -332,6 +340,46 @@ describe("the working copy", () => {
     // And with no machine running, status says so rather than claiming clean.
     const status = await worktreeStatus(scopeOf(project), USER);
     expect(status?.offline).toBe(true);
+  });
+
+  it("a busy server reads the last commit without asking the box", async () => {
+    // appPageReads (concurrency-limit.ts): past 3 s without a slot, status
+    // and files skip the sandbox and answer offline from the last commit.
+    const project = await makeProject();
+    const handle = await ensureWorktree(project, USER);
+    await writeFile(handle, "src/draft.ts", "export const d = 1;\n");
+
+    const provider = getSandboxProvider() as unknown as Record<string, unknown>;
+    const spies = Object.keys(provider)
+      .concat(Object.getOwnPropertyNames(Object.getPrototypeOf(provider)))
+      .filter(k => k !== "constructor" && typeof provider[k] === "function")
+      .map(k =>
+        vi.spyOn(provider as Record<string, (...a: unknown[]) => unknown>, k),
+      );
+    try {
+      const status = await worktreeStatus(scopeOf(project), USER, {
+        box: false,
+      });
+      expect(status?.offline).toBe(true);
+      expect(status?.changes).toEqual([]);
+      expect(status?.baseSha).toBe(
+        await resolveCommit(repoDirFor(WS), `refs/heads/${status?.branch}`),
+      );
+
+      const listing = await listFiles(project, USER, { box: false });
+      expect(listing.offline).toBe(true);
+      expect(listing.entries.map(e => e.path)).not.toContain("src/draft.ts");
+      expect(listing.entries.length).toBeGreaterThan(0);
+
+      expect(spies.reduce((n, s) => n + s.mock.calls.length, 0)).toBe(0);
+    } finally {
+      for (const s of spies) s.mockRestore();
+    }
+
+    // With a slot, the same reads are live again.
+    const live = await listFiles(project, USER);
+    expect(live.offline).toBe(false);
+    expect(live.entries.map(e => e.path)).toContain("src/draft.ts");
   });
 
   it("shell commands mutate files the next read sees", async () => {
