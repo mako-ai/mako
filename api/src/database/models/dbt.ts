@@ -61,6 +61,16 @@ export interface IDbtProject extends Document {
    */
   lastProdManifestKey?: string;
   /**
+   * Orders promotion of `lastProdManifestKey`: the committer time of the
+   * commit that manifest built (the run's creation time when the commit has
+   * none). A run promotes only when its own time is the same or later, so an
+   * older commit's run finishing last never overwrites a newer manifest.
+   * Unset on projects promoted before the field existed: the next run wins.
+   */
+  lastProdManifestCommittedAt?: Date;
+  /** The commit `lastProdManifestKey` built. Unset on runs without a pin. */
+  lastProdManifestSha?: string;
+  /**
    * Set when `dbt/environments.yml` at main does not parse. The derived
    * environments array is left as last-good; the file is never overwritten
    * from Mongo.
@@ -107,6 +117,8 @@ const DbtProjectSchema = new Schema<IDbtProject>(
     defaultEnvironment: { type: String, default: "dev" },
     prodEnvironment: { type: String },
     lastProdManifestKey: { type: String },
+    lastProdManifestCommittedAt: { type: Date },
+    lastProdManifestSha: { type: String },
     environmentsInvalid: {
       reason: { type: String },
       at: { type: Date },

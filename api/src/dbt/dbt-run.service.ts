@@ -17,6 +17,7 @@ import {
 } from "../database/workspace-schema";
 import { assertAdhocDbtRunAllowed } from "./dbt-environments.service";
 import {
+  commitTimeOf,
   getCheckoutBranch,
   resolveWorkingTreeCommit,
 } from "./dbt-working-tree.service";
@@ -60,6 +61,69 @@ export function promotesProdManifest(
   // built, and the next push's state:modified+ would skip it.
   if (run.deploysAfterRun) return false;
   return !run.gitBranch || run.gitBranch === "main";
+}
+
+/**
+ * Where a finished prod run's manifest sits in commit order: the committer
+ * time of its pinned `sourceSha`, else the run's creation time (a run that
+ * predates the pin, or a commit this instance cannot read).
+ */
+export async function prodManifestOrderKey(
+  run: Pick<IDbtRun, "workspaceId" | "createdAt"> &
+    Partial<Pick<IDbtRun, "sourceSha">>,
+): Promise<Date> {
+  if (run.sourceSha) {
+    const at = await commitTimeOf(
+      { workspaceId: run.workspaceId },
+      run.sourceSha,
+    );
+    if (at) return at;
+  }
+  return run.createdAt;
+}
+
+/**
+ * Promote a manifest to the project's prod state, compare-and-set on commit
+ * order. Inngest does not finish runs in trigger order, so an older commit's
+ * run can finish after a newer one: it must not overwrite the newer manifest.
+ * Promotes when the project has no order key yet (first promotion, or a
+ * project promoted before the key existed) or when `committedAt` is the same
+ * or later (a rebuild of the same commit refreshes it). Returns whether it
+ * promoted.
+ */
+export async function promoteProdManifest(params: {
+  projectId: Types.ObjectId | string;
+  manifestKey: string;
+  committedAt: Date;
+  sourceSha?: string;
+  runId?: string;
+}): Promise<boolean> {
+  const projectId = new Types.ObjectId(String(params.projectId));
+  const set = {
+    lastProdManifestKey: params.manifestKey,
+    lastProdManifestCommittedAt: params.committedAt,
+  };
+  const result = await DbtProject.updateOne(
+    {
+      _id: projectId,
+      $or: [
+        { lastProdManifestCommittedAt: { $exists: false } },
+        { lastProdManifestCommittedAt: null },
+        { lastProdManifestCommittedAt: { $lte: params.committedAt } },
+      ],
+    },
+    params.sourceSha
+      ? { $set: { ...set, lastProdManifestSha: params.sourceSha } }
+      : { $set: set, $unset: { lastProdManifestSha: "" } },
+  );
+  if (result.matchedCount > 0) return true;
+  logger.info("Skipped stale prod manifest promotion", {
+    projectId: projectId.toString(),
+    runId: params.runId,
+    sourceSha: params.sourceSha,
+    committedAt: params.committedAt.toISOString(),
+  });
+  return false;
 }
 
 export function isTerminalDbtRunStatus(status: DbtRunStatus): boolean {

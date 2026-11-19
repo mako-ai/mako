@@ -23,9 +23,12 @@ const BEFORE = "a".repeat(40);
 const AFTER = "b".repeat(40);
 const READER = "6a9411eb4c8b33609a65e001"; // binding reads {{ dbt_schema }}
 const PLAIN = "6a9411eb4c8b33609a65e002"; // binding reads a raw table
+const OTHER = "6a9411eb4c8b33609a65e003"; // reads dim_deal; outside the push by default
 
 const state = vi.hoisted(() => ({
   changed: [] as string[],
+  changedApps: [] as string[],
+  otherTables: [] as string[],
   projectYml: "name: acme\n" as string | null,
   sendError: null as Error | null,
   sent: [] as Array<{ name: string; data: unknown }>,
@@ -82,11 +85,19 @@ vi.mock("./deploy-progress", () => ({
 }));
 
 vi.mock("./app-index.service", () => ({
-  // Both apps changed between the two commits.
-  readIndexedAppsAt: vi.fn(async (_ws: string, _dir: string, sha: string) => [
-    { appId: READER, path: "apps/c14", treeOid: `${sha}-1` },
-    { appId: PLAIN, path: "apps/raw", treeOid: `${sha}-2` },
-  ]),
+  // The apps in state.changedApps changed between the two commits.
+  readIndexedAppsAt: vi.fn(async (_ws: string, _dir: string, sha: string) =>
+    [
+      { appId: READER, path: "apps/c14" },
+      { appId: PLAIN, path: "apps/raw" },
+      { appId: OTHER, path: "apps/other" },
+    ].map(app => ({
+      ...app,
+      treeOid: state.changedApps.includes(app.appId)
+        ? `${sha}-${app.appId}`
+        : `same-${app.appId}`,
+    })),
+  ),
   loadAppsIndex: vi.fn(async () => ({
     sha: AFTER,
     folders: [],
@@ -107,12 +118,9 @@ vi.mock("./app-index.service", () => ({
         bindingTables: [{ binding: "subs", tables: ["stripe.subscriptions"] }],
       },
       {
-        // Unchanged by the push, but its model joins the selection.
-        appId: "6a9411eb4c8b33609a65e003",
+        appId: OTHER,
         path: "apps/other",
-        bindingTables: [
-          { binding: "deals", tables: ["`p.{{dbt_schema}}.dim_deal`"] },
-        ],
+        bindingTables: [{ binding: "deals", tables: state.otherTables }],
       },
     ],
   })),
@@ -135,6 +143,8 @@ import {
   changesDbtBuildFiles,
   dbtBeforeDeployEnabled,
   dbtModelsReadBy,
+  modelsSelectedBy,
+  planDbtBeforeDeploy,
   preDeployBuildCommand,
   releaseDeploysAfterRun,
 } from "./dbt-before-deploy";
@@ -161,6 +171,8 @@ beforeEach(async () => {
     "dbt/models/marts/fct_c14__closed_loop.sql",
     "apps/c14/bindings/loop.sql",
   ];
+  state.changedApps = [READER, PLAIN];
+  state.otherTables = ["`p.{{dbt_schema}}.dim_deal`"];
   state.projectYml = "name: acme\n";
   state.sendError = null;
   state.sent = [];
@@ -267,8 +279,9 @@ describe("deployAppsForPush with a dbt change and the flag on", () => {
     const runs = await DbtRun.find().lean();
     expect(runs).toHaveLength(1);
     const run = runs[0];
+    // OTHER reads dim_deal but is not in the push: dim_deal stays out.
     expect(run.commands).toEqual([
-      "build --select state:modified+,+dim_deal state:modified+,+fct_c14__closed_loop",
+      "build --select state:modified+,+fct_c14__closed_loop",
     ]);
     expect(run.environment).toBe("prod");
     expect(run.trigger).toBe("schedule");
@@ -330,6 +343,71 @@ describe("deployAppsForPush with a dbt change and the flag on", () => {
       [PLAIN],
       AFTER,
       "push",
+    );
+  });
+
+  it("selects only the models the held apps read", async () => {
+    const plan = await planDbtBeforeDeploy({
+      workspaceId: ws,
+      repoDir: "/repo",
+      before: BEFORE,
+      after: AFTER,
+      appIds: [READER, PLAIN],
+    });
+    expect(plan?.held).toEqual([READER]);
+    expect(plan?.now).toEqual([PLAIN]);
+    expect(plan?.models).toEqual(["fct_c14__closed_loop"]);
+
+    // OTHER in the push: its model joins, sorted and once each.
+    state.otherTables = [
+      "`p.{{dbt_schema}}.dim_deal`",
+      "{{dbt_schema}}.fct_c14__closed_loop",
+    ];
+    const both = await planDbtBeforeDeploy({
+      workspaceId: ws,
+      repoDir: "/repo",
+      before: BEFORE,
+      after: AFTER,
+      appIds: [OTHER, READER],
+    });
+    expect(both?.held).toEqual([OTHER, READER]);
+    expect(both?.models).toEqual(["dim_deal", "fct_c14__closed_loop"]);
+  });
+
+  it("joins a running build of this commit that already selects its models", async () => {
+    state.otherTables = ["{{dbt_schema}}.fct_c14__closed_loop"];
+    await push();
+    state.changedApps = [READER, PLAIN, OTHER];
+
+    await push();
+
+    const runs = await DbtRun.find().lean();
+    expect(runs).toHaveLength(1);
+    expect(runs[0].deploysAfterRun?.appIds).toEqual([READER, OTHER]);
+    expect(state.sent).toHaveLength(1);
+  });
+
+  it("starts a second build when a joiner reads a model the first one skips", async () => {
+    await push();
+    state.changedApps = [READER, PLAIN, OTHER];
+
+    await push();
+
+    const runs = await DbtRun.find().sort({ createdAt: 1 }).lean();
+    expect(runs).toHaveLength(2);
+    expect(runs[0].commands).toEqual([
+      "build --select state:modified+,+fct_c14__closed_loop",
+    ]);
+    expect(runs[0].deploysAfterRun?.appIds).toEqual([READER]);
+    expect(runs[1].commands).toEqual([
+      "build --select state:modified+,+dim_deal state:modified+,+fct_c14__closed_loop",
+    ]);
+    expect(runs[1].deploysAfterRun?.appIds).toEqual([READER, OTHER]);
+    expect(requestAppDeploys).not.toHaveBeenCalledWith(
+      ws,
+      expect.arrayContaining([OTHER]),
+      expect.anything(),
+      expect.anything(),
     );
   });
 
@@ -486,5 +564,7 @@ describe("pieces", () => {
       "build --select state:modified+,+fct_a state:modified+,+fct_b",
     );
     expect(parseDbtCommand(command).subcommand).toBe("build");
+    expect([...modelsSelectedBy(command)]).toEqual(["fct_a", "fct_b"]);
+    expect(modelsSelectedBy(undefined).size).toBe(0);
   });
 });

@@ -9,7 +9,9 @@
  * By default (APPS_DBT_BEFORE_DEPLOY=0 rolls it back), a push whose diff touches dbt models, seeds
  * or snapshots holds back the changed apps whose bindings read dbt models.
  * One run of the existing dbt executor builds, in the prod-like environment,
- * the changed models upstream of any binding-read model. The run's end
+ * the changed models upstream of the models those held apps read. Apps
+ * outside the push do not redeploy, so their models stay out of the
+ * selection: the daily build covers them. The run's end
  * (success, failure or cancel) requests the held deploys. Everything else
  * deploys at once, as before. The hourly apps reconcile stays the backstop.
  */
@@ -84,6 +86,16 @@ export function preDeployBuildCommand(models: readonly string[]): string {
   return `build --select ${selectors.join(" ")}`;
 }
 
+/** The models a preDeployBuildCommand selects: its inverse. */
+export function modelsSelectedBy(command: string | undefined): Set<string> {
+  const out = new Set<string>();
+  for (const token of (command ?? "").split(/\s+/)) {
+    const model = /^state:modified\+,\+([a-z0-9_]+)$/.exec(token)?.[1];
+    if (model) out.add(model);
+  }
+  return out;
+}
+
 export interface DbtBeforeDeployPlan {
   projectId: string;
   environment: string;
@@ -91,7 +103,7 @@ export interface DbtBeforeDeployPlan {
   held: string[];
   /** Every other changed app: deploy now. */
   now: string[];
-  /** Every model any app's bindings read, sorted. */
+  /** The models the held apps' bindings read, sorted and deduped. */
   models: string[];
 }
 
@@ -150,9 +162,12 @@ export async function planDbtBeforeDeploy(input: {
 
   // changedApps refreshed the index a moment ago.
   const index = await loadAppsIndex(workspaceId, { freshen: false });
+  // Only the changed apps redeploy, so only their models need building.
+  const changedIds = new Set(appIds);
   const models = new Set<string>();
   const readers = new Set<string>();
   for (const app of index.apps) {
+    if (!changedIds.has(app.appId)) continue;
     const read = dbtModelsReadBy(app);
     for (const model of read) models.add(model);
     if (read.length > 0) readers.add(app.appId);
@@ -185,15 +200,19 @@ export async function holdDeploysForDbtRun(input: {
     await import("../inngest/functions/apps-deploy");
 
   // One build per pushed commit. A redelivered webhook (or a second push
-  // event for the same sha) joins the run already holding deploys for it.
+  // event for the same sha) joins the run already holding deploys for it,
+  // when that run's command already selects every model the joiner reads.
+  // A joiner that needs a model the run does not build starts its own run
+  // below: joining would deploy it against an unbuilt model.
   const existing = await DbtRun.findOne({
     "deploysAfterRun.workspaceId": workspaceId,
     "deploysAfterRun.sha": sha,
   })
     .sort({ createdAt: -1 })
-    .select("_id")
+    .select("_id commands")
     .lean();
-  if (existing) {
+  const built = modelsSelectedBy(existing?.commands?.[0]);
+  if (existing && plan.models.every(model => built.has(model))) {
     // Joins only while the run is active and unreleased. The release claims
     // after the run turns terminal and reads appIds then, so an app added
     // here is never dropped.
@@ -215,7 +234,8 @@ export async function holdDeploysForDbtRun(input: {
       });
       return existing._id.toString();
     }
-    // That build already finished: prod holds this commit's models.
+    // That build already finished: prod holds this commit's models, and
+    // every model these apps read was in its selection.
     await requestAppDeploys(workspaceId, plan.held, sha, "push");
     logger.info("Apps deploys after a finished dbt build of this commit", {
       workspaceId,
