@@ -182,7 +182,7 @@ function testRefusesToRunWithoutTenantServiceAccount() {
     const connector = createConnector({ service_account_json });
     assert.throws(
       () => (connector as any).getStorage(),
-      /service account|JSON/i,
+      /service.account|JSON|credential type/i,
     );
     assert.ok(!(connector as any).storage);
   }

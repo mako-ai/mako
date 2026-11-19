@@ -2,6 +2,7 @@
  * Connection CRUD and connection tests: list, get, create, update, delete,
  * test a saved connection or an unsaved candidate.
  */
+import { serviceAccountConfigRefusal } from "../../connections/google-service-account";
 import { createRoute, z } from "@hono/zod-openapi";
 import { recordAccessChange } from "../../access/connection-access-event";
 import { unifiedAuthMiddleware } from "../../auth/unified-auth.middleware";
@@ -264,6 +265,11 @@ connectionRoutes.openapi(
         }
       }
 
+      const keyRefusal = serviceAccountConfigRefusal(connection);
+      if (keyRefusal) {
+        return c.json({ success: false, error: keyRefusal }, 400);
+      }
+
       // Create a temporary database object for testing
       const tempDatabase = {
         _id: new Types.ObjectId(),
@@ -359,6 +365,11 @@ connectionRoutes.openapi(
 
       if (!user) {
         return c.json({ success: false, error: "Unauthorized" }, 401);
+      }
+
+      const keyRefusal = serviceAccountConfigRefusal(body.connection);
+      if (keyRefusal) {
+        return c.json({ success: false, error: keyRefusal }, 400);
       }
 
       // Optionally verify the connection before persisting. When requested and
@@ -522,6 +533,11 @@ connectionRoutes.openapi(
           ...previous,
           ...restoreKeptSecrets(body.connection, previous),
         };
+
+        const keyRefusal = serviceAccountConfigRefusal(candidate);
+        if (keyRefusal) {
+          return c.json({ success: false, error: keyRefusal }, 400);
+        }
 
         // Optionally verify the candidate before persisting the change.
         if (verifyBeforeSave) {

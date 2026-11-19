@@ -3,7 +3,7 @@
  * Without one it is refused before a BigQuery client exists, so the client
  * never falls back to Mako's Application Default Credentials.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const clientCtor = vi.hoisted(() => vi.fn());
 vi.mock("@google-cloud/bigquery", () => ({
@@ -46,7 +46,7 @@ describe("bigquery destination tenant credentials", () => {
   ])("refuses %s without creating a client", async (_n, sa) => {
     await expect(
       adapter({ project_id: "p", service_account_json: sa }).resolveBqClient(),
-    ).rejects.toThrow(/service account/i);
+    ).rejects.toThrow(/service.account|credential type/i);
     expect(clientCtor).not.toHaveBeenCalled();
   });
 
@@ -59,5 +59,42 @@ describe("bigquery destination tenant credentials", () => {
     expect(clientCtor.mock.calls[0][0].credentials.client_email).toBe(
       key.client_email,
     );
+  });
+
+  describe("local emulator address", () => {
+    const original = {
+      node: process.env.NODE_ENV,
+      host: process.env.BIGQUERY_EMULATOR_HOST,
+    };
+    afterEach(() => {
+      process.env.NODE_ENV = original.node;
+      if (original.host === undefined)
+        delete process.env.BIGQUERY_EMULATOR_HOST;
+      else process.env.BIGQUERY_EMULATOR_HOST = original.host;
+    });
+
+    const local = {
+      project_id: "p",
+      api_base_url: "http://localhost:9050",
+      service_account_json: JSON.stringify(key),
+    };
+
+    it("is refused in production, before any client exists", async () => {
+      process.env.NODE_ENV = "production";
+      await expect(adapter(local).resolveBqClient()).rejects.toThrow(
+        /not allowed in production/,
+      );
+      expect(clientCtor).not.toHaveBeenCalled();
+    });
+
+    it("sets the endpoint on the client and never on process env", async () => {
+      process.env.NODE_ENV = "development";
+      delete process.env.BIGQUERY_EMULATOR_HOST;
+      await adapter(local).resolveBqClient();
+      expect(clientCtor.mock.calls[0][0].apiEndpoint).toBe(
+        "http://localhost:9050",
+      );
+      expect(process.env.BIGQUERY_EMULATOR_HOST).toBeUndefined();
+    });
   });
 });

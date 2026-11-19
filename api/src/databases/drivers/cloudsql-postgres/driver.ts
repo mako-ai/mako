@@ -18,8 +18,10 @@ import {
   inReadOnlyTransaction,
   ownResult,
 } from "../../../access/connection-writes";
-import { JWT } from "google-auth-library";
-import { requireTenantServiceAccount } from "../../../connections/tenant-google-credentials";
+import {
+  googleJwtClient,
+  requireServiceAccount,
+} from "../../../connections/google-service-account";
 import { loggers } from "../../../logging";
 import {
   normalizePostgresFields,
@@ -497,10 +499,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
       if (resolvedAuthType === AuthTypes.IAM) {
         if (!user && conn.service_account_json) {
           try {
-            const sa =
-              typeof conn.service_account_json === "string"
-                ? JSON.parse(conn.service_account_json)
-                : conn.service_account_json;
+            const sa = requireServiceAccount(conn.service_account_json);
             const email = sa?.client_email;
             if (email) {
               if (email.endsWith(".gserviceaccount.com")) {
@@ -625,10 +624,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
         if (!user && conn.service_account_json) {
           // Try to extract email from service account JSON
           try {
-            const sa =
-              typeof conn.service_account_json === "string"
-                ? JSON.parse(conn.service_account_json)
-                : conn.service_account_json;
+            const sa = requireServiceAccount(conn.service_account_json);
             const email = sa?.client_email;
             if (email) {
               // For IAM auth, if the email ends with gserviceaccount.com,
@@ -736,19 +732,14 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
     });
 
     // Tenant connections sign in with the tenant's own service account only.
-    // Never fall back to Application Default Credentials: that is Mako's own
-    // Cloud Run service account.
-    const sa = requireTenantServiceAccount(
-      conn.service_account_json,
-      "Cloud SQL",
-    );
-
-    const connectorAuth = new JWT({
-      email: sa.client_email,
-      key: sa.private_key,
-      scopes: [...CLOUDSQL_SCOPES],
-      projectId: sa.project_id,
-    });
+    // No key: refused. Never fall back to Application Default Credentials,
+    // which are Mako's own Cloud Run service account.
+    // Built from the validated key only: a stored key of another type throws
+    // here, before any auth client exists.
+    requireServiceAccount(conn.service_account_json);
+    const connectorAuth = googleJwtClient(conn.service_account_json, [
+      ...CLOUDSQL_SCOPES,
+    ]);
 
     // Test if auth is working by trying to get an access token
     try {

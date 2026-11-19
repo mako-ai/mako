@@ -9,6 +9,10 @@
  */
 
 import { dump as yamlDump } from "js-yaml";
+import {
+  checkServiceAccount,
+  GOOGLE_TOKEN_URI,
+} from "../connections/google-service-account";
 import type {
   IDatabaseConnection,
   IDbtEnvironment,
@@ -101,21 +105,26 @@ const ADAPTERS: Record<string, AdapterEntry> = {
     renderTarget: (connection, env, _secretEnv, keyfiles) => {
       const c = connection.connection as Record<string, unknown>;
       // Credentials may be stored as a JSON string or an already-parsed object
-      // (the BigQuery query driver accepts both — mirror that here).
-      const rawSa = c.service_account_json;
+      // (the BigQuery query driver accepts both — mirror that here). Only a
+      // validated service_account key is written: dbt-bigquery reads `type`,
+      // `credential_source` and `token_uri` from the keyfile, so the file
+      // carries the safe fields and Google's fixed token endpoint, never the
+      // stored JSON. A stored key that fails validation stops the render.
+      const checked = checkServiceAccount(c.service_account_json);
       let keyfileContent = "";
       let saProjectId: string | undefined;
-      if (typeof rawSa === "string") {
-        keyfileContent = rawSa;
-        try {
-          saProjectId = (JSON.parse(rawSa) as { project_id?: string })
-            .project_id;
-        } catch {
-          // invalid/missing keyfile — dbt surfaces a clear error at startup
-        }
-      } else if (rawSa && typeof rawSa === "object") {
-        keyfileContent = JSON.stringify(rawSa);
-        saProjectId = (rawSa as { project_id?: string }).project_id;
+      if (!checked.ok && c.service_account_json) {
+        throw new Error(`BigQuery keyfile refused: ${checked.reason}`);
+      }
+      if (checked.ok) {
+        saProjectId = checked.key.project_id;
+        keyfileContent = JSON.stringify({
+          type: "service_account",
+          client_email: checked.key.client_email,
+          private_key: checked.key.private_key,
+          token_uri: GOOGLE_TOKEN_URI,
+          ...(saProjectId ? { project_id: saProjectId } : {}),
+        });
       }
 
       // Prefer the connection's configured project (what the query driver uses

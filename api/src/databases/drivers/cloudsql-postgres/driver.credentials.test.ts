@@ -61,7 +61,7 @@ describe("cloudsql-postgres tenant credentials", () => {
     const driver = new CloudSQLPostgresDatabaseDriver();
     await expect(
       (driver as any)._getConnector(db({ service_account_json: sa })),
-    ).rejects.toThrow(/service account/i);
+    ).rejects.toThrow(/service.account|credential type/i);
     expect(adc).not.toHaveBeenCalled();
     expect(token).not.toHaveBeenCalled();
     expect(connectorCtor).not.toHaveBeenCalled();
@@ -72,7 +72,9 @@ describe("cloudsql-postgres tenant credentials", () => {
     const bad = db({ service_account_json: undefined });
     const result = await (driver as any).testConnection(bad);
     expect(result.success).toBe(false);
-    await expect(driver.getConnection(bad)).rejects.toThrow(/service account/i);
+    await expect(driver.getConnection(bad)).rejects.toThrow(
+      /service.account|credential type/i,
+    );
     expect(adc).not.toHaveBeenCalled();
     expect(connectorCtor).not.toHaveBeenCalled();
   });
