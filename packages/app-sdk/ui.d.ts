@@ -302,6 +302,8 @@ export interface TableTooltipProps {
   total?: TooltipRow;
   /** Rows after the total, apart: a value on another axis. */
   after?: TooltipRow[];
+  /** The value columns' minimum width: "9ch", or px as a number. Default 7ch. */
+  colWidth?: number | string;
   className?: string;
 }
 /** The house chart tooltip: a table with swatches, right-aligned numbers and a total row. */
@@ -320,6 +322,8 @@ export interface TooltipSeriesRow<K extends string = string> {
   /** null when missing. */
   value: number | null;
   state: TooltipValueState;
+  /** With `share: true`: value ÷ the sum of the non-missing values; null when missing or the sum is not above 0. */
+  share?: number | null;
 }
 export interface TooltipSeriesRowsOptions {
   /** Pass series bottom-up, as drawn; the rows read top segment first. */
@@ -328,6 +332,10 @@ export interface TooltipSeriesRowsOptions {
   hideEmpty?: boolean;
   /** Opt-out: sort non-stacked rows highest value first, missing last (pre-2.15). */
   byValue?: boolean;
+  /** A null or absent key counts as 0 (a muted "0"): a stack segment with no rows in the bucket. NaN stays missing. */
+  absentAsZero?: boolean;
+  /** Adds `share`: value ÷ the sum of the non-missing values; null when missing or the sum is not above 0. */
+  share?: boolean;
 }
 /**
  * Every series of the hovered datum, in a fixed order: stacked = top segment
@@ -401,12 +409,29 @@ export interface DataTableColumn<R = any> {
   /** Header hover text, e.g. the column's definition. */
   hint?: string;
   /**
+   * The column group's id. Adjacent columns with the same `group` share one
+   * label in a header row on top (see `DataTableProps.groups`); ungrouped
+   * columns span both header rows.
+   */
+  group?: string;
+  /**
    * false leaves the column out of CSV; a function exports a readable cell (a
    * level name). Numbers export as is; a Date at local or UTC midnight exports
    * as YYYY-MM-DD, any other Date as a full UTC ISO timestamp.
    */
   csv?: false | ((row: R) => unknown);
 }
+/** A column group's header: its label spans the adjacent columns with `group: id`. */
+export interface DataTableGroup {
+  id: string;
+  label?: React.ReactNode;
+  /** On the group's header cell, e.g. a colour per section. */
+  className?: string;
+}
+/** The header runs of a DataTable's columns; null when no column has a `group`. */
+export function columnGroupRuns<C extends { id: string; group?: string; sticky?: boolean }>(
+  columns: readonly C[],
+): { group: string | null; start: boolean; columns: C[] }[] | null;
 export interface DataTableProps<R = any> {
   /** Default [] (renders the empty state while loading). */
   rows?: readonly R[];
@@ -455,6 +480,8 @@ export interface DataTableProps<R = any> {
   rowLabel?: (row: R) => string;
   /** Adds an "Export CSV" button: downloads every row, as sorted. */
   exportFilename?: string;
+  /** Labels and classes for the column groups, by `DataTableColumn.group`. A group not listed shows its id. */
+  groups?: readonly DataTableGroup[];
   className?: string;
   style?: React.CSSProperties;
 }

@@ -31,7 +31,8 @@ test("formatSeconds", () => {
 test("ui.css styles every class ui.js renders", () => {
   const js = readFileSync(new URL("./ui.js", import.meta.url), "utf8");
   const css = readFileSync(new URL("./ui.css", import.meta.url), "utf8");
-  const used = new Set(js.match(/\bmk-[a-z-]+/g));
+  // A custom property ("--mk-tip-col") is not a class.
+  const used = new Set(js.match(/(?<![-\w])mk-[a-z-]+/g));
   // Built dynamically (mk-btn--${variant}, mk-tone-${t}); covered by the
   // concrete variants below.
   for (const prefix of ["mk-btn--", "mk-tone-"]) used.delete(prefix);
@@ -952,4 +953,182 @@ test("MultiSelect searchable: search, All, separator, values; typing filters; cm
   await React.act(() => doc.querySelector(".mk-ms-trigger").click());
   assert.equal(input().value, "", "the query clears when the menu closes");
   await React.act(() => root.unmount());
+});
+
+// ---------------------------------------------------------------------------
+// tooltipSeriesRows absentAsZero/share, TableTooltip colWidth, DataTable groups
+// ---------------------------------------------------------------------------
+
+/** The fixtures behind test-support/ui-baseline-2.26.json, rendered by SDK 2.26.0 before these options existed. */
+async function renderBaseline(React, server, ui) {
+  const h = React.createElement;
+  const series = [{ key: "fr", label: "France", color: "#2563eb" }, { key: "es", label: "Spain", color: "#f59e0b" }, { key: "it", label: "Italy" }];
+  const seriesRows = ui.tooltipSeriesRows({ fr: 120, es: 0, it: null }, series, { stacked: true });
+  const tableTooltip = server.renderToStaticMarkup(
+    h(ui.TableTooltip, {
+      title: "W45",
+      columns: ["Leads"],
+      rows: seriesRows.map(r => ({ ...r, cells: [ui.tooltipCell(r.value)] })),
+      total: { label: "Total", cells: ["120"] },
+    }),
+  );
+  const data = Array.from({ length: 3 }, (_, i) => ({ id: i, name: `Org ${i}`, mrr: i * 10, arr: i * 120 }));
+  const columns = [
+    { id: "name", label: "Customer", value: r => r.name, sticky: true },
+    { id: "mrr", label: "MRR", num: true, value: r => r.mrr },
+    { id: "arr", label: "ARR", num: true, value: r => r.arr, sortable: false },
+  ];
+  const dataTable = server.renderToStaticMarkup(h(ui.DataTable, { rows: data, columns, defaultSort: { id: "mrr", dir: "desc" } }));
+  return { seriesRows, tableTooltip, dataTable, data, columns };
+}
+
+test("options off: tooltipSeriesRows, TableTooltip and DataTable render exactly as SDK 2.26.0", async t => {
+  let React, server, ui;
+  try {
+    React = await import("react");
+    server = await import("react-dom/server");
+    ui = await import("./ui.js");
+  } catch (e) {
+    t.skip("react not installed here: " + e.message);
+    return;
+  }
+  const baseline = JSON.parse(readFileSync(new URL("./test-support/ui-baseline-2.26.json", import.meta.url), "utf8"));
+  const now = await renderBaseline(React, server, ui);
+  assert.deepEqual(JSON.parse(JSON.stringify(now.seriesRows)), baseline.seriesRows);
+  assert.equal(now.tableTooltip, baseline.tableTooltip);
+  assert.equal(now.dataTable, baseline.dataTable);
+  // A `groups` prop with no grouped column changes nothing either.
+  const withGroups = server.renderToStaticMarkup(
+    React.createElement(ui.DataTable, { rows: now.data, columns: now.columns, defaultSort: { id: "mrr", dir: "desc" }, groups: [{ id: "x", label: "X" }] }),
+  );
+  assert.equal(withGroups, baseline.dataTable);
+  // The explicit false options are the defaults.
+  const { tooltipSeriesRows } = await import("./ui-core.js");
+  const series = [{ key: "a" }, { key: "b" }];
+  assert.deepEqual(tooltipSeriesRows({ a: 1 }, series, { absentAsZero: false, share: false }), tooltipSeriesRows({ a: 1 }, series));
+});
+
+test("tooltipSeriesRows absentAsZero + share: every legend row, a muted 0 and 0%, a dash when missing", async () => {
+  const { tooltipSeriesRows, tooltipCellText } = await import("./ui-core.js");
+  const stacks = [
+    { key: "ok", label: "2xx" },
+    { key: "redirect", label: "3xx" },
+    { key: "err", label: "5xx" },
+    { key: "mean", label: "Mean" },
+  ];
+  // A bucket with data where "redirect" has no rows (absent) and "err" is 0; "mean" cannot be computed.
+  const datum = { ok: 300, err: 0, mean: Number.NaN };
+  const rows = tooltipSeriesRows(datum, stacks, { stacked: true, absentAsZero: true, share: true });
+  assert.deepEqual(
+    rows.map(r => [r.key, r.value, r.state, r.share]),
+    [
+      ["mean", null, "missing", null],
+      ["err", 0, "zero", 0],
+      ["redirect", 0, "zero", 0],
+      ["ok", 300, "value", 1],
+    ],
+  );
+  const pct = v => `${Math.round(v * 100)}%`;
+  assert.deepEqual(
+    rows.map(r => [tooltipCellText(r.value, String).text, tooltipCellText(r.share, pct, { percent: true }).text]),
+    [["–", "–"], ["0", "0%"], ["0", "0%"], ["300", "100%"]],
+  );
+  // Without absentAsZero an absent key is missing ("–"); share still adds up over the rest.
+  const plain = tooltipSeriesRows({ ok: 1, err: 3 }, stacks, { share: true });
+  assert.deepEqual(plain.map(r => r.share), [0.25, null, 0.75, null]);
+  // An all-zero bucket: every row stays, shares are missing (no base to divide by).
+  const empty = tooltipSeriesRows({}, stacks, { absentAsZero: true, share: true });
+  assert.equal(empty.length, 4);
+  assert.deepEqual(empty.map(r => [r.state, r.share]), [["zero", null], ["zero", null], ["zero", null], ["zero", null]]);
+});
+
+test("TableTooltip colWidth sets the value columns' minimum width", async t => {
+  let React, server, ui;
+  try {
+    React = await import("react");
+    server = await import("react-dom/server");
+    ui = await import("./ui.js");
+  } catch (e) {
+    t.skip("react not installed here: " + e.message);
+    return;
+  }
+  const tip = colWidth => server.renderToStaticMarkup(React.createElement(ui.TableTooltip, { rows: [], colWidth }));
+  assert.match(tip("9ch"), /^<div class="mk-tip" style="--mk-tip-col:9ch">/);
+  assert.match(tip(72), /^<div class="mk-tip" style="--mk-tip-col:72px">/);
+  assert.match(tip(undefined), /^<div class="mk-tip"><table>/);
+  const css = readFileSync(new URL("./ui.css", import.meta.url), "utf8");
+  assert.match(css, /\.mk-tip td \{[^}]*min-width: var\(--mk-tip-col, 7ch\)/);
+});
+
+test("columnGroupRuns: adjacent columns share a group, ungrouped columns run alone, sections after unpinned columns", async () => {
+  const { columnGroupRuns } = await import("./ui-core.js");
+  assert.equal(columnGroupRuns([{ id: "a" }, { id: "b" }]), null);
+  const runs = columnGroupRuns([
+    { id: "name", sticky: true },
+    { id: "calls", group: "activity" },
+    { id: "demos", group: "activity" },
+    { id: "cash", group: "money" },
+    { id: "note" },
+    { id: "late", group: "activity" },
+  ]);
+  assert.deepEqual(
+    runs.map(r => [r.group, r.start, r.columns.map(c => c.id)]),
+    [
+      [null, false, ["name"]],
+      ["activity", false, ["calls", "demos"]], // after the pinned column: it already draws the line
+      ["money", true, ["cash"]],
+      [null, true, ["note"]],
+      ["activity", true, ["late"]], // not adjacent: a run of its own
+    ],
+  );
+});
+
+test("DataTable groups: a 2-row header, labels span their columns, sorting and the pinned corner still work", async t => {
+  let React, server, ui;
+  try {
+    React = await import("react");
+    server = await import("react-dom/server");
+    ui = await import("./ui.js");
+  } catch (e) {
+    t.skip("react not installed here: " + e.message);
+    return;
+  }
+  const rows = [
+    { id: 1, name: "France", calls: 40, demos: 4, cash: 900 },
+    { id: 2, name: "Spain", calls: 12, demos: 9, cash: 300 },
+  ];
+  const columns = [
+    { id: "name", label: "Country", value: r => r.name, sticky: true },
+    { id: "calls", label: "Calls", num: true, value: r => r.calls, group: "activity" },
+    { id: "demos", label: "Demos", num: true, value: r => r.demos, group: "activity" },
+    { id: "cash", label: "Cash", num: true, value: r => r.cash, group: "money" },
+  ];
+  const html = server.renderToStaticMarkup(
+    React.createElement(ui.DataTable, {
+      rows,
+      columns,
+      defaultSort: { id: "demos", dir: "desc" },
+      groups: [{ id: "activity", label: "Activity", className: "tone-brand" }],
+    }),
+  );
+  assert.match(html, /<table class="mk-dt-table mk-dt-table--grouped"/);
+  const head = html.match(/<thead>(.*)<\/thead>/)[1];
+  assert.equal((head.match(/<tr>/g) ?? []).length, 2);
+  // Row 1: the pinned corner spans both rows, then one cell per group.
+  assert.match(head, /^<tr><th scope="col" rowSpan="2" class="mk-dt-pin" aria-sort="none"><button type="button" class="mk-dt-sort"/);
+  assert.match(head, /<th scope="colgroup" colSpan="2" class="mk-dt-group tone-brand" title="Activity"><span class="mk-dt-th-text">Activity<\/span><\/th>/);
+  // A group not listed in `groups` shows its id, after a section line.
+  assert.match(head, /<th scope="colgroup" colSpan="1" class="mk-dt-group mk-dt-section" title="money">/);
+  // Row 2: the grouped columns, sortable, the sorted one marked.
+  assert.match(head, /<\/tr><tr><th scope="col" class="mk-dt-num" aria-sort="none"><button type="button" class="mk-dt-sort" title="Calls · click to sort">/);
+  assert.match(head, /<th scope="col" class="mk-dt-num mk-dt-sorted" aria-sort="descending">/);
+  assert.match(head, /<th scope="col" class="mk-dt-num mk-dt-section" aria-sort="none">/);
+  // Body: sorted by demos desc (Spain first), the section line on its cells too, 4 cells a row.
+  const body = html.match(/<tbody>(.*)<\/tbody>/)[1];
+  assert.match(body, /^<tr><td class="mk-dt-pin"><div class="mk-dt-cell" title="Spain">Spain<\/div><\/td>/);
+  assert.match(body, /<td class="mk-dt-num mk-dt-section"><div class="mk-dt-cell" title="300">300<\/div><\/td>/);
+  assert.equal((body.match(/<td/g) ?? []).length, 8);
+  const css = readFileSync(new URL("./ui.css", import.meta.url), "utf8");
+  assert.match(css, /\.mk-dt-table--grouped thead \{ position: sticky; top: 0;/);
+  assert.match(css, /\.mk-dt-table--grouped thead th\.mk-dt-pin \{ position: sticky; top: auto; left: 0; \}/);
 });

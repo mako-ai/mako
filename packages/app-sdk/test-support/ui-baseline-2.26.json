@@ -1,0 +1,26 @@
+{
+  "seriesRows": [
+    {
+      "key": "it",
+      "label": "Italy",
+      "value": null,
+      "state": "missing"
+    },
+    {
+      "key": "es",
+      "label": "Spain",
+      "color": "#f59e0b",
+      "value": 0,
+      "state": "zero"
+    },
+    {
+      "key": "fr",
+      "label": "France",
+      "color": "#2563eb",
+      "value": 120,
+      "state": "value"
+    }
+  ],
+  "tableTooltip": "<div class=\"mk-tip\"><div class=\"mk-tip-title\">W45</div><table><thead><tr><th></th><th>Leads</th></tr></thead><tbody><tr><th scope=\"row\"><span class=\"mk-tip-swatch\" style=\"background:transparent\"></span>Italy</th><td><span class=\"mk-tip-muted\">–</span></td></tr><tr><th scope=\"row\"><span class=\"mk-tip-swatch\" style=\"background:#f59e0b\"></span>Spain</th><td><span class=\"mk-tip-muted\">0</span></td></tr><tr><th scope=\"row\"><span class=\"mk-tip-swatch\" style=\"background:#2563eb\"></span>France</th><td>120</td></tr><tr class=\"mk-tip-total mk-tip-rule\"><th scope=\"row\"><span class=\"mk-tip-swatch\" style=\"background:transparent\"></span>Total</th><td>120</td></tr></tbody></table></div>",
+  "dataTable": "<section class=\"mk-card mk-dt\"><div class=\"mk-dt-scroll\"><table class=\"mk-dt-table\" style=\"min-width:432px\"><colgroup><col/><col style=\"width:96px\"/><col style=\"width:96px\"/></colgroup><thead><tr><th scope=\"col\" class=\"mk-dt-pin\" aria-sort=\"none\"><button type=\"button\" class=\"mk-dt-sort\" title=\"Customer · click to sort\"><span class=\"mk-dt-th-text\">Customer</span><svg class=\"mk-dt-faint\" width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m21 16-4 4-4-4M17 20V4M3 8l4-4 4 4M7 4v16\"></path></svg></button></th><th scope=\"col\" class=\"mk-dt-num mk-dt-sorted\" aria-sort=\"descending\"><button type=\"button\" class=\"mk-dt-sort\" title=\"MRR · click to sort\"><span class=\"mk-dt-th-text\">MRR</span><svg width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M12 5v14M19 12l-7 7-7-7\"></path></svg></button></th><th scope=\"col\" class=\"mk-dt-num\"><span class=\"mk-dt-label\" title=\"ARR\"><span class=\"mk-dt-th-text\">ARR</span></span></th></tr></thead><tbody><tr><td class=\"mk-dt-pin\"><div class=\"mk-dt-cell\" title=\"Org 2\">Org 2</div></td><td class=\"mk-dt-num\"><div class=\"mk-dt-cell\" title=\"20\">20</div></td><td class=\"mk-dt-num\"><div class=\"mk-dt-cell\" title=\"240\">240</div></td></tr><tr><td class=\"mk-dt-pin\"><div class=\"mk-dt-cell\" title=\"Org 1\">Org 1</div></td><td class=\"mk-dt-num\"><div class=\"mk-dt-cell\" title=\"10\">10</div></td><td class=\"mk-dt-num\"><div class=\"mk-dt-cell\" title=\"120\">120</div></td></tr><tr><td class=\"mk-dt-pin\"><div class=\"mk-dt-cell\" title=\"Org 0\">Org 0</div></td><td class=\"mk-dt-num\"><div class=\"mk-dt-cell\" title=\"0\">0</div></td><td class=\"mk-dt-num\"><div class=\"mk-dt-cell\" title=\"0\">0</div></td></tr></tbody></table></div><footer class=\"mk-dt-foot\"><span aria-live=\"polite\"><b>1–3</b> of <b>3</b> rows</span><div class=\"mk-dt-nav\"><select class=\"mk-dt-size\" aria-label=\"Rows per page\"><option value=\"25\">25 per page</option><option value=\"50\" selected=\"\">50 per page</option><option value=\"100\">100 per page</option></select><button type=\"button\" class=\"mk-btn mk-btn--outline mk-btn--sm\" aria-label=\"First page\" disabled=\"\">«</button><button type=\"button\" class=\"mk-btn mk-btn--outline mk-btn--sm\" aria-label=\"Previous page\" disabled=\"\">‹</button><span class=\"mk-dt-page\">Page 1 of 1</span><button type=\"button\" class=\"mk-btn mk-btn--outline mk-btn--sm\" aria-label=\"Next page\" disabled=\"\">›</button><button type=\"button\" class=\"mk-btn mk-btn--outline mk-btn--sm\" aria-label=\"Last page\" disabled=\"\">»</button></div></footer></section>"
+}
