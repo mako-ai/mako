@@ -9,6 +9,7 @@
  */
 import { inWorkspace } from "../../utils/workspace-scope";
 import { BigQuery } from "@google-cloud/bigquery";
+import { requireTenantServiceAccount } from "../../connections/tenant-google-credentials";
 import {
   isLocalBigQueryEmulator,
   bigQueryEmulatorEndpoint,
@@ -858,10 +859,14 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       location?: string;
       api_base_url?: string;
     };
-    const credentials =
-      typeof conn.service_account_json === "string"
-        ? JSON.parse(conn.service_account_json)
-        : conn.service_account_json;
+    // Tenant destination: its own service account only, never Mako's ADC.
+    // The local emulator needs no credentials.
+    const credentials = isLocalBigQueryEmulator(conn.api_base_url)
+      ? undefined
+      : requireTenantServiceAccount(
+          conn.service_account_json,
+          "BigQuery destination",
+        ).credentials;
     const projectId = conn.project_id as string;
     const dataset = this.config.tableDestination.schema;
     const connLocation: string | undefined = conn.location;

@@ -169,7 +169,37 @@ function testSupportsResumableFetching() {
   assert.equal(connector.supportsResumableFetching(), true);
 }
 
+function testRefusesToRunWithoutTenantServiceAccount() {
+  // A missing or non-service-account key never reaches a Google client, so
+  // the SDK cannot fall back to Mako's own Application Default Credentials.
+  for (const service_account_json of [
+    undefined,
+    "",
+    "not json",
+    JSON.stringify({ type: "authorized_user", client_email: "a@b.c" }),
+    JSON.stringify({ client_email: "a@b.c", private_key: "k" }),
+  ]) {
+    const connector = createConnector({ service_account_json });
+    assert.throws(
+      () => (connector as any).getStorage(),
+      /service account|JSON/i,
+    );
+    assert.ok(!(connector as any).storage);
+  }
+}
+
+function testUsesOnlyTheTenantServiceAccount() {
+  const connector = createConnector();
+  const storage = (connector as any).getStorage();
+  assert.equal(
+    storage.authClient.jsonContent.client_email,
+    "svc@demo.iam.gserviceaccount.com",
+  );
+}
+
 async function main() {
+  testRefusesToRunWithoutTenantServiceAccount();
+  testUsesOnlyTheTenantServiceAccount();
   testConfigSchemaExposesCredentialsAndFolders();
   testValidateConfigRequiresBucketAndSa();
   testValidateConfigAcceptsValidSa();

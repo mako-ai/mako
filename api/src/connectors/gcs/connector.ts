@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { requireTenantServiceAccount } from "../../connections/tenant-google-credentials";
 import { Storage, type Bucket, type File } from "@google-cloud/storage";
 import {
   BaseConnector,
@@ -233,12 +234,12 @@ export class GcsConnector extends BaseConnector {
     credentials: Record<string, unknown>;
     projectId?: string;
   } {
-    const raw = this.sourceConnection.config.service_account_json;
-    const credentials = typeof raw === "string" ? JSON.parse(raw) : raw;
-    const projectId =
-      this.sourceConnection.config.project_id ||
-      (credentials.project_id as string | undefined);
-    return { credentials, projectId };
+    const sa = requireTenantServiceAccount(
+      this.sourceConnection.config.service_account_json,
+      "GCS",
+    );
+    const projectId = this.sourceConnection.config.project_id || sa.project_id;
+    return { credentials: sa.credentials, projectId };
   }
 
   private getBucketName(): string {
