@@ -15,6 +15,7 @@
  *   enters the sandbox.
  */
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import {
   ConnectionConfig,
   FileNotFoundError,
@@ -763,6 +764,50 @@ async function startCommand(
   }
 }
 
+/** The env var that tags every process one exec started (see execE2b). */
+export const EXEC_ID_ENV = "MAKO_EXEC_ID";
+
+/**
+ * Shell that SIGKILLs every process carrying `${EXEC_ID_ENV}=<execId>` in its
+ * environment. By tag, not by tree: when a command's deadline passes, envd
+ * kills only the top bash, and its children are reparented to init (measured
+ * in a real box: 3 of 3 `sleep`s survived). They share envd's process group,
+ * so a group kill would take envd down too. The environment is inherited by
+ * npm, vite and esbuild alike and survives the reparenting. A STOP pass first,
+ * so nothing forks past the KILL pass.
+ */
+export function killByExecIdScript(execId: string): string {
+  if (!/^[A-Za-z0-9-]+$/.test(execId)) throw new Error("bad exec id");
+  return `for s in STOP KILL; do for p in /proc/[0-9]*; do grep -qzx '${EXEC_ID_ENV}=${execId}' "$p/environ" 2>/dev/null && kill -$s "\${p#/proc/}" 2>/dev/null; done; done; true`;
+}
+
+/**
+ * Kill a timed-out command and everything it started (npm, vite, esbuild).
+ * Best effort: the sweep runs as its own command, and envd's own kill of the
+ * top pid backs it up when the sweep cannot start.
+ */
+export async function killTimedOutCommand(
+  sandbox: Sandbox,
+  handle: { pid: number; kill?: () => Promise<boolean> },
+  execId: string,
+): Promise<void> {
+  try {
+    // As root: a command may have run as root (asRoot), and only root reads
+    // every process's environ and signals it.
+    await sandbox.commands.run(killByExecIdScript(execId), {
+      user: ROOT_USER,
+      timeoutMs: 15_000,
+    });
+  } catch (error) {
+    logger.warn("Could not kill a timed-out command's processes", {
+      sandboxId: sandbox.sandboxId,
+      pid: handle.pid,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  await handle.kill?.().catch(() => false);
+}
+
 async function execE2b(
   ctx: SandboxExecContext,
   command: string,
@@ -806,6 +851,7 @@ async function execE2b(
     // before envd accepted the command (it never ran) from one after (it may
     // still be running). Only the first may be retried; see withSandbox.
     const run = commandToRun(command, options);
+    const execId = randomUUID();
     const handle = await startCommand(sandbox, run.command, {
       user: userFor(options),
       cwd,
@@ -823,6 +869,7 @@ async function execE2b(
         // A `vite` the agent starts by hand accepts the preview origin.
         ...viteAllowedHostEnv(),
         ...run.env,
+        [EXEC_ID_ENV]: execId,
       },
       onStdout: d => push("out", d),
       onStderr: d => push("err", d),
@@ -848,6 +895,11 @@ async function execE2b(
       } else if (err.name === "TimeoutError") {
         exitCode = 124;
         timedOut = true;
+        // The deadline ends OUR wait, not the process: envd keeps a
+        // background command running after its stream closes. On 18 Nov
+        // 2026 timed-out builds kept the shared publish box at 2,018 of
+        // 2,079 MB for 34 min, and every later command failed to start.
+        await killTimedOutCommand(sandbox, handle, execId);
       } else {
         throw error;
       }

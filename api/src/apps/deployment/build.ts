@@ -91,6 +91,71 @@ async function prunePublishBoxIfFull(
   }
 }
 
+/**
+ * MiB of MemAvailable the publish box must have before a build starts. The box
+ * has 2,079 MB; idle it uses about 330 MB, and one vite build peaks well under
+ * the rest. Two builds run at once per workspace (apps-deploy.ts), so a build
+ * that cannot find this much is starting into a box that will thrash.
+ */
+export const PUBLISH_BUILD_MIN_FREE_MB = 600;
+
+/**
+ * Age past which a build tool in the publish box is an orphan: longer than the
+ * longest exec timeout (APPS_EXEC_MAX_TIMEOUT_MS, 10 min), so whatever
+ * started it has given up on it.
+ */
+export const PUBLISH_ORPHAN_AGE_S = 15 * 60;
+
+/** The publish box has too little free memory to start a build. */
+export class PublishBoxLowMemoryError extends Error {
+  constructor(readonly availableMb: number) {
+    super(
+      `The publish box has ${availableMb} MB of memory free; a build needs ${PUBLISH_BUILD_MIN_FREE_MB} MB. Retrying shortly.`,
+    );
+    this.name = "PublishBoxLowMemoryError";
+  }
+}
+
+/**
+ * Prints `avail <MiB>` after killing build tools (npm, pnpm, node running
+ * vite/esbuild/rollup/tsc) older than PUBLISH_ORPHAN_AGE_S. Those outlived
+ * every caller: an API instance that died mid-build never kills its tree.
+ */
+export const PUBLISH_BOX_MEMORY_SCRIPT = [
+  `ps -eo pid=,etimes=,args= 2>/dev/null | awk -v max=${PUBLISH_ORPHAN_AGE_S} '$2 > max && $0 ~ /(^|[ \\/])(npm|pnpm|npx|vite|esbuild|rollup|tsc)( |$)/ { print $1 }' | while read -r p; do kill -KILL "$p" 2>/dev/null; done`,
+  `awk '/^MemAvailable:/ { print "avail", int($2 / 1024) }' /proc/meminfo`,
+].join("\n");
+
+/** MemAvailable in MiB from PUBLISH_BOX_MEMORY_SCRIPT, or null if unreadable. */
+export function parseAvailableMb(stdout: string): number | null {
+  const match = /^avail (\d+)$/m.exec(stdout);
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * Never start a build in a publish box that is out of memory. On 18 Nov 2026
+ * the box sat at 2,018 of 2,079 MB for 34 min, and 19 deploys each failed
+ * with deadline_exceeded because envd could not start even a 15 s probe.
+ * Reap orphaned build tools first; if memory is still short, throw a
+ * retriable error instead of piling one more build onto the box.
+ */
+async function ensurePublishBoxMemory(
+  handle: WorktreeHandle,
+  exec: Parameters<typeof buildApp>[1],
+): Promise<void> {
+  if (handle.doc.userId !== PUBLISH_ACTOR) return;
+  const result = await exec(handle, PUBLISH_BOX_MEMORY_SCRIPT, {
+    timeoutMs: 30_000,
+  });
+  const availableMb = parseAvailableMb(result.stdout);
+  if (availableMb === null || availableMb >= PUBLISH_BUILD_MIN_FREE_MB) return;
+  logger.warn("Publish box low on memory; not starting a build", {
+    workspaceId: handle.doc.workspaceId.toString(),
+    availableMb,
+  });
+  throw new PublishBoxLowMemoryError(availableMb);
+}
+
 export async function buildApp(
   handle: WorktreeHandle,
   exec: (
@@ -100,6 +165,7 @@ export async function buildApp(
   ) => Promise<{ exitCode: number; stdout: string; stderr: string }>,
 ): Promise<{ ok: boolean; output: string }> {
   await prunePublishBoxIfFull(handle, exec);
+  await ensurePublishBoxMemory(handle, exec);
   const log = buildLogPath(handle);
   // The app's NON-SECRET env vars (env.service): `vite build` inlines the
   // `VITE_*` ones into the bundle — which is the point, that class of key is

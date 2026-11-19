@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   RECONCILE_FAILED_DEPLOY_BACKOFF_MS,
+  appsDeployFunction,
   shouldBackOffFromFailedDeploy,
 } from "./apps-deploy";
 
@@ -62,5 +63,20 @@ describe("shouldBackOffFromFailedDeploy (hourly reconcile)", () => {
         now,
       }),
     ).toBe(true);
+  });
+});
+
+describe("apps-deploy concurrency", () => {
+  it("builds at most 2 apps per workspace at once; the rest queue", () => {
+    // A wave of 42 deploys on 18 Nov 2026 ran 2 at a time, as designed. The
+    // queue time never counts against a build: timeouts are per command.
+    const opts = (
+      appsDeployFunction as unknown as {
+        opts: { concurrency?: unknown };
+      }
+    ).opts;
+    expect(opts.concurrency).toEqual([
+      { key: "event.data.workspaceId", limit: 2 },
+    ]);
   });
 });

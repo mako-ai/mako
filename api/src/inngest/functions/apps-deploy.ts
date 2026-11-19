@@ -18,7 +18,8 @@ import {
   isDeployInFlight,
   markDeployQueued,
 } from "../../apps/deploy-progress";
-import { NonRetriableError } from "inngest";
+import { NonRetriableError, RetryAfterError } from "inngest";
+import { PublishBoxLowMemoryError } from "../../apps/deployment/build";
 import { inngest } from "../client";
 import { loggers } from "../../logging";
 import { AppProject, type IAppProject } from "../../database/workspace-schema";
@@ -69,6 +70,9 @@ export function shouldBackOffFromFailedDeploy(input: {
   const now = (input.now ?? new Date()).getTime();
   return now - failedAt < RECONCILE_FAILED_DEPLOY_BACKOFF_MS;
 }
+
+/** How long a deploy waits before retrying into a publish box low on memory. */
+export const PUBLISH_BOX_RETRY_AFTER_MS = 2 * 60 * 1000;
 
 export interface AppsDeployEventData {
   workspaceId: string;
@@ -138,6 +142,13 @@ export const appsDeployFunction = inngest.createFunction(
         // backs off and a push that changes the app retries it.
         if (error instanceof DeployBindingsError) {
           throw new NonRetriableError(error.message, { cause: error });
+        }
+        // The shared publish box is out of memory: wait for the builds in it
+        // to finish rather than retrying into the same starved box at once.
+        if (error instanceof PublishBoxLowMemoryError) {
+          throw new RetryAfterError(error.message, PUBLISH_BOX_RETRY_AFTER_MS, {
+            cause: error,
+          });
         }
         throw error;
       }
