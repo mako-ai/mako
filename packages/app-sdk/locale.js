@@ -76,7 +76,7 @@ const de = {
 const it = {
   period: {
     time: "Periodo", previous: "Periodo precedente", next: "Periodo successivo", menu: "Scegli un periodo",
-    week: "Settimana", month: "Mese", quarter: "Trimestre", year: "Anno", custom: "Personalizzato", presets: "Rapidi",
+    week: "Settimana", month: "Mese", quarter: "Trimestre", year: "Anno", custom: "Personalizzato", presets: "Scorciatoie",
     inProgress: "in corso", inProgressTitle: "In corso: i numeri non sono ancora definitivi",
     from: "Da", to: "A", apply: "Applica",
     quarterLabel: (q, y) => `T${q} ${y}`,
@@ -152,7 +152,7 @@ const pt = {
     lastDays: n => `Últimos ${n} dias`, mtd: "Este mês", qtd: "Este trimestre", ytd: "Este ano",
   },
   filterBar: { filters: "Filtros", reset: "Repor", resetTitle: "Voltar aos filtros predefinidos", done: "Concluído" },
-  filter: { all: "Todos", none: "Nenhum", many: n => `${n} selecionados`, only: "Só", search: "Procurar", noMatch: "Sem resultados", groupAll: label => `${label} (tudo)` },
+  filter: { all: "Todos", none: "Nenhum", many: n => `${n} selecionados`, only: "Apenas", search: "Procurar", noMatch: "Sem resultados", groupAll: label => `${label} (tudo)` },
   combobox: { placeholder: "Selecionar…", search: "Procurar…", empty: "Sem resultados." },
   dataTable: {
     rows: "linhas", of: "de", empty: "Nenhuma linha com estes filtros.",
