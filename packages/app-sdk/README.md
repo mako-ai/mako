@@ -392,6 +392,8 @@ import {
   `{ value, label, color }`, or groups with `children`; `showOnly` adds an
   "Only" button per row. `FilterItems` is its rows alone. On
   phones the menu is a bottom sheet. See "MultiSelect: the All rule" below.
+  `disabled` (2.30, on FilterMenu too) greys the trigger at 50% as shadcn's
+  Button does. It takes no clicks and no focus.
 - `FreshnessBadge` — presentational: the app decides what fresh means and
   passes `tone` (`ok` / `warn` / `bad`, or `green` / `amber` / `red`), a
   `headline`, and per-source rows; `action` is a callout slot (e.g. a "Load
@@ -749,7 +751,7 @@ The components and their `labels` keys:
   `label` is unset), `previous`, `next`, `menu`, `week`, `month`, `quarter`,
   `year`, `custom`, `presets` (the presets tab), `inProgress`,
   `inProgressTitle`, `from`, `to`, `apply`, `quarterLabel(q, year)` ("T4
-  2026" in French), `lastDays(n)`, `mtd`, `qtd`, `ytd`. The period reads
+  2026" in French), `lastDays(n)`, `mtd`, `qtd`, `ytd`, `allTime` (2.30). The period reads
   "nov. 2026" in fr-CH and "16.–22. Nov 2026" in de-CH.
 - **FilterBar** (`FilterBarLabels`): `filters` (chip, sheet title, aria-label),
   `reset`, `resetTitle`, `done`.
@@ -758,6 +760,11 @@ The components and their `labels` keys:
   `noMatch`, `groupAll(label)` ("Bots (tout)", FilterMenu's group row).
   `allLabel` is optional on FilterMenu now.
 - **Combobox** (`ComboboxLabels`): `placeholder`, `search`, `empty`.
+- **RefreshAllButton** (2.30, `RefreshLabels`, `locale` only: its `labels`
+  prop stays the binding names' map): the button, the modal, each source's
+  state and stage, and the finish time. French reads "Actualiser".
+- **FreshnessBadge** (2.30, `FreshnessLabels`, `locale` only): the panel's and
+  the source list's screen-reader names.
 - **DataTable**: the `DataTableLabels` keys. A locale also formats the
   footer's numbers and names the rows ("1–50 sur 312 lignes") while `noun` is
   unset. `dataTableLabels(locale, labels)` returns the full set.
@@ -769,7 +776,10 @@ controls: `localeStrings("filterBar", "de-CH").reset` is "Zurücksetzen".
 that end today: `"7d"`, `"28d"`, `"90d"`, `"365d"` (any `"<N>d"`) and `"mtd"`,
 `"qtd"`, `"ytd"` (month, quarter and year to date). A pick emits
 `presetPeriod(id)`: `{ unit: "custom", from, to: today, preset: "28d" }`. The
-trigger reads the preset's name ("28 derniers jours"). ‹ from a to-date
+trigger reads the preset's name ("28 derniers jours"). `"all"` (2.30) runs
+from the picker's `min` to today and reads "All time" ("Toute la période").
+It needs `min`, so it replaces an app's separate "any time" Select. Read it
+from the URL with `presetPeriod(id, todayIso(), MIN)`. ‹ from a to-date
 preset goes to the whole unit before it; from N days, to the N days before.
 
 A preset keeps rolling only if the URL holds its id, not its dates. Write
@@ -935,6 +945,17 @@ passes `{ hideEmpty: true, byValue: true }`. `hideEmpty` drops zero and
 missing rows. `byValue` sorts non-stacked rows highest first, missing last.
 Both make the tooltip change height or order between buckets, so the house
 rule is to leave them off.
+
+**Rules and notes (2.30).** A row's `rule: true` draws a rule above it, such
+as an "Ending MRR" line before the total. `note` adds a muted line under the
+table, such as "Click to list the opportunities".
+
+```tsx
+<TableTooltip title={month} columns={["MRR", "Orgs"]}
+  rows={[...movements, { label: "Ending MRR", cells: [end, endOrgs], rule: true }]}
+  total={{ label: "Net MRR change", cells: [net, netOrgs] }}
+  note={drillable ? "Click to list the opportunities" : undefined} />
+```
 
 ### Data tables: `DataTable` (2.11+)
 
@@ -1114,9 +1135,49 @@ const COLUMNS: DataTableColumn<Customer>[] = [
     totalRow={rs => ({ name: "Total", demos: sum(rs, "demos"), cash: sum(rs, "cash") })}
     onTotalRowClick={() => openDrill(null)} />
   ```
+- **Server mode (2.30).** TanStack Table's props and state shapes. With
+  `manualSorting` the table never reorders rows. With `manualPagination`,
+  `rows` is the current page and `rowCount` the total, so the footer reads
+  "51–100 of 312". `sorting` / `onSortingChange` take `[{ id, desc }]`.
+  `pagination` / `onPaginationChange` take `{ pageIndex, pageSize }`,
+  0-based. Both callbacks get the next value, so a `useState` setter works.
+  `loading` fills an empty body with up to 10 skeleton rows and dims rows on
+  screen. The CSV button is off in manual paging: export on the server.
+
+  ```tsx
+  const [sorting, setSorting] = useState<SortingState>([{ id: "renewal", desc: false }]);
+  const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 50 });
+  const page = useDuckDB<Renewal>(pageSql(sorting, pagination));
+  <DataTable rows={page.data ?? []} columns={COLUMNS} manualSorting manualPagination rowCount={total}
+    sorting={sorting} onSortingChange={setSorting} pagination={pagination} onPaginationChange={setPagination}
+    loading={page.loading} pageSizes={[50]} />
+  ```
+- **Column resizing (2.30).** `enableColumnResizing` puts a drag handle on
+  each header's right edge. `columnResizeMode` is `"onEnd"` (TanStack's
+  default: the width lands on release) or `"onChange"` (live). A column's
+  `size` is its start width in px; `minSize` (default 20) and `maxSize`
+  clamp the drag. `enableResizing: false` drops one column's handle. A double
+  click resets a column. `columnSizing` + `onColumnSizingChange` keep the
+  widths, e.g. per viewer in localStorage. Resizing is pointer only, as in
+  TanStack: no keyboard.
+- **Section rows (2.30).** `isSectionRow(row)` marks a heading row. It spans
+  every column and shows `renderSection(row)` (default the first column's
+  cell). Rows sort inside their section. The pager, the footer, the CSV and
+  `totalRow` skip section rows. A section repeats at the top of a page its
+  rows continue on.
+
+  ```tsx
+  <DataTable rows={[{ kind: "section", label: "Inbound" }, ...inbound, { kind: "section", label: "Outbound" }, ...outbound]}
+    columns={COLUMNS} isSectionRow={r => r.kind === "section"} />
+  ```
+- **Cell class and style (2.30).** A column's `cellClassName` and
+  `cellStyle` take `(value, row)` and style each body cell, e.g. a heat cell:
+  `cellStyle: v => ({ background: heat(v) })`. The total row keeps the
+  column's own class.
 - Pure helpers for custom tables: `sortRows`, `compareValues`, `nextSort`,
   `pageSlice`, `pageToSync`, `toCsv`, `csvCell`, `csvDate`, `csvToTsv`,
-  `columnLayout`, `columnGroupRuns`.
+  `columnLayout`, `columnGroupRuns`, `resizeWidth`, `splitSections`,
+  `fromSorting`, `toSorting`.
 
 `ui.css` is plain CSS (no Tailwind needed; it coexists with Tailwind) and
 every kit class is prefixed `mk-`. It also sets the house base: Inter 14px on

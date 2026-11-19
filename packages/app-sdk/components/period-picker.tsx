@@ -40,7 +40,7 @@ export interface PeriodPickerProps {
   /**
    * Mako thin prop (2.29): rolling windows in their own tab, first: "7d", "28d", "90d" (the last N days),
    * "mtd", "qtd", "ytd" (month, quarter, year to date). A pick emits `presetPeriod(id)`: a custom range
-   * ending today with `preset: id`. Default none.
+   * ending today with `preset: id`. "all" (2.30): from `min` to today, "All time"; needs `min`. Default none.
    */
   presets?: readonly PeriodPreset[]
   /** Mako thin prop (2.27): classes on the stepper's frame, e.g. `w-full` in a phone sheet. */
@@ -127,7 +127,7 @@ function PickerMenu({ value, units, custom, min, max, today, L, locale, presets,
   const asMonth = custom === "month"
   const [from, setFrom] = React.useState(asMonth ? value.from.slice(0, 7) : value.from)
   const [to, setTo] = React.useState(asMonth ? value.to.slice(0, 7) : value.to)
-  const list = tab === "custom" ? [] : tab === "presets" ? (rolling ?? []).flatMap(id => presetPeriod(id, today) ?? []) : (() => {
+  const list = tab === "custom" ? [] : tab === "presets" ? (rolling ?? []).flatMap(id => presetPeriod(id, today, min) ?? []) : (() => {
     const out: Period[] = []
     let p = periodOf(tab, max)
     for (let i = 0; i < RECENT[tab] && (!min || p.to >= min); i++, p = shift(p, -1)) out.push(p)

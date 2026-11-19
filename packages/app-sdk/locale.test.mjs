@@ -23,7 +23,7 @@ test("locale: the language part picks the strings, anything else is English", ()
 
 test("locale: every language has every key, with the same kind of value", () => {
   for (const lang of LOCALES) {
-    for (const section of ["period", "filterBar", "filter", "combobox", ...(lang === "en" ? [] : ["dataTable"])]) {
+    for (const section of ["period", "filterBar", "filter", "combobox", "refresh", "freshness", ...(lang === "en" ? [] : ["dataTable"])]) {
       const ref = section === "dataTable" ? STRINGS.fr.dataTable : STRINGS.en[section];
       const got = STRINGS[lang][section];
       assert.deepEqual(Object.keys(got).sort(), Object.keys(ref).sort(), `${lang}.${section} keys`);
@@ -37,7 +37,7 @@ test("locale: the d.ts lists every key of the table", () => {
   const dts = readFileSync(new URL("./locale.d.ts", import.meta.url), "utf8");
   const block = name => dts.slice(dts.indexOf(`interface ${name}`), dts.indexOf("\n}", dts.indexOf(`interface ${name}`)));
   const map = { period: "PeriodPickerLabels", filterBar: "FilterBarLabels", filter: "FilterLabels", combobox: "ComboboxLabels" };
-  for (const [section, name] of Object.entries(map)) {
+  for (const [section, name] of Object.entries({ ...map, refresh: "RefreshLabels", freshness: "FreshnessLabels" })) {
     for (const k of Object.keys(STRINGS.en[section])) assert.match(block(name), new RegExp(`\\n  ${k}:`), `${name}.${k}`);
   }
   for (const k of Object.keys(STRINGS.fr.dataTable)) assert.match(block("DataTableLocaleStrings"), new RegExp(`\\n  ${k}:`), `DataTableLocaleStrings.${k}`);

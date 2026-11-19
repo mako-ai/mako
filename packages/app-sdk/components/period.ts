@@ -6,8 +6,8 @@
 import { localeStrings } from "../locale.js";
 
 export type Unit = "week" | "month" | "quarter" | "year";
-/** A rolling preset (2.29): the last N days ("28d") or month, quarter, year to date. All end today. */
-export type PeriodPreset = `${number}d` | "mtd" | "qtd" | "ytd";
+/** A rolling preset (2.29): the last N days ("28d") or month, quarter, year to date; "all" (2.30) runs from the picker's `min`. All end today. */
+export type PeriodPreset = `${number}d` | "mtd" | "qtd" | "ytd" | "all";
 /** `preset` (2.29) marks a range picked as a rolling preset: write it to the URL as `period=28d`. */
 export type Period = { unit: Unit | "custom"; from: string; to: string; preset?: PeriodPreset };
 
@@ -98,8 +98,12 @@ export const UNIT_LABEL: Record<Unit, string> = { week: "Week", month: "Month", 
 
 const TO_DATE = { mtd: "month", qtd: "quarter", ytd: "year" } as const;
 
-/** A preset's dates on `today`: `presetPeriod("28d")` is the 28 days ending today. Null for an unknown id. */
-export function presetPeriod(id: string | null | undefined, today = todayIso()): Period | null {
+/**
+ * A preset's dates on `today`: `presetPeriod("28d")` is the 28 days ending today. Null for an unknown id.
+ * "all" (2.30) is `min` to today, so it needs `min` (the picker's): null without it.
+ */
+export function presetPeriod(id: string | null | undefined, today = todayIso(), min?: string): Period | null {
+  if (id === "all") return min ? { unit: "custom", from: min, to: today, preset: "all" } : null;
   const days = /^([1-9]\d{0,3})d$/.exec(id ?? "");
   const unit = TO_DATE[id as keyof typeof TO_DATE];
   if (!days && !unit) return null;
@@ -108,8 +112,9 @@ export function presetPeriod(id: string | null | undefined, today = todayIso()):
 }
 
 /** A preset's name: "Last 28 days", "Month to date"; localized with `locale`. */
-export function presetLabel(id: PeriodPreset, locale?: string, labels?: { lastDays?: (n: number) => string; mtd?: string; qtd?: string; ytd?: string }): string {
+export function presetLabel(id: PeriodPreset, locale?: string, labels?: { lastDays?: (n: number) => string; mtd?: string; qtd?: string; ytd?: string; allTime?: string }): string {
   const L = localeStrings("period", locale, labels);
+  if (id === "all") return L.allTime;
   return /^\d+d$/.test(id) ? L.lastDays(Number(id.slice(0, -1))) : L[id as "mtd" | "qtd" | "ytd"];
 }
 

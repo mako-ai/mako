@@ -58,3 +58,14 @@
   }
   [data-slot] table { border-collapse: collapse; }
 }
+
+/* FilterField in the phone sheet (2.30): the field already stretches its
+   direct child; the trigger inside it stretches too, whatever wraps it
+   (MultiSelect's .mk-ms, a Select, a FilterMenu). One rule here, none per
+   control. Unlayered, so it outranks a control's own `w-fit`. */
+@media (width < 769px) {
+  [data-slot="filter-bar"][data-open] [data-slot="filter-field"] :is(.mk-ms-trigger, [data-slot="select-trigger"], [data-slot="combobox-trigger"]) {
+    width: 100%;
+    max-width: none;
+  }
+}

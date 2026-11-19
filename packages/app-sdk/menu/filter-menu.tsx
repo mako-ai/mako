@@ -13,6 +13,7 @@
 //
 // 2.29: `locale` and `labels` translate All, None, Only, "All <group>" and
 // "N selected" from the SDK's strings table (../locale.js).
+// 2.30: `disabled` on FilterMenu passes to the Radix trigger.
 import * as React from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
@@ -277,6 +278,8 @@ export interface FilterMenuProps extends Omit<FilterMenuItemsProps, "none" | "on
   sizeTo?: readonly string[];
   /** Menu alignment against the trigger. Default "start". */
   align?: "start" | "center" | "end";
+  /** Mako thin prop (2.30): disables the trigger (Radix Trigger's `disabled`): half opacity, no pointer, out of the tab order. */
+  disabled?: boolean;
 }
 
 /** The filter dropdown: the kit's trigger (`mk-ms-trigger`) over FilterMenuItems. */
@@ -296,7 +299,7 @@ export function FilterMenu(props: FilterMenuProps) {
         else setNone(false);
       }}
     >
-      <DropdownMenuTrigger asChild>
+      <DropdownMenuTrigger asChild disabled={props.disabled}>
         <button type="button" className={`mk-ms-trigger ${props.triggerClassName ?? ""}`} aria-label={props.label} title={text}>
           <span className="mk-ms-value">
             <span className="mk-ms-fit">
