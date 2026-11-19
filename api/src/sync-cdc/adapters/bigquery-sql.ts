@@ -127,6 +127,14 @@ export interface BuildMergeStatementParams {
    * undeleted record.
    */
   fullRead?: boolean;
+  /**
+   * The columns some staging row lists in `_mako_absent_cols`. Only these
+   * read `__live`: BigQuery bills a MERGE for every live column it names,
+   * in every partition it scans. Undefined means unknown, and every staged
+   * column reads `__live` (correct, and the most expensive). Ignored without
+   * the marker.
+   */
+  absentColumns?: ReadonlySet<string>;
 }
 
 /** How far behind the live `_mako_source_ts` a full-read row may be and still win. */
@@ -149,6 +157,7 @@ export function buildMergeStatement(p: BuildMergeStatementParams): string {
     entitySchema,
     livePartitionFilter,
     fullRead,
+    absentColumns,
   } = p;
 
   // Only consider staging cols that also exist on live (an ALTER TABLE add may
@@ -169,7 +178,15 @@ export function buildMergeStatement(p: BuildMergeStatementParams): string {
 
   // Sparse rows (sparse-rows.ts): a staging row lists the columns it lacks
   // in `_mako_absent_cols`. The marker never reaches the live table.
-  const hasAbsentMarker = stagingCols.has(ABSENT_COLUMNS_FIELD);
+  // A column keeps its live value only where some row can lack it. Every
+  // other column is a plain `__stg.col`, so the MERGE never reads it from
+  // live. When no updated column can be absent, the statement is the
+  // unmarked one, byte for byte.
+  const mayBeAbsent = (c: string) =>
+    !keyColumns.includes(c) && (!absentColumns || absentColumns.has(c));
+  const hasAbsentMarker =
+    stagingCols.has(ABSENT_COLUMNS_FIELD) &&
+    effectiveStagingCols.some(mayBeAbsent);
 
   // USING subquery: SELECT staging columns (cast to live types) with dedup by
   // key keeping the newest record per ordering expression.
@@ -216,7 +233,7 @@ export function buildMergeStatement(p: BuildMergeStatementParams): string {
   // A column a staging row lacks keeps its live value. A column it carries
   // as NULL is cleared. Without the marker every staged column is carried.
   const updateExpr = (c: string) =>
-    hasAbsentMarker
+    hasAbsentMarker && mayBeAbsent(c)
       ? `IF(STRPOS(IFNULL(__stg.${escId(ABSENT_COLUMNS_FIELD)}, ''), ${sqlString(absentColumnNeedle(c))}) > 0, __live.${escId(c)}, __stg.${escId(c)})`
       : `__stg.${escId(c)}`;
 
@@ -251,6 +268,16 @@ export function buildMergeStatement(p: BuildMergeStatementParams): string {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+/**
+ * The distinct columns that staging rows list in `_mako_absent_cols`. Reads
+ * the marker column of staging only. The bulk flush appends many files to one
+ * staging table, so the caller cannot know the set without asking.
+ */
+export function buildStagingAbsentColumnsQuery(fullStaging: string): string {
+  const marker = escId(ABSENT_COLUMNS_FIELD);
+  return `SELECT DISTINCT c FROM ${fullStaging}, UNNEST(SPLIT(${marker}, ',')) AS c WHERE ${marker} IS NOT NULL AND c != ''`;
 }
 
 // ---------------------------------------------------------------------------

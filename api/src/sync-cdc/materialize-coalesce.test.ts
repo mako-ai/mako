@@ -37,6 +37,16 @@ type Table = { columns: Set<string>; rows: Map<string, Row> };
 
 let table: Table;
 
+/**
+ * Which columns the in-memory MERGE may keep from live, as the SQL does:
+ * - "batch-absent": the columns some row of the batch lacks
+ *   (prepareSparseBatch().absentColumns), as buildMergeStatement does now;
+ * - "every-column": every staged column, as before the column-scan fix;
+ * - "none": no column, which drops the sparse-row rule (control).
+ */
+type LiveRead = "batch-absent" | "every-column" | "none";
+let liveRead: LiveRead = "batch-absent";
+
 function freshTable(): Table {
   return { columns: new Set(), rows: new Map() };
 }
@@ -55,7 +65,10 @@ function ts(value: unknown): number {
  * addMissingLiveColumns adds staged columns to live first.
  */
 function mergeIntoLive(records: Row[], keyColumns: string[]): void {
-  const { rows, presentColumns } = prepareSparseBatch(records);
+  const { rows, presentColumns, absentColumns } = prepareSparseBatch(records);
+  const mayKeepLive = (column: string) =>
+    liveRead === "every-column" ||
+    (liveRead === "batch-absent" && absentColumns.has(column));
   for (const column of presentColumns) table.columns.add(column);
   const keyOf = (row: Row) => keyColumns.map(k => String(row[k])).join("|");
 
@@ -79,7 +92,7 @@ function mergeIntoLive(records: Row[], keyColumns: string[]): void {
       if (ts(stg._mako_source_ts) < ts(live._mako_source_ts)) continue;
       for (const column of presentColumns) {
         if (keyColumns.includes(column)) continue;
-        if (absent.has(column)) continue;
+        if (mayKeepLive(column) && absent.has(column)) continue;
         live[column] = stg[column] ?? null;
       }
       continue;
@@ -359,6 +372,46 @@ describe("coalesced materialization equals per-batch materialization", () => {
     expect(newPath).toEqual(oldPath);
     expect(newPath.count).toBe(1);
   });
+});
+
+/**
+ * The MERGE reads from live only the columns some row of the batch lacks
+ * (buildMergeStatement `absentColumns`). Before, it read every staged column,
+ * which billed every column of the live table. The rows must not change.
+ */
+describe("the MERGE reads only the batch's absent columns from live", () => {
+  afterAll(() => {
+    liveRead = "batch-absent";
+  });
+
+  for (const deleteMode of ["hard", "soft"] as const) {
+    it(`lands the same rows as reading every column (${deleteMode} deletes)`, async () => {
+      let differsWithoutLiveRead = 0;
+      for (const seed of SEEDS) {
+        const stream = makeStream(seed + 20_000, {
+          events: 120,
+          records: 8,
+          outOfOrder: 0.1,
+          sparse: 0.4,
+          deletes: 0.12,
+        });
+        const random = rng(seed * 6007);
+        const batches = split(stream, random, 6);
+        liveRead = "every-column";
+        const everyColumn = await materialize(batches, deleteMode);
+        liveRead = "none";
+        const noLiveRead = await materialize(batches, deleteMode);
+        liveRead = "batch-absent";
+        const batchAbsent = await materialize(batches, deleteMode);
+        expect(batchAbsent, `seed ${seed}`).toEqual(everyColumn);
+        if (JSON.stringify(noLiveRead) !== JSON.stringify(everyColumn)) {
+          differsWithoutLiveRead++;
+        }
+      }
+      // The streams exercise the rule: without it most seeds lose a value.
+      expect(differsWithoutLiveRead).toBeGreaterThan(100);
+    });
+  }
 });
 
 /**
