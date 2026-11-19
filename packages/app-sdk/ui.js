@@ -610,7 +610,7 @@ export function DataTable({
               type: "button",
               className: "mk-dt-sort",
               onClick: () => sortBy(col),
-              title: `${col.hint ?? text} · click to sort`,
+              title: L.sortHint(col.hint ?? text),
             },
             h("span", { className: "mk-dt-th-text" }, col.label),
             h(IconSort, { dir: active ? sort.dir : null }),
@@ -652,42 +652,6 @@ export function DataTable({
         h("tr", null, ...runs.flatMap(run => (run.group == null ? [] : run.columns.map(col => headCell(col))))),
       )
     : h("thead", null, h("tr", null, ...columns.map(col => headCell(col))));
-  const head = h(
-    "thead",
-    null,
-    h(
-      "tr",
-      null,
-      ...columns.map(col => {
-        const active = sort?.id === col.id;
-        const text = typeof col.label === "string" ? col.label : col.id;
-        const label =
-          col.sortable === false
-            ? h("span", { className: "mk-dt-label", title: col.hint ?? text }, h("span", { className: "mk-dt-th-text" }, col.label))
-            : h(
-                "button",
-                {
-                  type: "button",
-                  className: "mk-dt-sort",
-                  onClick: () => sortBy(col),
-                  title: L.sortHint(col.hint ?? text),
-                },
-                h("span", { className: "mk-dt-th-text" }, col.label),
-                h(IconSort, { dir: active ? sort.dir : null }),
-              );
-        return h(
-          "th",
-          {
-            key: col.id,
-            scope: "col",
-            className: cellClass(col, active && "mk-dt-sorted"),
-            "aria-sort": col.sortable === false ? undefined : active ? (sort.dir === "asc" ? "ascending" : "descending") : "none",
-          },
-          label,
-        );
-      }),
-    ),
-  );
 
   // Every cell ellipsizes at its column's width, with the raw value (text or
   // a number) as the hover title. `truncate: false` wraps instead.
