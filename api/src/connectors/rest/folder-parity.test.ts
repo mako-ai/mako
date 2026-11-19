@@ -540,7 +540,7 @@ void test("the address check refuses metadata names and private IPs in any spell
     assert.equal(result?.status, "FAILED", url);
     assert.match(result?.message ?? "", /private or metadata address/, url);
   }
-  const open = await status("http://[2001:db8::1]:9/api");
+  const open = await status("http://127.0.0.1:9/api");
   assert.doesNotMatch(open?.message ?? "", /private or metadata address/);
 });
 
@@ -579,40 +579,154 @@ void test("a redirect to a metadata address is refused on the hop", async () => 
   assert.equal(server.requests(token).length, 1);
 });
 
-void test("a host name that resolves to a private address is refused before any request", () => {
-  const script = `
-    import { checkResolved } from ${JSON.stringify(path.join(FOLDER, "client.ts"))};
-    const answers = {
-      "internal.example.test": [{ address: "93.184.216.34" }, { address: "10.1.2.3" }],
-      "mapped.example.test": [{ address: "::ffff:169.254.169.254" }],
-      "public.example.test": [{ address: "93.184.216.34" }, { address: "2606:2800::1" }],
-      "loopback.example.test": [{ address: "127.0.0.1" }],
-      "localhost": [{ address: "::1" }, { address: "127.0.0.1" }],
-    };
-    const out = {};
-    for (const host of Object.keys(answers)) {
-      try {
-        await checkResolved(new URL("https://" + host + "/api"), async h => answers[h]);
-        out[host] = "allowed";
-      } catch (error) {
-        out[host] = error.message;
-      }
-    }
-    console.log(JSON.stringify(out));
-  `;
-  const out = JSON.parse(
+/** Run a script in the folder's own runtime and read its JSON output. */
+function inFolder(script: string): any {
+  return JSON.parse(
     execFileSync(process.execPath, ["--input-type=module", "-e", script], {
       encoding: "utf8",
+      cwd: FOLDER,
     }),
   );
-  assert.match(
-    out["internal.example.test"],
-    /resolves to a private.*10\.1\.2\.3/,
-  );
-  assert.match(out["mapped.example.test"], /resolves to a private/);
-  assert.equal(out["public.example.test"], "allowed");
-  assert.equal(out["loopback.example.test"], "allowed");
-  assert.equal(out["localhost"], "allowed");
+}
+
+void test("DNS rebinding: the socket's own lookup is the guard, so a rebound name is refused and no header is sent", () => {
+  // A fake resolver answers 93.184.216.34 on the first lookup (what a
+  // separate guard would see) and the target below on every later one. A
+  // second request on the same client is checked again, with no host cache.
+  const script = `
+    import http from "node:http";
+    import { RestClient } from ${JSON.stringify(path.join(FOLDER, "client.ts"))};
+    const seen = [];
+    const server = http.createServer((req, res) => {
+      seen.push(req.headers);
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: 1 }));
+    });
+    await new Promise(r => server.listen(0, "127.0.0.1", r));
+    const port = server.address().port;
+    const out = {};
+    const run = async (name, rebound) => {
+      const calls = [];
+      const resolve = (host, _o, cb) => {
+        calls.push(host);
+        const address = calls.length === 1 ? "93.184.216.34" : rebound;
+        cb(null, [{ address, family: address.includes(":") ? 6 : 4 }]);
+      };
+      // The "guard" lookup an old client made before connecting.
+      await new Promise(r => resolve("rebind.example.test", {}, () => r()));
+      const before = seen.length;
+      const client = new RestClient(
+        { api_base_url: "http://rebind.example.test:" + port + "/api", headers: { "X-API-Key": "S3CRET" } },
+        resolve,
+      );
+      try {
+        await client.request({ method: "GET", path: "/x", params: {} });
+        out[name] = { error: null, reached: seen.length - before, lookups: calls.length };
+      } catch (error) {
+        out[name] = { error: error.message, reached: seen.length - before, lookups: calls.length };
+      }
+    };
+    await run("metadata", "169.254.169.254");
+    await run("private", "10.1.2.3");
+    await run("mappedMetadata", "::ffff:169.254.169.254");
+    // Loopback is allowed in a box: the socket does connect to what the resolver answers.
+    await run("loopback", "127.0.0.1");
+    server.close();
+    console.log(JSON.stringify(out));
+  `;
+  const out = inFolder(script);
+  for (const name of ["metadata", "private", "mappedMetadata"]) {
+    assert.match(out[name].error, /resolves to a blocked address/, name);
+    assert.equal(
+      out[name].reached,
+      0,
+      `${name}: no request reached the server`,
+    );
+    assert.equal(out[name].lookups, 2, `${name}: one lookup in the request`);
+    assert.doesNotMatch(out[name].error, /S3CRET/);
+  }
+  assert.equal(out.loopback.error, null);
+  assert.equal(out.loopback.reached, 1);
+});
+
+void test("redirects: https to http with a credential is refused, and custom headers leave with the host", () => {
+  const script = `
+    import http from "node:http";
+    import { RestClient } from ${JSON.stringify(path.join(FOLDER, "client.ts"))};
+    const seen = [];
+    const server = http.createServer((req, res) => {
+      seen.push({ path: req.url, key: req.headers["x-api-key"] ?? null });
+      if (req.url.startsWith("/hop")) {
+        res.writeHead(302, { location: "http://other.example.test:" + server.address().port + "/landed" });
+        return res.end();
+      }
+      res.setHeader("content-type", "application/json");
+      res.end("{}");
+    });
+    await new Promise(r => server.listen(0, "127.0.0.1", r));
+    const port = server.address().port;
+    const resolve = (host, _o, cb) => cb(null, [{ address: "127.0.0.1", family: 4 }]);
+    const client = new RestClient(
+      { api_base_url: "http://main.example.test:" + port, headers: { "X-API-Key": "S3CRET" } },
+      resolve,
+    );
+    await client.request({ method: "GET", path: "/hop", params: {} });
+    server.close();
+    console.log(JSON.stringify(seen));
+  `;
+  const seen = inFolder(script);
+  assert.deepEqual(seen, [
+    { path: "/hop", key: "S3CRET" },
+    { path: "/landed", key: null },
+  ]);
+});
+
+void test("the address policy: public unicast and loopback pass, everything else is blocked", () => {
+  const blocked = [
+    "0.0.0.0",
+    "10.0.0.1",
+    "100.64.0.1",
+    "169.254.169.254",
+    "172.16.0.1",
+    "192.168.0.1",
+    "198.18.0.1",
+    "224.0.0.1",
+    "240.0.0.1",
+    "255.255.255.255",
+    "::",
+    "fe80::1",
+    "fec0::1",
+    "fd00::1",
+    "64:ff9b::a9fe:a9fe",
+    "64:ff9b:1::a9fe:a9fe",
+    "100::1",
+    "2002:a9fe:a9fe::1",
+    "::ffff:0:a9fe:a9fe",
+    "::ffff:169.254.169.254",
+    "2001:db8::1",
+  ];
+  const allowed = [
+    "1.1.1.1",
+    "93.184.216.34",
+    "127.0.0.1",
+    "::1",
+    "2606:2800::1",
+  ];
+  const script = `
+    import { isBlockedAddress } from "@makoai/connector-sdk";
+    const test = a => [a, isBlockedAddress(a, { allowLoopback: true })];
+    console.log(JSON.stringify({
+      blocked: ${JSON.stringify(blocked)}.map(test),
+      allowed: ${JSON.stringify(allowed)}.map(test),
+    }));
+  `;
+  const out = inFolder(script);
+  for (const [address, isBlocked] of out.blocked) {
+    assert.equal(isBlocked, true, address);
+  }
+  for (const [address, isBlocked] of out.allowed) {
+    assert.equal(isBlocked, false, address);
+  }
 });
 
 void test("a header value the runtime rejects is named, never quoted", async () => {
