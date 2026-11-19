@@ -29,6 +29,12 @@ export default defineConfig({
       // Doors onto main without a hook: merge and publish, workflows/ and
       // connectors/ need an admin.
       "src/apps/worktree/main-gate.test.ts",
+      // MCP and API-key writes stay off the default branch: the guard scope,
+      // the guard branch, the refusal and the merge request (checks, then a
+      // pull request or a merge).
+      "src/apps/default-branch-guard.test.ts",
+      "src/agent-lib/tools/apps-tools-merge-guard.test.ts",
+      "src/agent-lib/tools/flow-merge-guard.test.ts",
       "src/apps/workspace-repo.test.ts",
       "src/apps/workspace-prompt.test.ts",
       "src/migrations/2026-09-02-110000_workspace_self_directive_to_git.test.ts",

@@ -17,7 +17,12 @@
 import type { IDbtProject } from "../database/workspace-schema";
 import { RepoRequiredError, appsRequireConnectedRepo } from "../apps/config";
 import { ZERO_OID, runGit } from "../apps/git";
-import { commitBranchFor } from "../apps/branch-policy";
+import { commitBranchFor, guardBranchFor } from "../apps/branch-policy";
+import {
+  activeDefaultBranchGuard,
+  assertNotDefaultBranchWrite,
+  MERGE_TOOL_FOR_KIND,
+} from "../apps/default-branch-guard";
 import { authorForUser } from "../apps/workspace-consoles.service";
 import {
   ensureCommitLocally,
@@ -119,6 +124,29 @@ export async function getCheckoutBranch(
 ): Promise<string> {
   if (!userId) return DEFAULT_BRANCH;
   return commitBranchFor("dbt", project.workspaceId.toString(), userId);
+}
+
+/**
+ * The guarded caller's dbt branch when the workspace protects its default
+ * branch and the branch exists, else undefined. Runs that build "the tracked
+ * branch" pass it as `gitBranch`: a member's validation run (no working-tree
+ * user) and the Inngest worker (no request scope) then build the edits just
+ * made instead of main.
+ */
+export async function existingGuardBranch(
+  project: Pick<IDbtProject, "workspaceId">,
+  userId: string | undefined,
+): Promise<string | undefined> {
+  const workspaceId = project.workspaceId.toString();
+  if (!userId || !(await activeDefaultBranchGuard(workspaceId))) {
+    return undefined;
+  }
+  const repoDir = await repoForWorkspace(workspaceId);
+  if (!(await repoExists(repoDir))) return undefined;
+  const branch = await guardBranchFor(workspaceId, userId, "dbt");
+  return (await resolveCommit(repoDir, `refs/heads/${branch}`))
+    ? branch
+    : undefined;
 }
 
 async function repoDirIfExists(
@@ -239,6 +267,14 @@ async function commitDbtMutation(
   const repoDir = await repoForWorkspace(workspaceId);
   if (!(await repoExists(repoDir))) throw new RepoRequiredError();
   const branch = await getCheckoutBranch(project, userId);
+  // A guarded caller never commits to the default branch. The redirect in
+  // commitBranchFor makes this unreachable; the check keeps it that way.
+  await assertNotDefaultBranchWrite({
+    workspaceId,
+    branch,
+    guardBranch: await guardBranchFor(workspaceId, userId, "dbt"),
+    mergeTool: MERGE_TOOL_FOR_KIND.dbt,
+  });
   const onDefault = branch === DEFAULT_BRANCH;
   const author = await authorForUser(userId);
   const files = {

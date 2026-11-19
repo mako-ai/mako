@@ -86,4 +86,12 @@ export const SYNC_CAPABILITIES: readonly SyncCapabilityDefinition[] = [
     surfaces: EXTERNAL_MCP_ONLY,
     resultKind: "data",
   }),
+  define({
+    name: "flow_merge_to_main",
+    risk: "write",
+    minimumWorkspaceRole: "admin",
+    requiredGrant: "warehouse-write",
+    surfaces: EXTERNAL_MCP_ONLY,
+    resultKind: "data",
+  }),
 ];

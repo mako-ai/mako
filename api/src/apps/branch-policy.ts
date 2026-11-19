@@ -27,6 +27,11 @@
  *      reverted by the next index sync. Branch-scoped indexes are the
  *      prerequisite for lifting this (apps.md §18), not a policy toggle.
  *
+ *    Exception: an MCP or API-key caller in a workspace that protects its
+ *    default branch (default-branch-guard.ts) never lands on it. Its session
+ *    branch is `mcp/<person>/<kind>`; reaching the default branch takes the
+ *    family's merge tool, which opens a merge request.
+ *
  * 3. GRANULARITY — whether a save amends, squashes, or stands alone is a
  *    per-surface choice (see autoCommitFileEdit's history in
  *    worktree.service); it is deliberately NOT policy here.
@@ -34,6 +39,12 @@
 import { Types } from "mongoose";
 import { AppWorktree } from "../database/workspace-schema";
 import { DEFAULT_BRANCH } from "./repository.service";
+import {
+  activeDefaultBranchGuard,
+  guardBranchName,
+  type GuardKind,
+} from "./default-branch-guard";
+import { handleForUser } from "./user-handles.service";
 
 /** Content kinds that commit through Mako (dbt joins with Block D3). */
 export type RepoContentKind = "app" | "console" | "skill" | "dbt";
@@ -74,6 +85,22 @@ export async function sessionBranchFor(
 }
 
 /**
+ * The branch a guarded caller writes to for this family, e.g.
+ * `mcp/joan/dbt`. `scope` narrows it further (an app's slug).
+ */
+export async function guardBranchFor(
+  workspaceId: string,
+  actorId: string,
+  kind: GuardKind,
+  scope?: string,
+): Promise<string> {
+  const handle = await handleForUser(workspaceId, actorId).catch(
+    () => undefined,
+  );
+  return guardBranchName(handle ?? actorId, kind, scope);
+}
+
+/**
  * Where a commit of this content kind lands (rule 2 above). Indexed kinds
  * pin to the default branch until their indexes are branch-scoped.
  */
@@ -87,7 +114,13 @@ export async function commitBranchFor(
     case "skill":
       return DEFAULT_BRANCH;
     case "app":
+      return sessionBranchFor(workspaceId, actorId);
     case "dbt":
+      // A guarded MCP/API-key caller writes dbt to its own branch, never the
+      // session branch (which is the default branch unless someone switched).
+      if (await activeDefaultBranchGuard(workspaceId)) {
+        return guardBranchFor(workspaceId, actorId, "dbt");
+      }
       return sessionBranchFor(workspaceId, actorId);
   }
 }

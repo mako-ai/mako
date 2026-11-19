@@ -149,6 +149,17 @@ export const DBT_CAPABILITIES = [
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
+  // Opens the merge request for the dbt branch a guarded MCP/API-key caller
+  // wrote to (default-branch-guard.ts): dbt parse, then a GitHub pull request.
+  define({
+    name: "dbt_merge_to_main",
+    pack: "dbt-edit",
+    risk: "write",
+    minimumWorkspaceRole: "admin",
+    requiredGrant: "artifact-write",
+    surfaces: ALL_AGENT_SURFACES,
+    resultKind: "artifact",
+  }),
   // Validation runs are async (queue + poll dbt_get_run) since #755, so they
   // are safe on the stateless external MCP surface. Read-risk validation
   // (parse / compile / show) stays open to members. Every external MCP/CLI
