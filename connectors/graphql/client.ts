@@ -12,17 +12,23 @@
  *   (n counts from 1). 4xx fails at once;
  * - 30 s per request.
  *
- * It uses `fetch`, not axios: the folder needs no dependency.
- *
- * The in-process client is SSRF-guarded (`createSsrfSafeAxios`): it refuses
- * private, link-local and metadata targets because it runs inside Mako's
- * network. A box is outside it. The folder still refuses the cloud metadata
- * names and private or link-local IP literals; loopback reaches only the
- * box itself and is allowed.
+ * It sends through the SDK's `safeRequest`: the socket's own `lookup`
+ * checks every resolved address and the connection uses the address it
+ * checked, so DNS rebinding finds no window. Only public unicast and
+ * loopback (which reaches only the box) are allowed. A redirect is refused.
  */
 
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import {
+  SafeRequestError,
+  checkUrl,
+  isBlockedAddress,
+  safeRequest,
+} from "@makoai/connector-sdk";
+import type { SafeRequestOptions } from "@makoai/connector-sdk";
+
+/** The address policy, with loopback allowed: it reaches only the box. */
+export const addressBlocked = (address: string): boolean =>
+  isBlockedAddress(address, { allowLoopback: true });
 
 export const REQUEST_TIMEOUT_MS = 30_000;
 export const MAX_RETRIES = 3;
@@ -97,143 +103,32 @@ export function buildHeaders(raw: unknown): Record<string, string> {
   return headers;
 }
 
-function v4Blocked(host: string): boolean {
-  const parts = host.split(".").map(Number);
-  if (parts.length !== 4 || parts.some(p => !Number.isInteger(p))) return false;
-  const value =
-    ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
-  const ranges: Array<[string, number]> = [
-    ["10.0.0.0", 8],
-    ["172.16.0.0", 12],
-    ["192.168.0.0", 16],
-    ["169.254.0.0", 16],
-    ["100.64.0.0", 10],
-    ["0.0.0.0", 8],
-  ];
-  return ranges.some(([base, bits]) => {
-    const b = base.split(".").map(Number);
-    const baseValue = ((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) >>> 0;
-    const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
-    return (value & mask) === (baseValue & mask);
-  });
-}
-
-/** An IPv6 address's 8 groups, `::` expanded; null when it is not one. */
-function v6Groups(address: string): number[] | null {
-  // A dotted IPv4 tail (`::ffff:169.254.169.254`, as a resolver may write
-  // it) is the last two groups.
-  const host = address.replace(
-    /(\d+)\.(\d+)\.(\d+)\.(\d+)$/,
-    (_, a, b, c, d) =>
-      `${((+a << 8) | +b).toString(16)}:${((+c << 8) | +d).toString(16)}`,
-  );
-  const [head, tail, ...rest] = host.split("::");
-  if (rest.length > 0) return null;
-  const parse = (part: string | undefined) =>
-    part ? part.split(":").map(g => parseInt(g, 16)) : [];
-  const left = parse(head);
-  const right = parse(tail);
-  if (tail === undefined && left.length !== 8) return null;
-  const groups = [
-    ...left,
-    ...new Array(8 - left.length - right.length).fill(0),
-    ...right,
-  ];
-  return groups.length === 8 &&
-    groups.every(g => Number.isInteger(g) && g >= 0 && g <= 0xffff)
-    ? groups
-    : null;
-}
-
-/**
- * The IPv4 address an IPv6 literal carries in its last 32 bits: mapped
- * (`::ffff:a.b.c.d`), compatible (`::a.b.c.d`) or NAT64 (`64:ff9b::`).
- * Node writes them in hex (`::ffff:a9fe:a9fe`).
- */
-function embeddedV4(host: string): string | null {
-  const groups = v6Groups(host);
-  if (!groups) return null;
-  const zero = (from: number, to: number) =>
-    groups.slice(from, to).every(g => g === 0);
-  const mapped = zero(0, 5) && (groups[5] === 0xffff || groups[5] === 0);
-  const nat64 = groups[0] === 0x64 && groups[1] === 0xff9b && zero(2, 6);
-  if (!mapped && !nat64) return null;
-  return [
-    groups[6] >> 8,
-    groups[6] & 0xff,
-    groups[7] >> 8,
-    groups[7] & 0xff,
-  ].join(".");
-}
-
 /**
  * The endpoint, checked: http or https, never a cloud metadata name or a
- * private or link-local IP literal.
+ * blocked IP literal. A host name is checked by the socket's own lookup
+ * inside `safeRequest`, where the address checked is the address used.
+ * Loopback is allowed: it reaches only the box.
  */
 export function checkEndpoint(endpoint: string): URL {
-  let url: URL;
   try {
-    url = new URL(endpoint);
+    new URL(endpoint);
   } catch {
     throw new Error(`Invalid GraphQL endpoint URL: ${endpoint}`);
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error(`The GraphQL endpoint must be http or https: ${endpoint}`);
-  }
-  // A trailing dot names the same host to DNS (`metadata.google.internal.`).
-  const host = url.hostname
-    .replace(/^\[|\]$/g, "")
-    .toLowerCase()
-    .replace(/\.+$/, "");
-  const metadata =
-    host === "metadata" ||
-    host === "metadata.google.internal" ||
-    host.endsWith(".internal");
-  if (metadata || addressBlocked(host)) {
-    throw new Error(
-      `The GraphQL endpoint points at a private or metadata address: ${host}`,
-    );
-  }
-  return url;
-}
-
-/**
- * A private, link-local, CGNAT or unspecified address, in IPv4 or IPv6
- * form (an IPv4 inside IPv6 included). Loopback is not: it reaches only
- * the box.
- */
-export function addressBlocked(address: string): boolean {
-  const host = address.toLowerCase();
-  if (!host.includes(":")) return v4Blocked(host);
-  const groups = v6Groups(host);
-  // ::1 is loopback, not the IPv4-compatible 0.0.0.1: it reaches only the box.
-  if (groups?.slice(0, 7).every(g => g === 0) && groups[7] === 1) return false;
-  return (
-    /^f[cd]/.test(host) ||
-    /^fe[89ab]/.test(host) ||
-    host === "::" ||
-    v4Blocked(embeddedV4(host) ?? "")
-  );
-}
-
-/**
- * Every address a host name resolves to, checked. A literal was checked by
- * `checkEndpoint`. A name pointing at a private address (`10.0.0.5` behind a
- * public DNS name) fails here, before any request carries the headers.
- */
-export async function checkResolved(
-  url: URL,
-  resolve: (host: string) => Promise<Array<{ address: string }>> = host =>
-    lookup(host, { all: true, verbatim: true }),
-): Promise<void> {
-  const host = url.hostname.replace(/^\[|\]$/g, "");
-  if (isIP(host)) return;
-  const addresses = await resolve(host);
-  const blocked = addresses.find(a => addressBlocked(a.address));
-  if (blocked) {
-    throw new Error(
-      `The GraphQL endpoint ${host} resolves to a private or metadata address: ${blocked.address}`,
-    );
+  try {
+    return checkUrl(endpoint, { allowLoopback: true });
+  } catch (error) {
+    if (error instanceof SafeRequestError && error.code === "BLOCKED_HOST") {
+      throw new Error(
+        `The GraphQL endpoint points at a private or metadata address: ${error.message.split(": ").pop()}`,
+      );
+    }
+    if (error instanceof SafeRequestError && error.code === "BAD_URL") {
+      throw new Error(
+        `The GraphQL endpoint must be http or https: ${endpoint}`,
+      );
+    }
+    throw error;
   }
 }
 
@@ -255,25 +150,20 @@ export class GraphqlRedirectError extends Error {
   }
 }
 
-function isRedirect(error: unknown): boolean {
-  const cause = (error as { cause?: { message?: unknown } })?.cause;
-  return (
-    error instanceof TypeError &&
-    typeof cause?.message === "string" &&
-    /redirect/i.test(cause.message)
-  );
-}
+const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 
 export class GraphqlClient {
-  private resolved = false;
   private readonly url: string;
   private readonly headers: Record<string, string>;
   private readonly log: (message: string) => void;
+  private readonly resolve: SafeRequestOptions["resolve"];
 
   constructor(
     config: { endpoint?: unknown; headers?: unknown },
     log: (message: string) => void = () => {},
+    resolve?: SafeRequestOptions["resolve"],
   ) {
+    this.resolve = resolve;
     if (!config.endpoint) throw new Error("GraphQL endpoint not configured");
     this.url = checkEndpoint(String(config.endpoint)).toString();
     this.headers = buildHeaders(config.headers);
@@ -282,41 +172,34 @@ export class GraphqlClient {
 
   /** One POST; the body as JSON, or the raw text when it is not JSON. */
   async post(body: unknown, timeoutMs = REQUEST_TIMEOUT_MS): Promise<unknown> {
-    if (!this.resolved) {
-      try {
-        await checkResolved(new URL(this.url));
-      } catch (error) {
-        // A name that does not resolve is a network failure, as in-process.
-        throw isNetworkFailure(error) ? new GraphqlNetworkError(error) : error;
-      }
-      this.resolved = true;
-    }
-    let response: Response;
+    let status: number;
+    let text: string;
+    let retryAfter: string | null;
     try {
-      response = await fetch(this.url, {
+      // One request, resolved and checked inside the socket's own lookup.
+      // Every header is a credential as far as redirects go, and a redirect
+      // is refused below, never followed.
+      const response = await safeRequest(this.url, {
         method: "POST",
         headers: this.headers,
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(timeoutMs),
-        // A redirect could lead anywhere, the checks above notwithstanding.
-        redirect: "error",
+        timeoutMs,
+        allowLoopback: true,
+        followRedirects: false,
+        secretHeaders: Object.keys(this.headers),
+        resolve: this.resolve,
       });
+      status = response.status;
+      text = response.text;
+      retryAfter = response.headers["retry-after"] ?? null;
     } catch (error) {
-      if (isRedirect(error)) throw new GraphqlRedirectError(this.url);
-      throw isNetworkFailure(error) ? new GraphqlNetworkError(error) : error;
+      throw error instanceof SafeRequestError || !isNetworkFailure(error)
+        ? error
+        : new GraphqlNetworkError(error);
     }
-    let text: string;
-    try {
-      text = await response.text();
-    } catch (error) {
-      throw new GraphqlNetworkError(error);
-    }
-    if (!response.ok) {
-      throw new GraphqlHttpError(
-        response.status,
-        text,
-        response.headers.get("retry-after"),
-      );
+    if (REDIRECTS.has(status)) throw new GraphqlRedirectError(this.url);
+    if (status < 200 || status > 299) {
+      throw new GraphqlHttpError(status, text, retryAfter);
     }
     try {
       return text ? JSON.parse(text) : "";

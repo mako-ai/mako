@@ -348,3 +348,72 @@ export class HttpError extends Error {
   url: string;
   body: string;
 }
+
+export interface SafeRequestOptions {
+  /** Default POST when a body is given, else GET. */
+  method?: string;
+  headers?: Record<string, unknown>;
+  body?: string | Uint8Array;
+  /** The whole call, redirects included. Default 60 000. */
+  timeoutMs?: number;
+  /** Allow 127.0.0.0/8 and ::1 (they reach only the box). Default false. */
+  allowLoopback?: boolean;
+  /** Follow redirects, checking every hop. Default false: a 3xx is returned. */
+  followRedirects?: boolean;
+  /** Default 5. */
+  maxRedirects?: number;
+  /** Header names dropped on a hop off the original host and its subdomains. Authorization, Cookie and Proxy-Authorization always count. */
+  secretHeaders?: string[];
+  /** Cap on the decompressed body. Default 100 MB. */
+  maxResponseBytes?: number;
+  /** A `dns.lookup`-shaped resolver, for tests. */
+  resolve?: (
+    hostname: string,
+    options: { all: true; family?: number; hints?: number },
+    callback: (
+      err: NodeJS.ErrnoException | null,
+      addresses: Array<{ address: string; family: number }>,
+    ) => void,
+  ) => void;
+}
+
+export interface SafeResponse {
+  status: number;
+  /** Lower-case names. */
+  headers: Record<string, string>;
+  text: string;
+  /** The URL of the last hop. */
+  url: string;
+}
+
+/** One outbound request with SSRF guards: see `src/safe-request.js`. */
+export function safeRequest(
+  url: string | URL,
+  options?: SafeRequestOptions,
+): Promise<SafeResponse>;
+export function checkUrl(
+  url: string | URL,
+  options?: { allowLoopback?: boolean },
+): URL;
+export function isBlockedAddress(
+  address: string,
+  options?: { allowLoopback?: boolean },
+): boolean;
+export function createGuardedLookup(options?: {
+  allowLoopback?: boolean;
+  resolve?: SafeRequestOptions["resolve"];
+}): (
+  hostname: string,
+  options: { all?: boolean; family?: number; hints?: number },
+  callback: (
+    err: NodeJS.ErrnoException | null,
+    address: string | Array<{ address: string; family: number }>,
+    family?: number,
+  ) => void,
+) => void;
+export const DEFAULT_MAX_RESPONSE_BYTES: number;
+
+/** `code` is one of BAD_URL, BLOCKED_HOST, BLOCKED_ADDRESS, DOWNGRADE, TOO_LARGE, TOO_MANY_REDIRECTS. */
+export class SafeRequestError extends Error {
+  code: string;
+}

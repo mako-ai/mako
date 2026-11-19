@@ -418,7 +418,7 @@ void test("the endpoint check refuses metadata names and private IPs in any spel
     assert.match(result?.message ?? "", /private or metadata address/, url);
   }
   // A public name passes the check and fails later, on the network.
-  const open = await status("http://[2001:db8::1]:9/graphql");
+  const open = await status("http://[2606:2800::1]:9/graphql");
   assert.doesNotMatch(open?.message ?? "", /private or metadata address/);
 });
 
@@ -452,42 +452,140 @@ void test("a redirect is refused once, never followed or retried", async () => {
   assert.equal(server.requests(token).length, 1);
 });
 
-void test("a host name that resolves to a private address is refused before any request", () => {
-  // `checkResolved` with a stub resolver, in the folder's own runtime.
-  const script = `
-    import { checkResolved } from ${JSON.stringify(path.join(FOLDER, "client.ts"))};
-    const answers = {
-      "internal.example.test": [{ address: "93.184.216.34" }, { address: "10.1.2.3" }],
-      "mapped.example.test": [{ address: "::ffff:169.254.169.254" }],
-      "public.example.test": [{ address: "93.184.216.34" }, { address: "2606:2800::1" }],
-      "loopback.example.test": [{ address: "127.0.0.1" }],
-      "localhost": [{ address: "::1" }, { address: "127.0.0.1" }],
-      "v6loop.example.test": [{ address: "0:0:0:0:0:0:0:1" }],
-    };
-    const out = {};
-    for (const host of Object.keys(answers)) {
-      try {
-        await checkResolved(new URL("https://" + host + "/graphql"), async h => answers[h]);
-        out[host] = "allowed";
-      } catch (error) {
-        out[host] = error.message;
-      }
-    }
-    console.log(JSON.stringify(out));
-  `;
-  const out = JSON.parse(
+/** Run a script in the folder's own runtime and read its JSON output. */
+function inFolder(script: string): any {
+  return JSON.parse(
     execFileSync(process.execPath, ["--input-type=module", "-e", script], {
       encoding: "utf8",
+      cwd: FOLDER,
     }),
   );
-  assert.match(
-    out["internal.example.test"],
-    /resolves to a private.*10\.1\.2\.3/,
-  );
-  assert.match(out["mapped.example.test"], /resolves to a private/);
-  assert.equal(out["public.example.test"], "allowed");
-  assert.equal(out["loopback.example.test"], "allowed");
-  // IPv6 loopback is loopback, not the IPv4-compatible 0.0.0.1.
-  assert.equal(out["localhost"], "allowed");
-  assert.equal(out["v6loop.example.test"], "allowed");
+}
+
+void test("DNS rebinding: the socket's own lookup is the guard, so a rebound name is refused and no header is sent", () => {
+  // A fake resolver answers 93.184.216.34 on the first lookup (what a
+  // separate guard would see) and the target below on every later one.
+  const script = `
+    import http from "node:http";
+    import { GraphqlClient } from ${JSON.stringify(path.join(FOLDER, "client.ts"))};
+    const seen = [];
+    const server = http.createServer((req, res) => {
+      seen.push(req.headers);
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ data: { ok: 1 } }));
+    });
+    await new Promise(r => server.listen(0, "127.0.0.1", r));
+    const port = server.address().port;
+    const out = {};
+    const run = async (name, rebound) => {
+      const calls = [];
+      const resolve = (host, _o, cb) => {
+        calls.push(host);
+        const address = calls.length === 1 ? "93.184.216.34" : rebound;
+        cb(null, [{ address, family: address.includes(":") ? 6 : 4 }]);
+      };
+      // The "guard" lookup an old client made before connecting.
+      await new Promise(r => resolve("rebind.example.test", {}, () => r()));
+      const before = seen.length;
+      const client = new GraphqlClient(
+        { endpoint: "http://rebind.example.test:" + port + "/graphql", headers: { "x-hasura-admin-secret": "S3CRET" } },
+        () => {},
+        resolve,
+      );
+      try {
+        await client.post({ query: "{ a }" });
+        out[name] = { error: null, reached: seen.length - before, lookups: calls.length };
+      } catch (error) {
+        out[name] = { error: error.message, reached: seen.length - before, lookups: calls.length };
+      }
+    };
+    await run("metadata", "169.254.169.254");
+    await run("private", "10.1.2.3");
+    await run("mappedMetadata", "::ffff:169.254.169.254");
+    // Loopback is allowed in a box: the socket does connect to what the resolver answers.
+    await run("loopback", "127.0.0.1");
+    server.close();
+    console.log(JSON.stringify(out));
+  `;
+  const out = inFolder(script);
+  for (const name of ["metadata", "private", "mappedMetadata"]) {
+    assert.match(out[name].error, /resolves to a blocked address/, name);
+    assert.equal(
+      out[name].reached,
+      0,
+      `${name}: no request reached the server`,
+    );
+    assert.equal(out[name].lookups, 2, `${name}: one lookup in the request`);
+    assert.doesNotMatch(out[name].error, /S3CRET/);
+  }
+  assert.equal(out.loopback.error, null);
+  assert.equal(out.loopback.reached, 1);
+});
+
+void test("the address policy: public unicast and loopback pass, everything else is blocked", () => {
+  const blocked = [
+    "0.0.0.0",
+    "10.0.0.1",
+    "100.64.0.1",
+    "169.254.169.254",
+    "172.16.0.1",
+    "192.168.0.1",
+    "198.18.0.1",
+    "198.19.255.255",
+    "224.0.0.1",
+    "240.0.0.1",
+    "255.255.255.255",
+    "::",
+    "fe80::1",
+    "fec0::1",
+    "fd00::1",
+    "64:ff9b::a9fe:a9fe",
+    "64:ff9b:1::1",
+    "100::1",
+    "2002:a9fe:a9fe::",
+    "2002:a00:1::",
+    "::ffff:0:a9fe:a9fe",
+    "::ffff:169.254.169.254",
+    "::ffff:10.0.0.1",
+    "2001:db8::1",
+    "2001::1",
+    "::a9fe:a9fe",
+  ];
+  const allowed = [
+    "1.1.1.1",
+    "93.184.216.34",
+    "127.0.0.1",
+    "::1",
+    "::ffff:127.0.0.1",
+    "2606:2800::1",
+    "::ffff:93.184.216.34",
+  ];
+  const endpoints = [
+    // Decimal, octal and hex spellings of 169.254.169.254 and 10.0.0.1.
+    "http://2852039166/",
+    "http://0251.0376.0251.0376/",
+    "http://0xa9fea9fe/",
+    "http://167772161/",
+    "http://012.0.0.1/",
+    "http://0xa000001/",
+    "http://metadata.google.internal/",
+    "http://[::ffff:169.254.169.254]/",
+  ];
+  const script = `
+    import { addressBlocked, checkEndpoint } from ${JSON.stringify(path.join(FOLDER, "client.ts"))};
+    const refuses = url => { try { checkEndpoint(url); return false; } catch { return true; } };
+    console.log(JSON.stringify({
+      blocked: ${JSON.stringify(blocked)}.map(a => [a, addressBlocked(a)]),
+      allowed: ${JSON.stringify(allowed)}.map(a => [a, addressBlocked(a)]),
+      endpoints: ${JSON.stringify(endpoints)}.map(u => [u, refuses(u)]),
+    }));
+  `;
+  const out = inFolder(script);
+  for (const [address, isBlocked] of out.blocked) {
+    assert.equal(isBlocked, true, address);
+  }
+  for (const [address, isBlocked] of out.allowed) {
+    assert.equal(isBlocked, false, address);
+  }
+  for (const [url, refused] of out.endpoints) assert.equal(refused, true, url);
 });

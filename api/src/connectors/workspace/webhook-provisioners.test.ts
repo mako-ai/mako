@@ -8,7 +8,10 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import type { AxiosInstance } from "axios";
-import { adoptCloseWebhook, setCloseWebhookPaused } from "../close/webhooks";
+import {
+  adoptCloseWebhook,
+  setCloseWebhookPaused,
+} from "../../webhook-provisioning/close";
 import { SandboxedConnector } from "./SandboxedConnector";
 import {
   builtInProvisioningConfig,

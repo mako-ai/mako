@@ -14,37 +14,18 @@
  * never one from the connection's config, so a key goes only to its vendor.
  */
 import type Stripe from "stripe";
-import type {
-  DeleteWebhookSubscriptionOptions,
-  PauseWebhookSubscriptionOptions,
-  ProvisionWebhookOptions,
-  ProvisionWebhookResult,
-  UpdateWebhookSubscriptionOptions,
-} from "../base/BaseConnector";
-import { STRIPE_API_VERSION } from "../stripe/connector";
+import type { ProvisionWebhookOptions } from "../base/BaseConnector";
+import type { WebhookProvisioner } from "../../webhook-provisioning/types";
 import {
+  STRIPE_API_VERSION,
   createStripeWebhookEndpoint,
   resolveStripeProvisionEvents,
   stripeSupportedWebhookEvents,
   stripeWebhookEventsForEntities,
   updateStripeWebhookEndpoints,
-} from "../stripe/webhooks";
+} from "../../webhook-provisioning/stripe";
 
-export interface WebhookProvisioner {
-  /** Create the subscription (or adopt one already on the URL). */
-  create(options: ProvisionWebhookOptions): Promise<ProvisionWebhookResult>;
-  /** Adopt the subscription on the URL and set its events; null when none. */
-  update(
-    options: UpdateWebhookSubscriptionOptions,
-  ): Promise<ProvisionWebhookResult | null>;
-  /** Remove every subscription on the URL; only where `canDelete`. */
-  delete?(options: DeleteWebhookSubscriptionOptions): Promise<number>;
-  /**
-   * Pause or resume the subscription(s) on the URL; how many changed.
-   * Absent: the vendor's subscriptions cannot be paused from here.
-   */
-  setPaused?(options: PauseWebhookSubscriptionOptions): Promise<number>;
-}
+export type { WebhookProvisioner };
 
 type ProvisionerFactory = (
   config: Record<string, unknown>,
@@ -134,13 +115,14 @@ const PROVISIONERS: Record<string, ProvisionerEntry> = {
     storesSecretAutomatically: true,
     factory: async config => {
       const apiKey = apiKeyOf(config, "Close");
-      const { createCloseClient } = await import("../close/client");
+      const { createCloseClient } =
+        await import("../../webhook-provisioning/close-client");
       const {
         adoptCloseWebhook,
         closeWebhookEventsForEntities,
         provisionCloseWebhook,
         setCloseWebhookPaused,
-      } = await import("../close/webhooks");
+      } = await import("../../webhook-provisioning/close");
       const api = createCloseClient({
         apiKey,
         minDelayMs: 500,
@@ -166,15 +148,11 @@ const PROVISIONERS: Record<string, ProvisionerEntry> = {
       "Enter the webhook subscription Shared Key from the PandaDoc Developer Dashboard (used to verify the HMAC signature).",
     factory: async config => {
       const apiKey = apiKeyOf(config, "PandaDoc");
-      const { PandaDocConnector } = await import("../pandadoc/connector");
-      const connector = new PandaDocConnector({
-        id: "webhook-provisioning",
-        name: "PandaDoc",
-        type: "pandadoc",
-        config: { api_key: apiKey },
-      } as never);
+      const { createPandaDocContext, createPandaDocWebhookSubscription } =
+        await import("../../webhook-provisioning/pandadoc");
+      const ctx = createPandaDocContext(apiKey);
       return {
-        create: options => connector.createWebhookSubscription(options),
+        create: options => createPandaDocWebhookSubscription(ctx, options),
         update: async () => null,
       };
     },
@@ -189,15 +167,15 @@ const PROVISIONERS: Record<string, ProvisionerEntry> = {
     actionHint: "(copy the secret into this form if Claap shows it once)",
     factory: async config => {
       const apiKey = apiKeyOf(config, "Claap");
-      const { ClaapConnector } = await import("../claap/connector");
-      const connector = new ClaapConnector({
-        id: "webhook-provisioning",
-        name: "Claap",
-        type: "claap",
-        config: { api_key: apiKey },
-      } as never);
+      const {
+        claapWebhookEventsForEntities,
+        createClaapContext,
+        provisionClaapWebhook,
+      } = await import("../../webhook-provisioning/claap");
+      const ctx = createClaapContext(apiKey);
       return {
-        create: options => connector.createWebhookSubscription(options),
+        create: options =>
+          provisionClaapWebhook(ctx, options, claapWebhookEventsForEntities),
         update: async () => null,
       };
     },
@@ -215,18 +193,9 @@ const PROVISIONERS: Record<string, ProvisionerEntry> = {
     secretHelpText:
       'Wise signs webhooks with its RSA public keys, not a shared secret: this field only names the key set — "production" (or blank) or "sandbox". Creating the webhook in Wise fills it in.',
     factory: async config => {
-      const { WiseConnector } = await import("../wise/connector");
-      const connector = new WiseConnector({
-        id: "webhook-provisioning",
-        name: "Wise",
-        type: "wise",
-        config: builtInProvisioningConfig("wise", config),
-      } as never);
-      return {
-        create: options => connector.createWebhookSubscription(options),
-        update: options => connector.updateWebhookSubscription(options),
-        delete: options => connector.deleteWebhookSubscription(options),
-      };
+      const { createWiseProvisioning } =
+        await import("../../webhook-provisioning/wise");
+      return createWiseProvisioning(builtInProvisioningConfig("wise", config));
     },
   },
   // The built-in's organization-scoped `createWebhookSubscription` on the
@@ -235,15 +204,21 @@ const PROVISIONERS: Record<string, ProvisionerEntry> = {
     canUpdate: false,
     storesSecretAutomatically: true,
     factory: async config => {
-      const { CalendlyConnector } = await import("../calendly/connector");
-      const connector = new CalendlyConnector({
-        id: "webhook-provisioning",
-        name: "Calendly",
-        type: "calendly",
-        config: builtInProvisioningConfig("calendly", config),
-      } as never);
+      const {
+        calendlyWebhookEventsForEntities,
+        createCalendlyContext,
+        provisionCalendlyWebhook,
+      } = await import("../../webhook-provisioning/calendly");
+      const ctx = createCalendlyContext(
+        builtInProvisioningConfig("calendly", config).access_token,
+      );
       return {
-        create: options => connector.createWebhookSubscription(options),
+        create: options =>
+          provisionCalendlyWebhook(
+            ctx,
+            options,
+            calendlyWebhookEventsForEntities,
+          ),
         update: async () => null,
       };
     },

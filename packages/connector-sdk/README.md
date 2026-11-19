@@ -198,6 +198,20 @@ be dropped:
 Mako drops records for undeclared entities, stamps `_dataSourceId` and
 `_syncedAt`, applies the flow's entity selection and writes the rest.
 
+## `safeRequest`: a URL a user typed in
+
+`ctx.http` trusts its URL. When the target comes from the connection (a
+GraphQL or REST endpoint), call `safeRequest(url, options)` instead. The
+socket's own `lookup` checks every address the name resolves to against an
+allowlist (public unicast, plus loopback with `allowLoopback: true`) and the
+connection uses the address it checked, so DNS rebinding finds no window. A
+redirect is returned, or followed with `followRedirects: true` and checked
+on every hop. An https to http hop is refused while a credential is on the
+request. `secretHeaders` (plus Authorization, Cookie and Proxy-Authorization)
+are dropped on a hop off the original host and its subdomains. The
+decompressed response is capped at `maxResponseBytes` (100 MB). Errors name
+the origin and path and carry no header value or query string.
+
 ## `config.properties` is not optional
 
 Declare `config: { properties: { ... } }` even when the connector needs no
