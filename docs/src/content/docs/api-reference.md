@@ -160,7 +160,7 @@ Workspace-authored connector code has git history too: `GET /api/workspaces/:wid
 
 ### Calling a Service Through a Connection
 
-`POST /api/workflows/runtime/connections/:connection/request` sends one request to a service through a source connection. `:connection` is the connection's id or name. Mako adds the stored credential; the caller never sees it. Body: `method` and `path` (required), `query`, `headers` (including `Idempotency-Key`) and `body`. The service's status and answer come back as is, with credentials removed. The path must stay under the connection's address.
+`POST /api/workflows/runtime/connections/:connection/request` sends one request to a service through a source connection. `:connection` is the connection's id or name. Mako adds the stored credential; the caller never sees it. Body: `method` and `path` (required), `query`, `headers` (including `Idempotency-Key`) and `body`. The service's status and answer come back as is, with credentials removed. The path must stay under the connection's address. Mako sends a `GET`, `HEAD` or `OPTIONS` request, or one with an `Idempotency-Key`, up to 2 more times after a timeout, a reset or a 502, 503 or 504, all within 100 s. It sends any other request once.
 
 A read needs live reads on for the connection. A write needs the calling deployed workflow (`workflow:*`) or, on a person's own run, that person on the writers list. Agents and MCP logins only read, and every write is logged. Errors from Mako itself carry an `error` message and the matching HTTP status. Workflow code normally uses `connection(id)` from `lib/mako` instead of calling the route; see [Workflows](/workflows/#calling-a-service-through-a-connection).
 
