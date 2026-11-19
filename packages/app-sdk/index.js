@@ -2066,6 +2066,23 @@ if (
 }
 
 // ---------------------------------------------------------------------------
+// Country colours (2.27): one colour per market in every app, deck and chart,
+// keyed by the lowercase country code. `all` is the all-markets / group line.
+// ---------------------------------------------------------------------------
+export const COUNTRY_COLORS = Object.freeze({
+  ch: "#dc2626",
+  fr: "#2563eb",
+  it: "#16a34a",
+  es: "#f59e0b",
+  pt: "#0891b2",
+  pl: "#db2777",
+  all: "#475569",
+});
+
+/** The order countries take in legends, tables and filters: CH, FR, ES, IT, PL, PT. */
+export const COUNTRY_ORDER = Object.freeze(["ch", "fr", "es", "it", "pl", "pt"]);
+
+// ---------------------------------------------------------------------------
 // Theme — the OS preference; v1 mirrored the host's toggle, a standalone app
 // follows the system.
 // ---------------------------------------------------------------------------

@@ -389,6 +389,33 @@ export function filterLeavesOf(node) {
   return node.children ? filterLeaves(node.children) : [node.value];
 }
 
+/**
+ * The rows a search shows (2.27): null when `query` is blank (every row), else
+ * the set of node values to render. A row shows when its label holds the
+ * query (case-insensitive, trimmed), or when a row under it does. A group
+ * whose label matches shows every row under it.
+ */
+export function filterSearch(options, query) {
+  const needle = String(query ?? "").trim().toLowerCase();
+  if (!needle) return null;
+  const shown = new Set();
+  const all = node => {
+    shown.add(node.value);
+    node.children?.forEach(all);
+  };
+  const walk = node => {
+    if (String(node.label ?? node.value).toLowerCase().includes(needle)) {
+      all(node);
+      return true;
+    }
+    const hit = (node.children ?? []).map(walk).some(Boolean);
+    if (hit) shown.add(node.value);
+    return hit;
+  };
+  options.forEach(walk);
+  return shown;
+}
+
 /** The node with `value` anywhere in the tree. */
 export function filterFind(options, value) {
   for (const o of options) {

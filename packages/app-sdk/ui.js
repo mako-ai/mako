@@ -29,6 +29,7 @@ import {
   filterLeavesOf,
   filterNormalize,
   filterPickedNode,
+  filterSearch,
   filterText,
   filterTick,
   filterToggle,
@@ -124,6 +125,8 @@ const IconMinus = ({ size = 11 }) =>
   svg(size, 3.2, [h("line", { key: "l", x1: 6, y1: 12, x2: 18, y2: 12 })]);
 const IconChevron = ({ className }) =>
   svg(12, 2.2, [h("polyline", { key: "p", points: "6 9 12 15 18 9" })], className);
+const IconSearch = () =>
+  svg(16, 2, [h("circle", { key: "c", cx: 11, cy: 11, r: 8 }), h("path", { key: "p", d: "m21 21-4.3-4.3" })], "mk-ms-search-icon");
 const IconX = ({ size = 16 }) =>
   svg(size, 2, [h("path", { key: "p", d: "M18 6 6 18M6 6l12 12" })]);
 const IconRefresh = () =>
@@ -717,6 +720,9 @@ function toNode(o) {
   return n.children ? { ...n, children: n.children.map(toNode) } : n;
 }
 
+/** The All row's key in a search's highlight order (never an option value). */
+const ALL_KEY = "\u0000all";
+
 const asChecked = t => (t === "on" ? true : t === "mixed" ? "mixed" : false);
 
 /**
@@ -738,6 +744,13 @@ const asChecked = t => (t === "on" ? true : t === "mixed" ? "mixed" : false);
  * keeps its selection until a row is ticked, and the first tick picks that
  * row alone. Pass `none` / `onNoneChange` to show the draft elsewhere (the
  * trigger); otherwise FilterItems keeps it.
+ *
+ * `searchable` (2.27) puts a search input above the rows, as shadcn's
+ * Command does: it takes focus, filters the rows by label as you type, and
+ * hides All and its separator while a query is typed. Its keys are cmdk's:
+ * ArrowDown/ArrowUp (Ctrl+N/J, Ctrl+P/K) move the highlighted row, Home/End
+ * and Cmd+Arrow jump to the first or last, Enter ticks the highlighted row.
+ * Off (the default), FilterItems renders exactly as before.
  */
 export function FilterItems({
   options,
@@ -749,6 +762,9 @@ export function FilterItems({
   showOnly = false,
   none: noneProp,
   onNoneChange,
+  searchable = false,
+  searchPlaceholder = "Search",
+  searchEmpty = "No match",
   className,
   "aria-label": ariaLabel,
 }) {
@@ -775,7 +791,71 @@ export function FilterItems({
   const dot = o => (o.color ? h("span", { className: "mk-ms-swatch", style: { background: o.color } }) : null);
   const allTick = filterAllTick(selected, none);
 
+  // Search (2.27): cmdk's model. Focus stays in the input; one row is
+  // highlighted (the first after every keystroke) and Enter ticks it.
+  const [query, setQuery] = React.useState("");
+  const [activeKey, setActiveKey] = React.useState(null);
+  const uid = React.useId();
+  const shown = searchable ? filterSearch(tree, query) : null;
+  const keys = [];
+  const runs = new Map();
+  if (searchable) {
+    if (!shown) {
+      keys.push(ALL_KEY);
+      runs.set(ALL_KEY, () => apply(filterToggleAll(selected, none)));
+    }
+    const walk = node => {
+      if (shown && !shown.has(node.value)) return;
+      keys.push(node.value);
+      runs.set(node.value, () => flip(node));
+      node.children?.forEach(walk);
+    };
+    tree.forEach(walk);
+  }
+  const active = keys.includes(activeKey) ? activeKey : keys[0];
+  const rowId = key => `${uid}-o${keys.indexOf(key)}`;
+  const activeId = active === undefined ? undefined : rowId(active);
+  React.useEffect(() => {
+    if (!searchable || !activeId) return;
+    const el = document.getElementById(activeId);
+    if (el && typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "nearest" });
+  }, [searchable, activeId]);
+  const searchProps = key =>
+    searchable
+      ? { id: rowId(key), "data-selected": String(key === active), onPointerMove: () => setActiveKey(key) }
+      : null;
+  const onSearchKey = e => {
+    if (e.defaultPrevented || e.nativeEvent.isComposing || e.keyCode === 229) return;
+    const i = keys.indexOf(active);
+    const go = j => {
+      e.preventDefault();
+      if (j >= 0 && j < keys.length) setActiveKey(keys[j]);
+    };
+    switch (e.key) {
+      case "ArrowDown":
+        return go(e.metaKey ? keys.length - 1 : i + 1);
+      case "ArrowUp":
+        return go(e.metaKey ? 0 : i - 1);
+      case "n":
+      case "j":
+        return e.ctrlKey ? go(i + 1) : undefined;
+      case "p":
+      case "k":
+        return e.ctrlKey ? go(i - 1) : undefined;
+      case "Home":
+        return go(0);
+      case "End":
+        return go(keys.length - 1);
+      case "Enter":
+        e.preventDefault();
+        return runs.get(active)?.();
+      default:
+        return undefined;
+    }
+  };
+
   const row = (node, depth) => {
+    if (shown && !shown.has(node.value)) return [];
     const tick = filterTick(node, selected, none);
     const group = Boolean(node.children);
     const el = h(
@@ -789,6 +869,7 @@ export function FilterItems({
         title: node.title,
         className: cx("mk-ms-opt", tick !== "off" && "active", group && "mk-ms-group"),
         style: depth ? { paddingLeft: 8 + depth * 20 } : undefined,
+        ...searchProps(node.value),
         onClick: () => flip(node),
         onKeyDown: e => {
           if (e.key === "Enter" || e.key === " ") {
@@ -806,10 +887,16 @@ export function FilterItems({
     return group ? [el, ...node.children.flatMap(c => row(c, depth + 1))] : [el];
   };
 
-  return h(
+  const list = h(
     "div",
-    { className: cx("mk-ms-items", className), role: "listbox", "aria-multiselectable": true, "aria-label": ariaLabel },
-    h(
+    {
+      className: cx("mk-ms-items", className),
+      role: "listbox",
+      "aria-multiselectable": true,
+      "aria-label": ariaLabel,
+      ...(searchable ? { id: `${uid}-list` } : null),
+    },
+    !shown && h(
       "div",
       {
         role: "option",
@@ -817,6 +904,7 @@ export function FilterItems({
         "aria-checked": asChecked(allTick),
         tabIndex: 0,
         className: cx("mk-ms-opt", "mk-ms-all", allTick !== "off" && "active"),
+        ...searchProps(ALL_KEY),
         onClick: () => apply(filterToggleAll(selected, none)),
         onKeyDown: e => {
           if (e.key === "Enter" || e.key === " ") {
@@ -829,8 +917,41 @@ export function FilterItems({
       h(Checkbox, { checked: asChecked(allTick) }),
       h("span", { className: "mk-ms-label" }, allLabel),
     ),
-    h("div", { className: "mk-ms-sep" }),
+    !shown && h("div", { className: "mk-ms-sep" }),
     ...tree.flatMap(o => row(o, 0)),
+    shown && keys.length === 0 && h("div", { className: "mk-ms-empty", role: "presentation" }, searchEmpty),
+  );
+  if (!searchable) return list;
+  return h(
+    React.Fragment,
+    null,
+    h(
+      "div",
+      { className: "mk-ms-search" },
+      h(IconSearch),
+      h("input", {
+        type: "text",
+        className: "mk-ms-search-input",
+        autoFocus: true,
+        value: query,
+        placeholder: searchPlaceholder,
+        "aria-label": searchPlaceholder,
+        autoComplete: "off",
+        autoCorrect: "off",
+        spellCheck: false,
+        role: "combobox",
+        "aria-autocomplete": "list",
+        "aria-expanded": true,
+        "aria-controls": `${uid}-list`,
+        "aria-activedescendant": activeId,
+        onChange: e => {
+          setQuery(e.target.value);
+          setActiveKey(null);
+        },
+        onKeyDown: onSearchKey,
+      }),
+    ),
+    list,
   );
 }
 
@@ -850,6 +971,9 @@ export function FilterItems({
  *
  * Drop-in for the apps' NestedFilterMenu: `selected` = `value`, `label` =
  * `aria-label`, `triggerClassName`, `summary`, `probes`, `sizeTo`.
+ *
+ * `searchable` (2.27) adds FilterItems' search input at the top of the menu:
+ * search, All, a separator, then the values.
  */
 export function MultiSelect({
   options,
@@ -865,6 +989,9 @@ export function MultiSelect({
   sizeTo,
   probes = [],
   align = "start",
+  searchable = false,
+  searchPlaceholder,
+  searchEmpty,
   className,
   triggerClassName,
   label,
@@ -931,6 +1058,7 @@ export function MultiSelect({
           none,
           onNoneChange: setNone,
           "aria-label": ariaLabel,
+          ...(searchable ? { searchable, searchPlaceholder, searchEmpty } : null),
         }),
       ),
   );

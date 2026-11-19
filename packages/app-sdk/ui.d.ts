@@ -97,6 +97,17 @@ export interface FilterItemsProps<V extends string = string> {
   /** The "nothing ticked" draft, when the parent shows it; else FilterItems keeps it. */
   none?: boolean;
   onNoneChange?: (none: boolean) => void;
+  /**
+   * A search input above the rows (2.27), as shadcn's Command: it takes focus,
+   * filters rows by label as you type (a group whose label matches keeps its
+   * rows) and hides All while a query is typed. ArrowDown/ArrowUp move the
+   * highlighted row, Enter ticks it. Default false: no input, rows unchanged.
+   */
+  searchable?: boolean;
+  /** The search input's placeholder and accessible name. Default "Search". */
+  searchPlaceholder?: string;
+  /** Shown when no row matches. Default "No match". */
+  searchEmpty?: string;
   className?: string;
   "aria-label"?: string;
 }
@@ -142,6 +153,12 @@ export interface MultiSelectProps<V extends string = string> {
   maxChips?: number;
   /** Which edge the menu aligns to before flipping. Default "start". */
   align?: "start" | "end";
+  /** A search input at the top of the menu (2.27): search, All, a separator, the values. See FilterItemsProps. */
+  searchable?: boolean;
+  /** Default "Search". */
+  searchPlaceholder?: string;
+  /** Default "No match". */
+  searchEmpty?: string;
   className?: string;
   "aria-label"?: string;
 }
