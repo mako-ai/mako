@@ -17,6 +17,14 @@ const badgeVariants = cva(
           "border-border text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
         ghost: "[a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
         link: "text-primary underline-offset-4 [a&]:hover:underline",
+        // Mako thin prop (2.26): status tones in the house tokens, light and
+        // dark alike. From the FR dashboards' copies (fr-sales, fr-renewals, fr-sdr).
+        success: "border-[color-mix(in_srgb,var(--positive)_30%,transparent)] bg-[color-mix(in_srgb,var(--positive)_12%,transparent)] text-[var(--positive)]",
+        warning: "border-[color-mix(in_srgb,var(--warning)_30%,transparent)] bg-[color-mix(in_srgb,var(--warning)_12%,transparent)] text-[var(--warning)]",
+        danger: "border-[color-mix(in_srgb,var(--negative)_30%,transparent)] bg-[color-mix(in_srgb,var(--negative)_12%,transparent)] text-[var(--negative)]",
+        info: "border-[color-mix(in_srgb,var(--brand)_30%,transparent)] bg-[color-mix(in_srgb,var(--brand)_12%,transparent)] text-[var(--brand)]",
+        violet: "border-[color-mix(in_srgb,var(--chart-4)_30%,transparent)] bg-[color-mix(in_srgb,var(--chart-4)_12%,transparent)] text-[var(--chart-4)]",
+        muted: "border-border bg-muted text-muted-foreground",
       },
     },
     defaultVariants: {
