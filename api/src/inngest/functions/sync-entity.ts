@@ -567,7 +567,9 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         `flush-apply-${safeEntityStepId}-${flushIndex}`,
         () =>
           withHeartbeat(executionId, async () => {
-            const result = await performStagingMerge(bulkSyncOptions as any);
+            const result = await performStagingMerge(bulkSyncOptions as any, {
+              mergePath: "flush",
+            });
             await performStagingCleanup(bulkSyncOptions as any);
             const left = await getTempCollectionCount(flowId, entity, fullRead);
             const written = writtenBefore + result.written;
@@ -935,6 +937,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
               });
               const mergeResult = await performStagingMerge(
                 bulkSyncOptions as any,
+                { mergePath: "final" },
               );
               await performStagingCleanup(bulkSyncOptions as any);
               logExec(

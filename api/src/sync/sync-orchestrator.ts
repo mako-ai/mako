@@ -34,6 +34,7 @@ import {
   pollOverlapMsFromEnv,
 } from "../sync-cdc/poll-cursor";
 import { LEGACY_ENGINE_REMOVED } from "../services/flow-triggers.service";
+import type { CdcMergePath } from "../sync-cdc/table-write-lease";
 import {
   SandboxedConnector,
   isWorkspaceConnectorType,
@@ -1530,10 +1531,13 @@ export async function performRescueAndPrepareStaging(
       // same step loaded, so they keep this run's guard. The run-start
       // rescue may merge an earlier run of another kind (a poll): strict.
       rescued = (
-        await performStagingMerge({
-          ...options,
-          fullRead: opts?.dedupOnly ? options.fullRead : false,
-        })
+        await performStagingMerge(
+          {
+            ...options,
+            fullRead: opts?.dedupOnly ? options.fullRead : false,
+          },
+          { mergePath: "rescue" },
+        )
       ).written;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1598,6 +1602,7 @@ export function getTempCollectionCount(
 
 export async function performStagingMerge(
   options: SyncChunkOptions,
+  opts?: { mergePath?: CdcMergePath },
 ): Promise<{ written: number }> {
   if (!options.tableDestination?.connectionId || !options.flowId) {
     return { written: 0 };
@@ -1670,6 +1675,7 @@ export async function performStagingMerge(
     {
       stagingSuffix: bulkStagingSuffix(options.fullRead),
       fullRead: options.fullRead,
+      mergePath: opts?.mergePath ?? "final",
     },
   );
 }

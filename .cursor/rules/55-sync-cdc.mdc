@@ -26,6 +26,7 @@ Backfills follow a parallel path: `backfill.ts` → `flow.execute` with `backfil
 | `events.ts` | `CdcStoredEvent` type, `normalizeCdcEvent` |
 | `sync-state.ts` | Entity-level state machine (stream transitions, consumer cursors) |
 | `adapters/registry.ts` | `CdcDestinationAdapter` interface, `resolveCdcDestinationAdapter` |
+| `table-write-lease.ts` | One writer per live table: the BigQuery probe + MERGE and a repartition run under a Mongo lease |
 
 ## Rules
 
@@ -34,6 +35,7 @@ Backfills follow a parallel path: `backfill.ts` → `flow.execute` with `backfil
 - **Timestamp resolution** — `normalization.ts` `resolveSourceTimestamp` mirrors `BaseConnector.resolveRecordTimestamp`. Changes to field precedence must be applied in both locations.
 - **Consumer failure** — consumer throws after `markEventsFailed` + `applyStreamTransition(FAIL)`. Callers (Inngest functions) must expect retries.
 - **Payload sanitization** — `sanitizeBackfillPayloadForIdempotency` strips `_mako_*` and `_syncedAt` fields before hashing. Adding new volatile fields requires updating this function.
+- **Table write lease** — a pruned BigQuery MERGE is a probe then a MERGE. Another writer between the two duplicates keys. Every dedup MERGE (live, flush, final, rescue, poll) and `repartitionLiveTable` hold `table-write-lease.ts`, keyed by table. Keep schema work and staging reads outside it.
 - **Table naming** — `cdcLiveTableName` / `cdcStageTableName` use flow token from truncated ID + SHA1 fallback. Don't assume table names are human-readable.
 
 ## Destination Adapters

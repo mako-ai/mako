@@ -134,6 +134,11 @@ export interface QueryExecuteOptions {
    * enclosing withQueryLabels context (these win). See bigquery-labels.ts.
    */
   labels?: QueryLabels;
+  /**
+   * BigQuery only: called once the job exists, with its id and location.
+   * The CDC table write lease records it (sync-cdc/table-write-lease.ts).
+   */
+  onJobStarted?: (job: { jobId: string; location?: string }) => void;
   /** Cloud SQL only: older spelling of `databaseName`. */
   dbName?: string;
 }
