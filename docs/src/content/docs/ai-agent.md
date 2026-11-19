@@ -247,7 +247,7 @@ Results land via the persisted `lastRun` record and the realtime `console.run.co
 
 The short, single-shot execute tools (`sql_execute_query`, `mongo_execute_query`) stay on a brief timeout (`AGENT_DIRECT_QUERY_TIMEOUT_MS`, 60s default) for quick exploration; when one times out, the agent moves the query into a console and uses the resumable `run_console` flow instead.
 
-On BigQuery, a read from these tools (and from `query_metric`) carries a byte cap: `AGENT_BIGQUERY_MAX_BYTES_BILLED`, 1 TiB by default, `0` to remove it. BigQuery refuses a query that would bill more before it runs, at no charge, and the agent is told to filter on the partition column or use a console. Consoles, apps, flows and dbt builds are not capped.
+On BigQuery, every job an agent tool or the MCP server starts (`sql_execute_query`, `run_console`, app binding previews, `query_metric`) carries two caps that BigQuery enforces itself: a job timeout (`AGENT_BIGQUERY_JOB_TIMEOUT_MS`, 5 minutes by default, so a slow query releases its reservation slots even when Mako stops polling) and a byte cap (`AGENT_BIGQUERY_MAX_BYTES_BILLED`, 500 GiB by default; BigQuery refuses a query that would bill more before it runs, at no charge). `0` removes either default. Each BigQuery connection can override both with `agent_job_timeout_ms` and `agent_max_bytes_billed_gb` (`0` turns one off). A job stopped by a cap returns an error naming the cap and the setting to raise, and the agent is told to filter on the partition column or narrow the date range. Consoles run by people, apps, flows, CDC, scheduled queries and dbt builds are not capped.
 
 ## Safety
 

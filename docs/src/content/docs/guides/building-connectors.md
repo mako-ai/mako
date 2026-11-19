@@ -362,6 +362,17 @@ separate from anyone's session sandbox. Three things are deliberate there:
 - Only a bounded protocol stream comes back out of the sandbox — never
   unbounded output.
 
+Two operator flags change how that sandbox is used, both off unless set to
+exactly `true` (see [Deployment](/deployment/)):
+
+- `CONNECTOR_SESSION_READS`: an entity read is one connector process that
+  streams batches, instead of one process per chunk. It needs
+  `CONNECTOR_BOX_LEASES` off.
+- `CONNECTOR_WEBHOOK_BATCHES`: a `ws:` connector can receive webhooks. The API
+  verifies every delivery against the scheme the connector declared (a
+  connector that declares none is refused), then processes the events in
+  batches in the sandbox.
+
 ### Probing a live connection
 
 Once a connection exists, `npx @makoai/cli connection probe <id|name>
