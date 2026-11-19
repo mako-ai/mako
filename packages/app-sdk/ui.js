@@ -452,6 +452,32 @@ export function saveCsv(filename, text) {
 }
 
 const fmtCount = n => n.toLocaleString("en-US");
+
+/**
+ * The English text of a DataTable's footer, sort hints and export button.
+ * `labels` overrides any of them. Text with numbers is a function.
+ */
+export const DATA_TABLE_LABELS = {
+  range: (from, to, total, noun) => [
+    h("b", { key: "r" }, `${fmtCount(from)}–${fmtCount(to)}`),
+    " of ",
+    h("b", { key: "t" }, fmtCount(total)),
+    ` ${noun}`,
+  ],
+  none: noun => `No ${noun}`,
+  empty: "No rows match these filters.",
+  page: (page, pageCount) => `Page ${page} of ${pageCount}`,
+  perPage: size => `${size} per page`,
+  rowsPerPage: "Rows per page",
+  first: "First page",
+  previous: "Previous page",
+  next: "Next page",
+  last: "Last page",
+  sortHint: label => `${label} · click to sort`,
+  exportCsv: "Export CSV",
+  exportTitle: "Export every row on every page, as sorted",
+  exportFailed: "The browser blocked the download. Open the app in a new tab and export again.",
+};
 // A click on a link, button or field inside a row is that control's, not the row's.
 const INTERACTIVE = "a,button,input,select,textarea,label,[role=button]";
 
@@ -492,17 +518,21 @@ export function DataTable({
   onPageSizeChange,
   pageSizes = [25, 50, 100],
   noun = "rows",
-  empty = "No rows match these filters.",
+  empty: emptyProp,
+  labels: labelsProp,
   fill = false,
   maxHeight,
   onRowClick,
   rowLabel,
+  rowClassName,
   resetKey,
   exportFilename,
   groups,
   className,
   style,
 }) {
+  const L = labelsProp ? { ...DATA_TABLE_LABELS, ...labelsProp } : DATA_TABLE_LABELS;
+  const empty = emptyProp ?? L.empty;
   const [sort, setSort] = useControlled(sortProp, defaultSort, onSortChange);
   const [rawPage, setRawPage] = useControlled(pageProp, 1, onPageChange);
   const [pageSize, setPageSize] = useControlled(pageSizeProp, defaultPageSize, onPageSizeChange);
@@ -553,7 +583,7 @@ export function DataTable({
   };
   const exportCsv = () => {
     const res = saveCsv(exportFilename, toCsv(sorted, columns));
-    setNote(res === "failed" ? "The browser blocked the download. Open the app in a new tab and export again." : null);
+    setNote(res === "failed" ? L.exportFailed : null);
   };
 
   const cellClass = (col, extra) =>
@@ -622,6 +652,42 @@ export function DataTable({
         h("tr", null, ...runs.flatMap(run => (run.group == null ? [] : run.columns.map(col => headCell(col))))),
       )
     : h("thead", null, h("tr", null, ...columns.map(col => headCell(col))));
+  const head = h(
+    "thead",
+    null,
+    h(
+      "tr",
+      null,
+      ...columns.map(col => {
+        const active = sort?.id === col.id;
+        const text = typeof col.label === "string" ? col.label : col.id;
+        const label =
+          col.sortable === false
+            ? h("span", { className: "mk-dt-label", title: col.hint ?? text }, h("span", { className: "mk-dt-th-text" }, col.label))
+            : h(
+                "button",
+                {
+                  type: "button",
+                  className: "mk-dt-sort",
+                  onClick: () => sortBy(col),
+                  title: L.sortHint(col.hint ?? text),
+                },
+                h("span", { className: "mk-dt-th-text" }, col.label),
+                h(IconSort, { dir: active ? sort.dir : null }),
+              );
+        return h(
+          "th",
+          {
+            key: col.id,
+            scope: "col",
+            className: cellClass(col, active && "mk-dt-sorted"),
+            "aria-sort": col.sortable === false ? undefined : active ? (sort.dir === "asc" ? "ascending" : "descending") : "none",
+          },
+          label,
+        );
+      }),
+    ),
+  );
 
   // Every cell ellipsizes at its column's width, with the raw value (text or
   // a number) as the hover title. `truncate: false` wraps instead.
@@ -656,9 +722,10 @@ export function DataTable({
                 },
               }
             : null;
+          const rowClass = cx(click?.className, rowClassName?.(row)) || undefined;
           return h(
             "tr",
-            { key, ...click },
+            { key, ...click, className: rowClass },
             ...columns.map(col => h("td", { key: col.id, className: cellClass(col) || undefined }, cell(col, row))),
           );
         }),
@@ -671,8 +738,8 @@ export function DataTable({
       "span",
       { "aria-live": "polite" },
       sorted.length
-        ? [h("b", { key: "r" }, `${fmtCount(start + 1)}–${fmtCount(end)}`), " of ", h("b", { key: "t" }, fmtCount(sorted.length)), ` ${noun}`]
-        : `No ${noun}`,
+        ? L.range(start + 1, end, sorted.length, noun)
+        : L.none(noun),
     ),
     h(
       "div",
@@ -682,20 +749,20 @@ export function DataTable({
           "select",
           {
             className: "mk-dt-size",
-            "aria-label": "Rows per page",
+            "aria-label": L.rowsPerPage,
             value: pageSize,
             onChange: e => {
               setPageSize(Number(e.target.value));
               goTo(1);
             },
           },
-          ...sizeOptions.map(n => h("option", { key: n, value: n }, `${n} per page`)),
+          ...sizeOptions.map(n => h("option", { key: n, value: n }, L.perPage(n))),
         ),
-      h(Button, { size: "sm", "aria-label": "First page", disabled: page <= 1, onClick: () => goTo(1) }, "«"),
-      h(Button, { size: "sm", "aria-label": "Previous page", disabled: page <= 1, onClick: () => goTo(page - 1) }, "‹"),
-      h("span", { className: "mk-dt-page" }, `Page ${page} of ${pageCount}`),
-      h(Button, { size: "sm", "aria-label": "Next page", disabled: page >= pageCount, onClick: () => goTo(page + 1) }, "›"),
-      h(Button, { size: "sm", "aria-label": "Last page", disabled: page >= pageCount, onClick: () => goTo(pageCount) }, "»"),
+      h(Button, { size: "sm", "aria-label": L.first, disabled: page <= 1, onClick: () => goTo(1) }, "«"),
+      h(Button, { size: "sm", "aria-label": L.previous, disabled: page <= 1, onClick: () => goTo(page - 1) }, "‹"),
+      h("span", { className: "mk-dt-page" }, L.page(page, pageCount)),
+      h(Button, { size: "sm", "aria-label": L.next, disabled: page >= pageCount, onClick: () => goTo(page + 1) }, "›"),
+      h(Button, { size: "sm", "aria-label": L.last, disabled: page >= pageCount, onClick: () => goTo(pageCount) }, "»"),
     ),
   );
 
@@ -703,8 +770,8 @@ export function DataTable({
     exportFilename != null &&
     h(
       Button,
-      { key: "__export", disabled: !sorted.length, onClick: exportCsv, title: "Export every row on every page, as sorted" },
-      "Export CSV",
+      { key: "__export", disabled: !sorted.length, onClick: exportCsv, title: L.exportTitle },
+      L.exportCsv,
     );
 
   return h(
