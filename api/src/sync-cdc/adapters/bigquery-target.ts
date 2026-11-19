@@ -8,6 +8,10 @@ import type { IDatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { loggers } from "../../logging";
 import { escId } from "./bigquery-sql";
+import {
+  syncWritePriority,
+  type BigQueryJobPriority,
+} from "../../services/bigquery-job-priority";
 
 export const bqLog = loggers.sync("cdc.adapter.bigquery");
 
@@ -28,11 +32,31 @@ export function fullTableName(target: BigQueryTarget, table: string): string {
 export function runBigQuery(
   target: BigQueryTarget,
   sql: string,
-  options: { bigQueryJobMaxWaitMs?: number } = {},
+  options: {
+    bigQueryJobMaxWaitMs?: number;
+    priority?: BigQueryJobPriority;
+  } = {},
 ) {
   return databaseConnectionService.executeQuery(target.destination, sql, {
     location: target.datasetLocation,
     ...options,
+  });
+}
+
+/**
+ * Run one statement that writes synced rows (MERGE, DELETE, UPDATE, CREATE
+ * AS SELECT) at the sync-write priority: BATCH unless BQ_SYNC_WRITE_PRIORITY
+ * says INTERACTIVE (services/bigquery-job-priority.ts). Metadata reads and
+ * DDL use runBigQuery and stay INTERACTIVE: they use almost no slots.
+ */
+export function runBigQueryWrite(
+  target: BigQueryTarget,
+  sql: string,
+  options: { bigQueryJobMaxWaitMs?: number } = {},
+) {
+  return runBigQuery(target, sql, {
+    ...options,
+    priority: syncWritePriority(),
   });
 }
 

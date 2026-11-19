@@ -2,6 +2,7 @@
  * Backfill completion: mark it complete, purge soft deletes after a hard-delete
  * backfill, and force-drain the flow's pending CDC events.
  */
+import { syncWritePriority } from "../../services/bigquery-job-priority";
 import { inWorkspace } from "../../utils/workspace-scope";
 import { Types } from "mongoose";
 import { DatabaseConnection, Flow } from "../../database/workspace-schema";
@@ -88,7 +89,9 @@ export async function purgeSoftDeletesAfterBackfill(params: {
       : `"${schema}"."${tableName}"`;
     const query = `DELETE FROM ${fullTable} WHERE is_deleted = true`;
     try {
-      await driver.executeQuery(destination, query);
+      await driver.executeQuery(destination, query, {
+        priority: syncWritePriority(),
+      });
       log.info("Purged soft-deleted rows after backfill", {
         flowId: params.flowId,
         entity,
