@@ -193,7 +193,7 @@ button, input, select, textarea { font-family: inherit; }
 /* A zero ("0", "0%") or a missing value ("–"): kept, but muted. */
 .mk-tip-muted { color: var(--muted-foreground); font-weight: 400; }
 .mk-tip-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
-.mk-tip-total th, .mk-tip-total td { font-weight: 600; }
+.mk-tip .mk-tip-total th, .mk-tip .mk-tip-total td { font-weight: 600; }
 .mk-tip-rule th, .mk-tip-rule td { border-top: 1px solid var(--border); padding-top: 3px; }
 
 /* ---- DataTable ----------------------------------------------------------- */
