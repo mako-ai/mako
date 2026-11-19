@@ -242,3 +242,105 @@ describe("CDC MERGE keeps one live row per key", () => {
     });
   }
 });
+
+/**
+ * A composite key with a NULL part. Meta ads `ads_insights_region` keys on
+ * date_start, account_id, ad_id, region, and Meta sends zero-delivery days
+ * with no region. With `=` in the ON clause the NULL never matched, so each
+ * daily sync inserted the row again: 106,281 extra rows in 8 Meta tables on
+ * 19 Nov 2026. The probe joins on the same keys, so it runs here too.
+ */
+describe("CDC MERGE matches a NULL part of a composite key", () => {
+  const NK_KEY = ["ad_id", "region"];
+  const NK_COLUMNS = ["ad_id", "region", "spend", "_syncedAt"];
+  const NK_TYPES = new Map([
+    ["ad_id", "STRING"],
+    ["region", "STRING"],
+    ["spend", "STRING"],
+    ["_syncedAt", "TIMESTAMP"],
+  ]);
+
+  async function stageAndMerge(
+    conn: DuckDBConnection,
+    rows: Array<{ region: string | null; spend: string; syncedAt: string }>,
+    prune: boolean,
+  ): Promise<void> {
+    await conn.run(
+      'CREATE OR REPLACE TABLE nk_stg (ad_id VARCHAR, region VARCHAR, spend VARCHAR, "_syncedAt" VARCHAR)',
+    );
+    for (const r of rows) {
+      const region = r.region === null ? "NULL" : `'${r.region}'`;
+      await conn.run(
+        `INSERT INTO nk_stg VALUES ('ad_1', ${region}, '${r.spend}', '${r.syncedAt}')`,
+      );
+    }
+    let livePartitionFilter: string | undefined;
+    if (prune) {
+      const probe = buildLivePartitionProbeQuery({
+        fullLive: "`nk_live`",
+        fullStaging: "`nk_stg`",
+        keyColumns: NK_KEY,
+        partitionField: "_syncedAt",
+        granularity: "day",
+        liveTypes: NK_TYPES,
+        limit: MERGE_PRUNE_MAX_PARTITIONS,
+      });
+      const buckets = (await conn.runAndReadAll(toDuckDb(probe)))
+        .getRowObjects()
+        .map(r => (r.p == null ? null : String(r.p)));
+      livePartitionFilter = buildLivePartitionFilter({
+        partitionField: "_syncedAt",
+        granularity: "day",
+        buckets,
+      });
+    }
+    const merge = buildMergeStatement({
+      fullLive: "`nk_live`",
+      fullStaging: "`nk_stg`",
+      columns: NK_COLUMNS,
+      keyColumns: NK_KEY,
+      stagingCols: new Set(NK_COLUMNS),
+      liveTypes: NK_TYPES,
+      livePartitionFilter,
+    });
+    await conn.run(toDuckDb(merge));
+  }
+
+  for (const prune of [true, false]) {
+    const label = prune ? "partition-pruned" : "unfiltered";
+
+    it(`the same NULL-region row synced twice stays one row (${label})`, async () => {
+      const conn = await connect();
+      await conn.run(
+        'CREATE TABLE nk_live (ad_id VARCHAR, region VARCHAR, spend VARCHAR, "_syncedAt" TIMESTAMPTZ)',
+      );
+      await stageAndMerge(
+        conn,
+        [
+          { region: null, spend: "0", syncedAt: "2026-11-18 12:26:06" },
+          { region: "Paris", spend: "4.2", syncedAt: "2026-11-18 12:26:06" },
+        ],
+        prune,
+      );
+      await stageAndMerge(
+        conn,
+        [
+          { region: null, spend: "0.5", syncedAt: "2026-11-19 06:45:57" },
+          { region: "Paris", spend: "4.3", syncedAt: "2026-11-19 06:45:57" },
+        ],
+        prune,
+      );
+      const rows = (
+        await conn.runAndReadAll(
+          "SELECT region, spend FROM nk_live ORDER BY region NULLS FIRST",
+        )
+      ).getRowObjects();
+      conn.closeSync();
+
+      expect(rows).toEqual([
+        { region: null, spend: "0.5" },
+        { region: "Paris", spend: "4.3" },
+      ]);
+    });
+  }
+});

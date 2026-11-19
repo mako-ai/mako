@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { DuckDBInstance } from "@duckdb/node-api";
 import { BigQueryDatabaseDriver } from "./driver";
 import {
   makeCapturingDriver,
@@ -134,6 +135,49 @@ describe("BigQueryDatabaseDriver write SQL", () => {
     expect(insert).toContain(
       "INSERT INTO `proj`.`ds`.`users` (`id`, `name`) VALUES",
     );
+  });
+
+  // Meta ads, 19 Nov 2026: a NULL part of a composite key never matched `=`,
+  // so each sync inserted the row again. The driver's ON clause runs in
+  // DuckDB here, against the same NULL-keyed row upserted twice.
+  it("upsertBatch matches a NULL part of a composite key", async () => {
+    const bq = new BigQueryDatabaseDriver();
+    const cap = makeCapturingDriver(bq, infoSchemaResponder);
+    const res = await bq.upsertBatch(
+      conn,
+      "users",
+      [{ id: 1, region: null, name: "v2" }],
+      ["id", "region"],
+      { schema: "ds" },
+    );
+    expect(res.success).toBe(true);
+    const merge = cap
+      .sql()
+      .map(normalizeSql)
+      .find(s => s.startsWith("MERGE INTO"));
+    const on = merge?.match(/ ON (.+?) WHEN /)?.[1];
+    expect(on).toBeDefined();
+
+    const db = await DuckDBInstance.create(":memory:");
+    const duck = await db.connect();
+    await duck.run(
+      "CREATE TABLE live (id INTEGER, region VARCHAR, name VARCHAR)",
+    );
+    await duck.run(
+      "CREATE TABLE src AS SELECT 1 AS id, NULL::VARCHAR AS region, 'v2' AS name",
+    );
+    const duckMerge =
+      `MERGE INTO live AS T USING src AS S ON ${on!.replace(/`/g, '"')} ` +
+      "WHEN MATCHED THEN UPDATE SET name = S.name " +
+      "WHEN NOT MATCHED THEN INSERT (id, region, name) VALUES (S.id, S.region, S.name)";
+    await duck.run(duckMerge);
+    await duck.run(duckMerge);
+    const rows = (
+      await duck.runAndReadAll("SELECT id, region, name FROM live")
+    ).getRowObjects();
+    duck.closeSync();
+    db.closeSync();
+    expect(rows).toEqual([{ id: 1, region: null, name: "v2" }]);
   });
 });
 

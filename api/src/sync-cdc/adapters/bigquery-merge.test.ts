@@ -55,7 +55,7 @@ describe("buildMergeStatement", () => {
     expect(sql).toMatchInlineSnapshot(`
       "MERGE INTO \`proj\`.\`ds\`.live_users __live
       USING (SELECT SAFE_CAST(\`id\` AS INT64) AS \`id\`, SAFE_CAST(\`name\` AS STRING) AS \`name\`, SAFE_CAST(\`_mako_source_ts\` AS TIMESTAMP) AS \`_mako_source_ts\`, SAFE_CAST(\`is_deleted\` AS BOOL) AS \`is_deleted\` FROM \`proj\`.\`mako_internal\`.stg_users QUALIFY ROW_NUMBER() OVER (PARTITION BY \`id\` ORDER BY \`_mako_source_ts\` DESC) = 1) __stg
-      ON __live.\`id\` = __stg.\`id\`
+      ON (__live.\`id\` = __stg.\`id\` OR (__live.\`id\` IS NULL AND __stg.\`id\` IS NULL))
       WHEN MATCHED AND COALESCE(__stg.\`_mako_source_ts\`, TIMESTAMP('1970-01-01 00:00:00 UTC')) >= COALESCE(__live.\`_mako_source_ts\`, TIMESTAMP('1970-01-01 00:00:00 UTC')) THEN UPDATE SET \`name\` = __stg.\`name\`, \`_mako_source_ts\` = __stg.\`_mako_source_ts\`, \`is_deleted\` = __stg.\`is_deleted\`
       WHEN NOT MATCHED THEN INSERT (\`id\`, \`name\`, \`_mako_source_ts\`, \`is_deleted\`) VALUES (__stg.\`id\`, __stg.\`name\`, __stg.\`_mako_source_ts\`, __stg.\`is_deleted\`)"
     `);
@@ -67,7 +67,9 @@ describe("buildMergeStatement", () => {
       "QUALIFY ROW_NUMBER() OVER (PARTITION BY `id` ORDER BY `_mako_source_ts` DESC) = 1",
     );
     // join on key
-    expect(sql).toContain("ON __live.`id` = __stg.`id`");
+    expect(sql).toContain(
+      "ON (__live.`id` = __stg.`id` OR (__live.`id` IS NULL AND __stg.`id` IS NULL))",
+    );
     // ordering guard prevents stale overwrites
     expect(sql).toContain(
       "WHEN MATCHED AND COALESCE(__stg.`_mako_source_ts`, TIMESTAMP('1970-01-01 00:00:00 UTC')) >= COALESCE(__live.`_mako_source_ts`, TIMESTAMP('1970-01-01 00:00:00 UTC')) THEN UPDATE SET",
@@ -155,7 +157,7 @@ describe("buildMergeStatement", () => {
     );
     expect(sql).toContain("PARTITION BY `tenant`, `id`");
     expect(sql).toContain(
-      "ON __live.`tenant` = __stg.`tenant` AND __live.`id` = __stg.`id`",
+      "ON (__live.`tenant` = __stg.`tenant` OR (__live.`tenant` IS NULL AND __stg.`tenant` IS NULL)) AND (__live.`id` = __stg.`id` OR (__live.`id` IS NULL AND __stg.`id` IS NULL))",
     );
   });
 });
@@ -304,7 +306,7 @@ describe("MERGE partition pruning", () => {
       params({ livePartitionFilter: "__live.`d` IS NULL" }),
     );
     expect(pruned).toContain(
-      "ON __live.`id` = __stg.`id` AND (__live.`d` IS NULL)\n",
+      "ON (__live.`id` = __stg.`id` OR (__live.`id` IS NULL AND __stg.`id` IS NULL)) AND (__live.`d` IS NULL)\n",
     );
     expect(pruned.replace(" AND (__live.`d` IS NULL)", "")).toBe(base);
   });
@@ -321,7 +323,7 @@ describe("MERGE partition pruning", () => {
     });
     expect(sql).toBe(
       "SELECT DISTINCT FORMAT_TIMESTAMP('%FT%T', TIMESTAMP_TRUNC(__live.`date_created`, DAY), 'UTC') AS p " +
-        "FROM `proj`.`ds`.live_users __live JOIN (SELECT DISTINCT SAFE_CAST(`id` AS STRING) AS `id` FROM `proj`.`mako_internal`.stg_users) __stg ON __live.`id` = __stg.`id` " +
+        "FROM `proj`.`ds`.live_users __live JOIN (SELECT DISTINCT SAFE_CAST(`id` AS STRING) AS `id` FROM `proj`.`mako_internal`.stg_users) __stg ON (__live.`id` = __stg.`id` OR (__live.`id` IS NULL AND __stg.`id` IS NULL)) " +
         "LIMIT 401",
     );
   });
