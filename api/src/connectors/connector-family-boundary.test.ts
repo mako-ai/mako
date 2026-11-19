@@ -23,11 +23,14 @@ import {
   SHARED_DIRECTORIES,
 } from "./connector-family-allowlist";
 
+/** Ceiling for the allowlist. Lower it as families are removed. Never raise it. */
+const MAX_ALLOWED_FAMILIES = 11;
+
 const SRC_ROOT = path.resolve(__dirname, "..");
 const CONNECTORS_ROOT = path.resolve(__dirname);
 
 const SPECIFIER =
-  /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)(["'])(\.{1,2}\/[^"']*|\.{1,2})\1/g;
+  /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)(["'`])(\.{1,2}\/[^"'`]*|\.{1,2})\1/g;
 
 export function importedSpecifiers(source: string): string[] {
   const out: string[] = [];
@@ -83,14 +86,40 @@ function main() {
   // Self-test of the matcher.
   assert.deepEqual(
     importedSpecifiers(
-      `import a from "./x";\nexport { b } from "../y";\nconst c = await import("./z/w");\nimport "./side";\nimport p from "pkg";`,
+      `import a from "./x";\nexport { b } from "../y";\nconst c = await import("./z/w");\nimport "./side";\nimport p from "pkg";\n` +
+        `const r = require("./req");\nexport * from "./star";\nimport type { T } from "./types";\n` +
+        "const d = await import(`../connectors/stripe`);",
     ),
-    ["./x", "../y", "./z/w", "./side"],
+    [
+      "./x",
+      "../y",
+      "./z/w",
+      "./side",
+      "./req",
+      "./star",
+      "./types",
+      "../connectors/stripe",
+    ],
   );
 
   const present = readdirSync(CONNECTORS_ROOT, { withFileTypes: true })
     .filter(e => e.isDirectory() && !SHARED_DIRECTORIES.includes(e.name))
     .map(e => e.name);
+  assert.ok(
+    ALLOWED_FAMILIES_IMPORTED_FROM_OUTSIDE.length <= MAX_ALLOWED_FAMILIES,
+    `The allowlist has ${ALLOWED_FAMILIES_IMPORTED_FROM_OUTSIDE.length} families, ` +
+      `above the ceiling of ${MAX_ALLOWED_FAMILIES}. It must only shrink.`,
+  );
+  const unlisted = present.filter(
+    f => !ALLOWED_FAMILIES_IMPORTED_FROM_OUTSIDE.includes(f),
+  );
+  assert.deepEqual(
+    unlisted,
+    [],
+    `New family folders under api/src/connectors are not allowed. A new ` +
+      `connector is a workspace connector (connectors/<slug>/ in the repo):\n  ` +
+      unlisted.join("\n  "),
+  );
   const stale = ALLOWED_FAMILIES_IMPORTED_FROM_OUTSIDE.filter(
     f => !present.includes(f),
   );
