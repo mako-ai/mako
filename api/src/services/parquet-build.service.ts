@@ -172,10 +172,9 @@ export async function buildQueryParquetFile(
     });
   }
 
-  const rowLimit = input.rowLimit ?? parquetRowLimits().defaultRowLimit;
   return await buildParquetFromBatches({
     filenameBase,
-    rowLimit,
+    rowLimit: input.rowLimit ?? parquetRowLimits().defaultRowLimit,
     onRowLimit: input.onRowLimit,
     countRowsUpTo: input.countRowsUpTo,
     writeOptions: input.writeOptions,
@@ -191,9 +190,6 @@ export async function buildQueryParquetFile(
           executableQuery,
           {
             batchSize: STREAM_BATCH_SIZE,
-            // One row past what the builder keeps (or counts), so it can
-            // tell a result over the limit from one exactly at it.
-            maxRows: Math.max(rowLimit, input.countRowsUpTo ?? 0) + 1,
             databaseId,
             databaseName,
             onBatch: insertBatch,

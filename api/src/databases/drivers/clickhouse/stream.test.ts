@@ -1,5 +1,6 @@
 /**
- * A streamed read (binding parquet builds, exports) runs the query ONCE.
+ * A streamed ClickHouse read (binding parquet builds, exports) runs the
+ * query ONCE.
  *
  * It used to page with `LIMIT n OFFSET k`, one query per page. ClickHouse
  * returns an unordered result (GROUP BY, GROUPING SETS, parallel reads) in a
@@ -10,10 +11,9 @@
  * ClickHouse may. A paged read duplicates and drops rows against them; a
  * single read returns each row exactly once.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { IDatabaseConnection } from "../../../database/workspace-schema";
 import { DatabaseConnectionService } from "../../../services/database-connection.service";
-import { mysqlEngine } from "../mysql/engine";
 import {
   ClickHouseEngine,
   clickHouseEngine,
@@ -84,11 +84,7 @@ function conn(type: string): IDatabaseConnection {
   } as unknown as IDatabaseConnection;
 }
 
-async function readAll(
-  svc: DatabaseConnectionService,
-  type: string,
-  options: { maxRows?: number } = {},
-) {
+async function readAll(svc: DatabaseConnectionService, type: string) {
   const ids: number[] = [];
   const batches: number[] = [];
   const result = await svc.executeStreamingQuery(
@@ -97,7 +93,6 @@ async function readAll(
     {
       batchSize: 5,
       readOnly: true,
-      ...options,
       onBatch: async rows => {
         batches.push(rows.length);
         for (const row of rows) ids.push(row.id as number);
@@ -107,14 +102,13 @@ async function readAll(
   return { result, ids, batches };
 }
 
-describe("streamed reads run the query once", () => {
+describe("a streamed ClickHouse read runs the query once", () => {
   const swapped = clickHouseEngine as unknown as {
     deps: ClickHouseConnectDeps;
   };
   const original = swapped.deps;
   afterEach(() => {
     swapped.deps = original;
-    vi.restoreAllMocks();
   });
 
   it("ClickHouse: every row exactly once, in batches, from one query", async () => {
@@ -132,31 +126,6 @@ describe("streamed reads run the query once", () => {
     expect(fake.queries).toHaveLength(1);
     expect(fake.queries[0].query).not.toMatch(/\bOFFSET\b/i);
     expect(fake.queries[0].settings).toMatchObject({ readonly: "2" });
-  });
-
-  it("an engine without a native stream (MySQL) runs one query, capped at maxRows", async () => {
-    const calls: string[] = [];
-    vi.spyOn(mysqlEngine, "executeQuery").mockImplementation(
-      async (_db, query) => {
-        calls.push(String(query));
-        const rows = page(String(query), reordered(calls.length));
-        return { success: true, data: rows, rowCount: rows.length };
-      },
-    );
-
-    const all = await readAll(new DatabaseConnectionService(), "mysql");
-    expect(all.result).toEqual({ success: true, totalRows: ROWS.length });
-    expect(new Set(all.ids).size).toBe(ROWS.length);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).not.toMatch(/\bOFFSET\b/i);
-
-    calls.length = 0;
-    const capped = await readAll(new DatabaseConnectionService(), "mysql", {
-      maxRows: 11,
-    });
-    expect(capped.result).toEqual({ success: true, totalRows: 11 });
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatch(/LIMIT 11$/);
   });
 });
 

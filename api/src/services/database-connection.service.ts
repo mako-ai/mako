@@ -50,7 +50,6 @@ import { loggers } from "../logging";
 import {
   buildPreviewPage,
   checkPreviewQuerySafety,
-  applySqlRowLimit,
   prepareSqlBatchQuery,
   prepareSqlPreviewQuery,
   resolvePreviewPageSize,
@@ -439,7 +438,11 @@ export class DatabaseConnectionService {
         : { success: false, totalRows: streamed, error: result.error };
     }
 
-    // ClickHouse streams one query's rows over its HTTP response.
+    // ClickHouse streams ONE query's rows over its HTTP response. OFFSET
+    // pages re-run the query, and ClickHouse returns an unordered result
+    // (GROUP BY, GROUPING SETS, parallel reads) in a different order each
+    // time, so pages overlap and skip rows (a binding of 8,306 rows came out
+    // with 6,855 distinct keys).
     if (database.type === "clickhouse" && typeof query === "string") {
       return await clickHouseEngine.executeStreamingQuery(
         database,
@@ -448,37 +451,66 @@ export class DatabaseConnectionService {
       );
     }
 
-    // Every other engine runs the query ONCE and hands its result over in
-    // batches. Never LIMIT/OFFSET pages: each page is a separate query, and
-    // without an ORDER BY an engine may return rows in a different order each
-    // time, so pages overlap and skip rows (a ClickHouse GROUPING SETS
-    // binding lost 1,451 of 8,306 rows that way). `maxRows` caps the one
-    // query so a result past the caller's limit is never held whole.
-    let totalRows = 0;
-    try {
-      const sqlEngine =
-        typeof query === "string" && !engineFor(database.type)?.nonSql;
-      const executable =
-        sqlEngine && options.maxRows !== undefined
-          ? applySqlRowLimit({
-              query: query as string,
-              databaseType: database.type,
-              limit: options.maxRows,
-            })
-          : query;
-      const result = await this.executeQuery(database, executable, options);
+    if (engineFor(database.type)?.nonSql || typeof query !== "string") {
+      const result = await this.executeQuery(database, query, options);
       if (!result.success) {
         return { success: false, totalRows: 0, error: result.error };
       }
       const rows = resultRows(result.data);
-      for (let i = 0; i < rows.length; i += batchSize) {
+      if (rows.length > 0) {
+        await options.onBatch(rows);
+      }
+      return { success: true, totalRows: rows.length };
+    }
+
+    let totalRows = 0;
+    let offset = 0;
+
+    try {
+      for (;;) {
         if (options.signal?.aborted) {
           return { success: false, totalRows, error: "Query cancelled" };
         }
-        const batch = rows.slice(i, i + batchSize);
-        await options.onBatch(batch);
-        totalRows += batch.length;
+
+        const prepared = prepareSqlBatchQuery({
+          query: String(query),
+          databaseType: database.type,
+          batchSize,
+          offset,
+        });
+
+        const result = await this.executeQuery(database, prepared.query, {
+          databaseName: options.databaseName,
+          databaseId: options.databaseId,
+          executionId: options.executionId,
+          signal: options.signal,
+          readOnly: options.readOnly,
+          actor: options.actor,
+          writeChecked: true,
+          readOnlyTransaction: options.readOnlyTransaction,
+        });
+
+        if (!result.success) {
+          return { success: false, totalRows, error: result.error };
+        }
+
+        const rows = Array.isArray(result.data)
+          ? (result.data as Record<string, unknown>[])
+          : [];
+
+        if (rows.length === 0) {
+          break;
+        }
+
+        await options.onBatch(rows);
+        totalRows += rows.length;
+        offset += rows.length;
+
+        if (rows.length < batchSize) {
+          break;
+        }
       }
+
       return { success: true, totalRows };
     } catch (error) {
       return {
