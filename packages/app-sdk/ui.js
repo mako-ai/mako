@@ -11,6 +11,7 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { bindingPhaseLabel, refreshBinding, useBindingProgress } from "./index.js";
+import { bindingPhaseStage } from "./progress.js";
 import {
   claimPopover,
   closePopovers,
@@ -46,8 +47,12 @@ import {
   pageToSync,
   refreshOrder,
   releasePopover,
+  resizeWidth,
   serializeResetKey,
   sortRows,
+  splitSections,
+  fromSorting,
+  toSorting,
   toCsv,
   tooltipCellText,
   tooltipSeriesRows,
@@ -87,8 +92,12 @@ export {
   pageSlice,
   pageToSync,
   refreshOrder,
+  resizeWidth,
   serializeResetKey,
   sortRows,
+  splitSections,
+  fromSorting,
+  toSorting,
   toCsv,
   tooltipCellText,
   tooltipSeriesRows,
@@ -367,8 +376,11 @@ export function tooltipCell(value, format, opts) {
  * rate). A null or undefined cell shows a muted "–"; "" stays blank.
  * `colWidth` sets the value columns' minimum width (default 7ch; a number is
  * px), so the box keeps its size while the pointer moves.
+ * 2.30: a row's `rule: true` draws a rule above it (an "Ending MRR" line
+ * before the total), and `note` adds a muted line under the table (a caveat,
+ * "Click to list the opportunities").
  */
-export function TableTooltip({ title, columns = [], rows = [], total, after, className, colWidth }) {
+export function TableTooltip({ title, columns = [], rows = [], total, after, note, className, colWidth }) {
   return h(
     "div",
     {
@@ -384,13 +396,14 @@ export function TableTooltip({ title, columns = [], rows = [], total, after, cla
       h(
         "tbody",
         null,
-        ...rows.map(r => h(TooltipRow, { key: r.key ?? r.label, row: r })),
-        total && h(TooltipRow, { key: "__total", row: total, className: cx("mk-tip-total", rows.length > 0 && "mk-tip-rule") }),
+        ...rows.map(r => h(TooltipRow, { key: r.key ?? r.label, row: r, className: r.rule ? "mk-tip-rule" : undefined })),
+        total && h(TooltipRow, { key: "__total", row: total, className: cx("mk-tip-total", (rows.length > 0 || total.rule) && "mk-tip-rule") }),
         ...(after ?? []).map((r, i) =>
-          h(TooltipRow, { key: `__after_${r.key ?? r.label}`, row: r, className: i === 0 ? "mk-tip-rule" : undefined }),
+          h(TooltipRow, { key: `__after_${r.key ?? r.label}`, row: r, className: i === 0 || r.rule ? "mk-tip-rule" : undefined }),
         ),
       ),
     ),
+    note != null && note !== false && h("div", { className: "mk-tip-note" }, note),
   );
 }
 
@@ -561,6 +574,8 @@ export function saveCsv(filename, text) {
 
 const fmtCount = n => n.toLocaleString("en-US");
 const EMPTY_EXPANDED = Object.freeze({});
+const EMPTY_SIZING = Object.freeze({});
+const SKELETON_ROWS = 10;
 
 /**
  * The English text of a DataTable's footer, sort hints and export button.
@@ -589,6 +604,7 @@ export const DATA_TABLE_LABELS = {
   expand: () => "Show details",
   collapse: () => "Hide details",
   info: label => `About ${label}`,
+  resizeHint: "Drag to resize · double-click to reset",
 };
 /**
  * DataTable's texts for a locale (2.29), `labels` on top. No locale and no
@@ -676,26 +692,73 @@ export function DataTable({
   totalRow,
   onTotalRowClick,
   exportTotalRow = false,
+  manualSorting = false,
+  manualPagination = false,
+  rowCount,
+  sorting,
+  onSortingChange,
+  pagination,
+  onPaginationChange,
+  loading = false,
+  enableColumnResizing = false,
+  columnResizeMode = "onEnd",
+  columnSizing: columnSizingProp,
+  onColumnSizingChange,
+  isSectionRow,
+  renderSection,
   className,
   style,
 }) {
   const L = dataTableLabels(locale, labelsProp);
   const empty = emptyProp ?? L.empty;
   const noun = nounProp ?? L.rows;
-  const [sort, setSort] = useControlled(sortProp, defaultSort, onSortChange);
-  const [rawPage, setRawPage] = useControlled(pageProp, 1, onPageChange);
-  const [pageSize, setPageSize] = useControlled(pageSizeProp, defaultPageSize, onPageSizeChange);
+  // TanStack Table's state shapes (2.30): `sorting` ([{ id, desc }]) and
+  // `pagination` ({ pageIndex, pageSize }, 0-based) drive the same state as
+  // `sort`, `page` and `pageSize`. Their callbacks get the next value.
+  const [sort, setSortState] = useControlled(sorting !== undefined ? fromSorting(sorting) : sortProp, defaultSort, onSortChange);
+  const [rawPage, setRawPage] = useControlled(pagination ? pagination.pageIndex + 1 : pageProp, 1, onPageChange);
+  const [pageSize, setPageSize] = useControlled(pagination ? pagination.pageSize : pageSizeProp, defaultPageSize, onPageSizeChange);
+  const setSort = next => {
+    setSortState(next);
+    onSortingChange?.(toSorting(next));
+  };
+  const reportPage = (p, size) => onPaginationChange?.({ pageIndex: p - 1, pageSize: size });
   // A page size outside the list (defaultPageSize={200}) still shows as the selected option.
   const sizeOptions = pageSizes.includes(pageSize) ? pageSizes : [...pageSizes, pageSize].sort((a, b) => a - b);
   const [note, setNote] = React.useState(null);
   const scrollRef = React.useRef(null);
 
-  const sorted = React.useMemo(() => sortRows(rows, columns, sort), [rows, columns, sort]);
-  const layout = React.useMemo(() => columnLayout(columns), [columns]);
+  // Section rows (2.30) split the rows into runs: a run's rows sort inside it
+  // and the section row heads them. `sorted` holds data rows only, so the
+  // pager, the footer, the CSV and the total never count a section row.
+  // `manualSorting` (2.30): the rows come sorted (by the server), as given.
+  const runsOfRows = React.useMemo(() => (isSectionRow ? splitSections(rows, isSectionRow) : null), [rows, isSectionRow]);
+  const sorted = React.useMemo(() => {
+    const order = rs => (manualSorting ? rs.slice() : sortRows(rs, columns, sort));
+    return runsOfRows ? runsOfRows.flatMap(r => order(r.rows)) : order(rows);
+  }, [rows, runsOfRows, columns, sort, manualSorting]);
+  const sectionOf = React.useMemo(
+    () => (runsOfRows ? new Map(runsOfRows.flatMap(r => r.rows.map(row => [row, r.section]))) : null),
+    [runsOfRows],
+  );
+
+  // Column resizing (2.30, TanStack Table's): a drag handle on each header's
+  // right edge. `columnSizing` ({ [id]: px }) is controlled or local.
+  const [sizing, setSizing] = useControlled(columnSizingProp, EMPTY_SIZING, onColumnSizingChange);
+  const sizingRef = React.useRef(sizing);
+  sizingRef.current = sizing;
+  const [drag, setDrag] = React.useState(null);
+  const dragRef = React.useRef(null);
+  const resizable = enableColumnResizing || columnSizingProp !== undefined;
+  const layoutSizing = resizable ? sizing : undefined;
+  const layout = React.useMemo(() => columnLayout(columns, layoutSizing), [columns, layoutSizing]);
   const runs = React.useMemo(() => columnGroupRuns(columns), [columns]);
   const sections = React.useMemo(() => new Set(runs?.filter(r => r.start).map(r => r.columns[0].id)), [runs]);
-  const { page, pageCount, start, end } = pageSlice(sorted.length, rawPage, pageSize);
-  const visible = sorted.slice(start, end);
+  // `manualPagination` (2.30): `rows` is the current page and `rowCount` the
+  // total, so the footer and the pager count the server's rows.
+  const totalCount = manualPagination ? (rowCount ?? (Math.max(1, rawPage) - 1) * pageSize + sorted.length) : sorted.length;
+  const { page, pageCount, start, end } = pageSlice(totalCount, rawPage, pageSize);
+  const visible = manualPagination ? sorted : sorted.slice(start, end);
 
   // Expandable rows. The state has TanStack Table's ExpandedState shape:
   // `true` (every row) or `{ [rowId]: true }`, rowId being String(rowKey(row)).
@@ -721,13 +784,15 @@ export function DataTable({
 
   // The total row: an object, or a function over the rows the table got (the
   // filtered rows). It never sorts or pages; CSV only with `exportTotalRow`.
+  const dataRows = runsOfRows ? sorted : rows;
   const total = React.useMemo(
-    () => (typeof totalRow === "function" ? totalRow(rows) : (totalRow ?? null)),
-    [totalRow, rows],
+    () => (typeof totalRow === "function" ? totalRow(dataRows) : (totalRow ?? null)),
+    [totalRow, dataRows],
   );
 
-  const goTo = p => {
+  const goTo = (p, size = pageSize) => {
     if (p !== rawPage) setRawPage(p);
+    if (p !== rawPage || size !== pageSize) reportPage(p, size);
     scrollRef.current?.scrollTo?.({ top: 0 });
   };
 
@@ -744,9 +809,11 @@ export function DataTable({
 
   // A page past the end (rows shrank, a stale URL) shows the last page; report
   // it so a controlled page matches. Skipped while there are no rows yet.
-  const syncTo = pageToSync(rawPage, sorted.length, pageSize);
+  const syncTo = pageToSync(rawPage, totalCount, pageSize);
   React.useEffect(() => {
-    if (syncTo != null) setRawPage(syncTo);
+    if (syncTo == null) return;
+    setRawPage(syncTo);
+    reportPage(syncTo, pageSize);
   }, [syncTo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   React.useEffect(() => {
@@ -763,6 +830,64 @@ export function DataTable({
     const res = saveCsv(exportFilename, toCsv(exportTotalRow && total ? [...sorted, total] : sorted, columns));
     setNote(res === "failed" ? L.exportFailed : null);
   };
+
+  // A drag on a header's edge, ported from idx-portal's table on TanStack's
+  // semantics: "onChange" resizes as the pointer moves, "onEnd" (TanStack's
+  // default) moves only the handle and resizes on release. A double click
+  // resets the column (TanStack's resetSize). Pointer only, as TanStack.
+  const startResize = (e, col) => {
+    if (e.button != null && e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const th = e.currentTarget.closest("th");
+    dragRef.current = { col, x: e.clientX, w: th?.getBoundingClientRect().width || 0, to: null };
+    try {
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+    } catch {
+      /* a synthetic pointer without capture */
+    }
+    document.body.classList.add("mk-dt-col-resizing");
+    setDrag({ id: col.id, delta: 0 });
+  };
+  const moveResize = e => {
+    const d = dragRef.current;
+    if (!d) return;
+    const w = resizeWidth(d.col, d.w, e.clientX - d.x);
+    d.to = w;
+    if (columnResizeMode === "onChange") {
+      if (sizingRef.current[d.col.id] !== w) setSizing({ ...sizingRef.current, [d.col.id]: w });
+    } else setDrag({ id: d.col.id, delta: w - d.w });
+  };
+  const endResize = () => {
+    const d = dragRef.current;
+    if (!d) return;
+    dragRef.current = null;
+    document.body.classList.remove("mk-dt-col-resizing");
+    setDrag(null);
+    if (columnResizeMode !== "onChange" && d.to != null && sizingRef.current[d.col.id] !== d.to) {
+      setSizing({ ...sizingRef.current, [d.col.id]: d.to });
+    }
+  };
+  const resetSize = col => {
+    if (sizingRef.current[col.id] == null) return;
+    const { [col.id]: _drop, ...rest } = sizingRef.current;
+    setSizing(rest);
+  };
+  React.useEffect(() => () => document.body?.classList.remove("mk-dt-col-resizing"), []);
+  const resizer = col =>
+    h("span", {
+      className: cx("mk-dt-resizer", drag?.id === col.id && "mk-dt-resizer--active"),
+      role: "separator",
+      "aria-orientation": "vertical",
+      title: L.resizeHint,
+      style: drag?.id === col.id && drag.delta ? { transform: `translateX(${drag.delta}px)` } : undefined,
+      onPointerDown: e => startResize(e, col),
+      onPointerMove: moveResize,
+      onPointerUp: endResize,
+      onPointerCancel: endResize,
+      onDoubleClick: () => resetSize(col),
+      onClick: e => e.stopPropagation(),
+    });
 
   const cellClass = (col, extra) =>
     cx(
@@ -793,13 +918,14 @@ export function DataTable({
             h("span", { className: "mk-dt-th-text" }, col.label),
             h(IconSort, { dir: active ? sort.dir : null }),
           );
+    const canResize = enableColumnResizing && col.enableResizing !== false;
     return h(
       "th",
       {
         key: col.id,
         scope: "col",
         rowSpan,
-        className: cellClass(col, active && "mk-dt-sorted"),
+        className: cellClass(col, cx(active && "mk-dt-sorted", canResize && "mk-dt-resizable")),
         "aria-sort": col.sortable === false ? undefined : active ? (sort.dir === "asc" ? "ascending" : "descending") : "none",
       },
       col.info == null
@@ -810,6 +936,7 @@ export function DataTable({
             label,
             h(HeaderInfo, { title: col.label, label: L.info(text) }, col.info),
           ),
+      canResize ? resizer(col) : null,
     );
   };
 
@@ -883,12 +1010,46 @@ export function DataTable({
         }
       : null;
 
-  const body = h(
-    "tbody",
-    null,
-    visible.length === 0
-      ? h("tr", { key: "__empty" }, h("td", { colSpan: columns.length, className: "mk-dt-empty" }, empty))
-      : visible.map((row, i) => {
+  // A body cell's class and style: the column's, plus its `cellClassName`
+  // and `cellStyle` (2.30) of the cell's value and row (a heat cell).
+  const bodyCellProps = (col, row) => {
+    const own = typeof col.cellClassName === "function" ? col.cellClassName(col.value(row), row) : col.cellClassName;
+    const props = { key: col.id, className: cellClass(col, own) || undefined };
+    if (col.cellStyle) props.style = typeof col.cellStyle === "function" ? col.cellStyle(col.value(row), row) : col.cellStyle;
+    return props;
+  };
+
+  // `loading` (2.30): placeholder rows while there are none yet, else the
+  // rows on screen dim until the next ones land.
+  const skeleton = () =>
+    Array.from({ length: Math.min(pageSize, SKELETON_ROWS) }, (_, i) =>
+      h(
+        "tr",
+        { key: `__skeleton_${i}`, className: "mk-dt-skeleton-row", "aria-hidden": "true" },
+        ...columns.map((col, c) =>
+          h(
+            "td",
+            { key: col.id, className: cellClass(col) || undefined },
+            h("span", { className: "mk-dt-skeleton", style: { width: `${45 + ((i * 7 + c * 13) % 40)}%` } }),
+          ),
+        ),
+      ),
+    );
+
+  // A section row (2.30): one cell across every column, before the first row
+  // of its run on each page.
+  const sectionRowEl = (section, i) =>
+    h(
+      "tr",
+      { key: `__section_${keyOf(section, i)}`, className: "mk-dt-section-row" },
+      h(
+        "td",
+        { colSpan: columns.length },
+        h("div", { className: "mk-dt-section-label" }, renderSection ? renderSection(section) : columns[0].render ? columns[0].render(section) : columns[0].value(section)),
+      ),
+    );
+
+  const rowsEl = visible.map((row, i) => {
           const key = keyOf(row, start + i);
           const click = clickProps(onRowClick, row, rowLabel ? rowLabel(row) : undefined);
           const rowClass = cx(click?.className, rowClassName?.(row)) || undefined;
@@ -896,7 +1057,7 @@ export function DataTable({
             return h(
               "tr",
               { key, ...click, className: rowClass },
-              ...columns.map(col => h("td", { key: col.id, className: cellClass(col) || undefined }, cell(col, row))),
+              ...columns.map(col => h("td", bodyCellProps(col, row), cell(col, row))),
             );
           }
           const id = String(key);
@@ -911,7 +1072,7 @@ export function DataTable({
             ...columns.map((col, c) =>
               h(
                 "td",
-                { key: col.id, className: cellClass(col) || undefined },
+                bodyCellProps(col, row),
                 c === 0 ? firstCell(col, row, can ? expander(row, id, open, detailId) : null) : cell(col, row),
               ),
             ),
@@ -927,7 +1088,30 @@ export function DataTable({
               h("td", { colSpan: columns.length }, h("div", { className: "mk-dt-detail-body" }, renderExpanded(row))),
             ),
           );
-        }),
+        });
+  // Each section row goes before the first row of its run on the page.
+  const withSections = () => {
+    const out = [];
+    let last;
+    visible.forEach((row, i) => {
+      const section = sectionOf.get(row) ?? null;
+      if (section !== last && section != null) out.push(sectionRowEl(section, start + i));
+      last = section;
+      out.push(rowsEl[i]);
+    });
+    return out;
+  };
+
+  const body = h(
+    "tbody",
+    loading ? { className: "mk-dt-busy", "aria-busy": "true" } : null,
+    visible.length === 0
+      ? loading
+        ? skeleton()
+        : h("tr", { key: "__empty" }, h("td", { colSpan: columns.length, className: "mk-dt-empty" }, empty))
+      : sectionOf
+        ? withSections()
+        : rowsEl,
   );
 
   // The pinned total row (a <tfoot> that sticks to the bottom), shown with rows only.
@@ -956,9 +1140,11 @@ export function DataTable({
     h(
       "span",
       { "aria-live": "polite" },
-      sorted.length
-        ? L.range(start + 1, end, sorted.length, noun)
-        : L.none(noun),
+      totalCount
+        ? L.range(start + 1, end, totalCount, noun)
+        : loading
+          ? null
+          : L.none(noun),
     ),
     h(
       "div",
@@ -971,8 +1157,9 @@ export function DataTable({
             "aria-label": L.rowsPerPage,
             value: pageSize,
             onChange: e => {
-              setPageSize(Number(e.target.value));
-              goTo(1);
+              const size = Number(e.target.value);
+              setPageSize(size);
+              goTo(1, size);
             },
           },
           ...sizeOptions.map(n => h("option", { key: n, value: n }, L.perPage(n))),
@@ -987,6 +1174,7 @@ export function DataTable({
 
   const exportButton =
     exportFilename != null &&
+    !manualPagination &&
     h(
       Button,
       { key: "__export", disabled: !sorted.length, onClick: exportCsv, title: L.exportTitle },
@@ -1008,7 +1196,10 @@ export function DataTable({
       { className: "mk-dt-scroll", ref: scrollRef, style: !fill && maxHeight != null ? { maxHeight } : undefined },
       h(
         "table",
-        { className: cx("mk-dt-table", runs && "mk-dt-table--grouped"), style: { minWidth: layout.minWidth } },
+        {
+          className: cx("mk-dt-table", runs && "mk-dt-table--grouped"),
+          style: layout.fixed ? { minWidth: layout.minWidth, width: layout.minWidth } : { minWidth: layout.minWidth },
+        },
         h(
           "colgroup",
           null,
@@ -1314,6 +1505,9 @@ export function FilterItems({
  *
  * `searchable` (2.27) adds FilterItems' search input at the top of the menu:
  * search, All, a separator, then the values.
+ *
+ * `disabled` (2.30) disables the trigger as shadcn's Button does: half
+ * opacity, no pointer, out of the tab order. An open menu closes.
  */
 export function MultiSelect({
   options,
@@ -1334,6 +1528,7 @@ export function MultiSelect({
   searchEmpty,
   locale,
   labels,
+  disabled,
   className,
   triggerClassName,
   label,
@@ -1351,6 +1546,9 @@ export function MultiSelect({
   React.useEffect(() => {
     if (!open) setNone(false);
   }, [open]);
+  React.useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
   const tree = options.map(toNode);
   const selected = filterNormalize(tree, value ?? []);
   const many = formatMany ?? L.many;
@@ -1370,6 +1568,7 @@ export function MultiSelect({
         "aria-haspopup": "listbox",
         "aria-expanded": open,
         "aria-label": ariaLabel,
+        disabled,
         title: selected.length > 1
           ? selected.map(v => filterFind(tree, v)?.label ?? v).join(", ")
           : text,
@@ -1421,6 +1620,7 @@ export function MultiSelect({
  *
  * sources: [{ key, label, note?, value?, detail?, tone? }]
  * action:  a node shown as a callout above the sources (e.g. "Load latest").
+ * locale:  (2.30) BCP 47 tag: the panel's and the list's screen-reader names in that language.
  */
 export function FreshnessBadge({
   tone = "neutral",
@@ -1432,8 +1632,10 @@ export function FreshnessBadge({
   action,
   footer,
   align = "end",
+  locale,
   className,
 }) {
+  const T = localeStrings("freshness", locale);
   const [open, setOpen] = React.useState(false);
   const ref = React.useRef(null);
   usePopover(open, setOpen, ref, align);
@@ -1466,7 +1668,7 @@ export function FreshnessBadge({
         {
           className: "mk-pop mk-fresh-pop",
           role: "dialog",
-          "aria-label": "Data freshness",
+          "aria-label": T.dialog,
           onClick: cancelLabelActivation,
         },
         (title != null || meta != null) &&
@@ -1481,7 +1683,7 @@ export function FreshnessBadge({
         sources.length > 0 &&
           h(
             "ul",
-            { className: "mk-fresh-sources", "aria-label": "Sources" },
+            { className: "mk-fresh-sources", "aria-label": T.sources },
             ...sources.map(s =>
               h(
                 "li",
@@ -1506,6 +1708,20 @@ export function FreshnessBadge({
 // ---------------------------------------------------------------------------
 // RefreshAllButton
 // ---------------------------------------------------------------------------
+const STAGE_KEY = { waiting: "stageWaiting", building: "stageBuilding", linking: "stageLinking", downloading: "stageDownloading", loading: "stageLoading", querying: "stageQuerying" };
+const fmtMb = n => (n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+/** bindingPhaseLabel in a language (2.30): the stage, then rows or bytes when known. */
+function localPhaseLabel(progress, T, locale) {
+  const p = typeof progress === "string" ? { phase: progress } : progress;
+  const stage = p ? bindingPhaseStage(p.phase) : null;
+  if (!stage) return "";
+  const label = T[STAGE_KEY[stage]];
+  if (stage === "building" && typeof p.rowsWritten === "number") return `${label} · ${T.rowsWritten(p.rowsWritten.toLocaleString(locale))}`;
+  if (stage === "downloading" && typeof p.bytes === "number") {
+    return `${label} · ${fmtMb(p.bytes)}${typeof p.bytesTotal === "number" ? ` ${T.of} ${fmtMb(p.bytesTotal)}` : ""}`;
+  }
+  return label;
+}
 /**
  * Re-runs every binding's warehouse query, `concurrency` at a time, and
  * updates the app as each one lands (refreshBinding). The header shows one
@@ -1516,6 +1732,8 @@ export function FreshnessBadge({
  * `bindings` is the app's binding names — usually a build-time define over
  * `bindings/*.sql` (see the README). Keep `concurrency` low: stacked heavy
  * warehouse builds fail transiently and can wedge a slot pool.
+ * `locale` (2.30, BCP 47) writes every text and the finish time in that
+ * language (`labels` stays the binding names' map).
  */
 export function RefreshAllButton({
   bindings,
@@ -1526,8 +1744,11 @@ export function RefreshAllButton({
   concurrency = 3,
   schedule,
   refresh = refreshBinding,
+  locale,
   className,
 }) {
+  const T = localeStrings("refresh", locale);
+  const phaseLabel = p => (localeLang(locale) === "en" ? bindingPhaseLabel(p) : localPhaseLabel(p, T, locale));
   const sources = React.useMemo(
     () => refreshOrder(bindings, { first, last, skip }),
     // Patterns are usually literals; key them by content, not identity.
@@ -1605,7 +1826,7 @@ export function RefreshAllButton({
       await Promise.all(Array.from({ length: Math.min(concurrency, sources.length) }, worker));
       setState({
         status: "done",
-        at: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        at: new Date().toLocaleTimeString(locale ?? [], { hour: "2-digit", minute: "2-digit" }),
         failures,
         seconds: Math.round((Date.now() - startedAt) / 1000),
       });
@@ -1616,12 +1837,12 @@ export function RefreshAllButton({
 
   const failedCount = state.status === "done" ? state.failures.length : 0;
   const label = running
-    ? `Refreshing ${state.done}/${total}…`
+    ? T.running(state.done, total)
     : state.status === "done"
       ? failedCount
-        ? `${total - failedCount}/${total} refreshed`
-        : `Refreshed ${state.at}`
-      : "Refresh data";
+        ? T.partial(total - failedCount, total)
+        : T.doneAt(state.at)
+      : T.button;
   const elapsed = running
     ? Math.max(0, Math.round((now - state.startedAt) / 1000))
     : state.status === "done"
@@ -1632,20 +1853,20 @@ export function RefreshAllButton({
 
   const title =
     state.status === "idle"
-      ? "Refresh data"
+      ? T.titleIdle
       : running
-        ? "Refreshing data…"
+        ? T.titleRunning
         : failedCount
-          ? "Refresh finished with errors"
-          : "Data refreshed";
+          ? T.titleFailed
+          : T.titleDone;
   const desc =
     state.status === "idle"
-      ? `Re-runs ${total} warehouse ${total === 1 ? "query" : "queries"} (${concurrency} at a time) and updates the app as each one lands.${schedule ? ` ${schedule}` : ""}`
+      ? `${T.descIdle(total, concurrency)}${schedule ? ` ${schedule}` : ""}`
       : running
-        ? "You can close this — the refresh keeps running in the background."
+        ? T.descRunning
         : failedCount
-          ? "Failed sources keep serving their previous data."
-          : `All ${total} sources rebuilt in ${fmtSecs(elapsed)}.`;
+          ? T.descFailed
+          : T.descDone(total, fmtSecs(elapsed));
 
   const itemIcon = st =>
     st === "done"
@@ -1659,14 +1880,14 @@ export function RefreshAllButton({
     st === "queued"
       ? state.status === "idle"
         ? ""
-        : "Queued"
+        : T.queued
       : st === "running"
-        ? bindingPhaseLabel(progress[name]) || "Running"
+        ? phaseLabel(progress[name]) || T.running1
         : st === "done"
           ? took[name] != null
             ? fmtSecs(took[name])
-            : "Done"
-          : "Failed";
+            : T.done1
+          : T.failed1;
 
   const modal =
     open &&
@@ -1691,7 +1912,7 @@ export function RefreshAllButton({
             ),
             h(
               "button",
-              { ref: closeRef, type: "button", className: "mk-rf-x", "aria-label": "Close", onClick: () => setOpen(false) },
+              { ref: closeRef, type: "button", className: "mk-rf-x", "aria-label": T.close, onClick: () => setOpen(false) },
               h(IconX),
             ),
           ),
@@ -1716,7 +1937,7 @@ export function RefreshAllButton({
               h(
                 "div",
                 { className: "mk-rf-meta" },
-                h("span", null, `${doneCount} of ${total} rebuilt`),
+                h("span", null, T.progress(doneCount, total)),
                 h("span", null, fmtSecs(elapsed)),
               ),
             ),
@@ -1744,13 +1965,13 @@ export function RefreshAllButton({
             "div",
             { className: "mk-rf-foot" },
             state.status === "idle" && [
-              h(Button, { key: "c", onClick: () => setOpen(false) }, "Cancel"),
-              h(Button, { key: "s", variant: "primary", onClick: refreshAll }, "Start refresh"),
+              h(Button, { key: "c", onClick: () => setOpen(false) }, T.cancel),
+              h(Button, { key: "s", variant: "primary", onClick: refreshAll }, T.start),
             ],
-            running && h(Button, { onClick: () => setOpen(false) }, "Hide"),
+            running && h(Button, { onClick: () => setOpen(false) }, T.hide),
             state.status === "done" && [
-              h(Button, { key: "a", onClick: refreshAll }, "Refresh again"),
-              h(Button, { key: "d", variant: "primary", onClick: () => setOpen(false) }, "Done"),
+              h(Button, { key: "a", onClick: refreshAll }, T.again),
+              h(Button, { key: "d", variant: "primary", onClick: () => setOpen(false) }, T.finish),
             ],
           ),
         ),
@@ -1771,9 +1992,7 @@ export function RefreshAllButton({
           state.status === "done" && (failedCount ? "failed" : "ok"),
           className,
         ),
-        title: running
-          ? "Refresh in progress — click to see details."
-          : `Re-runs every binding's warehouse query.${schedule ? ` ${schedule}` : ""}`,
+        title: running ? T.hintRunning : `${T.hint}${schedule ? ` ${schedule}` : ""}`,
         disabled: !total,
         onClick: () => setOpen(true),
         "aria-haspopup": "dialog",

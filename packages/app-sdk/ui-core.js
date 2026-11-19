@@ -224,23 +224,73 @@ export function columnGroupRuns(columns) {
  * (default `defaultColumnWidth`). The flexible columns (`grow: true`, else the
  * first column) take the space left when the card is wider than the sum; their
  * floor is `minWidth`, else their width. Widths never depend on the rows, so
- * sorting, filtering and paging never move a column.
- * Returns `{ cols: [{ id, width: CSS length | null (flexible) }], minWidth }`.
+ * sorting, filtering and paging never move a column. A column's `size`
+ * (TanStack's name, px) is its width when `width` is unset. `sizing` (2.30,
+ * TanStack's ColumnSizingState, `{ [id]: px }`) holds dragged widths: they win,
+ * and a dragged growing column stops growing (`fixed: true` once none grows).
+ * Returns `{ cols: [{ id, width: CSS length | null (flexible) }], minWidth, fixed? }`.
  */
-export function columnLayout(columns) {
+export function columnLayout(columns, sizing) {
   const anyGrow = columns.some(c => c.grow);
   let px = 0;
+  let flexible = 0;
   const other = [];
   const cols = columns.map((c, i) => {
-    const grow = anyGrow ? !!c.grow : i === 0;
-    const base = c.width ?? defaultColumnWidth(c, i);
+    const sized = sizing?.[c.id];
+    const grow = (anyGrow ? !!c.grow : i === 0) && sized == null;
+    const base = sized ?? c.width ?? c.size ?? defaultColumnWidth(c, i);
     const floor = grow ? (c.minWidth ?? base) : base;
+    if (grow) flexible += 1;
     if (typeof floor === "number") px += floor;
     else other.push(floor);
     return { id: c.id, width: grow ? null : cssLength(base) };
   });
   const minWidth = other.length ? `calc(${[`${px}px`, ...other].join(" + ")})` : `${px}px`;
-  return { cols, minWidth };
+  // A dragged growing column is a fixed one: the table is then exactly the sum.
+  return sizing && !flexible ? { cols, minWidth, fixed: true } : { cols, minWidth };
+}
+
+/**
+ * A column width after a drag (2.30, TanStack Table's sizes): the start width
+ * plus the pointer's travel, rounded, within `minSize` (default 20, as
+ * TanStack) and `maxSize` (default none).
+ */
+export function resizeWidth(column, startWidth, delta) {
+  const min = column?.minSize ?? 20;
+  const max = column?.maxSize ?? Infinity;
+  return Math.min(max, Math.max(min, Math.round(startWidth + delta)));
+}
+
+/**
+ * Section rows (2.30): splits `rows` at each row `isSection` flags. Returns
+ * `[{ section: row | null, rows: [data rows] }]` in the given order; rows
+ * before the first section sit in a run with `section: null`.
+ */
+export function splitSections(rows, isSection) {
+  const runs = [];
+  let run = null;
+  for (const row of rows) {
+    if (isSection(row)) {
+      run = { section: row, rows: [] };
+      runs.push(run);
+    } else {
+      if (!run) {
+        run = { section: null, rows: [] };
+        runs.push(run);
+      }
+      run.rows.push(row);
+    }
+  }
+  return runs;
+}
+
+/** TanStack Table's SortingState (`[{ id, desc }]`) as a DataTable sort, and back. Only the first entry counts. */
+export function fromSorting(sorting) {
+  const s = sorting?.[0];
+  return s ? { id: s.id, dir: s.desc ? "desc" : "asc" } : null;
+}
+export function toSorting(sort) {
+  return sort ? [{ id: sort.id, desc: sort.dir === "desc" }] : [];
 }
 
 /**

@@ -40,6 +40,8 @@ export interface PeriodPickerLabels {
   mtd: string;
   qtd: string;
   ytd: string;
+  /** The "all" preset (2.30): from `min` to today. Default "All time". */
+  allTime: string;
 }
 
 /** Every fixed text of FilterBar. */
@@ -101,6 +103,65 @@ export interface DataTableLocaleStrings {
   expand: string;
   collapse: string;
   info: (label: string) => string;
+  /** A column resize handle's hover title (2.30). */
+  resizeHint: string;
+}
+
+/** Every fixed text of RefreshAllButton (2.30), by `locale`. English: the texts it showed before. */
+export interface RefreshLabels {
+  /** The idle button. Default "Refresh data". */
+  button: string;
+  /** The button while running. Default `Refreshing 2/7…`. */
+  running: (done: number, total: number) => string;
+  /** The button after a run with failures. Default `5/7 refreshed`. */
+  partial: (ok: number, total: number) => string;
+  /** The button after a clean run. Default `Refreshed 09:05`. */
+  doneAt: (at: string) => string;
+  /** The modal's title per state. */
+  titleIdle: string;
+  titleRunning: string;
+  titleFailed: string;
+  titleDone: string;
+  /** The modal's description per state; `schedule` follows the idle one. */
+  descIdle: (total: number, concurrency: number) => string;
+  descRunning: string;
+  descFailed: string;
+  descDone: (total: number, took: string) => string;
+  /** A source's state: queued, running (before its phase is known), done, failed. */
+  queued: string;
+  running1: string;
+  done1: string;
+  failed1: string;
+  /** Under the bar. Default `3 of 7 rebuilt`. */
+  progress: (done: number, total: number) => string;
+  /** The ✕ button's aria-label and the footer buttons. */
+  close: string;
+  cancel: string;
+  start: string;
+  hide: string;
+  again: string;
+  finish: string;
+  /** The button's hover title, idle and running. */
+  hint: string;
+  hintRunning: string;
+  /** A running source's stage (bindingPhaseLabel's stages). */
+  stageWaiting: string;
+  stageBuilding: string;
+  stageLinking: string;
+  stageDownloading: string;
+  stageLoading: string;
+  stageQuerying: string;
+  /** "Building from warehouse · 12,000 rows" and "Downloading · 1.2 MB of 3.4 MB". */
+  rowsWritten: (n: string) => string;
+  of: string;
+}
+
+/** The screen-reader names of FreshnessBadge (2.30). */
+export interface FreshnessLabels {
+  /** The panel. Default "Data freshness". */
+  dialog: string;
+  /** The source list. Default "Sources". */
+  sources: string;
 }
 
 export interface LocaleStrings {
@@ -108,13 +169,15 @@ export interface LocaleStrings {
   filterBar: FilterBarLabels;
   filter: FilterLabels;
   combobox: ComboboxLabels;
+  refresh: RefreshLabels;
+  freshness: FreshnessLabels;
   /** Absent in en: DataTable's English set is DATA_TABLE_LABELS. */
   dataTable?: DataTableLocaleStrings;
 }
 /** The one strings table, by language. */
 export const STRINGS: Readonly<Record<LocaleLang, LocaleStrings>>;
 /** One section for a locale, with `labels` on top. */
-export function localeStrings<K extends "period" | "filterBar" | "filter" | "combobox">(
+export function localeStrings<K extends "period" | "filterBar" | "filter" | "combobox" | "refresh" | "freshness">(
   section: K,
   locale?: string | null,
   labels?: Partial<LocaleStrings[K]> | null,
