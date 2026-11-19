@@ -9,22 +9,30 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  * warehouse hiccup as an empty table and re-fetched the whole entity.
  */
 
-const { executeQuery } = vi.hoisted(() => ({ executeQuery: vi.fn() }));
+const { executeQuery, driverOverride } = vi.hoisted(() => ({
+  executeQuery: vi.fn(),
+  driverOverride: { current: undefined as unknown },
+}));
 vi.mock("../../databases/registry", () => ({
   databaseRegistry: {
-    getDriver: () => ({
-      executeQuery,
-      quoteIdentifier: (n: string) => `\`${n}\``,
-    }),
+    getDriver: () =>
+      driverOverride.current ?? {
+        executeQuery,
+        quoteIdentifier: (n: string) => `\`${n}\``,
+      },
   },
 }));
 
 import { getMaxTrackingValue } from "./query-introspection";
+import { BigQueryDatabaseDriver } from "../../databases/drivers/bigquery/driver";
 
 const conn = { type: "bigquery" } as any;
 
 describe("getMaxTrackingValue", () => {
-  beforeEach(() => executeQuery.mockReset());
+  beforeEach(() => {
+    executeQuery.mockReset();
+    driverOverride.current = undefined;
+  });
 
   it("returns the max value", async () => {
     executeQuery.mockResolvedValue({
@@ -74,5 +82,21 @@ describe("getMaxTrackingValue", () => {
     expect(
       await getMaxTrackingValue({ type: "mongodb" } as any, "t", "_syncedAt"),
     ).toEqual({ success: true, maxValue: undefined });
+  });
+
+  // Prod: "Syntax error: Expected end of input but got "-"" for ad-review,
+  // because the BigQuery table ref left the table name bare.
+  it("backticks a hyphenated BigQuery dataset and table", async () => {
+    const bq = new BigQueryDatabaseDriver();
+    bq.executeQuery = executeQuery;
+    driverOverride.current = bq;
+    executeQuery.mockResolvedValue({
+      success: true,
+      data: [{ max_value: "2026-11-18T00:00:00.000Z" }],
+    });
+    await getMaxTrackingValue(conn, "ad-review", "_syncedAt", "meta-ads");
+    expect(executeQuery.mock.calls[0][1]).toBe(
+      "SELECT MAX(_syncedAt) as max_value FROM `meta-ads`.`ad-review`",
+    );
   });
 });
