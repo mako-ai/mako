@@ -472,6 +472,15 @@ The order is search, All, a separator, then the values.
 - `searchPlaceholder` sets the placeholder (default "Search").
 - Without `searchable` the menu is unchanged.
 
+**Counts (2.28).** An option's `count` shows muted at the row's right edge.
+It works in `MultiSelect` and `FilterItems`. Search matches the label only.
+The trigger shows the label only. A number prints with thousands separators
+(1,234). Put the count here, never in the label.
+
+```tsx
+<MultiSelect searchable options={offices.map(o => ({ value: o.id, label: o.name, count: o.n }))} value={office} onChange={setOffice} allLabel="All offices" />
+```
+
 **Replacing an app's NestedFilterMenu: `FilterMenu`.** See "Menus" below:
 `FilterMenu` and `FilterMenuItems` from `@makoai/app-sdk/menu` take
 NestedFilterMenu's props (`label`, `options`, `selected`, `onChange`,
@@ -582,6 +591,29 @@ react-day-picker or cmdk never loads them:
 import { Calendar } from "@makoai/app-sdk/components/calendar";
 import { Command, CommandInput, CommandList } from "@makoai/app-sdk/components/command";
 ```
+
+**Searchable single choice: `Combobox` (2.28).** shadcn's combobox recipe
+(Popover + Command) on its own subpath, since it loads cmdk. A pick closes
+it. Picking the picked row again clears the value to `null`. The trigger
+shows `placeholder` while the value is `null`.
+
+```tsx
+import { Combobox } from "@makoai/app-sdk/components/combobox";
+
+<Combobox
+  aria-label="CSM"
+  placeholder="All CSMs"
+  searchPlaceholder="Filter CSMs..."
+  options={csms.map(r => ({ value: r.csm, label: r.csm, count: r.n, keywords: [r.countries] }))}
+  value={csm}
+  onChange={setCsm}
+/>
+```
+
+- Search matches `label` and `keywords`. It never matches `value` or `count`.
+- `count` shows muted at the row's right edge. The trigger never shows it.
+- `icon` sits before the trigger text. `className` sizes the trigger (default `w-[200px]`).
+- The keys are cmdk's: arrows move, Enter picks, Escape closes.
 
 shadcn's stock components pass refs as props, so they need React 19. On
 React 18 a ref is dropped: a Calendar's arrow keys stop moving focus. Apps

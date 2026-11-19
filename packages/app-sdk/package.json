@@ -55,6 +55,10 @@
       "types": "./components/command.tsx",
       "default": "./components/command.tsx"
     },
+    "./components/combobox": {
+      "types": "./components/combobox.tsx",
+      "default": "./components/combobox.tsx"
+    },
     "./ui.css": "./ui.css",
     "./tailwind.css": "./tailwind.css"
   },

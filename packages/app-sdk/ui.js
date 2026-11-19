@@ -806,10 +806,13 @@ const asChecked = t => (t === "on" ? true : t === "mixed" ? "mixed" : false);
  * (several filters folded into one dropdown on a phone), so every filter
  * ticks and toggles alike.
  *
- * Options are strings, `{ value, label, color }`, or groups with `children`
+ * Options are strings, `{ value, label, color, count }`, or groups with `children`
  * (a flat list is a one-level tree). A group row ticks its whole group and
  * shows a dash when part of it is picked; its children follow it, indented.
  * A tree that needs hover submenus is a FilterMenu (`@makoai/app-sdk/menu`).
+ *
+ * `count` (2.28) is a number shown muted at the row's right edge, before
+ * "Only". Search matches the label only, and the trigger never shows it.
  *
  * The All rule (2.20): with nothing filtered (`value` empty or holding every
  * option) every row is ticked. Unticking one leaves All in the partial (–)
@@ -956,6 +959,7 @@ export function FilterItems({
       h(Checkbox, { checked: asChecked(tick) }),
       dot(node),
       h("span", { className: "mk-ms-label" }, node.label),
+      node.count != null && h("span", { className: "mk-ms-count" }, typeof node.count === "number" ? fmtCount(node.count) : node.count),
       showOnly && filterLeavesOf(node).length > 0 && h("button", { type: "button", className: "mk-ms-only", tabIndex: -1, onClick: only(node) }, "Only"),
     );
     return group ? [el, ...node.children.flatMap(c => row(c, depth + 1))] : [el];

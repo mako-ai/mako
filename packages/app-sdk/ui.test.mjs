@@ -1084,6 +1084,83 @@ test("MultiSelect searchable: search, All, separator, values; typing filters; cm
   await React.act(() => root.unmount());
 });
 
+// Markup of FilterItems and MultiSelect without `count`, rendered by the
+// 2.27.0 ui.js (sha256, first 16 hex), searchable off and on.
+const MARKUP_2_27 = ["ab078fde340fd7ae", "65b9d0d8e9b81d9f", "bcc26beb2d245b88", "bbfabefb95f06723"];
+
+test("option count off: markup identical to 2.27.0, and an undefined or null count equals none", async t => {
+  let React, server, crypto;
+  try {
+    React = await import("react");
+    server = await import("react-dom/server");
+    crypto = await import("node:crypto");
+  } catch (e) {
+    t.skip("react not installed here: " + e.message);
+    return;
+  }
+  const ui = await import("./ui.js");
+  const h = React.createElement;
+  const withCount = (opts, count) => opts.map(o => (typeof o === "string" || count === "omit" ? o : { ...o, count, ...(o.children ? { children: withCount(o.children, count) } : null) }));
+  const tree = [{ value: "humans", label: "Humans" }, { value: "bots", label: "Bots", children: [{ value: "gptbot", label: "GPTBot", title: "OpenAI" }, { value: "bing", label: "Bingbot" }] }];
+  const html = count => [
+    h(ui.FilterItems, { options: ["CH", "ES", "IT"], value: ["ES"], onChange() {}, allLabel: "All markets", showOnly: true }),
+    h(ui.FilterItems, { options: withCount(tree, count), value: ["humans", "gptbot"], onChange() {}, "aria-label": "Traffic" }),
+    h(ui.FilterItems, { options: withCount(tree, count), value: [], onChange() {}, searchable: true, showOnly: true }),
+    h(ui.MultiSelect, { options: withCount([{ value: "ch", label: "Switzerland", color: "#dc2626" }, "ES"], count), value: ["ch"], onChange() {}, allLabel: "All markets", searchable: true }),
+  ].map(el => server.renderToStaticMarkup(el));
+  const hash = s => crypto.createHash("sha256").update(s).digest("hex").slice(0, 16);
+  assert.deepEqual(html("omit").map(hash), MARKUP_2_27);
+  assert.deepEqual(html(undefined), html("omit"));
+  assert.deepEqual(html(null), html("omit"));
+  for (const s of html("omit")) assert.doesNotMatch(s, /mk-ms-count/);
+});
+
+test("option count: muted at the row's end before Only, formatted, never in the trigger or the search", async t => {
+  const env = await jsdomUi(t);
+  if (!env) return;
+  const { React, client, win, ui, h } = env;
+  const OFFICES = [
+    { value: "lyon", label: "Lyon Office", count: 1 },
+    { value: "paris", label: "Paris Office", count: 1234 },
+    { value: "nice", label: "Nice 12", count: "n/a" },
+    { value: "lille", label: "Lille Office" },
+  ];
+  let value = null;
+  function App() {
+    const [v, setV] = React.useState([]);
+    value = v;
+    return h(ui.MultiSelect, { searchable: true, showOnly: true, options: OFFICES, value: v, onChange: setV, allLabel: "All offices" });
+  }
+  const root = client.createRoot(win.document.getElementById("root"));
+  await React.act(() => root.render(h(App)));
+  const doc = win.document;
+  const trigger = doc.querySelector(".mk-ms-trigger");
+  assert.doesNotMatch(trigger.textContent, /1,234|\(1\)/, "the closed trigger's probes are labels only");
+  await React.act(() => trigger.click());
+  const opts = () => [...doc.querySelectorAll('.mk-ms-menu [role="option"]')];
+  const row = label => opts().find(r => r.querySelector(".mk-ms-label").textContent === label);
+  assert.deepEqual(opts().map(r => r.querySelector(".mk-ms-count")?.textContent ?? null), [null, "1", "1,234", "n/a", null], "All has none; a number is formatted; a string stays");
+  const parts = [...row("Paris Office").children].map(c => c.className);
+  assert.deepEqual(parts, ["mk-ms-box on", "mk-ms-label", "mk-ms-count", "mk-ms-only"], "checkbox, label, count, Only");
+  const input = doc.querySelector(".mk-ms-search-input");
+  // react-dom loaded before jsdom watches inputs through a polyfill that only
+  // the first window's input reaches, so call the input's onChange directly.
+  const type = async q => {
+    const props = input[Object.keys(input).find(k => k.startsWith("__reactProps"))];
+    await React.act(() => props.onChange({ target: { value: q } }));
+  };
+  await type("12");
+  assert.deepEqual(opts().map(r => r.querySelector(".mk-ms-label").textContent), ["Nice 12"], "search matches the label, never Paris's 1,234");
+  await type("1");
+  assert.deepEqual(opts().map(r => r.querySelector(".mk-ms-label").textContent), ["Nice 12"], "never Lyon's count of 1");
+  await type("");
+  await React.act(() => row("Paris Office").querySelector(".mk-ms-only").click());
+  assert.deepEqual(value, ["paris"]);
+  assert.equal(doc.querySelector(".mk-ms-text").textContent, "Paris Office", "the trigger shows the label, no count");
+  assert.equal(trigger.title, "Paris Office");
+  await React.act(() => root.unmount());
+});
+
 // ---------------------------------------------------------------------------
 // tooltipSeriesRows absentAsZero/share, TableTooltip colWidth, DataTable groups
 // ---------------------------------------------------------------------------
