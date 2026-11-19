@@ -23,7 +23,10 @@ import { withRetry } from "../../retry";
 import {
   buildMySQLConfig,
   buildSshTunnelConfig,
+  isLostConnectionError,
+  MYSQL_LOST_CONNECTION_PATTERNS,
   MYSQL_MAX_RETRIES,
+  MYSQL_POOL_OPTIONS,
   MYSQL_RETRY_BASE_DELAY_MS,
 } from "./config";
 
@@ -145,18 +148,23 @@ export class MySQLEngine implements QueryEngine {
       : undefined;
 
     const config = buildMySQLConfig(database, targetDatabase, tunnelEndpoint);
-    const pool = mysql.createPool({
-      ...config,
-      waitForConnections: true,
-      connectionLimit: 2,
-      maxIdle: 2,
-      idleTimeout: 10000,
-      enableKeepAlive: true,
-      keepAliveInitialDelay: 30000,
-    });
+    const pool = mysql.createPool({ ...config, ...MYSQL_POOL_OPTIONS });
+
+    // Checked-out connections. One the server closes while idle in the pool
+    // is routine: mysql2 already drops it, and the next checkout dials anew.
+    const inUse = new WeakSet<object>();
+    pool.on("acquire", connection => inUse.add(connection));
+    pool.on("release", connection => inUse.delete(connection));
 
     pool.on("connection", connection => {
       connection.on("error", err => {
+        if (!inUse.has(connection) && isLostConnectionError(err)) {
+          logger.debug("MySQL server closed an idle pooled connection", {
+            key,
+            error: err instanceof Error ? err.message : err,
+          });
+          return;
+        }
         logger.error("MySQL pool connection error", {
           key,
           error: err instanceof Error ? err.message : err,
@@ -261,6 +269,8 @@ export class MySQLEngine implements QueryEngine {
   ): Promise<StreamingQueryResult> {
     const batchSize = Math.max(1, Math.floor(options.batchSize || 1000));
     let totalRows = 0;
+    // Once a batch is out, a retry would hand the same rows out twice.
+    let delivered = false;
     const failed = await this.onConnection(
       database,
       options,
@@ -273,6 +283,7 @@ export class MySQLEngine implements QueryEngine {
           for await (const row of stream) {
             batch.push(normalizeMySQLValue(row) as Record<string, unknown>);
             if (batch.length >= batchSize) {
+              delivered = true;
               await options.onBatch(batch);
               totalRows += batch.length;
               batch = [];
@@ -285,11 +296,13 @@ export class MySQLEngine implements QueryEngine {
           throw error;
         }
         if (batch.length > 0) {
+          delivered = true;
           await options.onBatch(batch);
           totalRows += batch.length;
         }
         return false;
       },
+      () => !delivered,
     );
     return failed
       ? { success: false, totalRows, error: failed.error }
@@ -300,67 +313,37 @@ export class MySQLEngine implements QueryEngine {
    * Check out a pooled connection, make it cancellable, open a read-only
    * transaction when asked, and run `use` on it. Returns a failed result, or
    * undefined when `use` succeeded.
+   *
+   * A read (readOnly or readOnlyTransaction) that loses its connection runs
+   * once more on a fresh one, unless `canRetry` says rows already went out.
+   * A write never re-runs.
    */
   private async onConnection(
     database: IDatabaseConnection,
     options: QueryExecuteOptions | undefined,
     use: (connection: mysql.PoolConnection) => Promise<boolean>,
+    canRetry: () => boolean = () => true,
   ): Promise<QueryResult | undefined> {
     const signal = options?.signal;
     const targetDatabase =
       options?.databaseName || database.connection.database;
+    const isRead = options?.readOnly || options?.readOnlyTransaction;
 
     try {
       if (signal?.aborted) {
         return { success: false, error: "Query cancelled" };
       }
-
-      const pool = await this.getPool(database, targetDatabase);
-      const connection = await withRetry(async () => pool.getConnection(), {
-        maxRetries: MYSQL_MAX_RETRIES,
-        baseDelayMs: MYSQL_RETRY_BASE_DELAY_MS,
-        signal,
-      });
-
-      let readOnlyTransactionStarted = false;
-      let destroy = false;
-      // Cancellable by executionId (cancelQuery) and by the signal alone.
-      const untrack = this.trackQuery(
-        database,
-        targetDatabase,
-        connection,
-        options?.executionId,
-        signal,
+      return await withRetry(
+        () => this.runOnConnection(database, targetDatabase, options, use),
+        {
+          maxRetries: isRead ? 1 : 0,
+          baseDelayMs: 0,
+          retryableErrorPatterns: MYSQL_LOST_CONNECTION_PATTERNS,
+          shouldRetry: error =>
+            !signal?.aborted && canRetry() && isLostConnectionError(error),
+          signal,
+        },
       );
-      try {
-        if (signal?.aborted) {
-          return { success: false, error: "Query cancelled" };
-        }
-
-        if (options?.readOnly || options?.readOnlyTransaction) {
-          await connection.query("START TRANSACTION READ ONLY");
-          readOnlyTransactionStarted = true;
-        }
-        await use(connection);
-        if (readOnlyTransactionStarted) {
-          await connection.commit();
-          readOnlyTransactionStarted = false;
-        }
-        return undefined;
-      } catch (error) {
-        destroy =
-          (error as { destroyConnection?: boolean } | null)
-            ?.destroyConnection === true;
-        throw error;
-      } finally {
-        if (readOnlyTransactionStarted && !destroy) {
-          await connection.rollback().catch(() => undefined);
-        }
-        // A connection a KILL was aimed at is retired, not pooled: a KILL
-        // still in flight must not land on the next query it runs.
-        if (untrack() || destroy) connection.destroy();
-        else connection.release();
-      }
     } catch (error) {
       if (
         signal?.aborted ||
@@ -372,6 +355,63 @@ export class MySQLEngine implements QueryEngine {
         success: false,
         error: error instanceof Error ? error.message : "MySQL query failed",
       };
+    }
+  }
+
+  /** One attempt of onConnection. Throws on failure. */
+  private async runOnConnection(
+    database: IDatabaseConnection,
+    targetDatabase: string | undefined,
+    options: QueryExecuteOptions | undefined,
+    use: (connection: mysql.PoolConnection) => Promise<boolean>,
+  ): Promise<QueryResult | undefined> {
+    const signal = options?.signal;
+    const pool = await this.getPool(database, targetDatabase);
+    const connection = await withRetry(async () => pool.getConnection(), {
+      maxRetries: MYSQL_MAX_RETRIES,
+      baseDelayMs: MYSQL_RETRY_BASE_DELAY_MS,
+      signal,
+    });
+
+    let readOnlyTransactionStarted = false;
+    let destroy = false;
+    // Cancellable by executionId (cancelQuery) and by the signal alone.
+    const untrack = this.trackQuery(
+      database,
+      targetDatabase,
+      connection,
+      options?.executionId,
+      signal,
+    );
+    try {
+      if (signal?.aborted) {
+        return { success: false, error: "Query cancelled" };
+      }
+
+      if (options?.readOnly || options?.readOnlyTransaction) {
+        await connection.query("START TRANSACTION READ ONLY");
+        readOnlyTransactionStarted = true;
+      }
+      await use(connection);
+      if (readOnlyTransactionStarted) {
+        await connection.commit();
+        readOnlyTransactionStarted = false;
+      }
+      return undefined;
+    } catch (error) {
+      // A lost connection is dead too: never pool it.
+      destroy =
+        (error as { destroyConnection?: boolean } | null)?.destroyConnection ===
+          true || isLostConnectionError(error);
+      throw error;
+    } finally {
+      if (readOnlyTransactionStarted && !destroy) {
+        await connection.rollback().catch(() => undefined);
+      }
+      // A connection a KILL was aimed at is retired, not pooled: a KILL
+      // still in flight must not land on the next query it runs.
+      if (untrack() || destroy) connection.destroy();
+      else connection.release();
     }
   }
 

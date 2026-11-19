@@ -50,6 +50,8 @@ export default defineConfig({
       "src/databases/drivers/clickhouse/stream.test.ts",
       // Cloud SQL cursor, MySQL stream, capped single read: never OFFSET pages.
       "src/databases/stream-once.test.ts",
+      // MySQL pool: idle connections reaped, a lost one retried once on reads.
+      "src/databases/drivers/mysql/pool.test.ts",
       "src/routes/source-connection-writers.test.ts",
       // A database connection's writers list, changed in the app.
       "src/routes/database-writers-session.test.ts",
