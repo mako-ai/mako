@@ -36,7 +36,7 @@ import {
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { syncConnectorRegistry } from "../sync/connector-registry";
-import { probeConnection } from "./probe.service";
+import { boxBusyProbeError, probeConnection } from "./probe.service";
 import {
   SourceConnectionInputError,
   applySchemaEncryption,
@@ -328,7 +328,9 @@ export async function submitKey(input: {
   connectionId: string;
   name: string;
   connector: string;
-  check: { success: boolean; message?: string } | { skipped: true };
+  check:
+    | { success: boolean; message?: string }
+    | { skipped: true; message?: string };
 }> {
   const { workspaceId, token, userId, check = true } = input;
   const row = await findPending(workspaceId, token, input.authorize);
@@ -433,6 +435,11 @@ export async function submitKey(input: {
   try {
     result = (await probeConnection({ workspaceId, connectionId })).check;
   } catch (error) {
+    // A full connector box ran no check: the key stays, unjudged.
+    const busy = boxBusyProbeError(error);
+    if (busy) {
+      return { ...identity, check: { skipped: true, message: busy.message } };
+    }
     result = {
       success: false,
       message: error instanceof Error ? error.message : String(error),

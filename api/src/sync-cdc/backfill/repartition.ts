@@ -14,6 +14,7 @@ import {
 import { inngest } from "../../inngest/client";
 import { loggers } from "../../logging";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
+import { boxLowMemoryRefusal } from "../../apps/sandbox/box-memory";
 import { sourceConnectionManager } from "../../sync/database-data-source-manager";
 import {
   buildCdcEntityLayout,
@@ -184,6 +185,8 @@ export async function repartitionEntity(params: {
     );
     return { outcome: "missing" };
   } catch (error) {
+    // Not the entity's failure: the step waits for box memory and runs again.
+    if (boxLowMemoryRefusal(error)) throw error;
     const message = error instanceof Error ? error.message : String(error);
     log.error("In-place repartition failed for entity", {
       flowId,
@@ -336,7 +339,10 @@ export async function buildEntityLayout(flow: IFlow, entity: string) {
       const conn = ds ? await syncConnectorRegistry.getConnectorFor(ds) : null;
       const schema = conn ? await conn.resolveSchema(entity) : null;
       keyColumns = schema?.keyColumns;
-    } catch {
+    } catch (error) {
+      // A box memory refusal is no answer: the step waits for memory
+      // (cdc-repartition.ts) instead of repartitioning without key columns.
+      if (boxLowMemoryRefusal(error)) throw error;
       log.warn("Schema resolution failed for repartition key columns", {
         entity,
         flowId: String(flow._id),

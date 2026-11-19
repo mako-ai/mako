@@ -35,6 +35,7 @@ import {
   WebhookEvent,
 } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
+import { boxLowMemoryRefusal } from "../../apps/sandbox/box-memory";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
 import { sourceConnectionManager } from "../../sync/database-data-source-manager";
 import { hasCdcDestinationAdapter } from "../../sync-cdc/adapters/registry";
@@ -541,6 +542,10 @@ export function checkOutcome(
  * One batch of one flow: claim, run in the box, check, write. Every exit
  * leaves each claimed event in a final state or failed for the retry cron;
  * none is left `processing` by this run.
+ *
+ * A box memory refusal is the one throw: the claimed events go back to
+ * pending with their attempt refunded, the batch size stays, and the
+ * refusal is thrown for the caller to wait on (withBoxMemoryWaits).
  */
 export async function processBoxWebhookBatch(input: {
   flowId: string;
@@ -712,6 +717,10 @@ export async function processBoxWebhookBatch(input: {
     );
     declared = new Set(await runner.declaredEntities());
   } catch (error) {
+    if (boxLowMemoryRefusal(error)) {
+      await releaseClaimed(claim, claimed);
+      throw error;
+    }
     const reason = error instanceof Error ? error.message : String(error);
     await failClaimed(claim, claimed, reason);
     return {
@@ -892,6 +901,12 @@ async function runBatch(input: {
   try {
     run = await runner.runWebhookBatch(batch, { timeoutMs: limits.timeoutMs });
   } catch (error) {
+    // The box refused to start the run: no event of the batch is to blame,
+    // and the batch is no smaller next time. They wait for memory.
+    if (boxLowMemoryRefusal(error)) {
+      await releaseClaimed(claim, events);
+      throw error;
+    }
     const reason = error instanceof Error ? error.message : String(error);
     if (error instanceof ConnectorOutputTooLargeError) {
       return boxFailed(

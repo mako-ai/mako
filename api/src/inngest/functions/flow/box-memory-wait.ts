@@ -13,8 +13,16 @@
  * returns a marker, the function sleeps (step.sleep), and the next attempt
  * runs under a new step id. Only after MAX waits does the refusal throw, and
  * then infra-failure.ts reads it as Mako's failure, never the connector's.
+ * A step that must never throw (a webhook batch, a CDC materialization)
+ * passes `giveUp` and returns a "come back later" result instead.
+ *
+ * A wrapped refusal counts too: schema resolution wraps it in
+ * SchemaResolutionError (box-memory.ts boxLowMemoryRefusal).
  */
-import { isBoxLowMemoryError } from "../../../apps/sandbox/box-memory";
+import {
+  boxLowMemoryRefusal,
+  type BoxLowMemoryError,
+} from "../../../apps/sandbox/box-memory";
 
 /** Wait before the next attempt: 60 s, plus up to 30 s so waiters spread out. */
 export const BOX_MEMORY_WAIT_MS = 60_000;
@@ -57,6 +65,11 @@ export async function withBoxMemoryWaits<T>(
   options: {
     maxWaits?: number;
     onWait?: (wait: number, refusal: Refusal[typeof MARKER]) => void;
+    /**
+     * Runs inside the step once the waits are used up. Its value becomes the
+     * step's result, and the refusal does not throw.
+     */
+    giveUp?: (refusal: BoxLowMemoryError) => T;
     random?: () => number;
   } = {},
 ): Promise<{ result: T; waits: number }> {
@@ -68,11 +81,16 @@ export async function withBoxMemoryWaits<T>(
       try {
         return await fn();
       } catch (error) {
-        if (!isBoxLowMemoryError(error) || wait >= maxWaits) throw error;
+        const refused = boxLowMemoryRefusal(error);
+        if (!refused) throw error;
+        if (wait >= maxWaits) {
+          if (options.giveUp) return options.giveUp(refused);
+          throw error;
+        }
         const refusal: Refusal = {
           [MARKER]: {
-            message: error.message,
-            availableMb: error.availableMb,
+            message: refused.message,
+            availableMb: refused.availableMb,
             // Inside the step, so a replay sleeps exactly as long.
             retryInMs:
               BOX_MEMORY_WAIT_MS +

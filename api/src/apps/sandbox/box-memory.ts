@@ -62,3 +62,38 @@ export function isBoxLowMemoryError(
 ): error is BoxLowMemoryError {
   return error instanceof BoxLowMemoryError;
 }
+
+/**
+ * The text every connector-box refusal carries (sync-box.ts
+ * ConnectorBoxLowMemoryError). infra-failure.ts and transient-failure.ts
+ * match the same words.
+ */
+const REFUSAL_TEXT =
+  /has (\d+) MB of memory free; a connector run needs (\d+) MB/;
+
+/**
+ * The box memory refusal behind `error`, or null.
+ *
+ * A refusal rarely reaches a caller as itself. Schema resolution wraps it
+ * (SchemaResolutionError, as its `cause`), and other wrappers keep only its
+ * message. On 19 Nov 2026 a wrapped refusal failed a 16-hour CDC backfill
+ * because `instanceof` missed it. This walks the cause chain, then reads the
+ * refusal's own words from the message.
+ */
+export function boxLowMemoryRefusal(error: unknown): BoxLowMemoryError | null {
+  let current: unknown = error;
+  for (let depth = 0; depth < 8 && current; depth++) {
+    if (current instanceof BoxLowMemoryError) return current;
+    current = (current as { cause?: unknown }).cause;
+  }
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "";
+  const match = REFUSAL_TEXT.exec(message);
+  return match
+    ? new BoxLowMemoryError(message, Number(match[1]), Number(match[2]))
+    : null;
+}

@@ -28,6 +28,7 @@ import {
   isWebhookPaused,
 } from "../../services/flow-triggers.service";
 import { cdcConsumerService } from "../../sync-cdc/consumer";
+import { withBoxMemoryWaits } from "./flow/box-memory-wait";
 import { cdcBackfillService } from "../../sync-cdc/backfill";
 import { cleanupStalePendingCdcEvents } from "../../sync-cdc/cdc-stale-pending-cleanup";
 import { reconcileOrphanedWebhookApplyStatus } from "../../sync-cdc/cdc-orphan-applystatus";
@@ -328,6 +329,8 @@ function circuitBreakerBackoffMs(consecutiveFailures: number): number {
 }
 
 const CDC_MATERIALIZE_MAX_ITERATIONS = 5;
+/** Box memory waits per materialize step: 5 to 7.5 min, inside the 30 min finish. */
+const CDC_MATERIALIZE_MAX_MEMORY_WAITS = 5;
 
 async function runCdcMaterialization(params: {
   eventData: unknown;
@@ -401,9 +404,14 @@ async function runCdcMaterialization(params: {
   while (iterations < CDC_MATERIALIZE_MAX_ITERATIONS) {
     const iteration = iterations;
     const materializeStartedAt = Date.now();
-    const result = (await params.step.run(
+    // The layout reads the entity's key columns from the connector box. A
+    // memory refusal sleeps and runs the step again. After 5 waits it ends
+    // this run with nothing processed: no event is failed and the circuit
+    // breaker never counts it, so the stale-entity cron picks it up later.
+    const { result: materialized } = await withBoxMemoryWaits(
+      params.step,
       `materialize-cdc-entity-${iteration}`,
-      async () => {
+      async (): Promise<any> => {
         const flow = await Flow.findById(flowId)
           .select("backfillState.status")
           .lean();
@@ -420,7 +428,30 @@ async function runCdcMaterialization(params: {
         });
         return { ...materializeResult, isBackfilling, maxEvents };
       },
-    )) as any;
+      {
+        maxWaits: CDC_MATERIALIZE_MAX_MEMORY_WAITS,
+        onWait: (wait, refusal) =>
+          params.logger.warn(
+            "Connector box low on memory; materialization waits",
+            {
+              flowId,
+              entity,
+              iteration,
+              wait,
+              availableMb: refusal.availableMb,
+            },
+          ),
+        giveUp: refusal => ({
+          skipped: true,
+          reason: "box_low_memory",
+          error: refusal.message,
+          processed: 0,
+          applied: 0,
+          maxEvents: 1,
+        }),
+      },
+    );
+    const result = materialized as any;
     const materializeStepDurationMs = Date.now() - materializeStartedAt;
 
     params.logger.info("CDC materialization iteration completed", {

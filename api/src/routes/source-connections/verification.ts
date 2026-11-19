@@ -6,6 +6,7 @@ import {
   PROBE_DEFAULT_LIMIT,
   PROBE_MAX_LIMIT,
   ProbeError,
+  boxBusyProbeError,
   probeConnection,
   runConnectionCheck,
 } from "../../connectors/probe.service";
@@ -84,6 +85,9 @@ sourceConnectionVerificationRoutes.openapi(
         data: result,
       });
     } catch (error) {
+      // The connector box is full: nothing ran, so this is no failed check.
+      const busy = boxBusyProbeError(error);
+      if (busy) return fail(c, busy.status, busy.message, { code: busy.code });
       return failFromThrown(c, error, "Unknown error");
     }
   },
