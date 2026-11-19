@@ -220,6 +220,8 @@ export default defineConfig({
       "src/connectors/workspace/resolver.test.ts",
       "src/connectors/workspace/sync-box.test.ts",
       "src/connectors/workspace/transient-failure.test.ts",
+      "src/connectors/workspace/box-memory-gate.test.ts",
+      "src/inngest/functions/flow/box-memory-wait.test.ts",
       // Read sessions against a mocked provider: calls, pinning, outcomes.
       "src/connectors/workspace/session-read.test.ts",
       // Connector box leases: mocked provider, fake timers, and the Mongo

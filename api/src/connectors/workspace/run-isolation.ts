@@ -25,6 +25,7 @@
  * reaches its output file only through the stdout descriptor root hands it.
  */
 import path from "node:path";
+import { memoryGateShell } from "../../apps/sandbox/box-memory";
 
 export const ISOLATED_ROOT = "/var/lib/mako-connectors";
 export const ISOLATED_RUNS = path.posix.join(ISOLATED_ROOT, "runs");
@@ -37,6 +38,43 @@ export const CLEANUP_SURVIVORS_EXIT = 3;
 
 const PATH_FOR_ROOT =
   "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/**
+ * MiB of MemAvailable a connector box must have before a new connector run
+ * or read session starts in it. Many flow steps share one workspace sync box
+ * (Close, Stripe and Meta reads side by side), and nothing else caps how many
+ * run at once. On 19 Nov 2026 a new resync cron took RealAdvisor's 2 GB box
+ * to 1,899 of 1,982 MB: commands hit deadline_exceeded, run cleanup exited
+ * 124, and Mako replaced the box 10 times in 2 hours. 600 MB leaves room for
+ * one more connector process, envd and the run's cleanup, as
+ * PUBLISH_BUILD_MIN_FREE_MB does for builds.
+ */
+export const CONNECTOR_RUN_MIN_FREE_MB = 600;
+
+/** Exit code of a chunk run or session start the memory gate refused. */
+export const LOW_MEMORY_EXIT = 94;
+
+/**
+ * Shell, first in a chunk run or a session start: refuse the run when the box
+ * has under CONNECTOR_RUN_MIN_FREE_MB free. Removes the run's inbox (its
+ * credential), prints `<marker> low-memory <MiB>` and exits LOW_MEMORY_EXIT,
+ * before any user, process or file of the run exists. Inside the command, so
+ * the gate adds no round trip to the run's 3.
+ */
+export function memoryGateScript(marker: string, inbox: string): string {
+  return memoryGateShell(
+    CONNECTOR_RUN_MIN_FREE_MB,
+    `  rm -rf ${inbox}
+  echo "${marker} low-memory $avail"
+  exit ${LOW_MEMORY_EXIT}`,
+  );
+}
+
+/** The MiB a `low-memory <MiB>` marker reports, or null for another marker. */
+export function lowMemoryMb(marker: string | undefined): number | null {
+  const match = /^low-memory (\d+)$/.exec(marker ?? "");
+  return match ? Number(match[1]) : null;
+}
 
 export const shellQuote = (value: string): string =>
   `'${value.replace(/'/g, `'\\''`)}'`;
@@ -440,6 +478,7 @@ export function chunkScript(
     })
     .join("\n");
   return `${PATH_FOR_ROOT}
+${memoryGateScript(CHUNK_MARKER, inbox)}
 if ! (
 ${setupScript(l)}
 ); then

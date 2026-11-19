@@ -34,6 +34,7 @@ import {
   resolveEntityPartitioning,
   resolveEntityClustering,
 } from "../../sync-cdc/adapters/registry";
+import { withBoxMemoryWaits } from "./flow/box-memory-wait";
 
 /**
  * Max steps to use before yielding back to the parent for re-invocation.
@@ -608,185 +609,208 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         };
       }
 
-      const chunkResult = await step.run(
-        `sync-${entity}-chunk-${chunkIndex}`,
-        // Up to 10 connector pages fetched and written in one step.
-        () =>
-          withHeartbeat(executionId, async () => {
-            logger.info("Executing chunk", { flowId, entity, chunkIndex });
+      // A box memory gate that refuses the chunk (too many runs in the
+      // connector box) sleeps and retries it, without failing the run.
+      const { result: chunkResult, waits: memoryWaits } =
+        await withBoxMemoryWaits(
+          step,
+          `sync-${entity}-chunk-${chunkIndex}`,
+          // Up to 10 connector pages fetched and written in one step.
+          () =>
+            withHeartbeat(executionId, async () => {
+              logger.info("Executing chunk", { flowId, entity, chunkIndex });
 
-            const syncLogger: SyncLogger = {
-              log: (level: string, message: string, metadata?: any) => {
-                const logData = {
-                  flowId,
-                  entity,
-                  chunkIndex,
-                  executionId,
-                  ...metadata,
-                };
-                switch (level) {
-                  case "debug":
-                    logger.debug(message, logData);
-                    logExec("debug", message, logData);
-                    break;
-                  case "info":
-                    logger.info(message, logData);
-                    logExec("info", message, logData);
-                    break;
-                  case "warn":
-                    logger.warn(message, logData);
-                    logExec("warn", message, logData);
-                    break;
-                  case "error":
-                    logger.error(message, logData);
-                    logExec("error", message, logData);
-                    break;
-                  default:
-                    logger.info(message, logData);
-                    logExec("info", message, logData);
-                    break;
+              const syncLogger: SyncLogger = {
+                log: (level: string, message: string, metadata?: any) => {
+                  const logData = {
+                    flowId,
+                    entity,
+                    chunkIndex,
+                    executionId,
+                    ...metadata,
+                  };
+                  switch (level) {
+                    case "debug":
+                      logger.debug(message, logData);
+                      logExec("debug", message, logData);
+                      break;
+                    case "info":
+                      logger.info(message, logData);
+                      logExec("info", message, logData);
+                      break;
+                    case "warn":
+                      logger.warn(message, logData);
+                      logExec("warn", message, logData);
+                      break;
+                    case "error":
+                      logger.error(message, logData);
+                      logExec("error", message, logData);
+                      break;
+                    default:
+                      logger.info(message, logData);
+                      logExec("info", message, logData);
+                      break;
+                  }
+                },
+              };
+
+              let resolvedTableDest: Record<string, unknown> =
+                tableDestination as Record<string, unknown>;
+              if (tableDestination && entityLayouts) {
+                const entityLayout = (entityLayouts || []).find(
+                  (l: any) =>
+                    l.entity === entity || l.entity === entity.split(":")[0],
+                );
+                if (entityLayout) {
+                  const p = resolveEntityPartitioning(
+                    entityLayout as any,
+                    (tableDestination as any)?.partitioning,
+                  );
+                  const c = resolveEntityClustering(
+                    entityLayout as any,
+                    (tableDestination as any)?.clustering,
+                  );
+                  resolvedTableDest = {
+                    ...tableDestination,
+                    partitioning: p ? { enabled: true, ...p } : undefined,
+                    clustering: c ? { enabled: true, ...c } : undefined,
+                  };
                 }
-              },
-            };
+              }
 
-            let resolvedTableDest: Record<string, unknown> =
-              tableDestination as Record<string, unknown>;
-            if (tableDestination && entityLayouts) {
-              const entityLayout = (entityLayouts || []).find(
+              const chunkEntityLayout = (entityLayouts || []).find(
                 (l: any) =>
                   l.entity === entity || l.entity === entity.split(":")[0],
               );
-              if (entityLayout) {
-                const p = resolveEntityPartitioning(
-                  entityLayout as any,
-                  (tableDestination as any)?.partitioning,
-                );
-                const c = resolveEntityClustering(
-                  entityLayout as any,
-                  (tableDestination as any)?.clustering,
-                );
-                resolvedTableDest = {
-                  ...tableDestination,
-                  partitioning: p ? { enabled: true, ...p } : undefined,
-                  clustering: c ? { enabled: true, ...c } : undefined,
-                };
-              }
-            }
-
-            const chunkEntityLayout = (entityLayouts || []).find(
-              (l: any) =>
-                l.entity === entity || l.entity === entity.split(":")[0],
-            );
-            const result = await performSyncChunk({
-              dataSourceId,
-              destinationId,
-              destinationDatabaseName,
-              flowId,
-              workspaceId,
-              syncEngine,
-              backfillRunId: backfill
-                ? cdcBackfillRunId || executionId
-                : undefined,
-              entity,
-              isIncremental: syncMode === "incremental",
-              ...(backfillFetch
-                ? {
-                    backfillFetch:
-                      backfillFetch.mode === "incremental"
-                        ? { mode: "incremental", since: backfillFetch.since }
-                        : { mode: "full" },
-                  }
-                : {}),
-              ...(pollCursor
-                ? {
-                    pollCursor: {
-                      since: pollCursor.since,
-                      overlapMs: pollCursor.overlapMs,
-                    },
-                  }
-                : {}),
-              state,
-              fullRead,
-              maxIterations: 10,
-              logger: syncLogger,
-              step,
-              queries,
-              tableDestination: resolvedTableDest,
-              deleteMode,
-              writeMode,
-              // Layout hints flow to the CDC adapter so every destination can
-              // apply its native physical layout (indexes / partitioning).
-              entityPartitioning: resolveEntityPartitioning(
-                chunkEntityLayout as any,
-                (tableDestination as any)?.partitioning,
-              ),
-              entityClustering: resolveEntityClustering(
-                chunkEntityLayout as any,
-                (tableDestination as any)?.clustering,
-              ),
-            } as any);
-
-            const written = Number.isFinite(result.totalWritten)
-              ? result.totalWritten
-              : result.state.totalProcessed;
-            const fetched = Number.isFinite(result.totalFetched)
-              ? result.totalFetched
-              : result.state.totalProcessed;
-
-            if (executionId) {
-              try {
-                await Flow.db
-                  .collection("flow_executions")
-                  .updateOne({ _id: new Types.ObjectId(executionId) }, {
-                    $set: {
-                      lastHeartbeat: new Date(),
-                      "stats.currentEntity": entity,
-                      [`stats.entityStatus.${entity}`]:
-                        result.completed && !useBulkPath
-                          ? "completed"
-                          : "syncing",
-                      [`stats.entityStats.${entity}`]: written,
-                    },
-                    ...(result.completed && !useBulkPath
-                      ? { $addToSet: { "stats.syncedEntities": entity } }
-                      : {}),
-                    $push: {
-                      logs: {
-                        $each: [
-                          {
-                            timestamp: new Date(),
-                            level: "info",
-                            message:
-                              result.completed && useBulkPath
-                                ? `${entity} fetch completed (${fetched} fetched, ${written} written so far); flushing the rest`
-                                : result.completed
-                                  ? `${entity} sync completed (${written} written, ${fetched} fetched)`
-                                  : `${entity} sync in progress (${written} written, ${fetched} fetched)`,
-                            metadata: {
-                              flowId,
-                              executionId,
-                              entity,
-                              chunkIndex,
-                              totalProcessed: written,
-                              totalWritten: written,
-                              totalFetched: fetched,
-                              hasMore: !result.completed,
-                            },
-                          },
-                        ],
-                        $slice: -200,
+              const result = await performSyncChunk({
+                dataSourceId,
+                destinationId,
+                destinationDatabaseName,
+                flowId,
+                workspaceId,
+                syncEngine,
+                backfillRunId: backfill
+                  ? cdcBackfillRunId || executionId
+                  : undefined,
+                entity,
+                isIncremental: syncMode === "incremental",
+                ...(backfillFetch
+                  ? {
+                      backfillFetch:
+                        backfillFetch.mode === "incremental"
+                          ? { mode: "incremental", since: backfillFetch.since }
+                          : { mode: "full" },
+                    }
+                  : {}),
+                ...(pollCursor
+                  ? {
+                      pollCursor: {
+                        since: pollCursor.since,
+                        overlapMs: pollCursor.overlapMs,
                       },
-                    },
-                  } as any);
-              } catch {
-                // non-critical
-              }
-            }
+                    }
+                  : {}),
+                state,
+                fullRead,
+                maxIterations: 10,
+                logger: syncLogger,
+                step,
+                queries,
+                tableDestination: resolvedTableDest,
+                deleteMode,
+                writeMode,
+                // Layout hints flow to the CDC adapter so every destination can
+                // apply its native physical layout (indexes / partitioning).
+                entityPartitioning: resolveEntityPartitioning(
+                  chunkEntityLayout as any,
+                  (tableDestination as any)?.partitioning,
+                ),
+                entityClustering: resolveEntityClustering(
+                  chunkEntityLayout as any,
+                  (tableDestination as any)?.clustering,
+                ),
+              } as any);
 
-            return result;
-          }),
-      );
-      stepsUsed++;
+              const written = Number.isFinite(result.totalWritten)
+                ? result.totalWritten
+                : result.state.totalProcessed;
+              const fetched = Number.isFinite(result.totalFetched)
+                ? result.totalFetched
+                : result.state.totalProcessed;
+
+              if (executionId) {
+                try {
+                  await Flow.db
+                    .collection("flow_executions")
+                    .updateOne({ _id: new Types.ObjectId(executionId) }, {
+                      $set: {
+                        lastHeartbeat: new Date(),
+                        "stats.currentEntity": entity,
+                        [`stats.entityStatus.${entity}`]:
+                          result.completed && !useBulkPath
+                            ? "completed"
+                            : "syncing",
+                        [`stats.entityStats.${entity}`]: written,
+                      },
+                      ...(result.completed && !useBulkPath
+                        ? { $addToSet: { "stats.syncedEntities": entity } }
+                        : {}),
+                      $push: {
+                        logs: {
+                          $each: [
+                            {
+                              timestamp: new Date(),
+                              level: "info",
+                              message:
+                                result.completed && useBulkPath
+                                  ? `${entity} fetch completed (${fetched} fetched, ${written} written so far); flushing the rest`
+                                  : result.completed
+                                    ? `${entity} sync completed (${written} written, ${fetched} fetched)`
+                                    : `${entity} sync in progress (${written} written, ${fetched} fetched)`,
+                              metadata: {
+                                flowId,
+                                executionId,
+                                entity,
+                                chunkIndex,
+                                totalProcessed: written,
+                                totalWritten: written,
+                                totalFetched: fetched,
+                                hasMore: !result.completed,
+                              },
+                            },
+                          ],
+                          $slice: -200,
+                        },
+                      },
+                    } as any);
+                } catch {
+                  // non-critical
+                }
+              }
+
+              return result;
+            }),
+          {
+            onWait: (wait, refusal) => {
+              logger.warn("Connector box low on memory; chunk waits", {
+                flowId,
+                entity,
+                chunkIndex,
+                wait,
+                availableMb: refusal.availableMb,
+                retryInMs: refusal.retryInMs,
+              });
+              logExec("warn", refusal.message, {
+                flowId,
+                entity,
+                chunkIndex,
+                executionId,
+                wait,
+              });
+            },
+          },
+        );
+      stepsUsed += 1 + 2 * memoryWaits;
 
       state = chunkResult.state;
       completed = chunkResult.completed;

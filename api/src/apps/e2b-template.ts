@@ -13,6 +13,10 @@
  *
  * Build: `pnpm --filter api run apps:build-template` (needs E2B_API_KEY).
  * Then set APPS_E2B_TEMPLATE=mako-apps (also the default alias).
+ *
+ * Connector sync boxes: `pnpm --filter api run apps:build-connector-template`
+ * builds the same image as mako-connector-sync with 4,096 MB. Then set
+ * APPS_E2B_CONNECTOR_TEMPLATE=mako-connector-sync.
  */
 import dotenv from "dotenv";
 import fs from "node:fs";
@@ -320,10 +324,18 @@ async function main(): Promise<void> {
   if (!apiKey) throw new Error("E2B_API_KEY is required");
 
   const alias = process.env.E2B_TEMPLATE_ALIAS?.trim() || DEFAULT_ALIAS;
+  // E2B sets a box's memory here, at template build, never at create. The
+  // connector sync box template (apps:build-connector-template, alias
+  // mako-connector-sync) is this same image with 4,096 MB: many flow steps
+  // share that box (APPS_E2B_CONNECTOR_TEMPLATE, e2b-provider.ts).
+  const memoryMB = Number(process.env.E2B_TEMPLATE_MEMORY_MB?.trim() || 2048);
+  if (!Number.isInteger(memoryMB) || memoryMB < 512) {
+    throw new Error("E2B_TEMPLATE_MEMORY_MB must be an integer of 512 or more");
+  }
   const build = await Template.build(createAppsE2BTemplate(), alias, {
     apiKey,
     cpuCount: 2,
-    memoryMB: 2048,
+    memoryMB,
   });
 
   // Identifiers only — the API key is never logged.

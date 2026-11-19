@@ -9,6 +9,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -43,10 +44,12 @@ export function prepare(root) {
 }
 
 /**
- * Typecheck `workflows/` under a prepared `root`. Returns the errors, or null;
- * throws when tsc itself could not run.
+ * Typecheck `workflows/` under a prepared `root`, minus the `exclude`d
+ * folders (relative to `root`; a file one of them holds is still checked
+ * when an included file imports it). Returns the errors, or null; throws
+ * when tsc itself could not run.
  */
-export function typecheck(root) {
+export function typecheck(root, exclude = []) {
   const tsconfig = join(root, "tsconfig.workflows.json");
   writeFileSync(
     tsconfig,
@@ -62,6 +65,7 @@ export function typecheck(root) {
         types: ["node"],
       },
       include: ["workflows/**/*.ts"],
+      ...(exclude.length ? { exclude } : {}),
     }),
   );
   try {
@@ -87,8 +91,15 @@ export function typecheck(root) {
  * Typecheck the `workflows/` of a checkout as the worker's build does, on a
  * copy: preparing writes files a person's checkout must not get. Returns the
  * errors, paths relative to the checkout, or null.
+ *
+ * With `workflow`, only what a run of that one workflow needs: its folder and
+ * the shared code (top-level files, folders without a workflow.ts such as
+ * lib/), not the other workflows' folders, unless it imports from them. A
+ * sandbox checkout is shared by every chat of a person, so another chat's
+ * half-done edit to an unrelated workflow must not refuse this run. The
+ * worker's build (entrypoint.mjs) still checks everything before a deploy.
  */
-export function typecheckCheckout(checkout) {
+export function typecheckCheckout(checkout, workflow) {
   // Real path: tsc prints paths relative to it, and macOS's tmpdir is a link.
   const root = realpathSync(mkdtempSync(join(tmpdir(), "mako-typecheck-")));
   try {
@@ -97,10 +108,25 @@ export function typecheckCheckout(checkout) {
       filter: path => basename(path) !== "node_modules",
     });
     prepare(root);
-    return typecheck(root);
+    return typecheck(
+      root,
+      workflow ? otherWorkflowFolders(join(root, "workflows"), workflow) : [],
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+/** `workflows/<name>` of every workflow folder (one with a workflow.ts) but `workflow`'s. */
+function otherWorkflowFolders(workflowsDir, workflow) {
+  return readdirSync(workflowsDir, { withFileTypes: true })
+    .filter(
+      entry =>
+        entry.isDirectory() &&
+        entry.name !== workflow &&
+        existsSync(join(workflowsDir, entry.name, "workflow.ts")),
+    )
+    .map(entry => `workflows/${entry.name}`);
 }
 
 /**

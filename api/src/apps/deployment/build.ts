@@ -25,6 +25,13 @@ import { PublishResult, uploadDeployment } from "./store";
 import { setPublishedSha } from "./pointer";
 import { ensureDeploymentBindings } from "./bindings";
 import { killByEnvScript } from "../sandbox/kill-by-env";
+import {
+  BoxLowMemoryError,
+  MEM_AVAILABLE_SCRIPT,
+  parseAvailableMb,
+} from "../sandbox/box-memory";
+
+export { parseAvailableMb };
 
 const logger = loggers.api("apps-deployment");
 
@@ -108,10 +115,12 @@ export const PUBLISH_BUILD_MIN_FREE_MB = 600;
 export const PUBLISH_ORPHAN_AGE_S = 15 * 60;
 
 /** The publish box has too little free memory to start a build. */
-export class PublishBoxLowMemoryError extends Error {
-  constructor(readonly availableMb: number) {
+export class PublishBoxLowMemoryError extends BoxLowMemoryError {
+  constructor(availableMb: number) {
     super(
       `The publish box has ${availableMb} MB of memory free; a build needs ${PUBLISH_BUILD_MIN_FREE_MB} MB. Retrying shortly.`,
+      availableMb,
+      PUBLISH_BUILD_MIN_FREE_MB,
     );
     this.name = "PublishBoxLowMemoryError";
   }
@@ -135,14 +144,8 @@ export function publishBoxPrepScript(appId: string): string {
   return [
     killByEnvScript(PUBLISH_BUILD_APP_ENV, appId),
     `ps -eo pid=,etimes=,args= 2>/dev/null | awk -v max=${PUBLISH_ORPHAN_AGE_S} '$2 > max && $0 ~ /(^|[ \\/])(npm|pnpm|npx|vite|esbuild|rollup|tsc)( |$)/ { print $1 }' | while read -r p; do kill -KILL "$p" 2>/dev/null; done`,
-    `awk '/^MemAvailable:/ { print "avail", int($2 / 1024) }' /proc/meminfo`,
+    MEM_AVAILABLE_SCRIPT,
   ].join("\n");
-}
-
-/** MemAvailable in MiB from publishBoxPrepScript, or null if unreadable. */
-export function parseAvailableMb(stdout: string): number | null {
-  const match = /^avail (\d+)$/m.exec(stdout);
-  return match ? Number(match[1]) : null;
 }
 
 /**

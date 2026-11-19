@@ -29,10 +29,12 @@ import {
   CHUNK_MARKER,
   chunkScript,
   CLEANUP_SURVIVORS_EXIT,
+  CONNECTOR_RUN_MIN_FREE_MB,
   HIDEPID_MARKER,
   incomingPath,
   ISOLATED_ROOT,
   ISOLATED_RUNTIME,
+  lowMemoryMb,
   prepareBoxScript,
   resultPath,
   runLayout,
@@ -48,6 +50,7 @@ import {
   type SandboxExecResult,
   type SandboxFileOptions,
 } from "../../apps/sandbox/provider";
+import { BoxLowMemoryError } from "../../apps/sandbox/box-memory";
 import { loggers } from "../../logging";
 
 const logger = loggers.connector();
@@ -760,6 +763,45 @@ export async function prepareBox(
   return result.sandboxId;
 }
 
+/**
+ * A connector box had too little free memory to start another run
+ * (memoryGateScript, CONNECTOR_RUN_MIN_FREE_MB). The runs already in it end
+ * and free their memory, so the caller waits and tries again (flow steps:
+ * withBoxMemoryWaits). Matched as an infrastructure and a transient failure,
+ * so it never counts against a flow or a connector.
+ */
+export class ConnectorBoxLowMemoryError extends BoxLowMemoryError {
+  constructor(
+    readonly sessionKey: string,
+    availableMb: number,
+  ) {
+    super(
+      `The connector box ${sessionKey} has ${availableMb} MB of memory free; a connector run needs ${CONNECTOR_RUN_MIN_FREE_MB} MB. Waiting for the runs in it to finish.`,
+      availableMb,
+      CONNECTOR_RUN_MIN_FREE_MB,
+    );
+    this.name = "ConnectorBoxLowMemoryError";
+  }
+}
+
+/** Log the gate's refusal (Cloud Logging counts `boxLowMemory`) and build its error. */
+export function connectorBoxLowMemory(
+  ctx: SandboxExecContext,
+  sandboxId: string | undefined,
+  availableMb: number,
+  what: "chunk" | "session",
+): ConnectorBoxLowMemoryError {
+  boxLogger.warn("Connector box low on memory; not starting a run", {
+    boxLowMemory: true,
+    sessionKey: ctx.sessionKey,
+    sandboxId,
+    availableMb,
+    requiredMb: CONNECTOR_RUN_MIN_FREE_MB,
+    what,
+  });
+  return new ConnectorBoxLowMemoryError(ctx.sessionKey, availableMb);
+}
+
 /** Forget a prepared box, so the next call prepares (and pins) it again. */
 export function forgetPreparedBox(sessionKey: string): void {
   prepared.delete(sessionKey);
@@ -1064,6 +1106,17 @@ async function runIsolated(
       );
     }
 
+    // The memory gate refused the run before any of it existed, and removed
+    // its inbox: nothing to abandon.
+    const lowMb = lowMemoryMb(marker);
+    if (lowMb !== null) {
+      throw connectorBoxLowMemory(
+        ctx,
+        result.sandboxId ?? pinned,
+        lowMb,
+        "chunk",
+      );
+    }
     const [sizeText, cleanupText] = marker.split(/\s+/);
     if (sizeText === "setup-failed") {
       lastError = (result.stderr || result.stdout).trim().slice(0, 2000);

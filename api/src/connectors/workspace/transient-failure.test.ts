@@ -16,6 +16,8 @@ describe("isTransientIndexFailure", () => {
     "No connector box for this connection after 120 s. 3 runs are waiting.",
     "A new connector box did not answer its first ping.",
     "E2B list did not answer within 10000 ms",
+    // The box memory gate, 19 Nov 2026.
+    "The connector box connector-sync:v2:ws1 has 83 MB of memory free; a connector run needs 600 MB. Waiting for the runs in it to finish.",
     "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/var/lib/mako-connectors/runtime/versions/afaf3869/node_modules/@makoai/connector-sdk/src/run.js' imported from /var/lib/mako-connectors/runtime/versions/afaf3869/node_modules/@makoai/connector-sdk/bin/mako-connector.js",
     "Could not install the connector Node runtime: curl: (28) timed out",
     "Timed out while installing the connector runtime.",

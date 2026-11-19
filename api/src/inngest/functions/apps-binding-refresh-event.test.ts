@@ -54,6 +54,7 @@ import {
 import {
   AFTER_PUBLISH_MAX_ATTEMPTS,
   APPS_BINDING_MATERIALIZE_EVENT,
+  RESOURCE_RETRY_DELAY_MS,
   requestBindingRefreshes,
   runBindingMaterializeEvent,
 } from "./apps-binding-refresh";
@@ -224,6 +225,81 @@ describe("runBindingMaterializeEvent", () => {
     await expect(runBindingMaterializeEvent(afterPublish)).resolves.toEqual({
       skipped: "superseded",
     });
+    expect(materializeAppBinding).not.toHaveBeenCalled();
+  });
+});
+
+describe("scheduled build that ran out of warehouse resources", () => {
+  const clickhouseOom = new Error(
+    "Code: 241. DB::Exception: (total) memory limit exceeded: would use 14.04 GiB (attempt to allocate chunk of 4.00 MiB), maximum: 14.40 GiB. OvercommitTracker decision: Query was selected to stop by OvercommitTracker. (MEMORY_LIMIT_EXCEEDED)",
+  );
+
+  it("retries once, 10 minutes later, on a ClickHouse memory error", async () => {
+    vi.mocked(materializeAppBinding).mockRejectedValueOnce(clickhouseOom);
+
+    await expect(runBindingMaterializeEvent(scheduled)).resolves.toEqual({
+      ok: false,
+    });
+
+    expect(inngest.send).toHaveBeenCalledTimes(1);
+    const retry = vi.mocked(inngest.send).mock.calls[0][0] as {
+      name: string;
+      ts: number;
+      data: Record<string, unknown>;
+    };
+    expect(retry.name).toBe(APPS_BINDING_MATERIALIZE_EVENT);
+    expect(retry.data).toEqual({ ...scheduled, resourceRetry: true });
+    expect(retry.ts).toBeGreaterThanOrEqual(
+      Date.now() + RESOURCE_RETRY_DELAY_MS - 1_000,
+    );
+  });
+
+  it.each([
+    "Resources exceeded during query execution: The query could not be executed in the allotted memory.",
+    "out of memory",
+    "canceling statement due to statement timeout",
+  ])("retries on %s", async message => {
+    vi.mocked(materializeAppBinding).mockRejectedValueOnce(new Error(message));
+
+    await runBindingMaterializeEvent(scheduled);
+
+    expect(inngest.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a broken query", async () => {
+    vi.mocked(materializeAppBinding).mockRejectedValueOnce(
+      new Error("Code: 47. DB::Exception: Unknown column 'amount'"),
+    );
+
+    await runBindingMaterializeEvent(scheduled);
+
+    expect(inngest.send).not.toHaveBeenCalled();
+  });
+
+  it("the retry builds despite the failed attempt that made the binding look not due", async () => {
+    state.bindingState = { history: [{ at: new Date(), status: "error" }] };
+
+    await expect(
+      runBindingMaterializeEvent({ ...scheduled, resourceRetry: true }),
+    ).resolves.toEqual({ ok: true, rowCount: 7 });
+  });
+
+  it("a second resource failure logs and queues nothing", async () => {
+    state.bindingState = { history: [{ at: new Date(), status: "error" }] };
+    vi.mocked(materializeAppBinding).mockRejectedValueOnce(clickhouseOom);
+
+    await expect(
+      runBindingMaterializeEvent({ ...scheduled, resourceRetry: true }),
+    ).resolves.toEqual({ ok: false });
+    expect(inngest.send).not.toHaveBeenCalled();
+  });
+
+  it("the retry stands down when a build landed since the failure", async () => {
+    state.bindingState = { history: [{ at: new Date(), status: "ready" }] };
+
+    await expect(
+      runBindingMaterializeEvent({ ...scheduled, resourceRetry: true }),
+    ).resolves.toEqual({ skipped: "not-due" });
     expect(materializeAppBinding).not.toHaveBeenCalled();
   });
 });
