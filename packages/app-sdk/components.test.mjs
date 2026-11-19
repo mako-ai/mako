@@ -6,7 +6,7 @@ import test from "node:test";
 const dir = new URL("./components/", import.meta.url);
 const files = readdirSync(dir).filter(f => f.endsWith(".tsx"));
 
-test("components: the registry's new-york-v4 files, with only the cn import path changed", () => {
+test("components: the registry's new-york-v4 files; changes are the cn import and marked thin props", () => {
   assert.deepEqual(files.sort(), ["alert.tsx", "avatar.tsx", "badge.tsx", "button.tsx", "card.tsx", "collapsible.tsx", "dialog.tsx", "input.tsx", "label.tsx", "popover.tsx", "progress.tsx", "select.tsx", "separator.tsx", "sheet.tsx", "skeleton.tsx", "slider.tsx", "switch.tsx", "table.tsx", "tabs.tsx", "toggle-group.tsx", "toggle.tsx", "tooltip.tsx"]);
   for (const f of files) {
     const src = readFileSync(new URL(f, dir), "utf8");
@@ -38,3 +38,19 @@ test("tailwind.css sources both folders and maps the house tokens", () => {
   for (const f of ["components/", "menu/", "tailwind.css"]) assert.ok(pkg.files.includes(f), `ships ${f}`);
   assert.equal(pkg.peerDependenciesMeta["class-variance-authority"]?.optional, true);
 });
+
+test("components: thin props are marked, and stock behaviour stays the default", () => {
+  const sheet = readFileSync(new URL("sheet.tsx", dir), "utf8");
+  assert.match(sheet, /closeLabel = "Close"/);
+  assert.match(sheet, /<span className="sr-only">\{closeLabel\}<\/span>/);
+  const select = readFileSync(new URL("select.tsx", dir), "utf8");
+  assert.match(select, /<SelectPrimitive\.Portal container=\{container\}>/);
+  assert.match(select, /position = "item-aligned"/);
+  for (const f of files) {
+    const src = readFileSync(new URL(f, dir), "utf8");
+    for (const line of src.split("\n").filter(l => /Mako thin prop/.test(l))) {
+      assert.match(line, /\(2\.\d+\)/, `${f}: a thin prop names the SDK version that added it`);
+    }
+  }
+});
+
