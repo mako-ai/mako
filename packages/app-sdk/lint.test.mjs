@@ -84,6 +84,22 @@ test("react-version flags React below 19 only when the app uses shadcn", () => {
   assert.equal(minMajor(undefined), null);
 });
 
+test("react-version flags React 19 with recharts 2 until react-is 19 is pinned", () => {
+  const pkg = extra => JSON.stringify({ dependencies: { react: "^19.3.1", recharts: "^2.15.4" }, ...extra });
+  const bare = app({ "package.json": pkg({}), "src/a.tsx": "" });
+  assert.match(lintApp(bare, ["react-version"])[0].message, /react-is/);
+  const pinned = app({ "package.json": pkg({ pnpm: { overrides: { "react-is": "^19.1.10" } } }), "src/a.tsx": "" });
+  assert.equal(lintApp(pinned, ["react-version"]).length, 0);
+  const npmPinned = app({ "package.json": pkg({ overrides: { "react-is": "^19.0.0" } }), "src/a.tsx": "" });
+  assert.equal(lintApp(npmPinned, ["react-version"]).length, 0);
+  const pin18 = app({ "package.json": pkg({ pnpm: { overrides: { "react-is": "^18.3.1" } } }), "src/a.tsx": "" });
+  assert.equal(lintApp(pin18, ["react-version"]).length, 1);
+  const recharts3 = app({ "package.json": JSON.stringify({ dependencies: { react: "^19.3.1", recharts: "^3.2.0" } }), "src/a.tsx": "" });
+  assert.equal(lintApp(recharts3, ["react-version"]).length, 0, "recharts 3 reads children without react-is 18");
+  const react18 = app({ "package.json": JSON.stringify({ dependencies: { react: "^18.2.0", recharts: "^2.15.4" } }), "src/a.tsx": "" });
+  assert.equal(lintApp(react18, ["react-version"]).length, 0, "react-is 18 matches React 18");
+});
+
 test("--rules runs only the named rules; Calendar and Command point at their subpaths", () => {
   const dir = app({ "package.json": JSON.stringify({ dependencies: { react: "^18.2.0" } }), "src/components/ui/calendar.tsx": "x", "src/a.ts": "d.getUTCDay()" });
   assert.deepEqual([...new Set(lintApp(dir).map(f => f.rule))].sort(), ["local-shadcn", "react-version", "utc-display"]);

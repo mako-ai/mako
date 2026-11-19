@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// mako-app-lint (2.21; react-version and --rules from 2.24): app rules a
+// mako-app-lint (2.21; react-version and --rules from 2.24, recharts check
+// 2.25): app rules a
 // reviewer kept repeating.
 //
 //   utc-display   getUTC*, timeZone: "UTC" or toISOString().slice in display
@@ -11,6 +12,10 @@
 //                 radix-ui, or the SDK's /components or /menu). shadcn's stock
 //                 components pass refs as props, which React 18 drops: on
 //                 18 Nov 2026 a Calendar's arrow keys stopped moving focus.
+//                 Also React 19 with recharts 2 and no react-is 19 override:
+//                 recharts 2 reads chart children with react-is 18, which
+//                 drops anything in a <> fragment (19 Nov 2026: reference
+//                 lines vanished from a chart).
 //
 // Usage: npx mako-app-lint [app dir …] [--warn] [--rules=a,b]. Exit 1 on
 // findings unless --warn. --rules runs only the named rules. A line ending in `// mako-lint-ignore utc-display` is skipped (a
@@ -48,7 +53,12 @@ export function minMajor(range) {
   return m ? Number(m[1]) : null;
 }
 
-/** react-version: React below 19 with shadcn in the app. */
+/** The react-is range an override pins: pnpm.overrides, npm overrides or yarn resolutions. */
+function reactIsOverride(pkg) {
+  return pkg.pnpm?.overrides?.["react-is"] ?? pkg.overrides?.["react-is"] ?? pkg.resolutions?.["react-is"];
+}
+
+/** react-version: React below 19 with shadcn, or React 19 with recharts 2 on react-is 18. */
 function reactVersionFindings(appDir) {
   const pj = path.join(appDir, "package.json");
   if (!existsSync(pj)) return [];
@@ -60,7 +70,16 @@ function reactVersionFindings(appDir) {
   }
   const deps = { ...pkg.dependencies, ...pkg.devDependencies };
   const major = minMajor(deps.react);
-  if (major == null || major >= 19) return [];
+  if (major == null) return [];
+  if (major >= 19) {
+    if (minMajor(deps.recharts) !== 2 || (minMajor(reactIsOverride(pkg)) ?? 0) >= 19) return [];
+    return [{
+      file: "package.json",
+      line: 1,
+      rule: "react-version",
+      message: `React ${deps.react} with recharts ${deps.recharts}: recharts 2 reads chart children with react-is 18, which drops anything in a <> fragment. Add "pnpm": { "overrides": { "react-is": "^19.1.10" } }`,
+    }];
+  }
   const why = [];
   if (existsSync(path.join(appDir, "src", "components", "ui"))) why.push("src/components/ui");
   if (Object.keys(deps).some(d => d === "radix-ui" || d.startsWith("@radix-ui/"))) why.push("radix-ui");

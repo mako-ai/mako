@@ -616,6 +616,10 @@ Run it in an app folder (or pass several). It exits 1 on a finding;
 - `local-shadcn`: a `src/components/ui/<name>.tsx` the SDK ships.
 - `react-version` (2.24): React below 19 in an app that uses shadcn
   (`src/components/ui`, radix-ui, or the SDK's `/components` or `/menu`).
+  From 2.25 it also flags React 19 with recharts 2 and no react-is 19
+  override. recharts 2 reads chart children with react-is 18, which drops
+  anything inside a `<>` fragment: a chart loses its reference lines. The
+  fix is `"pnpm": { "overrides": { "react-is": "^19.1.10" } }`.
 
 `--rules=react-version` runs only the named rules (2.24).
 
