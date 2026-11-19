@@ -674,6 +674,7 @@ void test("an invoice's lines and a subscription's items ride on their events; a
 void test("children the flow does not sync cost no request and no record", async () => {
   const rowsOf = rowsByEntity();
   const invoice = rowsOf.invoices.find((r: any) => r.lines.has_more);
+  assert.ok(invoice, "fixture needs an invoice with more lines");
   const events = buildWebhookEvents(["invoice.paid"], {
     ...rowsOf,
     invoices: [invoice],
@@ -707,6 +708,7 @@ void test("children the flow does not sync cost no request and no record", async
 void test("a long list that cannot be read defers the whole event, never half of it", async () => {
   const rowsOf = rowsByEntity();
   const invoice = rowsOf.invoices.find((r: any) => r.lines.has_more);
+  assert.ok(invoice, "fixture needs an invoice with more lines");
   failing.add(`/v1/invoices/${invoice.id}/lines`);
   try {
     const events = buildWebhookEvents(["invoice.paid"], {
