@@ -31,6 +31,15 @@ import zlib from "node:zlib";
 export const DEFAULT_MAX_RESPONSE_BYTES = 100 * 1024 * 1024;
 export const DEFAULT_TIMEOUT_MS = 60_000;
 export const DEFAULT_MAX_REDIRECTS = 5;
+const MAX_TIMER_MS = 2 ** 31 - 1;
+const KNOWN_ENCODINGS = new Set([
+  "",
+  "identity",
+  "gzip",
+  "x-gzip",
+  "deflate",
+  "br",
+]);
 
 /** Header names that always count as credentials. */
 const DEFAULT_SECRET_HEADERS = [
@@ -185,8 +194,20 @@ export function createGuardedLookup({
     resolve(
       hostname,
       { family: options?.family, hints: options?.hints, all: true },
-      (err, addresses) => {
+      (err, answer) => {
         if (err) return callback(err, "", 0);
+        // A resolver may answer one address (string or object) or a list.
+        const addresses = (
+          answer === undefined || answer === null
+            ? []
+            : Array.isArray(answer)
+              ? answer
+              : [answer]
+        ).map(a =>
+          typeof a === "string"
+            ? { address: a, family: a.includes(":") ? 6 : 4 }
+            : a,
+        );
         if (!addresses || addresses.length === 0) {
           return callback(
             Object.assign(new Error(`No address for ${hostname}`), {
@@ -282,10 +303,8 @@ const hostOf = url =>
     .toLowerCase()
     .replace(/\.+$/, "");
 
-/** The same host, or a subdomain of it. */
-function sameOrSubdomain(host, original) {
-  return host === original || host.endsWith(`.${original}`);
-}
+/** Host plus port (default ports omitted): the unit a secret may travel within. */
+const hostKey = url => (url.port ? `${hostOf(url)}:${url.port}` : hostOf(url));
 
 /**
  * @param {string | URL} input
@@ -304,20 +323,26 @@ function sameOrSubdomain(host, original) {
  */
 export async function safeRequest(input, options = {}) {
   const {
-    timeoutMs = DEFAULT_TIMEOUT_MS,
     allowLoopback = false,
     followRedirects = false,
     maxRedirects = DEFAULT_MAX_REDIRECTS,
     maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES,
     resolve,
   } = options;
+  // Node fires a timer above 2^31-1 ms at once.
+  const timeoutMs = Math.min(
+    Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+      ? options.timeoutMs
+      : DEFAULT_TIMEOUT_MS,
+    MAX_TIMER_MS,
+  );
   const secretNames = new Set([
     ...DEFAULT_SECRET_HEADERS,
     ...(options.secretHeaders ?? []).map(n => String(n).toLowerCase()),
   ]);
 
   let url = checkUrl(input, { allowLoopback });
-  const originalHost = hostOf(url);
+  const originalHost = hostKey(url);
   let method = (
     options.method ?? (options.body === undefined ? "GET" : "POST")
   ).toUpperCase();
@@ -444,7 +469,7 @@ export function planRedirect({
     );
   }
   let next = { ...headers };
-  if (!sameOrSubdomain(hostOf(to), originalHost)) {
+  if (hostKey(to) !== originalHost) {
     next = Object.fromEntries(
       Object.entries(next).filter(([name]) => !secrets.has(name)),
     );
@@ -509,6 +534,16 @@ function sendOnce(
       ) {
         res.destroy();
         return finish(fail, tooLarge(url, maxResponseBytes));
+      }
+      if (!KNOWN_ENCODINGS.has(encoding)) {
+        res.destroy();
+        return finish(
+          fail,
+          new SafeRequestError(
+            "BAD_ENCODING",
+            `${describe(url)} answered with an unsupported content-encoding "${encoding.slice(0, 40)}" (stacked or unknown)`,
+          ),
+        );
       }
       const decoder =
         encoding === "gzip" || encoding === "x-gzip"
