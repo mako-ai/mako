@@ -66,6 +66,9 @@ const STRIPE_ENTITIES = [
   "refunds",
   "credit_notes",
   "customer_balance_transactions",
+  // Cards and debit mandates on file, walked per customer. Webhooks carry
+  // methods attached to older customers and every detach.
+  "payment_methods",
   // Billing detail behind MRR movements (one-off items, scheduled plan
   // changes, discounts) and the self-serve checkout funnel.
   "invoice_items",
@@ -295,6 +298,7 @@ export class StripeConnector extends BaseConnector {
         label: "Customer Balance Transactions",
         layoutSuggestion,
       },
+      { name: "payment_methods", label: "Payment Methods", layoutSuggestion },
       { name: "invoice_items", label: "Invoice Items", layoutSuggestion },
       {
         name: "subscription_schedules",

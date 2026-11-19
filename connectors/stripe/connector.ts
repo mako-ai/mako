@@ -2,7 +2,7 @@
  * Stripe on @makoai/connector-sdk: `spec`, `check`, `discover` and `read`.
  *
  * A port of the in-process connector in `api/src/connectors/stripe/`, with the
- * same 25 entities, schemas, cursors and pagination. Nothing runs it in
+ * same 26 entities, schemas, cursors and pagination. Nothing runs it in
  * production yet. `fixtures/parity.mjs` runs both against the same recorded
  * Stripe responses and compares them entity by entity.
  *
@@ -101,6 +101,9 @@ const ENTITIES: Array<[name: string, label: string, incremental: boolean]> = [
   ["credit_notes", "Credit Notes", true],
   // No account-wide list: every customer is re-walked, `since` is ignored.
   ["customer_balance_transactions", "Customer Balance Transactions", false],
+  // Walked per customer; `since` bounds the walk by the customer's
+  // `created`, webhooks carry cards attached to older customers.
+  ["payment_methods", "Payment Methods", true],
   ["invoice_items", "Invoice Items", true],
   ["subscription_schedules", "Subscription Schedules", true],
   ["coupons", "Coupons", true],
@@ -226,7 +229,7 @@ function entity(
 
 export default defineConnector<StripeConfig>({
   name: "stripe",
-  version: "1.3.0",
+  version: "1.4.0",
   title: "Stripe",
   documentationUrl: "https://docs.stripe.com/api",
   config: {

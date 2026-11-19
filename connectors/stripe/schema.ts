@@ -378,6 +378,55 @@ const CUSTOMER_BALANCE_TRANSACTION_SCHEMA: Fields = {
   type: "string",
 };
 
+/**
+ * A payment method carries the details of its own `type` under a key of the
+ * same name (`card`, `sepa_debit`, ...). These are the types our accounts
+ * use, plus the keys the Airbyte stream had, so its readers port one to one.
+ */
+export const PAYMENT_METHOD_TYPE_FIELDS = [
+  "acss_debit",
+  "affirm",
+  "afterpay_clearpay",
+  "alipay",
+  "amazon_pay",
+  "au_becs_debit",
+  "bacs_debit",
+  "bancontact",
+  "blik",
+  "boleto",
+  "card",
+  "card_present",
+  "cashapp",
+  "eps",
+  "fpx",
+  "giropay",
+  "grabpay",
+  "ideal",
+  "interac_present",
+  "klarna",
+  "link",
+  "oxxo",
+  "p24",
+  "paypal",
+  "revolut_pay",
+  "sepa_debit",
+  "sofort",
+  "twint",
+  "us_bank_account",
+] as const;
+
+const PAYMENT_METHOD_SCHEMA: Fields = {
+  ...COMMON_STRIPE_SCHEMA,
+  customer: "string",
+  type: "string",
+  allow_redisplay: "string",
+  billing_details: "json",
+  radar_options: "json",
+  ...Object.fromEntries(
+    PAYMENT_METHOD_TYPE_FIELDS.map(field => [field, "json" as const]),
+  ),
+};
+
 // ---------------------------------------------------------------------------
 // Billing detail
 // ---------------------------------------------------------------------------
@@ -565,6 +614,7 @@ export const STRIPE_ENTITY_SCHEMA_MAP: Record<string, Fields> = {
   refunds: REFUND_SCHEMA,
   credit_notes: CREDIT_NOTE_SCHEMA,
   customer_balance_transactions: CUSTOMER_BALANCE_TRANSACTION_SCHEMA,
+  payment_methods: PAYMENT_METHOD_SCHEMA,
   invoice_items: INVOICE_ITEM_SCHEMA,
   subscription_schedules: SUBSCRIPTION_SCHEDULE_SCHEMA,
   coupons: COUPON_SCHEMA,

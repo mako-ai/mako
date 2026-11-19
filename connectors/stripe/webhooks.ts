@@ -7,7 +7,8 @@
  * balance_transactions, payout_balance_transactions,
  * customer_balance_transactions and events have no Stripe events: polled
  * only. invoice_line_items and subscription_items ride on their parent's
- * events (webhook-handler.ts).
+ * events (webhook-handler.ts). The in-process table's comment lists the 6
+ * Stripe events left out, and why.
  */
 
 export interface StripeEventMapping {
@@ -36,7 +37,10 @@ const EVENTS: Array<[event: string, mapping: StripeEventMapping]> = [
   ["customer.subscription.deleted", remove("subscriptions")],
   ["customer.subscription.paused", upsert("subscriptions")],
   ["customer.subscription.resumed", upsert("subscriptions")],
-  // Charges
+  ["customer.subscription.trial_will_end", upsert("subscriptions")],
+  ["customer.subscription.pending_update_applied", upsert("subscriptions")],
+  ["customer.subscription.pending_update_expired", upsert("subscriptions")],
+  // Charges/Payments
   ["charge.succeeded", upsert("charges")],
   ["charge.failed", upsert("charges")],
   ["charge.captured", upsert("charges")],
@@ -46,13 +50,13 @@ const EVENTS: Array<[event: string, mapping: StripeEventMapping]> = [
   // charge.pending is its create event. charge.expired ends an uncaptured one.
   ["charge.pending", upsert("charges")],
   ["charge.expired", upsert("charges")],
-  // Disputes
+  // Disputes (status lost/won/open + amount for revenue netting)
   ["charge.dispute.created", upsert("disputes")],
   ["charge.dispute.updated", upsert("disputes")],
   ["charge.dispute.closed", upsert("disputes")],
   ["charge.dispute.funds_withdrawn", upsert("disputes")],
   ["charge.dispute.funds_reinstated", upsert("disputes")],
-  // Payment intents
+  // Payment Intents
   ["payment_intent.succeeded", upsert("payment_intents")],
   ["payment_intent.payment_failed", upsert("payment_intents")],
   ["payment_intent.created", upsert("payment_intents")],
@@ -60,6 +64,7 @@ const EVENTS: Array<[event: string, mapping: StripeEventMapping]> = [
   ["payment_intent.processing", upsert("payment_intents")],
   ["payment_intent.requires_action", upsert("payment_intents")],
   ["payment_intent.amount_capturable_updated", upsert("payment_intents")],
+  ["payment_intent.partially_funded", upsert("payment_intents")],
   // Invoices
   ["invoice.created", upsert("invoices")],
   ["invoice.finalized", upsert("invoices")],
@@ -68,20 +73,24 @@ const EVENTS: Array<[event: string, mapping: StripeEventMapping]> = [
   ["invoice.updated", upsert("invoices")],
   ["invoice.voided", upsert("invoices")],
   ["invoice.marked_uncollectible", upsert("invoices")],
+  ["invoice.payment_succeeded", upsert("invoices")],
+  ["invoice.payment_action_required", upsert("invoices")],
+  ["invoice.finalization_failed", upsert("invoices")],
+  ["invoice.sent", upsert("invoices")],
   ["invoice.deleted", remove("invoices")],
   // Products
   ["product.created", upsert("products")],
   ["product.updated", upsert("products")],
   ["product.deleted", remove("products")],
-  // Prices
+  // Prices (modern API → `prices` entity)
   ["price.created", upsert("prices")],
   ["price.updated", upsert("prices")],
   ["price.deleted", remove("prices")],
-  // Plans (legacy)
+  // Plans (legacy API → `plans` entity, kept for back-compat)
   ["plan.created", upsert("plans")],
   ["plan.updated", upsert("plans")],
   ["plan.deleted", remove("plans")],
-  // Payouts
+  // Payouts (status moves pending → in_transit → paid/failed)
   ["payout.created", upsert("payouts")],
   ["payout.updated", upsert("payouts")],
   ["payout.paid", upsert("payouts")],
@@ -97,7 +106,8 @@ const EVENTS: Array<[event: string, mapping: StripeEventMapping]> = [
   ["credit_note.created", upsert("credit_notes")],
   ["credit_note.updated", upsert("credit_notes")],
   ["credit_note.voided", upsert("credit_notes")],
-  // Invoice items. No `invoiceitem.updated`: Stripe rejects it as deprecated.
+  // Invoice items. No `invoiceitem.updated`: Stripe rejects it as deprecated
+  // on webhook endpoints, which fails the whole create/update request.
   ["invoiceitem.created", upsert("invoice_items")],
   ["invoiceitem.deleted", remove("invoice_items")],
   // Subscription schedules
@@ -108,7 +118,7 @@ const EVENTS: Array<[event: string, mapping: StripeEventMapping]> = [
   ["subscription_schedule.canceled", upsert("subscription_schedules")],
   ["subscription_schedule.aborted", upsert("subscription_schedules")],
   ["subscription_schedule.expiring", upsert("subscription_schedules")],
-  // Coupons and promotion codes
+  // Coupons & promotion codes
   ["coupon.created", upsert("coupons")],
   ["coupon.updated", upsert("coupons")],
   ["coupon.deleted", remove("coupons")],
@@ -125,6 +135,13 @@ const EVENTS: Array<[event: string, mapping: StripeEventMapping]> = [
   ["setup_intent.setup_failed", upsert("setup_intents")],
   ["setup_intent.requires_action", upsert("setup_intents")],
   ["setup_intent.canceled", upsert("setup_intents")],
+  // Payment methods. `detached` carries the method with `customer: null`:
+  // an upsert, so the row shows it is no longer on file, as Airbyte's
+  // payment_methods keeps it.
+  ["payment_method.attached", upsert("payment_methods")],
+  ["payment_method.updated", upsert("payment_methods")],
+  ["payment_method.automatically_updated", upsert("payment_methods")],
+  ["payment_method.detached", upsert("payment_methods")],
   // Radar early fraud warnings
   ["radar.early_fraud_warning.created", upsert("early_fraud_warnings")],
   ["radar.early_fraud_warning.updated", upsert("early_fraud_warnings")],
