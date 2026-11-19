@@ -741,11 +741,13 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     });
 
     try {
+      // The suffix is new on every call, so no table by that name exists:
+      // skip the DROP TABLE IF EXISTS job before the load.
       const loadResult = await this.loadStagingFromParquet(
         parquet.filePath,
         params.layout,
         flowId,
-        { stagingSuffix },
+        { stagingSuffix, skipDrop: true },
       );
       // The finally below drops the table, but not when the worker dies
       // mid-batch (deploy, timeout): such tables piled up for months, one

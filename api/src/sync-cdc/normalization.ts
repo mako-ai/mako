@@ -185,6 +185,44 @@ export function selectLatestChangePerRecord<T extends ComparableChange>(
   return result;
 }
 
+/**
+ * Cut an ingest-ordered slice of change events so that, within each segment,
+ * a record has either upserts only or one delete. Applying the segments in
+ * order then lands the same rows however the slice was batched.
+ *
+ * Without the cut, a delete shares a segment with the record's other events
+ * and selectLatestChangePerRecord keeps one change per record:
+ * - upserts before a delete never reach the live row, so a soft-delete
+ *   tombstone keeps whatever fields an earlier batch wrote;
+ * - a sparse upsert after a hard delete MERGEs onto the old live row (the
+ *   DELETE never runs) and inherits the deleted record's fields.
+ * Both outcomes changed with where the batch happened to end. Deletes are
+ * rare, so a slice almost always stays one segment.
+ */
+export function segmentAroundDeletes<
+  T extends { recordId: string; operation?: string },
+>(events: T[]): T[][] {
+  const segments: T[][] = [];
+  let current: T[] = [];
+  let seen = new Set<string>();
+  let deleted = new Set<string>();
+  for (const event of events) {
+    const id = String(event.recordId);
+    const isDelete = event.operation === "delete";
+    if (deleted.has(id) || (isDelete && seen.has(id))) {
+      segments.push(current);
+      current = [];
+      seen = new Set();
+      deleted = new Set();
+    }
+    current.push(event);
+    seen.add(id);
+    if (isDelete) deleted.add(id);
+  }
+  if (current.length > 0) segments.push(current);
+  return segments;
+}
+
 function camelToSnake(str: string): string {
   return str.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
 }
