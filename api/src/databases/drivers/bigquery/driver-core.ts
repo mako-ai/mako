@@ -151,10 +151,12 @@ export class BigQueryDriverCore implements DatabaseDriver {
     table: string,
     options?: { projectId?: string },
   ): string {
-    const dataset = options?.projectId
-      ? `\`${options.projectId}\`.\`${schema}\``
-      : `\`${schema}\``;
-    return `${dataset}.${table}`;
+    // Every part is backticked: a bare `ad-review` (or a hyphenated project
+    // or dataset) is a syntax error in GoogleSQL.
+    return [options?.projectId, schema, table]
+      .filter((part): part is string => !!part)
+      .map(escapeIdentifier)
+      .join(".");
   }
 
   buildRowCountBatchQuery(

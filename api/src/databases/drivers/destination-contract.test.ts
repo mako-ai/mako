@@ -71,13 +71,21 @@ const cases: Array<[DatabaseDriver, DestinationContractExpectations]> = [
       mapColumnType: { cases: BQ_MAP_COLUMN_CASES },
       formatTableRef: {
         cases: [
-          { schema: "ds", table: "tbl", expected: "`ds`.tbl" },
+          { schema: "ds", table: "tbl", expected: "`ds`.`tbl`" },
           {
             schema: "ds",
             table: "tbl",
             projectId: "proj",
-            expected: "`proj`.`ds`.tbl",
+            expected: "`proj`.`ds`.`tbl`",
           },
+          // Prod: a bare `ad-review` failed with "Expected end of input but got "-"".
+          {
+            schema: "meta-ads",
+            table: "ad-review",
+            projectId: "realadvisor-prod",
+            expected: "`realadvisor-prod`.`meta-ads`.`ad-review`",
+          },
+          { schema: undefined, table: "ad-review", expected: "`ad-review`" },
         ],
       },
       rowCountBatchQuery: {
