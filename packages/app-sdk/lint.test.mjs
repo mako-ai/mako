@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFil
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { lintApp, minMajor, SDK_COMPONENTS, SDK_SUBPATH_COMPONENTS } from "./lint.js";
+import { distinctColumns, lintApp, minMajor, SDK_COMPONENTS, SDK_SUBPATH_COMPONENTS } from "./lint.js";
 
 function app(files) {
   const dir = mkdtempSync(path.join(tmpdir(), "mako-lint-"));
@@ -111,3 +111,34 @@ test("--rules runs only the named rules; Calendar and Command point at their sub
   assert.doesNotMatch(out, /utc-display|local-shadcn/);
 });
 
+
+test("distinct-sum warns when a distinct-count column is summed, and never fails the run", () => {
+  const binding = [
+    "-- connection: x",
+    "SELECT week, country, page_type,",
+    "  COUNT(DISTINCT user_id) AS unique_users,",
+    "  CAST(COUNT(DISTINCT org_id) AS INT64) AS orgs,",
+    "  uniqIf(agency_id, agency_id != '') AS agencies,",
+    "  count() AS impressions",
+    "FROM t GROUP BY 1, 2, 3",
+  ].join("\n");
+  const dir = app({
+    "bindings/imp.sql": binding,
+    "src/a.tsx": [
+      'const q = useQuery("imp");',
+      "const total = rows.reduce((s, r) => s + r.unique_users, 0);",
+      "const imps = rows.reduce((s, r) => s + r.impressions, 0);",
+      "// user-days on purpose",
+      "// mako-lint-ignore distinct-sum",
+      "const days = rows.reduce((s, r) => s + r.orgs, 0);",
+    ].join("\n"),
+    "src/b.ts": 'const sql = `SELECT SUM(agencies) FROM imp`;',
+    "src/c.ts": "const other = rows.reduce((s, r) => s + r.unique_users, 0); // reads another binding",
+  });
+  assert.deepEqual([...distinctColumns(dir).keys()].sort(), ["agencies", "orgs", "unique_users"]);
+  const found = lintApp(dir, ["distinct-sum"]).map(f => `${f.file}:${f.line}:${f.level}`).sort();
+  assert.deepEqual(found, ["src/a.tsx:2:warn", "src/b.ts:1:warn"]);
+  const bin = new URL("./lint.js", import.meta.url).pathname;
+  const out = execFileSync(process.execPath, [bin, dir, "--rules=distinct-sum"], { encoding: "utf8" });
+  assert.match(out, /0 findings, 2 warnings/);
+});
