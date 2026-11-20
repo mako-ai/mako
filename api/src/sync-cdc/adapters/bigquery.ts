@@ -13,7 +13,6 @@ import { BigQuery } from "@google-cloud/bigquery";
 import {
   isLocalBigQueryEmulator,
   bigQueryEmulatorEndpoint,
-  bigQueryEmulatorHostPort,
 } from "../../utils/bigquery-emulator";
 import {
   DatabaseConnection,
@@ -873,15 +872,16 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       location: connLocation,
     };
     if (isLocalBigQueryEmulator(apiBaseUrl)) {
-      // Point the SDK (Parquet load jobs, dataset metadata) at the local
-      // emulator. The SDK only fully bypasses auth when BIGQUERY_EMULATOR_HOST
-      // is set, so set it alongside the explicit apiEndpoint.
-      bqOptions.apiEndpoint = bigQueryEmulatorEndpoint(apiBaseUrl as string);
-      if (!process.env.BIGQUERY_EMULATOR_HOST) {
-        process.env.BIGQUERY_EMULATOR_HOST = bigQueryEmulatorHostPort(
-          apiBaseUrl as string,
+      // The emulator is a development tool. In production a destination that
+      // names a local address is refused, so a tenant cannot redirect the
+      // client. The endpoint is set on this client only, never through
+      // process env, which every later BigQuery client in the process reads.
+      if (process.env.NODE_ENV === "production") {
+        throw new Error(
+          "BigQuery destination: a local api_base_url is not allowed in production.",
         );
       }
+      bqOptions.apiEndpoint = bigQueryEmulatorEndpoint(apiBaseUrl as string);
     }
     const bq = new BigQuery(bqOptions);
     // Emulator jobs cost nothing; only a real client gets labelled loads.

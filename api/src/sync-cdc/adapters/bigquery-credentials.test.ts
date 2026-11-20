@@ -1,0 +1,102 @@
+/**
+ * A BigQuery CDC destination signs in with the tenant's own service account.
+ * Without one it is refused before a BigQuery client exists, so the client
+ * never falls back to Mako's Application Default Credentials.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const clientCtor = vi.hoisted(() => vi.fn());
+vi.mock("@google-cloud/bigquery", () => ({
+  BigQuery: class {
+    constructor(opts: unknown) {
+      clientCtor(opts);
+    }
+    dataset() {
+      return { getMetadata: async () => [{ location: "EU" }] };
+    }
+  },
+}));
+
+import { BigQueryDestinationAdapter } from "./bigquery";
+
+const key = {
+  type: "service_account",
+  project_id: "tenant-proj",
+  client_email: "tenant@tenant-proj.iam.gserviceaccount.com",
+  private_key: "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----\n",
+};
+
+function adapter(connection: Record<string, unknown>) {
+  const a = new BigQueryDestinationAdapter({
+    workspaceId: "w",
+    destinationDatabaseId: "d",
+    tableDestination: { schema: "ds" },
+  } as never);
+  (a as any).resolveDestination = async () => ({ connection });
+  return a as any;
+}
+
+describe("bigquery destination tenant credentials", () => {
+  beforeEach(() => clientCtor.mockClear());
+
+  it.each([
+    ["no key", undefined],
+    ["empty key", ""],
+    ["not a service account", { ...key, type: "authorized_user" }],
+  ])("refuses %s without creating a client", async (_n, sa) => {
+    await expect(
+      adapter({ project_id: "p", service_account_json: sa }).resolveBqClient(),
+    ).rejects.toThrow(/service.account|credential type/i);
+    expect(clientCtor).not.toHaveBeenCalled();
+  });
+
+  it("uses only the tenant's service account", async () => {
+    await adapter({
+      project_id: "p",
+      service_account_json: JSON.stringify(key),
+    }).resolveBqClient();
+    expect(clientCtor).toHaveBeenCalledTimes(1);
+    expect(clientCtor.mock.calls[0][0].credentials.client_email).toBe(
+      key.client_email,
+    );
+  });
+
+  describe("local emulator address", () => {
+    const original = {
+      node: process.env.NODE_ENV,
+      host: process.env.BIGQUERY_EMULATOR_HOST,
+    };
+    afterEach(() => {
+      process.env.NODE_ENV = original.node;
+      if (original.host === undefined) {
+        delete process.env.BIGQUERY_EMULATOR_HOST;
+      } else {
+        process.env.BIGQUERY_EMULATOR_HOST = original.host;
+      }
+    });
+
+    const local = {
+      project_id: "p",
+      api_base_url: "http://localhost:9050",
+      service_account_json: JSON.stringify(key),
+    };
+
+    it("is refused in production, before any client exists", async () => {
+      process.env.NODE_ENV = "production";
+      await expect(adapter(local).resolveBqClient()).rejects.toThrow(
+        /not allowed in production/,
+      );
+      expect(clientCtor).not.toHaveBeenCalled();
+    });
+
+    it("sets the endpoint on the client and never on process env", async () => {
+      process.env.NODE_ENV = "development";
+      delete process.env.BIGQUERY_EMULATOR_HOST;
+      await adapter(local).resolveBqClient();
+      expect(clientCtor.mock.calls[0][0].apiEndpoint).toBe(
+        "http://localhost:9050",
+      );
+      expect(process.env.BIGQUERY_EMULATOR_HOST).toBeUndefined();
+    });
+  });
+});
