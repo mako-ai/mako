@@ -36,6 +36,14 @@ export async function workspaceByteCapGb(
   }
 }
 
+/** Seed the cache (tests). */
+export function primeWorkspaceByteCapCache(
+  workspaceId: string,
+  gb: number | undefined,
+): void {
+  cache.set(workspaceId, { gb, at: Date.now() });
+}
+
 export function clearWorkspaceByteCapCache(workspaceId: string): void {
   cache.delete(workspaceId);
 }

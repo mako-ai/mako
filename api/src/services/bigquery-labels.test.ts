@@ -170,6 +170,11 @@ async function testContext(): Promise<void> {
   });
   assert.match(emailCaller.mako_caller, /^h_[0-9a-f]{12}$/);
   assert.equal(emailCaller.mako_caller.includes("example"), false);
+  // mako_user itself never carries an email either.
+  const hashed = caller({ mako_source: "agent", mako_user: "A.B@x.com" });
+  assert.match(hashed.mako_user, /^h_[0-9a-f]{12}$/);
+  assert.equal(hashed.mako_user, hashed.mako_caller);
+  assert.equal(caller({ mako_user: "665f00aa" }).mako_user, "665f00aa");
   // An entry point's own caller label wins.
   assert.equal(
     caller({ mako_source: "agent", mako_caller: "Agent-7" }).mako_caller,

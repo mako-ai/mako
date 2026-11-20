@@ -21,6 +21,7 @@ import {
   resolveAgentJobCaps,
 } from "../databases/drivers/bigquery/agent-caps";
 import { withQueryLabels } from "./bigquery-labels";
+import { primeWorkspaceByteCapCache } from "./workspace-byte-cap";
 import {
   AGENT_BIGQUERY_JOB_TIMEOUT_MS,
   AGENT_BIGQUERY_MAX_BYTES_BILLED,
@@ -182,19 +183,14 @@ async function testRequestBody(): Promise<void> {
       { mako_source: "app_binding", mako_trigger: "scheduler" },
       () => service.executeQuery(database, "SELECT 1", {}),
     );
-    // The console is interactive: byte cap, but no timeout. CDC and the
-    // scheduler get neither.
-    assert.equal(
-      posts[4].body.maximumBytesBilled,
-      String(AGENT_BIGQUERY_MAX_BYTES_BILLED),
-    );
-    assert.equal("jobTimeoutMs" in posts[4].body, false);
-    for (const post of posts.slice(5)) {
+    // A workspace without its own cap keeps today's behaviour: a console,
+    // CDC and the scheduler get neither cap.
+    for (const post of posts.slice(4)) {
       assert.equal("jobTimeoutMs" in post.body, false);
       assert.equal("maximumBytesBilled" in post.body, false);
     }
 
-    // An MCP call gets the 20 GiB default; its own maximumBytesBilled wins.
+    // An MCP call gets the platform default (500 GiB); its own maximumBytesBilled wins.
     posts.length = 0;
     await withQueryLabels(
       {
@@ -204,7 +200,10 @@ async function testRequestBody(): Promise<void> {
       },
       () => service.executeQuery(database, "SELECT 1", {}),
     );
-    assert.equal(posts[0].body.maximumBytesBilled, String(20 * 1024 ** 3));
+    assert.equal(
+      posts[0].body.maximumBytesBilled,
+      String(AGENT_BIGQUERY_MAX_BYTES_BILLED),
+    );
     await withQueryLabels(
       {
         mako_source: "agent",
@@ -218,11 +217,28 @@ async function testRequestBody(): Promise<void> {
     );
     assert.equal(posts[1].body.maximumBytesBilled, String(200 * 1024 ** 3));
 
-    // Notebook and a binding preview are capped; a published app refresh
-    // and a dbt defer build are not.
+    // Without a workspace cap, a notebook and a binding preview are not capped.
     for (const labels of [
       { mako_source: "notebook", mako_trigger: "kernel" },
       { mako_source: "app_binding", mako_trigger: "preview" },
+      { mako_source: "console", mako_trigger: "console_ui" },
+    ]) {
+      posts.length = 0;
+      await withQueryLabels(labels, () =>
+        service.executeQuery(database, "SELECT 1", {}),
+      );
+      assert.equal("maximumBytesBilled" in posts[0].body, false);
+    }
+
+    // With the workspace set to 20 GiB, a notebook, a console and a binding
+    // preview are capped; a published app refresh and a dbt defer build are
+    // not, and neither are sync paths.
+    primeWorkspaceByteCapCache("ws1", 20);
+    for (const labels of [
+      { mako_source: "notebook", mako_trigger: "kernel" },
+      { mako_source: "app_binding", mako_trigger: "preview" },
+      { mako_source: "console", mako_trigger: "console_ui" },
+      { mako_source: "agent", mako_trigger: "mcp" },
     ]) {
       posts.length = 0;
       await withQueryLabels(labels, () =>
@@ -234,6 +250,8 @@ async function testRequestBody(): Promise<void> {
       { mako_source: "app_binding", mako_trigger: "viewer" },
       { mako_source: "dbt_defer" },
       { mako_source: "flow" },
+      { mako_source: "cdc" },
+      { mako_source: "app_binding", mako_trigger: "scheduler" },
       { mako_source: "console", mako_trigger: "api" },
     ]) {
       posts.length = 0;
@@ -334,6 +352,11 @@ function testAgentCaps(): void {
       .maximumBytesBilled,
     undefined,
   );
+  // With no connection or workspace setting a console is not capped.
+  assert.deepEqual(
+    resolveAgentJobCaps({ connection: {}, labels: { mako_source: "console" } }),
+    {},
+  );
   // Sync paths ignore the workspace setting.
   assert.deepEqual(
     resolveAgentJobCaps({
@@ -378,9 +401,9 @@ function testOtherErrors(): void {
     describeBytesBilledCap("Syntax error: Unexpected keyword FROM", 1),
     null,
   );
-  // 20 GiB and 5 minutes unless the operator sets others.
+  // 500 GiB and 5 minutes unless the operator sets others.
   if (process.env.AGENT_BIGQUERY_MAX_BYTES_BILLED === undefined) {
-    assert.equal(AGENT_BIGQUERY_MAX_BYTES_BILLED, 20 * 1024 ** 3);
+    assert.equal(AGENT_BIGQUERY_MAX_BYTES_BILLED, 500 * 1024 ** 3);
   }
   if (process.env.AGENT_BIGQUERY_JOB_TIMEOUT_MS === undefined) {
     assert.equal(AGENT_BIGQUERY_JOB_TIMEOUT_MS, 300000);

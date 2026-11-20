@@ -550,7 +550,7 @@ export interface paths {
         };
         /**
          * Byte cap on interactive BigQuery queries
-         * @description The most GiB one interactive BigQuery query (agent, MCP, console, notebook, binding preview) may bill. `gb` is null when unset, so the default applies; 0 means no cap. Sync, flows, dbt and published apps are never capped.
+         * @description The most GiB one interactive BigQuery query (agent, MCP, console, notebook, binding preview) may bill. `gb` is null when unset: agent and MCP queries then carry the platform default (`defaultGb`) and consoles, notebooks and previews are uncapped; 0 means no cap. Sync, flows, dbt and published apps are never capped.
          */
         get: operations["get_api_workspaces_id_bigquery_byte_cap"];
         /**

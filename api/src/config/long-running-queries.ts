@@ -58,17 +58,19 @@ export const AGENT_DIRECT_QUERY_TIMEOUT_MS = envInt(
 );
 
 /**
- * The most bytes one interactive BigQuery job may bill: an agent or MCP
- * call, a console or notebook someone runs, an app binding preview. Order of
- * precedence: the call's own `maxBytesBilled`, the connection's
+ * The most bytes one agent or MCP BigQuery job may bill when neither its
+ * call, its connection nor its workspace sets a cap. Order of precedence:
+ * the call's own `maxBytesBilled`, the connection's
  * `agent_max_bytes_billed_gb`, the workspace's `bigqueryMaxBytesBilledGb`,
- * then this. BigQuery fails a job over the cap before it runs, at no charge.
- * 20 GiB by default, after a 110.8 GB MCP query on 2026-11-19. `0` removes
- * the default cap. CDC, flows, dbt, scheduled queries and published apps are
- * never capped.
+ * then this. A connection or workspace setting also caps consoles,
+ * notebooks and binding previews; this default does not. BigQuery fails a
+ * job over the cap before it runs, at no charge. 500 GiB: the largest MCP
+ * query on realadvisor-prod in the 7 days to 2026-11-18 billed 236.5 GiB.
+ * RealAdvisor sets its workspace to 20 GiB. `0` removes the default cap.
+ * CDC, flows, dbt, scheduled queries and published apps are never capped.
  */
 export const AGENT_BIGQUERY_MAX_BYTES_BILLED = ((): number => {
-  const fallback = 20 * 1024 ** 3;
+  const fallback = 500 * 1024 ** 3;
   const raw = process.env.AGENT_BIGQUERY_MAX_BYTES_BILLED;
   if (raw === undefined || raw.trim() === "") return fallback;
   const parsed = Number(raw);

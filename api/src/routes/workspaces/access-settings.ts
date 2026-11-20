@@ -131,7 +131,7 @@ workspaceAccessSettingsRoutes.openapi(
     tags: ["Workspaces"],
     summary: "Byte cap on interactive BigQuery queries",
     description:
-      "The most GiB one interactive BigQuery query (agent, MCP, console, notebook, binding preview) may bill. `gb` is null when unset, so the default applies; 0 means no cap. Sync, flows, dbt and published apps are never capped.",
+      "The most GiB one interactive BigQuery query (agent, MCP, console, notebook, binding preview) may bill. `gb` is null when unset: agent and MCP queries then carry the platform default (`defaultGb`) and consoles, notebooks and previews are uncapped; 0 means no cap. Sync, flows, dbt and published apps are never capped.",
     security: AUTH_SECURITY,
     middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
     request: { params: IdParam },

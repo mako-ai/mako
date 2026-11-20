@@ -50,7 +50,7 @@ export interface IWorkspace extends Document {
     linkPreviews?: boolean;
     /**
      * Byte cap in GiB on interactive BigQuery queries (agents, MCP,
-     * consoles, notebooks, binding previews). Unset: the 20 GiB default.
+     * consoles, notebooks, binding previews). Unset: agent and MCP queries carry the platform default (500 GiB), others none.
      * 0: no cap. A connection's `agent_max_bytes_billed_gb` wins over it.
      */
     bigqueryMaxBytesBilledGb?: number;

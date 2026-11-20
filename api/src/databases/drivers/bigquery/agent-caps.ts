@@ -119,14 +119,24 @@ export function resolveAgentJobCaps(input: {
     if (timeout > 0) caps.jobTimeoutMs = Math.max(1000, Math.floor(timeout));
   }
 
-  if (explicit === undefined && isInteractiveJob(input.labels)) {
-    // Connection setting, then the workspace setting, then the default.
+  if (explicit === undefined) {
+    // A connection or workspace setting caps every interactive job. With
+    // neither, only agent and MCP jobs carry the default; consoles,
+    // notebooks and binding previews stay uncapped, as before.
     const gb =
       setting(input.connection?.[AGENT_MAX_BYTES_SETTING]) ??
       setting(input.workspaceGb);
-    const bytes =
-      gb !== undefined ? Math.floor(gb * GIB) : AGENT_BIGQUERY_MAX_BYTES_BILLED;
-    if (bytes > 0) caps.maximumBytesBilled = bytes;
+    const applies =
+      gb !== undefined
+        ? isInteractiveJob(input.labels)
+        : isAgentJob(input.labels);
+    if (applies) {
+      const bytes =
+        gb !== undefined
+          ? Math.floor(gb * GIB)
+          : AGENT_BIGQUERY_MAX_BYTES_BILLED;
+      if (bytes > 0) caps.maximumBytesBilled = bytes;
+    }
   }
   return caps;
 }

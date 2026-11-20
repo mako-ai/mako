@@ -632,9 +632,9 @@ const DATABASE_SCHEMAS: Record<string, DatabaseSchemaResponse> = {
         label: "Interactive query byte cap (GiB, optional)",
         type: "number",
         required: false,
-        placeholder: "20",
+        placeholder: "500",
         helperText:
-          "BigQuery refuses an agent, MCP, console, notebook or binding-preview query that would bill more, before it runs. Empty: the workspace setting, else 20 GiB. 0: no cap.",
+          "BigQuery refuses an agent, MCP, console, notebook or binding-preview query that would bill more, before it runs. Empty: the workspace setting, else 500 GiB for agent and MCP queries only. 0: no cap.",
         advanced: true,
       },
     ],

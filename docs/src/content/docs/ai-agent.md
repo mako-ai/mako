@@ -247,7 +247,7 @@ Results land via the persisted `lastRun` record and the realtime `console.run.co
 
 The short, single-shot execute tools (`sql_execute_query`, `mongo_execute_query`) stay on a brief timeout (`AGENT_DIRECT_QUERY_TIMEOUT_MS`, 60s default) for quick exploration; when one times out, the agent moves the query into a console and uses the resumable `run_console` flow instead.
 
-On BigQuery, an interactive read (these tools, `query_metric`, consoles, notebooks and binding previews) carries a byte cap. The order: the call's own `maxBytesBilled` on `sql_execute_query`, the connection's `agent_max_bytes_billed_gb`, the workspace setting (`PUT /api/workspaces/{id}/bigquery-byte-cap`), then `AGENT_BIGQUERY_MAX_BYTES_BILLED`, 20 GiB by default, `0` to remove it. BigQuery refuses a query that would bill more before it runs, at no charge, and the error gives the bytes it needs. Flows, CDC, dbt builds, scheduled queries and published apps are not capped.
+On BigQuery, an agent or MCP read (these tools and `query_metric`) carries a byte cap. The order: the call's own `maxBytesBilled` on `sql_execute_query`, the connection's `agent_max_bytes_billed_gb`, the workspace setting (`PUT /api/workspaces/{id}/bigquery-byte-cap`, in GiB), then `AGENT_BIGQUERY_MAX_BYTES_BILLED`, 500 GiB by default, `0` to remove it. A connection or workspace setting also caps consoles, notebooks and binding previews. BigQuery refuses a query that would bill more before it runs, at no charge, and the error gives the bytes it needs. Flows, CDC, dbt builds, scheduled queries and published apps are never capped.
 
 ## Safety
 

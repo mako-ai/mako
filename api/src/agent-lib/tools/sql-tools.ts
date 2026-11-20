@@ -185,7 +185,7 @@ const executeQuerySchema = z.object({
     .positive()
     .optional()
     .describe(
-      "BigQuery only: raise the byte cap for this one query, in bytes. Without it BigQuery refuses a read that would bill more than the cap (20 GiB by default) and the error says how many bytes it needs. Set it on purpose, after filtering on the partition column and selecting fewer columns, never by reflex.",
+      "BigQuery: byte cap for this query, in bytes. Set it on purpose, only after the error names the bytes needed.",
     ),
 });
 

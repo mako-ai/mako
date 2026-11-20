@@ -127,6 +127,10 @@ export function bigQueryJobLabels(input: {
   if (!merged.mako_workspace && input.workspaceId) {
     merged.mako_workspace = String(input.workspaceId);
   }
+  // mako_user is a user id; an email there becomes a hash.
+  if (merged.mako_user?.includes("@")) {
+    merged.mako_user = callerHandle(merged.mako_user);
+  }
   // Who asked: an entry point's own caller labels win.
   const caller = callerLabels(merged);
   for (const [key, value] of Object.entries(caller)) {
