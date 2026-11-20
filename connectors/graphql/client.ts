@@ -113,7 +113,7 @@ export function checkEndpoint(endpoint: string): URL {
   try {
     new URL(endpoint);
   } catch {
-    throw new Error(`Invalid GraphQL endpoint URL: ${endpoint}`);
+    throw new Error("Invalid GraphQL endpoint URL");
   }
   try {
     return checkUrl(endpoint, { allowLoopback: true });
@@ -124,9 +124,8 @@ export function checkEndpoint(endpoint: string): URL {
       );
     }
     if (error instanceof SafeRequestError && error.code === "BAD_URL") {
-      throw new Error(
-        `The GraphQL endpoint must be http or https: ${endpoint}`,
-      );
+      // The SDK's message names the origin and path only: no userinfo, no query.
+      throw new Error(error.message);
     }
     throw error;
   }
@@ -143,8 +142,16 @@ export interface GraphqlResponse {
 /** A redirect: refused, never followed, never retried. */
 export class GraphqlRedirectError extends Error {
   constructor(url: string) {
+    // Origin and path only: the query string can carry a token.
+    let shown = "The GraphQL endpoint";
+    try {
+      const u = new URL(url);
+      shown = `The GraphQL endpoint ${u.origin}${u.pathname}`;
+    } catch {
+      // keep the generic wording
+    }
     super(
-      `The GraphQL endpoint ${url} answered with a redirect. Set the endpoint to the URL it redirects to.`,
+      `${shown} answered with a redirect. Set the endpoint to the URL it redirects to.`,
     );
     this.name = "GraphqlRedirectError";
   }
