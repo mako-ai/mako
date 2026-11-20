@@ -240,5 +240,47 @@
     },
     "read": false,
     "status": 200
+  },
+  "custom_api api key in a header": {
+    "sent": {
+      "url": "https://api.example.com/v1/things",
+      "method": "GET",
+      "headers": {
+        "x-custom-key": "api_test_close_key_0123456789"
+      }
+    },
+    "read": true,
+    "status": 200
+  },
+  "custom_api api key in the query string": {
+    "sent": {
+      "url": "https://api.example.com/v1/things?page=2&key=api_test_close_key_0123456789",
+      "method": "GET",
+      "headers": {}
+    },
+    "read": true,
+    "status": 200
+  },
+  "custom_api basic auth": {
+    "sent": {
+      "url": "https://api.example.com/v1/things",
+      "method": "GET",
+      "headers": {
+        "authorization": "Basic c3ZjLXVzZXI6YXBpX3Rlc3RfY2xvc2Vfa2V5XzAxMjM0NTY3ODk="
+      }
+    },
+    "read": true,
+    "status": 200
+  },
+  "posthog project api key": {
+    "sent": {
+      "url": "https://app.posthog.com/api/projects/12345/persons/?search=jane%40example.com&limit=20",
+      "method": "GET",
+      "headers": {
+        "posthog-api-token": "api_test_close_key_0123456789"
+      }
+    },
+    "read": true,
+    "status": 200
   }
 }

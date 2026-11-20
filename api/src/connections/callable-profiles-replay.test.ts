@@ -11,12 +11,12 @@
  * fixtures/callable-profiles-replay-expected.json was written on master while the
  * built-in connector folder (api/src/connectors/close) still existed:
  *
- *   CLOSE_REPLAY_WRITE=1 pnpm --filter api exec tsx src/connections/close-profile-replay.test.ts
+ *   CLOSE_REPLAY_WRITE=1 pnpm --filter api exec tsx src/connections/callable-profiles-replay.test.ts
  *
  * The same file must pass with the folder deleted: Close then runs on the
- * profile in connections/profiles, with no connector behind it.
+ * profile in connections/callable-profiles, with no connector behind it.
  *
- * Run with: pnpm --filter api exec tsx src/connections/close-profile-replay.test.ts
+ * Run with: pnpm --filter api exec tsx src/connections/callable-profiles-replay.test.ts
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -255,6 +255,37 @@ const CASES: Case[] = [
     write: true,
     request: { method: "POST", path: "/v3/profiles/1/quotes", body: { a: 1 } },
   },
+  {
+    name: "custom_api api key in a header",
+    conn: "custom_api_header",
+    workflow: "agent",
+    write: false,
+    request: { method: "GET", path: "/things" },
+  },
+  {
+    name: "custom_api api key in the query string",
+    conn: "custom_api_query",
+    workflow: "agent",
+    write: false,
+    request: { method: "GET", path: "/things", query: { page: "2" } },
+  },
+  {
+    name: "custom_api basic auth",
+    conn: "custom_api_basic",
+    workflow: "agent",
+    write: false,
+    request: { method: "GET", path: "/things" },
+  },
+  {
+    name: "posthog project api key",
+    conn: "posthog_project_key",
+    workflow: "agent",
+    write: false,
+    operation: {
+      name: "search_persons",
+      params: { search: "jane@example.com" },
+    },
+  },
 ];
 
 type Wire = {
@@ -304,6 +335,41 @@ async function main() {
         base_url: "https://api.example.com/v1",
         auth_type: "bearer",
         token: enc(KEY),
+      },
+    },
+    custom_api_header: {
+      type: "custom_api",
+      config: {
+        base_url: "https://api.example.com/v1",
+        auth_type: "api_key_header",
+        header_name: "X-Custom-Key",
+        token: enc(KEY),
+      },
+    },
+    custom_api_query: {
+      type: "custom_api",
+      config: {
+        base_url: "https://api.example.com/v1",
+        auth_type: "api_key_query",
+        query_param: "key",
+        token: enc(KEY),
+      },
+    },
+    custom_api_basic: {
+      type: "custom_api",
+      config: {
+        base_url: "https://api.example.com/v1",
+        auth_type: "basic",
+        username: enc("svc-user"),
+        password: enc(KEY),
+      },
+    },
+    posthog_project_key: {
+      type: "posthog",
+      config: {
+        api_key: enc(KEY),
+        project_id: "12345",
+        auth_type: "project_api_key",
       },
     },
     wise: {
@@ -384,7 +450,12 @@ async function main() {
     string,
     unknown
   >;
-  for (const type of writing ? [] : Object.keys(stored)) {
+  // Loaded here: master, where the baseline is written, has no registry.
+  const { callableProfileSchemaFor } = writing
+    ? { callableProfileSchemaFor: () => null }
+    : await import("./callable-profiles");
+  const types = [...new Set(Object.values(stored).map(c => c.type))];
+  for (const type of writing ? [] : types) {
     assert.equal(
       await isOrphanConnectorType(type, String(ws), { callable: true }),
       false,
@@ -395,6 +466,13 @@ async function main() {
       JSON.parse(JSON.stringify(schema)),
       schemas[type],
       `${type} config schema`,
+    );
+    // The profile's own schema, which is what stays once the connector
+    // folder is gone, is the same one.
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(callableProfileSchemaFor(type))),
+      schemas[type],
+      `${type} profile schema`,
     );
   }
 
