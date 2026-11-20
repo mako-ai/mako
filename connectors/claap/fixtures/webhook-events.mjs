@@ -72,8 +72,6 @@ export function buildWebhookDeliveries() {
       rawPayload: body,
       receivedAt: RECEIVED_AT,
     },
-    /** The in-process stored shape: `verifyWebhook` adds `type` and `id`. */
-    inProcessPayload: { ...body, type: body.event.type, id: body.eventId },
   }));
 }
 

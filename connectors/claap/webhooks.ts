@@ -5,11 +5,10 @@
  * `X-Claap-Webhook-Secret`, which Mako's API compares with the flow's
  * secret in constant time (`scheme: "shared-secret"`). The secret never
  * reaches the box. The event id is the body's `eventId`, its type
- * `event.type`, as the in-process check reads them.
+ * `event.type`.
  *
- * `claapWebhookRecords` is the in-process `extractWebhookCdcRecords`,
- * parity-tested. The handler then does what the in-process
- * `enrichWebhookCdcRecords` does, plus the fill rule:
+ * `claapWebhookRecords` extracts the change records of a delivery. The
+ * handler then enriches them (transcripts) and applies the fill rule:
  *
  * - Fill: a webhook recording carries every column a backfill writes except,
  *   now and then, `source`. An upsert that lacks one of
@@ -45,7 +44,7 @@ import {
 
 export const CLAAP_WEBHOOK_EVENTS = ["recording_added", "recording_updated"];
 
-/** The in-process `verifyClaapWebhook`, as data. The API test runs both. */
+/** The shared-secret check on `X-Claap-Webhook-Secret`, as data. */
 export const CLAAP_WEBHOOK_VERIFICATION: WebhookVerification = {
   scheme: "shared-secret",
   secretHeader: "x-claap-webhook-secret",
@@ -128,7 +127,7 @@ function recordingOf(
   return { id, data: { ...recording, id } };
 }
 
-/** The in-process `extractWebhookCdcRecords`, base plus Claap's override. */
+/** The change records of one delivery: the recording, then its transcripts. */
 export function claapWebhookRecords(
   rawPayload: unknown,
   eventType?: string,
@@ -316,7 +315,7 @@ export async function handleClaapWebhookBatch(
         }
         records.splice(0, records.length, ...withRows);
       } catch (error) {
-        // As in-process: a failed enrichment applies the recordings alone.
+        // A failed enrichment applies the recordings alone.
         deps.log(
           `Claap transcript enrichment failed; applying recordings only: ${
             error instanceof Error ? error.message : String(error)
