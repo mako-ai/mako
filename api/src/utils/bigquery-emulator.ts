@@ -77,7 +77,7 @@ export function assertBigQueryApiBaseUrl(apiBaseUrl?: string): void {
   } catch {
     throw new Error("BigQuery: api_base_url is not a valid URL.");
   }
-  const host = url.hostname.toLowerCase();
+  const host = url.hostname.toLowerCase().replace(/\.$/, "");
   const isGoogleHost =
     host === "googleapis.com" || host.endsWith(".googleapis.com");
   if (

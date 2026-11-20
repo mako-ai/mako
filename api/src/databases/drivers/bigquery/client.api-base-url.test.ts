@@ -51,6 +51,7 @@ describe("BigQuery api_base_url", () => {
     "https://bigquery.googleapis.com",
     "https://bigquery.europe-west3.rep.googleapis.com",
     "bigquery.googleapis.com",
+    "https://bigquery.googleapis.com.",
   ])("production allows %s", url => {
     vi.stubEnv("NODE_ENV", "production");
     expect(() => assertBigQueryApiBaseUrl(url)).not.toThrow();
@@ -68,5 +69,14 @@ describe("BigQuery api_base_url", () => {
       "Bearer emulator",
     );
     expect(post).not.toHaveBeenCalled();
+  });
+
+  it("the client follows no redirects", async () => {
+    vi.stubEnv("NODE_ENV", "test");
+    const client = await new BigQueryClients().getHttpClient(
+      key,
+      "http://localhost:9050",
+    );
+    expect(client.defaults.maxRedirects).toBe(0);
   });
 });

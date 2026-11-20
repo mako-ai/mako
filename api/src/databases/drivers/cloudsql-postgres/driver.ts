@@ -37,6 +37,13 @@ import { ConnectionCache } from "../../connection-cache";
 
 const logger = loggers.db("cloudsql-postgres");
 
+function isIamAuth(conn: { authType?: unknown }): boolean {
+  return (
+    typeof conn.authType === "string" &&
+    conn.authType.toUpperCase() === AuthTypes.IAM
+  );
+}
+
 /**
  * The Postgres login user. IAM auth signs in as the validated key's own
  * service account, in Cloud SQL's IAM form (the email without
@@ -470,6 +477,8 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
     let client: PgClient | null = null;
     try {
       const conn = (database.connection as any) || {};
+      // Before any Google call, so a bad username never reaches the Admin API.
+      const user = resolveLoginUser(conn, isIamAuth(conn));
       connector = await this._getConnector(database);
 
       const getOpts: any = {};
@@ -524,8 +533,6 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
         }
         throw getOptionsError;
       }
-
-      const user = resolveLoginUser(conn, resolvedAuthType === AuthTypes.IAM);
 
       client = new PgClient({
         ...(clientOpts as any),
@@ -592,6 +599,8 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
   ): Promise<PgPool> {
     try {
       const conn = (database.connection as any) || {};
+      // Before any Google call, so a bad username never reaches the Admin API.
+      const user = resolveLoginUser(conn, isIamAuth(conn));
       const connector = await this.getSharedConnector(database);
 
       const getOpts: any = {};
@@ -625,8 +634,6 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
       }
 
       const clientOpts = await connector.getOptions(getOpts);
-
-      const user = resolveLoginUser(conn, resolvedAuthType === AuthTypes.IAM);
 
       // Use override if provided, otherwise config, otherwise default to postgres
       const targetDb = dbNameOverride || conn.database || "postgres";

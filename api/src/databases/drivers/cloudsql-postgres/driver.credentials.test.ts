@@ -123,6 +123,10 @@ describe("cloudsql-postgres IAM login user", () => {
   });
 
   it("refuses a mismatch in the connection test and pool creation", async () => {
+    const tokenCall = vi
+      .spyOn(JWT.prototype, "getAccessToken")
+      .mockResolvedValue({ token: "t" } as never);
+    connectorCtor.mockClear();
     const driver = new CloudSQLPostgresDatabaseDriver();
     const bad = db({
       service_account_json: JSON.stringify(key),
@@ -132,6 +136,9 @@ describe("cloudsql-postgres IAM login user", () => {
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/signs in as/);
     await expect(driver.getConnection(bad)).rejects.toThrow(/signs in as/);
+    // Refused before the token call and the connector (Admin API) exist.
+    expect(tokenCall).not.toHaveBeenCalled();
+    expect(connectorCtor).not.toHaveBeenCalled();
   });
 
   it("leaves password auth unchanged", () => {
