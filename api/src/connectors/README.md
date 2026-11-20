@@ -69,7 +69,6 @@ connectors/
 ├── close/
 ├── claap/
 ├── calendly/
-├── pandadoc/
 ├── wise/
 ├── posthog/
 ├── graphql/
@@ -178,7 +177,7 @@ table of connectors and entities. Summary:
 - Supported entities: leads, opportunities, activities (10+ sub-types), contacts, users, custom_fields
 - Required config: `api_key`
 
-### Claap, Calendly, PandaDoc
+### Claap, Calendly
 
 - Fixed-entity connectors with backfill + CDC webhook support (auto-provisioned where the provider allows it)
 
