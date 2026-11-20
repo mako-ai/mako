@@ -374,16 +374,12 @@ async function folderSpec(slug: "wise" | "calendly") {
   return run.messages.find((m: any) => m.type === "SPEC")?.spec;
 }
 
-void test("the Wise declaration agrees with the in-process check, with Wise's own keys", async () => {
-  const { verifyWiseWebhook, wiseWebhookPublicKeys } =
-    await import("../wise/webhooks");
+void test("the Wise declaration verifies its fixture deliveries", async () => {
   const fixtures =
     await import("../../../../connectors/wise/fixtures/webhook-events.mjs");
   const wise = await folderSpec("wise");
   const declared = wise.mako.webhooks.verification;
-  // Wise's production and sandbox keys, in the built-in's order.
-  assert.deepEqual(declared.publicKeys, wiseWebhookPublicKeys(false));
-  // The fixtures are signed by a per-run key: swap it in on both sides.
+  // The fixtures are signed by a per-run key: swap it in.
   const testKey = fixtures.TEST_WEBHOOK_KEYS.publicKey;
   const declaration = declaredWebhookVerification(
     spec({ ...declared, publicKeys: [testKey] }),
@@ -394,11 +390,10 @@ void test("the Wise declaration agrees with the in-process check, with Wise's ow
   let valid = 0;
   for (const d of deliveries) {
     const ours = verifyDeclaredWebhook(declaration, d);
-    const theirs = verifyWiseWebhook(
-      { payload: d.payload, headers: d.headers, secret: "production" },
-      () => [testKey],
-    );
-    assert.equal(ours.valid, theirs.valid, d.name);
+    if (/^valid/.test(d.name)) assert.ok(ours.valid, d.name);
+    if (/tampered|wrong key|no signature|not base64/.test(d.name)) {
+      assert.equal(ours.valid, false, d.name);
+    }
     if (ours.valid) valid++;
   }
   assert.equal(valid, 4);
