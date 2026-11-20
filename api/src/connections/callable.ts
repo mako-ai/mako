@@ -27,7 +27,7 @@ import {
 /**
  * Four ways, whatever the service: a bearer token, an API key in a header or
  * in the query string, or basic auth. A connector fixes its own (Close sends
- * its key as basic auth, Stripe and Wise as a bearer token); a Custom API
+ * its key as basic auth, Stripe as a bearer token); a Custom API
  * connection picks one, or a Google service account, whose key makes a
  * short-lived bearer token for each request (`wireCredential`).
  */
@@ -456,15 +456,6 @@ const stripe: CallableConnection = {
   bodyEncoding: "form",
 };
 
-const wise: CallableConnection = {
-  type: "wise",
-  baseUrl: config =>
-    trimSlash(text(config.api_base_url) || "https://api.wise.com"),
-  baseUrlFields: ["api_base_url"],
-  credential: config => ({ type: "bearer", token: text(config.api_key) }),
-  otherSecrets: config => [text(config.sca_private_key)],
-};
-
 // ---------------------------------------------------------------------------
 // PostHog: reads in the connection's own project, a query included
 // ---------------------------------------------------------------------------
@@ -838,7 +829,7 @@ export const customApi: CallableConnection = {
 };
 
 const CALLABLE = new Map<string, CallableConnection>(
-  [close, stripe, wise, posthog, customApi].map(c => [c.type, c]),
+  [close, stripe, posthog, customApi].map(c => [c.type, c]),
 );
 
 /** How Mako calls a connection of `type`, or null when it cannot yet. */

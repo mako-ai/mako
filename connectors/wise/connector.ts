@@ -2,11 +2,9 @@
  * Wise on @makoai/connector-sdk: `spec`, `check`, `discover`, `read` and
  * `webhook`.
  *
- * A port of the in-process connector in `api/src/connectors/wise/`, with the
- * same 7 entities, schemas, requests, pagination, chunk positions, retry
- * policy and webhook mapping. Nothing runs it in production yet.
- * `fixtures/parity.mjs` runs both against the same recorded Wise responses
- * and compares them entity by entity.
+ * Ported from the former in-process connector (deleted), with the same 7
+ * entities, schemas, requests, pagination, chunk positions, retry policy and
+ * webhook mapping.
  *
  * Read state per entity is the in-process `FetchState.metadata`, key for
  * key (`profileIds`, `profileIndex`, then `offset`, `seekPosition`,

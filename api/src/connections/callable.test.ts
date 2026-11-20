@@ -96,7 +96,7 @@ describe("reads and writes", () => {
     );
 
   it("GET, HEAD and OPTIONS read on every type", () => {
-    for (const kind of ["close", "stripe", "wise", "custom_api"]) {
+    for (const kind of ["close", "stripe", "custom_api"]) {
       for (const method of ["GET", "HEAD", "OPTIONS"]) {
         expect(read(kind, method, "/anything")).toBe(true);
       }
@@ -120,9 +120,8 @@ describe("reads and writes", () => {
     }
   });
 
-  it("Stripe and Wise: every POST writes", () => {
+  it("Stripe: every POST writes", () => {
     expect(read("stripe", "POST", "/v1/customers/search")).toBe(false);
-    expect(read("wise", "POST", "/v3/profiles/1/quotes")).toBe(false);
   });
 
   it("Custom API GraphQL: a query reads, a mutation writes, only when GraphQL is on", () => {
@@ -538,22 +537,6 @@ describe("each credential is added the type's way", () => {
       headers: { "Stripe-Account": "acct_123" },
     });
     expect(sent[0].headers["stripe-account"]).toBe("acct_123");
-  });
-
-  it("Wise: Bearer on the configured base URL", async () => {
-    const sent = answering(200, []);
-    await forward(
-      connection("wise", {
-        api_key: KEY,
-        api_base_url: "https://api.sandbox.transferwise.tech/",
-      }),
-      type("wise"),
-      { method: "GET", path: "/v2/profiles" },
-    );
-    expect(sent[0].url).toBe(
-      "https://api.sandbox.transferwise.tech/v2/profiles",
-    );
-    expect(sent[0].headers.authorization).toBe(`Bearer ${KEY}`);
   });
 
   it("Custom API: bearer, API key in a header or query, basic", async () => {
@@ -1421,7 +1404,7 @@ describe("named operations build reads the profile accepts", () => {
     expect(() => operationRequest("close", {}, "delete_lead", {})).toThrow(
       /no operation delete_lead\. Its operations: search_leads/,
     );
-    expect(() => operationRequest("wise", {}, "anything", {})).toThrow(
+    expect(() => operationRequest("custom_api", {}, "anything", {})).toThrow(
       /no named operations/,
     );
     expect(() => operationRequest("close", {}, "search_leads", {})).toThrow(
