@@ -739,7 +739,12 @@ export class SandboxedConnector extends BaseConnector {
   private queryEntityNames(): string[] {
     const declared = (this.loaded?.spec?.mako as any)?.queryEntities;
     if (!declared || typeof declared !== "object") return [];
-    const list = this.config().queries;
+    const list =
+      this.config()[
+        typeof declared.key === "string" && declared.key
+          ? declared.key
+          : "queries"
+      ];
     if (!Array.isArray(list)) return [];
     return list
       .filter(

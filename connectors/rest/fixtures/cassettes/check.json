@@ -1,0 +1,4 @@
+[
+{"request":"GET /api/","status":200,"body":{"ok":true}},
+{"request":"GET /api/final","status":200,"body":{"ok":true}}
+]
