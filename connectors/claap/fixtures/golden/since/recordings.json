@@ -1,0 +1,736 @@
+[
+  {
+    "actionItems": [
+      {
+        "text": "Envoyer l'estimation 12"
+      }
+    ],
+    "aiFields": [
+      {
+        "name": "Résumé",
+        "value": "R12"
+      }
+    ],
+    "channel": {
+      "id": "chn_1",
+      "name": "Ventes"
+    },
+    "companies": [],
+    "createdAt": "2026-09-06T08:00:00.000Z",
+    "durationSeconds": 1050,
+    "id": "rec_0012",
+    "keyTakeaways": [
+      "Point 12"
+    ],
+    "labels": [
+      {
+        "id": "lbl_1",
+        "name": "Estimation"
+      }
+    ],
+    "meeting": null,
+    "outlines": [
+      {
+        "startedAt": 0,
+        "title": "Intro"
+      }
+    ],
+    "recorder": {
+      "email": "agent.one@example.test",
+      "id": "usr_1",
+      "name": "Agent One"
+    },
+    "source": "upload",
+    "state": "Ready",
+    "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0012.jpg",
+    "title": "Visite 12 - Rue Exemple",
+    "transcripts": [
+      {
+        "isActive": true,
+        "isTranscript": true,
+        "langIso2": "FR",
+        "url": "https://signed.claap.test/t/rec_0012/fr.json?sig=fixture12"
+      },
+      {
+        "isActive": false,
+        "isTranscript": false,
+        "langIso2": "en",
+        "url": "https://signed.claap.test/t/rec_0012/en.json?sig=fixture12"
+      }
+    ],
+    "url": "https://app.claap.test/r/rec_0012",
+    "video": {
+      "url": "https://cdn.claap.test/v/rec_0012.mp4"
+    },
+    "workspace": {
+      "id": "wks_fixture",
+      "name": "Fixture"
+    }
+  },
+  {
+    "actionItems": [
+      {
+        "text": "Envoyer l'estimation 13"
+      }
+    ],
+    "aiFields": [
+      {
+        "name": "Résumé",
+        "value": "R13"
+      }
+    ],
+    "channel": {
+      "id": "chn_1",
+      "name": "Ventes"
+    },
+    "companies": [],
+    "createdAt": "2026-09-09T09:00:00.000Z",
+    "durationSeconds": 1087.5,
+    "id": "rec_0013",
+    "keyTakeaways": [
+      "Point 13"
+    ],
+    "labels": [],
+    "meeting": {
+      "startingAt": "2026-09-09T09:00:00.000Z",
+      "type": "external"
+    },
+    "outlines": [
+      {
+        "startedAt": 0,
+        "title": "Intro"
+      }
+    ],
+    "recorder": {
+      "email": "agent.one@example.test",
+      "id": "usr_1",
+      "name": "Agent One"
+    },
+    "source": "meeting",
+    "state": "Ready",
+    "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0013.jpg",
+    "title": "Visite 13 - Rue Exemple",
+    "transcripts": [
+      {
+        "isActive": true,
+        "isTranscript": true,
+        "langIso2": "FR",
+        "url": "https://signed.claap.test/t/rec_0013/fr.json?sig=fixture13"
+      }
+    ],
+    "url": "https://app.claap.test/r/rec_0013",
+    "video": {
+      "url": "https://cdn.claap.test/v/rec_0013.mp4"
+    },
+    "workspace": {
+      "id": "wks_fixture",
+      "name": "Fixture"
+    }
+  },
+  {
+    "actionItems": [
+      {
+        "text": "Envoyer l'estimation 14"
+      }
+    ],
+    "aiFields": [
+      {
+        "name": "Résumé",
+        "value": "R14"
+      }
+    ],
+    "channel": {
+      "id": "chn_1",
+      "name": "Ventes"
+    },
+    "companies": [],
+    "createdAt": "2026-09-12T10:00:00.000Z",
+    "durationSeconds": 1125,
+    "id": "rec_0014",
+    "keyTakeaways": [
+      "Point 14"
+    ],
+    "labels": [],
+    "meeting": null,
+    "outlines": [
+      {
+        "startedAt": 0,
+        "title": "Intro"
+      }
+    ],
+    "recorder": {
+      "email": "agent.one@example.test",
+      "id": "usr_1",
+      "name": "Agent One"
+    },
+    "source": "upload",
+    "state": "Ready",
+    "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0014.jpg",
+    "title": "Visite 14 - Rue Exemple",
+    "transcripts": [
+      {
+        "isActive": true,
+        "isTranscript": true,
+        "langIso2": "FR",
+        "url": "https://signed.claap.test/t/rec_0014/fr.json?sig=fixture14"
+      }
+    ],
+    "url": "https://app.claap.test/r/rec_0014",
+    "video": {
+      "url": "https://cdn.claap.test/v/rec_0014.mp4"
+    },
+    "workspace": {
+      "id": "wks_fixture",
+      "name": "Fixture"
+    }
+  },
+  {
+    "actionItems": [
+      {
+        "text": "Envoyer l'estimation 15"
+      }
+    ],
+    "aiFields": [
+      {
+        "name": "Résumé",
+        "value": "R15"
+      }
+    ],
+    "channel": {
+      "id": "chn_1",
+      "name": "Ventes"
+    },
+    "companies": [],
+    "createdAt": "2026-09-15T11:00:00.000Z",
+    "durationSeconds": 1162.5,
+    "id": "rec_0015",
+    "keyTakeaways": [
+      "Point 15"
+    ],
+    "labels": [
+      {
+        "id": "lbl_1",
+        "name": "Estimation"
+      }
+    ],
+    "meeting": {
+      "startingAt": "2026-09-15T11:00:00.000Z",
+      "type": "external"
+    },
+    "outlines": [
+      {
+        "startedAt": 0,
+        "title": "Intro"
+      }
+    ],
+    "recorder": {
+      "email": "agent.one@example.test",
+      "id": "usr_1",
+      "name": "Agent One"
+    },
+    "source": "meeting",
+    "state": "Ready",
+    "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0015.jpg",
+    "title": "Visite 15 - Rue Exemple",
+    "transcripts": [
+      {
+        "isActive": true,
+        "isTranscript": true,
+        "langIso2": "FR",
+        "url": "https://signed.claap.test/t/rec_0015/fr.json?sig=fixture15"
+      }
+    ],
+    "url": "https://app.claap.test/r/rec_0015",
+    "video": {
+      "url": "https://cdn.claap.test/v/rec_0015.mp4"
+    },
+    "workspace": {
+      "id": "wks_fixture",
+      "name": "Fixture"
+    }
+  },
+  {
+    "actionItems": [
+      {
+        "text": "Envoyer l'estimation 16"
+      }
+    ],
+    "aiFields": [
+      {
+        "name": "Résumé",
+        "value": "R16"
+      }
+    ],
+    "channel": {
+      "id": "chn_1",
+      "name": "Ventes"
+    },
+    "companies": [],
+    "createdAt": "2026-09-18T12:00:00.000Z",
+    "durationSeconds": 1200,
+    "id": "rec_0016",
+    "keyTakeaways": [
+      "Point 16"
+    ],
+    "labels": [],
+    "meeting": null,
+    "outlines": [
+      {
+        "startedAt": 0,
+        "title": "Intro"
+      }
+    ],
+    "recorder": {
+      "email": "agent.one@example.test",
+      "id": "usr_1",
+      "name": "Agent One"
+    },
+    "source": "upload",
+    "state": "Ready",
+    "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0016.jpg",
+    "title": "Visite 16 - Rue Exemple",
+    "transcripts": [
+      {
+        "isActive": true,
+        "isTranscript": true,
+        "langIso2": "FR",
+        "url": "https://signed.claap.test/t/rec_0016/fr.json?sig=fixture16"
+      },
+      {
+        "isActive": false,
+        "isTranscript": false,
+        "langIso2": "en",
+        "url": "https://signed.claap.test/t/rec_0016/en.json?sig=fixture16"
+      }
+    ],
+    "url": "https://app.claap.test/r/rec_0016",
+    "video": {
+      "url": "https://cdn.claap.test/v/rec_0016.mp4"
+    },
+    "workspace": {
+      "id": "wks_fixture",
+      "name": "Fixture"
+    }
+  },
+  {
+    "actionItems": [
+      {
+        "text": "Envoyer l'estimation 17"
+      }
+    ],
+    "channel": {
+      "id": "chn_1",
+      "name": "Ventes"
+    },
+    "companies": [],
+    "createdAt": "2026-09-21T13:00:00.000Z",
+    "durationSeconds": 1237.5,
+    "id": "rec_0017",
+    "keyTakeaways": [
+      "Point 17"
+    ],
+    "labels": [],
+    "meeting": {
+      "startingAt": "2026-09-21T13:00:00.000Z",
+      "type": "external"
+    },
+    "outlines": [
+      {
+        "startedAt": 0,
+        "title": "Intro"
+      }
+    ],
+    "recorder": {
+      "email": "agent.one@example.test",
+      "id": "usr_1",
+      "name": "Agent One"
+    },
+    "source": "meeting",
+    "state": "Uploaded",
+    "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0017.jpg",
+    "title": "Visite 17 - Rue Exemple",
+    "transcripts": [
+      {
+        "isActive": true,
+        "isTranscript": true,
+        "langIso2": "FR",
+        "url": "https://signed.claap.test/t/rec_0017/fr.json?sig=fixture17"
+      }
+    ],
+    "url": "https://app.claap.test/r/rec_0017",
+    "video": {
+      "url": "https://cdn.claap.test/v/rec_0017.mp4"
+    },
+    "workspace": {
+      "id": "wks_fixture",
+      "name": "Fixture"
+    }
+  },
+  {
+    "actionItems": [
+      {
+        "text": "Envoyer l'estimation 18"
+      }
+    ],
+    "aiFields": [
+      {
+        "name": "Résumé",
+        "value": "R18"
+      }
+    ],
+    "channel": {
+      "id": "chn_1",
+      "name": "Ventes"
+    },
+    "companies": [],
+    "createdAt": "2026-09-24T08:00:00.000Z",
+    "durationSeconds": 1275,
+    "id": "rec_0018",
+    "keyTakeaways": [
+      "Point 18"
+    ],
+    "labels": [
+      {
+        "id": "lbl_1",
+        "name": "Estimation"
+      }
+    ],
+    "meeting": null,
+    "outlines": [
+      {
+        "startedAt": 0,
+        "title": "Intro"
+      }
+    ],
+    "recorder": {
+      "email": "agent.one@example.test",
+      "id": "usr_1",
+      "name": "Agent One"
+    },
+    "source": "upload",
+    "state": "Ready",
+    "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0018.jpg",
+    "title": "Visite 18 - Rue Exemple",
+    "transcripts": [
+      {
+        "isActive": true,
+        "isTranscript": true,
+        "langIso2": "FR",
+        "url": "https://signed.claap.test/t/rec_0018/fr.json?sig=fixture18"
+      }
+    ],
+    "url": "https://app.claap.test/r/rec_0018",
+    "video": {
+      "url": "https://cdn.claap.test/v/rec_0018.mp4"
+    },
+    "workspace": {
+      "id": "wks_fixture",
+      "name": "Fixture"
+    }
+  },
+  {
+    "actionItems": [
+      {
+        "text": "Envoyer l'estimation 19"
+      }
+    ],
+    "aiFields": [
+      {
+        "name": "Résumé",
+        "value": "R19"
+      }
+    ],
+    "channel": {
+      "id": "chn_1",
+      "name": "Ventes"
+    },
+    "companies": [],
+    "createdAt": "2026-09-27T09:00:00.000Z",
+    "durationSeconds": 1312.5,
+    "id": "rec_0019",
+    "keyTakeaways": [
+      "Point 19"
+    ],
+    "labels": [],
+    "meeting": {
+      "startingAt": "2026-09-27T09:00:00.000Z",
+      "type": "external"
+    },
+    "outlines": [
+      {
+        "startedAt": 0,
+        "title": "Intro"
+      }
+    ],
+    "recorder": {
+      "email": "agent.one@example.test",
+      "id": "usr_1",
+      "name": "Agent One"
+    },
+    "source": "meeting",
+    "state": "Ready",
+    "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0019.jpg",
+    "title": "Visite 19 - Rue Exemple",
+    "transcripts": [
+      {
+        "isActive": true,
+        "isTranscript": true,
+        "langIso2": "FR",
+        "url": "https://signed.claap.test/t/rec_0019/fr.json?sig=fixture19"
+      }
+    ],
+    "url": "https://app.claap.test/r/rec_0019",
+    "video": {
+      "url": "https://cdn.claap.test/v/rec_0019.mp4"
+    },
+    "workspace": {
+      "id": "wks_fixture",
+      "name": "Fixture"
+    }
+  },
+  {
+    "actionItems": [
+      {
+        "text": "Envoyer l'estimation 20"
+      }
+    ],
+    "aiFields": [
+      {
+        "name": "Résumé",
+        "value": "R20"
+      }
+    ],
+    "channel": {
+      "id": "chn_1",
+      "name": "Ventes"
+    },
+    "companies": [],
+    "createdAt": "2026-09-30T10:00:00.000Z",
+    "durationSeconds": 1350,
+    "id": "rec_0020",
+    "keyTakeaways": [
+      "Point 20"
+    ],
+    "labels": [],
+    "meeting": null,
+    "outlines": [
+      {
+        "startedAt": 0,
+        "title": "Intro"
+      }
+    ],
+    "recorder": {
+      "email": "agent.one@example.test",
+      "id": "usr_1",
+      "name": "Agent One"
+    },
+    "source": "upload",
+    "state": "Ready",
+    "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0020.jpg",
+    "title": "Visite 20 - Rue Exemple",
+    "transcripts": [
+      {
+        "isActive": true,
+        "isTranscript": true,
+        "langIso2": "FR",
+        "url": "https://signed.claap.test/t/rec_0020/fr.json?sig=fixture20"
+      },
+      {
+        "isActive": false,
+        "isTranscript": false,
+        "langIso2": "en",
+        "url": "https://signed.claap.test/t/rec_0020/en.json?sig=fixture20"
+      }
+    ],
+    "url": "https://app.claap.test/r/rec_0020",
+    "video": {
+      "url": "https://cdn.claap.test/v/rec_0020.mp4"
+    },
+    "workspace": {
+      "id": "wks_fixture",
+      "name": "Fixture"
+    }
+  },
+  {
+    "actionItems": [
+      {
+        "text": "Envoyer l'estimation 21"
+      }
+    ],
+    "aiFields": [
+      {
+        "name": "Résumé",
+        "value": "R21"
+      }
+    ],
+    "channel": {
+      "id": "chn_1",
+      "name": "Ventes"
+    },
+    "companies": [],
+    "createdAt": "2026-10-03T11:00:00.000Z",
+    "durationSeconds": 1387.5,
+    "id": "rec_0021",
+    "keyTakeaways": [
+      "Point 21"
+    ],
+    "labels": [
+      {
+        "id": "lbl_1",
+        "name": "Estimation"
+      }
+    ],
+    "meeting": {
+      "startingAt": "2026-10-03T11:00:00.000Z",
+      "type": "external"
+    },
+    "outlines": [
+      {
+        "startedAt": 0,
+        "title": "Intro"
+      }
+    ],
+    "recorder": {
+      "email": "agent.one@example.test",
+      "id": "usr_1",
+      "name": "Agent One"
+    },
+    "source": "meeting",
+    "state": "Ready",
+    "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0021.jpg",
+    "title": "Visite 21 - Rue Exemple",
+    "transcripts": [
+      {
+        "isActive": true,
+        "isTranscript": true,
+        "langIso2": "FR",
+        "url": "https://signed.claap.test/t/rec_0021/fr.json?sig=fixture21"
+      }
+    ],
+    "url": "https://app.claap.test/r/rec_0021",
+    "video": {
+      "url": "https://cdn.claap.test/v/rec_0021.mp4"
+    },
+    "workspace": {
+      "id": "wks_fixture",
+      "name": "Fixture"
+    }
+  },
+  {
+    "actionItems": [
+      {
+        "text": "Envoyer l'estimation 22"
+      }
+    ],
+    "aiFields": [
+      {
+        "name": "Résumé",
+        "value": "R22"
+      }
+    ],
+    "channel": {
+      "id": "chn_1",
+      "name": "Ventes"
+    },
+    "companies": [],
+    "createdAt": "2026-10-06T12:00:00.000Z",
+    "durationSeconds": 1425,
+    "id": "rec_0022",
+    "keyTakeaways": [
+      "Point 22"
+    ],
+    "labels": [],
+    "meeting": null,
+    "outlines": [
+      {
+        "startedAt": 0,
+        "title": "Intro"
+      }
+    ],
+    "recorder": {
+      "email": "agent.one@example.test",
+      "id": "usr_1",
+      "name": "Agent One"
+    },
+    "source": "upload",
+    "state": "Ready",
+    "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0022.jpg",
+    "title": "Visite 22 - Rue Exemple",
+    "transcripts": [
+      {
+        "isActive": true,
+        "isTranscript": true,
+        "langIso2": "FR",
+        "url": "https://signed.claap.test/t/rec_0022/fr.json?sig=fixture22"
+      }
+    ],
+    "url": "https://app.claap.test/r/rec_0022",
+    "video": {
+      "url": "https://cdn.claap.test/v/rec_0022.mp4"
+    },
+    "workspace": {
+      "id": "wks_fixture",
+      "name": "Fixture"
+    }
+  },
+  {
+    "actionItems": [
+      {
+        "text": "Envoyer l'estimation 23"
+      }
+    ],
+    "aiFields": [
+      {
+        "name": "Résumé",
+        "value": "R23"
+      }
+    ],
+    "channel": {
+      "id": "chn_1",
+      "name": "Ventes"
+    },
+    "companies": [],
+    "createdAt": "2026-10-09T13:00:00.000Z",
+    "durationSeconds": 1462.5,
+    "id": "rec_0023",
+    "keyTakeaways": [
+      "Point 23"
+    ],
+    "labels": [],
+    "meeting": {
+      "startingAt": "2026-10-09T13:00:00.000Z",
+      "type": "external"
+    },
+    "outlines": [
+      {
+        "startedAt": 0,
+        "title": "Intro"
+      }
+    ],
+    "recorder": {
+      "email": "agent.one@example.test",
+      "id": "usr_1",
+      "name": "Agent One"
+    },
+    "source": "meeting",
+    "state": "Ready",
+    "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0023.jpg",
+    "title": "Visite 23 - Rue Exemple",
+    "transcripts": [
+      {
+        "isActive": true,
+        "isTranscript": true,
+        "langIso2": "FR",
+        "url": "https://signed.claap.test/t/rec_0023/fr.json?sig=fixture23"
+      }
+    ],
+    "url": "https://app.claap.test/r/rec_0023",
+    "video": {
+      "url": "https://cdn.claap.test/v/rec_0023.mp4"
+    },
+    "workspace": {
+      "id": "wks_fixture",
+      "name": "Fixture"
+    }
+  }
+]

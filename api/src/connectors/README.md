@@ -66,7 +66,6 @@ connectors/
 │   ├── incremental.ts       # Date windows, the client-side `since` filter
 │   └── webhook-signature.ts # Raw body, HMAC, constant-time compare
 ├── stripe/
-├── claap/
 ├── calendly/
 ├── posthog/
 ├── graphql/

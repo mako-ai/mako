@@ -1,6 +1,5 @@
 /**
- * The Claap HTTP client, with the in-process connector's retry policy
- * (`createRetryExecutor` over `api/src/connectors/base/http-retry.ts`):
+ * The Claap HTTP client and its retry policy:
  *
  * - `X-Claap-Key: <key>`;
  * - up to 5 retries on 429, 5xx and network errors, waiting the server's
@@ -11,8 +10,7 @@
  * - errors read `HTTP <status>: <message>`, as `formatClaapApiError` writes
  *   them.
  *
- * Two limits the in-process client does not have, because a box is killed
- * after 10 minutes: 60 s per attempt, and 4 minutes of backoff per process.
+ * Two limits that suit a box, which is killed after 10 minutes: 60 s per attempt, and 4 minutes of backoff per process.
  *
  * It uses `fetch`, not axios: the folder needs no dependency.
  */

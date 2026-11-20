@@ -1,0 +1,1374 @@
+{
+  "transcripts": [
+    {
+      "delivery": "recording_added",
+      "eventId": "evt_fixture_1",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "evt_fixture_1",
+          "entity": "recordings",
+          "operation": "upsert",
+          "payload": {
+            "actionItems": [
+              {
+                "text": "Envoyer l'estimation 1"
+              }
+            ],
+            "aiFields": [
+              {
+                "name": "Résumé",
+                "value": "R1"
+              }
+            ],
+            "analytics": {
+              "views": 3
+            },
+            "channel": {
+              "id": "chn_1",
+              "name": "Ventes"
+            },
+            "companies": [],
+            "createdAt": "2026-08-04T09:00:00.000Z",
+            "durationSeconds": 637.5,
+            "id": "rec_0001",
+            "insightTemplates": null,
+            "keyTakeaways": [
+              "Point 1"
+            ],
+            "labels": [],
+            "meeting": {
+              "startingAt": "2026-08-04T09:00:00.000Z",
+              "type": "external"
+            },
+            "outlines": [
+              {
+                "startedAt": 0,
+                "title": "Intro"
+              }
+            ],
+            "recorder": {
+              "email": "agent.one@example.test",
+              "id": "usr_1",
+              "name": "Agent One"
+            },
+            "source": "meeting",
+            "state": "Ready",
+            "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0001.jpg",
+            "title": "Visite 1 - Rue Exemple",
+            "transcriptOnly": false,
+            "transcripts": [
+              {
+                "isActive": true,
+                "isTranscript": true,
+                "langIso2": "FR",
+                "url": "https://signed.claap.test/t/rec_0001/fr.json?sig=fixture1"
+              }
+            ],
+            "url": "https://app.claap.test/r/rec_0001",
+            "video": {
+              "url": "https://cdn.claap.test/v/rec_0001.mp4"
+            },
+            "workspace": {
+              "id": "wks_fixture",
+              "name": "Fixture"
+            }
+          },
+          "recordId": "rec_0001",
+          "sourceTs": "2026-08-04T09:00:00.000Z"
+        },
+        {
+          "changeId": "evt_fixture_1:recording_transcripts:rec_0001:fr",
+          "entity": "recording_transcripts",
+          "operation": "upsert",
+          "payload": {
+            "charCount": 104,
+            "fetchError": null,
+            "fetchStatus": "ok",
+            "fetchedAt": "<fetchedAt>",
+            "id": "rec_0001:fr",
+            "isActive": true,
+            "isTranscript": true,
+            "langIso2": "fr",
+            "recordingCreatedAt": "2026-08-04T09:00:00.000Z",
+            "recordingId": "rec_0001",
+            "segmentCount": 3,
+            "segments": [
+              {
+                "endedAt": 4.8,
+                "speaker": "speaker_1",
+                "startedAt": 1.2,
+                "text": "Bonjour, ici rec_0001 (fr)."
+              },
+              {
+                "endedAt": 70.5,
+                "languageCode": "fr",
+                "speaker": "speaker_2",
+                "startedAt": 65,
+                "text": "Merci pour votre temps."
+              },
+              {
+                "endedAt": 3702,
+                "startedAt": 3700,
+                "text": "Au revoir."
+              }
+            ],
+            "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0001 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+          },
+          "recordId": "rec_0001:fr",
+          "sourceTs": "<now>"
+        }
+      ]
+    },
+    {
+      "delivery": "recording_updated",
+      "eventId": "evt_fixture_2",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "evt_fixture_2",
+          "entity": "recordings",
+          "operation": "upsert",
+          "payload": {
+            "actionItems": [
+              {
+                "text": "Envoyer l'estimation 4"
+              }
+            ],
+            "aiFields": [
+              {
+                "name": "Résumé",
+                "value": "R4"
+              }
+            ],
+            "analytics": {
+              "views": 3
+            },
+            "channel": {
+              "id": "chn_1",
+              "name": "Ventes"
+            },
+            "companies": [],
+            "createdAt": "2026-08-13T12:00:00.000Z",
+            "durationSeconds": 750,
+            "id": "rec_0004",
+            "insightTemplates": null,
+            "keyTakeaways": [
+              "Point 4"
+            ],
+            "labels": [],
+            "meeting": null,
+            "outlines": [
+              {
+                "startedAt": 0,
+                "title": "Intro"
+              }
+            ],
+            "recorder": {
+              "email": "agent.one@example.test",
+              "id": "usr_1",
+              "name": "Agent One"
+            },
+            "source": "upload",
+            "state": "Ready",
+            "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0004.jpg",
+            "title": "Visite 4 - Rue Exemple",
+            "transcriptOnly": false,
+            "transcripts": [
+              {
+                "isActive": true,
+                "isTranscript": true,
+                "langIso2": "FR",
+                "url": "https://signed.claap.test/t/rec_0004/fr.json?sig=fixture4"
+              },
+              {
+                "isActive": false,
+                "isTranscript": false,
+                "langIso2": "en",
+                "url": "https://signed.claap.test/t/rec_0004/en.json?sig=fixture4"
+              }
+            ],
+            "url": "https://app.claap.test/r/rec_0004",
+            "video": {
+              "url": "https://cdn.claap.test/v/rec_0004.mp4"
+            },
+            "workspace": {
+              "id": "wks_fixture",
+              "name": "Fixture"
+            }
+          },
+          "recordId": "rec_0004",
+          "sourceTs": "2026-08-13T12:00:00.000Z"
+        },
+        {
+          "changeId": "evt_fixture_2:recording_transcripts:rec_0004:fr",
+          "entity": "recording_transcripts",
+          "operation": "upsert",
+          "payload": {
+            "charCount": 104,
+            "fetchError": null,
+            "fetchStatus": "ok",
+            "fetchedAt": "<fetchedAt>",
+            "id": "rec_0004:fr",
+            "isActive": true,
+            "isTranscript": true,
+            "langIso2": "fr",
+            "recordingCreatedAt": "2026-08-13T12:00:00.000Z",
+            "recordingId": "rec_0004",
+            "segmentCount": 3,
+            "segments": [
+              {
+                "endedAt": 4.8,
+                "speaker": "speaker_1",
+                "startedAt": 1.2,
+                "text": "Bonjour, ici rec_0004 (fr)."
+              },
+              {
+                "endedAt": 70.5,
+                "languageCode": "fr",
+                "speaker": "speaker_2",
+                "startedAt": 65,
+                "text": "Merci pour votre temps."
+              },
+              {
+                "endedAt": 3702,
+                "startedAt": 3700,
+                "text": "Au revoir."
+              }
+            ],
+            "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0004 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+          },
+          "recordId": "rec_0004:fr",
+          "sourceTs": "<now>"
+        },
+        {
+          "changeId": "evt_fixture_2:recording_transcripts:rec_0004:en",
+          "entity": "recording_transcripts",
+          "operation": "upsert",
+          "payload": {
+            "charCount": 104,
+            "fetchError": null,
+            "fetchStatus": "ok",
+            "fetchedAt": "<fetchedAt>",
+            "id": "rec_0004:en",
+            "isActive": false,
+            "isTranscript": false,
+            "langIso2": "en",
+            "recordingCreatedAt": "2026-08-13T12:00:00.000Z",
+            "recordingId": "rec_0004",
+            "segmentCount": 3,
+            "segments": [
+              {
+                "endedAt": 4.8,
+                "speaker": "speaker_1",
+                "startedAt": 1.2,
+                "text": "Bonjour, ici rec_0004 (en)."
+              },
+              {
+                "endedAt": 70.5,
+                "languageCode": "en",
+                "speaker": "speaker_2",
+                "startedAt": 65,
+                "text": "Merci pour votre temps."
+              },
+              {
+                "endedAt": 3702,
+                "startedAt": 3700,
+                "text": "Au revoir."
+              }
+            ],
+            "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0004 (en).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+          },
+          "recordId": "rec_0004:en",
+          "sourceTs": "<now>"
+        }
+      ]
+    },
+    {
+      "delivery": "partial: no source",
+      "eventId": "evt_fixture_3",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "evt_fixture_3",
+          "entity": "recordings",
+          "operation": "upsert",
+          "payload": {
+            "actionItems": [
+              {
+                "text": "Envoyer l'estimation 2"
+              }
+            ],
+            "aiFields": [
+              {
+                "name": "Résumé",
+                "value": "R2"
+              }
+            ],
+            "analytics": {
+              "views": 3
+            },
+            "channel": {
+              "id": "chn_1",
+              "name": "Ventes"
+            },
+            "companies": [],
+            "createdAt": "2026-08-07T10:00:00.000Z",
+            "durationSeconds": 675,
+            "id": "rec_0002",
+            "insightTemplates": null,
+            "keyTakeaways": [
+              "Point 2"
+            ],
+            "labels": [],
+            "meeting": null,
+            "outlines": [
+              {
+                "startedAt": 0,
+                "title": "Intro"
+              }
+            ],
+            "recorder": {
+              "email": "agent.one@example.test",
+              "id": "usr_1",
+              "name": "Agent One"
+            },
+            "source": "upload",
+            "state": "Ready",
+            "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0002.jpg",
+            "title": "Visite 2 - Rue Exemple",
+            "transcriptOnly": false,
+            "transcripts": [
+              {
+                "isActive": true,
+                "isTranscript": true,
+                "langIso2": "FR",
+                "url": "https://signed.claap.test/t/rec_0002/fr.json?sig=fixture2"
+              }
+            ],
+            "url": "https://app.claap.test/r/rec_0002",
+            "video": {
+              "url": "https://cdn.claap.test/v/rec_0002.mp4"
+            },
+            "workspace": {
+              "id": "wks_fixture",
+              "name": "Fixture"
+            }
+          },
+          "recordId": "rec_0002",
+          "sourceTs": "2026-08-07T10:00:00.000Z"
+        },
+        {
+          "changeId": "evt_fixture_3:recording_transcripts:rec_0002:fr",
+          "entity": "recording_transcripts",
+          "operation": "upsert",
+          "payload": {
+            "charCount": 104,
+            "fetchError": null,
+            "fetchStatus": "ok",
+            "fetchedAt": "<fetchedAt>",
+            "id": "rec_0002:fr",
+            "isActive": true,
+            "isTranscript": true,
+            "langIso2": "fr",
+            "recordingCreatedAt": "2026-08-07T10:00:00.000Z",
+            "recordingId": "rec_0002",
+            "segmentCount": 3,
+            "segments": [
+              {
+                "endedAt": 4.8,
+                "speaker": "speaker_1",
+                "startedAt": 1.2,
+                "text": "Bonjour, ici rec_0002 (fr)."
+              },
+              {
+                "endedAt": 70.5,
+                "languageCode": "fr",
+                "speaker": "speaker_2",
+                "startedAt": 65,
+                "text": "Merci pour votre temps."
+              },
+              {
+                "endedAt": 3702,
+                "startedAt": 3700,
+                "text": "Au revoir."
+              }
+            ],
+            "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0002 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+          },
+          "recordId": "rec_0002:fr",
+          "sourceTs": "<now>"
+        }
+      ]
+    },
+    {
+      "delivery": "gone since",
+      "eventId": "evt_fixture_4",
+      "outcome": "skipped",
+      "reason": "Claap no longer has 1 recording(s) of this event (404)"
+    },
+    {
+      "delivery": "Ready without aiFields",
+      "eventId": "evt_fixture_5",
+      "outcome": "extract_failed",
+      "reason": "Claap recording rec_noai is Ready without aiFields; retrying later"
+    },
+    {
+      "delivery": "a transcript that fails",
+      "eventId": "evt_fixture_6",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "evt_fixture_6",
+          "entity": "recordings",
+          "operation": "upsert",
+          "payload": {
+            "actionItems": [
+              {
+                "text": "Envoyer l'estimation 8"
+              }
+            ],
+            "aiFields": [
+              {
+                "name": "Résumé",
+                "value": "R8"
+              }
+            ],
+            "analytics": {
+              "views": 3
+            },
+            "channel": {
+              "id": "chn_1",
+              "name": "Ventes"
+            },
+            "companies": [],
+            "createdAt": "2026-08-25T10:00:00.000Z",
+            "durationSeconds": 900,
+            "id": "rec_0008",
+            "insightTemplates": null,
+            "keyTakeaways": [
+              "Point 8"
+            ],
+            "labels": [],
+            "meeting": null,
+            "outlines": [
+              {
+                "startedAt": 0,
+                "title": "Intro"
+              }
+            ],
+            "recorder": {
+              "email": "agent.one@example.test",
+              "id": "usr_1",
+              "name": "Agent One"
+            },
+            "source": "upload",
+            "state": "Ready",
+            "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0008.jpg",
+            "title": "Visite 8 - Rue Exemple",
+            "transcriptOnly": false,
+            "transcripts": [
+              {
+                "isActive": true,
+                "isTranscript": true,
+                "langIso2": "FR",
+                "url": "https://signed.claap.test/t/rec_0008/fr.json?sig=fixture8"
+              },
+              {
+                "isActive": false,
+                "isTranscript": false,
+                "langIso2": "en",
+                "url": "https://signed.claap.test/t/rec_0008/en.json?sig=fixture8"
+              },
+              {
+                "isActive": false,
+                "isTranscript": false,
+                "langIso2": "de",
+                "url": "https://signed.claap.test/t/rec_0008/de.json?sig=fixture8"
+              }
+            ],
+            "url": "https://app.claap.test/r/rec_0008",
+            "video": {
+              "url": "https://cdn.claap.test/v/rec_0008.mp4"
+            },
+            "workspace": {
+              "id": "wks_fixture",
+              "name": "Fixture"
+            }
+          },
+          "recordId": "rec_0008",
+          "sourceTs": "2026-08-25T10:00:00.000Z"
+        },
+        {
+          "changeId": "evt_fixture_6:recording_transcripts:rec_0008:fr",
+          "entity": "recording_transcripts",
+          "operation": "upsert",
+          "payload": {
+            "charCount": 104,
+            "fetchError": null,
+            "fetchStatus": "ok",
+            "fetchedAt": "<fetchedAt>",
+            "id": "rec_0008:fr",
+            "isActive": true,
+            "isTranscript": true,
+            "langIso2": "fr",
+            "recordingCreatedAt": "2026-08-25T10:00:00.000Z",
+            "recordingId": "rec_0008",
+            "segmentCount": 3,
+            "segments": [
+              {
+                "endedAt": 4.8,
+                "speaker": "speaker_1",
+                "startedAt": 1.2,
+                "text": "Bonjour, ici rec_0008 (fr)."
+              },
+              {
+                "endedAt": 70.5,
+                "languageCode": "fr",
+                "speaker": "speaker_2",
+                "startedAt": 65,
+                "text": "Merci pour votre temps."
+              },
+              {
+                "endedAt": 3702,
+                "startedAt": 3700,
+                "text": "Au revoir."
+              }
+            ],
+            "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0008 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+          },
+          "recordId": "rec_0008:fr",
+          "sourceTs": "<now>"
+        },
+        {
+          "changeId": "evt_fixture_6:recording_transcripts:rec_0008:en",
+          "entity": "recording_transcripts",
+          "operation": "upsert",
+          "payload": {
+            "charCount": 104,
+            "fetchError": null,
+            "fetchStatus": "ok",
+            "fetchedAt": "<fetchedAt>",
+            "id": "rec_0008:en",
+            "isActive": false,
+            "isTranscript": false,
+            "langIso2": "en",
+            "recordingCreatedAt": "2026-08-25T10:00:00.000Z",
+            "recordingId": "rec_0008",
+            "segmentCount": 3,
+            "segments": [
+              {
+                "endedAt": 4.8,
+                "speaker": "speaker_1",
+                "startedAt": 1.2,
+                "text": "Bonjour, ici rec_0008 (en)."
+              },
+              {
+                "endedAt": 70.5,
+                "languageCode": "en",
+                "speaker": "speaker_2",
+                "startedAt": 65,
+                "text": "Merci pour votre temps."
+              },
+              {
+                "endedAt": 3702,
+                "startedAt": 3700,
+                "text": "Au revoir."
+              }
+            ],
+            "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0008 (en).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+          },
+          "recordId": "rec_0008:en",
+          "sourceTs": "<now>"
+        },
+        {
+          "changeId": "evt_fixture_6:recording_transcripts:rec_0008:de",
+          "entity": "recording_transcripts",
+          "operation": "upsert",
+          "payload": {
+            "charCount": null,
+            "fetchError": "HTTP 404: No transcript in de",
+            "fetchStatus": "failed",
+            "fetchedAt": "<fetchedAt>",
+            "id": "rec_0008:de",
+            "isActive": false,
+            "isTranscript": false,
+            "langIso2": "de",
+            "recordingCreatedAt": "2026-08-25T10:00:00.000Z",
+            "recordingId": "rec_0008",
+            "segmentCount": null,
+            "segments": null,
+            "transcriptText": null
+          },
+          "recordId": "rec_0008:de",
+          "sourceTs": "<now>"
+        }
+      ]
+    },
+    {
+      "delivery": "no signed link",
+      "eventId": "evt_fixture_7",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "evt_fixture_7",
+          "entity": "recordings",
+          "operation": "upsert",
+          "payload": {
+            "actionItems": [
+              {
+                "text": "Envoyer l'estimation 3"
+              }
+            ],
+            "aiFields": [
+              {
+                "name": "Résumé",
+                "value": "R3"
+              }
+            ],
+            "analytics": {
+              "views": 3
+            },
+            "channel": {
+              "id": "chn_1",
+              "name": "Ventes"
+            },
+            "companies": [],
+            "createdAt": "2026-08-10T11:00:00.000Z",
+            "durationSeconds": 712.5,
+            "id": "rec_0003",
+            "insightTemplates": null,
+            "keyTakeaways": [
+              "Point 3"
+            ],
+            "labels": [
+              {
+                "id": "lbl_1",
+                "name": "Estimation"
+              }
+            ],
+            "meeting": {
+              "startingAt": "2026-08-10T11:00:00.000Z",
+              "type": "external"
+            },
+            "outlines": [
+              {
+                "startedAt": 0,
+                "title": "Intro"
+              }
+            ],
+            "recorder": {
+              "email": "agent.one@example.test",
+              "id": "usr_1",
+              "name": "Agent One"
+            },
+            "source": "meeting",
+            "state": "Ready",
+            "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0003.jpg",
+            "title": "Visite 3 - Rue Exemple",
+            "transcriptOnly": false,
+            "transcripts": [
+              {
+                "isActive": true,
+                "isTranscript": true,
+                "langIso2": "FR"
+              }
+            ],
+            "url": "https://app.claap.test/r/rec_0003",
+            "video": {
+              "url": "https://cdn.claap.test/v/rec_0003.mp4"
+            },
+            "workspace": {
+              "id": "wks_fixture",
+              "name": "Fixture"
+            }
+          },
+          "recordId": "rec_0003",
+          "sourceTs": "2026-08-10T11:00:00.000Z"
+        },
+        {
+          "changeId": "evt_fixture_7:recording_transcripts:rec_0003:fr",
+          "entity": "recording_transcripts",
+          "operation": "upsert",
+          "payload": {
+            "charCount": 104,
+            "fetchError": null,
+            "fetchStatus": "ok",
+            "fetchedAt": "<fetchedAt>",
+            "id": "rec_0003:fr",
+            "isActive": true,
+            "isTranscript": true,
+            "langIso2": "fr",
+            "recordingCreatedAt": "2026-08-10T11:00:00.000Z",
+            "recordingId": "rec_0003",
+            "segmentCount": 3,
+            "segments": [
+              {
+                "endedAt": 4.8,
+                "speaker": "speaker_1",
+                "startedAt": 1.2,
+                "text": "Bonjour, ici rec_0003 (fr)."
+              },
+              {
+                "endedAt": 70.5,
+                "languageCode": "fr",
+                "speaker": "speaker_2",
+                "startedAt": 65,
+                "text": "Merci pour votre temps."
+              },
+              {
+                "endedAt": 3702,
+                "startedAt": 3700,
+                "text": "Au revoir."
+              }
+            ],
+            "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0003 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+          },
+          "recordId": "rec_0003:fr",
+          "sourceTs": "<now>"
+        }
+      ]
+    },
+    {
+      "delivery": "a refused signed link",
+      "eventId": "evt_fixture_8",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "evt_fixture_8",
+          "entity": "recordings",
+          "operation": "upsert",
+          "payload": {
+            "actionItems": [
+              {
+                "text": "Envoyer l'estimation 5"
+              }
+            ],
+            "aiFields": [
+              {
+                "name": "Résumé",
+                "value": "R5"
+              }
+            ],
+            "analytics": {
+              "views": 3
+            },
+            "channel": {
+              "id": "chn_1",
+              "name": "Ventes"
+            },
+            "companies": [],
+            "createdAt": "2026-08-16T13:00:00.000Z",
+            "durationSeconds": 787.5,
+            "id": "rec_0005",
+            "insightTemplates": null,
+            "keyTakeaways": [
+              "Point 5"
+            ],
+            "labels": [],
+            "meeting": {
+              "startingAt": "2026-08-16T13:00:00.000Z",
+              "type": "external"
+            },
+            "outlines": [
+              {
+                "startedAt": 0,
+                "title": "Intro"
+              }
+            ],
+            "recorder": {
+              "email": "agent.one@example.test",
+              "id": "usr_1",
+              "name": "Agent One"
+            },
+            "source": "meeting",
+            "state": "Ready",
+            "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0005.jpg",
+            "title": "Visite 5 - Rue Exemple",
+            "transcriptOnly": false,
+            "transcripts": [
+              {
+                "isActive": true,
+                "isTranscript": true,
+                "langIso2": "FR",
+                "url": "https://signed.claap.test/t/rec_0005/fr.json?sig=fixture5"
+              }
+            ],
+            "url": "https://app.claap.test/r/rec_0005",
+            "video": {
+              "url": "https://cdn.claap.test/v/rec_0005.mp4"
+            },
+            "workspace": {
+              "id": "wks_fixture",
+              "name": "Fixture"
+            }
+          },
+          "recordId": "rec_0005",
+          "sourceTs": "2026-08-16T13:00:00.000Z"
+        },
+        {
+          "changeId": "evt_fixture_8:recording_transcripts:rec_0005:fr",
+          "entity": "recording_transcripts",
+          "operation": "upsert",
+          "payload": {
+            "charCount": 104,
+            "fetchError": null,
+            "fetchStatus": "ok",
+            "fetchedAt": "<fetchedAt>",
+            "id": "rec_0005:fr",
+            "isActive": true,
+            "isTranscript": true,
+            "langIso2": "fr",
+            "recordingCreatedAt": "2026-08-16T13:00:00.000Z",
+            "recordingId": "rec_0005",
+            "segmentCount": 3,
+            "segments": [
+              {
+                "endedAt": 4.8,
+                "speaker": "speaker_1",
+                "startedAt": 1.2,
+                "text": "Bonjour, ici rec_0005 (fr)."
+              },
+              {
+                "endedAt": 70.5,
+                "languageCode": "fr",
+                "speaker": "speaker_2",
+                "startedAt": 65,
+                "text": "Merci pour votre temps."
+              },
+              {
+                "endedAt": 3702,
+                "startedAt": 3700,
+                "text": "Au revoir."
+              }
+            ],
+            "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0005 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+          },
+          "recordId": "rec_0005:fr",
+          "sourceTs": "<now>"
+        }
+      ]
+    },
+    {
+      "delivery": "unknown event",
+      "eventId": "evt_fixture_unknown",
+      "outcome": "unmapped"
+    },
+    {
+      "delivery": "no recording",
+      "eventId": "evt_fixture_empty",
+      "outcome": "extract_failed"
+    }
+  ],
+  "transcriptsOff": [
+    {
+      "delivery": "recording_added",
+      "eventId": "evt_fixture_1",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "evt_fixture_1",
+          "entity": "recordings",
+          "operation": "upsert",
+          "payload": {
+            "actionItems": [
+              {
+                "text": "Envoyer l'estimation 1"
+              }
+            ],
+            "aiFields": [
+              {
+                "name": "Résumé",
+                "value": "R1"
+              }
+            ],
+            "analytics": {
+              "views": 3
+            },
+            "channel": {
+              "id": "chn_1",
+              "name": "Ventes"
+            },
+            "companies": [],
+            "createdAt": "2026-08-04T09:00:00.000Z",
+            "durationSeconds": 637.5,
+            "id": "rec_0001",
+            "insightTemplates": null,
+            "keyTakeaways": [
+              "Point 1"
+            ],
+            "labels": [],
+            "meeting": {
+              "startingAt": "2026-08-04T09:00:00.000Z",
+              "type": "external"
+            },
+            "outlines": [
+              {
+                "startedAt": 0,
+                "title": "Intro"
+              }
+            ],
+            "recorder": {
+              "email": "agent.one@example.test",
+              "id": "usr_1",
+              "name": "Agent One"
+            },
+            "source": "meeting",
+            "state": "Ready",
+            "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0001.jpg",
+            "title": "Visite 1 - Rue Exemple",
+            "transcriptOnly": false,
+            "transcripts": [
+              {
+                "isActive": true,
+                "isTranscript": true,
+                "langIso2": "FR",
+                "url": "https://signed.claap.test/t/rec_0001/fr.json?sig=fixture1"
+              }
+            ],
+            "url": "https://app.claap.test/r/rec_0001",
+            "video": {
+              "url": "https://cdn.claap.test/v/rec_0001.mp4"
+            },
+            "workspace": {
+              "id": "wks_fixture",
+              "name": "Fixture"
+            }
+          },
+          "recordId": "rec_0001",
+          "sourceTs": "2026-08-04T09:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "delivery": "recording_updated",
+      "eventId": "evt_fixture_2",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "evt_fixture_2",
+          "entity": "recordings",
+          "operation": "upsert",
+          "payload": {
+            "actionItems": [
+              {
+                "text": "Envoyer l'estimation 4"
+              }
+            ],
+            "aiFields": [
+              {
+                "name": "Résumé",
+                "value": "R4"
+              }
+            ],
+            "analytics": {
+              "views": 3
+            },
+            "channel": {
+              "id": "chn_1",
+              "name": "Ventes"
+            },
+            "companies": [],
+            "createdAt": "2026-08-13T12:00:00.000Z",
+            "durationSeconds": 750,
+            "id": "rec_0004",
+            "insightTemplates": null,
+            "keyTakeaways": [
+              "Point 4"
+            ],
+            "labels": [],
+            "meeting": null,
+            "outlines": [
+              {
+                "startedAt": 0,
+                "title": "Intro"
+              }
+            ],
+            "recorder": {
+              "email": "agent.one@example.test",
+              "id": "usr_1",
+              "name": "Agent One"
+            },
+            "source": "upload",
+            "state": "Ready",
+            "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0004.jpg",
+            "title": "Visite 4 - Rue Exemple",
+            "transcriptOnly": false,
+            "transcripts": [
+              {
+                "isActive": true,
+                "isTranscript": true,
+                "langIso2": "FR",
+                "url": "https://signed.claap.test/t/rec_0004/fr.json?sig=fixture4"
+              },
+              {
+                "isActive": false,
+                "isTranscript": false,
+                "langIso2": "en",
+                "url": "https://signed.claap.test/t/rec_0004/en.json?sig=fixture4"
+              }
+            ],
+            "url": "https://app.claap.test/r/rec_0004",
+            "video": {
+              "url": "https://cdn.claap.test/v/rec_0004.mp4"
+            },
+            "workspace": {
+              "id": "wks_fixture",
+              "name": "Fixture"
+            }
+          },
+          "recordId": "rec_0004",
+          "sourceTs": "2026-08-13T12:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "delivery": "partial: no source",
+      "eventId": "evt_fixture_3",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "evt_fixture_3",
+          "entity": "recordings",
+          "operation": "upsert",
+          "payload": {
+            "actionItems": [
+              {
+                "text": "Envoyer l'estimation 2"
+              }
+            ],
+            "aiFields": [
+              {
+                "name": "Résumé",
+                "value": "R2"
+              }
+            ],
+            "analytics": {
+              "views": 3
+            },
+            "channel": {
+              "id": "chn_1",
+              "name": "Ventes"
+            },
+            "companies": [],
+            "createdAt": "2026-08-07T10:00:00.000Z",
+            "durationSeconds": 675,
+            "id": "rec_0002",
+            "insightTemplates": null,
+            "keyTakeaways": [
+              "Point 2"
+            ],
+            "labels": [],
+            "meeting": null,
+            "outlines": [
+              {
+                "startedAt": 0,
+                "title": "Intro"
+              }
+            ],
+            "recorder": {
+              "email": "agent.one@example.test",
+              "id": "usr_1",
+              "name": "Agent One"
+            },
+            "source": "upload",
+            "state": "Ready",
+            "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0002.jpg",
+            "title": "Visite 2 - Rue Exemple",
+            "transcriptOnly": false,
+            "transcripts": [
+              {
+                "isActive": true,
+                "isTranscript": true,
+                "langIso2": "FR",
+                "url": "https://signed.claap.test/t/rec_0002/fr.json?sig=fixture2"
+              }
+            ],
+            "url": "https://app.claap.test/r/rec_0002",
+            "video": {
+              "url": "https://cdn.claap.test/v/rec_0002.mp4"
+            },
+            "workspace": {
+              "id": "wks_fixture",
+              "name": "Fixture"
+            }
+          },
+          "recordId": "rec_0002",
+          "sourceTs": "2026-08-07T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "delivery": "gone since",
+      "eventId": "evt_fixture_4",
+      "outcome": "skipped",
+      "reason": "Claap no longer has 1 recording(s) of this event (404)"
+    },
+    {
+      "delivery": "Ready without aiFields",
+      "eventId": "evt_fixture_5",
+      "outcome": "extract_failed",
+      "reason": "Claap recording rec_noai is Ready without aiFields; retrying later"
+    },
+    {
+      "delivery": "a transcript that fails",
+      "eventId": "evt_fixture_6",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "evt_fixture_6",
+          "entity": "recordings",
+          "operation": "upsert",
+          "payload": {
+            "actionItems": [
+              {
+                "text": "Envoyer l'estimation 8"
+              }
+            ],
+            "aiFields": [
+              {
+                "name": "Résumé",
+                "value": "R8"
+              }
+            ],
+            "analytics": {
+              "views": 3
+            },
+            "channel": {
+              "id": "chn_1",
+              "name": "Ventes"
+            },
+            "companies": [],
+            "createdAt": "2026-08-25T10:00:00.000Z",
+            "durationSeconds": 900,
+            "id": "rec_0008",
+            "insightTemplates": null,
+            "keyTakeaways": [
+              "Point 8"
+            ],
+            "labels": [],
+            "meeting": null,
+            "outlines": [
+              {
+                "startedAt": 0,
+                "title": "Intro"
+              }
+            ],
+            "recorder": {
+              "email": "agent.one@example.test",
+              "id": "usr_1",
+              "name": "Agent One"
+            },
+            "source": "upload",
+            "state": "Ready",
+            "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0008.jpg",
+            "title": "Visite 8 - Rue Exemple",
+            "transcriptOnly": false,
+            "transcripts": [
+              {
+                "isActive": true,
+                "isTranscript": true,
+                "langIso2": "FR",
+                "url": "https://signed.claap.test/t/rec_0008/fr.json?sig=fixture8"
+              },
+              {
+                "isActive": false,
+                "isTranscript": false,
+                "langIso2": "en",
+                "url": "https://signed.claap.test/t/rec_0008/en.json?sig=fixture8"
+              },
+              {
+                "isActive": false,
+                "isTranscript": false,
+                "langIso2": "de",
+                "url": "https://signed.claap.test/t/rec_0008/de.json?sig=fixture8"
+              }
+            ],
+            "url": "https://app.claap.test/r/rec_0008",
+            "video": {
+              "url": "https://cdn.claap.test/v/rec_0008.mp4"
+            },
+            "workspace": {
+              "id": "wks_fixture",
+              "name": "Fixture"
+            }
+          },
+          "recordId": "rec_0008",
+          "sourceTs": "2026-08-25T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "delivery": "no signed link",
+      "eventId": "evt_fixture_7",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "evt_fixture_7",
+          "entity": "recordings",
+          "operation": "upsert",
+          "payload": {
+            "actionItems": [
+              {
+                "text": "Envoyer l'estimation 3"
+              }
+            ],
+            "aiFields": [
+              {
+                "name": "Résumé",
+                "value": "R3"
+              }
+            ],
+            "analytics": {
+              "views": 3
+            },
+            "channel": {
+              "id": "chn_1",
+              "name": "Ventes"
+            },
+            "companies": [],
+            "createdAt": "2026-08-10T11:00:00.000Z",
+            "durationSeconds": 712.5,
+            "id": "rec_0003",
+            "insightTemplates": null,
+            "keyTakeaways": [
+              "Point 3"
+            ],
+            "labels": [
+              {
+                "id": "lbl_1",
+                "name": "Estimation"
+              }
+            ],
+            "meeting": {
+              "startingAt": "2026-08-10T11:00:00.000Z",
+              "type": "external"
+            },
+            "outlines": [
+              {
+                "startedAt": 0,
+                "title": "Intro"
+              }
+            ],
+            "recorder": {
+              "email": "agent.one@example.test",
+              "id": "usr_1",
+              "name": "Agent One"
+            },
+            "source": "meeting",
+            "state": "Ready",
+            "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0003.jpg",
+            "title": "Visite 3 - Rue Exemple",
+            "transcriptOnly": false,
+            "transcripts": [
+              {
+                "isActive": true,
+                "isTranscript": true,
+                "langIso2": "FR"
+              }
+            ],
+            "url": "https://app.claap.test/r/rec_0003",
+            "video": {
+              "url": "https://cdn.claap.test/v/rec_0003.mp4"
+            },
+            "workspace": {
+              "id": "wks_fixture",
+              "name": "Fixture"
+            }
+          },
+          "recordId": "rec_0003",
+          "sourceTs": "2026-08-10T11:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "delivery": "a refused signed link",
+      "eventId": "evt_fixture_8",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "evt_fixture_8",
+          "entity": "recordings",
+          "operation": "upsert",
+          "payload": {
+            "actionItems": [
+              {
+                "text": "Envoyer l'estimation 5"
+              }
+            ],
+            "aiFields": [
+              {
+                "name": "Résumé",
+                "value": "R5"
+              }
+            ],
+            "analytics": {
+              "views": 3
+            },
+            "channel": {
+              "id": "chn_1",
+              "name": "Ventes"
+            },
+            "companies": [],
+            "createdAt": "2026-08-16T13:00:00.000Z",
+            "durationSeconds": 787.5,
+            "id": "rec_0005",
+            "insightTemplates": null,
+            "keyTakeaways": [
+              "Point 5"
+            ],
+            "labels": [],
+            "meeting": {
+              "startingAt": "2026-08-16T13:00:00.000Z",
+              "type": "external"
+            },
+            "outlines": [
+              {
+                "startedAt": 0,
+                "title": "Intro"
+              }
+            ],
+            "recorder": {
+              "email": "agent.one@example.test",
+              "id": "usr_1",
+              "name": "Agent One"
+            },
+            "source": "meeting",
+            "state": "Ready",
+            "thumbnailUrl": "https://cdn.claap.test/thumb/rec_0005.jpg",
+            "title": "Visite 5 - Rue Exemple",
+            "transcriptOnly": false,
+            "transcripts": [
+              {
+                "isActive": true,
+                "isTranscript": true,
+                "langIso2": "FR",
+                "url": "https://signed.claap.test/t/rec_0005/fr.json?sig=fixture5"
+              }
+            ],
+            "url": "https://app.claap.test/r/rec_0005",
+            "video": {
+              "url": "https://cdn.claap.test/v/rec_0005.mp4"
+            },
+            "workspace": {
+              "id": "wks_fixture",
+              "name": "Fixture"
+            }
+          },
+          "recordId": "rec_0005",
+          "sourceTs": "2026-08-16T13:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "delivery": "unknown event",
+      "eventId": "evt_fixture_unknown",
+      "outcome": "unmapped"
+    },
+    {
+      "delivery": "no recording",
+      "eventId": "evt_fixture_empty",
+      "outcome": "extract_failed"
+    }
+  ]
+}

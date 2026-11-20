@@ -1,7 +1,7 @@
 /**
- * Claap entity schemas, field for field the same as the in-process
- * connector's (`api/src/connectors/claap/schema.ts`). The parity test fails
- * if the two drift. Mako's system columns are merged in on the box path.
+ * Claap entity schemas, field for field the same as the deleted in-process
+ * connector's. The golden files and the API test hold them in place. Mako's
+ * system columns are merged in on the box path.
  */
 
 type FieldType = "string" | "timestamp" | "number" | "boolean" | "json";
@@ -64,7 +64,7 @@ export const ENTITY_FIELDS: Record<string, Fields> = {
   workspace: WORKSPACE_FIELDS,
 };
 
-/** Non-null columns besides `id`, as the in-process schema marks them. */
+/** Non-null columns besides `id`, as the deleted in-process schema marked them. */
 const NOT_NULL: Record<string, string[]> = {
   recording_transcripts: [
     "recordingId",
