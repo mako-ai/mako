@@ -104,6 +104,10 @@ vi.mock("./worktree.service", () => ({
 
 vi.mock("./deploy-progress", () => ({
   markDeployQueued: vi.fn(async () => undefined),
+  isDeployInFlight: (
+    progress: { sha?: string } | null | undefined,
+    sha: string,
+  ) => progress?.sha === sha,
   clearDeployProgress: vi.fn(async () => undefined),
   markDeployStage: vi.fn(async () => undefined),
 }));
@@ -156,6 +160,7 @@ vi.mock("../dbt/dbt-working-tree.service", async importOriginal => ({
 }));
 
 import {
+  AppProject,
   DbtProject,
   DbtRun,
   type DbtRunStatus,
@@ -226,6 +231,7 @@ beforeEach(async () => {
   delete process.env.APPS_DBT_BEFORE_DEPLOY;
   process.env.APPS_DBT_BEFORE_DEPLOY_MODE = "full";
   await DbtRun.deleteMany({});
+  await AppProject.collection.deleteMany({});
   await DbtProject.deleteMany({});
   projectId = new Types.ObjectId();
   await DbtProject.collection.insertOne({
@@ -612,6 +618,39 @@ describe("deployAppsForPush in schema-gap mode (the default)", () => {
     // One run, joined by the retry; no deploy requested for the held reader.
     expect(await DbtRun.countDocuments()).toBe(1);
     expect(requestAppDeploys).not.toHaveBeenCalled();
+  });
+
+  it("does not re-request a free app whose deploy is already running (a retry of hold)", async () => {
+    state.changedApps = [READER, OTHER];
+    state.otherTables = ["`p.{{dbt_schema}}.dim_deal`"];
+    gap("fct_c14__closed_loop");
+    await AppProject.collection.insertOne({
+      _id: new Types.ObjectId(OTHER),
+      deployProgress: { sha: AFTER, stage: "build", updatedAt: new Date() },
+    });
+    await push();
+    vi.mocked(requestAppDeploys).mockClear();
+
+    await settle();
+
+    expect(requestAppDeploys).not.toHaveBeenCalled();
+    expect(await DbtRun.countDocuments()).toBe(1);
+  });
+
+  it("still requests a free app that is only marked queued", async () => {
+    state.changedApps = [READER, OTHER];
+    state.otherTables = ["`p.{{dbt_schema}}.dim_deal`"];
+    gap("fct_c14__closed_loop");
+    await AppProject.collection.insertOne({
+      _id: new Types.ObjectId(OTHER),
+      deployProgress: { sha: AFTER, stage: "queued", updatedAt: new Date() },
+    });
+    await push();
+    vi.mocked(requestAppDeploys).mockClear();
+
+    await settle();
+
+    expect(requestAppDeploys).toHaveBeenCalledWith(ws, [OTHER], AFTER, "push");
   });
 
   it("rethrows a failure that is not a compile error, so the retry runs", async () => {

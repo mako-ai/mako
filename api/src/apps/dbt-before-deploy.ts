@@ -41,6 +41,7 @@
 import { createHash } from "node:crypto";
 import { Types } from "mongoose";
 import {
+  AppProject,
   DbtProject,
   DbtRun,
   type DbtRunStatus,
@@ -57,7 +58,7 @@ import {
 } from "./dbt-schema-gap";
 import { loadAppsIndex, type AppIndexRow } from "./app-index.service";
 import { diffNameStatus, readBlob } from "./repository.service";
-import { markDeployQueued } from "./deploy-progress";
+import { isDeployInFlight, markDeployQueued } from "./deploy-progress";
 
 const logger = loggers.api("apps-dbt-before-deploy");
 
@@ -422,6 +423,34 @@ export async function planDbtHold(
 }
 
 /**
+ * Drop the apps whose deploy of `sha` is already running. A new request would
+ * cancel it and start over, which is what a retry of the "hold" step would do
+ * to the free apps it requested the first time. The "queued" mark does not
+ * count: it is this check's own (and the deploy function's first stage).
+ */
+async function withoutRunningDeploys(
+  appIds: string[],
+  sha: string,
+): Promise<string[]> {
+  if (appIds.length === 0) return appIds;
+  const rows = await AppProject.find({
+    _id: { $in: appIds.filter(id => Types.ObjectId.isValid(id)) },
+  })
+    .select("deployProgress")
+    .lean();
+  const running = new Set(
+    rows
+      .filter(
+        row =>
+          row.deployProgress?.stage !== "queued" &&
+          isDeployInFlight(row.deployProgress, sha),
+      )
+      .map(row => row._id.toString()),
+  );
+  return appIds.filter(id => !running.has(id));
+}
+
+/**
  * Step 2: act on the plan. The apps that need no build are requested, the
  * others wait on one dbt run. A saved plan makes a retry of this step skip
  * the compile and the warehouse.
@@ -438,7 +467,10 @@ export async function applyDbtHold(
   const { requestAppDeploys } =
     await import("../inngest/functions/apps-deploy");
   const waiting = new Set(plan.held);
-  const free = prep.readers.filter(id => !waiting.has(id));
+  const free = await withoutRunningDeploys(
+    prep.readers.filter(id => !waiting.has(id)),
+    sha,
+  );
   if (free.length > 0) {
     await requestAppDeploys(workspaceId, free, sha, "push");
   }

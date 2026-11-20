@@ -10,8 +10,9 @@
  *
  * Two steps, so a retry reuses what finished: "plan" compiles and checks,
  * "hold" requests the free deploys and starts the build. A retry of "hold"
- * never re-compiles and never re-requests a deploy that is in flight (the
- * deploy function cancels the older run of an app).
+ * never re-compiles and skips an app whose deploy of the commit is already
+ * running (a new request would cancel it, as the deploy function keeps one
+ * run per app).
  *
  * When every retry fails, the apps this check would hold deploy at once, but
  * not the ones a dbt run already holds for this commit: a failed check must
