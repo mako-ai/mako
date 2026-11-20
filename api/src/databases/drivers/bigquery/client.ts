@@ -8,7 +8,10 @@ import { requireServiceAccount } from "../../../connections/google-service-accou
 import axios, { type AxiosInstance } from "axios";
 import crypto from "crypto";
 import { loggers } from "../../../logging";
-import { isLocalBigQueryEmulator } from "../../../utils/bigquery-emulator";
+import {
+  assertBigQueryApiBaseUrl,
+  isLocalBigQueryEmulator,
+} from "../../../utils/bigquery-emulator";
 import { describeGoogleApiError } from "./errors";
 
 const logger = loggers.db("bigquery");
@@ -33,6 +36,8 @@ export class BigQueryClients {
     serviceAccountJson: string | object,
     apiBaseUrl?: string,
   ): Promise<AxiosInstance> {
+    // Refused before the key is read or any request is built.
+    assertBigQueryApiBaseUrl(apiBaseUrl);
     const sa = this.parseServiceAccount(serviceAccountJson);
     const base = (apiBaseUrl || "https://bigquery.googleapis.com").trim();
     const normalized = /^https?:\/\//i.test(base) ? base : `https://${base}`;
@@ -50,7 +55,8 @@ export class BigQueryClients {
     // token exchange entirely and send a dummy bearer the emulator ignores. This
     // lets local dev / integration tests run fully offline with fake credentials.
     if (isLocalBigQueryEmulator(apiBaseUrl)) {
-      const emulatorClient = cached?.client || axios.create({ baseURL });
+      const emulatorClient =
+        cached?.client || axios.create({ baseURL, maxRedirects: 0 });
       emulatorClient.defaults.headers.common["Authorization"] =
         "Bearer emulator";
       emulatorClient.defaults.headers.common["Content-Type"] =
@@ -88,7 +94,7 @@ export class BigQueryClients {
 
     const { token, expiresAtMs } = await tokenPromise;
 
-    const client = cached?.client || axios.create({ baseURL });
+    const client = cached?.client || axios.create({ baseURL, maxRedirects: 0 });
     client.defaults.headers.common["Authorization"] = `Bearer ${token}`;
     client.defaults.headers.common["Content-Type"] = "application/json";
     this.clients.set(cacheKey, { client, token, expiresAtMs });
