@@ -16,7 +16,8 @@ test("deferred: exported from /components, one copy", () => {
 
 test("deferred: the copies' numbers (800px 0px margin, one frame then one task per Staged panel)", () => {
   assert.match(SRC, /rootMargin = "800px 0px"/);
-  assert.match(SRC, /requestAnimationFrame\(\(\) => setTimeout\(done, 0\)\)/);
+  assert.match(SRC, /frame = requestAnimationFrame\(\(\) => \{[\s\S]*?window\.setTimeout\(cb, 0\)/);
+  assert.match(SRC, /FRAME_FALLBACK_MS = 100/);
   assert.match(SRC, /aria-busy="true"/);
 });
 
@@ -193,6 +194,38 @@ test("staged: panels mount one per frame, in mount order, behind a placeholder o
   assert.deepEqual(log.map((l) => l.id), ["a", "b", "c"], "mount order");
   assert.ok(log[1].at - log[0].at >= 5 && log[2].at - log[1].at >= 5, "each panel on its own frame, not one commit");
   assert.equal(win.document.querySelectorAll('[data-slot="staged"]').length, 0, "placeholders gone");
+});
+
+test("staged: in a hidden tab (requestAnimationFrame never fires) a 100 ms timer still mounts the panels, in order", async (t) => {
+  const env = await setup(t);
+  if (!env) return;
+  const { win, mod, h, mount, wait } = env;
+  globalThis.requestAnimationFrame = () => 1;
+  globalThis.cancelAnimationFrame = () => {};
+  await mount(h("div", null, ...["a", "b"].map((id) => h(mod.Staged, { key: id, minHeight: 50 }, h("p", { id }, id)))));
+  await wait(60);
+  assert.equal(win.document.getElementById("a"), null, "not before the fallback delay");
+  await wait(120);
+  assert.ok(win.document.getElementById("a"), "first panel after about 100 ms");
+  assert.equal(win.document.getElementById("b"), null, "second panel waits for its own turn");
+  await wait(150);
+  assert.ok(win.document.getElementById("b"), "second panel after about 200 ms");
+});
+
+test("staged: a panel unmounted before its turn spends no frame", async (t) => {
+  const env = await setup(t);
+  if (!env) return;
+  const { win, mod, h, mount, wait } = env;
+  const real = globalThis.requestAnimationFrame;
+  let frames = 0;
+  globalThis.requestAnimationFrame = (cb) => (frames++, real(cb));
+  const panel = (id) => h(mod.Staged, { key: id, minHeight: 10 }, h("p", { id }, id));
+  await mount(h("div", null, panel("a"), panel("b"), panel("c")));
+  await mount(h("div", null, panel("a"), panel("c")));
+  await wait(300);
+  assert.ok(win.document.getElementById("a") && win.document.getElementById("c"));
+  assert.equal(win.document.getElementById("b"), null);
+  assert.equal(frames, 2, "2 frames for 2 live panels; the unmounted one took none");
 });
 
 test("useStagedMount: steps 0 to count, one per frame, then stops", async (t) => {

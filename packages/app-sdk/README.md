@@ -633,6 +633,13 @@ that does not.
 
 `Deferred` also takes `rootMargin`, `mode="task"` and `placeholder` (`false` = blank spacer). `useStagedMount(n)` returns a step 0..n, one per frame.
 
+```tsx
+const step = useStagedMount(2);
+{step >= 1 ? <ZonesTable /> : <Skeleton aria-busy="true" style={{ minHeight: 600 }} />}
+{step >= 2 ? <Gallery /> : null}
+<Deferred mode="task" placeholder={false} minHeight={640}><Grid /></Deferred>
+```
+
 Thin props (2.23), marked "Mako thin prop" in the source. Stock behaviour
 stays the default:
 

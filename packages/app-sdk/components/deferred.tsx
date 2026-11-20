@@ -1,9 +1,7 @@
 "use client"
 
 // Deferred and Staged mounting (2.31): panels below the first screen stop sharing the
-// load task with the panels above them. House components, not shadcn ones: they
-// replace five app-local copies written in the 20 Nov perf pass (call-tracking-monitor,
-// crm-ai-agent-adoption, cohort-mrr-dashboard, feature-dashboard, visibility-dashboard).
+// load task with the panels above them. House components, not shadcn ones.
 // Each placeholder keeps the final height, so nothing jumps when the content lands.
 //   Deferred          mounts on first approach to the viewport (or one task later).
 //   Staged            mounts one panel per painted frame, in mount order, app-wide.
@@ -67,7 +65,30 @@ function Deferred({ minHeight, rootMargin = "800px 0px", mode = "visible", place
 // Panels whose data lands in the same tick would mount in one React commit. Each Staged panel waits for its
 // turn in this one queue: one panel per painted frame, in mount order.
 let turn: Promise<void> = Promise.resolve()
-const nextFrame = () => new Promise<void>((done) => requestAnimationFrame(() => setTimeout(done, 0)))
+
+// Runs `cb` after the next painted frame and one task. A hidden tab never fires requestAnimationFrame, so a
+// 100 ms timer races it: whichever fires first runs `cb`, and the other is cancelled.
+const FRAME_FALLBACK_MS = 100
+function afterFrame(cb: () => void): () => void {
+  let frame = 0
+  let task = 0
+  let fallback = 0
+  const cancel = () => {
+    cancelAnimationFrame(frame)
+    window.clearTimeout(task)
+    window.clearTimeout(fallback)
+  }
+  frame = requestAnimationFrame(() => {
+    window.clearTimeout(fallback)
+    task = window.setTimeout(cb, 0)
+  })
+  fallback = window.setTimeout(() => {
+    cancelAnimationFrame(frame)
+    cb()
+  }, FRAME_FALLBACK_MS)
+  return cancel
+}
+const nextFrame = () => new Promise<void>((done) => afterFrame(done))
 
 /** Shows a Skeleton of `minHeight`, then mounts `children` on its own frame, one panel at a time. */
 function Staged({ minHeight, placeholder, children }: {
@@ -80,9 +101,8 @@ function Staged({ minHeight, placeholder, children }: {
   const [ready, setReady] = React.useState(false)
   React.useEffect(() => {
     let live = true
-    turn = turn.then(nextFrame).then(() => {
-      if (live) setReady(true)
-    })
+    // A panel unmounted before its turn spends no frame.
+    turn = turn.then(() => (live ? nextFrame().then(() => { if (live) setReady(true) }) : undefined))
     return () => {
       live = false
     }
@@ -98,14 +118,7 @@ function useStagedMount(count: number): number {
   const [step, setStep] = React.useState(0)
   React.useEffect(() => {
     if (step >= count) return
-    let timer = 0
-    const frame = requestAnimationFrame(() => {
-      timer = window.setTimeout(() => setStep((s) => s + 1), 0)
-    })
-    return () => {
-      cancelAnimationFrame(frame)
-      clearTimeout(timer)
-    }
+    return afterFrame(() => setStep((s) => s + 1))
   }, [step, count])
   return step
 }
