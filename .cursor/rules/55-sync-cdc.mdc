@@ -36,6 +36,7 @@ Backfills follow a parallel path: `backfill.ts` → `flow.execute` with `backfil
 - **Consumer failure** — consumer throws after `markEventsFailed` + `applyStreamTransition(FAIL)`. Callers (Inngest functions) must expect retries.
 - **Payload sanitization** — `sanitizeBackfillPayloadForIdempotency` strips `_mako_*` and `_syncedAt` fields before hashing. Adding new volatile fields requires updating this function.
 - **Table write lease** — a pruned BigQuery MERGE is a probe then a MERGE. Another writer between the two duplicates keys. Every dedup MERGE (live, flush, final, rescue, poll) and `repartitionLiveTable` hold `table-write-lease.ts`, keyed by table. Keep schema work and staging reads outside it.
+- **Layout matches table** — `layout-table-check.ts` compares each entity layout's partition field, granularity and cluster fields with the existing BigQuery table's metadata. Flow create/update, the `flows/<slug>.yml` push and `check_flow_files` refuse a mismatch. A table that does not exist passes. A MERGE that runs without partition pruning on a partitioned table logs one `MERGE ran without partition pruning` warning per table per hour (`adapters/merge-prune-warning.ts`).
 - **Table naming** — `cdcLiveTableName` / `cdcStageTableName` use flow token from truncated ID + SHA1 fallback. Don't assume table names are human-readable.
 
 ## Destination Adapters

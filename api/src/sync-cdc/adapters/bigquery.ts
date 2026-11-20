@@ -27,7 +27,16 @@ import {
   withSyncedAt,
 } from "../normalization";
 import type { CdcStoredEvent } from "../events";
-import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
+import type {
+  CdcDestinationAdapter,
+  CdcEntityLayout,
+  LiveTableDescription,
+} from "./registry";
+import {
+  claimUnprunedMergeWarning,
+  type UnprunedMerge,
+  type UnprunedMergeReason,
+} from "./merge-prune-warning";
 import type { ConnectorEntitySchema } from "../../connectors/base/BaseConnector";
 import {
   MERGE_PRUNE_MAX_PARTITIONS,
@@ -48,6 +57,7 @@ import {
   discoverMergeSchemas,
   evolveSchemaIfNeeded,
   getLiveTablePartitioning,
+  getLiveTableMeta,
   getSchemaCacheKey,
   hashEntitySchema,
   invalidateCachedSchema,
@@ -123,6 +133,16 @@ interface BigQueryAdapterConfig {
 
 type FlowRef = Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
 
+const UNPRUNED_WARN_JOB_READ_TIMEOUT_MS = 5000;
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("timed out")), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
+
 /** Upper bound on a MERGE job's wait: BIGQUERY_MERGE_MAX_WAIT_MS, else 15 min. */
 function mergeMaxWaitMs(): number {
   const fromEnv = Number.parseInt(
@@ -156,6 +176,13 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
   async ensureLiveTable(_layout: CdcEntityLayout): Promise<void> {
     await this.ensureDataset();
+  }
+
+  /** The live table's cached metadata (see getLiveTableMeta). */
+  async describeLiveTable(
+    tableName: string,
+  ): Promise<LiveTableDescription | undefined> {
+    return getLiveTableMeta(await this.resolveBqClient(), tableName);
   }
 
   async repartitionLiveTable(
@@ -361,7 +388,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
   async mergeFromStaging(
     layout: CdcEntityLayout,
-    flow: FlowRef,
+    _flow: FlowRef,
     flowId: string,
     entitySchema?: ConnectorEntitySchema,
     options?: {
@@ -428,17 +455,51 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       fullStaging: string;
       liveTypes: Map<string, string>;
       entitySchema?: ConnectorEntitySchema;
+      /** Called when a partitioned table merges without a partition filter. */
+      onUnpruned?: (u: UnprunedMerge) => void;
     },
   ): Promise<string | undefined> {
-    if (process.env.CDC_BQ_MERGE_PARTITION_PRUNE === "off") return undefined;
+    const table = await getLiveTablePartitioning(target, p.layout.tableName);
+    const layoutField = p.layout.partitioning?.field;
+    // Only a table known to be partitioned on a column can be scanned in full
+    // by mistake. A layout that names another column is the likeliest cause.
+    const unpruned = (
+      reason: UnprunedMergeReason,
+      detail?: Record<string, unknown>,
+    ): undefined => {
+      if (!table?.field) return undefined;
+      p.onUnpruned?.({
+        // A mismatch explains an unpruned MERGE only when the table could not
+        // be pruned at all. Too many partitions stays too many partitions.
+        reason:
+          reason === "no_probe" &&
+          layoutField &&
+          layoutField.toLowerCase() !== table.field.toLowerCase()
+            ? "layout_mismatch"
+            : reason,
+        tableField: table.field,
+        tableGranularity: table.type,
+        layoutField,
+        layoutGranularity: p.layout.partitioning?.granularity,
+        ...detail,
+      });
+      return undefined;
+    };
+    if (process.env.CDC_BQ_MERGE_PARTITION_PRUNE === "off") {
+      return unpruned("no_probe", { detail: "pruning switched off" });
+    }
     // Prune on the column the live table is partitioned on, which can differ
     // from the layout (resolveMergePartitioning).
     const pruneOn = resolveMergePartitioning({
-      table: await getLiveTablePartitioning(target, p.layout.tableName),
+      table,
       layout: p.layout.partitioning,
       liveTypes: p.liveTypes,
     });
-    if (!pruneOn) return undefined;
+    if (!pruneOn) {
+      return unpruned("no_probe", {
+        detail: "partition column is not a TIMESTAMP",
+      });
+    }
     const { field, granularity } = pruneOn;
     if (field !== p.layout.partitioning?.field) {
       log.info("Live table partition column differs from the layout", {
@@ -463,7 +524,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         liveTable: p.layout.tableName,
         error: result.error,
       });
-      return undefined;
+      return unpruned("no_probe", { detail: "partition probe failed" });
     }
     const rows = (result.data as Array<{ p?: unknown }> | undefined) || [];
     if (rows.length > MERGE_PRUNE_MAX_PARTITIONS) {
@@ -471,7 +532,10 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         liveTable: p.layout.tableName,
         partitions: rows.length,
       });
-      return undefined;
+      return unpruned("too_many_partitions", {
+        partitions: rows.length,
+        maxPartitions: MERGE_PRUNE_MAX_PARTITIONS,
+      });
     }
     const buckets = rows.map(r =>
       r.p == null ? null : String((r.p as { value?: unknown })?.value ?? r.p),
@@ -480,6 +544,59 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       partitionField: field,
       granularity,
       buckets,
+    });
+  }
+
+  /**
+   * One structured warning per table per hour for a MERGE that read a
+   * partitioned live table without a partition filter, with the job's billed
+   * bytes once BigQuery reports them (a metadata read, never billed).
+   */
+  private async warnUnprunedMerge(
+    target: BigQueryTarget,
+    p: {
+      unpruned: UnprunedMerge;
+      liveTable: string;
+      flowId?: string;
+      path: CdcMergePath;
+      job?: { jobId: string; location?: string };
+    },
+  ): Promise<void> {
+    const key = `${target.projectId}.${target.dataset}.${p.liveTable}`;
+    if (!claimUnprunedMergeWarning(key)) return;
+    let totalBytesBilled: string | undefined;
+    if (p.job) {
+      try {
+        const [meta] = await withTimeout(
+          target.bq
+            .job(p.job.jobId, {
+              location: p.job.location ?? target.datasetLocation,
+            })
+            .getMetadata(),
+          UNPRUNED_WARN_JOB_READ_TIMEOUT_MS,
+        );
+        totalBytesBilled = (
+          meta as { statistics?: { query?: { totalBytesBilled?: string } } }
+        )?.statistics?.query?.totalBytesBilled;
+      } catch {
+        // The bytes are extra detail: the warning stands without them.
+      }
+    }
+    log.warn("MERGE ran without partition pruning on a partitioned table", {
+      flowId: p.flowId,
+      table: p.liveTable,
+      dataset: target.dataset,
+      path: p.path,
+      reason: p.unpruned.reason,
+      detail: p.unpruned.detail,
+      tablePartitionField: p.unpruned.tableField,
+      tablePartitionGranularity: p.unpruned.tableGranularity,
+      layoutPartitionField: p.unpruned.layoutField,
+      layoutPartitionGranularity: p.unpruned.layoutGranularity,
+      partitions: p.unpruned.partitions,
+      maxPartitions: p.unpruned.maxPartitions,
+      jobId: p.job?.jobId,
+      total_bytes_billed: totalBytesBilled,
     });
   }
 
@@ -617,11 +734,16 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         : undefined;
     const path = options.mergePath;
 
+    // Set by the MERGE closure, read after the lease is released.
+    let unpruned: UnprunedMerge | undefined;
+    let mergeJob: { jobId: string; location?: string } | undefined;
+
     const runMerge = async (
       lease: TableWriteLease | undefined,
     ): Promise<void> => {
       // Every dedup path prunes. The probe and the MERGE run under the table
       // write lease, so no other writer moves or inserts a key in between.
+      unpruned = undefined;
       const livePartitionFilter = isDedup
         ? await this.resolveLivePartitionFilter(target, {
             layout,
@@ -629,8 +751,12 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
             fullStaging,
             liveTypes,
             entitySchema,
+            onUnpruned: u => {
+              unpruned = u;
+            },
           })
         : undefined;
+      mergeJob = undefined;
       const mergeStmt = !isDedup
         ? `INSERT INTO ${fullLive} (${insertColList}) SELECT ${insertColList} FROM ${fullStaging}`
         : buildMergeStatement({
@@ -675,7 +801,10 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
             async () => {
               const mergeResult = await runBigQueryWrite(target, mergeStmt, {
                 bigQueryJobMaxWaitMs: maxWaitMs,
-                onJobStarted: job => lease?.recordJob(job),
+                onJobStarted: job => {
+                  mergeJob = job;
+                  lease?.recordJob(job);
+                },
               });
               if (!mergeResult.success) {
                 invalidateCachedSchema(liveCacheKey);
@@ -704,6 +833,18 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       );
     } else {
       await runMerge(undefined);
+    }
+
+    // After the lease: a slow jobs.get must not hold the table's writer slot,
+    // and nothing waits for the warning.
+    if (unpruned) {
+      void this.warnUnprunedMerge(target, {
+        unpruned,
+        liveTable,
+        flowId: options.flowId,
+        path,
+        job: mergeJob,
+      }).catch(() => undefined);
     }
 
     log.info("Merged staging to live via MERGE", {

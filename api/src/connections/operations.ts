@@ -1,6 +1,6 @@
 /**
- * Named read operations on a source connection: "run a HogQL
- * query", "get a Stripe customer", without knowing the vendor's API.
+ * Named read operations on a source connection: "search Close leads", "run
+ * a HogQL query", "get a Stripe customer", without knowing the vendor's API.
  *
  * Code, not stored. An operation only builds an ordinary request (method,
  * path, query, body) from a few parameters. That request then goes through
@@ -15,6 +15,7 @@
  */
 import type { ISourceConnection } from "../database/workspace-schema";
 import { ConnectionRequestError, type ForwardInput } from "./forward";
+import { callableProfileOperations } from "./callable-profiles";
 
 type Config = ISourceConnection["config"];
 type Params = Record<string, unknown>;
@@ -37,12 +38,12 @@ export interface ConnectionOperation {
 export const OPERATION_DEFAULT_LIMIT = 20;
 export const OPERATION_MAX_LIMIT = 100;
 
-function param(name: string, description: string, required = false) {
+export function param(name: string, description: string, required = false) {
   return { name, description, required };
 }
 
 /** A required non-empty string parameter. */
-function required(params: Params, name: string): string {
+export function required(params: Params, name: string): string {
   const value = params[name];
   if (typeof value !== "string" || !value.trim()) {
     throw new ConnectionRequestError(
@@ -52,8 +53,18 @@ function required(params: Params, name: string): string {
   return value.trim();
 }
 
+/** An optional string parameter. */
+export function optional(params: Params, name: string): string | undefined {
+  const value = params[name];
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string") {
+    throw new ConnectionRequestError(`params.${name} must be a string.`);
+  }
+  return value.trim();
+}
+
 /** An id that goes into a path: one segment, nothing a server could split. */
-function idParam(params: Params, name: string): string {
+export function idParam(params: Params, name: string): string {
   const value = required(params, name);
   if (!/^[A-Za-z0-9_.:@-]+$/.test(value) || /^\.+$/.test(value)) {
     throw new ConnectionRequestError(
@@ -76,109 +87,25 @@ export function limitParam(params: Params): number {
   return Math.min(value, OPERATION_MAX_LIMIT);
 }
 
-const LIMIT = param(
+/** `params.skip`: a non-negative integer, default 0. */
+export function skipParam(params: Params): number {
+  const value = Number(params.skip ?? 0);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new ConnectionRequestError(
+      "params.skip must be a non-negative integer.",
+    );
+  }
+  return value;
+}
+
+export const LIMIT = param(
   "limit",
   `Records per page (default ${OPERATION_DEFAULT_LIMIT}, max ${OPERATION_MAX_LIMIT}).`,
 );
 
-// ---------------------------------------------------------------------------
-// PostHog
-// ---------------------------------------------------------------------------
-
-function posthogProject(config: Config): string {
-  const project = String(config.project_id ?? "").trim();
-  if (!project) {
-    throw new ConnectionRequestError("This connection has no project_id.");
-  }
-  return encodeURIComponent(project);
-}
-
-const POSTHOG: ConnectionOperation[] = [
-  {
-    name: "hogql",
-    description:
-      "Run a HogQL (SQL) query on the project's events, persons and sessions, e.g. `select count() from events where timestamp > now() - interval 1 day`. Add a LIMIT: PostHog caps a result at 100 rows unless the query sets one.",
-    params: [param("query", "A HogQL SELECT.", true)],
-    build: (params, config) => ({
-      method: "POST",
-      path: `/api/projects/${posthogProject(config)}/query/`,
-      body: { query: { kind: "HogQLQuery", query: required(params, "query") } },
-    }),
-  },
-  {
-    name: "search_persons",
-    description: "Persons whose email, name or distinct id matches.",
-    params: [param("search", "Email, name or distinct id.", true), LIMIT],
-    build: (params, config) => ({
-      method: "GET",
-      path: `/api/projects/${posthogProject(config)}/persons/`,
-      query: { search: required(params, "search"), limit: limitParam(params) },
-    }),
-  },
-];
-
-// ---------------------------------------------------------------------------
-// Stripe
-// ---------------------------------------------------------------------------
-
-const STRIPE: ConnectionOperation[] = [
-  {
-    name: "search_customers",
-    description:
-      "Search customers with Stripe's search syntax, e.g. `email:'a@b.com'` or `name~'Dupont'`.",
-    params: [param("query", "Stripe search query.", true), LIMIT],
-    build: params => ({
-      method: "GET",
-      path: "/v1/customers/search",
-      query: { query: required(params, "query"), limit: limitParam(params) },
-    }),
-  },
-  {
-    name: "get_customer",
-    description: "One customer.",
-    params: [param("id", "Customer id (cus_…).", true)],
-    build: params => ({
-      method: "GET",
-      path: `/v1/customers/${idParam(params, "id")}`,
-    }),
-  },
-  {
-    name: "list_subscriptions",
-    description: "A customer's subscriptions, every status.",
-    params: [param("customer", "Customer id (cus_…).", true), LIMIT],
-    build: params => ({
-      method: "GET",
-      path: "/v1/subscriptions",
-      query: {
-        customer: required(params, "customer"),
-        status: "all",
-        limit: limitParam(params),
-      },
-    }),
-  },
-  {
-    name: "list_invoices",
-    description: "A customer's invoices, newest first.",
-    params: [param("customer", "Customer id (cus_…).", true), LIMIT],
-    build: params => ({
-      method: "GET",
-      path: "/v1/invoices",
-      query: {
-        customer: required(params, "customer"),
-        limit: limitParam(params),
-      },
-    }),
-  },
-];
-
-const OPERATIONS: Record<string, ConnectionOperation[]> = {
-  posthog: POSTHOG,
-  stripe: STRIPE,
-};
-
 /** The named operations of a connection type (none for most). */
 export function operationsFor(type: string): ConnectionOperation[] {
-  return OPERATIONS[type] ?? [];
+  return callableProfileOperations(type);
 }
 
 /** The operations of `type` as an agent sees them: name, description, params. */

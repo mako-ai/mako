@@ -387,6 +387,13 @@ sourceConnectionRoutes.openapi(
         sourceConnection.type,
         workspaceId,
       );
+      // A type kept only as a call profile (connections/profiles) still has a
+      // schema: its config and settings can change, nothing that syncs can.
+      const noSchema = orphan
+        ? await isOrphanConnectorType(sourceConnection.type, workspaceId, {
+            callable: true,
+          })
+        : false;
       const orphanRefusal = () => fail(c, 409, ORPHAN_TYPE_MESSAGE);
 
       // Where a key is sent is a person's choice, in the app: an API key or
@@ -463,7 +470,7 @@ sourceConnectionRoutes.openapi(
 
         // Only update config if something changed
         if (configChanged) {
-          if (orphan) return orphanRefusal();
+          if (noSchema) return orphanRefusal();
           const schema = await syncConnectorRegistry.getConfigSchemaForType(
             sourceConnection.type,
             workspaceId,
@@ -522,7 +529,7 @@ sourceConnectionRoutes.openapi(
         }
 
         if (settingsChanged) {
-          if (orphan) return orphanRefusal();
+          if (noSchema) return orphanRefusal();
           sourceConnection.settings = newSettings;
           hasChanges = true;
         }

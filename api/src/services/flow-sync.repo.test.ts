@@ -64,6 +64,7 @@ import {
   syncFlowsFromRepo,
 } from "./flow-sync.service";
 import { isCronDue } from "./cron-due";
+import { BigQueryDestinationAdapter } from "../sync-cdc/adapters/bigquery";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -394,6 +395,110 @@ describe("one bad file is that file's problem", () => {
     expect(
       await Flow.findOne({ workspaceId: WS, slug: "z-good-one" }),
     ).not.toBeNull();
+  });
+
+  it("a layout that disagrees with its BigQuery table is refused, a missing table is not", async () => {
+    const withTable = (name: string) =>
+      flowYaml(name).replace(
+        "  table:\n",
+        `  table:\n    connection_id: ${DEST}\n`,
+      );
+    const spy = vi
+      .spyOn(BigQueryDestinationAdapter.prototype, "describeLiveTable")
+      .mockResolvedValue({
+        exists: true,
+        timePartitioning: { field: "date_created", type: "DAY" },
+        clusterFields: [],
+      });
+    try {
+      await push({ "flows/a-mismatch.yml": withTable("Mismatch") });
+      const refused = await syncFlowsFromRepo(WS, "user-42");
+      expect(refused.invalid).toEqual(["a-mismatch"]);
+      expect(refused.created).toBe(0);
+
+      spy.mockResolvedValue({ exists: false, clusterFields: [] });
+      const accepted = await syncFlowsFromRepo(WS, "user-42");
+      expect(accepted.invalid).toEqual([]);
+      expect(accepted.created).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("an EXISTING flow is never paused or flagged for a layout mismatch", async () => {
+    const withTable = (name: string) =>
+      flowYaml(name).replace(
+        "  table:\n",
+        `  table:\n    connection_id: ${DEST}\n`,
+      );
+    const spy = vi
+      .spyOn(BigQueryDestinationAdapter.prototype, "describeLiveTable")
+      .mockResolvedValue({ exists: false, clusterFields: [] });
+    try {
+      await push({ "flows/live.yml": withTable("Live") });
+      expect((await syncFlowsFromRepo(WS, "user-42")).created).toBe(1);
+
+      // The table now exists, partitioned on another column.
+      spy.mockResolvedValue({
+        exists: true,
+        timePartitioning: { field: "date_created", type: "DAY" },
+        clusterFields: [],
+      });
+
+      // An edit that leaves the layout alone applies.
+      await push({ "flows/live.yml": withTable("Live renamed") });
+      const renamed = await syncFlowsFromRepo(WS, "user-42");
+      expect(renamed.updated).toBe(1);
+      expect(renamed.invalid).toEqual([]);
+
+      // An edit to the mismatching layout is not applied. The flow keeps
+      // its definition, its schedules and no marker.
+      const edited = withTable("Live renamed").replace(
+        "partitionGranularity: day",
+        "partitionGranularity: hour",
+      );
+      await push({ "flows/live.yml": edited });
+      const refused = await syncFlowsFromRepo(WS, "user-42");
+      expect(refused.invalid).toEqual(["live"]);
+      const row = await Flow.findOne({ workspaceId: WS, slug: "live" });
+      expect(row?.name).toBe("Live renamed");
+      expect(row?.entityLayouts?.[0]?.partitionGranularity).toBe("day");
+      expect(row?.backfillSchedule?.enabled).toBe(true);
+      expect(isFlowMarkedInvalid(row as never)).toBe(false);
+      // The refusal shows in the view: a warning, not a pause.
+      expect(row?.layoutWarnings?.[0]).toMatchObject({
+        entity: "leads",
+        refused: true,
+        realValue: "date_created",
+      });
+      const plain = liveFlowToPlain(
+        (await loadLiveFlows(WS)).find(f => f.def.slug === "live") as never,
+        WS,
+      );
+      expect(plain.layoutWarnings).toHaveLength(1);
+      expect(plain.definitionInvalid).toBeUndefined();
+
+      // Reading the flow does not apply the refused layout either.
+      expect(await ensureFlowDerivedCache(row as never)).toBe("ok");
+      const after = await Flow.findOne({ workspaceId: WS, slug: "live" });
+      expect(after?.entityLayouts?.[0]?.partitionGranularity).toBe("day");
+      expect(after?.backfillSchedule?.enabled).toBe(true);
+      expect(isFlowMarkedInvalid(after as never)).toBe(false);
+
+      // Fixing the layout applies it and clears the warnings.
+      await push({
+        "flows/live.yml": withTable("Live renamed").replace(
+          "partitionField: _syncedAt",
+          "partitionField: date_created",
+        ),
+      });
+      expect((await syncFlowsFromRepo(WS, "user-42")).invalid).toEqual([]);
+      const fixed = await Flow.findOne({ workspaceId: WS, slug: "live" });
+      expect(fixed?.entityLayouts?.[0]?.partitionField).toBe("date_created");
+      expect(fixed?.layoutWarnings ?? []).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("a connector NAME where an id belongs is refused, not thrown", async () => {
