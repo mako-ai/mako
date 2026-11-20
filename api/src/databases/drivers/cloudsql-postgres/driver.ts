@@ -37,6 +37,36 @@ import { ConnectionCache } from "../../connection-cache";
 
 const logger = loggers.db("cloudsql-postgres");
 
+/**
+ * The Postgres login user. IAM auth signs in as the validated key's own
+ * service account, in Cloud SQL's IAM form (the email without
+ * `.gserviceaccount.com`, e.g. `name@project.iam`). A supplied `username`
+ * that names anyone else is refused: the tenant cannot pick another
+ * database user. Password auth uses the supplied username unchanged.
+ */
+export function resolveLoginUser(
+  conn: { username?: unknown; service_account_json?: unknown },
+  isIam: boolean,
+): string | undefined {
+  const supplied =
+    typeof conn.username === "string" && conn.username.trim()
+      ? conn.username.trim()
+      : undefined;
+  if (!isIam) return supplied;
+  const email = requireServiceAccount(conn.service_account_json).client_email;
+  const iamUser = email.replace(/\.gserviceaccount\.com$/i, "");
+  if (
+    supplied &&
+    supplied.toLowerCase() !== iamUser.toLowerCase() &&
+    supplied.toLowerCase() !== email.toLowerCase()
+  ) {
+    throw new Error(
+      `IAM auth signs in as ${iamUser}, the service account in the key. Remove the username or set it to ${iamUser}.`,
+    );
+  }
+  return iamUser;
+}
+
 interface QueryResult {
   success: boolean;
   data?: any;
@@ -495,30 +525,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
         throw getOptionsError;
       }
 
-      let user: string | undefined = conn.username;
-      if (resolvedAuthType === AuthTypes.IAM) {
-        if (!user && conn.service_account_json) {
-          try {
-            const sa = requireServiceAccount(conn.service_account_json);
-            const email = sa?.client_email;
-            if (email) {
-              if (email.endsWith(".gserviceaccount.com")) {
-                const [localPart] = email.split("@");
-                const projectId =
-                  sa.project_id || email.split("@")[1].split(".")[0];
-                user = `${localPart}@${projectId}.iam`;
-                logger.info("Using IAM format for connection test", { user });
-              } else {
-                user = email;
-              }
-            }
-          } catch (e) {
-            logger.error("Failed to extract email from service account", {
-              error: e,
-            });
-          }
-        }
-      }
+      const user = resolveLoginUser(conn, resolvedAuthType === AuthTypes.IAM);
 
       client = new PgClient({
         ...(clientOpts as any),
@@ -619,42 +626,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
 
       const clientOpts = await connector.getOptions(getOpts);
 
-      let user: string | undefined = conn.username;
-      if (resolvedAuthType === AuthTypes.IAM) {
-        if (!user && conn.service_account_json) {
-          // Try to extract email from service account JSON
-          try {
-            const sa = requireServiceAccount(conn.service_account_json);
-            const email = sa?.client_email;
-            if (email) {
-              // For IAM auth, if the email ends with gserviceaccount.com,
-              // convert to the IAM format: name@project.iam
-              if (email.endsWith(".gserviceaccount.com")) {
-                const [localPart] = email.split("@");
-                const projectId =
-                  sa.project_id || email.split("@")[1].split(".")[0];
-                user = `${localPart}@${projectId}.iam`;
-                logger.info("Converted service account email to IAM format", {
-                  user,
-                });
-              } else {
-                user = email;
-              }
-            }
-          } catch (e) {
-            logger.error(
-              "Failed to extract email from service account for pool",
-              { error: e },
-            );
-          }
-        }
-
-        if (!user) {
-          logger.warn(
-            "IAM auth selected but no username provided for pool. Please provide username in format: service-account@project.iam",
-          );
-        }
-      }
+      const user = resolveLoginUser(conn, resolvedAuthType === AuthTypes.IAM);
 
       // Use override if provided, otherwise config, otherwise default to postgres
       const targetDb = dbNameOverride || conn.database || "postgres";

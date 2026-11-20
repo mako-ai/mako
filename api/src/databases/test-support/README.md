@@ -91,7 +91,8 @@ Create a BigQuery connection with:
 `isLocalBigQueryEmulator(api_base_url)` (in
 [`utils/bigquery-emulator.ts`](../../utils/bigquery-emulator.ts)) makes both
 client stacks skip auth: the REST client sends a dummy bearer; the SDK gets
-`apiEndpoint` + `BIGQUERY_EMULATOR_HOST`.
+an explicit `apiEndpoint` (no env var). In production a local `api_base_url`
+is refused.
 
 ### Emulator feature gaps
 
