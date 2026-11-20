@@ -253,7 +253,7 @@ async function main() {
       _id: sourceId,
       workspaceId,
       name: "fr_close",
-      type: "close",
+      type: "stripe",
       config: {},
     });
     const flowId = new Types.ObjectId();
@@ -279,7 +279,7 @@ async function main() {
       { reasons: [] },
     );
     const stamped = await Flow.findById(flowId).lean();
-    assert.match(stamped!.dataDiffFingerprint!.code!, /^close@[0-9a-f]{16}$/);
+    assert.match(stamped!.dataDiffFingerprint!.code!, /^stripe@[0-9a-f]{16}$/);
     assert.equal(await FlowDataDiff.countDocuments(), 0);
     assert.equal(await compareFlowDataDiff({ flowId: id }), null);
 
@@ -314,7 +314,7 @@ async function main() {
     // 4. New connector code between two plain runs opens a check.
     await Flow.updateOne(
       { _id: flowId },
-      { $set: { "dataDiffFingerprint.code": "close@0000000000000000" } },
+      { $set: { "dataDiffFingerprint.code": "stripe@0000000000000000" } },
     );
     assert.deepEqual(
       await prepareFlowDataDiff({ flowId: id, entities, backfill: false }),
