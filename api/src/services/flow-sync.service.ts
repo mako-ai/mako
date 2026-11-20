@@ -31,7 +31,7 @@
  * rename. The file format already excludes all of them; this module must not
  * reintroduce them by writing whole nested objects.
  */
-import { Types } from "mongoose";
+import mongoose, { Types, type Connection } from "mongoose";
 import {
   flowFileConnectionRefusal,
   flowFilesConnectionRefusals,
@@ -63,7 +63,9 @@ import {
   resolveCommit,
 } from "../apps/repository.service";
 import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
-import { Flow, type IFlow } from "../database/workspace-schema";
+import { Flow, WebhookEvent, type IFlow } from "../database/workspace-schema";
+import { commitIsAncestor } from "../apps/git";
+import { randomUUID } from "node:crypto";
 import { inngest } from "../inngest/client";
 import { loggers } from "../logging";
 import {
@@ -96,6 +98,207 @@ export {
 } from "./flow-definition-apply";
 
 const logger = loggers.api("flow-sync");
+
+class GuardCandidateInvalid extends Error {}
+
+/** Local prototype only. Both writers must opt in to its transaction. */
+export interface InternalBindingGuard {
+  afterCandidateRead?: (commit: string) => Promise<void>;
+  afterRowRead?: (commit: string) => Promise<void>;
+  afterLayoutPreflight?: () => Promise<void>;
+  beforeFlowWrite?: () => Promise<void>;
+  afterFlowWrite?: () => Promise<void>;
+  connection?: Connection;
+}
+
+/**
+ * Conditionally apply an existing row against the last observed Git commit.
+ * The local retention seam writes this same Flow row in its transaction.
+ */
+async function applyGuardedCandidate(
+  doc: IFlow,
+  repoDir: string,
+  commit: string,
+  blob: string,
+  definition: FlowFile,
+  connection: Connection,
+  guard: InternalBindingGuard,
+): Promise<"applied" | "blocked" | "stale"> {
+  const model =
+    connection.models.Flow ?? connection.model<IFlow>("Flow", Flow.schema);
+  const session = await connection.startSession();
+  try {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const basis = await model.findOne({
+        _id: doc._id,
+        workspaceId: doc.workspaceId,
+      });
+      if (!basis) return "stale";
+      const snapshot = JSON.stringify(basis.toObject());
+      const previousLayouts = snapshotLayouts(basis as never);
+      const candidate = model.hydrate(basis.toObject());
+      const refusal = applyDefinition(candidate, definition);
+      if (refusal) throw new GuardCandidateInvalid(refusal);
+      const { changed, untouched } = await splitLayoutMismatches(
+        candidate as never,
+        previousLayouts,
+      );
+      const layoutRefused = changed.length > 0;
+      candidate.layoutWarnings = toLayoutWarnings(untouched, false);
+      candidate.sourceBlobSha = blob;
+      try {
+        await candidate.validate();
+      } catch (error) {
+        if (error instanceof mongoose.Error.ValidationError) {
+          throw new GuardCandidateInvalid(error.message);
+        }
+        throw error;
+      }
+      if (guard.afterLayoutPreflight) await guard.afterLayoutPreflight();
+      const outcome = await session.withTransaction(async () => {
+        const current = await model.collection.findOne(
+          { _id: doc._id, workspaceId: doc.workspaceId },
+          { session },
+        );
+        if (!current) return "stale";
+        const state = (
+          current as unknown as {
+            bindingApply?: {
+              token: string;
+              commit: string;
+              desiredBlobSha?: string;
+            };
+          }
+        ).bindingApply;
+        // Reject older and divergent commits. An unknown ancestry also throws.
+        if (
+          state?.commit &&
+          state.commit !== commit &&
+          !(await commitIsAncestor(repoDir, state.commit, commit))
+        ) {
+          return "stale";
+        }
+        const fresh = await model
+          .findOne({ _id: doc._id, workspaceId: doc.workspaceId })
+          .session(session);
+        if (!fresh) return "stale";
+        // The table check ran outside Mongo. Never use it for a different row.
+        if (JSON.stringify(fresh.toObject()) !== snapshot) return "retry";
+        const sourceChanged =
+          current.sourceType !== candidate.sourceType ||
+          String(current.dataSourceId ?? "") !==
+            String(candidate.dataSourceId ?? "");
+        if (!connection.db) throw new Error("MongoDB connection is not open");
+        const blocked =
+          !layoutRefused &&
+          sourceChanged &&
+          (await connection.db
+            .collection(WebhookEvent.collection.collectionName)
+            .findOne(
+              {
+                workspaceId: doc.workspaceId,
+                flowId: doc._id,
+                status: "dormant",
+              },
+              { session },
+            )) !== null;
+        const changes = candidate.$getChanges();
+        const update = blocked || layoutRefused ? {} : changes;
+        const set = {
+          ...((update.$set ?? {}) as Record<string, unknown>),
+          bindingApply: {
+            ...(layoutRefused ? state : {}),
+            token: randomUUID(),
+            commit,
+            ...(blocked ? { desiredBlobSha: blob } : {}),
+            ...(layoutRefused ? { layoutRefusedBlobSha: blob } : {}),
+          },
+        };
+        if (guard.beforeFlowWrite) await guard.beforeFlowWrite();
+        const result = await model.collection.updateOne(
+          {
+            _id: doc._id,
+            workspaceId: doc.workspaceId,
+            ...(state
+              ? { "bindingApply.token": state.token }
+              : { bindingApply: { $exists: false } }),
+          } as never,
+          {
+            ...update,
+            $set: set,
+            ...(!blocked && !layoutRefused
+              ? {
+                  $unset: {
+                    ...((update.$unset ?? {}) as Record<string, unknown>),
+                    definitionInvalid: 1,
+                  },
+                }
+              : {}),
+          } as never,
+          { session },
+        );
+        if (!result.matchedCount) {
+          throw new Error("Flow changed during guarded apply");
+        }
+        if (guard.afterFlowWrite) await guard.afterFlowWrite();
+        return layoutRefused ? "stale" : blocked ? "blocked" : "applied";
+      });
+      if (outcome !== "retry") return outcome;
+    }
+    return "stale";
+  } finally {
+    await session.endSession();
+  }
+}
+
+/** Record an invalid observation under the same ordering token as valid applies. */
+async function markGuardedInvalid(
+  doc: IFlow,
+  repoDir: string,
+  commit: string,
+  reason: string,
+  path: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const current = await Flow.collection.findOne({
+      _id: doc._id,
+      workspaceId: doc.workspaceId,
+    });
+    if (!current) return;
+    const state = (
+      current as unknown as {
+        bindingApply?: { token: string; commit: string };
+      }
+    ).bindingApply;
+    if (
+      state?.commit &&
+      state.commit !== commit &&
+      !(await commitIsAncestor(repoDir, state.commit, commit))
+    ) {
+      return;
+    }
+    const result = await Flow.collection.updateOne(
+      {
+        _id: doc._id,
+        workspaceId: doc.workspaceId,
+        ...(state
+          ? { "bindingApply.token": state.token }
+          : { bindingApply: { $exists: false } }),
+      } as never,
+      {
+        $set: {
+          bindingApply: { token: randomUUID(), commit },
+          definitionInvalid: { reason, at: new Date(), path },
+          ...(current.schedule ? { "schedule.enabled": false } : {}),
+          ...(current.backfillSchedule
+            ? { "backfillSchedule.enabled": false }
+            : {}),
+        },
+      } as never,
+    );
+    if (result.matchedCount) return;
+  }
+}
 
 export interface FlowDefinitionAtMain {
   path: string;
@@ -370,13 +573,16 @@ function overlayFlow(
  * Leftover local git without a GitHub binding is ignored — runtime keeps
  * the SHA-checked Mongo cache (issue #956).
  */
-export async function ensureFlowDerivedCache(flow: {
-  _id: { toString(): string };
-  workspaceId: { toString(): string };
-  slug?: string;
-  sourceBlobSha?: string;
-  definitionInvalid?: { reason: string } | null;
-}): Promise<"ok" | "invalid" | "missing" | "resynced"> {
+export async function ensureFlowDerivedCache(
+  flow: {
+    _id: { toString(): string };
+    workspaceId: { toString(): string };
+    slug?: string;
+    sourceBlobSha?: string;
+    definitionInvalid?: { reason: string } | null;
+  },
+  guard?: InternalBindingGuard,
+): Promise<"ok" | "invalid" | "missing" | "resynced"> {
   if (!flow.slug) return "ok";
   const workspaceId = flow.workspaceId.toString();
   const repoDir = await boundRepoDirIfExists(workspaceId);
@@ -386,28 +592,34 @@ export async function ensureFlowDerivedCache(flow: {
   const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
   if (!head) return isFlowMarkedInvalid(flow) ? "invalid" : "ok";
   const path = `flows/${flow.slug}.yml`;
+  const mark = (row: IFlow, reason: string) =>
+    guard
+      ? markGuardedInvalid(row, repoDir, head, reason, path)
+      : markFlowInvalid(row, reason, path);
   let contents: string;
   try {
     const blob = await readBlob(repoDir, head, path);
     if (blob.isBinary) {
       const row = await Flow.findById(flow._id);
-      if (row) await markFlowInvalid(row, "binary flow file", path);
+      if (row) await mark(row, "binary flow file");
       return "invalid";
     }
     contents = blob.contents;
   } catch {
     const row = await Flow.findById(flow._id);
-    if (row) await markFlowInvalid(row, "flow file missing at main", path);
+    if (row) await mark(row, "flow file missing at main");
     return "missing";
   }
   const sha = blobOid(contents);
+  if (guard?.afterCandidateRead) await guard.afterCandidateRead(head);
   const wasMarked = isFlowMarkedInvalid(flow);
-  if (flow.sourceBlobSha === sha && !wasMarked) return "ok";
+  if (!guard && flow.sourceBlobSha === sha && !wasMarked) return "ok";
   const parsed = parseFlowFile(contents);
   const row = await Flow.findById(flow._id);
   if (!row) return "missing";
+  if (guard?.afterRowRead) await guard.afterRowRead(head);
   if (!parsed) {
-    await markFlowInvalid(row, "unparseable flow file", path);
+    await mark(row, "unparseable flow file");
     return "invalid";
   }
   let refusal: string | null = await flowFileConnectionRefusal(
@@ -423,16 +635,15 @@ export async function ensureFlowDerivedCache(flow: {
     }
   }
   if (refusal) {
-    await markFlowInvalid(row, refusal, path);
+    await mark(row, refusal);
     return "invalid";
   }
   // A changed layout that disagrees with its table is not applied, and the
   // flow is neither paused nor flagged: it keeps running on the stored
   // definition (the same rule as the push in syncFlowsFromRepo).
-  const { changed: layoutMismatches, untouched } = await splitLayoutMismatches(
-    row as never,
-    previousLayouts,
-  );
+  const { changed: layoutMismatches, untouched } = guard
+    ? { changed: [], untouched: [] }
+    : await splitLayoutMismatches(row as never, previousLayouts);
   if (layoutMismatches.length > 0) {
     logger.warn("Flow file layout does not match its table; not applied", {
       workspaceId,
@@ -448,17 +659,35 @@ export async function ensureFlowDerivedCache(flow: {
   row.layoutWarnings = toLayoutWarnings(untouched, false);
   row.sourceBlobSha = sha;
   try {
-    await row.save();
+    if (guard) {
+      const outcome = await applyGuardedCandidate(
+        row,
+        repoDir,
+        head,
+        sha,
+        parsed,
+        guard.connection ?? mongoose.connection,
+        guard,
+      );
+      if (outcome !== "applied") return "ok";
+    } else {
+      await row.save();
+    }
   } catch (error) {
+    if (guard) {
+      if (!(error instanceof GuardCandidateInvalid)) throw error;
+      await mark(row, error.message);
+      return "invalid";
+    }
     // applyDefinition already mutated `row`. Saving that document again
     // (via markFlowInvalid) would re-raise the same ValidationError and
     // 500 GET/list. Reload the persisted row, then stamp invalid.
     const reason = error instanceof Error ? error.message : String(error);
     const fresh = await Flow.findById(flow._id);
-    if (fresh) await markFlowInvalid(fresh, reason, path);
+    if (fresh) await mark(fresh, reason);
     return "invalid";
   }
-  if (wasMarked) await clearFlowInvalid(row._id);
+  if (wasMarked && !guard) await clearFlowInvalid(row._id);
   return "resynced";
 }
 
@@ -575,6 +804,7 @@ export async function readFlowFilesAtMain(
 export async function syncFlowsFromRepo(
   workspaceId: string,
   actorUserId?: string,
+  guard?: InternalBindingGuard,
 ): Promise<FlowSyncResult> {
   const empty: FlowSyncResult = {
     created: 0,
@@ -591,6 +821,7 @@ export async function syncFlowsFromRepo(
     freshen: true,
   });
   if (!head) return empty;
+  if (guard?.afterCandidateRead) await guard.afterCandidateRead(head);
 
   // No flows/ in the repo at all → this workspace has not adopted flows as
   // code. Leave Mongo alone. Without this an empty or partial tree would read
@@ -610,6 +841,17 @@ export async function syncFlowsFromRepo(
     const sha = blobOid(contents);
     const parsedForDesired = parseFlowFile(contents);
     const row = await Flow.findOne({ workspaceId, slug });
+    if (guard?.afterRowRead) await guard.afterRowRead(head);
+    const mark = (candidate: IFlow, reason: string) =>
+      guard
+        ? markGuardedInvalid(
+            candidate,
+            repoDirFor(workspaceId),
+            head,
+            reason,
+            path,
+          )
+        : markFlowInvalid(candidate, reason, path);
     // The desired set is EVERY file present, not only the changed ones: the
     // reconciler derives removals from it, so omitting an unchanged file would
     // read as "this flow was deleted" and tear down a live stream.
@@ -630,7 +872,12 @@ export async function syncFlowsFromRepo(
     // Level already — unless the row is still flagged from an earlier bad
     // version and the file was reverted to this exact content, in which
     // case the marker must clear.
-    if (row && row.sourceBlobSha === sha && !isFlowMarkedInvalid(row)) {
+    if (
+      !guard &&
+      row &&
+      row.sourceBlobSha === sha &&
+      !isFlowMarkedInvalid(row)
+    ) {
       result.unchanged++;
       continue;
     }
@@ -642,7 +889,7 @@ export async function syncFlowsFromRepo(
         path,
       });
       if (row) {
-        await markFlowInvalid(row, "unparseable flow file", path);
+        await mark(row, "unparseable flow file");
       }
       result.invalid.push(slug);
       continue;
@@ -662,7 +909,7 @@ export async function syncFlowsFromRepo(
         path,
         reason: applyFailure,
       });
-      if (row) await markFlowInvalid(row, applyFailure, path);
+      if (row) await mark(row, applyFailure);
       result.invalid.push(slug);
       continue;
     }
@@ -675,12 +922,13 @@ export async function syncFlowsFromRepo(
         path,
         reason: foreign,
       });
-      if (row) await markFlowInvalid(row, foreign, path);
+      if (row) await mark(row, foreign);
       result.invalid.push(slug);
       continue;
     }
 
     const isNew = !row;
+    const previousFile = guard && row ? flowToFile(row) : undefined;
     const wasInvalid = row ? isFlowMarkedInvalid(row) : false;
     const entitySignatureBefore = row ? flowEntitySignature(row as IFlow) : "";
     const doc =
@@ -710,7 +958,7 @@ export async function syncFlowsFromRepo(
         reason: refusal,
       });
       if (row) {
-        await markFlowInvalid(row, refusal, path);
+        await mark(row, refusal);
       }
       result.invalid.push(slug);
       continue;
@@ -720,7 +968,9 @@ export async function syncFlowsFromRepo(
     // never paused or flagged for it: a refused push leaves the row exactly
     // as it was, running, and an old mismatch it did not touch only warns.
     const { changed: layoutMismatches, untouched } =
-      await splitLayoutMismatches(doc as never, previousLayouts);
+      guard && row
+        ? { changed: [], untouched: [] }
+        : await splitLayoutMismatches(doc as never, previousLayouts);
     if (layoutMismatches.length > 0) {
       logger.warn("Flow file layout does not match its table; not applied", {
         workspaceId,
@@ -771,8 +1021,31 @@ export async function syncFlowsFromRepo(
     // not created, and since it never reached `desired` there is nothing for
     // the reconciler to tear down either way.
     try {
-      await doc.save();
+      if (guard && row) {
+        const outcome = await applyGuardedCandidate(
+          doc,
+          repoDirFor(workspaceId),
+          head,
+          sha,
+          parsed,
+          guard.connection ?? mongoose.connection,
+          guard,
+        );
+        if (outcome !== "applied") {
+          const desiredEntry = desired.find(entry => entry.slug === slug);
+          if (desiredEntry && previousFile) desiredEntry.file = previousFile;
+          continue;
+        }
+      } else {
+        await doc.save();
+      }
     } catch (error) {
+      if (guard) {
+        if (!(error instanceof GuardCandidateInvalid) || !row) throw error;
+        await mark(row, error.message);
+        result.invalid.push(slug);
+        continue;
+      }
       logger.warn("Flow file could not be saved; keeping current row", {
         workspaceId,
         path,
@@ -781,7 +1054,7 @@ export async function syncFlowsFromRepo(
       result.invalid.push(slug);
       continue;
     }
-    if (wasInvalid) await clearFlowInvalid((doc as IFlow)._id);
+    if (wasInvalid && !guard) await clearFlowInvalid((doc as IFlow)._id);
     if (isNew) {
       result.created++;
       // A row created in this pass has no id until now, so its desired entry
