@@ -20,6 +20,10 @@ import {
 import { databaseRegistry } from "../databases/registry";
 import { loggers } from "../logging";
 import { hasCdcDestinationAdapter } from "../sync-cdc/adapters/registry";
+import {
+  findLayoutTableMismatches,
+  formatLayoutMismatches,
+} from "../sync-cdc/layout-table-check";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
 import {
   checkQuerySafety,
@@ -52,6 +56,22 @@ import { resyncLastRunAt } from "./resync-schedule";
 const logger = loggers.inngest("flow");
 
 type FlowDocument = InstanceType<typeof Flow>;
+
+/**
+ * Refuse a CDC flow whose entity layouts disagree with the BigQuery tables
+ * they write to (a table that does not exist yet passes).
+ */
+async function assertLayoutsMatchTables(flow: {
+  syncEngine?: string;
+}): Promise<void> {
+  if (flow.syncEngine !== "cdc") return;
+  const mismatches = await findLayoutTableMismatches(flow as never);
+  if (mismatches.length > 0) {
+    throw new FlowRequestError(400, formatLayoutMismatches(mismatches), {
+      layoutMismatches: mismatches,
+    });
+  }
+}
 
 /** A create/update request body: the loose JSON the flow forms POST. */
 type FlowRequestBody = Record<string, any>;
@@ -361,6 +381,7 @@ export async function buildNewFlow(params: {
   if (createValidation.error) {
     throw new FlowRequestError(400, createValidation.error);
   }
+  await assertLayoutsMatchTables(flowData);
   const syncConfigWarnings = createValidation.warnings;
 
   // The create forms have always POSTed a synthesized `name`; until this
@@ -723,6 +744,11 @@ export async function applyFlowUpdate(params: {
   }
   if (body.entityLayouts !== undefined) {
     (flow as any).entityLayouts = body.entityLayouts;
+  }
+  // Only a request that touches the layouts or the destination is judged:
+  // an unrelated edit of a flow with an old mismatch still saves.
+  if (body.entityLayouts !== undefined || body.tableDestination) {
+    await assertLayoutsMatchTables(flow);
   }
 
   // Periodic full backfill cadence (CDC flows only). The dedicated

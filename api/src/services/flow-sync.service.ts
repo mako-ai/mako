@@ -65,6 +65,10 @@ import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import { Flow, type IFlow } from "../database/workspace-schema";
 import { inngest } from "../inngest/client";
 import { loggers } from "../logging";
+import {
+  findLayoutTableMismatches,
+  formatLayoutMismatches,
+} from "../sync-cdc/layout-table-check";
 import { flowEntitySignature } from "../sync-cdc/entity-selection";
 import {
   reconcileFlowsFromRepo,
@@ -683,6 +687,20 @@ export async function syncFlowsFromRepo(
       if (row) {
         await markFlowInvalid(row, refusal, path);
       }
+      result.invalid.push(slug);
+      continue;
+    }
+    // A layout that disagrees with the table it writes is refused like any
+    // other bad file: the row keeps its definition, the file is flagged.
+    const layoutMismatches = await findLayoutTableMismatches(doc as never);
+    if (layoutMismatches.length > 0) {
+      const reason = formatLayoutMismatches(layoutMismatches);
+      logger.warn("Flow file layout does not match its table", {
+        workspaceId,
+        path,
+        reason,
+      });
+      if (row) await markFlowInvalid(row, reason, path);
       result.invalid.push(slug);
       continue;
     }

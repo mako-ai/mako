@@ -64,6 +64,7 @@ import {
   syncFlowsFromRepo,
 } from "./flow-sync.service";
 import { isCronDue } from "./cron-due";
+import { BigQueryDestinationAdapter } from "../sync-cdc/adapters/bigquery";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -394,6 +395,34 @@ describe("one bad file is that file's problem", () => {
     expect(
       await Flow.findOne({ workspaceId: WS, slug: "z-good-one" }),
     ).not.toBeNull();
+  });
+
+  it("a layout that disagrees with its BigQuery table is refused, a missing table is not", async () => {
+    const withTable = (name: string) =>
+      flowYaml(name).replace(
+        "  table:\n",
+        `  table:\n    connection_id: ${DEST}\n`,
+      );
+    const spy = vi
+      .spyOn(BigQueryDestinationAdapter.prototype, "describeLiveTable")
+      .mockResolvedValue({
+        exists: true,
+        timePartitioning: { field: "date_created", type: "DAY" },
+        clusterFields: [],
+      });
+    try {
+      await push({ "flows/a-mismatch.yml": withTable("Mismatch") });
+      const refused = await syncFlowsFromRepo(WS, "user-42");
+      expect(refused.invalid).toEqual(["a-mismatch"]);
+      expect(refused.created).toBe(0);
+
+      spy.mockResolvedValue({ exists: false, clusterFields: [] });
+      const accepted = await syncFlowsFromRepo(WS, "user-42");
+      expect(accepted.invalid).toEqual([]);
+      expect(accepted.created).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("a connector NAME where an id belongs is refused, not thrown", async () => {

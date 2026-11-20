@@ -59,6 +59,7 @@ import {
   validateFlowFiles,
   type FlowFileProblem,
 } from "../../services/flow-validate.service";
+import { findLayoutTableMismatches } from "../../sync-cdc/layout-table-check";
 import {
   dryRunFlowReconcile,
   type PlannedFlow,
@@ -173,6 +174,18 @@ export async function checkFlowFiles(input: {
         slug,
         reason: `\`${err.path}\`: ${err.message} — the flow row would fail to save, so the push would leave the flow unchanged`,
       });
+    }
+    // A layout that disagrees with its BigQuery table is an error: a pruned
+    // MERGE depends on the table, and a PR with a wrong layout should fail.
+    if (hydrated.doc && hydrated.schemaErrors.length === 0) {
+      const mismatches = await findLayoutTableMismatches(hydrated.doc as never);
+      for (const m of mismatches) {
+        schemaProblems.push({
+          path: file.path,
+          slug,
+          reason: `layout does not match the existing table. ${m.message}`,
+        });
+      }
     }
   }
   problems.push(...schemaProblems);

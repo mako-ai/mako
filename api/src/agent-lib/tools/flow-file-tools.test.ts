@@ -55,6 +55,7 @@ import {
 import { initRepo, repoDirFor } from "../../apps/repository.service";
 import { bindTestWorkspaceRepo } from "../../apps/bind-test-workspace-repo";
 import { checkFlowFiles, createFlowFileTools } from "./flow-file-tools";
+import { BigQueryDestinationAdapter } from "../../sync-cdc/adapters/bigquery";
 import { buildMakoMcpToolset } from "../../mcp/mako-mcp-server";
 import {
   MCP_BRIDGE_POLICY,
@@ -355,6 +356,70 @@ describe("the three validation layers", () => {
     expect(result.problems.some(p => p.reason.includes("partitionField"))).toBe(
       true,
     );
+  });
+
+  describe("layout against the existing BigQuery table", () => {
+    const withLayout = (partitionField: string) =>
+      `${flowYaml("shadow", ["activities:Email"])}  layouts:\n    - entity: activities:Email\n      partitionField: ${partitionField}\n      partitionGranularity: day\n` +
+      `destination_table_placeholder`;
+    const yamlFor = (partitionField: string) =>
+      withLayout(partitionField)
+        .replace(
+          "destination:\n",
+          `destination:\n  table:\n    connection_id: ${DEST.toString()}\n    schema: close\n    table_name: ''\n`,
+        )
+        .replace("destination_table_placeholder", "");
+
+    const real = {
+      exists: true,
+      timePartitioning: { field: "date_created", type: "DAY" },
+      clusterFields: [],
+    };
+
+    it("reports a mismatch as an error naming entity, table, layout and real value", async () => {
+      await seedRepo({});
+      const spy = vi
+        .spyOn(BigQueryDestinationAdapter.prototype, "describeLiveTable")
+        .mockResolvedValue(real);
+      try {
+        const result = await checkFlowFiles({
+          workspaceId: WS.toString(),
+          files: [{ path: "flows/shadow.yml", contents: yamlFor("_syncedAt") }],
+        });
+        expect(result.ok).toBe(false);
+        const reason = result.problems.map(p => p.reason).join("\n");
+        expect(reason).toContain("activities:Email");
+        expect(reason).toContain("email_activities");
+        expect(reason).toContain("`_syncedAt`");
+        expect(reason).toContain("`date_created`");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("passes a matching layout and a table that does not exist yet", async () => {
+      await seedRepo({});
+      const spy = vi
+        .spyOn(BigQueryDestinationAdapter.prototype, "describeLiveTable")
+        .mockResolvedValue(real);
+      try {
+        const matching = await checkFlowFiles({
+          workspaceId: WS.toString(),
+          files: [
+            { path: "flows/shadow.yml", contents: yamlFor("date_created") },
+          ],
+        });
+        expect(matching.problems).toEqual([]);
+        spy.mockResolvedValue({ exists: false, clusterFields: [] });
+        const missing = await checkFlowFiles({
+          workspaceId: WS.toString(),
+          files: [{ path: "flows/shadow.yml", contents: yamlFor("_syncedAt") }],
+        });
+        expect(missing.problems).toEqual([]);
+      } finally {
+        spy.mockRestore();
+      }
+    });
   });
 
   it("a file that does not parse is a no-op, not the teardown it used to be", async () => {

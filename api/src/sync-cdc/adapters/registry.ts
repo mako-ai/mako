@@ -33,6 +33,19 @@ export interface CdcEntityLayout {
   };
 }
 
+/**
+ * A live table as the warehouse reports it (a metadata read, never billed).
+ * `timePartitioning` is absent for an unpartitioned table; its `field` is
+ * absent for ingestion-time partitioning.
+ */
+export interface LiveTableDescription {
+  exists: boolean;
+  timePartitioning?: { field?: string; type?: string };
+  /** The integer-range partition column, when the table has one. */
+  rangePartitionField?: string;
+  clusterFields: string[];
+}
+
 export interface CdcDestinationAdapter {
   destinationType: string;
   /**
@@ -107,6 +120,14 @@ export interface CdcDestinationAdapter {
   repartitionLiveTable?(layout: CdcEntityLayout): Promise<{
     repartitioned: boolean;
   }>;
+  /**
+   * Read a live table's real partitioning and clustering. Returns undefined
+   * when the read fails (the layout check then skips the table). Only
+   * implemented for BigQuery.
+   */
+  describeLiveTable?(
+    tableName: string,
+  ): Promise<LiveTableDescription | undefined>;
 }
 
 /**

@@ -296,6 +296,8 @@ export interface HydratedFlowRow {
   refusal: string | null;
   /** Field-level schema failures, as mongoose would raise them on save. */
   schemaErrors: Array<{ path: string; message: string }>;
+  /** The unsaved row, when the file applied. */
+  doc?: IFlow;
 }
 
 /**
@@ -351,5 +353,6 @@ export function hydrateFlowRow(
       path,
       message: err?.message ?? "is invalid",
     })),
+    doc,
   };
 }
