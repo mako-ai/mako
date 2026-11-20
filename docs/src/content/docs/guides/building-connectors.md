@@ -10,7 +10,7 @@ Connectors allow Mako to ingest data from external sources. This guide walks you
 - **Connections** store only credentials and connection settings (endpoint, API keys, auth headers). A **connector** is the code that uses them.
 - **Flows** define what data to sync:
   - For connectors with fixed entities (Stripe, Close): use `entityFilter`
-  - For query-based connectors (GraphQL, PostHog): use `queries` array on the flow
+  - For query-based connectors (GraphQL): use `queries` array on the flow
 
 This separation allows reusing the same connection credentials for multiple transfers with different data configurations.
 

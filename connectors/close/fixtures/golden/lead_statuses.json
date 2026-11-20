@@ -1,0 +1,38 @@
+[
+  {
+    "color": null,
+    "id": "stat_m49ZcKMPq6fPJlLSPMCZPcBuv766mlF3m49ZcKMPq",
+    "label": "Potential",
+    "organization_id": "orga_fixture000000000000000000000000000000"
+  },
+  {
+    "color": null,
+    "id": "stat_lr5QijNf2c082tnt2VA1BRZ35M6swJgglr5QijNf2",
+    "label": "Bad Fit",
+    "organization_id": "orga_fixture000000000000000000000000000000"
+  },
+  {
+    "color": null,
+    "id": "stat_BAJejx5F8I8Xg5Z9OU3JNmsdRZpX2VvcBAJejx5F8",
+    "label": "Qualified",
+    "organization_id": "orga_fixture000000000000000000000000000000"
+  },
+  {
+    "color": null,
+    "id": "stat_7gck80VoRDjoZayA19oAdAp8i7ea7Z8F7gck80VoR",
+    "label": "Customer",
+    "organization_id": "orga_fixture000000000000000000000000000000"
+  },
+  {
+    "color": null,
+    "id": "stat_iXT00S9Be3dVRUkzaVb5Vit45kOlkrihiXT00S9Be",
+    "label": "Lost",
+    "organization_id": "orga_fixture000000000000000000000000000000"
+  },
+  {
+    "color": null,
+    "id": "stat_84SK6RuB62Qg1fmZqndDpWnfNa63YyVJ84SK6RuB6",
+    "label": "Nurture",
+    "organization_id": "orga_fixture000000000000000000000000000000"
+  }
+]

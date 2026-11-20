@@ -1,29 +1,19 @@
 /**
- * Parity harness: the in-process Close connector and this folder, run
- * against the same recorded Close responses, compared entity by entity.
+ * Fixture harness for the Close folder: the replay and recording servers,
+ * the Close emulator over `dataset.mjs`, and the runners that drive the
+ * folder the way a box does.
  *
- * Both connectors talk to a local HTTP server: the folder through its
- * `__base_url` config key, the in-process one through an axios client the
- * caller points at the server (it has no base-URL setting). In replay mode
- * the server answers only requests it has a cassette for, so a folder that
- * sends a different request than the in-process connector fails with a
- * cassette miss, and the request logs are compared as well.
+ * The folder talks to a local HTTP server through its `__base_url` config
+ * key. In replay mode the server answers only requests it has a cassette
+ * for; any other request is a miss. `golden.mjs --record` rebuilds the
+ * cassettes from the emulator.
  *
- * The clock is frozen at FIXTURE_NOW on both sides: the Search API walk ends
- * one day after "now", and its binary-search probes are computed from it.
- * In the folder process `clock.mjs` also shortens timers under 5 s to 0, so
- * the rate-limit pauses and retry waits do not slow the replay.
+ * The clock is frozen at FIXTURE_NOW: the Search API walk ends one day after
+ * "now", and its binary-search probes are computed from it. In the folder
+ * process `clock.mjs` also shortens timers under 5 s to 0, so the rate-limit
+ * pauses and retry waits do not slow the replay.
  *
- * For each entity and scenario it compares:
- * - row count, key set and row order;
- * - column set (the union of fields across rows);
- * - a SHA-256 checksum per row, over canonical JSON;
- * - each row's source timestamp, as the engine and the connector resolve it;
- * - the chunk sequence: the read position and hasMore after every chunk;
- * - the exact request sequence each connector sent.
- *
- * This file has no dependency on the API. The caller passes the in-process
- * connector and the timestamp resolvers in (`parity.mjs`, and the API test).
+ * This file has no dependency on the API.
  */
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -47,10 +37,7 @@ export const FIXTURE_NOW = "2026-11-16T12:00:00.000Z";
 /** The incremental anchor of the `since` scenario. */
 export const SINCE = "2026-09-01T00:00:00.000Z";
 
-/**
- * Close's own Search page. The in-process connector ignores batch size on
- * Search; the folder pages by `__page_size` when one is set.
- */
+/** Close's own Search page. The folder pages by `__page_size` when set. */
 export const SEARCH_PAGE_SIZE = 200;
 /** The emulator refuses a request naming more custom selectors than this. */
 export const SELECTOR_CEILING = 50;
@@ -63,22 +50,14 @@ export const CURSOR_ROW_LIMIT = { "activity.call": 200, default: 10_000 };
 export const SCENARIOS = [
   // One page per chunk: every page boundary is a chunk boundary.
   { name: "chunked", maxIterations: 1 },
-  // Two rows a page, one page per chunk. The offset lists page by 2 on
-  // both sides. On Search the folder pages by 2 too and in-process stays at
-  // 200, so those runs differ in requests and chunks by design: the folder
-  // reads from the emulator (`dataset.mjs`) and is held to the same rows,
-  // in the same order, with no row lost or read twice (`rowsOnly`).
-  { name: "small-pages", maxIterations: 1, pageSize: 2, searchRowsOnly: true },
+  // Two rows a page, one page per chunk. The offset lists and Search page
+  // by 2 (`__page_size`).
+  { name: "small-pages", maxIterations: 1, pageSize: 2 },
   // The engine's default chunk of 10 pages.
   { name: "default", maxIterations: 10 },
   // Incremental: `date_updated` windows from `since`.
   { name: "since", maxIterations: 10, since: SINCE },
 ];
-
-/** Leads, contacts, opportunities and activities go through the Search API. */
-export const isSearchEntity = entity =>
-  ["leads", "contacts", "opportunities"].includes(entity) ||
-  entity.startsWith("activities:");
 
 /** The `_limit` of every Search request in a request log. */
 export function searchLimits(requests) {
@@ -87,23 +66,13 @@ export function searchLimits(requests) {
     .map(key => JSON.parse(key.slice("POST /data/search/ ".length))._limit);
 }
 
-/** A scenario where every request is answered 429 once before it succeeds. */
-export const RATE_LIMIT_SCENARIO = {
-  name: "rate-limited",
-  maxIterations: 10,
-  rateLimited: true,
-};
-export const RATE_LIMIT_ENTITIES = ["users", "leads", "activities:Call"];
-
 /**
- * What the folder reads on purpose that in-process gets only from webhooks.
- * A poll-only connection (the box has no webhooks yet) needs it to match
- * what a webhook-fed in-process connection holds in the warehouse.
+ * What the folder reads on purpose that the deleted in-process connector got
+ * only from webhooks, so a poll-only connection (the box has no webhooks
+ * yet) holds the same data.
  *
  * Per entity: the extra rows (`row`), columns (`columns`), schema fields
- * (`schemaFields`) and requests (`request`). The comparison leaves them out
- * of the folder's run, holds the rest to in-process exactly, and checks the
- * extras are there (`folderOnlyOk`):
+ * (`schemaFields`) and requests (`request`):
  * - `custom_fields`: activity and custom-object fields, which in-process
  *   writes from `custom_fields.activity.*` / `custom_fields.custom_object.*`
  *   webhooks (with `custom_field_type` null).
@@ -175,7 +144,7 @@ export function folderEnv() {
 }
 
 /**
- * Freeze `Date.now` in this process (the in-process side). Returns the
+ * Freeze `Date.now` in this process. Returns the
  * restore function. `new Date()` with no argument is left alone.
  */
 export function freezeClock() {
@@ -562,11 +531,11 @@ function search(dataset, body) {
 }
 
 // ---------------------------------------------------------------------------
-// Running the two connectors
+// Running the folder
 // ---------------------------------------------------------------------------
 
 const scratch = () =>
-  fs.mkdtempSync(path.join(os.tmpdir(), "mako-close-parity-"));
+  fs.mkdtempSync(path.join(os.tmpdir(), "mako-close-fixture-"));
 
 /** Run one SDK command on the folder and parse its JSON Lines. */
 export function runFolderCommand(
@@ -628,24 +597,6 @@ const positionOf = state => {
 };
 
 /**
- * The in-process `FetchState` as a read position: the offset of the offset
- * lists, or the window position of the Search API walk.
- */
-export function inProcessPosition(state) {
-  if (!state) return {};
-  if (typeof state.offset === "number") return { offset: state.offset };
-  const m = state.metadata;
-  if (!m || !("windowStart" in m)) return {};
-  return {
-    windowStart: m.windowStart,
-    windowEnd: m.windowEnd,
-    pageCursor: m.pageCursor,
-    lastSeenWindowValue: m.lastSeenWindowValue,
-    windowField: m.windowField,
-  };
-}
-
-/**
  * Drive the folder chunk by chunk, the way `SandboxedConnector` does: the
  * last STATE message goes back as `--state`, until `mako.hasMore` is false.
  * Also measures each chunk's protocol output, the number §8 needs.
@@ -700,508 +651,6 @@ export async function readFolder({ entity, config, since, maxIterations }) {
   return { rows, chunks };
 }
 
-/**
- * Drive `SandboxedConnector` (the box path, with the box swapped for a local
- * process) chunk by chunk, as the engine does. `since` goes in as
- * `options.since` on every chunk; the adapter puts it into `state.mako`.
- */
-export async function readBoxed(
-  connector,
-  { entity, since, maxIterations, pageSize },
-) {
-  const rows = [];
-  const chunks = [];
-  let state;
-  for (let chunk = 0; chunk < 2000; chunk++) {
-    let records = 0;
-    state = await connector.fetchEntityChunk({
-      entity,
-      since: since ? new Date(since) : undefined,
-      maxIterations,
-      ...(pageSize ? { batchSize: pageSize } : {}),
-      rateLimitDelay: 1,
-      state,
-      onBatch: async batch => {
-        rows.push(...batch);
-        records += batch.length;
-      },
-    });
-    // Pin the page cap. SandboxedConnector grows the next chunk's cap
-    // (`state.chunkPages`, up to 8x) when a chunk used little of its
-    // byte budget; the in-process side has no such growth, so chunk
-    // counts and boundary requests would differ by design. Unpinned,
-    // the folder read the same rows and checksums (PR #1386); the cap
-    // math is tested in api/src/connectors/workspace/sandboxed-chunk.test.ts.
-    const { chunkPages: _grown, ...pinned } = state;
-    state = pinned;
-    chunks.push({
-      position: positionOf(state.metadata?.stream?.stream_state),
-      hasMore: state.hasMore,
-      records,
-    });
-    if (!state.hasMore) break;
-  }
-  return { rows, chunks };
-}
-
-/**
- * Drive the in-process connector chunk by chunk, as the engine does, with a
- * fresh connector per chunk: `performSyncChunk` builds one per chunk too, so
- * the custom-field lookups are repeated exactly as in production.
- */
-export async function readInProcess(
-  makeConnector,
-  { entity, since, maxIterations, pageSize },
-) {
-  const rows = [];
-  const chunks = [];
-  let state;
-  for (let chunk = 0; chunk < 2000; chunk++) {
-    let records = 0;
-    state = await makeConnector().fetchEntityChunk({
-      entity,
-      since: since ? new Date(since) : undefined,
-      maxIterations,
-      ...(pageSize ? { batchSize: pageSize } : {}),
-      rateLimitDelay: 1,
-      state,
-      onBatch: async batch => {
-        rows.push(...batch);
-        records += batch.length;
-      },
-    });
-    chunks.push({
-      position: inProcessPosition(state),
-      hasMore: state.hasMore,
-      records,
-    });
-    if (!state.hasMore) break;
-  }
-  return { rows, chunks };
-}
-
-// ---------------------------------------------------------------------------
-// Comparison
-// ---------------------------------------------------------------------------
-
-/** Checksum of a row as it lands, through JSON on both sides. */
-export const rowChecksum = row =>
-  crypto
-    .createHash("sha256")
-    .update(canonicalJson(JSON.parse(JSON.stringify(row))))
-    .digest("hex");
-
-const TIMESTAMP_CANDIDATES = [
-  "date_updated",
-  "updated_at",
-  "updatedAt",
-  "date_modified",
-  "date_created",
-  "created_at",
-  "createdAt",
-  "timestamp",
-  "_syncedAt",
-];
-
-/**
- * Whether a row carries a time the resolvers can read. A row without one
- * gets "now" from both; it is compared as "fallback", not as two clocks.
- */
-export function hasSourceTime(row) {
-  return TIMESTAMP_CANDIDATES.some(
-    field =>
-      row?.[field] && !Number.isNaN(new Date(String(row[field])).getTime()),
-  );
-}
-
-const columnsOf = rows =>
-  [...new Set(rows.flatMap(row => Object.keys(row)))].sort();
-const sameList = (a, b) =>
-  a.length === b.length && a.every((value, i) => value === b[i]);
-
-/**
- * Every comparison for one entity and scenario. `ok` is the conjunction.
- * `sourceTs` maps a row to its resolved source times, one list per side.
- */
-export function compareRuns(inProcess, rawFolder, sourceTs, entity) {
-  const { run: folder, folderOnly } = withoutFolderOnly(entity, rawFolder);
-  const inIds = inProcess.rows.map(row => String(row.id));
-  const folderIds = folder.rows.map(row => String(row.id));
-  const checksumMismatches = [];
-  const timestampMismatches = [];
-  let fallbacks = 0;
-  const n = Math.min(inProcess.rows.length, folder.rows.length);
-  for (let i = 0; i < n; i++) {
-    const a = inProcess.rows[i];
-    const b = folder.rows[i];
-    if (rowChecksum(a) !== rowChecksum(b)) checksumMismatches.push(inIds[i]);
-    if (sourceTs) {
-      if (!hasSourceTime(a) && !hasSourceTime(b)) {
-        fallbacks++;
-        continue;
-      }
-      const ta = sourceTs.inProcess(a);
-      const tb = sourceTs.folder(b);
-      if (canonicalJson(ta) !== canonicalJson(tb))
-        timestampMismatches.push(inIds[i]);
-    }
-  }
-  const strip = chunks =>
-    chunks.map(c => ({ position: c.position, hasMore: c.hasMore }));
-  const inColumns = columnsOf(inProcess.rows);
-  const folderColumns = columnsOf(folder.rows);
-  const result = {
-    rows: [inProcess.rows.length, folder.rows.length],
-    // Rows read twice. The cursor-limit restart re-reads the row it stopped
-    // on, on both sides; anything more on the folder side is a bug.
-    duplicates: [
-      inIds.length - new Set(inIds).size,
-      folderIds.length - new Set(folderIds).size,
-    ],
-    keys: sameList([...new Set(inIds)].sort(), [...new Set(folderIds)].sort()),
-    order: sameList(inIds, folderIds),
-    columns: sameList(inColumns, folderColumns),
-    columnCount: inColumns.length,
-    checksumMismatches,
-    timestampMismatches,
-    timestampFallbacks: fallbacks,
-    chunks: [inProcess.chunks.length, folder.chunks.length],
-    chunkStates:
-      canonicalJson(strip(inProcess.chunks)) ===
-      canonicalJson(strip(folder.chunks)),
-    requests: [inProcess.requests?.length ?? 0, folder.requests?.length ?? 0],
-    requestsEqual: sameList(inProcess.requests ?? [], folder.requests ?? []),
-    ...(folderOnly ? { folderOnly } : {}),
-  };
-  result.ok =
-    (folderOnly?.ok ?? true) &&
-    result.rows[0] === result.rows[1] &&
-    result.duplicates[0] === result.duplicates[1] &&
-    result.keys &&
-    result.order &&
-    result.columns &&
-    checksumMismatches.length === 0 &&
-    timestampMismatches.length === 0 &&
-    result.chunkStates &&
-    result.requestsEqual;
-  return result;
-}
-
-/** Chunk and page sizes of a folder run, for the scale notes. */
-export function chunkStats(run) {
-  const sizes = run.chunks.map(c => c.recordBytes ?? 0);
-  const rows = run.chunks.map(c => c.records ?? 0);
-  const totalBytes = sizes.reduce((a, b) => a + b, 0);
-  const totalRows = rows.reduce((a, b) => a + b, 0);
-  return {
-    chunks: run.chunks.length,
-    rows: totalRows,
-    maxChunkRows: Math.max(0, ...rows),
-    maxChunkBytes: Math.max(0, ...sizes),
-    bytesPerRow: totalRows ? Math.round(totalBytes / totalRows) : 0,
-  };
-}
-
-/**
- * Run every entity in every scenario against one server.
- * `makeInProcess(config)` returns a fresh connector for one chunk.
- */
-export async function runParity({
-  entities,
-  makeInProcess,
-  makeBoxed,
-  server,
-  sourceTs,
-  scenarios = SCENARIOS,
-  concurrency = 6,
-}) {
-  const jobs = [];
-  for (const scenario of scenarios) {
-    for (const entity of entities) jobs.push({ entity, scenario });
-  }
-  const results = [];
-  // The Close emulator, for runs whose requests the cassettes cannot hold.
-  let emulator;
-  const emulated = () =>
-    (emulator ??= import("./dataset.mjs").then(({ buildDataset }) =>
-      startRecordingServer(buildDataset()),
-    ));
-  const work = async ({ entity, scenario }) => {
-    const options = {
-      entity,
-      since: scenario.since,
-      maxIterations: scenario.maxIterations,
-      pageSize: scenario.pageSize,
-    };
-    const limited = scenario.rateLimited ? "_ratelimit" : "";
-    const tag = entity.replace(/[^a-zA-Z0-9_]/g, "-");
-    const inKey = `api_test_inprocess${limited}_${scenario.name}_${tag}`;
-    const folderKey = `api_test_folder${limited}_${scenario.name}_${tag}`;
-    const run = async (side, read) => {
-      try {
-        return await read();
-      } catch (error) {
-        return {
-          rows: [],
-          chunks: [],
-          error: `${side}: ${error instanceof Error ? error.message : String(error)}`,
-        };
-      }
-    };
-    const inProcess = await run("in-process", () =>
-      readInProcess(
-        () => makeInProcess({ api_key: inKey, baseUrl: server.url }),
-        options,
-      ),
-    );
-    inProcess.requests = server.requests(inKey);
-    // Through `SandboxedConnector` when the caller gives one (the API test),
-    // else the SDK runner driven directly (`parity.mjs`).
-    // Schemas are compared on their own: the box path's `discover` reads
-    // every entity's custom fields at once, so it is not part of a read.
-    const rowsOnly = Boolean(scenario.searchRowsOnly && isSearchEntity(entity));
-    const folderServer = rowsOnly ? await emulated() : server;
-    const boxed = makeBoxed?.({
-      api_key: folderKey,
-      __base_url: folderServer.url,
-    });
-    const folder = await run("folder", () =>
-      boxed
-        ? readBoxed(boxed, options)
-        : readFolder({
-            ...options,
-            config: {
-              api_key: folderKey,
-              __base_url: folderServer.url,
-              ...(scenario.pageSize ? { __page_size: scenario.pageSize } : {}),
-            },
-          }),
-    );
-    folder.requests = folderServer.requests(folderKey);
-    const comparison = compareRuns(inProcess, folder, sourceTs, entity);
-    if (rowsOnly) {
-      // Same rows, same order, nothing read twice more than in-process, and
-      // pages of at most `pageSize` (probes ask for 1).
-      const limits = searchLimits(folder.requests);
-      comparison.rowsOnly = true;
-      comparison.pageSizeHonoured =
-        limits.length > 0 &&
-        limits.every(limit => limit <= scenario.pageSize) &&
-        limits.includes(scenario.pageSize);
-      comparison.ok =
-        (comparison.folderOnly?.ok ?? true) &&
-        comparison.rows[0] === comparison.rows[1] &&
-        comparison.duplicates[1] === comparison.duplicates[0] &&
-        comparison.keys &&
-        comparison.order &&
-        comparison.columns &&
-        comparison.checksumMismatches.length === 0 &&
-        comparison.timestampMismatches.length === 0 &&
-        comparison.pageSizeHonoured;
-    }
-    const error = inProcess.error ?? folder.error;
-    results.push({
-      entity,
-      scenario: scenario.name,
-      ...comparison,
-      stats: chunkStats(folder),
-      error,
-      ok: comparison.ok && !error,
-    });
-  };
-  const queue = [...jobs];
-  try {
-    await Promise.all(
-      Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
-        while (queue.length > 0) await work(queue.shift());
-      }),
-    );
-  } finally {
-    if (emulator) await (await emulator).close();
-  }
-  const order = new Map(
-    jobs.map((job, i) => [`${job.scenario.name}/${job.entity}`, i]),
-  );
-  return results.sort(
-    (a, b) =>
-      order.get(`${a.scenario}/${a.entity}`) -
-      order.get(`${b.scenario}/${b.entity}`),
-  );
-}
-
-/** `check` on both sides, with a working key and a revoked one. */
-export async function checkParity({ makeInProcess, server }) {
-  const outcomes = [];
-  for (const variant of ["valid", "revoked"]) {
-    const suffix = variant === "revoked" ? "_revoked" : "";
-    const inKey = `api_test_inprocess_check${suffix}`;
-    const folderKey = `api_test_folder_check${suffix}`;
-    const inResult = await makeInProcess({
-      api_key: inKey,
-      baseUrl: server.url,
-    }).testConnection();
-    const folderRun = await runFolderCommand("check", {
-      config: { api_key: folderKey, __base_url: server.url },
-    });
-    const status = folderRun.messages.find(
-      m => m.type === "CONNECTION_STATUS",
-    )?.connectionStatus;
-    outcomes.push({
-      variant,
-      inProcess: inResult.success,
-      folder: status?.status === "SUCCEEDED",
-      folderMessage: status?.message,
-      requestsEqual: sameList(
-        server.requests(inKey),
-        server.requests(folderKey),
-      ),
-    });
-  }
-  return outcomes;
-}
-
-/** A plain-text table, one row per entity, one column group per scenario. */
-export function formatReport(results) {
-  const scenarios = [...new Set(results.map(r => r.scenario))];
-  const entities = [...new Set(results.map(r => r.entity))];
-  const header = [
-    "entity",
-    ...scenarios.map(s => `${s}: rows in/folder, chunks, requests, result`),
-  ];
-  const lines = [header.join(" | ")];
-  for (const entity of entities) {
-    const cells = [entity];
-    for (const scenario of scenarios) {
-      const r = results.find(
-        x => x.entity === entity && x.scenario === scenario,
-      );
-      if (!r) {
-        cells.push("-");
-        continue;
-      }
-      const problems = [];
-      if (!r.keys) problems.push("keys");
-      if (!r.order) problems.push("order");
-      if (!r.columns) problems.push("columns");
-      if (r.checksumMismatches.length)
-        problems.push(`${r.checksumMismatches.length} checksums`);
-      if (r.timestampMismatches.length)
-        problems.push(`${r.timestampMismatches.length} source timestamps`);
-      if (r.duplicates[1] !== r.duplicates[0])
-        problems.push(`${r.duplicates[1]}/${r.duplicates[0]} duplicates`);
-      if (r.rowsOnly) {
-        if (!r.pageSizeHonoured) problems.push("page size");
-      } else {
-        if (!r.chunkStates) problems.push("chunk states");
-        if (!r.requestsEqual) problems.push("requests");
-      }
-      if (r.folderOnly && !r.folderOnly.ok) problems.push("folder-only extras");
-      if (r.error) problems.push(`error (${r.error})`);
-      const extras = r.folderOnly
-        ? ` (+${r.folderOnly.rows} rows, +${r.folderOnly.columns.length} columns, +${r.folderOnly.requests} requests folder-only)`
-        : "";
-      cells.push(
-        `${r.rows[0]}/${r.rows[1]}, ${r.chunks[0]}/${r.chunks[1]}, ${r.requests[0]}/${r.requests[1]}, ${r.ok ? (r.rowsOnly ? "same rows" : "match") : `DIFF ${problems.join(", ")}`}${extras}`,
-      );
-    }
-    lines.push(cells.join(" | "));
-  }
-  return lines.join("\n");
-}
-
-/** Pages, chunks and bytes per entity in the default scenario. */
-export function formatScale(results, scenario = "default") {
-  const lines = [
-    "entity | rows | chunks | requests | max rows/chunk | max bytes/chunk | bytes/row",
-  ];
-  for (const r of results.filter(x => x.scenario === scenario)) {
-    const s = r.stats;
-    lines.push(
-      `${r.entity} | ${s.rows} | ${s.chunks} | ${r.requests[1]} | ${s.maxChunkRows} | ${s.maxChunkBytes} | ${s.bytesPerRow}`,
-    );
-  }
-  return lines.join("\n");
-}
-
-// ---------------------------------------------------------------------------
-// Schemas and the credential form
-// ---------------------------------------------------------------------------
-
-/**
- * The in-process `ConnectorEntitySchema` against the folder's stream as the
- * engine translates it. Fields in `ignore` (Mako's system columns) are left
- * out. The in-process Close schemas declare no key columns, so the engine
- * merges on its default `["id"]`; the folder declares `["id"]`. The
- * folder's `FOLDER_ONLY` schema fields are left out of its side, and must be
- * there.
- */
-export function compareEntitySchema(inProcess, folder, ignore = new Set()) {
-  const names = schema =>
-    Object.keys(schema?.fields ?? {})
-      .filter(name => !ignore.has(name))
-      .sort();
-  const folderOnly =
-    FOLDER_ONLY[inProcess?.entity ?? folder?.entity]?.schemaFields ?? [];
-  const inNames = names(inProcess);
-  const folderNames = names(folder).filter(name => !folderOnly.includes(name));
-  const folderOnlyMissing = folderOnly.filter(
-    name => !(name in (folder?.fields ?? {})),
-  );
-  const nullable = field => field.nullable ?? !field.required;
-  const fieldDiffs = [];
-  for (const name of inNames) {
-    const a = inProcess.fields[name];
-    const b = folder?.fields?.[name];
-    if (!b) continue;
-    if (a.type !== b.type)
-      fieldDiffs.push(`${name}: type ${a.type} vs ${b.type}`);
-    if (nullable(a) !== nullable(b))
-      fieldDiffs.push(`${name}: nullable ${nullable(a)} vs ${nullable(b)}`);
-    if (Boolean(a.required) !== Boolean(b.required))
-      fieldDiffs.push(
-        `${name}: required ${Boolean(a.required)} vs ${Boolean(b.required)}`,
-      );
-  }
-  const missing = inNames.filter(name => !folderNames.includes(name));
-  const extra = folderNames.filter(name => !inNames.includes(name));
-  const keyColumns =
-    canonicalJson(inProcess?.keyColumns ?? ["id"]) ===
-    canonicalJson(folder?.keyColumns);
-  const policy = inProcess?.unknownFieldPolicy === folder?.unknownFieldPolicy;
-  return {
-    fields: [inNames.length, folderNames.length],
-    customFields: inNames.filter(name => name.startsWith("custom_cf_")).length,
-    missing,
-    extra,
-    fieldDiffs,
-    keyColumns,
-    policy,
-    folderOnlyMissing,
-    ok:
-      folderOnlyMissing.length === 0 &&
-      missing.length === 0 &&
-      extra.length === 0 &&
-      fieldDiffs.length === 0 &&
-      keyColumns &&
-      policy,
-  };
-}
-
-/** `getConfigSchema().fields` against the form built from the folder's spec. */
-export function compareForm(inProcessFields, folderFields) {
-  const shape = field => ({
-    name: field.name,
-    label: field.label,
-    type: field.type,
-    required: Boolean(field.required),
-    default: field.default,
-    helperText: field.helperText,
-  });
-  const a = inProcessFields.map(shape);
-  const b = folderFields.map(shape);
-  return { ok: canonicalJson(a) === canonicalJson(b), inProcess: a, folder: b };
-}
-
 // ---------------------------------------------------------------------------
 // Webhooks
 // ---------------------------------------------------------------------------
@@ -1228,101 +677,4 @@ export function runFolderWebhook(input) {
       else resolve(JSON.parse(stdout));
     });
   });
-}
-
-/** The in-process connector's answer for the same batch, same shape. */
-export function inProcessWebhookOutcomes(connector, events) {
-  return events.map(({ eventId, eventType, rawPayload }) => {
-    if (!connector.getWebhookEventMapping(eventType)) {
-      return { eventId, outcome: "unmapped" };
-    }
-    const records = (
-      connector.extractWebhookCdcRecords(rawPayload, eventType) ?? []
-    ).filter(Boolean);
-    if (records.length === 0) return { eventId, outcome: "extract_failed" };
-    return {
-      eventId,
-      outcome: "records",
-      records: records.map(record => ({
-        ...record,
-        sourceTs: record.sourceTs.toISOString(),
-      })),
-    };
-  });
-}
-
-/**
- * Webhook parity: the subscribed events, the signature checks and the
- * change records of every event, in-process against the folder.
- */
-export async function webhookParity({ connector, events, deliveries }) {
-  const folder = await runFolderWebhook({
-    verify: deliveries.map(({ payload, headers, secret }) => ({
-      payload,
-      headers,
-      secret,
-    })),
-    events,
-  });
-  const inEvents = connector.getSupportedWebhookEvents();
-  const inVerify = await Promise.all(
-    deliveries.map(({ payload, headers, secret }) =>
-      connector.verifyWebhook({ payload, headers, secret, query: {} }),
-    ),
-  );
-  const verify = deliveries.map((delivery, i) => ({
-    name: delivery.name,
-    inProcess: inVerify[i].valid,
-    folder: folder.verify[i].valid,
-    same:
-      canonicalJson({ ...inVerify[i] }) ===
-      canonicalJson({ ...folder.verify[i] }),
-  }));
-  const inOutcomes = inProcessWebhookOutcomes(connector, events);
-  const outcomes = events.map((event, i) => ({
-    eventId: event.eventId,
-    eventType: event.eventType,
-    outcome: inOutcomes[i].outcome,
-    records: inOutcomes[i].records?.length ?? 0,
-    same: canonicalJson(inOutcomes[i]) === canonicalJson(folder.outcomes[i]),
-  }));
-  return {
-    eventsSame: sameList(inEvents, folder.events),
-    eventCount: inEvents.length,
-    verify,
-    outcomes,
-    ok:
-      sameList(inEvents, folder.events) &&
-      verify.every(v => v.same) &&
-      outcomes.every(o => o.same),
-  };
-}
-
-/**
- * A factory of in-process connectors pointed at `baseUrl`. The connector has
- * no base-URL setting, so its axios client is built here with the real
- * `createCloseClient` (retry policy and rate gate included) and aimed at
- * the fixture server. Waits are stubbed; the request sequence is not.
- */
-export function inProcessFactory({ CloseConnector, createCloseClient }) {
-  return ({ api_key, baseUrl }) => {
-    const connector = new CloseConnector({
-      id: "ds_parity",
-      name: "Close parity",
-      type: "close",
-      config: { api_key },
-    });
-    connector.sleep = async () => {};
-    if (baseUrl) {
-      const client = createCloseClient({
-        apiKey: api_key,
-        minDelayMs: 0,
-        emitLog: () => {},
-        sleep: async () => {},
-      });
-      client.defaults.baseURL = baseUrl;
-      connector.closeApi = client;
-    }
-    return connector;
-  };
 }

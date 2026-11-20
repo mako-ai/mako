@@ -66,10 +66,8 @@ connectors/
 │   ├── incremental.ts       # Date windows, the client-side `since` filter
 │   └── webhook-signature.ts # Raw body, HMAC, constant-time compare
 ├── stripe/
-├── close/
 ├── claap/
 ├── calendly/
-├── posthog/
 ├── rest/
 ├── registry.ts              # Runtime connector discovery for the API server
 └── README.md               # This file
@@ -168,20 +166,9 @@ table of connectors and entities. Summary:
 - Required config: `api_key`
 - Supports backfill and CDC webhooks (auto-provisioning)
 
-### Close
-
-- Syncs CRM data from Close
-- Supported entities: leads, opportunities, activities (10+ sub-types), contacts, users, custom_fields
-- Required config: `api_key`
-
 ### Claap, Calendly
 
 - Fixed-entity connectors with backfill + CDC webhook support (auto-provisioned where the provider allows it)
-
-### PostHog
-
-- Hybrid connector: built-in REST entities (surveys, survey_responses, feature_flags, experiments, annotations) plus dynamic HogQL query entities configured on the Flow
-- Required config: `project_id`, `api_key`
 
 ### GraphQL
 

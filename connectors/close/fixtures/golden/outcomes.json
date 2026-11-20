@@ -1,0 +1,62 @@
+[
+  {
+    "applies_to": [
+      "calls",
+      "meetings"
+    ],
+    "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "date_created": "2024-02-01T08:00:00.000000+00:00",
+    "date_updated": "2024-02-01T08:00:00.000000+00:00",
+    "description": null,
+    "id": "outcome_SD9hiQAIj3x0YfSN80yQ5OGfcgOTgC6XSD9hiQAIj",
+    "name": "Interested",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "type": "custom",
+    "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+  },
+  {
+    "applies_to": [
+      "calls",
+      "meetings"
+    ],
+    "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "date_created": "2024-02-02T08:00:00.000000+00:00",
+    "date_updated": "2024-02-02T08:00:00.000000+00:00",
+    "description": null,
+    "id": "outcome_b5N7tCiHXKuSBeOVmY87nNJj3D5t15ESb5N7tCiHX",
+    "name": "No answer",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "type": "custom",
+    "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+  },
+  {
+    "applies_to": [
+      "calls",
+      "meetings"
+    ],
+    "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "date_created": "2024-02-03T08:00:00.000000+00:00",
+    "date_updated": "2024-02-03T08:00:00.000000+00:00",
+    "description": null,
+    "id": "outcome_zBHF5DUU117KoQxWkL6YvLZwTgEZAChozBHF5DUU1",
+    "name": "Call back",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "type": "custom",
+    "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+  },
+  {
+    "applies_to": [
+      "calls",
+      "meetings"
+    ],
+    "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "date_created": "2024-02-04T08:00:00.000000+00:00",
+    "date_updated": "2024-02-04T08:00:00.000000+00:00",
+    "description": null,
+    "id": "outcome_rRy2Ly1XoxnN8TKWuNq0vGqExn9T5fIurRy2Ly1Xo",
+    "name": "Not interested",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "type": "custom",
+    "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+  }
+]

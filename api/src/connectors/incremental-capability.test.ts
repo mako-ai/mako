@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import { StripeConnector } from "./stripe/connector";
-import { CloseConnector } from "./close/connector";
 import { ClaapConnector } from "./claap/connector";
 import { CalendlyConnector } from "./calendly/connector";
 import { RestConnector } from "./rest/connector";
-import { PosthogConnector } from "./posthog/connector";
 import {
   BaseConnector,
   type IncrementalCapabilities,
@@ -72,16 +70,6 @@ const connectors: Array<{
       } as any),
   },
   {
-    label: "close",
-    make: () =>
-      new CloseConnector({
-        id: "ds_close",
-        name: "Close",
-        type: "close",
-        config: { api_key: "test-key" },
-      } as any),
-  },
-  {
     label: "claap",
     make: () =>
       new ClaapConnector({
@@ -117,16 +105,6 @@ const connectors: Array<{
         config: {},
       } as any),
   },
-  {
-    label: "posthog",
-    make: () =>
-      new PosthogConnector({
-        id: "ds_posthog",
-        name: "PostHog",
-        type: "posthog",
-        config: {},
-      } as any),
-  },
 ];
 
 function capabilitiesFor(label: string): IncrementalCapabilities {
@@ -140,19 +118,6 @@ function testEveryConnectorReturnsWellFormedCapabilities() {
     const capabilities = make().getIncrementalCapabilities();
     assertWellFormed(label, capabilities);
   }
-}
-
-function testPosthogDeclaresNativeSincePlaceholder() {
-  const posthog = capabilitiesFor("posthog");
-  assert.equal(posthog.supported, true);
-  assert.equal(posthog.mode, "native");
-  assert.equal(posthog.anchorField, "$since");
-  assert.ok(posthog.warning && posthog.warning.includes("$since"));
-  assert.equal(posthog.perEntity?.surveys?.mode, "created-anchor");
-  assert.equal(posthog.perEntity?.survey_responses?.mode, "native");
-  assert.equal(posthog.perEntity?.feature_flags?.mode, "created-anchor");
-  assert.equal(posthog.perEntity?.experiments?.mode, "created-anchor");
-  assert.equal(posthog.perEntity?.annotations?.mode, "created-anchor");
 }
 
 function testCreatedAnchorConnectorsWarnAboutMissedUpdates() {
@@ -169,69 +134,10 @@ function testCreatedAnchorConnectorsWarnAboutMissedUpdates() {
   assert.equal(claap.perEntity?.recordings?.mode, "created-anchor");
 }
 
-function testCloseSearchApiEntitiesDeclareNative() {
-  const close = capabilitiesFor("close");
-  assert.equal(close.mode, "native");
-  assert.equal(close.perEntity?.leads?.mode, "native");
-  assert.equal(close.perEntity?.leads?.anchorField, "date_updated");
-  assert.equal(close.perEntity?.users?.mode, "native");
-  assert.equal(close.perEntity?.groups?.mode, "none");
-}
-
 function testRestDeclaresClientFilterWithWarning() {
   const rest = capabilitiesFor("rest");
   assert.equal(rest.mode, "client-filter");
   assert.ok(rest.warning && rest.warning.length > 0);
-}
-
-async function testCloseSearchApiUsesDateUpdatedWhenSinceSet() {
-  const connector = new CloseConnector({
-    id: "ds_close",
-    name: "Close",
-    type: "close",
-    config: { api_key: "test-key" },
-  } as any);
-
-  const bodies: any[] = [];
-  (connector as any).closeApi = {
-    post: async (_path: string, body: any) => {
-      bodies.push(body);
-      // Oldest/count probes and window pages
-      if (body.include_counts) {
-        return { data: { count: { total: 0 } } };
-      }
-      return {
-        data: {
-          data: [
-            {
-              id: "lead_1",
-              date_created: "2026-07-01T00:00:00.000Z",
-              date_updated: "2026-07-16T00:00:00.000Z",
-            },
-          ],
-          cursor: null,
-        },
-      };
-    },
-    get: async () => ({ data: { data: [] } }),
-  };
-
-  await connector.fetchEntityChunk({
-    entity: "leads",
-    since: new Date("2026-07-15T00:00:00.000Z"),
-    maxIterations: 1,
-    onBatch: async () => {},
-  } as any);
-
-  const windowed = bodies.find(body =>
-    body?.query?.queries?.some(
-      (q: any) =>
-        q?.type === "field_condition" &&
-        q?.field?.field_name === "date_updated",
-    ),
-  );
-  assert.ok(windowed, "expected Search body to filter on date_updated");
-  assert.equal(windowed.sort?.[0]?.field?.field_name, "date_updated");
 }
 
 async function testStripeCreatedGteWhenSinceSet() {
@@ -264,10 +170,7 @@ async function testStripeCreatedGteWhenSinceSet() {
 
 async function main() {
   testEveryConnectorReturnsWellFormedCapabilities();
-  testPosthogDeclaresNativeSincePlaceholder();
   testCreatedAnchorConnectorsWarnAboutMissedUpdates();
-  testCloseSearchApiEntitiesDeclareNative();
-  await testCloseSearchApiUsesDateUpdatedWhenSinceSet();
   await testStripeCreatedGteWhenSinceSet();
   testRestDeclaresClientFilterWithWarning();
 }

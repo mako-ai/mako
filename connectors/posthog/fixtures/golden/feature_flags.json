@@ -1,0 +1,401 @@
+[
+  {
+    "active": true,
+    "analytics_dashboards": [],
+    "can_edit": true,
+    "created_at": "2026-10-22T15:52:15.000000Z",
+    "created_by": {
+      "distinct_id": "user_1",
+      "email": "ana@example.com",
+      "first_name": "Ana",
+      "hedgehog_config": null,
+      "id": 1,
+      "is_email_verified": true,
+      "last_name": "",
+      "role_at_organization": "product",
+      "uuid": "0188aa00-0000-0000-0000-000000000001"
+    },
+    "deleted": false,
+    "ensure_experience_continuity": false,
+    "experiment_set": [],
+    "features": [],
+    "filters": {
+      "groups": [
+        {
+          "properties": [],
+          "rollout_percentage": 50,
+          "variant": null
+        }
+      ],
+      "multivariate": null,
+      "payloads": {}
+    },
+    "has_enriched_analytics": false,
+    "id": 4,
+    "is_simple_flag": true,
+    "key": "flag-4",
+    "last_modified_by": {
+      "distinct_id": "user_2",
+      "email": "marc@example.com",
+      "first_name": "Marc",
+      "hedgehog_config": null,
+      "id": 2,
+      "is_email_verified": true,
+      "last_name": "",
+      "role_at_organization": "product",
+      "uuid": "0188aa00-0000-0000-0000-000000000002"
+    },
+    "name": "Flag 4",
+    "performed_rollback": false,
+    "rollback_conditions": null,
+    "rollout_percentage": 50,
+    "status": "ACTIVE",
+    "surveys": [],
+    "tags": [],
+    "usage_dashboard": 1004,
+    "user_access_level": "editor",
+    "version": 1
+  },
+  {
+    "active": true,
+    "analytics_dashboards": [],
+    "can_edit": true,
+    "created_at": "2026-10-06T04:52:53.000000Z",
+    "created_by": {
+      "distinct_id": "user_1",
+      "email": "ana@example.com",
+      "first_name": "Ana",
+      "hedgehog_config": null,
+      "id": 1,
+      "is_email_verified": true,
+      "last_name": "",
+      "role_at_organization": "product",
+      "uuid": "0188aa00-0000-0000-0000-000000000001"
+    },
+    "deleted": false,
+    "ensure_experience_continuity": false,
+    "experiment_set": [],
+    "features": [],
+    "filters": {
+      "groups": [
+        {
+          "properties": [],
+          "rollout_percentage": 50,
+          "variant": null
+        }
+      ],
+      "multivariate": null,
+      "payloads": {}
+    },
+    "has_enriched_analytics": false,
+    "id": 2,
+    "is_simple_flag": true,
+    "key": "flag-2",
+    "last_modified_by": {
+      "distinct_id": "user_2",
+      "email": "marc@example.com",
+      "first_name": "Marc",
+      "hedgehog_config": null,
+      "id": 2,
+      "is_email_verified": true,
+      "last_name": "",
+      "role_at_organization": "product",
+      "uuid": "0188aa00-0000-0000-0000-000000000002"
+    },
+    "name": "Flag 2",
+    "performed_rollback": false,
+    "rollback_conditions": null,
+    "rollout_percentage": 50,
+    "status": "ACTIVE",
+    "surveys": [],
+    "tags": [],
+    "usage_dashboard": 1002,
+    "user_access_level": "editor",
+    "version": 1
+  },
+  {
+    "active": true,
+    "analytics_dashboards": [],
+    "can_edit": true,
+    "created_at": "2026-04-02T16:26:35.000000Z",
+    "created_by": {
+      "distinct_id": "user_2",
+      "email": "marc@example.com",
+      "first_name": "Marc",
+      "hedgehog_config": null,
+      "id": 2,
+      "is_email_verified": true,
+      "last_name": "",
+      "role_at_organization": "product",
+      "uuid": "0188aa00-0000-0000-0000-000000000002"
+    },
+    "deleted": false,
+    "ensure_experience_continuity": false,
+    "experiment_set": [],
+    "features": [],
+    "filters": {
+      "groups": [
+        {
+          "properties": [],
+          "rollout_percentage": 50,
+          "variant": null
+        }
+      ],
+      "multivariate": null,
+      "payloads": {}
+    },
+    "has_enriched_analytics": false,
+    "id": 5,
+    "is_simple_flag": true,
+    "key": "flag-5",
+    "last_modified_by": {
+      "distinct_id": "user_1",
+      "email": "ana@example.com",
+      "first_name": "Ana",
+      "hedgehog_config": null,
+      "id": 1,
+      "is_email_verified": true,
+      "last_name": "",
+      "role_at_organization": "product",
+      "uuid": "0188aa00-0000-0000-0000-000000000001"
+    },
+    "name": "Flag 5",
+    "performed_rollback": false,
+    "rollback_conditions": null,
+    "rollout_percentage": 50,
+    "status": "ACTIVE",
+    "surveys": [],
+    "tags": [],
+    "usage_dashboard": 1005,
+    "user_access_level": "editor",
+    "version": 1
+  },
+  {
+    "active": false,
+    "analytics_dashboards": [],
+    "can_edit": true,
+    "created_at": "2026-01-26T10:44:47.000000Z",
+    "created_by": {
+      "distinct_id": "user_2",
+      "email": "marc@example.com",
+      "first_name": "Marc",
+      "hedgehog_config": null,
+      "id": 2,
+      "is_email_verified": true,
+      "last_name": "",
+      "role_at_organization": "product",
+      "uuid": "0188aa00-0000-0000-0000-000000000002"
+    },
+    "deleted": false,
+    "ensure_experience_continuity": false,
+    "experiment_set": [],
+    "features": [],
+    "filters": {
+      "groups": [
+        {
+          "properties": [],
+          "rollout_percentage": 50,
+          "variant": null
+        }
+      ],
+      "multivariate": null,
+      "payloads": {}
+    },
+    "has_enriched_analytics": false,
+    "id": 3,
+    "is_simple_flag": true,
+    "key": "flag-3",
+    "last_modified_by": {
+      "distinct_id": "user_1",
+      "email": "ana@example.com",
+      "first_name": "Ana",
+      "hedgehog_config": null,
+      "id": 1,
+      "is_email_verified": true,
+      "last_name": "",
+      "role_at_organization": "product",
+      "uuid": "0188aa00-0000-0000-0000-000000000001"
+    },
+    "name": "Flag 3",
+    "performed_rollback": false,
+    "rollback_conditions": null,
+    "rollout_percentage": 50,
+    "status": "ACTIVE",
+    "surveys": [],
+    "tags": [],
+    "usage_dashboard": 1003,
+    "user_access_level": "editor",
+    "version": 1
+  },
+  {
+    "active": false,
+    "analytics_dashboards": [],
+    "can_edit": true,
+    "created_at": "2025-08-11T11:10:09.000000Z",
+    "created_by": {
+      "distinct_id": "user_1",
+      "email": "ana@example.com",
+      "first_name": "Ana",
+      "hedgehog_config": null,
+      "id": 1,
+      "is_email_verified": true,
+      "last_name": "",
+      "role_at_organization": "product",
+      "uuid": "0188aa00-0000-0000-0000-000000000001"
+    },
+    "deleted": false,
+    "ensure_experience_continuity": false,
+    "experiment_set": [],
+    "features": [],
+    "filters": {
+      "groups": [
+        {
+          "properties": [],
+          "rollout_percentage": 50,
+          "variant": null
+        }
+      ],
+      "multivariate": null,
+      "payloads": {}
+    },
+    "has_enriched_analytics": false,
+    "id": 6,
+    "is_simple_flag": true,
+    "key": "flag-6",
+    "last_modified_by": {
+      "distinct_id": "user_2",
+      "email": "marc@example.com",
+      "first_name": "Marc",
+      "hedgehog_config": null,
+      "id": 2,
+      "is_email_verified": true,
+      "last_name": "",
+      "role_at_organization": "product",
+      "uuid": "0188aa00-0000-0000-0000-000000000002"
+    },
+    "name": "Flag 6",
+    "performed_rollback": false,
+    "rollback_conditions": null,
+    "rollout_percentage": 50,
+    "status": "ACTIVE",
+    "surveys": [],
+    "tags": [],
+    "usage_dashboard": 1006,
+    "user_access_level": "editor",
+    "version": 1
+  },
+  {
+    "active": true,
+    "analytics_dashboards": [],
+    "can_edit": true,
+    "created_at": "2025-06-28T12:58:53.000000Z",
+    "created_by": {
+      "distinct_id": "user_2",
+      "email": "marc@example.com",
+      "first_name": "Marc",
+      "hedgehog_config": null,
+      "id": 2,
+      "is_email_verified": true,
+      "last_name": "",
+      "role_at_organization": "product",
+      "uuid": "0188aa00-0000-0000-0000-000000000002"
+    },
+    "deleted": false,
+    "ensure_experience_continuity": false,
+    "experiment_set": [],
+    "features": [],
+    "filters": {
+      "groups": [
+        {
+          "properties": [],
+          "rollout_percentage": 50,
+          "variant": null
+        }
+      ],
+      "multivariate": null,
+      "payloads": {}
+    },
+    "has_enriched_analytics": false,
+    "id": 1,
+    "is_simple_flag": true,
+    "key": "flag-1",
+    "last_modified_by": {
+      "distinct_id": "user_1",
+      "email": "ana@example.com",
+      "first_name": "Ana",
+      "hedgehog_config": null,
+      "id": 1,
+      "is_email_verified": true,
+      "last_name": "",
+      "role_at_organization": "product",
+      "uuid": "0188aa00-0000-0000-0000-000000000001"
+    },
+    "name": "Flag 1",
+    "performed_rollback": false,
+    "rollback_conditions": null,
+    "rollout_percentage": 50,
+    "status": "ACTIVE",
+    "surveys": [],
+    "tags": [],
+    "usage_dashboard": 1001,
+    "user_access_level": "editor",
+    "version": 1
+  },
+  {
+    "active": true,
+    "analytics_dashboards": [],
+    "can_edit": true,
+    "created_at": "2025-06-27T18:13:00.000000Z",
+    "created_by": {
+      "distinct_id": "user_2",
+      "email": "marc@example.com",
+      "first_name": "Marc",
+      "hedgehog_config": null,
+      "id": 2,
+      "is_email_verified": true,
+      "last_name": "",
+      "role_at_organization": "product",
+      "uuid": "0188aa00-0000-0000-0000-000000000002"
+    },
+    "deleted": false,
+    "ensure_experience_continuity": false,
+    "experiment_set": [],
+    "features": [],
+    "filters": {
+      "groups": [
+        {
+          "properties": [],
+          "rollout_percentage": 50,
+          "variant": null
+        }
+      ],
+      "multivariate": null,
+      "payloads": {}
+    },
+    "has_enriched_analytics": false,
+    "id": 7,
+    "is_simple_flag": true,
+    "key": "flag-7",
+    "last_modified_by": {
+      "distinct_id": "user_1",
+      "email": "ana@example.com",
+      "first_name": "Ana",
+      "hedgehog_config": null,
+      "id": 1,
+      "is_email_verified": true,
+      "last_name": "",
+      "role_at_organization": "product",
+      "uuid": "0188aa00-0000-0000-0000-000000000001"
+    },
+    "name": "Flag 7",
+    "performed_rollback": false,
+    "rollback_conditions": null,
+    "rollout_percentage": 50,
+    "status": "ACTIVE",
+    "surveys": [],
+    "tags": [],
+    "usage_dashboard": 1007,
+    "user_access_level": "editor",
+    "version": 1
+  }
+]

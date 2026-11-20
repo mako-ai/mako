@@ -1,0 +1,68 @@
+[
+  {
+    "api_create_only": false,
+    "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "date_created": "2024-03-01T08:00:00.000000+00:00",
+    "date_updated": "2024-03-01T08:00:00.000000+00:00",
+    "description": null,
+    "editable_with_roles": [],
+    "fields": [
+      {
+        "id": "cf_pFENWLuqjoD6XhY8FSvBPf9KySoiOlsTpFENWLuqj"
+      },
+      {
+        "id": "cf_fq04OecgkYPT53tszrDxn1NKkRzXFN5afq04Oecgk"
+      }
+    ],
+    "id": "actitype_TnOtn2l4Mcxie1F30Tfiz7UF8ZSPO53tTnOtn2l4M",
+    "is_archived": false,
+    "name": "Custom activity 1",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "role_permissions": null,
+    "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+  },
+  {
+    "api_create_only": false,
+    "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "date_created": "2024-03-02T08:00:00.000000+00:00",
+    "date_updated": "2024-03-02T08:00:00.000000+00:00",
+    "description": null,
+    "editable_with_roles": [],
+    "fields": [
+      {
+        "id": "cf_GzHbRpWQDQuYjOQ3m50tEzsQwklcfhggGzHbRpWQD"
+      },
+      {
+        "id": "cf_lNhBiHaYyd95KctPesj3Zlx5zBL8pAYKlNhBiHaYy"
+      }
+    ],
+    "id": "actitype_KzJM7cJegeHRUuSplkFGdolWs93pl6HqKzJM7cJeg",
+    "is_archived": false,
+    "name": "Custom activity 2",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "role_permissions": null,
+    "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+  },
+  {
+    "api_create_only": false,
+    "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "date_created": "2024-03-03T08:00:00.000000+00:00",
+    "date_updated": "2024-03-03T08:00:00.000000+00:00",
+    "description": null,
+    "editable_with_roles": [],
+    "fields": [
+      {
+        "id": "cf_WbV0SbJ5lz1khjaj8d9KnuDOSe37FCV8WbV0SbJ5l"
+      },
+      {
+        "id": "cf_gVsECuuOmASvCFSc2Dl1KogiTv4MMXQxgVsECuuOm"
+      }
+    ],
+    "id": "actitype_ECj1wLGCN5KSE5dBDjmXRzNkT017blANECj1wLGCN",
+    "is_archived": false,
+    "name": "Custom activity 3",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "role_permissions": null,
+    "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+  }
+]

@@ -40,7 +40,7 @@ export interface ConnectorType {
 
 export interface ConnectorSchemaResponse {
   fields: Array<any>;
-  /** Schema for transfer-level queries (for connectors like GraphQL/PostHog) */
+  /** Schema for transfer-level queries (for connectors like GraphQL) */
   transferQueries?: {
     label: string;
     required: boolean;

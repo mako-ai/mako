@@ -1,14 +1,15 @@
 /**
  * PostHog on @makoai/connector-sdk: `spec`, `check`, `discover` and `read`.
  *
- * A port of the in-process connector in `api/src/connectors/posthog/`, with
- * its 5 built-in REST entities, the same schemas, offsets, pagination and
- * `since` handling. Nothing runs it in production yet. `fixtures/parity.mjs`
- * runs both against the same recorded PostHog responses and compares them
- * entity by entity.
+ * A port of the in-process connector (deleted), with its 5 REST entities,
+ * schemas, offsets, pagination and `since` handling. Production runs it on
+ * the shadow of the posthog-crm-bigquery-write flow. `fixtures/golden/` holds
+ * the rows it reads from the recorded PostHog responses (default, `since` and
+ * one-request chunks), checked byte for byte by
+ * `api/src/connectors/posthog-folder.test.ts`.
  *
- * Read state mirrors the in-process `FetchState`, so a chunk boundary means
- * the same thing on both sides:
+ * Read state keeps the in-process `FetchState` shape, so a chunk boundary
+ * means what it did there:
  * - list entities (surveys, feature flags, experiments, annotations):
  *   `{ offset }`, the in-process `FetchState.offset`;
  * - `survey_responses`: `{ surveyOffset, responseOffset, currentSurveyId,

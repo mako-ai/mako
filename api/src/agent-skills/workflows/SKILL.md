@@ -223,7 +223,7 @@ Paths are relative to the base URL and cannot leave it. `get`/`post`/`put`/
 `body`) at 400 or more; `request(method, path, body)` returns `{ status,
 headers, body }` at any status. GraphQL: `post("/", { query, variables })`.
 
-GETs, GraphQL queries and Close searches are reads: on once a manager turns
+GETs and GraphQL queries are reads: on once a manager turns
 live reads on in the connection's Access tab (every connection starts off).
 A GraphQL document with the word `mutation` or `subscription` anywhere, even
 in a string or comment, is a write. Anything else is a write: it needs the

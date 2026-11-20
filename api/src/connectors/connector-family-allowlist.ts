@@ -11,9 +11,7 @@
 export const ALLOWED_FAMILIES_IMPORTED_FROM_OUTSIDE: readonly string[] = [
   "calendly",
   "claap",
-  "close",
   "custom_api",
-  "posthog",
   "rest",
   "stripe",
 ];

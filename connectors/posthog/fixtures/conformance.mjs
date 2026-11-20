@@ -5,7 +5,7 @@
  * It starts the replay server, points `api_base_url` at it with a test key,
  * and runs the CLI exactly as an author would. A request the cassettes do not
  * hold fails the read, so this also proves the conformance run sends only
- * requests the in-process connector sent when the cassettes were recorded.
+ * requests the cassettes hold (recorded with `golden.mjs --record`).
  *
  *   node connectors/posthog/fixtures/conformance.mjs
  */

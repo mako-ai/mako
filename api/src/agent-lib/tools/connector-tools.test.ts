@@ -160,7 +160,7 @@ beforeEach(async () => {
   await SourceConnection.create({
     workspaceId: new Types.ObjectId(),
     name: "theirs",
-    type: "close",
+    type: "calendly",
     config: { api_key: encryptString("theirs_" + SECRET) },
     isActive: true,
     settings: { rate_limit_delay_ms: 100, sync_batch_size: 100 },
@@ -217,8 +217,8 @@ describe("vocabulary: connectors are code, connections are credentials", () => {
     ]);
     // Configured elsewhere, so unconfigured here — and the stranger's row
     // is not attached to it.
-    const close = result.connectors.find(c => c.connector === "close");
-    expect(close?.connections).toEqual([]);
+    const calendly = result.connectors.find(c => c.connector === "calendly");
+    expect(calendly?.connections).toEqual([]);
     expect(JSON.stringify(result)).not.toContain(SECRET);
   });
 
@@ -474,14 +474,14 @@ describe("call_connection: a named operation instead of a path", () => {
     proxied.body = { data: [] };
     const result = await tools().call_connection.execute({
       connectionId: "fr_close",
-      operation: "search_leads",
+      operation: "search_customers",
       params: { query: "Dupont" },
     });
     expect(result.status).toBe(200);
     expect(proxied.calls[0]).toMatchObject({
       workspaceId: WS,
       connection: "fr_close",
-      operation: { name: "search_leads", params: { query: "Dupont" } },
+      operation: { name: "search_customers", params: { query: "Dupont" } },
       readOnly: true,
       agentBudget: true,
     });
@@ -515,7 +515,7 @@ describe("call_connection: a named operation instead of a path", () => {
     ]) {
       const result = await tools().call_connection.execute({
         connectionId: "fr_close",
-        operation: "search_leads",
+        operation: "search_customers",
         params: { query: "Dupont" },
         ...raw,
       });
