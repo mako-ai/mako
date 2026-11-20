@@ -11,7 +11,7 @@ export interface IWebhookEvent extends Document {
   eventType: string; // e.g., "customer.updated"
   receivedAt: Date;
   processedAt?: Date;
-  status: "pending" | "processing" | "completed" | "failed";
+  status: "pending" | "processing" | "completed" | "failed" | "dormant";
   attempts: number;
   error?: {
     message: string;
@@ -24,7 +24,7 @@ export interface IWebhookEvent extends Document {
   entity?: string;
   operation?: "upsert" | "delete";
   recordId?: string;
-  applyStatus?: "pending" | "applied" | "failed" | "dropped";
+  applyStatus?: "pending" | "applied" | "failed" | "dropped" | "dormant";
   appliedAt?: Date;
   applyAttempts?: number;
   applyError?: {
@@ -37,7 +37,7 @@ export interface IWebhookEvent extends Document {
    * Absent for every other event.
    */
   lane?: "box";
-  /** The connection a box-lane event was verified for. */
+  /** The connection a box-lane or dormant event was verified for. */
   dataSourceId?: Types.ObjectId;
   /** The batch run holding a box-lane event while it is `processing`. */
   boxClaim?: string;
@@ -64,7 +64,7 @@ const WebhookEventSchema = new Schema<IWebhookEvent>(
     processedAt: Date,
     status: {
       type: String,
-      enum: ["pending", "processing", "completed", "failed"],
+      enum: ["pending", "processing", "completed", "failed", "dormant"],
       default: "pending",
       required: true,
     },
@@ -85,7 +85,7 @@ const WebhookEventSchema = new Schema<IWebhookEvent>(
     recordId: String,
     applyStatus: {
       type: String,
-      enum: ["pending", "applied", "failed", "dropped"],
+      enum: ["pending", "applied", "failed", "dropped", "dormant"],
       default: "pending",
       required: true,
     },
@@ -120,7 +120,7 @@ WebhookEventSchema.index({ status: 1, receivedAt: 1 });
 WebhookEventSchema.index({ status: 1, lane: 1, receivedAt: 1 });
 WebhookEventSchema.index({ workspaceId: 1, receivedAt: -1 });
 // Tiered retention by applyStatus (anchored on receivedAt, which is required on
-// every doc so the four partial TTLs fully cover the collection). MongoDB allows
+// every ordinary doc. Dormant deliveries intentionally match none). MongoDB allows
 // multiple TTL indexes on the same key when they differ by partialFilterExpression
 // (same pattern as cdc_change_events applied-vs-dropped). Successfully processed
 // events are purged quickly; errors are retained longer for debugging.
