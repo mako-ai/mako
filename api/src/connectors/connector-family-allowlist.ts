@@ -19,7 +19,6 @@ export const ALLOWED_FAMILIES_IMPORTED_FROM_OUTSIDE: readonly string[] = [
   "posthog",
   "rest",
   "stripe",
-  "wise",
 ];
 
 /**

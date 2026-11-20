@@ -1,1 +1,0 @@
-export { WiseConnector } from "./connector";

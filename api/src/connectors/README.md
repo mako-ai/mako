@@ -70,7 +70,6 @@ connectors/
 ├── claap/
 ├── calendly/
 ├── pandadoc/
-├── wise/
 ├── posthog/
 ├── graphql/
 ├── bigquery/
@@ -181,13 +180,6 @@ table of connectors and entities. Summary:
 ### Claap, Calendly, PandaDoc
 
 - Fixed-entity connectors with backfill + CDC webhook support (auto-provisioned where the provider allows it)
-
-### Wise
-
-- Syncs Wise (TransferWise) financial data
-- Supported entities: profiles, balances, balance_updates, transfers, recipients, activities
-- Required config: `api_key` (personal API token); optional `profile_id`, `api_base_url` (sandbox)
-- Webhooks verified with Wise's RSA-SHA256 public keys. "Create in Wise" provisions profile-level subscriptions (`/v3/profiles/{id}/subscriptions`, one per event, on every synced profile; reused when they exist, removed when the flow is deleted). Wise only lets a token allowed to manage the profile's webhooks do this (OAuth user token, or a full-access personal token); otherwise the error says how to create them by hand. `balances#account-state-change` and `profiles#state-change` are application-level only, so `balances` / `profiles` cannot be fed by a profile subscription
 
 ### PostHog
 
