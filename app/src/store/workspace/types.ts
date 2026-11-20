@@ -61,6 +61,14 @@ export interface PendingInvite {
   expiresAt: string;
 }
 
+/** A workspace the signed-in user can join by email domain (onboarding). */
+export interface AutoJoinOffer {
+  workspaceId: string;
+  workspaceName: string;
+  domain: string;
+  role: "member" | "viewer";
+}
+
 export interface CreateWorkspaceData {
   name: string;
   slug?: string;

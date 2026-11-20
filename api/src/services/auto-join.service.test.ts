@@ -7,8 +7,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import { User } from "../database/schema";
 import { Workspace, WorkspaceMember } from "../database/workspace-schema";
-import { ensureAutoJoin, normalizeAutoJoin } from "./auto-join.service";
+import {
+  ensureAutoJoin,
+  findAutoJoinOffers,
+  normalizeAutoJoin,
+} from "./auto-join.service";
 
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId();
@@ -91,6 +96,64 @@ describe("ensureAutoJoin", () => {
       email: "sam@acme.com",
     });
     expect(member?.role).toBe("viewer");
+  });
+});
+
+describe("findAutoJoinOffers", () => {
+  beforeEach(async () => {
+    await User.deleteMany({});
+    await User.create([
+      { _id: "u-owner", email: "owner@acme.com", emailVerified: true },
+      { _id: "u-outsider", email: "boss@gmail.com", emailVerified: true },
+      { _id: "u-unverified", email: "fake@acme.com", emailVerified: false },
+    ]);
+    await WorkspaceMember.create({
+      workspaceId: WS,
+      userId: "u-owner",
+      role: "owner",
+    });
+  });
+
+  it("offers a workspace that auto-joins the domain and is run from it", async () => {
+    expect(
+      await findAutoJoinOffers({ id: "u-sam", email: "sam@acme.com" }),
+    ).toEqual([
+      {
+        workspaceId: WS.toString(),
+        workspaceName: "Acme",
+        domain: "acme.com",
+        role: "viewer",
+      },
+    ]);
+  });
+
+  it("drops workspaces already joined, other domains, and look-alikes run from elsewhere", async () => {
+    const LOOKALIKE = new Types.ObjectId();
+    await Workspace.create({
+      _id: LOOKALIKE,
+      name: "Acme",
+      slug: "acme-1",
+      createdBy: "u-outsider",
+      settings: { autoJoin: { domains: ["acme.com"], role: "member" } },
+      billing: {},
+    });
+    await WorkspaceMember.create([
+      { workspaceId: LOOKALIKE, userId: "u-outsider", role: "owner" },
+      { workspaceId: LOOKALIKE, userId: "u-unverified", role: "admin" },
+    ]);
+    expect(
+      (await findAutoJoinOffers({ id: "u-sam", email: "sam@acme.com" })).map(
+        o => o.workspaceId,
+      ),
+    ).toEqual([WS.toString()]);
+
+    await ensureAutoJoin(WS.toString(), { id: "u-sam", email: "sam@acme.com" });
+    expect(
+      await findAutoJoinOffers({ id: "u-sam", email: "sam@acme.com" }),
+    ).toEqual([]);
+    expect(
+      await findAutoJoinOffers({ id: "u-x", email: "x@evil.acme.com" }),
+    ).toEqual([]);
   });
 });
 

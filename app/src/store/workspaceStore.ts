@@ -29,6 +29,7 @@ import { useExplorerStore } from "./explorerStore";
 import { useFlowStore } from "./flowStore";
 import { workspaceApi } from "./workspace/workspace-api";
 import type {
+  AutoJoinOffer,
   CreateWorkspaceData,
   InviteDetails,
   InviteMemberData,
@@ -80,11 +81,15 @@ export interface WorkspaceState extends WorkspaceData {
   loadInvites: () => Promise<void>;
   cancelInvite: (inviteId: string) => Promise<void>;
   acceptInvite: (token: string) => Promise<Workspace>;
+  /** Join a workspace that auto-joins the user's email domain (onboarding). */
+  joinByDomain: (workspaceId: string) => Promise<Workspace>;
 
   /** Invite preview for the accept page (public endpoint). */
   getInviteDetails: (token: string) => Promise<InviteDetails>;
   /** Invites addressed to the signed-in user's email (onboarding). */
   getPendingInvitesForUser: () => Promise<PendingInvite[]>;
+  /** Workspaces the signed-in user can join by email domain (onboarding). */
+  getAutoJoinOffers: () => Promise<AutoJoinOffer[]>;
   getAutoJoin: (workspaceId: string) => Promise<WorkspaceAutoJoin | null>;
   setAutoJoin: (
     workspaceId: string,
@@ -128,6 +133,23 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
       set({ error: toErrorMessage(err, fallback) });
       throw err;
     }
+  };
+
+  /** Makes a just-joined workspace (invite or email domain) the active one. */
+  const enterJoined = async (workspace: Workspace): Promise<Workspace> => {
+    // Remember the joined workspace FIRST so the redirect selects it
+    // (loadWorkspaces must not pick a different one).
+    rememberWorkspaceId(workspace.id);
+    set(s => ({
+      workspaces: s.workspaces.some(ws => ws.id === workspace.id)
+        ? s.workspaces
+        : [...s.workspaces, workspace],
+    }));
+    await workspaceApi.switchWorkspace(workspace.id);
+    select(workspace);
+    // No reload here: the caller redirects (AcceptInvite, after its success
+    // message) or reloads workspaces (onboarding).
+    return workspace;
   };
 
   return {
@@ -349,25 +371,17 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
       }),
 
     acceptInvite: token =>
-      withError("Failed to accept invite", async () => {
-        const workspace = await workspaceApi.acceptInvite(token);
-        // Remember the invited workspace FIRST so the redirect selects it
-        // (loadWorkspaces must not pick a different one).
-        rememberWorkspaceId(workspace.id);
-        set(s => ({
-          workspaces: s.workspaces.some(ws => ws.id === workspace.id)
-            ? s.workspaces
-            : [...s.workspaces, workspace],
-        }));
-        await workspaceApi.switchWorkspace(workspace.id);
-        select(workspace);
-        // No reload here: the caller (AcceptInvite) redirects after showing
-        // the success message.
-        return workspace;
-      }),
+      withError("Failed to accept invite", async () =>
+        enterJoined(await workspaceApi.acceptInvite(token)),
+      ),
+    joinByDomain: workspaceId =>
+      withError("Failed to join workspace", async () =>
+        enterJoined(await workspaceApi.joinByDomain(workspaceId)),
+      ),
 
     getInviteDetails: token => workspaceApi.getInviteDetails(token),
     getPendingInvitesForUser: () => workspaceApi.getPendingInvitesForUser(),
+    getAutoJoinOffers: () => workspaceApi.getAutoJoinOffers(),
     getAutoJoin: workspaceId => workspaceApi.getAutoJoin(workspaceId),
     setAutoJoin: (workspaceId, data) =>
       workspaceApi.setAutoJoin(workspaceId, data),
