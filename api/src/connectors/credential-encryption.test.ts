@@ -38,10 +38,7 @@ const CREDENTIAL_NAME =
   /pass(word|wd)?|secret|token|api[_-]?key|apikey|private[_-]?key|service_account|credential|bearer/i;
 
 /** Known non-secrets whose NAME trips the pattern. Each needs a reason. */
-const NOT_A_SECRET: Record<string, string> = {
-  "posthog.auth_type":
-    "selects WHICH credential to use (personal vs project key); the key itself is posthog.api_key",
-};
+const NOT_A_SECRET: Record<string, string> = {};
 
 function connectorTypes(): string[] {
   return readdirSync(CONNECTORS_DIR, { withFileTypes: true })

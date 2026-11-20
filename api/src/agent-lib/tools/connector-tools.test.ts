@@ -160,7 +160,7 @@ beforeEach(async () => {
   await SourceConnection.create({
     workspaceId: new Types.ObjectId(),
     name: "theirs",
-    type: "posthog",
+    type: "calendly",
     config: { api_key: encryptString("theirs_" + SECRET) },
     isActive: true,
     settings: { rate_limit_delay_ms: 100, sync_batch_size: 100 },
@@ -217,8 +217,8 @@ describe("vocabulary: connectors are code, connections are credentials", () => {
     ]);
     // Configured elsewhere, so unconfigured here — and the stranger's row
     // is not attached to it.
-    const posthog = result.connectors.find(c => c.connector === "posthog");
-    expect(posthog?.connections).toEqual([]);
+    const calendly = result.connectors.find(c => c.connector === "calendly");
+    expect(calendly?.connections).toEqual([]);
     expect(JSON.stringify(result)).not.toContain(SECRET);
   });
 

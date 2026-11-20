@@ -13,7 +13,6 @@ export const ALLOWED_FAMILIES_IMPORTED_FROM_OUTSIDE: readonly string[] = [
   "claap",
   "custom_api",
   "graphql",
-  "posthog",
   "rest",
   "stripe",
 ];

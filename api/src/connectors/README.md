@@ -68,7 +68,6 @@ connectors/
 ├── stripe/
 ├── claap/
 ├── calendly/
-├── posthog/
 ├── graphql/
 ├── rest/
 ├── registry.ts              # Runtime connector discovery for the API server
@@ -171,11 +170,6 @@ table of connectors and entities. Summary:
 ### Claap, Calendly
 
 - Fixed-entity connectors with backfill + CDC webhook support (auto-provisioned where the provider allows it)
-
-### PostHog
-
-- Hybrid connector: built-in REST entities (surveys, survey_responses, feature_flags, experiments, annotations) plus dynamic HogQL query entities configured on the Flow
-- Required config: `project_id`, `api_key`
 
 ### GraphQL
 

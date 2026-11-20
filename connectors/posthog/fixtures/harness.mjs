@@ -1,33 +1,18 @@
 /**
- * Parity harness: the in-process PostHog connector and this folder, run
- * against the same recorded PostHog responses, compared entity by entity.
+ * Test harness for the PostHog folder: a local PostHog that replays recorded
+ * responses (or emulates PostHog over `dataset.mjs` to record them), and a
+ * driver that runs the folder through the SDK runner, chunk by chunk.
  *
- * Both connectors talk to a local HTTP server through `api_base_url`. In
+ * Both servers listen on a local port, reached through `api_base_url`. In
  * replay mode the server answers only requests it has a cassette for, so a
- * folder that sends a different request than the in-process connector fails
- * with a cassette miss, and the request logs are compared as well.
+ * folder that sends a different request fails with a cassette miss.
  *
- * For each entity and scenario it compares:
- * - row count, key set and row order;
- * - column set (the union of fields across rows);
- * - a SHA-256 checksum per row, over canonical JSON;
- * - the chunk sequence: the resume position and hasMore after every chunk
- *   (`offset` for the list entities; survey and response offsets, the
- *   current survey and `surveysDone` for `survey_responses`);
- * - the exact request sequence each connector sent, with the auth header
- *   style it used (Bearer or `POSTHOG-API-TOKEN`);
- * - each row's source timestamp, as each connector resolves it.
- *
- * The folder side runs one of two ways. Given `makeBoxed`, it runs through
- * the API's `SandboxedConnector`, the adapter a box uses, with only the box
- * itself replaced by a local process. Without it, the SDK runner is driven
- * directly (`readFolder`), as `parity.mjs` does.
- *
- * This file has no dependency on the API. The caller passes the in-process
- * connector in (see `parity.mjs` and the API test that imports this file).
+ * Users: `conformance.mjs` (mako connector test), `golden.mjs` (the golden
+ * rows and `--record`) and the API test
+ * `api/src/connectors/posthog-folder.test.ts`. This file has no dependency on
+ * the API.
  */
 import { spawn } from "node:child_process";
-import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -359,7 +344,7 @@ function emulate(dataset, rawUrl) {
 }
 
 // ---------------------------------------------------------------------------
-// Running the two connectors
+// Running the folder
 // ---------------------------------------------------------------------------
 
 const scratch = () =>
@@ -435,18 +420,6 @@ const RESPONSE_KEYS = [
   "surveysDone",
 ];
 
-/**
- * The resume position in a chunk's state, the same shape on both sides:
- * the in-process `FetchState` (offset, or the walk in `metadata`), or the
- * folder's stream state (directly, or inside `SandboxedConnector`'s).
- */
-export function chunkPosition(entity, state, hasMore) {
-  const stream = state?.metadata?.stream?.stream_state;
-  const source =
-    stream ?? (entity === "survey_responses" ? state?.metadata : state);
-  return streamPosition(entity, source, hasMore);
-}
-
 /** The same position, from a folder's own stream state. */
 export function streamPosition(entity, source, hasMore) {
   const position =
@@ -502,61 +475,8 @@ export async function readFolder({ entity, config, since, maxIterations }) {
   return { rows, chunks };
 }
 
-/**
- * Drive a connector chunk by chunk, as the engine does: its schema first,
- * then `fetchEntityChunk` until `hasMore` is false. Works for the in-process
- * connector and for `SandboxedConnector`.
- */
-export async function readInProcess(
-  connector,
-  { entity, since, maxIterations, pageSize },
-) {
-  const rows = [];
-  const chunks = [];
-  let state;
-  await connector.resolveSchema?.(entity);
-  for (let chunk = 0; chunk < 1000; chunk++) {
-    state = await connector.fetchEntityChunk({
-      entity,
-      since: since ? new Date(since) : undefined,
-      maxIterations,
-      ...(pageSize ? { batchSize: pageSize } : {}),
-      // Truthy, so the connector's 200 ms default does not slow the replay.
-      rateLimitDelay: 1,
-      state,
-      onBatch: async batch => {
-        rows.push(...batch);
-      },
-    });
-    chunks.push(chunkPosition(entity, state, state.hasMore));
-    if (!state.hasMore) break;
-  }
-  return { rows, chunks };
-}
-
-/** Same driver; the name says which side it is reading. */
-export const readBoxed = readInProcess;
-
-/**
- * Each row's source timestamp as `connector` resolves it, by row id. A row
- * whose timestamp is within a minute of now fell back to "now".
- */
-export function sourceTimestamps(connector, entity, rows) {
-  const now = Date.now();
-  const byId = new Map();
-  let fellBackToNow = 0;
-  for (const row of rows) {
-    const ts = connector.normalizeBackfillRecord?.(entity, row)?.sourceTs;
-    const fellBack =
-      !(ts instanceof Date) || Math.abs(ts.getTime() - now) < 60_000;
-    if (fellBack) fellBackToNow++;
-    byId.set(String(row.id), fellBack ? "now" : ts.toISOString());
-  }
-  return { byId, fellBackToNow };
-}
-
 // ---------------------------------------------------------------------------
-// Comparison
+// Canonical JSON and the check variants
 // ---------------------------------------------------------------------------
 
 /** JSON with keys sorted at every level; `undefined` dropped, as JSON does. */
@@ -572,310 +492,5 @@ export function canonicalJson(value) {
   return JSON.stringify(value);
 }
 
-/** Checksum of a row as it lands: through JSON first, on both sides. */
-export const rowChecksum = row =>
-  crypto
-    .createHash("sha256")
-    .update(canonicalJson(JSON.parse(JSON.stringify(row))))
-    .digest("hex");
-
-const columnsOf = rows =>
-  [...new Set(rows.flatMap(row => Object.keys(row)))].sort();
-const sameList = (a, b) =>
-  a.length === b.length && a.every((value, i) => value === b[i]);
-
-/**
- * Every comparison for one entity and scenario. `ok` is the conjunction.
- * `timestampMismatches` is reported, never part of `ok`: the caller decides
- * which differences are expected (see the API test).
- */
-export function compareRuns(inProcess, folder) {
-  const inIds = inProcess.rows.map(row => String(row.id));
-  const folderIds = folder.rows.map(row => String(row.id));
-  const inSums = new Map(
-    inProcess.rows.map(row => [String(row.id), rowChecksum(row)]),
-  );
-  const folderSums = new Map(
-    folder.rows.map(row => [String(row.id), rowChecksum(row)]),
-  );
-  const checksumMismatches = [...inSums]
-    .filter(([id, sum]) => folderSums.get(id) !== sum)
-    .map(([id]) => id);
-  const inColumns = columnsOf(inProcess.rows);
-  const folderColumns = columnsOf(folder.rows);
-  const result = {
-    rows: [inProcess.rows.length, folder.rows.length],
-    keys: sameList([...new Set(inIds)].sort(), [...new Set(folderIds)].sort()),
-    order: sameList(inIds, folderIds),
-    columns: sameList(inColumns, folderColumns),
-    columnCount: inColumns.length,
-    checksumMismatches,
-    chunks: [inProcess.chunks.length, folder.chunks.length],
-    chunkStates:
-      canonicalJson(inProcess.chunks) === canonicalJson(folder.chunks),
-    requests: [inProcess.requests?.length ?? 0, folder.requests?.length ?? 0],
-    requestsEqual: sameList(inProcess.requests ?? [], folder.requests ?? []),
-    timestampMismatches: [],
-    timestampsChecked: 0,
-  };
-  if (inProcess.timestamps && folder.timestamps) {
-    for (const [id, ts] of inProcess.timestamps.byId) {
-      result.timestampsChecked++;
-      if (folder.timestamps.byId.get(id) !== ts)
-        result.timestampMismatches.push(id);
-    }
-  }
-  result.ok =
-    result.rows[0] === result.rows[1] &&
-    result.keys &&
-    result.order &&
-    result.columns &&
-    checksumMismatches.length === 0 &&
-    result.chunkStates &&
-    result.requestsEqual;
-  return result;
-}
-
-/** Run every entity in every scenario against one server. */
-export async function runParity({
-  entities,
-  makeInProcess,
-  makeBoxed,
-  server,
-  scenarios = SCENARIOS,
-  concurrency = 4,
-}) {
-  const jobs = [];
-  for (const scenario of scenarios) {
-    for (const entity of entities) jobs.push({ entity, scenario });
-  }
-  const results = [];
-  const work = async ({ entity, scenario }) => {
-    const options = {
-      entity,
-      since: scenario.since,
-      maxIterations: scenario.maxIterations,
-      pageSize: scenario.pageSize,
-    };
-    const inKey = `phx_test_inprocess_${scenario.name}_${entity}`;
-    const folderKey = `phx_test_folder_${scenario.name}_${entity}`;
-    const run = async (side, read) => {
-      try {
-        return await read();
-      } catch (error) {
-        return {
-          rows: [],
-          chunks: [],
-          error: `${side}: ${error instanceof Error ? error.message : String(error)}`,
-        };
-      }
-    };
-    const inConnector = makeInProcess(testConfig(inKey, server, scenario));
-    const inProcess = await run("in-process", () =>
-      readInProcess(inConnector, options),
-    );
-    inProcess.requests = server.requests(inKey);
-    let folder;
-    if (makeBoxed) {
-      const boxed = makeBoxed(testConfig(folderKey, server, scenario));
-      folder = await run("folder", () => readBoxed(boxed, options));
-      inProcess.timestamps = sourceTimestamps(
-        inConnector,
-        entity,
-        inProcess.rows,
-      );
-      folder.timestamps = sourceTimestamps(boxed, entity, folder.rows);
-    } else {
-      folder = await run("folder", () =>
-        readFolder({
-          ...options,
-          config: {
-            ...testConfig(folderKey, server, scenario),
-            ...(scenario.pageSize ? { __page_size: scenario.pageSize } : {}),
-            __rate_limit_delay_ms: 1,
-          },
-        }),
-      );
-    }
-    folder.requests = server.requests(folderKey);
-    const comparison = compareRuns(inProcess, folder);
-    const error = inProcess.error ?? folder.error;
-    // A run that failed is a difference even when both sides failed alike.
-    results.push({
-      entity,
-      scenario: scenario.name,
-      ...comparison,
-      timestampsFellBackToNow: [
-        inProcess.timestamps?.fellBackToNow ?? 0,
-        folder.timestamps?.fellBackToNow ?? 0,
-      ],
-      error,
-      ok: comparison.ok && !error,
-    });
-  };
-  const queue = [...jobs];
-  await Promise.all(
-    Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
-      while (queue.length > 0) await work(queue.shift());
-    }),
-  );
-  const order = new Map(
-    jobs.map((job, i) => [`${job.scenario.name}/${job.entity}`, i]),
-  );
-  return results.sort(
-    (a, b) =>
-      order.get(`${a.scenario}/${a.entity}`) -
-      order.get(`${b.scenario}/${b.entity}`),
-  );
-}
-
+/** `check` against a working key, a key without `survey:read`, a revoked one. */
 export const CHECK_VARIANTS = ["valid", "nosurveys", "revoked"];
-
-/**
- * `check` on both sides: a working key, a key without `survey:read` (the
- * HogQL fallback), and a revoked one.
- */
-export async function checkParity({ makeInProcess, server }) {
-  const outcomes = [];
-  for (const variant of CHECK_VARIANTS) {
-    const suffix = variant === "valid" ? "" : `_${variant}`;
-    const inKey = `phx_test_inprocess_check${suffix}`;
-    const folderKey = `phx_test_folder_check${suffix}`;
-    const project =
-      variant === "nosurveys" ? { projectId: NO_SURVEYS_PROJECT_ID } : {};
-    const inResult = await makeInProcess(
-      testConfig(inKey, server, project),
-    ).testConnection();
-    const folderRun = await runFolderCommand("check", {
-      config: testConfig(folderKey, server, project),
-    });
-    const status = folderRun.messages.find(
-      m => m.type === "CONNECTION_STATUS",
-    )?.connectionStatus;
-    outcomes.push({
-      variant,
-      inProcess: inResult.success,
-      folder: status?.status === "SUCCEEDED",
-      folderMessage: status?.message,
-      requests: server.requests(inKey).length,
-      requestsEqual: sameList(
-        server.requests(inKey),
-        server.requests(folderKey),
-      ),
-    });
-  }
-  return outcomes;
-}
-
-/** A plain-text table, one row per entity, one column group per scenario. */
-export function formatReport(results) {
-  const scenarios = [...new Set(results.map(r => r.scenario))];
-  const entities = [...new Set(results.map(r => r.entity))];
-  const header = [
-    "entity",
-    ...scenarios.map(s => `${s}: rows in/folder, chunks, requests, result`),
-  ];
-  const lines = [header.join(" | ")];
-  for (const entity of entities) {
-    const cells = [entity];
-    for (const scenario of scenarios) {
-      const r = results.find(
-        x => x.entity === entity && x.scenario === scenario,
-      );
-      const problems = [];
-      if (!r.keys) problems.push("keys");
-      if (!r.order) problems.push("order");
-      if (!r.columns) problems.push("columns");
-      if (r.checksumMismatches.length)
-        problems.push(`${r.checksumMismatches.length} checksums`);
-      if (!r.chunkStates) problems.push("chunk states");
-      if (!r.requestsEqual) problems.push("requests");
-      if (r.error) problems.push(`error (${r.error})`);
-      cells.push(
-        `${r.rows[0]}/${r.rows[1]}, ${r.chunks[0]}/${r.chunks[1]}, ${r.requests[0]}/${r.requests[1]}, ${r.ok ? "match" : `DIFF ${problems.join(", ")}`}`,
-      );
-    }
-    lines.push(cells.join(" | "));
-  }
-  return lines.join("\n");
-}
-
-// ---------------------------------------------------------------------------
-// Schemas and the credential form
-// ---------------------------------------------------------------------------
-
-/**
- * The in-process `ConnectorEntitySchema` against the folder's stream as the
- * engine translates it. Fields in `ignore` (Mako's system columns) are left
- * out of the field lists and compared in full on their own.
- */
-export function compareEntitySchema(inProcess, folder, ignore = new Set()) {
-  const names = schema =>
-    Object.keys(schema?.fields ?? {})
-      .filter(name => !ignore.has(name))
-      .sort();
-  const inNames = names(inProcess);
-  const folderNames = names(folder);
-  const nullable = field => field.nullable ?? !field.required;
-  const fieldDiffs = [];
-  for (const name of inNames) {
-    const a = inProcess.fields[name];
-    const b = folder?.fields?.[name];
-    if (!b) continue;
-    if (a.type !== b.type)
-      fieldDiffs.push(`${name}: type ${a.type} vs ${b.type}`);
-    if (nullable(a) !== nullable(b))
-      fieldDiffs.push(`${name}: nullable ${nullable(a)} vs ${nullable(b)}`);
-    if (Boolean(a.required) !== Boolean(b.required))
-      fieldDiffs.push(
-        `${name}: required ${Boolean(a.required)} vs ${Boolean(b.required)}`,
-      );
-  }
-  const missing = inNames.filter(name => !folderNames.includes(name));
-  const extra = folderNames.filter(name => !inNames.includes(name));
-  const keyColumns =
-    canonicalJson(inProcess?.keyColumns) === canonicalJson(folder?.keyColumns);
-  const policy = inProcess?.unknownFieldPolicy === folder?.unknownFieldPolicy;
-  const systemFields = Object.keys(inProcess?.fields ?? {}).filter(name =>
-    ignore.has(name),
-  ).length;
-  const systemDiffs = [...ignore]
-    .filter(
-      name =>
-        canonicalJson(inProcess?.fields?.[name] ?? null) !==
-        canonicalJson(folder?.fields?.[name] ?? null),
-    )
-    .sort();
-  return {
-    fields: [inNames.length, folderNames.length],
-    missing,
-    extra,
-    fieldDiffs,
-    keyColumns,
-    policy,
-    systemFields,
-    systemDiffs,
-    ok:
-      missing.length === 0 &&
-      extra.length === 0 &&
-      fieldDiffs.length === 0 &&
-      keyColumns &&
-      policy,
-  };
-}
-
-/** `getConfigSchema().fields` against the form built from the folder's spec. */
-export function compareForm(inProcessFields, folderFields) {
-  const shape = field => ({
-    name: field.name,
-    label: field.label,
-    type: field.type,
-    required: Boolean(field.required),
-    default: field.default,
-    helperText: field.helperText,
-    options: field.options?.map(o => o.value),
-  });
-  const a = inProcessFields.map(shape);
-  const b = folderFields.map(shape);
-  return { ok: canonicalJson(a) === canonicalJson(b), inProcess: a, folder: b };
-}
