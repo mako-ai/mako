@@ -622,6 +622,17 @@ React 18 a ref is dropped: a Calendar's arrow keys stop moving focus. Apps
 that use them run React 19; `mako-app-lint --rules=react-version` flags any
 that does not.
 
+#### Deferred and Staged (2.31)
+
+`Deferred` mounts a panel 800 px before it scrolls in. `Staged` mounts one panel per painted frame. Both hold `minHeight` with an `aria-busy` Skeleton.
+
+```tsx
+<Deferred minHeight={520}><CallsTable /></Deferred>
+<Staged minHeight={260}><TrendChart /></Staged>
+```
+
+`Deferred` also takes `rootMargin`, `mode="task"` and `placeholder` (`false` = blank spacer). `useStagedMount(n)` returns a step 0..n, one per frame.
+
 Thin props (2.23), marked "Mako thin prop" in the source. Stock behaviour
 stays the default:
 
