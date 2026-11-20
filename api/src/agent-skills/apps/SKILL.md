@@ -245,6 +245,14 @@ A binding is ONE file — `bindings/<name>.sql` (name = filename, no manifest):
 SELECT ...
 ```
 
+A binding that reads `{{ dbt_schema }}.<model>` deploys at once after a push to
+main. It waits for a prod dbt build only when that model's prod table is missing
+or lacks a column the model now returns. A logic-only change to the model reaches
+the app at the next scheduled dbt job. A new column on an incremental model
+needs `on_schema_change: append_new_columns` (or `sync_all_columns`): with the
+default `ignore` a build never adds it, so the app is not held and its binding
+fails until the model is full-refreshed.
+
 Front matter is a leading block of `-- key: value` SQL comments; the first
 SQL line ends it. Keep queries read-only SELECTs. Build the artifact with
 `app_materialize` (appId + binding name) — it reads the working branch, so

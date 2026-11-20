@@ -95,6 +95,8 @@ Set these in Cloud Run's environment configuration (`deploy.sh` generates the se
 | `QUERY_EXECUTE_MAX_ROWS`       | Optional    | Row cap for the query execute routes (default `50000`). A cut result comes back with `truncated`, `rowCount` and `rowLimit` set |
 | `FLOW_EXECUTION_RETENTION_DAYS` | Optional   | Days a finished sync run (`flow_executions`) is kept before a TTL index expires it (default `90`). Running executions never expire. The API updates the index on boot when the value changes |
 | `EDGE_ORIGIN_SECRET`           | Optional    | When set, requests must carry `x-mako-edge: <secret>` (set by a Cloudflare Transform Rule) so the `*.run.app` URL cannot bypass Cloudflare. Logs only until `EDGE_ORIGIN_CHECK=enforce` |
+| `APPS_DBT_BEFORE_DEPLOY`       | Optional    | `0` or `false` turns off the dbt build that [holds an app deploy](/apps/#publishing--sharing) for a schema gap. Unset = on |
+| `APPS_DBT_BEFORE_DEPLOY_MODE`  | Optional    | `schema-gap` (default) builds only the models a held app cannot run without. `full` is the rollback to building every changed model upstream of the held apps |
 | `APPS_LIFECYCLE_ENFORCE`       | Optional    | Enforces the daily [app lifecycle job](/apps/#app-lifecycle-stale-and-archived-apps) (stale notices, archiving, paused schedules): `all` or a comma-separated list of workspace ids. Unset = dry run, the job only logs its plan |
 | `PARQUET_COMPRESSION`          | Optional    | Codec for app binding parquet: `ZSTD` (default, level 3) or `SNAPPY`. CDC and sync loads always write SNAPPY. An invalid value stops the API at boot; existing files stay readable |
 | `PARQUET_ZSTD_LEVEL`           | Optional    | ZSTD level for app binding parquet, 1–22 (default `3`) |

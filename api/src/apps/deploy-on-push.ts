@@ -41,7 +41,7 @@ import {
 import { ensureCommitLocally } from "./cloud-repo.service";
 import { clearDeployProgress, markDeployStage } from "./deploy-progress";
 import { DEFAULT_BRANCH, resolveCommit } from "./repository.service";
-import { holdDeploysForDbtRun, planDbtBeforeDeploy } from "./dbt-before-deploy";
+import { planDbtBeforeDeploy, startDbtBeforeDeploy } from "./dbt-before-deploy";
 
 const logger = loggers.api("apps-deploy-on-push");
 
@@ -437,10 +437,11 @@ export async function deployTargetForPush(
  * built here — the webhook delivery must return quickly, and on Cloud Run
  * work detached from a request does not reliably run to completion.
  *
- * Unless APPS_DBT_BEFORE_DEPLOY=0 rolls it back, a push that also changed dbt models holds
- * back the apps whose bindings read dbt models until one dbt run rebuilds
- * the changed models in prod (dbt-before-deploy.ts). They are still returned:
- * that run's end requests their deploys.
+ * Unless APPS_DBT_BEFORE_DEPLOY=0 turns it off, a push that also changed dbt
+ * models holds back an app only when a model its bindings read has a schema
+ * gap (missing prod table or new column) until one dbt run builds those
+ * models in prod (dbt-before-deploy.ts). Held apps are still returned: that
+ * run's end requests their deploys. Every other app deploys at once.
  */
 export async function deployAppsForPush(input: {
   workspaceId: string;
@@ -456,7 +457,7 @@ export async function deployAppsForPush(input: {
   const { requestAppDeploys } =
     await import("../inngest/functions/apps-deploy");
   // A plan that cannot be made never blocks a deploy: everything goes now.
-  const plan = await planDbtBeforeDeploy({
+  const prep = await planDbtBeforeDeploy({
     workspaceId,
     repoDir,
     before,
@@ -470,14 +471,19 @@ export async function deployAppsForPush(input: {
     });
     return null;
   });
-  await requestAppDeploys(workspaceId, plan ? plan.now : appIds, sha, "push");
-  if (plan) await holdDeploysForDbtRun({ workspaceId, sha, plan });
+  // Apps that read no dbt model go first, before any compile or warehouse
+  // work: nothing below can delay them.
+  const now = prep ? prep.now : appIds;
+  if (now.length > 0) await requestAppDeploys(workspaceId, now, sha, "push");
+  if (prep) {
+    await startDbtBeforeDeploy({ workspaceId, sha, after, prep });
+  }
   logger.info("Apps deploys requested from push", {
     workspaceId,
     sha,
     ...(sha !== after ? { staleDelivery: after } : {}),
     apps: appIds.length,
-    ...(plan ? { heldForDbt: plan.held.length } : {}),
+    ...(prep ? { awaitingDbtCheck: prep.readers.length } : {}),
   });
   return appIds;
 }

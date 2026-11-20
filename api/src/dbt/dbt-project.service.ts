@@ -253,6 +253,11 @@ export async function runAdhocDbtCommand(params: {
    * preview never sees another user's uncommitted work.
    */
   userId?: string;
+  /**
+   * Exactly this commit of the repo (a push's head), as a run's pinned
+   * `sourceSha`. Wins over `userId`'s checkout for the tree read.
+   */
+  commit?: string;
   command: string;
   /** Used to extract compiled SQL from the manifest after compile. */
   select?: string;
@@ -270,6 +275,7 @@ export async function runAdhocDbtCommand(params: {
     projectId: params.projectId,
     environmentName: params.environmentName,
     userId: params.userId,
+    commit: params.commit,
   });
 
   // Ad-hoc commands build the caller's working tree (checkout + drafts);

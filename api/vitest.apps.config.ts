@@ -161,6 +161,9 @@ export default defineConfig({
       "src/apps/deploy-on-push.test.ts",
       // A push changing dbt models: readers deploy after one prod dbt build.
       "src/apps/dbt-before-deploy.test.ts",
+      // Which models a held app cannot run without: missing relation, new
+      // column, and the parent walk (pure, over a fake warehouse).
+      "src/apps/dbt-schema-gap.test.ts",
       // The publish box memory gate: no build starts into a starved box.
       "src/apps/deployment/build-memory.test.ts",
       "src/apps/deploy-progress.test.ts",

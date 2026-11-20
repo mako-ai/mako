@@ -31,16 +31,40 @@ const state = vi.hoisted(() => ({
   otherTables: [] as string[],
   projectYml: "name: acme\n" as string | null,
   sendError: null as Error | null,
+  outcome: {
+    kind: "gap",
+    gap: {
+      models: [],
+      reasons: {},
+      newColumns: {},
+      unfixable: {},
+      unknownReads: [],
+    },
+  } as import("./dbt-schema-gap").GapOutcome,
+  gapError: null as Error | null,
+  gapCalls: [] as unknown[],
   sent: [] as Array<{ name: string; data: unknown }>,
 }));
 
 vi.mock("../inngest/client", () => ({
   inngest: {
-    send: vi.fn(async (event: { name: string; data: unknown }) => {
+    createFunction: vi.fn(() => ({})),
+    send: vi.fn(async (event: { id?: string; name: string; data: unknown }) => {
       if (state.sendError) throw state.sendError;
       state.sent.push(event);
     }),
   },
+}));
+
+vi.mock("./dbt-schema-gap", async importOriginal => ({
+  ...(await importOriginal<typeof import("./dbt-schema-gap")>()),
+  detectSchemaGap: vi.fn(async (input: unknown) => {
+    state.gapCalls.push(input);
+    // The real one calls this once the project has compiled.
+    await (input as { onCompiled?: () => Promise<void> }).onCompiled?.();
+    if (state.gapError) throw state.gapError;
+    return state.outcome;
+  }),
 }));
 
 vi.mock("../inngest/functions/apps-deploy", () => ({
@@ -80,6 +104,10 @@ vi.mock("./worktree.service", () => ({
 
 vi.mock("./deploy-progress", () => ({
   markDeployQueued: vi.fn(async () => undefined),
+  isDeployInFlight: (
+    progress: { sha?: string } | null | undefined,
+    sha: string,
+  ) => progress?.sha === sha,
   clearDeployProgress: vi.fn(async () => undefined),
   markDeployStage: vi.fn(async () => undefined),
 }));
@@ -132,6 +160,7 @@ vi.mock("../dbt/dbt-working-tree.service", async importOriginal => ({
 }));
 
 import {
+  AppProject,
   DbtProject,
   DbtRun,
   type DbtRunStatus,
@@ -139,12 +168,21 @@ import {
 import { requestAppDeploys } from "../inngest/functions/apps-deploy";
 import { markDeployQueued } from "./deploy-progress";
 import { deployAppsForPush } from "./deploy-on-push";
+import { appsDbtHoldOnFailure } from "../inngest/functions/apps-dbt-hold";
 import {
   changesDbtBuildFiles,
   dbtBeforeDeployEnabled,
+  dbtBeforeDeployMode,
   dbtModelsReadBy,
+  gapBuildCommand,
   modelsSelectedBy,
+  APPS_DBT_HOLD_EVENT,
   planDbtBeforeDeploy,
+  resolveDbtBeforeDeploy,
+  settleDbtBeforeDeploy,
+  planDbtHold,
+  applyDbtHold,
+  type AppsDbtHoldEventData,
   preDeployBuildCommand,
   releaseDeploysAfterRun,
 } from "./dbt-before-deploy";
@@ -176,9 +214,24 @@ beforeEach(async () => {
   state.projectYml = "name: acme\n";
   state.sendError = null;
   state.sent = [];
-  // The default: unset means on.
+  state.outcome = {
+    kind: "gap",
+    gap: {
+      models: [],
+      reasons: {},
+      newColumns: {},
+      unfixable: {},
+      unknownReads: [],
+    },
+  };
+  state.gapError = null;
+  state.gapCalls = [];
+  // The default: unset means on. The suites below run `full` (today's
+  // rollback mode) unless they say otherwise; "schema-gap" has its own suite.
   delete process.env.APPS_DBT_BEFORE_DEPLOY;
+  process.env.APPS_DBT_BEFORE_DEPLOY_MODE = "full";
   await DbtRun.deleteMany({});
+  await AppProject.collection.deleteMany({});
   await DbtProject.deleteMany({});
   projectId = new Types.ObjectId();
   await DbtProject.collection.insertOne({
@@ -187,7 +240,11 @@ beforeEach(async () => {
     name: "acme",
     environments: [
       { name: "dev", targetSchema: "dbt_dev" },
-      { name: "prod", targetSchema: "dbt_prod" },
+      {
+        name: "prod",
+        targetSchema: "dbt_prod",
+        connectionId: new Types.ObjectId(),
+      },
     ],
     defaultEnvironment: "dev",
     lastProdManifestKey: "dbt-artifacts/w/r/manifest.json",
@@ -196,6 +253,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   delete process.env.APPS_DBT_BEFORE_DEPLOY;
+  delete process.env.APPS_DBT_BEFORE_DEPLOY_MODE;
 });
 
 const push = () =>
@@ -268,7 +326,7 @@ describe("deployAppsForPush without a dbt build", () => {
   });
 });
 
-describe("deployAppsForPush with a dbt change and the flag on", () => {
+describe("deployAppsForPush with a dbt change, mode full", () => {
   it("deploys the plain app now and holds the reader for one prod build", async () => {
     expect((await push()).sort()).toEqual([READER, PLAIN].sort());
 
@@ -347,29 +405,31 @@ describe("deployAppsForPush with a dbt change and the flag on", () => {
   });
 
   it("selects only the models the held apps read", async () => {
-    const plan = await planDbtBeforeDeploy({
-      workspaceId: ws,
-      repoDir: "/repo",
-      before: BEFORE,
-      after: AFTER,
-      appIds: [READER, PLAIN],
-    });
-    expect(plan?.held).toEqual([READER]);
-    expect(plan?.now).toEqual([PLAIN]);
-    expect(plan?.models).toEqual(["fct_c14__closed_loop"]);
+    const plan = async (appIds: string[]) => {
+      const prep = await planDbtBeforeDeploy({
+        workspaceId: ws,
+        repoDir: "/repo",
+        before: BEFORE,
+        after: AFTER,
+        appIds,
+      });
+      expect(prep).not.toBeNull();
+      return resolveDbtBeforeDeploy(prep as NonNullable<typeof prep>, {
+        workspaceId: ws,
+        sha: AFTER,
+      });
+    };
+    const first = await plan([READER, PLAIN]);
+    expect(first?.held).toEqual([READER]);
+    expect(first?.now).toEqual([PLAIN]);
+    expect(first?.models).toEqual(["fct_c14__closed_loop"]);
 
     // OTHER in the push: its model joins, sorted and once each.
     state.otherTables = [
       "`p.{{dbt_schema}}.dim_deal`",
       "{{dbt_schema}}.fct_c14__closed_loop",
     ];
-    const both = await planDbtBeforeDeploy({
-      workspaceId: ws,
-      repoDir: "/repo",
-      before: BEFORE,
-      after: AFTER,
-      appIds: [OTHER, READER],
-    });
+    const both = await plan([OTHER, READER]);
     expect(both?.held).toEqual([OTHER, READER]);
     expect(both?.models).toEqual(["dim_deal", "fct_c14__closed_loop"]);
   });
@@ -448,6 +508,430 @@ describe("deployAppsForPush with a dbt change and the flag on", () => {
     );
     const run = await DbtRun.findOne().lean();
     expect(run?.status).toBe("error");
+  });
+});
+
+describe("deployAppsForPush in schema-gap mode (the default)", () => {
+  beforeEach(() => {
+    delete process.env.APPS_DBT_BEFORE_DEPLOY_MODE;
+  });
+
+  const holdEvents = () =>
+    state.sent.filter(e => e.name === APPS_DBT_HOLD_EVENT);
+  /** What the Inngest function does with the event the push sent. */
+  const settle = async () => {
+    const event = holdEvents().at(-1);
+    if (!event) throw new Error("no dbt-hold event was sent");
+    return settleDbtBeforeDeploy(event.data as AppsDbtHoldEventData);
+  };
+  const gap = (...models: string[]) => {
+    state.outcome = {
+      kind: "gap",
+      gap: {
+        models,
+        reasons: {},
+        newColumns: {},
+        unfixable: {},
+        unknownReads: [],
+      },
+    };
+  };
+
+  it("requests the apps that read no dbt model before any check, and queues the readers", async () => {
+    expect((await push()).sort()).toEqual([READER, PLAIN].sort());
+
+    // Nothing compiled yet: the plain app is already on its way.
+    expect(requestAppDeploys).toHaveBeenCalledTimes(1);
+    expect(requestAppDeploys).toHaveBeenCalledWith(ws, [PLAIN], AFTER, "push");
+    expect(markDeployQueued).toHaveBeenCalledWith(READER, AFTER);
+    expect(state.gapCalls).toEqual([]);
+    expect(await DbtRun.countDocuments()).toBe(0);
+    expect(holdEvents()).toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({
+          workspaceId: ws,
+          sha: AFTER,
+          after: AFTER,
+          prep: expect.objectContaining({
+            mode: "schema-gap",
+            environment: "prod",
+            readers: [READER],
+            now: [PLAIN],
+            readsByApp: { [READER]: ["fct_c14__closed_loop"] },
+          }),
+        }),
+      }),
+    ]);
+  });
+
+  it("sends one event id per push and reader set, so a redelivery dedupes", async () => {
+    await push();
+    await push();
+
+    const [a, b] = holdEvents() as unknown as Array<{ id: string }>;
+    expect(a.id).toBe(b.id);
+    expect(a.id).toMatch(
+      new RegExp(`^apps-dbt-hold:${ws}:${AFTER}:[0-9a-f]{16}$`),
+    );
+    state.changedApps = [READER, OTHER];
+    state.otherTables = ["`p.{{dbt_schema}}.dim_deal`"];
+    await push();
+    expect((holdEvents().at(-1) as unknown as { id: string }).id).not.toBe(
+      a.id,
+    );
+  });
+
+  it("sends only dbt paths in the event", async () => {
+    await push();
+    const data = holdEvents()[0].data as AppsDbtHoldEventData;
+    expect(data.prep.changedPaths).toEqual([
+      "dbt/models/marts/fct_c14__closed_loop.sql",
+    ]);
+  });
+
+  it("renews the queued mark at the start of the check and after the compile", async () => {
+    gap();
+    await push();
+    vi.mocked(markDeployQueued).mockClear();
+
+    await settle();
+
+    const calls = vi
+      .mocked(markDeployQueued)
+      .mock.calls.filter(([id]) => id === READER);
+    expect(calls).toHaveLength(2);
+    expect(calls.every(([, sha]) => sha === AFTER)).toBe(true);
+  });
+
+  it("reuses a saved plan: the apply step neither compiles nor queries", async () => {
+    gap("fct_c14__closed_loop");
+    await push();
+    const data = holdEvents()[0].data as AppsDbtHoldEventData;
+
+    const plan = await planDbtHold(data);
+    expect(state.gapCalls).toHaveLength(1);
+    vi.mocked(requestAppDeploys).mockClear();
+    await applyDbtHold(data, plan);
+    await applyDbtHold(data, plan); // a retry of the step
+
+    expect(state.gapCalls).toHaveLength(1);
+    // One run, joined by the retry; no deploy requested for the held reader.
+    expect(await DbtRun.countDocuments()).toBe(1);
+    expect(requestAppDeploys).not.toHaveBeenCalled();
+  });
+
+  it("does not re-request a free app whose deploy is already running (a retry of hold)", async () => {
+    state.changedApps = [READER, OTHER];
+    state.otherTables = ["`p.{{dbt_schema}}.dim_deal`"];
+    gap("fct_c14__closed_loop");
+    await AppProject.collection.insertOne({
+      _id: new Types.ObjectId(OTHER),
+      deployProgress: { sha: AFTER, stage: "build", updatedAt: new Date() },
+    });
+    await push();
+    vi.mocked(requestAppDeploys).mockClear();
+
+    await settle();
+
+    expect(requestAppDeploys).not.toHaveBeenCalled();
+    expect(await DbtRun.countDocuments()).toBe(1);
+  });
+
+  it("still requests a free app that is only marked queued", async () => {
+    state.changedApps = [READER, OTHER];
+    state.otherTables = ["`p.{{dbt_schema}}.dim_deal`"];
+    gap("fct_c14__closed_loop");
+    await AppProject.collection.insertOne({
+      _id: new Types.ObjectId(OTHER),
+      deployProgress: { sha: AFTER, stage: "queued", updatedAt: new Date() },
+    });
+    await push();
+    vi.mocked(requestAppDeploys).mockClear();
+
+    await settle();
+
+    expect(requestAppDeploys).toHaveBeenCalledWith(ws, [OTHER], AFTER, "push");
+  });
+
+  it("rethrows a failure that is not a compile error, so the retry runs", async () => {
+    state.gapError = new Error("quota exceeded");
+    await push();
+    vi.mocked(requestAppDeploys).mockClear();
+
+    await expect(settle()).rejects.toThrow("quota exceeded");
+
+    expect(requestAppDeploys).not.toHaveBeenCalled();
+    expect(await DbtRun.countDocuments()).toBe(0);
+  });
+
+  describe("when the check fails for good (onFailure)", () => {
+    const failed = async () => {
+      await push();
+      vi.mocked(requestAppDeploys).mockClear();
+      const data = holdEvents()[0].data as AppsDbtHoldEventData;
+      return appsDbtHoldOnFailure({
+        event: { data: { event: { data } } },
+        error: new Error("boom"),
+      });
+    };
+
+    it("deploys the readers", async () => {
+      expect(await failed()).toEqual([READER]);
+      expect(requestAppDeploys).toHaveBeenCalledWith(
+        ws,
+        [READER],
+        AFTER,
+        "push",
+      );
+    });
+
+    it("skips the apps a dbt run already holds for this commit", async () => {
+      gap("fct_c14__closed_loop");
+      await push();
+      await settle(); // the run now holds READER
+      vi.mocked(requestAppDeploys).mockClear();
+
+      expect(await failed()).toEqual([]);
+      expect(requestAppDeploys).not.toHaveBeenCalled();
+    });
+
+    it("ignores an event it cannot read", async () => {
+      expect(
+        await appsDbtHoldOnFailure({ event: {}, error: new Error("x") }),
+      ).toEqual([]);
+    });
+  });
+
+  it("runs no build and deploys the reader at once when no model has a gap", async () => {
+    gap();
+    await push();
+
+    expect(await settle()).toEqual({ held: [] });
+
+    expect(requestAppDeploys).toHaveBeenLastCalledWith(
+      ws,
+      [READER],
+      AFTER,
+      "push",
+    );
+    expect(await DbtRun.countDocuments()).toBe(0);
+    expect(state.gapCalls).toEqual([
+      expect.objectContaining({
+        workspaceId: ws,
+        environment: "prod",
+        sha: AFTER,
+        reads: ["fct_c14__closed_loop"],
+        changedPaths: state.changed.filter(p => p.startsWith("dbt/")),
+      }),
+    ]);
+  });
+
+  it("builds exactly the gap models and holds only the apps that read one", async () => {
+    gap("fct_c14__closed_loop");
+    await push();
+    await settle();
+
+    const runs = await DbtRun.find().lean();
+    expect(runs).toHaveLength(1);
+    expect(runs[0].commands).toEqual(["build --select fct_c14__closed_loop"]);
+    expect(runs[0].deploysAfterRun).toEqual({
+      workspaceId: ws,
+      appIds: [READER],
+      sha: AFTER,
+    });
+    expect(parseDbtCommand(runs[0].commands[0]).subcommand).toBe("build");
+    // Only the plain app was requested.
+    expect(requestAppDeploys).toHaveBeenCalledTimes(1);
+  });
+
+  it("builds a gap parent with the model and still holds only the reader", async () => {
+    gap("fct_c14__closed_loop", "int_c14__loop_base");
+    await push();
+    await settle();
+
+    const runs = await DbtRun.find().lean();
+    expect(runs[0].commands).toEqual([
+      "build --select fct_c14__closed_loop int_c14__loop_base",
+    ]);
+    expect(runs[0].deploysAfterRun?.appIds).toEqual([READER]);
+  });
+
+  it("deploys a reader at once when its models have no gap but another app's do", async () => {
+    state.changedApps = [READER, OTHER];
+    state.otherTables = ["`p.{{dbt_schema}}.dim_deal`"];
+    gap("fct_c14__closed_loop");
+    await push();
+    await settle();
+
+    expect(requestAppDeploys).toHaveBeenCalledWith(ws, [OTHER], AFTER, "push");
+    const runs = await DbtRun.find().lean();
+    expect(runs[0].commands).toEqual(["build --select fct_c14__closed_loop"]);
+    expect(runs[0].deploysAfterRun?.appIds).toEqual([READER]);
+  });
+
+  it("matches a gap model to a binding's table name without case", async () => {
+    gap("Fct_C14__Closed_Loop");
+    await push();
+    await settle();
+
+    const runs = await DbtRun.find().lean();
+    expect(runs[0].commands).toEqual(["build --select Fct_C14__Closed_Loop"]);
+    expect(runs[0].deploysAfterRun?.appIds).toEqual([READER]);
+  });
+
+  it("needs no prod manifest: the gap comes from the warehouse", async () => {
+    await DbtProject.updateOne(
+      { _id: projectId },
+      { $unset: { lastProdManifestKey: 1 } },
+    );
+    gap("fct_c14__closed_loop");
+    await push();
+    await settle();
+
+    expect(await DbtRun.countDocuments()).toBe(1);
+  });
+
+  it("deploys the readers at once when the pushed commit does not compile", async () => {
+    state.gapError = Object.assign(new Error("dbt compile failed (exit 2)"), {
+      name: "DbtCompileError",
+    });
+    await push();
+    await settle();
+
+    expect(requestAppDeploys).toHaveBeenLastCalledWith(
+      ws,
+      [READER],
+      AFTER,
+      "push",
+    );
+    expect(await DbtRun.countDocuments()).toBe(0);
+  });
+
+  it("builds the changed read models directly and holds when the warehouse side fails", async () => {
+    state.outcome = {
+      kind: "fallback",
+      models: ["fct_c14__closed_loop"],
+      error: "denied",
+    };
+    await push();
+    await settle();
+
+    const runs = await DbtRun.find().lean();
+    expect(runs[0].commands).toEqual(["build --select fct_c14__closed_loop"]);
+    expect(runs[0].deploysAfterRun?.appIds).toEqual([READER]);
+  });
+
+  it("deploys at once when the fallback finds no changed read model", async () => {
+    state.outcome = { kind: "fallback", models: [], error: "denied" };
+    await push();
+    await settle();
+
+    expect(await DbtRun.countDocuments()).toBe(0);
+    expect(requestAppDeploys).toHaveBeenLastCalledWith(
+      ws,
+      [READER],
+      AFTER,
+      "push",
+    );
+  });
+
+  it("keeps the full build for an environment without a BigQuery connection", async () => {
+    state.outcome = { kind: "full" };
+    await push();
+    await settle();
+
+    const runs = await DbtRun.find().lean();
+    expect(runs[0].commands).toEqual([
+      "build --select state:modified+,+fct_c14__closed_loop",
+    ]);
+  });
+
+  it("deploys at once when the full fallback has no prod manifest", async () => {
+    await DbtProject.updateOne(
+      { _id: projectId },
+      { $unset: { lastProdManifestKey: 1 } },
+    );
+    state.outcome = { kind: "full" };
+    await push();
+    await settle();
+
+    expect(await DbtRun.countDocuments()).toBe(0);
+    expect(requestAppDeploys).toHaveBeenLastCalledWith(
+      ws,
+      [READER],
+      AFTER,
+      "push",
+    );
+  });
+
+  it("deploys the readers at once when the check cannot be queued", async () => {
+    state.sendError = new Error("inngest down");
+    await push();
+
+    expect(requestAppDeploys).toHaveBeenLastCalledWith(
+      ws,
+      [READER],
+      AFTER,
+      "push",
+    );
+    expect(await DbtRun.countDocuments()).toBe(0);
+  });
+
+  it("skips the check when the push touches no dbt file", async () => {
+    state.changed = ["apps/c14/bindings/loop.sql"];
+    await push();
+
+    expect(holdEvents()).toEqual([]);
+    expect(state.gapCalls).toEqual([]);
+    expect(requestAppDeploys).toHaveBeenCalledWith(
+      ws,
+      [READER, PLAIN],
+      AFTER,
+      "push",
+    );
+  });
+
+  it("joins a running gap build that already names the joiner's gap models", async () => {
+    state.otherTables = ["{{dbt_schema}}.fct_c14__closed_loop"];
+    gap("fct_c14__closed_loop");
+    await push();
+    await settle();
+    state.changedApps = [READER, PLAIN, OTHER];
+    await push();
+    await settle();
+
+    const runs = await DbtRun.find().lean();
+    expect(runs).toHaveLength(1);
+    expect(runs[0].deploysAfterRun?.appIds).toEqual([READER, OTHER]);
+  });
+
+  it("starts a second build when a joiner needs a gap model the first run skips", async () => {
+    gap("fct_c14__closed_loop");
+    await push();
+    await settle();
+    state.changedApps = [READER, PLAIN, OTHER];
+    gap("fct_c14__closed_loop", "dim_deal");
+    await push();
+    await settle();
+
+    const runs = await DbtRun.find().sort({ createdAt: 1 }).lean();
+    expect(runs).toHaveLength(2);
+    expect(runs[1].commands).toEqual([
+      "build --select dim_deal fct_c14__closed_loop",
+    ]);
+  });
+
+  it("mode full still builds every changed model upstream of the held apps, with no check", async () => {
+    process.env.APPS_DBT_BEFORE_DEPLOY_MODE = "full";
+
+    await push();
+
+    expect(holdEvents()).toEqual([]);
+    expect(state.gapCalls).toEqual([]);
+    const runs = await DbtRun.find().lean();
+    expect(runs[0].commands).toEqual([
+      "build --select state:modified+,+fct_c14__closed_loop",
+    ]);
   });
 });
 
@@ -535,6 +1019,32 @@ describe("pieces", () => {
     expect(dbtBeforeDeployEnabled({ APPS_DBT_BEFORE_DEPLOY: " FALSE " })).toBe(
       false,
     );
+  });
+
+  it("defaults to schema-gap; only full is the rollback mode", () => {
+    expect(dbtBeforeDeployMode({})).toBe("schema-gap");
+    expect(dbtBeforeDeployMode({ APPS_DBT_BEFORE_DEPLOY_MODE: "" })).toBe(
+      "schema-gap",
+    );
+    expect(dbtBeforeDeployMode({ APPS_DBT_BEFORE_DEPLOY_MODE: "bogus" })).toBe(
+      "schema-gap",
+    );
+    expect(dbtBeforeDeployMode({ APPS_DBT_BEFORE_DEPLOY_MODE: " FULL " })).toBe(
+      "full",
+    );
+  });
+
+  it("writes a gap command with no `+` and no state:modified", () => {
+    const command = gapBuildCommand(["fct_b", "fct_a", "fct_b"]);
+    expect(command).toBe("build --select fct_a fct_b");
+    expect(command).not.toMatch(/[+]|state:/);
+    expect(parseDbtCommand(command).argv).toEqual([
+      "build",
+      "--select",
+      "fct_a",
+      "fct_b",
+    ]);
+    expect([...modelsSelectedBy(command)]).toEqual(["fct_a", "fct_b"]);
   });
 
   it("counts models, seeds and snapshots, never macros or tests", () => {
