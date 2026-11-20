@@ -843,7 +843,7 @@ export function createConnectorTools(workspaceId: string) {
     }),
     call_connection: tool({
       description: [
-        "Read a SOURCE connection LIVE (Close, Stripe, PostHog, Wise, a Custom API): Mako adds the credential, which you never see, and returns status, headers and body. Use it for fresh or unsynced data; synced tables and metrics come first.",
+        "Read a SOURCE connection LIVE (Close, Stripe, PostHog, a Custom API): Mako adds the credential, which you never see, and returns status, headers and body. Use it for fresh or unsynced data; synced tables and metrics come first.",
         "Two ways. (1) A named operation: `operation` + `params`, e.g. Close `search_leads` { query }, PostHog `hogql` { query }, Stripe `get_customer` { id }. inspect_connection lists a connection's `operations`. (2) A raw request: `method` + `path` (+ `query`, `body`), never mixed with `operation`, under the connection's base URL (Close: /lead/, Stripe: /v1/customers, PostHog: /api/projects/<project_id>/persons/).",
         "Reads only: GET, a Close search or a Close POST with x-http-method-override: GET, a PostHog query in the connection's project, a GraphQL query (Custom API with GraphQL on). Writes are refused; they belong to a workflow on the writers list.",
         "Needs live reads on in the connection's Access tab (the workspace owner or a manager switches them on per connection) and you on its live readers list when it has one; with live reads off it is refused for everyone. At most AGENT_CALLS_PER_MINUTE calls (default 30) per person per connection per minute. Answers over 40,000 characters come back cut (`truncated`).",

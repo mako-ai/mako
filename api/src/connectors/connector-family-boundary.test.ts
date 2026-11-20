@@ -24,7 +24,7 @@ import {
 } from "./connector-family-allowlist";
 
 /** Ceiling for the allowlist. Lower it as families are removed. Never raise it. */
-const MAX_ALLOWED_FAMILIES = 10;
+const MAX_ALLOWED_FAMILIES = 9;
 
 const SRC_ROOT = path.resolve(__dirname, "..");
 const CONNECTORS_ROOT = path.resolve(__dirname);

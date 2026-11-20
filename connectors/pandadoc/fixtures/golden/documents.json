@@ -48,7 +48,9 @@
       "id": "usr_fixture_1"
     },
     "status": "document.sent",
-    "tags": ["mandate"],
+    "tags": [
+      "mandate"
+    ],
     "template": {
       "id": "tpl_0001",
       "name": "Mandate"
@@ -172,7 +174,9 @@
       "id": "usr_fixture_1"
     },
     "status": "document.completed",
-    "tags": ["mandate"],
+    "tags": [
+      "mandate"
+    ],
     "template": {
       "id": "tpl_0003",
       "name": "Mandate"
@@ -294,7 +298,9 @@
     ],
     "sent_by": null,
     "status": "document.draft",
-    "tags": ["mandate"],
+    "tags": [
+      "mandate"
+    ],
     "template": {
       "id": "tpl_0001",
       "name": "Mandate"
@@ -489,7 +495,9 @@
       "id": "usr_fixture_1"
     },
     "status": "document.declined",
-    "tags": ["mandate"],
+    "tags": [
+      "mandate"
+    ],
     "template": {
       "id": "tpl_0001",
       "name": "Mandate"
@@ -611,7 +619,9 @@
       "id": "usr_fixture_1"
     },
     "status": "document.sent",
-    "tags": ["mandate"],
+    "tags": [
+      "mandate"
+    ],
     "template": {
       "id": "tpl_0003",
       "name": "Mandate"
@@ -804,7 +814,9 @@
     ],
     "sent_by": null,
     "status": "document.draft",
-    "tags": ["mandate"],
+    "tags": [
+      "mandate"
+    ],
     "template": {
       "id": "tpl_0003",
       "name": "Mandate"
@@ -928,7 +940,9 @@
       "id": "usr_fixture_1"
     },
     "status": "document.viewed",
-    "tags": ["mandate"],
+    "tags": [
+      "mandate"
+    ],
     "template": {
       "id": "tpl_0001",
       "name": "Mandate"
@@ -1052,7 +1066,9 @@
       "id": "usr_fixture_1"
     },
     "status": "document.declined",
-    "tags": ["mandate"],
+    "tags": [
+      "mandate"
+    ],
     "template": {
       "id": "tpl_0003",
       "name": "Mandate"
@@ -1174,7 +1190,9 @@
       "id": "usr_fixture_1"
     },
     "status": "document.sent",
-    "tags": ["mandate"],
+    "tags": [
+      "mandate"
+    ],
     "template": {
       "id": "tpl_0001",
       "name": "Mandate"
@@ -1298,7 +1316,9 @@
       "id": "usr_fixture_1"
     },
     "status": "document.completed",
-    "tags": ["mandate"],
+    "tags": [
+      "mandate"
+    ],
     "template": {
       "id": "tpl_0003",
       "name": "Mandate"
@@ -1420,7 +1440,9 @@
     ],
     "sent_by": null,
     "status": "document.draft",
-    "tags": ["mandate"],
+    "tags": [
+      "mandate"
+    ],
     "template": {
       "id": "tpl_0001",
       "name": "Mandate"

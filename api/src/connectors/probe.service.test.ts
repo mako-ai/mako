@@ -64,6 +64,7 @@ vi.mock("../services/workspace.service", () => ({
 vi.mock("../sync/connector-registry", () => ({
   syncConnectorRegistry: {
     getConnectorFor: vi.fn(async () => state.connector),
+    getConfigSchemaForType: vi.fn(async () => ({ fields: [] })),
   },
 }));
 

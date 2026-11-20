@@ -1,8 +1,7 @@
 # Wise connector folder
 
-Wise (TransferWise) on `@makoai/connector-sdk`: a port of the in-process
-connector in `api/src/connectors/wise/`, run in a box. No flow uses it yet.
-The parity harness in `fixtures/` holds the two to the same output.
+Wise (TransferWise) on `@makoai/connector-sdk`, run in a box. It replaced the
+in-process connector, which has been deleted.
 
 ## Entities
 
@@ -80,11 +79,6 @@ defers the event, and any other failure fails it for a retry.
 ## Tests
 
 ```bash
-# Parity tables, folder through the SDK runner (re-record with --record).
-TZ=UTC pnpm --filter api exec tsx ../connectors/wise/fixtures/parity.mjs
-# The same through SandboxedConnector, and the webhook fill.
-cd api && node --import tsx src/connectors/wise/folder-parity.test.ts
-cd api && node --import tsx src/connectors/wise/folder-webhook-batches.test.ts
 # `mako connector test` against the cassettes.
 node connectors/wise/fixtures/conformance.mjs
 ```

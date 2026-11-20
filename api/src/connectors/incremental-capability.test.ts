@@ -7,7 +7,6 @@ import { RestConnector } from "./rest/connector";
 import { GraphQLConnector } from "./graphql/connector";
 import { PosthogConnector } from "./posthog/connector";
 import { BigQueryConnector } from "./bigquery/connector";
-import { WiseConnector } from "./wise/connector";
 import {
   BaseConnector,
   type IncrementalCapabilities,
@@ -150,16 +149,6 @@ const connectors: Array<{
         config: {},
       } as any),
   },
-  {
-    label: "wise",
-    make: () =>
-      new WiseConnector({
-        id: "ds_wise",
-        name: "Wise",
-        type: "wise",
-        config: { api_key: "test-token" },
-      } as any),
-  },
 ];
 
 function capabilitiesFor(label: string): IncrementalCapabilities {
@@ -230,17 +219,6 @@ function testRestDeclaresClientFilterWithWarning() {
   const rest = capabilitiesFor("rest");
   assert.equal(rest.mode, "client-filter");
   assert.ok(rest.warning && rest.warning.length > 0);
-}
-
-function testWiseCreatedAnchorTransfersAndNoneFallback() {
-  const wise = capabilitiesFor("wise");
-  assert.equal(wise.supported, true);
-  assert.equal(wise.mode, "none");
-  assert.equal(wise.perEntity?.transfers?.mode, "created-anchor");
-  assert.equal(wise.perEntity?.transfers?.anchorField, "createdDateStart");
-  assert.equal(wise.perEntity?.activities?.mode, "native");
-  assert.equal(wise.perEntity?.activities?.anchorField, "since");
-  assert.ok(wise.warning && wise.warning.length > 0);
 }
 
 async function testCloseSearchApiUsesDateUpdatedWhenSinceSet() {
@@ -321,57 +299,6 @@ async function testStripeCreatedGteWhenSinceSet() {
   assert.ok(captured.created.gte > 0);
 }
 
-async function testWiseTransfersCreatedDateStartWhenSinceSet() {
-  const connector = new WiseConnector({
-    id: "ds_wise",
-    name: "Wise",
-    type: "wise",
-    config: { api_key: "test", profile_id: "1" },
-  } as any);
-
-  let captured: any;
-  (connector as any).wiseApi = {
-    get: async (_path: string, config?: { params?: any }) => {
-      captured = config?.params;
-      return { data: [] };
-    },
-  };
-
-  await connector.fetchEntityChunk({
-    entity: "transfers",
-    since: new Date("2026-07-15T12:00:00.000Z"),
-    onBatch: async () => {},
-  } as any);
-
-  assert.equal(captured.createdDateStart, "2026-07-15");
-}
-
-async function testWiseActivitiesNativeSinceWhenSinceSet() {
-  const connector = new WiseConnector({
-    id: "ds_wise",
-    name: "Wise",
-    type: "wise",
-    config: { api_key: "test", profile_id: "1" },
-  } as any);
-
-  let captured: any;
-  (connector as any).wiseApi = {
-    get: async (_path: string, config?: { params?: any }) => {
-      captured = config?.params;
-      return { data: { activities: [], cursor: null } };
-    },
-  };
-
-  await connector.fetchEntityChunk({
-    entity: "activities",
-    since: new Date("2026-07-15T12:00:00.000Z"),
-    onBatch: async () => {},
-  } as any);
-
-  assert.equal(captured.since, "2026-07-15T12:00:00.000Z");
-  assert.equal(captured.cursor, undefined);
-}
-
 async function main() {
   testEveryConnectorReturnsWellFormedCapabilities();
   testConnectorsWithNoRealIncrementalDeclareNone();
@@ -381,10 +308,7 @@ async function main() {
   testCloseSearchApiEntitiesDeclareNative();
   await testCloseSearchApiUsesDateUpdatedWhenSinceSet();
   await testStripeCreatedGteWhenSinceSet();
-  await testWiseTransfersCreatedDateStartWhenSinceSet();
-  await testWiseActivitiesNativeSinceWhenSinceSet();
   testRestDeclaresClientFilterWithWarning();
-  testWiseCreatedAnchorTransfersAndNoneFallback();
 }
 
 main().catch((error: unknown) => {

@@ -9,7 +9,7 @@
  * Run: node --import tsx src/connectors/workspace/webhook-verification.test.ts
  */
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { before, test } from "node:test";
 import {
   type DeclaredHmacVerification,
@@ -359,8 +359,8 @@ void test("where an event id and type sit is read from the spec, plain paths onl
 });
 
 // ---------------------------------------------------------------------------
-// Wise (rsa-sha256) and Calendly (stripe-v1), each against its in-process
-// check, on the folders' own fixture deliveries and declarations.
+// Wise (rsa-sha256) and Calendly (stripe-v1), on the folders' own fixture
+// deliveries and declarations.
 // ---------------------------------------------------------------------------
 
 async function folderSpec(slug: "wise" | "calendly" | "pandadoc") {
@@ -376,16 +376,23 @@ async function folderSpec(slug: "wise" | "calendly" | "pandadoc") {
   return run.messages.find((m: any) => m.type === "SPEC")?.spec;
 }
 
-void test("the Wise declaration agrees with the in-process check, with Wise's own keys", async () => {
-  const { verifyWiseWebhook, wiseWebhookPublicKeys } =
-    await import("../wise/webhooks");
+void test("the Wise declaration verifies its fixture deliveries", async () => {
   const fixtures =
     await import("../../../../connectors/wise/fixtures/webhook-events.mjs");
   const wise = await folderSpec("wise");
   const declared = wise.mako.webhooks.verification;
-  // Wise's production and sandbox keys, in the built-in's order.
-  assert.deepEqual(declared.publicKeys, wiseWebhookPublicKeys(false));
-  // The fixtures are signed by a per-run key: swap it in on both sides.
+  // Wise's two real keys, pinned by SHA-256 to the values the deleted built-in
+  // carried (production first, then sandbox).
+  assert.deepEqual(
+    declared.publicKeys.map((k: string) =>
+      createHash("sha256").update(k).digest("hex"),
+    ),
+    [
+      "1e92104074d466544ce0104a5aa70605c3ea4d66a2539989a9c23138d837ee10",
+      "81853ce0f40d8faef86e8c0c903a19336f4414e5c6af196478b8f15dd97148d2",
+    ],
+  );
+  // The fixtures are signed by a per-run key: swap it in.
   const testKey = fixtures.TEST_WEBHOOK_KEYS.publicKey;
   const declaration = declaredWebhookVerification(
     spec({ ...declared, publicKeys: [testKey] }),
@@ -396,11 +403,10 @@ void test("the Wise declaration agrees with the in-process check, with Wise's ow
   let valid = 0;
   for (const d of deliveries) {
     const ours = verifyDeclaredWebhook(declaration, d);
-    const theirs = verifyWiseWebhook(
-      { payload: d.payload, headers: d.headers, secret: "production" },
-      () => [testKey],
-    );
-    assert.equal(ours.valid, theirs.valid, d.name);
+    if (/^valid/.test(d.name)) assert.ok(ours.valid, d.name);
+    if (/tampered|wrong key|no signature|not base64/.test(d.name)) {
+      assert.equal(ours.valid, false, d.name);
+    }
     if (ours.valid) valid++;
   }
   assert.equal(valid, 4);
