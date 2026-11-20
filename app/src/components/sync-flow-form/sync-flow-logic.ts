@@ -289,9 +289,9 @@ export function buildSyncPayload(data: FormData, ctx: SyncPayloadContext) {
 
   // Entity selection: staging destinations use the layout table; other
   // destinations use the same enabled-set without layout hints.
-  // Hybrid connectors (PostHog) expose built-in entities via layouts AND
-  // query-named entities via transferQueries — persist both so surveys
-  // stay opt-in while HogQL queries still sync.
+  // Hybrid connectors expose built-in entities via layouts AND
+  // query-named entities via transferQueries — persist both so built-in
+  // entities stay opt-in while queries still sync.
   const layouts = data.entityLayouts || [];
   if (ctx.hasTransferQueries) {
     const enabledBuiltins = layouts

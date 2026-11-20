@@ -2,7 +2,7 @@
  * The boxed PostHog connector folder (`connectors/posthog/`): checks that
  * hold the folder to itself, kept after the in-process connector was removed.
  *
- * - the folder is a node connector with 5 entities, 3 golden files each;
+ * - the folder is a node connector with 5 entities, 6 golden files each;
  * - every entity reads the replay cassettes into its golden rows, byte for
  *   byte, in 3 scenarios: the default read, an incremental read (`since`)
  *   and one request per chunk (rewrite them, after an intended change, with
@@ -178,7 +178,7 @@ void test("connector.yaml is a node folder with its entry", () => {
   assert.equal(parsed.value.entry, "connector.ts");
 });
 
-void test("5 entities, each with a label and 3 golden files", async () => {
+void test("5 entities, each with a label and 6 golden files", async () => {
   const { GOLDEN_DIR, GOLDEN_SCENARIOS, goldenFile } = await loadGolden();
   assert.deepEqual(
     streams.map(s => s.name),
@@ -291,10 +291,10 @@ void test("check accepts a valid key and a key without survey scope, and refuses
   ]);
 });
 
-void test("every entity reads the cassettes into its golden rows, byte for byte, in 3 scenarios", async () => {
+void test("every entity reads the cassettes into its golden rows, byte for byte, in 6 scenarios", async () => {
   const { GOLDEN_DIR, buildGolden } = await loadGolden();
   const actual = await buildGolden();
-  assert.equal(Object.keys(actual).length, ENTITIES.length * 3);
+  assert.equal(Object.keys(actual).length, ENTITIES.length * 6);
   for (const [file, text] of Object.entries(actual)) {
     const expected = fs.readFileSync(path.join(GOLDEN_DIR, file), "utf8");
     assert.equal(text, expected, `${file} differs from fixtures/golden/`);

@@ -12,4 +12,5 @@ Releases of `mako/posthog`. Not released yet: no tag, no registry entry.
   in-process. A response row has no update or creation field and gets the
   sync time on both paths.
 - Not ported: HogQL query entities (a flow's `queries`). The SDK declares
-  entities statically.
+  entities statically. 0 production flows used them. Live HogQL reads stay
+  available through `call_connection` (`hogql`).

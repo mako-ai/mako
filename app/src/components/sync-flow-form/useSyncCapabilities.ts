@@ -226,8 +226,8 @@ export function useSyncCapabilities({
       : layoutMode === "index"
         ? "36px minmax(110px, 1.3fr) minmax(70px, 0.6fr) minmax(120px, 0.9fr) minmax(100px, 1fr) minmax(100px, 1fr)"
         : "36px minmax(110px, 1.3fr) minmax(70px, 0.6fr) minmax(120px, 0.9fr)";
-  // Schema may expose optional transferQueries (PostHog: HogQL optional when
-  // syncing built-in entities like surveys) or required ones (GraphQL).
+  // Schema may expose optional transferQueries (hybrid connectors: queries
+  // optional when syncing built-in entities) or required ones (GraphQL).
   const hasTransferQueries = !!transferQueriesSchema;
   const requiresQueries = Boolean(transferQueriesSchema?.required);
   const requiresDestinationDatabaseName =

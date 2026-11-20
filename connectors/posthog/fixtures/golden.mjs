@@ -1,7 +1,9 @@
 /**
  * Golden rows: what the folder reads from the replay cassettes, per entity,
- * in three scenarios: the engine's default (10 requests a chunk), an
- * incremental read (`since`), and one request per chunk. The in-process
+ * in six scenarios: the engine's default (10 requests a chunk), an
+ * incremental read (`since`), one request per chunk, two-row pages, the
+ * RealAdvisor flow (incremental, 2000 rows a page) and a project API key.
+ * The in-process
  * connector this folder was ported from is gone, so these files hold the
  * output it was checked against. The API test
  * `api/src/connectors/posthog-folder.test.ts` compares byte for byte.
@@ -12,6 +14,9 @@
  * - `<entity>.chunked.json`  the resume position after every one-request
  *                            chunk, and the row count. Its rows equal the
  *                            default read's (`buildGolden` fails if not).
+ * - `<entity>.small-pages.json`  the same, with two rows per page.
+ * - `<entity>.flow.json`     the rows of the flow's incremental read.
+ * - `<entity>.project-key.json`  the rows of a read with a project API key.
  *
  * Rewrite after an intended change:
  *
@@ -44,11 +49,35 @@ import {
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const GOLDEN_DIR = path.join(here, "golden");
 
-/** The three read scenarios that have golden files. */
+/** The six read scenarios that have golden files. */
 export const GOLDEN_SCENARIOS = [
   { name: "default", suffix: "", maxIterations: 10 },
   { name: "since", suffix: ".since", maxIterations: 10, since: SINCE },
-  { name: "chunked", suffix: ".chunked", maxIterations: 1 },
+  { name: "chunked", suffix: ".chunked", maxIterations: 1, chunks: true },
+  // Two rows per page, one page per chunk: every list of 3 rows or more
+  // resumes from an offset at least once.
+  {
+    name: "small-pages",
+    suffix: ".small-pages",
+    maxIterations: 1,
+    pageSize: 2,
+    chunks: true,
+  },
+  // RealAdvisor's posthog_crm flow: incremental, 2000 rows per page.
+  {
+    name: "flow",
+    suffix: ".flow",
+    maxIterations: 10,
+    pageSize: 2000,
+    since: SINCE,
+  },
+  // A project API key: the POSTHOG-API-TOKEN header instead of Bearer.
+  {
+    name: "project-key",
+    suffix: ".project-key",
+    maxIterations: 10,
+    authType: "project_api_key",
+  },
 ];
 
 /** The golden file name of one entity in one scenario. */
@@ -97,19 +126,21 @@ export async function buildGolden() {
           config: readConfig(
             `phx_test_golden_${scenario.name}_${entity}`,
             server,
+            scenario,
           ),
         });
         if (scenario.name === "default") defaultRows = rows;
         if (
-          scenario.name === "chunked" &&
+          scenario.chunks &&
           canonicalJson(rows) !== canonicalJson(defaultRows)
         ) {
-          throw new Error(`${entity}: chunked rows differ from the default`);
+          throw new Error(
+            `${entity}: ${scenario.name} rows differ from the default`,
+          );
         }
-        out[goldenFile(entity, scenario)] =
-          scenario.name === "chunked"
-            ? goldenText({ chunks, rows: rows.length })
-            : goldenText(rows);
+        out[goldenFile(entity, scenario)] = scenario.chunks
+          ? goldenText({ chunks, rows: rows.length })
+          : goldenText(rows);
       }
     }
     if (server.misses.length > 0) {
