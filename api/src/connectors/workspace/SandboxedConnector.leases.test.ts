@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   retireSyncBox: vi.fn(),
   snapshotPristine: vi.fn(),
   getBoxScheduler: vi.fn(),
+  prepareRegistryConnector: vi.fn(),
 }));
 
 vi.mock("./sync-box", async importOriginal => ({
@@ -36,6 +37,9 @@ vi.mock("./resolver", () => ({
 }));
 vi.mock("./boxes/scheduler", () => ({
   getBoxScheduler: mocks.getBoxScheduler,
+}));
+vi.mock("./registry/registry.service", () => ({
+  prepareRegistryConnector: mocks.prepareRegistryConnector,
 }));
 
 import { SandboxedConnector } from "./SandboxedConnector";
@@ -74,6 +78,10 @@ beforeEach(() => {
   mocks.readConnectorFolder.mockResolvedValue(new Map());
   mocks.materializeConnector.mockResolvedValue("/tmp/acme");
   mocks.ensureBundle.mockResolvedValue({ runtimeId: "rt-1", dir: "/tmp/acme" });
+  mocks.prepareRegistryConnector.mockResolvedValue({
+    dir: "/box/registry",
+    entry: "connector.mjs",
+  });
   mocks.runConnectorCommand.mockResolvedValue(status);
   mocks.getBoxScheduler.mockReturnValue({ withLease: mocks.withLease });
   mocks.withLease.mockImplementation(async (_run, fn) =>
@@ -94,7 +102,27 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.CONNECTOR_BOX_LEASES;
+  delete process.env.CONNECTOR_REGISTRY_ENABLED;
 });
+
+const registry = {
+  ref: "mako/acme@1.0.0",
+  slug: "acme",
+  version: "1.0.0",
+  hash: "a".repeat(64),
+  sha256: "b".repeat(64),
+};
+
+function useRegistryDefinition() {
+  mocks.loadConnectorDefinition.mockResolvedValue({
+    slug: "acme",
+    sha: "commit-sha",
+    sourceSha: "source-sha",
+    entry: "connector.ts",
+    entities: [],
+    registry,
+  });
+}
 
 describe("flag off", () => {
   it("runs in the workspace's sync box and never touches the scheduler", async () => {
@@ -138,6 +166,69 @@ describe("flag off", () => {
     process.env.CONNECTOR_BOX_LEASES = "1";
     await connector().testConnection();
     expect(mocks.withLease).not.toHaveBeenCalled();
+  });
+});
+
+describe.each([false, true])("registry execution with leases %s", leases => {
+  beforeEach(() => {
+    useRegistryDefinition();
+    process.env.CONNECTOR_REGISTRY_ENABLED = "true";
+    if (leases) process.env.CONNECTOR_BOX_LEASES = "true";
+  });
+
+  it("verifies the registry bundle on every run without reading workspace files", async () => {
+    const c = connector();
+    expect((await c.testConnection()).success).toBe(true);
+    expect((await c.testConnection()).success).toBe(true);
+    expect(mocks.prepareRegistryConnector).toHaveBeenCalledTimes(2);
+    expect(mocks.prepareRegistryConnector).toHaveBeenCalledWith({
+      ctx: {
+        sessionKey: leases ? "connector-box:cbx_1" : "connector-sync:v2:ws1",
+      },
+      runtimeId: "rt-1",
+      registry,
+    });
+    expect(mocks.readConnectorFolder).not.toHaveBeenCalled();
+    expect(mocks.ensureBundle).not.toHaveBeenCalled();
+    expect(mocks.runConnectorCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectorDir: "/box/registry",
+        entry: "connector.mjs",
+      }),
+    );
+    if (leases) {
+      expect(mocks.withLease).toHaveBeenCalledWith(
+        expect.objectContaining({ bundleHash: registry.sha256 }),
+        expect.any(Function),
+      );
+    } else {
+      expect(mocks.withLease).not.toHaveBeenCalled();
+    }
+  });
+
+  it("refuses a failed warm-bundle verification before running the command", async () => {
+    const c = connector();
+    expect((await c.testConnection()).success).toBe(true);
+    mocks.prepareRegistryConnector.mockRejectedValueOnce(
+      new Error("digest mismatch"),
+    );
+    expect(await c.testConnection()).toMatchObject({
+      success: false,
+      message: "digest mismatch",
+    });
+    expect(mocks.runConnectorCommand).toHaveBeenCalledTimes(1);
+    expect(mocks.readConnectorFolder).not.toHaveBeenCalled();
+  });
+
+  it("refuses registry execution when its flag is off", async () => {
+    delete process.env.CONNECTOR_REGISTRY_ENABLED;
+    expect(await connector().testConnection()).toMatchObject({
+      success: false,
+      message: expect.stringContaining("CONNECTOR_REGISTRY_ENABLED"),
+    });
+    expect(mocks.prepareRegistryConnector).not.toHaveBeenCalled();
+    expect(mocks.runConnectorCommand).not.toHaveBeenCalled();
+    expect(mocks.readConnectorFolder).not.toHaveBeenCalled();
   });
 });
 

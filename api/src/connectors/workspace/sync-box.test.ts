@@ -522,21 +522,33 @@ describe("verify_tree against a real connector folder", () => {
   afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
-  const verify = () =>
+  const verify = (expectedLine = "") =>
     execFileSync(
       "bash",
       [
         "-c",
-        `${verifyTreeShell()}\nverify_tree "$1" "$2" && echo yes || echo no`,
+        `${verifyTreeShell()}\nverify_tree "$1" "$2" "$3" && echo yes || echo no`,
         "verify",
         dir,
         id,
+        expectedLine,
       ],
       { encoding: "utf8" },
     ).trim();
 
   it("accepts a complete folder", () => {
     expect(verify()).toBe("yes");
+  });
+
+  it("requires the configured digest when checking a single-file bundle", () => {
+    const name = "connector.mjs";
+    const bytes = new TextEncoder().encode("export default {};");
+    const manifest = treeManifest(new Map([[name, bytes]]));
+    fs.writeFileSync(nodePath.join(dir, name), bytes);
+    fs.writeFileSync(nodePath.join(dir, TREE_MANIFEST), manifest);
+
+    expect(verify(manifest.trimEnd())).toBe("yes");
+    expect(verify(`${"0".repeat(64)}  ${name}`)).toBe("no");
   });
 
   it("rejects a marker over a folder without connector.ts", () => {
