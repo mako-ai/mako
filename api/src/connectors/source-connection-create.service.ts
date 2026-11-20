@@ -57,11 +57,17 @@ export class OrphanConnectorTypeError extends Error {
   }
 }
 
-/** True when `type` has no config schema, so its secrets cannot be told apart. */
+/**
+ * True when `type` is a built-in type with no config schema, so its secrets
+ * cannot be told apart. A `ws:` type is never an orphan here: its schema
+ * load can fail for a moment (blocked, retrying) and that error must surface
+ * as it does elsewhere, not read as a removed connector.
+ */
 export async function isOrphanConnectorType(
   type: string,
   workspaceId?: string,
 ): Promise<boolean> {
+  if (isWorkspaceConnectorType(type)) return false;
   const schema = await syncConnectorRegistry
     .getConfigSchemaForType(type, workspaceId)
     .catch(() => null);

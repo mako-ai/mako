@@ -658,7 +658,7 @@ sourceConnectionRoutes.openapi(
 
       const existing = await SourceConnection.findOne(
         { _id: id, workspaceId },
-        { createdBy: 1, managers: 1, keyRequest: 1 },
+        { createdBy: 1, managers: 1, keyRequest: 1, type: 1 },
       ).lean();
       if (!existing) {
         return fail(c, 404, "Source connection not found");
@@ -666,6 +666,13 @@ sourceConnectionRoutes.openapi(
       const caller = await callerOf(c, workspaceId);
       if (!(await mayChangeSourceConnection(caller, existing))) {
         return fail(c, 403, changeRefusal(caller.role));
+      }
+      // A removed connector's connection cannot be switched on.
+      if (
+        body.enabled &&
+        (await isOrphanConnectorType(existing.type, workspaceId))
+      ) {
+        return fail(c, 409, ORPHAN_TYPE_MESSAGE);
       }
       // A connection still waiting for its key has nothing to sync with.
       if (body.enabled && existing.keyRequest) {

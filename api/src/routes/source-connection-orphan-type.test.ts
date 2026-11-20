@@ -45,11 +45,13 @@ vi.mock("../services/workspace.service", () => ({
 // "gcs" and "wise" have no schema here (removed connectors); "close" does.
 vi.mock("../sync/connector-registry", () => ({
   syncConnectorRegistry: {
-    getConfigSchemaForType: vi.fn(async (type: string) =>
-      type === "close"
+    getConfigSchemaForType: vi.fn(async (type: string) => {
+      // A workspace connector that is retrying: loading its schema throws.
+      if (type === "ws:acme") throw new Error("The connector acme is retrying");
+      return type === "close"
         ? { fields: [{ name: "api_key", type: "password", encrypted: true }] }
-        : null,
-    ),
+        : null;
+    }),
     getConnectorFor: vi.fn(async () => null),
   },
 }));
@@ -60,9 +62,15 @@ vi.mock("../connectors/registry", () => ({
 
 import { sourceConnectionRoutes } from "./source-connections";
 import { SourceConnection } from "../database/workspace-schema";
-import { applySchemaEncryption } from "../connectors/source-connection-create.service";
+import {
+  applySchemaEncryption,
+  isOrphanConnectorType,
+} from "../connectors/source-connection-create.service";
 import { connectionRequest } from "../connections/proxy.service";
 import { setTransportForTests } from "../connections/forward";
+import { probeConnection, ProbeError } from "../connectors/probe.service";
+import { getSourceConnectionManager } from "../sync/database-data-source-manager";
+import { createConnectionWriteTools } from "../agent-lib/tools/connection-write-tools";
 
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId();
@@ -192,5 +200,76 @@ describe("an orphan type (no config schema)", () => {
       /no longer available/,
     );
     expect(applySchemaEncryption({}, null)).toEqual({});
+  });
+
+  it("PATCH enable is refused, and the row stays off", async () => {
+    await SourceConnection.updateOne({ _id: orphan }, { isActive: false });
+    const on = await req("PATCH", `/${orphan}/enable`, { enabled: true });
+    expect(on.status).toBe(409);
+    expect((await stored())?.isActive).toBe(false);
+    const off = await req("PATCH", `/${orphan}/enable`, { enabled: false });
+    expect(off.status).toBe(200);
+  });
+
+  it("MCP update_connection active:true is refused, a rename works", async () => {
+    await SourceConnection.updateOne({ _id: orphan }, { isActive: false });
+    const tools = createConnectionWriteTools(String(WS), "owner1");
+    const exec = (input: Record<string, unknown>) =>
+      (
+        tools.update_connection as unknown as {
+          execute: (i: unknown, o: unknown) => Promise<any>;
+        }
+      ).execute({ connectionId: orphan, ...input }, {});
+    const on = await exec({ active: true });
+    expect(on.error).toMatch(/no longer available/);
+    expect((await stored())?.isActive).toBe(false);
+    const renamed = await exec({ name: "mcp renamed" });
+    expect(renamed.error).toBeUndefined();
+    expect((await stored())?.name).toBe("mcp renamed");
+  });
+
+  it("probe is refused before any request", async () => {
+    await expect(
+      probeConnection({
+        workspaceId: String(WS),
+        connectionId: orphan,
+        actor: { userId: "owner1" },
+      } as never),
+    ).rejects.toSatisfy(
+      (e: unknown) =>
+        e instanceof ProbeError && e.code === "connector_unavailable",
+    );
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("decryptConfig withholds the config for a null schema", async () => {
+    const manager = getSourceConnectionManager() as unknown as {
+      decryptConfig: (c: unknown, t: string, w?: string) => Promise<unknown>;
+    };
+    const out = await manager.decryptConfig(
+      { api_key: CIPHERTEXT },
+      "gcs",
+      String(WS),
+    );
+    expect(out).toEqual({});
+  });
+});
+
+describe("a workspace connector that is retrying", () => {
+  it("is not an orphan, and its connection can still be switched on", async () => {
+    expect(await isOrphanConnectorType("ws:acme", String(WS))).toBe(false);
+    expect(await isOrphanConnectorType("gcs", String(WS))).toBe(true);
+    const live = await SourceConnection.create({
+      workspaceId: WS,
+      name: "acme",
+      type: "ws:acme",
+      config: {},
+      isActive: false,
+      settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
+      createdBy: "owner1",
+      managers: ["owner1"],
+    });
+    const res = await req("PATCH", `/${live._id}/enable`, { enabled: true });
+    expect(res.status).toBe(200);
   });
 });
