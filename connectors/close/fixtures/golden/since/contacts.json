@@ -1,0 +1,404 @@
+[
+  {
+    "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "custom_cf_AAaM6ofpxp8fYr454scqu7VbL4uD5ijNAAaM6ofpx": [
+      "Option A"
+    ],
+    "custom_cf_EX9nQJ05nZhbEyAFOYamOfuQ0vxf5rk6EX9nQJ05n": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "custom_cf_L91DgqW85uYB6futIrMyQbp09iGsr4A3L91DgqW85": [
+      "Option A"
+    ],
+    "custom_cf_mbFSm2BqJoIrucIm5cHO9XqZRkP4dfA0mbFSm2BqJ": "Value 0042",
+    "custom_cf_uMoagVrce2l3Gpbkmw8r736Lc1LhPHbvuMoagVrce": true,
+    "date_created": "2025-06-03T14:53:39.921000+00:00",
+    "date_updated": "2026-09-07T21:18:19.196000+00:00",
+    "display_name": "Contact 0042",
+    "emails": [
+      {
+        "email": "contact0042@example.com",
+        "type": "office"
+      }
+    ],
+    "id": "cont_fYdGJcm9464gfAYybdw8ZYmq44YxY7p7fYdGJcm94",
+    "integration_links": [],
+    "lead_id": "lead_HSHaTPh1VFyKk8p6n5SNiwE3wRBoV44yHSHaTPh1V",
+    "lead_suggestions_operation_id": null,
+    "name": "Contact 0042",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "phones": [
+      {
+        "phone": "+48000000042",
+        "type": "mobile"
+      }
+    ],
+    "timezone": "Europe/Warsaw",
+    "timezone_source": "phone",
+    "title": "Owner",
+    "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "urls": []
+  },
+  {
+    "created_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "custom_cf_7et0Jb06NX0IAyDmFpz0Bglhiapn4hDi7et0Jb06N": "Value 0045",
+    "custom_cf_AAaM6ofpxp8fYr454scqu7VbL4uD5ijNAAaM6ofpx": [
+      "Option A"
+    ],
+    "custom_cf_BcRZu47v5PVae9RtZJptKR7m0r8dM5jbBcRZu47v5": 450,
+    "custom_cf_EX9nQJ05nZhbEyAFOYamOfuQ0vxf5rk6EX9nQJ05n": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "custom_cf_Kt0kyeNmn79LraqgfAnynZDafwqWGCXPKt0kyeNmn": 450,
+    "custom_cf_N3rqcQGAaAKV4pE07BkHzham6pPGFVtpN3rqcQGAa": "2025-05-01",
+    "date_created": "2025-06-03T15:45:56.881000+00:00",
+    "date_updated": "2026-09-09T16:22:21.195000+00:00",
+    "display_name": "Contact 0045",
+    "emails": [
+      {
+        "email": "contact0045@example.com",
+        "type": "office"
+      }
+    ],
+    "id": "cont_Lecy7YCoAUlm8bKWekGCne8IJjT66nlOLecy7YCoA",
+    "integration_links": [],
+    "lead_id": "lead_JjXbIrOdlHSFXqKUmAcbvSeg3NS0HYiUJjXbIrOdl",
+    "lead_suggestions_operation_id": null,
+    "name": "Contact 0045",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "phones": [
+      {
+        "phone": "+48000000045",
+        "type": "mobile"
+      }
+    ],
+    "timezone": "Europe/Warsaw",
+    "timezone_source": "address",
+    "title": "Owner",
+    "updated_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "urls": []
+  },
+  {
+    "created_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "custom_cf_7et0Jb06NX0IAyDmFpz0Bglhiapn4hDi7et0Jb06N": "Value 0005",
+    "custom_cf_AAaM6ofpxp8fYr454scqu7VbL4uD5ijNAAaM6ofpx": [
+      "Option A"
+    ],
+    "custom_cf_N3rqcQGAaAKV4pE07BkHzham6pPGFVtpN3rqcQGAa": "2025-05-01",
+    "custom_cf_rZqMap6z1dUnZUeGvlfS3N6RBo2EJL0QrZqMap6z1": 50,
+    "custom_cf_yCFkG68V21Si7a2aO91rqmzJmdZSr0LPyCFkG68V2": "2025-05-01",
+    "date_created": "2025-06-02T08:43:31.890000+00:00",
+    "date_updated": "2026-09-12T04:24:36.885000+00:00",
+    "display_name": "Contact 0005",
+    "emails": [
+      {
+        "email": "contact0005@example.com",
+        "type": "office"
+      }
+    ],
+    "id": "cont_TTgIfBNiyBexsKu0PUvaFii09tZat4g2TTgIfBNiy",
+    "integration_links": [],
+    "lead_id": "lead_jpYtGXQx5lDyUPiHA23lTYahD7FHkBcRjpYtGXQx5",
+    "lead_suggestions_operation_id": null,
+    "name": "Contact 0005",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "phones": [
+      {
+        "phone": "+48000000005",
+        "type": "mobile"
+      }
+    ],
+    "timezone": "Europe/Warsaw",
+    "timezone_source": "address",
+    "title": null,
+    "updated_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "urls": []
+  },
+  {
+    "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "custom_cf_7et0Jb06NX0IAyDmFpz0Bglhiapn4hDi7et0Jb06N": "Value 0063",
+    "custom_cf_BcRZu47v5PVae9RtZJptKR7m0r8dM5jbBcRZu47v5": 630,
+    "custom_cf_EX9nQJ05nZhbEyAFOYamOfuQ0vxf5rk6EX9nQJ05n": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "custom_cf_Kt0kyeNmn79LraqgfAnynZDafwqWGCXPKt0kyeNmn": 630,
+    "custom_cf_mbFSm2BqJoIrucIm5cHO9XqZRkP4dfA0mbFSm2BqJ": "Value 0063",
+    "custom_cf_wnyGgplyAhfe7ZHzyl2bkYcBy1EKTL16wnyGgplyA": "Value 0063",
+    "date_created": "2025-06-04T02:05:52.373000+00:00",
+    "date_updated": "2026-09-14T00:29:01.262000+00:00",
+    "display_name": "Contact 0063",
+    "emails": [
+      {
+        "email": "contact0063@example.com",
+        "type": "office"
+      }
+    ],
+    "id": "cont_U8Dwr7J7ie9qhRVXEC5ENae61u9QmHQnU8Dwr7J7i",
+    "integration_links": [],
+    "lead_id": "lead_1EonSZQktpLyPhYS8rrJPb77brxXVkgR1EonSZQkt",
+    "lead_suggestions_operation_id": null,
+    "name": "Contact 0063",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "phones": [
+      {
+        "phone": "+48000000063",
+        "type": "mobile"
+      }
+    ],
+    "timezone": "Europe/Warsaw",
+    "timezone_source": "address",
+    "title": "Owner",
+    "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "urls": []
+  },
+  {
+    "created_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "custom_cf_7et0Jb06NX0IAyDmFpz0Bglhiapn4hDi7et0Jb06N": "Value 0047",
+    "custom_cf_BcRZu47v5PVae9RtZJptKR7m0r8dM5jbBcRZu47v5": 470,
+    "custom_cf_L91DgqW85uYB6futIrMyQbp09iGsr4A3L91DgqW85": [
+      "Option A"
+    ],
+    "custom_cf_mbFSm2BqJoIrucIm5cHO9XqZRkP4dfA0mbFSm2BqJ": "Value 0047",
+    "custom_cf_yCFkG68V21Si7a2aO91rqmzJmdZSr0LPyCFkG68V2": "2025-05-01",
+    "date_created": "2025-06-03T16:27:21.652000+00:00",
+    "date_updated": "2026-09-21T19:06:33.643000+00:00",
+    "display_name": "Contact 0047",
+    "emails": [
+      {
+        "email": "contact0047@example.com",
+        "type": "office"
+      }
+    ],
+    "id": "cont_3nfedTFTHF33eev8LUv8bXzGRVGYzhdT3nfedTFTH",
+    "integration_links": [],
+    "lead_id": "lead_35MS2uP755RKCW0OFw71ofC4f1D3crFr35MS2uP75",
+    "lead_suggestions_operation_id": null,
+    "name": "Contact 0047",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "phones": [
+      {
+        "phone": "+48000000047",
+        "type": "mobile"
+      }
+    ],
+    "timezone": "Europe/Warsaw",
+    "timezone_source": "address",
+    "title": null,
+    "updated_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "urls": []
+  },
+  {
+    "created_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+    "custom_cf_AAaM6ofpxp8fYr454scqu7VbL4uD5ijNAAaM6ofpx": [
+      "Option A"
+    ],
+    "custom_cf_EX9nQJ05nZhbEyAFOYamOfuQ0vxf5rk6EX9nQJ05n": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+    "custom_cf_mbFSm2BqJoIrucIm5cHO9XqZRkP4dfA0mbFSm2BqJ": "Value 0067",
+    "custom_cf_uMoagVrce2l3Gpbkmw8r736Lc1LhPHbvuMoagVrce": false,
+    "custom_cf_wnyGgplyAhfe7ZHzyl2bkYcBy1EKTL16wnyGgplyA": "Value 0067",
+    "date_created": "2025-06-04T05:42:00.557000+00:00",
+    "date_updated": "2026-09-22T20:48:32.772000+00:00",
+    "display_name": "Contact 0067",
+    "emails": [
+      {
+        "email": "contact0067@example.com",
+        "type": "office"
+      }
+    ],
+    "id": "cont_PqXyGfbnfXgDTkJZo7QsDWFWfKn7e1vSPqXyGfbnf",
+    "integration_links": [],
+    "lead_id": "lead_PmLHxiPDcNFKpH0r1Yui4IGYAwasH5EKPmLHxiPDc",
+    "lead_suggestions_operation_id": null,
+    "name": "Contact 0067",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "phones": [
+      {
+        "phone": "+48000000067",
+        "type": "mobile"
+      }
+    ],
+    "timezone": "Europe/Warsaw",
+    "timezone_source": "address",
+    "title": null,
+    "updated_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+    "urls": []
+  },
+  {
+    "created_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "custom_cf_BcRZu47v5PVae9RtZJptKR7m0r8dM5jbBcRZu47v5": 220,
+    "custom_cf_Kt0kyeNmn79LraqgfAnynZDafwqWGCXPKt0kyeNmn": 220,
+    "custom_cf_L91DgqW85uYB6futIrMyQbp09iGsr4A3L91DgqW85": [
+      "Option A"
+    ],
+    "custom_cf_mbFSm2BqJoIrucIm5cHO9XqZRkP4dfA0mbFSm2BqJ": "Value 0022",
+    "custom_cf_rZqMap6z1dUnZUeGvlfS3N6RBo2EJL0QrZqMap6z1": 220,
+    "custom_cf_uMoagVrce2l3Gpbkmw8r736Lc1LhPHbvuMoagVrce": true,
+    "date_created": "2025-06-02T18:56:36.435000+00:00",
+    "date_updated": "2026-10-03T13:18:58.620000+00:00",
+    "display_name": "Contact 0022",
+    "emails": [
+      {
+        "email": "contact0022@example.com",
+        "type": "office"
+      }
+    ],
+    "id": "cont_9OKoxI8JkqRo30X1thxqnt7BZ2E8SaI09OKoxI8Jk",
+    "integration_links": [],
+    "lead_id": "lead_8vwzTs7rhAAWwbzIl5YQiEBQgHmTcmnN8vwzTs7rh",
+    "lead_suggestions_operation_id": null,
+    "name": "Contact 0022",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "phones": [
+      {
+        "phone": "+48000000022",
+        "type": "mobile"
+      }
+    ],
+    "timezone": "Europe/Warsaw",
+    "timezone_source": "phone",
+    "title": null,
+    "updated_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "urls": []
+  },
+  {
+    "created_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "custom_cf_AAaM6ofpxp8fYr454scqu7VbL4uD5ijNAAaM6ofpx": [
+      "Option A"
+    ],
+    "custom_cf_EX9nQJ05nZhbEyAFOYamOfuQ0vxf5rk6EX9nQJ05n": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "custom_cf_L91DgqW85uYB6futIrMyQbp09iGsr4A3L91DgqW85": [
+      "Option A"
+    ],
+    "custom_cf_N3rqcQGAaAKV4pE07BkHzham6pPGFVtpN3rqcQGAa": "2025-05-01",
+    "custom_cf_uMoagVrce2l3Gpbkmw8r736Lc1LhPHbvuMoagVrce": true,
+    "custom_cf_yCFkG68V21Si7a2aO91rqmzJmdZSr0LPyCFkG68V2": "2025-05-01",
+    "date_created": "2025-06-03T19:04:03.099000+00:00",
+    "date_updated": "2026-10-05T04:36:55.663000+00:00",
+    "display_name": "Contact 0052",
+    "emails": [
+      {
+        "email": "contact0052@example.com",
+        "type": "office"
+      }
+    ],
+    "id": "cont_IvOJViLPzVxQ4QBjtwJBOUPBMSiDp0e0IvOJViLPz",
+    "integration_links": [],
+    "lead_id": "lead_STPnp8abMSzcxJLfFneohNTTPb8p9XhLSTPnp8abM",
+    "lead_suggestions_operation_id": "lsop_0052",
+    "name": "Contact 0052",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "phones": [
+      {
+        "phone": "+48000000052",
+        "type": "mobile"
+      }
+    ],
+    "timezone": "Europe/Warsaw",
+    "timezone_source": "phone",
+    "title": null,
+    "updated_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "urls": []
+  },
+  {
+    "created_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+    "custom_cf_AAaM6ofpxp8fYr454scqu7VbL4uD5ijNAAaM6ofpx": [
+      "Option A"
+    ],
+    "custom_cf_Kt0kyeNmn79LraqgfAnynZDafwqWGCXPKt0kyeNmn": 200,
+    "custom_cf_L91DgqW85uYB6futIrMyQbp09iGsr4A3L91DgqW85": [
+      "Option A"
+    ],
+    "custom_cf_N3rqcQGAaAKV4pE07BkHzham6pPGFVtpN3rqcQGAa": "2025-05-01",
+    "custom_cf_mbFSm2BqJoIrucIm5cHO9XqZRkP4dfA0mbFSm2BqJ": "Value 0020",
+    "custom_cf_wnyGgplyAhfe7ZHzyl2bkYcBy1EKTL16wnyGgplyA": "Value 0020",
+    "date_created": "2025-06-02T18:29:55.238000+00:00",
+    "date_updated": "2026-10-12T09:44:05.525000+00:00",
+    "display_name": "Contact 0020",
+    "emails": [
+      {
+        "email": "contact0020@example.com",
+        "type": "office"
+      }
+    ],
+    "id": "cont_8VLVTwCq8vf99Dakcf4j1QZQYaCPHdw88VLVTwCq8",
+    "integration_links": [],
+    "lead_id": "lead_hzA8uzjpT2UIJf3caa8FWIXvD3h24K4nhzA8uzjpT",
+    "lead_suggestions_operation_id": "lsop_0020",
+    "name": "Contact 0020",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "phones": [
+      {
+        "phone": "+48000000020",
+        "type": "mobile"
+      }
+    ],
+    "timezone": "Europe/Warsaw",
+    "timezone_source": "phone",
+    "title": null,
+    "updated_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+    "urls": []
+  },
+  {
+    "created_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+    "custom_cf_7et0Jb06NX0IAyDmFpz0Bglhiapn4hDi7et0Jb06N": "Value 0072",
+    "custom_cf_BcRZu47v5PVae9RtZJptKR7m0r8dM5jbBcRZu47v5": 720,
+    "custom_cf_rZqMap6z1dUnZUeGvlfS3N6RBo2EJL0QrZqMap6z1": 720,
+    "custom_cf_yCFkG68V21Si7a2aO91rqmzJmdZSr0LPyCFkG68V2": "2025-05-01",
+    "date_created": "2025-06-04T08:03:45.702000+00:00",
+    "date_updated": "2026-10-12T23:52:30.614000+00:00",
+    "display_name": "Contact 0072",
+    "emails": [
+      {
+        "email": "contact0072@example.com",
+        "type": "office"
+      }
+    ],
+    "id": "cont_W3xcnmHSHOhFhsExe0K49JkhuzBw3xdyW3xcnmHSH",
+    "integration_links": [],
+    "lead_id": "lead_6cTtcrk8y1gFdpYDbudgktss4t2hccXK6cTtcrk8y",
+    "lead_suggestions_operation_id": "lsop_0072",
+    "name": "Contact 0072",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "phones": [
+      {
+        "phone": "+48000000072",
+        "type": "mobile"
+      }
+    ],
+    "timezone": "Europe/Warsaw",
+    "timezone_source": "phone",
+    "title": "Owner",
+    "updated_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+    "urls": []
+  },
+  {
+    "created_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "custom_cf_AAaM6ofpxp8fYr454scqu7VbL4uD5ijNAAaM6ofpx": [
+      "Option A"
+    ],
+    "custom_cf_BcRZu47v5PVae9RtZJptKR7m0r8dM5jbBcRZu47v5": 570,
+    "custom_cf_Kt0kyeNmn79LraqgfAnynZDafwqWGCXPKt0kyeNmn": 570,
+    "custom_cf_N3rqcQGAaAKV4pE07BkHzham6pPGFVtpN3rqcQGAa": "2025-05-01",
+    "custom_cf_yCFkG68V21Si7a2aO91rqmzJmdZSr0LPyCFkG68V2": "2025-05-01",
+    "date_created": "2025-06-03T20:57:48.491000+00:00",
+    "date_updated": "2026-10-21T02:13:21.980000+00:00",
+    "display_name": "Contact 0057",
+    "emails": [
+      {
+        "email": "contact0057@example.com",
+        "type": "office"
+      }
+    ],
+    "id": "cont_4g7TTB3foOWuyJL9Y5FrQjVPBDIXTK924g7TTB3fo",
+    "integration_links": [],
+    "lead_id": "lead_GL2Y4uPmbProKREorI9So0yiPjHVPIVDGL2Y4uPmb",
+    "lead_suggestions_operation_id": null,
+    "name": "Contact 0057",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "phones": [
+      {
+        "phone": "+48000000057",
+        "type": "mobile"
+      }
+    ],
+    "timezone": "Europe/Warsaw",
+    "timezone_source": "address",
+    "title": "Owner",
+    "updated_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "urls": []
+  }
+]

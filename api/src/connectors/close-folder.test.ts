@@ -2,10 +2,13 @@
  * The boxed Close connector folder (`connectors/close/`): checks that hold
  * the folder to itself, kept after the in-process connector was removed.
  *
- * - the folder is a node connector with 22 entities, one golden file each;
- * - every entity reads the replay cassettes into its golden rows, byte for
- *   byte (rewrite them, after an intended change, with
- *   `node connectors/close/fixtures/golden.mjs --write`);
+ * - the folder is a node connector with 22 entities;
+ * - the folder reads the replay cassettes into 50 golden files, byte for
+ *   byte: the default read and one-page-per-chunk read of 22 entities, the
+ *   incremental read of 5 Search entities, and the outcome of 86 webhook
+ *   events (rewrite them, after an intended change, with
+ *   `node connectors/close/fixtures/golden.mjs --write`; rebuild the
+ *   cassettes with `--record`);
  * - the config holds the API key and nothing else, and the key goes only to
  *   Close or a loopback test server;
  * - the folder's source reads no environment variable;
@@ -67,38 +70,115 @@ void test("connector.yaml is a node folder with its entry", () => {
   assert.equal(parsed.value.entry, "connector.ts");
 });
 
-void test("22 entities, each with a label and a golden file", async () => {
-  const { GOLDEN_DIR, goldenFile } = await loadGolden();
+/** Every file under golden/, as paths relative to it. */
+function goldenFiles(dir: string, prefix = ""): string[] {
+  return fs
+    .readdirSync(dir, { withFileTypes: true })
+    .flatMap(entry =>
+      entry.isDirectory()
+        ? goldenFiles(path.join(dir, entry.name), `${prefix}${entry.name}/`)
+        : [`${prefix}${entry.name}`],
+    );
+}
+
+/** A golden file, parsed. */
+const golden = async (file: string) => {
+  const { GOLDEN_DIR } = await loadGolden();
+  return JSON.parse(fs.readFileSync(path.join(GOLDEN_DIR, file), "utf8"));
+};
+
+void test("22 entities, each with a label and its golden files", async () => {
+  const { GOLDEN_DIR, SINCE_ENTITIES, goldenFile } = await loadGolden();
   const names = streams.map(s => s.name);
   assert.equal(names.length, 22);
   for (const name of names) {
     assert.ok(spec?.mako?.entities?.[name]?.label, `${name} has a label`);
   }
   assert.deepEqual(
-    fs.readdirSync(GOLDEN_DIR).sort(),
-    names.map(goldenFile).sort(),
+    goldenFiles(GOLDEN_DIR).sort(),
+    [
+      ...names.map(goldenFile),
+      ...names.map(n => `chunked/${goldenFile(n)}`),
+      ...SINCE_ENTITIES.map(n => `since/${goldenFile(n)}`),
+      "webhooks.json",
+    ].sort(),
   );
 });
 
-void test("the folder reads the cassettes into the golden rows, byte for byte", async () => {
-  const { GOLDEN_DIR, buildGolden, goldenFile } = await loadGolden();
+void test("the folder reads the cassettes into the golden files, byte for byte", async () => {
+  const { GOLDEN_DIR, buildGolden } = await loadGolden();
   const actual = await buildGolden();
-  assert.deepEqual(Object.keys(actual).sort(), streams.map(s => s.name).sort());
-  for (const [entity, text] of Object.entries(actual)) {
-    const expected = fs.readFileSync(
-      path.join(GOLDEN_DIR, goldenFile(entity)),
-      "utf8",
-    );
-    // custom_objects reads nothing: Close needs a lead id per object.
-    if (entity !== "custom_objects") {
-      assert.ok(JSON.parse(expected).length > 0, `${entity} golden is empty`);
-    }
+  assert.equal(Object.keys(actual).length, 22 + 22 + 5 + 1);
+  for (const [file, text] of Object.entries(actual)) {
+    const expected = fs.readFileSync(path.join(GOLDEN_DIR, file), "utf8");
     assert.equal(
       text,
       expected,
-      `${entity} differs from fixtures/golden/${goldenFile(entity)}`,
+      `${file} differs from fixtures/golden/${file}`,
     );
   }
+});
+
+void test("every entity's default read has rows, custom_objects aside", async () => {
+  const { goldenFile } = await loadGolden();
+  for (const { name } of streams) {
+    const rows = await golden(goldenFile(name));
+    // custom_objects reads nothing: Close needs a lead id per object.
+    if (name !== "custom_objects") assert.ok(rows.length > 0, name);
+  }
+});
+
+void test("an incremental read from SINCE returns only newer rows, and fewer than the full read", async () => {
+  const { SINCE_ENTITIES, goldenFile } = await loadGolden();
+  const { SINCE } =
+    await import("../../../connectors/close/fixtures/harness.mjs");
+  const expected: Record<string, [number, number]> = {
+    leads: [35, 215],
+    contacts: [11, 80],
+    opportunities: [5, 50],
+    "activities:Call": [45, 231],
+    "activities:Email": [9, 30],
+  };
+  assert.deepEqual(SINCE_ENTITIES.sort(), Object.keys(expected).sort());
+  for (const entity of SINCE_ENTITIES) {
+    const since = await golden(`since/${goldenFile(entity)}`);
+    const full = await golden(goldenFile(entity));
+    assert.deepEqual([since.length, full.length], expected[entity], entity);
+    assert.ok(since.length < full.length, entity);
+    for (const row of since) {
+      assert.ok(row.date_updated >= SINCE, `${entity} ${row.id}`);
+    }
+  }
+});
+
+void test("one page per chunk reads every row in more than one chunk, and ends", async () => {
+  const leads = await golden("chunked/leads.json");
+  assert.equal(leads.rowCount, 215);
+  assert.equal(leads.chunks.length, 12);
+  assert.equal(leads.chunks.at(-1).hasMore, false);
+  assert.ok(leads.chunks.slice(0, -1).every((c: any) => c.hasMore));
+  const { goldenFile } = await loadGolden();
+  for (const { name } of streams) {
+    const chunked = await golden(`chunked/${goldenFile(name)}`);
+    assert.equal(chunked.chunks.at(-1).hasMore, false, name);
+    assert.equal(
+      chunked.chunks.reduce((n: number, c: any) => n + c.records, 0),
+      chunked.rowCount,
+      name,
+    );
+  }
+});
+
+void test("the 86 subscribed events give 93 records, 1 failed extraction and 1 unmapped event", async () => {
+  const webhooks = await golden("webhooks.json");
+  assert.equal(webhooks.events.length, 86);
+  const counts: Record<string, number> = {};
+  for (const o of webhooks.outcomes) {
+    counts[o.outcome] =
+      (counts[o.outcome] ?? 0) +
+      (o.outcome === "records" ? o.records.length : 1);
+  }
+  assert.deepEqual(counts, { records: 93, extract_failed: 1, unmapped: 1 });
 });
 
 void test("the config form is the API key and nothing else", () => {

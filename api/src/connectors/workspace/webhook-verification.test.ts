@@ -61,6 +61,11 @@ void test("the Close declaration accepts the valid delivery and refuses the 5 ta
       ["no secret", false],
     ],
   );
+  // The valid delivery's event is the parsed body, as the in-process check
+  // returned it.
+  const valid = deliveries[0];
+  const result = verifyDeclaredWebhook(declaration, { ...valid, now: SENT });
+  assert.deepEqual(result.event, JSON.parse(valid.payload));
 });
 
 void test("headers are matched case-insensitively, as a proxy may rewrite them", () => {

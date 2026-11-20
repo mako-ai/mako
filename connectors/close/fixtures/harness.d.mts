@@ -1,4 +1,4 @@
-// Types for harness.mjs, for the API test that imports it.
+// Types for harness.mjs, for the API tests that import it.
 
 export const FOLDER: string;
 export const REPO_ROOT: string;
@@ -16,23 +16,10 @@ export interface Scenario {
   name: string;
   maxIterations: number;
   since?: string;
-  /**
-   * Rows per page (`__page_size` / `batchSize`). The offset lists default to
-   * 100 on both sides; on Search the folder pages by it, in-process ignores it.
-   */
+  /** Rows per page (`__page_size`): the offset lists and Search page by it. */
   pageSize?: number;
-  rateLimited?: boolean;
-  /** Search runs read from the emulator and are compared on rows only. */
-  searchRowsOnly?: boolean;
 }
 export const SCENARIOS: Scenario[];
-export const RATE_LIMIT_SCENARIO: Scenario;
-export const RATE_LIMIT_ENTITIES: string[];
-
-export interface CloseTestConfig {
-  api_key: string;
-  baseUrl?: string;
-}
 
 export interface ChunkState {
   position: Record<string, unknown>;
@@ -57,54 +44,12 @@ export interface ReplayServer extends FixtureServer {
   misses: string[];
 }
 
-export interface SourceTimestamps {
-  inProcess(row: Record<string, unknown>): unknown;
-  folder(row: Record<string, unknown>): unknown;
-}
-
-export interface Comparison {
-  rows: [number, number];
-  /** Rows read twice, in-process and folder. */
-  duplicates: [number, number];
-  /** Compared on rows only (a `searchRowsOnly` scenario's Search entity). */
-  rowsOnly?: boolean;
-  /** Every Search page asked for at most the scenario's page size. */
-  pageSizeHonoured?: boolean;
-  keys: boolean;
-  order: boolean;
-  columns: boolean;
-  columnCount: number;
-  checksumMismatches: string[];
-  timestampMismatches: string[];
-  timestampFallbacks: number;
-  chunks: [number, number];
-  chunkStates: boolean;
-  requests: [number, number];
-  requestsEqual: boolean;
-  /** What the folder read beyond in-process on purpose (`FOLDER_ONLY`). */
-  folderOnly?: FolderOnly;
-  ok: boolean;
-}
-
 export interface FolderOnly {
   rows: number;
   columns: string[];
   requests: number;
   /** The extras are there, as declared. */
   ok: boolean;
-}
-
-export interface ParityResult extends Comparison {
-  entity: string;
-  scenario: string;
-  stats: {
-    chunks: number;
-    rows: number;
-    maxChunkRows: number;
-    maxChunkBytes: number;
-    bytesPerRow: number;
-  };
-  error?: string;
 }
 
 export interface ProtocolMessage {
@@ -123,7 +68,10 @@ export function requestKey(
 ): string;
 export function requestHash(key: string): string;
 export function loadCassettes(dir?: string): Map<string, unknown>;
-export function isSearchEntity(entity: string): boolean;
+export function saveCassettes(
+  byFile: Map<string, Map<string, unknown>>,
+  dir?: string,
+): void;
 export function searchLimits(requests: string[]): number[];
 export function startRecordingServer(
   dataset: unknown,
@@ -144,14 +92,18 @@ export function runFolderCommand(
   code: number | null;
   messages: ProtocolMessage[];
   stderr: string;
+  lines: string[];
 }>;
-export function inProcessPosition(state: unknown): Record<string, unknown>;
-export function compareRuns(
-  inProcess: Run,
-  folder: Run,
-  sourceTs?: SourceTimestamps,
-  entity?: string,
-): Comparison;
+export function readFolder(options: {
+  entity: string;
+  config: unknown;
+  since?: string;
+  maxIterations?: number;
+}): Promise<{ rows: Array<Record<string, any>>; chunks: ChunkState[] }>;
+export function runFolderWebhook(input: {
+  verify?: unknown[];
+  events?: unknown[];
+}): Promise<{ events: string[]; verify: any[]; outcomes: any[] }>;
 export const FOLDER_ONLY: Record<
   string,
   {
@@ -166,77 +118,3 @@ export function withoutFolderOnly(
   entity: string | undefined,
   run: Run,
 ): { run: Run; folderOnly?: FolderOnly };
-export function runParity(options: {
-  entities: string[];
-  makeInProcess: (config: CloseTestConfig) => any;
-  makeBoxed?: (config: { api_key: string; __base_url: string }) => any;
-  server: FixtureServer;
-  sourceTs?: SourceTimestamps;
-  scenarios?: Scenario[];
-  concurrency?: number;
-}): Promise<ParityResult[]>;
-export function checkParity(options: {
-  makeInProcess: (config: CloseTestConfig) => any;
-  server: FixtureServer;
-}): Promise<
-  Array<{
-    variant: string;
-    inProcess: boolean;
-    folder: boolean;
-    folderMessage?: string;
-    requestsEqual: boolean;
-  }>
->;
-export function formatReport(results: ParityResult[]): string;
-export function formatScale(results: ParityResult[], scenario?: string): string;
-export function compareEntitySchema(
-  inProcess: any,
-  folder: any,
-  ignore?: Set<string>,
-): {
-  fields: [number, number];
-  customFields: number;
-  missing: string[];
-  extra: string[];
-  fieldDiffs: string[];
-  keyColumns: boolean;
-  policy: boolean;
-  /** `FOLDER_ONLY` schema fields the folder should declare and does not. */
-  folderOnlyMissing: string[];
-  ok: boolean;
-};
-export function compareForm(
-  inProcessFields: any[],
-  folderFields: any[],
-): { ok: boolean; inProcess: unknown; folder: unknown };
-export function webhookParity(options: {
-  connector: any;
-  events: Array<{ eventId: string; eventType: string; rawPayload: unknown }>;
-  deliveries: Array<{
-    name: string;
-    payload: string;
-    headers: Record<string, string>;
-    secret?: string;
-  }>;
-}): Promise<{
-  eventsSame: boolean;
-  eventCount: number;
-  verify: Array<{
-    name: string;
-    inProcess: boolean;
-    folder: boolean;
-    same: boolean;
-  }>;
-  outcomes: Array<{
-    eventId: string;
-    eventType: string;
-    outcome: string;
-    records: number;
-    same: boolean;
-  }>;
-  ok: boolean;
-}>;
-export function inProcessFactory(classes: {
-  CloseConnector: any;
-  createCloseClient: any;
-}): (config: CloseTestConfig) => any;

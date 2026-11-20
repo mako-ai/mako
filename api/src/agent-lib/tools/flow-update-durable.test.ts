@@ -209,7 +209,7 @@ beforeEach(async () => {
   await SourceConnection.collection.insertOne({
     _id: new Types.ObjectId(CONNECTOR),
     workspaceId,
-    name: "Close",
+    name: "Stripe",
     type: "stripe",
   } as any);
   await DatabaseConnection.collection.insertOne({

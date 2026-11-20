@@ -474,14 +474,14 @@ describe("call_connection: a named operation instead of a path", () => {
     proxied.body = { data: [] };
     const result = await tools().call_connection.execute({
       connectionId: "fr_close",
-      operation: "search_leads",
+      operation: "search_customers",
       params: { query: "Dupont" },
     });
     expect(result.status).toBe(200);
     expect(proxied.calls[0]).toMatchObject({
       workspaceId: WS,
       connection: "fr_close",
-      operation: { name: "search_leads", params: { query: "Dupont" } },
+      operation: { name: "search_customers", params: { query: "Dupont" } },
       readOnly: true,
       agentBudget: true,
     });
@@ -515,7 +515,7 @@ describe("call_connection: a named operation instead of a path", () => {
     ]) {
       const result = await tools().call_connection.execute({
         connectionId: "fr_close",
-        operation: "search_leads",
+        operation: "search_customers",
         params: { query: "Dupont" },
         ...raw,
       });

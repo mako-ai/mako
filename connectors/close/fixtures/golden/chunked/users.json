@@ -1,0 +1,14 @@
+{
+  "chunks": [
+    {
+      "hasMore": false,
+      "position": {
+        "offset": 0
+      },
+      "recordBytes": 3927,
+      "records": 7
+    }
+  ],
+  "rowCount": 7,
+  "rowsSha256": "923ec76ae0396c2e37655aea59cb56dd0d5424a886366468e2bafa35bbf00164"
+}
