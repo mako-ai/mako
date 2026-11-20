@@ -51,6 +51,14 @@ beforeEach(() => {
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 function jobControl(state: {
   done: boolean;
   cancels: number;
@@ -233,7 +241,7 @@ describe("table write lease", () => {
       location: "EU",
       intentFingerprint: fingerprint("late-submit"),
     };
-    const observedRunning = Promise.withResolvers<void>();
+    const observedRunning = deferred();
     let state: "missing" | "running" | "done" = "missing";
     const cancel = vi.fn(async () => undefined);
     const isDone = vi.fn(async (job: LeaseJobRef) => {
@@ -494,8 +502,8 @@ describe("table write lease", () => {
         jobs,
         ...FAST,
       });
-      const stored = Promise.withResolvers<void>();
-      const ack = Promise.withResolvers<void>();
+      const stored = deferred();
+      const ack = deferred();
       const update = CdcTableWriteLease.updateOne.bind(CdcTableWriteLease);
       const spy = vi
         .spyOn(CdcTableWriteLease, "updateOne")
