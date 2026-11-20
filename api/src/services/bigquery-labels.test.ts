@@ -109,6 +109,9 @@ async function testContext(): Promise<void> {
   assert.deepEqual(bigQueryJobLabels({ workspaceId: "WS1" }), {
     mako_source: "other",
     mako_workspace: "ws1",
+    mako_caller_kind: "system",
+    mako_caller: "other",
+    mako_surface: "other",
   });
   withQueryLabels({ mako_source: "agent", mako_workspace: "ctx" }, () => {
     assert.deepEqual(
@@ -116,9 +119,67 @@ async function testContext(): Promise<void> {
         workspaceId: "db",
         explicit: { mako_source: "export" },
       }),
-      { mako_source: "export", mako_workspace: "ctx" },
+      {
+        mako_source: "export",
+        mako_workspace: "ctx",
+        mako_caller_kind: "system",
+        mako_caller: "export",
+        mako_surface: "system",
+      },
     );
   });
+
+  // Caller labels: kind, a label-safe handle, the surface.
+  const caller = (labels: Record<string, string>) =>
+    bigQueryJobLabels({ explicit: labels });
+  const mcp = caller({
+    mako_source: "agent",
+    mako_trigger: "mcp",
+    mako_user: "u123",
+  });
+  assert.equal(mcp.mako_caller_kind, "agent");
+  assert.equal(mcp.mako_caller, "u123");
+  assert.equal(mcp.mako_surface, "mcp");
+  const consoleRun = caller({
+    mako_source: "console",
+    mako_trigger: "console_ui",
+    mako_user: "u123",
+  });
+  assert.equal(consoleRun.mako_caller_kind, "user");
+  assert.equal(consoleRun.mako_surface, "console");
+  assert.equal(
+    caller({ mako_source: "console", mako_trigger: "api", mako_user: "u1" })
+      .mako_caller_kind,
+    "api_key",
+  );
+  assert.equal(
+    caller({ mako_source: "app_binding", mako_trigger: "preview" })
+      .mako_surface,
+    "binding",
+  );
+  assert.equal(
+    caller({ mako_source: "notebook", mako_trigger: "kernel" }).mako_surface,
+    "notebook",
+  );
+  assert.equal(caller({ mako_source: "cdc" }).mako_caller_kind, "system");
+  // An email never becomes a caller label; the handle is a short hash.
+  const emailCaller = caller({
+    mako_source: "agent",
+    mako_trigger: "chat",
+    mako_user: "Someone@Example.com",
+  });
+  assert.match(emailCaller.mako_caller, /^h_[0-9a-f]{12}$/);
+  assert.equal(emailCaller.mako_caller.includes("example"), false);
+  // mako_user itself never carries an email either.
+  const hashed = caller({ mako_source: "agent", mako_user: "A.B@x.com" });
+  assert.match(hashed.mako_user, /^h_[0-9a-f]{12}$/);
+  assert.equal(hashed.mako_user, hashed.mako_caller);
+  assert.equal(caller({ mako_user: "665f00aa" }).mako_user, "665f00aa");
+  // An entry point's own caller label wins.
+  assert.equal(
+    caller({ mako_source: "agent", mako_caller: "Agent-7" }).mako_caller,
+    "agent-7",
+  );
 
   assert.deepEqual(bindingActorLabels("scheduler"), {
     mako_trigger: "scheduler",
@@ -188,6 +249,9 @@ async function testRequestBodies(): Promise<void> {
     mako_source: "app_binding",
     mako_app: "sales",
     mako_workspace: "ws1",
+    mako_caller_kind: "system",
+    mako_caller: "app_binding",
+    mako_surface: "binding",
   };
 
   try {
@@ -220,6 +284,9 @@ async function testRequestBodies(): Promise<void> {
       mako_source: "console",
       mako_console: "c1",
       mako_workspace: "ws1",
+      mako_caller_kind: "system",
+      mako_caller: "console",
+      mako_surface: "console",
     });
 
     // No context at all still says where to look.
@@ -228,6 +295,9 @@ async function testRequestBodies(): Promise<void> {
     assert.deepEqual(posts[0].body.labels, {
       mako_source: "other",
       mako_workspace: "ws1",
+      mako_caller_kind: "system",
+      mako_caller: "other",
+      mako_surface: "other",
     });
 
     // A local emulator gets no labels: its jobs cost nothing.

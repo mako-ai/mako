@@ -541,6 +541,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{id}/bigquery-byte-cap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Byte cap on interactive BigQuery queries
+         * @description The most GiB one interactive BigQuery query (agent, MCP, console, notebook, binding preview) may bill. `gb` is null when unset: agent and MCP queries then carry the platform default (`defaultGb`) and consoles, notebooks and previews are uncapped; 0 means no cap. Sync, flows, dbt and published apps are never capped.
+         */
+        get: operations["get_api_workspaces_id_bigquery_byte_cap"];
+        /**
+         * Set the byte cap on interactive BigQuery queries
+         * @description gb in GiB. null clears it (the default applies). 0 turns the cap off. A connection's own agent_max_bytes_billed_gb wins over this.
+         */
+        put: operations["put_api_workspaces_id_bigquery_byte_cap"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{id}/link-previews": {
         parameters: {
             query?: never;
@@ -8040,6 +8064,92 @@ export interface operations {
                      * @enum {string}
                      */
                     role?: "member" | "viewer";
+                };
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_id_bigquery_byte_cap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    put_api_workspaces_id_bigquery_byte_cap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    gb: number | null;
                 };
             };
         };

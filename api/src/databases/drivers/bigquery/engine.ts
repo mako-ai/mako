@@ -34,6 +34,7 @@ import {
   type StreamingQueryOptions,
   type StreamingQueryResult,
 } from "../../query-types";
+import { workspaceByteCapGb } from "../../../services/workspace-byte-cap";
 import { BigQueryClients } from "./client";
 import {
   applyAgentJobCaps,
@@ -178,12 +179,13 @@ export class BigQueryEngine implements QueryEngine {
    * BigQuery-enforced timeout and byte cap when the job serves an agent or
    * the MCP server, plus any byte cap the caller set itself.
    */
-  private agentJobCaps(
+  private async agentJobCaps(
     database: IDatabaseConnection,
     options?: Pick<QueryExecuteOptions, "labels" | "maximumBytesBilled">,
-  ): AgentJobCaps {
+  ): Promise<AgentJobCaps> {
     const config = bigQueryConfig(database);
     return resolveAgentJobCaps({
+      workspaceGb: await workspaceByteCapGb(database.workspaceId),
       connection: config as Record<string, unknown>,
       labels: this.jobLabels(database, config.api_base_url, options),
       explicitBytes: options?.maximumBytesBilled,
@@ -242,7 +244,7 @@ export class BigQueryEngine implements QueryEngine {
     query: DatabaseQuery,
     options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
-    const caps = this.agentJobCaps(database, options);
+    const caps = await this.agentJobCaps(database, options);
     return this.explainAgentCap(
       await this.runQuery(database, query, options, caps),
       caps,
@@ -540,7 +542,7 @@ export class BigQueryEngine implements QueryEngine {
     query: string,
     options?: QueryPreviewOptions,
   ): Promise<QueryPreviewResult> {
-    const caps = this.agentJobCaps(database, options);
+    const caps = await this.agentJobCaps(database, options);
     return this.explainAgentCap(
       await this.runPreviewQuery(database, query, options, caps),
       caps,
@@ -758,7 +760,7 @@ export class BigQueryEngine implements QueryEngine {
     query: string,
     options: StreamingQueryOptions & QueryExecuteOptions,
   ): Promise<StreamingQueryResult> {
-    const caps = this.agentJobCaps(database, options);
+    const caps = await this.agentJobCaps(database, options);
     return this.explainAgentCap(
       await this.runStreamingQuery(database, query, options, caps),
       caps,

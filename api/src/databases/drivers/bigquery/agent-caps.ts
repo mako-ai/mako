@@ -35,6 +35,10 @@ const GIB = 1024 ** 3;
 const UNCAPPED_SOURCES = new Set(["cdc", "flow", "scheduled_query"]);
 /** Triggers that run unattended: scheduled and published binding builds. */
 const UNCAPPED_TRIGGERS = new Set(["scheduler", "publish"]);
+/** Sources a person drives by hand: a console tab, a notebook, an ad hoc run. */
+const INTERACTIVE_SOURCES = new Set(["console", "notebook", "adhoc"]);
+/** Binding triggers where a person waits: a preview, a dev build, a manual refresh. */
+const INTERACTIVE_TRIGGERS = new Set(["preview", "dev", "manual"]);
 /** Triggers that mean an MCP client asked. */
 const MCP_TRIGGERS = new Set(["mcp", "desktop"]);
 
@@ -60,6 +64,26 @@ export function isAgentJob(
 }
 
 /**
+ * Whether a job with these labels is interactive: an agent or MCP call, a
+ * console or notebook someone runs, or an app binding preview. Interactive
+ * jobs get the byte cap. Scheduled, CDC, flow, dbt and published-app jobs
+ * never do, and neither does a console run through an API key.
+ */
+export function isInteractiveJob(
+  labels: Record<string, string> | undefined,
+): boolean {
+  if (!labels) return false;
+  if (UNCAPPED_SOURCES.has(labels.mako_source ?? "")) return false;
+  if (UNCAPPED_TRIGGERS.has(labels.mako_trigger ?? "")) return false;
+  if (isAgentJob(labels)) return true;
+  if (INTERACTIVE_TRIGGERS.has(labels.mako_trigger ?? "")) return true;
+  return (
+    INTERACTIVE_SOURCES.has(labels.mako_source ?? "") &&
+    labels.mako_trigger !== "api"
+  );
+}
+
+/**
  * A non-negative number from a connection field (forms may store numbers as
  * strings); undefined when unset or invalid, so the default applies.
  */
@@ -79,25 +103,40 @@ export function resolveAgentJobCaps(input: {
   connection: Record<string, unknown> | undefined;
   labels: Record<string, string> | undefined;
   explicitBytes?: number;
+  /** The workspace's byte cap in GiB (`settings.bigqueryMaxBytesBilledGb`). */
+  workspaceGb?: number;
 }): AgentJobCaps {
   const caps: AgentJobCaps = {};
   const explicit = input.explicitBytes;
   if (typeof explicit === "number" && explicit > 0) {
     caps.maximumBytesBilled = Math.floor(explicit);
   }
-  if (!isAgentJob(input.labels)) return caps;
-
-  const timeout =
-    setting(input.connection?.[AGENT_JOB_TIMEOUT_SETTING]) ??
-    AGENT_BIGQUERY_JOB_TIMEOUT_MS;
-  // BigQuery refuses a jobTimeoutMs under 1 s.
-  if (timeout > 0) caps.jobTimeoutMs = Math.max(1000, Math.floor(timeout));
+  if (isAgentJob(input.labels)) {
+    const timeout =
+      setting(input.connection?.[AGENT_JOB_TIMEOUT_SETTING]) ??
+      AGENT_BIGQUERY_JOB_TIMEOUT_MS;
+    // BigQuery refuses a jobTimeoutMs under 1 s.
+    if (timeout > 0) caps.jobTimeoutMs = Math.max(1000, Math.floor(timeout));
+  }
 
   if (explicit === undefined) {
-    const gb = setting(input.connection?.[AGENT_MAX_BYTES_SETTING]);
-    const bytes =
-      gb !== undefined ? Math.floor(gb * GIB) : AGENT_BIGQUERY_MAX_BYTES_BILLED;
-    if (bytes > 0) caps.maximumBytesBilled = bytes;
+    // A connection or workspace setting caps every interactive job. With
+    // neither, only agent and MCP jobs carry the default; consoles,
+    // notebooks and binding previews stay uncapped, as before.
+    const gb =
+      setting(input.connection?.[AGENT_MAX_BYTES_SETTING]) ??
+      setting(input.workspaceGb);
+    const applies =
+      gb !== undefined
+        ? isInteractiveJob(input.labels)
+        : isAgentJob(input.labels);
+    if (applies) {
+      const bytes =
+        gb !== undefined
+          ? Math.floor(gb * GIB)
+          : AGENT_BIGQUERY_MAX_BYTES_BILLED;
+      if (bytes > 0) caps.maximumBytesBilled = bytes;
+    }
   }
   return caps;
 }
