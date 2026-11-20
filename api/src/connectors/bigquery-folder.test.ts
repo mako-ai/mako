@@ -116,6 +116,19 @@ void test("connector.yaml is a node folder with its entry", () => {
   assert.equal(parsed.value.entry, "connector.ts");
 });
 
+void test("connector.yaml declares no schema, and the spec declares no fixed entities", () => {
+  const text = fs.readFileSync(path.join(FOLDER, "connector.yaml"), "utf8");
+  assert.doesNotMatch(text, /^\s*schema/m);
+  const parsed = parseConnectorFile(text);
+  assert.ok(parsed.ok, parsed.ok ? "" : parsed.reason);
+  assert.equal(
+    (parsed.value as unknown as Record<string, unknown>).schema,
+    undefined,
+  );
+  assert.deepEqual(spec?.mako?.entities, {});
+  assert.equal(spec?.mako?.queryEntities?.source, "connection");
+});
+
 void test("no schema: rows land as they come", async () => {
   const box = makeBoxed(CONFIG as unknown as BigQueryTestConfig);
   await box.loadDefinition();
