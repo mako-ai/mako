@@ -1,0 +1,594 @@
+{
+  "chunks": [
+    {
+      "cursor": 25,
+      "hasMore": true,
+      "offset": 0,
+      "totalCount": 70,
+      "totalProcessed": 25
+    },
+    {
+      "cursor": 50,
+      "hasMore": true,
+      "offset": 0,
+      "totalCount": 70,
+      "totalProcessed": 50
+    },
+    {
+      "cursor": 70,
+      "hasMore": true,
+      "offset": 0,
+      "totalCount": 70,
+      "totalProcessed": 70
+    },
+    {
+      "cursor": 70,
+      "hasMore": false,
+      "offset": 0,
+      "totalCount": 70,
+      "totalProcessed": 70
+    }
+  ],
+  "rows": [
+    {
+      "created_at": "2025-11-01T08:00:00.000Z",
+      "id": 1,
+      "portal": "immoscout",
+      "sale_price": null,
+      "updated_at": "2025-12-01T08:00:00.000Z",
+      "url": "https://example.test/listing/1"
+    },
+    {
+      "created_at": "2025-11-02T08:01:00.000Z",
+      "id": 2,
+      "portal": "homegate",
+      "sale_price": 251250,
+      "updated_at": "2025-12-02T00:37:00.000Z",
+      "url": "https://example.test/listing/2"
+    },
+    {
+      "created_at": "2025-11-03T08:02:00.000Z",
+      "id": 3,
+      "portal": "idealista",
+      "sale_price": 252500,
+      "updated_at": "2025-12-02T17:14:00.000Z",
+      "url": "https://example.test/listing/3"
+    },
+    {
+      "created_at": "2025-11-04T08:03:00.000Z",
+      "id": 4,
+      "portal": "immoscout",
+      "sale_price": 253750,
+      "updated_at": "2025-12-03T09:51:00.000Z",
+      "url": "https://example.test/listing/4"
+    },
+    {
+      "created_at": "2025-11-05T08:04:00.000Z",
+      "id": 5,
+      "portal": "homegate",
+      "sale_price": null,
+      "updated_at": "2025-12-04T02:28:00.000Z",
+      "url": "https://example.test/listing/5"
+    },
+    {
+      "created_at": "2025-11-06T08:05:00.000Z",
+      "id": 6,
+      "portal": "idealista",
+      "sale_price": 256250,
+      "updated_at": "2025-12-04T19:05:00.000Z",
+      "url": "https://example.test/listing/6"
+    },
+    {
+      "created_at": "2025-11-07T08:06:00.000Z",
+      "id": 7,
+      "portal": "immoscout",
+      "sale_price": 257500,
+      "updated_at": "2025-12-05T11:42:00.000Z",
+      "url": "https://example.test/listing/7"
+    },
+    {
+      "created_at": "2025-11-08T08:07:00.000Z",
+      "id": 8,
+      "portal": "homegate",
+      "sale_price": 258750,
+      "updated_at": "2025-12-06T04:19:00.000Z",
+      "url": "https://example.test/listing/8"
+    },
+    {
+      "created_at": "2025-11-09T08:08:00.000Z",
+      "id": 9,
+      "portal": "idealista",
+      "sale_price": null,
+      "updated_at": "2025-12-06T20:56:00.000Z",
+      "url": "https://example.test/listing/9"
+    },
+    {
+      "created_at": "2025-11-10T08:09:00.000Z",
+      "id": 10,
+      "portal": "immoscout",
+      "sale_price": 261250,
+      "updated_at": "2025-12-07T13:33:00.000Z",
+      "url": "https://example.test/listing/10"
+    },
+    {
+      "created_at": "2025-11-11T08:10:00.000Z",
+      "id": 11,
+      "portal": "homegate",
+      "sale_price": 262500,
+      "updated_at": "2025-12-08T06:10:00.000Z",
+      "url": "https://example.test/listing/11"
+    },
+    {
+      "created_at": "2025-11-12T08:11:00.000Z",
+      "id": 12,
+      "portal": "idealista",
+      "sale_price": 263750,
+      "updated_at": "2025-12-08T22:47:00.000Z",
+      "url": "https://example.test/listing/12"
+    },
+    {
+      "created_at": "2025-11-13T08:12:00.000Z",
+      "id": 13,
+      "portal": "immoscout",
+      "sale_price": null,
+      "updated_at": "2025-12-09T15:24:00.000Z",
+      "url": "https://example.test/listing/13"
+    },
+    {
+      "created_at": "2025-11-14T08:13:00.000Z",
+      "id": 14,
+      "portal": "homegate",
+      "sale_price": 266250,
+      "updated_at": "2025-12-10T08:01:00.000Z",
+      "url": "https://example.test/listing/14"
+    },
+    {
+      "created_at": "2025-11-15T08:14:00.000Z",
+      "id": 15,
+      "portal": "idealista",
+      "sale_price": 267500,
+      "updated_at": "2025-12-11T00:38:00.000Z",
+      "url": "https://example.test/listing/15"
+    },
+    {
+      "created_at": "2025-11-16T08:15:00.000Z",
+      "id": 16,
+      "portal": "immoscout",
+      "sale_price": 268750,
+      "updated_at": "2025-12-11T17:15:00.000Z",
+      "url": "https://example.test/listing/16"
+    },
+    {
+      "created_at": "2025-11-17T08:16:00.000Z",
+      "id": 17,
+      "portal": "homegate",
+      "sale_price": null,
+      "updated_at": "2025-12-12T09:52:00.000Z",
+      "url": "https://example.test/listing/17"
+    },
+    {
+      "created_at": "2025-11-18T08:17:00.000Z",
+      "id": 18,
+      "portal": "idealista",
+      "sale_price": 271250,
+      "updated_at": "2025-12-13T02:29:00.000Z",
+      "url": "https://example.test/listing/18"
+    },
+    {
+      "created_at": "2025-11-19T08:18:00.000Z",
+      "id": 19,
+      "portal": "immoscout",
+      "sale_price": 272500,
+      "updated_at": "2025-12-13T19:06:00.000Z",
+      "url": "https://example.test/listing/19"
+    },
+    {
+      "created_at": "2025-11-20T08:19:00.000Z",
+      "id": 20,
+      "portal": "homegate",
+      "sale_price": 273750,
+      "updated_at": "2025-12-14T11:43:00.000Z",
+      "url": "https://example.test/listing/20"
+    },
+    {
+      "created_at": "2025-11-21T08:20:00.000Z",
+      "id": 21,
+      "portal": "idealista",
+      "sale_price": null,
+      "updated_at": "2025-12-15T04:20:00.000Z",
+      "url": "https://example.test/listing/21"
+    },
+    {
+      "created_at": "2025-11-22T08:21:00.000Z",
+      "id": 22,
+      "portal": "immoscout",
+      "sale_price": 276250,
+      "updated_at": "2025-12-15T20:57:00.000Z",
+      "url": "https://example.test/listing/22"
+    },
+    {
+      "created_at": "2025-11-23T08:22:00.000Z",
+      "id": 23,
+      "portal": "homegate",
+      "sale_price": 277500,
+      "updated_at": "2025-12-16T13:34:00.000Z",
+      "url": "https://example.test/listing/23"
+    },
+    {
+      "created_at": "2025-11-24T08:23:00.000Z",
+      "id": 24,
+      "portal": "idealista",
+      "sale_price": 278750,
+      "updated_at": "2025-12-17T06:11:00.000Z",
+      "url": "https://example.test/listing/24"
+    },
+    {
+      "created_at": "2025-11-25T08:24:00.000Z",
+      "id": 25,
+      "portal": "immoscout",
+      "sale_price": null,
+      "updated_at": "2025-12-17T22:48:00.000Z",
+      "url": "https://example.test/listing/25"
+    },
+    {
+      "created_at": "2025-11-26T08:25:00.000Z",
+      "id": 26,
+      "portal": "homegate",
+      "sale_price": 281250,
+      "updated_at": "2025-12-18T15:25:00.000Z",
+      "url": "https://example.test/listing/26"
+    },
+    {
+      "created_at": "2025-11-27T08:26:00.000Z",
+      "id": 27,
+      "portal": "idealista",
+      "sale_price": 282500,
+      "updated_at": "2025-12-19T08:02:00.000Z",
+      "url": "https://example.test/listing/27"
+    },
+    {
+      "created_at": "2025-11-28T08:27:00.000Z",
+      "id": 28,
+      "portal": "immoscout",
+      "sale_price": 283750,
+      "updated_at": "2025-12-20T00:39:00.000Z",
+      "url": "https://example.test/listing/28"
+    },
+    {
+      "created_at": "2025-11-29T08:28:00.000Z",
+      "id": 29,
+      "portal": "homegate",
+      "sale_price": null,
+      "updated_at": "2025-12-20T17:16:00.000Z",
+      "url": "https://example.test/listing/29"
+    },
+    {
+      "created_at": "2025-11-30T08:29:00.000Z",
+      "id": 30,
+      "portal": "idealista",
+      "sale_price": 286250,
+      "updated_at": "2025-12-21T09:53:00.000Z",
+      "url": "https://example.test/listing/30"
+    },
+    {
+      "created_at": "2025-12-01T08:30:00.000Z",
+      "id": 31,
+      "portal": "immoscout",
+      "sale_price": 287500,
+      "updated_at": "2025-12-22T02:30:00.000Z",
+      "url": "https://example.test/listing/31"
+    },
+    {
+      "created_at": "2025-12-02T08:31:00.000Z",
+      "id": 32,
+      "portal": "homegate",
+      "sale_price": 288750,
+      "updated_at": "2025-12-22T19:07:00.000Z",
+      "url": "https://example.test/listing/32"
+    },
+    {
+      "created_at": "2025-12-03T08:32:00.000Z",
+      "id": 33,
+      "portal": "idealista",
+      "sale_price": null,
+      "updated_at": "2025-12-23T11:44:00.000Z",
+      "url": "https://example.test/listing/33"
+    },
+    {
+      "created_at": "2025-12-04T08:33:00.000Z",
+      "id": 34,
+      "portal": "immoscout",
+      "sale_price": 291250,
+      "updated_at": "2025-12-24T04:21:00.000Z",
+      "url": "https://example.test/listing/34"
+    },
+    {
+      "created_at": "2025-12-05T08:34:00.000Z",
+      "id": 35,
+      "portal": "homegate",
+      "sale_price": 292500,
+      "updated_at": "2025-12-24T20:58:00.000Z",
+      "url": "https://example.test/listing/35"
+    },
+    {
+      "created_at": "2025-12-06T08:35:00.000Z",
+      "id": 36,
+      "portal": "idealista",
+      "sale_price": 293750,
+      "updated_at": "2025-12-25T13:35:00.000Z",
+      "url": "https://example.test/listing/36"
+    },
+    {
+      "created_at": "2025-12-07T08:36:00.000Z",
+      "id": 37,
+      "portal": "immoscout",
+      "sale_price": null,
+      "updated_at": "2025-12-26T06:12:00.000Z",
+      "url": "https://example.test/listing/37"
+    },
+    {
+      "created_at": "2025-12-08T08:37:00.000Z",
+      "id": 38,
+      "portal": "homegate",
+      "sale_price": 296250,
+      "updated_at": "2025-12-26T22:49:00.000Z",
+      "url": "https://example.test/listing/38"
+    },
+    {
+      "created_at": "2025-12-09T08:38:00.000Z",
+      "id": 39,
+      "portal": "idealista",
+      "sale_price": 297500,
+      "updated_at": "2025-12-27T15:26:00.000Z",
+      "url": "https://example.test/listing/39"
+    },
+    {
+      "created_at": "2025-12-10T08:39:00.000Z",
+      "id": 40,
+      "portal": "immoscout",
+      "sale_price": 298750,
+      "updated_at": "2025-12-28T08:03:00.000Z",
+      "url": "https://example.test/listing/40"
+    },
+    {
+      "created_at": "2025-12-11T08:40:00.000Z",
+      "id": 41,
+      "portal": "homegate",
+      "sale_price": null,
+      "updated_at": "2025-12-29T00:40:00.000Z",
+      "url": "https://example.test/listing/41"
+    },
+    {
+      "created_at": "2025-12-12T08:41:00.000Z",
+      "id": 42,
+      "portal": "idealista",
+      "sale_price": 301250,
+      "updated_at": "2025-12-29T17:17:00.000Z",
+      "url": "https://example.test/listing/42"
+    },
+    {
+      "created_at": "2025-12-13T08:42:00.000Z",
+      "id": 43,
+      "portal": "immoscout",
+      "sale_price": 302500,
+      "updated_at": "2025-12-30T09:54:00.000Z",
+      "url": "https://example.test/listing/43"
+    },
+    {
+      "created_at": "2025-12-14T08:43:00.000Z",
+      "id": 44,
+      "portal": "homegate",
+      "sale_price": 303750,
+      "updated_at": "2025-12-31T02:31:00.000Z",
+      "url": "https://example.test/listing/44"
+    },
+    {
+      "created_at": "2025-12-15T08:44:00.000Z",
+      "id": 45,
+      "portal": "idealista",
+      "sale_price": null,
+      "updated_at": "2025-12-31T19:08:00.000Z",
+      "url": "https://example.test/listing/45"
+    },
+    {
+      "created_at": "2025-12-16T08:45:00.000Z",
+      "id": 46,
+      "portal": "immoscout",
+      "sale_price": 306250,
+      "updated_at": "2026-01-01T11:45:00.000Z",
+      "url": "https://example.test/listing/46"
+    },
+    {
+      "created_at": "2025-12-17T08:46:00.000Z",
+      "id": 47,
+      "portal": "homegate",
+      "sale_price": 307500,
+      "updated_at": "2026-01-02T04:22:00.000Z",
+      "url": "https://example.test/listing/47"
+    },
+    {
+      "created_at": "2025-12-18T08:47:00.000Z",
+      "id": 48,
+      "portal": "idealista",
+      "sale_price": 308750,
+      "updated_at": "2026-01-02T20:59:00.000Z",
+      "url": "https://example.test/listing/48"
+    },
+    {
+      "created_at": "2025-12-19T08:48:00.000Z",
+      "id": 49,
+      "portal": "immoscout",
+      "sale_price": null,
+      "updated_at": "2026-01-03T13:36:00.000Z",
+      "url": "https://example.test/listing/49"
+    },
+    {
+      "created_at": "2025-12-20T08:49:00.000Z",
+      "id": 50,
+      "portal": "homegate",
+      "sale_price": 311250,
+      "updated_at": "2026-01-04T06:13:00.000Z",
+      "url": "https://example.test/listing/50"
+    },
+    {
+      "created_at": "2025-12-21T08:50:00.000Z",
+      "id": 51,
+      "portal": "idealista",
+      "sale_price": 312500,
+      "updated_at": "2026-01-04T22:50:00.000Z",
+      "url": "https://example.test/listing/51"
+    },
+    {
+      "created_at": "2025-12-22T08:51:00.000Z",
+      "id": 52,
+      "portal": "immoscout",
+      "sale_price": 313750,
+      "updated_at": "2026-01-05T15:27:00.000Z",
+      "url": "https://example.test/listing/52"
+    },
+    {
+      "created_at": "2025-12-23T08:52:00.000Z",
+      "id": 53,
+      "portal": "homegate",
+      "sale_price": null,
+      "updated_at": "2026-01-06T08:04:00.000Z",
+      "url": "https://example.test/listing/53"
+    },
+    {
+      "created_at": "2025-12-24T08:53:00.000Z",
+      "id": 54,
+      "portal": "idealista",
+      "sale_price": 316250,
+      "updated_at": "2026-01-07T00:41:00.000Z",
+      "url": "https://example.test/listing/54"
+    },
+    {
+      "created_at": "2025-12-25T08:54:00.000Z",
+      "id": 55,
+      "portal": "immoscout",
+      "sale_price": 317500,
+      "updated_at": "2026-01-07T17:18:00.000Z",
+      "url": "https://example.test/listing/55"
+    },
+    {
+      "created_at": "2025-12-26T08:55:00.000Z",
+      "id": 56,
+      "portal": "homegate",
+      "sale_price": 318750,
+      "updated_at": "2026-01-08T09:55:00.000Z",
+      "url": "https://example.test/listing/56"
+    },
+    {
+      "created_at": "2025-12-27T08:56:00.000Z",
+      "id": 57,
+      "portal": "idealista",
+      "sale_price": null,
+      "updated_at": "2026-01-09T02:32:00.000Z",
+      "url": "https://example.test/listing/57"
+    },
+    {
+      "created_at": "2025-12-28T08:57:00.000Z",
+      "id": 58,
+      "portal": "immoscout",
+      "sale_price": 321250,
+      "updated_at": "2026-01-09T19:09:00.000Z",
+      "url": "https://example.test/listing/58"
+    },
+    {
+      "created_at": "2025-12-29T08:58:00.000Z",
+      "id": 59,
+      "portal": "homegate",
+      "sale_price": 322500,
+      "updated_at": "2026-01-10T11:46:00.000Z",
+      "url": "https://example.test/listing/59"
+    },
+    {
+      "created_at": "2025-12-30T08:59:00.000Z",
+      "id": 60,
+      "portal": "idealista",
+      "sale_price": 323750,
+      "updated_at": "2026-01-11T04:23:00.000Z",
+      "url": "https://example.test/listing/60"
+    },
+    {
+      "created_at": "2025-12-31T09:00:00.000Z",
+      "id": 61,
+      "portal": "immoscout",
+      "sale_price": null,
+      "updated_at": "2026-01-11T21:00:00.000Z",
+      "url": "https://example.test/listing/61"
+    },
+    {
+      "created_at": "2026-01-01T09:01:00.000Z",
+      "id": 62,
+      "portal": "homegate",
+      "sale_price": 326250,
+      "updated_at": "2026-01-12T13:37:00.000Z",
+      "url": "https://example.test/listing/62"
+    },
+    {
+      "created_at": "2026-01-02T09:02:00.000Z",
+      "id": 63,
+      "portal": "idealista",
+      "sale_price": 327500,
+      "updated_at": "2026-01-13T06:14:00.000Z",
+      "url": "https://example.test/listing/63"
+    },
+    {
+      "created_at": "2026-01-03T09:03:00.000Z",
+      "id": 64,
+      "portal": "immoscout",
+      "sale_price": 328750,
+      "updated_at": "2026-01-13T22:51:00.000Z",
+      "url": "https://example.test/listing/64"
+    },
+    {
+      "created_at": "2026-01-04T09:04:00.000Z",
+      "id": 65,
+      "portal": "homegate",
+      "sale_price": null,
+      "updated_at": "2026-01-14T15:28:00.000Z",
+      "url": "https://example.test/listing/65"
+    },
+    {
+      "created_at": "2026-01-05T09:05:00.000Z",
+      "id": 66,
+      "portal": "idealista",
+      "sale_price": 331250,
+      "updated_at": "2026-01-15T08:05:00.000Z",
+      "url": "https://example.test/listing/66"
+    },
+    {
+      "created_at": "2026-01-06T09:06:00.000Z",
+      "id": 67,
+      "portal": "immoscout",
+      "sale_price": 332500,
+      "updated_at": "2026-01-16T00:42:00.000Z",
+      "url": "https://example.test/listing/67"
+    },
+    {
+      "created_at": "2026-01-07T09:07:00.000Z",
+      "id": 68,
+      "portal": "homegate",
+      "sale_price": 333750,
+      "updated_at": "2026-01-16T17:19:00.000Z",
+      "url": "https://example.test/listing/68"
+    },
+    {
+      "created_at": "2026-01-08T09:08:00.000Z",
+      "id": 69,
+      "portal": "idealista",
+      "sale_price": null,
+      "updated_at": "2026-01-17T09:56:00.000Z",
+      "url": "https://example.test/listing/69"
+    },
+    {
+      "created_at": "2026-01-09T09:09:00.000Z",
+      "id": 70,
+      "portal": "immoscout",
+      "sale_price": 336250,
+      "updated_at": "2026-01-18T02:33:00.000Z",
+      "url": "https://example.test/listing/70"
+    }
+  ]
+}

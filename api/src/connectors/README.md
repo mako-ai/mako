@@ -68,7 +68,6 @@ connectors/
 ├── stripe/
 ├── claap/
 ├── calendly/
-├── graphql/
 ├── rest/
 ├── registry.ts              # Runtime connector discovery for the API server
 └── README.md               # This file
@@ -173,7 +172,7 @@ table of connectors and entities. Summary:
 
 ### GraphQL
 
-- Generic GraphQL API connector
+- A connector folder, `connectors/graphql/` (type `ws:graphql`). The in-process connector is deleted.
 - Supports custom queries with offset or cursor pagination
 - Required config: `endpoint`, `queries` (configured on the Flow, not the connector)
 

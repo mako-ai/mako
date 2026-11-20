@@ -1,5 +1,5 @@
 /**
- * A synthetic GraphQL API for the parity cassettes: 5 queries shaped like
+ * A synthetic GraphQL API for the cassettes: 5 queries shaped like
  * the ones RealAdvisor's flows run (Hasura aggregates with an integer or a
  * timestamptz cursor, an offset list with `$since`, a Relay connection and
  * an Expo Observe time series), each with its own resolver. Nothing here

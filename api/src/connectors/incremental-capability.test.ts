@@ -3,7 +3,6 @@ import { StripeConnector } from "./stripe/connector";
 import { ClaapConnector } from "./claap/connector";
 import { CalendlyConnector } from "./calendly/connector";
 import { RestConnector } from "./rest/connector";
-import { GraphQLConnector } from "./graphql/connector";
 import {
   BaseConnector,
   type IncrementalCapabilities,
@@ -106,16 +105,6 @@ const connectors: Array<{
         config: {},
       } as any),
   },
-  {
-    label: "graphql",
-    make: () =>
-      new GraphQLConnector({
-        id: "ds_graphql",
-        name: "GraphQL",
-        type: "graphql",
-        config: {},
-      } as any),
-  },
 ];
 
 function capabilitiesFor(label: string): IncrementalCapabilities {
@@ -129,13 +118,6 @@ function testEveryConnectorReturnsWellFormedCapabilities() {
     const capabilities = make().getIncrementalCapabilities();
     assertWellFormed(label, capabilities);
   }
-}
-
-function testGraphQLDeclaresClientFilterWithSinceInjection() {
-  const graphql = capabilitiesFor("graphql");
-  assert.equal(graphql.supported, true);
-  assert.equal(graphql.mode, "client-filter");
-  assert.ok(graphql.warning && graphql.warning.includes("$since"));
 }
 
 function testCreatedAnchorConnectorsWarnAboutMissedUpdates() {
@@ -188,7 +170,6 @@ async function testStripeCreatedGteWhenSinceSet() {
 
 async function main() {
   testEveryConnectorReturnsWellFormedCapabilities();
-  testGraphQLDeclaresClientFilterWithSinceInjection();
   testCreatedAnchorConnectorsWarnAboutMissedUpdates();
   await testStripeCreatedGteWhenSinceSet();
   testRestDeclaresClientFilterWithWarning();

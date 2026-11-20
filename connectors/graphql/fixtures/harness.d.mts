@@ -1,4 +1,4 @@
-// Types for harness.mjs, for the API test that imports it.
+// Types for harness.mjs, for the API tests that import it.
 
 export const FOLDER: string;
 export const REPO_ROOT: string;
@@ -35,28 +35,6 @@ export interface ChunkState {
   hasMore: boolean;
 }
 
-export interface SourceTimestamps {
-  byId: Map<string, string | null>;
-  fellBackToNow: number;
-}
-
-export interface Run {
-  rows: Array<Record<string, unknown>>;
-  chunks: ChunkState[];
-  requests?: string[];
-  timestamps?: SourceTimestamps;
-}
-
-export interface ReadableConnector {
-  fetchEntityChunk(options: any): Promise<any>;
-  testConnection(): Promise<{ success: boolean; message?: string }>;
-  resolveSchema?(entity: string): Promise<unknown>;
-  normalizeBackfillRecord?(
-    entity: string,
-    record: Record<string, unknown>,
-  ): { sourceTs: Date } | null;
-}
-
 export interface FixtureServer {
   url: string;
   requests(token: string): string[];
@@ -65,38 +43,6 @@ export interface FixtureServer {
 }
 export interface ReplayServer extends FixtureServer {
   misses: string[];
-}
-
-export interface Comparison {
-  entity: string;
-  scenario: string;
-  rows: [number, number];
-  keys: boolean;
-  order: boolean;
-  columns: boolean;
-  columnCount: number;
-  checksumMismatches: string[];
-  chunks: [number, number];
-  chunkStates: boolean;
-  requests: [number, number];
-  requestsEqual: boolean;
-  timestampMismatches: string[];
-  timestampsChecked: number;
-  timestampsFellBackToNow?: [number, number];
-  error?: string;
-  ok: boolean;
-}
-
-export const CHECK_VARIANTS: Array<
-  "valid" | "errors" | "revoked" | "bad-headers"
->;
-export interface CheckOutcome {
-  variant: string;
-  requests: number;
-  inProcess: boolean;
-  folder: boolean;
-  folderMessage?: string;
-  requestsEqual: boolean;
 }
 
 export interface FolderCommandResult {
@@ -117,7 +63,16 @@ export function testConfig(
   server: { url: string },
   scenario?: Partial<Scenario>,
 ): GraphqlTestConfig;
-export function liftSsrfGuard<T>(connector: T): T;
+export function scenarioConfig(
+  token: string,
+  server: { url: string },
+  scenario: Scenario,
+): Record<string, unknown>;
+export function tokenFor(
+  side: string,
+  scenario: Scenario,
+  entity: string,
+): string;
 export function loadCassettes(
   dir?: string,
 ): Map<string, { status: number; body: unknown }>;
@@ -135,39 +90,9 @@ export function runFolderCommand(
     env?: Record<string, string>;
   },
 ): Promise<FolderCommandResult>;
-export function readInProcess(
-  makeConnector: () => ReadableConnector,
-  options: {
-    entity: string;
-    since?: string;
-    maxIterations: number;
-    pageSize?: number;
-  },
-): Promise<Run>;
-export function sourceTimestamps(
-  connector: ReadableConnector,
-  entity: string,
-  rows: Array<Record<string, unknown>>,
-): SourceTimestamps;
-export function rowChecksum(row: unknown): string;
-export function compareRuns(
-  inProcess: Run,
-  folder: Run,
-): Omit<Comparison, "entity" | "scenario">;
-export function runParity(options: {
-  entities: string[];
-  makeInProcess: (config: any) => ReadableConnector;
-  makeBoxed?: (config: any) => ReadableConnector;
-  server: FixtureServer;
-  scenarios?: Scenario[];
-  concurrency?: number;
-}): Promise<Comparison[]>;
-export function checkParity(options: {
-  makeInProcess: (config: Record<string, unknown>) => ReadableConnector;
-  server: FixtureServer;
-}): Promise<CheckOutcome[]>;
-export function formatReport(results: Comparison[]): string;
-export function compareForm(
-  inProcessFields: Array<Record<string, any>> | undefined,
-  folderFields: Array<Record<string, any>> | undefined,
-): { ok: boolean; inProcess: unknown[]; folder: unknown[] };
+export function readFolder(options: {
+  entity: string;
+  config: Record<string, unknown>;
+  since?: string;
+  maxIterations?: number;
+}): Promise<{ rows: Array<Record<string, unknown>>; chunks: ChunkState[] }>;

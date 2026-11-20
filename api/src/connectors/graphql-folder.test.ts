@@ -1,70 +1,52 @@
 /**
- * Parity between this in-process GraphQL connector and its port to a
- * connector folder (`connectors/graphql/`, RFC connector-runtime iteration
- * 5).
+ * The GraphQL connector folder (`connectors/graphql/`), run as production
+ * runs it: through `SandboxedConnector`, with only the box replaced by a
+ * local process, and again through a read session.
  *
- * Both run against the same recorded GraphQL responses, served locally.
- * Each of 5 flow queries (Hasura aggregates with an Int and a timestamptz
- * cursor, an offset list with `$since`, a Relay connection, an Expo Observe
- * time series) is read in 6 scenarios: one request per chunk, two-row
- * pages, the default chunk, incremental `since`, Hasura's admin-secret
- * header, and a 429 then a 503 before the first page. Each run compares row
- * count, keys, order, columns, a checksum per row, the chunk positions, the
- * exact requests sent (retries included) and each row's source timestamp.
- * The entity list, the credential form, the flow's query form, incremental
- * capabilities and `check` are compared too.
+ * The in-process connector this folder was ported from is deleted. The rows
+ * it produced are the golden files in `connectors/graphql/fixtures/golden/`
+ * (compared byte for byte by `workspace/graphql-folder-golden.test.ts`).
+ * These tests cover what the golden rows cannot: the entity list, the forms,
+ * `check`, the adapter and session paths, retries, and the address policy
+ * (a redirect, a rebound DNS name, every spelling of a private address).
  *
- * The folder runs through `SandboxedConnector`, with only the box replaced
- * by a local process (`BoxlessGraphql`), and again through a read session.
- *
- * The harness lives with the folder: connectors/graphql/fixtures/harness.mjs.
- * Re-record or print the table with connectors/graphql/fixtures/parity.mjs.
+ * Run: node --import tsx --test src/connectors/graphql-folder.test.ts
  */
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { GraphQLConnector } from "./connector";
-import { SandboxedConnector } from "../workspace/SandboxedConnector";
-import type { LoadedConnector } from "../workspace/resolver";
-import type { ConnectorCommand, RunResult } from "../workspace/sync-box";
-import { parseConnectorFile } from "../workspace/connector-file";
-import { specToForm } from "../workspace/spec-translation";
-import { LocalSessionTransport } from "../workspace/test-support/local-session";
-import { resolveEntitySchema } from "../../sync/sync-orchestrator";
+import { SandboxedConnector } from "./workspace/SandboxedConnector";
+import type { LoadedConnector } from "./workspace/resolver";
+import type { ConnectorCommand, RunResult } from "./workspace/sync-box";
+import { parseConnectorFile } from "./workspace/connector-file";
+import { specToForm } from "./workspace/spec-translation";
+import { LocalSessionTransport } from "./workspace/test-support/local-session";
+import { resolveEntitySchema } from "../sync/sync-orchestrator";
 import {
   CASSETTE_DIR,
   CONNECTION_ID,
   FLOW_QUERIES,
   FOLDER,
+  RATE_LIMIT_SCENARIO,
   RUNNER,
+  SCENARIOS,
   WORKSPACE_ID,
-  checkParity,
-  compareForm,
-  compareRuns,
   ensureFolderInstalled,
-  formatReport,
-  liftSsrfGuard,
+  readFolder,
   runFolderCommand,
-  runParity,
+  scenarioConfig,
   startReplayServer,
   testConfig,
-  type Comparison,
-  type GraphqlTestConfig,
+  tokenFor,
   type ReplayServer,
-} from "../../../../connectors/graphql/fixtures/harness.mjs";
+} from "../../../connectors/graphql/fixtures/harness.mjs";
 
-const makeInProcess = (config: Record<string, unknown>) =>
-  liftSsrfGuard(
-    new GraphQLConnector({
-      _id: CONNECTION_ID,
-      name: "GraphQL parity",
-      type: "graphql",
-      workspaceId: WORKSPACE_ID,
-      config,
-    } as any),
-  );
+const GOLDEN_DIR = path.join(FOLDER, "fixtures/golden");
+const ENTITIES = FLOW_QUERIES.map(query => query.name);
+const goldenFile = (scenario: string, entity: string) =>
+  path.join(GOLDEN_DIR, scenario, `${entity}.json`);
 
 /** The folder as a workspace connector; only the box is a local process. */
 class BoxlessGraphql extends SandboxedConnector {
@@ -75,8 +57,8 @@ class BoxlessGraphql extends SandboxedConnector {
       slug: "graphql",
       runtime: "node",
       entry: "connector.ts",
-      sha: "parity",
-      sourceSha: "parity",
+      sha: "fixture",
+      sourceSha: "fixture",
       spec: BoxlessGraphql.spec,
       entities: Object.keys(BoxlessGraphql.spec?.mako?.entities ?? {}),
       status: "indexed",
@@ -105,7 +87,7 @@ const boxed = <T extends BoxlessGraphql>(
 ) => {
   const connector = new Kind({
     _id: CONNECTION_ID,
-    name: "GraphQL parity",
+    name: "GraphQL fixture",
     type: "ws:graphql",
     workspaceId: WORKSPACE_ID,
     config,
@@ -114,8 +96,6 @@ const boxed = <T extends BoxlessGraphql>(
   void connector.loadDefinition();
   return connector;
 };
-const makeBoxed = (config: GraphqlTestConfig) =>
-  boxed(BoxlessGraphql, config as unknown as Record<string, unknown>);
 
 /** Through a read session; a `read` reaching a chunk process is counted. */
 class SessionGraphql extends BoxlessGraphql {
@@ -149,7 +129,6 @@ const CONFIG = {
   headers: "{}",
   queries: FLOW_QUERIES,
 };
-const ENTITIES = FLOW_QUERIES.map(q => q.name);
 
 let server: ReplayServer;
 let spec: Record<string, any> | undefined;
@@ -167,6 +146,37 @@ after(async () => {
   await server?.close();
 });
 
+/** What the engine does: schema, then chunks until `hasMore` is false. */
+async function readThrough(
+  connector: BoxlessGraphql,
+  options: { entity: string; maxIterations: number; since?: string },
+): Promise<Array<Record<string, unknown>>> {
+  const rows: Array<Record<string, unknown>> = [];
+  await connector.resolveSchema?.(options.entity);
+  let state: any;
+  for (let chunk = 0; chunk < 1000; chunk++) {
+    state = await connector.fetchEntityChunk({
+      entity: options.entity,
+      since: options.since ? new Date(options.since) : undefined,
+      maxIterations: options.maxIterations,
+      rateLimitDelay: 1,
+      state,
+      onBatch: async (batch: Array<Record<string, unknown>>) => {
+        rows.push(...batch);
+      },
+      onProgress: () => {},
+    } as any);
+    if (!state.hasMore) break;
+  }
+  return rows;
+}
+
+const goldenRows = (scenario: string, entity: string) =>
+  JSON.parse(fs.readFileSync(goldenFile(scenario, entity), "utf8")).rows;
+
+/** Compare as JSON: the golden files are JSON, a row may carry `undefined`. */
+const asJson = (value: unknown) => JSON.parse(JSON.stringify(value));
+
 void test("connector.yaml is a node folder with its entry", () => {
   const parsed = parseConnectorFile(
     fs.readFileSync(path.join(FOLDER, "connector.yaml"), "utf8"),
@@ -176,76 +186,75 @@ void test("connector.yaml is a node folder with its entry", () => {
   assert.equal(parsed.value.entry, "connector.ts");
 });
 
-void test("one entity per flow query, in the flow's order, labelled as in-process", async () => {
-  const inProcess = makeInProcess(CONFIG);
-  const box = makeBoxed(CONFIG as GraphqlTestConfig);
+void test("one entity per flow query, in the flow's order", async () => {
+  const box = boxed(BoxlessGraphql, CONFIG);
   await box.loadDefinition();
-  assert.deepEqual(
-    box.getAvailableEntities(),
-    inProcess.getAvailableEntities(),
-  );
   assert.deepEqual(box.getAvailableEntities(), ENTITIES);
-  const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
-  assert.deepEqual(
-    plain(box.getEntityMetadata()),
-    plain(inProcess.getEntityMetadata()),
-  );
-  // A connection with no flow queries offers no entity, on both sides.
+  assert.equal(ENTITIES.length, 5);
+  // A connection with no flow queries offers no entity.
   const bare = boxed(BoxlessGraphql, { endpoint: CONFIG.endpoint });
   await bare.loadDefinition();
   assert.deepEqual(bare.getAvailableEntities(), []);
-  assert.deepEqual(
-    makeInProcess({ endpoint: CONFIG.endpoint }).getAvailableEntities(),
-    [],
-  );
   // The spec declares no fixed entity: the index holds none.
   assert.deepEqual(spec?.mako?.entities, {});
   assert.equal(spec?.mako?.queryEntities?.source, "flow");
 });
 
-void test("same credential form and the same flow query form", () => {
-  const inProcess = GraphQLConnector.getConfigSchema();
-  const folder = specToForm(spec);
-  const form = compareForm(inProcess.fields, folder.fields);
-  assert.ok(form.ok, JSON.stringify(form, null, 2));
-  const headers = folder.fields.find(f => f.name === "headers");
-  assert.equal(headers?.type, "textarea");
+void test("the credential form and the flow query form", () => {
+  const form = specToForm(spec);
+  assert.deepEqual(
+    form.fields.map(f => [f.name, f.type, Boolean(f.required)]),
+    [
+      ["endpoint", "string", true],
+      ["headers", "textarea", false],
+    ],
+  );
+  const headers = form.fields.find(f => f.name === "headers");
   assert.equal(headers?.encrypted, true);
-  assert.equal(folder.transferQueries?.label, inProcess.transferQueries.label);
   assert.equal(
-    folder.transferQueries?.required,
-    inProcess.transferQueries.required,
+    form.fields.find(f => f.name === "endpoint")?.encrypted,
+    undefined,
   );
-  const queries = compareForm(
-    inProcess.transferQueries.fields,
-    folder.transferQueries?.fields,
+  assert.equal(form.transferQueries?.label, "GraphQL Queries");
+  assert.equal(form.transferQueries?.required, true);
+  assert.deepEqual(
+    form.transferQueries?.fields?.map(f => [
+      f.name,
+      f.type,
+      Boolean(f.required),
+    ]),
+    [
+      ["name", "string", true],
+      ["query", "textarea", true],
+      ["data_path", "string", true],
+      ["total_count_path", "string", false],
+      ["has_next_page_path", "string", false],
+      ["cursor_path", "string", false],
+      ["batch_size", "number", false],
+    ],
   );
-  assert.ok(queries.ok, JSON.stringify(queries, null, 2));
 });
 
-void test("same incremental capability: a client filter, before any query exists", async () => {
+void test("incremental capability: a client filter, before any query exists", async () => {
   const bare = boxed(BoxlessGraphql, { endpoint: CONFIG.endpoint });
   await bare.loadDefinition();
-  const inCaps = makeInProcess({
-    endpoint: CONFIG.endpoint,
-  }).getIncrementalCapabilities();
-  assert.equal(bare.getIncrementalCapabilities().supported, inCaps.supported);
-  assert.equal(bare.getIncrementalCapabilities().mode, inCaps.mode);
-  const box = makeBoxed(CONFIG as GraphqlTestConfig);
+  assert.equal(bare.getIncrementalCapabilities().supported, true);
+  assert.equal(bare.getIncrementalCapabilities().mode, "client-filter");
+  const box = boxed(BoxlessGraphql, CONFIG);
   await box.loadDefinition();
   for (const entity of ENTITIES) {
     assert.equal(
       box.getIncrementalCapabilities().perEntity?.[entity]?.mode,
       "client-filter",
+      entity,
     );
   }
 });
 
-void test("no schema on either side: rows land as they come, typed by the destination", async () => {
-  const box = makeBoxed(CONFIG as GraphqlTestConfig);
+void test("no schema: rows land as they come, typed by the destination", async () => {
+  const box = boxed(BoxlessGraphql, CONFIG);
   await box.loadDefinition();
   for (const entity of ENTITIES) {
-    assert.equal(await makeInProcess(CONFIG).resolveSchema(entity), null);
     assert.equal(await box.resolveSchema(entity), null, entity);
     assert.equal(await box.declaresUntypedSchema(entity), true, entity);
     // The engine accepts the null: the catalog says the stream is untyped.
@@ -255,138 +264,108 @@ void test("no schema on either side: rows land as they come, typed by the destin
         workspaceId: WORKSPACE_ID,
         connector: box,
         sourceConnection: { type: "ws:graphql" },
-        context: "parity",
+        context: "fixture",
       }),
       null,
     );
   }
 });
 
-void test("check agrees on a valid endpoint, GraphQL errors, a 401 and bad headers", async () => {
-  const outcomes = await checkParity({ makeInProcess, server });
+void test("check passes on a valid endpoint and fails on GraphQL errors, a 401 and bad headers", async () => {
+  const outcome = async (variant: string, headers?: string) => {
+    const token = `gql_test_folder_check_${variant}${variant === "valid" ? "" : `_${variant}`}`;
+    const { queries: _queries, ...connection } = testConfig(token, server);
+    const run = await runFolderCommand("check", {
+      config: headers === undefined ? connection : { ...connection, headers },
+    });
+    const status = run.messages.find(
+      m => m.type === "CONNECTION_STATUS",
+    )?.connectionStatus;
+    return [variant, status?.status, server.requests(token).length];
+  };
   assert.deepEqual(
-    outcomes.map(o => [
-      o.variant,
-      o.inProcess,
-      o.folder,
-      o.requests,
-      o.requestsEqual,
-    ]),
     [
-      ["valid", true, true, 1, true],
-      ["errors", false, false, 1, true],
-      ["revoked", false, false, 1, true],
-      ["bad-headers", false, false, 0, true],
+      await outcome("valid"),
+      await outcome("errors"),
+      await outcome("revoked"),
+      await outcome("bad-headers", "{not json"),
+    ],
+    [
+      ["valid", "SUCCEEDED", 1],
+      ["errors", "FAILED", 1],
+      ["revoked", "FAILED", 1],
+      ["bad-headers", "FAILED", 0],
     ],
   );
 });
 
-function assertTimestamps(results: Comparison[]) {
-  const checked = results.reduce((n, r) => n + r.timestampsChecked, 0);
-  const rowsRead = results.reduce((n, r) => n + r.rows[0], 0);
-  assert.equal(checked, rowsRead);
-  assert.ok(checked > 0);
-  for (const r of results) {
-    assert.deepEqual(r.timestampMismatches, [], `${r.scenario}/${r.entity}`);
-  }
-}
-
-void test("every query reads the same rows, chunks, requests and timestamps", async () => {
-  const results = await runParity({
-    entities: ENTITIES,
-    makeInProcess,
-    makeBoxed,
-    server,
-  });
-  const report = formatReport(results);
-  assert.equal(results.length, ENTITIES.length * 6);
-  assert.deepEqual(
-    results.filter(r => !r.ok).map(r => `${r.scenario}/${r.entity}`),
-    [],
-    report,
-  );
-  assert.deepEqual(server.misses, []);
-  assertTimestamps(results);
-  const run = (scenario: string, entity: string): Comparison => {
-    const found = results.find(
-      r => r.scenario === scenario && r.entity === entity,
-    );
-    assert.ok(found, `${scenario}/${entity}`);
-    return found;
+void test("a read through the adapter gives the golden rows, default and incremental", async () => {
+  const run = async (scenarioName: string) => {
+    const scenario = SCENARIOS.find(s => s.name === scenarioName)!;
+    for (const entity of ENTITIES) {
+      const token = tokenFor("adapter", scenario, entity);
+      const config = testConfig(token, server, scenario);
+      const box = boxed(
+        BoxlessGraphql,
+        config as unknown as Record<string, unknown>,
+      );
+      const rows = await readThrough(box, {
+        entity,
+        since: scenario.since,
+        maxIterations: scenario.maxIterations,
+      });
+      assert.deepEqual(
+        asJson(rows),
+        goldenRows(scenarioName, entity),
+        `${scenarioName}/${entity}`,
+      );
+    }
   };
-  // Cursor and offset pagination cross chunk boundaries.
-  assert.equal(run("default", "online_listings").rows[0], 70);
-  assert.equal(run("chunked", "online_listings").chunks[0], 4);
-  assert.equal(run("small-pages", "items").chunks[0], 18);
-  assert.equal(run("small-pages", "things").chunks[0], 12);
-  // `since` narrows on updated_at; rows without it are dropped, as in-process.
-  assert.equal(run("since", "items").rows[0], 20);
-  assert.equal(run("since", "online_listings").rows[0], 25);
-  assert.equal(run("since", "enquiries").rows[0], 0);
-  // The 429 and the 503 are retried on both sides, request for request.
-  for (const entity of ENTITIES) {
-    const limited = run("rate-limited", entity);
-    assert.ok(limited.ok, entity);
-    assert.ok(limited.requests[0] > run("default", entity).requests[0], entity);
-  }
+  await run("default");
+  await run("since");
+  assert.deepEqual(server.misses, []);
 });
 
-void test("a read session reads the same rows, chunks, requests and timestamps", async () => {
+void test("a read session gives the golden rows and starts and closes once per read", async () => {
   const own = await startReplayServer();
   try {
-    const results = await runParity({
-      entities: ENTITIES,
-      makeInProcess,
-      makeBoxed: config =>
-        boxed(SessionGraphql, config as unknown as Record<string, unknown>),
-      server: own,
-    });
-    assert.deepEqual(
-      results.filter(r => !r.ok).map(r => `${r.scenario}/${r.entity}`),
-      [],
-      formatReport(results),
-    );
+    const scenario = SCENARIOS.find(s => s.name === "chunked")!;
+    for (const entity of ENTITIES) {
+      const token = tokenFor("session", scenario, entity);
+      const config = testConfig(token, own, scenario);
+      const box = boxed(
+        SessionGraphql,
+        config as unknown as Record<string, unknown>,
+      );
+      const rows = await readThrough(box, {
+        entity,
+        maxIterations: scenario.maxIterations,
+      });
+      assert.deepEqual(asJson(rows), goldenRows("chunked", entity), entity);
+    }
     assert.deepEqual(own.misses, []);
-    assertTimestamps(results);
     assert.equal(SessionGraphql.chunkReads, 0);
     const calls = SessionGraphql.transports.flatMap(t => t.calls);
-    assert.equal(calls.filter(c => c === "start").length, ENTITIES.length * 6);
-    assert.equal(calls.filter(c => c === "close").length, ENTITIES.length * 6);
+    assert.equal(calls.filter(c => c === "start").length, ENTITIES.length);
+    assert.equal(calls.filter(c => c === "close").length, ENTITIES.length);
   } finally {
     await own.close();
   }
 });
 
-void test("the comparison catches a changed field, a lost row and another request", () => {
-  const base = {
-    rows: [
-      { id: 1, n: 1 },
-      { id: 2, n: 2 },
-    ],
-    chunks: [
-      {
-        offset: 0,
-        cursor: null,
-        totalProcessed: 2,
-        totalCount: null,
-        hasMore: false,
-      },
-    ],
-    requests: ['POST /graphql {"query":"q"} (bearer)'],
-  };
-  assert.ok(compareRuns(base, structuredClone(base)).ok);
-  const changed = structuredClone(base);
-  changed.rows[1].n = 3;
-  assert.deepEqual(compareRuns(base, changed).checksumMismatches, ["2"]);
-  assert.equal(
-    compareRuns(base, { ...base, rows: [base.rows[0]] }).keys,
-    false,
-  );
-  const other = {
-    ...structuredClone(base),
-    requests: ['POST /graphql {"query":"q"} (hasura)'],
-  };
-  assert.equal(compareRuns(base, other).requestsEqual, false);
+void test("a 429 then a 503 before the first page are retried, and the rows are the default rows", async () => {
+  for (const entity of ENTITIES) {
+    const token = tokenFor("folder", RATE_LIMIT_SCENARIO, entity);
+    const { rows } = await readFolder({
+      entity,
+      maxIterations: RATE_LIMIT_SCENARIO.maxIterations,
+      config: scenarioConfig(token, server, RATE_LIMIT_SCENARIO),
+    });
+    assert.deepEqual(asJson(rows), goldenRows("default", entity), entity);
+    const requests = server.requestKeys(token);
+    const unique = new Set(requests);
+    assert.ok(requests.length > unique.size, `${entity}: first page retried`);
+  }
 });
 
 void test("the cassettes hold no credential", () => {
@@ -394,6 +373,7 @@ void test("the cassettes hold no credential", () => {
     const text = fs.readFileSync(path.join(CASSETTE_DIR, file), "utf8");
     assert.doesNotMatch(text, /gql_test_|Bearer |admin-secret/i, file);
   }
+  assert.ok(fs.existsSync(GOLDEN_DIR));
 });
 
 void test("the endpoint check refuses metadata names and private IPs in any spelling", async () => {
@@ -423,8 +403,7 @@ void test("the endpoint check refuses metadata names and private IPs in any spel
 });
 
 void test("an unknown query entity fails the read, even with no query at all", async () => {
-  // In-process throws "Query configuration '<entity>' not found"; the box
-  // must not answer 0 rows instead (a probe on a connection with no flow).
+  // The box must not answer 0 rows (a probe on a connection with no flow).
   for (const config of [
     { endpoint: CONFIG.endpoint },
     { ...CONFIG, queries: FLOW_QUERIES.slice(0, 1) },
@@ -612,4 +591,15 @@ void test("the address policy: public unicast and loopback pass, everything else
     assert.equal(isBlocked, false, address);
   }
   for (const [url, refused] of out.endpoints) assert.equal(refused, true, url);
+});
+
+// The scenario list is part of the contract with golden.mjs.
+void test("the golden scenarios exist in the harness", () => {
+  for (const name of ["default", "since", "chunked"]) {
+    assert.ok(
+      SCENARIOS.some(s => s.name === name),
+      name,
+    );
+  }
+  assert.ok(RATE_LIMIT_SCENARIO.rateLimited);
 });

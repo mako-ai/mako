@@ -49,7 +49,7 @@ export interface FormSchema {
   /**
    * The flow form's query list, for a connector whose entities are each
    * flow's own queries (`spec.mako.queryEntities.source: "flow"`), in the
-   * shape the in-process GraphQL connector's `getConfigSchema()` gives.
+   * shape the GraphQL folder's query form has.
    */
   transferQueries?: {
     label: string;
