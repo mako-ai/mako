@@ -296,6 +296,8 @@ export interface HydratedFlowRow {
   refusal: string | null;
   /** Field-level schema failures, as mongoose would raise them on save. */
   schemaErrors: Array<{ path: string; message: string }>;
+  /** The unsaved row, when the file applied. */
+  doc?: IFlow;
 }
 
 /**
@@ -351,5 +353,22 @@ export function hydrateFlowRow(
       path,
       message: err?.message ?? "is invalid",
     })),
+    doc,
   };
+}
+
+/**
+ * Store the view-only layout warnings with a targeted update (no pause, no
+ * invalid marker). An empty list removes them.
+ */
+export async function setLayoutWarnings(
+  id: Types.ObjectId,
+  warnings: NonNullable<IFlow["layoutWarnings"]>,
+): Promise<void> {
+  await Flow.updateOne(
+    { _id: id },
+    warnings.length > 0
+      ? { $set: { layoutWarnings: warnings } }
+      : { $unset: { layoutWarnings: 1 } },
+  );
 }

@@ -173,6 +173,20 @@ export interface IFlow extends Document {
     at: Date;
     path?: string;
   };
+  /**
+   * View-only: layouts that disagree with their BigQuery table. `refused`
+   * marks a layout from the file that was NOT applied (the flow keeps running
+   * its stored one). Never pauses the flow and never sets definitionInvalid.
+   */
+  layoutWarnings?: Array<{
+    entity: string;
+    table: string;
+    kind: string;
+    layoutValue: string;
+    realValue: string;
+    message: string;
+    refused: boolean;
+  }>;
 
   // Source configuration — either a source connection or a database connection
   sourceType: "connector" | "database";
@@ -360,6 +374,18 @@ const FlowSchema = new Schema<IFlow>(
       at: { type: Date },
       path: { type: String },
     },
+    layoutWarnings: [
+      {
+        _id: false,
+        entity: String,
+        table: String,
+        kind: String,
+        layoutValue: String,
+        realValue: String,
+        message: String,
+        refused: Boolean,
+      },
+    ],
     // Source type discriminator - defaults to "connector" for backward compatibility
     sourceType: {
       type: String,
