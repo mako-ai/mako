@@ -41,7 +41,6 @@ import {
 } from "./google-service-account";
 import { googleCredentialRefusal } from "./callable";
 import { BigQueryClients } from "../databases/drivers/bigquery/client";
-import { BigQueryConnector } from "../connectors/bigquery/connector";
 import { BigQueryDestinationAdapter } from "../sync-cdc/adapters/bigquery";
 import { cancelBigQueryJobs } from "../dbt/bigquery-cancel.service";
 import { renderDbtProfile } from "../dbt/adapter-map";
@@ -236,22 +235,6 @@ describe("save time", () => {
     expect(serviceAccountConfigRefusal({})).toBeNull();
   });
 
-  it("BigQueryConnector.validateConfig refuses it", () => {
-    const connector = new BigQueryConnector({
-      id: "x",
-      name: "x",
-      type: "bigquery",
-      config: {
-        project_id: "p",
-        queries: [{ name: "q", query: "select 1" }],
-        service_account_json: EXTERNAL_JSON,
-      },
-    } as never);
-    const result = connector.validateConfig();
-    expect(result.valid).toBe(false);
-    expect(result.errors.join(" ")).toMatch(NOT_ALLOWED);
-  });
-
   it("the Custom API Google credential refuses it", () => {
     expect(
       googleCredentialRefusal({
@@ -290,29 +273,6 @@ describe("use time: a stored external_account config fails closed", () => {
       ),
     ).rejects.toThrow(NOT_ALLOWED);
     noRequestMade();
-  });
-
-  it("BigQuery source connector (sync, probe, entities)", async () => {
-    const connector = new BigQueryConnector({
-      id: "x",
-      name: "x",
-      type: "bigquery",
-      config: {
-        project_id: "p",
-        queries: [{ name: "q", query: "select 1" }],
-        service_account_json: EXTERNAL_JSON,
-      },
-    } as never);
-    const tested = await connector.testConnection();
-    expect(tested.success).toBe(false);
-    expect(JSON.stringify(tested)).not.toContain("environ");
-    await expect(
-      (
-        connector as unknown as { getAccessToken(): Promise<string> }
-      ).getAccessToken(),
-    ).rejects.toThrow(NOT_ALLOWED);
-    noRequestMade();
-    neverConstructed();
   });
 
   it("CDC BigQuery destination adapter (resolveBqClient)", async () => {

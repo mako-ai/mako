@@ -1,1 +1,0 @@
-export { BigQueryConnector } from "./connector";

@@ -7,7 +7,6 @@ import { CalendlyConnector } from "./calendly/connector";
 import { RestConnector } from "./rest/connector";
 import { GraphQLConnector } from "./graphql/connector";
 import { PosthogConnector } from "./posthog/connector";
-import { BigQueryConnector } from "./bigquery/connector";
 import { WiseConnector } from "./wise/connector";
 import {
   BaseConnector,
@@ -155,16 +154,6 @@ const connectors: Array<{
       } as any),
   },
   {
-    label: "bigquery",
-    make: () =>
-      new BigQueryConnector({
-        id: "ds_bigquery",
-        name: "BigQuery",
-        type: "bigquery",
-        config: {},
-      } as any),
-  },
-  {
     label: "wise",
     make: () =>
       new WiseConnector({
@@ -187,14 +176,6 @@ function testEveryConnectorReturnsWellFormedCapabilities() {
     const capabilities = make().getIncrementalCapabilities();
     assertWellFormed(label, capabilities);
   }
-}
-
-function testConnectorsWithNoRealIncrementalDeclareNone() {
-  // BigQuery still accepts `since` without applying it. GraphQL/PostHog now
-  // declare real incremental modes (client-filter / $since substitution).
-  const bigquery = capabilitiesFor("bigquery");
-  assert.equal(bigquery.supported, false, "bigquery.supported");
-  assert.equal(bigquery.mode, "none", "bigquery.mode");
 }
 
 function testGraphQLDeclaresClientFilterWithSinceInjection() {
@@ -395,7 +376,6 @@ async function testWiseActivitiesNativeSinceWhenSinceSet() {
 
 async function main() {
   testEveryConnectorReturnsWellFormedCapabilities();
-  testConnectorsWithNoRealIncrementalDeclareNone();
   testGraphQLDeclaresClientFilterWithSinceInjection();
   testPosthogDeclaresNativeSincePlaceholder();
   testCreatedAnchorConnectorsWarnAboutMissedUpdates();
