@@ -3,6 +3,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose, { type Connection, Types } from "mongoose";
 import { WebhookEvent } from "../database/models/webhooks";
+import { Flow } from "../database/workspace-schema";
+import { resyncFlow } from "./backfill/resync";
+
+vi.mock("./backfill/lifecycle", () => ({ startBackfill: vi.fn() }));
 import {
   admitInlineWebhook,
   closeInlineWebhookAdmission,
@@ -32,6 +36,7 @@ beforeAll(async () => {
     replSet: { count: 1 },
     instanceOpts: [{ args: ["--setParameter", "ttlMonitorSleepSecs=1"] }],
   });
+  await mongoose.connect(mongo.getUri());
   workerA = await mongoose.createConnection(mongo.getUri()).asPromise();
   workerB = await mongoose.createConnection(mongo.getUri()).asPromise();
   await workerA.model("WebhookEvent", WebhookEvent.schema).init();
@@ -40,10 +45,123 @@ beforeAll(async () => {
 afterAll(async () => {
   await workerA?.close();
   await workerB?.close();
+  await mongoose.disconnect();
   await mongo?.stop();
 });
 
 describe("closed webhook retention", () => {
+  it("preserves retained deliveries arriving during resync cleanup", async () => {
+    const key = scope();
+    await Flow.create({
+      _id: key.flowId,
+      workspaceId: key.workspaceId,
+      dataSourceId: key.sourceConnectionId,
+      destinationDatabaseId: new Types.ObjectId(),
+      createdBy: new Types.ObjectId().toString(),
+      schedule: { cron: "0 0 * * *" },
+      syncEngine: "cdc",
+    });
+    await closeInlineWebhookAdmission(workerA, key);
+    const retain = (eventId: string) =>
+      retainClosedInlineWebhook(workerB, key, {
+        sourceConnectionId: key.sourceConnectionId,
+        eventId,
+        eventType: "created",
+        rawPayload: { eventId },
+      });
+    expect(await retain("earlier")).toBe("retained");
+    const inbox = database(workerA).collection("webhookevents");
+    const otherFlow = new Types.ObjectId();
+    const otherWorkspace = new Types.ObjectId();
+    await inbox.insertMany([
+      {
+        workspaceId: key.workspaceId,
+        flowId: key.flowId,
+        eventId: "ordinary",
+        status: "pending",
+        applyStatus: "pending",
+      },
+      { workspaceId: key.workspaceId, flowId: key.flowId, eventId: "legacy" },
+      {
+        workspaceId: key.workspaceId,
+        flowId: otherFlow,
+        eventId: "other-flow",
+        status: "pending",
+      },
+      {
+        workspaceId: otherWorkspace,
+        flowId: key.flowId,
+        eventId: "other-workspace",
+        status: "pending",
+      },
+    ]);
+    let entered!: () => void;
+    let release!: () => void;
+    const atDelete = new Promise<void>(resolve => {
+      entered = resolve;
+    });
+    const proceed = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const originalDelete = WebhookEvent.collection.deleteMany.bind(
+      WebhookEvent.collection,
+    );
+    const spy = vi
+      .spyOn(WebhookEvent.collection, "deleteMany")
+      .mockImplementation(async (...args) => {
+        entered();
+        await proceed;
+        return originalDelete(...args);
+      });
+    const resync = resyncFlow({
+      workspaceId: key.workspaceId.toString(),
+      flowId: key.flowId.toString(),
+      clearWebhookEvents: true,
+    });
+    try {
+      await Promise.race([
+        atDelete,
+        resync.then(() => {
+          throw new Error("Resync skipped webhook cleanup");
+        }),
+      ]);
+      expect(await retain("during")).toBe("retained");
+    } finally {
+      release();
+      try {
+        await resync;
+      } finally {
+        spy.mockRestore();
+      }
+    }
+    const remaining = await inbox
+      .find({ $or: [{ flowId: key.flowId }, { flowId: otherFlow }] })
+      .toArray();
+    expect(remaining.map(row => row.eventId).sort()).toEqual([
+      "during",
+      "earlier",
+      "other-flow",
+      "other-workspace",
+    ]);
+    expect(
+      remaining.filter(
+        row => row.eventId === "during" || row.eventId === "earlier",
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventId: "earlier",
+          status: "dormant",
+          applyStatus: "dormant",
+        }),
+        expect.objectContaining({
+          eventId: "during",
+          status: "dormant",
+          applyStatus: "dormant",
+        }),
+      ]),
+    );
+  });
   it("retains one delivery across competing workers and excludes it from TTL and queues", async () => {
     const key = scope();
     const delivery = {
