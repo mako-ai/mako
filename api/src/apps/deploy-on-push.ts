@@ -471,7 +471,7 @@ export async function deployAppsForPush(input: {
     return null;
   });
   await requestAppDeploys(workspaceId, plan ? plan.now : appIds, sha, "push");
-  if (plan) await holdDeploysForDbtRun({ workspaceId, sha, plan });
+  if (plan) await holdDeploysForDbtRun({ workspaceId, sha, plan, repoDir });
   logger.info("Apps deploys requested from push", {
     workspaceId,
     sha,

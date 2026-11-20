@@ -151,6 +151,15 @@ mcpProtocolRoutes.post(
       acpDesktop,
       capabilityGrants,
       automationKey: isAutomationKey(apiKey),
+      credential: isMcpOAuthAuth(c)
+        ? {
+            oauthClientId: c.get("mcpOAuthClientId"),
+            agentSessionId: c.get("mcpAgentSessionId"),
+          }
+        : {
+            apiKeyId: apiKey?._id != null ? String(apiKey._id) : undefined,
+            apiKeyName: apiKey?.name,
+          },
     };
     // External clients also get the ChatGPT connector contract (search /
     // fetch) — required for ChatGPT to accept the server as a connector,

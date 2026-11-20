@@ -21,6 +21,7 @@ import {
 import { recordCompletedAdhocDbtRun } from "../../dbt/dbt-run.service";
 import {
   getUserId,
+  runActorOf,
   badRequest,
   serverError,
   publishDbtEvent,
@@ -248,6 +249,7 @@ dbtCommandRoutes.post(
           environment: environment ?? project.defaultEnvironment,
           command: normalized,
           triggeredBy: userId,
+          actor: runActorOf(c),
           workingTreeUserId: userId,
           sourceBranch: await getCheckoutBranch(project, userId),
           deferToProduction: Boolean(defer && deferState),

@@ -50,6 +50,7 @@ import {
   resolveProdLikeEnvironmentName,
 } from "./dbt-environments.service";
 import { triggerDbtRun } from "./dbt-run.service";
+import type { DbtRunActor } from "./run-actor";
 import { parseDbtCommands } from "./commands";
 import { storeLocalOverlay, type LocalOverlay } from "./local-overlay";
 
@@ -208,6 +209,8 @@ async function resolveLocalRunProject(
 export interface StartLocalRunInput {
   workspaceId: string;
   userId: string;
+  /** Who is asking, for the run's `actor` (session, API key or MCP client). */
+  actor: DbtRunActor;
   authority: LocalRunAuthority;
   projectId?: string;
   command: string;
@@ -302,6 +305,7 @@ export async function startLocalDbtRun(
     commands: [commandText],
     trigger: "manual",
     triggeredBy: input.userId,
+    actor: input.actor,
     deferToProduction: defer,
     localOverlay: {
       key,

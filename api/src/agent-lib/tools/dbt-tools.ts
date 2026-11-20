@@ -52,6 +52,7 @@ import {
   triggerDbtJobRun,
   triggerDbtRun,
 } from "../../dbt/dbt-run.service";
+import { redactRunActor, type DbtRunActor } from "../../dbt/run-actor";
 import {
   DbtCommandValidationError,
   parseDbtCommands,
@@ -175,6 +176,12 @@ export const createDbtServerTools = (
     queryAccess?: QueryAccess;
     /** Cancels query_metric when the chat request stops. */
     toolExecutionContext?: AgentToolExecutionContext;
+    /**
+     * Who the runs these tools queue are attributed to (dbt_runs.actor). The
+     * MCP server passes its credential (API key or OAuth client); without
+     * it the runs belong to the in-app agent: this user and `chatId`.
+     */
+    actor?: DbtRunActor;
   },
 ) => {
   const maxRunWaitMs = Math.min(
@@ -185,6 +192,11 @@ export const createDbtServerTools = (
   // Drafts/checkouts belong to the user the agent acts for; without a user
   // session (rare) the agent gets its own overlay under the "agent" owner.
   const actingUserId = userId ?? "agent";
+  const runActor: DbtRunActor = options?.actor ?? {
+    kind: "agent",
+    userId,
+    chatId: options?.chatId,
+  };
 
   // Poke open dbt-file tabs to pull the new content (poke-then-pull, mirrors
   // the console #475 realtime sync). Draft edits carry forUserId so only the
@@ -339,6 +351,7 @@ export const createDbtServerTools = (
       commands,
       trigger: "agent",
       triggeredBy: "agent",
+      actor: runActor,
       workingTreeUserId,
       deferToProduction,
     });
@@ -1043,6 +1056,7 @@ export const createDbtServerTools = (
             ],
             trigger: "agent",
             triggeredBy: "agent",
+            actor: runActor,
             // Build the acting user's working tree (checkout + drafts) so
             // the run verifies exactly the uncommitted edits just made.
             workingTreeUserId: actingUserId,
@@ -1109,6 +1123,7 @@ export const createDbtServerTools = (
             job,
             trigger: "agent",
             triggeredBy: "agent",
+            actor: runActor,
           });
           publishRunUpdated(projectId, {
             runId: run._id.toString(),
@@ -1322,6 +1337,10 @@ export const createDbtServerTools = (
             runId: run._id.toString(),
             status: run.status,
             trigger: run.trigger,
+            // Who started it: ids and labels, never an email or a secret.
+            ...(redactRunActor(run.actor)
+              ? { actor: redactRunActor(run.actor) }
+              : {}),
             environment: run.environment,
             commands: run.commands,
             createdAt: run.createdAt,

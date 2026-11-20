@@ -18,6 +18,7 @@ import {
   serverError,
   publishDbtEvent,
   findProject,
+  runActorOf,
 } from "./context";
 import { fail } from "../lib/respond";
 
@@ -159,6 +160,7 @@ dbtRunRoutes.post(
         workspaceId: project.workspaceId.toString(),
         runId,
         triggeredBy: getUserId(c),
+        actor: runActorOf(c),
       });
       if (!run) {
         return badRequest(

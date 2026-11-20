@@ -113,6 +113,7 @@ async function seedHistory(
       status: "success",
       trigger: "schedule",
       triggeredBy: "scheduler",
+      actor: { kind: "user" as const, userId: "u1" },
       durationMs,
       createdAt: new Date(Date.now() - (i + 1) * 3600e3),
     })),
@@ -230,6 +231,7 @@ describe("resolveJobLane and chooseRunLane", () => {
         status: "success",
         trigger: "schedule",
         triggeredBy: "scheduler",
+        actor: { kind: "user" as const, userId: "u1" },
         durationMs: 30 * MIN,
         createdAt: new Date(t0.getTime() + 60_000),
       })),
@@ -261,6 +263,7 @@ describe("dbt/run.requested payload", () => {
       job,
       trigger: "schedule",
       triggeredBy: "scheduler",
+      actor: { kind: "user" as const, userId: "u1" },
     });
 
     expect(run.lane).toBe("fast");
@@ -287,6 +290,7 @@ describe("dbt/run.requested payload", () => {
       job,
       trigger: "manual",
       triggeredBy: "u1",
+      actor: { kind: "user" as const, userId: "u1" },
     });
 
     expect(run.lane).toBe("default");
@@ -305,6 +309,7 @@ describe("dbt/run.requested payload", () => {
       commands: ["build --select stg_orders"],
       trigger: "schedule",
       triggeredBy: "apps-deploy-on-push",
+      actor: { kind: "user" as const, userId: "u1" },
     });
 
     expect(run.lane).toBe("default");
@@ -387,6 +392,7 @@ async function seedRun(
     status,
     trigger: extra.jobId ? "schedule" : "manual",
     triggeredBy: "u1",
+    actor: { kind: "user" as const, userId: "u1" },
     ...extra,
   });
 }

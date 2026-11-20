@@ -118,6 +118,34 @@ export interface DbtRunItem {
   status: "queued" | "running" | "success" | "error" | "cancelled";
   trigger: "schedule" | "manual" | "agent" | "ci";
   triggeredBy: string;
+  /** Who started the run (absent on runs from before it was recorded). */
+  actor?: {
+    kind:
+      | "schedule"
+      | "user"
+      | "api_key"
+      | "agent"
+      | "mcp"
+      | "deploy_on_push"
+      | "ci"
+      | "retry";
+    userId?: string;
+    userName?: string;
+    apiKeyId?: string;
+    apiKeyName?: string;
+    oauthClientId?: string;
+    oauthClientName?: string;
+    chatId?: string;
+    agentSessionId?: string;
+    jobScheduleId?: string;
+    retryOf?: string;
+    push?: {
+      sha: string;
+      prNumber?: number;
+      prAuthor?: string;
+      mergedAt?: string;
+    };
+  };
   startedAt?: string;
   completedAt?: string;
   durationMs?: number;
