@@ -34,6 +34,10 @@
  * try a new connection. A credential-only check returns no records and stays
  * open to every member.
  */
+import {
+  isOrphanConnectorType,
+  ORPHAN_TYPE_MESSAGE,
+} from "./source-connection-create.service";
 import { Types } from "mongoose";
 
 import type {
@@ -368,6 +372,7 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
     {
       _id: 1,
       name: 1,
+      type: 1,
       liveReads: 1,
       liveReaders: 1,
       writers: 1,
@@ -380,6 +385,9 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
       "not_found",
       'Connection not found in this workspace. Call list_connections({ kind: "source" }) for valid ids.',
     );
+  }
+  if (await isOrphanConnectorType(String(owned.type ?? ""), workspaceId)) {
+    throw new ProbeError("connector_unavailable", ORPHAN_TYPE_MESSAGE);
   }
   if (input.entity) await assertMayProbeEntity(workspaceId, owned);
 

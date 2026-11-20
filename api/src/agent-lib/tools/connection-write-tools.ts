@@ -73,7 +73,9 @@ import {
   assertConnectorTypeUsable,
   assertCredentialCharacters,
   createSourceConnection,
+  isOrphanConnectorType,
   isSecretField,
+  ORPHAN_TYPE_MESSAGE,
   type ConnectorFieldSchema,
 } from "../../connectors/source-connection-create.service";
 import { Flow, SourceConnection } from "../../database/workspace-schema";
@@ -616,6 +618,12 @@ export function createConnectionWriteTools(
                 error:
                   "This connection is waiting for its key, so it cannot be switched on. The user sets the key through its keyLink (or in its settings in Mako); it then turns on by itself.",
               };
+            }
+            if (
+              active &&
+              (await isOrphanConnectorType(row.type, workspaceId))
+            ) {
+              return { error: ORPHAN_TYPE_MESSAGE };
             }
             set.isActive = active;
           }
