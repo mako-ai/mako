@@ -159,8 +159,8 @@ beforeEach(async () => {
   await SourceConnection.create({
     _id: CONNECTOR,
     workspaceId: WS,
-    name: "Close",
-    type: "close",
+    name: "Stripe",
+    type: "stripe",
     config: {},
     settings: { rate_limit_delay_ms: 100, sync_batch_size: 100 },
     createdBy: "u1",

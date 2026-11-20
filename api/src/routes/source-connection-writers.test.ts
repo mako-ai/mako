@@ -120,7 +120,7 @@ beforeEach(async () => {
   const row = await SourceConnection.create({
     workspaceId: WS,
     name: "ch_close",
-    type: "close",
+    type: "stripe",
     config: { api_key: "x" },
     settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
     createdBy: "manager1",
@@ -502,7 +502,7 @@ describe("source connection writers", () => {
     const other = await SourceConnection.create({
       workspaceId: new Types.ObjectId(),
       name: "theirs",
-      type: "close",
+      type: "stripe",
       config: {},
       settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
       createdBy: "x",

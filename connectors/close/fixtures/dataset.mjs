@@ -3,10 +3,9 @@
  *
  * Nothing here comes from a real account. Every name is "Lead 0001"-style,
  * every email is @example.com, every phone is +48 000 000 xxx, and ids are
- * hashes of a counter. The shapes follow Close's API reference and the
- * in-process connector's unit-test fixtures.
+ * hashes of a counter. The shapes follow Close's API reference.
  *
- * The data is built to walk every branch of the in-process read path:
+ * The data is built to walk every branch of the folder's read path:
  * - leads carry 70 custom fields, more than the 50 selectors the emulator
  *   accepts per request: the first page is refused, the selector budget
  *   halves to 30, and every page needs 2 by-id follow-ups;

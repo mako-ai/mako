@@ -66,7 +66,6 @@ connectors/
 │   ├── incremental.ts       # Date windows, the client-side `since` filter
 │   └── webhook-signature.ts # Raw body, HMAC, constant-time compare
 ├── stripe/
-├── close/
 ├── claap/
 ├── calendly/
 ├── posthog/
@@ -168,12 +167,6 @@ table of connectors and entities. Summary:
 - Supported entities: customers, subscriptions, disputes, charges, invoices, products, prices, plans, payment intents, balance_transactions, payouts, payout_balance_transactions, refunds, credit_notes, customer_balance_transactions, payment_methods, invoice_items, subscription_schedules, coupons, promotion_codes, checkout_sessions, setup_intents, early_fraud_warnings, invoice_line_items, subscription_items, events
 - Required config: `api_key`
 - Supports backfill and CDC webhooks (auto-provisioning)
-
-### Close
-
-- Syncs CRM data from Close
-- Supported entities: leads, opportunities, activities (10+ sub-types), contacts, users, custom_fields
-- Required config: `api_key`
 
 ### Claap, Calendly
 

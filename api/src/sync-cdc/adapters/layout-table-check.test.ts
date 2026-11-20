@@ -262,7 +262,7 @@ describe("flow save", () => {
   const createBody = (over: Record<string, unknown> = {}) => ({
     name: "close shadow",
     dataSourceId: String(SOURCE),
-    syncMode: "incremental",
+    syncMode: "full",
     tableDestination: {
       connectionId: String(DEST),
       schema: "close",
@@ -309,7 +309,7 @@ describe("flow save", () => {
       sourceType: "connector",
       dataSourceId: SOURCE,
       syncEngine: "cdc",
-      syncMode: "incremental",
+      syncMode: "full",
       destinationDatabaseId: DEST,
       tableDestination: { connectionId: DEST, schema: "close", tableName: "" },
       entityFilter: ["activities:Email"],

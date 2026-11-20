@@ -1,0 +1,3184 @@
+{
+  "events": [
+    "lead.created",
+    "lead.updated",
+    "lead.deleted",
+    "lead.merged",
+    "contact.created",
+    "contact.updated",
+    "contact.deleted",
+    "membership.activated",
+    "membership.deactivated",
+    "opportunity.created",
+    "opportunity.updated",
+    "opportunity.deleted",
+    "activity.call.created",
+    "activity.call.updated",
+    "activity.call.deleted",
+    "activity.call.answered",
+    "activity.call.completed",
+    "activity.email.created",
+    "activity.email.updated",
+    "activity.email.deleted",
+    "activity.email.sent",
+    "activity.email_thread.created",
+    "activity.email_thread.updated",
+    "activity.email_thread.deleted",
+    "activity.sms.created",
+    "activity.sms.updated",
+    "activity.sms.deleted",
+    "activity.sms.sent",
+    "activity.note.created",
+    "activity.note.updated",
+    "activity.note.deleted",
+    "activity.meeting.created",
+    "activity.meeting.updated",
+    "activity.meeting.deleted",
+    "activity.meeting.scheduled",
+    "activity.meeting.started",
+    "activity.meeting.completed",
+    "activity.meeting.canceled",
+    "activity.lead_status_change.created",
+    "activity.lead_status_change.updated",
+    "activity.lead_status_change.deleted",
+    "activity.opportunity_status_change.created",
+    "activity.opportunity_status_change.updated",
+    "activity.opportunity_status_change.deleted",
+    "activity.task_completed.created",
+    "activity.task_completed.updated",
+    "activity.task_completed.deleted",
+    "activity.custom_activity.created",
+    "activity.custom_activity.updated",
+    "activity.custom_activity.deleted",
+    "custom_fields.lead.created",
+    "custom_fields.lead.updated",
+    "custom_fields.lead.deleted",
+    "custom_fields.contact.created",
+    "custom_fields.contact.updated",
+    "custom_fields.contact.deleted",
+    "custom_fields.opportunity.created",
+    "custom_fields.opportunity.updated",
+    "custom_fields.opportunity.deleted",
+    "custom_fields.activity.created",
+    "custom_fields.activity.updated",
+    "custom_fields.activity.deleted",
+    "custom_fields.custom_object.created",
+    "custom_fields.custom_object.updated",
+    "custom_fields.custom_object.deleted",
+    "custom_fields.shared.created",
+    "custom_fields.shared.updated",
+    "custom_fields.shared.deleted",
+    "custom_activity_type.created",
+    "custom_activity_type.updated",
+    "custom_activity_type.deleted",
+    "custom_object_type.created",
+    "custom_object_type.updated",
+    "custom_object_type.deleted",
+    "custom_object.created",
+    "custom_object.updated",
+    "custom_object.deleted",
+    "status.lead.created",
+    "status.lead.updated",
+    "status.lead.deleted",
+    "status.opportunity.created",
+    "status.opportunity.updated",
+    "status.opportunity.deleted",
+    "group.created",
+    "group.updated",
+    "group.deleted"
+  ],
+  "outcomes": [
+    {
+      "eventId": "ev_iRDEOb3Wy843h7WSa3jfR6yVpC3kApJYiRDEOb3Wy",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_iRDEOb3Wy843h7WSa3jfR6yVpC3kApJYiRDEOb3Wy",
+          "entity": "leads",
+          "operation": "upsert",
+          "payload": {
+            "addresses": [],
+            "contact_ids": [
+              "cont_n5I4TeDXmhP6nd1hovyN7WzzmseiI4nnn5I4TeDXm"
+            ],
+            "contacts": [
+              {
+                "id": "cont_n5I4TeDXmhP6nd1hovyN7WzzmseiI4nnn5I4TeDXm"
+              }
+            ],
+            "created_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+            "created_by_name": "User 0002",
+            "custom": {
+              "cf_2RHZBsjWrze6xuWe5DSdd24FoPbnYjsg2RHZBsjWr": "2025-05-01",
+              "cf_50yyP2bsdRyrzcO0v2CK32HJnj7iv2nV50yyP2bsd": [
+                "Option A"
+              ],
+              "cf_GYxP1VoJC05SdugRmRBEPv43bpGaPYthGYxP1VoJC": "2025-05-01",
+              "cf_h58GvwUflzv8GP76ACyX4CtK6cAO4Syyh58GvwUfl": "2025-05-01",
+              "cf_lQ32HRIxPe2hYiQyj2ADnVov5cABs2J0lQ32HRIxP": 10,
+              "cf_mpccsmmzcAGtj07acb4UHPzlxJvVb7IYmpccsmmzc": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF"
+            },
+            "custom_cf_2RHZBsjWrze6xuWe5DSdd24FoPbnYjsg2RHZBsjWr": "2025-05-01",
+            "custom_cf_50yyP2bsdRyrzcO0v2CK32HJnj7iv2nV50yyP2bsd": [
+              "Option A"
+            ],
+            "custom_cf_GYxP1VoJC05SdugRmRBEPv43bpGaPYthGYxP1VoJC": "2025-05-01",
+            "custom_cf_h58GvwUflzv8GP76ACyX4CtK6cAO4Syyh58GvwUfl": "2025-05-01",
+            "custom_cf_lQ32HRIxPe2hYiQyj2ADnVov5cABs2J0lQ32HRIxP": 10,
+            "custom_cf_mpccsmmzcAGtj07acb4UHPzlxJvVb7IYmpccsmmzc": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+            "date_created": "2024-04-13T11:30:33.172000+00:00",
+            "date_updated": "2024-04-14T10:00:09.553000+00:00",
+            "description": "",
+            "display_name": "Lead 0001",
+            "html_url": "https://app.close.com/lead/lead_X93D4GdztnNeq2B8rXoHaAe3rUfdSiF3X93D4Gdzt/",
+            "id": "lead_X93D4GdztnNeq2B8rXoHaAe3rUfdSiF3X93D4Gdzt",
+            "integration_links": [],
+            "name": "Lead 0001",
+            "opportunities": [],
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "primary_email": {
+              "email": "contact0001@example.com"
+            },
+            "primary_phone": null,
+            "source": null,
+            "status_id": "stat_lr5QijNf2c082tnt2VA1BRZ35M6swJgglr5QijNf2",
+            "status_label": "Bad Fit",
+            "tasks": [],
+            "updated_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+            "updated_by_name": "User 0002",
+            "url": null
+          },
+          "recordId": "lead_X93D4GdztnNeq2B8rXoHaAe3rUfdSiF3X93D4Gdzt",
+          "source": "webhook",
+          "sourceTs": "2026-11-02T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_fVD5sG7ZtBYOCX7EGuZOuWnMPF7DbH5gfVD5sG7Zt",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_fVD5sG7ZtBYOCX7EGuZOuWnMPF7DbH5gfVD5sG7Zt",
+          "entity": "leads",
+          "operation": "upsert",
+          "payload": {
+            "addresses": [],
+            "contact_ids": [
+              "cont_xhmgZ0ofkPduQnqi3odj0s6JNiqylYoJxhmgZ0ofk"
+            ],
+            "contacts": [
+              {
+                "id": "cont_xhmgZ0ofkPduQnqi3odj0s6JNiqylYoJxhmgZ0ofk"
+              }
+            ],
+            "created_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+            "created_by_name": "User 0003",
+            "custom": {
+              "cf_1zC0Wdh2PpR9qQBdlHeGVqY8M28EAqRX1zC0Wdh2P": 20,
+              "cf_2KQVbgSGIoeL7DPY2ITa9fqaq6ySAZOc2KQVbgSGI": true,
+              "cf_MkXlPK8dln7OiNhmTVsK8MGFKXxFQ0EyMkXlPK8dl": 20,
+              "cf_lSBYynbVQDLgp374Gbiqb4RM0TbubYbIlSBYynbVQ": "Option B",
+              "cf_mpccsmmzcAGtj07acb4UHPzlxJvVb7IYmpccsmmzc": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+              "cf_pU6aSj6sjbgwis0gOajsGrYGxT7zNyV5pU6aSj6sj": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko"
+            },
+            "custom_cf_1zC0Wdh2PpR9qQBdlHeGVqY8M28EAqRX1zC0Wdh2P": 20,
+            "custom_cf_2KQVbgSGIoeL7DPY2ITa9fqaq6ySAZOc2KQVbgSGI": true,
+            "custom_cf_MkXlPK8dln7OiNhmTVsK8MGFKXxFQ0EyMkXlPK8dl": 20,
+            "custom_cf_lSBYynbVQDLgp374Gbiqb4RM0TbubYbIlSBYynbVQ": "Option B",
+            "custom_cf_mpccsmmzcAGtj07acb4UHPzlxJvVb7IYmpccsmmzc": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+            "custom_cf_pU6aSj6sjbgwis0gOajsGrYGxT7zNyV5pU6aSj6sj": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+            "date_created": "2024-09-06T03:36:43.698000+00:00",
+            "date_updated": "2024-09-07T23:41:48.526000+00:00",
+            "description": "",
+            "display_name": "Lead 0002",
+            "html_url": "https://app.close.com/lead/lead_RIBVJRBflK15yGr2hjtB7Xvt1x5f9m1ORIBVJRBfl/",
+            "id": "lead_RIBVJRBflK15yGr2hjtB7Xvt1x5f9m1ORIBVJRBfl",
+            "integration_links": [],
+            "name": "Lead 0002",
+            "opportunities": [],
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "primary_email": {
+              "email": "contact0002@example.com"
+            },
+            "primary_phone": null,
+            "source": "Website",
+            "status_id": "stat_BAJejx5F8I8Xg5Z9OU3JNmsdRZpX2VvcBAJejx5F8",
+            "status_label": "Qualified",
+            "tasks": [],
+            "updated_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+            "updated_by_name": "User 0003",
+            "url": null
+          },
+          "recordId": "lead_RIBVJRBflK15yGr2hjtB7Xvt1x5f9m1ORIBVJRBfl",
+          "source": "webhook",
+          "sourceTs": "2026-11-03T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_RVBYqaHrRppSq0KOc0qlJY15fN3WhLcTRVBYqaHrR",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_RVBYqaHrRppSq0KOc0qlJY15fN3WhLcTRVBYqaHrR",
+          "entity": "leads",
+          "operation": "delete",
+          "payload": {
+            "id": "lead_gbSxBpnl50OtPeldwKR3V0ho5lgMjte3gbSxBpnl5"
+          },
+          "recordId": "lead_gbSxBpnl50OtPeldwKR3V0ho5lgMjte3gbSxBpnl5",
+          "source": "webhook",
+          "sourceTs": "2026-11-04T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_Rg2W1p7zQNqseW7d2dW6YrLFrt8M4Dm0Rg2W1p7zQ",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_Rg2W1p7zQNqseW7d2dW6YrLFrt8M4Dm0Rg2W1p7zQ",
+          "entity": "leads",
+          "operation": "upsert",
+          "payload": {
+            "addresses": [
+              {
+                "city": "Fixture City",
+                "country": "PL",
+                "label": "business"
+              }
+            ],
+            "contact_ids": [
+              "cont_bxtZGPSX1M4ikc0hQ2bU535ruJ2gPn9dbxtZGPSX1"
+            ],
+            "contacts": [
+              {
+                "id": "cont_bxtZGPSX1M4ikc0hQ2bU535ruJ2gPn9dbxtZGPSX1"
+              }
+            ],
+            "created_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "created_by_name": "User 0005",
+            "custom": {
+              "cf_2o7Yz3nPOKLoIXLCXGSf30OILxO6gBNc2o7Yz3nPO": "Value 0004",
+              "cf_89ge6FPIMpVY34HnGVHQTG9YguP4CVjj89ge6FPIM": 40,
+              "cf_OZLqCLFiFhY9fLsS0bhR6owvaFbJarp8OZLqCLFiF": true,
+              "cf_S4MAc0V51gKf2PtSouB26nhq31rnb1hoS4MAc0V51": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+              "cf_WpVG58JnZgCpbjC8PbBiv2QCccAkYNxyWpVG58JnZ": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+              "cf_yCAvq2WZowHeHkaShIJAHEFqDJN8TDooyCAvq2WZo": true
+            },
+            "custom_cf_2o7Yz3nPOKLoIXLCXGSf30OILxO6gBNc2o7Yz3nPO": "Value 0004",
+            "custom_cf_89ge6FPIMpVY34HnGVHQTG9YguP4CVjj89ge6FPIM": 40,
+            "custom_cf_OZLqCLFiFhY9fLsS0bhR6owvaFbJarp8OZLqCLFiF": true,
+            "custom_cf_S4MAc0V51gKf2PtSouB26nhq31rnb1hoS4MAc0V51": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "custom_cf_WpVG58JnZgCpbjC8PbBiv2QCccAkYNxyWpVG58JnZ": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "custom_cf_yCAvq2WZowHeHkaShIJAHEFqDJN8TDooyCAvq2WZo": true,
+            "date_created": "2024-09-28T15:59:33.041000+00:00",
+            "date_updated": "2024-09-29T13:18:16.840000+00:00",
+            "description": "",
+            "display_name": "Lead 0004",
+            "html_url": "https://app.close.com/lead/lead_MBoKB0Jtv3L7RPBMZpuP3KwYDXkC2AdZMBoKB0Jtv/",
+            "id": "lead_MBoKB0Jtv3L7RPBMZpuP3KwYDXkC2AdZMBoKB0Jtv",
+            "integration_links": [],
+            "name": "Lead 0004",
+            "opportunities": [],
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "primary_email": {
+              "email": "contact0004@example.com"
+            },
+            "primary_phone": null,
+            "source": "Website",
+            "status_id": "stat_iXT00S9Be3dVRUkzaVb5Vit45kOlkrihiXT00S9Be",
+            "status_label": "Lost",
+            "tasks": [],
+            "updated_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "updated_by_name": "User 0005",
+            "url": null
+          },
+          "recordId": "lead_MBoKB0Jtv3L7RPBMZpuP3KwYDXkC2AdZMBoKB0Jtv",
+          "source": "webhook",
+          "sourceTs": "2026-11-05T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_7KNeCSCbdBItUBMVyQpfPd6WVQVsZlyC7KNeCSCbd",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_7KNeCSCbdBItUBMVyQpfPd6WVQVsZlyC7KNeCSCbd",
+          "entity": "contacts",
+          "operation": "upsert",
+          "payload": {
+            "created_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+            "custom": {
+              "cf_7et0Jb06NX0IAyDmFpz0Bglhiapn4hDi7et0Jb06N": "Value 0005",
+              "cf_AAaM6ofpxp8fYr454scqu7VbL4uD5ijNAAaM6ofpx": [
+                "Option A"
+              ],
+              "cf_N3rqcQGAaAKV4pE07BkHzham6pPGFVtpN3rqcQGAa": "2025-05-01",
+              "cf_rZqMap6z1dUnZUeGvlfS3N6RBo2EJL0QrZqMap6z1": 50,
+              "cf_yCFkG68V21Si7a2aO91rqmzJmdZSr0LPyCFkG68V2": "2025-05-01"
+            },
+            "custom_cf_7et0Jb06NX0IAyDmFpz0Bglhiapn4hDi7et0Jb06N": "Value 0005",
+            "custom_cf_AAaM6ofpxp8fYr454scqu7VbL4uD5ijNAAaM6ofpx": [
+              "Option A"
+            ],
+            "custom_cf_N3rqcQGAaAKV4pE07BkHzham6pPGFVtpN3rqcQGAa": "2025-05-01",
+            "custom_cf_rZqMap6z1dUnZUeGvlfS3N6RBo2EJL0QrZqMap6z1": 50,
+            "custom_cf_yCFkG68V21Si7a2aO91rqmzJmdZSr0LPyCFkG68V2": "2025-05-01",
+            "date_created": "2025-06-02T08:43:31.890000+00:00",
+            "date_updated": "2026-09-12T04:24:36.885000+00:00",
+            "display_name": "Contact 0005",
+            "emails": [
+              {
+                "email": "contact0005@example.com",
+                "type": "office"
+              }
+            ],
+            "id": "cont_TTgIfBNiyBexsKu0PUvaFii09tZat4g2TTgIfBNiy",
+            "integration_links": [],
+            "lead_id": "lead_jpYtGXQx5lDyUPiHA23lTYahD7FHkBcRjpYtGXQx5",
+            "lead_suggestions_operation_id": null,
+            "name": "Contact 0005",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "phones": [
+              {
+                "phone": "+48000000005",
+                "type": "mobile"
+              }
+            ],
+            "timezone": "Europe/Warsaw",
+            "timezone_source": "address",
+            "title": null,
+            "updated_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+            "urls": []
+          },
+          "recordId": "cont_TTgIfBNiyBexsKu0PUvaFii09tZat4g2TTgIfBNiy",
+          "source": "webhook",
+          "sourceTs": "2026-11-06T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_vH2JKy2FIXpyOvbEU4uKOFJD0C860lkFvH2JKy2FI",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_vH2JKy2FIXpyOvbEU4uKOFJD0C860lkFvH2JKy2FI",
+          "entity": "contacts",
+          "operation": "upsert",
+          "payload": {
+            "created_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "custom": {
+              "cf_7et0Jb06NX0IAyDmFpz0Bglhiapn4hDi7et0Jb06N": "Value 0006",
+              "cf_AAaM6ofpxp8fYr454scqu7VbL4uD5ijNAAaM6ofpx": [
+                "Option A"
+              ],
+              "cf_EX9nQJ05nZhbEyAFOYamOfuQ0vxf5rk6EX9nQJ05n": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+              "cf_Kt0kyeNmn79LraqgfAnynZDafwqWGCXPKt0kyeNmn": 60,
+              "cf_mbFSm2BqJoIrucIm5cHO9XqZRkP4dfA0mbFSm2BqJ": "Value 0006",
+              "cf_uMoagVrce2l3Gpbkmw8r736Lc1LhPHbvuMoagVrce": true
+            },
+            "custom_cf_7et0Jb06NX0IAyDmFpz0Bglhiapn4hDi7et0Jb06N": "Value 0006",
+            "custom_cf_AAaM6ofpxp8fYr454scqu7VbL4uD5ijNAAaM6ofpx": [
+              "Option A"
+            ],
+            "custom_cf_EX9nQJ05nZhbEyAFOYamOfuQ0vxf5rk6EX9nQJ05n": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "custom_cf_Kt0kyeNmn79LraqgfAnynZDafwqWGCXPKt0kyeNmn": 60,
+            "custom_cf_mbFSm2BqJoIrucIm5cHO9XqZRkP4dfA0mbFSm2BqJ": "Value 0006",
+            "custom_cf_uMoagVrce2l3Gpbkmw8r736Lc1LhPHbvuMoagVrce": true,
+            "date_created": "2025-06-02T08:51:57.202000+00:00",
+            "date_updated": "2025-06-05T02:22:03.600000+00:00",
+            "display_name": "Contact 0006",
+            "emails": [
+              {
+                "email": "contact0006@example.com",
+                "type": "office"
+              }
+            ],
+            "id": "cont_bOgczUbSBKiG8yRZ2kSHXTtn74jg4AshbOgczUbSB",
+            "integration_links": [],
+            "lead_id": "lead_P94CJnLh2TcFgAS3bNbu3TuUDRbrCeEkP94CJnLh2",
+            "lead_suggestions_operation_id": null,
+            "name": "Contact 0006",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "phones": [
+              {
+                "phone": "+48000000006",
+                "type": "mobile"
+              }
+            ],
+            "timezone": "Europe/Warsaw",
+            "timezone_source": "phone",
+            "title": "Owner",
+            "updated_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "urls": []
+          },
+          "recordId": "cont_bOgczUbSBKiG8yRZ2kSHXTtn74jg4AshbOgczUbSB",
+          "source": "webhook",
+          "sourceTs": "2026-11-07T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_Jrr9ToQReIzoxxNCX5Dn8z2RH4KnO3P8Jrr9ToQRe",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_Jrr9ToQReIzoxxNCX5Dn8z2RH4KnO3P8Jrr9ToQRe",
+          "entity": "contacts",
+          "operation": "delete",
+          "payload": {
+            "id": "cont_pIlkXA2rDIJF9nQ61SZl2evfgiKK4kaKpIlkXA2rD"
+          },
+          "recordId": "cont_pIlkXA2rDIJF9nQ61SZl2evfgiKK4kaKpIlkXA2rD",
+          "source": "webhook",
+          "sourceTs": "2026-11-08T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_j4Ziv777yE5hqRRF7Veyeli3OT3F9B7oj4Ziv777y",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_j4Ziv777yE5hqRRF7Veyeli3OT3F9B7oj4Ziv777y",
+          "entity": "users",
+          "operation": "upsert",
+          "payload": {
+            "date_created": "2024-01-02T08:00:00.000000+00:00",
+            "date_updated": "2026-10-01T08:00:00.000000+00:00",
+            "email": "user0001@example.com",
+            "email_verified_at": "2024-01-02T08:00:00.000000+00:00",
+            "first_name": "User",
+            "google_profile_image_url": null,
+            "id": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "image": null,
+            "last_name": "0001",
+            "last_used_timezone": "Europe/Warsaw",
+            "organizations": [
+              "orga_fixture000000000000000000000000000000"
+            ]
+          },
+          "recordId": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+          "source": "webhook",
+          "sourceTs": "2026-11-09T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_8p5hgAOIHJx8VSxrJrNLIhisBU52FjWH8p5hgAOIH",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_8p5hgAOIHJx8VSxrJrNLIhisBU52FjWH8p5hgAOIH",
+          "entity": "users",
+          "operation": "delete",
+          "payload": {
+            "date_created": "2024-01-03T08:00:00.000000+00:00",
+            "date_updated": "2026-10-02T08:00:00.000000+00:00",
+            "email": "user0002@example.com",
+            "email_verified_at": "2024-01-03T08:00:00.000000+00:00",
+            "first_name": "User",
+            "google_profile_image_url": null,
+            "id": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+            "image": null,
+            "last_name": "0002",
+            "last_used_timezone": "Europe/Warsaw",
+            "organizations": [
+              "orga_fixture000000000000000000000000000000"
+            ]
+          },
+          "recordId": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+          "source": "webhook",
+          "sourceTs": "2026-11-01T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_5rZHF2jURXWL2Si5UHSZPZex54gZKPIw5rZHF2jUR",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_5rZHF2jURXWL2Si5UHSZPZex54gZKPIw5rZHF2jUR",
+          "entity": "opportunities",
+          "operation": "upsert",
+          "payload": {
+            "annualized_expected_value": 5000,
+            "annualized_value": 10000,
+            "attachments": [],
+            "confidence": 50,
+            "contact_id": null,
+            "contact_name": null,
+            "created_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "created_by_name": "User 0004",
+            "custom": {
+              "cf_AGgms4sFP8Y5mYdfXV5lGQDVv3cAqB3qAGgms4sFP": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+              "cf_JSmFIw0HE01KFg95j4BHEIZIbeP5f0ZwJSmFIw0HE": "2025-05-01",
+              "cf_aMqfwvGJu96i0Jr0W1iPO35Gen7A5WMfaMqfwvGJu": "Option B",
+              "cf_nN2oNXLOUq7URBrHiC3Pl3oaKjbA5OOQnN2oNXLOU": true,
+              "cf_rEgmhgNTsi5Qtpi7Enkje5TlqrPEUjKLrEgmhgNTs": 100,
+              "cf_w1Ss3lnPVo6A7MKQkcGtCHbTZAIQ4EoQw1Ss3lnPV": "2025-05-01"
+            },
+            "custom_cf_AGgms4sFP8Y5mYdfXV5lGQDVv3cAqB3qAGgms4sFP": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "custom_cf_JSmFIw0HE01KFg95j4BHEIZIbeP5f0ZwJSmFIw0HE": "2025-05-01",
+            "custom_cf_aMqfwvGJu96i0Jr0W1iPO35Gen7A5WMfaMqfwvGJu": "Option B",
+            "custom_cf_nN2oNXLOUq7URBrHiC3Pl3oaKjbA5OOQnN2oNXLOU": true,
+            "custom_cf_rEgmhgNTsi5Qtpi7Enkje5TlqrPEUjKLrEgmhgNTs": 100,
+            "custom_cf_w1Ss3lnPVo6A7MKQkcGtCHbTZAIQ4EoQw1Ss3lnPV": "2025-05-01",
+            "date_created": "2025-01-08T12:09:16.850000+00:00",
+            "date_lost": null,
+            "date_updated": "2025-01-10T08:54:57.605000+00:00",
+            "date_won": null,
+            "expected_value": 5000,
+            "id": "oppo_aGnB65hFOxfOA78kGzOD2Nmpl5KDHyJ6aGnB65hFO",
+            "integration_links": [],
+            "is_stalled": false,
+            "lead_id": "lead_A4CSOu16Wmae6oAzdhj6alSV91Tty2WJA4CSOu16W",
+            "lead_name": "Lead 0031",
+            "note": "",
+            "note_html": "",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "pipeline_id": "pipe_xBEhe2JDAf87nAtzWSyVFBSchwLwYZvLxBEhe2JDA",
+            "pipeline_name": "Sales",
+            "stall_status": null,
+            "status_display_name": "Active",
+            "status_id": "stat_H87erqmSalxZEKCTyEwlgJ2wDAQq8pf4H87erqmSa",
+            "status_label": "Active",
+            "status_type": "active",
+            "updated_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "updated_by_name": "User 0004",
+            "user_id": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "user_name": "User 0004",
+            "value": 10000,
+            "value_currency": "PLN",
+            "value_formatted": "PLN100",
+            "value_period": "one_time"
+          },
+          "recordId": "oppo_aGnB65hFOxfOA78kGzOD2Nmpl5KDHyJ6aGnB65hFO",
+          "source": "webhook",
+          "sourceTs": "2026-11-02T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_qReP5KmgeiNyN7slcYkVreiyazMmGeptqReP5Kmge",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_qReP5KmgeiNyN7slcYkVreiyazMmGeptqReP5Kmge",
+          "entity": "opportunities",
+          "operation": "upsert",
+          "payload": {
+            "annualized_expected_value": 5500,
+            "annualized_value": 11000,
+            "attachments": [],
+            "confidence": 50,
+            "contact_id": null,
+            "contact_name": null,
+            "created_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "created_by_name": "User 0005",
+            "custom": {
+              "cf_6rHX3cjiqeTODUUhParIHTK720UTF4Oz6rHX3cjiq": [
+                "Option A"
+              ],
+              "cf_JSmFIw0HE01KFg95j4BHEIZIbeP5f0ZwJSmFIw0HE": "2025-05-01",
+              "cf_Kt1j4eNbHEXd5t1TEjPR62dIj8TS6Y5IKt1j4eNbH": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+              "cf_aMqfwvGJu96i0Jr0W1iPO35Gen7A5WMfaMqfwvGJu": "Option B",
+              "cf_nN2oNXLOUq7URBrHiC3Pl3oaKjbA5OOQnN2oNXLOU": false,
+              "cf_rEgmhgNTsi5Qtpi7Enkje5TlqrPEUjKLrEgmhgNTs": 110
+            },
+            "custom_cf_6rHX3cjiqeTODUUhParIHTK720UTF4Oz6rHX3cjiq": [
+              "Option A"
+            ],
+            "custom_cf_JSmFIw0HE01KFg95j4BHEIZIbeP5f0ZwJSmFIw0HE": "2025-05-01",
+            "custom_cf_Kt1j4eNbHEXd5t1TEjPR62dIj8TS6Y5IKt1j4eNbH": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "custom_cf_aMqfwvGJu96i0Jr0W1iPO35Gen7A5WMfaMqfwvGJu": "Option B",
+            "custom_cf_nN2oNXLOUq7URBrHiC3Pl3oaKjbA5OOQnN2oNXLOU": false,
+            "custom_cf_rEgmhgNTsi5Qtpi7Enkje5TlqrPEUjKLrEgmhgNTs": 110,
+            "date_created": "2025-02-09T02:42:20.497000+00:00",
+            "date_lost": null,
+            "date_updated": "2025-02-11T12:25:00.915000+00:00",
+            "date_won": "2025-02-14T02:42:20.497000+00:00",
+            "expected_value": 5500,
+            "id": "oppo_SmP1RKtSD1K7HKLLzQru7pGkQA4BPYu7SmP1RKtSD",
+            "integration_links": [],
+            "is_stalled": false,
+            "lead_id": "lead_ka26665lF2BWgq0ml7ph1g2uRXSTlMGfka26665lF",
+            "lead_name": "Lead 0034",
+            "note": "",
+            "note_html": "",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "pipeline_id": "pipe_xBEhe2JDAf87nAtzWSyVFBSchwLwYZvLxBEhe2JDA",
+            "pipeline_name": "Sales",
+            "stall_status": null,
+            "status_display_name": "Won",
+            "status_id": "stat_dC5PUmnUcvYhGgkBynn5QNOyaPZtjTa1dC5PUmnUc",
+            "status_label": "Won",
+            "status_type": "won",
+            "updated_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "updated_by_name": "User 0005",
+            "user_id": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "user_name": "User 0005",
+            "value": 11000,
+            "value_currency": "PLN",
+            "value_formatted": "PLN110",
+            "value_period": "one_time"
+          },
+          "recordId": "oppo_SmP1RKtSD1K7HKLLzQru7pGkQA4BPYu7SmP1RKtSD",
+          "source": "webhook",
+          "sourceTs": "2026-11-03T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_TaSl6rnStT9VyA47gTcSBlVvQfb0nH5ETaSl6rnSt",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_TaSl6rnStT9VyA47gTcSBlVvQfb0nH5ETaSl6rnSt",
+          "entity": "opportunities",
+          "operation": "delete",
+          "payload": {
+            "id": "oppo_6dTd7yIJIFpaKlu0eBu828USMzC64Z536dTd7yIJI"
+          },
+          "recordId": "oppo_6dTd7yIJIFpaKlu0eBu828USMzC64Z536dTd7yIJI",
+          "source": "webhook",
+          "sourceTs": "2026-11-04T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_XclsZNsJqZr02nv18ZbL5LrU33DebM3XXclsZNsJq",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_XclsZNsJqZr02nv18ZbL5LrU33DebM3XXclsZNsJq",
+          "entity": "activities:Call",
+          "operation": "upsert",
+          "payload": {
+            "_type": "Call",
+            "activity_at": "2026-02-02T07:31:49.297000+00:00",
+            "contact_id": null,
+            "cost": "0.01",
+            "created_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "created_by_name": "User 0007",
+            "date_answered": "2026-02-02T07:31:54.297000+00:00",
+            "date_created": "2026-02-02T07:31:49.297000+00:00",
+            "date_updated": "2026-02-02T14:12:00.176000+00:00",
+            "direction": "inbound",
+            "disposition": "answered",
+            "duration": 481,
+            "has_recording": false,
+            "id": "acti_aeLSzewWdZQLZq8YcViCFPDJVEF0MqxFaeLSzewWd",
+            "lead_id": "lead_HK9NSyxF6knQIYHrlP1f5k9xQi4YUDmzHK9NSyxF6",
+            "local_country_iso": "PL",
+            "local_phone": "+48000000999",
+            "note": "",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "outcome_id": "outcome_b5N7tCiHXKuSBeOVmY87nNJj3D5t15ESb5N7tCiHX",
+            "phone": "+48000000013",
+            "recording_url": null,
+            "remote_country_iso": "PL",
+            "remote_phone": "+48000000013",
+            "source": "Close.io",
+            "status": "completed",
+            "updated_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "updated_by_name": "User 0007",
+            "user_id": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "user_name": "User 0007",
+            "users": [
+              "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu"
+            ]
+          },
+          "recordId": "acti_aeLSzewWdZQLZq8YcViCFPDJVEF0MqxFaeLSzewWd",
+          "source": "webhook",
+          "sourceTs": "2026-11-05T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_6hhCCnPuFVXeXjCPkEylyIgazU5nOj5z6hhCCnPuF",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_6hhCCnPuFVXeXjCPkEylyIgazU5nOj5z6hhCCnPuF",
+          "entity": "activities:Call",
+          "operation": "upsert",
+          "payload": {
+            "_type": "Call",
+            "activity_at": "2026-02-02T07:32:47.368000+00:00",
+            "contact_id": null,
+            "cost": "0.01",
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "created_by_name": "User 0001",
+            "date_answered": "2026-02-02T07:32:52.368000+00:00",
+            "date_created": "2026-02-02T07:32:47.368000+00:00",
+            "date_updated": "2026-02-04T07:01:57.566000+00:00",
+            "direction": "outbound",
+            "disposition": "answered",
+            "duration": 518,
+            "has_recording": false,
+            "id": "acti_UQ06Y2HLz47F60hS5bngf4lNw7vELvsXUQ06Y2HLz",
+            "lead_id": "lead_3HCADqW0Ry4dGxUnAiqdqRN4SkKb7Cjr3HCADqW0R",
+            "local_country_iso": "PL",
+            "local_phone": "+48000000999",
+            "note": "",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "outcome_id": "outcome_zBHF5DUU117KoQxWkL6YvLZwTgEZAChozBHF5DUU1",
+            "phone": "+48000000014",
+            "recording_url": null,
+            "remote_country_iso": "PL",
+            "remote_phone": "+48000000014",
+            "source": "Close.io",
+            "status": "completed",
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "updated_by_name": "User 0001",
+            "user_id": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "user_name": "User 0001",
+            "users": [
+              "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+            ]
+          },
+          "recordId": "acti_UQ06Y2HLz47F60hS5bngf4lNw7vELvsXUQ06Y2HLz",
+          "source": "webhook",
+          "sourceTs": "2026-11-06T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_L3HWWRP8x3pcjQcRWnDshCd7BLlvXYDoL3HWWRP8x",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_L3HWWRP8x3pcjQcRWnDshCd7BLlvXYDoL3HWWRP8x",
+          "entity": "activities:Call",
+          "operation": "delete",
+          "payload": {
+            "id": "acti_EQzezYIghdNO3OrNa2G3nJKoY848EQgpEQzezYIgh"
+          },
+          "recordId": "acti_EQzezYIghdNO3OrNa2G3nJKoY848EQgpEQzezYIgh",
+          "source": "webhook",
+          "sourceTs": "2026-11-07T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_RG5CJ3pAaoHD2IRyHH6btZ6IjK3LUr2CRG5CJ3pAa",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_RG5CJ3pAaoHD2IRyHH6btZ6IjK3LUr2CRG5CJ3pAa",
+          "entity": "activities:Call",
+          "operation": "upsert",
+          "payload": {
+            "_type": "Call",
+            "activity_at": "2026-02-02T07:34:04.886000+00:00",
+            "contact_id": null,
+            "cost": "0.01",
+            "created_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+            "created_by_name": "User 0003",
+            "date_answered": "2026-02-02T07:34:09.886000+00:00",
+            "date_created": "2026-02-02T07:34:04.886000+00:00",
+            "date_updated": "2026-02-05T02:33:09.136000+00:00",
+            "direction": "outbound",
+            "disposition": "answered",
+            "duration": 592,
+            "has_recording": true,
+            "id": "acti_gvBHdWOIkrtTymTvn13nim5KAyxZEP7KgvBHdWOIk",
+            "lead_id": "lead_5c339i6zFWemiKfTqPRw6WMJJi0ld1Xm5c339i6zF",
+            "local_country_iso": "PL",
+            "local_phone": "+48000000999",
+            "note": "",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "outcome_id": "outcome_SD9hiQAIj3x0YfSN80yQ5OGfcgOTgC6XSD9hiQAIj",
+            "phone": "+48000000016",
+            "recording_url": null,
+            "remote_country_iso": "PL",
+            "remote_phone": "+48000000016",
+            "source": "Close.io",
+            "status": "completed",
+            "updated_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+            "updated_by_name": "User 0003",
+            "user_id": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+            "user_name": "User 0003",
+            "users": [
+              "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko"
+            ]
+          },
+          "recordId": "acti_gvBHdWOIkrtTymTvn13nim5KAyxZEP7KgvBHdWOIk",
+          "source": "webhook",
+          "sourceTs": "2026-11-08T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_LVfFI0vtDX1PTBYwhwRR9Bx68v4zaur9LVfFI0vtD",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_LVfFI0vtDX1PTBYwhwRR9Bx68v4zaur9LVfFI0vtD",
+          "entity": "activities:Call",
+          "operation": "upsert",
+          "payload": {
+            "_type": "Call",
+            "activity_at": "2026-02-02T07:37:23.405000+00:00",
+            "contact_id": null,
+            "cost": "0.01",
+            "created_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "created_by_name": "User 0004",
+            "date_answered": "2026-02-02T07:37:28.405000+00:00",
+            "date_created": "2026-02-02T07:37:23.405000+00:00",
+            "date_updated": "2026-02-02T21:09:13.911000+00:00",
+            "direction": "inbound",
+            "disposition": "answered",
+            "duration": 29,
+            "has_recording": false,
+            "id": "acti_QUmSvlsDrQoaP63X2u2xmHcHizlWVfwfQUmSvlsDr",
+            "lead_id": "lead_8PAkwgxZ4ZHiNQEy7vvPhsFORmVU1NHg8PAkwgxZ4",
+            "local_country_iso": "PL",
+            "local_phone": "+48000000999",
+            "note": "",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "outcome_id": "outcome_b5N7tCiHXKuSBeOVmY87nNJj3D5t15ESb5N7tCiHX",
+            "phone": "+48000000017",
+            "recording_url": null,
+            "remote_country_iso": "PL",
+            "remote_phone": "+48000000017",
+            "source": "Close.io",
+            "status": "completed",
+            "updated_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "updated_by_name": "User 0004",
+            "user_id": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "user_name": "User 0004",
+            "users": [
+              "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I"
+            ]
+          },
+          "recordId": "acti_QUmSvlsDrQoaP63X2u2xmHcHizlWVfwfQUmSvlsDr",
+          "source": "webhook",
+          "sourceTs": "2026-11-09T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_1ayYkAxhTYeQNZbBQumiywzL1KyW0ur31ayYkAxhT",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_1ayYkAxhTYeQNZbBQumiywzL1KyW0ur31ayYkAxhT",
+          "entity": "activities:Email",
+          "operation": "upsert",
+          "payload": {
+            "_type": "Email",
+            "activity_at": "2025-08-18T13:20:45.714000+00:00",
+            "attachments": [],
+            "bcc": [],
+            "body_html": "<p>Synthetic email body 0018.</p>",
+            "body_preview": "Synthetic email body 0018.",
+            "body_text": "Synthetic email body 0018.",
+            "cc": [],
+            "contact_id": null,
+            "created_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "created_by_name": "User 0005",
+            "date_created": "2025-08-18T13:20:45.714000+00:00",
+            "date_sent": "2025-08-18T13:20:45.714000+00:00",
+            "date_updated": "2025-08-18T22:49:42.624000+00:00",
+            "direction": "outgoing",
+            "has_reply": true,
+            "id": "acti_e_U7sOBamZIGQdnZIc1kkqaXCJd4xwHo8IU7sOBamZI",
+            "lead_id": "lead_XAJ8p2yYV6SZlvVUCjrRgK7aQLlMQIJDXAJ8p2yYV",
+            "opens": [],
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "sender": "User 0004 <user0005@example.com>",
+            "status": "sent",
+            "subject": "Subject 0018",
+            "template_id": null,
+            "thread_id": "acti_t_BVDNtjuxgBUzfNok5D2f1oPDW1MG4EbOBVDNtjuxg",
+            "to": [
+              "contact0018@example.com"
+            ],
+            "updated_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "updated_by_name": "User 0005",
+            "user_id": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "user_name": "User 0005",
+            "users": [
+              "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq"
+            ]
+          },
+          "recordId": "acti_e_U7sOBamZIGQdnZIc1kkqaXCJd4xwHo8IU7sOBamZI",
+          "source": "webhook",
+          "sourceTs": "2026-11-01T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_G7GEWpzvU1r2Rdv0sCcwfXXSwnVnWGdYG7GEWpzvU",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_G7GEWpzvU1r2Rdv0sCcwfXXSwnVnWGdYG7GEWpzvU",
+          "entity": "activities:Email",
+          "operation": "upsert",
+          "payload": {
+            "_type": "Email",
+            "activity_at": "2026-03-04T10:22:14.457000+00:00",
+            "attachments": [],
+            "bcc": [],
+            "body_html": "<p>Synthetic email body 0019.</p>",
+            "body_preview": "Synthetic email body 0019.",
+            "body_text": "Synthetic email body 0019.",
+            "cc": [],
+            "contact_id": null,
+            "created_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+            "created_by_name": "User 0006",
+            "date_created": "2026-03-04T10:22:14.457000+00:00",
+            "date_sent": "2026-03-04T10:22:14.457000+00:00",
+            "date_updated": "2026-03-07T00:37:58.322000+00:00",
+            "direction": "incoming",
+            "has_reply": false,
+            "id": "acti_e_zHpWYYF6TewhVlacseeFy3MmzFxXDA48zHpWYYF6T",
+            "lead_id": "lead_3Xlq7iPxyh7zc6n5Q5ks4kGJo6Pgpj3R3Xlq7iPxy",
+            "opens": [],
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "sender": "User 0005 <user0006@example.com>",
+            "status": "sent",
+            "subject": "Subject 0019",
+            "template_id": null,
+            "thread_id": "acti_t_X4Ax0RWcC7c5U7ghhf3intfFvl0LLhtOX4Ax0RWcC",
+            "to": [
+              "contact0019@example.com"
+            ],
+            "updated_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+            "updated_by_name": "User 0006",
+            "user_id": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+            "user_name": "User 0006",
+            "users": [
+              "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa"
+            ]
+          },
+          "recordId": "acti_e_zHpWYYF6TewhVlacseeFy3MmzFxXDA48zHpWYYF6T",
+          "source": "webhook",
+          "sourceTs": "2026-11-02T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_JiAO5X9lrjTcAK1EbXSWFfrdlhxIj6ieJiAO5X9lr",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_JiAO5X9lrjTcAK1EbXSWFfrdlhxIj6ieJiAO5X9lr",
+          "entity": "activities:Email",
+          "operation": "delete",
+          "payload": {
+            "id": "acti_e_5xN3pRR6k65pJ96ydjYuufXeqATRqKy75xN3pRR6k"
+          },
+          "recordId": "acti_e_5xN3pRR6k65pJ96ydjYuufXeqATRqKy75xN3pRR6k",
+          "source": "webhook",
+          "sourceTs": "2026-11-03T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_D2GsG7prtPC3999jTugsUhxZ7L8Pmc8pD2GsG7prt",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_D2GsG7prtPC3999jTugsUhxZ7L8Pmc8pD2GsG7prt",
+          "entity": "activities:Email",
+          "operation": "upsert",
+          "payload": {
+            "_type": "Email",
+            "activity_at": "2026-06-07T12:30:54.125000+00:00",
+            "attachments": [],
+            "bcc": [],
+            "body_html": "<p>Synthetic email body 0021.</p>",
+            "body_preview": "Synthetic email body 0021.",
+            "body_text": "Synthetic email body 0021.",
+            "cc": [],
+            "contact_id": null,
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "created_by_name": "User 0001",
+            "date_created": "2026-06-07T12:30:54.125000+00:00",
+            "date_sent": "2026-06-07T12:30:54.125000+00:00",
+            "date_updated": "2026-06-08T08:43:39.694000+00:00",
+            "direction": "incoming",
+            "has_reply": true,
+            "id": "acti_e_xoNDa6Im51hx1U9Sr6Ihr9a8T6yRWVhQxoNDa6Im5",
+            "lead_id": "lead_dcw92SsWYLSs8n6LFCJln7aOLcjQpkFxdcw92SsWY",
+            "opens": [],
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "sender": "User 0000 <user0001@example.com>",
+            "status": "sent",
+            "subject": "Subject 0021",
+            "template_id": null,
+            "thread_id": "acti_t_Ni65Ndc5xYUlklAYd4c5kYuDV71275UKNi65Ndc5x",
+            "to": [
+              "contact0021@example.com"
+            ],
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "updated_by_name": "User 0001",
+            "user_id": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "user_name": "User 0001",
+            "users": [
+              "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+            ]
+          },
+          "recordId": "acti_e_xoNDa6Im51hx1U9Sr6Ihr9a8T6yRWVhQxoNDa6Im5",
+          "source": "webhook",
+          "sourceTs": "2026-11-04T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_eVNE8aDzW6G5L26QAPd3rIfSMERBXpL0eVNE8aDzW",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_eVNE8aDzW6G5L26QAPd3rIfSMERBXpL0eVNE8aDzW",
+          "entity": "activities:EmailThread",
+          "operation": "upsert",
+          "payload": {
+            "_type": "EmailThread",
+            "activity_at": "2024-05-01T05:51:34.349000+00:00",
+            "contact_id": "cont_hD4j59CKHk120iskXC5arIgA8AmHHfDdhD4j59CKH",
+            "created_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+            "created_by_name": "User 0003",
+            "date_created": "2024-05-01T05:51:34.349000+00:00",
+            "date_updated": "2024-05-02T06:07:12.489000+00:00",
+            "email_ids": "[\"acti_e_aB8Ji02Hs1xCfkMhKEXGxEK2yZCrUOtlaB8Ji02Hs\"]",
+            "id": "acti_t_SD1CPnHzNwhbqZU0cXJtRUgOVUaqv43wSD1CPnHzN",
+            "latest_emails": [],
+            "latest_normalized_subject": "Subject 0002",
+            "lead_id": "lead_Utzlx8wKZsZkSkeDnPgQiQj26dGLR846Utzlx8wKZ",
+            "n_emails": 3,
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "participants": [
+              {
+                "email": "contact0002@example.com"
+              }
+            ],
+            "updated_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+            "updated_by_name": "User 0003",
+            "user_id": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+            "user_name": "User 0003",
+            "users": [
+              "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko"
+            ]
+          },
+          "recordId": "acti_t_SD1CPnHzNwhbqZU0cXJtRUgOVUaqv43wSD1CPnHzN",
+          "source": "webhook",
+          "sourceTs": "2026-11-05T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_IYAKYhqzsrk5CuHs2Wh2nsTLRGGD7uPqIYAKYhqzs",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_IYAKYhqzsrk5CuHs2Wh2nsTLRGGD7uPqIYAKYhqzs",
+          "entity": "activities:EmailThread",
+          "operation": "upsert",
+          "payload": {
+            "_type": "EmailThread",
+            "activity_at": "2024-05-13T14:19:37.367000+00:00",
+            "contact_id": "cont_9OKoxI8JkqRo30X1thxqnt7BZ2E8SaI09OKoxI8Jk",
+            "created_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "created_by_name": "User 0004",
+            "date_created": "2024-05-13T14:19:37.367000+00:00",
+            "date_updated": "2024-05-16T08:58:06.390000+00:00",
+            "email_ids": "[\"acti_e_L9ePVRhiD69AjqEhZW0WQqPngR8Jjp2sL9ePVRhiD\"]",
+            "id": "acti_t_vdo72wCLsoAlACbZlZHbI2FSwcE9Ce86vdo72wCLs",
+            "latest_emails": [],
+            "latest_normalized_subject": "Subject 0003",
+            "lead_id": "lead_8vwzTs7rhAAWwbzIl5YQiEBQgHmTcmnN8vwzTs7rh",
+            "n_emails": 4,
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "participants": [
+              {
+                "email": "contact0003@example.com"
+              }
+            ],
+            "updated_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "updated_by_name": "User 0004",
+            "user_id": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "user_name": "User 0004",
+            "users": [
+              "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I"
+            ]
+          },
+          "recordId": "acti_t_vdo72wCLsoAlACbZlZHbI2FSwcE9Ce86vdo72wCLs",
+          "source": "webhook",
+          "sourceTs": "2026-11-06T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_z3EtsIGpMabXg9h7HIMyWLAuUtDhFNVUz3EtsIGpM",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_z3EtsIGpMabXg9h7HIMyWLAuUtDhFNVUz3EtsIGpM",
+          "entity": "activities:EmailThread",
+          "operation": "delete",
+          "payload": {
+            "id": "acti_t_72CANe6i6Z34fuTqlIBNoGSU9MP1OMNE72CANe6i6"
+          },
+          "recordId": "acti_t_72CANe6i6Z34fuTqlIBNoGSU9MP1OMNE72CANe6i6",
+          "source": "webhook",
+          "sourceTs": "2026-11-07T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_zVzpea5fgPf7tUCPJkmsVZxCB2HlHGe0zVzpea5fg",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_zVzpea5fgPf7tUCPJkmsVZxCB2HlHGe0zVzpea5fg",
+          "entity": "activities:SMS",
+          "operation": "upsert",
+          "payload": {
+            "_type": "SMS",
+            "activity_at": "2025-04-18T12:34:00.513000+00:00",
+            "attachments": [],
+            "contact_id": "cont_TBtMZDhfFGo0swsd0Lq2lvcaUz6eB1yNTBtMZDhfF",
+            "created_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "created_by_name": "User 0004",
+            "date_created": "2025-04-18T12:34:00.513000+00:00",
+            "date_sent": "2025-04-18T12:34:00.513000+00:00",
+            "date_updated": "2025-04-18T21:35:42.099000+00:00",
+            "direction": "outbound",
+            "id": "acti_s_aswHqcSK34zlA5pGKhj7E3w345LHrls2aswHqcSK3",
+            "lead_id": "lead_r28wu6EnxoWSw0R9kZA4ys67EjWHgIPfr28wu6Enx",
+            "local_phone": "+48000000999",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "remote_phone": "+48000000010",
+            "status": "sent",
+            "text": "Synthetic text 0010",
+            "updated_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "updated_by_name": "User 0004",
+            "user_id": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "user_name": "User 0004",
+            "users": [
+              "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I"
+            ]
+          },
+          "recordId": "acti_s_aswHqcSK34zlA5pGKhj7E3w345LHrls2aswHqcSK3",
+          "source": "webhook",
+          "sourceTs": "2026-11-08T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_hSzRS4EdvcpzU8VpOHdEf0Us6Z8X8Y4dhSzRS4Edv",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_hSzRS4EdvcpzU8VpOHdEf0Us6Z8X8Y4dhSzRS4Edv",
+          "entity": "activities:SMS",
+          "operation": "upsert",
+          "payload": {
+            "_type": "SMS",
+            "activity_at": "2025-07-16T11:11:29.545000+00:00",
+            "attachments": [],
+            "contact_id": "cont_2Un5ItbURQCxk5JmtAvnTSzDjUDKL2o62Un5ItbUR",
+            "created_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "created_by_name": "User 0005",
+            "date_created": "2025-07-16T11:11:29.545000+00:00",
+            "date_sent": "2025-07-16T11:11:29.545000+00:00",
+            "date_updated": "2026-10-26T00:33:38.464000+00:00",
+            "direction": "outbound",
+            "id": "acti_s_A5ck4T30B1oZFqMQH6SBgBDHbIu3rdp3A5ck4T30B",
+            "lead_id": "lead_H2TujYfbrj80FnkIsbykwNErp6i2q2RDH2TujYfbr",
+            "local_phone": "+48000000999",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "remote_phone": "+48000000011",
+            "status": "sent",
+            "text": "Synthetic text 0011",
+            "updated_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "updated_by_name": "User 0005",
+            "user_id": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "user_name": "User 0005",
+            "users": [
+              "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq"
+            ]
+          },
+          "recordId": "acti_s_A5ck4T30B1oZFqMQH6SBgBDHbIu3rdp3A5ck4T30B",
+          "source": "webhook",
+          "sourceTs": "2026-11-09T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_ms3C2Ch3zUWRtvlP3kbTib3zaQxpGUNums3C2Ch3z",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_ms3C2Ch3zUWRtvlP3kbTib3zaQxpGUNums3C2Ch3z",
+          "entity": "activities:SMS",
+          "operation": "delete",
+          "payload": {
+            "id": "acti_s_jRcI93QMxSY1s2dLqd3i4Ln3p3zz3deQjRcI93QMx"
+          },
+          "recordId": "acti_s_jRcI93QMxSY1s2dLqd3i4Ln3p3zz3deQjRcI93QMx",
+          "source": "webhook",
+          "sourceTs": "2026-11-01T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_2TVODplFUplmOvXCtv6pLPZPZIxc38A72TVODplFU",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_2TVODplFUplmOvXCtv6pLPZPZIxc38A72TVODplFU",
+          "entity": "activities:SMS",
+          "operation": "upsert",
+          "payload": {
+            "_type": "SMS",
+            "activity_at": "2025-11-19T19:20:22.832000+00:00",
+            "attachments": [],
+            "contact_id": null,
+            "created_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "created_by_name": "User 0007",
+            "date_created": "2025-11-19T19:20:22.832000+00:00",
+            "date_sent": "2025-11-19T19:20:22.832000+00:00",
+            "date_updated": "2025-11-21T18:26:06.929000+00:00",
+            "direction": "outbound",
+            "id": "acti_s_DLh00hWbH2pigHBAufEU4itXSMz51dLeDLh00hWbH",
+            "lead_id": "lead_HK9NSyxF6knQIYHrlP1f5k9xQi4YUDmzHK9NSyxF6",
+            "local_phone": "+48000000999",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "remote_phone": "+48000000013",
+            "status": "sent",
+            "text": "Synthetic text 0013",
+            "updated_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "updated_by_name": "User 0007",
+            "user_id": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "user_name": "User 0007",
+            "users": [
+              "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu"
+            ]
+          },
+          "recordId": "acti_s_DLh00hWbH2pigHBAufEU4itXSMz51dLeDLh00hWbH",
+          "source": "webhook",
+          "sourceTs": "2026-11-02T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_7LYocSsvnSRfceev2Y6YQcGhWxU1Azdl7LYocSsvn",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_7LYocSsvnSRfceev2Y6YQcGhWxU1Azdl7LYocSsvn",
+          "entity": "activities:Note",
+          "operation": "upsert",
+          "payload": {
+            "_type": "Note",
+            "activity_at": "2026-08-29T08:46:01.954000+00:00",
+            "attachments": [],
+            "contact_id": null,
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "created_by_name": "User 0001",
+            "date_created": "2026-08-29T08:46:01.954000+00:00",
+            "date_updated": "2026-08-30T21:20:23.679000+00:00",
+            "id": "acti_n_pz4Z9RTT58FTnMcI7thA3FACO11E9BGIpz4Z9RTT5",
+            "lead_id": "lead_3HCADqW0Ry4dGxUnAiqdqRN4SkKb7Cjr3HCADqW0R",
+            "note": "Synthetic note 0014",
+            "note_html": "<p>Synthetic note 0014</p>",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "pinned": false,
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "updated_by_name": "User 0001",
+            "user_id": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "user_name": "User 0001",
+            "users": [
+              "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+            ]
+          },
+          "recordId": "acti_n_pz4Z9RTT58FTnMcI7thA3FACO11E9BGIpz4Z9RTT5",
+          "source": "webhook",
+          "sourceTs": "2026-11-03T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_7vXarCC1QPsyezq5EdLD7FPVjenIzhxa7vXarCC1Q",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_7vXarCC1QPsyezq5EdLD7FPVjenIzhxa7vXarCC1Q",
+          "entity": "activities:Note",
+          "operation": "upsert",
+          "payload": {
+            "_type": "Note",
+            "activity_at": "2026-10-30T08:12:19.822000+00:00",
+            "attachments": [],
+            "contact_id": null,
+            "created_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+            "created_by_name": "User 0002",
+            "date_created": "2026-10-30T08:12:19.822000+00:00",
+            "date_updated": "2026-10-30T14:46:43.734000+00:00",
+            "id": "acti_n_cQ3YlUh76NLLIv87z6H4B5pYM35ta2yRcQ3YlUh76",
+            "lead_id": "lead_85jYMGstLcNbU8gTbjRxFdRdRuf84lHg85jYMGstL",
+            "note": "Synthetic note 0015",
+            "note_html": "<p>Synthetic note 0015</p>",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "pinned": false,
+            "updated_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+            "updated_by_name": "User 0002",
+            "user_id": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+            "user_name": "User 0002",
+            "users": [
+              "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF"
+            ]
+          },
+          "recordId": "acti_n_cQ3YlUh76NLLIv87z6H4B5pYM35ta2yRcQ3YlUh76",
+          "source": "webhook",
+          "sourceTs": "2026-11-04T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_De6NcN6hgLvIchQYgjUjH6tRk2zNxyhKDe6NcN6hg",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_De6NcN6hgLvIchQYgjUjH6tRk2zNxyhKDe6NcN6hg",
+          "entity": "activities:Note",
+          "operation": "delete",
+          "payload": {
+            "id": "acti_n_cScFgfzXqbxkD3Ce9ZrxgcN2Q0bQqvgrcScFgfzXq"
+          },
+          "recordId": "acti_n_cScFgfzXqbxkD3Ce9ZrxgcN2Q0bQqvgrcScFgfzXq",
+          "source": "webhook",
+          "sourceTs": "2026-11-05T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_Badyctz4OsIxLwFtykZNqdcF2otnkIBfBadyctz4O",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_Badyctz4OsIxLwFtykZNqdcF2otnkIBfBadyctz4O",
+          "entity": "activities:Meeting",
+          "operation": "upsert",
+          "payload": {
+            "_type": "Meeting",
+            "activity_at": "2026-01-31T12:55:30.271000+00:00",
+            "attendees": [
+              {
+                "email": "contact0008@example.com",
+                "status": "yes"
+              }
+            ],
+            "conference_links": [],
+            "contact_id": "cont_4g7TTB3foOWuyJL9Y5FrQjVPBDIXTK924g7TTB3fo",
+            "created_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+            "created_by_name": "User 0002",
+            "date_created": "2026-01-31T12:55:30.271000+00:00",
+            "date_updated": "2026-01-31T21:28:33.329000+00:00",
+            "duration": 1800,
+            "ends_at": "2026-02-01T13:25:30.271000+00:00",
+            "id": "acti_m_xJTnWx9l6mV8zy1fYk9zJLs0LaEE1JDGxJTnWx9l6",
+            "is_recurring": false,
+            "lead_id": "lead_GL2Y4uPmbProKREorI9So0yiPjHVPIVDGL2Y4uPmb",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "source": "calendar",
+            "starts_at": "2026-02-01T12:55:30.271000+00:00",
+            "status": "completed",
+            "title": "Meeting 0008",
+            "updated_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+            "updated_by_name": "User 0002",
+            "user_id": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+            "user_name": "User 0002",
+            "users": [
+              "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF"
+            ]
+          },
+          "recordId": "acti_m_xJTnWx9l6mV8zy1fYk9zJLs0LaEE1JDGxJTnWx9l6",
+          "source": "webhook",
+          "sourceTs": "2026-11-06T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_9gyc49tgKBxyupsRjgMFFj6oJ4Ld2T679gyc49tgK",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_9gyc49tgKBxyupsRjgMFFj6oJ4Ld2T679gyc49tgK",
+          "entity": "activities:Meeting",
+          "operation": "upsert",
+          "payload": {
+            "_type": "Meeting",
+            "activity_at": "2026-04-18T19:48:12.593000+00:00",
+            "attendees": [
+              {
+                "email": "contact0009@example.com",
+                "status": "yes"
+              }
+            ],
+            "conference_links": [],
+            "contact_id": "cont_q2xQ3uixYWyKdfbqIj0oZmOnYlwpUZPwq2xQ3uixY",
+            "created_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+            "created_by_name": "User 0003",
+            "date_created": "2026-04-18T19:48:12.593000+00:00",
+            "date_updated": "2026-04-21T00:45:53.280000+00:00",
+            "duration": 1800,
+            "ends_at": "2026-04-19T20:18:12.593000+00:00",
+            "id": "acti_m_9xcc29scBRILWfRg8jteXNfD83BQUrXa9xcc29scB",
+            "is_recurring": false,
+            "lead_id": "lead_P6q7WufEjF9GaQPaV23z7YBJGUVHtLqyP6q7WufEj",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "source": "calendar",
+            "starts_at": "2026-04-19T19:48:12.593000+00:00",
+            "status": "completed",
+            "title": "Meeting 0009",
+            "updated_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+            "updated_by_name": "User 0003",
+            "user_id": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+            "user_name": "User 0003",
+            "users": [
+              "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko"
+            ]
+          },
+          "recordId": "acti_m_9xcc29scBRILWfRg8jteXNfD83BQUrXa9xcc29scB",
+          "source": "webhook",
+          "sourceTs": "2026-11-07T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_20baTrE3MWo5784j45VcqteDlBNNy5oe20baTrE3M",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_20baTrE3MWo5784j45VcqteDlBNNy5oe20baTrE3M",
+          "entity": "activities:Meeting",
+          "operation": "delete",
+          "payload": {
+            "id": "acti_m_ltfxJUS7hwVSUKqobvyzQ9cVKq4pQ7gTltfxJUS7h"
+          },
+          "recordId": "acti_m_ltfxJUS7hwVSUKqobvyzQ9cVKq4pQ7gTltfxJUS7h",
+          "source": "webhook",
+          "sourceTs": "2026-11-08T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_40RlevtCz6q1oJzj2C2azC0RbcWfa1kl40RlevtCz",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_40RlevtCz6q1oJzj2C2azC0RbcWfa1kl40RlevtCz",
+          "entity": "activities:Meeting",
+          "operation": "upsert",
+          "payload": {
+            "_type": "Meeting",
+            "activity_at": "2026-07-30T12:01:12.154000+00:00",
+            "attendees": [
+              {
+                "email": "contact0011@example.com",
+                "status": "yes"
+              }
+            ],
+            "conference_links": [],
+            "contact_id": "cont_2Un5ItbURQCxk5JmtAvnTSzDjUDKL2o62Un5ItbUR",
+            "created_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "created_by_name": "User 0005",
+            "date_created": "2026-07-30T12:01:12.154000+00:00",
+            "date_updated": "2026-07-31T09:47:14.831000+00:00",
+            "duration": 1800,
+            "ends_at": "2026-07-31T12:31:12.154000+00:00",
+            "id": "acti_m_7Mw9M4cMAXxvr8o1qQw4NGVdL0c1R2vA7Mw9M4cMA",
+            "is_recurring": false,
+            "lead_id": "lead_H2TujYfbrj80FnkIsbykwNErp6i2q2RDH2TujYfbr",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "source": "calendar",
+            "starts_at": "2026-07-31T12:01:12.154000+00:00",
+            "status": "completed",
+            "title": "Meeting 0011",
+            "updated_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "updated_by_name": "User 0005",
+            "user_id": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "user_name": "User 0005",
+            "users": [
+              "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq"
+            ]
+          },
+          "recordId": "acti_m_7Mw9M4cMAXxvr8o1qQw4NGVdL0c1R2vA7Mw9M4cMA",
+          "source": "webhook",
+          "sourceTs": "2026-11-09T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_131G7KTTKKeEt5nZkxTddO6BJU7wupBw131G7KTTK",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_131G7KTTKKeEt5nZkxTddO6BJU7wupBw131G7KTTK",
+          "entity": "activities:Meeting",
+          "operation": "upsert",
+          "payload": {
+            "_type": "Meeting",
+            "activity_at": "2026-08-21T16:53:36.465000+00:00",
+            "attendees": [
+              {
+                "email": "contact0012@example.com",
+                "status": "yes"
+              }
+            ],
+            "conference_links": [],
+            "contact_id": null,
+            "created_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+            "created_by_name": "User 0006",
+            "date_created": "2026-08-21T16:53:36.465000+00:00",
+            "date_updated": "2026-08-22T08:43:32.230000+00:00",
+            "duration": 1800,
+            "ends_at": "2026-08-22T17:23:36.465000+00:00",
+            "id": "acti_m_3hlevvBRUm7JlEenU1zxBVBP8rP7hYWP3hlevvBRU",
+            "is_recurring": false,
+            "lead_id": "lead_1xq18n0H5HbngGspKikArW7ZY8P1VORX1xq18n0H5",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "source": "calendar",
+            "starts_at": "2026-08-22T16:53:36.465000+00:00",
+            "status": "completed",
+            "title": "Meeting 0012",
+            "updated_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+            "updated_by_name": "User 0006",
+            "user_id": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+            "user_name": "User 0006",
+            "users": [
+              "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa"
+            ]
+          },
+          "recordId": "acti_m_3hlevvBRUm7JlEenU1zxBVBP8rP7hYWP3hlevvBRU",
+          "source": "webhook",
+          "sourceTs": "2026-11-01T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_ZBzAAcFs3rWdUvXs0O6UW7PRVW9tCtCtZBzAAcFs3",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_ZBzAAcFs3rWdUvXs0O6UW7PRVW9tCtCtZBzAAcFs3",
+          "entity": "activities:Meeting",
+          "operation": "upsert",
+          "payload": {
+            "_type": "Meeting",
+            "activity_at": "2024-05-14T16:19:32.074000+00:00",
+            "attendees": [
+              {
+                "email": "contact0001@example.com",
+                "status": "yes"
+              }
+            ],
+            "conference_links": [],
+            "contact_id": "cont_zr6lFeQyEW9vjxUWltIGQ1HdVvSxdxCXzr6lFeQyE",
+            "created_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+            "created_by_name": "User 0002",
+            "date_created": "2024-05-14T16:19:32.074000+00:00",
+            "date_updated": "2024-05-17T14:16:36.364000+00:00",
+            "duration": 1800,
+            "ends_at": "2024-05-15T16:49:32.074000+00:00",
+            "id": "acti_m_At73oNfjuIuAXP4MDWlHFJV0pPDNcg5hAt73oNfju",
+            "is_recurring": false,
+            "lead_id": "lead_iY5LM6DJrwrIL57OYsXAx3zCNGMjmLN3iY5LM6DJr",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "source": "calendar",
+            "starts_at": "2024-05-15T16:19:32.074000+00:00",
+            "status": "completed",
+            "title": "Meeting 0001",
+            "updated_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+            "updated_by_name": "User 0002",
+            "user_id": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+            "user_name": "User 0002",
+            "users": [
+              "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF"
+            ]
+          },
+          "recordId": "acti_m_At73oNfjuIuAXP4MDWlHFJV0pPDNcg5hAt73oNfju",
+          "source": "webhook",
+          "sourceTs": "2026-11-02T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_eyEdvzkmi8ISEJ7QMZsof7KMJyBgWSBYeyEdvzkmi",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_eyEdvzkmi8ISEJ7QMZsof7KMJyBgWSBYeyEdvzkmi",
+          "entity": "activities:Meeting",
+          "operation": "upsert",
+          "payload": {
+            "_type": "Meeting",
+            "activity_at": "2024-09-23T21:08:56.159000+00:00",
+            "attendees": [
+              {
+                "email": "contact0002@example.com",
+                "status": "yes"
+              }
+            ],
+            "conference_links": [],
+            "contact_id": "cont_hD4j59CKHk120iskXC5arIgA8AmHHfDdhD4j59CKH",
+            "created_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+            "created_by_name": "User 0003",
+            "date_created": "2024-09-23T21:08:56.159000+00:00",
+            "date_updated": "2024-09-23T22:05:17.605000+00:00",
+            "duration": 1800,
+            "ends_at": "2024-09-24T21:38:56.159000+00:00",
+            "id": "acti_m_1eyfqp6W5tiVgKpRcXbYIRlrMiXtLzwn1eyfqp6W5",
+            "is_recurring": false,
+            "lead_id": "lead_Utzlx8wKZsZkSkeDnPgQiQj26dGLR846Utzlx8wKZ",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "source": "calendar",
+            "starts_at": "2024-09-24T21:08:56.159000+00:00",
+            "status": "completed",
+            "title": "Meeting 0002",
+            "updated_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+            "updated_by_name": "User 0003",
+            "user_id": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+            "user_name": "User 0003",
+            "users": [
+              "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko"
+            ]
+          },
+          "recordId": "acti_m_1eyfqp6W5tiVgKpRcXbYIRlrMiXtLzwn1eyfqp6W5",
+          "source": "webhook",
+          "sourceTs": "2026-11-03T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_aIcu3zRe1PzmWQSJZRWDqYBxdQQtPT86aIcu3zRe1",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_aIcu3zRe1PzmWQSJZRWDqYBxdQQtPT86aIcu3zRe1",
+          "entity": "activities:LeadStatusChange",
+          "operation": "upsert",
+          "payload": {
+            "_type": "LeadStatusChange",
+            "activity_at": "2024-08-07T04:54:01.954000+00:00",
+            "contact_id": "cont_9OKoxI8JkqRo30X1thxqnt7BZ2E8SaI09OKoxI8Jk",
+            "created_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "created_by_name": "User 0004",
+            "date_created": "2024-08-07T04:54:01.954000+00:00",
+            "date_updated": "2024-08-07T07:37:47.637000+00:00",
+            "id": "acti_l_cXHA0ppO21zKII39maQc8F7MEfJ7xfGMcXHA0ppO2",
+            "lead_id": "lead_8vwzTs7rhAAWwbzIl5YQiEBQgHmTcmnN8vwzTs7rh",
+            "new_status_id": "stat_iXT00S9Be3dVRUkzaVb5Vit45kOlkrihiXT00S9Be",
+            "new_status_label": "Lost",
+            "new_status_type": "active",
+            "old_status_id": "stat_7gck80VoRDjoZayA19oAdAp8i7ea7Z8F7gck80VoR",
+            "old_status_label": "Customer",
+            "old_status_type": "active",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "updated_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "updated_by_name": "User 0004",
+            "user_id": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "user_name": "User 0004",
+            "users": [
+              "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I"
+            ]
+          },
+          "recordId": "acti_l_cXHA0ppO21zKII39maQc8F7MEfJ7xfGMcXHA0ppO2",
+          "source": "webhook",
+          "sourceTs": "2026-11-04T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_RiclmgHr8z7xhjV5qCjc6ApSLmOTXD7TRiclmgHr8",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_RiclmgHr8z7xhjV5qCjc6ApSLmOTXD7TRiclmgHr8",
+          "entity": "activities:LeadStatusChange",
+          "operation": "upsert",
+          "payload": {
+            "_type": "LeadStatusChange",
+            "activity_at": "2024-10-18T22:09:26.042000+00:00",
+            "contact_id": "cont_m1veGtiz6DcEEOqq1p7Scl1U0yXoIcSsm1veGtiz6",
+            "created_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "created_by_name": "User 0005",
+            "date_created": "2024-10-18T22:09:26.042000+00:00",
+            "date_updated": "2026-09-10T18:04:00.295000+00:00",
+            "id": "acti_l_h6d70e6LSKDNqk76Nu989NwNm9kwLHQ7h6d70e6LS",
+            "lead_id": "lead_1iJLz7eRKvHgVYIK0lCJwofTd7r0SNWJ1iJLz7eRK",
+            "new_status_id": "stat_84SK6RuB62Qg1fmZqndDpWnfNa63YyVJ84SK6RuB6",
+            "new_status_label": "Nurture",
+            "new_status_type": "active",
+            "old_status_id": "stat_iXT00S9Be3dVRUkzaVb5Vit45kOlkrihiXT00S9Be",
+            "old_status_label": "Lost",
+            "old_status_type": "active",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "updated_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "updated_by_name": "User 0005",
+            "user_id": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "user_name": "User 0005",
+            "users": [
+              "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq"
+            ]
+          },
+          "recordId": "acti_l_h6d70e6LSKDNqk76Nu989NwNm9kwLHQ7h6d70e6LS",
+          "source": "webhook",
+          "sourceTs": "2026-11-05T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_XnmUUMfPeAP7c4NHlpPi0LlrfQqF4FlbXnmUUMfPe",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_XnmUUMfPeAP7c4NHlpPi0LlrfQqF4FlbXnmUUMfPe",
+          "entity": "activities:LeadStatusChange",
+          "operation": "delete",
+          "payload": {
+            "id": "acti_l_P1G1CpgM622kFOzRgIykgvOd7SJEzKU6P1G1CpgM6"
+          },
+          "recordId": "acti_l_P1G1CpgM622kFOzRgIykgvOd7SJEzKU6P1G1CpgM6",
+          "source": "webhook",
+          "sourceTs": "2026-11-06T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_nWYWn8Fdx9hd6foxPGMBa7HG6qpPDYSBnWYWn8Fdx",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_nWYWn8Fdx9hd6foxPGMBa7HG6qpPDYSBnWYWn8Fdx",
+          "entity": "activities:OpportunityStatusChange",
+          "operation": "upsert",
+          "payload": {
+            "_type": "OpportunityStatusChange",
+            "activity_at": "2024-06-29T23:13:54.978000+00:00",
+            "contact_id": "cont_hD4j59CKHk120iskXC5arIgA8AmHHfDdhD4j59CKH",
+            "created_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+            "created_by_name": "User 0003",
+            "date_created": "2024-06-29T23:13:54.978000+00:00",
+            "date_updated": "2024-07-01T07:37:25.268000+00:00",
+            "id": "acti_o_oBQoQFLc3LIDZSDOyjqPF4PRL1rcandaoBQoQFLc3",
+            "lead_id": "lead_Utzlx8wKZsZkSkeDnPgQiQj26dGLR846Utzlx8wKZ",
+            "new_pipeline_id": "pipe_xBEhe2JDAf87nAtzWSyVFBSchwLwYZvLxBEhe2JDA",
+            "new_status_id": "stat_C6kn78X82s18WL2KvJRiliE18AdmWV0kC6kn78X82",
+            "new_status_label": "On hold",
+            "new_status_type": "active",
+            "old_pipeline_id": "pipe_xBEhe2JDAf87nAtzWSyVFBSchwLwYZvLxBEhe2JDA",
+            "old_status_id": "stat_cSnbOjlm8xYOHvhVG7ekp3jzuQcveiBncSnbOjlm8",
+            "old_status_label": "Lost",
+            "old_status_type": "lost",
+            "opportunity_id": "oppo_254xtNk2TVJlKQ93FX2wRyh98pJURTFw254xtNk2T",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "updated_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+            "updated_by_name": "User 0003",
+            "user_id": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+            "user_name": "User 0003",
+            "users": [
+              "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko"
+            ]
+          },
+          "recordId": "acti_o_oBQoQFLc3LIDZSDOyjqPF4PRL1rcandaoBQoQFLc3",
+          "source": "webhook",
+          "sourceTs": "2026-11-07T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_Iq123TgGseLYVsqgI863XW952y0M8HwRIq123TgGs",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_Iq123TgGseLYVsqgI863XW952y0M8HwRIq123TgGs",
+          "entity": "activities:OpportunityStatusChange",
+          "operation": "upsert",
+          "payload": {
+            "_type": "OpportunityStatusChange",
+            "activity_at": "2024-07-05T04:11:12.309000+00:00",
+            "contact_id": "cont_9OKoxI8JkqRo30X1thxqnt7BZ2E8SaI09OKoxI8Jk",
+            "created_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "created_by_name": "User 0004",
+            "date_created": "2024-07-05T04:11:12.309000+00:00",
+            "date_updated": "2024-07-07T06:34:03.403000+00:00",
+            "id": "acti_o_7qu4RFhUnxQgQ9VVRr6exnAiRb3PTn507qu4RFhUn",
+            "lead_id": "lead_8vwzTs7rhAAWwbzIl5YQiEBQgHmTcmnN8vwzTs7rh",
+            "new_pipeline_id": "pipe_xBEhe2JDAf87nAtzWSyVFBSchwLwYZvLxBEhe2JDA",
+            "new_status_id": "stat_ZMiD3370kPPmaqLhFxHbTLW4IryWZhpIZMiD3370k",
+            "new_status_label": "Demo",
+            "new_status_type": "active",
+            "old_pipeline_id": "pipe_xBEhe2JDAf87nAtzWSyVFBSchwLwYZvLxBEhe2JDA",
+            "old_status_id": "stat_C6kn78X82s18WL2KvJRiliE18AdmWV0kC6kn78X82",
+            "old_status_label": "On hold",
+            "old_status_type": "active",
+            "opportunity_id": "oppo_8qyfOj7LwGrsUs6vNMUBPKGdKS4blN558qyfOj7Lw",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "updated_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "updated_by_name": "User 0004",
+            "user_id": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "user_name": "User 0004",
+            "users": [
+              "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I"
+            ]
+          },
+          "recordId": "acti_o_7qu4RFhUnxQgQ9VVRr6exnAiRb3PTn507qu4RFhUn",
+          "source": "webhook",
+          "sourceTs": "2026-11-08T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_1OBOsK7Ue5IyVPaSQRoJ8lILiCsIozVm1OBOsK7Ue",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_1OBOsK7Ue5IyVPaSQRoJ8lILiCsIozVm1OBOsK7Ue",
+          "entity": "activities:OpportunityStatusChange",
+          "operation": "delete",
+          "payload": {
+            "id": "acti_o_wAToHWSG4xsfINKNEoPEdI6eLvSSen6rwAToHWSG4"
+          },
+          "recordId": "acti_o_wAToHWSG4xsfINKNEoPEdI6eLvSSen6rwAToHWSG4",
+          "source": "webhook",
+          "sourceTs": "2026-11-09T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_nky461h8ZPWNQMPDcJAFyuyOj6hnvOyonky461h8Z",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_nky461h8ZPWNQMPDcJAFyuyOj6hnvOyonky461h8Z",
+          "entity": "activities:TaskCompleted",
+          "operation": "upsert",
+          "payload": {
+            "_type": "TaskCompleted",
+            "activity_at": "2026-04-07T09:21:33.126000+00:00",
+            "contact_id": null,
+            "created_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "created_by_name": "User 0007",
+            "date_created": "2026-04-07T09:21:33.126000+00:00",
+            "date_updated": "2026-04-10T05:38:49.713000+00:00",
+            "id": "acti_k_4iKqv8wQvlnj86xTignRgaqWCG7wQOlL4iKqv8wQv",
+            "lead_id": "lead_hs4cFAqDCvBUXlLnQ0qXRc0ZbiDUMqKChs4cFAqDC",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "task_assigned_to": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "task_id": "task_rmTA486q2u1ofEspE0wsod1kw018bAiOrmTA486q2",
+            "task_text": "Synthetic task 0020",
+            "updated_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "updated_by_name": "User 0007",
+            "user_id": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "user_name": "User 0007",
+            "users": [
+              "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu"
+            ]
+          },
+          "recordId": "acti_k_4iKqv8wQvlnj86xTignRgaqWCG7wQOlL4iKqv8wQv",
+          "source": "webhook",
+          "sourceTs": "2026-11-01T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_FQuVhiAxkV7RBiQETG41ZPV1ADt9iFovFQuVhiAxk",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_FQuVhiAxkV7RBiQETG41ZPV1ADt9iFovFQuVhiAxk",
+          "entity": "activities:TaskCompleted",
+          "operation": "upsert",
+          "payload": {
+            "_type": "TaskCompleted",
+            "activity_at": "2026-05-17T18:42:18.096000+00:00",
+            "contact_id": null,
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "created_by_name": "User 0001",
+            "date_created": "2026-05-17T18:42:18.096000+00:00",
+            "date_updated": "2026-05-20T00:08:49.090000+00:00",
+            "id": "acti_k_21asTOqDF6keBSzH7kpKFViPCHd5mW4421asTOqDF",
+            "lead_id": "lead_dcw92SsWYLSs8n6LFCJln7aOLcjQpkFxdcw92SsWY",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "task_assigned_to": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "task_id": "task_oNEvSWDAmHoggL3TWO6EhRGIGJX43SEwoNEvSWDAm",
+            "task_text": "Synthetic task 0021",
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "updated_by_name": "User 0001",
+            "user_id": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "user_name": "User 0001",
+            "users": [
+              "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+            ]
+          },
+          "recordId": "acti_k_21asTOqDF6keBSzH7kpKFViPCHd5mW4421asTOqDF",
+          "source": "webhook",
+          "sourceTs": "2026-11-02T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_JPw6pxcGxrbvfSMPr1rxgov1sj88YEzXJPw6pxcGx",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_JPw6pxcGxrbvfSMPr1rxgov1sj88YEzXJPw6pxcGx",
+          "entity": "activities:TaskCompleted",
+          "operation": "delete",
+          "payload": {
+            "id": "acti_k_ljj1j2f8YWF6ikf4sjQg9vHNhDCIZI61ljj1j2f8Y"
+          },
+          "recordId": "acti_k_ljj1j2f8YWF6ikf4sjQg9vHNhDCIZI61ljj1j2f8Y",
+          "source": "webhook",
+          "sourceTs": "2026-11-03T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_QHNK9xglSfamvfcIyY4E9jx0IltUTJ16QHNK9xglS",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_QHNK9xglSfamvfcIyY4E9jx0IltUTJ16QHNK9xglS",
+          "entity": "activities:CustomActivity",
+          "operation": "upsert",
+          "payload": {
+            "_type": "CustomActivity",
+            "activity_at": "2025-03-09T23:04:43.315000+00:00",
+            "contact_id": null,
+            "created_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+            "created_by_name": "User 0006",
+            "custom": {
+              "cf_GzHbRpWQDQuYjOQ3m50tEzsQwklcfhggGzHbRpWQD": "2025-05-01",
+              "cf_fq04OecgkYPT53tszrDxn1NKkRzXFN5afq04Oecgk": 120,
+              "cf_pFENWLuqjoD6XhY8FSvBPf9KySoiOlsTpFENWLuqj": "Value 0012"
+            },
+            "custom_activity_type_id": "actitype_TnOtn2l4Mcxie1F30Tfiz7UF8ZSPO53tTnOtn2l4M",
+            "custom_cf_GzHbRpWQDQuYjOQ3m50tEzsQwklcfhggGzHbRpWQD": "2025-05-01",
+            "custom_cf_fq04OecgkYPT53tszrDxn1NKkRzXFN5afq04Oecgk": 120,
+            "custom_cf_pFENWLuqjoD6XhY8FSvBPf9KySoiOlsTpFENWLuqj": "Value 0012",
+            "date_created": "2025-03-09T23:04:43.315000+00:00",
+            "date_updated": "2025-03-12T18:32:03.787000+00:00",
+            "id": "acti_c_l16kAY1JeQD31edXeLjwxiia3q1bgyi6l16kAY1Je",
+            "lead_id": "lead_1xq18n0H5HbngGspKikArW7ZY8P1VORX1xq18n0H5",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "pinned": false,
+            "status": "published",
+            "updated_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+            "updated_by_name": "User 0006",
+            "user_id": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+            "user_name": "User 0006",
+            "users": [
+              "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa"
+            ]
+          },
+          "recordId": "acti_c_l16kAY1JeQD31edXeLjwxiia3q1bgyi6l16kAY1Je",
+          "source": "webhook",
+          "sourceTs": "2026-11-04T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_G3e0si2qUYvpR1vcOTMF3yte2Vsocc6SG3e0si2qU",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_G3e0si2qUYvpR1vcOTMF3yte2Vsocc6SG3e0si2qU",
+          "entity": "activities:CustomActivity",
+          "operation": "upsert",
+          "payload": {
+            "_type": "CustomActivity",
+            "activity_at": "2025-07-09T12:34:45.520000+00:00",
+            "contact_id": null,
+            "created_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "created_by_name": "User 0007",
+            "custom": {
+              "cf_GzHbRpWQDQuYjOQ3m50tEzsQwklcfhggGzHbRpWQD": "2025-05-01",
+              "cf_WbV0SbJ5lz1khjaj8d9KnuDOSe37FCV8WbV0SbJ5l": false,
+              "cf_fq04OecgkYPT53tszrDxn1NKkRzXFN5afq04Oecgk": 130,
+              "cf_gVsECuuOmASvCFSc2Dl1KogiTv4MMXQxgVsECuuOm": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu"
+            },
+            "custom_activity_type_id": "actitype_KzJM7cJegeHRUuSplkFGdolWs93pl6HqKzJM7cJeg",
+            "custom_cf_GzHbRpWQDQuYjOQ3m50tEzsQwklcfhggGzHbRpWQD": "2025-05-01",
+            "custom_cf_WbV0SbJ5lz1khjaj8d9KnuDOSe37FCV8WbV0SbJ5l": false,
+            "custom_cf_fq04OecgkYPT53tszrDxn1NKkRzXFN5afq04Oecgk": 130,
+            "custom_cf_gVsECuuOmASvCFSc2Dl1KogiTv4MMXQxgVsECuuOm": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "date_created": "2025-07-09T12:34:45.520000+00:00",
+            "date_updated": "2026-10-10T17:53:10.649000+00:00",
+            "id": "acti_c_xBKCMxmJIxrYckTTXo0UeYIQ5UZLQpHLxBKCMxmJI",
+            "lead_id": "lead_HK9NSyxF6knQIYHrlP1f5k9xQi4YUDmzHK9NSyxF6",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "pinned": false,
+            "status": "published",
+            "updated_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "updated_by_name": "User 0007",
+            "user_id": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "user_name": "User 0007",
+            "users": [
+              "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu"
+            ]
+          },
+          "recordId": "acti_c_xBKCMxmJIxrYckTTXo0UeYIQ5UZLQpHLxBKCMxmJI",
+          "source": "webhook",
+          "sourceTs": "2026-11-05T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_WDsbk9PM4WdYUuaRXOQ5wPQ46uCswGnCWDsbk9PM4",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_WDsbk9PM4WdYUuaRXOQ5wPQ46uCswGnCWDsbk9PM4",
+          "entity": "activities:CustomActivity",
+          "operation": "delete",
+          "payload": {
+            "id": "acti_c_oam0yLKJMEYOlvhonzc4ONs6YPDmwI3roam0yLKJM"
+          },
+          "recordId": "acti_c_oam0yLKJMEYOlvhonzc4ONs6YPDmwI3roam0yLKJM",
+          "source": "webhook",
+          "sourceTs": "2026-11-06T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_VlWwZ0dXnL0Sl34qArU610A95Wl9Yh4rVlWwZ0dXn",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_VlWwZ0dXnL0Sl34qArU610A95Wl9Yh4rVlWwZ0dXn",
+          "entity": "custom_fields",
+          "operation": "upsert",
+          "payload": {
+            "accepts_multiple_values": false,
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "date_created": "2024-01-10T09:00:00.000000+00:00",
+            "date_updated": "2024-01-10T14:58:37.099000+00:00",
+            "description": null,
+            "id": "cf_00qHS1oDpU2ulBgwKEZTdCIXkrzOpWZT00qHS1oDp",
+            "name": "Lead field 01",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "type": "text",
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+          },
+          "recordId": "cf_00qHS1oDpU2ulBgwKEZTdCIXkrzOpWZT00qHS1oDp",
+          "source": "webhook",
+          "sourceTs": "2026-11-07T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_cqZZHDliK3w9GRBvhBdoLp4cJfP5T77mcqZZHDliK",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_cqZZHDliK3w9GRBvhBdoLp4cJfP5T77mcqZZHDliK",
+          "entity": "custom_fields",
+          "operation": "upsert",
+          "payload": {
+            "accepts_multiple_values": false,
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "date_created": "2024-01-10T09:00:00.000000+00:00",
+            "date_updated": "2024-01-10T14:58:37.099000+00:00",
+            "description": null,
+            "id": "cf_00qHS1oDpU2ulBgwKEZTdCIXkrzOpWZT00qHS1oDp",
+            "name": "Lead field 01",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "type": "text",
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+          },
+          "recordId": "cf_00qHS1oDpU2ulBgwKEZTdCIXkrzOpWZT00qHS1oDp",
+          "source": "webhook",
+          "sourceTs": "2026-11-08T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_hDFqruKzV8ivOTHUDjlQpt0AjbJPUAhDhDFqruKzV",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_hDFqruKzV8ivOTHUDjlQpt0AjbJPUAhDhDFqruKzV",
+          "entity": "custom_fields",
+          "operation": "delete",
+          "payload": {
+            "id": "cf_00qHS1oDpU2ulBgwKEZTdCIXkrzOpWZT00qHS1oDp"
+          },
+          "recordId": "cf_00qHS1oDpU2ulBgwKEZTdCIXkrzOpWZT00qHS1oDp",
+          "source": "webhook",
+          "sourceTs": "2026-11-09T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_gtlLmg7u8jeUGnt11DL11TSw7uocoj7ugtlLmg7u8",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_gtlLmg7u8jeUGnt11DL11TSw7uocoj7ugtlLmg7u8",
+          "entity": "custom_fields",
+          "operation": "upsert",
+          "payload": {
+            "accepts_multiple_values": false,
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "date_created": "2024-01-10T09:00:00.000000+00:00",
+            "date_updated": "2024-01-10T20:52:42.157000+00:00",
+            "description": null,
+            "id": "cf_7et0Jb06NX0IAyDmFpz0Bglhiapn4hDi7et0Jb06N",
+            "name": "Contact field 01",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "type": "text",
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+          },
+          "recordId": "cf_7et0Jb06NX0IAyDmFpz0Bglhiapn4hDi7et0Jb06N",
+          "source": "webhook",
+          "sourceTs": "2026-11-01T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_bJgwZ6OI40JN6Ew69bctVF7ndVpPREO1bJgwZ6OI4",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_bJgwZ6OI40JN6Ew69bctVF7ndVpPREO1bJgwZ6OI4",
+          "entity": "custom_fields",
+          "operation": "upsert",
+          "payload": {
+            "accepts_multiple_values": false,
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "date_created": "2024-01-10T09:00:00.000000+00:00",
+            "date_updated": "2024-01-10T20:52:42.157000+00:00",
+            "description": null,
+            "id": "cf_7et0Jb06NX0IAyDmFpz0Bglhiapn4hDi7et0Jb06N",
+            "name": "Contact field 01",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "type": "text",
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+          },
+          "recordId": "cf_7et0Jb06NX0IAyDmFpz0Bglhiapn4hDi7et0Jb06N",
+          "source": "webhook",
+          "sourceTs": "2026-11-02T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_MP369gMwE8YzsYuAdQRfhEBFFYwXoYF3MP369gMwE",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_MP369gMwE8YzsYuAdQRfhEBFFYwXoYF3MP369gMwE",
+          "entity": "custom_fields",
+          "operation": "delete",
+          "payload": {
+            "id": "cf_7et0Jb06NX0IAyDmFpz0Bglhiapn4hDi7et0Jb06N"
+          },
+          "recordId": "cf_7et0Jb06NX0IAyDmFpz0Bglhiapn4hDi7et0Jb06N",
+          "source": "webhook",
+          "sourceTs": "2026-11-03T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_5WzgZLiaUa6tiNnh79h4gXaTSZZX2V3T5WzgZLiaU",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_5WzgZLiaUa6tiNnh79h4gXaTSZZX2V3T5WzgZLiaU",
+          "entity": "custom_fields",
+          "operation": "upsert",
+          "payload": {
+            "accepts_multiple_values": false,
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "date_created": "2024-01-10T09:00:00.000000+00:00",
+            "date_updated": "2024-01-11T06:33:08.537000+00:00",
+            "description": null,
+            "id": "cf_HqdYPOSXCxA6h4X82XVSv7egywHEhYY9HqdYPOSXC",
+            "name": "Opportunity field 01",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "type": "text",
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+          },
+          "recordId": "cf_HqdYPOSXCxA6h4X82XVSv7egywHEhYY9HqdYPOSXC",
+          "source": "webhook",
+          "sourceTs": "2026-11-04T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_wuPx2v5nnJDKNO0yVFYkqZVSIaye6oXzwuPx2v5nn",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_wuPx2v5nnJDKNO0yVFYkqZVSIaye6oXzwuPx2v5nn",
+          "entity": "custom_fields",
+          "operation": "upsert",
+          "payload": {
+            "accepts_multiple_values": false,
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "date_created": "2024-01-10T09:00:00.000000+00:00",
+            "date_updated": "2024-01-11T06:33:08.537000+00:00",
+            "description": null,
+            "id": "cf_HqdYPOSXCxA6h4X82XVSv7egywHEhYY9HqdYPOSXC",
+            "name": "Opportunity field 01",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "type": "text",
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+          },
+          "recordId": "cf_HqdYPOSXCxA6h4X82XVSv7egywHEhYY9HqdYPOSXC",
+          "source": "webhook",
+          "sourceTs": "2026-11-05T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_7gpvoaHMnb2st8ehMInYTHPRj71XytYn7gpvoaHMn",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_7gpvoaHMnb2st8ehMInYTHPRj71XytYn7gpvoaHMn",
+          "entity": "custom_fields",
+          "operation": "delete",
+          "payload": {
+            "id": "cf_HqdYPOSXCxA6h4X82XVSv7egywHEhYY9HqdYPOSXC"
+          },
+          "recordId": "cf_HqdYPOSXCxA6h4X82XVSv7egywHEhYY9HqdYPOSXC",
+          "source": "webhook",
+          "sourceTs": "2026-11-06T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_BPYsZAgXiRgySMkUHs6NGbYxORLnJAbABPYsZAgXi",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_BPYsZAgXiRgySMkUHs6NGbYxORLnJAbABPYsZAgXi",
+          "entity": "custom_fields",
+          "operation": "upsert",
+          "payload": {
+            "accepts_multiple_values": false,
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "date_created": "2024-01-10T09:00:00.000000+00:00",
+            "date_updated": "2024-01-11T01:59:29.389000+00:00",
+            "description": null,
+            "id": "cf_pFENWLuqjoD6XhY8FSvBPf9KySoiOlsTpFENWLuqj",
+            "name": "Activity field 01",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "type": "text",
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+          },
+          "recordId": "cf_pFENWLuqjoD6XhY8FSvBPf9KySoiOlsTpFENWLuqj",
+          "source": "webhook",
+          "sourceTs": "2026-11-07T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_wcMRj8txq3KVPY1hiemEswLDNs9fj4qOwcMRj8txq",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_wcMRj8txq3KVPY1hiemEswLDNs9fj4qOwcMRj8txq",
+          "entity": "custom_fields",
+          "operation": "upsert",
+          "payload": {
+            "accepts_multiple_values": false,
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "date_created": "2024-01-10T09:00:00.000000+00:00",
+            "date_updated": "2024-01-11T01:59:29.389000+00:00",
+            "description": null,
+            "id": "cf_pFENWLuqjoD6XhY8FSvBPf9KySoiOlsTpFENWLuqj",
+            "name": "Activity field 01",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "type": "text",
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+          },
+          "recordId": "cf_pFENWLuqjoD6XhY8FSvBPf9KySoiOlsTpFENWLuqj",
+          "source": "webhook",
+          "sourceTs": "2026-11-08T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_lrCiJ3VlHkvBfMS4yZ85LJzwN56wHwPBlrCiJ3VlH",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_lrCiJ3VlHkvBfMS4yZ85LJzwN56wHwPBlrCiJ3VlH",
+          "entity": "custom_fields",
+          "operation": "delete",
+          "payload": {
+            "id": "cf_pFENWLuqjoD6XhY8FSvBPf9KySoiOlsTpFENWLuqj"
+          },
+          "recordId": "cf_pFENWLuqjoD6XhY8FSvBPf9KySoiOlsTpFENWLuqj",
+          "source": "webhook",
+          "sourceTs": "2026-11-09T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_IKVN2t9wvMqNgvwlS5kipK6LdMcIdoJLIKVN2t9wv",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_IKVN2t9wvMqNgvwlS5kipK6LdMcIdoJLIKVN2t9wv",
+          "entity": "custom_fields",
+          "operation": "upsert",
+          "payload": {
+            "accepts_multiple_values": false,
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "date_created": "2024-01-10T09:00:00.000000+00:00",
+            "date_updated": "2024-01-11T05:22:39.536000+00:00",
+            "description": null,
+            "id": "cf_7LhBV0dFT4u8QO7dclCufUMVe90uabhn7LhBV0dFT",
+            "name": "Object field 01",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "type": "text",
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+          },
+          "recordId": "cf_7LhBV0dFT4u8QO7dclCufUMVe90uabhn7LhBV0dFT",
+          "source": "webhook",
+          "sourceTs": "2026-11-01T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_maocpYTAmNo2G6zQ2HmlwhwdLlm21uN0maocpYTAm",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_maocpYTAmNo2G6zQ2HmlwhwdLlm21uN0maocpYTAm",
+          "entity": "custom_fields",
+          "operation": "upsert",
+          "payload": {
+            "accepts_multiple_values": false,
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "date_created": "2024-01-10T09:00:00.000000+00:00",
+            "date_updated": "2024-01-11T05:22:39.536000+00:00",
+            "description": null,
+            "id": "cf_7LhBV0dFT4u8QO7dclCufUMVe90uabhn7LhBV0dFT",
+            "name": "Object field 01",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "type": "text",
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+          },
+          "recordId": "cf_7LhBV0dFT4u8QO7dclCufUMVe90uabhn7LhBV0dFT",
+          "source": "webhook",
+          "sourceTs": "2026-11-02T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_W9fLXZduAn86aqobtHhL8KKOVa4Z6fY5W9fLXZduA",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_W9fLXZduAn86aqobtHhL8KKOVa4Z6fY5W9fLXZduA",
+          "entity": "custom_fields",
+          "operation": "delete",
+          "payload": {
+            "id": "cf_7LhBV0dFT4u8QO7dclCufUMVe90uabhn7LhBV0dFT"
+          },
+          "recordId": "cf_7LhBV0dFT4u8QO7dclCufUMVe90uabhn7LhBV0dFT",
+          "source": "webhook",
+          "sourceTs": "2026-11-03T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_kx2ZFWQNYM21cPwc73qj4fKSdLsXAPsckx2ZFWQNY",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_kx2ZFWQNYM21cPwc73qj4fKSdLsXAPsckx2ZFWQNY",
+          "entity": "custom_fields",
+          "operation": "upsert",
+          "payload": {
+            "accepts_multiple_values": false,
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "date_created": "2024-01-10T09:00:00.000000+00:00",
+            "date_updated": "2024-01-10T11:48:10.903000+00:00",
+            "description": null,
+            "id": "cf_wnyGgplyAhfe7ZHzyl2bkYcBy1EKTL16wnyGgplyA",
+            "is_shared": true,
+            "name": "Shared field 01",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "type": "text",
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+          },
+          "recordId": "cf_wnyGgplyAhfe7ZHzyl2bkYcBy1EKTL16wnyGgplyA",
+          "source": "webhook",
+          "sourceTs": "2026-11-04T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_ILaPXECUxCTrsWXj27pmmrUpXrNArh0LILaPXECUx",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_ILaPXECUxCTrsWXj27pmmrUpXrNArh0LILaPXECUx",
+          "entity": "custom_fields",
+          "operation": "upsert",
+          "payload": {
+            "accepts_multiple_values": false,
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "date_created": "2024-01-10T09:00:00.000000+00:00",
+            "date_updated": "2024-01-10T11:48:10.903000+00:00",
+            "description": null,
+            "id": "cf_wnyGgplyAhfe7ZHzyl2bkYcBy1EKTL16wnyGgplyA",
+            "is_shared": true,
+            "name": "Shared field 01",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "type": "text",
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+          },
+          "recordId": "cf_wnyGgplyAhfe7ZHzyl2bkYcBy1EKTL16wnyGgplyA",
+          "source": "webhook",
+          "sourceTs": "2026-11-05T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_BtfXsSDrYDBJJGQxul53bRmIbN6RTlh4BtfXsSDrY",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_BtfXsSDrYDBJJGQxul53bRmIbN6RTlh4BtfXsSDrY",
+          "entity": "custom_fields",
+          "operation": "delete",
+          "payload": {
+            "id": "cf_wnyGgplyAhfe7ZHzyl2bkYcBy1EKTL16wnyGgplyA"
+          },
+          "recordId": "cf_wnyGgplyAhfe7ZHzyl2bkYcBy1EKTL16wnyGgplyA",
+          "source": "webhook",
+          "sourceTs": "2026-11-06T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_yd40MZOh5PND1AFlJDodZpT4TL8BEkBOyd40MZOh5",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_yd40MZOh5PND1AFlJDodZpT4TL8BEkBOyd40MZOh5",
+          "entity": "custom_activity_types",
+          "operation": "upsert",
+          "payload": {
+            "api_create_only": false,
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "date_created": "2024-03-01T08:00:00.000000+00:00",
+            "date_updated": "2024-03-01T08:00:00.000000+00:00",
+            "description": null,
+            "editable_with_roles": [],
+            "fields": [
+              {
+                "id": "cf_pFENWLuqjoD6XhY8FSvBPf9KySoiOlsTpFENWLuqj"
+              },
+              {
+                "id": "cf_fq04OecgkYPT53tszrDxn1NKkRzXFN5afq04Oecgk"
+              }
+            ],
+            "id": "actitype_TnOtn2l4Mcxie1F30Tfiz7UF8ZSPO53tTnOtn2l4M",
+            "is_archived": false,
+            "name": "Custom activity 1",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "role_permissions": null,
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+          },
+          "recordId": "actitype_TnOtn2l4Mcxie1F30Tfiz7UF8ZSPO53tTnOtn2l4M",
+          "source": "webhook",
+          "sourceTs": "2026-11-07T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_ySoIC50k6hs9gaBBMK6DwC54DLvAWvkYySoIC50k6",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_ySoIC50k6hs9gaBBMK6DwC54DLvAWvkYySoIC50k6",
+          "entity": "custom_activity_types",
+          "operation": "upsert",
+          "payload": {
+            "api_create_only": false,
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "date_created": "2024-03-01T08:00:00.000000+00:00",
+            "date_updated": "2024-03-01T08:00:00.000000+00:00",
+            "description": null,
+            "editable_with_roles": [],
+            "fields": [
+              {
+                "id": "cf_pFENWLuqjoD6XhY8FSvBPf9KySoiOlsTpFENWLuqj"
+              },
+              {
+                "id": "cf_fq04OecgkYPT53tszrDxn1NKkRzXFN5afq04Oecgk"
+              }
+            ],
+            "id": "actitype_TnOtn2l4Mcxie1F30Tfiz7UF8ZSPO53tTnOtn2l4M",
+            "is_archived": false,
+            "name": "Custom activity 1",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "role_permissions": null,
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+          },
+          "recordId": "actitype_TnOtn2l4Mcxie1F30Tfiz7UF8ZSPO53tTnOtn2l4M",
+          "source": "webhook",
+          "sourceTs": "2026-11-08T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_Mxjr9GO6u1ulK0ELIqpNKl78nFJdi1vtMxjr9GO6u",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_Mxjr9GO6u1ulK0ELIqpNKl78nFJdi1vtMxjr9GO6u",
+          "entity": "custom_activity_types",
+          "operation": "delete",
+          "payload": {
+            "id": "actitype_TnOtn2l4Mcxie1F30Tfiz7UF8ZSPO53tTnOtn2l4M"
+          },
+          "recordId": "actitype_TnOtn2l4Mcxie1F30Tfiz7UF8ZSPO53tTnOtn2l4M",
+          "source": "webhook",
+          "sourceTs": "2026-11-09T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_7UK9go2Pqpm6e0WvkVJeAuS4Y7MZda1l7UK9go2Pq",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_7UK9go2Pqpm6e0WvkVJeAuS4Y7MZda1l7UK9go2Pq",
+          "entity": "custom_object_types",
+          "operation": "upsert",
+          "payload": {
+            "api_create_only": false,
+            "back_reference_fields": [],
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "date_created": "2024-03-05T08:00:00.000000+00:00",
+            "date_updated": "2024-03-05T08:00:00.000000+00:00",
+            "description": null,
+            "editable_with_roles": [],
+            "fields": [],
+            "id": "cotype_pcqAA3KjmsQ17gDvIzm15F6XAaIRWW11pcqAA3Kjm",
+            "name": "Object 1",
+            "name_plural": "Objects 1",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+          },
+          "recordId": "cotype_pcqAA3KjmsQ17gDvIzm15F6XAaIRWW11pcqAA3Kjm",
+          "source": "webhook",
+          "sourceTs": "2026-11-01T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_qGlyjO3704Ld1r7fToq6iXOKC7wivsGNqGlyjO370",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_qGlyjO3704Ld1r7fToq6iXOKC7wivsGNqGlyjO370",
+          "entity": "custom_object_types",
+          "operation": "upsert",
+          "payload": {
+            "api_create_only": false,
+            "back_reference_fields": [],
+            "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+            "date_created": "2024-03-05T08:00:00.000000+00:00",
+            "date_updated": "2024-03-05T08:00:00.000000+00:00",
+            "description": null,
+            "editable_with_roles": [],
+            "fields": [],
+            "id": "cotype_pcqAA3KjmsQ17gDvIzm15F6XAaIRWW11pcqAA3Kjm",
+            "name": "Object 1",
+            "name_plural": "Objects 1",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+          },
+          "recordId": "cotype_pcqAA3KjmsQ17gDvIzm15F6XAaIRWW11pcqAA3Kjm",
+          "source": "webhook",
+          "sourceTs": "2026-11-02T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_6Jbo6iFQ3B0uXJBY5Ht0a4YCYtBrzLys6Jbo6iFQ3",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_6Jbo6iFQ3B0uXJBY5Ht0a4YCYtBrzLys6Jbo6iFQ3",
+          "entity": "custom_object_types",
+          "operation": "delete",
+          "payload": {
+            "id": "cotype_pcqAA3KjmsQ17gDvIzm15F6XAaIRWW11pcqAA3Kjm"
+          },
+          "recordId": "cotype_pcqAA3KjmsQ17gDvIzm15F6XAaIRWW11pcqAA3Kjm",
+          "source": "webhook",
+          "sourceTs": "2026-11-03T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_MNSqeGE30ShAdON49mcq4NPrvi0wGG9fMNSqeGE30",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_MNSqeGE30ShAdON49mcq4NPrvi0wGG9fMNSqeGE30",
+          "entity": "custom_objects",
+          "operation": "upsert",
+          "payload": {
+            "custom": {
+              "cf_7LhBV0dFT4u8QO7dclCufUMVe90uabhn7LhBV0dFT": "x"
+            },
+            "custom_cf_7LhBV0dFT4u8QO7dclCufUMVe90uabhn7LhBV0dFT": "x",
+            "custom_object_type_id": "cotype_pcqAA3KjmsQ17gDvIzm15F6XAaIRWW11pcqAA3Kjm",
+            "date_created": "2026-10-01T08:00:00.000000+00:00",
+            "date_updated": "2026-10-02T08:00:00.000000+00:00",
+            "id": "custobj_72CAOQF5ucikkVRs2JDZ3dH7i6MxnVrR72CAOQF5u",
+            "lead_id": "lead_X93D4GdztnNeq2B8rXoHaAe3rUfdSiF3X93D4Gdzt",
+            "name": "Object 74",
+            "organization_id": "orga_fixture000000000000000000000000000000"
+          },
+          "recordId": "custobj_72CAOQF5ucikkVRs2JDZ3dH7i6MxnVrR72CAOQF5u",
+          "source": "webhook",
+          "sourceTs": "2026-11-04T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_mf6DfljO8lkytDTG2r5oZ7bykc53YIQimf6DfljO8",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_mf6DfljO8lkytDTG2r5oZ7bykc53YIQimf6DfljO8",
+          "entity": "custom_objects",
+          "operation": "upsert",
+          "payload": {
+            "custom": {
+              "cf_7LhBV0dFT4u8QO7dclCufUMVe90uabhn7LhBV0dFT": "x"
+            },
+            "custom_cf_7LhBV0dFT4u8QO7dclCufUMVe90uabhn7LhBV0dFT": "x",
+            "custom_object_type_id": "cotype_pcqAA3KjmsQ17gDvIzm15F6XAaIRWW11pcqAA3Kjm",
+            "date_created": "2026-10-01T08:00:00.000000+00:00",
+            "date_updated": "2026-10-02T08:00:00.000000+00:00",
+            "id": "custobj_dU4m1mz7wjOROuGUnuxEc6JlBzXH2kGodU4m1mz7w",
+            "lead_id": "lead_X93D4GdztnNeq2B8rXoHaAe3rUfdSiF3X93D4Gdzt",
+            "name": "Object 75",
+            "organization_id": "orga_fixture000000000000000000000000000000"
+          },
+          "recordId": "custobj_dU4m1mz7wjOROuGUnuxEc6JlBzXH2kGodU4m1mz7w",
+          "source": "webhook",
+          "sourceTs": "2026-11-05T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_NUBhdiURCGrIl5sL1TMPCV0QbCbsLD2ENUBhdiURC",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_NUBhdiURCGrIl5sL1TMPCV0QbCbsLD2ENUBhdiURC",
+          "entity": "custom_objects",
+          "operation": "delete",
+          "payload": {
+            "id": "custobj_VmyDZIkf3idjQujGobq0C7pzHMeHvYpmVmyDZIkf3"
+          },
+          "recordId": "custobj_VmyDZIkf3idjQujGobq0C7pzHMeHvYpmVmyDZIkf3",
+          "source": "webhook",
+          "sourceTs": "2026-11-06T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_JO5tWEaZnHpvRyWF4uoV3EWt2VIY8OQPJO5tWEaZn",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_JO5tWEaZnHpvRyWF4uoV3EWt2VIY8OQPJO5tWEaZn",
+          "entity": "lead_statuses",
+          "operation": "upsert",
+          "payload": {
+            "color": null,
+            "id": "stat_m49ZcKMPq6fPJlLSPMCZPcBuv766mlF3m49ZcKMPq",
+            "label": "Potential",
+            "organization_id": "orga_fixture000000000000000000000000000000"
+          },
+          "recordId": "stat_m49ZcKMPq6fPJlLSPMCZPcBuv766mlF3m49ZcKMPq",
+          "source": "webhook",
+          "sourceTs": "2026-11-07T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_6rGvplpVCHrMnQrtcgp6mB3dezPlrFEi6rGvplpVC",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_6rGvplpVCHrMnQrtcgp6mB3dezPlrFEi6rGvplpVC",
+          "entity": "lead_statuses",
+          "operation": "upsert",
+          "payload": {
+            "color": null,
+            "id": "stat_m49ZcKMPq6fPJlLSPMCZPcBuv766mlF3m49ZcKMPq",
+            "label": "Potential",
+            "organization_id": "orga_fixture000000000000000000000000000000"
+          },
+          "recordId": "stat_m49ZcKMPq6fPJlLSPMCZPcBuv766mlF3m49ZcKMPq",
+          "source": "webhook",
+          "sourceTs": "2026-11-08T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_DQA0FdQwJcv5OU7HNfgXwF6dVii3PunXDQA0FdQwJ",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_DQA0FdQwJcv5OU7HNfgXwF6dVii3PunXDQA0FdQwJ",
+          "entity": "lead_statuses",
+          "operation": "delete",
+          "payload": {
+            "id": "stat_m49ZcKMPq6fPJlLSPMCZPcBuv766mlF3m49ZcKMPq"
+          },
+          "recordId": "stat_m49ZcKMPq6fPJlLSPMCZPcBuv766mlF3m49ZcKMPq",
+          "source": "webhook",
+          "sourceTs": "2026-11-09T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_FMLFZZ96yygt0C2MVHi11xCFbu7gszbbFMLFZZ96y",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_FMLFZZ96yygt0C2MVHi11xCFbu7gszbbFMLFZZ96y",
+          "entity": "opportunity_statuses",
+          "operation": "upsert",
+          "payload": {
+            "id": "stat_H87erqmSalxZEKCTyEwlgJ2wDAQq8pf4H87erqmSa",
+            "label": "Active",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "pipeline_id": "pipe_xBEhe2JDAf87nAtzWSyVFBSchwLwYZvLxBEhe2JDA",
+            "type": "active"
+          },
+          "recordId": "stat_H87erqmSalxZEKCTyEwlgJ2wDAQq8pf4H87erqmSa",
+          "source": "webhook",
+          "sourceTs": "2026-11-01T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_n60KYwPKDW1TdUTewwBZCbBjE09Dybhln60KYwPKD",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_n60KYwPKDW1TdUTewwBZCbBjE09Dybhln60KYwPKD",
+          "entity": "opportunity_statuses",
+          "operation": "upsert",
+          "payload": {
+            "id": "stat_H87erqmSalxZEKCTyEwlgJ2wDAQq8pf4H87erqmSa",
+            "label": "Active",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "pipeline_id": "pipe_xBEhe2JDAf87nAtzWSyVFBSchwLwYZvLxBEhe2JDA",
+            "type": "active"
+          },
+          "recordId": "stat_H87erqmSalxZEKCTyEwlgJ2wDAQq8pf4H87erqmSa",
+          "source": "webhook",
+          "sourceTs": "2026-11-02T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_pFi6l0KePb5vjFEtcQJkXBjQWWcXI9JApFi6l0KeP",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_pFi6l0KePb5vjFEtcQJkXBjQWWcXI9JApFi6l0KeP",
+          "entity": "opportunity_statuses",
+          "operation": "delete",
+          "payload": {
+            "id": "stat_H87erqmSalxZEKCTyEwlgJ2wDAQq8pf4H87erqmSa"
+          },
+          "recordId": "stat_H87erqmSalxZEKCTyEwlgJ2wDAQq8pf4H87erqmSa",
+          "source": "webhook",
+          "sourceTs": "2026-11-03T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_eQ1F9Yy1crQFDD41QDkdT7vuxeR6ybRzeQ1F9Yy1c",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_eQ1F9Yy1crQFDD41QDkdT7vuxeR6ybRzeQ1F9Yy1c",
+          "entity": "groups",
+          "operation": "upsert",
+          "payload": {
+            "id": "group_GTyT14dZ0eCCdru1WXJidtQqPXS6fqdyGTyT14dZ0",
+            "members": [
+              {
+                "user_id": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+              },
+              {
+                "user_id": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I"
+              },
+              {
+                "user_id": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu"
+              }
+            ],
+            "name": "Group A",
+            "organization_id": "orga_fixture000000000000000000000000000000"
+          },
+          "recordId": "group_GTyT14dZ0eCCdru1WXJidtQqPXS6fqdyGTyT14dZ0",
+          "source": "webhook",
+          "sourceTs": "2026-11-04T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_2TMbmiGXSiXbn7FjADIyQhT0FSNtpyaj2TMbmiGXS",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_2TMbmiGXSiXbn7FjADIyQhT0FSNtpyaj2TMbmiGXS",
+          "entity": "groups",
+          "operation": "upsert",
+          "payload": {
+            "id": "group_GTyT14dZ0eCCdru1WXJidtQqPXS6fqdyGTyT14dZ0",
+            "members": [
+              {
+                "user_id": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+              },
+              {
+                "user_id": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I"
+              },
+              {
+                "user_id": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu"
+              }
+            ],
+            "name": "Group A",
+            "organization_id": "orga_fixture000000000000000000000000000000"
+          },
+          "recordId": "group_GTyT14dZ0eCCdru1WXJidtQqPXS6fqdyGTyT14dZ0",
+          "source": "webhook",
+          "sourceTs": "2026-11-05T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_EBrZClb5kfYTLvx4cS0LaCelUu8TK6sHEBrZClb5k",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_EBrZClb5kfYTLvx4cS0LaCelUu8TK6sHEBrZClb5k",
+          "entity": "groups",
+          "operation": "delete",
+          "payload": {
+            "id": "group_GTyT14dZ0eCCdru1WXJidtQqPXS6fqdyGTyT14dZ0"
+          },
+          "recordId": "group_GTyT14dZ0eCCdru1WXJidtQqPXS6fqdyGTyT14dZ0",
+          "source": "webhook",
+          "sourceTs": "2026-11-06T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_Gf45cAel13zy2c4JLZMMoTstYPMhorm9Gf45cAel1",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_Gf45cAel13zy2c4JLZMMoTstYPMhorm9Gf45cAel1",
+          "entity": "users",
+          "operation": "upsert",
+          "payload": {
+            "date_created": "2024-01-03T08:00:00.000000+00:00",
+            "date_updated": "2026-10-02T08:00:00.000000+00:00",
+            "email": "user0002@example.com",
+            "email_verified_at": "2024-01-03T08:00:00.000000+00:00",
+            "first_name": "User",
+            "google_profile_image_url": null,
+            "id": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+            "image": null,
+            "last_name": "0002",
+            "last_used_timezone": "Europe/Warsaw",
+            "organizations": [
+              "orga_fixture000000000000000000000000000000"
+            ]
+          },
+          "recordId": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+          "source": "webhook",
+          "sourceTs": "2026-11-07T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_17RSl1WOzaHHzkzlizs0gr9ze6EN8Cwz17RSl1WOz",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_17RSl1WOzaHHzkzlizs0gr9ze6EN8Cwz17RSl1WOz",
+          "entity": "users",
+          "operation": "upsert",
+          "payload": {
+            "date_created": "2024-01-03T08:00:00.000000+00:00",
+            "date_updated": "2026-10-02T08:00:00.000000+00:00",
+            "email": "user0002@example.com",
+            "email_verified_at": "2024-01-03T08:00:00.000000+00:00",
+            "first_name": "User",
+            "google_profile_image_url": null,
+            "id": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+            "image": null,
+            "last_name": "0002",
+            "last_used_timezone": "Europe/Warsaw",
+            "organizations": [
+              "orga_fixture000000000000000000000000000000"
+            ]
+          },
+          "recordId": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+          "source": "webhook",
+          "sourceTs": "2026-11-08T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_Vw0imnyC2pZGYGQ8Dikf6Z9xSmUHuCOxVw0imnyC2",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_Vw0imnyC2pZGYGQ8Dikf6Z9xSmUHuCOxVw0imnyC2",
+          "entity": "users",
+          "operation": "delete",
+          "payload": {
+            "date_created": "2024-01-03T08:00:00.000000+00:00",
+            "date_updated": "2026-10-02T08:00:00.000000+00:00",
+            "email": "user0002@example.com",
+            "email_verified_at": "2024-01-03T08:00:00.000000+00:00",
+            "first_name": "User",
+            "google_profile_image_url": null,
+            "id": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+            "image": null,
+            "last_name": "0002",
+            "last_used_timezone": "Europe/Warsaw",
+            "organizations": [
+              "orga_fixture000000000000000000000000000000"
+            ]
+          },
+          "recordId": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+          "source": "webhook",
+          "sourceTs": "2026-11-09T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_YoN7ecZ4ftWe3SC15AeqlX3Q49feq1z4YoN7ecZ4f",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_YoN7ecZ4ftWe3SC15AeqlX3Q49feq1z4YoN7ecZ4f",
+          "entity": "users",
+          "operation": "delete",
+          "payload": {
+            "id": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko"
+          },
+          "recordId": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+          "source": "webhook",
+          "sourceTs": "2026-11-01T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_G8Sj2vvUG8YmRPbsCEa11nbIBWR5Ze7yG8Sj2vvUG",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_G8Sj2vvUG8YmRPbsCEa11nbIBWR5Ze7yG8Sj2vvUG",
+          "entity": "leads",
+          "operation": "upsert",
+          "payload": {
+            "addresses": [
+              {
+                "city": "Fixture City",
+                "country": "PL",
+                "label": "business"
+              }
+            ],
+            "contacts": [
+              {
+                "id": "cont_bxtZGPSX1M4ikc0hQ2bU535ruJ2gPn9dbxtZGPSX1"
+              }
+            ],
+            "created_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "created_by_name": "User 0005",
+            "custom": {
+              "cf_2o7Yz3nPOKLoIXLCXGSf30OILxO6gBNc2o7Yz3nPO": "Value 0004",
+              "cf_89ge6FPIMpVY34HnGVHQTG9YguP4CVjj89ge6FPIM": 40,
+              "cf_OZLqCLFiFhY9fLsS0bhR6owvaFbJarp8OZLqCLFiF": true,
+              "cf_S4MAc0V51gKf2PtSouB26nhq31rnb1hoS4MAc0V51": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+              "cf_WpVG58JnZgCpbjC8PbBiv2QCccAkYNxyWpVG58JnZ": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+              "cf_yCAvq2WZowHeHkaShIJAHEFqDJN8TDooyCAvq2WZo": true
+            },
+            "date_created": "2024-09-28T15:59:33.041000+00:00",
+            "date_updated": "2024-09-29T13:18:16.840000+00:00",
+            "description": "",
+            "display_name": "Lead 0004",
+            "html_url": "https://app.close.com/lead/lead_MBoKB0Jtv3L7RPBMZpuP3KwYDXkC2AdZMBoKB0Jtv/",
+            "id": "lead_MBoKB0Jtv3L7RPBMZpuP3KwYDXkC2AdZMBoKB0Jtv",
+            "integration_links": [],
+            "name": "Lead 0004",
+            "opportunities": [],
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "primary_email": {
+              "email": "contact0004@example.com"
+            },
+            "primary_phone": null,
+            "source": "Website",
+            "status_id": "stat_iXT00S9Be3dVRUkzaVb5Vit45kOlkrihiXT00S9Be",
+            "status_label": "Lost",
+            "tasks": [],
+            "updated_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+            "updated_by_name": "User 0005",
+            "url": null
+          },
+          "recordId": "lead_MBoKB0Jtv3L7RPBMZpuP3KwYDXkC2AdZMBoKB0Jtv",
+          "source": "webhook",
+          "sourceTs": "2024-09-29T13:18:16.840Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_6iwghHycGNwqPzFqRw6r2wO0mQ50gknK6iwghHycG",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_6iwghHycGNwqPzFqRw6r2wO0mQ50gknK6iwghHycG",
+          "entity": "contacts",
+          "operation": "upsert",
+          "payload": {
+            "created_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "custom_cf_7et0Jb06NX0IAyDmFpz0Bglhiapn4hDi7et0Jb06N": "Value 0003",
+            "custom_cf_Kt0kyeNmn79LraqgfAnynZDafwqWGCXPKt0kyeNmn": 30,
+            "custom_cf_L91DgqW85uYB6futIrMyQbp09iGsr4A3L91DgqW85": [
+              "Option A"
+            ],
+            "custom_cf_mbFSm2BqJoIrucIm5cHO9XqZRkP4dfA0mbFSm2BqJ": "Value 0003",
+            "custom_cf_uMoagVrce2l3Gpbkmw8r736Lc1LhPHbvuMoagVrce": false,
+            "custom_cf_yCFkG68V21Si7a2aO91rqmzJmdZSr0LPyCFkG68V2": "2025-05-01",
+            "date_created": "2024-09-09T20:52:27.507000+00:00",
+            "date_updated": "2024-09-11T22:27:59.252000+00:00",
+            "display_name": "Contact 0003",
+            "emails": [
+              {
+                "email": "contact0003@example.com",
+                "type": "office"
+              }
+            ],
+            "id": "cont_iueu6tzGJcfWJlKU8RDMzyOZK74X45k4iueu6tzGJ",
+            "integration_links": [],
+            "lead_id": "lead_gbSxBpnl50OtPeldwKR3V0ho5lgMjte3gbSxBpnl5",
+            "lead_suggestions_operation_id": null,
+            "name": "Contact 0003",
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "phones": [
+              {
+                "phone": "+48000000003",
+                "type": "mobile"
+              }
+            ],
+            "timezone": "Europe/Warsaw",
+            "timezone_source": "address",
+            "title": "Owner",
+            "updated_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+            "urls": []
+          },
+          "recordId": "cont_iueu6tzGJcfWJlKU8RDMzyOZK74X45k4iueu6tzGJ",
+          "source": "webhook",
+          "sourceTs": "2026-11-03T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_xGfFgy74LhhFESyJ398he66EL1zCRdmDxGfFgy74L",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "ev_xGfFgy74LhhFESyJ398he66EL1zCRdmDxGfFgy74L",
+          "entity": "leads",
+          "operation": "upsert",
+          "payload": {
+            "addresses": [],
+            "contact_ids": [
+              "cont_bOgczUbSBKiG8yRZ2kSHXTtn74jg4AshbOgczUbSB"
+            ],
+            "contacts": [
+              {
+                "id": "cont_bOgczUbSBKiG8yRZ2kSHXTtn74jg4AshbOgczUbSB"
+              }
+            ],
+            "created_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "created_by_name": "User 0007",
+            "custom": {
+              "cf_9NWeO1a5rAXKlOZ07I8gk8xgRVhj5iN09NWeO1a5r": "2025-05-01",
+              "cf_GV7Nsbg1fDfqR7iFGkK4swlTjLFU18HYGV7Nsbg1f": true,
+              "cf_P1mZ3LyJnX3YUKzJs6gqc35pSl4C9hfRP1mZ3LyJn": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+              "cf_SRFOzxfoSfG5fAK5F85aDV6Td07SoPeSSRFOzxfoS": "Value 0006",
+              "cf_lQ32HRIxPe2hYiQyj2ADnVov5cABs2J0lQ32HRIxP": 60,
+              "cf_yCAvq2WZowHeHkaShIJAHEFqDJN8TDooyCAvq2WZo": true
+            },
+            "custom_cf_9NWeO1a5rAXKlOZ07I8gk8xgRVhj5iN09NWeO1a5r": "2025-05-01",
+            "custom_cf_GV7Nsbg1fDfqR7iFGkK4swlTjLFU18HYGV7Nsbg1f": true,
+            "custom_cf_P1mZ3LyJnX3YUKzJs6gqc35pSl4C9hfRP1mZ3LyJn": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "custom_cf_SRFOzxfoSfG5fAK5F85aDV6Td07SoPeSSRFOzxfoS": "Value 0006",
+            "custom_cf_lQ32HRIxPe2hYiQyj2ADnVov5cABs2J0lQ32HRIxP": 60,
+            "custom_cf_yCAvq2WZowHeHkaShIJAHEFqDJN8TDooyCAvq2WZo": true,
+            "date_created": "2025-06-02T08:50:57.202000+00:00",
+            "date_updated": "2025-06-05T04:21:56.504000+00:00",
+            "description": "",
+            "display_name": "Lead 0006",
+            "html_url": "https://app.close.com/lead/lead_P94CJnLh2TcFgAS3bNbu3TuUDRbrCeEkP94CJnLh2/",
+            "id": "lead_P94CJnLh2TcFgAS3bNbu3TuUDRbrCeEkP94CJnLh2",
+            "integration_links": [],
+            "name": "Lead 0006",
+            "opportunities": [],
+            "organization_id": "orga_fixture000000000000000000000000000000",
+            "primary_email": {
+              "email": "contact0006@example.com"
+            },
+            "primary_phone": null,
+            "source": "Website",
+            "status_id": "stat_m49ZcKMPq6fPJlLSPMCZPcBuv766mlF3m49ZcKMPq",
+            "status_label": "Potential",
+            "tasks": [],
+            "updated_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+            "updated_by_name": "User 0007",
+            "url": null
+          },
+          "recordId": "lead_P94CJnLh2TcFgAS3bNbu3TuUDRbrCeEkP94CJnLh2",
+          "source": "webhook",
+          "sourceTs": "2026-11-04T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "ev_empty",
+      "outcome": "extract_failed"
+    },
+    {
+      "eventId": "ev_4eM142yRpNiLacTXxscCLyHvmgxDpSX94eM142yRp",
+      "outcome": "unmapped"
+    }
+  ]
+}

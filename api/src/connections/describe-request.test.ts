@@ -126,16 +126,21 @@ describe("describeRequest", () => {
     expect(recorded.headers.authorization).toBe("Bearer [redacted]");
   });
 
-  it("redacts basic auth, the encoded pair included (Close)", () => {
+  it("redacts basic auth, the encoded pair included", () => {
     const recorded = describeFor(
-      "close",
-      { api_key: KEY },
+      "custom_api",
+      {
+        base_url: "https://crm.example.com/api",
+        auth_type: "basic",
+        username: "agent",
+        password: KEY,
+      },
       { method: "POST", path: "/task/", body: { text: "Call back" } },
     );
     expect(recorded.headers.authorization).toBe("Basic [redacted]");
     expect(JSON.stringify(recorded)).not.toContain(KEY);
     expect(JSON.stringify(recorded)).not.toContain(
-      Buffer.from(`${KEY}:`).toString("base64"),
+      Buffer.from(`agent:${KEY}`).toString("base64"),
     );
   });
 

@@ -52,7 +52,7 @@ Nothing is written: no destination table, no sync cursor. The one side effect is
 
 ## Calling a Service Live
 
-Workflows and agents can also call a source connection's service directly, through Mako, without ever seeing its key: Close, Stripe, Wise, and **Custom API** connections. Mako adds the stored credential, keeps every request under the connection's address, and removes the credential from what comes back.
+Workflows and agents can also call a source connection's service directly, through Mako, without ever seeing its key: Stripe, PostHog, and **Custom API** connections. Mako adds the stored credential, keeps every request under the connection's address, and removes the credential from what comes back.
 
 **Custom API** is any HTTP or GraphQL API with a stored key. It is never synced; it is only called. Set its address, a credential type (bearer token, API key in a header or in the query string, basic auth, a Google service account, or none), and optionally headers sent with every request (for example `Notion-Version`). Those headers are not secret: anyone who can see the connection sees them, and the credential's own header and transport headers (`Authorization`, `Cookie`, `Host`, …) cannot be set there. With **GraphQL API** on, only a query POSTed to the endpoint is a read; a mutation, and any GET, is a write.
 
@@ -68,7 +68,7 @@ A **Google service account** connection stores the service account's JSON key fi
 
 The connection's **Access** tab decides who may call it:
 
-- **Allowed to read live**: a dropdown with **Off** (the default for every connection), **Everyone in the workspace** and **Only people listed**. With everyone, anyone in the workspace (workflows and agents included) may read: GET and HEAD, a GraphQL query, a Close search or a Close POST read as GET. With a list, only the people and single deployed workflows on it, and the connection's writers, read live (starting a list adds you; going back to everyone asks first). Reading an entity with `probe_connection` is a live read and follows the same rule, except for the connection's managers and the workspace owner; a credential-only probe (no entity) stays open. Over the API, the writers route takes `liveReads` and `liveReaders` (`null` means everyone). On PostHog, a live read is limited to the connection's own project: a query (HogQL, events, trends, …) or a GET of persons, events, insights, cohorts, query results or feature flags (the list or one flag). The PostHog project root and every other PostHog path are refused.
+- **Allowed to read live**: a dropdown with **Off** (the default for every connection), **Everyone in the workspace** and **Only people listed**. With everyone, anyone in the workspace (workflows and agents included) may read: GET and HEAD, and a GraphQL query. With a list, only the people and single deployed workflows on it, and the connection's writers, read live (starting a list adds you; going back to everyone asks first). Reading an entity with `probe_connection` is a live read and follows the same rule, except for the connection's managers and the workspace owner; a credential-only probe (no entity) stays open. Over the API, the writers route takes `liveReads` and `liveReaders` (`null` means everyone). On PostHog, a live read is limited to the connection's own project: a query (HogQL, events, trends, …) or a GET of persons, events, insights, cohorts, query results or feature flags (the list or one flag). The PostHog project root and every other PostHog path are refused.
 - **Writers**: who may write (POST, PUT, PATCH, DELETE). Add people, single deployed workflows, or **All deployed workflows**. Each deployed workflow acts as itself (its step's pass), so one can be allowed without the others. Viewers and agents never write, and a person who left the workspace can no longer call it at all.
 - **Refused attempts**: every write, allowed or not, is logged; refused ones are listed with who tried, so a manager can allow that person or the deployed workflows (an agent's attempt cannot be allowed).
 
@@ -76,7 +76,6 @@ From a workflow, see [Workflows](/workflows/#calling-a-service-through-a-connect
 
 | Connector | Operations                                                                                                           |
 | --------- | -------------------------------------------------------------------------------------------------------------------- |
-| Close     | `search_leads` { query }, `get_lead` { id }, `list_opportunities` { lead_id, status_type, updated_since }            |
 | PostHog   | `hogql` { query }, `search_persons` { search }                                                                       |
 | Stripe    | `search_customers` { query }, `get_customer` { id }, `list_subscriptions` { customer }, `list_invoices` { customer } |
 
