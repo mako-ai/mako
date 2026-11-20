@@ -116,6 +116,23 @@ The MCP tool surface is a curated subset of the in-product agent tools. Classifi
 
 Read-only tools are annotated per the MCP spec (`readOnlyHint`), so well-behaved clients run the whole discovery/query loop without approval prompts. If you keep a Mako tab open on the app being edited, it live-reloads on every agent change.
 
+## Writes stay off the default branch
+
+MCP and API-key writes never commit to the workspace repo's default branch (`main`). Each family writes to its own branch, one per person:
+
+| Tools | Branch | Opens the merge |
+| --- | --- | --- |
+| `create_dbt_file`, `edit_dbt_file`, `modify_dbt_file`, `delete_dbt_file` | `mcp/<you>/dbt` | `dbt_merge_to_main` |
+| `flow_update`, `flow_webhook_provision` | `mcp/<you>/flows` | `flow_merge_to_main` |
+| `app_commit` | `mcp/<you>/app/<slug>` | `app_merge_to_main` |
+| `workflow_commit` | `workflow/<you>/<workflow>` | `workflow_merge_to_main` |
+
+The merge tools open a merge request. They run the check each change calls for (`dbt parse` for `dbt/`, `check_flow_files` for `flows/`, an app build for `apps/<slug>/`) and stop on a failure. With a GitHub repo connected they open a pull request and a person merges it. With none they merge once the checks pass.
+
+A flow change is a proposal until the merge: the sync, its triggers and its provider subscription stay as they are. `dbt_create_project`, the dbt job tools and `app_move_app` have no branch to wait on and refuse with a message.
+
+An owner or admin turns the protection off with `PUT /api/workspaces/{id}/protect-default-branch` (`{ "enabled": false }`). It is on by default. Mako Desktop and the in-app agent keep direct writes.
+
 ## Security model
 
 - **SQL is read-only unless double-gated otherwise.** By default SQL must be a single `SELECT`/`WITH` statement; enforcement also happens _inside the database_ where supported (PostgreSQL/Cloud SQL/Redshift read-only transactions, MySQL `START TRANSACTION READ ONLY`, ClickHouse `readonly=2`). MongoDB queries (`mongo_execute_query`, Mongo consoles) are interpreted, never evaluated: a read-only run takes `find`, `findOne`, `aggregate`, `countDocuments` and `distinct`, and refuses any write method, command, `$out` or `$merge` before it runs (the interpreter refuses them again at run time). SQL writes require an API key with the `query:write` scope **and** a connection a workspace admin marked `allowAgentWrites` — the key scope alone stays read-only against every other connection, the connection flag alone does nothing for read-scoped keys, and console runs, app data bindings, and materializations stay read-only regardless.

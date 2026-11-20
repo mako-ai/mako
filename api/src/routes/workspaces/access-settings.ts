@@ -17,7 +17,13 @@ import {
   OPEN_RESPONSES,
   createRouter,
 } from "../../openapi/core";
-import { AutoJoinBody, LinkPreviewsBody, IdParam } from "./schemas";
+import { isDefaultBranchProtected } from "../../apps/default-branch-guard";
+import {
+  AutoJoinBody,
+  LinkPreviewsBody,
+  ProtectDefaultBranchBody,
+  IdParam,
+} from "./schemas";
 import { fail, failFromThrown } from "../lib/respond";
 
 const logger = loggers.workspace();
@@ -172,6 +178,69 @@ workspaceAccessSettingsRoutes.openapi(
       { $set: { "settings.linkPreviews": enabled } },
     );
     logger.info("Workspace link previews updated", {
+      workspaceId: workspace._id.toString(),
+      by: c.get("user")?.id,
+      enabled,
+    });
+    return c.json({ success: true, data: { enabled } });
+  },
+);
+
+// Default-branch protection for MCP / API-key writes — read
+workspaceAccessSettingsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/protect-default-branch",
+    tags: ["Workspaces"],
+    summary: "Default-branch protection setting",
+    description:
+      "Whether MCP and API-key callers are kept off the workspace repo's default branch: their writes go to mcp/<person>/<kind> branches and reach main through a merge request. Default on.",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: { params: IdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const workspace = c.get("workspace");
+    if (c.req.param("id") !== workspace._id.toString()) {
+      return fail(c, 400, "Workspace ID mismatch");
+    }
+    return c.json({
+      success: true,
+      data: {
+        enabled: await isDefaultBranchProtected(workspace._id.toString()),
+      },
+    });
+  },
+);
+
+// Default-branch protection for MCP / API-key writes — write (owners and admins)
+workspaceAccessSettingsRoutes.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}/protect-default-branch",
+    tags: ["Workspaces"],
+    summary: "Turn default-branch protection for MCP writes on or off",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin"]),
+    ] as const,
+    request: { params: IdParam, body: ProtectDefaultBranchBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const workspace = c.get("workspace");
+    if (c.req.param("id") !== workspace._id.toString()) {
+      return fail(c, 400, "Workspace ID mismatch");
+    }
+    const { enabled } = c.req.valid("json");
+    await Workspace.updateOne(
+      { _id: workspace._id },
+      { $set: { "settings.protectDefaultBranch": enabled } },
+    );
+    logger.info("Workspace default-branch protection updated", {
       workspaceId: workspace._id.toString(),
       by: c.get("user")?.id,
       enabled,

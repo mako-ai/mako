@@ -15,6 +15,7 @@
  * JSON response mode) — see stateless-transport.ts and mcp-server.routes.ts.
  */
 import { withQueryLabels } from "../services/bigquery-labels";
+import { runUnderDefaultBranchGuard } from "../apps/default-branch-guard";
 import { MCP_QUERY_SOFT_TIMEOUT_MS } from "../config/long-running-queries";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
@@ -109,7 +110,7 @@ This connection is bound to one workspace: call get_mcp_capabilities before the 
 Apps: search_apps first (extend a close match) → app_create_app (lands in the user's personal users/<handle>/apps/ unless they ask for a shared one) → app_write_file / app_edit_file / app_bash → app_materialize (bindings/<name>.sql holds the validated query; a metric's SQL comes from compile_metric). Verify with app_open_app (dev server, focuses the user's UI) + app_dev_log + app_browse (headless browser). app_commit → app_merge_to_main (main is what publishes).
 App performance (mako://skills/apps, "Performance"): filter, join and aggregate in SQL with useDuckDB(sql), one query per panel; useQuery(name) only for bindings under ~10k rows; trace a filter change with app_browse: no main-thread task over 200 ms.
 
-dbt: before creating a dbt model or a binding that aggregates a business metric, call lookup_term and find_models; when a canonical model exists, read it or extend it, never derive the metric again. model_readers({ name }) lists the apps and bindings a change touches. Before joining two entities, call find_join_path({ from, to }): join on the columns it returns and heed its fan-out warnings. Edits commit to the user's session branch (dbt/ folder); validate with dbt_parse / dbt_compile_model / dbt_show (poll dbt_get_run). dbt_run_model, dbt_run_job and dbt_cancel_run need the warehouse:write scope.
+dbt: before creating a dbt model or a binding that aggregates a business metric, call lookup_term and find_models; when a canonical model exists, read it or extend it, never derive the metric again. model_readers({ name }) lists the apps and bindings a change touches. Before joining two entities, call find_join_path({ from, to }): join on the columns it returns and heed its fan-out warnings. Edits go to mcp/<you>/dbt, not main; run dbt_parse / dbt_compile_model / dbt_show (poll dbt_get_run); dbt_merge_to_main opens a PR. dbt_run_model, dbt_run_job and dbt_cancel_run need the warehouse:write scope.
 
 Slow SQL: create_console → run_console → check_query_status. A source connection (kind "source": Stripe, Close, PostHog, …) is not SQL-queryable: call_connection reads it live (a named operation or a GET), probe_connection reads one page of an entity; list_connectors is the connector catalog.
 Syncs: flow_list → flow_read / flow_status; flow_backfill, flow_cancel, flow_update need warehouse:write + owner/admin.
@@ -148,6 +149,24 @@ const SKILL_URI_PREFIX = "mako://skills/";
 
 /** dbt_get_run's longest server-side wait over MCP (see createDbtServerTools). */
 export const MCP_MAX_RUN_WAIT_MS = 45_000;
+
+/**
+ * MCP and API-key callers are headless: nobody watches the write, so a
+ * workspace that protects its default branch (the default) gets their writes
+ * on `mcp/<person>/<kind>` branches and a merge request in place of a merge
+ * (apps/default-branch-guard.ts). A Desktop ACP client is a person at their
+ * own editor and keeps direct writes.
+ */
+function runUnderMcpGuard<T>(
+  context: MakoMcpContext,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (context.acpDesktop) return fn();
+  return runUnderDefaultBranchGuard(
+    { workspaceId: context.workspaceId, userId: context.userId },
+    fn,
+  );
+}
 
 export interface MakoMcpContext {
   workspaceId: string;
@@ -787,22 +806,24 @@ export function buildMakoMcpServer(
       text: JSON.stringify({ workspace: boundWorkspace(context) }),
     };
     try {
-      const result = await withQueryLabels(
-        {
-          mako_source: "agent",
-          mako_trigger: context.acpDesktop ? "desktop" : "mcp",
-          mako_tool: name,
-          mako_user: context.userId,
-          mako_workspace: context.workspaceId,
-        },
-        () =>
-          execute(input as never, {
-            toolCallId: nanoid(),
-            messages: [],
-            context: undefined,
-            // A cancelled call stops its server-side waits.
-            abortSignal: extra.signal,
-          }),
+      const result = await runUnderMcpGuard(context, () =>
+        withQueryLabels(
+          {
+            mako_source: "agent",
+            mako_trigger: context.acpDesktop ? "desktop" : "mcp",
+            mako_tool: name,
+            mako_user: context.userId,
+            mako_workspace: context.workspaceId,
+          },
+          () =>
+            execute(input as never, {
+              toolCallId: nanoid(),
+              messages: [],
+              context: undefined,
+              // A cancelled call stops its server-side waits.
+              abortSignal: extra.signal,
+            }),
+        ),
       );
       const stamped = isWrite ? withBoundWorkspace(result, context) : result;
       const workspaceBlock =

@@ -48,6 +48,13 @@ export interface IWorkspace extends Document {
      * `false` makes every in-app link preview generic.
      */
     linkPreviews?: boolean;
+    /**
+     * Keep MCP and API-key callers off the workspace repo's default branch
+     * (apps/default-branch-guard.ts): their writes go to `mcp/<person>/<kind>`
+     * branches and reach main through a merge request. Default on; `false`
+     * restores direct writes.
+     */
+    protectDefaultBranch?: boolean;
   };
   billing: IWorkspaceBilling;
   apiKeys?: IWorkspaceApiKey[];
@@ -216,6 +223,7 @@ const WorkspaceSchema = new Schema<IWorkspace>(
         required: false,
       },
       linkPreviews: { type: Boolean, required: false },
+      protectDefaultBranch: { type: Boolean, required: false },
     },
     billing: {
       stripeCustomerId: { type: String, default: null },
