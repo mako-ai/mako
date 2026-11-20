@@ -13,8 +13,12 @@
  *   page while more remain, and the last page read once the list ends.
  * - `contacts` and `members` come whole in one response.
  * - `mako.since` (ISO 8601) is Mako's incremental anchor. Documents send it
- *   as `modified_from`; templates and members keep rows whose
- *   `date_modified` is at or after it; contacts ignore it.
+ *   as `modified_from`; templates keep rows whose `date_modified` is at or
+ *   after it; contacts and members ignore it.
+ * - `members` is the workspace's seat roster (about 100 rows). It is re-read
+ *   whole on every poll, so a seat dropped by the `since` filter never goes
+ *   missing. Each poll upserts every row by `id`, so `is_active` follows the
+ *   seat.
  *
  * Document hydration: the list returns a shallow projection, so every listed
  * document is re-read from `/details`, 5 at a time, with the rate-limit
@@ -123,14 +127,14 @@ function withId(
   return record;
 }
 
-/** Templates and members keep rows modified at or after `since`. */
+/** Templates keep rows modified at or after `since`. Members never filter. */
 function mapRecords(
   entity: Entity,
   results: Record<string, unknown>[],
   since?: Date,
 ): Record<string, unknown>[] {
   let records = results.map(item => withId(entity, item));
-  if (since && (entity === "templates" || entity === "members")) {
+  if (since && entity === "templates") {
     const sinceMs = since.getTime();
     records = records.filter(record => {
       const value = record.date_modified;
@@ -354,9 +358,9 @@ export default defineConnector<PandaDocConfig>({
     contacts: entity("contacts", "Contacts", "Workspace contacts directory", {
       layout: LAYOUT("_syncedAt"),
     }),
+    // No `incremental`: the roster is small, so every poll re-reads it whole.
     members: entity("members", "Members", "Workspace members (users)", {
       cursorField: "date_modified",
-      incremental: "client-filter",
       layout: LAYOUT("date_created"),
     }),
   },

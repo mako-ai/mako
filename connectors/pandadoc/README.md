@@ -11,7 +11,7 @@ connector, which is deleted. Production runs it on the 4 `*-shadow-*` flows
 | `documents` | `?count=&page=`, `order_by=date_modified`, then `/details` per document, 5 at a time | native: `modified_from`        |
 | `templates` | `?count=&page=`                                                                      | keeps `date_modified >= since` |
 | `contacts`  | one response                                                                         | none                           |
-| `members`   | one response; `id` copied from `membership_id`                                       | keeps `date_modified >= since` |
+| `members`   | one response; `id` copied from `membership_id`                                       | none, re-read whole every poll |
 
 - Columns, types and keys are the in-process schema's (`schema.ts`).
 - A hydrating `documents` chunk reads at most 2 pages, then ends with
