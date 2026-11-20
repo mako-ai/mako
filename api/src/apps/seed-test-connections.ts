@@ -27,7 +27,7 @@ export async function seedTestConnections(
   for (const id of ids.source ?? []) {
     await SourceConnection.collection.updateOne(
       { _id: new Types.ObjectId(id) },
-      { $set: { workspaceId: ws, name: `src-${id}`, type: "close" } },
+      { $set: { workspaceId: ws, name: `src-${id}`, type: "stripe" } },
       { upsert: true },
     );
   }

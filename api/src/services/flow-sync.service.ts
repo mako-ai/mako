@@ -45,6 +45,7 @@ import {
   markFlowInvalid,
   mintedWebhookEndpoint,
   rowInvalidMarker,
+  setLayoutWarnings,
 } from "./flow-definition-apply";
 
 import {
@@ -65,6 +66,12 @@ import { boundRepoDirIfExists } from "../apps/workspace-repo-required";
 import { Flow, type IFlow } from "../database/workspace-schema";
 import { inngest } from "../inngest/client";
 import { loggers } from "../logging";
+import {
+  formatLayoutMismatches,
+  snapshotLayouts,
+  splitLayoutMismatches,
+  toLayoutWarnings,
+} from "../sync-cdc/layout-table-check";
 import { flowEntitySignature } from "../sync-cdc/entity-selection";
 import {
   reconcileFlowsFromRepo,
@@ -407,6 +414,7 @@ export async function ensureFlowDerivedCache(flow: {
     workspaceId,
     parsed,
   );
+  const previousLayouts = snapshotLayouts(row as never);
   if (!refusal) {
     try {
       refusal = applyDefinition(row, parsed);
@@ -418,6 +426,26 @@ export async function ensureFlowDerivedCache(flow: {
     await markFlowInvalid(row, refusal, path);
     return "invalid";
   }
+  // A changed layout that disagrees with its table is not applied, and the
+  // flow is neither paused nor flagged: it keeps running on the stored
+  // definition (the same rule as the push in syncFlowsFromRepo).
+  const { changed: layoutMismatches, untouched } = await splitLayoutMismatches(
+    row as never,
+    previousLayouts,
+  );
+  if (layoutMismatches.length > 0) {
+    logger.warn("Flow file layout does not match its table; not applied", {
+      workspaceId,
+      path,
+      reason: formatLayoutMismatches(layoutMismatches),
+    });
+    await setLayoutWarnings(row._id, [
+      ...toLayoutWarnings(layoutMismatches, true),
+      ...toLayoutWarnings(untouched, false),
+    ]);
+    return wasMarked ? "invalid" : "ok";
+  }
+  row.layoutWarnings = toLayoutWarnings(untouched, false);
   row.sourceBlobSha = sha;
   try {
     await row.save();
@@ -668,6 +696,7 @@ export async function syncFlowsFromRepo(
     // belongs, the likeliest agent mistake) fails inside `new ObjectId()`.
     // Same treatment as a refusal; see the save() catch below for why it
     // must not escape.
+    const previousLayouts = row ? snapshotLayouts(row as never) : undefined;
     let refusal: string | null;
     try {
       refusal = applyDefinition(doc as IFlow, parsed);
@@ -686,6 +715,36 @@ export async function syncFlowsFromRepo(
       result.invalid.push(slug);
       continue;
     }
+    // A layout that disagrees with the table it writes is refused for a NEW
+    // flow and for a layout this push adds or edits. An existing flow is
+    // never paused or flagged for it: a refused push leaves the row exactly
+    // as it was, running, and an old mismatch it did not touch only warns.
+    const { changed: layoutMismatches, untouched } =
+      await splitLayoutMismatches(doc as never, previousLayouts);
+    if (layoutMismatches.length > 0) {
+      logger.warn("Flow file layout does not match its table; not applied", {
+        workspaceId,
+        path,
+        reason: formatLayoutMismatches(layoutMismatches),
+      });
+      if (row) {
+        await setLayoutWarnings(row._id, [
+          ...toLayoutWarnings(layoutMismatches, true),
+          ...toLayoutWarnings(untouched, false),
+        ]);
+      }
+      result.invalid.push(slug);
+      continue;
+    }
+    if (untouched.length > 0) {
+      logger.warn("Flow layout does not match its table", {
+        workspaceId,
+        path,
+        reason: formatLayoutMismatches(untouched),
+      });
+    }
+    // Saved with the row, so a fixed layout clears the warnings.
+    (doc as IFlow).layoutWarnings = toLayoutWarnings(untouched, false);
     // A file-born webhook flow needs an inbound URL, and this is the only
     // place one may be minted. `isNew` is the create/update distinction: an
     // update must leave the endpoint exactly where it is.

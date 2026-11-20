@@ -1,0 +1,186 @@
+{
+  "chunks": [
+    {
+      "hasMore": true,
+      "position": {
+        "lastSeenWindowValue": "2024-03-04T16:54:50.129Z",
+        "pageCursor": null,
+        "windowEnd": "2024-03-18T16:54:50.129Z",
+        "windowField": "date_created",
+        "windowStart": "2024-03-11T16:54:50.129Z"
+      },
+      "recordBytes": 1011,
+      "records": 1
+    },
+    {
+      "hasMore": true,
+      "position": {
+        "lastSeenWindowValue": "2024-08-07T17:23:14.482Z",
+        "pageCursor": null,
+        "windowEnd": "2024-08-20T10:45:58.351Z",
+        "windowField": "date_created",
+        "windowStart": "2024-08-13T10:45:58.351Z"
+      },
+      "recordBytes": 1011,
+      "records": 1
+    },
+    {
+      "hasMore": true,
+      "position": {
+        "lastSeenWindowValue": "2024-08-26T20:22:02.755Z",
+        "pageCursor": null,
+        "windowEnd": "2024-09-09T20:20:18.051Z",
+        "windowField": "date_created",
+        "windowStart": "2024-09-02T20:20:18.051Z"
+      },
+      "recordBytes": 1011,
+      "records": 1
+    },
+    {
+      "hasMore": true,
+      "position": {
+        "lastSeenWindowValue": "2024-09-03T23:28:16.139Z",
+        "pageCursor": null,
+        "windowEnd": "2024-09-16T20:20:18.051Z",
+        "windowField": "date_created",
+        "windowStart": "2024-09-09T20:20:18.051Z"
+      },
+      "recordBytes": 1011,
+      "records": 1
+    },
+    {
+      "hasMore": true,
+      "position": {
+        "lastSeenWindowValue": "2024-09-19T09:09:34.499Z",
+        "pageCursor": null,
+        "windowEnd": "2024-09-30T20:20:18.051Z",
+        "windowField": "date_created",
+        "windowStart": "2024-09-23T20:20:18.051Z"
+      },
+      "recordBytes": 1011,
+      "records": 1
+    },
+    {
+      "hasMore": true,
+      "position": {
+        "lastSeenWindowValue": "2024-09-24T12:38:31.656Z",
+        "pageCursor": null,
+        "windowEnd": "2024-10-07T20:20:18.051Z",
+        "windowField": "date_created",
+        "windowStart": "2024-09-30T20:20:18.051Z"
+      },
+      "recordBytes": 1011,
+      "records": 1
+    },
+    {
+      "hasMore": true,
+      "position": {
+        "lastSeenWindowValue": "2024-10-21T15:23:42.010Z",
+        "pageCursor": null,
+        "windowEnd": "2024-11-02T21:19:59.018Z",
+        "windowField": "date_created",
+        "windowStart": "2024-10-26T21:19:59.018Z"
+      },
+      "recordBytes": 1011,
+      "records": 1
+    },
+    {
+      "hasMore": true,
+      "position": {
+        "lastSeenWindowValue": "2024-12-13T15:47:38.988Z",
+        "pageCursor": null,
+        "windowEnd": "2024-12-27T14:38:06.571Z",
+        "windowField": "date_created",
+        "windowStart": "2024-12-20T14:38:06.571Z"
+      },
+      "recordBytes": 1011,
+      "records": 1
+    },
+    {
+      "hasMore": true,
+      "position": {
+        "lastSeenWindowValue": "2025-02-20T07:58:06.562Z",
+        "pageCursor": null,
+        "windowEnd": "2025-03-05T12:10:45.432Z",
+        "windowField": "date_created",
+        "windowStart": "2025-02-26T12:10:45.432Z"
+      },
+      "recordBytes": 1011,
+      "records": 1
+    },
+    {
+      "hasMore": true,
+      "position": {
+        "lastSeenWindowValue": "2025-04-18T12:34:00.513Z",
+        "pageCursor": null,
+        "windowEnd": "2025-05-02T05:47:30.049Z",
+        "windowField": "date_created",
+        "windowStart": "2025-04-25T05:47:30.049Z"
+      },
+      "recordBytes": 1011,
+      "records": 1
+    },
+    {
+      "hasMore": true,
+      "position": {
+        "lastSeenWindowValue": "2025-07-16T11:11:29.545Z",
+        "pageCursor": null,
+        "windowEnd": "2025-07-30T04:21:58.401Z",
+        "windowField": "date_created",
+        "windowStart": "2025-07-23T04:21:58.401Z"
+      },
+      "recordBytes": 1011,
+      "records": 1
+    },
+    {
+      "hasMore": true,
+      "position": {
+        "lastSeenWindowValue": "2025-07-27T19:59:24.502Z",
+        "pageCursor": null,
+        "windowEnd": "2025-08-06T04:21:58.401Z",
+        "windowField": "date_created",
+        "windowStart": "2025-07-30T04:21:58.401Z"
+      },
+      "recordBytes": 967,
+      "records": 1
+    },
+    {
+      "hasMore": true,
+      "position": {
+        "lastSeenWindowValue": "2025-11-22T06:13:03.931Z",
+        "pageCursor": null,
+        "windowEnd": "2025-11-30T15:02:10.000Z",
+        "windowField": "date_created",
+        "windowStart": "2025-11-23T15:02:10.000Z"
+      },
+      "recordBytes": 1934,
+      "records": 2
+    },
+    {
+      "hasMore": true,
+      "position": {
+        "lastSeenWindowValue": "2026-01-30T19:30:31.450Z",
+        "pageCursor": null,
+        "windowEnd": "2026-02-13T02:30:51.406Z",
+        "windowField": "date_created",
+        "windowStart": "2026-02-06T02:30:51.406Z"
+      },
+      "recordBytes": 967,
+      "records": 1
+    },
+    {
+      "hasMore": false,
+      "position": {
+        "lastSeenWindowValue": "2026-01-30T19:30:31.450Z",
+        "pageCursor": null,
+        "windowEnd": "2026-02-20T02:30:51.406Z",
+        "windowField": "date_created",
+        "windowStart": "2026-02-13T02:30:51.406Z"
+      },
+      "recordBytes": 0,
+      "records": 0
+    }
+  ],
+  "rowCount": 15,
+  "rowsSha256": "d1a981191e48626ab7b63753bc420bc58180a5a37d0f1c67a734b667cf90e4c1"
+}

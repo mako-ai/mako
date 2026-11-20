@@ -1,0 +1,398 @@
+[
+  {
+    "_type": "Meeting",
+    "activity_at": "2024-05-14T16:19:32.074000+00:00",
+    "attendees": [
+      {
+        "email": "contact0001@example.com",
+        "status": "yes"
+      }
+    ],
+    "conference_links": [],
+    "contact_id": "cont_zr6lFeQyEW9vjxUWltIGQ1HdVvSxdxCXzr6lFeQyE",
+    "created_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "created_by_name": "User 0002",
+    "date_created": "2024-05-14T16:19:32.074000+00:00",
+    "date_updated": "2024-05-17T14:16:36.364000+00:00",
+    "duration": 1800,
+    "ends_at": "2024-05-15T16:49:32.074000+00:00",
+    "id": "acti_m_At73oNfjuIuAXP4MDWlHFJV0pPDNcg5hAt73oNfju",
+    "is_recurring": false,
+    "lead_id": "lead_iY5LM6DJrwrIL57OYsXAx3zCNGMjmLN3iY5LM6DJr",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "source": "calendar",
+    "starts_at": "2024-05-15T16:19:32.074000+00:00",
+    "status": "completed",
+    "title": "Meeting 0001",
+    "updated_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "updated_by_name": "User 0002",
+    "user_id": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "user_name": "User 0002",
+    "users": [
+      "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF"
+    ]
+  },
+  {
+    "_type": "Meeting",
+    "activity_at": "2024-09-23T21:08:56.159000+00:00",
+    "attendees": [
+      {
+        "email": "contact0002@example.com",
+        "status": "yes"
+      }
+    ],
+    "conference_links": [],
+    "contact_id": "cont_hD4j59CKHk120iskXC5arIgA8AmHHfDdhD4j59CKH",
+    "created_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+    "created_by_name": "User 0003",
+    "date_created": "2024-09-23T21:08:56.159000+00:00",
+    "date_updated": "2024-09-23T22:05:17.605000+00:00",
+    "duration": 1800,
+    "ends_at": "2024-09-24T21:38:56.159000+00:00",
+    "id": "acti_m_1eyfqp6W5tiVgKpRcXbYIRlrMiXtLzwn1eyfqp6W5",
+    "is_recurring": false,
+    "lead_id": "lead_Utzlx8wKZsZkSkeDnPgQiQj26dGLR846Utzlx8wKZ",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "source": "calendar",
+    "starts_at": "2024-09-24T21:08:56.159000+00:00",
+    "status": "completed",
+    "title": "Meeting 0002",
+    "updated_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+    "updated_by_name": "User 0003",
+    "user_id": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+    "user_name": "User 0003",
+    "users": [
+      "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko"
+    ]
+  },
+  {
+    "_type": "Meeting",
+    "activity_at": "2025-04-01T13:58:48.447000+00:00",
+    "attendees": [
+      {
+        "email": "contact0003@example.com",
+        "status": "yes"
+      }
+    ],
+    "conference_links": [],
+    "contact_id": "cont_9OKoxI8JkqRo30X1thxqnt7BZ2E8SaI09OKoxI8Jk",
+    "created_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "created_by_name": "User 0004",
+    "date_created": "2025-04-01T13:58:48.447000+00:00",
+    "date_updated": "2025-04-02T01:44:01.108000+00:00",
+    "duration": 1800,
+    "ends_at": "2025-04-02T14:28:48.447000+00:00",
+    "id": "acti_m_GuQx3O6cfnM43iMN7kBrOIpQf3s0l25WGuQx3O6cf",
+    "is_recurring": false,
+    "lead_id": "lead_8vwzTs7rhAAWwbzIl5YQiEBQgHmTcmnN8vwzTs7rh",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "source": "calendar",
+    "starts_at": "2025-04-02T13:58:48.447000+00:00",
+    "status": "completed",
+    "title": "Meeting 0003",
+    "updated_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "updated_by_name": "User 0004",
+    "user_id": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "user_name": "User 0004",
+    "users": [
+      "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I"
+    ]
+  },
+  {
+    "_type": "Meeting",
+    "activity_at": "2025-05-21T13:42:00.764000+00:00",
+    "attendees": [
+      {
+        "email": "contact0004@example.com",
+        "status": "yes"
+      }
+    ],
+    "conference_links": [],
+    "contact_id": "cont_m1veGtiz6DcEEOqq1p7Scl1U0yXoIcSsm1veGtiz6",
+    "created_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+    "created_by_name": "User 0005",
+    "date_created": "2025-05-21T13:42:00.764000+00:00",
+    "date_updated": "2025-05-24T02:09:16.822000+00:00",
+    "duration": 1800,
+    "ends_at": "2025-05-22T14:12:00.764000+00:00",
+    "id": "acti_m_oJJ6kI9k6HRaYnIFWJR442BQtxWEvHYloJJ6kI9k6",
+    "is_recurring": false,
+    "lead_id": "lead_1iJLz7eRKvHgVYIK0lCJwofTd7r0SNWJ1iJLz7eRK",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "source": "calendar",
+    "starts_at": "2025-05-22T13:42:00.764000+00:00",
+    "status": "completed",
+    "title": "Meeting 0004",
+    "updated_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+    "updated_by_name": "User 0005",
+    "user_id": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+    "user_name": "User 0005",
+    "users": [
+      "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq"
+    ]
+  },
+  {
+    "_type": "Meeting",
+    "activity_at": "2025-05-23T22:44:23.889000+00:00",
+    "attendees": [
+      {
+        "email": "contact0005@example.com",
+        "status": "yes"
+      }
+    ],
+    "conference_links": [],
+    "contact_id": "cont_9tv3aiDYSikGYhVMaXSqqWK5e7f1ELgZ9tv3aiDYS",
+    "created_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "created_by_name": "User 0006",
+    "date_created": "2025-05-23T22:44:23.889000+00:00",
+    "date_updated": "2025-05-24T18:01:02.029000+00:00",
+    "duration": 1800,
+    "ends_at": "2025-05-24T23:14:23.889000+00:00",
+    "id": "acti_m_n0JKwRjiaOg2eM6WiS0epUq4FIZI2xB1n0JKwRjia",
+    "is_recurring": false,
+    "lead_id": "lead_kqD5jeqnD7gBwhXXXXceUCcNZuu6Sb29kqD5jeqnD",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "source": "calendar",
+    "starts_at": "2025-05-24T22:44:23.889000+00:00",
+    "status": "completed",
+    "title": "Meeting 0005",
+    "updated_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "updated_by_name": "User 0006",
+    "user_id": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "user_name": "User 0006",
+    "users": [
+      "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa"
+    ]
+  },
+  {
+    "_type": "Meeting",
+    "activity_at": "2025-07-06T14:24:22.655000+00:00",
+    "attendees": [
+      {
+        "email": "contact0006@example.com",
+        "status": "yes"
+      }
+    ],
+    "conference_links": [],
+    "contact_id": "cont_Low5o1mqQSahRB1oop649k0qyEg0xgXwLow5o1mqQ",
+    "created_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+    "created_by_name": "User 0007",
+    "date_created": "2025-07-06T14:24:22.655000+00:00",
+    "date_updated": "2026-10-29T18:43:21.804000+00:00",
+    "duration": 1800,
+    "ends_at": "2025-07-07T14:54:22.655000+00:00",
+    "id": "acti_m_t4BxJ1dIzWDDHHdhnMb3jchDOprgV1S2t4BxJ1dIz",
+    "is_recurring": false,
+    "lead_id": "lead_0tJzf6SJhT1h6TFlnauKULFw5CPum4Wn0tJzf6SJh",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "source": "calendar",
+    "starts_at": "2025-07-07T14:24:22.655000+00:00",
+    "status": "completed",
+    "title": "Meeting 0006",
+    "updated_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+    "updated_by_name": "User 0007",
+    "user_id": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+    "user_name": "User 0007",
+    "users": [
+      "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu"
+    ]
+  },
+  {
+    "_type": "Meeting",
+    "activity_at": "2025-08-24T13:40:50.159000+00:00",
+    "attendees": [
+      {
+        "email": "contact0007@example.com",
+        "status": "yes"
+      }
+    ],
+    "conference_links": [],
+    "contact_id": "cont_IZrcTjkRqT4hQeURBzCjTGHbV4kdEZ94IZrcTjkRq",
+    "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "created_by_name": "User 0001",
+    "date_created": "2025-08-24T13:40:50.159000+00:00",
+    "date_updated": "2025-08-27T00:12:10.001000+00:00",
+    "duration": 1800,
+    "ends_at": "2025-08-25T14:10:50.159000+00:00",
+    "id": "acti_m_lmRzCAra02JSItRZyWfolTG0mB1dtFColmRzCAra0",
+    "is_recurring": false,
+    "lead_id": "lead_8TbQEI8tQseL4c8rHwAieSS40dYzijBY8TbQEI8tQ",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "source": "calendar",
+    "starts_at": "2025-08-25T13:40:50.159000+00:00",
+    "status": "completed",
+    "title": "Meeting 0007",
+    "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "updated_by_name": "User 0001",
+    "user_id": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "user_name": "User 0001",
+    "users": [
+      "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+    ]
+  },
+  {
+    "_type": "Meeting",
+    "activity_at": "2026-01-31T12:55:30.271000+00:00",
+    "attendees": [
+      {
+        "email": "contact0008@example.com",
+        "status": "yes"
+      }
+    ],
+    "conference_links": [],
+    "contact_id": "cont_4g7TTB3foOWuyJL9Y5FrQjVPBDIXTK924g7TTB3fo",
+    "created_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "created_by_name": "User 0002",
+    "date_created": "2026-01-31T12:55:30.271000+00:00",
+    "date_updated": "2026-01-31T21:28:33.329000+00:00",
+    "duration": 1800,
+    "ends_at": "2026-02-01T13:25:30.271000+00:00",
+    "id": "acti_m_xJTnWx9l6mV8zy1fYk9zJLs0LaEE1JDGxJTnWx9l6",
+    "is_recurring": false,
+    "lead_id": "lead_GL2Y4uPmbProKREorI9So0yiPjHVPIVDGL2Y4uPmb",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "source": "calendar",
+    "starts_at": "2026-02-01T12:55:30.271000+00:00",
+    "status": "completed",
+    "title": "Meeting 0008",
+    "updated_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "updated_by_name": "User 0002",
+    "user_id": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "user_name": "User 0002",
+    "users": [
+      "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF"
+    ]
+  },
+  {
+    "_type": "Meeting",
+    "activity_at": "2026-04-18T19:48:12.593000+00:00",
+    "attendees": [
+      {
+        "email": "contact0009@example.com",
+        "status": "yes"
+      }
+    ],
+    "conference_links": [],
+    "contact_id": "cont_q2xQ3uixYWyKdfbqIj0oZmOnYlwpUZPwq2xQ3uixY",
+    "created_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+    "created_by_name": "User 0003",
+    "date_created": "2026-04-18T19:48:12.593000+00:00",
+    "date_updated": "2026-04-21T00:45:53.280000+00:00",
+    "duration": 1800,
+    "ends_at": "2026-04-19T20:18:12.593000+00:00",
+    "id": "acti_m_9xcc29scBRILWfRg8jteXNfD83BQUrXa9xcc29scB",
+    "is_recurring": false,
+    "lead_id": "lead_P6q7WufEjF9GaQPaV23z7YBJGUVHtLqyP6q7WufEj",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "source": "calendar",
+    "starts_at": "2026-04-19T19:48:12.593000+00:00",
+    "status": "completed",
+    "title": "Meeting 0009",
+    "updated_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+    "updated_by_name": "User 0003",
+    "user_id": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+    "user_name": "User 0003",
+    "users": [
+      "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko"
+    ]
+  },
+  {
+    "_type": "Meeting",
+    "activity_at": "2026-06-25T22:46:38.484000+00:00",
+    "attendees": [
+      {
+        "email": "contact0010@example.com",
+        "status": "yes"
+      }
+    ],
+    "conference_links": [],
+    "contact_id": "cont_TBtMZDhfFGo0swsd0Lq2lvcaUz6eB1yNTBtMZDhfF",
+    "created_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "created_by_name": "User 0004",
+    "date_created": "2026-06-25T22:46:38.484000+00:00",
+    "date_updated": "2026-06-26T07:06:02.021000+00:00",
+    "duration": 1800,
+    "ends_at": "2026-06-26T23:16:38.484000+00:00",
+    "id": "acti_m_ltfxJUS7hwVSUKqobvyzQ9cVKq4pQ7gTltfxJUS7h",
+    "is_recurring": false,
+    "lead_id": "lead_r28wu6EnxoWSw0R9kZA4ys67EjWHgIPfr28wu6Enx",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "source": "calendar",
+    "starts_at": "2026-06-26T22:46:38.484000+00:00",
+    "status": "completed",
+    "title": "Meeting 0010",
+    "updated_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "updated_by_name": "User 0004",
+    "user_id": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "user_name": "User 0004",
+    "users": [
+      "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I"
+    ]
+  },
+  {
+    "_type": "Meeting",
+    "activity_at": "2026-07-30T12:01:12.154000+00:00",
+    "attendees": [
+      {
+        "email": "contact0011@example.com",
+        "status": "yes"
+      }
+    ],
+    "conference_links": [],
+    "contact_id": "cont_2Un5ItbURQCxk5JmtAvnTSzDjUDKL2o62Un5ItbUR",
+    "created_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+    "created_by_name": "User 0005",
+    "date_created": "2026-07-30T12:01:12.154000+00:00",
+    "date_updated": "2026-07-31T09:47:14.831000+00:00",
+    "duration": 1800,
+    "ends_at": "2026-07-31T12:31:12.154000+00:00",
+    "id": "acti_m_7Mw9M4cMAXxvr8o1qQw4NGVdL0c1R2vA7Mw9M4cMA",
+    "is_recurring": false,
+    "lead_id": "lead_H2TujYfbrj80FnkIsbykwNErp6i2q2RDH2TujYfbr",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "source": "calendar",
+    "starts_at": "2026-07-31T12:01:12.154000+00:00",
+    "status": "completed",
+    "title": "Meeting 0011",
+    "updated_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+    "updated_by_name": "User 0005",
+    "user_id": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+    "user_name": "User 0005",
+    "users": [
+      "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq"
+    ]
+  },
+  {
+    "_type": "Meeting",
+    "activity_at": "2026-08-21T16:53:36.465000+00:00",
+    "attendees": [
+      {
+        "email": "contact0012@example.com",
+        "status": "yes"
+      }
+    ],
+    "conference_links": [],
+    "contact_id": null,
+    "created_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "created_by_name": "User 0006",
+    "date_created": "2026-08-21T16:53:36.465000+00:00",
+    "date_updated": "2026-08-22T08:43:32.230000+00:00",
+    "duration": 1800,
+    "ends_at": "2026-08-22T17:23:36.465000+00:00",
+    "id": "acti_m_3hlevvBRUm7JlEenU1zxBVBP8rP7hYWP3hlevvBRU",
+    "is_recurring": false,
+    "lead_id": "lead_1xq18n0H5HbngGspKikArW7ZY8P1VORX1xq18n0H5",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "source": "calendar",
+    "starts_at": "2026-08-22T16:53:36.465000+00:00",
+    "status": "completed",
+    "title": "Meeting 0012",
+    "updated_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "updated_by_name": "User 0006",
+    "user_id": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "user_name": "User 0006",
+    "users": [
+      "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa"
+    ]
+  }
+]

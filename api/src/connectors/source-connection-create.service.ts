@@ -66,11 +66,19 @@ export class OrphanConnectorTypeError extends Error {
 export async function isOrphanConnectorType(
   type: string,
   workspaceId?: string,
+  options: { callable?: boolean } = {},
 ): Promise<boolean> {
   if (isWorkspaceConnectorType(type)) return false;
-  const schema = await syncConnectorRegistry
-    .getConfigSchemaForType(type, workspaceId)
-    .catch(() => null);
+  // `callable`: the paths that only decrypt, edit or call (the proxy, config
+  // edits) also know a type kept as a call profile. Enabling, probing and
+  // retyping leave it off: such a type has no connector to run.
+  const schema = await (
+    options.callable
+      ? syncConnectorRegistry.getConfigSchemaForType(type, workspaceId)
+      : syncConnectorRegistry.getConfigSchemaForType(type, workspaceId, {
+          connectorOnly: true,
+        })
+  ).catch(() => null);
   return !schema || !Array.isArray(schema.fields);
 }
 

@@ -60,6 +60,10 @@ import {
   type FlowFileProblem,
 } from "../../services/flow-validate.service";
 import {
+  snapshotLayouts,
+  splitLayoutMismatches,
+} from "../../sync-cdc/layout-table-check";
+import {
   dryRunFlowReconcile,
   type PlannedFlow,
   type ReconcilePlan,
@@ -173,6 +177,32 @@ export async function checkFlowFiles(input: {
         slug,
         reason: `\`${err.path}\`: ${err.message} — the flow row would fail to save, so the push would leave the flow unchanged`,
       });
+    }
+    // A layout that disagrees with its BigQuery table is an error: a pruned
+    // MERGE depends on the table, and a PR with a wrong layout should fail.
+    if (hydrated.doc && hydrated.schemaErrors.length === 0) {
+      // Judged against the flow's stored row, like the push: a layout the
+      // file adds or edits is an error, an old mismatch it leaves alone is a
+      // note (the push accepts it and only warns).
+      const stored = await Flow.findOne({ workspaceId, slug });
+      const { changed, untouched } = await splitLayoutMismatches(
+        hydrated.doc as never,
+        stored ? snapshotLayouts(stored as never) : undefined,
+      );
+      for (const m of changed) {
+        schemaProblems.push({
+          path: file.path,
+          slug,
+          reason: `layout does not match the existing table. ${m.message}`,
+        });
+      }
+      for (const m of untouched) {
+        schemaProblems.push({
+          path: file.path,
+          slug,
+          reason: `note: the stored layout already does not match the existing table (the push accepts it). ${m.message}`,
+        });
+      }
     }
   }
   problems.push(...schemaProblems);

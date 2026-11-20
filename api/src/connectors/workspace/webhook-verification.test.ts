@@ -2,9 +2,9 @@
  * Webhook signatures of workspace connectors, checked in the API from the
  * scheme the connector declares as data.
  *
- * The Close folder's declaration must accept and refuse exactly what the
- * in-process `verifyCloseWebhook` does, on the same deliveries. Declarations
- * the API cannot run fail closed.
+ * The Close folder's declaration must accept its one valid fixture delivery
+ * and refuse the five tampered ones. Declarations the API cannot run fail
+ * closed.
  *
  * Run: node --import tsx src/connectors/workspace/webhook-verification.test.ts
  */
@@ -20,11 +20,6 @@ import {
   verifyDeclaredWebhook,
   declaredEventId,
 } from "./webhook-verification";
-import { verifyCloseWebhook } from "../close/webhooks";
-import {
-  ensureFolderInstalled,
-  runFolderCommand,
-} from "../../../../connectors/close/fixtures/harness.mjs";
 import {
   buildDeliveries,
   buildWebhookEvents,
@@ -40,32 +35,37 @@ const spec = (verification: unknown) => ({
 /** What the Close folder declares, from its own spec. */
 let CLOSE_WEBHOOK_VERIFICATION: Record<string, unknown>;
 before(async () => {
-  ensureFolderInstalled();
-  const result = await runFolderCommand("spec");
-  const message = result.messages.find(m => m.type === "SPEC");
-  CLOSE_WEBHOOK_VERIFICATION = message?.spec?.mako?.webhooks?.verification;
+  const closeSpec = await folderSpec("close");
+  CLOSE_WEBHOOK_VERIFICATION = closeSpec?.mako?.webhooks?.verification;
   assert.ok(CLOSE_WEBHOOK_VERIFICATION, "the Close folder declares one");
 });
 
-void test("the Close declaration agrees with the in-process check on every delivery", () => {
+void test("the Close declaration accepts the valid delivery and refuses the 5 tampered ones", () => {
   const declaration = declaredWebhookVerification(
     spec(CLOSE_WEBHOOK_VERIFICATION),
   );
   assert.ok(declaration);
   const [event] = buildWebhookEvents(["lead.updated"]);
   const deliveries = buildDeliveries(event.rawPayload);
-  assert.ok(deliveries.length >= 6);
-  let valid = 0;
-  for (const delivery of deliveries) {
-    const ours = verifyDeclaredWebhook(declaration, { ...delivery, now: SENT });
-    const theirs = verifyCloseWebhook(delivery);
-    assert.equal(ours.valid, theirs.valid, delivery.name);
-    if (ours.valid) {
-      valid++;
-      assert.deepEqual(ours.event, theirs.event);
-    }
-  }
-  assert.equal(valid, 1);
+  assert.equal(deliveries.length, 6);
+  const outcome = (delivery: (typeof deliveries)[number]) =>
+    verifyDeclaredWebhook(declaration, { ...delivery, now: SENT }).valid;
+  assert.deepEqual(
+    deliveries.map(d => [d.name, outcome(d)]),
+    [
+      ["valid", true],
+      ["tampered body", false],
+      ["wrong key", false],
+      ["no hash header", false],
+      ["no timestamp header", false],
+      ["no secret", false],
+    ],
+  );
+  // The valid delivery's event is the parsed body, as the in-process check
+  // returned it.
+  const valid = deliveries[0];
+  const result = verifyDeclaredWebhook(declaration, { ...valid, now: SENT });
+  assert.deepEqual(result.event, JSON.parse(valid.payload));
 });
 
 void test("headers are matched case-insensitively, as a proxy may rewrite them", () => {
@@ -363,13 +363,15 @@ void test("where an event id and type sit is read from the spec, plain paths onl
 // deliveries and declarations.
 // ---------------------------------------------------------------------------
 
-async function folderSpec(slug: "wise" | "calendly" | "pandadoc") {
+async function folderSpec(slug: "wise" | "calendly" | "pandadoc" | "close") {
   const harness = await import(
     slug === "wise"
       ? "../../../../connectors/wise/fixtures/harness.mjs"
       : slug === "pandadoc"
         ? "../../../../connectors/pandadoc/fixtures/harness.mjs"
-        : "../../../../connectors/calendly/fixtures/harness.mjs"
+        : slug === "close"
+          ? "../../../../connectors/close/fixtures/harness.mjs"
+          : "../../../../connectors/calendly/fixtures/harness.mjs"
   );
   harness.ensureFolderInstalled();
   const run = await harness.runFolderCommand("spec");

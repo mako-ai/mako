@@ -137,9 +137,7 @@
   ],
   "workflowConfig": {
     "CronInput": null,
-    "CronTriggers": [
-      "* * * * *"
-    ],
+    "CronTriggers": ["* * * * *"],
     "DefaultPriority": null,
     "EventTriggers": null,
     "Name": "runbindingproof",

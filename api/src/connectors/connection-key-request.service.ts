@@ -41,6 +41,7 @@ import {
   SourceConnectionInputError,
   applySchemaEncryption,
   assertCredentialCharacters,
+  isOrphanConnectorType,
   isSecretField,
   type ConnectorFieldSchema,
 } from "./source-connection-create.service";
@@ -430,6 +431,18 @@ export async function submitKey(input: {
 
   const identity = { connectionId, name: row.name, connector: row.type };
   if (!check) return { ...identity, check: { skipped: true } };
+  // A type kept only as a call profile (connections/callable-profiles) has no
+  // connector to probe with: the key is saved, and calls use it.
+  if (await isOrphanConnectorType(row.type, workspaceId)) {
+    return {
+      ...identity,
+      check: {
+        skipped: true,
+        message:
+          "Key saved. This connection type is for calls only, not syncing, so the key was not checked.",
+      },
+    };
+  }
 
   let result: { success: boolean; message?: string };
   try {

@@ -1,0 +1,286 @@
+{
+  "privacy-request lead lookup": {
+    "sent": {
+      "url": "https://api.close.com/api/v1/lead/?query=email%3A%22jane%40example.com%22&_fields=id%2Ccontacts&_limit=100&_skip=0",
+      "method": "GET",
+      "headers": {
+        "authorization": "Basic YXBpX3Rlc3RfY2xvc2Vfa2V5XzAxMjM0NTY3ODk6"
+      }
+    },
+    "read": true,
+    "status": 200
+  },
+  "privacy-request activities read": {
+    "sent": {
+      "url": "https://api.close.com/api/v1/activity/?lead_id=lead_abc123&date_created__gte=2026-05-20T00%3A00%3A00.000Z&_limit=100&_fields=_type%2Cdate_created",
+      "method": "GET",
+      "headers": {
+        "authorization": "Basic YXBpX3Rlc3RfY2xvc2Vfa2V5XzAxMjM0NTY3ODk6"
+      }
+    },
+    "read": true,
+    "status": 200
+  },
+  "privacy-request block phone": {
+    "sent": {
+      "url": "https://api.close.com/api/v1/blocked_phone_number/",
+      "method": "POST",
+      "headers": {
+        "content-type": "application/json",
+        "authorization": "Basic YXBpX3Rlc3RfY2xvc2Vfa2V5XzAxMjM0NTY3ODk6"
+      },
+      "body": "{\"phone\":\"+41791234567\",\"reason\":\"privacy request\"}"
+    },
+    "read": false,
+    "status": 200
+  },
+  "access-offboarding me": {
+    "sent": {
+      "url": "https://api.close.com/api/v1/me/?_fields=id%2Cmemberships",
+      "method": "GET",
+      "headers": {
+        "authorization": "Basic YXBpX3Rlc3RfY2xvc2Vfa2V5XzAxMjM0NTY3ODk6"
+      }
+    },
+    "read": true,
+    "status": 200
+  },
+  "access-offboarding organization": {
+    "sent": {
+      "url": "https://api.close.com/api/v1/organization/orga_xyz/?_fields=memberships",
+      "method": "GET",
+      "headers": {
+        "authorization": "Basic YXBpX3Rlc3RfY2xvc2Vfa2V5XzAxMjM0NTY3ODk6"
+      }
+    },
+    "read": true,
+    "status": 200
+  },
+  "access-offboarding delete membership": {
+    "sent": {
+      "url": "https://api.close.com/api/v1/membership/memb_123/",
+      "method": "DELETE",
+      "headers": {
+        "authorization": "Basic YXBpX3Rlc3RfY2xvc2Vfa2V5XzAxMjM0NTY3ODk6"
+      }
+    },
+    "read": false,
+    "status": 200
+  },
+  "tam-fr-weekly read": {
+    "sent": {
+      "url": "https://api.close.com/api/v1/lead/?query=name%3Aacme&_limit=50",
+      "method": "GET",
+      "headers": {
+        "authorization": "Basic YXBpX3Rlc3RfY2xvc2Vfa2V5XzAxMjM0NTY3ODk6"
+      }
+    },
+    "read": true,
+    "status": 200
+  },
+  "tam-fr-weekly data search": {
+    "sent": {
+      "url": "https://api.close.com/api/v1/data/search/",
+      "method": "POST",
+      "headers": {
+        "content-type": "application/json",
+        "authorization": "Basic YXBpX3Rlc3RfY2xvc2Vfa2V5XzAxMjM0NTY3ODk6"
+      },
+      "body": "{\"query\":{\"type\":\"and\",\"queries\":[{\"type\":\"object_type\",\"object_type\":\"lead\"}]},\"_limit\":100}"
+    },
+    "read": true,
+    "status": 200
+  },
+  "tam-fr-weekly create lead": {
+    "sent": {
+      "url": "https://api.close.com/api/v1/lead/",
+      "method": "POST",
+      "headers": {
+        "content-type": "application/json",
+        "authorization": "Basic YXBpX3Rlc3RfY2xvc2Vfa2V5XzAxMjM0NTY3ODk6"
+      },
+      "body": "{\"name\":\"Acme SA\"}"
+    },
+    "read": false,
+    "status": 200
+  },
+  "method override read (POST as GET)": {
+    "sent": {
+      "url": "https://api.close.com/api/v1/lead/",
+      "method": "POST",
+      "headers": {
+        "x-http-method-override": "GET",
+        "content-type": "application/json",
+        "authorization": "Basic YXBpX3Rlc3RfY2xvc2Vfa2V5XzAxMjM0NTY3ODk6"
+      },
+      "body": "{\"query\":\"name:acme\"}"
+    },
+    "read": true,
+    "status": 200
+  },
+  "posthog hogql": {
+    "sent": {
+      "url": "https://app.posthog.com/api/projects/12345/query/",
+      "method": "POST",
+      "headers": {
+        "content-type": "application/json",
+        "authorization": "Bearer api_test_close_key_0123456789"
+      },
+      "body": "{\"query\":{\"kind\":\"HogQLQuery\",\"query\":\"select count() from events limit 10\"}}"
+    },
+    "read": true,
+    "status": 200
+  },
+  "posthog search_persons": {
+    "sent": {
+      "url": "https://app.posthog.com/api/projects/12345/persons/?search=jane%40example.com&limit=20",
+      "method": "GET",
+      "headers": {
+        "authorization": "Bearer api_test_close_key_0123456789"
+      }
+    },
+    "read": true,
+    "status": 200
+  },
+  "posthog raw query body": {
+    "sent": {
+      "url": "https://app.posthog.com/api/projects/12345/query/",
+      "method": "POST",
+      "headers": {
+        "content-type": "application/json",
+        "authorization": "Bearer api_test_close_key_0123456789"
+      },
+      "body": "{\"query\":{\"kind\":\"HogQLQuery\",\"query\":\"select 1\"}}"
+    },
+    "read": true,
+    "status": 200
+  },
+  "posthog insight post writes": {
+    "sent": {
+      "url": "https://app.posthog.com/api/projects/12345/insights/",
+      "method": "POST",
+      "headers": {
+        "content-type": "application/json",
+        "authorization": "Bearer api_test_close_key_0123456789"
+      },
+      "body": "{}"
+    },
+    "read": false,
+    "status": 200
+  },
+  "stripe get_customer": {
+    "sent": {
+      "url": "https://api.stripe.com/v1/customers/cus_123",
+      "method": "GET",
+      "headers": {
+        "authorization": "Bearer api_test_close_key_0123456789"
+      }
+    },
+    "read": true,
+    "status": 200
+  },
+  "stripe form post with caller header": {
+    "sent": {
+      "url": "https://api.stripe.com/v1/customers",
+      "method": "POST",
+      "headers": {
+        "stripe-account": "acct_1",
+        "content-type": "application/x-www-form-urlencoded",
+        "authorization": "Bearer api_test_close_key_0123456789"
+      },
+      "body": "email=a%40b.c&name=Jane"
+    },
+    "read": false,
+    "status": 200
+  },
+  "custom_api bearer get": {
+    "sent": {
+      "url": "https://api.example.com/v1/things?page=2",
+      "method": "GET",
+      "headers": {
+        "authorization": "Bearer api_test_close_key_0123456789"
+      }
+    },
+    "read": true,
+    "status": 200
+  },
+  "custom_api post writes": {
+    "sent": {
+      "url": "https://api.example.com/v1/things",
+      "method": "POST",
+      "headers": {
+        "content-type": "application/json",
+        "authorization": "Bearer api_test_close_key_0123456789"
+      },
+      "body": "{\"a\":1}"
+    },
+    "read": false,
+    "status": 200
+  },
+  "wise get profiles": {
+    "sent": {
+      "url": "https://api.wise.com/v2/profiles",
+      "method": "GET",
+      "headers": {
+        "authorization": "Bearer api_test_close_key_0123456789"
+      }
+    },
+    "read": true,
+    "status": 200
+  },
+  "wise post writes": {
+    "sent": {
+      "url": "https://api.wise.com/v3/profiles/1/quotes",
+      "method": "POST",
+      "headers": {
+        "content-type": "application/json",
+        "authorization": "Bearer api_test_close_key_0123456789"
+      },
+      "body": "{\"a\":1}"
+    },
+    "read": false,
+    "status": 200
+  },
+  "custom_api api key in a header": {
+    "sent": {
+      "url": "https://api.example.com/v1/things",
+      "method": "GET",
+      "headers": {
+        "x-custom-key": "api_test_close_key_0123456789"
+      }
+    },
+    "read": true,
+    "status": 200
+  },
+  "custom_api api key in the query string": {
+    "sent": {
+      "url": "https://api.example.com/v1/things?page=2&key=api_test_close_key_0123456789",
+      "method": "GET",
+      "headers": {}
+    },
+    "read": true,
+    "status": 200
+  },
+  "custom_api basic auth": {
+    "sent": {
+      "url": "https://api.example.com/v1/things",
+      "method": "GET",
+      "headers": {
+        "authorization": "Basic c3ZjLXVzZXI6YXBpX3Rlc3RfY2xvc2Vfa2V5XzAxMjM0NTY3ODk="
+      }
+    },
+    "read": true,
+    "status": 200
+  },
+  "posthog project api key": {
+    "sent": {
+      "url": "https://app.posthog.com/api/projects/12345/persons/?search=jane%40example.com&limit=20",
+      "method": "GET",
+      "headers": {
+        "posthog-api-token": "api_test_close_key_0123456789"
+      }
+    },
+    "read": true,
+    "status": 200
+  }
+}

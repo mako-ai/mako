@@ -11,6 +11,7 @@ import {
 } from "../connectors/workspace/SandboxedConnector";
 import { loadConnectorDefinition } from "../connectors/workspace/resolver";
 import { specToForm } from "../connectors/workspace/spec-translation";
+import { callableProfileSchemaFor } from "../connections/callable-profiles";
 
 const logger = loggers.sync("connector-registry");
 
@@ -114,6 +115,7 @@ class SyncConnectorRegistry {
   async getConfigSchemaForType(
     type: string,
     workspaceId?: string,
+    options: { connectorOnly?: boolean } = {},
   ): Promise<any | null> {
     if (isWorkspaceConnectorType(type)) {
       if (!workspaceId) {
@@ -129,6 +131,17 @@ class SyncConnectorRegistry {
       return specToForm(definition.spec as any);
     }
 
+    // The connector's own schema first; a type with no connector but a
+    // callable profile (connections/profiles) falls back to the profile's.
+    // `connectorOnly` skips the fallback: a type with no connector is then an
+    // orphan, which is what enabling, probing and retyping must see.
+    const own = await this.connectorSchemaForType(type);
+    return (
+      own ?? (options.connectorOnly ? null : callableProfileSchemaFor(type))
+    );
+  }
+
+  private async connectorSchemaForType(type: string): Promise<any | null> {
     let entry = this.connectors.get(type);
     if (!entry) {
       // Attempt lazy load

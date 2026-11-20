@@ -97,7 +97,7 @@ export const CLOSE_MCP_PRESET: McpPreset = {
   label: "Close CRM",
   description:
     "Lets the agent search leads, manage opportunities, create contacts, and log activities in your Close organization.",
-  icon: "/api/connectors/close/icon.svg",
+  icon: "/api/mcp/presets/close/icon.svg",
   url: "https://mcp.close.com/mcp",
   urlEditable: false,
   authType: "oauth",

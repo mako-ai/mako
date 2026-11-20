@@ -1,10 +1,10 @@
 /**
  * Close CRM on @makoai/connector-sdk: `spec`, `check`, `discover` and `read`.
  *
- * A port of the in-process connector in `api/src/connectors/close/`, with the
- * same 22 entities, schemas, cursors, pagination and rate-limit policy.
- * Nothing runs it in production yet. `fixtures/parity.mjs` runs both against
- * the same recorded Close responses and compares them entity by entity.
+ * 22 entities with their schemas, cursors, pagination and rate-limit policy,
+ * ported from the in-process connector (deleted). `fixtures/golden/` holds
+ * the rows it reads from the recorded Close responses, checked byte for byte
+ * by an API test (`api/src/connectors/close-folder.test.ts`).
  *
  * Read state per entity:
  * - Search API entities (leads, contacts, opportunities, 10 activity types):

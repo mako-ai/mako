@@ -1,0 +1,340 @@
+{
+  "close": {
+    "fields": [
+      {
+        "name": "api_key",
+        "label": "API Key",
+        "type": "password",
+        "required": true,
+        "helperText": "Close API Key (generate in Close settings)"
+      }
+    ]
+  },
+  "custom_api": {
+    "fields": [
+      {
+        "name": "base_url",
+        "label": "Address",
+        "type": "string",
+        "required": true,
+        "placeholder": "https://api.example.com/v1",
+        "helperText": "The API's base URL. Every request goes under it; a path outside it is refused."
+      },
+      {
+        "name": "auth_type",
+        "label": "Credential type",
+        "type": "select",
+        "required": true,
+        "default": "bearer",
+        "options": [
+          {
+            "label": "Bearer token",
+            "value": "bearer"
+          },
+          {
+            "label": "API key in a header",
+            "value": "api_key_header"
+          },
+          {
+            "label": "API key in the query string",
+            "value": "api_key_query"
+          },
+          {
+            "label": "Basic auth (username and password)",
+            "value": "basic"
+          },
+          {
+            "label": "Google service account (access token)",
+            "value": "google_service_account"
+          },
+          {
+            "label": "Google service account (ID token: Cloud Run, IAP)",
+            "value": "google_id_token"
+          },
+          {
+            "label": "None",
+            "value": "none"
+          }
+        ]
+      },
+      {
+        "name": "token",
+        "label": "Key",
+        "type": "password",
+        "required": false,
+        "showIf": {
+          "field": "auth_type",
+          "equals": ["bearer", "api_key_header", "api_key_query"]
+        }
+      },
+      {
+        "name": "header_name",
+        "label": "Header name",
+        "type": "string",
+        "required": false,
+        "default": "X-API-Key",
+        "showIf": {
+          "field": "auth_type",
+          "equals": "api_key_header"
+        }
+      },
+      {
+        "name": "query_param",
+        "label": "Query parameter",
+        "type": "string",
+        "required": false,
+        "default": "api_key",
+        "showIf": {
+          "field": "auth_type",
+          "equals": "api_key_query"
+        }
+      },
+      {
+        "name": "username",
+        "label": "Username",
+        "type": "string",
+        "encrypted": true,
+        "required": false,
+        "showIf": {
+          "field": "auth_type",
+          "equals": "basic"
+        }
+      },
+      {
+        "name": "password",
+        "label": "Password",
+        "type": "password",
+        "required": false,
+        "showIf": {
+          "field": "auth_type",
+          "equals": "basic"
+        }
+      },
+      {
+        "name": "service_account_json",
+        "label": "Service account key (JSON)",
+        "type": "textarea",
+        "rows": 10,
+        "encrypted": true,
+        "required": false,
+        "placeholder": "{\n  \"type\": \"service_account\",\n  \"client_email\": \"svc@project.iam.gserviceaccount.com\",\n  \"private_key\": \"-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n\",\n  ...\n}",
+        "helperText": "The JSON key file. Each request gets a short-lived Google token made from it; the key itself is never sent.",
+        "showIf": {
+          "field": "auth_type",
+          "equals": ["google_service_account", "google_id_token"]
+        }
+      },
+      {
+        "name": "scopes",
+        "label": "Scopes",
+        "type": "string",
+        "required": false,
+        "placeholder": "https://www.googleapis.com/auth/cloud-platform",
+        "helperText": "Separated by spaces or commas. Default: cloud-platform.",
+        "showIf": {
+          "field": "auth_type",
+          "equals": "google_service_account"
+        }
+      },
+      {
+        "name": "subject",
+        "label": "Act as user (optional)",
+        "type": "string",
+        "required": false,
+        "placeholder": "someone@yourcompany.com",
+        "helperText": "Google Workspace APIs only: the user the service account acts for, with domain-wide delegation.",
+        "showIf": {
+          "field": "auth_type",
+          "equals": "google_service_account"
+        }
+      },
+      {
+        "name": "audience",
+        "label": "Audience (optional)",
+        "type": "string",
+        "required": false,
+        "placeholder": "https://my-service-abc123-ew.a.run.app",
+        "helperText": "Who the ID token is for. Default: the address's origin, as Cloud Run expects. For IAP, the OAuth client ID.",
+        "showIf": {
+          "field": "auth_type",
+          "equals": "google_id_token"
+        }
+      },
+      {
+        "name": "graphql",
+        "label": "GraphQL API",
+        "type": "boolean",
+        "required": false,
+        "default": false,
+        "helperText": "On: a POST that only queries is a read; a mutation is a write."
+      },
+      {
+        "name": "extra_headers",
+        "label": "Headers",
+        "type": "object_array",
+        "required": false,
+        "helperText": "Optional. Sent with every request, e.g. Notion-Version. Not for keys: anyone who can see the connection sees them. The credential's header and transport headers cannot be set.",
+        "itemFields": [
+          {
+            "name": "name",
+            "label": "Header name",
+            "type": "string",
+            "required": true,
+            "placeholder": "Notion-Version"
+          },
+          {
+            "name": "value",
+            "label": "Value",
+            "type": "string",
+            "required": true,
+            "placeholder": "2022-06-28"
+          }
+        ]
+      },
+      {
+        "name": "test_path",
+        "label": "Test path",
+        "type": "string",
+        "required": false,
+        "placeholder": "/me",
+        "helperText": "Optional. A GET under the address that needs the credential, used by Test. With GraphQL on, Test sends { __typename } instead."
+      },
+      {
+        "name": "test_expect",
+        "label": "Test expects",
+        "type": "string",
+        "required": false,
+        "placeholder": "ok=true",
+        "helperText": "Optional. A JSON field and the value Test needs in the answer, as path=value (e.g. ok=true, data.status=active). For APIs that report errors in a 200 body. Slack is checked for ok=true (on /auth.test unless a test path is set) by default."
+      }
+    ]
+  },
+  "posthog": {
+    "fields": [
+      {
+        "name": "api_base_url",
+        "label": "API Base URL",
+        "type": "string",
+        "required": false,
+        "default": "https://app.posthog.com",
+        "helperText": "Base URL for PostHog API (e.g. https://us.posthog.com or https://eu.posthog.com)"
+      },
+      {
+        "name": "project_id",
+        "label": "Project ID",
+        "type": "string",
+        "required": true,
+        "helperText": "PostHog Project ID (numeric)"
+      },
+      {
+        "name": "api_key",
+        "label": "API Key",
+        "type": "password",
+        "required": true,
+        "helperText": "Personal API key (recommended) or Project API key depending on Auth Type"
+      },
+      {
+        "name": "auth_type",
+        "label": "Auth Type",
+        "type": "select",
+        "required": false,
+        "default": "personal_api_key",
+        "options": [
+          {
+            "label": "Personal API Key (Bearer)",
+            "value": "personal_api_key"
+          },
+          {
+            "label": "Project API Key (POSTHOG-API-TOKEN)",
+            "value": "project_api_key"
+          }
+        ]
+      }
+    ],
+    "transferQueries": {
+      "label": "HogQL Queries",
+      "required": false,
+      "fields": [
+        {
+          "name": "name",
+          "label": "Entity Name",
+          "type": "string",
+          "required": true,
+          "placeholder": "events_7d",
+          "helperText": "Name used as entity and collection name"
+        },
+        {
+          "name": "query",
+          "label": "HogQL Query",
+          "type": "textarea",
+          "required": true,
+          "rows": 8,
+          "placeholder": "SELECT event, count() AS cnt FROM events WHERE timestamp > now() - interval 7 day GROUP BY event ORDER BY cnt DESC",
+          "helperText": "Optional placeholders: $limit, $offset, and $since / {{since}}. If limit/offset are omitted, pagination will be appended automatically."
+        },
+        {
+          "name": "batch_size",
+          "label": "Batch Size",
+          "type": "number",
+          "required": false,
+          "default": 100,
+          "placeholder": "100",
+          "helperText": "Number of records per request"
+        }
+      ]
+    }
+  },
+  "stripe": {
+    "fields": [
+      {
+        "name": "api_key",
+        "label": "API Key",
+        "type": "password",
+        "required": true,
+        "helperText": "Your Stripe secret API key"
+      },
+      {
+        "name": "api_base_url",
+        "label": "API Base URL",
+        "type": "string",
+        "required": false,
+        "default": "https://api.stripe.com"
+      }
+    ]
+  },
+  "wise": {
+    "fields": [
+      {
+        "name": "api_key",
+        "label": "API Token",
+        "type": "password",
+        "required": true,
+        "helperText": "Wise personal API token or OAuth access token. Used as `Authorization: Bearer <token>`."
+      },
+      {
+        "name": "profile_id",
+        "label": "Profile ID",
+        "type": "string",
+        "required": false,
+        "helperText": "Optional. Restrict sync to one Wise profile. Leave blank to sync every profile the token can access."
+      },
+      {
+        "name": "sca_private_key",
+        "label": "SCA Private Key",
+        "type": "textarea",
+        "rows": 6,
+        "encrypted": true,
+        "required": false,
+        "helperText": "Optional. PEM private key whose public key is registered in Wise (Settings → API tokens → Manage public keys). Wise asks for it (strong customer authentication) before it serves balance statements on some profiles."
+      },
+      {
+        "name": "api_base_url",
+        "label": "API Base URL",
+        "type": "string",
+        "required": false,
+        "default": "https://api.wise.com",
+        "helperText": "Production: https://api.wise.com. Sandbox: https://api.sandbox.transferwise.tech"
+      }
+    ]
+  }
+}
