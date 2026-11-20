@@ -34,8 +34,6 @@ export interface ChunkState {
 export interface Run {
   rows: Array<Record<string, any>>;
   chunks: ChunkState[];
-  requests?: string[];
-  error?: string;
 }
 
 export interface FixtureServer {
@@ -46,33 +44,6 @@ export interface FixtureServer {
 
 export interface ReplayServer extends FixtureServer {
   misses: string[];
-}
-
-export interface SourceTimestamps {
-  inProcess(row: Record<string, any>, entity: string): unknown;
-  folder(row: Record<string, any>, entity: string): unknown;
-}
-
-export interface Comparison {
-  rows: [number, number];
-  keys: boolean;
-  order: boolean;
-  columns: boolean;
-  columnCount: number;
-  checksumMismatches: string[];
-  timestampMismatches: string[];
-  chunks: [number, number];
-  chunkStates: boolean;
-  requests: [number, number];
-  requestsEqual: boolean;
-  ok: boolean;
-}
-
-export interface ParityResult extends Comparison {
-  entity: string;
-  scenario: string;
-  endError?: string;
-  error?: string;
 }
 
 export interface FolderRun {
@@ -97,74 +68,16 @@ export function runFolderCommand(
     batch?: unknown;
     maxIterations?: number;
     maxBytes?: number;
-    timeoutMs?: number;
   },
 ): Promise<FolderRun>;
-export function readInProcess(
-  makeConnector: () => any,
+export function positionOf(state: unknown): Record<string, unknown>;
+export function readFolder(
   options: {
     entity: string;
+    config: Record<string, unknown>;
     since?: string;
     maxIterations?: number;
-    pageSize?: number;
   },
   out?: Run,
 ): Promise<Run>;
-export function positionOf(state: unknown): Record<string, unknown>;
-export function inProcessPosition(state: unknown): Record<string, unknown>;
 export function masked<T>(row: T): T;
-export function rowChecksum(row: unknown): string;
-export function compareRuns(
-  inProcess: Run,
-  folder: Run,
-  sourceTs?: SourceTimestamps,
-  entity?: string,
-): Comparison;
-export function runParity(options: {
-  entities?: string[];
-  makeInProcess: (config: Record<string, any>) => any;
-  makeBoxed?: (config: Record<string, any>) => any;
-  server: FixtureServer;
-  sourceTs?: SourceTimestamps;
-  scenarios?: Scenario[];
-  concurrency?: number;
-}): Promise<ParityResult[]>;
-export function checkParity(options: {
-  makeInProcess: (config: Record<string, any>) => any;
-  server: FixtureServer;
-}): Promise<
-  Array<{
-    variant: string;
-    inProcess: boolean;
-    folder: boolean;
-    folderMessage?: string;
-    requestsEqual: boolean;
-  }>
->;
-export function formatReport(results: ParityResult[]): string;
-export function compareEntitySchema(
-  inProcess: unknown,
-  folder: unknown,
-  ignore?: Set<string>,
-): {
-  fields: [number, number];
-  missing: string[];
-  extra: string[];
-  fieldDiffs: string[];
-  keyColumns: boolean;
-  policy: boolean;
-  systemDiffs: string[];
-  ok: boolean;
-};
-export function compareForm(
-  inProcessFields: unknown[],
-  folderFields: unknown[],
-): { ok: boolean; inProcess: unknown[]; folder: unknown[] };
-export function inProcessFactory(
-  Connector: new (source: any) => any,
-  type?: string,
-): (config: Record<string, any>) => any;
-export function downloadSigned(
-  url: string,
-  config: Record<string, unknown>,
-): Promise<string>;

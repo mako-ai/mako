@@ -6,7 +6,7 @@
  * and runs the CLI exactly as an author would, with the fixture clock
  * preloaded into every process it starts. A request the cassettes do not
  * hold fails the read, so this also proves the conformance run sends only
- * requests the in-process connector sent when the cassettes were recorded.
+ * requests the cassettes recorded.
  *
  *   node connectors/claap/fixtures/conformance.mjs
  */

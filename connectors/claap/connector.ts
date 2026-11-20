@@ -2,10 +2,11 @@
  * Claap on @makoai/connector-sdk: `spec`, `check`, `discover`, `read` and
  * `webhooks`.
  *
- * A port of the in-process connector in `api/src/connectors/claap/`, with
- * the same 3 entities, schemas, pagination, quota checkpoints, incremental
- * anchors and webhook handling. `fixtures/parity.mjs` runs both against the
- * same recorded Claap responses and compares them entity by entity.
+ * 3 entities with their schemas, pagination, quota checkpoints, incremental
+ * anchors and webhook handling, ported from the in-process connector
+ * (deleted). `fixtures/golden/` holds the rows it reads from the recorded
+ * Claap responses, checked byte for byte by an API test
+ * (`api/src/connectors/claap-folder.test.ts`).
  *
  * - `recordings`: list pages of 50 (`sort=created_asc`), every recording
  *   re-read from its detail. `state.mako.since`, moved back by
@@ -14,7 +15,7 @@
  *   downloaded. `createdAfter` is `since` minus 2 days.
  * - `workspace`: `GET /v1/workspaces/mine`, one row.
  *
- * Read state carries the in-process `FetchState` fields: `cursor`,
+ * Read state carries the fields the in-process `FetchState` had: `cursor`,
  * `pageOffset`, `createdAfter`, `totalCount`, `recordingsSeen`,
  * `totalProcessed`, next to Mako's `mako.since`.
  */
@@ -234,8 +235,8 @@ export default defineConnector<ClaapConfig>({
       "Recording transcripts",
       "Transcript text and speaker segments, one row per recording and language",
       {
-        // No cursor field: in-process rows carry no time it reads, so both
-        // sides stamp them with the sync time.
+        // No cursor field: rows carry no time the engine reads, so it stamps
+        // them with the sync time.
         incremental: "created-anchor",
         layout: {
           partitionField: "recordingCreatedAt",

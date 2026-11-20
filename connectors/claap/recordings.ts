@@ -91,7 +91,7 @@ export interface RecordingDetail {
   dailyRemaining?: number;
 }
 
-/** `GET /v1/recordings/{id}?returnAiFields=true`, as in-process. */
+/** `GET /v1/recordings/{id}?returnAiFields=true`. */
 export async function fetchRecordingDetail(
   api: ClaapClient,
   recordingId: string,
@@ -150,7 +150,7 @@ export interface RecordingsState {
  *
  * Only a 404 or a Ready recording without `aiFields` is skipped. Any other
  * detail failure fails the chunk, which retries from its last state. A
- * chunk that read details but emitted nothing fails too, as in-process,
+ * chunk that read details but emitted nothing fails too,
  * including one the runner stops at its page limit.
  *
  * Near the daily quota reserve the chunk checkpoints mid-page (the page's
@@ -179,7 +179,7 @@ export async function* readClaapRecordings(
   let detailCalls = 0;
   let emittedInChunk = 0;
   // True until this generator ends on its own: the runner stopping it at
-  // its page limit still gets the in-process end-of-chunk check.
+  // its page limit still gets the end-of-chunk check.
   let stoppedByRunner = true;
 
   try {

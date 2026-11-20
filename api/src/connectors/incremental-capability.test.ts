@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { StripeConnector } from "./stripe/connector";
-import { ClaapConnector } from "./claap/connector";
 import { CalendlyConnector } from "./calendly/connector";
 import { RestConnector } from "./rest/connector";
 import { GraphQLConnector } from "./graphql/connector";
@@ -69,19 +68,6 @@ const connectors: Array<{
         name: "Stripe",
         type: "stripe",
         config: { api_key: "sk_test_123" },
-      } as any),
-  },
-  {
-    label: "claap",
-    make: () =>
-      new ClaapConnector({
-        id: "ds_claap",
-        name: "Claap",
-        type: "claap",
-        config: {
-          api_key: "cla_test_key",
-          api_base_url: "https://api.claap.io",
-        },
       } as any),
   },
   {
@@ -169,11 +155,6 @@ function testCreatedAnchorConnectorsWarnAboutMissedUpdates() {
   assert.equal(stripe.mode, "created-anchor");
   assert.equal(stripe.supported, true);
   assert.ok(stripe.warning && stripe.warning.length > 0);
-
-  // Claap: recordings is created-anchor, workspace is none.
-  const claap = capabilitiesFor("claap");
-  assert.equal(claap.mode, "none"); // fallback (workspace)
-  assert.equal(claap.perEntity?.recordings?.mode, "created-anchor");
 }
 
 function testRestDeclaresClientFilterWithWarning() {
