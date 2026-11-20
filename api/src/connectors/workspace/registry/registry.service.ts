@@ -158,6 +158,7 @@ export async function prepareRegistryConnector(input: {
     runtimeId,
     slug: registryBoxSlug(registry.slug),
     hash: registry.hash,
+    expectedSha256: registry.sha256,
     load: () => readRegistryBundle(registry.slug, registry),
   });
 }

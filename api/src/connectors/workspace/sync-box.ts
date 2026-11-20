@@ -297,6 +297,9 @@ verify_tree() {
   test -f "$1/.materialized" || return 1
   grep -Fqx "$2" "$1/.materialized" || return 1
   test -f "$1/${TREE_MANIFEST}" || return 1
+  if test -n "\${3:-}"; then
+    printf '%s\\n' "$3" | cmp -s - "$1/${TREE_MANIFEST}" || return 1
+  fi
   (cd "$1" && sha256_check ${TREE_MANIFEST}) || return 1
 }`;
 }
@@ -316,15 +319,18 @@ async function installVerifiedTree(input: {
   id: string;
   what: string;
   files: () => Promise<Map<string, Uint8Array>>;
+  /** One trusted manifest line for bundles whose bytes are pinned externally. */
+  expectedManifestLine?: string;
   /** Parents to open for traversal by run users, on isolated boxes. */
   parents: string[];
 }): Promise<void> {
   const { ctx, dir, id, what } = input;
+  const expected = shellQuote(input.expectedManifestLine ?? "");
   const provider = getSandboxProvider();
   const check = await provider.exec(
     ctx,
     `${verifyTreeShell()}
-verify_tree ${shellQuote(dir)} ${shellQuote(id)} && echo yes || echo no`,
+verify_tree ${shellQuote(dir)} ${shellQuote(id)} ${expected} && echo yes || echo no`,
     execOptions({ timeoutMs: 30_000 }),
   );
   if (check.stdout.trim() === "yes") return;
@@ -367,7 +373,7 @@ id=${shellQuote(id)}
 trap 'rm -rf "$stage"' EXIT
 ${verifyTreeShell()}
 printf '%s' "$id" > "$stage/.materialized"
-if ! verify_tree "$stage" "$id"; then
+if ! verify_tree "$stage" "$id" ${expected}; then
   echo "The staged ${what} failed its check: a file is missing or changed." >&2
   exit 1
 fi${
@@ -383,7 +389,7 @@ if command -v flock >/dev/null 2>&1; then
   exec 9>"$dir.lock"
   flock -w 60 9
 fi
-if verify_tree "$dir" "$id"; then exit 0; fi
+if verify_tree "$dir" "$id" ${expected}; then exit 0; fi
 discard="$dir.discard-$$"
 if test -e "$dir" || test -L "$dir"; then mv "$dir" "$discard"; fi
 mv "$stage" "$dir"
@@ -851,19 +857,29 @@ export async function installConnectorBundle(input: {
   runtimeId: string;
   slug: string;
   hash: string;
+  expectedSha256?: string;
   load: () => Promise<Uint8Array>;
 }): Promise<{ dir: string; entry: string }> {
-  const { ctx, runtimeId, slug, hash } = input;
+  const { ctx, runtimeId, slug, hash, expectedSha256 } = input;
+  if (expectedSha256 !== undefined && !/^[a-f0-9]{64}$/.test(expectedSha256)) {
+    throw new Error(
+      "Expected connector bundle digest must be a SHA-256 hex string.",
+    );
+  }
+  const id = expectedSha256 ? `${hash}-${expectedSha256}` : hash;
   const dir = path.posix.join(
     runtimeRoot(ctx, runtimeId),
     "bundles",
-    `${slug}@${hash}`,
+    `${slug}@${id}`,
   );
   await installVerifiedTree({
     ctx,
     dir,
-    id: hash,
+    id,
     what: `connector bundle ${slug}@${hash}`,
+    expectedManifestLine: expectedSha256
+      ? `${expectedSha256}  ${CONNECTOR_BUNDLE_ENTRY}`
+      : undefined,
     files: async () => new Map([[CONNECTOR_BUNDLE_ENTRY, await input.load()]]),
     parents: [path.posix.dirname(dir)],
   });

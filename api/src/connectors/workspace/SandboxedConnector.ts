@@ -466,27 +466,22 @@ export class SandboxedConnector extends BaseConnector {
     const definition = await this.definition();
     const ctx = syncBoxContext(this.workspaceId);
     await retireLegacySyncBox(this.workspaceId);
+    if (definition.registry) {
+      this.requireRegistryEnabled(definition);
+      const runtimeId = this.runtimeId ?? (await ensureConnectorRuntime(ctx));
+      // The installer checks the published digest even on a warm box.
+      const installed = await prepareRegistryConnector({
+        ctx,
+        runtimeId,
+        registry: definition.registry,
+      });
+      this.materializedDir = installed.dir;
+      this.runEntry = installed.entry;
+      this.runtimeId = runtimeId;
+      return { dir: installed.dir, runtimeId, entry: installed.entry, ctx };
+    }
     if (!this.materializedDir || !this.runtimeId) {
       const runtimeId = await ensureConnectorRuntime(ctx);
-      if (definition.registry) {
-        // Installed by reference: the folder holds no code. Run the registry
-        // version the push resolved, never whatever is newest now.
-        if (!connectorRegistryEnabled()) {
-          throw new Error(
-            `The connector "${definition.slug}" is installed by reference (${definition.registry.ref}), ` +
-              `and install by reference is off on this Mako (CONNECTOR_REGISTRY_ENABLED).`,
-          );
-        }
-        const installed = await prepareRegistryConnector({
-          ctx,
-          runtimeId,
-          registry: definition.registry,
-        });
-        this.materializedDir = installed.dir;
-        this.runEntry = installed.entry;
-        this.runtimeId = runtimeId;
-        return { dir: installed.dir, runtimeId, entry: installed.entry, ctx };
-      }
       const files = await readConnectorFolder(
         this.workspaceId,
         definition.slug,
@@ -540,6 +535,15 @@ export class SandboxedConnector extends BaseConnector {
       this.connectionId() ??
       String((this.sourceConnection as { id?: unknown }).id ?? "")
     );
+  }
+
+  private requireRegistryEnabled(definition: LoadedConnector): void {
+    if (definition.registry && !connectorRegistryEnabled()) {
+      throw new Error(
+        `The connector "${definition.slug}" is installed by reference (${definition.registry.ref}), ` +
+          `and install by reference is off on this Mako (CONNECTOR_REGISTRY_ENABLED).`,
+      );
+    }
   }
 
   /** The saved data source's id, or null for a connection not saved yet. */
@@ -606,6 +610,7 @@ export class SandboxedConnector extends BaseConnector {
     }
 
     const definition = await this.definition();
+    this.requireRegistryEnabled(definition);
     const saved = this.connectionId();
     return getBoxScheduler().withLease(
       {
@@ -613,31 +618,46 @@ export class SandboxedConnector extends BaseConnector {
         // A connection being tested before it is saved has no id. It gets a
         // one-off key, so its credential never enters a box another run uses.
         connectionId: saved ?? `unsaved:${randomBytes(8).toString("hex")}`,
-        bundleHash: definition.sourceSha,
+        bundleHash: definition.registry?.sha256 ?? definition.sourceSha,
         command,
         runtimeId: await connectorRuntimeId(),
         timeoutMs: options.timeoutMs,
         oneOff: saved === null,
       },
       async lease => {
-        // Checked once per box incarnation, not per chunk: on a warm box the
-        // runtime and the connector are known to be there (BoxLease.memo).
-        const { dir, runtimeId, entry } = await lease.memo(
-          `bundle:${await connectorRuntimeId()}:${definition.sourceSha}`,
-          () =>
-            ensureBundle({
-              ctx: lease.ctx,
-              hash: definition.sourceSha,
-              slug: definition.slug,
-              entry: definition.entry,
-              files: () => this.folder(definition),
-              ensureRuntime: ensureConnectorRuntime,
-              bundle: async ({ ctx, runtimeId, files }) =>
-                shouldBundle(definition.runtime, files)
-                  ? this.prepareBundle({ ctx, runtimeId, definition, files })
-                  : null,
-            }),
-        );
+        // Registry bundles must be checked against their digest on every reuse.
+        // Workspace bundles retain their per-box memo.
+        const { dir, runtimeId, entry } = definition.registry
+          ? await (async () => {
+              const runtimeId = await ensureConnectorRuntime(lease.ctx);
+              const installed = await prepareRegistryConnector({
+                ctx: lease.ctx,
+                runtimeId,
+                registry: definition.registry!,
+              });
+              return { ...installed, runtimeId };
+            })()
+          : await lease.memo(
+              `bundle:${await connectorRuntimeId()}:${definition.sourceSha}`,
+              () =>
+                ensureBundle({
+                  ctx: lease.ctx,
+                  hash: definition.sourceSha,
+                  slug: definition.slug,
+                  entry: definition.entry,
+                  files: () => this.folder(definition),
+                  ensureRuntime: ensureConnectorRuntime,
+                  bundle: async ({ ctx, runtimeId, files }) =>
+                    shouldBundle(definition.runtime, files)
+                      ? this.prepareBundle({
+                          ctx,
+                          runtimeId,
+                          definition,
+                          files,
+                        })
+                      : null,
+                }),
+            );
         lease.noteRuntime(runtimeId);
         // Before any credentialed command: the template must hold none.
         await lease.snapshotPristine(runtimeId);
