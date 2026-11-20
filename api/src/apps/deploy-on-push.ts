@@ -437,10 +437,11 @@ export async function deployTargetForPush(
  * built here — the webhook delivery must return quickly, and on Cloud Run
  * work detached from a request does not reliably run to completion.
  *
- * Unless APPS_DBT_BEFORE_DEPLOY=0 rolls it back, a push that also changed dbt models holds
- * back the apps whose bindings read dbt models until one dbt run rebuilds
- * the changed models in prod (dbt-before-deploy.ts). They are still returned:
- * that run's end requests their deploys.
+ * Unless APPS_DBT_BEFORE_DEPLOY=0 turns it off, a push that also changed dbt
+ * models holds back an app only when a model its bindings read has a schema
+ * gap (missing prod table or new column) until one dbt run builds those
+ * models in prod (dbt-before-deploy.ts). Held apps are still returned: that
+ * run's end requests their deploys. Every other app deploys at once.
  */
 export async function deployAppsForPush(input: {
   workspaceId: string;

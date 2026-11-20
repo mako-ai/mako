@@ -31,6 +31,9 @@ const state = vi.hoisted(() => ({
   otherTables: [] as string[],
   projectYml: "name: acme\n" as string | null,
   sendError: null as Error | null,
+  gap: [] as string[],
+  gapError: null as Error | null,
+  gapCalls: [] as unknown[],
   sent: [] as Array<{ name: string; data: unknown }>,
 }));
 
@@ -41,6 +44,14 @@ vi.mock("../inngest/client", () => ({
       state.sent.push(event);
     }),
   },
+}));
+
+vi.mock("./dbt-schema-gap", () => ({
+  detectSchemaGap: vi.fn(async (input: unknown) => {
+    state.gapCalls.push(input);
+    if (state.gapError) throw state.gapError;
+    return { models: state.gap, reasons: {}, newColumns: {} };
+  }),
 }));
 
 vi.mock("../inngest/functions/apps-deploy", () => ({
@@ -142,7 +153,9 @@ import { deployAppsForPush } from "./deploy-on-push";
 import {
   changesDbtBuildFiles,
   dbtBeforeDeployEnabled,
+  dbtBeforeDeployMode,
   dbtModelsReadBy,
+  gapBuildCommand,
   modelsSelectedBy,
   planDbtBeforeDeploy,
   preDeployBuildCommand,
@@ -176,8 +189,13 @@ beforeEach(async () => {
   state.projectYml = "name: acme\n";
   state.sendError = null;
   state.sent = [];
-  // The default: unset means on.
+  state.gap = [];
+  state.gapError = null;
+  state.gapCalls = [];
+  // The default: unset means on. The suites below run `full` (today's
+  // rollback mode) unless they say otherwise; "schema-gap" has its own suite.
   delete process.env.APPS_DBT_BEFORE_DEPLOY;
+  process.env.APPS_DBT_BEFORE_DEPLOY_MODE = "full";
   await DbtRun.deleteMany({});
   await DbtProject.deleteMany({});
   projectId = new Types.ObjectId();
@@ -187,7 +205,11 @@ beforeEach(async () => {
     name: "acme",
     environments: [
       { name: "dev", targetSchema: "dbt_dev" },
-      { name: "prod", targetSchema: "dbt_prod" },
+      {
+        name: "prod",
+        targetSchema: "dbt_prod",
+        connectionId: new Types.ObjectId(),
+      },
     ],
     defaultEnvironment: "dev",
     lastProdManifestKey: "dbt-artifacts/w/r/manifest.json",
@@ -196,6 +218,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   delete process.env.APPS_DBT_BEFORE_DEPLOY;
+  delete process.env.APPS_DBT_BEFORE_DEPLOY_MODE;
 });
 
 const push = () =>
@@ -268,7 +291,7 @@ describe("deployAppsForPush without a dbt build", () => {
   });
 });
 
-describe("deployAppsForPush with a dbt change and the flag on", () => {
+describe("deployAppsForPush with a dbt change, mode full", () => {
   it("deploys the plain app now and holds the reader for one prod build", async () => {
     expect((await push()).sort()).toEqual([READER, PLAIN].sort());
 
@@ -451,6 +474,156 @@ describe("deployAppsForPush with a dbt change and the flag on", () => {
   });
 });
 
+describe("deployAppsForPush in schema-gap mode (the default)", () => {
+  beforeEach(() => {
+    delete process.env.APPS_DBT_BEFORE_DEPLOY_MODE;
+  });
+
+  it("runs no build and deploys every app at once when no model has a gap", async () => {
+    state.gap = [];
+
+    expect((await push()).sort()).toEqual([READER, PLAIN].sort());
+
+    expect(requestAppDeploys).toHaveBeenCalledTimes(1);
+    expect(requestAppDeploys).toHaveBeenCalledWith(
+      ws,
+      [READER, PLAIN],
+      AFTER,
+      "push",
+    );
+    expect(await DbtRun.countDocuments()).toBe(0);
+    expect(markDeployQueued).not.toHaveBeenCalled();
+    expect(state.gapCalls).toEqual([
+      expect.objectContaining({
+        workspaceId: ws,
+        environment: "prod",
+        sha: AFTER,
+        reads: ["fct_c14__closed_loop"],
+      }),
+    ]);
+  });
+
+  it("builds exactly the gap models and holds only the apps that read one", async () => {
+    state.gap = ["fct_c14__closed_loop"];
+
+    await push();
+
+    expect(requestAppDeploys).toHaveBeenCalledWith(ws, [PLAIN], AFTER, "push");
+    const runs = await DbtRun.find().lean();
+    expect(runs).toHaveLength(1);
+    expect(runs[0].commands).toEqual(["build --select fct_c14__closed_loop"]);
+    expect(runs[0].deploysAfterRun).toEqual({
+      workspaceId: ws,
+      appIds: [READER],
+      sha: AFTER,
+    });
+    expect(parseDbtCommand(runs[0].commands[0]).subcommand).toBe("build");
+  });
+
+  it("builds a gap parent with the model and still holds only the reader", async () => {
+    state.gap = ["fct_c14__closed_loop", "int_c14__loop_base"];
+
+    await push();
+
+    const runs = await DbtRun.find().lean();
+    expect(runs[0].commands).toEqual([
+      "build --select fct_c14__closed_loop int_c14__loop_base",
+    ]);
+    expect(runs[0].deploysAfterRun?.appIds).toEqual([READER]);
+  });
+
+  it("deploys an app at once when its models have no gap but another app's do", async () => {
+    state.changedApps = [READER, OTHER];
+    state.otherTables = ["`p.{{dbt_schema}}.dim_deal`"];
+    state.gap = ["fct_c14__closed_loop"];
+
+    await push();
+
+    expect(requestAppDeploys).toHaveBeenCalledWith(ws, [OTHER], AFTER, "push");
+    const runs = await DbtRun.find().lean();
+    expect(runs[0].commands).toEqual(["build --select fct_c14__closed_loop"]);
+    expect(runs[0].deploysAfterRun?.appIds).toEqual([READER]);
+  });
+
+  it("needs no prod manifest: the gap comes from the warehouse", async () => {
+    await DbtProject.updateOne(
+      { _id: projectId },
+      { $unset: { lastProdManifestKey: 1 } },
+    );
+    state.gap = ["fct_c14__closed_loop"];
+
+    await push();
+
+    expect(await DbtRun.countDocuments()).toBe(1);
+  });
+
+  it("deploys every app at once when the gap check fails", async () => {
+    state.gapError = new Error("dbt compile failed (exit 2)");
+
+    await push();
+
+    expect(requestAppDeploys).toHaveBeenCalledTimes(1);
+    expect(requestAppDeploys).toHaveBeenCalledWith(
+      ws,
+      [READER, PLAIN],
+      AFTER,
+      "push",
+    );
+    expect(await DbtRun.countDocuments()).toBe(0);
+  });
+
+  it("skips the check when the push touches no dbt file", async () => {
+    state.changed = ["apps/c14/bindings/loop.sql"];
+    state.gap = ["fct_c14__closed_loop"];
+
+    await push();
+
+    expect(state.gapCalls).toEqual([]);
+    expect(await DbtRun.countDocuments()).toBe(0);
+  });
+
+  it("joins a running gap build that already names the joiner's gap models", async () => {
+    state.otherTables = ["{{dbt_schema}}.fct_c14__closed_loop"];
+    state.gap = ["fct_c14__closed_loop"];
+    await push();
+    state.changedApps = [READER, PLAIN, OTHER];
+
+    await push();
+
+    const runs = await DbtRun.find().lean();
+    expect(runs).toHaveLength(1);
+    expect(runs[0].deploysAfterRun?.appIds).toEqual([READER, OTHER]);
+  });
+
+  it("starts a second build when a joiner needs a gap model the first run skips", async () => {
+    state.gap = ["fct_c14__closed_loop"];
+    await push();
+    state.changedApps = [READER, PLAIN, OTHER];
+    state.gap = ["fct_c14__closed_loop", "dim_deal"];
+
+    await push();
+
+    const runs = await DbtRun.find().sort({ createdAt: 1 }).lean();
+    expect(runs).toHaveLength(2);
+    expect(runs[1].commands).toEqual([
+      "build --select dim_deal fct_c14__closed_loop",
+    ]);
+  });
+
+  it("mode full still builds every changed model upstream of the held apps", async () => {
+    process.env.APPS_DBT_BEFORE_DEPLOY_MODE = "full";
+    state.gap = [];
+
+    await push();
+
+    expect(state.gapCalls).toEqual([]);
+    const runs = await DbtRun.find().lean();
+    expect(runs[0].commands).toEqual([
+      "build --select state:modified+,+fct_c14__closed_loop",
+    ]);
+  });
+});
+
 describe("releaseDeploysAfterRun", () => {
   const heldRun = async (status: DbtRunStatus) =>
     DbtRun.create({
@@ -535,6 +708,32 @@ describe("pieces", () => {
     expect(dbtBeforeDeployEnabled({ APPS_DBT_BEFORE_DEPLOY: " FALSE " })).toBe(
       false,
     );
+  });
+
+  it("defaults to schema-gap; only full is the rollback mode", () => {
+    expect(dbtBeforeDeployMode({})).toBe("schema-gap");
+    expect(dbtBeforeDeployMode({ APPS_DBT_BEFORE_DEPLOY_MODE: "" })).toBe(
+      "schema-gap",
+    );
+    expect(dbtBeforeDeployMode({ APPS_DBT_BEFORE_DEPLOY_MODE: "bogus" })).toBe(
+      "schema-gap",
+    );
+    expect(dbtBeforeDeployMode({ APPS_DBT_BEFORE_DEPLOY_MODE: " FULL " })).toBe(
+      "full",
+    );
+  });
+
+  it("writes a gap command with no `+` and no state:modified", () => {
+    const command = gapBuildCommand(["fct_b", "fct_a", "fct_b"]);
+    expect(command).toBe("build --select fct_a fct_b");
+    expect(command).not.toMatch(/[+]|state:/);
+    expect(parseDbtCommand(command).argv).toEqual([
+      "build",
+      "--select",
+      "fct_a",
+      "fct_b",
+    ]);
+    expect([...modelsSelectedBy(command)]).toEqual(["fct_a", "fct_b"]);
   });
 
   it("counts models, seeds and snapshots, never macros or tests", () => {
