@@ -418,7 +418,7 @@ test("planRedirect refuses an https to http hop while a credential is present", 
   );
 });
 
-test("secret headers are dropped on a hop off the host and its subdomains, and stay dropped", async () => {
+test("secret headers are dropped on a hop off the host, port or a subdomain, and stay dropped", async () => {
   const a = await serve((req, res) => {
     if (req.url === "/to-sub") {
       res.writeHead(302, { location: `http://sub.a.test:${a.port}/landing` });
@@ -429,8 +429,15 @@ test("secret headers are dropped on a hop off the host and its subdomains, and s
     } else if (req.url === "/back") {
       res.writeHead(302, { location: `http://a.test:${a.port}/landing` });
       res.end();
+    } else if (req.url === "/to-port") {
+      res.writeHead(302, { location: `http://a.test:${b.port}/landing` });
+      res.end();
+    } else if (req.url === "/same") {
+      res.writeHead(302, { location: `http://a.test:${a.port}/landing` });
+      res.end();
     } else ok(res);
   });
+  const b = await serve((req, res) => ok(res));
   const resolve = resolverFor({
     "a.test": ["127.0.0.1"],
     "sub.a.test": ["127.0.0.1"],
@@ -447,12 +454,22 @@ test("secret headers are dropped on a hop off the host and its subdomains, and s
     followRedirects: true,
     resolve,
   };
-  // A subdomain keeps them.
-  await safeRequest(`http://a.test:${a.port}/to-sub`, options);
+  // The same host and port keeps them.
+  await safeRequest(`http://a.test:${a.port}/same`, options);
   let landing = a.seen.at(-1);
   assert.equal(landing.url, "/landing");
   assert.equal(landing.headers.authorization, "Bearer T");
   assert.equal(landing.headers["x-custom-key"], "K");
+  // A subdomain drops them.
+  await safeRequest(`http://a.test:${a.port}/to-sub`, options);
+  landing = a.seen.at(-1);
+  assert.equal(landing.url, "/landing");
+  assert.equal(landing.headers.authorization, undefined);
+  assert.equal(landing.headers["x-custom-key"], undefined);
+  // The same host on another port drops them.
+  await safeRequest(`http://a.test:${a.port}/to-port`, options);
+  assert.equal(b.seen.at(-1).headers.authorization, undefined);
+  assert.equal(b.seen.at(-1).headers["x-custom-key"], undefined);
   // Another host drops them, and a hop back to the first host does not restore them.
   a.seen.length = 0;
   await safeRequest(`http://a.test:${a.port}/to-other`, options);
@@ -467,6 +484,59 @@ test("secret headers are dropped on a hop off the host and its subdomains, and s
     );
   }
   assert.equal(a.seen.at(-1).url, "/landing");
+});
+
+test("planRedirect keeps secrets only on the same host and port", () => {
+  const base = {
+    from: new URL("https://api.example.com/a"),
+    status: 307,
+    method: "POST",
+    body: Buffer.from("x"),
+    headers: { authorization: "v" },
+    originalHost: "api.example.com",
+    secretNames: new Set(["authorization"]),
+  };
+  const kept = to =>
+    "authorization" in planRedirect({ ...base, to: new URL(to) }).headers;
+  assert.equal(kept("https://api.example.com/b"), true);
+  assert.equal(kept("https://api.example.com:8443/b"), false);
+  assert.equal(kept("https://x.api.example.com/b"), false);
+  assert.equal(kept("https://example.com/b"), false);
+});
+
+test("a stacked or unknown content-encoding is refused", async () => {
+  for (const encoding of ["gzip, br", "zstd"]) {
+    const { port } = await serve((req, res) => {
+      res.writeHead(200, { "content-encoding": encoding });
+      res.end("whatever");
+    });
+    await assert.rejects(
+      safeRequest(`http://127.0.0.1:${port}/`, { allowLoopback: true }),
+      { code: "BAD_ENCODING" },
+      encoding,
+    );
+  }
+});
+
+test("a huge timeoutMs is clamped, not fired at once", async () => {
+  const { port } = await serve((req, res) => ok(res, "fine"));
+  const result = await safeRequest(`http://127.0.0.1:${port}/`, {
+    allowLoopback: true,
+    timeoutMs: Number.MAX_SAFE_INTEGER,
+  });
+  assert.equal(result.text, "fine");
+});
+
+test("a resolver may answer with a string or one object", async () => {
+  const { port } = await serve((req, res) => ok(res, "fine"));
+  for (const answer of ["127.0.0.1", { address: "127.0.0.1", family: 4 }]) {
+    const resolve = (_h, _o, callback) => callback(null, answer);
+    const result = await safeRequest(`http://a.test:${port}/`, {
+      allowLoopback: true,
+      resolve,
+    });
+    assert.equal(result.text, "fine");
+  }
 });
 
 // ---------------------------------------------------------------------------

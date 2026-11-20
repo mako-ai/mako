@@ -316,6 +316,7 @@ export async function ensureConnectorRuntime(
   logger.info("Installed the connector SDK into a sync box", {
     files: files.size,
     runtimeId,
+    sdkVersion: await connectorSdkVersion(),
   });
   return runtimeId;
 }
@@ -379,7 +380,7 @@ export function runtimeIdOf(files: Map<string, Uint8Array>): string {
 }
 
 /** The SDK's shipped files, read from this repository's own package. */
-async function readSdkFiles(): Promise<Map<string, Uint8Array>> {
+export async function readSdkFiles(): Promise<Map<string, Uint8Array>> {
   if (sdkFilesCache) return sdkFilesCache;
   const root = await findSdkRoot();
   const files = new Map<string, Uint8Array>();

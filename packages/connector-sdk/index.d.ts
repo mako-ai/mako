@@ -357,7 +357,7 @@ export interface SafeRequestOptions {
   followRedirects?: boolean;
   /** Default 5. */
   maxRedirects?: number;
-  /** Header names dropped on a hop off the original host and its subdomains. Authorization, Cookie and Proxy-Authorization always count. */
+  /** Header names dropped on a hop off the original host and port, subdomains included. Authorization, Cookie and Proxy-Authorization always count. */
   secretHeaders?: string[];
   /** Cap on the decompressed body. Default 100 MB. */
   maxResponseBytes?: number;

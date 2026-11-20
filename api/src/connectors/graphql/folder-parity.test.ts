@@ -452,6 +452,30 @@ void test("a redirect is refused once, never followed or retried", async () => {
   assert.equal(server.requests(token).length, 1);
 });
 
+void test("a credentialed or query URL never appears in an error", async () => {
+  const status = async (endpoint: string) =>
+    (await runFolderCommand("check", { config: { endpoint } })).messages.find(
+      m => m.type === "CONNECTION_STATUS",
+    )?.connectionStatus;
+  for (const endpoint of [
+    "https://user:s3cret@api.x.com/graphql?token=Q",
+    "ftp://user:s3cret@api.x.com/graphql?token=Q",
+    "http://user:s3cret@169.254.169.254/graphql?token=Q",
+    "not a url s3cret?token=Q",
+  ]) {
+    const result = await status(endpoint);
+    assert.equal(result?.status, "FAILED", endpoint);
+    const message = result?.message ?? "";
+    for (const secret of ["s3cret", "token=Q", "user:"]) {
+      assert.ok(!message.includes(secret), `${endpoint}: ${message}`);
+    }
+  }
+  assert.match(
+    (await status("https://user:s3cret@api.x.com/graphql"))?.message ?? "",
+    /credentials/,
+  );
+});
+
 /** Run a script in the folder's own runtime and read its JSON output. */
 function inFolder(script: string): any {
   return JSON.parse(
