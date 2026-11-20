@@ -27,7 +27,14 @@ vi.mock("./sync-box", () => ({
   installConnectorRuntime: vi.fn(),
 }));
 import { createHash } from "node:crypto";
-import { readConnectorFolder, runtimeIdOf, RUNTIME_LAYOUT } from "./resolver";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import {
+  readConnectorFolder,
+  readSdkFiles,
+  runtimeIdOf,
+  RUNTIME_LAYOUT,
+} from "./resolver";
 
 beforeEach(() => {
   cache.present = false;
@@ -87,5 +94,26 @@ describe("runtime id", () => {
 
   it("is stable for the same SDK bytes", () => {
     expect(runtimeIdOf(files)).toBe(runtimeIdOf(new Map(files)));
+  });
+});
+
+describe("box runtime carries the rebinding guard", () => {
+  it("ships safe-request.js with the guarded socket lookup", async () => {
+    const files = await readSdkFiles();
+    const source = new TextDecoder().decode(files.get("src/safe-request.js"));
+    expect(source).toContain("export async function safeRequest");
+    expect(source).toContain("export function createGuardedLookup");
+    expect(source).toContain("lookup: createGuardedLookup(");
+  });
+
+  it("the GraphQL folder client imports safeRequest from the SDK", async () => {
+    const clientPath = path.resolve(
+      __dirname,
+      "../../../../connectors/graphql/client.ts",
+    );
+    const client = await readFile(clientPath, "utf8");
+    expect(client).toMatch(
+      /import \{[^}]*\bsafeRequest\b[^}]*\} from "@makoai\/connector-sdk";/,
+    );
   });
 });
