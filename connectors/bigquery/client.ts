@@ -1,6 +1,6 @@
 /**
  * BigQuery's REST API with the connection's own service account, as the
- * in-process connector (`api/src/connectors/bigquery/connector.ts`) calls it:
+ * former in-process connector did:
  *
  * - the service-account JSON from the connection signs a JWT (RS256, scope
  *   `bigquery.readonly`, one hour), which its `token_uri` exchanges for an

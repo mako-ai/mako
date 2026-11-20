@@ -1,10 +1,9 @@
 /**
  * BigQuery on @makoai/connector-sdk: `spec`, `check`, `discover` and `read`.
  *
- * A port of the in-process connector in `api/src/connectors/bigquery/`.
- * Nothing runs it in production yet. `fixtures/parity.mjs` runs both
- * against the same recorded BigQuery responses and compares them query by
- * query.
+ * A port of the former in-process connector, now removed. Nothing runs it in
+ * production yet. `fixtures/conformance.mjs` replays recorded BigQuery
+ * responses against it.
  *
  * ENTITIES are the connection's SQL queries, one per query
  * (`queryEntities` with `source: "connection"`). Each is untyped: rows land

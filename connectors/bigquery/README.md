@@ -1,8 +1,8 @@
 # BigQuery connector folder
 
 Google BigQuery on `@makoai/connector-sdk`: a port of the in-process
-connector in `api/src/connectors/bigquery/`, run in a box. No flow uses it
-yet. The parity harness in `fixtures/` holds the two to the same output.
+connector (removed), run in a box. No flow uses it yet.
+`fixtures/conformance.mjs` replays recorded BigQuery responses against it.
 
 ## Connection
 
@@ -62,11 +62,10 @@ No incremental: `since` is ignored and every run re-reads the query.
   declares `checkbox`, which the form does not render as one.
 - Each request times out after 60 s. In-process has no timeout.
 
-## Parity
+## Tests
 
 ```
-pnpm --filter api exec tsx ../connectors/bigquery/fixtures/parity.mjs
-cd api && node --import tsx scripts/run-tsx-tests.mjs connectors/bigquery
+cd api && node --import tsx scripts/run-tsx-tests.mjs bigquery-folder
 node connectors/bigquery/fixtures/conformance.mjs
 ```
 
