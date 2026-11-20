@@ -5,7 +5,6 @@ import { ClaapConnector } from "./claap/connector";
 import { CalendlyConnector } from "./calendly/connector";
 import { RestConnector } from "./rest/connector";
 import { GraphQLConnector } from "./graphql/connector";
-import { PosthogConnector } from "./posthog/connector";
 import {
   BaseConnector,
   type IncrementalCapabilities,
@@ -128,16 +127,6 @@ const connectors: Array<{
         config: {},
       } as any),
   },
-  {
-    label: "posthog",
-    make: () =>
-      new PosthogConnector({
-        id: "ds_posthog",
-        name: "PostHog",
-        type: "posthog",
-        config: {},
-      } as any),
-  },
 ];
 
 function capabilitiesFor(label: string): IncrementalCapabilities {
@@ -158,19 +147,6 @@ function testGraphQLDeclaresClientFilterWithSinceInjection() {
   assert.equal(graphql.supported, true);
   assert.equal(graphql.mode, "client-filter");
   assert.ok(graphql.warning && graphql.warning.includes("$since"));
-}
-
-function testPosthogDeclaresNativeSincePlaceholder() {
-  const posthog = capabilitiesFor("posthog");
-  assert.equal(posthog.supported, true);
-  assert.equal(posthog.mode, "native");
-  assert.equal(posthog.anchorField, "$since");
-  assert.ok(posthog.warning && posthog.warning.includes("$since"));
-  assert.equal(posthog.perEntity?.surveys?.mode, "created-anchor");
-  assert.equal(posthog.perEntity?.survey_responses?.mode, "native");
-  assert.equal(posthog.perEntity?.feature_flags?.mode, "created-anchor");
-  assert.equal(posthog.perEntity?.experiments?.mode, "created-anchor");
-  assert.equal(posthog.perEntity?.annotations?.mode, "created-anchor");
 }
 
 function testCreatedAnchorConnectorsWarnAboutMissedUpdates() {
@@ -283,7 +259,6 @@ async function testStripeCreatedGteWhenSinceSet() {
 async function main() {
   testEveryConnectorReturnsWellFormedCapabilities();
   testGraphQLDeclaresClientFilterWithSinceInjection();
-  testPosthogDeclaresNativeSincePlaceholder();
   testCreatedAnchorConnectorsWarnAboutMissedUpdates();
   testCloseSearchApiEntitiesDeclareNative();
   await testCloseSearchApiUsesDateUpdatedWhenSinceSet();

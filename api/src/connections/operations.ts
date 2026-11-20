@@ -172,42 +172,6 @@ const CLOSE: ConnectionOperation[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// PostHog
-// ---------------------------------------------------------------------------
-
-function posthogProject(config: Config): string {
-  const project = String(config.project_id ?? "").trim();
-  if (!project) {
-    throw new ConnectionRequestError("This connection has no project_id.");
-  }
-  return encodeURIComponent(project);
-}
-
-const POSTHOG: ConnectionOperation[] = [
-  {
-    name: "hogql",
-    description:
-      "Run a HogQL (SQL) query on the project's events, persons and sessions, e.g. `select count() from events where timestamp > now() - interval 1 day`. Add a LIMIT: PostHog caps a result at 100 rows unless the query sets one.",
-    params: [param("query", "A HogQL SELECT.", true)],
-    build: (params, config) => ({
-      method: "POST",
-      path: `/api/projects/${posthogProject(config)}/query/`,
-      body: { query: { kind: "HogQLQuery", query: required(params, "query") } },
-    }),
-  },
-  {
-    name: "search_persons",
-    description: "Persons whose email, name or distinct id matches.",
-    params: [param("search", "Email, name or distinct id.", true), LIMIT],
-    build: (params, config) => ({
-      method: "GET",
-      path: `/api/projects/${posthogProject(config)}/persons/`,
-      query: { search: required(params, "search"), limit: limitParam(params) },
-    }),
-  },
-];
-
-// ---------------------------------------------------------------------------
 // Stripe
 // ---------------------------------------------------------------------------
 
@@ -263,7 +227,6 @@ const STRIPE: ConnectionOperation[] = [
 
 const OPERATIONS: Record<string, ConnectionOperation[]> = {
   close: CLOSE,
-  posthog: POSTHOG,
   stripe: STRIPE,
 };
 

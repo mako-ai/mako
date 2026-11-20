@@ -1,0 +1,251 @@
+[
+  {
+    "appearance": {
+      "backgroundColor": "#eeeded",
+      "position": "right"
+    },
+    "archived": false,
+    "base_language": null,
+    "conditions": {
+      "url": "/valuation",
+      "urlMatchType": "icontains"
+    },
+    "created_at": "2026-11-07T09:47:52.000000Z",
+    "created_by": {
+      "distinct_id": "user_2",
+      "email": "marc@example.com",
+      "first_name": "Marc",
+      "hedgehog_config": null,
+      "id": 2,
+      "is_email_verified": true,
+      "last_name": "",
+      "role_at_organization": "product",
+      "uuid": "0188aa00-0000-0000-0000-000000000002"
+    },
+    "current_iteration": null,
+    "current_iteration_start_date": null,
+    "description": "Asked after a valuation",
+    "enable_iframe_embedding": false,
+    "enable_partial_responses": false,
+    "end_date": null,
+    "feature_flag_keys": [
+      {
+        "key": "flag",
+        "value": null
+      },
+      {
+        "key": "internal_targeting_flag_key",
+        "value": "survey-targeting-01903ceb"
+      }
+    ],
+    "form_content": null,
+    "id": "01903ceb-d46e-7dec-a3d5-ed7d7c2cd33e",
+    "internal_targeting_flag": {
+      "active": true,
+      "id": 905,
+      "key": "survey-targeting-01903ceb",
+      "team_id": 1
+    },
+    "iteration_count": null,
+    "iteration_frequency_days": null,
+    "iteration_start_dates": [],
+    "linked_flag": null,
+    "linked_flag_id": null,
+    "linked_insight_id": null,
+    "name": "Survey 6: Exit",
+    "questions": [
+      {
+        "display": "number",
+        "id": "019005f4-be94-72f4-a444-b9cc7affa1d7",
+        "lowerBoundLabel": "Unlikely",
+        "question": "How likely are you to recommend us?",
+        "scale": 10,
+        "type": "rating",
+        "upperBoundLabel": "Very likely"
+      },
+      {
+        "id": "0190032b-2d88-7f4f-abfa-9307afd04cb9",
+        "optional": true,
+        "question": "What could we do better?",
+        "type": "open"
+      }
+    ],
+    "response_sampling_daily_limits": null,
+    "response_sampling_interval": null,
+    "response_sampling_interval_type": "week",
+    "response_sampling_limit": null,
+    "response_sampling_start_date": null,
+    "responses_limit": null,
+    "schedule": "once",
+    "start_date": "2026-11-07T10:47:52.000000Z",
+    "targeting_flag": null,
+    "translations": null,
+    "type": "api",
+    "user_access_level": "editor"
+  },
+  {
+    "appearance": {
+      "backgroundColor": "#eeeded",
+      "position": "right"
+    },
+    "archived": false,
+    "base_language": null,
+    "conditions": {
+      "url": "/valuation",
+      "urlMatchType": "icontains"
+    },
+    "created_at": "2026-06-18T14:26:20.000000Z",
+    "created_by": {
+      "distinct_id": "user_2",
+      "email": "marc@example.com",
+      "first_name": "Marc",
+      "hedgehog_config": null,
+      "id": 2,
+      "is_email_verified": true,
+      "last_name": "",
+      "role_at_organization": "product",
+      "uuid": "0188aa00-0000-0000-0000-000000000002"
+    },
+    "current_iteration": null,
+    "current_iteration_start_date": null,
+    "description": "Asked after a valuation",
+    "enable_iframe_embedding": false,
+    "enable_partial_responses": false,
+    "end_date": null,
+    "feature_flag_keys": [
+      {
+        "key": "flag",
+        "value": null
+      },
+      {
+        "key": "internal_targeting_flag_key",
+        "value": "survey-targeting-01903139"
+      }
+    ],
+    "form_content": null,
+    "id": "01903139-6242-7d03-a1f7-8b6165a5c0bf",
+    "internal_targeting_flag": {
+      "active": true,
+      "id": 901,
+      "key": "survey-targeting-01903139",
+      "team_id": 1
+    },
+    "iteration_count": null,
+    "iteration_frequency_days": null,
+    "iteration_start_dates": [],
+    "linked_flag": null,
+    "linked_flag_id": null,
+    "linked_insight_id": null,
+    "name": "Survey 2: Valuation feedback",
+    "questions": [
+      {
+        "display": "number",
+        "id": "0190fb52-eaed-79af-a40e-bbc64e69752f",
+        "lowerBoundLabel": "Unlikely",
+        "question": "How likely are you to recommend us?",
+        "scale": 10,
+        "type": "rating",
+        "upperBoundLabel": "Very likely"
+      },
+      {
+        "id": "01901b32-5ab0-7f37-a98c-41f58562780f",
+        "optional": true,
+        "question": "What could we do better?",
+        "type": "open"
+      }
+    ],
+    "response_sampling_daily_limits": null,
+    "response_sampling_interval": null,
+    "response_sampling_interval_type": "week",
+    "response_sampling_limit": null,
+    "response_sampling_start_date": null,
+    "responses_limit": null,
+    "schedule": "once",
+    "start_date": "2026-06-18T15:26:20.000000Z",
+    "targeting_flag": null,
+    "translations": null,
+    "type": "api",
+    "user_access_level": "editor"
+  },
+  {
+    "appearance": {
+      "backgroundColor": "#eeeded",
+      "position": "right"
+    },
+    "archived": false,
+    "base_language": null,
+    "conditions": null,
+    "created_at": "2026-02-09T13:25:44.000000Z",
+    "created_by": {
+      "distinct_id": "user_1",
+      "email": "ana@example.com",
+      "first_name": "Ana",
+      "hedgehog_config": null,
+      "id": 1,
+      "is_email_verified": true,
+      "last_name": "",
+      "role_at_organization": "product",
+      "uuid": "0188aa00-0000-0000-0000-000000000001"
+    },
+    "current_iteration": null,
+    "current_iteration_start_date": null,
+    "description": "",
+    "enable_iframe_embedding": false,
+    "enable_partial_responses": true,
+    "end_date": null,
+    "feature_flag_keys": [
+      {
+        "key": "flag",
+        "value": null
+      },
+      {
+        "key": "internal_targeting_flag_key",
+        "value": "survey-targeting-0190e393"
+      }
+    ],
+    "form_content": null,
+    "id": "0190e393-f1f5-7333-a719-6190bc762f65",
+    "internal_targeting_flag": {
+      "active": true,
+      "id": 900,
+      "key": "survey-targeting-0190e393",
+      "team_id": 1
+    },
+    "iteration_count": null,
+    "iteration_frequency_days": null,
+    "iteration_start_dates": [],
+    "linked_flag": null,
+    "linked_flag_id": null,
+    "linked_insight_id": null,
+    "name": "Survey 1: NPS",
+    "questions": [
+      {
+        "display": "number",
+        "id": "019087df-40ca-707e-a80c-5a70440b1282",
+        "lowerBoundLabel": "Unlikely",
+        "question": "How likely are you to recommend us?",
+        "scale": 10,
+        "type": "rating",
+        "upperBoundLabel": "Very likely"
+      },
+      {
+        "id": "0190dfbb-857c-7c6d-adc1-c974a7ae736d",
+        "optional": true,
+        "question": "What could we do better?",
+        "type": "open"
+      }
+    ],
+    "response_sampling_daily_limits": null,
+    "response_sampling_interval": null,
+    "response_sampling_interval_type": "week",
+    "response_sampling_limit": null,
+    "response_sampling_start_date": null,
+    "responses_limit": null,
+    "schedule": "once",
+    "start_date": "2026-02-09T14:25:44.000000Z",
+    "targeting_flag": null,
+    "translations": null,
+    "type": "popover",
+    "user_access_level": "editor"
+  }
+]

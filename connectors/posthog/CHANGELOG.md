@@ -4,7 +4,7 @@ Releases of `mako/posthog`. Not released yet: no tag, no registry entry.
 
 ## 1.0.0 (unreleased)
 
-- The in-process PostHog connector ported to `@makoai/connector-sdk`, with
+- The in-process PostHog connector (now deleted) ported to `@makoai/connector-sdk`, with
   the same 5 REST entities (`surveys`, `survey_responses`, `feature_flags`,
   `experiments`, `annotations`), schemas, offsets, pagination, `since`
   handling, retry policy and `check` probe.

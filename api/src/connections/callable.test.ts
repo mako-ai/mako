@@ -1181,168 +1181,15 @@ describe("form encoding", () => {
   });
 });
 
-describe("PostHog: reads in its own project, a query included", () => {
-  const config = {
-    api_base_url: "https://us.posthog.com",
-    project_id: "175702",
-    api_key: KEY,
-  };
-  const read = (method: string, path: string, body?: unknown) =>
-    isReadRequest(
-      type("posthog"),
-      { method, path, headers: {}, ...(body === undefined ? {} : { body }) },
-      config,
-    );
-  const hogql = { query: { kind: "HogQLQuery", query: "select 1" } };
-
-  it("a GET in the project reads; a GET elsewhere does not", () => {
-    expect(read("GET", "/api/projects/175702/persons/")).toBe(true);
-    expect(read("GET", "/api/environments/175702/persons/")).toBe(true);
-    expect(read("GET", "/api/projects/999/persons/")).toBe(false);
-    expect(read("GET", "/api/projects/1757020/persons/")).toBe(false);
-    expect(read("GET", "/api/organizations/")).toBe(false);
-    expect(read("GET", "/api/users/@me/")).toBe(false);
-  });
-
-  it("a query that reads, POSTed to the project's query API, reads", () => {
-    expect(read("POST", "/api/projects/175702/query/", hogql)).toBe(true);
-    expect(read("POST", "/api/projects/175702/query", hogql)).toBe(true);
-    expect(
-      read("POST", "/api/projects/175702/query/", JSON.stringify(hogql)),
-    ).toBe(true);
-  });
-
-  it("an agent cannot force a recompute: refresh is refused", () => {
-    for (const refresh of ["blocking", "force_blocking", true]) {
-      expect(
-        read("POST", "/api/projects/175702/query/", { ...hogql, refresh }),
-      ).toBe(false);
-    }
-  });
-
-  it("a GET reads only allowlisted analytics data, never the project root", () => {
-    // The project root returns the project's secret token and integrations.
-    expect(read("GET", "/api/projects/175702/")).toBe(false);
-    expect(read("GET", "/api/projects/175702")).toBe(false);
-    expect(read("GET", "/api/environments/175702/")).toBe(false);
-    for (const path of [
-      "/api/projects/175702/persons/",
-      "/api/projects/175702/persons/abc/",
-      "/api/projects/175702/events/",
-      "/api/projects/175702/insights/42/",
-      "/api/projects/175702/cohorts/7/persons/",
-      "/api/projects/175702/query/q_123/",
-      "/api/projects/175702/feature_flags/",
-      "/api/projects/175702/feature_flags/12/",
-    ]) {
-      expect(read("GET", path), path).toBe(true);
-    }
-    for (const path of [
-      "/api/projects/175702/feature_flags/local_evaluation/",
-      "/api/projects/175702/feature_flags/12/remote_config/",
-      "/api/projects/175702/hog_functions/",
-      "/api/projects/175702/integrations/",
-      "/api/projects/175702/batch_exports/",
-      "/api/projects/175702/plugin_configs/",
-      "/api/projects/175702/surveys/",
-      "/api/environments/175702/secret_token/",
-    ]) {
-      expect(read("GET", path), path).toBe(false);
-    }
-  });
-
-  it("anything else POSTed writes", () => {
-    expect(read("POST", "/api/projects/999/query/", hogql)).toBe(false);
-    expect(read("POST", "/api/projects/175702/feature_flags/", hogql)).toBe(
-      false,
-    );
-    expect(
-      read("POST", "/api/projects/175702/query/", {
-        query: { kind: "SomethingNew" },
-      }),
-    ).toBe(false);
-    expect(
-      read("POST", "/api/projects/175702/query/", { ...hogql, extra: 1 }),
-    ).toBe(false);
-    expect(
-      read("POST", "/api/projects/175702/query/", { query: "select 1" }),
-    ).toBe(false);
-    // Not compact JSON: a duplicate key could mean something else.
-    expect(
-      read(
-        "POST",
-        "/api/projects/175702/query/",
-        '{"query":{"kind":"HogQLQuery","query":"select 1"}, "query":{}}',
-      ),
-    ).toBe(false);
-    for (const method of ["PUT", "PATCH", "DELETE"]) {
-      expect(read(method, "/api/projects/175702/persons/1/", {})).toBe(false);
-    }
-  });
-
-  it("a numeric project_id reads as its string", () => {
-    expect(
-      isReadRequest(
-        type("posthog"),
-        { method: "GET", path: "/api/projects/175702/persons/", headers: {} },
-        { ...config, project_id: 175702 },
-      ),
-    ).toBe(true);
-  });
-
-  it("a project with no project_id reads nothing", () => {
-    expect(
-      isReadRequest(
-        type("posthog"),
-        { method: "GET", path: "/api/projects/1/persons/", headers: {} },
-        { api_key: KEY },
-      ),
-    ).toBe(false);
-  });
-
-  it("sends the key as the connector does and never passes it back", async () => {
-    const sent = answering(200, { echoed: `Bearer ${KEY}`, results: [[3]] });
-    const answer = await forward(
-      connection("posthog", config),
-      type("posthog"),
-      { method: "POST", path: "/api/projects/175702/query/", body: hogql },
-    );
-    expect(sent[0].url).toBe(
-      "https://us.posthog.com/api/projects/175702/query/",
-    );
-    expect(sent[0].headers.authorization).toBe(`Bearer ${KEY}`);
-    expect(sent[0].headers["content-type"]).toBe("application/json");
-    expect(JSON.parse(sent[0].body ?? "")).toEqual(hogql);
-    expect(JSON.stringify(answer)).not.toContain(KEY);
-
-    const project = answering(200, {});
-    await forward(
-      connection("posthog", { ...config, auth_type: "project_api_key" }),
-      type("posthog"),
-      { method: "GET", path: "/api/projects/175702/persons/" },
-    );
-    expect(project[0].headers["posthog-api-token"]).toBe(KEY);
-    expect(project[0].headers.authorization).toBeUndefined();
-  });
-
-  it("its address is changed only in the app", () => {
-    expect(type("posthog").baseUrlFields).toEqual(["api_base_url"]);
-    expect(type("posthog").baseUrl({})).toBe("https://app.posthog.com");
-  });
-});
-
 describe("named operations build reads the profile accepts", () => {
   const configs: Record<string, Record<string, unknown>> = {
     close: { api_key: KEY },
     stripe: { api_key: KEY },
-    posthog: { project_id: "175702", api_key: KEY },
   };
   const examples: Record<string, Record<string, unknown>> = {
     search_leads: { query: 'email_address:"a@b.com"' },
     get_lead: { id: "lead_abc" },
     list_opportunities: { lead_id: "lead_abc", status_type: "active" },
-    hogql: { query: "select count() from events" },
-    search_persons: { search: "a@b.com" },
     search_customers: { query: "email:'a@b.com'" },
     get_customer: { id: "cus_123" },
     list_subscriptions: { customer: "cus_123" },
@@ -1366,7 +1213,7 @@ describe("named operations build reads the profile accepts", () => {
     }
   });
 
-  it("the three target reads build the expected requests", () => {
+  it("the target reads build the expected requests", () => {
     expect(
       operationRequest("close", configs.close, "search_leads", {
         query: "Dupont",
@@ -1376,22 +1223,6 @@ describe("named operations build reads the profile accepts", () => {
       method: "GET",
       path: "/lead/",
       query: { query: "Dupont", _limit: OPERATION_MAX_LIMIT, _skip: 0 },
-    });
-    expect(
-      operationRequest("posthog", configs.posthog, "hogql", {
-        query:
-          "select count() from events where timestamp > now() - interval 1 day",
-      }),
-    ).toEqual({
-      method: "POST",
-      path: "/api/projects/175702/query/",
-      body: {
-        query: {
-          kind: "HogQLQuery",
-          query:
-            "select count() from events where timestamp > now() - interval 1 day",
-        },
-      },
     });
     expect(
       operationRequest("stripe", configs.stripe, "get_customer", {
@@ -1421,14 +1252,11 @@ describe("named operations build reads the profile accepts", () => {
     expect(() =>
       operationRequest("close", {}, "search_leads", { query: "x", skip: -1 }),
     ).toThrow(/skip/);
-    expect(() =>
-      operationRequest("posthog", {}, "hogql", { query: "select 1" }),
-    ).toThrow(/project_id/);
   });
 
   it("each operation is described with its params, never a credential", () => {
-    const described = describeOperations("posthog");
-    expect(described.map(op => op.name)).toEqual(["hogql", "search_persons"]);
+    const described = describeOperations("close");
+    expect(described.map(op => op.name)).toContain("search_leads");
     expect(described[0].params[0]).toMatchObject({
       name: "query",
       required: true,

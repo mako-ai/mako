@@ -1,13 +1,13 @@
 /**
- * PostHog entity schemas, field for field the same as the in-process
- * connector's (`api/src/connectors/posthog/schema.ts`). The parity harness in
- * `fixtures/` fails if the two drift.
+ * PostHog entity schemas, field for field the same as the deleted in-process
+ * connector's. `api/src/connectors/posthog-folder.test.ts` pins the shape of
+ * every entity, and the golden rows in `fixtures/golden/` pin the data.
  *
  * Two things differ in form, not in meaning:
  * - Mako's system columns (`_mako_*`, `_syncedAt`, `is_deleted`, ...) are not
  *   declared here: a connector cannot declare them over the wire.
  *   `jsonSchemaToEntitySchema` merges all 8 on the box path, as the
- *   in-process schema spreads them, and the parity test checks they match.
+ *   in-process schema spread them, and the API test checks all 8 are there.
  * - Nullability is a JSON Schema type list. A field the in-process schema
  *   marks `nullable: false` (a survey's `name`, a response's `uuid`) has no
  *   `"null"` in its list; every other field has one.
