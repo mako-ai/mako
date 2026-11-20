@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { parseConnectorFile } from "../connector-file";
 import { maxSatisfying, parseRange, parseRegistryReference } from "./semver";
 import { resolveReference } from "./registry.service";
+import { resolveStripeRelease } from "./stripe-release";
 import {
   authTypeOf,
   changelogFor,
@@ -149,6 +150,73 @@ function catalogWith(...versions: string[]): RegistryCatalog {
     versions: versions.map(v => version(v)),
   });
 }
+
+describe("platform Stripe release", () => {
+  const sha256 = "f".repeat(64);
+
+  it("stays inactive without a pin", async () => {
+    await expect(resolveStripeRelease({})).resolves.toBeNull();
+  });
+
+  it.each([{ version: "1.0.0" }, { sha256 }])(
+    "refuses a partial pin",
+    async pin => {
+      await expect(
+        resolveStripeRelease(pin, catalogWith("1.0.0")),
+      ).rejects.toThrow(/both/);
+    },
+  );
+
+  it.each(["1", "1.0", "^1.0.0", "1.0.0-beta", " 1.0.0 ", ""])(
+    "refuses the nonexact version %s",
+    async version => {
+      await expect(
+        resolveStripeRelease({ version, sha256 }, catalogWith("1.0.0")),
+      ).rejects.toThrow(/exact version/);
+    },
+  );
+
+  it.each(["", "f".repeat(63), "g".repeat(64), "F".repeat(64)])(
+    "refuses an invalid digest",
+    async digest => {
+      await expect(
+        resolveStripeRelease(
+          { version: "1.0.0", sha256: digest },
+          catalogWith("1.0.0"),
+        ),
+      ).rejects.toThrow(/SHA-256/);
+    },
+  );
+
+  it("refuses a missing published version", async () => {
+    await expect(
+      resolveStripeRelease({ version: "1.0.0", sha256 }, catalogWith("1.0.1")),
+    ).rejects.toThrow(/No version/);
+  });
+
+  it("refuses a different published digest", async () => {
+    await expect(
+      resolveStripeRelease(
+        { version: "1.0.0", sha256: "a".repeat(64) },
+        catalogWith("1.0.0"),
+      ),
+    ).rejects.toThrow(/reviewed SHA-256/);
+  });
+
+  it("returns only the exact reviewed published release", async () => {
+    const resolved = await resolveStripeRelease(
+      { version: "1.0.0", sha256 },
+      catalogWith("1.0.0", "1.0.1", "2.0.0"),
+    );
+    expect(resolved).toMatchObject({
+      ref: "mako/stripe@1.0.0",
+      slug: "stripe",
+      version: "1.0.0",
+      hash: version("1.0.0").hash,
+      sha256,
+    });
+  });
+});
 
 describe("resolution", () => {
   const reference = (text: string) => {
