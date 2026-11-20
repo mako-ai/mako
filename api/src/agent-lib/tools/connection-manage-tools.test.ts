@@ -268,7 +268,8 @@ describe("update_connection", () => {
       connectionId: String(GQL._id),
       config: { endpoint: "https://attacker.example/x" },
     });
-    expect(endpoint.error).toBeTruthy();
+    // The refusal is configUpdateProblem's no-schema guard.
+    expect(String(endpoint.error)).toMatch(/declares no config schema/);
     expect(String(endpoint.error)).not.toContain("attacker.example");
     expect(
       (await SourceConnection.findById(GQL._id).lean())?.config?.endpoint,
@@ -277,6 +278,7 @@ describe("update_connection", () => {
     const schema = {
       fields: [
         { name: "api_base_url", type: "string" },
+        { name: "endpoint", type: "string" },
         { name: "tenant_host", type: "string" },
         { name: "label", type: "string" },
         { name: "page_size", type: "number" },
@@ -284,6 +286,7 @@ describe("update_connection", () => {
     };
     for (const [config, stored] of [
       [{ api_base_url: "x" }, {}],
+      [{ endpoint: "x" }, {}],
       [{ tenant_host: "x" }, {}],
       [{ label: "https://attacker.example" }, {}],
       [{ label: "attacker.example.com" }, {}],

@@ -204,7 +204,6 @@ const CREDENTIAL_LIKE_KEY =
  * picked, then probe it there.
  */
 const ADDRESS_FIELDS_BY_TYPE: Readonly<Record<string, readonly string[]>> = {
-  graphql: ["endpoint", "headers"],
   rest: ["api_base_url", "headers"],
   posthog: ["api_base_url"],
   calendly: ["api_base_url"],

@@ -18,7 +18,7 @@ void test("the folder reads the cassettes into the golden rows, byte for byte", 
   const expectedKeys = GOLDEN_SCENARIOS.flatMap(scenario =>
     ENTITIES.map(entity => `${scenario}/${entity}`),
   );
-  assert.equal(expectedKeys.length, 15);
+  assert.equal(expectedKeys.length, 25);
   assert.deepEqual(Object.keys(actual).sort(), expectedKeys.sort());
   for (const key of expectedKeys) {
     const [scenario, entity] = key.split("/");
@@ -46,6 +46,17 @@ void test("the golden rows cover a default, an incremental and a chunked read", 
   // One request per chunk: the 70 listings cross 4 chunk boundaries' worth
   // of cursor and offset state.
   assert.equal(read("chunked", "online_listings").chunks.length, 4);
+  // Two rows a page: 35 items take 18 requests.
+  assert.equal(read("small-pages", "items").rows.length, 35);
+  // The credential travels in the Hasura header on every request.
+  for (const entity of ENTITIES) {
+    const { requests } = read("hasura-secret", entity);
+    assert.ok(requests.length > 0, entity);
+    assert.ok(
+      requests.every((r: string) => r.endsWith("(hasura)")),
+      entity,
+    );
+  }
   // `since` keeps rows whose `updated_at` is after it and drops rows without.
   assert.equal(read("since", "items").rows.length, 20);
   assert.equal(read("since", "online_listings").rows.length, 25);

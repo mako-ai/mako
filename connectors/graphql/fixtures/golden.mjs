@@ -6,7 +6,10 @@
  * - default: the engine's default chunk of 10 requests;
  * - since: the incremental read, a client filter on `updated_at`;
  * - chunked: one request per chunk, so every cursor and offset crosses a
- *   chunk boundary. The file also holds the position after each chunk.
+ *   chunk boundary. The file also holds the position after each chunk;
+ * - small-pages: two rows a page (a probe's batch size), one page per chunk;
+ * - hasura-secret: the credential goes in `x-hasura-admin-secret`, not a
+ *   bearer header. The file also holds the requests with the header style.
  *
  * The API test `api/src/connectors/workspace/graphql-folder-golden.test.ts`
  * compares byte for byte. After an intended change:
@@ -39,7 +42,13 @@ import {
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const GOLDEN_DIR = path.join(here, "golden");
-export const GOLDEN_SCENARIOS = ["default", "since", "chunked"];
+export const GOLDEN_SCENARIOS = [
+  "default",
+  "since",
+  "chunked",
+  "small-pages",
+  "hasura-secret",
+];
 export const ENTITIES = FLOW_QUERIES.map(query => query.name);
 
 /** The golden file text: sorted keys, 2-space indent. */
@@ -60,18 +69,21 @@ export async function buildGolden() {
     for (const name of GOLDEN_SCENARIOS) {
       const scenario = scenarioByName(name);
       for (const entity of ENTITIES) {
+        const token = tokenFor("golden", scenario, entity);
         const { rows, chunks } = await readFolder({
           entity,
           since: scenario.since,
           maxIterations: scenario.maxIterations,
-          config: scenarioConfig(
-            tokenFor("golden", scenario, entity),
-            server,
-            scenario,
-          ),
+          config: scenarioConfig(token, server, scenario),
         });
+        // Chunked keeps the position after each chunk. Hasura keeps the
+        // requests with the header style that carried the credential.
         out[`${name}/${entity}`] = goldenText(
-          name === "chunked" ? { chunks, rows } : { rows },
+          name === "chunked"
+            ? { chunks, rows }
+            : name === "hasura-secret"
+              ? { requests: server.requests(token), rows }
+              : { rows },
         );
       }
     }
