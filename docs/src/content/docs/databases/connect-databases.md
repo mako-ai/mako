@@ -150,6 +150,8 @@ Note the query parameter (`?appName=`) becomes a path segment (`/MyCluster`).
 
 Requires a Google Cloud service account with BigQuery access. Upload the service account JSON key file when adding the connection.
 
+Only a key of `type: service_account` is accepted. Mako refuses any other Google credential type (authorized user, external account, impersonation) when you save the connection and again each time it is used. A connection with no key is refused too: Mako never signs in with its own Google credentials on a workspace's behalf.
+
 ### ClickHouse
 
 Connects over HTTP. Default port is `8123` (HTTP) or `9000` (native). Cloud-hosted ClickHouse (e.g. ClickHouse Cloud) is supported.
@@ -165,6 +167,8 @@ postgresql://user:password@cluster.region.redshift.amazonaws.com:5439/database
 ### Cloud SQL (Postgres)
 
 For Google Cloud SQL instances with the Auth Proxy. Provide the instance connection name (e.g. `project:region:instance`) and credentials.
+
+Cloud SQL connections sign in with the service account JSON key you provide, under the same rules as BigQuery above: a `service_account` key is required, and there is no fallback to Mako's own Google credentials.
 
 ### Cloudflare D1
 

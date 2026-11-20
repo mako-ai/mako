@@ -49,6 +49,8 @@ Workspace admins can schedule a saved console to run automatically from the cons
 
 When a console is scheduled, Mako stores the next run time and executes it through Inngest. The schedule panel shows the latest run status, duration, row count, consecutive failures, and recent run history. You can attach **notifications** to a schedule (email, webhook, or Slack) — see [Notifications](/notifications/).
 
+**Automatic pause.** A schedule that fails for the same permanent cause three runs in a row is paused. Two causes count: Mako refusing the console's writes (the console's owner is not a writer in the connection's Access tab), and a database permission error. Timeouts and dropped connections never count; those schedules keep running. A paused schedule keeps its cron, but the scheduler skips it, and the schedule panel shows why it paused and what to fix. A permanent failure sends a notification on its first run and again on the pause, not on the runs in between; other failures notify on every run. Saving the schedule again (the schedule panel, the API, the agent tool, or a changed cron in git) resumes it with fresh failure counts.
+
 ### Async Runs (Run now)
 
 **Run now** triggers an asynchronous run of any saved console — no schedule required. Each run is queued through Inngest, executes in the background, and is recorded in the **Runs** tab below the editor. Use this to:
