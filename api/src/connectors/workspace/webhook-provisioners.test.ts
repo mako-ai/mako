@@ -7,7 +7,12 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import type { AxiosInstance } from "axios";
+import { withConfig, type LogRecord } from "@logtape/logtape";
+import axios, {
+  AxiosError,
+  type AxiosAdapter,
+  type AxiosInstance,
+} from "axios";
 import {
   adoptCloseWebhook,
   setCloseWebhookPaused,
@@ -175,13 +180,13 @@ void test("only Close and Stripe have a provisioner, and each needs a key", asyn
 
 /** A boxed connector whose indexed spec is given, without any box. */
 class SpecConnector extends SandboxedConnector {
-  constructor(type: string, spec: Record<string, unknown>) {
+  constructor(type: string, spec: Record<string, unknown>, apiKey = "k") {
     super({
       _id: "665f00000000000000000001",
       workspaceId: "ws1",
       name: "PL Close shadow",
       type,
-      config: { api_key: "k" },
+      config: { api_key: apiKey },
     } as never);
     this.loaded = {
       slug: type.slice(3),
@@ -272,6 +277,183 @@ void test("PandaDoc and Claap folders provision as their built-ins do, create on
   assert.match(String(cl.secretHelpText), /X-Claap-Webhook-Secret/);
   assert.match(String(pd.secretHelpText), /Shared Key/);
 });
+
+for (const scenario of [
+  { name: "creation", adopt: false, reject: undefined },
+  { name: "adoption", adopt: true, reject: undefined },
+  { name: "missing auth", adopt: false, reject: "get" },
+  { name: "rejected update", adopt: true, reject: "put" },
+] as const) {
+  void test(`boxed Claap provisioning logs safe dispatch fields for ${scenario.name}`, async t => {
+    const { adopt, reject } = scenario;
+    process.env.CONNECTOR_WEBHOOK_BATCHES = "true";
+    const apiKey = "synthetic-claap-api-key";
+    const signingSecret = "synthetic-claap-signing-secret";
+    const webhook = { id: "claap-shadow", url: URL_A, secret: signingSecret };
+    const existing = [{ id: "claap-live", url: "https://elsewhere.test/hook" }];
+    const calls: string[] = [];
+    const authenticated: boolean[] = [];
+    const records: LogRecord[] = [];
+    const providerMessage = "synthetic provider rejection detail";
+    const adapter: AxiosAdapter = async config => {
+      calls.push(`${config.method?.toUpperCase()} ${config.url}`);
+      const header = config.headers.get("X-Claap-Key");
+      assert.equal(header, reject === "get" ? undefined : apiKey);
+      authenticated.push(header === apiKey);
+      assert.equal(config.baseURL, "https://api.claap.io");
+      if (reject !== undefined && config.method === reject) {
+        throw new AxiosError(
+          providerMessage,
+          "ERR_BAD_REQUEST",
+          config,
+          undefined,
+          {
+            config,
+            data: { message: providerMessage, apiKey, signingSecret },
+            headers: { "X-Synthetic-Response": signingSecret },
+            status: 401,
+            statusText: "Unauthorized",
+          },
+        );
+      }
+      return {
+        config,
+        data: {
+          result:
+            config.method === "get"
+              ? adopt
+                ? [...existing, webhook]
+                : existing
+              : webhook,
+        },
+        headers: {},
+        status: 200,
+        statusText: "OK",
+      };
+    };
+    const create = axios.create.bind(axios);
+    t.mock.method(axios, "create", (config?: Parameters<typeof create>[0]) => {
+      const client = create({ ...config, adapter });
+      if (reject === "get") {
+        client.interceptors.request.use(request => {
+          request.headers.delete("X-Claap-Key");
+          return request;
+        });
+      }
+      return client;
+    });
+    const connector = new SpecConnector(
+      "ws:claap",
+      {
+        mako: {
+          webhooks: {
+            verification: {
+              scheme: "shared-secret",
+              secretHeader: "x-claap-webhook-secret",
+            },
+          },
+        },
+      },
+      apiKey,
+    );
+
+    await withConfig(
+      {
+        sinks: {
+          capture: record => {
+            records.push(record);
+          },
+        },
+        loggers: [
+          {
+            category: ["connector", "claap"],
+            sinks: ["capture"],
+            parentSinks: "override",
+          },
+        ],
+      },
+      async () => {
+        const result = connector.createWebhookSubscription({
+          endpointUrl: URL_A,
+          enabledEntities: ["recordings", "recording_transcripts"],
+        });
+        if (reject === "get") {
+          await assert.rejects(result, (error: Error) => {
+            assert.equal(
+              error.message,
+              "Failed to create Claap webhook subscription: HTTP 401",
+            );
+            assert.equal(error.cause, undefined);
+            return true;
+          });
+        } else {
+          const subscription = await result;
+          assert.equal(subscription.providerWebhookId, "claap-shadow");
+          assert.equal(subscription.signingSecret, signingSecret);
+        }
+      },
+    );
+
+    const operations =
+      reject === "get" ? ["list"] : ["list", adopt ? "update" : "create"];
+    assert.deepEqual(
+      calls,
+      reject === "get"
+        ? ["GET /v1/webhooks"]
+        : [
+            "GET /v1/webhooks",
+            adopt ? "PUT /v1/webhooks/claap-shadow" : "POST /v1/webhooks",
+          ],
+    );
+    const dispatches = records.filter(record => record.level === "info");
+    assert.deepEqual(
+      dispatches.map(record => record.properties.operation),
+      operations,
+    );
+    assert.deepEqual(
+      dispatches.map(record => record.properties.authHeaderPresent),
+      authenticated,
+    );
+    const requestIds = dispatches.map(
+      record => record.properties.provisionRequestId,
+    );
+    assert.equal(new Set(requestIds).size, operations.length);
+    for (const requestId of requestIds) {
+      assert.match(String(requestId), /^[\da-f-]{36}$/);
+    }
+    assert.equal(
+      records.length,
+      operations.length + (reject === undefined ? 0 : 1),
+    );
+    for (const record of dispatches) {
+      assert.deepEqual(Object.keys(record.properties).sort(), [
+        "authHeaderPresent",
+        "operation",
+        "provisionRequestId",
+      ]);
+    }
+    if (reject !== undefined) {
+      assert.equal(records.at(-1)?.level, "warning");
+      assert.deepEqual(records.at(-1)?.properties, {
+        ...dispatches.at(-1)?.properties,
+        status: 401,
+      });
+    }
+    const serializedLogs = JSON.stringify(records);
+    for (const privateValue of [
+      apiKey,
+      signingSecret,
+      providerMessage,
+      URL_A,
+      "X-Claap-Key",
+      "/v1/webhooks",
+      "recording_added",
+      "claap-shadow",
+    ]) {
+      assert.equal(serializedLogs.includes(privateValue), false);
+    }
+  });
+}
 
 void test("a shared-secret folder names its secret header for redaction", () => {
   const claap = new SpecConnector("ws:claap", {

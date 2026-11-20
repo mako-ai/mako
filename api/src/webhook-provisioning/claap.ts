@@ -3,16 +3,14 @@
  * create-or-adopt call, run in the API process so the webhook secret never
  * reaches a box. Moved 1:1 from the built-in connector.
  */
-import axios, { AxiosInstance } from "axios";
+import { randomUUID } from "node:crypto";
+import axios, { type AxiosInstance } from "axios";
 import type {
   ProvisionWebhookOptions,
   ProvisionWebhookResult,
 } from "../connectors/base/BaseConnector";
-import {
-  createRetryExecutor,
-  formatHttpApiError,
-  type RetryExecutor,
-} from "../connectors/base/http-client";
+import type { RetryExecutor } from "../connectors/base/http-client";
+import { getErrorStatus, withHttpRetry } from "../connectors/base/http-retry";
 import { loggers } from "../logging";
 
 const logger = loggers.connector("claap");
@@ -40,29 +38,14 @@ function extractClaapResult(data: unknown): unknown {
   return data;
 }
 
-function describeClaapErrorBody(raw: unknown): string | undefined {
-  const data = raw as
-    { error?: { message?: string }; message?: string } | string | undefined;
-
-  const directError =
-    typeof data === "string"
-      ? data
-      : typeof data?.error?.message === "string"
-        ? data.error.message
-        : typeof data?.message === "string"
-          ? data.message
-          : undefined;
-
-  const serialized =
-    !directError && data && typeof data === "object"
-      ? JSON.stringify(data)
-      : undefined;
-
-  return directError || serialized;
-}
-
-function formatClaapApiError(error: unknown): string {
-  return formatHttpApiError(error, describeClaapErrorBody);
+function provisioningStatus(error: unknown): number | undefined {
+  const status = getErrorStatus(error);
+  return status !== undefined &&
+    Number.isInteger(status) &&
+    status >= 100 &&
+    status <= 599
+    ? status
+    : undefined;
 }
 
 type ClaapWebhookRecord = {
@@ -184,21 +167,9 @@ export async function provisionClaapWebhook(
       ? requestedEvents
       : eventsForEntities(options.enabledEntities ?? []);
 
-  const unsupported = effectiveEvents.filter(event => !isSupportedEvent(event));
-  if (requestedEvents.length > 0 && unsupported.length > 0) {
-    logger.warn("Ignoring unsupported Claap webhook events", {
-      unsupportedEvents: unsupported,
-    });
-  }
-
   const events = effectiveEvents.filter(isSupportedEvent);
-
   if (events.length === 0) {
-    throw new Error(
-      requestedEvents.length > 0
-        ? `No valid Claap webhook events configured. Unsupported events: ${unsupported.join(", ")}`
-        : "No valid Claap webhook events configured",
-    );
+    throw new Error("No valid Claap webhook events configured");
   }
 
   const payload = {
@@ -206,54 +177,61 @@ export async function provisionClaapWebhook(
     events,
   };
 
-  try {
-    const existingResponse = await ctx.execute(() => api.get("/v1/webhooks"));
-    const existing = normalizeClaapWebhookList(existingResponse.data).find(
-      webhook => webhook.url === options.endpointUrl,
-    );
-
-    if (existing) {
-      try {
-        await ctx.execute(() =>
-          api.put(`/v1/webhooks/${existing.id}`, payload),
-        );
-        logger.info("Updated Claap webhook events for existing subscription", {
-          webhookId: existing.id,
-          eventCount: events.length,
-        });
-      } catch (updateError) {
-        logger.warn("Could not update events on existing Claap webhook", {
-          webhookId: existing.id,
-          error: updateError,
-        });
-      }
-
-      return {
-        providerWebhookId: existing.id,
-        endpointUrl: options.endpointUrl,
-        signingSecret: existing.secret,
-      };
-    }
-
-    const response = await ctx.execute(() => api.post("/v1/webhooks", payload));
-    const created = normalizeClaapWebhookRecord(response.data);
-    const providerWebhookId = created?.id;
-    if (!providerWebhookId) {
+  const execute = async <T>(request: () => Promise<T>): Promise<T> => {
+    try {
+      return await ctx.execute(request);
+    } catch (error) {
+      const status = provisioningStatus(error);
+      // eslint-disable-next-line preserve-caught-error -- An Axios cause can expose credentials to callers and logs.
       throw new Error(
-        "Claap webhook created but no subscription id returned by API",
+        `Failed to create Claap webhook subscription${status === undefined ? "" : `: HTTP ${status}`}`,
       );
+    }
+  };
+  const existingResponse = await execute(() => api.get("/v1/webhooks"));
+  const existing = normalizeClaapWebhookList(existingResponse.data).find(
+    webhook => webhook.url === options.endpointUrl,
+  );
+
+  if (existing) {
+    try {
+      await ctx.execute(() => api.put(`/v1/webhooks/${existing.id}`, payload));
+    } catch {
+      // Adoption still succeeds if Claap refuses the event update. The adapter logs the failure.
     }
 
     return {
-      providerWebhookId,
+      providerWebhookId: existing.id,
       endpointUrl: options.endpointUrl,
-      signingSecret: created.secret,
+      signingSecret: existing.secret,
     };
-  } catch (error) {
+  }
+
+  const response = await execute(() => api.post("/v1/webhooks", payload));
+  const created = normalizeClaapWebhookRecord(response.data);
+  if (!created) {
     throw new Error(
-      `Failed to create Claap webhook subscription: ${formatClaapApiError(error)}`,
-      { cause: error },
+      "Claap webhook created but no subscription id returned by API",
     );
+  }
+
+  return {
+    providerWebhookId: created.id,
+    endpointUrl: options.endpointUrl,
+    signingSecret: created.secret,
+  };
+}
+
+function provisioningOperation(method: string | undefined) {
+  switch (method) {
+    case "get":
+      return "list";
+    case "post":
+      return "create";
+    case "put":
+      return "update";
+    default:
+      return undefined;
   }
 }
 
@@ -267,11 +245,34 @@ export function createClaapContext(apiKey: string): ClaapContext {
       "Content-Type": "application/json",
     },
   });
-  /** Shared policy: backoff with jitter, Retry-After, 429/5xx/network. */
-  const execute = createRetryExecutor({
-    label: "Claap",
-    logger,
-    sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
-  });
-  return { api: () => client, execute };
+  const adapter = client.defaults.adapter;
+  // Axios has merged defaults and run request transforms at this boundary.
+  client.defaults.adapter = async config => {
+    const dispatch = axios.getAdapter(adapter, config);
+    const operation = provisioningOperation(config.method);
+    if (!operation) return dispatch(config);
+    const authHeader = config.headers.get("X-Claap-Key");
+    const fields = {
+      provisionRequestId: randomUUID(),
+      operation,
+      authHeaderPresent:
+        typeof authHeader === "string" && authHeader.trim() !== "",
+    };
+    logger.info("Dispatching Claap webhook provisioning request", fields);
+    try {
+      return await dispatch(config);
+    } catch (error) {
+      const status = provisioningStatus(error);
+      logger.warn("Claap webhook provisioning request failed", {
+        ...fields,
+        ...(status === undefined ? {} : { status }),
+      });
+      throw error;
+    }
+  };
+  // The shared policy still retries 429, 5xx and network failures. The adapter logs each attempt.
+  return {
+    api: () => client,
+    execute: (fn, maxRetries) => withHttpRetry(fn, { maxRetries }),
+  };
 }
