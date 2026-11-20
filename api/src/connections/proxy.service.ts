@@ -347,7 +347,11 @@ export async function connectionRequest(
   }
   // A type whose connector was removed has no schema to decrypt by: refuse
   // before anything is loaded or sent.
-  if (await isOrphanConnectorType(row.type, params.workspaceId)) {
+  if (
+    await isOrphanConnectorType(row.type, params.workspaceId, {
+      callable: true,
+    })
+  ) {
     throw new ConnectionRequestError(ORPHAN_TYPE_MESSAGE, 409);
   }
   const callable = callableFor(row.type);

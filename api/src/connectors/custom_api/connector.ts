@@ -3,7 +3,7 @@ import {
   ConnectionTestResult,
   FetchOptions,
 } from "../base/BaseConnector";
-import { customApi } from "../../connections/callable";
+import { customApiProfile } from "../../connections/callable-profiles/custom-api";
 import { forward } from "../../connections/forward";
 
 /** A JSON field Test needs in the answer, and the value it needs there. */
@@ -313,7 +313,7 @@ export class CustomApiConnector extends BaseConnector {
     try {
       const answer = await forward(
         this.sourceConnection,
-        customApi,
+        customApiProfile.callable,
         config.graphql === true
           ? { method: "POST", path: "/", body: { query: "{ __typename }" } }
           : { method: "GET", path: testPath },
