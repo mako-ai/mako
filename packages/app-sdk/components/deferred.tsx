@@ -66,27 +66,39 @@ function Deferred({ minHeight, rootMargin = "800px 0px", mode = "visible", place
 // turn in this one queue: one panel per painted frame, in mount order.
 let turn: Promise<void> = Promise.resolve()
 
-// Runs `cb` after the next painted frame and one task. A hidden tab never fires requestAnimationFrame, so a
-// 100 ms timer races it: whichever fires first runs `cb`, and the other is cancelled.
+// Runs `run` once: after the next painted frame and one task in a visible tab, or after a 100 ms timer in a
+// hidden one (a hidden tab never fires requestAnimationFrame). The timer runs only while the tab is hidden, so
+// frames slower than 100 ms never let it fire between paints. A visibilitychange swaps the waiting path.
 const FRAME_FALLBACK_MS = 100
-function afterFrame(cb: () => void): () => void {
+function afterFrame(run: () => void): () => void {
   let frame = 0
   let task = 0
   let fallback = 0
-  const cancel = () => {
+  const cb = () => {
+    stop()
+    run()
+  }
+  const stop = () => {
     cancelAnimationFrame(frame)
     window.clearTimeout(task)
     window.clearTimeout(fallback)
+    document.removeEventListener("visibilitychange", arm)
   }
-  frame = requestAnimationFrame(() => {
-    window.clearTimeout(fallback)
-    task = window.setTimeout(cb, 0)
-  })
-  fallback = window.setTimeout(() => {
+  function arm() {
     cancelAnimationFrame(frame)
-    cb()
-  }, FRAME_FALLBACK_MS)
-  return cancel
+    window.clearTimeout(fallback)
+    if (document.visibilityState === "hidden") {
+      fallback = window.setTimeout(cb, FRAME_FALLBACK_MS)
+      return
+    }
+    frame = requestAnimationFrame(() => {
+      document.removeEventListener("visibilitychange", arm)
+      task = window.setTimeout(cb, 0)
+    })
+  }
+  document.addEventListener("visibilitychange", arm)
+  arm()
+  return stop
 }
 const nextFrame = () => new Promise<void>((done) => afterFrame(done))
 
