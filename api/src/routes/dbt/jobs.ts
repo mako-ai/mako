@@ -29,6 +29,7 @@ import {
   serverError,
   publishDbtEvent,
   findProject,
+  runActorOf,
 } from "./context";
 import { fail } from "../lib/respond";
 
@@ -272,6 +273,7 @@ dbtJobRoutes.post(
         job,
         trigger: "manual",
         triggeredBy: getUserId(c),
+        actor: runActorOf(c),
       });
       publishDbtEvent(c, {
         type: "dbt.run.updated",

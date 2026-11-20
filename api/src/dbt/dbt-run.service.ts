@@ -31,6 +31,7 @@ import {
 } from "./dbt-run-queue";
 import type { AdhocDbtResult } from "./dbt-project.service";
 import { loggers } from "../logging";
+import { retryActor, withActorNames, type DbtRunActor } from "./run-actor";
 
 const TERMINAL_DBT_RUN_STATUSES: ReadonlySet<DbtRunStatus> = new Set([
   "success",
@@ -302,6 +303,8 @@ export async function triggerDbtRun(params: {
   commands: string[];
   trigger: "schedule" | "manual" | "agent" | "ci";
   triggeredBy: string;
+  /** Who started the run (run-actor.ts). Every creation path sets it. */
+  actor: DbtRunActor;
   /**
    * Branch whose committed base tree the run builds (repo-bound projects).
    * Defaults to the project default branch; CI runs pass the PR head.
@@ -415,6 +418,7 @@ export async function triggerDbtRun(params: {
     status: "queued",
     trigger: params.trigger,
     triggeredBy: params.triggeredBy,
+    actor: await withActorNames(params.actor),
     lane,
     gitBranch: params.gitBranch,
     workingTreeUserId: params.workingTreeUserId,
@@ -483,6 +487,7 @@ export async function recordCompletedAdhocDbtRun(params: {
   environment: string;
   command: string;
   triggeredBy: string;
+  actor: DbtRunActor;
   /** Caller whose working tree the command built (repo-bound projects). */
   workingTreeUserId?: string;
   /** Caller's checkout branch at run time (display-only provenance). */
@@ -505,6 +510,7 @@ export async function recordCompletedAdhocDbtRun(params: {
       status: params.result.success ? "success" : "error",
       trigger: "manual",
       triggeredBy: params.triggeredBy,
+      actor: await withActorNames(params.actor),
       workingTreeUserId: params.workingTreeUserId,
       sourceBranch: params.sourceBranch,
       deferToProduction: params.deferToProduction,
@@ -542,6 +548,7 @@ export async function triggerDbtJobRun(params: {
   job: IDbtJob;
   trigger: "schedule" | "manual" | "agent";
   triggeredBy: string;
+  actor: DbtRunActor;
 }): Promise<IDbtRun> {
   return triggerDbtRun({
     workspaceId: params.workspaceId,
@@ -551,6 +558,7 @@ export async function triggerDbtJobRun(params: {
     commands: params.job.commands,
     trigger: params.trigger,
     triggeredBy: params.triggeredBy,
+    actor: params.actor,
     // Scheduled ticks must not stack behind a still-running run.
     skipIfActive: params.trigger === "schedule",
   });
@@ -566,6 +574,8 @@ export async function triggerDbtRunRetry(params: {
   workspaceId: string;
   runId: string;
   triggeredBy: string;
+  /** Who asks for the retry; the run stores it as kind "retry". */
+  actor: DbtRunActor;
 }): Promise<IDbtRun | null> {
   const source = await DbtRun.findOne({
     _id: new Types.ObjectId(params.runId),
@@ -584,6 +594,7 @@ export async function triggerDbtRunRetry(params: {
     status: "queued",
     trigger: "manual",
     triggeredBy: params.triggeredBy,
+    actor: await withActorNames(retryActor(params.actor, params.runId)),
     // A manual retry waits in the default lane.
     lane: "default",
     // Resume the same source tree the failed run built — a laptop run's

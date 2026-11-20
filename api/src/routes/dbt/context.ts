@@ -11,11 +11,26 @@ import { DbtProject } from "../../database/workspace-schema";
 import { publishRealtimeEvent } from "../../services/realtime.service";
 import { DbtProtectedEnvironmentError } from "../../dbt/dbt-environments.service";
 import { fail } from "../lib/respond";
+import { actorFromRequest, type DbtRunActor } from "../../dbt/run-actor";
 
 export const logger = loggers.api("dbt");
 
 export function getUserId(c: AuthenticatedContext): string {
   return c.get("user")?.id ?? "api-key";
+}
+
+/**
+ * Who this request is, for `dbt_runs.actor`: the signed-in person, or the
+ * workspace API key / MCP client behind the call (never its secret).
+ */
+export function runActorOf(c: AuthenticatedContext): DbtRunActor {
+  return actorFromRequest({
+    authType: c.get("authType"),
+    user: c.get("user"),
+    apiKey: c.get("apiKey"),
+    mcpOAuthClientId: c.get("mcpOAuthClientId"),
+    mcpAgentSessionId: c.get("mcpAgentSessionId"),
+  });
 }
 
 export function badRequest(c: AuthenticatedContext, message: string) {

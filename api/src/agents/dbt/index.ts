@@ -74,6 +74,7 @@ export const dbtAgentFactory: AgentFactory = (
     { chatId: context.chatId },
   );
   const dbtServerTools = createDbtServerTools(workspaceId, userId, {
+    actor: { kind: "agent", userId, chatId: context.chatId },
     queryAccess: context.queryAccess,
     toolExecutionContext: context.toolExecutionContext,
   });

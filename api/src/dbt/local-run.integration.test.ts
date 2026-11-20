@@ -155,6 +155,7 @@ function input(
   return {
     workspaceId: WS.toString(),
     userId: JOAN,
+    actor: { kind: "user", userId: JOAN },
     authority: WAREHOUSE,
     command: "build",
     select: "stg_orders+",
@@ -188,6 +189,7 @@ describe("startLocalDbtRun", () => {
       commands: ["build --select stg_orders+ --full-refresh"],
       trigger: "manual",
       triggeredBy: JOAN,
+      actor: { kind: "user", userId: JOAN },
       sourceBranch: "local checkout on feat/calls",
       localOverlay: { baseSha: BASE, files: 1, deletes: 1 },
     });
@@ -397,6 +399,7 @@ describe("triggerDbtRunRetry of a laptop run", () => {
       workspaceId: WS.toString(),
       runId: run._id.toString(),
       triggeredBy: JOAN,
+      actor: { kind: "user" as const, userId: "u1" },
     });
     const stored = await DbtRun.findById(retry?._id).lean();
     expect(stored?.localOverlay).toEqual(

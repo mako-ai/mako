@@ -176,6 +176,17 @@ export interface MakoMcpContext {
    * sandbox run), not by a person for themselves. It gets no sandbox shell.
    */
   automationKey?: boolean;
+  /**
+   * The credential behind this request, for attributing what it starts (a dbt
+   * run's `actor`): the API key's id and label, or the OAuth client and
+   * desktop session. Ids and labels only, never a secret.
+   */
+  credential?: {
+    apiKeyId?: string;
+    apiKeyName?: string;
+    oauthClientId?: string;
+    agentSessionId?: string;
+  };
 }
 
 export type BridgeableTool = Pick<
@@ -249,6 +260,13 @@ export function buildMakoMcpCandidateTools(
     maxRunWaitMs: MCP_MAX_RUN_WAIT_MS,
     // query_metric runs a SELECT: gated by the key's query scopes.
     queryAccess,
+    // dbt runs started here belong to this credential, not to the chat id
+    // above (a fresh random id per exchange).
+    actor: {
+      kind: "mcp",
+      userId,
+      ...context.credential,
+    },
   });
   // Connector discovery for flow authoring (RFC: agent-authored flows).
   const connectorTools = createConnectorTools(workspaceId);

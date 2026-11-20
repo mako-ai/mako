@@ -106,6 +106,7 @@ function adhocParams(projectId: string, environment: string) {
     commands: ["build --select stg_orders --full-refresh"],
     trigger: "agent" as const,
     triggeredBy: "agent",
+    actor: { kind: "user" as const, userId: "u1" },
     workingTreeUserId: "u1",
   };
 }
@@ -154,6 +155,7 @@ describe("triggerDbtRun protected-environment guard", () => {
       job,
       trigger: "manual",
       triggeredBy: "u1",
+      actor: { kind: "user" as const, userId: "u1" },
     });
     expect(run.status).toBe("queued");
     expect(run.jobId?.toString()).toBe(job._id.toString());
@@ -209,6 +211,7 @@ describe("sourceBranch provenance stamping", () => {
       job,
       trigger: "manual",
       triggeredBy: "u1",
+      actor: { kind: "user" as const, userId: "u1" },
     });
     expect(run.sourceBranch).toBe("main");
     expect(run.workingTreeUserId).toBeUndefined();
@@ -223,6 +226,7 @@ describe("sourceBranch provenance stamping", () => {
       commands: ["build"],
       trigger: "agent",
       triggeredBy: "agent",
+      actor: { kind: "user" as const, userId: "u1" },
       gitBranch: "pr-head-branch",
     });
     expect(explicit.sourceBranch).toBe("pr-head-branch");
@@ -306,6 +310,7 @@ describe("recordCompletedAdhocDbtRun", () => {
       environment: "dev",
       command: "build --select stg_orders --full-refresh",
       triggeredBy: "u1",
+      actor: { kind: "user" as const, userId: "u1" },
       workingTreeUserId: "u1",
       sourceBranch: "main",
       startedAt,
@@ -350,6 +355,7 @@ describe("recordCompletedAdhocDbtRun", () => {
       environment: "dev",
       command: "build",
       triggeredBy: "u1",
+      actor: { kind: "user" as const, userId: "u1" },
       startedAt: new Date(),
       result: { success: false, exitCode: 2, logs: [], stepResults: [] },
     });

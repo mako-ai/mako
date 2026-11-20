@@ -18,7 +18,12 @@ import {
   reconcileStaleQueuedRun,
   requestDbtRunCancel,
 } from "../../dbt/dbt-run.service";
-import { badRequest, serverError, publishDbtEvent } from "./context";
+import {
+  badRequest,
+  serverError,
+  publishDbtEvent,
+  runActorOf,
+} from "./context";
 import { fail } from "../lib/respond";
 
 export const dbtLocalRunRoutes = new Hono();
@@ -86,6 +91,7 @@ dbtLocalRunRoutes.post("/local-runs", async (c: AuthenticatedContext) => {
     const result = await startLocalDbtRun({
       workspaceId,
       userId: caller.userId,
+      actor: runActorOf(c),
       authority: caller.authority,
       projectId: body.projectId,
       command: body.command,

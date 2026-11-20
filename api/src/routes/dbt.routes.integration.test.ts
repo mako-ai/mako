@@ -21,14 +21,21 @@ import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
 // Mutable caller role for the RBAC matrix (hoisted so the mock factory sees it).
-const ctx = vi.hoisted(() => ({ role: "owner" as string | null }));
+const ctx = vi.hoisted(() => ({
+  role: "owner" as string | null,
+  // Extra auth facts a test sets on the request (authType, apiKey, ...).
+  auth: {} as Record<string, unknown>,
+}));
 
 vi.mock("../auth/unified-auth.middleware", () => ({
+  isMcpOAuthAuth: (c: { get: (k: string) => unknown }) =>
+    c.get("authType") === "mcpOAuth",
   unifiedAuthMiddleware: async (
     c: { set: (k: string, v: unknown) => void },
     next: () => Promise<void>,
   ) => {
-    c.set("user", { id: "u1" });
+    c.set("user", { id: "u1", email: "joan@example.com" });
+    for (const [key, value] of Object.entries(ctx.auth)) c.set(key, value);
     await next();
   },
 }));
@@ -61,6 +68,17 @@ vi.mock("../dbt/dbt-project.service", () => ({
     compiledSql: "select 1",
   })),
 }));
+vi.mock("../dbt/local-run.service", async importOriginal => ({
+  ...(await importOriginal<typeof import("../dbt/local-run.service")>()),
+  startLocalDbtRun: vi.fn(async () => ({
+    run: {
+      _id: new Types.ObjectId(),
+      environment: "dev",
+      commands: ["build --select m"],
+    },
+    projectId: "p1",
+  })),
+}));
 vi.mock("../dbt/dbt-run.service", () => ({
   triggerDbtJobRun: vi.fn(async () => ({ _id: new Types.ObjectId() })),
   triggerDbtRunRetry: vi.fn(async () => ({ _id: new Types.ObjectId() })),
@@ -91,8 +109,10 @@ import { seedDbtGitTree } from "../dbt/test-support/git-tree";
 import { bindTestWorkspaceRepo } from "../apps/bind-test-workspace-repo";
 import { DatabaseConnection } from "../database/workspace-schema";
 import { runAdhocDbtCommand } from "../dbt/dbt-project.service";
+import { startLocalDbtRun } from "../dbt/local-run.service";
 import {
   recordCompletedAdhocDbtRun,
+  triggerDbtJobRun,
   requestDbtRunCancel,
   triggerDbtRunRetry,
 } from "../dbt/dbt-run.service";
@@ -104,6 +124,8 @@ const recordAdhocMock = recordCompletedAdhocDbtRun as unknown as ReturnType<
   typeof vi.fn
 >;
 const cancelMock = requestDbtRunCancel as unknown as ReturnType<typeof vi.fn>;
+const jobRunMock = triggerDbtJobRun as unknown as ReturnType<typeof vi.fn>;
+const localRunMock = startLocalDbtRun as unknown as ReturnType<typeof vi.fn>;
 const retryMock = triggerDbtRunRetry as unknown as ReturnType<typeof vi.fn>;
 
 let mongo: MongoMemoryServer;
@@ -179,6 +201,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   ctx.role = "owner";
+  ctx.auth = {};
   vi.clearAllMocks();
   // Reset data and (re)seed a dbt-compatible connection for environments.
   await Promise.all([
@@ -865,5 +888,128 @@ describe("ad-hoc runner routes", () => {
     const json = await res.json();
     expect(json.lineage.nodes).toEqual([]);
     expect(json.lineage.edges).toEqual([]);
+  });
+});
+
+describe("runs record who asked (actor), read off the request", () => {
+  const KEY_ID = new Types.ObjectId();
+
+  it("job trigger by a signed-in person: kind user and their ids", async () => {
+    const projectId = await createProjectAsOwner();
+    const jobId = (
+      await (
+        await req("POST", `/projects/${projectId}/jobs`, {
+          name: "nightly",
+          environment: "dev",
+          commands: ["build"],
+        })
+      ).json()
+    ).job._id;
+    ctx.auth = { authType: "session" };
+    const res = await req(
+      "POST",
+      `/projects/${projectId}/jobs/${jobId}/trigger`,
+    );
+    expect(res.status).toBe(200);
+    expect(jobRunMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actor: { kind: "user", userId: "u1", userName: "joan" },
+      }),
+    );
+  });
+
+  it("job trigger by a workspace API key: kind api_key, key id and label", async () => {
+    const projectId = await createProjectAsOwner();
+    const jobId = (
+      await (
+        await req("POST", `/projects/${projectId}/jobs`, {
+          name: "nightly",
+          environment: "dev",
+          commands: ["build"],
+        })
+      ).json()
+    ).job._id;
+    ctx.auth = {
+      authType: "apiKey",
+      workspace: { _id: new Types.ObjectId(WS) },
+      apiKey: { _id: KEY_ID, name: "ci key", keyHash: "secret" },
+    };
+    await req("POST", `/projects/${projectId}/jobs/${jobId}/trigger`);
+    const actor = jobRunMock.mock.calls[0][0].actor;
+    expect(actor).toMatchObject({
+      kind: "api_key",
+      userId: "u1",
+      apiKeyId: KEY_ID.toString(),
+      apiKeyName: "ci key",
+    });
+    expect(JSON.stringify(actor)).not.toContain("secret");
+  });
+
+  it("local run by an MCP OAuth login: kind mcp, client id and user", async () => {
+    const projectId = await createProjectAsOwner();
+    ctx.auth = {
+      authType: "mcpOAuth",
+      workspace: { _id: new Types.ObjectId(WS) },
+      mcpOAuthScopes: ["mcp", "warehouse:write"],
+      mcpOAuthClientId: "client-1",
+    };
+    const res = await req("POST", "/local-runs", {
+      projectId,
+      command: "build",
+      select: "m",
+      files: { "dbt_project.yml": "name: analytics\n" },
+    });
+    expect(res.status).toBe(200);
+    expect(localRunMock.mock.calls[0][0].actor).toMatchObject({
+      kind: "mcp",
+      userId: "u1",
+      oauthClientId: "client-1",
+    });
+  });
+
+  it("an ad-hoc command record: kind user and their ids", async () => {
+    const projectId = await createProjectAsOwner();
+    ctx.auth = { authType: "session" };
+    await req("POST", `/projects/${projectId}/command`, {
+      command: "build --select customers",
+    });
+    expect(recordAdhocMock.mock.calls[0][0].actor).toEqual({
+      kind: "user",
+      userId: "u1",
+      userName: "joan",
+    });
+  });
+
+  it("retry passes the requester; the service stores it as kind retry", async () => {
+    const projectId = await createProjectAsOwner();
+    const runId = new Types.ObjectId().toString();
+    ctx.auth = { authType: "session" };
+    retryMock.mockResolvedValueOnce({ _id: new Types.ObjectId() });
+    await req("POST", `/projects/${projectId}/runs/${runId}/retry`);
+    expect(retryMock.mock.calls[0][0].actor).toMatchObject({
+      kind: "user",
+      userId: "u1",
+    });
+  });
+
+  it("the run read API redacts the actor: handle in, email out", async () => {
+    const projectId = await createProjectAsOwner();
+    const run = await mongoose.connection.collection("dbt_runs").insertOne({
+      workspaceId: new Types.ObjectId(WS),
+      projectId: new Types.ObjectId(projectId),
+      environment: "dev",
+      commands: ["build"],
+      status: "success",
+      trigger: "manual",
+      triggeredBy: "u1",
+      actor: { kind: "user", userId: "u1", userName: "old@example.com" },
+      createdAt: new Date(),
+    });
+    const one = await (
+      await req("GET", `/projects/${projectId}/runs/${run.insertedId}`)
+    ).json();
+    expect(one.run.actor).toEqual({ kind: "user", userId: "u1" });
+    const list = await (await req("GET", `/projects/${projectId}/runs`)).json();
+    expect(list.runs[0].actor).toEqual({ kind: "user", userId: "u1" });
   });
 });
