@@ -1,0 +1,72 @@
+[
+  {
+    "city": "Genève",
+    "company": "",
+    "country": "CH",
+    "email": "contact1@example.test",
+    "first_name": "Contact",
+    "id": "contact_1",
+    "job_title": "",
+    "last_name": "N1",
+    "phone": "+41 00 000 00 00",
+    "postal_code": "1200",
+    "state": "",
+    "street_address": "Rue Exemple 1"
+  },
+  {
+    "city": "Genève",
+    "company": "Example Realty",
+    "country": "CH",
+    "email": "contact2@example.test",
+    "first_name": "Contact",
+    "id": "contact_2",
+    "job_title": "",
+    "last_name": "N2",
+    "phone": "+41 00 000 00 01",
+    "postal_code": "1200",
+    "state": "",
+    "street_address": "Rue Exemple 2"
+  },
+  {
+    "city": "Genève",
+    "company": "",
+    "country": "CH",
+    "email": "contact3@example.test",
+    "first_name": "Contact",
+    "id": "contact_3",
+    "job_title": "",
+    "last_name": "N3",
+    "phone": "+41 00 000 00 02",
+    "postal_code": "1200",
+    "state": "",
+    "street_address": "Rue Exemple 3"
+  },
+  {
+    "city": "Genève",
+    "company": "Example Realty",
+    "country": "CH",
+    "email": "contact4@example.test",
+    "first_name": "Contact",
+    "id": "contact_4",
+    "job_title": "",
+    "last_name": "N4",
+    "phone": "+41 00 000 00 03",
+    "postal_code": "1200",
+    "state": "",
+    "street_address": "Rue Exemple 4"
+  },
+  {
+    "city": "Genève",
+    "company": "",
+    "country": "CH",
+    "email": "contact5@example.test",
+    "first_name": "Contact",
+    "id": "contact_5",
+    "job_title": "",
+    "last_name": "N5",
+    "phone": "+41 00 000 00 04",
+    "postal_code": "1200",
+    "state": "",
+    "street_address": "Rue Exemple 5"
+  }
+]

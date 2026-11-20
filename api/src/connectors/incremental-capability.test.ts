@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { StripeConnector } from "./stripe/connector";
 import { CloseConnector } from "./close/connector";
-import { PandaDocConnector } from "./pandadoc/connector";
 import { ClaapConnector } from "./claap/connector";
 import { CalendlyConnector } from "./calendly/connector";
 import { RestConnector } from "./rest/connector";
@@ -82,19 +81,6 @@ const connectors: Array<{
         name: "Close",
         type: "close",
         config: { api_key: "test-key" },
-      } as any),
-  },
-  {
-    label: "pandadoc",
-    make: () =>
-      new PandaDocConnector({
-        id: "ds_pandadoc",
-        name: "PandaDoc",
-        type: "pandadoc",
-        config: {
-          api_key: "test-api-key",
-          api_base_url: "https://api.pandadoc.com",
-        },
       } as any),
   },
   {
@@ -229,13 +215,6 @@ function testCloseSearchApiEntitiesDeclareNative() {
   assert.equal(close.perEntity?.groups?.mode, "none");
 }
 
-function testPandadocDocumentsAreNativeContactsAreNot() {
-  const pandadoc = capabilitiesFor("pandadoc");
-  assert.equal(pandadoc.perEntity?.documents?.mode, "native");
-  assert.equal(pandadoc.perEntity?.documents?.anchorField, "modified_from");
-  assert.equal(pandadoc.mode, "none"); // fallback covers "contacts"
-}
-
 function testRestDeclaresClientFilterWithWarning() {
   const rest = capabilitiesFor("rest");
   assert.equal(rest.mode, "client-filter");
@@ -329,7 +308,6 @@ async function main() {
   testCloseSearchApiEntitiesDeclareNative();
   await testCloseSearchApiUsesDateUpdatedWhenSinceSet();
   await testStripeCreatedGteWhenSinceSet();
-  testPandadocDocumentsAreNativeContactsAreNot();
   testRestDeclaresClientFilterWithWarning();
 }
 

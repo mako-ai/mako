@@ -363,11 +363,13 @@ void test("where an event id and type sit is read from the spec, plain paths onl
 // deliveries and declarations.
 // ---------------------------------------------------------------------------
 
-async function folderSpec(slug: "wise" | "calendly") {
+async function folderSpec(slug: "wise" | "calendly" | "pandadoc") {
   const harness = await import(
     slug === "wise"
       ? "../../../../connectors/wise/fixtures/harness.mjs"
-      : "../../../../connectors/calendly/fixtures/harness.mjs"
+      : slug === "pandadoc"
+        ? "../../../../connectors/pandadoc/fixtures/harness.mjs"
+        : "../../../../connectors/calendly/fixtures/harness.mjs"
   );
   harness.ensureFolderInstalled();
   const run = await harness.runFolderCommand("spec");
@@ -573,4 +575,50 @@ void test("a forged Wise test ping can not take a real delivery's event id", asy
       .eventId,
     "d-2",
   );
+});
+
+void test("PandaDoc's declaration accepts the query, header and upper-case signatures and refuses a tampered body or a wrong key", async () => {
+  const fixtures =
+    await import("../../../../connectors/pandadoc/fixtures/webhook-events.mjs");
+  const declaration = declaredWebhookVerification(await folderSpec("pandadoc"));
+  assert.equal(declaration?.scheme, "hmac-sha256");
+  const deliveries = fixtures.buildWebhookDeliveries();
+  assert.ok(deliveries.length >= 15);
+  const key = fixtures.TEST_SHARED_KEY;
+  const verify = (
+    body: string,
+    secret: string,
+    query: Record<string, string>,
+    headers: Record<string, string> = {},
+  ) =>
+    verifyDeclaredWebhook(declaration!, {
+      payload: body,
+      headers,
+      query,
+      secret,
+    }).valid;
+  for (const d of deliveries) {
+    const signature = fixtures.sign(d.body, key);
+    assert.equal(verify(d.body, key, { signature }), true, `${d.name} query`);
+    assert.equal(
+      verify(d.body, key, {}, { signature }),
+      true,
+      `${d.name} header`,
+    );
+    assert.equal(
+      verify(d.body, key, { signature: signature.toUpperCase() }),
+      true,
+      `${d.name} upper-case`,
+    );
+    assert.equal(
+      verify(`${d.body} `, key, { signature }),
+      false,
+      `${d.name} tampered body`,
+    );
+    assert.equal(
+      verify(d.body, "another-shared-key", { signature }),
+      false,
+      `${d.name} wrong key`,
+    );
+  }
 });
