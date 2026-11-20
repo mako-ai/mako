@@ -68,9 +68,11 @@ describe("bigquery destination tenant credentials", () => {
     };
     afterEach(() => {
       process.env.NODE_ENV = original.node;
-      if (original.host === undefined)
+      if (original.host === undefined) {
         delete process.env.BIGQUERY_EMULATOR_HOST;
-      else process.env.BIGQUERY_EMULATOR_HOST = original.host;
+      } else {
+        process.env.BIGQUERY_EMULATOR_HOST = original.host;
+      }
     });
 
     const local = {
