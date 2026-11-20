@@ -4,7 +4,11 @@
  */
 import * as crypto from "crypto";
 import { Types } from "mongoose";
-import { Flow, FlowExecution } from "../../database/workspace-schema";
+import {
+  Flow,
+  FlowExecution,
+  type IFlow,
+} from "../../database/workspace-schema";
 import { inngest } from "../../inngest/client";
 import { carriedInfraBackoff } from "../../inngest/functions/flow/infra-failure";
 import { loggers } from "../../logging";
@@ -12,6 +16,11 @@ import { normalizeEntityList } from "../entity-selection";
 import { getCdcEventStore } from "../event-store";
 import { cdcSyncStateService } from "../sync-state";
 
+import {
+  automaticRecoveryFilter,
+  backfillAttemptFilter,
+  scheduledBackfillGate,
+} from "./attempt";
 import { forceDrainCdcFlow } from "./completion";
 import {
   assertCanStartBackfill,
@@ -34,6 +43,7 @@ export async function startBackfill(
   flowId: string,
   options?: {
     reuseExistingRunId?: boolean;
+    automaticRecovery?: NonNullable<IFlow["backfillState"]>;
     entities?: string[];
     reason?: string;
     /**
@@ -79,7 +89,25 @@ export async function startBackfill(
     entities: effectiveScope.length > 0 ? effectiveScope : "all",
   });
   const preCheckStart = Date.now();
-  await assertCanStartBackfill(workspaceId, flowId);
+  const scopedFlow = { _id: flow._id, workspaceId: flow.workspaceId };
+  const recoveryState = options?.automaticRecovery;
+  const scheduledStart = options?.trigger === "scheduled" && !recoveryState;
+  const automatic = Boolean(recoveryState || scheduledStart);
+  if (automatic) {
+    if (
+      await FlowExecution.exists({
+        flowId: flow._id,
+        workspaceId: flow.workspaceId,
+        status: "running",
+      })
+    ) {
+      throw new Error(
+        "Cannot start automatic backfill while an execution is running",
+      );
+    }
+  } else {
+    await assertCanStartBackfill(workspaceId, flowId);
+  }
   const preCheckMs = Date.now() - preCheckStart;
   if (preCheckMs > 5000) {
     log.warn("startBackfill: pre-check was slow", {
@@ -88,17 +116,12 @@ export async function startBackfill(
     });
   }
 
-  // Always cancel any lingering Inngest runs (parent + child entity
-  // functions) before starting a new backfill.  assertCanStartBackfill
-  // only checks FlowExecution documents in MongoDB — orphaned Inngest
-  // functions can still be running after the document was abandoned.
-  await Promise.all([
-    inngest.send({
-      name: "flow.cancel",
-      data: { flowId },
-    }),
-    cancelInngestFlowRuns(flowId),
-  ]);
+  const cancelLingering = () =>
+    Promise.all([
+      inngest.send({ name: "flow.cancel", data: { flowId } }),
+      cancelInngestFlowRuns(flowId),
+    ]);
+  if (!automatic) await cancelLingering();
 
   const runId =
     shouldReuseRunId && flow.backfillState?.runId
@@ -113,9 +136,12 @@ export async function startBackfill(
       : "manual");
   const now = new Date();
   const infraBackoff = carriedInfraBackoff(flow.backfillState, reusedRunId);
-  flow.backfillState = {
+  const triggerEventId = createBackfillTriggerEventId(flowId, runId);
+  const nextState: NonNullable<IFlow["backfillState"]> = {
     status: "running",
     runId,
+    attemptId: triggerEventId,
+    dispatchPendingAt: now,
     startedAt: reusedRunId ? flow.backfillState?.startedAt || now : now,
     completedAt: undefined,
     consecutiveFailures: previousFailures,
@@ -126,7 +152,25 @@ export async function startBackfill(
     },
     trigger,
   };
-  await flow.save();
+  if (automatic) {
+    const gate = recoveryState
+      ? automaticRecoveryFilter(recoveryState, now)
+      : {
+          ...scheduledBackfillGate,
+          ...backfillAttemptFilter(flow.backfillState ?? {}),
+        };
+    if (!gate) throw new Error("Automatic backfill is no longer due");
+    const claim = await Flow.updateOne(
+      { ...scopedFlow, ...gate },
+      { $set: { backfillState: nextState } },
+    );
+    if (!claim.modifiedCount) {
+      throw new Error("Automatic backfill lost its claim");
+    }
+  } else {
+    flow.backfillState = nextState;
+    await flow.save();
+  }
 
   const reason =
     options?.reason ||
@@ -142,28 +186,47 @@ export async function startBackfill(
     scope: effectiveScope.length > 0 ? effectiveScope : "all",
   });
 
-  await cdcSyncStateService.applyBackfillTransition({
-    workspaceId,
-    flowId,
-    event: { type: "START", reason },
-    context: { hasActiveRunLock: false },
-  });
-
-  const triggerEventId = createBackfillTriggerEventId(flowId, runId);
-  const sendResult = await inngest.send({
-    id: triggerEventId,
-    name: "flow.execute",
-    data: {
-      flowId,
-      noJitter: true,
-      backfill: true,
-      triggerType: "manual",
-      backfillRunId: runId,
-      ...(effectiveScope.length > 0
-        ? { backfillEntities: effectiveScope }
-        : {}),
-    },
-  });
+  const ownership = {
+    ...scopedFlow,
+    ...backfillAttemptFilter(nextState),
+    "backfillState.status": "running" as const,
+  };
+  let sendResult;
+  try {
+    // Automatic starts never cancel flow-wide work. A queued event is fenced
+    // by its attempt ID and Inngest's per-flow concurrency.
+    if (!(await Flow.exists(ownership))) {
+      throw new Error("Backfill start was superseded");
+    }
+    sendResult = await inngest.send({
+      id: triggerEventId,
+      name: "flow.execute",
+      data: {
+        flowId,
+        noJitter: true,
+        backfill: true,
+        triggerType: "manual",
+        backfillRunId: runId,
+        backfillAttemptId: triggerEventId,
+        ...(effectiveScope.length > 0
+          ? { backfillEntities: effectiveScope }
+          : {}),
+      },
+    });
+  } catch (error) {
+    // Leave a paused or replaced attempt alone. Restore the prior checkpoint
+    // after a failed automatic dispatch so the scheduler can try again.
+    if (automatic) {
+      if (flow.backfillState) {
+        await Flow.updateOne(ownership, {
+          $set: { backfillState: flow.backfillState },
+        });
+      } else {
+        await Flow.updateOne(ownership, { $unset: { backfillState: 1 } });
+      }
+    }
+    throw error;
+  }
 
   log.info("Backfill flow.execute event sent to Inngest", {
     flowId,
@@ -187,11 +250,18 @@ export async function pauseBackfill(workspaceId: string, flowId: string) {
     throw new Error("Pause requires syncEngine=cdc");
   }
 
-  await cdcSyncStateService.applyBackfillTransition({
+  const transition = await cdcSyncStateService.applyBackfillTransition({
     workspaceId,
     flowId,
     event: { type: "PAUSE", reason: "Paused via API" },
   });
+  if (transition.toState !== "paused") {
+    return {
+      paused: false,
+      cancelledExecutionId: null,
+      runId: flow.backfillState?.runId ?? null,
+    };
+  }
 
   // Send cancel to Inngest so it stops the function between steps.
   // The FlowExecution stays "running" so assertCanStartBackfill()
@@ -214,16 +284,6 @@ export async function pauseBackfill(workspaceId: string, flowId: string) {
     });
   }
 
-  await Flow.updateOne(
-    { _id: flow._id, workspaceId: new Types.ObjectId(workspaceId) },
-    {
-      $set: {
-        "backfillState.status": "paused",
-        "backfillState.completedAt": null,
-      },
-    },
-  );
-
   return {
     paused: true,
     cancelledExecutionId: runningExecution?._id?.toString() || null,
@@ -243,11 +303,15 @@ export async function cancelBackfill(workspaceId: string, flowId: string) {
     throw new Error("Cancel requires syncEngine=cdc");
   }
 
-  await cdcSyncStateService.applyBackfillTransition({
+  const transition = await cdcSyncStateService.applyBackfillTransition({
     workspaceId,
     flowId,
     event: { type: "CANCEL", reason: "Cancelled via API" },
+    expectedAttempt: flow.backfillState ?? {},
   });
+  if (!transition.changed) {
+    return { cancelled: false, cancelledExecutionId: null };
+  }
 
   const runningExecution = await FlowExecution.findOne({
     flowId: new Types.ObjectId(flowId),
@@ -266,19 +330,6 @@ export async function cancelBackfill(workspaceId: string, flowId: string) {
       },
     });
   }
-
-  await Flow.updateOne(
-    { _id: flow._id, workspaceId: new Types.ObjectId(workspaceId) },
-    {
-      $set: {
-        "backfillState.status": "idle",
-        "backfillState.completedAt": null,
-      },
-      $unset: {
-        "backfillState.runId": "",
-      },
-    },
-  );
 
   return {
     cancelled: true,

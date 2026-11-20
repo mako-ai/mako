@@ -4,7 +4,11 @@ import { Types } from "mongoose";
 import { syncMachineService } from "../../../sync-cdc/sync-state";
 import { cdcBackfillService } from "../../../sync-cdc/backfill";
 import { EXECUTION_HEARTBEAT_STALE_MS } from "../../../services/flow-execution-tracking";
-import { infraResumeDue } from "./infra-failure";
+import {
+  automaticRecoveryFilter,
+  MAX_BACKFILL_RECOVERY_FAILURES,
+  staleBackfillDispatchAt,
+} from "../../../sync-cdc/backfill/attempt";
 
 // Cleanup function for abandoned flows
 export const cleanupAbandonedFlowsFunction = inngest.createFunction(
@@ -27,7 +31,6 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
       const executionsCollection = db.collection("flow_executions");
       const locksCollection = db.collection("flow_execution_locks");
 
-      const MAX_CONSECUTIVE_FAILURES = 10;
       let abandonedCount = 0;
       let staleLockCount = 0;
 
@@ -216,13 +219,25 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
       let cdcRecoveredCount = 0;
       const interruptedCdcFlows = await Flow.find({
         syncEngine: "cdc",
-        "backfillState.status": "error",
         "backfillState.runId": { $exists: true, $ne: null },
+        $and: [
+          {
+            $or: [
+              { "backfillState.status": "error" },
+              {
+                "backfillState.status": "running",
+                "backfillState.dispatchPendingAt": {
+                  $lte: staleBackfillDispatchAt(now),
+                },
+              },
+            ],
+          },
+        ],
         $or: [
           { "backfillState.consecutiveFailures": { $exists: false } },
           {
             "backfillState.consecutiveFailures": {
-              $lt: MAX_CONSECUTIVE_FAILURES,
+              $lt: MAX_BACKFILL_RECOVERY_FAILURES,
             },
           },
         ],
@@ -240,7 +255,10 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
         if (hasRunningExec) continue;
         // A platform failure does not use up an attempt; it waits 1, 2,
         // 4 … 30 min before the next resume instead (infra-failure.ts).
-        if (!infraResumeDue(cdcFlow.backfillState, now)) continue;
+        const recoveryState = cdcFlow.backfillState;
+        if (!recoveryState || !automaticRecoveryFilter(recoveryState, now)) {
+          continue;
+        }
 
         try {
           const restartResult = await cdcBackfillService.startBackfill(
@@ -248,7 +266,8 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
             fId,
             {
               reuseExistingRunId: true,
-              reason: `Auto-resumed interrupted backfill (attempt ${failures + 1}/${MAX_CONSECUTIVE_FAILURES}${
+              automaticRecovery: recoveryState,
+              reason: `Auto-resumed interrupted backfill (attempt ${failures + 1}/${MAX_BACKFILL_RECOVERY_FAILURES}${
                 cdcFlow.backfillState?.infraFailures
                   ? `; ${cdcFlow.backfillState.infraFailures} platform failures not counted`
                   : ""

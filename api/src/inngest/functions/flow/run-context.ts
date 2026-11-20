@@ -9,6 +9,7 @@ import type { inngest } from "../../client";
 import { Flow, type IFlow } from "../../../database/workspace-schema";
 import { normalizeEntityList } from "../../../sync-cdc/entity-selection";
 import { appendExecutionLog as appendFlowExecutionLog } from "../../../services/flow-execution-tracking";
+import { backfillAttemptFilter } from "../../../sync-cdc/backfill/attempt";
 
 export type FlowRunTriggerType = "manual" | "schedule";
 
@@ -17,6 +18,7 @@ export interface FlowRunEventData {
   noJitter?: boolean;
   backfill?: boolean;
   backfillRunId?: string;
+  backfillAttemptId?: string;
   backfillEntities?: string[];
   triggerType?: FlowRunTriggerType;
 }
@@ -85,6 +87,43 @@ export function createFlowRunContext(params: {
       }),
     throwIfExecutionCancelled: async (scope, metadata) => {
       const { executionId } = state;
+      if (data.backfillAttemptId) {
+        // Do not re-read the live state on replay of an already checked
+        // step. The same attempt may have since completed its checkpoint.
+        const discriminator = metadata?.entity ?? metadata?.chunkIndex ?? "";
+        const current = await step.run(
+          `check-backfill-attempt:${scope}:${discriminator}`,
+          async () =>
+            Boolean(
+              await Flow.exists({
+                _id: flowId,
+                $or: [
+                  {
+                    ...backfillAttemptFilter({
+                      runId: data.backfillRunId,
+                      attemptId: data.backfillAttemptId,
+                    }),
+                    "backfillState.status": "running",
+                  },
+                  ...(scope === "connector-before-success-mark"
+                    ? [
+                        {
+                          "backfillState.attemptId": data.backfillAttemptId,
+                          "backfillState.status": "completed" as const,
+                        },
+                      ]
+                    : []),
+                ],
+              }),
+            ),
+        );
+        if (!current) {
+          throw Object.assign(
+            new Error("Backfill attempt cancelled or superseded"),
+            { code: "USER_CANCELLED" },
+          );
+        }
+      }
       if (!executionId) return;
       const db = Flow.db;
       const collection = db.collection("flow_executions");

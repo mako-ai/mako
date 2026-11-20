@@ -2,6 +2,7 @@ import { Flow, FlowExecution } from "../../../database/workspace-schema";
 import { isCronDue } from "../../../services/cron-due";
 import { cdcBackfillService } from "../../../sync-cdc/backfill";
 import { inngest } from "../../client";
+import { scheduledBackfillGate } from "../../../sync-cdc/backfill/attempt";
 
 // Scheduled CDC full backfill - triggers a periodic full reconciliation
 // backfill for CDC flows that opted into `backfillSchedule`. The live stream
@@ -32,6 +33,7 @@ export const cdcScheduledBackfillFunction = inngest.createFunction(
           syncEngine: "cdc",
           "backfillSchedule.enabled": true,
           enabled: { $ne: false },
+          ...scheduledBackfillGate,
         })
           .select("_id workspaceId backfillSchedule backfillState streamState")
           .lean();
@@ -85,6 +87,7 @@ export const cdcScheduledBackfillFunction = inngest.createFunction(
             {
               _id: flow._id,
               workspaceId: flow.workspaceId,
+              ...scheduledBackfillGate,
               "backfillSchedule.lastRunAt":
                 flow.backfillSchedule?.lastRunAt ?? null,
             },

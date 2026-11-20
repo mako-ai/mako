@@ -285,6 +285,9 @@ export interface IFlow extends Document {
   backfillState?: {
     status?: BackfillStatus;
     runId?: string;
+    /** The Inngest dispatch ID for the current execution of this checkpoint. */
+    attemptId?: string;
+    dispatchPendingAt?: Date;
     startedAt?: Date;
     completedAt?: Date;
     consecutiveFailures?: number;
@@ -294,6 +297,8 @@ export interface IFlow extends Document {
      */
     infraFailures?: number;
     lastInfraFailureAt?: Date;
+    /** Earliest automatic recovery after a recognized provider throttle. */
+    providerRetryAt?: Date;
     scope?: {
       mode: "all" | "subset";
       entities?: string[];
@@ -672,11 +677,14 @@ const FlowSchema = new Schema<IFlow>(
         default: "idle",
       },
       runId: String,
+      attemptId: String,
+      dispatchPendingAt: Date,
       startedAt: Date,
       completedAt: Date,
       consecutiveFailures: { type: Number, default: 0 },
       infraFailures: { type: Number, default: 0 },
       lastInfraFailureAt: Date,
+      providerRetryAt: Date,
       scope: {
         mode: {
           type: String,
