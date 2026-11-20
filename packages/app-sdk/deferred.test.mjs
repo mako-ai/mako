@@ -266,6 +266,42 @@ test("staged: a panel unmounted before its turn spends no frame", async (t) => {
   assert.equal(frames, 2, "2 frames for 2 live panels; the unmounted one took none");
 });
 
+test("staged: unmounting the active panel releases frame 1 to the next panel", async (t) => {
+  const env = await setup(t);
+  if (!env) return;
+  const { React, win, mod, h, mount } = env;
+  const frames = new Map();
+  let nextId = 0;
+  globalThis.requestAnimationFrame = (cb) => {
+    frames.set(++nextId, cb);
+    return nextId;
+  };
+  globalThis.cancelAnimationFrame = (id) => frames.delete(id);
+  const addListener = t.mock.method(win.document, "addEventListener");
+  const removeListener = t.mock.method(win.document, "removeEventListener");
+  const panel = (id) => h(mod.Staged, { key: id, minHeight: 10 }, h("p", { id }, id));
+
+  await mount(h("div", null, panel("a"), panel("b")));
+  assert.deepEqual([...frames.keys()], [1], "the first panel already holds the active request");
+  const [, firstListener] = addListener.mock.calls.find(({ arguments: args }) => args[0] === "visibilitychange").arguments;
+  await mount(h("div", null, panel("b")));
+  const firstRequestCancelled = !frames.has(1);
+  const firstListenerRemoved = removeListener.mock.calls.some(({ arguments: args }) => args[0] === "visibilitychange" && args[1] === firstListener);
+  assert.equal(win.document.getElementById("b"), null, "the next panel still waits for the frame");
+
+  await React.act(async () => {
+    const callbacks = [...frames.values()];
+    frames.clear();
+    for (const cb of callbacks) cb(performance.now());
+    await sleep(20);
+  });
+  assert.ok(win.document.getElementById("b"), "the next live panel mounts after frame 1");
+  assert.equal(win.document.getElementById("a"), null);
+  assert.ok(firstRequestCancelled, "unmount cancels the active request");
+  assert.ok(firstListenerRemoved, "unmount removes the old visibility listener");
+  assert.equal(frames.size, 0, "no second frame is needed");
+});
+
 test("useStagedMount: steps 0 to count, one per frame, then stops", async (t) => {
   const env = await setup(t);
   if (!env) return;

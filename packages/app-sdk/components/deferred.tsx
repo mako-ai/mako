@@ -100,7 +100,6 @@ function afterFrame(run: () => void): () => void {
   arm()
   return stop
 }
-const nextFrame = () => new Promise<void>((done) => afterFrame(done))
 
 /** Shows a Skeleton of `minHeight`, then mounts `children` on its own frame, one panel at a time. */
 function Staged({ minHeight, placeholder, children }: {
@@ -113,10 +112,23 @@ function Staged({ minHeight, placeholder, children }: {
   const [ready, setReady] = React.useState(false)
   React.useEffect(() => {
     let live = true
-    // A panel unmounted before its turn spends no frame.
-    turn = turn.then(() => (live ? nextFrame().then(() => { if (live) setReady(true) }) : undefined))
+    let cancel: (() => void) | undefined
+    turn = turn.then(() => {
+      if (!live) return
+      return new Promise<void>((done) => {
+        const stop = afterFrame(done)
+        cancel = () => {
+          stop()
+          done() // Release the queue without waiting for the cancelled frame or timer.
+        }
+      }).then(() => {
+        cancel = undefined
+        if (live) setReady(true)
+      })
+    })
     return () => {
       live = false
+      cancel?.()
     }
   }, [])
   return ready ? <>{children}</> : <Placeholder slot="staged" minHeight={minHeight} placeholder={placeholder} />
