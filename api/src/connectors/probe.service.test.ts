@@ -93,6 +93,8 @@ vi.mock("./workspace/reconcile.service", () => ({
 }));
 
 import { SourceConnection } from "../database/workspace-schema";
+import { sourceConnectionManager } from "../sync/database-data-source-manager";
+import { syncConnectorRegistry } from "../sync/connector-registry";
 import { requestContextStorage } from "../logging/context";
 import {
   PROBE_MAX_LIMIT,
@@ -234,6 +236,34 @@ async function failure(promise: Promise<unknown>): Promise<ProbeError> {
 }
 
 describe("tenancy", () => {
+  it("reloads credentials in the authorized workspace", async () => {
+    const reload = vi.mocked(sourceConnectionManager.getSourceConnection);
+    reload.mockClear();
+
+    await probe();
+
+    expect(reload).toHaveBeenCalledOnce();
+    expect(reload).toHaveBeenCalledWith(mine.toString(), WS.toString());
+  });
+
+  it("stops before provider calls when the scoped reload finds no connection", async () => {
+    const reload = vi.mocked(sourceConnectionManager.getSourceConnection);
+    const getConnector = vi.mocked(syncConnectorRegistry.getConnectorFor);
+    reload.mockClear();
+    getConnector.mockClear();
+    reload.mockResolvedValueOnce(null);
+    const check = vi.spyOn(fake, "testConnection");
+    const fetch = vi.spyOn(fake, "fetchEntityChunk");
+
+    const error = await failure(probe({ entity: "daily-usage" }));
+
+    expect(error.code).toBe("not_found");
+    expect(reload).toHaveBeenCalledWith(mine.toString(), WS.toString());
+    expect(getConnector).not.toHaveBeenCalled();
+    expect(check).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("a connector from another workspace is not found, not probed", async () => {
     const error = await failure(probe({ connectionId: theirs.toString() }));
     expect(error.code).toBe("not_found");
