@@ -42,7 +42,6 @@ import {
 import { googleCredentialRefusal } from "./callable";
 import { BigQueryClients } from "../databases/drivers/bigquery/client";
 import { BigQueryConnector } from "../connectors/bigquery/connector";
-import { GcsConnector } from "../connectors/gcs/connector";
 import { BigQueryDestinationAdapter } from "../sync-cdc/adapters/bigquery";
 import { cancelBigQueryJobs } from "../dbt/bigquery-cancel.service";
 import { renderDbtProfile } from "../dbt/adapter-map";
@@ -253,18 +252,6 @@ describe("save time", () => {
     expect(result.errors.join(" ")).toMatch(NOT_ALLOWED);
   });
 
-  it("GcsConnector.validateConfig refuses it", () => {
-    const connector = new GcsConnector({
-      id: "x",
-      name: "x",
-      type: "gcs",
-      config: { bucket: "b", service_account_json: EXTERNAL_JSON },
-    } as never);
-    const result = connector.validateConfig();
-    expect(result.valid).toBe(false);
-    expect(result.errors.join(" ")).toMatch(NOT_ALLOWED);
-  });
-
   it("the Custom API Google credential refuses it", () => {
     expect(
       googleCredentialRefusal({
@@ -325,21 +312,6 @@ describe("use time: a stored external_account config fails closed", () => {
       ).getAccessToken(),
     ).rejects.toThrow(NOT_ALLOWED);
     noRequestMade();
-    neverConstructed();
-  });
-
-  it("GCS connector (sync, probe, entities)", async () => {
-    const connector = new GcsConnector({
-      id: "x",
-      name: "x",
-      type: "gcs",
-      config: { bucket: "b", service_account_json: EXTERNAL_JSON },
-    } as never);
-    expect(() =>
-      (connector as unknown as { getStorage(): unknown }).getStorage(),
-    ).toThrow(NOT_ALLOWED);
-    const tested = await connector.testConnection();
-    expect(tested.success).toBe(false);
     neverConstructed();
   });
 
@@ -497,7 +469,6 @@ describe("guard: no raw Google credential constructors outside the validator", (
     const reviewed = new Set([
       "api/src/sync-cdc/adapters/bigquery.ts",
       "api/src/dbt/bigquery-cancel.service.ts",
-      "api/src/connectors/gcs/connector.ts",
       // Application Default Credentials of the server itself, scopes only:
       // no tenant input reaches these.
       "api/src/databases/drivers/cloudsql-postgres/driver.ts",
@@ -517,9 +488,6 @@ describe("guard: no raw Google credential constructors outside the validator", (
     );
     expect(read("api/src/dbt/bigquery-cancel.service.ts")).toContain(
       "requireServiceAccount(params.credentials)",
-    );
-    expect(read("api/src/connectors/gcs/connector.ts")).toContain(
-      "requireServiceAccount(raw)",
     );
   });
 });

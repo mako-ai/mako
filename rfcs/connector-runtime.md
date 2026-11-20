@@ -66,7 +66,7 @@ The folder shape is identical across tiers, as RFC #947 required. Promotion and 
 - **Eject.** Copy a Mako connector's source into the workspace's `connectors/<slug>/`. It becomes a `ws:` connector the workspace owns. It no longer upgrades. The switch is visible in the flow file.
 - **Publish (later).** A workspace connector is submitted to the registry. After review, others install it by reference.
 
-What leaves `api/src`: the 10 vendor-facing connector directories (`calendly`, `claap`, `close`, `custom_api`, `graphql`, `pandadoc`, `posthog`, `rest`, `stripe`, `wise`). What stays: `base/` (the contract), `registry.ts`, `rate-gate.ts`, `probe.service.ts`, `workspace/` (the adapter and runtime), and `bigquery/` and `gcs/` while they are warehouse readers rather than vendor APIs.
+What leaves `api/src`: the 10 vendor-facing connector directories (`calendly`, `claap`, `close`, `custom_api`, `graphql`, `pandadoc`, `posthog`, `rest`, `stripe`, `wise`). What stays: `base/` (the contract), `registry.ts`, `rate-gate.ts`, `probe.service.ts`, `workspace/` (the adapter and runtime), and `bigquery/` while it is a warehouse reader rather than vendor APIs.
 
 ### 4.1 What stays in the API: the connection gateway and workflows
 
