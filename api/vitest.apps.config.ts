@@ -20,6 +20,9 @@ export default defineConfig({
       "src/apps/sharing-routes.test.ts",
       // Share links on the app's own origin: token scope, unlock, host gate.
       "src/apps/share-app-origin.test.ts",
+      // A published token is re-authorized on every use (removed member,
+      // private, republish, share rotated or password added).
+      "src/apps/published-grant-access.test.ts",
       // Its browser half: opt-in (SHARE_ORIGIN_PLAYWRIGHT), headless.
       "src/apps/share-app-origin.browser.test.ts",
       "src/apps/worktree.service.test.ts",

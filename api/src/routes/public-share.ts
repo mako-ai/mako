@@ -208,7 +208,7 @@ function shareAppUrl(
     workspaceId: project.workspaceId.toString(),
     projectId,
     sha,
-    share: shareFingerprint(token),
+    share: shareFingerprint(token, project.publicShare?.passwordHash),
     stableWindowMs: tokenWindowMs(),
     ...(notAfter !== undefined ? { notAfter } : {}),
   });
@@ -767,7 +767,7 @@ export async function refreshForShareGrant(
     !project ||
     !current ||
     !grant.share ||
-    !sameString(shareFingerprint(current), grant.share) ||
+    !sameString(shareFingerprint(current, share?.passwordHash), grant.share) ||
     !grant.publishedSha
   ) {
     return shareAppJson({ success: false, error: "Share link not found" }, 404);

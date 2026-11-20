@@ -14,6 +14,7 @@ import { timingSafeEqual } from "node:crypto";
 const ACCESS_CACHE_MS = 60_000;
 const MAX_ENTRIES = 10_000;
 const verdicts = new Map<string, { allowed: boolean; at: number }>();
+const inflight = new Map<string, Promise<boolean>>();
 
 function sameString(a: string, b: string): boolean {
   const left = Buffer.from(a);
@@ -24,17 +25,23 @@ function sameString(a: string, b: string): boolean {
 async function check(grant: PreviewGrant): Promise<boolean> {
   const project = await AppProject.findById(grant.projectId);
   if (!project) return false;
+  // A republish or unpublish ends the old build's tokens: a sensitive binding
+  // removed from the app must stop being served at once.
+  const republished = project.publishedSha !== grant.publishedSha;
   if (grant.share) {
+    if (republished) return false;
     const share = project.publicShare;
     return !!(
       share?.enabled &&
       share.token &&
-      sameString(shareFingerprint(share.token), grant.share)
+      sameString(shareFingerprint(share.token, share.passwordHash), grant.share)
     );
   }
   if (grant.viewer) {
+    if (republished) return false;
     const viewer = await resolveAppViewer(project, grant.viewer);
-    return !!viewer?.app.role;
+    // An owner or sharedWith entry who left the workspace keeps an app role.
+    return !!(viewer?.workspace.role && viewer.app.role);
   }
   // Minted for nobody in particular: only the short TTL bounds it.
   return true;
@@ -44,16 +51,26 @@ export async function publishedGrantAllowed(
   grant: PreviewGrant,
   now = Date.now(),
 ): Promise<boolean> {
-  const key = `${grant.projectId}:${grant.share ? `s:${grant.share}` : `u:${grant.viewer?.id ?? ""}`}`;
+  const key = `${grant.projectId}:${grant.publishedSha}:${grant.share ? `s:${grant.share}` : `u:${grant.viewer?.id ?? ""}`}`;
   const hit = verdicts.get(key);
   if (hit && now - hit.at < ACCESS_CACHE_MS) return hit.allowed;
-  const allowed = await check(grant);
-  if (verdicts.size >= MAX_ENTRIES) verdicts.clear();
-  verdicts.set(key, { allowed, at: now });
-  return allowed;
+  // One check per key at a time: a cold page fires many requests at once.
+  let pending = inflight.get(key);
+  if (!pending) {
+    pending = check(grant)
+      .then(allowed => {
+        if (verdicts.size >= MAX_ENTRIES) verdicts.clear();
+        verdicts.set(key, { allowed, at: now });
+        return allowed;
+      })
+      .finally(() => inflight.delete(key));
+    inflight.set(key, pending);
+  }
+  return pending;
 }
 
 /** Tests only. */
 export function clearPublishedGrantAccessCache(): void {
   verdicts.clear();
+  inflight.clear();
 }

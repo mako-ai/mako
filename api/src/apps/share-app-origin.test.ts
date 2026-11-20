@@ -270,7 +270,9 @@ describe("password shares", () => {
     expect(res.status).toBe(200);
     const grant = resolvePreviewGrant(tokenOf(data?.appUrl));
     expect(grant?.projectId).toBe(locked._id.toString());
-    expect(grant?.share).toBe(shareFingerprint(LOCKED));
+    expect(grant?.share).toBe(
+      shareFingerprint(LOCKED, locked.publicShare?.passwordHash),
+    );
   });
 
   it("never outlive the 12 h unlock", async () => {

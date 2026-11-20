@@ -229,13 +229,22 @@ export function mintPublishedGrant(input: {
 /**
  * What a share-minted token stores instead of the share token itself: an
  * HMAC of it. The token's payload is readable, and the share token is a
- * lasting credential while the pub token lasts at most a window + 30 min,
- * so the pub token must not reveal it. The HMAC still lets the serving
+ * lasting credential while the pub token can outlive it (a viewer or share
+ * token lasts PUBLISHED_TTL_MS), so the pub token must not reveal it. The HMAC still lets the serving
  * route check that the share it came from is the app's CURRENT share.
  */
-export function shareFingerprint(shareToken: string): string {
+export function shareFingerprint(
+  shareToken: string,
+  passwordHash?: string | null,
+): string {
+  // The password is part of what a share IS: setting, changing or removing it
+  // invalidates every token minted before. No password hashes as before.
   return createHmac("sha256", resolveSecret())
-    .update(`app-share:${shareToken}`)
+    .update(
+      passwordHash
+        ? `app-share:${shareToken}:pw:${passwordHash}`
+        : `app-share:${shareToken}`,
+    )
     .digest("base64url")
     .slice(0, 22);
 }
