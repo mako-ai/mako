@@ -29,7 +29,6 @@ const KEY_FILE = JSON.stringify({
   project_id: "acme",
   client_email: "svc@acme.iam.gserviceaccount.com",
   private_key: PRIVATE_KEY,
-  token_uri: "http://169.254.169.254/token",
 });
 
 const found = callableFor("custom_api");
@@ -126,11 +125,21 @@ describe("access token", () => {
     });
   });
 
-  it("reads only the email and private key from the key file, never its token_uri", () => {
+  it("reads the email and private key, and refuses a token_uri that is not Google's", () => {
     expect(parseServiceAccountKey(KEY_FILE)).toEqual({
       client_email: "svc@acme.iam.gserviceaccount.com",
       private_key: PRIVATE_KEY,
+      project_id: "acme",
+      token_uri: "https://oauth2.googleapis.com/token",
     });
+    expect(
+      parseServiceAccountKey(
+        JSON.stringify({
+          ...JSON.parse(KEY_FILE),
+          token_uri: "http://169.254.169.254/token",
+        }),
+      ),
+    ).toBeNull();
   });
 
   it("keeps a token for later requests, one per key and scopes", async () => {
@@ -283,13 +292,22 @@ describe("what may be saved", () => {
         ...base,
         service_account_json: JSON.stringify({ client_email: "a@b" }),
       }),
+    ).toMatch(/credential type not allowed/);
+    expect(
+      googleCredentialRefusal({
+        ...base,
+        service_account_json: JSON.stringify({
+          type: "service_account",
+          client_email: "a@b.co",
+        }),
+      }),
     ).toMatch(/private_key/);
     expect(
       googleCredentialRefusal({ ...base, service_account_json: KEY_FILE }),
     ).toBeNull();
     expect(
       customApi.configRefusal?.({ ...base, service_account_json: "{}" }),
-    ).toMatch(/JSON key file/);
+    ).toMatch(/credential type not allowed/);
   });
 
   it("refuses an ID token without an audience to make it for", () => {

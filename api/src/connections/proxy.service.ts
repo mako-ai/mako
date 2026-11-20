@@ -8,8 +8,8 @@
  * workspace, or, when the connection has a live readers list, only for the
  * principals on it and its writers (same identity rule as writers; a request
  * that identifies no one reads nothing there). Live reads off refuse every
- * read, whoever asks. GET, HEAD, OPTIONS, a connection's `reads` (a Close search POST)
- * and a GraphQL query are reads; everything else is a write, for the
+ * read, whoever asks. GET, HEAD, OPTIONS, a connection's `reads` (a profile's
+ * search POST) and a GraphQL query are reads; everything else is a write, for the
  * principals on the connection's writers list only (the same list and the
  * same identity rule as database connections, access/connection-writes.ts):
  * a person's own run writes as `user:<id>`, and a request that identifies no
@@ -34,6 +34,10 @@
  * log, an allowed one before it is sent (none is sent unrecorded) with its
  * outcome after; every read is logged.
  */
+import {
+  isOrphanConnectorType,
+  ORPHAN_TYPE_MESSAGE,
+} from "../connectors/source-connection-create.service";
 import { Types } from "mongoose";
 import {
   SourceConnection,
@@ -340,6 +344,15 @@ export async function connectionRequest(
       `No connection ${params.connection} in this workspace.`,
       404,
     );
+  }
+  // A type whose connector was removed has no schema to decrypt by: refuse
+  // before anything is loaded or sent.
+  if (
+    await isOrphanConnectorType(row.type, params.workspaceId, {
+      callable: true,
+    })
+  ) {
+    throw new ConnectionRequestError(ORPHAN_TYPE_MESSAGE, 409);
   }
   const callable = callableFor(row.type);
   if (!callable) {

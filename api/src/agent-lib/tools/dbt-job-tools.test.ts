@@ -35,6 +35,7 @@ vi.mock("../../services/realtime.service", () => ({
 vi.mock("../../services/workspace.service", () => ({
   workspaceService: {
     isAdmin: vi.fn(async () => true),
+    getMember: vi.fn(async () => ({ role: "admin" })),
     // Default: multi-user workspace; solo tests override per-call.
     getMembers: vi.fn(async () => [{ userId: "u1" }, { userId: "u2" }]),
   },
@@ -63,9 +64,10 @@ import {
   DbtEnvPreference,
   DbtJob,
   DbtProject,
+  DbtRun,
 } from "../../database/workspace-schema";
 import { workspaceService } from "../../services/workspace.service";
-import { triggerDbtRun } from "../../dbt/dbt-run.service";
+import { triggerDbtJobRun, triggerDbtRun } from "../../dbt/dbt-run.service";
 import {
   DEFAULT_BRANCH,
   initRepo,
@@ -365,5 +367,101 @@ describe("dbt_run_model — per-user environment resolution", () => {
     );
     const project = await DbtProject.findById(projectId).lean();
     expect(project?.environments.some(e => e.ownerUserId === "u1")).toBe(false);
+  });
+});
+
+describe("dbt runs record who started them (actor)", () => {
+  type Exec = (i: unknown, o: unknown) => Promise<Record<string, unknown>>;
+  const exec = (set: ReturnType<typeof createDbtServerTools>, name: string) =>
+    (set[name as keyof typeof set].execute as unknown as Exec).bind(null);
+
+  const agentActor = { kind: "agent", userId: "u1", chatId: "chat1" };
+
+  it("dbt_run_model by the in-app agent: kind agent, user and chat", async () => {
+    const projectId = await seedProject();
+    await exec(tools, "dbt_run_model")(
+      { projectId, model: "stg_orders", environment: "dev" },
+      {},
+    );
+    expect(vi.mocked(triggerDbtRun)).toHaveBeenCalledWith(
+      expect.objectContaining({ actor: agentActor }),
+    );
+  });
+
+  it("dbt_show (the shared queue helper) records the same agent actor", async () => {
+    const projectId = await seedProject();
+    const result = await exec(tools, "dbt_show")(
+      { projectId, model: "stg_orders", limit: 5, environment: "dev" },
+      {},
+    );
+    expect(result).toMatchObject({ success: true });
+    expect(vi.mocked(triggerDbtRun)).toHaveBeenCalledWith(
+      expect.objectContaining({ actor: agentActor }),
+    );
+  });
+
+  it("dbt_run_job by the in-app agent: kind agent, user and chat", async () => {
+    const projectId = await seedProject();
+    const jobId = await seedJob(projectId);
+    const result = await exec(tools, "dbt_run_job")({ projectId, jobId }, {});
+    expect(result.success).toBe(true);
+    expect(vi.mocked(triggerDbtJobRun)).toHaveBeenCalledWith(
+      expect.objectContaining({ actor: agentActor }),
+    );
+  });
+
+  it("over MCP the tools pass the server's credential, not a chat", async () => {
+    const mcpActor = {
+      kind: "mcp" as const,
+      userId: "u1",
+      oauthClientId: "mako-client-abc",
+    };
+    const mcpTools = createDbtServerTools(WS, "u1", {
+      chatId: "mcp-xyz",
+      actor: mcpActor,
+    });
+    const projectId = await seedProject();
+    const jobId = await seedJob(projectId);
+    await exec(mcpTools, "dbt_run_model")(
+      { projectId, model: "stg_orders", environment: "dev" },
+      {},
+    );
+    await exec(mcpTools, "dbt_run_job")({ projectId, jobId }, {});
+    expect(vi.mocked(triggerDbtRun)).toHaveBeenCalledWith(
+      expect.objectContaining({ actor: mcpActor }),
+    );
+    expect(vi.mocked(triggerDbtJobRun)).toHaveBeenCalledWith(
+      expect.objectContaining({ actor: mcpActor }),
+    );
+  });
+
+  it("dbt_get_run shows the actor without the user's email", async () => {
+    const projectId = await seedProject();
+    const run = await DbtRun.create({
+      workspaceId: new Types.ObjectId(WS),
+      projectId: new Types.ObjectId(projectId),
+      environment: "dev",
+      commands: ["build"],
+      status: "success",
+      trigger: "agent",
+      triggeredBy: "agent",
+      actor: {
+        kind: "mcp",
+        userId: "u1",
+        userName: "joan@example.com",
+        oauthClientId: "mako-client-abc",
+        oauthClientName: "Claude Code",
+      },
+    });
+    const result = await exec(tools, "dbt_get_run")(
+      { projectId, runId: run._id.toString() },
+      {},
+    );
+    expect(result.actor).toEqual({
+      kind: "mcp",
+      userId: "u1",
+      oauthClientId: "mako-client-abc",
+      oauthClientName: "Claude Code",
+    });
   });
 });

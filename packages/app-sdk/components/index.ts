@@ -14,6 +14,7 @@ export * from "./badge";
 export * from "./button";
 export * from "./card";
 export * from "./collapsible";
+export * from "./deferred";
 export * from "./dialog";
 export * from "./filter-bar";
 export * from "./input";

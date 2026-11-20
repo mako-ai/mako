@@ -1,0 +1,63 @@
+[
+  {
+    "archived": false,
+    "conclusion": "won",
+    "conclusion_comment": "Test variant converts better",
+    "created_at": "2026-01-08T23:41:18.000000Z",
+    "created_by": {
+      "distinct_id": "user_2",
+      "email": "marc@example.com",
+      "first_name": "Marc",
+      "hedgehog_config": null,
+      "id": 2,
+      "is_email_verified": true,
+      "last_name": "",
+      "role_at_organization": "product",
+      "uuid": "0188aa00-0000-0000-0000-000000000002"
+    },
+    "deleted": false,
+    "description": "Price page layout",
+    "end_date": "2026-01-23T23:41:18.000000Z",
+    "exposure_criteria": {
+      "filterTestAccounts": true
+    },
+    "feature_flag": {
+      "active": true,
+      "id": 501,
+      "key": "exp-1"
+    },
+    "feature_flag_key": "exp-1",
+    "filters": {},
+    "holdout": null,
+    "holdout_id": null,
+    "id": 1,
+    "metrics": [
+      {
+        "kind": "ExperimentMetric",
+        "metric_type": "funnel"
+      }
+    ],
+    "metrics_secondary": [],
+    "name": "Experiment 1",
+    "parameters": {
+      "feature_flag_variants": [
+        {
+          "key": "control",
+          "rollout_percentage": 50
+        },
+        {
+          "key": "test",
+          "rollout_percentage": 50
+        }
+      ]
+    },
+    "saved_metrics": [],
+    "secondary_metrics": [],
+    "start_date": "2026-01-09T23:41:18.000000Z",
+    "stats_config": {
+      "version": 2
+    },
+    "type": "web",
+    "updated_at": "2026-01-10T23:41:18.000000Z"
+  }
+]

@@ -1,12 +1,11 @@
 /**
- * SSRF guard for the user-URL connectors (REST, GraphQL): private, loopback
+ * SSRF guard for the user-URL connectors (REST): private, loopback
  * and metadata targets are refused before any byte is sent, by IP literal,
  * by DNS answer, and on redirect.
  */
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { GraphQLConnector } from "../connectors/graphql/connector";
 import { RestConnector } from "../connectors/rest/connector";
 import {
   assertSafeRedirect,
@@ -129,7 +128,7 @@ describe("redirect re-check", () => {
   });
 });
 
-describe("REST and GraphQL connectors", () => {
+describe("REST connector", () => {
   it("REST testConnection to the metadata IP fails without connecting", async () => {
     const connector = new RestConnector({
       id: "ds",
@@ -143,18 +142,5 @@ describe("REST and GraphQL connectors", () => {
     const result = await connector.testConnection();
     expect(result.success).toBe(false);
     expect(String(result.details)).toMatch(/Blocked/);
-  });
-
-  it("GraphQL testConnection to loopback fails and the server is never hit", async () => {
-    const connector = new GraphQLConnector({
-      id: "ds",
-      name: "GraphQL",
-      type: "graphql",
-      config: { endpoint: `${localUrl}/graphql` },
-    } as never);
-    const result = await connector.testConnection();
-    expect(result.success).toBe(false);
-    expect(String(result.details)).toMatch(/Blocked/);
-    expect(hits).toBe(0);
   });
 });

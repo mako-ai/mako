@@ -1,10 +1,10 @@
 /**
  * GraphQL on @makoai/connector-sdk: `spec`, `check`, `discover` and `read`.
  *
- * A port of the in-process connector in `api/src/connectors/graphql/`.
- * Nothing runs it in production yet. `fixtures/parity.mjs` runs both
- * against the same recorded GraphQL responses and compares them query by
- * query.
+ * Ported from the in-process connector, which is deleted. Production runs
+ * this folder on the `ws:graphql` connections. `fixtures/golden/` holds the
+ * rows the in-process connector was checked against, and an API test
+ * compares the folder with them byte for byte.
  *
  * ENTITIES are the flow's queries, one per query (`queryEntities` with
  * `source: "flow"`). Mako puts a flow's `queries` in `config.queries`, as it

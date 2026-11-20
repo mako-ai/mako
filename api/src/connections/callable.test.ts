@@ -16,7 +16,6 @@ import {
 } from "./callable";
 import { sourceConnectionKind } from "./kinds";
 import {
-  OPERATION_MAX_LIMIT,
   describeOperations,
   operationRequest,
   operationsFor,
@@ -38,7 +37,35 @@ import type { ISourceConnection } from "../database/workspace-schema";
 
 const KEY = "api_live_7f3a9c1e2b4d";
 
+/**
+ * A test-only profile with the shape the Close one had: a key as the basic
+ * auth username, a POST read as a GET when told so, a search that reads, one
+ * `GET` override value. It holds the forwarding core to those rules, which no
+ * built-in profile uses now.
+ */
+const OVERRIDE_PROFILE: CallableConnection = {
+  type: "override_profile",
+  baseUrl: () => "https://api.override.example/v1",
+  baseUrlFields: [],
+  credential: config => ({
+    type: "basic",
+    username: String(config.api_key ?? ""),
+    password: "",
+  }),
+  reads(request) {
+    if (request.method !== "POST") return false;
+    if (request.methodOverride === "GET") return true;
+    return /^\/data\/search\/?$/.test(request.path);
+  },
+  methodOverrides: ["GET"],
+  extraHeaders: (request): Record<string, string> =>
+    request.method === "POST" && request.methodOverride === "GET"
+      ? { "x-http-method-override": "GET" }
+      : {},
+};
+
 function type(name: string): CallableConnection {
+  if (name === OVERRIDE_PROFILE.type) return OVERRIDE_PROFILE;
   const found = callableFor(name);
   if (!found) throw new Error(`no call profile for ${name}`);
   return found;
@@ -96,33 +123,34 @@ describe("reads and writes", () => {
     );
 
   it("GET, HEAD and OPTIONS read on every type", () => {
-    for (const kind of ["close", "stripe", "wise", "custom_api"]) {
+    for (const kind of ["override_profile", "stripe", "custom_api"]) {
       for (const method of ["GET", "HEAD", "OPTIONS"]) {
         expect(read(kind, method, "/anything")).toBe(true);
       }
     }
   });
 
-  it("Close: POST /lead/ told to act as GET reads; POST /task/ writes", () => {
-    expect(read("close", "POST", "/lead/", { methodOverride: "GET" })).toBe(
-      true,
-    );
-    expect(read("close", "POST", "/data/search/")).toBe(true);
-    expect(read("close", "POST", "/task/")).toBe(false);
-    expect(read("close", "PUT", "/lead/lead_1/")).toBe(false);
-    expect(read("close", "DELETE", "/task/task_1/")).toBe(false);
+  it("Override profile: POST /lead/ told to act as GET reads; POST /task/ writes", () => {
+    expect(
+      read("override_profile", "POST", "/lead/", { methodOverride: "GET" }),
+    ).toBe(true);
+    expect(read("override_profile", "POST", "/data/search/")).toBe(true);
+    expect(read("override_profile", "POST", "/task/")).toBe(false);
+    expect(read("override_profile", "PUT", "/lead/lead_1/")).toBe(false);
+    expect(read("override_profile", "DELETE", "/task/task_1/")).toBe(false);
   });
 
-  it("Close: the GET override reads only on a POST", () => {
+  it("Override profile: the GET override reads only on a POST", () => {
     const override = { methodOverride: "GET" };
     for (const method of ["DELETE", "PUT", "PATCH"]) {
-      expect(read("close", method, "/lead/lead_1/", override)).toBe(false);
+      expect(read("override_profile", method, "/lead/lead_1/", override)).toBe(
+        false,
+      );
     }
   });
 
-  it("Stripe and Wise: every POST writes", () => {
+  it("Stripe: every POST writes", () => {
     expect(read("stripe", "POST", "/v1/customers/search")).toBe(false);
-    expect(read("wise", "POST", "/v3/profiles/1/quotes")).toBe(false);
   });
 
   it("Custom API GraphQL: a query reads, a mutation writes, only when GraphQL is on", () => {
@@ -285,20 +313,28 @@ describe("no caller method override reaches the service", () => {
     expect(request.url.searchParams.toString()).toBe("limit=1");
   });
 
-  it("Close: a POST told to act as GET reads and goes out with exactly GET", async () => {
+  it("Override profile: a POST told to act as GET reads and goes out with exactly GET", async () => {
     const sent = answering(200, {});
     const input = {
       method: "POST",
       path: "/lead/",
       headers: { "X-HTTP-Method-Override": "get" },
     };
-    const request = resolveRequest(type("close"), { api_key: KEY }, input);
-    expect(isReadRequest(type("close"), request, {})).toBe(true);
-    await forward(connection("close", { api_key: KEY }), type("close"), input);
+    const request = resolveRequest(
+      type("override_profile"),
+      { api_key: KEY },
+      input,
+    );
+    expect(isReadRequest(type("override_profile"), request, {})).toBe(true);
+    await forward(
+      connection("override_profile", { api_key: KEY }),
+      type("override_profile"),
+      input,
+    );
     expect(sent[0].headers["x-http-method-override"]).toBe("GET");
   });
 
-  it("Close: an override other than GET is refused, and nothing is sent", async () => {
+  it("Override profile: an override other than GET is refused, and nothing is sent", async () => {
     const sent = answering(200, {});
     for (const value of ["DELETE", "PUT", "get, delete"]) {
       const input = {
@@ -307,10 +343,14 @@ describe("no caller method override reaches the service", () => {
         headers: { "x-http-method-override": value },
       };
       expect(() =>
-        resolveRequest(type("close"), { api_key: KEY }, input),
+        resolveRequest(type("override_profile"), { api_key: KEY }, input),
       ).toThrow(/may only be GET/);
       await expect(
-        forward(connection("close", { api_key: KEY }), type("close"), input),
+        forward(
+          connection("override_profile", { api_key: KEY }),
+          type("override_profile"),
+          input,
+        ),
       ).rejects.toMatchObject({ status: 400 });
     }
     expect(sent).toHaveLength(0);
@@ -355,35 +395,47 @@ describe("a request a profile reads goes out as JSON", () => {
     expect(sent[0].body).toBe('{"query":"{ a }"}');
   });
 
-  it("Close: a search or a POST read as GET goes out as JSON; a string that is not JSON is refused", async () => {
+  it("Override profile: a search or a POST read as GET goes out as JSON; a string that is not JSON is refused", async () => {
     let sent = answering(200, {});
-    await forward(connection("close", { api_key: KEY }), type("close"), {
-      method: "POST",
-      path: "/data/search/",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: { query: { type: "and" } },
-    });
+    await forward(
+      connection("override_profile", { api_key: KEY }),
+      type("override_profile"),
+      {
+        method: "POST",
+        path: "/data/search/",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: { query: { type: "and" } },
+      },
+    );
     expect(sent[0].headers["content-type"]).toBe("application/json");
     sent = answering(200, {});
     await expect(
-      forward(connection("close", { api_key: KEY }), type("close"), {
-        method: "POST",
-        path: "/lead/",
-        headers: { "x-http-method-override": "GET" },
-        body: "a=1&b=2",
-      }),
+      forward(
+        connection("override_profile", { api_key: KEY }),
+        type("override_profile"),
+        {
+          method: "POST",
+          path: "/lead/",
+          headers: { "x-http-method-override": "GET" },
+          body: "a=1&b=2",
+        },
+      ),
     ).rejects.toMatchObject({ status: 400 });
     expect(sent).toHaveLength(0);
   });
 
   it("a write keeps the caller's content type", async () => {
     const sent = answering(200, {});
-    await forward(connection("close", { api_key: KEY }), type("close"), {
-      method: "POST",
-      path: "/task/",
-      headers: { "content-type": "text/plain" },
-      body: "x",
-    });
+    await forward(
+      connection("override_profile", { api_key: KEY }),
+      type("override_profile"),
+      {
+        method: "POST",
+        path: "/task/",
+        headers: { "content-type": "text/plain" },
+        body: "x",
+      },
+    );
     expect(sent[0].headers["content-type"]).toBe("text/plain");
   });
 
@@ -502,13 +554,17 @@ describe("paths stay under the base URL", () => {
 });
 
 describe("each credential is added the type's way", () => {
-  it("Close: Basic with the key and an empty password", async () => {
+  it("Override profile: Basic with the key and an empty password", async () => {
     const sent = answering(200, { data: [] });
-    await forward(connection("close", { api_key: KEY }), type("close"), {
-      method: "GET",
-      path: "/lead/",
-    });
-    expect(sent[0].url).toBe("https://api.close.com/api/v1/lead/");
+    await forward(
+      connection("override_profile", { api_key: KEY }),
+      type("override_profile"),
+      {
+        method: "GET",
+        path: "/lead/",
+      },
+    );
+    expect(sent[0].url).toBe("https://api.override.example/v1/lead/");
     expect(sent[0].headers.authorization).toBe(
       `Basic ${Buffer.from(`${KEY}:`).toString("base64")}`,
     );
@@ -538,22 +594,6 @@ describe("each credential is added the type's way", () => {
       headers: { "Stripe-Account": "acct_123" },
     });
     expect(sent[0].headers["stripe-account"]).toBe("acct_123");
-  });
-
-  it("Wise: Bearer on the configured base URL", async () => {
-    const sent = answering(200, []);
-    await forward(
-      connection("wise", {
-        api_key: KEY,
-        api_base_url: "https://api.sandbox.transferwise.tech/",
-      }),
-      type("wise"),
-      { method: "GET", path: "/v2/profiles" },
-    );
-    expect(sent[0].url).toBe(
-      "https://api.sandbox.transferwise.tech/v2/profiles",
-    );
-    expect(sent[0].headers.authorization).toBe(`Bearer ${KEY}`);
   });
 
   it("Custom API: bearer, API key in a header or query, basic", async () => {
@@ -764,8 +804,8 @@ describe("no secret in any answer", () => {
       },
     );
     const result = await forward(
-      connection("close", { api_key: KEY }),
-      type("close"),
+      connection("override_profile", { api_key: KEY }),
+      type("override_profile"),
       { method: "GET", path: "/me/" },
     );
     const text = JSON.stringify(result);
@@ -1169,7 +1209,7 @@ describe("the Custom API connection", () => {
 describe("kinds of source connection", () => {
   it("are read from the type alone", () => {
     expect(sourceConnectionKind("custom_api")).toBe("custom");
-    expect(sourceConnectionKind("close")).toBe("builtin");
+    expect(sourceConnectionKind("stripe")).toBe("builtin");
     expect(sourceConnectionKind("rest")).toBe("builtin");
     expect(sourceConnectionKind("graphql")).toBe("builtin");
     expect(sourceConnectionKind("ws:close-tasks")).toBe("workspace");
@@ -1350,14 +1390,10 @@ describe("PostHog: reads in its own project, a query included", () => {
 
 describe("named operations build reads the profile accepts", () => {
   const configs: Record<string, Record<string, unknown>> = {
-    close: { api_key: KEY },
     stripe: { api_key: KEY },
     posthog: { project_id: "175702", api_key: KEY },
   };
   const examples: Record<string, Record<string, unknown>> = {
-    search_leads: { query: 'email_address:"a@b.com"' },
-    get_lead: { id: "lead_abc" },
-    list_opportunities: { lead_id: "lead_abc", status_type: "active" },
     hogql: { query: "select count() from events" },
     search_persons: { search: "a@b.com" },
     search_customers: { query: "email:'a@b.com'" },
@@ -1383,17 +1419,7 @@ describe("named operations build reads the profile accepts", () => {
     }
   });
 
-  it("the three target reads build the expected requests", () => {
-    expect(
-      operationRequest("close", configs.close, "search_leads", {
-        query: "Dupont",
-        limit: 500,
-      }),
-    ).toMatchObject({
-      method: "GET",
-      path: "/lead/",
-      query: { query: "Dupont", _limit: OPERATION_MAX_LIMIT, _skip: 0 },
-    });
+  it("the target reads build the expected requests", () => {
     expect(
       operationRequest("posthog", configs.posthog, "hogql", {
         query:
@@ -1418,26 +1444,26 @@ describe("named operations build reads the profile accepts", () => {
   });
 
   it("refuses unknown operations, missing params and ids that are not ids", () => {
-    expect(() => operationRequest("close", {}, "delete_lead", {})).toThrow(
-      /no operation delete_lead\. Its operations: search_leads/,
+    expect(() => operationRequest("stripe", {}, "delete_customer", {})).toThrow(
+      /no operation delete_customer\. Its operations: search_customers/,
     );
-    expect(() => operationRequest("wise", {}, "anything", {})).toThrow(
+    expect(() => operationRequest("custom_api", {}, "anything", {})).toThrow(
       /no named operations/,
     );
-    expect(() => operationRequest("close", {}, "search_leads", {})).toThrow(
-      /params\.query/,
-    );
+    expect(() =>
+      operationRequest("stripe", {}, "search_customers", {}),
+    ).toThrow(/params\.query/);
     for (const id of ["../task", "a/b", "..", "cus 1", "x?y=1"]) {
       expect(() =>
         operationRequest("stripe", {}, "get_customer", { id }),
       ).toThrow(ConnectionRequestError);
     }
     expect(() =>
-      operationRequest("close", {}, "search_leads", { query: "x", limit: 0 }),
+      operationRequest("stripe", {}, "search_customers", {
+        query: "x",
+        limit: 0,
+      }),
     ).toThrow(/limit/);
-    expect(() =>
-      operationRequest("close", {}, "search_leads", { query: "x", skip: -1 }),
-    ).toThrow(/skip/);
     expect(() =>
       operationRequest("posthog", {}, "hogql", { query: "select 1" }),
     ).toThrow(/project_id/);

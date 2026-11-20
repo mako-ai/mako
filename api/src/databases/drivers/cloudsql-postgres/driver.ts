@@ -18,7 +18,10 @@ import {
   inReadOnlyTransaction,
   ownResult,
 } from "../../../access/connection-writes";
-import { GoogleAuth, JWT, type AuthClient } from "google-auth-library";
+import {
+  googleJwtClient,
+  requireServiceAccount,
+} from "../../../connections/google-service-account";
 import { loggers } from "../../../logging";
 import {
   normalizePostgresFields,
@@ -496,10 +499,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
       if (resolvedAuthType === AuthTypes.IAM) {
         if (!user && conn.service_account_json) {
           try {
-            const sa =
-              typeof conn.service_account_json === "string"
-                ? JSON.parse(conn.service_account_json)
-                : conn.service_account_json;
+            const sa = requireServiceAccount(conn.service_account_json);
             const email = sa?.client_email;
             if (email) {
               if (email.endsWith(".gserviceaccount.com")) {
@@ -624,10 +624,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
         if (!user && conn.service_account_json) {
           // Try to extract email from service account JSON
           try {
-            const sa =
-              typeof conn.service_account_json === "string"
-                ? JSON.parse(conn.service_account_json)
-                : conn.service_account_json;
+            const sa = requireServiceAccount(conn.service_account_json);
             const email = sa?.client_email;
             if (email) {
               // For IAM auth, if the email ends with gserviceaccount.com,
@@ -734,110 +731,33 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
       ipType: conn.ipType,
     });
 
-    // Set up authentication
-    let connectorAuth: GoogleAuth | AuthClient | undefined;
+    // Tenant connections sign in with the tenant's own service account only.
+    // No key: refused. Never fall back to Application Default Credentials,
+    // which are Mako's own Cloud Run service account.
+    // Built from the validated key only: a stored key of another type throws
+    // here, before any auth client exists.
+    requireServiceAccount(conn.service_account_json);
+    const connectorAuth = googleJwtClient(conn.service_account_json, [
+      ...CLOUDSQL_SCOPES,
+    ]);
 
-    // Check if service account JSON is provided (multi-tenant scenario)
-    if (conn.service_account_json) {
-      try {
-        const credentials =
-          typeof conn.service_account_json === "string"
-            ? JSON.parse(conn.service_account_json)
-            : conn.service_account_json;
-
-        logger.info("Using provided service account", {
-          type: credentials.type,
-          client_email: credentials.client_email,
-          project_id: credentials.project_id,
-          hasPrivateKey: !!credentials.private_key,
-        });
-
-        const {
-          client_email: email,
-          private_key: key,
-          project_id: projectId,
-        } = credentials;
-        if (!email || !key) {
-          throw new Error(
-            "Service account JSON must include client_email and private_key.",
-          );
-        }
-
-        connectorAuth = new JWT({
-          email,
-          key,
-          scopes: [...CLOUDSQL_SCOPES],
-          projectId,
-        });
-
-        // Test if auth is working by trying to get an access token
-        logger.info("Testing auth by getting access token...");
-        let authClient: AuthClient | null = null;
-        try {
-          authClient = connectorAuth;
-          const accessTokenResponse = await authClient.getAccessToken();
-          logger.info("Access token obtained, auth is working", {
-            hasToken: !!accessTokenResponse?.token,
-            expiration: accessTokenResponse?.res?.data?.expiry_date,
-          });
-        } catch (authTestError) {
-          logger.error("Auth test failed", { error: authTestError });
-          throw new Error(
-            `Service account authentication failed: ${
-              authTestError instanceof Error
-                ? authTestError.message
-                : "Unknown error"
-            }`,
-            { cause: authTestError },
-          );
-        }
-
-        if (!authClient) {
-          throw new Error(
-            "Auth client initialization failed even though credentials were parsed successfully.",
-          );
-        }
-        logger.info("Using JWT auth client for connector");
-        const connector = new Connector({ auth: connectorAuth });
-        logger.info("Connector created successfully");
-        return connector;
-      } catch (parseError) {
-        logger.error("Failed to parse service account JSON", {
-          error: parseError,
-        });
-        throw new Error(
-          `Invalid service account JSON: ${
-            parseError instanceof Error ? parseError.message : "Parse error"
-          }`,
-          { cause: parseError },
-        );
-      }
-    } else {
-      // Fall back to Application Default Credentials
-      logger.info(
-        "No service account JSON provided, using Application Default Credentials",
+    // Test if auth is working by trying to get an access token
+    try {
+      const accessTokenResponse = await connectorAuth.getAccessToken();
+      logger.info("Access token obtained, auth is working", {
+        hasToken: !!accessTokenResponse?.token,
+      });
+    } catch (authTestError) {
+      logger.error("Auth test failed", { error: authTestError });
+      throw new Error(
+        `Service account authentication failed: ${
+          authTestError instanceof Error
+            ? authTestError.message
+            : "Unknown error"
+        }`,
+        { cause: authTestError },
       );
-      try {
-        connectorAuth = new GoogleAuth({
-          scopes: [...CLOUDSQL_SCOPES],
-        });
-        const authClient = await connectorAuth.getClient();
-        logger.info("Auth client obtained successfully");
-        const tokenResponse = await authClient.getAccessToken();
-        logger.info("Access token obtained, auth is working", {
-          hasToken: !!tokenResponse?.token,
-        });
-        return new Connector({ auth: connectorAuth });
-      } catch (authError) {
-        logger.error("Failed to create auth with ADC", { error: authError });
-        throw new Error(
-          `Authentication setup failed: ${
-            authError instanceof Error ? authError.message : "Unknown error"
-          }. ` +
-            `Please provide service account JSON or ensure GOOGLE_APPLICATION_CREDENTIALS is set.`,
-          { cause: authError },
-        );
-      }
     }
+    return new Connector({ auth: connectorAuth });
   }
 }

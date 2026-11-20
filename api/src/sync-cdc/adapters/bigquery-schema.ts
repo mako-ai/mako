@@ -5,7 +5,7 @@
  */
 import { createHash } from "crypto";
 import type { ConnectorEntitySchema } from "../../connectors/base/BaseConnector";
-import type { CdcEntityLayout } from "./registry";
+import type { CdcEntityLayout, LiveTableDescription } from "./registry";
 import {
   buildCastExpression,
   buildCreateLiveTableStatement,
@@ -72,21 +72,23 @@ export function invalidateCachedSchema(key: string): void {
   partitioningCache.delete(key);
 }
 
-// The live table's actual time partitioning, cached like the column types.
+// The live table's metadata (time partitioning, clustering), cached like the
+// column types. A table that does not exist is never cached: it may be
+// created a moment later.
 const partitioningCache = new Map<
   string,
-  { value: LiveTablePartitioning | null; fetchedAt: number }
+  { value: LiveTableDescription; fetchedAt: number }
 >();
 
 /**
- * The live table's `timePartitioning` from the tables API (a metadata read,
- * never billed). Returns null when the table is not partitioned on a column,
- * and undefined when the read fails.
+ * The live table's partitioning and clustering from the tables API (a
+ * metadata read, never billed), cached. `{ exists: false }` when the table
+ * does not exist; undefined when the read fails.
  */
-export async function getLiveTablePartitioning(
+export async function getLiveTableMeta(
   target: BigQueryTarget,
   liveTable: string,
-): Promise<LiveTablePartitioning | null | undefined> {
+): Promise<LiveTableDescription | undefined> {
   const key = getSchemaCacheKey(target.projectId, target.dataset, liveTable);
   const cached = partitioningCache.get(key);
   if (cached && Date.now() - cached.fetchedAt <= SCHEMA_CACHE_TTL_MS) {
@@ -97,19 +99,46 @@ export async function getLiveTablePartitioning(
       .dataset(target.dataset, { location: target.datasetLocation })
       .table(liveTable)
       .getMetadata();
-    const tp = (
-      metadata as { timePartitioning?: { field?: string; type?: string } }
-    ).timePartitioning;
-    const value = tp?.field ? { field: tp.field, type: tp.type } : null;
+    const m = metadata as {
+      timePartitioning?: { field?: string; type?: string };
+      rangePartitioning?: { field?: string };
+      clustering?: { fields?: string[] };
+    };
+    const value: LiveTableDescription = {
+      exists: true,
+      timePartitioning: m.timePartitioning
+        ? { field: m.timePartitioning.field, type: m.timePartitioning.type }
+        : undefined,
+      rangePartitionField: m.rangePartitioning?.field,
+      clusterFields: m.clustering?.fields ?? [],
+    };
     partitioningCache.set(key, { value, fetchedAt: Date.now() });
     return value;
   } catch (err) {
-    log.warn("Could not read live table partitioning; using the layout", {
+    if ((err as { code?: number } | null)?.code === 404) {
+      return { exists: false, clusterFields: [] };
+    }
+    log.warn("Could not read the live table metadata", {
       liveTable,
       error: err instanceof Error ? err.message : String(err),
     });
     return undefined;
   }
+}
+
+/**
+ * The live table's `timePartitioning` column. Returns null when the table is
+ * not partitioned on a column, and undefined when the read fails or the table
+ * does not exist.
+ */
+export async function getLiveTablePartitioning(
+  target: BigQueryTarget,
+  liveTable: string,
+): Promise<LiveTablePartitioning | null | undefined> {
+  const meta = await getLiveTableMeta(target, liveTable);
+  if (!meta?.exists) return undefined;
+  const tp = meta.timePartitioning;
+  return tp?.field ? { field: tp.field, type: tp.type } : null;
 }
 
 export function hashEntitySchema(schema: ConnectorEntitySchema): string {

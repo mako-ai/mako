@@ -7,6 +7,7 @@
  * of this path is how a credential ends up stored in plaintext on one of
  * them; there is one.
  */
+import { serviceAccountConfigRefusal } from "../connections/google-service-account";
 import { callableFor } from "../connections/callable";
 import { connectorRegistry } from "./registry";
 import { connectorTypeExists } from "./workspace/catalog";
@@ -41,6 +42,46 @@ export class SecretEncryptionError extends Error {
   }
 }
 
+export const ORPHAN_TYPE_MESSAGE =
+  "This connector type is no longer available. Delete or recreate the connection.";
+
+/**
+ * The connection's type has no registered connector or config schema (its
+ * connector was removed). Its stored config cannot be edited, decrypted or
+ * sent anywhere: only rename, describe and delete still work.
+ */
+export class OrphanConnectorTypeError extends Error {
+  constructor() {
+    super(ORPHAN_TYPE_MESSAGE);
+    this.name = "OrphanConnectorTypeError";
+  }
+}
+
+/**
+ * True when `type` is a built-in type with no config schema, so its secrets
+ * cannot be told apart. A `ws:` type is never an orphan here: its schema
+ * load can fail for a moment (blocked, retrying) and that error must surface
+ * as it does elsewhere, not read as a removed connector.
+ */
+export async function isOrphanConnectorType(
+  type: string,
+  workspaceId?: string,
+  options: { callable?: boolean } = {},
+): Promise<boolean> {
+  if (isWorkspaceConnectorType(type)) return false;
+  // `callable`: the paths that only decrypt, edit or call (the proxy, config
+  // edits) also know a type kept as a call profile. Enabling, probing and
+  // retyping leave it off: such a type has no connector to run.
+  const schema = await (
+    options.callable
+      ? syncConnectorRegistry.getConfigSchemaForType(type, workspaceId)
+      : syncConnectorRegistry.getConfigSchemaForType(type, workspaceId, {
+          connectorOnly: true,
+        })
+  ).catch(() => null);
+  return !schema || !Array.isArray(schema.fields);
+}
+
 /**
  * Whether a config field holds a credential, encrypted at rest. The one rule:
  * `applySchemaEncryption` encrypts by it and `inspect_connection` reports it.
@@ -67,7 +108,15 @@ export function applySchemaEncryption(
   config: any,
   schema: { fields: ConnectorFieldSchema[] } | null,
 ): any {
-  if (!schema || !schema.fields || !config) return config;
+  if (!config) return config;
+  // No schema means no way to tell a secret from a plain value. Passing the
+  // config through would store a new key in plaintext, so refuse instead.
+  if (!schema || !Array.isArray(schema.fields)) {
+    if (typeof config === "object" && Object.keys(config).length === 0) {
+      return config;
+    }
+    throw new OrphanConnectorTypeError();
+  }
   const clone: any = { ...config };
 
   const processFields = (target: any, fields: ConnectorFieldSchema[]): void => {
@@ -214,7 +263,9 @@ export async function createSourceConnection(
     workspaceId,
   );
   assertCredentialCharacters(input.config, schema);
-  const refusal = callableFor(type)?.configRefusal?.(input.config ?? {});
+  const refusal =
+    callableFor(type)?.configRefusal?.(input.config ?? {}) ??
+    serviceAccountConfigRefusal(input.config);
   if (refusal) throw new SourceConnectionInputError(refusal);
   const settings = (input.settings ?? {}) as Record<string, any>;
 

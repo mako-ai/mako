@@ -26,7 +26,12 @@ import { DBT_ROOT, dbtResourcePaths } from "../dbt/dbt-working-tree.service";
 import { resolveProdLikeEnvironmentName } from "../dbt/dbt-environments.service";
 import { dbtModelNameOf } from "../dbt/ontology/model-readers";
 import { loadAppsIndex, type AppIndexRow } from "./app-index.service";
-import { diffNameStatus, readBlob } from "./repository.service";
+import {
+  diffNameStatus,
+  log as commitLog,
+  readBlob,
+} from "./repository.service";
+import { pushInfoFromCommit, type DbtRunPushInfo } from "../dbt/run-actor";
 import { markDeployQueued } from "./deploy-progress";
 
 const logger = loggers.api("apps-dbt-before-deploy");
@@ -184,6 +189,23 @@ export async function planDbtBeforeDeploy(input: {
 }
 
 /**
+ * The pushed commit as a run's `push`: the sha always, plus the PR number
+ * (the subject's "(#NNNN)" on a squash merge), the author and the commit time
+ * when the commit can be read. A repo that cannot be read leaves the sha.
+ */
+export async function pushInfoOf(
+  repoDir: string,
+  sha: string,
+): Promise<DbtRunPushInfo> {
+  try {
+    const [commit] = await commitLog(repoDir, sha, 1);
+    return pushInfoFromCommit(sha, commit);
+  } catch {
+    return { sha };
+  }
+}
+
+/**
  * Start the pre-deploy dbt run for a plan. The run carries the held apps
  * (`deploysAfterRun`) and its end requests their deploys. When the run cannot
  * be started, the held apps deploy at once, as they would without the flag.
@@ -193,8 +215,10 @@ export async function holdDeploysForDbtRun(input: {
   workspaceId: string;
   sha: string;
   plan: DbtBeforeDeployPlan;
+  /** The workspace repo, to read the pushed commit's PR number and author. */
+  repoDir: string;
 }): Promise<string | null> {
-  const { workspaceId, sha, plan } = input;
+  const { workspaceId, sha, plan, repoDir } = input;
   const { triggerDbtRun } = await import("../dbt/dbt-run.service");
   const { requestAppDeploys } =
     await import("../inngest/functions/apps-deploy");
@@ -263,6 +287,10 @@ export async function holdDeploysForDbtRun(input: {
       // the ad-hoc guard (dbt-run.service, isAdhocRun).
       trigger: "schedule",
       triggeredBy: "apps-deploy-on-push",
+      actor: {
+        kind: "deploy_on_push",
+        push: await pushInfoOf(repoDir, sha),
+      },
       deferToProduction: true,
       sourceSha: sha,
       deploysAfterRun: { workspaceId, appIds: plan.held, sha },

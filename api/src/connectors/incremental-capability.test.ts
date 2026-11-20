@@ -1,15 +1,8 @@
 import assert from "node:assert/strict";
 import { StripeConnector } from "./stripe/connector";
-import { CloseConnector } from "./close/connector";
-import { PandaDocConnector } from "./pandadoc/connector";
 import { ClaapConnector } from "./claap/connector";
 import { CalendlyConnector } from "./calendly/connector";
 import { RestConnector } from "./rest/connector";
-import { GraphQLConnector } from "./graphql/connector";
-import { PosthogConnector } from "./posthog/connector";
-import { BigQueryConnector } from "./bigquery/connector";
-import { WiseConnector } from "./wise/connector";
-import { GcsConnector } from "./gcs/connector";
 import {
   BaseConnector,
   type IncrementalCapabilities,
@@ -77,29 +70,6 @@ const connectors: Array<{
       } as any),
   },
   {
-    label: "close",
-    make: () =>
-      new CloseConnector({
-        id: "ds_close",
-        name: "Close",
-        type: "close",
-        config: { api_key: "test-key" },
-      } as any),
-  },
-  {
-    label: "pandadoc",
-    make: () =>
-      new PandaDocConnector({
-        id: "ds_pandadoc",
-        name: "PandaDoc",
-        type: "pandadoc",
-        config: {
-          api_key: "test-api-key",
-          api_base_url: "https://api.pandadoc.com",
-        },
-      } as any),
-  },
-  {
     label: "claap",
     make: () =>
       new ClaapConnector({
@@ -135,56 +105,6 @@ const connectors: Array<{
         config: {},
       } as any),
   },
-  {
-    label: "graphql",
-    make: () =>
-      new GraphQLConnector({
-        id: "ds_graphql",
-        name: "GraphQL",
-        type: "graphql",
-        config: {},
-      } as any),
-  },
-  {
-    label: "posthog",
-    make: () =>
-      new PosthogConnector({
-        id: "ds_posthog",
-        name: "PostHog",
-        type: "posthog",
-        config: {},
-      } as any),
-  },
-  {
-    label: "bigquery",
-    make: () =>
-      new BigQueryConnector({
-        id: "ds_bigquery",
-        name: "BigQuery",
-        type: "bigquery",
-        config: {},
-      } as any),
-  },
-  {
-    label: "wise",
-    make: () =>
-      new WiseConnector({
-        id: "ds_wise",
-        name: "Wise",
-        type: "wise",
-        config: { api_key: "test-token" },
-      } as any),
-  },
-  {
-    label: "gcs",
-    make: () =>
-      new GcsConnector({
-        id: "ds_gcs",
-        name: "GCS",
-        type: "gcs",
-        config: { bucket: "test-bucket", service_account_json: "{}" },
-      } as any),
-  },
 ];
 
 function capabilitiesFor(label: string): IncrementalCapabilities {
@@ -198,34 +118,6 @@ function testEveryConnectorReturnsWellFormedCapabilities() {
     const capabilities = make().getIncrementalCapabilities();
     assertWellFormed(label, capabilities);
   }
-}
-
-function testConnectorsWithNoRealIncrementalDeclareNone() {
-  // BigQuery still accepts `since` without applying it. GraphQL/PostHog now
-  // declare real incremental modes (client-filter / $since substitution).
-  const bigquery = capabilitiesFor("bigquery");
-  assert.equal(bigquery.supported, false, "bigquery.supported");
-  assert.equal(bigquery.mode, "none", "bigquery.mode");
-}
-
-function testGraphQLDeclaresClientFilterWithSinceInjection() {
-  const graphql = capabilitiesFor("graphql");
-  assert.equal(graphql.supported, true);
-  assert.equal(graphql.mode, "client-filter");
-  assert.ok(graphql.warning && graphql.warning.includes("$since"));
-}
-
-function testPosthogDeclaresNativeSincePlaceholder() {
-  const posthog = capabilitiesFor("posthog");
-  assert.equal(posthog.supported, true);
-  assert.equal(posthog.mode, "native");
-  assert.equal(posthog.anchorField, "$since");
-  assert.ok(posthog.warning && posthog.warning.includes("$since"));
-  assert.equal(posthog.perEntity?.surveys?.mode, "created-anchor");
-  assert.equal(posthog.perEntity?.survey_responses?.mode, "native");
-  assert.equal(posthog.perEntity?.feature_flags?.mode, "created-anchor");
-  assert.equal(posthog.perEntity?.experiments?.mode, "created-anchor");
-  assert.equal(posthog.perEntity?.annotations?.mode, "created-anchor");
 }
 
 function testCreatedAnchorConnectorsWarnAboutMissedUpdates() {
@@ -242,87 +134,10 @@ function testCreatedAnchorConnectorsWarnAboutMissedUpdates() {
   assert.equal(claap.perEntity?.recordings?.mode, "created-anchor");
 }
 
-function testCloseSearchApiEntitiesDeclareNative() {
-  const close = capabilitiesFor("close");
-  assert.equal(close.mode, "native");
-  assert.equal(close.perEntity?.leads?.mode, "native");
-  assert.equal(close.perEntity?.leads?.anchorField, "date_updated");
-  assert.equal(close.perEntity?.users?.mode, "native");
-  assert.equal(close.perEntity?.groups?.mode, "none");
-}
-
-function testPandadocDocumentsAreNativeContactsAreNot() {
-  const pandadoc = capabilitiesFor("pandadoc");
-  assert.equal(pandadoc.perEntity?.documents?.mode, "native");
-  assert.equal(pandadoc.perEntity?.documents?.anchorField, "modified_from");
-  assert.equal(pandadoc.mode, "none"); // fallback covers "contacts"
-}
-
 function testRestDeclaresClientFilterWithWarning() {
   const rest = capabilitiesFor("rest");
   assert.equal(rest.mode, "client-filter");
   assert.ok(rest.warning && rest.warning.length > 0);
-}
-
-function testWiseCreatedAnchorTransfersAndNoneFallback() {
-  const wise = capabilitiesFor("wise");
-  assert.equal(wise.supported, true);
-  assert.equal(wise.mode, "none");
-  assert.equal(wise.perEntity?.transfers?.mode, "created-anchor");
-  assert.equal(wise.perEntity?.transfers?.anchorField, "createdDateStart");
-  assert.equal(wise.perEntity?.activities?.mode, "native");
-  assert.equal(wise.perEntity?.activities?.anchorField, "since");
-  assert.ok(wise.warning && wise.warning.length > 0);
-}
-
-async function testCloseSearchApiUsesDateUpdatedWhenSinceSet() {
-  const connector = new CloseConnector({
-    id: "ds_close",
-    name: "Close",
-    type: "close",
-    config: { api_key: "test-key" },
-  } as any);
-
-  const bodies: any[] = [];
-  (connector as any).closeApi = {
-    post: async (_path: string, body: any) => {
-      bodies.push(body);
-      // Oldest/count probes and window pages
-      if (body.include_counts) {
-        return { data: { count: { total: 0 } } };
-      }
-      return {
-        data: {
-          data: [
-            {
-              id: "lead_1",
-              date_created: "2026-07-01T00:00:00.000Z",
-              date_updated: "2026-07-16T00:00:00.000Z",
-            },
-          ],
-          cursor: null,
-        },
-      };
-    },
-    get: async () => ({ data: { data: [] } }),
-  };
-
-  await connector.fetchEntityChunk({
-    entity: "leads",
-    since: new Date("2026-07-15T00:00:00.000Z"),
-    maxIterations: 1,
-    onBatch: async () => {},
-  } as any);
-
-  const windowed = bodies.find(body =>
-    body?.query?.queries?.some(
-      (q: any) =>
-        q?.type === "field_condition" &&
-        q?.field?.field_name === "date_updated",
-    ),
-  );
-  assert.ok(windowed, "expected Search body to filter on date_updated");
-  assert.equal(windowed.sort?.[0]?.field?.field_name, "date_updated");
 }
 
 async function testStripeCreatedGteWhenSinceSet() {
@@ -353,71 +168,11 @@ async function testStripeCreatedGteWhenSinceSet() {
   assert.ok(captured.created.gte > 0);
 }
 
-async function testWiseTransfersCreatedDateStartWhenSinceSet() {
-  const connector = new WiseConnector({
-    id: "ds_wise",
-    name: "Wise",
-    type: "wise",
-    config: { api_key: "test", profile_id: "1" },
-  } as any);
-
-  let captured: any;
-  (connector as any).wiseApi = {
-    get: async (_path: string, config?: { params?: any }) => {
-      captured = config?.params;
-      return { data: [] };
-    },
-  };
-
-  await connector.fetchEntityChunk({
-    entity: "transfers",
-    since: new Date("2026-07-15T12:00:00.000Z"),
-    onBatch: async () => {},
-  } as any);
-
-  assert.equal(captured.createdDateStart, "2026-07-15");
-}
-
-async function testWiseActivitiesNativeSinceWhenSinceSet() {
-  const connector = new WiseConnector({
-    id: "ds_wise",
-    name: "Wise",
-    type: "wise",
-    config: { api_key: "test", profile_id: "1" },
-  } as any);
-
-  let captured: any;
-  (connector as any).wiseApi = {
-    get: async (_path: string, config?: { params?: any }) => {
-      captured = config?.params;
-      return { data: { activities: [], cursor: null } };
-    },
-  };
-
-  await connector.fetchEntityChunk({
-    entity: "activities",
-    since: new Date("2026-07-15T12:00:00.000Z"),
-    onBatch: async () => {},
-  } as any);
-
-  assert.equal(captured.since, "2026-07-15T12:00:00.000Z");
-  assert.equal(captured.cursor, undefined);
-}
-
 async function main() {
   testEveryConnectorReturnsWellFormedCapabilities();
-  testConnectorsWithNoRealIncrementalDeclareNone();
-  testGraphQLDeclaresClientFilterWithSinceInjection();
-  testPosthogDeclaresNativeSincePlaceholder();
   testCreatedAnchorConnectorsWarnAboutMissedUpdates();
-  testCloseSearchApiEntitiesDeclareNative();
-  await testCloseSearchApiUsesDateUpdatedWhenSinceSet();
   await testStripeCreatedGteWhenSinceSet();
-  await testWiseTransfersCreatedDateStartWhenSinceSet();
-  await testWiseActivitiesNativeSinceWhenSinceSet();
-  testPandadocDocumentsAreNativeContactsAreNot();
   testRestDeclaresClientFilterWithWarning();
-  testWiseCreatedAnchorTransfersAndNoneFallback();
 }
 
 main().catch((error: unknown) => {

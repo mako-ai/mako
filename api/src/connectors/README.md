@@ -66,14 +66,8 @@ connectors/
 │   ├── incremental.ts       # Date windows, the client-side `since` filter
 │   └── webhook-signature.ts # Raw body, HMAC, constant-time compare
 ├── stripe/
-├── close/
 ├── claap/
 ├── calendly/
-├── pandadoc/
-├── wise/
-├── posthog/
-├── graphql/
-├── bigquery/
 ├── rest/
 ├── registry.ts              # Runtime connector discovery for the API server
 └── README.md               # This file
@@ -172,48 +166,18 @@ table of connectors and entities. Summary:
 - Required config: `api_key`
 - Supports backfill and CDC webhooks (auto-provisioning)
 
-### Close
-
-- Syncs CRM data from Close
-- Supported entities: leads, opportunities, activities (10+ sub-types), contacts, users, custom_fields
-- Required config: `api_key`
-
-### Claap, Calendly, PandaDoc
+### Claap, Calendly
 
 - Fixed-entity connectors with backfill + CDC webhook support (auto-provisioned where the provider allows it)
 
-### Wise
-
-- Syncs Wise (TransferWise) financial data
-- Supported entities: profiles, balances, balance_updates, transfers, recipients, activities
-- Required config: `api_key` (personal API token); optional `profile_id`, `api_base_url` (sandbox)
-- Webhooks verified with Wise's RSA-SHA256 public keys. "Create in Wise" provisions profile-level subscriptions (`/v3/profiles/{id}/subscriptions`, one per event, on every synced profile; reused when they exist, removed when the flow is deleted). Wise only lets a token allowed to manage the profile's webhooks do this (OAuth user token, or a full-access personal token); otherwise the error says how to create them by hand. `balances#account-state-change` and `profiles#state-change` are application-level only, so `balances` / `profiles` cannot be fed by a profile subscription
-
-### PostHog
-
-- Hybrid connector: built-in REST entities (surveys, survey_responses, feature_flags, experiments, annotations) plus dynamic HogQL query entities configured on the Flow
-- Required config: `project_id`, `api_key`
-
 ### GraphQL
 
-- Generic GraphQL API connector
+- A connector folder, `connectors/graphql/` (type `ws:graphql`). The in-process connector is deleted.
 - Supports custom queries with offset or cursor pagination
 - Required config: `endpoint`, `queries` (configured on the Flow, not the connector)
 
 ### Custom API (`custom_api`)
 Any HTTP or GraphQL API with a stored key (bearer, API key in a header or query string, basic auth, or none). Never synced: no entities, hidden from the flow source picker (`syncable: false`). It is only called, through the connection proxy (`connections/proxy.service.ts`). See the [Calling a Service Live](/connectors/#calling-a-service-live) docs.
-
-### Google Cloud Storage (`gcs`)
-
-Import CSV files from a GCS bucket. Credentials (service account + bucket) live
-on the data source; folder prefixes live on the flow via `transferQueries`.
-
-- Sync discovers objects under a prefix matching a glob (default `*.csv`)
-- Incremental runs only process objects with `updated > since` (new/changed files)
-- Each row is tagged with `_source_key` / `_source_generation` / `_source_updated_at`
-
-Required config: `service_account_json`, `bucket`  
-Flow folders: `name`, `prefix`, `glob`, CSV options
 
 ## Future Connectors
 

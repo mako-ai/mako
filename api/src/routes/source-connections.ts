@@ -12,6 +12,7 @@
  * connection's surface is in ./source-connections/, mounted below in its
  * original registration order.
  */
+import { serviceAccountConfigRefusal } from "../connections/google-service-account";
 import { createRoute } from "@hono/zod-openapi";
 import { isEncryptedValue } from "../services/crypto.service";
 import { SourceConnection } from "../database/workspace-schema";
@@ -20,6 +21,8 @@ import {
   type ConnectorFieldSchema,
   SourceConnectionInputError,
   applySchemaEncryption,
+  isOrphanConnectorType,
+  ORPHAN_TYPE_MESSAGE,
   assertCredentialCharacters,
   createSourceConnection,
 } from "../connectors/source-connection-create.service";
@@ -378,6 +381,21 @@ sourceConnectionRoutes.openapi(
       // Get the current values (decrypted) for comparison
       const currentValues = sourceConnection.toObject();
 
+      // A type whose connector was removed: only name, description and
+      // switching off still work. Nothing else is written.
+      const orphan = await isOrphanConnectorType(
+        sourceConnection.type,
+        workspaceId,
+      );
+      // A type kept only as a call profile (connections/profiles) still has a
+      // schema: its config and settings can change, nothing that syncs can.
+      const noSchema = orphan
+        ? await isOrphanConnectorType(sourceConnection.type, workspaceId, {
+            callable: true,
+          })
+        : false;
+      const orphanRefusal = () => fail(c, 409, ORPHAN_TYPE_MESSAGE);
+
       // Where a key is sent is a person's choice, in the app: an API key or
       // agent cannot point a stored credential at another address.
       if (
@@ -407,6 +425,12 @@ sourceConnectionRoutes.openapi(
         hasChanges = true;
       }
       if (body.type !== undefined && body.type !== currentValues.type) {
+        if (
+          orphan ||
+          (await isOrphanConnectorType(String(body.type), workspaceId))
+        ) {
+          return orphanRefusal();
+        }
         sourceConnection.type = body.type;
         hasChanges = true;
       }
@@ -414,6 +438,7 @@ sourceConnectionRoutes.openapi(
         body.isActive !== undefined &&
         body.isActive !== currentValues.isActive
       ) {
+        if (orphan && body.isActive) return orphanRefusal();
         sourceConnection.isActive = body.isActive;
         hasChanges = true;
       }
@@ -445,6 +470,7 @@ sourceConnectionRoutes.openapi(
 
         // Only update config if something changed
         if (configChanged) {
+          if (noSchema) return orphanRefusal();
           const schema = await syncConnectorRegistry.getConfigSchemaForType(
             sourceConnection.type,
             workspaceId,
@@ -457,9 +483,9 @@ sourceConnectionRoutes.openapi(
           );
           try {
             assertCredentialCharacters(changed, schema);
-            const refusal = callableFor(sourceConnection.type)?.configRefusal?.(
-              newConfig,
-            );
+            const refusal =
+              callableFor(sourceConnection.type)?.configRefusal?.(newConfig) ??
+              serviceAccountConfigRefusal(newConfig);
             if (refusal) throw new SourceConnectionInputError(refusal);
           } catch (error) {
             if (error instanceof SourceConnectionInputError) {
@@ -503,6 +529,7 @@ sourceConnectionRoutes.openapi(
         }
 
         if (settingsChanged) {
+          if (noSchema) return orphanRefusal();
           sourceConnection.settings = newSettings;
           hasChanges = true;
         }
@@ -523,6 +550,7 @@ sourceConnectionRoutes.openapi(
           currentTargets.every((id, index) => id === newTargets[index]);
 
         if (!arraysEqual) {
+          if (orphan) return orphanRefusal();
           sourceConnection.targetDatabases = body.targetDatabases;
           hasChanges = true;
         }
@@ -637,7 +665,7 @@ sourceConnectionRoutes.openapi(
 
       const existing = await SourceConnection.findOne(
         { _id: id, workspaceId },
-        { createdBy: 1, managers: 1, keyRequest: 1 },
+        { createdBy: 1, managers: 1, keyRequest: 1, type: 1 },
       ).lean();
       if (!existing) {
         return fail(c, 404, "Source connection not found");
@@ -645,6 +673,13 @@ sourceConnectionRoutes.openapi(
       const caller = await callerOf(c, workspaceId);
       if (!(await mayChangeSourceConnection(caller, existing))) {
         return fail(c, 403, changeRefusal(caller.role));
+      }
+      // A removed connector's connection cannot be switched on.
+      if (
+        body.enabled &&
+        (await isOrphanConnectorType(existing.type, workspaceId))
+      ) {
+        return fail(c, 409, ORPHAN_TYPE_MESSAGE);
       }
       // A connection still waiting for its key has nothing to sync with.
       if (body.enabled && existing.keyRequest) {

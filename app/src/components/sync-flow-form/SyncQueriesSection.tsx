@@ -27,7 +27,7 @@ export function SyncQueriesSection({ model }: { model: SyncFlowFormModel }) {
   } = model;
   return (
     <>
-      {/* Query-based connectors (GraphQL / PostHog) */}
+      {/* Query-based connectors (GraphQL) */}
       {hasTransferQueries && transferQueriesSchema && (
         <Box>
           <Box

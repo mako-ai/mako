@@ -52,7 +52,7 @@ entry: connector.ts # optional; this is the default
 Push `connectors/<slug>/` to your workspace repo's default branch and Mako
 indexes it: it runs `spec`, captures the credential form, and offers the
 connector in the picker. Test it first with `npx @makoai/cli connector test
-connectors/<slug>`. A connector is code; a *connection* is a credential a
+connectors/<slug>`. A connector is code; a _connection_ is a credential a
 workspace configures with it. Once a connection exists (a credential entered
 in the UI), `npx @makoai/cli connection probe <name> --entity <entity>` runs
 it live against the platform — the check plus one bounded page, written
@@ -185,7 +185,7 @@ syncs, when Mako sends them, so a handler can skip work whose records would
 be dropped:
 
 - `records`: the change records, `{ entity, recordId, operation, payload,
-  sourceTs?, changeId? }`. `payload` must be the whole row, as `read` emits
+sourceTs?, changeId? }`. `payload` must be the whole row, as `read` emits
   it: a missing column is written as NULL. When a vendor sends a partial
   object, re-fetch the row by id with `ctx`.
 - `unmapped`: an event type the connector does not handle.
@@ -208,8 +208,8 @@ connection uses the address it checked, so DNS rebinding finds no window. A
 redirect is returned, or followed with `followRedirects: true` and checked
 on every hop. An https to http hop is refused while a credential is on the
 request. `secretHeaders` (plus Authorization, Cookie and Proxy-Authorization)
-are dropped on a hop off the original host and its subdomains. The
-decompressed response is capped at `maxResponseBytes` (100 MB). Errors name
+are dropped on a hop off the original host and port, subdomains included. The
+decompressed response is capped at `maxResponseBytes` (100 MB). A stacked or unknown `content-encoding` is refused. Errors name
 the origin and path and carry no header value or query string.
 
 ## `config.properties` is not optional

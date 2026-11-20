@@ -47,6 +47,7 @@ import {
   releaseHeldDeploys,
   triggerDbtJobRun,
 } from "../../dbt/dbt-run.service";
+import { scheduledRunActor } from "../../dbt/run-actor";
 import { resolveProdLikeEnvironmentName } from "../../dbt/dbt-environments.service";
 import {
   claimDbtRunSlot,
@@ -932,6 +933,7 @@ export const dbtSchedulerFunction = inngest.createFunction(
                 job,
                 trigger: "schedule",
                 triggeredBy: "scheduler",
+                actor: scheduledRunActor(dueJob.id),
               });
               ids.push(run._id.toString());
             } catch (error) {

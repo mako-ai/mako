@@ -12,7 +12,7 @@
  * under its base URL with its credential.
  */
 import type { ISourceConnection } from "../database/workspace-schema";
-import { CUSTOM_API_TYPE } from "./kinds";
+import { callableProfileFor } from "./callable-profiles";
 import {
   DEFAULT_GOOGLE_SCOPE,
   googleToken,
@@ -27,7 +27,7 @@ import {
 /**
  * Four ways, whatever the service: a bearer token, an API key in a header or
  * in the query string, or basic auth. A connector fixes its own (Close sends
- * its key as basic auth, Stripe and Wise as a bearer token); a Custom API
+ * its key as basic auth, Stripe as a bearer token); a Custom API
  * connection picks one, or a Google service account, whose key makes a
  * short-lived bearer token for each request (`wireCredential`).
  */
@@ -173,7 +173,7 @@ export interface RequestShape {
   methodOverride?: string;
 }
 
-type Config = ISourceConnection["config"];
+export type Config = ISourceConnection["config"];
 type GateConnection = Pick<ISourceConnection, "_id" | "config" | "settings">;
 
 export interface CallableConnection {
@@ -296,15 +296,15 @@ export function rateGateOf(
   );
 }
 
-function connectionGateKey(connection: GateConnection): string {
+export function connectionGateKey(connection: GateConnection): string {
   return `connection:${String(connection._id)}`;
 }
 
-function text(value: unknown): string {
+export function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function trimSlash(url: string): string {
+export function trimSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
@@ -392,7 +392,7 @@ export function isGraphqlRead(request: RequestShape): boolean {
   return isGraphqlReadBody(request.body);
 }
 
-function safeJson(value: string): unknown {
+export function safeJson(value: string): unknown {
   try {
     return JSON.parse(value);
   } catch {
@@ -401,213 +401,13 @@ function safeJson(value: string): unknown {
 }
 
 // ---------------------------------------------------------------------------
-// Built-in connectors: each fixes its own credential type
-// ---------------------------------------------------------------------------
-
-/** The base URL the built-in Close connector uses (connectors/close). */
-const CLOSE_BASE_URL = "https://api.close.com/api/v1";
-
-/** A POST the caller asked Close to read as a GET. */
-function closeReadsAsGet(request: RequestShape): boolean {
-  return request.method === "POST" && request.methodOverride === "GET";
-}
-
-const close: CallableConnection = {
-  type: "close",
-  baseUrl: () => CLOSE_BASE_URL,
-  baseUrlFields: [],
-  // Close: the API key as the basic-auth username, no password.
-  credential: config => ({
-    type: "basic",
-    username: text(config.api_key),
-    password: "",
-  }),
-  reads(request) {
-    // Only a POST can be a read here: Close reads a POST as a GET when told
-    // so (the connector lists leads that way), and its search API only
-    // searches. Any other method writes, whatever its headers say.
-    if (request.method !== "POST") return false;
-    if (closeReadsAsGet(request)) return true;
-    return /^\/data\/search\/?$/.test(request.path);
-  },
-  // The caller's override is never forwarded; this is the one Mako sends.
-  methodOverrides: ["GET"],
-  extraHeaders: (request): Record<string, string> =>
-    closeReadsAsGet(request) ? { "x-http-method-override": "GET" } : {},
-  rateGate(connection) {
-    // The connector's own gate: keyed by the key, at least 500 ms apart.
-    return {
-      key: text(connection.config?.api_key) || connectionGateKey(connection),
-      minDelayMs: Math.max(
-        500,
-        Number(connection.settings?.rate_limit_delay_ms) || 200,
-      ),
-    };
-  },
-};
-
-const stripe: CallableConnection = {
-  type: "stripe",
-  baseUrl: config =>
-    trimSlash(text(config.api_base_url) || "https://api.stripe.com"),
-  baseUrlFields: ["api_base_url"],
-  credential: config => ({ type: "bearer", token: text(config.api_key) }),
-  callerHeaders: ["stripe-version", "stripe-account"],
-  bodyEncoding: "form",
-};
-
-const wise: CallableConnection = {
-  type: "wise",
-  baseUrl: config =>
-    trimSlash(text(config.api_base_url) || "https://api.wise.com"),
-  baseUrlFields: ["api_base_url"],
-  credential: config => ({ type: "bearer", token: text(config.api_key) }),
-  otherSecrets: config => [text(config.sca_private_key)],
-};
-
-// ---------------------------------------------------------------------------
-// PostHog: reads in the connection's own project, a query included
-// ---------------------------------------------------------------------------
-
-/** The PostHog default the built-in connector uses (connectors/posthog). */
-const POSTHOG_BASE_URL = "https://app.posthog.com";
-
-/**
- * Query kinds the query API runs that only read. HogQL itself has no write
- * statement; a kind not listed (a new one) is a write until it is added.
- */
-const POSTHOG_READ_QUERY_KINDS = new Set([
-  "HogQLQuery",
-  "HogQLMetadata",
-  "EventsQuery",
-  "ActorsQuery",
-  "TrendsQuery",
-  "FunnelsQuery",
-  "RetentionQuery",
-  "PathsQuery",
-  "StickinessQuery",
-  "LifecycleQuery",
-]);
-
-/**
- * The only fields a query request may carry. Not `refresh`: an agent reads
- * PostHog's cached result and cannot force a recompute on every call.
- */
-const POSTHOG_QUERY_BODY_KEYS = new Set(["query", "client_query_id", "name"]);
-
-/**
- * The resource a path names in the project the connection is configured for
- * (`/api/projects/<id>/<resource>/…` or `/api/environments/<id>/…`), as
- * `{ resource, rest }`; null for another project, the project root itself,
- * or a path outside a project. A personal API key may reach other projects
- * and organizations; the connection reads one.
- */
-function posthogResource(
-  path: string,
-  config: Config,
-): { resource: string; rest: string[] } | null {
-  // Stored as a string or a number (the field asks for a numeric id).
-  const project = String(config.project_id ?? "").trim();
-  if (!project) return null;
-  const match =
-    /^\/api\/(?:projects|environments)\/([^/]+)\/([^/]+)(\/.*)?$/.exec(path);
-  if (!match || match[1] !== project) return null;
-  return {
-    resource: match[2],
-    rest: (match[3] ?? "").split("/").filter(Boolean),
-  };
-}
-
-/**
- * Whether a GET of a project path only returns analytics data: persons,
- * events, insights, cohorts, query results, and feature flags as the flag
- * list or one flag. Everything else is refused: the project root (it holds
- * the project's secret token and its integration settings), local
- * evaluation and remote config (signed with that token), destinations,
- * integrations, and any resource not listed.
- */
-function isPosthogDataRead(path: string, config: Config): boolean {
-  const target = posthogResource(path, config);
-  if (!target) return false;
-  const { resource, rest } = target;
-  switch (resource) {
-    case "persons":
-    case "events":
-    case "insights":
-    case "cohorts":
-    case "query":
-      return true;
-    case "feature_flags":
-      return rest.length === 0 || (rest.length === 1 && /^\d+$/.test(rest[0]));
-    default:
-      return false;
-  }
-}
-
-/**
- * A query API body that only reads: the standard fields only, and a `query`
- * of a kind that reads (POSTHOG_READ_QUERY_KINDS). A string body counts only
- * as compact JSON, as for GraphQL (isGraphqlReadBody).
- */
-export function isPosthogQueryBody(body: unknown): boolean {
-  const parsed = typeof body === "string" ? safeJson(body) : body;
-  if (typeof body === "string" && JSON.stringify(parsed) !== body.trim()) {
-    return false;
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return false;
-  }
-  if (!Object.keys(parsed).every(key => POSTHOG_QUERY_BODY_KEYS.has(key))) {
-    return false;
-  }
-  const query = (parsed as { query?: unknown }).query;
-  if (!query || typeof query !== "object" || Array.isArray(query)) {
-    return false;
-  }
-  const kind = (query as { kind?: unknown }).kind;
-  return typeof kind === "string" && POSTHOG_READ_QUERY_KINDS.has(kind);
-}
-
-/**
- * PostHog: the API key the sync uses, sent as the connector sends it. Only
- * analytics data in the connection's project reads: a GET of an allowed
- * resource (isPosthogDataRead), or a POST of a query that reads to its query
- * API. Everything else, the project root and every other GET included, is a
- * write, so an agent never reaches it.
- */
-const posthog: CallableConnection = {
-  type: "posthog",
-  baseUrl: config => trimSlash(text(config.api_base_url) || POSTHOG_BASE_URL),
-  baseUrlFields: ["api_base_url"],
-  credential: config =>
-    text(config.auth_type) === "project_api_key"
-      ? {
-          type: "api_key_header",
-          token: text(config.api_key),
-          header: "POSTHOG-API-TOKEN",
-        }
-      : { type: "bearer", token: text(config.api_key) },
-  reads(request, config) {
-    if (request.method === "GET" || request.method === "HEAD") {
-      return isPosthogDataRead(request.path, config);
-    }
-    const target = posthogResource(request.path, config);
-    return (
-      request.method === "POST" &&
-      target?.resource === "query" &&
-      target.rest.length === 0 &&
-      isPosthogQueryBody(request.body)
-    );
-  },
-  onlyReads: () => true,
-};
-
-// ---------------------------------------------------------------------------
 // Custom API: an address and a credential type the person picks
 // ---------------------------------------------------------------------------
 
 /** The credential type a Custom API connection picked; bearer when unset. */
-function customApiCredentialType(config: Config): CredentialTypeId | "none" {
+export function customApiCredentialType(
+  config: Config,
+): CredentialTypeId | "none" {
   const picked = text(config.auth_type) as CredentialTypeId | "none";
   return picked === "none" || CREDENTIAL_TYPES.includes(picked as never)
     ? picked
@@ -682,9 +482,11 @@ export function staticHeadersRefusal(config: Config): string | null {
   if (rows.length > MAX_STATIC_HEADERS) {
     return `At most ${MAX_STATIC_HEADERS} headers.`;
   }
-  const credential = customApi.credential(config);
+  const credential = callableProfileFor("custom_api")?.credential(config);
   const keyHeader =
-    credential.type === "api_key_header" ? credential.header.toLowerCase() : "";
+    credential?.type === "api_key_header"
+      ? credential.header.toLowerCase()
+      : "";
   for (const { name, value } of rows) {
     if (!HEADER_NAME.test(name)) {
       return `${JSON.stringify(name).slice(0, 80)} is not a valid header name.`;
@@ -701,7 +503,7 @@ export function staticHeadersRefusal(config: Config): string | null {
 }
 
 /** Scopes as entered (spaces, commas or new lines between them). */
-function googleScopes(config: Config): string[] {
+export function googleScopes(config: Config): string[] {
   const scopes = text(config.scopes)
     .split(/[\s,]+/)
     .filter(Boolean);
@@ -712,7 +514,7 @@ function googleScopes(config: Config): string[] {
  * The audience an ID token is made for: as entered, else the base URL's
  * origin (what Cloud Run and Cloud Functions expect).
  */
-function googleAudience(config: Config): string {
+export function googleAudience(config: Config): string {
   const entered = text(config.audience);
   if (entered) return entered;
   try {
@@ -757,7 +559,7 @@ export function googleCredentialRefusal(config: Config): string | null {
  * a list that could be saved (staticHeadersRefusal) is sent; any other sends
  * none.
  */
-function staticHeaders(config: Config): Record<string, string> {
+export function staticHeaders(config: Config): Record<string, string> {
   if (staticHeadersRefusal(config) !== null) return {};
   return Object.fromEntries(
     staticHeaderRows(config).map(({ name, value }) => [
@@ -767,81 +569,7 @@ function staticHeaders(config: Config): Record<string, string> {
   );
 }
 
-/**
- * Any HTTP API: an address, one credential type and its key. With `graphql`
- * on, only a POST of a query to the endpoint itself reads (isGraphqlRead);
- * everything else, a GET included, writes.
- */
-export const customApi: CallableConnection = {
-  type: CUSTOM_API_TYPE,
-  baseUrl: config => trimSlash(text(config.base_url)),
-  baseUrlFields: ["base_url"],
-  appOnlyFields: [
-    "auth_type",
-    "header_name",
-    "query_param",
-    "graphql",
-    "extra_headers",
-    // Who the Google token speaks for and where it is valid.
-    "scopes",
-    "subject",
-    "audience",
-  ],
-  configRefusal: config =>
-    staticHeadersRefusal(config) ?? googleCredentialRefusal(config),
-  // After the caller's headers; the credential is added after these.
-  extraHeaders: (_request, config) => staticHeaders(config ?? {}),
-  credential(config): Credential {
-    const token = text(config.token);
-    switch (customApiCredentialType(config)) {
-      case "bearer":
-        return { type: "bearer", token };
-      case "api_key_header":
-        return {
-          type: "api_key_header",
-          token,
-          header: text(config.header_name) || "X-API-Key",
-        };
-      case "api_key_query":
-        return {
-          type: "api_key_query",
-          token,
-          param: text(config.query_param) || "api_key",
-        };
-      case "basic":
-        return {
-          type: "basic",
-          username: text(config.username),
-          password: text(config.password),
-        };
-      case "google_service_account":
-        return {
-          type: "google_service_account",
-          key: text(config.service_account_json),
-          scopes: googleScopes(config),
-          ...(text(config.subject) ? { subject: text(config.subject) } : {}),
-        };
-      case "google_id_token":
-        return {
-          type: "google_id_token",
-          key: text(config.service_account_json),
-          audience: googleAudience(config),
-        };
-      case "none":
-        return { type: "none" };
-    }
-  },
-  reads(request, config) {
-    return config.graphql === true && isGraphqlRead(request);
-  },
-  onlyReads: config => config.graphql === true,
-};
-
-const CALLABLE = new Map<string, CallableConnection>(
-  [close, stripe, wise, posthog, customApi].map(c => [c.type, c]),
-);
-
 /** How Mako calls a connection of `type`, or null when it cannot yet. */
 export function callableFor(type: string): CallableConnection | null {
-  return CALLABLE.get(type) ?? null;
+  return callableProfileFor(type);
 }

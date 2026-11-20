@@ -57,7 +57,7 @@ Taken by Joan on 2026-11-16 in the design discussion this RFC records.
 
 | Tier                                                                                                            | Source lives in                                                                     | Built by                                                             | Installed as                                                                        | Runs in    |
 | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ---------- |
-| **Mako** (Stripe, Close, PostHog, Wise, Calendly, PandaDoc, Claap, the REST, GraphQL and custom API connectors) | Mako repo, top-level `connectors/<slug>/` (moved from `api/src/connectors/<slug>/`) | Mako CI on release, semver per connector                             | `source: mako/<slug>@<range>` in the workspace's `connectors/<slug>/connector.yaml` | Leased box |
+| **Mako** (Stripe, Close, PostHog, Wise, Calendly, PandaDoc, Claap, the REST, GraphQL and custom API connectors) | Mako repo, top-level `connectors/<slug>/` (moved from `api/src/connectors/<slug>/`; PostHog and Close are moved and their `api/src` directories deleted) | Mako CI on release, semver per connector                             | `source: mako/<slug>@<range>` in the workspace's `connectors/<slug>/connector.yaml` | Leased box |
 | **Vendored** (Airbyte, Estuary; RFC #947 iterations 3–4)                                                        | Mako repo, `connectors/<slug>/`, with `origin:`                                     | Mako CI, bot PR per upstream release                                 | Same reference                                                                      | Leased box |
 | **Workspace**                                                                                                   | Workspace repo, `connectors/<slug>/` with `entry:`                                  | Mako, on push to main or on first run from a branch, per source hash | Itself                                                                              | Leased box |
 
@@ -66,7 +66,7 @@ The folder shape is identical across tiers, as RFC #947 required. Promotion and 
 - **Eject.** Copy a Mako connector's source into the workspace's `connectors/<slug>/`. It becomes a `ws:` connector the workspace owns. It no longer upgrades. The switch is visible in the flow file.
 - **Publish (later).** A workspace connector is submitted to the registry. After review, others install it by reference.
 
-What leaves `api/src`: the 10 vendor-facing connector directories (`calendly`, `claap`, `close`, `custom_api`, `graphql`, `pandadoc`, `posthog`, `rest`, `stripe`, `wise`). What stays: `base/` (the contract), `registry.ts`, `rate-gate.ts`, `probe.service.ts`, `workspace/` (the adapter and runtime), and `bigquery/` and `gcs/` while they are warehouse readers rather than vendor APIs.
+What leaves `api/src`: the 10 vendor-facing connector directories (`calendly`, `claap`, `close`, `custom_api`, `graphql`, `pandadoc`, `posthog`, `rest`, `stripe`, `wise`). `close`, `pandadoc`, `posthog` and `wise` are already gone, and the PostHog folder has no query entities. What stays: `base/` (the contract), `registry.ts`, `rate-gate.ts`, `probe.service.ts`, `workspace/` (the adapter and runtime), and `bigquery/` while it is a warehouse reader rather than vendor APIs.
 
 ### 4.1 What stays in the API: the connection gateway and workflows
 
@@ -76,7 +76,7 @@ Two paths reach vendor APIs without running connector code. Neither moves.
   - The API forwards the request with the stored key, so the key never leaves Mako.
   - Each connection lists who may read and who may write. A deployed workflow acts as itself (`workflow:<name>` or `workflow:*`). A write is bound to an executing run and recorded.
   - It holds no vendor SDK and no tenant code: it is credential handling plus HTTP forwarding. Moving it into a box would put the key back into a sandbox and undo #1178's guarantee.
-- **Named live-read operations (#1269).** `call_connection` operations such as Close `search_leads` or PostHog `hogql` are request builders on that gateway. They execute in the API in milliseconds and need no box, so they are not runs and not P0 (§6.5).
+- **Named live-read operations (#1269).** `call_connection` operations such as Stripe `get_customer` or PostHog `hogql` are request builders on that gateway. They execute in the API in milliseconds and need no box, so they are not runs and not P0 (§6.5).
 - **Hatchet workflows.** Workflow step programs run on Hatchet workers (`deploy/workflows/`), a separate runtime this RFC does not touch. A workflow that needs synced data reads the warehouse. A workflow that needs a vendor calls the gateway.
 
 **Where the two meet later.** A connector in a box could make its vendor calls through the gateway too, with a run-scoped token in place of the raw key. The box would then never hold a credential at all. The cost is vendor responses passing through the API twice during a backfill. Left as an open question (§12).

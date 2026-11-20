@@ -1,6 +1,6 @@
 /**
  * The PostHog HTTP client, with the in-process connector's policy
- * (`api/src/connectors/posthog/connector.ts`, `base/http-retry.ts`):
+ * (deleted; `base/http-retry.ts` held its retry):
  *
  * - a personal API key goes in `Authorization: Bearer`, a project API key in
  *   `POSTHOG-API-TOKEN`, chosen by `auth_type`;

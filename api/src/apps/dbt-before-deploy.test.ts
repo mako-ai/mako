@@ -61,6 +61,15 @@ vi.mock("./repository.service", () => ({
   DEFAULT_BRANCH: "main",
   // Main's head is the pushed commit: deployTargetForPush returns it.
   resolveCommit: vi.fn(async () => AFTER),
+  // The pushed commit, a squash merge: "(#NNNN)" names its pull request.
+  log: vi.fn(async () => [
+    {
+      oid: AFTER,
+      author: "Joan Rodriguez",
+      timestamp: Date.parse("2026-11-19T10:30:00Z"),
+      subject: "fix(dbt): rebuild closed loop (#1234)",
+    },
+  ]),
   diffNameStatus: vi.fn(async () =>
     state.changed.map(path => ({ path, status: "modified" })),
   ),
@@ -288,6 +297,16 @@ describe("deployAppsForPush with a dbt change and the flag on", () => {
     expect(run.deferToProduction).toBe(true);
     expect(run.sourceSha).toBe(AFTER);
     expect(run.gitBranch).toBeUndefined();
+    // Who started it: the push, with its PR read from the squash subject.
+    expect(run.actor).toEqual({
+      kind: "deploy_on_push",
+      push: {
+        sha: AFTER,
+        prNumber: 1234,
+        prAuthor: "Joan Rodriguez",
+        mergedAt: new Date("2026-11-19T10:30:00Z"),
+      },
+    });
     expect(run.deploysAfterRun).toEqual({
       workspaceId: ws,
       appIds: [READER],

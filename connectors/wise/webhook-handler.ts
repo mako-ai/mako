@@ -54,7 +54,7 @@ import {
   type WebhookChangeRecord,
 } from "./webhooks.ts";
 
-/** `verifyWiseWebhook` as data. The API test runs both on the same deliveries. */
+/** Wise's RSA-SHA256 webhook check, declared as data. */
 export const WISE_WEBHOOK_VERIFICATION: WebhookVerification = {
   scheme: "rsa-sha256",
   publicKeys: [WISE_PRODUCTION_PUBLIC_KEY, WISE_SANDBOX_PUBLIC_KEY],
@@ -68,7 +68,7 @@ export const WISE_WEBHOOK_VERIFICATION: WebhookVerification = {
 };
 
 /**
- * The event id in-process `verifyWiseWebhook` gives a delivery that has no
+ * The event id the former in-process check gave a delivery that has no
  * `X-Delivery-Id`: type, resource id and time, else the subscription id.
  */
 export function wiseFallbackEventId(
@@ -100,8 +100,8 @@ const BODY_HASH_ID = /^[0-9a-f]{40}$/;
 /**
  * A stored event as the in-process connector holds it. Mako stores the raw
  * body, keyed by `X-Delivery-Id` (`eventIdHeader`), or by a SHA-1 of the
- * body when the header is missing, and typed by `event_type`. In-process
- * `verifyWiseWebhook` adds `type`, `event_type` and `id` (the header, else
+ * body when the header is missing, and typed by `event_type`. The former
+ * in-process check added `type`, `event_type` and `id` (the header, else
  * its own fallback) to the body, and the extraction reads them.
  */
 export function inProcessWiseEvent(event: WebhookEvent): WebhookEvent {

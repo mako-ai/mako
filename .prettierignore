@@ -11,6 +11,8 @@ coverage/
 *.d.ts
 # Recorded connector cassettes: one interaction per line, written by parity.mjs
 connectors/*/fixtures/cassettes/
+# Golden rows: byte-compared by a test, written by golden.mjs
+connectors/*/fixtures/golden/
 
 # Configuration files
 *.config.js

@@ -1,7 +1,6 @@
 /**
- * PandaDoc entity schemas, field for field the same as the in-process
- * connector's (`api/src/connectors/pandadoc/schema.ts`). The parity test
- * fails if the two drift.
+ * PandaDoc entity schemas, ported field for field from the in-process
+ * connector (deleted). The golden rows test fails if the output drifts.
  *
  * Mako's system columns (`_syncedAt`, `is_deleted`, the `_mako_*` columns,
  * ...) are not declared here: a connector cannot declare them over the wire.

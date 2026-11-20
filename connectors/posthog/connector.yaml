@@ -1,8 +1,8 @@
 # PostHog, as a connector folder (RFC connector-runtime, iteration 5).
 #
-# Production still runs the in-process connector in api/src/connectors/posthog.
-# No flow uses this folder. The parity harness in fixtures/ holds the two to
-# the same output.
+# The in-process connector this folder was ported from is deleted. Production
+# runs the folder on the shadow of the posthog-crm-bigquery-write flow. The
+# golden rows in fixtures/golden/ hold the output it was checked against.
 runtime: node
 entry: connector.ts
 page:

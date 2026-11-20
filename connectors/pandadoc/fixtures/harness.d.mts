@@ -87,7 +87,15 @@ export function ensureFolderInstalled(): void;
 export function canonicalJson(value: unknown): string;
 export function requestKey(method: string, rawUrl: string): string;
 export function loadCassettes(dir?: string): Map<string, unknown>;
-export function startReplayServer(): Promise<ReplayServer>;
+export function startReplayServer(
+  interactions?: Map<string, { status: number; body: unknown }>,
+): Promise<ReplayServer>;
+export function readFolder(options: {
+  entity: string;
+  config: Record<string, unknown>;
+  since?: string;
+  maxIterations: number;
+}): Promise<Run>;
 export function runFolderCommand(
   command: string,
   options?: {

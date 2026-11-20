@@ -1,6 +1,6 @@
 /**
  * An axios instance with the SSRF guards of `safe-fetch.service.ts`, for
- * connectors whose target URL is user-supplied (REST, GraphQL).
+ * connectors whose target URL is user-supplied (REST).
  *
  * Those connectors used a plain `axios.create({ baseURL })`, so any workspace
  * member could point a connection at `http://169.254.169.254/…` or an

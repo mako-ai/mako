@@ -1,0 +1,37 @@
+[
+  {
+    "id": "stat_H87erqmSalxZEKCTyEwlgJ2wDAQq8pf4H87erqmSa",
+    "label": "Active",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "pipeline_id": "pipe_xBEhe2JDAf87nAtzWSyVFBSchwLwYZvLxBEhe2JDA",
+    "type": "active"
+  },
+  {
+    "id": "stat_dC5PUmnUcvYhGgkBynn5QNOyaPZtjTa1dC5PUmnUc",
+    "label": "Won",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "pipeline_id": "pipe_xBEhe2JDAf87nAtzWSyVFBSchwLwYZvLxBEhe2JDA",
+    "type": "won"
+  },
+  {
+    "id": "stat_cSnbOjlm8xYOHvhVG7ekp3jzuQcveiBncSnbOjlm8",
+    "label": "Lost",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "pipeline_id": "pipe_xBEhe2JDAf87nAtzWSyVFBSchwLwYZvLxBEhe2JDA",
+    "type": "lost"
+  },
+  {
+    "id": "stat_C6kn78X82s18WL2KvJRiliE18AdmWV0kC6kn78X82",
+    "label": "On hold",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "pipeline_id": "pipe_xBEhe2JDAf87nAtzWSyVFBSchwLwYZvLxBEhe2JDA",
+    "type": "active"
+  },
+  {
+    "id": "stat_ZMiD3370kPPmaqLhFxHbTLW4IryWZhpIZMiD3370k",
+    "label": "Demo",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "pipeline_id": "pipe_xBEhe2JDAf87nAtzWSyVFBSchwLwYZvLxBEhe2JDA",
+    "type": "active"
+  }
+]

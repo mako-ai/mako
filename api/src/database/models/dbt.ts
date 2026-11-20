@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document, Types } from "mongoose";
+import { DbtRunActorSchema, type DbtRunActor } from "../../dbt/run-actor";
 
 /**
  * dbt — workspace-scoped dbt Core projects ("dbt Cloud replica").
@@ -381,6 +382,12 @@ export interface IDbtRun extends Document {
   /** User id for manual triggers, "scheduler" / "agent" / "ci-webhook". */
   triggeredBy: string;
   /**
+   * Who started the run: kind plus the user, API key, MCP client, chat,
+   * schedule or pushed commit behind it (dbt/run-actor.ts). Absent on runs
+   * created before it existed.
+   */
+  actor?: DbtRunActor;
+  /**
    * Executor lane chosen at trigger time (dbt-run-queue.ts, chooseRunLane).
    * Absent on runs that predate lanes, which ran in the default lane.
    */
@@ -544,6 +551,7 @@ const DbtRunSchema = new Schema<IDbtRun>(
       required: true,
     },
     triggeredBy: { type: String, required: true },
+    actor: { type: DbtRunActorSchema, required: false },
     lane: { type: String, enum: ["default", "fast"] },
     gitBranch: { type: String },
     workingTreeUserId: { type: String },
@@ -652,6 +660,8 @@ const DbtRunSchema = new Schema<IDbtRun>(
 
 DbtRunSchema.index({ workspaceId: 1, projectId: 1, createdAt: -1 });
 DbtRunSchema.index({ jobId: 1, createdAt: -1 }, { sparse: true });
+// "Who started the runs of this workspace lately" in one query.
+DbtRunSchema.index({ workspaceId: 1, createdAt: -1 });
 // One pre-deploy build per pushed commit (apps/dbt-before-deploy.ts).
 DbtRunSchema.index(
   { "deploysAfterRun.workspaceId": 1, "deploysAfterRun.sha": 1 },

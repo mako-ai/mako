@@ -734,7 +734,7 @@ export class SandboxedConnector extends BaseConnector {
    * The query entities' names, in the connection's order, for a connector
    * whose spec declares `queryEntities`: one per item of `config.queries`
    * with a name. A flow's queries are in the config too (the engine injects
-   * them, as for the in-process GraphQL connector).
+   * them, as for the GraphQL folder).
    */
   private queryEntityNames(): string[] {
     const declared = (this.loaded?.spec?.mako as any)?.queryEntities;

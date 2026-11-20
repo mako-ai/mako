@@ -548,7 +548,7 @@ export function createConnectorTools(workspaceId: string) {
   return {
     list_connectors: tool({
       description: [
-        "List the CONNECTORS available to this workspace — the code a connection is configured with: built-in ones (Stripe, Close, PostHog, GCS, …) and the workspace's own (`ws:<slug>`, from `connectors/<slug>/` in its repo).",
+        "List the CONNECTORS available to this workspace — the code a connection is configured with: built-in ones (Stripe, Close, PostHog, …) and the workspace's own (`ws:<slug>`, from `connectors/<slug>/` in its repo).",
         "Each entry carries the entities it can sync, whether incremental pulls are honest, and the `connections` already configured with it (id + name — never a credential). A workspace connector also carries `status` (indexed, verified, blocked with `blockedReason`, or retrying: a platform error during indexing, with `blockedReason`, `nextRetryAt` and `retryAttempts`; it indexes again on its own) and, when its folder has a package.json, `build` (built or failed, with npm's or esbuild's `error`).",
         "When the connector registry is on, Mako's own connectors also appear as `mako/<slug>` (`source: registry`) with their `versions`, `authType`, `changelog` and `install` line; a workspace connector installed from one (`source: mako/<slug>@<range>` in its connector.yaml) carries `registry` with the version it runs and any `upgradeAvailable`.",
         "This is the catalog of what CAN be connected. For what IS connected, call list_connections (databases and sources), and inspect_connection / probe_connection for one of them.",
@@ -843,9 +843,9 @@ export function createConnectorTools(workspaceId: string) {
     }),
     call_connection: tool({
       description: [
-        "Read a SOURCE connection LIVE (Close, Stripe, PostHog, Wise, a Custom API): Mako adds the credential, which you never see, and returns status, headers and body. Use it for fresh or unsynced data; synced tables and metrics come first.",
-        "Two ways. (1) A named operation: `operation` + `params`, e.g. Close `search_leads` { query }, PostHog `hogql` { query }, Stripe `get_customer` { id }. inspect_connection lists a connection's `operations`. (2) A raw request: `method` + `path` (+ `query`, `body`), never mixed with `operation`, under the connection's base URL (Close: /lead/, Stripe: /v1/customers, PostHog: /api/projects/<project_id>/persons/).",
-        "Reads only: GET, a Close search or a Close POST with x-http-method-override: GET, a PostHog query in the connection's project, a GraphQL query (Custom API with GraphQL on). Writes are refused; they belong to a workflow on the writers list.",
+        "Read a SOURCE connection LIVE (Stripe, PostHog, a Custom API): Mako adds the credential, which you never see, and returns status, headers and body. Use it for fresh or unsynced data; synced tables and metrics come first.",
+        "Two ways. (1) A named operation: `operation` + `params`, e.g. PostHog `hogql` { query }, Stripe `get_customer` { id }. inspect_connection lists a connection's `operations`. (2) A raw request: `method` + `path` (+ `query`, `body`), never mixed with `operation`, under the connection's base URL (Stripe: /v1/customers, PostHog: /api/projects/<project_id>/persons/).",
+        "Reads only: GET, a PostHog query in the connection's project, a GraphQL query (Custom API with GraphQL on). Writes are refused; they belong to a workflow on the writers list.",
         "Needs live reads on in the connection's Access tab (the workspace owner or a manager switches them on per connection) and you on its live readers list when it has one; with live reads off it is refused for everyone. At most AGENT_CALLS_PER_MINUTE calls (default 30) per person per connection per minute. Answers over 40,000 characters come back cut (`truncated`).",
       ].join("\n"),
       inputSchema: z.object({
@@ -856,7 +856,7 @@ export function createConnectorTools(workspaceId: string) {
           .string()
           .optional()
           .describe(
-            "A named read operation from inspect_connection's `operations` (e.g. search_leads, hogql, get_customer). Replaces method, path, query and body; headers still apply (Stripe-Account).",
+            "A named read operation from inspect_connection's `operations` (e.g. hogql, get_customer). Replaces method, path, query and body; headers still apply (Stripe-Account).",
           ),
         params: z
           .record(z.string(), z.unknown())
@@ -881,7 +881,7 @@ export function createConnectorTools(workspaceId: string) {
           .unknown()
           .optional()
           .describe(
-            "JSON body, for a read POST (a GraphQL query, a Close search, a PostHog query).",
+            "JSON body, for a read POST (a GraphQL query, a PostHog query).",
           ),
       }),
       execute: async (

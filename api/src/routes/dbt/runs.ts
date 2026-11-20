@@ -18,10 +18,18 @@ import {
   serverError,
   publishDbtEvent,
   findProject,
+  runActorOf,
 } from "./context";
 import { fail } from "../lib/respond";
+import { redactRunActor, type DbtRunActor } from "../../dbt/run-actor";
 
 export const dbtRunRoutes = new Hono();
+
+/** A run as the API returns it: its actor through the same redaction as MCP. */
+function withRedactedActor<T extends { actor?: unknown }>(run: T): T {
+  if (!run.actor) return run;
+  return { ...run, actor: redactRunActor(run.actor as DbtRunActor) };
+}
 
 // ---------------------------------------------------------------------------
 // Runs
@@ -52,7 +60,10 @@ dbtRunRoutes.get(
       const reconciled = await reconcileStaleQueuedRuns(runs, {
         persist: false,
       });
-      return c.json({ success: true, runs: reconciled });
+      return c.json({
+        success: true,
+        runs: reconciled.map(withRedactedActor),
+      });
     } catch (error) {
       return serverError(c, error, "Failed to list dbt runs");
     }
@@ -91,7 +102,7 @@ dbtRunRoutes.get(
       return c.json({
         success: true,
         run: {
-          ...run,
+          ...withRedactedActor(run),
           logs: logs.slice(logsSince),
           logCursor: logs.length,
           ...(queue ? { queue } : {}),
@@ -159,6 +170,7 @@ dbtRunRoutes.post(
         workspaceId: project.workspaceId.toString(),
         runId,
         triggeredBy: getUserId(c),
+        actor: runActorOf(c),
       });
       if (!run) {
         return badRequest(

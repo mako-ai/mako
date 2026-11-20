@@ -41,6 +41,8 @@ workspace did the same. Every app follows these five rules.
    or tab switch. Report the first-load time. Trace it with `app_browse`
    steps: `eval` `window.__lt=[];new PerformanceObserver(l=>l.getEntries().forEach(e=>__lt.push(Math.round(e.duration)))).observe({type:"longtask"})`,
    `click` the filter, `wait` 3000, `eval` `Math.max(0,...__lt)`.
+   - Measure it on a production build: `pnpm build`, then `pnpm exec vite preview --port <port>`. React's dev build overstated long tasks 2 to 4× in measurements on 20 Nov 2026. csat was 256 ms on dev and had 0 long tasks on prod.
+   - `vite preview` serves `__data/*` as index.html. Record the dev `__data` responses once, then replay them with Playwright `route()`. Take the median of 3 runs over load and 1 filter change.
 4. **Keep bindings small and fast.** Aggregate in the binding when the page
    only shows aggregates. Select only the columns the app reads. Split a
    binding when one view needs far more rows than the others. Keep a build

@@ -33,6 +33,7 @@ export default defineConfig({
       "src/routes/source-connection-ids.test.ts",
       "src/routes/source-connection-secrets.test.ts",
       "src/routes/source-connection-roles.test.ts",
+      "src/routes/source-connection-orphan-type.test.ts",
       "src/routes/connector-probe.test.ts",
       // Key links: a connection created without its key, set in the app.
       "src/routes/source-connection-key-link.test.ts",
@@ -43,6 +44,8 @@ export default defineConfig({
       // A write an agent's run records: the request whole, credential redacted.
       "src/connections/describe-request.test.ts",
       "src/connections/google-service-account.test.ts",
+      // Google credential type validation, at save and at every use path.
+      "src/connections/google-credential-use-paths.test.ts",
       "src/connectors/rate-gate.test.ts",
       // ClickHouse Cloud wake: wait budget, interactive cap, DNS fails fast.
       "src/databases/drivers/clickhouse/wake.test.ts",

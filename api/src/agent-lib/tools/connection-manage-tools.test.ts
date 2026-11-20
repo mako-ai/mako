@@ -245,10 +245,11 @@ describe("update_connection", () => {
     );
   });
 
-  it("refuses a graphql endpoint, any address-like field, and a field holding a URL", async () => {
+  it("refuses an orphaned graphql connection, any address-like field, and a field holding a URL", async () => {
     const GQL = { _id: new Types.ObjectId() };
     // Raw insert: the typed model declares `headers` as an object, the
-    // GraphQL connector stores it encrypted, as a string.
+    // GraphQL connector stored it encrypted, as a string. Its in-process
+    // connector is deleted: this row is an orphan, and an edit fails closed.
     await SourceConnection.collection.insertOne({
       _id: GQL._id,
       workspaceId: new Types.ObjectId(WS),
@@ -267,7 +268,9 @@ describe("update_connection", () => {
       connectionId: String(GQL._id),
       config: { endpoint: "https://attacker.example/x" },
     });
-    expect(String(endpoint.error)).toMatch(/endpoint: where and how the key/);
+    // The refusal is configUpdateProblem's no-schema guard.
+    expect(String(endpoint.error)).toMatch(/declares no config schema/);
+    expect(String(endpoint.error)).not.toContain("attacker.example");
     expect(
       (await SourceConnection.findById(GQL._id).lean())?.config?.endpoint,
     ).toBe("https://api.example.com/graphql");
@@ -275,6 +278,7 @@ describe("update_connection", () => {
     const schema = {
       fields: [
         { name: "api_base_url", type: "string" },
+        { name: "endpoint", type: "string" },
         { name: "tenant_host", type: "string" },
         { name: "label", type: "string" },
         { name: "page_size", type: "number" },
@@ -282,6 +286,7 @@ describe("update_connection", () => {
     };
     for (const [config, stored] of [
       [{ api_base_url: "x" }, {}],
+      [{ endpoint: "x" }, {}],
       [{ tenant_host: "x" }, {}],
       [{ label: "https://attacker.example" }, {}],
       [{ label: "attacker.example.com" }, {}],

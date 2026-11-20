@@ -1,0 +1,312 @@
+{
+  "rows": [
+    {
+      "id": 116,
+      "name": "item 116",
+      "nested": {
+        "flags": [
+          false,
+          true
+        ],
+        "score": 3.75
+      },
+      "tags": [],
+      "updated_at": "2026-01-02T01:15:00.000Z"
+    },
+    {
+      "id": 117,
+      "name": "item 117",
+      "nested": {
+        "flags": [
+          true,
+          false
+        ],
+        "score": 4
+      },
+      "tags": [
+        "t1",
+        "t2"
+      ],
+      "updated_at": "2026-01-03T06:08:00.000Z"
+    },
+    {
+      "id": 118,
+      "name": "item 118",
+      "nested": {
+        "flags": [
+          false,
+          false
+        ],
+        "score": 4.25
+      },
+      "tags": [
+        "t2",
+        "t3"
+      ],
+      "updated_at": "2026-01-04T11:01:00.000Z"
+    },
+    {
+      "id": 119,
+      "name": "item 119",
+      "nested": {
+        "flags": [
+          true,
+          true
+        ],
+        "score": 4.5
+      },
+      "tags": [
+        "t0",
+        "t4"
+      ],
+      "updated_at": "2026-01-05T15:54:00.000Z"
+    },
+    {
+      "id": 120,
+      "name": "item 120",
+      "nested": {
+        "flags": [
+          false,
+          false
+        ],
+        "score": 4.75
+      },
+      "tags": [
+        "t1",
+        "t5"
+      ],
+      "updated_at": "2026-01-06T20:47:00.000Z"
+    },
+    {
+      "id": 121,
+      "name": "item 121",
+      "nested": {
+        "flags": [
+          true,
+          false
+        ],
+        "score": 5
+      },
+      "tags": [],
+      "updated_at": "2026-01-08T01:40:00.000Z"
+    },
+    {
+      "id": 122,
+      "name": "item 122",
+      "nested": {
+        "flags": [
+          false,
+          true
+        ],
+        "score": 5.25
+      },
+      "tags": [
+        "t0",
+        "t0"
+      ],
+      "updated_at": "2026-01-09T06:33:00.000Z"
+    },
+    {
+      "id": 123,
+      "name": "item 123",
+      "nested": {
+        "flags": [
+          true,
+          false
+        ],
+        "score": 5.5
+      },
+      "tags": [
+        "t1",
+        "t1"
+      ],
+      "updated_at": "2026-01-10T11:26:00.000Z"
+    },
+    {
+      "id": 124,
+      "name": "item 124",
+      "nested": {
+        "flags": [
+          false,
+          false
+        ],
+        "score": 5.75
+      },
+      "tags": [
+        "t2",
+        "t2"
+      ],
+      "updated_at": "2026-01-11T16:19:00.000Z"
+    },
+    {
+      "id": 125,
+      "name": "item 125",
+      "nested": {
+        "flags": [
+          true,
+          true
+        ],
+        "score": 6
+      },
+      "tags": [
+        "t0",
+        "t3"
+      ],
+      "updated_at": "2026-01-12T21:12:00.000Z"
+    },
+    {
+      "id": 126,
+      "name": "item 126",
+      "nested": {
+        "flags": [
+          false,
+          false
+        ],
+        "score": 6.25
+      },
+      "tags": [],
+      "updated_at": "2026-01-14T02:05:00.000Z"
+    },
+    {
+      "id": 127,
+      "name": "item 127",
+      "nested": {
+        "flags": [
+          true,
+          false
+        ],
+        "score": 6.5
+      },
+      "tags": [
+        "t2",
+        "t5"
+      ],
+      "updated_at": "2026-01-15T06:58:00.000Z"
+    },
+    {
+      "id": 128,
+      "name": "item 128",
+      "nested": {
+        "flags": [
+          false,
+          true
+        ],
+        "score": 6.75
+      },
+      "tags": [
+        "t0",
+        "t6"
+      ],
+      "updated_at": "2026-01-16T11:51:00.000Z"
+    },
+    {
+      "id": 129,
+      "name": "item 129",
+      "nested": {
+        "flags": [
+          true,
+          false
+        ],
+        "score": 7
+      },
+      "tags": [
+        "t1",
+        "t0"
+      ],
+      "updated_at": "2026-01-17T16:44:00.000Z"
+    },
+    {
+      "id": 130,
+      "name": "item 130",
+      "nested": {
+        "flags": [
+          false,
+          false
+        ],
+        "score": 7.25
+      },
+      "tags": [
+        "t2",
+        "t1"
+      ],
+      "updated_at": "2026-01-18T21:37:00.000Z"
+    },
+    {
+      "id": 131,
+      "name": "item 131",
+      "nested": {
+        "flags": [
+          true,
+          true
+        ],
+        "score": 7.5
+      },
+      "tags": [],
+      "updated_at": "2026-01-20T02:30:00.000Z"
+    },
+    {
+      "id": 132,
+      "name": "item 132",
+      "nested": {
+        "flags": [
+          false,
+          false
+        ],
+        "score": 7.75
+      },
+      "tags": [
+        "t1",
+        "t3"
+      ],
+      "updated_at": "2026-01-21T07:23:00.000Z"
+    },
+    {
+      "id": 133,
+      "name": "item 133",
+      "nested": {
+        "flags": [
+          true,
+          false
+        ],
+        "score": 8
+      },
+      "tags": [
+        "t2",
+        "t4"
+      ],
+      "updated_at": "2026-01-22T12:16:00.000Z"
+    },
+    {
+      "id": 134,
+      "name": "item 134",
+      "nested": {
+        "flags": [
+          false,
+          true
+        ],
+        "score": 8.25
+      },
+      "tags": [
+        "t0",
+        "t5"
+      ],
+      "updated_at": "2026-01-23T17:09:00.000Z"
+    },
+    {
+      "id": 135,
+      "name": "item 135",
+      "nested": {
+        "flags": [
+          true,
+          false
+        ],
+        "score": 8.5
+      },
+      "tags": [
+        "t1",
+        "t6"
+      ],
+      "updated_at": "2026-01-24T22:02:00.000Z"
+    }
+  ]
+}

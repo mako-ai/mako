@@ -1,0 +1,562 @@
+[
+  {
+    "_type": "EmailThread",
+    "activity_at": "2024-04-13T16:21:55.401000+00:00",
+    "contact_id": "cont_zr6lFeQyEW9vjxUWltIGQ1HdVvSxdxCXzr6lFeQyE",
+    "created_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "created_by_name": "User 0002",
+    "date_created": "2024-04-13T16:21:55.401000+00:00",
+    "date_updated": "2024-04-14T06:17:15.007000+00:00",
+    "email_ids": "[\"acti_e_Suiv78o7AGr2upKXR2QblcJBimDm0MjMSuiv78o7A\"]",
+    "id": "acti_t_359cGrFpbopNzLtzGk2NGfffxmwasGcN359cGrFpb",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0001",
+    "lead_id": "lead_iY5LM6DJrwrIL57OYsXAx3zCNGMjmLN3iY5LM6DJr",
+    "n_emails": 2,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0001@example.com"
+      }
+    ],
+    "updated_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "updated_by_name": "User 0002",
+    "user_id": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "user_name": "User 0002",
+    "users": [
+      "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF"
+    ]
+  },
+  {
+    "_type": "EmailThread",
+    "activity_at": "2024-05-01T05:51:34.349000+00:00",
+    "contact_id": "cont_hD4j59CKHk120iskXC5arIgA8AmHHfDdhD4j59CKH",
+    "created_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+    "created_by_name": "User 0003",
+    "date_created": "2024-05-01T05:51:34.349000+00:00",
+    "date_updated": "2024-05-02T06:07:12.489000+00:00",
+    "email_ids": "[\"acti_e_aB8Ji02Hs1xCfkMhKEXGxEK2yZCrUOtlaB8Ji02Hs\"]",
+    "id": "acti_t_SD1CPnHzNwhbqZU0cXJtRUgOVUaqv43wSD1CPnHzN",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0002",
+    "lead_id": "lead_Utzlx8wKZsZkSkeDnPgQiQj26dGLR846Utzlx8wKZ",
+    "n_emails": 3,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0002@example.com"
+      }
+    ],
+    "updated_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+    "updated_by_name": "User 0003",
+    "user_id": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+    "user_name": "User 0003",
+    "users": [
+      "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko"
+    ]
+  },
+  {
+    "_type": "EmailThread",
+    "activity_at": "2024-05-13T14:19:37.367000+00:00",
+    "contact_id": "cont_9OKoxI8JkqRo30X1thxqnt7BZ2E8SaI09OKoxI8Jk",
+    "created_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "created_by_name": "User 0004",
+    "date_created": "2024-05-13T14:19:37.367000+00:00",
+    "date_updated": "2024-05-16T08:58:06.390000+00:00",
+    "email_ids": "[\"acti_e_L9ePVRhiD69AjqEhZW0WQqPngR8Jjp2sL9ePVRhiD\"]",
+    "id": "acti_t_vdo72wCLsoAlACbZlZHbI2FSwcE9Ce86vdo72wCLs",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0003",
+    "lead_id": "lead_8vwzTs7rhAAWwbzIl5YQiEBQgHmTcmnN8vwzTs7rh",
+    "n_emails": 4,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0003@example.com"
+      }
+    ],
+    "updated_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "updated_by_name": "User 0004",
+    "user_id": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "user_name": "User 0004",
+    "users": [
+      "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I"
+    ]
+  },
+  {
+    "_type": "EmailThread",
+    "activity_at": "2024-08-24T05:23:09.053000+00:00",
+    "contact_id": "cont_m1veGtiz6DcEEOqq1p7Scl1U0yXoIcSsm1veGtiz6",
+    "created_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+    "created_by_name": "User 0005",
+    "date_created": "2024-08-24T05:23:09.053000+00:00",
+    "date_updated": "2026-10-26T21:30:39.987000+00:00",
+    "email_ids": "[\"acti_e_Zh4WO2V5Ugmq1OMhl18QI7VFMspM9yMBZh4WO2V5U\"]",
+    "id": "acti_t_72CANe6i6Z34fuTqlIBNoGSU9MP1OMNE72CANe6i6",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0004",
+    "lead_id": "lead_1iJLz7eRKvHgVYIK0lCJwofTd7r0SNWJ1iJLz7eRK",
+    "n_emails": 1,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0004@example.com"
+      }
+    ],
+    "updated_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+    "updated_by_name": "User 0005",
+    "user_id": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+    "user_name": "User 0005",
+    "users": [
+      "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq"
+    ]
+  },
+  {
+    "_type": "EmailThread",
+    "activity_at": "2024-09-16T16:58:58.747000+00:00",
+    "contact_id": "cont_9tv3aiDYSikGYhVMaXSqqWK5e7f1ELgZ9tv3aiDYS",
+    "created_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "created_by_name": "User 0006",
+    "date_created": "2024-09-16T16:58:58.747000+00:00",
+    "date_updated": "2024-09-19T01:32:17.113000+00:00",
+    "email_ids": "[\"acti_e_L8JrUnXfoAOFslJ0PXjegHmbvtGC7Z2dL8JrUnXfo\"]",
+    "id": "acti_t_ubzDFzXYQvm4e5SxwetJmpPtNonnYGXPubzDFzXYQ",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0005",
+    "lead_id": "lead_kqD5jeqnD7gBwhXXXXceUCcNZuu6Sb29kqD5jeqnD",
+    "n_emails": 2,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0005@example.com"
+      }
+    ],
+    "updated_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "updated_by_name": "User 0006",
+    "user_id": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "user_name": "User 0006",
+    "users": [
+      "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa"
+    ]
+  },
+  {
+    "_type": "EmailThread",
+    "activity_at": "2025-02-22T18:02:02.556000+00:00",
+    "contact_id": "cont_Low5o1mqQSahRB1oop649k0qyEg0xgXwLow5o1mqQ",
+    "created_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+    "created_by_name": "User 0007",
+    "date_created": "2025-02-22T18:02:02.556000+00:00",
+    "date_updated": "2025-02-23T18:10:17.284000+00:00",
+    "email_ids": "[\"acti_e_MdffOXqQSJIFd7ms7jZvtDeBS7n7f9n7MdffOXqQS\"]",
+    "id": "acti_t_Qq1ci9949018MJC3KmfmHCqN1sTTpHtHQq1ci9949",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0006",
+    "lead_id": "lead_0tJzf6SJhT1h6TFlnauKULFw5CPum4Wn0tJzf6SJh",
+    "n_emails": 3,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0006@example.com"
+      }
+    ],
+    "updated_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+    "updated_by_name": "User 0007",
+    "user_id": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+    "user_name": "User 0007",
+    "users": [
+      "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu"
+    ]
+  },
+  {
+    "_type": "EmailThread",
+    "activity_at": "2025-03-07T03:14:48.125000+00:00",
+    "contact_id": "cont_IZrcTjkRqT4hQeURBzCjTGHbV4kdEZ94IZrcTjkRq",
+    "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "created_by_name": "User 0001",
+    "date_created": "2025-03-07T03:14:48.125000+00:00",
+    "date_updated": "2025-03-08T17:04:49.803000+00:00",
+    "email_ids": "[\"acti_e_tQfB70w6NB1HRK2B1mtpUz8MDsppjYnZtQfB70w6N\"]",
+    "id": "acti_t_VRZVVBGkSEB3VC9T0bdlOm3adY4Mf4xIVRZVVBGkS",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0007",
+    "lead_id": "lead_8TbQEI8tQseL4c8rHwAieSS40dYzijBY8TbQEI8tQ",
+    "n_emails": 4,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0007@example.com"
+      }
+    ],
+    "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "updated_by_name": "User 0001",
+    "user_id": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "user_name": "User 0001",
+    "users": [
+      "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+    ]
+  },
+  {
+    "_type": "EmailThread",
+    "activity_at": "2025-03-19T16:47:11.794000+00:00",
+    "contact_id": "cont_4g7TTB3foOWuyJL9Y5FrQjVPBDIXTK924g7TTB3fo",
+    "created_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "created_by_name": "User 0002",
+    "date_created": "2025-03-19T16:47:11.794000+00:00",
+    "date_updated": "2025-03-21T21:50:43.335000+00:00",
+    "email_ids": "[\"acti_e_BQCl2O6Rj4DZvA7G6gi6gbf0RLGcws4GBQCl2O6Rj\"]",
+    "id": "acti_t_di1BBeP4PqAcWQxT17L4MGAOHGWyAh1Ydi1BBeP4P",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0008",
+    "lead_id": "lead_GL2Y4uPmbProKREorI9So0yiPjHVPIVDGL2Y4uPmb",
+    "n_emails": 1,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0008@example.com"
+      }
+    ],
+    "updated_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "updated_by_name": "User 0002",
+    "user_id": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "user_name": "User 0002",
+    "users": [
+      "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF"
+    ]
+  },
+  {
+    "_type": "EmailThread",
+    "activity_at": "2025-05-21T03:18:59.973000+00:00",
+    "contact_id": "cont_q2xQ3uixYWyKdfbqIj0oZmOnYlwpUZPwq2xQ3uixY",
+    "created_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+    "created_by_name": "User 0003",
+    "date_created": "2025-05-21T03:18:59.973000+00:00",
+    "date_updated": "2025-05-21T08:36:50.812000+00:00",
+    "email_ids": "[\"acti_e_QgpHLl0RyooaZHY7hAqgB8ChMTHklTKOQgpHLl0Ry\"]",
+    "id": "acti_t_jkydKPGvK9PfGNfxILK8XM5qFnT6A1vfjkydKPGvK",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0009",
+    "lead_id": "lead_P6q7WufEjF9GaQPaV23z7YBJGUVHtLqyP6q7WufEj",
+    "n_emails": 2,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0009@example.com"
+      }
+    ],
+    "updated_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+    "updated_by_name": "User 0003",
+    "user_id": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+    "user_name": "User 0003",
+    "users": [
+      "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko"
+    ]
+  },
+  {
+    "_type": "EmailThread",
+    "activity_at": "2025-05-24T21:58:15.057000+00:00",
+    "contact_id": "cont_TBtMZDhfFGo0swsd0Lq2lvcaUz6eB1yNTBtMZDhfF",
+    "created_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "created_by_name": "User 0004",
+    "date_created": "2025-05-24T21:58:15.057000+00:00",
+    "date_updated": "2025-05-26T09:25:49.882000+00:00",
+    "email_ids": "[\"acti_e_zlhl43Zb3iIaYrpUshg8TguexTsgITe7zlhl43Zb3\"]",
+    "id": "acti_t_zglZDb1ap2z0fpZscbsp0SoY0rMs0QQ4zglZDb1ap",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0010",
+    "lead_id": "lead_r28wu6EnxoWSw0R9kZA4ys67EjWHgIPfr28wu6Enx",
+    "n_emails": 3,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0010@example.com"
+      }
+    ],
+    "updated_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "updated_by_name": "User 0004",
+    "user_id": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "user_name": "User 0004",
+    "users": [
+      "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I"
+    ]
+  },
+  {
+    "_type": "EmailThread",
+    "activity_at": "2025-05-30T10:24:56.578000+00:00",
+    "contact_id": "cont_2Un5ItbURQCxk5JmtAvnTSzDjUDKL2o62Un5ItbUR",
+    "created_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+    "created_by_name": "User 0005",
+    "date_created": "2025-05-30T10:24:56.578000+00:00",
+    "date_updated": "2025-05-31T01:17:46.742000+00:00",
+    "email_ids": "[\"acti_e_u3T6qAukSVREPSYoEPdAJ3bJQP5Uxwx2u3T6qAukS\"]",
+    "id": "acti_t_5TrSdcJv6v6HOsDHRexcf7LxX78c4bx55TrSdcJv6",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0011",
+    "lead_id": "lead_H2TujYfbrj80FnkIsbykwNErp6i2q2RDH2TujYfbr",
+    "n_emails": 4,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0011@example.com"
+      }
+    ],
+    "updated_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+    "updated_by_name": "User 0005",
+    "user_id": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+    "user_name": "User 0005",
+    "users": [
+      "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq"
+    ]
+  },
+  {
+    "_type": "EmailThread",
+    "activity_at": "2025-07-11T03:45:44.996000+00:00",
+    "contact_id": null,
+    "created_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "created_by_name": "User 0006",
+    "date_created": "2025-07-11T03:45:44.996000+00:00",
+    "date_updated": "2025-07-12T02:02:25.712000+00:00",
+    "email_ids": "[\"acti_e_q1VexuSvZZyaSDRcqatHlPlNNNqZo0yGq1VexuSvZ\"]",
+    "id": "acti_t_CTBx2YLA5A1rV7xlqwDY3Itd4jz3r4ZHCTBx2YLA5",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0012",
+    "lead_id": "lead_1xq18n0H5HbngGspKikArW7ZY8P1VORX1xq18n0H5",
+    "n_emails": 1,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0012@example.com"
+      }
+    ],
+    "updated_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "updated_by_name": "User 0006",
+    "user_id": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "user_name": "User 0006",
+    "users": [
+      "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa"
+    ]
+  },
+  {
+    "_type": "EmailThread",
+    "activity_at": "2025-07-22T05:12:28.944000+00:00",
+    "contact_id": null,
+    "created_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+    "created_by_name": "User 0007",
+    "date_created": "2025-07-22T05:12:28.944000+00:00",
+    "date_updated": "2025-07-23T17:44:18.438000+00:00",
+    "email_ids": "[\"acti_e_596CXn1NJooZYzIYGSozpQ5nAA5Ofsux596CXn1NJ\"]",
+    "id": "acti_t_paax67i5eGh2A3I7EzMhINlQKq5skCnnpaax67i5e",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0013",
+    "lead_id": "lead_HK9NSyxF6knQIYHrlP1f5k9xQi4YUDmzHK9NSyxF6",
+    "n_emails": 2,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0013@example.com"
+      }
+    ],
+    "updated_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+    "updated_by_name": "User 0007",
+    "user_id": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+    "user_name": "User 0007",
+    "users": [
+      "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu"
+    ]
+  },
+  {
+    "_type": "EmailThread",
+    "activity_at": "2025-12-05T18:13:58.407000+00:00",
+    "contact_id": null,
+    "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "created_by_name": "User 0001",
+    "date_created": "2025-12-05T18:13:58.407000+00:00",
+    "date_updated": "2025-12-06T05:03:59.084000+00:00",
+    "email_ids": "[\"acti_e_3X49f3tFX7RLPNK75yyNtzCC0vqgzJqo3X49f3tFX\"]",
+    "id": "acti_t_lm9VfZ3iOlmIItfjCPcGWf5SwQtjt7Pzlm9VfZ3iO",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0014",
+    "lead_id": "lead_3HCADqW0Ry4dGxUnAiqdqRN4SkKb7Cjr3HCADqW0R",
+    "n_emails": 3,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0014@example.com"
+      }
+    ],
+    "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "updated_by_name": "User 0001",
+    "user_id": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "user_name": "User 0001",
+    "users": [
+      "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+    ]
+  },
+  {
+    "_type": "EmailThread",
+    "activity_at": "2026-02-13T17:40:38.210000+00:00",
+    "contact_id": null,
+    "created_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "created_by_name": "User 0002",
+    "date_created": "2026-02-13T17:40:38.210000+00:00",
+    "date_updated": "2026-02-15T13:26:20.617000+00:00",
+    "email_ids": "[\"acti_e_oufbhCmLURYMyYKJR952m398xnII68DNoufbhCmLU\"]",
+    "id": "acti_t_Psz0rfvQbDCD36bpcmzCS8Goj61gNzI5Psz0rfvQb",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0015",
+    "lead_id": "lead_85jYMGstLcNbU8gTbjRxFdRdRuf84lHg85jYMGstL",
+    "n_emails": 4,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0015@example.com"
+      }
+    ],
+    "updated_by": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "updated_by_name": "User 0002",
+    "user_id": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "user_name": "User 0002",
+    "users": [
+      "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF"
+    ]
+  },
+  {
+    "_type": "EmailThread",
+    "activity_at": "2026-06-16T11:41:53.674000+00:00",
+    "contact_id": null,
+    "created_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+    "created_by_name": "User 0003",
+    "date_created": "2026-06-16T11:41:53.674000+00:00",
+    "date_updated": "2026-06-17T04:06:07.734000+00:00",
+    "email_ids": "[\"acti_e_Us2HSskEv3ssqOTqaKeLvLLZveFoWUiQUs2HSskEv\"]",
+    "id": "acti_t_rfBiwlDUC9VnqIAkIZLgSVMsJGsKHy3trfBiwlDUC",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0016",
+    "lead_id": "lead_5c339i6zFWemiKfTqPRw6WMJJi0ld1Xm5c339i6zF",
+    "n_emails": 1,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0016@example.com"
+      }
+    ],
+    "updated_by": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+    "updated_by_name": "User 0003",
+    "user_id": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+    "user_name": "User 0003",
+    "users": [
+      "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko"
+    ]
+  },
+  {
+    "_type": "EmailThread",
+    "activity_at": "2026-07-13T11:38:31.592000+00:00",
+    "contact_id": null,
+    "created_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "created_by_name": "User 0004",
+    "date_created": "2026-07-13T11:38:31.592000+00:00",
+    "date_updated": "2026-07-15T22:51:22.924000+00:00",
+    "email_ids": "[\"acti_e_yAqdlOMCqIKZBoL1MgH62RCAjDEBwBtIyAqdlOMCq\"]",
+    "id": "acti_t_hosG1RxqqRSwkAqPzwuZvEtrWEmdbc6chosG1Rxqq",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0017",
+    "lead_id": "lead_8PAkwgxZ4ZHiNQEy7vvPhsFORmVU1NHg8PAkwgxZ4",
+    "n_emails": 2,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0017@example.com"
+      }
+    ],
+    "updated_by": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "updated_by_name": "User 0004",
+    "user_id": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "user_name": "User 0004",
+    "users": [
+      "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I"
+    ]
+  },
+  {
+    "_type": "EmailThread",
+    "activity_at": "2026-08-24T16:31:26.062000+00:00",
+    "contact_id": null,
+    "created_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+    "created_by_name": "User 0005",
+    "date_created": "2026-08-24T16:31:26.062000+00:00",
+    "date_updated": "2026-09-17T05:53:07.343000+00:00",
+    "email_ids": "[\"acti_e_U7sOBamZIGQdnZIc1kkqaXCJd4xwHo8IU7sOBamZI\"]",
+    "id": "acti_t_BVDNtjuxgBUzfNok5D2f1oPDW1MG4EbOBVDNtjuxg",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0018",
+    "lead_id": "lead_XAJ8p2yYV6SZlvVUCjrRgK7aQLlMQIJDXAJ8p2yYV",
+    "n_emails": 3,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0018@example.com"
+      }
+    ],
+    "updated_by": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+    "updated_by_name": "User 0005",
+    "user_id": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+    "user_name": "User 0005",
+    "users": [
+      "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq"
+    ]
+  },
+  {
+    "_type": "EmailThread",
+    "activity_at": "2026-09-29T12:22:38.292000+00:00",
+    "contact_id": null,
+    "created_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "created_by_name": "User 0006",
+    "date_created": "2026-09-29T12:22:38.292000+00:00",
+    "date_updated": "2026-10-01T05:09:36.488000+00:00",
+    "email_ids": "[\"acti_e_zHpWYYF6TewhVlacseeFy3MmzFxXDA48zHpWYYF6T\"]",
+    "id": "acti_t_X4Ax0RWcC7c5U7ghhf3intfFvl0LLhtOX4Ax0RWcC",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0019",
+    "lead_id": "lead_3Xlq7iPxyh7zc6n5Q5ks4kGJo6Pgpj3R3Xlq7iPxy",
+    "n_emails": 4,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0019@example.com"
+      }
+    ],
+    "updated_by": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "updated_by_name": "User 0006",
+    "user_id": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "user_name": "User 0006",
+    "users": [
+      "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa"
+    ]
+  },
+  {
+    "_type": "EmailThread",
+    "activity_at": "2026-11-07T10:37:30.259000+00:00",
+    "contact_id": null,
+    "created_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+    "created_by_name": "User 0007",
+    "date_created": "2026-11-07T10:37:30.259000+00:00",
+    "date_updated": "2026-09-28T08:23:10.451000+00:00",
+    "email_ids": "[\"acti_e_5xN3pRR6k65pJ96ydjYuufXeqATRqKy75xN3pRR6k\"]",
+    "id": "acti_t_b3J3d05NsOVIh9yuRbB3sTG76sbWm5ukb3J3d05Ns",
+    "latest_emails": [],
+    "latest_normalized_subject": "Subject 0020",
+    "lead_id": "lead_hs4cFAqDCvBUXlLnQ0qXRc0ZbiDUMqKChs4cFAqDC",
+    "n_emails": 1,
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "participants": [
+      {
+        "email": "contact0020@example.com"
+      }
+    ],
+    "updated_by": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+    "updated_by_name": "User 0007",
+    "user_id": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+    "user_name": "User 0007",
+    "users": [
+      "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu"
+    ]
+  }
+]

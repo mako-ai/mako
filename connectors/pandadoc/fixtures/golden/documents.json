@@ -1,0 +1,1458 @@
+[
+  {
+    "autonumbering_sequence_name": null,
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": null,
+    "date_created": "2026-08-03T09:00:00.000Z",
+    "date_modified": "2026-08-04T11:00:00.000Z",
+    "date_sent": "2026-08-03T12:00:00.000Z",
+    "expiration_date": "2026-10-02T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-1",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1010",
+      "currency": "EUR"
+    },
+    "id": "doc_0001AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-1"
+    },
+    "name": "Mandate 1 - Rue Exemple 1",
+    "pricing": {
+      "tables": [],
+      "total": "1010"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client1@example.test",
+        "first_name": "Client",
+        "has_completed": false,
+        "id": "rcp-1",
+        "last_name": "N1"
+      }
+    ],
+    "sent_by": {
+      "id": "usr_fixture_1"
+    },
+    "status": "document.sent",
+    "tags": [
+      "mandate"
+    ],
+    "template": {
+      "id": "tpl_0001",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 1"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": null,
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": null,
+    "date_created": "2026-08-05T09:00:00.000Z",
+    "date_modified": "2026-08-06T12:00:00.000Z",
+    "date_sent": "2026-08-05T12:00:00.000Z",
+    "expiration_date": "2026-10-04T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-2",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1020",
+      "currency": "EUR"
+    },
+    "id": "doc_0002AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-2"
+    },
+    "name": "Mandate 2 - Rue Exemple 2",
+    "pricing": {
+      "tables": [],
+      "total": "1020"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client2@example.test",
+        "first_name": "Client",
+        "has_completed": false,
+        "id": "rcp-2",
+        "last_name": "N2"
+      }
+    ],
+    "sent_by": {
+      "id": "usr_fixture_1"
+    },
+    "status": "document.viewed",
+    "tags": [],
+    "template": {
+      "id": "tpl_0002",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 2"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": "MAND-3",
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": "2026-08-08T17:00:00.000Z",
+    "date_created": "2026-08-07T09:00:00.000Z",
+    "date_modified": "2026-08-08T13:00:00.000Z",
+    "date_sent": "2026-08-07T12:00:00.000Z",
+    "expiration_date": "2026-10-06T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-3",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1030",
+      "currency": "EUR"
+    },
+    "id": "doc_0003AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-3"
+    },
+    "name": "Mandate 3 - Rue Exemple 3",
+    "pricing": {
+      "tables": [],
+      "total": "1030"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client3@example.test",
+        "first_name": "Client",
+        "has_completed": true,
+        "id": "rcp-3",
+        "last_name": "N3"
+      }
+    ],
+    "sent_by": {
+      "id": "usr_fixture_1"
+    },
+    "status": "document.completed",
+    "tags": [
+      "mandate"
+    ],
+    "template": {
+      "id": "tpl_0003",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 3"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": null,
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": null,
+    "date_created": "2026-08-09T09:00:00.000Z",
+    "date_modified": "2026-08-10T14:00:00.000Z",
+    "date_sent": "2026-08-09T12:00:00.000Z",
+    "expiration_date": "2026-10-08T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-4",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1040",
+      "currency": "EUR"
+    },
+    "id": "doc_0004AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-4"
+    },
+    "name": "Mandate 4 - Rue Exemple 4",
+    "pricing": {
+      "tables": [],
+      "total": "1040"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client4@example.test",
+        "first_name": "Client",
+        "has_completed": false,
+        "id": "rcp-4",
+        "last_name": "N4"
+      }
+    ],
+    "sent_by": {
+      "id": "usr_fixture_1"
+    },
+    "status": "document.declined",
+    "tags": [],
+    "template": {
+      "id": "tpl_0000",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 4"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": null,
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": null,
+    "date_created": "2026-08-11T09:00:00.000Z",
+    "date_modified": "2026-08-12T10:00:00.000Z",
+    "date_sent": null,
+    "expiration_date": "2026-10-10T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-5",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1050",
+      "currency": "EUR"
+    },
+    "id": "doc_0005AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-5"
+    },
+    "name": "Mandate 5 - Rue Exemple 5",
+    "pricing": {
+      "tables": [],
+      "total": "1050"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client5@example.test",
+        "first_name": "Client",
+        "has_completed": false,
+        "id": "rcp-5",
+        "last_name": "N5"
+      }
+    ],
+    "sent_by": null,
+    "status": "document.draft",
+    "tags": [
+      "mandate"
+    ],
+    "template": {
+      "id": "tpl_0001",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 5"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": "MAND-6",
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": null,
+    "date_created": "2026-08-13T09:00:00.000Z",
+    "date_modified": "2026-08-14T11:00:00.000Z",
+    "date_sent": "2026-08-13T12:00:00.000Z",
+    "expiration_date": "2026-10-12T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-6",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1060",
+      "currency": "EUR"
+    },
+    "id": "doc_0006AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-6"
+    },
+    "name": "Mandate 6 - Rue Exemple 6",
+    "pricing": {
+      "tables": [],
+      "total": "1060"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client6@example.test",
+        "first_name": "Client",
+        "has_completed": false,
+        "id": "rcp-6",
+        "last_name": "N6"
+      }
+    ],
+    "sent_by": {
+      "id": "usr_fixture_1"
+    },
+    "status": "document.sent",
+    "tags": [],
+    "template": {
+      "id": "tpl_0002",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 6"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "date_created": "2026-08-15T09:00:00.000Z",
+    "date_modified": "2026-08-16T12:00:00.000Z",
+    "expiration_date": "2026-10-14T09:00:00.000Z",
+    "id": "doc_nodetail_404",
+    "name": "Mandate 7 - Rue Exemple 7",
+    "status": "document.viewed",
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": null,
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": "2026-08-18T17:00:00.000Z",
+    "date_created": "2026-08-17T09:00:00.000Z",
+    "date_modified": "2026-08-18T13:00:00.000Z",
+    "date_sent": "2026-08-17T12:00:00.000Z",
+    "expiration_date": "2026-10-16T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-8",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1080",
+      "currency": "EUR"
+    },
+    "id": "doc_0008AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-8"
+    },
+    "name": "Mandate 8 - Rue Exemple 8",
+    "pricing": {
+      "tables": [],
+      "total": "1080"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client8@example.test",
+        "first_name": "Client",
+        "has_completed": true,
+        "id": "rcp-8",
+        "last_name": "N8"
+      }
+    ],
+    "sent_by": {
+      "id": "usr_fixture_1"
+    },
+    "status": "document.completed",
+    "tags": [],
+    "template": {
+      "id": "tpl_0000",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 8"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": "MAND-9",
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": null,
+    "date_created": "2026-08-19T09:00:00.000Z",
+    "date_modified": "2026-08-20T14:00:00.000Z",
+    "date_sent": "2026-08-19T12:00:00.000Z",
+    "expiration_date": "2026-10-18T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-9",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1090",
+      "currency": "EUR"
+    },
+    "id": "doc_0009AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-9"
+    },
+    "name": "Mandate 9 - Rue Exemple 9",
+    "pricing": {
+      "tables": [],
+      "total": "1090"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client9@example.test",
+        "first_name": "Client",
+        "has_completed": false,
+        "id": "rcp-9",
+        "last_name": "N9"
+      }
+    ],
+    "sent_by": {
+      "id": "usr_fixture_1"
+    },
+    "status": "document.declined",
+    "tags": [
+      "mandate"
+    ],
+    "template": {
+      "id": "tpl_0001",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 9"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": null,
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": null,
+    "date_created": "2026-08-21T09:00:00.000Z",
+    "date_modified": "2026-08-22T10:00:00.000Z",
+    "date_sent": null,
+    "expiration_date": "2026-10-20T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-10",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1100",
+      "currency": "EUR"
+    },
+    "id": "doc_0010AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-10"
+    },
+    "name": "Mandate 10 - Rue Exemple 10",
+    "pricing": {
+      "tables": [],
+      "total": "1100"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client10@example.test",
+        "first_name": "Client",
+        "has_completed": false,
+        "id": "rcp-10",
+        "last_name": "N10"
+      }
+    ],
+    "sent_by": null,
+    "status": "document.draft",
+    "tags": [],
+    "template": {
+      "id": "tpl_0002",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 10"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": null,
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": null,
+    "date_created": "2026-08-23T09:00:00.000Z",
+    "date_modified": "2026-08-24T11:00:00.000Z",
+    "date_sent": "2026-08-23T12:00:00.000Z",
+    "expiration_date": "2026-10-22T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-11",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1110",
+      "currency": "EUR"
+    },
+    "id": "doc_0011AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-11"
+    },
+    "name": "Mandate 11 - Rue Exemple 11",
+    "pricing": {
+      "tables": [],
+      "total": "1110"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client11@example.test",
+        "first_name": "Client",
+        "has_completed": false,
+        "id": "rcp-11",
+        "last_name": "N11"
+      }
+    ],
+    "sent_by": {
+      "id": "usr_fixture_1"
+    },
+    "status": "document.sent",
+    "tags": [
+      "mandate"
+    ],
+    "template": {
+      "id": "tpl_0003",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 11"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": "MAND-12",
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": null,
+    "date_created": "2026-08-25T09:00:00.000Z",
+    "date_modified": "2026-08-26T12:00:00.000Z",
+    "date_sent": "2026-08-25T12:00:00.000Z",
+    "expiration_date": "2026-10-24T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-12",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1120",
+      "currency": "EUR"
+    },
+    "id": "doc_0012AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-12"
+    },
+    "name": "Mandate 12 - Rue Exemple 12",
+    "pricing": {
+      "tables": [],
+      "total": "1120"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client12@example.test",
+        "first_name": "Client",
+        "has_completed": false,
+        "id": "rcp-12",
+        "last_name": "N12"
+      }
+    ],
+    "sent_by": {
+      "id": "usr_fixture_1"
+    },
+    "status": "document.viewed",
+    "tags": [],
+    "template": {
+      "id": "tpl_0000",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 12"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "date_created": "2026-08-27T09:00:00.000Z",
+    "date_modified": "2026-08-28T13:00:00.000Z",
+    "expiration_date": "2026-10-26T09:00:00.000Z",
+    "id": "doc_nodetail_400",
+    "name": "Mandate 13 - Rue Exemple 13",
+    "status": "document.completed",
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": null,
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": null,
+    "date_created": "2026-08-29T09:00:00.000Z",
+    "date_modified": "2026-08-30T14:00:00.000Z",
+    "date_sent": "2026-08-29T12:00:00.000Z",
+    "expiration_date": "2026-10-28T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-14",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1140",
+      "currency": "EUR"
+    },
+    "id": "doc_0014AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-14"
+    },
+    "name": "Mandate 14 - Rue Exemple 14",
+    "pricing": {
+      "tables": [],
+      "total": "1140"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client14@example.test",
+        "first_name": "Client",
+        "has_completed": false,
+        "id": "rcp-14",
+        "last_name": "N14"
+      }
+    ],
+    "sent_by": {
+      "id": "usr_fixture_1"
+    },
+    "status": "document.declined",
+    "tags": [],
+    "template": {
+      "id": "tpl_0002",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 14"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": "MAND-15",
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": null,
+    "date_created": "2026-08-31T09:00:00.000Z",
+    "date_modified": "2026-09-01T10:00:00.000Z",
+    "date_sent": null,
+    "expiration_date": "2026-10-30T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-15",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1150",
+      "currency": "EUR"
+    },
+    "id": "doc_0015AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-15"
+    },
+    "name": "Mandate 15 - Rue Exemple 15",
+    "pricing": {
+      "tables": [],
+      "total": "1150"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client15@example.test",
+        "first_name": "Client",
+        "has_completed": false,
+        "id": "rcp-15",
+        "last_name": "N15"
+      }
+    ],
+    "sent_by": null,
+    "status": "document.draft",
+    "tags": [
+      "mandate"
+    ],
+    "template": {
+      "id": "tpl_0003",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 15"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": null,
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": null,
+    "date_created": "2026-09-02T09:00:00.000Z",
+    "date_modified": "2026-09-03T11:00:00.000Z",
+    "date_sent": "2026-09-02T12:00:00.000Z",
+    "expiration_date": "2026-11-01T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-16",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1160",
+      "currency": "EUR"
+    },
+    "id": "doc_0016AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-16"
+    },
+    "name": "Mandate 16 - Rue Exemple 16",
+    "pricing": {
+      "tables": [],
+      "total": "1160"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client16@example.test",
+        "first_name": "Client",
+        "has_completed": false,
+        "id": "rcp-16",
+        "last_name": "N16"
+      }
+    ],
+    "sent_by": {
+      "id": "usr_fixture_1"
+    },
+    "status": "document.sent",
+    "tags": [],
+    "template": {
+      "id": "tpl_0000",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 16"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": null,
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": null,
+    "date_created": "2026-09-04T09:00:00.000Z",
+    "date_modified": "2026-09-05T12:00:00.000Z",
+    "date_sent": "2026-09-04T12:00:00.000Z",
+    "expiration_date": "2026-11-03T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-17",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1170",
+      "currency": "EUR"
+    },
+    "id": "doc_0017AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-17"
+    },
+    "name": "Mandate 17 - Rue Exemple 17",
+    "pricing": {
+      "tables": [],
+      "total": "1170"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client17@example.test",
+        "first_name": "Client",
+        "has_completed": false,
+        "id": "rcp-17",
+        "last_name": "N17"
+      }
+    ],
+    "sent_by": {
+      "id": "usr_fixture_1"
+    },
+    "status": "document.viewed",
+    "tags": [
+      "mandate"
+    ],
+    "template": {
+      "id": "tpl_0001",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 17"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": "MAND-18",
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": "2026-09-07T17:00:00.000Z",
+    "date_created": "2026-09-06T09:00:00.000Z",
+    "date_modified": "2026-09-07T13:00:00.000Z",
+    "date_sent": "2026-09-06T12:00:00.000Z",
+    "expiration_date": "2026-11-05T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-18",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1180",
+      "currency": "EUR"
+    },
+    "id": "doc_0018AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-18"
+    },
+    "name": "Mandate 18 - Rue Exemple 18",
+    "pricing": {
+      "tables": [],
+      "total": "1180"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client18@example.test",
+        "first_name": "Client",
+        "has_completed": true,
+        "id": "rcp-18",
+        "last_name": "N18"
+      }
+    ],
+    "sent_by": {
+      "id": "usr_fixture_1"
+    },
+    "status": "document.completed",
+    "tags": [],
+    "template": {
+      "id": "tpl_0002",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 18"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": null,
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": null,
+    "date_created": "2026-09-08T09:00:00.000Z",
+    "date_modified": "2026-09-09T14:00:00.000Z",
+    "date_sent": "2026-09-08T12:00:00.000Z",
+    "expiration_date": "2026-11-07T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-19",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1190",
+      "currency": "EUR"
+    },
+    "id": "doc_0019AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-19"
+    },
+    "name": "Mandate 19 - Rue Exemple 19",
+    "pricing": {
+      "tables": [],
+      "total": "1190"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client19@example.test",
+        "first_name": "Client",
+        "has_completed": false,
+        "id": "rcp-19",
+        "last_name": "N19"
+      }
+    ],
+    "sent_by": {
+      "id": "usr_fixture_1"
+    },
+    "status": "document.declined",
+    "tags": [
+      "mandate"
+    ],
+    "template": {
+      "id": "tpl_0003",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 19"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": null,
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": null,
+    "date_created": "2026-09-10T09:00:00.000Z",
+    "date_modified": "2026-09-11T10:00:00.000Z",
+    "date_sent": null,
+    "expiration_date": "2026-11-09T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-20",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1200",
+      "currency": "EUR"
+    },
+    "id": "doc_0020AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-20"
+    },
+    "name": "Mandate 20 - Rue Exemple 20",
+    "pricing": {
+      "tables": [],
+      "total": "1200"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client20@example.test",
+        "first_name": "Client",
+        "has_completed": false,
+        "id": "rcp-20",
+        "last_name": "N20"
+      }
+    ],
+    "sent_by": null,
+    "status": "document.draft",
+    "tags": [],
+    "template": {
+      "id": "tpl_0000",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 20"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": "MAND-21",
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": null,
+    "date_created": "2026-09-12T09:00:00.000Z",
+    "date_modified": "2026-09-13T11:00:00.000Z",
+    "date_sent": "2026-09-12T12:00:00.000Z",
+    "expiration_date": "2026-11-11T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-21",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1210",
+      "currency": "EUR"
+    },
+    "id": "doc_0021AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-21"
+    },
+    "name": "Mandate 21 - Rue Exemple 21",
+    "pricing": {
+      "tables": [],
+      "total": "1210"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client21@example.test",
+        "first_name": "Client",
+        "has_completed": false,
+        "id": "rcp-21",
+        "last_name": "N21"
+      }
+    ],
+    "sent_by": {
+      "id": "usr_fixture_1"
+    },
+    "status": "document.sent",
+    "tags": [
+      "mandate"
+    ],
+    "template": {
+      "id": "tpl_0001",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 21"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": null,
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": null,
+    "date_created": "2026-09-14T09:00:00.000Z",
+    "date_modified": "2026-09-15T12:00:00.000Z",
+    "date_sent": "2026-09-14T12:00:00.000Z",
+    "expiration_date": "2026-11-13T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-22",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1220",
+      "currency": "EUR"
+    },
+    "id": "doc_0022AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-22"
+    },
+    "name": "Mandate 22 - Rue Exemple 22",
+    "pricing": {
+      "tables": [],
+      "total": "1220"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client22@example.test",
+        "first_name": "Client",
+        "has_completed": false,
+        "id": "rcp-22",
+        "last_name": "N22"
+      }
+    ],
+    "sent_by": {
+      "id": "usr_fixture_1"
+    },
+    "status": "document.viewed",
+    "tags": [],
+    "template": {
+      "id": "tpl_0002",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 22"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": null,
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": "2026-09-17T17:00:00.000Z",
+    "date_created": "2026-09-16T09:00:00.000Z",
+    "date_modified": "2026-09-17T13:00:00.000Z",
+    "date_sent": "2026-09-16T12:00:00.000Z",
+    "expiration_date": "2026-11-15T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-23",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1230",
+      "currency": "EUR"
+    },
+    "id": "doc_0023AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-23"
+    },
+    "name": "Mandate 23 - Rue Exemple 23",
+    "pricing": {
+      "tables": [],
+      "total": "1230"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client23@example.test",
+        "first_name": "Client",
+        "has_completed": true,
+        "id": "rcp-23",
+        "last_name": "N23"
+      }
+    ],
+    "sent_by": {
+      "id": "usr_fixture_1"
+    },
+    "status": "document.completed",
+    "tags": [
+      "mandate"
+    ],
+    "template": {
+      "id": "tpl_0003",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 23"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": "MAND-24",
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": null,
+    "date_created": "2026-09-18T09:00:00.000Z",
+    "date_modified": "2026-09-19T14:00:00.000Z",
+    "date_sent": "2026-09-18T12:00:00.000Z",
+    "expiration_date": "2026-11-17T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-24",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1240",
+      "currency": "EUR"
+    },
+    "id": "doc_0024AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-24"
+    },
+    "name": "Mandate 24 - Rue Exemple 24",
+    "pricing": {
+      "tables": [],
+      "total": "1240"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client24@example.test",
+        "first_name": "Client",
+        "has_completed": false,
+        "id": "rcp-24",
+        "last_name": "N24"
+      }
+    ],
+    "sent_by": {
+      "id": "usr_fixture_1"
+    },
+    "status": "document.declined",
+    "tags": [],
+    "template": {
+      "id": "tpl_0000",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 24"
+      }
+    ],
+    "version": "2"
+  },
+  {
+    "autonumbering_sequence_name": null,
+    "created_by": {
+      "email": "agent.one@example.test",
+      "first_name": "Agent",
+      "id": "usr_fixture_1",
+      "last_name": "One"
+    },
+    "date_completed": null,
+    "date_created": "2026-09-20T09:00:00.000Z",
+    "date_modified": "2026-09-21T10:00:00.000Z",
+    "date_sent": null,
+    "expiration_date": "2026-11-19T09:00:00.000Z",
+    "fields": [
+      {
+        "name": "Signature",
+        "uuid": "f-25",
+        "value": ""
+      }
+    ],
+    "grand_total": {
+      "amount": "1250",
+      "currency": "EUR"
+    },
+    "id": "doc_0025AbCd",
+    "linked_objects": [],
+    "metadata": {
+      "country": "fr",
+      "property_id": "prop-25"
+    },
+    "name": "Mandate 25 - Rue Exemple 25",
+    "pricing": {
+      "tables": [],
+      "total": "1250"
+    },
+    "products": [],
+    "recipients": [
+      {
+        "email": "client25@example.test",
+        "first_name": "Client",
+        "has_completed": false,
+        "id": "rcp-25",
+        "last_name": "N25"
+      }
+    ],
+    "sent_by": null,
+    "status": "document.draft",
+    "tags": [
+      "mandate"
+    ],
+    "template": {
+      "id": "tpl_0001",
+      "name": "Mandate"
+    },
+    "tokens": [
+      {
+        "name": "Client.City",
+        "value": "Ville 25"
+      }
+    ],
+    "version": "2"
+  }
+]
