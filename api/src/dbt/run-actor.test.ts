@@ -111,7 +111,7 @@ describe("actorFromRequest", () => {
         authType: "session",
         user: { id: "u1", email: "joan@example.com" },
       }),
-    ).toEqual({ kind: "user", userId: "u1", userName: "joan@example.com" });
+    ).toEqual({ kind: "user", userId: "u1", userName: "joan" });
   });
 
   it("a workspace API key is kind api_key, by id and label, never the key", () => {
@@ -198,27 +198,31 @@ describe("push info", () => {
 });
 
 describe("redactRunActor", () => {
-  it("drops the email and keeps ids and labels", () => {
+  it("keeps ids, labels and the handle; drops an email", () => {
     expect(
       redactRunActor({
         kind: "api_key",
         userId: "u1",
-        userName: "joan@example.com",
+        userName: "joan",
         apiKeyId: "k1",
         apiKeyName: "ci key",
       }),
     ).toEqual({
       kind: "api_key",
       userId: "u1",
+      userName: "joan",
       apiKeyId: "k1",
       apiKeyName: "ci key",
     });
+    expect(
+      redactRunActor({ kind: "user", userId: "u1", userName: "a@b.com" }),
+    ).toEqual({ kind: "user", userId: "u1" });
     expect(redactRunActor(undefined)).toBeUndefined();
   });
 });
 
 describe("withActorNames", () => {
-  it("fills the user's email and the OAuth client's name from their ids", async () => {
+  it("fills the user's handle (never the email) and the OAuth client's name", async () => {
     await User.collection.insertOne({
       _id: "u1" as never,
       email: "joan@example.com",
@@ -234,14 +238,31 @@ describe("withActorNames", () => {
       oauthClientId: "client-1",
     });
     expect(actor).toMatchObject({
-      userName: "joan@example.com",
+      userName: "joan",
       oauthClientName: "Claude Code",
     });
+    expect(JSON.stringify(actor)).not.toContain("@");
+  });
+
+  it("gives up after the timeout and keeps the ids", async () => {
+    const lookup = vi
+      .spyOn(User, "findById")
+      .mockImplementation(() => new Promise(() => undefined) as never);
+    const actor = await withActorNames({ kind: "user", userId: "u1" }, 20);
+    lookup.mockRestore();
+    expect(actor).toEqual({ kind: "user", userId: "u1" });
+  });
+
+  it("runs no query for an actor with nothing to look up", async () => {
+    const lookup = vi.spyOn(User, "findById");
+    await withActorNames({ kind: "schedule", jobScheduleId: "j1" });
+    expect(lookup).not.toHaveBeenCalled();
+    lookup.mockRestore();
   });
 });
 
 describe("every run creation path stores an actor", () => {
-  it("triggerDbtRun stores the actor it is given, with names filled", async () => {
+  it("triggerDbtRun stores the actor it is given, with the handle filled", async () => {
     await User.collection.insertOne({
       _id: "u1" as never,
       email: "joan@example.com",
@@ -260,7 +281,7 @@ describe("every run creation path stores an actor", () => {
     expect(stored?.actor).toEqual({
       kind: "user",
       userId: "u1",
-      userName: "joan@example.com",
+      userName: "joan",
     });
     // The compatibility fields stay as they were.
     expect(stored?.trigger).toBe("manual");
@@ -327,10 +348,13 @@ describe("every run creation path stores an actor", () => {
       kind: "retry",
       userId: "u1",
       retryOf: source._id.toString(),
+      retryOfKind: "user",
     });
-    expect(retryActor({ kind: "user" }, "r1")).toEqual({
+    expect(retryActor({ kind: "api_key", apiKeyId: "k1" }, "r1")).toEqual({
       kind: "retry",
+      apiKeyId: "k1",
       retryOf: "r1",
+      retryOfKind: "api_key",
     });
   });
 });

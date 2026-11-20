@@ -10,6 +10,7 @@
  * Leaf module (mongoose only at load time): the model imports its schema.
  */
 import { Schema } from "mongoose";
+import { handleFromEmail } from "../apps/user-handles";
 
 export const DBT_RUN_ACTOR_KINDS = [
   "schedule",
@@ -38,6 +39,7 @@ export interface DbtRunPushInfo {
 export interface DbtRunActor {
   kind: DbtRunActorKind;
   userId?: string;
+  /** The person's handle (email local part, as in `users/<handle>/`). Never the email. */
   userName?: string;
   /** Workspace API key: its subdocument id and label. Never the key. */
   apiKeyId?: string;
@@ -53,6 +55,8 @@ export interface DbtRunActor {
   jobScheduleId?: string;
   /** For kind "retry": the run that was retried. */
   retryOf?: string;
+  /** For kind "retry": how the retry was asked for (user, api_key, mcp). */
+  retryOfKind?: DbtRunActorKind;
   push?: DbtRunPushInfo;
 }
 
@@ -69,6 +73,7 @@ export const DbtRunActorSchema = new Schema<DbtRunActor>(
     agentSessionId: { type: String },
     jobScheduleId: { type: String },
     retryOf: { type: String },
+    retryOfKind: { type: String, enum: DBT_RUN_ACTOR_KINDS },
     push: {
       type: new Schema(
         {
@@ -101,7 +106,9 @@ export interface RequestAuthFacts {
  */
 export function actorFromRequest(facts: RequestAuthFacts): DbtRunActor {
   const userId = facts.user?.id != null ? String(facts.user.id) : undefined;
-  const userName = facts.user?.email || undefined;
+  const userName = facts.user?.email
+    ? handleFromEmail(facts.user.email)
+    : undefined;
   if (facts.authType === "mcpOAuth") {
     return {
       kind: "mcp",
@@ -131,7 +138,7 @@ export function scheduledRunActor(jobId: string): DbtRunActor {
 
 /** The actor of a run that retries `retryOf`, started by `by`. */
 export function retryActor(by: DbtRunActor, retryOf: string): DbtRunActor {
-  return { ...by, kind: "retry", retryOf };
+  return { ...by, kind: "retry", retryOf, retryOfKind: by.kind };
 }
 
 /** "(#1234)" at the end of a squash-merge subject, or "Merge pull request #1234". */
@@ -166,39 +173,63 @@ export function compactActor<T extends object>(actor: T): T {
   ) as T;
 }
 
-/**
- * Fills the display names a request did not carry: a user's email from the
- * user id, an OAuth client's name from its id. Best effort: a lookup failure
- * leaves the ids, which are enough to attribute a run.
- */
-export async function withActorNames(actor: DbtRunActor): Promise<DbtRunActor> {
+/** Longest a run waits for display names; past it the run keeps ids only. */
+export const ACTOR_NAME_LOOKUP_TIMEOUT_MS = 1000;
+
+async function lookUpNames(actor: DbtRunActor): Promise<DbtRunActor> {
   const next: DbtRunActor = { ...actor };
-  try {
-    if (next.userId && !next.userName && next.userId !== "agent") {
-      const { User } = await import("../database/schema");
-      const user = await User.findById(next.userId).select("email").lean();
-      if (user?.email) next.userName = user.email;
-    }
-    if (next.oauthClientId && !next.oauthClientName) {
-      const { getOAuthClient } = await import("../auth/mcp-oauth.service");
-      const client = await getOAuthClient(next.oauthClientId);
-      if (client?.clientName) next.oauthClientName = client.clientName;
-    }
-  } catch {
-    /* ids already attribute the run */
+  if (next.userId && !next.userName && next.userId !== "agent") {
+    const { User } = await import("../database/schema");
+    const user = await User.findById(next.userId).select("email").lean();
+    if (user?.email) next.userName = handleFromEmail(user.email);
   }
-  return compactActor(next);
+  if (next.oauthClientId && !next.oauthClientName) {
+    const { getOAuthClient } = await import("../auth/mcp-oauth.service");
+    const client = await getOAuthClient(next.oauthClientId);
+    if (client?.clientName) next.oauthClientName = client.clientName;
+  }
+  return next;
 }
 
 /**
- * The actor as an MCP client may read it: ids and labels. The person shows
- * as `userId`; their email stays out.
+ * Fills the display names a request did not carry: the user's handle from
+ * the user id, an OAuth client's name from its id. Bounded by
+ * ACTOR_NAME_LOOKUP_TIMEOUT_MS and best effort: a slow or failed lookup
+ * leaves the ids, which are enough to attribute a run, so a run never waits
+ * on it for longer than 1 s. Actors with nothing to look up cost no query.
+ */
+export async function withActorNames(
+  actor: DbtRunActor,
+  timeoutMs = ACTOR_NAME_LOOKUP_TIMEOUT_MS,
+): Promise<DbtRunActor> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const named = await Promise.race([
+      lookUpNames(actor),
+      new Promise<DbtRunActor>(resolve => {
+        timer = setTimeout(() => resolve(actor), timeoutMs);
+      }),
+    ]);
+    return compactActor(named);
+  } catch {
+    return compactActor(actor);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * The actor as a client may read it, over MCP or REST: ids, labels and the
+ * person's handle. A `userName` that holds an email (a run recorded by an
+ * older build) is dropped, so an email never leaves the API.
  */
 export function redactRunActor(
   actor: Partial<DbtRunActor> | null | undefined,
-): Omit<DbtRunActor, "userName"> | undefined {
+): DbtRunActor | undefined {
   if (!actor?.kind) return undefined;
-  const { userName: _omitted, ...rest } = actor as DbtRunActor;
-  void _omitted;
-  return compactActor(rest);
+  const { userName, ...rest } = actor as DbtRunActor;
+  return compactActor({
+    ...rest,
+    ...(userName && !userName.includes("@") ? { userName } : {}),
+  });
 }
