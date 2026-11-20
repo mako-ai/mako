@@ -26,6 +26,10 @@
  * selects). Any other failure throws, and the caller falls back (see
  * `detectSchemaGap`).
  *
+ * Not detected: a new field INSIDE an existing STRUCT column. The compare is
+ * by top-level name, so `participants.phone` added next to `participants`
+ * looks like no change. That model waits for its scheduled job.
+ *
  * An incremental model whose `on_schema_change` is `ignore` (the default) or
  * `fail` cannot get a new column from a build, so the app is not held on it:
  * it is reported in `unfixable`.
@@ -507,6 +511,13 @@ const MISSING_NAME =
   /unrecognized name|not found inside|not found: (?:table|dataset|view)|(?:table|view|dataset) \S+ was not found|does not exist|no such (?:table|column)/i;
 
 /**
+ * "Not found: Table x was not found in location EU" is also what BigQuery
+ * says when the job runs in the wrong location. That is a connection
+ * problem, not a missing table, so it never counts as a gap.
+ */
+const WRONG_LOCATION = /not found in location/i;
+
+/**
  * The warehouse answers for a BigQuery connection. Prod columns: one
  * `INFORMATION_SCHEMA.COLUMNS` query per dataset, from the driver's
  * `buildColumnListQuery`.
@@ -570,7 +581,10 @@ export function warehouseLookupFor(
         () => querySchema(connection, sql),
       );
       if (!result.success || !result.columns) {
-        if (MISSING_NAME.test(result.error ?? "")) return null;
+        const error = result.error ?? "";
+        if (!WRONG_LOCATION.test(error) && MISSING_NAME.test(error)) {
+          return null;
+        }
         throw new Error(result.error || "dry run failed");
       }
       // The dry run flattens a STRUCT to leaves (`participants.email`);
@@ -619,6 +633,8 @@ export async function detectSchemaGap(input: {
   reads: readonly string[];
   /** Repo paths the push changed. */
   changedPaths: readonly string[];
+  /** Called once the project has compiled. */
+  onCompiled?: () => Promise<void>;
 }): Promise<GapOutcome> {
   const connection = input.connectionId
     ? await loadEnvironmentConnection(input.workspaceId, input.connectionId)
@@ -626,6 +642,7 @@ export async function detectSchemaGap(input: {
   if (!connection || connection.type !== "bigquery") return { kind: "full" };
 
   const graph = await compileGapGraph(input);
+  await input.onCompiled?.();
   const changed = changedNodeNames(graph, input.changedPaths);
   try {
     const gap = await findSchemaGap({
@@ -667,7 +684,20 @@ export async function detectSchemaGap(input: {
           .map(read => lower.get(read.toLowerCase()))
           .filter((name): name is string => !!name && changed.has(name)),
       ),
-    ].sort();
+    ]
+      // A build that cannot add the column is no reason to hold the app.
+      .filter(name => {
+        const node = graph.get(name);
+        if (!node || buildCanAddColumns(node)) return true;
+        logger.warn("A build cannot close this schema gap; app not held", {
+          workspaceId: input.workspaceId,
+          sha: input.sha,
+          model: name,
+          why: whyUnfixable(node),
+        });
+        return false;
+      })
+      .sort();
     logger.warn("Schema gap check failed; building the changed read models", {
       workspaceId: input.workspaceId,
       sha: input.sha,

@@ -640,11 +640,22 @@ describe("warehouseLookupFor", () => {
   it.each([
     "Unrecognized name: closed_at at [3:5]",
     "Name closed_at not found inside t at [2:3]",
-    "Not found: Table proj:prod.int_loop was not found in location EU",
+    "Not found: Table proj:prod.int_loop",
   ])("returns null when BigQuery says a name is missing: %s", async error => {
     const querySchema = vi.fn().mockResolvedValue({ success: false, error });
     const lookup = warehouseLookupFor(connection, { querySchema, driver });
     expect(await lookup.queryColumns("select bad")).toBeNull();
+  });
+
+  it("does not call a wrong-location error a missing table", async () => {
+    const querySchema = vi.fn().mockResolvedValue({
+      success: false,
+      error: "Not found: Table proj:prod.t was not found in location EU",
+    });
+    const lookup = warehouseLookupFor(connection, { querySchema, driver });
+    await expect(lookup.queryColumns("select 1")).rejects.toThrow(
+      /in location/,
+    );
   });
 
   it("throws on a dry-run failure that names no missing table or column", async () => {

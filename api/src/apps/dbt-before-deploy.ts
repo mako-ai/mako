@@ -38,6 +38,7 @@
  * behaviour. APPS_DBT_BEFORE_DEPLOY=0 turns the feature off. Apps outside
  * the push do not redeploy. The hourly apps reconcile stays the backstop.
  */
+import { createHash } from "node:crypto";
 import { Types } from "mongoose";
 import {
   DbtProject,
@@ -284,7 +285,8 @@ export async function planDbtBeforeDeploy(input: {
     readsByApp,
     readers,
     now: appIds.filter(id => !(id in readsByApp)),
-    changedPaths,
+    // Only dbt files matter to the check; the event stays small.
+    changedPaths: changedPaths.filter(path => path.startsWith(`${DBT_ROOT}/`)),
   };
 }
 
@@ -300,7 +302,12 @@ export async function planDbtBeforeDeploy(input: {
  */
 export async function resolveDbtBeforeDeploy(
   prep: DbtDeployPrep,
-  ctx: { workspaceId: string; sha: string },
+  ctx: {
+    workspaceId: string;
+    sha: string;
+    /** Called once the project has compiled. */
+    onCompiled?: () => Promise<void>;
+  },
 ): Promise<DbtBeforeDeployPlan | null> {
   const allReads = [...new Set(Object.values(prep.readsByApp).flat())].sort();
   const base = { projectId: prep.projectId, environment: prep.environment };
@@ -325,6 +332,7 @@ export async function resolveDbtBeforeDeploy(
     sha: ctx.sha,
     reads: allReads,
     changedPaths: prep.changedPaths,
+    onCompiled: ctx.onCompiled,
   });
   if (outcome.kind === "full") return full();
   const models = outcome.kind === "gap" ? outcome.gap.models : outcome.models;
@@ -371,26 +379,58 @@ async function deployReadersNow(data: AppsDbtHoldEventData): Promise<void> {
 }
 
 /**
- * Settle the apps waiting on the dbt check: resolve the plan, then hold the
- * ones that need a build and deploy the rest. A check that throws (the
- * commit does not compile, the dbt run cannot start) deploys them all: the
- * hourly reconcile is the backstop for an instance that dies mid-check.
+ * Mark the readers "queued" again. The mark is good for 30 minutes
+ * (deploy-progress.ts), and the hourly reconcile deploys any app whose mark
+ * lapsed: against the old prod tables. The check waits in the Inngest queue
+ * and compiles for up to 10 minutes, so it renews the mark at its start and
+ * after the compile.
  */
-export async function settleDbtBeforeDeploy(
+async function renewQueued(data: AppsDbtHoldEventData): Promise<void> {
+  await Promise.all(
+    data.prep.readers.map(appId => markDeployQueued(appId, data.sha)),
+  );
+}
+
+/**
+ * Step 1 of the check: the plan for the apps waiting on it. Null means
+ * "deploy them all now": nothing needs building, or the pushed commit does
+ * not compile. Any other failure throws, so the Inngest retry runs the step
+ * again (and `onFailure` deploys the apps when the retries are spent).
+ */
+export async function planDbtHold(
   data: AppsDbtHoldEventData,
-): Promise<{ held: string[] }> {
+): Promise<DbtBeforeDeployPlan | null> {
   const { workspaceId, sha, after, prep } = data;
-  let plan: DbtBeforeDeployPlan | null = null;
+  await renewQueued(data);
   try {
-    plan = await resolveDbtBeforeDeploy(prep, { workspaceId, sha: after });
-  } catch (error) {
-    logger.warn("Could not plan a dbt build before deploy; deploying now", {
+    return await resolveDbtBeforeDeploy(prep, {
       workspaceId,
-      sha,
-      compileFailed: error instanceof Error && error.name === "DbtCompileError",
-      error: error instanceof Error ? error.message : String(error),
+      sha: after,
+      onCompiled: () => renewQueued(data),
     });
+  } catch (error) {
+    if (error instanceof Error && error.name === "DbtCompileError") {
+      logger.warn("The pushed commit does not compile; deploying now", {
+        workspaceId,
+        sha,
+        error: error.message,
+      });
+      return null;
+    }
+    throw error;
   }
+}
+
+/**
+ * Step 2: act on the plan. The apps that need no build are requested, the
+ * others wait on one dbt run. A saved plan makes a retry of this step skip
+ * the compile and the warehouse.
+ */
+export async function applyDbtHold(
+  data: AppsDbtHoldEventData,
+  plan: DbtBeforeDeployPlan | null,
+): Promise<{ held: string[] }> {
+  const { workspaceId, sha, prep } = data;
   if (!plan) {
     await deployReadersNow(data);
     return { held: [] };
@@ -404,6 +444,45 @@ export async function settleDbtBeforeDeploy(
   }
   await holdDeploysForDbtRun({ workspaceId, sha, plan });
   return { held: plan.held };
+}
+
+/** Both steps in one call (the inline `full` path, and tests). */
+export async function settleDbtBeforeDeploy(
+  data: AppsDbtHoldEventData,
+): Promise<{ held: string[] }> {
+  return applyDbtHold(data, await planDbtHold(data));
+}
+
+/**
+ * The check failed for good: deploy the readers, except the ones a dbt run
+ * already holds for this commit. Requesting a deploy of a held app would
+ * run it against the old prod tables, and cancel nothing useful.
+ */
+export async function deployReadersAfterFailedCheck(
+  data: AppsDbtHoldEventData,
+): Promise<string[]> {
+  const runs = await DbtRun.find({
+    "deploysAfterRun.workspaceId": data.workspaceId,
+    "deploysAfterRun.sha": data.sha,
+  })
+    .select("deploysAfterRun.appIds")
+    .lean();
+  const held = new Set(runs.flatMap(run => run.deploysAfterRun?.appIds ?? []));
+  const ids = data.prep.readers.filter(id => !held.has(id));
+  if (ids.length === 0) return [];
+  const { requestAppDeploys } =
+    await import("../inngest/functions/apps-deploy");
+  await requestAppDeploys(data.workspaceId, ids, data.sha, "push");
+  return ids;
+}
+
+/** An event id that dedupes a redelivered webhook for the same push. */
+export function dbtHoldEventId(data: AppsDbtHoldEventData): string {
+  const readers = createHash("sha256")
+    .update([...data.prep.readers].sort().join(","))
+    .digest("hex")
+    .slice(0, 16);
+  return `apps-dbt-hold:${data.workspaceId}:${data.sha}:${readers}`;
 }
 
 /**
@@ -422,9 +501,13 @@ export async function startDbtBeforeDeploy(
     await settleDbtBeforeDeploy(data);
     return;
   }
-  await Promise.all(prep.readers.map(appId => markDeployQueued(appId, sha)));
+  await renewQueued(data);
   try {
-    await inngest.send({ name: APPS_DBT_HOLD_EVENT, data });
+    await inngest.send({
+      id: dbtHoldEventId(data),
+      name: APPS_DBT_HOLD_EVENT,
+      data,
+    });
   } catch (error) {
     logger.warn("Could not queue the dbt schema-gap check; deploying now", {
       workspaceId,

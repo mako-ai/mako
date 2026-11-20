@@ -48,7 +48,8 @@ const state = vi.hoisted(() => ({
 
 vi.mock("../inngest/client", () => ({
   inngest: {
-    send: vi.fn(async (event: { name: string; data: unknown }) => {
+    createFunction: vi.fn(() => ({})),
+    send: vi.fn(async (event: { id?: string; name: string; data: unknown }) => {
       if (state.sendError) throw state.sendError;
       state.sent.push(event);
     }),
@@ -59,6 +60,8 @@ vi.mock("./dbt-schema-gap", async importOriginal => ({
   ...(await importOriginal<typeof import("./dbt-schema-gap")>()),
   detectSchemaGap: vi.fn(async (input: unknown) => {
     state.gapCalls.push(input);
+    // The real one calls this once the project has compiled.
+    await (input as { onCompiled?: () => Promise<void> }).onCompiled?.();
     if (state.gapError) throw state.gapError;
     return state.outcome;
   }),
@@ -160,6 +163,7 @@ import {
 import { requestAppDeploys } from "../inngest/functions/apps-deploy";
 import { markDeployQueued } from "./deploy-progress";
 import { deployAppsForPush } from "./deploy-on-push";
+import { appsDbtHoldOnFailure } from "../inngest/functions/apps-dbt-hold";
 import {
   changesDbtBuildFiles,
   dbtBeforeDeployEnabled,
@@ -171,6 +175,8 @@ import {
   planDbtBeforeDeploy,
   resolveDbtBeforeDeploy,
   settleDbtBeforeDeploy,
+  planDbtHold,
+  applyDbtHold,
   type AppsDbtHoldEventData,
   preDeployBuildCommand,
   releaseDeploysAfterRun,
@@ -552,6 +558,111 @@ describe("deployAppsForPush in schema-gap mode (the default)", () => {
     ]);
   });
 
+  it("sends one event id per push and reader set, so a redelivery dedupes", async () => {
+    await push();
+    await push();
+
+    const [a, b] = holdEvents() as unknown as Array<{ id: string }>;
+    expect(a.id).toBe(b.id);
+    expect(a.id).toMatch(
+      new RegExp(`^apps-dbt-hold:${ws}:${AFTER}:[0-9a-f]{16}$`),
+    );
+    state.changedApps = [READER, OTHER];
+    state.otherTables = ["`p.{{dbt_schema}}.dim_deal`"];
+    await push();
+    expect((holdEvents().at(-1) as unknown as { id: string }).id).not.toBe(
+      a.id,
+    );
+  });
+
+  it("sends only dbt paths in the event", async () => {
+    await push();
+    const data = holdEvents()[0].data as AppsDbtHoldEventData;
+    expect(data.prep.changedPaths).toEqual([
+      "dbt/models/marts/fct_c14__closed_loop.sql",
+    ]);
+  });
+
+  it("renews the queued mark at the start of the check and after the compile", async () => {
+    gap();
+    await push();
+    vi.mocked(markDeployQueued).mockClear();
+
+    await settle();
+
+    const calls = vi
+      .mocked(markDeployQueued)
+      .mock.calls.filter(([id]) => id === READER);
+    expect(calls).toHaveLength(2);
+    expect(calls.every(([, sha]) => sha === AFTER)).toBe(true);
+  });
+
+  it("reuses a saved plan: the apply step neither compiles nor queries", async () => {
+    gap("fct_c14__closed_loop");
+    await push();
+    const data = holdEvents()[0].data as AppsDbtHoldEventData;
+
+    const plan = await planDbtHold(data);
+    expect(state.gapCalls).toHaveLength(1);
+    vi.mocked(requestAppDeploys).mockClear();
+    await applyDbtHold(data, plan);
+    await applyDbtHold(data, plan); // a retry of the step
+
+    expect(state.gapCalls).toHaveLength(1);
+    // One run, joined by the retry; no deploy requested for the held reader.
+    expect(await DbtRun.countDocuments()).toBe(1);
+    expect(requestAppDeploys).not.toHaveBeenCalled();
+  });
+
+  it("rethrows a failure that is not a compile error, so the retry runs", async () => {
+    state.gapError = new Error("quota exceeded");
+    await push();
+    vi.mocked(requestAppDeploys).mockClear();
+
+    await expect(settle()).rejects.toThrow("quota exceeded");
+
+    expect(requestAppDeploys).not.toHaveBeenCalled();
+    expect(await DbtRun.countDocuments()).toBe(0);
+  });
+
+  describe("when the check fails for good (onFailure)", () => {
+    const failed = async () => {
+      await push();
+      vi.mocked(requestAppDeploys).mockClear();
+      const data = holdEvents()[0].data as AppsDbtHoldEventData;
+      return appsDbtHoldOnFailure({
+        event: { data: { event: { data } } },
+        error: new Error("boom"),
+      });
+    };
+
+    it("deploys the readers", async () => {
+      expect(await failed()).toEqual([READER]);
+      expect(requestAppDeploys).toHaveBeenCalledWith(
+        ws,
+        [READER],
+        AFTER,
+        "push",
+      );
+    });
+
+    it("skips the apps a dbt run already holds for this commit", async () => {
+      gap("fct_c14__closed_loop");
+      await push();
+      await settle(); // the run now holds READER
+      vi.mocked(requestAppDeploys).mockClear();
+
+      expect(await failed()).toEqual([]);
+      expect(requestAppDeploys).not.toHaveBeenCalled();
+    });
+
+    it("ignores an event it cannot read", async () => {
+      expect(
+        await appsDbtHoldOnFailure({ event: {}, error: new Error("x") }),
+      ).toEqual([]);
+    });
+  });
+
   it("runs no build and deploys the reader at once when no model has a gap", async () => {
     gap();
     await push();
@@ -571,7 +682,7 @@ describe("deployAppsForPush in schema-gap mode (the default)", () => {
         environment: "prod",
         sha: AFTER,
         reads: ["fct_c14__closed_loop"],
-        changedPaths: state.changed,
+        changedPaths: state.changed.filter(p => p.startsWith("dbt/")),
       }),
     ]);
   });
