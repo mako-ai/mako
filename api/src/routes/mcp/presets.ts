@@ -86,16 +86,16 @@ mcpPresetRoutes.openapi(
     if (!MCP_PRESETS[type]) {
       return fail(c, 404, "Icon not found");
     }
-    let iconPath = path.resolve(__dirname, "..", "mcp", "icons", `${type}.svg`);
-    if (!fs.existsSync(iconPath)) {
-      iconPath = path.resolve(
-        process.cwd(),
-        "src",
-        "mcp",
-        "icons",
-        `${type}.svg`,
-      );
-    }
+    // src/routes/mcp -> src/mcp/icons, and dist/routes/mcp -> dist/mcp/icons
+    // (copy-build-assets.mjs copies every .svg there).
+    const iconPath = path.resolve(
+      __dirname,
+      "..",
+      "..",
+      "mcp",
+      "icons",
+      `${type}.svg`,
+    );
     if (!fs.existsSync(iconPath)) {
       return fail(c, 404, "Icon not found");
     }
