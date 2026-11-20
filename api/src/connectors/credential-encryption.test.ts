@@ -57,8 +57,11 @@ async function main() {
   // A census whose subject is empty passes vacuously. The first version of
   // this check enumerated the registry, found zero connectors, and cheerfully
   // reported that every field was protected.
+  // The floor guards against an empty enumeration, not a fixed count: built-in
+  // families are being removed one PR at a time (connector-family-allowlist.ts).
+  // stripe, calendly and rest stay while external workspaces use them.
   assert.ok(
-    types.length >= 10,
+    types.length >= 3,
     `expected to find the connector directories, found ${types.length} — enumeration is broken, and a census of nothing proves nothing`,
   );
 

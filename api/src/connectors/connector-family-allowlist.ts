@@ -14,11 +14,9 @@ export const ALLOWED_FAMILIES_IMPORTED_FROM_OUTSIDE: readonly string[] = [
   "close",
   "custom_api",
   "graphql",
-  "pandadoc",
   "posthog",
   "rest",
   "stripe",
-  "wise",
 ];
 
 /**

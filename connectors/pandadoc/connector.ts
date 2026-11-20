@@ -2,10 +2,10 @@
  * PandaDoc on @makoai/connector-sdk: `spec`, `check`, `discover`, `read` and
  * `webhooks`.
  *
- * A port of the in-process connector in `api/src/connectors/pandadoc/`, with
- * the same 4 entities, schemas, pagination, document hydration and
- * incremental modes. `fixtures/parity.mjs` runs both against the same
- * recorded PandaDoc responses and compares them entity by entity.
+ * 4 entities with their schemas, pagination, document hydration and
+ * incremental modes, ported from the in-process connector (deleted).
+ * `fixtures/golden/` holds the rows it reads from the recorded PandaDoc
+ * responses, checked byte for byte by an API test.
  *
  * Read state is `{ page, totalProcessed, mako: { since } }`, the in-process
  * `FetchState` fields:

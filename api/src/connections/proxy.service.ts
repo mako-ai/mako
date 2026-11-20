@@ -34,6 +34,10 @@
  * log, an allowed one before it is sent (none is sent unrecorded) with its
  * outcome after; every read is logged.
  */
+import {
+  isOrphanConnectorType,
+  ORPHAN_TYPE_MESSAGE,
+} from "../connectors/source-connection-create.service";
 import { Types } from "mongoose";
 import {
   SourceConnection,
@@ -340,6 +344,11 @@ export async function connectionRequest(
       `No connection ${params.connection} in this workspace.`,
       404,
     );
+  }
+  // A type whose connector was removed has no schema to decrypt by: refuse
+  // before anything is loaded or sent.
+  if (await isOrphanConnectorType(row.type, params.workspaceId)) {
+    throw new ConnectionRequestError(ORPHAN_TYPE_MESSAGE, 409);
   }
   const callable = callableFor(row.type);
   if (!callable) {
