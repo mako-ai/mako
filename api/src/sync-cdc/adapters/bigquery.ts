@@ -154,6 +154,19 @@ function mergeMaxWaitMs(): number {
     : 15 * 60 * 1000;
 }
 
+/**
+ * A GoogleSQL string literal. GoogleSQL escapes with a backslash; a doubled
+ * quote (what `sqlString` writes) is not an escape there, and a listed id
+ * comes from a source we do not control.
+ */
+export function bigQueryStringLiteral(value: string): string {
+  return `'${value
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r")}'`;
+}
+
 function coerceToDate(value: unknown): Date | null {
   if (value == null) return null;
   if (value instanceof Date) {
@@ -564,24 +577,9 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   ): Promise<void> {
     const key = `${target.projectId}.${target.dataset}.${p.liveTable}`;
     if (!claimUnprunedMergeWarning(key)) return;
-    let totalBytesBilled: string | undefined;
-    if (p.job) {
-      try {
-        const [meta] = await withTimeout(
-          target.bq
-            .job(p.job.jobId, {
-              location: p.job.location ?? target.datasetLocation,
-            })
-            .getMetadata(),
-          UNPRUNED_WARN_JOB_READ_TIMEOUT_MS,
-        );
-        totalBytesBilled = (
-          meta as { statistics?: { query?: { totalBytesBilled?: string } } }
-        )?.statistics?.query?.totalBytesBilled;
-      } catch {
-        // The bytes are extra detail: the warning stands without them.
-      }
-    }
+    const totalBytesBilled = p.job
+      ? (await this.readJobStats(target, p.job)).totalBytesBilled
+      : undefined;
     log.warn("MERGE ran without partition pruning on a partitioned table", {
       flowId: p.flowId,
       table: p.liveTable,
@@ -857,6 +855,128 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     });
 
     return { written: stagingRowCount };
+  }
+
+  /**
+   * A finished job's billed bytes and DML row count (a metadata read, never
+   * billed). Empty when the read fails or times out: the numbers are extra
+   * detail.
+   */
+  private async readJobStats(
+    target: BigQueryTarget,
+    job: { jobId: string; location?: string },
+  ): Promise<{ totalBytesBilled?: string; numDmlAffectedRows?: string }> {
+    try {
+      const [meta] = await withTimeout(
+        target.bq
+          .job(job.jobId, { location: job.location ?? target.datasetLocation })
+          .getMetadata(),
+        UNPRUNED_WARN_JOB_READ_TIMEOUT_MS,
+      );
+      const q = (
+        meta as {
+          statistics?: {
+            query?: { totalBytesBilled?: string; numDmlAffectedRows?: string };
+          };
+        }
+      )?.statistics?.query;
+      return {
+        totalBytesBilled: q?.totalBytesBilled,
+        numDmlAffectedRows: q?.numDmlAffectedRows,
+      };
+    } catch {
+      return {};
+    }
+  }
+
+  async countLiveRows(
+    layout: CdcEntityLayout,
+    keyColumn: string,
+    ids: readonly string[],
+  ): Promise<{ live: number; missing: number } | undefined> {
+    const target = await this.resolveBqClient();
+    const idList = ids.map(bigQueryStringLiteral).join(", ");
+    const result = await runBigQuery(
+      target,
+      `SELECT COUNT(*) AS live, COUNTIF(CAST(${escId(keyColumn)} AS STRING) NOT IN UNNEST([${idList}])) AS missing FROM ${fullTableName(target, layout.tableName)} WHERE ${escId("is_deleted")} IS NOT TRUE`,
+    );
+    if (!result.success) return undefined;
+    const row = (
+      result.data as Array<{ live?: unknown; missing?: unknown }> | undefined
+    )?.[0];
+    const live = Number(row?.live);
+    const missing = Number(row?.missing);
+    return Number.isFinite(live) && Number.isFinite(missing)
+      ? { live, missing }
+      : undefined;
+  }
+
+  /**
+   * One UPDATE soft-deleting the live rows whose key is not in `ids`. BigQuery
+   * bills the scanned columns of the whole table, so the job's billed bytes
+   * and the table's partitioning are logged, under the
+   * `mako_merge_path: soft_delete_missing` label. Only small rosters get here
+   * (soft-delete-missing.ts caps the ids).
+   */
+  async softDeleteRowsNotIn(
+    layout: CdcEntityLayout,
+    keyColumn: string,
+    ids: readonly string[],
+  ): Promise<{ marked: number | undefined }> {
+    const target = await this.resolveBqClient();
+    const fullLive = fullTableName(target, layout.tableName);
+    const meta = await getLiveTableMeta(target, layout.tableName);
+    const idList = ids.map(bigQueryStringLiteral).join(", ");
+    const sql = [
+      `UPDATE ${fullLive}`,
+      `SET ${escId("is_deleted")} = TRUE, ${escId("deleted_at")} = CURRENT_TIMESTAMP(), ${escId("_mako_deleted_at")} = CURRENT_TIMESTAMP()`,
+      `WHERE ${escId("is_deleted")} IS NOT TRUE AND CAST(${escId(keyColumn)} AS STRING) NOT IN UNNEST([${idList}])`,
+    ].join("\n");
+    let job: { jobId: string; location?: string } | undefined;
+    await this.underTableWriteLease(
+      target,
+      layout.tableName,
+      { path: "soft_delete_missing" },
+      async held => {
+        await withQueryLabels({ mako_merge_path: "soft_delete_missing" }, () =>
+          retryOnQuota(
+            async () => {
+              const result = await runBigQueryWrite(target, sql, {
+                onJobStarted: j => {
+                  job = j;
+                  held?.recordJob(j);
+                },
+              });
+              if (!result.success) {
+                throw new Error(
+                  result.error || "BigQuery soft-delete-missing failed",
+                );
+              }
+              held?.markJobDone();
+            },
+            { label: `softDeleteRowsNotIn(${layout.tableName})` },
+          ),
+        );
+      },
+    );
+    const stats = job ? await this.readJobStats(target, job) : {};
+    const marked =
+      stats.numDmlAffectedRows !== undefined
+        ? Number(stats.numDmlAffectedRows)
+        : undefined;
+    log.info("Soft-deleted rows missing from a full read", {
+      table: layout.tableName,
+      dataset: target.dataset,
+      listedIds: ids.length,
+      marked,
+      total_bytes_billed: stats.totalBytesBilled,
+      jobId: job?.jobId,
+      partitionField:
+        meta?.timePartitioning?.field ?? meta?.rangePartitionField ?? null,
+      clusterFields: meta?.clusterFields,
+      mako_merge_path: "soft_delete_missing",
+    });
+    return { marked };
   }
 
   /** Full Refresh | Overwrite: clear the live table (no-op when absent). */

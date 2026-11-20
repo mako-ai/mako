@@ -39,6 +39,9 @@ export default defineConfig({
       // One writer per live table: the lease, and the MERGE races it closes.
       "src/sync-cdc/table-write-lease.db.test.ts",
       "src/sync-cdc/flow-reconcile.test.ts",
+      // A complete full read soft-deletes the rows it no longer lists.
+      "src/sync-cdc/soft-delete-missing.test.ts",
+      "src/sync/soft-delete-missing-poll.test.ts",
       // The push reactor's create path, against a real repo and the real model.
       "src/services/flow-sync.repo.test.ts",
       "src/sync/legacy-flow-migration.test.ts",

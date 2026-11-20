@@ -6,6 +6,7 @@ import {
   SyncLogger,
   FetchState,
   type ConnectorEntitySchema,
+  type IncrementalCapabilities,
 } from "../connectors/base/BaseConnector";
 import {
   DatabaseConnection,
@@ -35,6 +36,10 @@ import {
 } from "../sync-cdc/poll-cursor";
 import { LEGACY_ENGINE_REMOVED } from "../services/flow-triggers.service";
 import type { CdcMergePath } from "../sync-cdc/table-write-lease";
+import {
+  SOFT_DELETE_MISSING_MAX_IDS,
+  softDeleteMissingRows,
+} from "../sync-cdc/soft-delete-missing";
 import {
   SandboxedConnector,
   isWorkspaceConnectorType,
@@ -387,6 +392,25 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * The connector declares the entity's incremental mode "none": its read
+ * ignores `since` and lists the whole entity every poll. A connector that
+ * declares per-entity modes answers per entity; any other falls back to its
+ * top-level mode.
+ */
+export function entityIsReadInFull(
+  connector: unknown,
+  entity: string,
+): boolean {
+  const caps = (
+    connector as {
+      getIncrementalCapabilities?: () => IncrementalCapabilities;
+    }
+  ).getIncrementalCapabilities?.();
+  if (!caps) return false;
+  return (caps.perEntity?.[entity]?.mode ?? caps.mode) === "none";
+}
+
+/**
  * Performs a single chunk of sync work and returns state for resumption
  */
 export async function performSyncChunk(
@@ -721,6 +745,21 @@ async function performSyncChunkSql(
     }
   }
 
+  // A poll of an entity whose read ignores `since` re-lists all of it: the
+  // listed ids let the sweep soft-delete what left the listing
+  // (sync-cdc/soft-delete-missing.ts). Collected on a first-chunk poll only.
+  const sweepKeyColumn =
+    cdcLayout?.keyColumns.length === 1 ? cdcLayout.keyColumns[0] : undefined;
+  const collectListedIds =
+    isCdcEnabled &&
+    !state &&
+    !backfillFetch &&
+    options.fullRead !== true &&
+    sweepKeyColumn !== undefined &&
+    entityIsReadInFull(connector, entity);
+  const listedIds = new Set<string>();
+  let listedIdsOverflowed = false;
+
   const maxRetries = sourceConnection.settings?.max_retries || 3;
   const rateLimitDelay = sourceConnection.settings?.rate_limit_delay_ms || 200;
   const fetchState: FetchState = await executeWithRetry<FetchState>(
@@ -761,6 +800,20 @@ async function performSyncChunkSql(
             );
             return typed;
           });
+
+          if (collectListedIds && sweepKeyColumn) {
+            for (const record of processedRecords) {
+              const id = (record as Record<string, unknown>)[sweepKeyColumn];
+              if (id === null || id === undefined) {
+                // A row without a key makes the listing untrustworthy.
+                listedIdsOverflowed = true;
+              } else if (listedIds.size >= SOFT_DELETE_MISSING_MAX_IDS) {
+                listedIdsOverflowed = true;
+              } else {
+                listedIds.add(String(id));
+              }
+            }
+          }
 
           if (isCdcEnabled) {
             if (!options.flowId || !options.workspaceId) {
@@ -844,6 +897,27 @@ async function performSyncChunkSql(
   fetchState.metadata = nextMetadata;
 
   const completed = !fetchState.hasMore;
+
+  // Guard 4: only a read that ended in this one chunk, without an error (it
+  // would have thrown above) and without a resume point, is a full listing.
+  if (collectListedIds && completed && cdcAdapter && cdcLayout) {
+    try {
+      await softDeleteMissingRows({
+        adapter: cdcAdapter,
+        layout: cdcLayout,
+        ids: [...listedIds],
+        overflowed: listedIdsOverflowed,
+        deleteMode: options.deleteMode,
+        logger,
+      });
+    } catch (err) {
+      // The sweep is housekeeping: a failure must not fail the sync.
+      logger?.log(
+        "warn",
+        `Soft-delete of missing ${entity} rows failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   if (useBulkPath) {
     // Bulk path: rows are in the buffer; the flush reports what it merged.

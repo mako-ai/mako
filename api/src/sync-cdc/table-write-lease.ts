@@ -51,7 +51,13 @@ const SETTLE_AFTER_CANCEL_MS = 60_000;
 
 /** Which write path holds the lease: the `mako_merge_path` job label. */
 export type CdcMergePath =
-  "live" | "flush" | "final" | "rescue" | "poll" | "repartition";
+  | "live"
+  | "flush"
+  | "final"
+  | "rescue"
+  | "poll"
+  | "repartition"
+  | "soft_delete_missing";
 
 export function tableWriteLeaseMaxWaitMs(path: CdcMergePath): number {
   return path === "live"

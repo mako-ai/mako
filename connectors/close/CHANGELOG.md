@@ -14,6 +14,9 @@ Releases of `mako/close`. Not released yet: no tag, no registry entry.
   half the budget doubles the next page, back up to 200 rows. `__page_size` lowers
   the 200-row Search page. Fixes `activities:Email`, whose 200-row pages
   were over the 32 MiB chunk cap.
+- `users` declares no incremental mode (it said `native`). It re-reads every
+  membership on every poll and ignores `since`, so Mako now treats it as a
+  full read and soft-deletes a user that left the listing.
 - `custom_fields` reads all 6 custom-field lists. Activity
   (`/custom_field/activity/`) and custom-object fields used to come only
   from webhooks, untyped; a poll now has them, with `custom_field_type`
