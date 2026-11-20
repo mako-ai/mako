@@ -391,8 +391,10 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
   }
   if (input.entity) await assertMayProbeEntity(workspaceId, owned);
 
-  const sourceConnection =
-    await sourceConnectionManager.getSourceConnection(connectionId);
+  const sourceConnection = await sourceConnectionManager.getSourceConnection(
+    connectionId,
+    workspaceId,
+  );
   if (!sourceConnection) {
     throw new ProbeError("not_found", "Connection not found");
   }
