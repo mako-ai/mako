@@ -15,6 +15,13 @@ export interface ConnectionTestResult {
   details?: any;
 }
 
+/** The authenticated caller of a stored connection Test, when one exists. */
+export interface ConnectionTestContext {
+  actor: string;
+  workspaceId: string;
+  connectionId: string;
+}
+
 // Callback types for streaming data
 export type DataBatchCallback<T = any> = (batch: T[]) => Promise<void>;
 export type ProgressCallback = (current: number, total?: number) => void;
@@ -297,7 +304,9 @@ export abstract class BaseConnector {
   /**
    * Test the bound source connection against the connector's platform
    */
-  abstract testConnection(): Promise<ConnectionTestResult>;
+  abstract testConnection(
+    context?: ConnectionTestContext,
+  ): Promise<ConnectionTestResult>;
 
   /**
    * Get available entities that can be fetched from this source
