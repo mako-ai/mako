@@ -129,6 +129,33 @@ describe("tab-routing", () => {
     expect(dbtRunsUrl).not.toMatch(TAB_DEEP_LINK_PATTERNS["dbt-console"]);
   });
 
+  it("addresses a workflow, one of its runs, and a workflow file", () => {
+    const url = (metadata: Record<string, unknown>) =>
+      tabUrlPath("t", baseTab({ kind: "workflow", metadata })) as string;
+    const pattern = TAB_DEEP_LINK_PATTERNS.workflow;
+
+    expect(url({ workflowId: "daily-digest" })).toBe("/workflows/daily-digest");
+    expect(
+      url({ workflowId: "daily-digest" }).match(pattern)?.slice(1),
+    ).toEqual(["daily-digest", undefined, undefined]);
+
+    const run = url({ workflowId: "daily-digest", runId: "run-1" });
+    expect(run).toBe("/workflows/daily-digest/runs/run-1");
+    expect(run.match(pattern)?.slice(1)).toEqual([
+      "daily-digest",
+      "run-1",
+      undefined,
+    ]);
+
+    const file = url({ path: "daily-digest/workflow.ts" });
+    expect(file).toBe("/workflow-files/daily-digest/workflow.ts");
+    expect(file.match(pattern)?.[3]).toBe("daily-digest/workflow.ts");
+
+    // A workflow may be named "file" or "runs": neither reads as a file.
+    expect(url({ workflowId: "file" }).match(pattern)?.[1]).toBe("file");
+    expect(tabUrlPath("t", baseTab({ kind: "workflow" }))).toBeNull();
+  });
+
   it("encodes nested dbt file paths in their URL", () => {
     const url = tabUrlPath("t", FIXTURES["dbt-file"]) as string;
     expect(url).toBe("/x/proj-1/file/models/stg.sql");

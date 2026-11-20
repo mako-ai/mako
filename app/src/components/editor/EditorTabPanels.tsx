@@ -280,6 +280,8 @@ function TabBody({
     case "workflow":
       return (
         <WorkflowView
+          tabId={tab.id}
+          runId={meta?.runId as string | undefined}
           workflowId={meta?.workflowId as string | undefined}
           path={meta?.path as string | undefined}
         />
