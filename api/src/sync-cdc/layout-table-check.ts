@@ -16,6 +16,8 @@ import { loggers } from "../logging";
 import { inWorkspace } from "../utils/workspace-scope";
 import {
   resolveCdcDestinationAdapter,
+  resolveEntityClustering,
+  resolveEntityPartitioning,
   type CdcDestinationAdapter,
   type LiveTableDescription,
 } from "./adapters/registry";
@@ -46,6 +48,9 @@ export interface LayoutToCheck {
   clusterFields?: string[];
   enabled?: boolean;
 }
+
+const MAX_CLUSTER_FIELDS = 4;
+const MAX_PARALLEL_TABLE_READS = 8;
 
 const NO_PARTITIONING = "no partitioning";
 
@@ -86,7 +91,11 @@ export function compareLayoutToTable(p: {
   const realField = realPartitionField(real);
   const layoutField = layout.partitionField;
 
-  if (layoutField && layoutField !== real.timePartitioning?.field) {
+  // BigQuery column names are case-insensitive.
+  if (
+    layoutField &&
+    layoutField.toLowerCase() !== real.timePartitioning?.field?.toLowerCase()
+  ) {
     const layoutValue = `\`${layoutField}\``;
     const realValue =
       realField === NO_PARTITIONING ? realField : `\`${realField}\``;
@@ -127,10 +136,15 @@ export function compareLayoutToTable(p: {
     }
   }
 
-  const layoutCluster = layout.clusterFields ?? [];
+  // The table is created with the first four cluster fields.
+  const layoutCluster = (layout.clusterFields ?? []).slice(
+    0,
+    MAX_CLUSTER_FIELDS,
+  );
   if (
     layoutCluster.length > 0 &&
-    layoutCluster.join(",") !== real.clusterFields.join(",")
+    layoutCluster.join(",").toLowerCase() !==
+      real.clusterFields.join(",").toLowerCase()
   ) {
     const layoutValue = layoutCluster.join(", ");
     const realValue = real.clusterFields.length
@@ -170,9 +184,95 @@ export interface FlowForLayoutCheck {
     connectionId?: unknown;
     schema?: string;
     tableName?: string;
+    partitioning?: unknown;
+    clustering?: unknown;
   } | null;
   entityLayouts?: ArrayLike<LayoutToCheck> | null;
   entityFilter?: ArrayLike<string> | null;
+}
+
+/** What a layout and the flow's table defaults resolve to when it creates a table. */
+function effectiveLayout(
+  layout: LayoutToCheck,
+  td: FlowForLayoutCheck["tableDestination"],
+): LayoutToCheck {
+  const partitioning = resolveEntityPartitioning(
+    layout,
+    td?.partitioning as Parameters<typeof resolveEntityPartitioning>[1],
+  );
+  const clustering = resolveEntityClustering(
+    layout,
+    td?.clustering as Parameters<typeof resolveEntityClustering>[1],
+  );
+  return {
+    entity: layout.entity,
+    enabled: layout.enabled,
+    partitionField: partitioning?.field,
+    partitionGranularity: partitioning?.granularity,
+    clusterFields: clustering?.fields
+      ? Array.from(clustering.fields)
+      : undefined,
+  };
+}
+
+function layoutKey(l: LayoutToCheck): string {
+  return JSON.stringify([
+    l.entity,
+    l.enabled !== false,
+    (l.partitionField ?? "").toLowerCase(),
+    (l.partitionGranularity ?? "day").toLowerCase(),
+    Array.from(l.clusterFields ?? []).map(f => f.toLowerCase()),
+  ]);
+}
+
+/** The slice of a stored definition a layout is judged against. */
+export interface PreviousLayouts {
+  entityLayouts?: ArrayLike<LayoutToCheck> | null;
+  tableDestination?: {
+    connectionId?: unknown;
+    schema?: string;
+    tableName?: string;
+    partitioning?: unknown;
+    clustering?: unknown;
+  } | null;
+}
+
+/** A plain copy of the layouts and destination, safe to keep while a document mutates. */
+export function snapshotLayouts(flow: FlowForLayoutCheck): PreviousLayouts {
+  const td = flow.tableDestination;
+  return {
+    entityLayouts: Array.from(flow.entityLayouts ?? []).map(l => ({
+      entity: l.entity,
+      enabled: l.enabled,
+      partitionField: l.partitionField,
+      partitionGranularity: l.partitionGranularity,
+      clusterFields: Array.from(l.clusterFields ?? []),
+    })),
+    tableDestination: td
+      ? {
+          connectionId: td.connectionId ? String(td.connectionId) : undefined,
+          schema: td.schema,
+          tableName: td.tableName,
+          partitioning: td.partitioning
+            ? JSON.parse(JSON.stringify(td.partitioning))
+            : undefined,
+          clustering: td.clustering
+            ? JSON.parse(JSON.stringify(td.clustering))
+            : undefined,
+        }
+      : null,
+  };
+}
+
+function sameDestination(
+  a: PreviousLayouts["tableDestination"],
+  b: PreviousLayouts["tableDestination"],
+): boolean {
+  return (
+    String(a?.connectionId ?? "") === String(b?.connectionId ?? "") &&
+    (a?.schema ?? "") === (b?.schema ?? "") &&
+    (a?.tableName ?? "") === (b?.tableName ?? "")
+  );
 }
 
 /** The tables one layout writes: its entity, or each selected `entity:sub`. */
@@ -180,28 +280,64 @@ function entitiesForLayout(
   layout: LayoutToCheck,
   entityFilter: string[],
 ): string[] {
-  const matching = entityFilter.filter(
+  // No selection: the layout's own entity. With a selection, a layout for an
+  // entity outside it writes nothing.
+  if (entityFilter.length === 0) return [layout.entity];
+  return entityFilter.filter(
     e => e === layout.entity || e.split(":")[0] === layout.entity,
   );
-  return matching.length > 0 ? matching : [layout.entity];
+}
+
+async function mapWithLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, worker),
+  );
+  return out;
 }
 
 /**
  * Every layout of a BigQuery CDC flow that disagrees with its existing table.
  * Empty for other destinations, flows without layouts, missing tables and
  * unreadable metadata.
+ *
+ * With `previous`, only layouts that are new or changed against that stored
+ * definition are judged (all of them when the destination moved). A flow
+ * saved with an old mismatch it did not touch stays saveable.
  */
 export async function findLayoutTableMismatches(
   flow: FlowForLayoutCheck,
   deps: {
     /** Test seam: the adapter that reads table metadata. */
     adapterFor?: (args: { schema: string }) => CdcDestinationAdapter;
+    previous?: PreviousLayouts;
   } = {},
 ): Promise<LayoutTableMismatch[]> {
-  const layouts = Array.from(flow.entityLayouts ?? []).filter(
+  const td = flow.tableDestination;
+  let layouts = Array.from(flow.entityLayouts ?? []).filter(
     l => l && l.enabled !== false && l.entity,
   );
-  const td = flow.tableDestination;
+  if (deps.previous && sameDestination(deps.previous.tableDestination, td)) {
+    const before = new Set(
+      Array.from(deps.previous.entityLayouts ?? []).map(l =>
+        layoutKey(effectiveLayout(l, deps.previous?.tableDestination)),
+      ),
+    );
+    layouts = layouts.filter(
+      l => !before.has(layoutKey(effectiveLayout(l, td))),
+    );
+  }
   if (layouts.length === 0 || !td?.connectionId) return [];
 
   const workspaceId = String(flow.workspaceId);
@@ -231,11 +367,17 @@ export async function findLayoutTableMismatches(
             tableName: td.tableName ?? "",
           },
         });
-    if (!adapter.describeLiveTable) return [];
+    const describe = adapter.describeLiveTable?.bind(adapter);
+    if (!describe) return [];
 
-    const mismatches: LayoutTableMismatch[] = [];
+    const jobs: Array<{
+      entity: string;
+      table: string;
+      layout: LayoutToCheck;
+    }> = [];
     const seen = new Set<string>();
     for (const layout of layouts) {
+      const effective = effectiveLayout(layout, td);
       for (const entity of entitiesForLayout(layout, entityFilter)) {
         const table = cdcLiveTableName(
           td.tableName,
@@ -244,14 +386,18 @@ export async function findLayoutTableMismatches(
         );
         if (seen.has(table)) continue;
         seen.add(table);
-        const real = await adapter.describeLiveTable(table);
-        if (!real) continue;
-        mismatches.push(
-          ...compareLayoutToTable({ entity, table, layout, real }),
-        );
+        jobs.push({ entity, table, layout: effective });
       }
     }
-    return mismatches;
+    const results = await mapWithLimit(
+      jobs,
+      MAX_PARALLEL_TABLE_READS,
+      async job => {
+        const real = await describe(job.table);
+        return real ? compareLayoutToTable({ ...job, real }) : [];
+      },
+    );
+    return results.flat();
   } catch (err) {
     log.warn("Layout check skipped: could not read the destination", {
       flowId: flow._id ? String(flow._id) : undefined,

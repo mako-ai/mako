@@ -93,6 +93,17 @@ describe("why a MERGE ran unpruned", () => {
     ).toBe("too_many_partitions");
   });
 
+  it("keeps too many partitions even when the layout also mismatches", async () => {
+    expect(
+      await reasonFor({
+        tableField: "d",
+        layoutField: "_syncedAt",
+        types: { d: "TIMESTAMP" },
+        probeRows: 401,
+      }),
+    ).toBe("too_many_partitions");
+  });
+
   it("reports no probe for a column it cannot prune, with a matching layout", async () => {
     expect(
       await reasonFor({

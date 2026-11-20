@@ -425,6 +425,58 @@ describe("one bad file is that file's problem", () => {
     }
   });
 
+  it("an EXISTING flow is never paused or flagged for a layout mismatch", async () => {
+    const withTable = (name: string) =>
+      flowYaml(name).replace(
+        "  table:\n",
+        `  table:\n    connection_id: ${DEST}\n`,
+      );
+    const spy = vi
+      .spyOn(BigQueryDestinationAdapter.prototype, "describeLiveTable")
+      .mockResolvedValue({ exists: false, clusterFields: [] });
+    try {
+      await push({ "flows/live.yml": withTable("Live") });
+      expect((await syncFlowsFromRepo(WS, "user-42")).created).toBe(1);
+
+      // The table now exists, partitioned on another column.
+      spy.mockResolvedValue({
+        exists: true,
+        timePartitioning: { field: "date_created", type: "DAY" },
+        clusterFields: [],
+      });
+
+      // An edit that leaves the layout alone applies.
+      await push({ "flows/live.yml": withTable("Live renamed") });
+      const renamed = await syncFlowsFromRepo(WS, "user-42");
+      expect(renamed.updated).toBe(1);
+      expect(renamed.invalid).toEqual([]);
+
+      // An edit to the mismatching layout is not applied. The flow keeps
+      // its definition, its schedules and no marker.
+      const edited = withTable("Live renamed").replace(
+        "partitionGranularity: day",
+        "partitionGranularity: hour",
+      );
+      await push({ "flows/live.yml": edited });
+      const refused = await syncFlowsFromRepo(WS, "user-42");
+      expect(refused.invalid).toEqual(["live"]);
+      const row = await Flow.findOne({ workspaceId: WS, slug: "live" });
+      expect(row?.name).toBe("Live renamed");
+      expect(row?.entityLayouts?.[0]?.partitionGranularity).toBe("day");
+      expect(row?.backfillSchedule?.enabled).toBe(true);
+      expect(isFlowMarkedInvalid(row as never)).toBe(false);
+
+      // Reading the flow does not apply the refused layout either.
+      expect(await ensureFlowDerivedCache(row as never)).toBe("ok");
+      const after = await Flow.findOne({ workspaceId: WS, slug: "live" });
+      expect(after?.entityLayouts?.[0]?.partitionGranularity).toBe("day");
+      expect(after?.backfillSchedule?.enabled).toBe(true);
+      expect(isFlowMarkedInvalid(after as never)).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("a connector NAME where an id belongs is refused, not thrown", async () => {
     await push({
       "flows/a-by-name.yml": flowYaml("By name").replace(

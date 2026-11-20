@@ -57,6 +57,7 @@ import {
   discoverMergeSchemas,
   evolveSchemaIfNeeded,
   getLiveTablePartitioning,
+  getLiveTableMeta,
   getSchemaCacheKey,
   hashEntitySchema,
   invalidateCachedSchema,
@@ -132,6 +133,16 @@ interface BigQueryAdapterConfig {
 
 type FlowRef = Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
 
+const UNPRUNED_WARN_JOB_READ_TIMEOUT_MS = 5000;
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("timed out")), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
+
 /** Upper bound on a MERGE job's wait: BIGQUERY_MERGE_MAX_WAIT_MS, else 15 min. */
 function mergeMaxWaitMs(): number {
   const fromEnv = Number.parseInt(
@@ -167,38 +178,11 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     await this.ensureDataset();
   }
 
+  /** The live table's cached metadata (see getLiveTableMeta). */
   async describeLiveTable(
     tableName: string,
   ): Promise<LiveTableDescription | undefined> {
-    const target = await this.resolveBqClient();
-    try {
-      const [metadata] = await target.bq
-        .dataset(target.dataset, { location: target.datasetLocation })
-        .table(tableName)
-        .getMetadata();
-      const m = metadata as {
-        timePartitioning?: { field?: string; type?: string };
-        rangePartitioning?: { field?: string };
-        clustering?: { fields?: string[] };
-      };
-      return {
-        exists: true,
-        timePartitioning: m.timePartitioning
-          ? { field: m.timePartitioning.field, type: m.timePartitioning.type }
-          : undefined,
-        rangePartitionField: m.rangePartitioning?.field,
-        clusterFields: m.clustering?.fields ?? [],
-      };
-    } catch (err) {
-      if ((err as { code?: number } | null)?.code === 404) {
-        return { exists: false, clusterFields: [] };
-      }
-      log.warn("Could not read the live table metadata", {
-        liveTable: tableName,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return undefined;
-    }
+    return getLiveTableMeta(await this.resolveBqClient(), tableName);
   }
 
   async repartitionLiveTable(
@@ -485,8 +469,12 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     ): undefined => {
       if (!table?.field) return undefined;
       p.onUnpruned?.({
+        // A mismatch explains an unpruned MERGE only when the table could not
+        // be pruned at all. Too many partitions stays too many partitions.
         reason:
-          layoutField && layoutField !== table.field
+          reason === "no_probe" &&
+          layoutField &&
+          layoutField.toLowerCase() !== table.field.toLowerCase()
             ? "layout_mismatch"
             : reason,
         tableField: table.field,
@@ -579,11 +567,14 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     let totalBytesBilled: string | undefined;
     if (p.job) {
       try {
-        const [meta] = await target.bq
-          .job(p.job.jobId, {
-            location: p.job.location ?? target.datasetLocation,
-          })
-          .getMetadata();
+        const [meta] = await withTimeout(
+          target.bq
+            .job(p.job.jobId, {
+              location: p.job.location ?? target.datasetLocation,
+            })
+            .getMetadata(),
+          UNPRUNED_WARN_JOB_READ_TIMEOUT_MS,
+        );
         totalBytesBilled = (
           meta as { statistics?: { query?: { totalBytesBilled?: string } } }
         )?.statistics?.query?.totalBytesBilled;
@@ -743,12 +734,16 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         : undefined;
     const path = options.mergePath;
 
+    // Set by the MERGE closure, read after the lease is released.
+    let unpruned: UnprunedMerge | undefined;
+    let mergeJob: { jobId: string; location?: string } | undefined;
+
     const runMerge = async (
       lease: TableWriteLease | undefined,
     ): Promise<void> => {
       // Every dedup path prunes. The probe and the MERGE run under the table
       // write lease, so no other writer moves or inserts a key in between.
-      let unpruned: UnprunedMerge | undefined;
+      unpruned = undefined;
       const livePartitionFilter = isDedup
         ? await this.resolveLivePartitionFilter(target, {
             layout,
@@ -761,7 +756,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
             },
           })
         : undefined;
-      let mergeJob: { jobId: string; location?: string } | undefined;
+      mergeJob = undefined;
       const mergeStmt = !isDedup
         ? `INSERT INTO ${fullLive} (${insertColList}) SELECT ${insertColList} FROM ${fullStaging}`
         : buildMergeStatement({
@@ -826,16 +821,6 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
             { label: `mergeStagingToLive:MERGE(${liveTable})` },
           ),
       );
-
-      if (unpruned) {
-        await this.warnUnprunedMerge(target, {
-          unpruned,
-          liveTable,
-          flowId: options.flowId,
-          path,
-          job: mergeJob,
-        });
-      }
     };
 
     // A plain INSERT (append, overwrite) probes nothing: no lease.
@@ -848,6 +833,18 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       );
     } else {
       await runMerge(undefined);
+    }
+
+    // After the lease: a slow jobs.get must not hold the table's writer slot,
+    // and nothing waits for the warning.
+    if (unpruned) {
+      void this.warnUnprunedMerge(target, {
+        unpruned,
+        liveTable,
+        flowId: options.flowId,
+        path,
+        job: mergeJob,
+      }).catch(() => undefined);
     }
 
     log.info("Merged staging to live via MERGE", {

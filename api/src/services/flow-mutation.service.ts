@@ -23,6 +23,8 @@ import { hasCdcDestinationAdapter } from "../sync-cdc/adapters/registry";
 import {
   findLayoutTableMismatches,
   formatLayoutMismatches,
+  snapshotLayouts,
+  type PreviousLayouts,
 } from "../sync-cdc/layout-table-check";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
 import {
@@ -61,11 +63,14 @@ type FlowDocument = InstanceType<typeof Flow>;
  * Refuse a CDC flow whose entity layouts disagree with the BigQuery tables
  * they write to (a table that does not exist yet passes).
  */
-async function assertLayoutsMatchTables(flow: {
-  syncEngine?: string;
-}): Promise<void> {
+async function assertLayoutsMatchTables(
+  flow: { syncEngine?: string },
+  previous?: PreviousLayouts,
+): Promise<void> {
   if (flow.syncEngine !== "cdc") return;
-  const mismatches = await findLayoutTableMismatches(flow as never);
+  const mismatches = await findLayoutTableMismatches(flow as never, {
+    previous,
+  });
   if (mismatches.length > 0) {
     throw new FlowRequestError(400, formatLayoutMismatches(mismatches), {
       layoutMismatches: mismatches,
@@ -482,6 +487,9 @@ export async function applyFlowUpdate(params: {
   body: FlowRequestBody;
 }): Promise<string[]> {
   const { workspaceId, flow, body } = params;
+  // The stored layouts, before the body changes them: only a layout this
+  // request adds or edits is judged against its table.
+  const layoutsBefore = snapshotLayouts(flow as never);
   // Update common fields. Under the unified trigger model any flow may
   // carry a poll schedule (hybrid trigger set), not only type=scheduled.
   if (body.schedule) {
@@ -748,7 +756,7 @@ export async function applyFlowUpdate(params: {
   // Only a request that touches the layouts or the destination is judged:
   // an unrelated edit of a flow with an old mismatch still saves.
   if (body.entityLayouts !== undefined || body.tableDestination) {
-    await assertLayoutsMatchTables(flow);
+    await assertLayoutsMatchTables(flow, layoutsBefore);
   }
 
   // Periodic full backfill cadence (CDC flows only). The dedicated
