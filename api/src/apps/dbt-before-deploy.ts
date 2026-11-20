@@ -194,10 +194,9 @@ export async function planDbtBeforeDeploy(input: {
  * when the commit can be read. A repo that cannot be read leaves the sha.
  */
 export async function pushInfoOf(
-  repoDir: string | undefined,
+  repoDir: string,
   sha: string,
 ): Promise<DbtRunPushInfo> {
-  if (!repoDir) return { sha };
   try {
     const [commit] = await commitLog(repoDir, sha, 1);
     return pushInfoFromCommit(sha, commit);
@@ -217,7 +216,7 @@ export async function holdDeploysForDbtRun(input: {
   sha: string;
   plan: DbtBeforeDeployPlan;
   /** The workspace repo, to read the pushed commit's PR number and author. */
-  repoDir?: string;
+  repoDir: string;
 }): Promise<string | null> {
   const { workspaceId, sha, plan, repoDir } = input;
   const { triggerDbtRun } = await import("../dbt/dbt-run.service");
