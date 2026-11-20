@@ -4,7 +4,6 @@ import { CloseConnector } from "./close/connector";
 import { ClaapConnector } from "./claap/connector";
 import { CalendlyConnector } from "./calendly/connector";
 import { RestConnector } from "./rest/connector";
-import { GraphQLConnector } from "./graphql/connector";
 import { PosthogConnector } from "./posthog/connector";
 import {
   BaseConnector,
@@ -119,16 +118,6 @@ const connectors: Array<{
       } as any),
   },
   {
-    label: "graphql",
-    make: () =>
-      new GraphQLConnector({
-        id: "ds_graphql",
-        name: "GraphQL",
-        type: "graphql",
-        config: {},
-      } as any),
-  },
-  {
     label: "posthog",
     make: () =>
       new PosthogConnector({
@@ -151,13 +140,6 @@ function testEveryConnectorReturnsWellFormedCapabilities() {
     const capabilities = make().getIncrementalCapabilities();
     assertWellFormed(label, capabilities);
   }
-}
-
-function testGraphQLDeclaresClientFilterWithSinceInjection() {
-  const graphql = capabilitiesFor("graphql");
-  assert.equal(graphql.supported, true);
-  assert.equal(graphql.mode, "client-filter");
-  assert.ok(graphql.warning && graphql.warning.includes("$since"));
 }
 
 function testPosthogDeclaresNativeSincePlaceholder() {
@@ -282,7 +264,6 @@ async function testStripeCreatedGteWhenSinceSet() {
 
 async function main() {
   testEveryConnectorReturnsWellFormedCapabilities();
-  testGraphQLDeclaresClientFilterWithSinceInjection();
   testPosthogDeclaresNativeSincePlaceholder();
   testCreatedAnchorConnectorsWarnAboutMissedUpdates();
   testCloseSearchApiEntitiesDeclareNative();

@@ -1,8 +1,9 @@
 # GraphQL connector folder
 
-Any GraphQL endpoint on `@makoai/connector-sdk`: a port of the in-process
-connector in `api/src/connectors/graphql/`, run in a box. No flow uses it
-yet. The parity harness in `fixtures/` holds the two to the same output.
+Any GraphQL endpoint on `@makoai/connector-sdk`, run in a box. It replaces
+the in-process connector, which is deleted. Production runs it on the
+`ws:graphql` connections. The golden rows in `fixtures/golden/` hold the
+output the in-process connector was checked against.
 
 ## Connection
 
@@ -76,13 +77,18 @@ of `__rate_limit_delay_ms` (200 ms by default) follows each page.
 - `hasMore` is a boolean in the folder's state. In-process keeps whatever
   `has_next_page_path` held (a count, for Hasura aggregates).
 
-## Parity
+## Fixtures
+
+`fixtures/cassettes/` holds the recorded responses, one file per query.
+`fixtures/golden/` holds the rows the folder reads from them in 3 scenarios
+(`default`, `since`, `chunked`) for each of the 5 queries.
 
 ```
-pnpm --filter api exec tsx ../connectors/graphql/fixtures/parity.mjs
-cd api && node --import tsx scripts/run-tsx-tests.mjs connectors/graphql
-node connectors/graphql/fixtures/conformance.mjs
+node connectors/graphql/fixtures/conformance.mjs         # mako connector test
+node connectors/graphql/fixtures/golden.mjs --record     # rebuild the cassettes
+node connectors/graphql/fixtures/golden.mjs --write      # rewrite the golden rows
+(cd api && node --import tsx --test src/connectors/workspace/graphql-folder-golden.test.ts)
 ```
 
-`--record` on `parity.mjs` rebuilds the cassettes from `dataset.mjs`
-through a local emulator. Nothing calls a real API.
+`--record` runs the folder against a local emulator of `dataset.mjs`.
+Nothing calls a real API.

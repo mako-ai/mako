@@ -1,0 +1,214 @@
+{
+  "chunks": [
+    {
+      "cursor": "2026-01-04T19:47:00.000Z",
+      "hasMore": true,
+      "offset": 0,
+      "totalCount": null,
+      "totalProcessed": 12
+    },
+    {
+      "cursor": "2026-01-21T15:11:00.000Z",
+      "hasMore": true,
+      "offset": 0,
+      "totalCount": null,
+      "totalProcessed": 24
+    },
+    {
+      "cursor": "2026-01-30T00:53:00.000Z",
+      "hasMore": true,
+      "offset": 0,
+      "totalCount": null,
+      "totalProcessed": 30
+    },
+    {
+      "cursor": "2026-01-30T00:53:00.000Z",
+      "hasMore": false,
+      "offset": 0,
+      "totalCount": null,
+      "totalProcessed": 30
+    }
+  ],
+  "rows": [
+    {
+      "created_at": "2025-12-20T10:00:00.000Z",
+      "id": "enq_001",
+      "merged_listing_id": 0,
+      "portal": "immoscout"
+    },
+    {
+      "created_at": "2025-12-21T19:37:00.000Z",
+      "id": "enq_002",
+      "merged_listing_id": 7,
+      "portal": "homegate"
+    },
+    {
+      "created_at": "2025-12-23T05:14:00.000Z",
+      "id": "enq_003",
+      "merged_listing_id": 14,
+      "portal": "immoscout"
+    },
+    {
+      "created_at": "2025-12-24T14:51:00.000Z",
+      "id": "enq_004",
+      "merged_listing_id": 21,
+      "portal": "homegate"
+    },
+    {
+      "created_at": "2025-12-26T00:28:00.000Z",
+      "id": "enq_005",
+      "merged_listing_id": 28,
+      "portal": "immoscout"
+    },
+    {
+      "created_at": "2025-12-27T10:05:00.000Z",
+      "id": "enq_006",
+      "merged_listing_id": 35,
+      "portal": "homegate"
+    },
+    {
+      "created_at": "2025-12-28T19:42:00.000Z",
+      "id": "enq_007",
+      "merged_listing_id": 42,
+      "portal": "immoscout"
+    },
+    {
+      "created_at": "2025-12-30T05:19:00.000Z",
+      "id": "enq_008",
+      "merged_listing_id": 49,
+      "portal": "homegate"
+    },
+    {
+      "created_at": "2025-12-31T14:56:00.000Z",
+      "id": "enq_009",
+      "merged_listing_id": 56,
+      "portal": "immoscout"
+    },
+    {
+      "created_at": "2026-01-02T00:33:00.000Z",
+      "id": "enq_010",
+      "merged_listing_id": 63,
+      "portal": "homegate"
+    },
+    {
+      "created_at": "2026-01-03T10:10:00.000Z",
+      "id": "enq_011",
+      "merged_listing_id": 0,
+      "portal": "immoscout"
+    },
+    {
+      "created_at": "2026-01-04T19:47:00.000Z",
+      "id": "enq_012",
+      "merged_listing_id": 7,
+      "portal": "homegate"
+    },
+    {
+      "created_at": "2026-01-06T05:24:00.000Z",
+      "id": "enq_013",
+      "merged_listing_id": 14,
+      "portal": "immoscout"
+    },
+    {
+      "created_at": "2026-01-07T15:01:00.000Z",
+      "id": "enq_014",
+      "merged_listing_id": 21,
+      "portal": "homegate"
+    },
+    {
+      "created_at": "2026-01-09T00:38:00.000Z",
+      "id": "enq_015",
+      "merged_listing_id": 28,
+      "portal": "immoscout"
+    },
+    {
+      "created_at": "2026-01-10T10:15:00.000Z",
+      "id": "enq_016",
+      "merged_listing_id": 35,
+      "portal": "homegate"
+    },
+    {
+      "created_at": "2026-01-11T19:52:00.000Z",
+      "id": "enq_017",
+      "merged_listing_id": 42,
+      "portal": "immoscout"
+    },
+    {
+      "created_at": "2026-01-13T05:29:00.000Z",
+      "id": "enq_018",
+      "merged_listing_id": 49,
+      "portal": "homegate"
+    },
+    {
+      "created_at": "2026-01-14T15:06:00.000Z",
+      "id": "enq_019",
+      "merged_listing_id": 56,
+      "portal": "immoscout"
+    },
+    {
+      "created_at": "2026-01-16T00:43:00.000Z",
+      "id": "enq_020",
+      "merged_listing_id": 63,
+      "portal": "homegate"
+    },
+    {
+      "created_at": "2026-01-17T10:20:00.000Z",
+      "id": "enq_021",
+      "merged_listing_id": 0,
+      "portal": "immoscout"
+    },
+    {
+      "created_at": "2026-01-18T19:57:00.000Z",
+      "id": "enq_022",
+      "merged_listing_id": 7,
+      "portal": "homegate"
+    },
+    {
+      "created_at": "2026-01-20T05:34:00.000Z",
+      "id": "enq_023",
+      "merged_listing_id": 14,
+      "portal": "immoscout"
+    },
+    {
+      "created_at": "2026-01-21T15:11:00.000Z",
+      "id": "enq_024",
+      "merged_listing_id": 21,
+      "portal": "homegate"
+    },
+    {
+      "created_at": "2026-01-23T00:48:00.000Z",
+      "id": "enq_025",
+      "merged_listing_id": 28,
+      "portal": "immoscout"
+    },
+    {
+      "created_at": "2026-01-24T10:25:00.000Z",
+      "id": "enq_026",
+      "merged_listing_id": 35,
+      "portal": "homegate"
+    },
+    {
+      "created_at": "2026-01-25T20:02:00.000Z",
+      "id": "enq_027",
+      "merged_listing_id": 42,
+      "portal": "immoscout"
+    },
+    {
+      "created_at": "2026-01-27T05:39:00.000Z",
+      "id": "enq_028",
+      "merged_listing_id": 49,
+      "portal": "homegate"
+    },
+    {
+      "created_at": "2026-01-28T15:16:00.000Z",
+      "id": "enq_029",
+      "merged_listing_id": 56,
+      "portal": "immoscout"
+    },
+    {
+      "created_at": "2026-01-30T00:53:00.000Z",
+      "id": "enq_030",
+      "merged_listing_id": 63,
+      "portal": "homegate"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 /**
- * The GraphQL HTTP client, with the in-process connector's policy
- * (`api/src/connectors/graphql/connector.ts`):
+ * The GraphQL HTTP client, with the policy of the in-process connector this
+ * folder replaced (deleted):
  *
  * - one POST of `{ query, variables }` to the endpoint, with
  *   `Content-Type: application/json` and the connection's custom headers on
