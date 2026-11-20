@@ -19,6 +19,7 @@
  * `sanitizeBigQueryLabels` enforces them so a label can never fail a query.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
 
 /** Values may be absent: empty ones are dropped, never sent. */
 export type QueryLabels = Record<string, string | null | undefined>;
@@ -126,7 +127,89 @@ export function bigQueryJobLabels(input: {
   if (!merged.mako_workspace && input.workspaceId) {
     merged.mako_workspace = String(input.workspaceId);
   }
+  // Who asked: an entry point's own caller labels win.
+  const caller = callerLabels(merged);
+  for (const [key, value] of Object.entries(caller)) {
+    if (!merged[key]) merged[key] = value;
+  }
   return sanitizeBigQueryLabels(merged);
+}
+
+const SYSTEM_SOURCES = new Set([
+  "cdc",
+  "flow",
+  "scheduled_query",
+  "metadata",
+  "connection_test",
+  "export",
+]);
+const SYSTEM_TRIGGERS = new Set(["scheduler", "publish"]);
+const BINDING_TRIGGERS = new Set([
+  "preview",
+  "dev",
+  "manual",
+  "viewer",
+  "live",
+  "public",
+]);
+
+/**
+ * A label-safe stand-in for a caller id. A value that looks like an email
+ * becomes a short hash, so an address never reaches BigQuery's job history.
+ */
+export function callerHandle(raw: string): string {
+  const text = raw.trim();
+  if (text.includes("@")) {
+    return `h_${createHash("sha256").update(text.toLowerCase()).digest("hex").slice(0, 12)}`;
+  }
+  return sanitizePart(text);
+}
+
+/**
+ * `mako_caller_kind` (user | agent | api_key | system), `mako_caller` (the
+ * user id or agent id, never an email) and `mako_surface` (console | mcp |
+ * agent | notebook | binding | system | other), derived from the labels the
+ * entry points already set.
+ */
+export function callerLabels(
+  labels: Record<string, string>,
+): Record<string, string> {
+  const { mako_source: source = "", mako_trigger: trigger = "" } = labels;
+  const user = labels.mako_user ? callerHandle(labels.mako_user) : "";
+
+  let surface = "other";
+  if (trigger === "mcp" || trigger === "desktop") surface = "mcp";
+  else if (source === "agent" || labels.mako_tool) surface = "agent";
+  else if (source === "console" || source === "adhoc") surface = "console";
+  else if (source === "notebook") surface = "notebook";
+  else if (source === "app_binding" || BINDING_TRIGGERS.has(trigger)) {
+    surface = "binding";
+  } else if (SYSTEM_SOURCES.has(source) || SYSTEM_TRIGGERS.has(trigger)) {
+    surface = "system";
+  }
+
+  let kind = "system";
+  let caller = source || "other";
+  if (trigger === "api" || trigger === "api_key") {
+    kind = "api_key";
+    caller = user || "api_key";
+  } else if (SYSTEM_SOURCES.has(source) || SYSTEM_TRIGGERS.has(trigger)) {
+    kind = "system";
+  } else if (surface === "mcp" || surface === "agent") {
+    kind = "agent";
+    caller =
+      user ||
+      (labels.mako_chat ? callerHandle(labels.mako_chat) : "") ||
+      "agent";
+  } else if (user) {
+    kind = "user";
+    caller = user;
+  }
+  return {
+    mako_caller_kind: kind,
+    mako_caller: caller,
+    mako_surface: surface,
+  };
 }
 
 /**

@@ -48,6 +48,12 @@ export interface IWorkspace extends Document {
      * `false` makes every in-app link preview generic.
      */
     linkPreviews?: boolean;
+    /**
+     * Byte cap in GiB on interactive BigQuery queries (agents, MCP,
+     * consoles, notebooks, binding previews). Unset: the 20 GiB default.
+     * 0: no cap. A connection's `agent_max_bytes_billed_gb` wins over it.
+     */
+    bigqueryMaxBytesBilledGb?: number;
   };
   billing: IWorkspaceBilling;
   apiKeys?: IWorkspaceApiKey[];
@@ -216,6 +222,7 @@ const WorkspaceSchema = new Schema<IWorkspace>(
         required: false,
       },
       linkPreviews: { type: Boolean, required: false },
+      bigqueryMaxBytesBilledGb: { type: Number, required: false, min: 0 },
     },
     billing: {
       stripeCustomerId: { type: String, default: null },

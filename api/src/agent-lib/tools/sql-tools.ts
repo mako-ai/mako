@@ -179,6 +179,14 @@ const executeQuerySchema = z.object({
     .describe(
       `Rows to show in the result table (default ${QUERY_RESULT_DEFAULT_ROWS}, at most ${QUERY_RESULT_MAX_ROWS}). Prefer aggregating in SQL over raising this.`,
     ),
+  maxBytesBilled: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "BigQuery only: raise the byte cap for this one query, in bytes. Without it BigQuery refuses a read that would bill more than the cap (20 GiB by default) and the error says how many bytes it needs. Set it on purpose, after filtering on the partition column and selecting fewer columns, never by reflex.",
+    ),
 });
 
 // ============================================================================
@@ -1182,6 +1190,8 @@ export interface ExecuteQueryExtras {
   timeoutMs?: number;
   /** Applied to the result rows before they are formatted for the model. */
   mapRows?: (rows: unknown[]) => unknown[];
+  /** BigQuery: the caller's own byte cap for this query (`maxBytesBilled`). */
+  maxBytesBilled?: number;
 }
 
 export async function executeQueryImpl(
@@ -1236,7 +1246,11 @@ export async function executeQueryImpl(
             executionId: registeredExecutionId,
             signal,
             readOnly: target.readOnly,
-            ...(uncapBytes ? { maximumBytesBilled: 0 } : {}),
+            ...(uncapBytes
+              ? { maximumBytesBilled: 0 }
+              : dialect === "bigquery" && extras.maxBytesBilled
+                ? { maximumBytesBilled: extras.maxBytesBilled }
+                : {}),
           },
         ),
       { signal, timeoutMs },
@@ -1436,7 +1450,13 @@ export const createSqlToolsV2 = (
       description:
         "Execute a SQL query and return results as a markdown table, fenced as untrusted data (columns with types listed separately; long cells shortened; `note` says what was left out). Shows up to 50 rows by default within a size budget — pass maxRows for more, but prefer aggregating in SQL. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. The 'database' parameter is optional: when omitted, the query runs against the connection's default database (Postgres/MySQL) — for BigQuery/ClickHouse fully qualify tables (dataset.table) or pass the dataset as 'database'. IMPORTANT for Cloudflare D1: use the UUID from list_databases 'id' field as the database parameter.",
       inputSchema: executeQuerySchema,
-      execute: async ({ connectionId, database, query, maxRows }) => {
+      execute: async ({
+        connectionId,
+        database,
+        query,
+        maxRows,
+        maxBytesBilled,
+      }) => {
         try {
           return await executeQueryImpl(
             connectionId,
@@ -1447,7 +1467,10 @@ export const createSqlToolsV2 = (
             toolExecutionContext,
             queryAccess,
             maxRows,
-            executeTimeoutMs ? { timeoutMs: executeTimeoutMs } : {},
+            {
+              ...(executeTimeoutMs ? { timeoutMs: executeTimeoutMs } : {}),
+              ...(maxBytesBilled ? { maxBytesBilled } : {}),
+            },
           );
         } catch (error) {
           return {
