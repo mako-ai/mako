@@ -21,6 +21,8 @@ import {
   type ConnectorFieldSchema,
   SourceConnectionInputError,
   applySchemaEncryption,
+  isOrphanConnectorType,
+  ORPHAN_TYPE_MESSAGE,
   assertCredentialCharacters,
   createSourceConnection,
 } from "../connectors/source-connection-create.service";
@@ -379,6 +381,14 @@ sourceConnectionRoutes.openapi(
       // Get the current values (decrypted) for comparison
       const currentValues = sourceConnection.toObject();
 
+      // A type whose connector was removed: only name, description and
+      // switching off still work. Nothing else is written.
+      const orphan = await isOrphanConnectorType(
+        sourceConnection.type,
+        workspaceId,
+      );
+      const orphanRefusal = () => fail(c, 409, ORPHAN_TYPE_MESSAGE);
+
       // Where a key is sent is a person's choice, in the app: an API key or
       // agent cannot point a stored credential at another address.
       if (
@@ -408,6 +418,12 @@ sourceConnectionRoutes.openapi(
         hasChanges = true;
       }
       if (body.type !== undefined && body.type !== currentValues.type) {
+        if (
+          orphan ||
+          (await isOrphanConnectorType(String(body.type), workspaceId))
+        ) {
+          return orphanRefusal();
+        }
         sourceConnection.type = body.type;
         hasChanges = true;
       }
@@ -415,6 +431,7 @@ sourceConnectionRoutes.openapi(
         body.isActive !== undefined &&
         body.isActive !== currentValues.isActive
       ) {
+        if (orphan && body.isActive) return orphanRefusal();
         sourceConnection.isActive = body.isActive;
         hasChanges = true;
       }
@@ -446,6 +463,7 @@ sourceConnectionRoutes.openapi(
 
         // Only update config if something changed
         if (configChanged) {
+          if (orphan) return orphanRefusal();
           const schema = await syncConnectorRegistry.getConfigSchemaForType(
             sourceConnection.type,
             workspaceId,
@@ -504,6 +522,7 @@ sourceConnectionRoutes.openapi(
         }
 
         if (settingsChanged) {
+          if (orphan) return orphanRefusal();
           sourceConnection.settings = newSettings;
           hasChanges = true;
         }
@@ -524,6 +543,7 @@ sourceConnectionRoutes.openapi(
           currentTargets.every((id, index) => id === newTargets[index]);
 
         if (!arraysEqual) {
+          if (orphan) return orphanRefusal();
           sourceConnection.targetDatabases = body.targetDatabases;
           hasChanges = true;
         }

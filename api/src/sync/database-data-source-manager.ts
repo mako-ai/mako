@@ -271,11 +271,12 @@ class SourceConnectionManager {
 
     const schema = await this.getConnectorSchema(connectorType, workspaceId);
     if (!schema) {
-      logger.warn("No schema found for connector type, skipping decryption", {
+      logger.warn("No schema found for connector type, config withheld", {
         connectorType,
       });
-      // Return config as-is without decryption
-      return config;
+      // Without a schema nothing can be decrypted, and ciphertext must not
+      // reach a connector or a request as if it were a credential.
+      return {};
     }
 
     const decrypted: any = {};

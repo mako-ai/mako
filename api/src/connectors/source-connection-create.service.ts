@@ -42,6 +42,32 @@ export class SecretEncryptionError extends Error {
   }
 }
 
+export const ORPHAN_TYPE_MESSAGE =
+  "This connector type is no longer available. Delete or recreate the connection.";
+
+/**
+ * The connection's type has no registered connector or config schema (its
+ * connector was removed). Its stored config cannot be edited, decrypted or
+ * sent anywhere: only rename, describe and delete still work.
+ */
+export class OrphanConnectorTypeError extends Error {
+  constructor() {
+    super(ORPHAN_TYPE_MESSAGE);
+    this.name = "OrphanConnectorTypeError";
+  }
+}
+
+/** True when `type` has no config schema, so its secrets cannot be told apart. */
+export async function isOrphanConnectorType(
+  type: string,
+  workspaceId?: string,
+): Promise<boolean> {
+  const schema = await syncConnectorRegistry
+    .getConfigSchemaForType(type, workspaceId)
+    .catch(() => null);
+  return !schema || !Array.isArray(schema.fields);
+}
+
 /**
  * Whether a config field holds a credential, encrypted at rest. The one rule:
  * `applySchemaEncryption` encrypts by it and `inspect_connection` reports it.
@@ -68,7 +94,15 @@ export function applySchemaEncryption(
   config: any,
   schema: { fields: ConnectorFieldSchema[] } | null,
 ): any {
-  if (!schema || !schema.fields || !config) return config;
+  if (!config) return config;
+  // No schema means no way to tell a secret from a plain value. Passing the
+  // config through would store a new key in plaintext, so refuse instead.
+  if (!schema || !Array.isArray(schema.fields)) {
+    if (typeof config === "object" && Object.keys(config).length === 0) {
+      return config;
+    }
+    throw new OrphanConnectorTypeError();
+  }
   const clone: any = { ...config };
 
   const processFields = (target: any, fields: ConnectorFieldSchema[]): void => {
