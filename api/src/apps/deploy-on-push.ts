@@ -41,7 +41,7 @@ import {
 import { ensureCommitLocally } from "./cloud-repo.service";
 import { clearDeployProgress, markDeployStage } from "./deploy-progress";
 import { DEFAULT_BRANCH, resolveCommit } from "./repository.service";
-import { holdDeploysForDbtRun, planDbtBeforeDeploy } from "./dbt-before-deploy";
+import { planDbtBeforeDeploy, startDbtBeforeDeploy } from "./dbt-before-deploy";
 
 const logger = loggers.api("apps-deploy-on-push");
 
@@ -457,7 +457,7 @@ export async function deployAppsForPush(input: {
   const { requestAppDeploys } =
     await import("../inngest/functions/apps-deploy");
   // A plan that cannot be made never blocks a deploy: everything goes now.
-  const plan = await planDbtBeforeDeploy({
+  const prep = await planDbtBeforeDeploy({
     workspaceId,
     repoDir,
     before,
@@ -471,14 +471,19 @@ export async function deployAppsForPush(input: {
     });
     return null;
   });
-  await requestAppDeploys(workspaceId, plan ? plan.now : appIds, sha, "push");
-  if (plan) await holdDeploysForDbtRun({ workspaceId, sha, plan });
+  // Apps that read no dbt model go first, before any compile or warehouse
+  // work: nothing below can delay them.
+  const now = prep ? prep.now : appIds;
+  if (now.length > 0) await requestAppDeploys(workspaceId, now, sha, "push");
+  if (prep) {
+    await startDbtBeforeDeploy({ workspaceId, sha, after, prep });
+  }
   logger.info("Apps deploys requested from push", {
     workspaceId,
     sha,
     ...(sha !== after ? { staleDelivery: after } : {}),
     apps: appIds.length,
-    ...(plan ? { heldForDbt: plan.held.length } : {}),
+    ...(prep ? { awaitingDbtCheck: prep.readers.length } : {}),
   });
   return appIds;
 }

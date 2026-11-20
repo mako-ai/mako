@@ -21,6 +21,19 @@
  * requests the held deploys. With no gap there is no run: every app deploys
  * at once, and a logic-only dbt change waits for its next scheduled job.
  *
+ * Order of work on a push: the apps that read no dbt model are requested
+ * first. The apps that read dbt models are marked queued and an Inngest
+ * event (apps/dbt-hold.requested) runs the compile and the warehouse check,
+ * so it survives the webhook instance.
+ *
+ * When the check cannot finish:
+ *  - the pushed commit does not compile: the readers deploy at once;
+ *  - a warehouse query fails: build the changed read models directly
+ *    (`build --select m1 m2`, no `+`) and hold;
+ *  - no BigQuery connection for the environment: `full`, as before.
+ * An incremental model whose on_schema_change cannot add the column is not
+ * built and its app is not held on it (logged as unfixable).
+ *
  * APPS_DBT_BEFORE_DEPLOY_MODE=full is the operator rollback to the 19 Nov
  * behaviour. APPS_DBT_BEFORE_DEPLOY=0 turns the feature off. Apps outside
  * the push do not redeploy. The hourly apps reconcile stays the backstop.
@@ -35,7 +48,12 @@ import { loggers } from "../logging";
 import { DBT_ROOT, dbtResourcePaths } from "../dbt/dbt-working-tree.service";
 import { resolveProdLikeEnvironmentName } from "../dbt/dbt-environments.service";
 import { dbtModelNameOf } from "../dbt/ontology/model-readers";
-import { detectSchemaGap } from "./dbt-schema-gap";
+import { inngest } from "../inngest/client";
+import {
+  SAFE_NODE_NAME,
+  detectSchemaGap,
+  selectableNames,
+} from "./dbt-schema-gap";
 import { loadAppsIndex, type AppIndexRow } from "./app-index.service";
 import { diffNameStatus, readBlob } from "./repository.service";
 import { markDeployQueued } from "./deploy-progress";
@@ -64,6 +82,11 @@ export function dbtBeforeDeployMode(
   env: NodeJS.ProcessEnv = process.env,
 ): DbtBeforeDeployMode {
   const raw = (env.APPS_DBT_BEFORE_DEPLOY_MODE ?? "").trim().toLowerCase();
+  if (raw && raw !== "full" && raw !== "schema-gap") {
+    logger.warn("Unknown APPS_DBT_BEFORE_DEPLOY_MODE; using schema-gap", {
+      value: raw,
+    });
+  }
   return raw === "full" ? "full" : "schema-gap";
 }
 
@@ -82,7 +105,7 @@ export function changesDbtBuildFiles(
 }
 
 /** A name dbt's selector and our command tokenizer both take as is. */
-const SAFE_MODEL_NAME = /^[a-z0-9_]+$/;
+const SAFE_MODEL_NAME = SAFE_NODE_NAME;
 
 /** The dbt models an app's bindings read through `{{ dbt_schema }}`. */
 export function dbtModelsReadBy(
@@ -92,7 +115,13 @@ export function dbtModelsReadBy(
   for (const binding of app.bindingTables ?? []) {
     for (const table of binding.tables) {
       const model = dbtModelNameOf(table);
-      if (model && SAFE_MODEL_NAME.test(model)) out.add(model);
+      if (!model) continue;
+      if (SAFE_MODEL_NAME.test(model)) out.add(model);
+      else {
+        logger.warn("An app reads a dbt model with an unsupported name", {
+          model,
+        });
+      }
     }
   }
   return [...out];
@@ -104,7 +133,7 @@ export function dbtModelsReadBy(
  * its own waits for its scheduled job.
  */
 export function gapBuildCommand(models: readonly string[]): string {
-  return `build --select ${[...new Set(models)].sort().join(" ")}`;
+  return `build --select ${selectableNames(models).join(" ")}`;
 }
 
 /**
@@ -133,7 +162,7 @@ export function modelsSelectedBy(command: string | undefined): Set<string> {
   if (start < 0) return out;
   for (const token of tokens.slice(start + 1)) {
     const model =
-      /^state:modified\+,\+([a-z0-9_]+)$/.exec(token)?.[1] ??
+      /^state:modified\+,\+([A-Za-z0-9_]+)$/.exec(token)?.[1] ??
       (SAFE_MODEL_NAME.test(token) ? token : undefined);
     if (model) out.add(model);
   }
@@ -156,17 +185,41 @@ export interface DbtBeforeDeployPlan {
   command: string;
 }
 
+/**
+ * What a push needs decided before its deploys can go, found without any
+ * dbt compile or warehouse query: the changed apps that read dbt models and
+ * the dbt project to check them against. Serialisable: it travels in an
+ * Inngest event.
+ */
+export interface DbtDeployPrep {
+  projectId: string;
+  environment: string;
+  mode: DbtBeforeDeployMode;
+  /** The prod-like environment's warehouse connection, when it has one. */
+  connectionId?: string;
+  /** `full` needs the prod manifest `state:modified` compares against. */
+  hasProdManifest: boolean;
+  /** Changed apps whose bindings read a dbt model, with the models. */
+  readsByApp: Record<string, string[]>;
+  /** The keys of readsByApp, in push order. */
+  readers: string[];
+  /** Every other changed app: deploy now. */
+  now: string[];
+  /** Repo paths the push changed. */
+  changedPaths: string[];
+}
+
 function isDiffableSha(sha: string | undefined): sha is string {
   return !!sha && /^[0-9a-f]{40}$/.test(sha) && !/^0+$/.test(sha);
 }
 
 /**
- * Should this push's deploys wait for a dbt build? Null means "deploy all of
- * them now, as before": the flag is off, the push cannot be diffed (first
- * push, force push), the workspace has no single dbt project (`full` also
- * needs a prod manifest to defer to), the diff touches no model/seed/snapshot
- * file, no changed app reads a dbt model, or (`schema-gap`) no model they
- * read has a schema gap. Throws when the gap check cannot be made.
+ * Does this push's deploys possibly wait for a dbt build? Null means "deploy
+ * all of them now, as before": the flag is off, the push cannot be diffed
+ * (first push, force push), the workspace has no single dbt project, the
+ * diff touches no model/seed/snapshot file, no changed app reads a dbt model,
+ * or (`full`) there is no prod manifest to defer to. Cheap: git and Mongo
+ * only. The compile and the warehouse come later, in `resolveDbtBeforeDeploy`.
  */
 export async function planDbtBeforeDeploy(input: {
   workspaceId: string;
@@ -174,7 +227,7 @@ export async function planDbtBeforeDeploy(input: {
   before?: string;
   after: string;
   appIds: readonly string[];
-}): Promise<DbtBeforeDeployPlan | null> {
+}): Promise<DbtDeployPrep | null> {
   const { workspaceId, repoDir, before, after, appIds } = input;
   if (!dbtBeforeDeployEnabled() || appIds.length === 0) return null;
   if (!isDiffableSha(before)) return null;
@@ -196,6 +249,7 @@ export async function planDbtBeforeDeploy(input: {
   if (mode === "full" && !project.lastProdManifestKey) return null;
 
   const changed = await diffNameStatus(repoDir, before, after);
+  const changedPaths = changed.map(c => c.path);
   const projectYml = await readBlob(
     repoDir,
     after,
@@ -203,69 +257,182 @@ export async function planDbtBeforeDeploy(input: {
   )
     .then(blob => (blob.isBinary ? undefined : blob.contents))
     .catch(() => undefined);
-  if (
-    !changesDbtBuildFiles(
-      changed.map(c => c.path),
-      projectYml,
-    )
-  ) {
-    return null;
-  }
+  if (!changesDbtBuildFiles(changedPaths, projectYml)) return null;
 
   // changedApps refreshed the index a moment ago.
   const index = await loadAppsIndex(workspaceId, { freshen: false });
   // Only the changed apps redeploy, so only their models need building.
   const changedIds = new Set(appIds);
-  const models = new Set<string>();
-  const readsByApp = new Map<string, string[]>();
+  const readsByApp: Record<string, string[]> = {};
   for (const app of index.apps) {
     if (!changedIds.has(app.appId)) continue;
     const read = dbtModelsReadBy(app);
-    for (const model of read) models.add(model);
-    if (read.length > 0) readsByApp.set(app.appId, read);
+    if (read.length > 0) readsByApp[app.appId] = read;
   }
-  if (readsByApp.size === 0) return null;
+  const readers = appIds.filter(id => id in readsByApp);
+  if (readers.length === 0) return null;
   const environment = resolveProdLikeEnvironmentName(project);
-
-  if (mode === "full") {
-    return {
-      projectId: project._id.toString(),
-      environment,
-      held: appIds.filter(id => readsByApp.has(id)),
-      now: appIds.filter(id => !readsByApp.has(id)),
-      models: [...models].sort(),
-      command: preDeployBuildCommand([...models]),
-    };
-  }
-
-  // schema-gap: build only what a held app cannot run without. A check that
-  // throws (compile fails, the warehouse is not BigQuery) reaches the caller,
-  // which deploys everything at once.
-  const connectionId = project.environments.find(
-    env => env.name === environment,
-  )?.connectionId;
-  if (!connectionId) return null;
-  const gap = await detectSchemaGap({
-    workspaceId,
-    projectId: project._id.toString(),
-    environment,
-    connectionId,
-    sha: after,
-    reads: [...models].sort(),
-  });
-  if (gap.models.length === 0) return null;
-  // An app waits only when it reads a gap model itself.
-  const gapSet = new Set(gap.models);
-  const waits = (id: string) =>
-    (readsByApp.get(id) ?? []).some(model => gapSet.has(model));
+  const connectionId = project.environments
+    .find(env => env.name === environment)
+    ?.connectionId?.toString();
   return {
     projectId: project._id.toString(),
     environment,
-    held: appIds.filter(waits),
-    now: appIds.filter(id => !waits(id)),
-    models: gap.models,
-    command: gapBuildCommand(gap.models),
+    mode,
+    ...(connectionId ? { connectionId } : {}),
+    hasProdManifest: !!project.lastProdManifestKey,
+    readsByApp,
+    readers,
+    now: appIds.filter(id => !(id in readsByApp)),
+    changedPaths,
   };
+}
+
+/**
+ * The plan for the apps that read dbt models. Null means "deploy them all
+ * now": nothing needs building. A pushed commit that does not compile throws
+ * `DbtCompileError`, which the caller also answers by deploying at once.
+ *
+ * `full` builds every changed model upstream of the held apps. `schema-gap`
+ * builds the nodes held apps cannot run without (dbt-schema-gap.ts). When the
+ * warehouse side of that check fails, it builds the changed read models
+ * directly (no `+`) and holds. Without a BigQuery connection it is `full`.
+ */
+export async function resolveDbtBeforeDeploy(
+  prep: DbtDeployPrep,
+  ctx: { workspaceId: string; sha: string },
+): Promise<DbtBeforeDeployPlan | null> {
+  const allReads = [...new Set(Object.values(prep.readsByApp).flat())].sort();
+  const base = { projectId: prep.projectId, environment: prep.environment };
+
+  const full = (): DbtBeforeDeployPlan | null =>
+    prep.hasProdManifest
+      ? {
+          ...base,
+          held: prep.readers,
+          now: prep.now,
+          models: allReads,
+          command: preDeployBuildCommand(allReads),
+        }
+      : null;
+  if (prep.mode === "full") return full();
+
+  const outcome = await detectSchemaGap({
+    workspaceId: ctx.workspaceId,
+    projectId: prep.projectId,
+    environment: prep.environment,
+    connectionId: prep.connectionId,
+    sha: ctx.sha,
+    reads: allReads,
+    changedPaths: prep.changedPaths,
+  });
+  if (outcome.kind === "full") return full();
+  const models = outcome.kind === "gap" ? outcome.gap.models : outcome.models;
+  if (models.length === 0) return null;
+
+  // An app waits only when it reads a node being built (names compare
+  // without case: a binding's table name is lowercased).
+  const building = new Set(models.map(m => m.toLowerCase()));
+  const waits = (id: string) =>
+    (prep.readsByApp[id] ?? []).some(model => building.has(model));
+  const held = prep.readers.filter(waits);
+  if (held.length === 0) return null;
+  return {
+    ...base,
+    held,
+    now: prep.now,
+    models,
+    command: gapBuildCommand(models),
+  };
+}
+
+/** The Inngest event that runs the gap check and the hold off the webhook. */
+export const APPS_DBT_HOLD_EVENT = "apps/dbt-hold.requested";
+
+export interface AppsDbtHoldEventData {
+  workspaceId: string;
+  /** The commit the deploys target (the head of main when it descends). */
+  sha: string;
+  /** The pushed commit the check compiles. */
+  after: string;
+  prep: DbtDeployPrep;
+}
+
+/** Deploy the apps that read dbt models, now, unrestricted. */
+async function deployReadersNow(data: AppsDbtHoldEventData): Promise<void> {
+  const { requestAppDeploys } =
+    await import("../inngest/functions/apps-deploy");
+  await requestAppDeploys(
+    data.workspaceId,
+    data.prep.readers,
+    data.sha,
+    "push",
+  );
+}
+
+/**
+ * Settle the apps waiting on the dbt check: resolve the plan, then hold the
+ * ones that need a build and deploy the rest. A check that throws (the
+ * commit does not compile, the dbt run cannot start) deploys them all: the
+ * hourly reconcile is the backstop for an instance that dies mid-check.
+ */
+export async function settleDbtBeforeDeploy(
+  data: AppsDbtHoldEventData,
+): Promise<{ held: string[] }> {
+  const { workspaceId, sha, after, prep } = data;
+  let plan: DbtBeforeDeployPlan | null = null;
+  try {
+    plan = await resolveDbtBeforeDeploy(prep, { workspaceId, sha: after });
+  } catch (error) {
+    logger.warn("Could not plan a dbt build before deploy; deploying now", {
+      workspaceId,
+      sha,
+      compileFailed: error instanceof Error && error.name === "DbtCompileError",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  if (!plan) {
+    await deployReadersNow(data);
+    return { held: [] };
+  }
+  const { requestAppDeploys } =
+    await import("../inngest/functions/apps-deploy");
+  const waiting = new Set(plan.held);
+  const free = prep.readers.filter(id => !waiting.has(id));
+  if (free.length > 0) {
+    await requestAppDeploys(workspaceId, free, sha, "push");
+  }
+  await holdDeploysForDbtRun({ workspaceId, sha, plan });
+  return { held: plan.held };
+}
+
+/**
+ * The webhook's part, after the apps that read no dbt model are requested.
+ * `full` is cheap (no compile), so it settles here. `schema-gap` compiles
+ * the project, so it moves to an Inngest function that survives the
+ * instance. The readers are marked queued first, so the hourly reconcile
+ * leaves them alone and `app_publish_status` says a deploy is coming. When
+ * the event cannot be sent they deploy at once.
+ */
+export async function startDbtBeforeDeploy(
+  data: AppsDbtHoldEventData,
+): Promise<void> {
+  const { workspaceId, sha, prep } = data;
+  if (prep.mode === "full") {
+    await settleDbtBeforeDeploy(data);
+    return;
+  }
+  await Promise.all(prep.readers.map(appId => markDeployQueued(appId, sha)));
+  try {
+    await inngest.send({ name: APPS_DBT_HOLD_EVENT, data });
+  } catch (error) {
+    logger.warn("Could not queue the dbt schema-gap check; deploying now", {
+      workspaceId,
+      sha,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    await deployReadersNow(data);
+  }
 }
 
 /**

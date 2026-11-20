@@ -34,6 +34,7 @@ import {
   appsDeployFunction,
   appsDeployReconcileFunction,
 } from "./functions/apps-deploy";
+import { appsDbtHoldFunction } from "./functions/apps-dbt-hold";
 import {
   workflowsDeployFunction,
   workflowsDeployReconcileFunction,
@@ -80,6 +81,7 @@ const baseFunctions = [
   appsBindingMaterializeFunction,
   appsBindingJobFunction,
   appsDeployFunction,
+  appsDbtHoldFunction,
   workflowsDeployFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,

@@ -1,19 +1,34 @@
 /**
  * The schema gap: which dbt models a held app cannot run without.
  *
- * Deploy-on-push (dbt-before-deploy.ts) builds in prod only these models:
+ * Deploy-on-push (dbt-before-deploy.ts) builds in prod only these nodes:
  *  - a model the held apps read whose prod relation is missing, or whose
  *    compiled columns include a column the prod table lacks;
- *  - a parent of such a model that has the same kind of gap itself. The walk
- *    up stops at the first parent without a gap.
+ *  - a parent, seed or snapshot upstream of such a model with a gap of its
+ *    own. The walk up stops at the first parent without one, and walks
+ *    through ephemeral parents (they have no table to build);
+ *  - a changed ancestor with a gap, and the `select *` models between it and
+ *    a read model (their own dry run cannot see a column prod's parent lacks);
+ *  - a changed seed or snapshot upstream of a read model (its columns cannot
+ *    be read without building it).
  * Every other dbt change waits for its next scheduled job.
  *
  * Columns come from the pushed commit's compiled manifest: `dbt compile`
  * writes each model's `compiled_code`, and a BigQuery dry run of that SQL
  * returns the columns it would produce (nothing runs, nothing bills). Prod's
  * columns come from INFORMATION_SCHEMA.COLUMNS through the driver's own
- * `buildColumnListQuery`. A model whose SQL cannot be dry-run is a gap too:
- * the usual cause is a parent that lacks a column the model selects.
+ * `buildColumnListQuery`. Both sides are compared by TOP-LEVEL column name:
+ * the dry run lists STRUCT leaves as `participants.email`, the table lists
+ * `participants`.
+ *
+ * A dry run that fails counts as a gap only when BigQuery says a table or
+ * column is missing (the usual cause: a parent lacks a column the model
+ * selects). Any other failure throws, and the caller falls back (see
+ * `detectSchemaGap`).
+ *
+ * An incremental model whose `on_schema_change` is `ignore` (the default) or
+ * `fail` cannot get a new column from a build, so the app is not held on it:
+ * it is reported in `unfixable`.
  *
  * `findSchemaGap` is pure over a `WarehouseLookup`; `compileGapGraph` and
  * `warehouseLookupFor` are the I/O around it.
@@ -26,6 +41,7 @@ import {
 import type { DatabaseDriver } from "../databases/driver";
 import { databaseRegistry } from "../databases/registry";
 import { runAdhocDbtCommand } from "../dbt/dbt-project.service";
+import { DBT_ROOT } from "../dbt/dbt-working-tree.service";
 import {
   buildManifestIndex,
   type RawManifest,
@@ -36,21 +52,29 @@ import { withQueryLabels } from "../services/bigquery-labels";
 
 const logger = loggers.api("apps-dbt-schema-gap");
 
-/** A model's prod relation: BigQuery `project.dataset.table`. */
+/** A node's prod relation: BigQuery `project.dataset.table`, case kept. */
 export interface GapRelation {
   project: string;
   dataset: string;
   table: string;
 }
 
+export type GapKind = "model" | "seed" | "snapshot";
+
 export interface GapModel {
   name: string;
-  /** Names of the parent models (seeds, snapshots and sources left out). */
+  kind: GapKind;
+  /** Names of the parent models, seeds and snapshots (sources left out). */
   parents: string[];
-  /** Null for a model with no relation (ephemeral). */
+  /** Null for an ephemeral model: it has no table. */
   relation: GapRelation | null;
   /** The compiled SQL; undefined when the manifest has none for it. */
   compiledSql?: string;
+  /** Path inside the dbt project (`models/marts/x.sql`). */
+  path?: string;
+  materialized?: string;
+  /** The `on_schema_change` config of an incremental model. */
+  onSchemaChange?: string;
 }
 
 export type GapGraph = ReadonlyMap<string, GapModel>;
@@ -64,7 +88,10 @@ export interface WarehouseLookup {
   prodColumns(
     relations: readonly GapRelation[],
   ): Promise<Map<string, Set<string>>>;
-  /** The columns the SQL would return, or null when its dry run fails. */
+  /**
+   * The TOP-LEVEL column names the SQL would return, or null when BigQuery
+   * says a table or column it names is missing. Throws on any other failure.
+   */
   queryColumns(sql: string): Promise<string[] | null>;
 }
 
@@ -73,73 +100,171 @@ export type GapReason =
   | "missing"
   /** The compiled columns include one the prod table lacks. */
   | "new-columns"
-  /** The compiled SQL cannot be dry-run (a parent lacks a column it reads). */
-  | "unverified";
+  /** The SQL names a table or column prod lacks (a parent has a gap). */
+  | "unverified"
+  /** A changed seed or snapshot: its columns cannot be read unbuilt. */
+  | "changed-source"
+  /** A `select *` model between a gap model and a read model. */
+  | "pass-through";
 
 export interface SchemaGap {
-  /** Models to build, sorted: the gap models and their gap parents. */
+  /** Nodes to build, sorted. */
   models: string[];
   reasons: Record<string, GapReason>;
   /** New columns per model, for the log (empty for a missing relation). */
   newColumns: Record<string, string[]>;
+  /** Models with a gap that a build cannot fix, with why. Not built. */
+  unfixable: Record<string, string>;
+  /** Reads the manifest does not hold (a name case or an unbuilt model). */
+  unknownReads: string[];
 }
 
+/** Case-sensitive: BigQuery dataset and table names are. */
 export function relationKey(relation: GapRelation): string {
-  return `${relation.project}.${relation.dataset}.${relation.table}`.toLowerCase();
+  return `${relation.project}.${relation.dataset}.${relation.table}`;
 }
+
+/** `` `p`.`d`.`t` `` as dbt wrote it → its parts, case kept. */
+function parseRelationName(
+  relationName: string | undefined,
+): GapRelation | null {
+  if (!relationName) return null;
+  const parts = relationName.replace(/[`"[\]]/g, "").split(".");
+  if (parts.length !== 3 || parts.some(part => !part)) return null;
+  return { project: parts[0], dataset: parts[1], table: parts[2] };
+}
+
+const KINDS = new Set<string>(["model", "seed", "snapshot"]);
 
 /**
  * The gap graph of a compiled manifest. Reuses the manifest index for names,
- * relations and lineage; only the compiled SQL is read from the raw nodes.
+ * paths, relations and lineage; the compiled SQL and `on_schema_change` come
+ * from the raw nodes.
  */
 export function gapGraphFromManifest(manifest: RawManifest): GapGraph {
   const index = buildManifestIndex(manifest);
-  const compiled = new Map<string, string>();
+  const raws = new Map<
+    string,
+    {
+      compiled_code?: string;
+      compiled_sql?: string;
+      config?: { on_schema_change?: string };
+    }
+  >();
   for (const [id, raw] of Object.entries(manifest.nodes ?? {})) {
-    const node = raw as { compiled_code?: string; compiled_sql?: string };
-    const sql = node.compiled_code ?? node.compiled_sql;
-    if (sql) compiled.set(id, sql);
+    raws.set(id, raw as never);
   }
-  const graph = new Map<string, GapModel>();
-  const modelNames = new Set(
-    index.nodes.filter(n => n.resourceType === "model").map(n => n.name),
+  const buildable = new Set(
+    index.nodes.filter(n => KINDS.has(n.resourceType)).map(n => n.name),
   );
-  const isModel = (name: string) => modelNames.has(name);
+  const graph = new Map<string, GapModel>();
   for (const node of index.nodes) {
-    if (node.resourceType !== "model") continue;
-    const parts = node.relationKey?.split(".") ?? [];
-    const sql = compiled.get(node.id);
+    if (!KINDS.has(node.resourceType)) continue;
+    const raw = raws.get(node.id);
+    const sql = raw?.compiled_code ?? raw?.compiled_sql;
+    const ephemeral = node.materialized === "ephemeral";
     graph.set(node.name, {
       name: node.name,
-      parents: node.parents.filter(isModel),
-      relation:
-        parts.length === 3
-          ? { project: parts[0], dataset: parts[1], table: parts[2] }
-          : null,
+      kind: node.resourceType as GapKind,
+      parents: node.parents.filter(name => buildable.has(name)),
+      relation: ephemeral ? null : parseRelationName(node.relationName),
       ...(sql ? { compiledSql: sql } : {}),
+      ...(node.path ? { path: node.path } : {}),
+      ...(node.materialized ? { materialized: node.materialized } : {}),
+      ...(raw?.config?.on_schema_change
+        ? { onSchemaChange: raw.config.on_schema_change }
+        : {}),
     });
   }
   return graph;
 }
 
+/** Nodes whose file the push changed (repo paths start with `dbt/`). */
+export function changedNodeNames(
+  graph: GapGraph,
+  changedPaths: readonly string[],
+): Set<string> {
+  const changed = new Set(changedPaths);
+  const out = new Set<string>();
+  for (const node of graph.values()) {
+    if (node.path && changed.has(`${DBT_ROOT}/${node.path}`)) {
+      out.add(node.name);
+    }
+  }
+  return out;
+}
+
 /**
- * The models the held apps cannot run without. `reads` are the models their
- * bindings read; the rest of the graph is walked from there, upward only,
- * and only through models with a gap.
+ * `select *`, `select distinct *`, `, *` and `alias.*`: a model that passes
+ * its parent's columns through, so its own dry run cannot see a column the
+ * parent only gets in the next build. `count(*)` and `a * b` do not match.
+ */
+const SELECT_STAR = /(?:\bselect\s+(?:distinct\s+)?|,\s*|[\w`"\]]\.)\*/i;
+
+export function selectsStar(sql: string | undefined): boolean {
+  return !!sql && SELECT_STAR.test(sql);
+}
+
+/** Can a build add a column to this node's prod table? */
+export function buildCanAddColumns(node: GapModel): boolean {
+  if (node.materialized !== "incremental") return true;
+  return (
+    node.onSchemaChange === "append_new_columns" ||
+    node.onSchemaChange === "sync_all_columns"
+  );
+}
+
+function whyUnfixable(node: GapModel): string {
+  return `incremental with on_schema_change=${node.onSchemaChange ?? "ignore"}: a build cannot add the column`;
+}
+
+/**
+ * The nodes the held apps cannot run without. `reads` are the models their
+ * bindings read; `changed` are the nodes whose file the push changed.
  */
 export async function findSchemaGap(input: {
   graph: GapGraph;
   reads: readonly string[];
   warehouse: WarehouseLookup;
+  changed?: ReadonlySet<string>;
 }): Promise<SchemaGap> {
-  const { graph, reads, warehouse } = input;
+  const { graph, warehouse } = input;
+  const changed = input.changed ?? new Set<string>();
+
+  const lowerNames = new Map<string, string>();
+  for (const name of graph.keys()) {
+    if (!lowerNames.has(name.toLowerCase())) {
+      lowerNames.set(name.toLowerCase(), name);
+    }
+  }
+  const reads: string[] = [];
+  const unknownReads: string[] = [];
+  for (const read of new Set(input.reads)) {
+    const name = graph.has(read) ? read : lowerNames.get(read.toLowerCase());
+    if (name) reads.push(name);
+    else unknownReads.push(read);
+  }
+
+  // Every node a read model depends on, itself included.
+  const scope = new Set<string>();
+  const queue = [...reads];
+  while (queue.length > 0) {
+    const name = queue.pop() as string;
+    if (scope.has(name)) continue;
+    scope.add(name);
+    queue.push(...(graph.get(name)?.parents ?? []));
+  }
+
   const prod = new Map<string, Set<string>>();
   const looked = new Set<string>();
   const reasons: Record<string, GapReason> = {};
   const newColumns: Record<string, string[]> = {};
+  const unfixable: Record<string, string> = {};
   const assessed = new Map<string, boolean>();
+  const included = new Set<string>();
+  const seen = new Set<string>();
 
-  /** Fetch prod columns for models not looked up yet, one query per dataset. */
+  /** Fetch prod columns for nodes not looked up yet, one query per dataset. */
   const loadProd = async (names: readonly string[]) => {
     const relations: GapRelation[] = [];
     for (const name of names) {
@@ -154,57 +279,133 @@ export async function findSchemaGap(input: {
     }
   };
 
-  /** Does this model, by itself, lack something in prod? Memoised. */
+  /** Does this node, by itself, lack something in prod? Memoised. */
   const assess = async (name: string): Promise<boolean> => {
     const known = assessed.get(name);
     if (known !== undefined) return known;
     const node = graph.get(name);
-    // Not in the manifest, or without a relation: nothing a build can fix.
-    if (!node?.relation) {
-      assessed.set(name, false);
-      return false;
-    }
+    const done = (gap: boolean) => {
+      assessed.set(name, gap);
+      return gap;
+    };
+    // Not in the manifest, or ephemeral: nothing a build can fix.
+    if (!node?.relation) return done(false);
+    await loadProd([name]);
     const existing = prod.get(relationKey(node.relation));
     if (!existing) {
       reasons[name] = "missing";
-      assessed.set(name, true);
-      return true;
+      return done(true);
+    }
+    if (node.kind !== "model") {
+      // A seed's or snapshot's columns are not in the manifest SQL: a
+      // changed one is built, an unchanged one is left alone.
+      if (!changed.has(name)) return done(false);
+      reasons[name] = "changed-source";
+      return done(true);
     }
     const columns = node.compiledSql
       ? await warehouse.queryColumns(node.compiledSql)
       : null;
+    let reason: GapReason | null = null;
     if (!columns) {
-      reasons[name] = "unverified";
-      assessed.set(name, true);
-      return true;
+      reason = "unverified";
+    } else {
+      const added = [
+        ...new Set(
+          columns.map(c => c.toLowerCase()).filter(c => !existing.has(c)),
+        ),
+      ].sort();
+      if (added.length > 0) {
+        reason = "new-columns";
+        newColumns[name] = added;
+      }
     }
-    const added = [
-      ...new Set(
-        columns.map(c => c.toLowerCase()).filter(c => !existing.has(c)),
-      ),
-    ];
-    if (added.length > 0) {
-      reasons[name] = "new-columns";
-      newColumns[name] = added.sort();
+    if (!reason) return done(false);
+    if (!buildCanAddColumns(node)) {
+      unfixable[name] = whyUnfixable(node);
+      return done(false);
     }
-    assessed.set(name, added.length > 0);
-    return added.length > 0;
+    reasons[name] = reason;
+    return done(true);
   };
 
-  const included = new Set<string>();
-  const walk = async (names: readonly string[]) => {
-    await loadProd(names);
-    for (const name of names) {
-      if (included.has(name)) continue;
+  // Walk up from a node, only while the gap holds. An ephemeral parent has
+  // no table of its own: the walk goes through it to its parents.
+  const walk = async (names: readonly string[]): Promise<void> => {
+    const todo = names.filter(name => !seen.has(name));
+    for (const name of todo) seen.add(name);
+    await loadProd(todo);
+    for (const name of todo) {
+      const node = graph.get(name);
+      if (!node) continue;
+      if (!node.relation) {
+        await walk(node.parents);
+        continue;
+      }
       if (!(await assess(name))) continue;
       included.add(name);
-      // Walk up only while the gap holds: a parent is examined, and joins
-      // the build only when it has a gap of its own.
-      const parents = graph.get(name)?.parents ?? [];
-      await walk(parents.filter(p => !included.has(p)));
+      await walk(node.parents);
     }
   };
-  await walk([...new Set(reads)]);
+
+  // 1. The read models, and what they need above them.
+  await walk(reads);
+  // 2. Changed ancestors with a gap of their own. A read model that passes
+  //    their columns through (`select *`) cannot show the gap in its own dry
+  //    run: prod's parent lacks the column until the next build. They join
+  //    the build only when such a model sits between them and a read model.
+  const relationParents = (name: string, acc = new Set<string>()) => {
+    for (const parent of graph.get(name)?.parents ?? []) {
+      const node = graph.get(parent);
+      if (!node) continue;
+      if (!node.relation) relationParents(parent, acc);
+      else acc.add(parent);
+    }
+    return acc;
+  };
+  const candidates = new Set<string>();
+  for (const name of [...scope].sort()) {
+    if (included.has(name) || !changed.has(name)) continue;
+    if (!graph.get(name)?.relation) continue;
+    if (await assess(name)) candidates.add(name);
+  }
+  const promote = async (name: string): Promise<void> => {
+    candidates.delete(name);
+    included.add(name);
+    for (const parent of graph.get(name)?.parents ?? []) {
+      if (candidates.has(parent)) await promote(parent);
+      else await walk([parent]);
+    }
+  };
+
+  // 3. Bottom-up: a model with an included or candidate parent that passes
+  //    its columns through (or whose own check finds a gap) joins the build,
+  //    and takes its candidate parents with it.
+  let grew = true;
+  while (grew && candidates.size > 0) {
+    grew = false;
+    for (const name of [...scope].sort()) {
+      const node = graph.get(name);
+      if (included.has(name) || !node?.relation || node.kind !== "model") {
+        continue;
+      }
+      const above = [...relationParents(name)].filter(
+        p => included.has(p) || candidates.has(p),
+      );
+      if (above.length === 0) continue;
+      if (!selectsStar(node.compiledSql) && !(await assess(name))) continue;
+      if (!buildCanAddColumns(node)) {
+        unfixable[name] = whyUnfixable(node);
+        continue;
+      }
+      reasons[name] ??= "pass-through";
+      included.add(name);
+      for (const parent of above) {
+        if (candidates.has(parent)) await promote(parent);
+      }
+      grew = true;
+    }
+  }
 
   const models = [...included].sort();
   return {
@@ -214,28 +415,47 @@ export async function findSchemaGap(input: {
       GapReason
     >,
     newColumns,
+    unfixable,
+    unknownReads,
   };
 }
 
 /** A name dbt's selector and our command tokenizer both take as is. */
-const SAFE_MODEL_NAME = /^[a-z0-9_]+$/;
+export const SAFE_NODE_NAME = /^[A-Za-z0-9_]+$/;
+
+/** Names a selector can carry; the rest are logged, never dropped silently. */
+export function selectableNames(names: readonly string[]): string[] {
+  const unsafe = names.filter(name => !SAFE_NODE_NAME.test(name));
+  if (unsafe.length > 0) {
+    logger.warn("dbt names left out of a selector: unsupported characters", {
+      names: unsafe,
+    });
+  }
+  return [...new Set(names)].filter(name => SAFE_NODE_NAME.test(name)).sort();
+}
 
 /**
  * `compile --select +m1 +m2`: every read model with all of its ancestors, so
  * the manifest carries the compiled SQL the parent walk needs.
  */
 export function compileGraphCommand(reads: readonly string[]): string {
-  const selectors = [...new Set(reads)]
-    .filter(model => SAFE_MODEL_NAME.test(model))
-    .sort()
-    .map(model => `+${model}`);
-  return `compile --select ${selectors.join(" ")}`;
+  return `compile --select ${selectableNames(reads)
+    .map(model => `+${model}`)
+    .join(" ")}`;
+}
+
+/** The pushed commit does not compile: nothing can be checked or built. */
+export class DbtCompileError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DbtCompileError";
+  }
 }
 
 /**
  * Compile the held apps' models (and their ancestors) at the pushed commit
- * in the prod-like environment. Throws when dbt fails: the caller then
- * deploys at once, as it does for any plan it cannot make.
+ * in the prod-like environment. The compile runs in the shared ad-hoc dbt
+ * directory of the project, so it queues behind other shared compiles.
  */
 export async function compileGapGraph(input: {
   workspaceId: string;
@@ -253,10 +473,10 @@ export async function compileGapGraph(input: {
     timeoutMs: 10 * 60 * 1000,
   });
   if (!result.success) {
-    throw new Error(`dbt compile failed (exit ${result.exitCode})`);
+    throw new DbtCompileError(`dbt compile failed (exit ${result.exitCode})`);
   }
   const buffer = result.raw.artifacts.manifest;
-  if (!buffer) throw new Error("dbt compile wrote no manifest");
+  if (!buffer) throw new DbtCompileError("dbt compile wrote no manifest");
   return gapGraphFromManifest(
     JSON.parse(buffer.toString("utf8")) as RawManifest,
   );
@@ -273,15 +493,23 @@ const defaultRunQuery: RunQuery = (connection, sql) =>
 type QuerySchema = (
   connection: IDatabaseConnection,
   sql: string,
-) => Promise<{ success: boolean; columns?: Array<{ name: string }> }>;
+) => Promise<{
+  success: boolean;
+  columns?: Array<{ name: string }>;
+  error?: string;
+}>;
 
 const defaultQuerySchema: QuerySchema = (connection, sql) =>
   databaseConnectionService.getBigQueryQuerySchema(connection, sql);
 
+/** BigQuery's wording when a table or column the SQL names is not there. */
+const MISSING_NAME =
+  /unrecognized name|not found inside|not found: (?:table|dataset|view)|(?:table|view|dataset) \S+ was not found|does not exist|no such (?:table|column)/i;
+
 /**
  * The warehouse answers for a BigQuery connection. Prod columns: one
  * `INFORMATION_SCHEMA.COLUMNS` query per dataset, from the driver's
- * `buildColumnListQuery`. Any other engine throws: the caller deploys at once.
+ * `buildColumnListQuery`.
  */
 export function warehouseLookupFor(
   connection: IDatabaseConnection,
@@ -341,8 +569,13 @@ export function warehouseLookupFor(
         { mako_source: "other", mako_purpose: "dbt_schema_gap" },
         () => querySchema(connection, sql),
       );
-      if (!result.success || !result.columns) return null;
-      return result.columns.map(c => c.name);
+      if (!result.success || !result.columns) {
+        if (MISSING_NAME.test(result.error ?? "")) return null;
+        throw new Error(result.error || "dry run failed");
+      }
+      // The dry run flattens a STRUCT to leaves (`participants.email`);
+      // INFORMATION_SCHEMA.COLUMNS lists `participants`.
+      return [...new Set(result.columns.map(c => c.name.split(".")[0]))];
     },
   };
 }
@@ -359,34 +592,88 @@ export async function loadEnvironmentConnection(
   return doc ? (doc.toObject({ getters: true }) as IDatabaseConnection) : null;
 }
 
+export type GapOutcome =
+  /** The check ran: build these nodes (maybe none). */
+  | { kind: "gap"; gap: SchemaGap }
+  /**
+   * The warehouse side of the check failed. Build the changed read models
+   * directly and hold, as the reviewer asked: no `+`, no children.
+   */
+  | { kind: "fallback"; models: string[]; error: string }
+  /** No BigQuery connection to ask: keep today's `full` build. */
+  | { kind: "full" };
+
 /**
- * The models a held app cannot run without, for one push. Throws when the
- * check cannot be made (compile fails, warehouse is not BigQuery, a query
- * errors): the caller logs it and deploys at once.
+ * The nodes a held app cannot run without, for one push. Throws
+ * `DbtCompileError` when the pushed commit does not compile: the caller then
+ * deploys at once. A failing warehouse query falls back to building the
+ * changed read models. A non-BigQuery warehouse, or an environment without a
+ * connection, returns `full`.
  */
 export async function detectSchemaGap(input: {
   workspaceId: string;
   projectId: string;
   environment: string;
-  connectionId: Types.ObjectId | string;
+  connectionId?: Types.ObjectId | string;
   sha: string;
   reads: readonly string[];
-}): Promise<SchemaGap> {
-  const connection = await loadEnvironmentConnection(
-    input.workspaceId,
-    input.connectionId,
-  );
-  if (!connection) throw new Error("environment connection not found");
-  const warehouse = warehouseLookupFor(connection);
+  /** Repo paths the push changed. */
+  changedPaths: readonly string[];
+}): Promise<GapOutcome> {
+  const connection = input.connectionId
+    ? await loadEnvironmentConnection(input.workspaceId, input.connectionId)
+    : null;
+  if (!connection || connection.type !== "bigquery") return { kind: "full" };
+
   const graph = await compileGapGraph(input);
-  const gap = await findSchemaGap({ graph, reads: input.reads, warehouse });
-  logger.info("Schema gap checked", {
-    workspaceId: input.workspaceId,
-    sha: input.sha,
-    reads: input.reads.length,
-    gap: gap.models,
-    reasons: gap.reasons,
-    newColumns: gap.newColumns,
-  });
-  return gap;
+  const changed = changedNodeNames(graph, input.changedPaths);
+  try {
+    const gap = await findSchemaGap({
+      graph,
+      reads: input.reads,
+      warehouse: warehouseLookupFor(connection),
+      changed,
+    });
+    logger.info("Schema gap checked", {
+      workspaceId: input.workspaceId,
+      sha: input.sha,
+      reads: input.reads.length,
+      gap: gap.models,
+      reasons: gap.reasons,
+      newColumns: gap.newColumns,
+    });
+    if (gap.unfixable && Object.keys(gap.unfixable).length > 0) {
+      logger.warn("A build cannot close this schema gap; app not held on it", {
+        workspaceId: input.workspaceId,
+        sha: input.sha,
+        unfixable: gap.unfixable,
+      });
+    }
+    if (gap.unknownReads.length > 0) {
+      logger.warn("Models an app reads are not in the compiled manifest", {
+        workspaceId: input.workspaceId,
+        sha: input.sha,
+        reads: gap.unknownReads,
+      });
+    }
+    return { kind: "gap", gap };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const lower = new Map<string, string>();
+    for (const name of graph.keys()) lower.set(name.toLowerCase(), name);
+    const models = [
+      ...new Set(
+        input.reads
+          .map(read => lower.get(read.toLowerCase()))
+          .filter((name): name is string => !!name && changed.has(name)),
+      ),
+    ].sort();
+    logger.warn("Schema gap check failed; building the changed read models", {
+      workspaceId: input.workspaceId,
+      sha: input.sha,
+      models,
+      error: message,
+    });
+    return { kind: "fallback", models, error: message };
+  }
 }
