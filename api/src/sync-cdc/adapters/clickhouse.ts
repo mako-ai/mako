@@ -417,7 +417,7 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
 
   async mergeFromStaging(
     layout: CdcEntityLayout,
-    flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">,
+    _flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">,
     flowId: string,
     entitySchema?: ConnectorEntitySchema,
     options?: { stagingSuffix?: string },

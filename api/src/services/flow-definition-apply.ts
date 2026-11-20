@@ -356,3 +356,19 @@ export function hydrateFlowRow(
     doc,
   };
 }
+
+/**
+ * Store the view-only layout warnings with a targeted update (no pause, no
+ * invalid marker). An empty list removes them.
+ */
+export async function setLayoutWarnings(
+  id: Types.ObjectId,
+  warnings: NonNullable<IFlow["layoutWarnings"]>,
+): Promise<void> {
+  await Flow.updateOne(
+    { _id: id },
+    warnings.length > 0
+      ? { $set: { layoutWarnings: warnings } }
+      : { $unset: { layoutWarnings: 1 } },
+  );
+}

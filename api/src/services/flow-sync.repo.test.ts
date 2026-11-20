@@ -465,6 +465,18 @@ describe("one bad file is that file's problem", () => {
       expect(row?.entityLayouts?.[0]?.partitionGranularity).toBe("day");
       expect(row?.backfillSchedule?.enabled).toBe(true);
       expect(isFlowMarkedInvalid(row as never)).toBe(false);
+      // The refusal shows in the view: a warning, not a pause.
+      expect(row?.layoutWarnings?.[0]).toMatchObject({
+        entity: "leads",
+        refused: true,
+        realValue: "date_created",
+      });
+      const plain = liveFlowToPlain(
+        (await loadLiveFlows(WS)).find(f => f.def.slug === "live") as never,
+        WS,
+      );
+      expect(plain.layoutWarnings).toHaveLength(1);
+      expect(plain.definitionInvalid).toBeUndefined();
 
       // Reading the flow does not apply the refused layout either.
       expect(await ensureFlowDerivedCache(row as never)).toBe("ok");
@@ -472,6 +484,18 @@ describe("one bad file is that file's problem", () => {
       expect(after?.entityLayouts?.[0]?.partitionGranularity).toBe("day");
       expect(after?.backfillSchedule?.enabled).toBe(true);
       expect(isFlowMarkedInvalid(after as never)).toBe(false);
+
+      // Fixing the layout applies it and clears the warnings.
+      await push({
+        "flows/live.yml": withTable("Live renamed").replace(
+          "partitionField: _syncedAt",
+          "partitionField: date_created",
+        ),
+      });
+      expect((await syncFlowsFromRepo(WS, "user-42")).invalid).toEqual([]);
+      const fixed = await Flow.findOne({ workspaceId: WS, slug: "live" });
+      expect(fixed?.entityLayouts?.[0]?.partitionField).toBe("date_created");
+      expect(fixed?.layoutWarnings ?? []).toHaveLength(0);
     } finally {
       spy.mockRestore();
     }

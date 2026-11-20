@@ -388,7 +388,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
   async mergeFromStaging(
     layout: CdcEntityLayout,
-    flow: FlowRef,
+    _flow: FlowRef,
     flowId: string,
     entitySchema?: ConnectorEntitySchema,
     options?: {

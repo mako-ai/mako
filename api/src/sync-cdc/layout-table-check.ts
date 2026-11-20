@@ -406,3 +406,39 @@ export async function findLayoutTableMismatches(
     return [];
   }
 }
+
+/**
+ * Mismatches split by whether this change caused them: `changed` are layouts
+ * the change adds or edits (refused), `untouched` are old ones it leaves
+ * alone (a warning). Without `previous` every mismatch is `changed`.
+ */
+export async function splitLayoutMismatches(
+  flow: FlowForLayoutCheck,
+  previous?: PreviousLayouts,
+): Promise<{
+  changed: LayoutTableMismatch[];
+  untouched: LayoutTableMismatch[];
+}> {
+  const changed = await findLayoutTableMismatches(flow, { previous });
+  if (!previous) return { changed, untouched: [] };
+  const all = await findLayoutTableMismatches(flow);
+  const key = (m: LayoutTableMismatch) => `${m.table}|${m.kind}`;
+  const changedKeys = new Set(changed.map(key));
+  return { changed, untouched: all.filter(m => !changedKeys.has(key(m))) };
+}
+
+/** The view-only warnings stored on a flow row. */
+export function toLayoutWarnings(
+  mismatches: LayoutTableMismatch[],
+  refused: boolean,
+) {
+  return mismatches.map(m => ({
+    entity: m.entity,
+    table: m.table,
+    kind: m.kind,
+    layoutValue: m.layoutValue,
+    realValue: m.realValue,
+    message: m.message,
+    refused,
+  }));
+}

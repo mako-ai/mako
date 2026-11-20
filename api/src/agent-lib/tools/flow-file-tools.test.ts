@@ -397,6 +397,67 @@ describe("the three validation layers", () => {
       }
     });
 
+    it("reports an old mismatch the file leaves alone as a note, a changed one as an error", async () => {
+      await seedRepo({});
+      await Flow.create({
+        workspaceId: WS,
+        slug: "shadow",
+        name: "shadow",
+        type: "scheduled",
+        sourceType: "connector",
+        dataSourceId: CONNECTOR,
+        destinationDatabaseId: DEST,
+        syncEngine: "cdc",
+        schedule: { enabled: false },
+        entityFilter: ["activities:Email"],
+        tableDestination: {
+          connectionId: DEST,
+          schema: "close",
+          tableName: "",
+        },
+        entityLayouts: [
+          {
+            entity: "activities:Email",
+            partitionField: "_syncedAt",
+            partitionGranularity: "day",
+          },
+        ],
+        createdBy: "u1",
+      });
+      const spy = vi
+        .spyOn(BigQueryDestinationAdapter.prototype, "describeLiveTable")
+        .mockResolvedValue(real);
+      try {
+        const untouched = await checkFlowFiles({
+          workspaceId: WS.toString(),
+          files: [{ path: "flows/shadow.yml", contents: yamlFor("_syncedAt") }],
+        });
+        expect(untouched.ok).toBe(true);
+        expect(
+          untouched.problems.every(p => p.reason.startsWith("note:")),
+        ).toBe(true);
+        expect(
+          untouched.problems.some(p => p.reason.includes("`date_created`")),
+        ).toBe(true);
+
+        const changed = await checkFlowFiles({
+          workspaceId: WS.toString(),
+          files: [
+            {
+              path: "flows/shadow.yml",
+              contents: yamlFor("_syncedAt").replace(
+                "partitionGranularity: day",
+                "partitionGranularity: hour",
+              ),
+            },
+          ],
+        });
+        expect(changed.ok).toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it("passes a matching layout and a table that does not exist yet", async () => {
       await seedRepo({});
       const spy = vi
