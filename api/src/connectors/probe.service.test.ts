@@ -29,6 +29,8 @@ import {
 } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import { Hono } from "hono";
+import { sourceConnectionVerificationRoutes } from "../routes/source-connections/verification";
 
 import {
   BaseConnector,
@@ -98,6 +100,7 @@ import {
   PROBE_MAX_LIMIT,
   ProbeError,
   probeConnection,
+  runConnectionCheck,
   redactSecrets,
   secretValuesOf,
 } from "./probe.service";
@@ -232,6 +235,110 @@ async function failure(promise: Promise<unknown>): Promise<ProbeError> {
   }
   throw new Error("expected the probe to fail");
 }
+
+describe("stored Custom API Test identity", () => {
+  const app = new Hono();
+  app.route(
+    "/workspaces/:workspaceId/connections",
+    sourceConnectionVerificationRoutes,
+  );
+  const request = (id: string, principal?: string) =>
+    requestContextStorage.run(
+      {
+        requestId: "r",
+        method: "POST",
+        path: "/test",
+        startTime: 0,
+        ...(principal ? { userId: principal } : {}),
+      },
+      () =>
+        app.request(`/workspaces/${WS}/connections/${id}/test`, {
+          method: "POST",
+        }),
+    );
+
+  it("passes the authenticated actor and stored tenant to the connector", async () => {
+    state.dataSourceType = "custom_api";
+    const check = vi.spyOn(fake, "testConnection");
+    const response = await request(mine.toString(), "u1");
+    expect(response.status).toBe(200);
+    expect(check).toHaveBeenCalledWith({
+      actor: "user:u1",
+      workspaceId: WS.toString(),
+      connectionId: mine.toString(),
+    });
+  });
+
+  it("refuses a Custom API Test without an actor", async () => {
+    state.dataSourceType = "custom_api";
+    const check = vi.spyOn(fake, "testConnection");
+    expect((await request(mine.toString())).status).toBe(401);
+    expect(check).not.toHaveBeenCalled();
+  });
+
+  it("refuses another tenant's connection before checking", async () => {
+    state.dataSourceType = "custom_api";
+    const check = vi.spyOn(fake, "testConnection");
+    expect((await request(theirs.toString(), "u1")).status).toBe(404);
+    expect(check).not.toHaveBeenCalled();
+  });
+
+  it("keeps other connector checks unchanged without an actor", async () => {
+    const check = vi.spyOn(fake, "testConnection");
+    expect((await request(mine.toString())).status).toBe(200);
+    expect(check).toHaveBeenCalledWith();
+  });
+
+  it("rejects mismatched context before invoking a connector", async () => {
+    const check = vi.spyOn(fake, "testConnection");
+    const sourceConnection = {
+      id: mine.toString(),
+      workspaceId: WS.toString(),
+      type: "custom_api",
+      name: "test",
+      active: true,
+      connection: {},
+      settings: {},
+    };
+    await expect(
+      runConnectionCheck({
+        workspaceId: WS.toString(),
+        sourceConnection,
+        connector: fake,
+        testContext: {
+          actor: "user:u1",
+          workspaceId: WS_THEIRS.toString(),
+          connectionId: mine.toString(),
+        },
+      }),
+    ).rejects.toThrow(/identity/);
+    await expect(
+      runConnectionCheck({
+        workspaceId: WS.toString(),
+        sourceConnection,
+        connector: fake,
+        testContext: {
+          actor: "",
+          workspaceId: WS.toString(),
+          connectionId: mine.toString(),
+        },
+      }),
+    ).rejects.toThrow(/identity/);
+    await expect(
+      runConnectionCheck({
+        workspaceId: WS.toString(),
+        sourceConnection,
+        connector: fake,
+        testContext: {
+          actor: "user:u1",
+          workspaceId: WS.toString(),
+          connectionId: theirs.toString(),
+        },
+      }),
+    ).rejects.toThrow(/identity/);
+    expect(check).not.toHaveBeenCalled();
+  });
+});
 
 describe("tenancy", () => {
   it("a connector from another workspace is not found, not probed", async () => {

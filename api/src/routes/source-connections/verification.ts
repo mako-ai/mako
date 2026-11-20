@@ -19,6 +19,8 @@ import {
 } from "../../openapi/core";
 import { SourceIdParam, isSourceConnectionId } from "./shared";
 import { fail, failFromThrown } from "../lib/respond";
+import { actingPrincipal } from "../../access/connection-writes";
+import { CUSTOM_API_TYPE } from "../../connections/kinds";
 
 const logger = loggers.connector();
 
@@ -58,10 +60,25 @@ sourceConnectionVerificationRoutes.openapi(
       }
 
       // Use manager to load decrypted configuration before testing
-      const ds = await sourceConnectionManager.getSourceConnection(id);
+      const ds = await sourceConnectionManager.getSourceConnection(
+        id,
+        workspaceId,
+      );
 
       if (!ds) {
         return fail(c, 404, "Source connection not found");
+      }
+
+      // The stored Custom API Test carries the authenticated actor into the
+      // check. Background probes and other connector types keep their existing
+      // execution path.
+      const actor = ds.type === CUSTOM_API_TYPE ? actingPrincipal() : undefined;
+      if (ds.type === CUSTOM_API_TYPE && !actor) {
+        return fail(
+          c,
+          401,
+          "An authenticated actor is required to test this connection",
+        );
       }
 
       // Get connector and test connection
@@ -74,10 +91,22 @@ sourceConnectionVerificationRoutes.openapi(
       // credential and a real answer is the only evidence that may move a
       // workspace connector to `verified`. Shared with the probe, which is
       // this check plus a read.
+      // MongoDB accepts uppercase ObjectId strings. Use canonical IDs in the
+      // actor binding so equivalent URL spellings still refer to the same row.
+      const checkWorkspaceId = actor ? workspaceId.toLowerCase() : workspaceId;
       const result = await runConnectionCheck({
-        workspaceId,
+        workspaceId: checkWorkspaceId,
         sourceConnection: ds,
         connector,
+        ...(actor
+          ? {
+              testContext: {
+                actor,
+                workspaceId: checkWorkspaceId,
+                connectionId: ds.id,
+              },
+            }
+          : {}),
       });
 
       return c.json({

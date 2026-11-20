@@ -43,6 +43,7 @@ import { Types } from "mongoose";
 import type {
   BaseConnector,
   ConnectionTestResult,
+  ConnectionTestContext,
   ConnectorEntitySchema,
 } from "./base/BaseConnector";
 import {
@@ -187,8 +188,20 @@ export async function runConnectionCheck(input: {
   workspaceId: string;
   sourceConnection: SourceConnectionConfig;
   connector: BaseConnector;
+  testContext?: ConnectionTestContext;
 }): Promise<ConnectionTestResult> {
-  const { workspaceId, sourceConnection, connector } = input;
+  const { workspaceId, sourceConnection, connector, testContext } = input;
+  if (
+    testContext &&
+    (!testContext.actor ||
+      testContext.workspaceId !== workspaceId ||
+      sourceConnection.workspaceId !== workspaceId ||
+      testContext.connectionId !== sourceConnection.id)
+  ) {
+    throw new Error(
+      "Connection Test identity does not match the stored connection",
+    );
+  }
 
   // Pin the check to the code this instance will run, before running it, so
   // a concurrent push cannot make the result refer to a different revision.
@@ -197,7 +210,9 @@ export async function runConnectionCheck(input: {
       ? await connector.sourceShaForConnectionCheck()
       : undefined;
 
-  const result = await connector.testConnection();
+  const result = testContext
+    ? await connector.testConnection(testContext)
+    : await connector.testConnection();
 
   if (isWorkspaceConnectorType(sourceConnection.type)) {
     if (!workspaceSourceSha) {

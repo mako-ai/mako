@@ -1,6 +1,7 @@
 import {
   BaseConnector,
   ConnectionTestResult,
+  type ConnectionTestContext,
   FetchOptions,
 } from "../base/BaseConnector";
 import { customApiProfile } from "../../connections/callable-profiles/custom-api";
@@ -300,7 +301,9 @@ export class CustomApiConnector extends BaseConnector {
     };
   }
 
-  async testConnection(): Promise<ConnectionTestResult> {
+  async testConnection(
+    _context?: ConnectionTestContext,
+  ): Promise<ConnectionTestResult> {
     // A missing or non-http(s) address is refused by the proxy's own check
     // (connections/forward.ts `urlUnder`), with a message the form shows.
     const config = this.sourceConnection.config ?? {};
