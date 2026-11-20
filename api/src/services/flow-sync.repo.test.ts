@@ -16,6 +16,8 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   afterAll,
   beforeAll,
@@ -26,7 +28,7 @@ import {
   vi,
 } from "vitest";
 import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { MongoMemoryReplSet } from "mongodb-memory-server";
 
 vi.mock("../integrations/github/app-auth", () => ({
   resolveRepoToken: async () => undefined,
@@ -39,6 +41,7 @@ import {
   DatabaseConnection,
   Flow,
   SourceConnection,
+  WebhookEvent,
 } from "../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
@@ -62,11 +65,17 @@ import {
   loadLiveFlows,
   resolveLiveFlowRow,
   syncFlowsFromRepo,
+  type InternalBindingGuard,
 } from "./flow-sync.service";
+import { flowToFile } from "./flow-config-files";
 import { isCronDue } from "./cron-due";
 import { BigQueryDestinationAdapter } from "../sync-cdc/adapters/bigquery";
+import {
+  closeInlineWebhookAdmission,
+  retainClosedInlineWebhook,
+} from "../sync-cdc/inline-webhook-admission";
 
-let mongo: MongoMemoryServer;
+let mongo: MongoMemoryReplSet;
 let tmpRoot: string;
 let WS: string;
 
@@ -118,7 +127,7 @@ async function push(writes: Record<string, string>): Promise<void> {
 beforeAll(async () => {
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "flow-sync-repo-"));
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
-  mongo = await MongoMemoryServer.create();
+  mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(mongo.getUri());
 }, 120_000);
 
@@ -161,6 +170,728 @@ beforeEach(async () => {
   await seedConnections(WS, { source: CONNECTOR, dest: DEST });
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
   await bindTestWorkspaceRepo(WS);
+});
+
+describe("retained delivery binding contract", () => {
+  it.each(["repo sync", "cache refresh"] as const)(
+    "%s keeps the full effective definition across reload and stale refresh",
+    async writer => {
+      const nextSource = new Types.ObjectId();
+      await SourceConnection.collection.insertOne({
+        _id: nextSource,
+        workspaceId: new Types.ObjectId(WS),
+        name: "Second source",
+        type: "close",
+      } as never);
+      const oldFile = flowYaml("Original");
+      const desiredFile = flowYaml("Desired")
+        .replace(CONNECTOR, nextSource.toString())
+        .replace("entity: leads", "entity: contacts")
+        .replace("write_mode: append_dedup", "write_mode: append");
+      await push({ "flows/binding.yml": oldFile });
+      await syncFlowsFromRepo(WS, "user-42");
+      const stale = await Flow.findOne({ workspaceId: WS, slug: "binding" });
+      expect(stale).not.toBeNull();
+      await WebhookEvent.create({
+        flowId: stale!._id,
+        workspaceId: WS,
+        eventId: "retained-1",
+        eventType: "lead.updated",
+        status: "dormant",
+        applyStatus: "dormant",
+        dataSourceId: CONNECTOR,
+        rawPayload: { id: "lead-1" },
+      });
+      const effective = (row: typeof stale) => ({
+        definition: row ? flowToFile(row) : null,
+        sourceBlobSha: row?.sourceBlobSha,
+      });
+      const prior = effective(stale);
+      await push({ "flows/binding.yml": desiredFile });
+      if (writer === "repo sync") {
+        await syncFlowsFromRepo(WS, "user-42", {});
+      } else {
+        await ensureFlowDerivedCache(stale!, {});
+      }
+      const reloaded = await Flow.findById(stale!._id);
+      expect
+        .soft(effective(reloaded), "effective definition after reload")
+        .toEqual(prior);
+      const head = await resolveCommit(
+        repoDirFor(WS),
+        `refs/heads/${DEFAULT_BRANCH}`,
+      );
+      const desired = await readBlob(
+        repoDirFor(WS),
+        head!,
+        "flows/binding.yml",
+      );
+      expect
+        .soft(desired.contents, "desired revision remains observable in Git")
+        .toBe(desiredFile);
+      expect
+        .soft(
+          blobOid(desired.contents),
+          "desired revision differs from effective revision",
+        )
+        .not.toBe(reloaded?.sourceBlobSha);
+      const stored = await Flow.collection.findOne({ _id: stale!._id });
+      expect
+        .soft(
+          (stored as unknown as { bindingApply?: { desiredBlobSha?: string } })
+            .bindingApply?.desiredBlobSha,
+        )
+        .toBe(blobOid(desiredFile));
+      await ensureFlowDerivedCache(stale!, {});
+      const afterStale = await Flow.findById(stale!._id);
+      expect
+        .soft(
+          effective(afterStale),
+          "stale refresh preserves effective definition",
+        )
+        .toEqual(prior);
+      expect
+        .soft(
+          await WebhookEvent.countDocuments({
+            flowId: stale!._id,
+            status: "dormant",
+          }),
+        )
+        .toBe(1);
+      await push({ "flows/binding.yml": oldFile });
+      await ensureFlowDerivedCache(afterStale!, {});
+      const reverted = await Flow.collection.findOne({ _id: stale!._id });
+      expect(
+        (reverted as unknown as { bindingApply?: { desiredBlobSha?: string } })
+          .bindingApply?.desiredBlobSha,
+      ).toBeUndefined();
+    },
+  );
+});
+
+describe("guarded preflight and failures", () => {
+  it("guarded repo sync refuses a new flow with a mismatching layout", async () => {
+    const spy = vi
+      .spyOn(BigQueryDestinationAdapter.prototype, "describeLiveTable")
+      .mockResolvedValue({
+        exists: true,
+        timePartitioning: { field: "date_created", type: "DAY" },
+        clusterFields: [],
+      });
+    try {
+      const file = flowYaml("New mismatch").replace(
+        "  table:\n",
+        `  table:\n    connection_id: ${DEST}\n`,
+      );
+      await push({ "flows/new-mismatch.yml": file });
+      const result = await syncFlowsFromRepo(WS, "user-42", {});
+      expect(result.invalid).toEqual(["new-mismatch"]);
+      expect(
+        await Flow.findOne({ workspaceId: WS, slug: "new-mismatch" }),
+      ).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it.each(["repo", "cache"] as const)(
+    "a newer layout refusal stops older %s and keeps pending",
+    async olderWriter => {
+      const withTable = (name: string) =>
+        flowYaml(name).replace(
+          "  table:\n",
+          `  table:\n    connection_id: ${DEST}\n`,
+        );
+      const nextSource = new Types.ObjectId();
+      await SourceConnection.collection.insertOne({
+        _id: nextSource,
+        workspaceId: new Types.ObjectId(WS),
+        name: "Next",
+        type: "close",
+      } as never);
+      const spy = vi
+        .spyOn(BigQueryDestinationAdapter.prototype, "describeLiveTable")
+        .mockResolvedValue({ exists: false, clusterFields: [] });
+      try {
+        const original = withTable("Original");
+        await push({ "flows/refusal-order.yml": original });
+        await syncFlowsFromRepo(WS, "user-42");
+        const row = (await Flow.findOne({
+          workspaceId: WS,
+          slug: "refusal-order",
+        }))!;
+        const prior = flowToFile(row);
+        await WebhookEvent.create({
+          flowId: row._id,
+          workspaceId: WS,
+          eventId: "held-refusal",
+          eventType: "lead.updated",
+          status: "dormant",
+          applyStatus: "dormant",
+          dataSourceId: CONNECTOR,
+          rawPayload: { id: "lead-1" },
+        });
+        spy.mockResolvedValue({
+          exists: true,
+          timePartitioning: { field: "_syncedAt", type: "DAY" },
+          clusterFields: [],
+        });
+        const pending = withTable("Pending").replace(
+          CONNECTOR,
+          nextSource.toString(),
+        );
+        await push({ "flows/refusal-order.yml": pending });
+        await ensureFlowDerivedCache(row, {});
+        await push({ "flows/refusal-order.yml": withTable("Older valid") });
+        let release!: () => void;
+        let read!: () => void;
+        const paused = new Promise<void>(resolve => {
+          read = resolve;
+        });
+        const resume = new Promise<void>(resolve => {
+          release = resolve;
+        });
+        const guard = {
+          afterCandidateRead: async () => {
+            read();
+            await resume;
+          },
+        };
+        const older =
+          olderWriter === "repo"
+            ? syncFlowsFromRepo(WS, "user-42", guard)
+            : ensureFlowDerivedCache(row, guard);
+        try {
+          await paused;
+          const refused = withTable("Newer refused").replace(
+            "partitionGranularity: day",
+            "partitionGranularity: hour",
+          );
+          await push({ "flows/refusal-order.yml": refused });
+          if (olderWriter === "repo") await ensureFlowDerivedCache(row, {});
+          else await syncFlowsFromRepo(WS, "user-42", {});
+          const head = await resolveCommit(
+            repoDirFor(WS),
+            `refs/heads/${DEFAULT_BRANCH}`,
+          );
+          const observed = await Flow.collection.findOne({ _id: row._id });
+          const state = (
+            observed as unknown as {
+              bindingApply?: {
+                commit?: string;
+                desiredBlobSha?: string;
+                layoutRefusedBlobSha?: string;
+              };
+            }
+          ).bindingApply;
+          expect(state?.commit).toBe(head);
+          expect(state?.desiredBlobSha).toBe(blobOid(pending));
+          expect(state?.layoutRefusedBlobSha).toBe(blobOid(refused));
+        } finally {
+          release();
+          await older;
+        }
+        const after = (await Flow.findById(row._id))!;
+        expect(flowToFile(after)).toEqual(prior);
+        expect(after.sourceBlobSha).toBe(blobOid(original));
+        const stored = await Flow.collection.findOne({ _id: row._id });
+        expect(
+          (stored as unknown as { bindingApply?: { desiredBlobSha?: string } })
+            .bindingApply?.desiredBlobSha,
+        ).toBe(blobOid(pending));
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+  it.each(["repo", "cache"] as const)(
+    "%s rechecks layout when its snapshot moves",
+    async writer => {
+      const withTable = (name: string) =>
+        flowYaml(name).replace(
+          "  table:\n",
+          `  table:\n    connection_id: ${DEST}\n`,
+        );
+      const spy = vi
+        .spyOn(BigQueryDestinationAdapter.prototype, "describeLiveTable")
+        .mockResolvedValue({ exists: false, clusterFields: [] });
+      try {
+        const original = withTable("Original");
+        await push({ "flows/layout-race.yml": original });
+        await syncFlowsFromRepo(WS, "user-42");
+        const row = (await Flow.findOne({
+          workspaceId: WS,
+          slug: "layout-race",
+        }))!;
+        spy.mockResolvedValue({
+          exists: true,
+          timePartitioning: { field: "date_created", type: "DAY" },
+          clusterFields: [],
+        });
+        await push({ "flows/layout-race.yml": withTable("Desired") });
+        let entered!: () => void;
+        let release!: () => void;
+        const paused = new Promise<void>(resolve => {
+          entered = resolve;
+        });
+        const resume = new Promise<void>(resolve => {
+          release = resolve;
+        });
+        const guard = {
+          afterLayoutPreflight: async () => {
+            entered();
+            await resume;
+          },
+        };
+        const applying =
+          writer === "repo"
+            ? syncFlowsFromRepo(WS, "user-42", guard)
+            : ensureFlowDerivedCache(row, guard);
+        try {
+          await paused;
+          await Flow.collection.updateOne(
+            { _id: row._id },
+            { $set: { "entityLayouts.0.partitionField": "date_created" } },
+          );
+        } finally {
+          release();
+          await applying;
+        }
+        const stored = await Flow.findById(row._id);
+        expect(stored?.name).toBe("Original");
+        expect(stored?.entityLayouts?.[0]?.partitionField).toBe("date_created");
+        expect(stored?.sourceBlobSha).toBe(blobOid(original));
+        expect(spy.mock.calls.length).toBeGreaterThanOrEqual(2);
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+
+  it.each(["repo", "cache"] as const)(
+    "%s keeps pending state after a transaction error",
+    async writer => {
+      const nextSource = new Types.ObjectId();
+      await SourceConnection.collection.insertOne({
+        _id: nextSource,
+        workspaceId: new Types.ObjectId(WS),
+        name: "Next",
+        type: "close",
+      } as never);
+      const original = flowYaml("Original");
+      const pending = flowYaml("Pending").replace(
+        CONNECTOR,
+        nextSource.toString(),
+      );
+      await push({ "flows/failure.yml": original });
+      await syncFlowsFromRepo(WS, "user-42");
+      const row = (await Flow.findOne({ workspaceId: WS, slug: "failure" }))!;
+      await WebhookEvent.create({
+        flowId: row._id,
+        workspaceId: WS,
+        eventId: "held-failure",
+        eventType: "lead.updated",
+        status: "dormant",
+        applyStatus: "dormant",
+        dataSourceId: CONNECTOR,
+        rawPayload: { id: "lead-1" },
+      });
+      await push({ "flows/failure.yml": pending });
+      await ensureFlowDerivedCache(row, {});
+      const before = await Flow.collection.findOne({ _id: row._id });
+      await push({
+        "flows/failure.yml": pending.replace("name: Pending", "name: Newer"),
+      });
+      const guard = {
+        beforeFlowWrite: async () => {
+          throw new Error("injected transaction failure");
+        },
+      };
+      const applying =
+        writer === "repo"
+          ? syncFlowsFromRepo(WS, "user-42", guard)
+          : ensureFlowDerivedCache(row, guard);
+      await expect(applying).rejects.toThrow("injected transaction failure");
+      const after = await Flow.collection.findOne({ _id: row._id });
+      expect(after?.definitionInvalid?.reason).toBeUndefined();
+      expect(after?.sourceBlobSha).toBe(blobOid(original));
+      expect(
+        (after as unknown as { bindingApply?: unknown }).bindingApply,
+      ).toEqual((before as unknown as { bindingApply?: unknown }).bindingApply);
+    },
+  );
+});
+
+describe("guarded Git candidate ordering", () => {
+  it.each([
+    ["repo", "invalid"],
+    ["repo", "valid"],
+    ["cache", "invalid"],
+    ["cache", "valid"],
+  ] as const)(
+    "orders an older %s %s observation",
+    async (writer, olderKind) => {
+      await push({ "flows/invalid-order.yml": flowYaml("Original") });
+      await syncFlowsFromRepo(WS, "user-42");
+      const row = (await Flow.findOne({
+        workspaceId: WS,
+        slug: "invalid-order",
+      }))!;
+      await push({
+        "flows/invalid-order.yml":
+          olderKind === "invalid" ? "name: [broken" : flowYaml("Older valid"),
+      });
+      let release!: () => void;
+      let read!: () => void;
+      const paused = new Promise<void>(resolve => {
+        read = resolve;
+      });
+      const resume = new Promise<void>(resolve => {
+        release = resolve;
+      });
+      const guard = {
+        afterCandidateRead: async () => {
+          read();
+          await resume;
+        },
+      };
+      const older =
+        writer === "repo"
+          ? syncFlowsFromRepo(WS, "user-42", guard)
+          : ensureFlowDerivedCache(row, guard);
+      try {
+        await paused;
+        await push({
+          "flows/invalid-order.yml":
+            olderKind === "invalid"
+              ? flowYaml("Newest valid")
+              : "name: [broken",
+        });
+        if (writer === "repo") await ensureFlowDerivedCache(row, {});
+        else await syncFlowsFromRepo(WS, "user-42", {});
+      } finally {
+        release();
+        await older;
+      }
+      const stored = await Flow.findById(row._id);
+      if (olderKind === "invalid") {
+        expect(stored?.name).toBe("Newest valid");
+        expect(isFlowMarkedInvalid(stored!)).toBe(false);
+      } else {
+        expect(stored?.name).toBe("Original");
+        expect(stored?.definitionInvalid?.reason).toBe("unparseable flow file");
+      }
+    },
+  );
+
+  it("rebuilds a newer candidate from the row after an intervening apply", async () => {
+    const original = flowYaml("Original");
+    await push({ "flows/interleaved.yml": original });
+    await syncFlowsFromRepo(WS, "user-42");
+    const row = (await Flow.findOne({ workspaceId: WS, slug: "interleaved" }))!;
+    await push({ "flows/interleaved.yml": flowYaml("Intervening") });
+    let allowOlder!: () => void;
+    let olderRead!: () => void;
+    const olderPaused = new Promise<void>(resolve => {
+      olderRead = resolve;
+    });
+    const olderResume = new Promise<void>(resolve => {
+      allowOlder = resolve;
+    });
+    const older = syncFlowsFromRepo(WS, "user-42", {
+      afterCandidateRead: async () => {
+        olderRead();
+        await olderResume;
+      },
+    });
+    await olderPaused;
+    const newest = original.replace(
+      "write_mode: append_dedup",
+      "write_mode: append",
+    );
+    await push({ "flows/interleaved.yml": newest });
+    let allowNewer!: () => void;
+    let newerRead!: () => void;
+    const newerPaused = new Promise<void>(resolve => {
+      newerRead = resolve;
+    });
+    const newerResume = new Promise<void>(resolve => {
+      allowNewer = resolve;
+    });
+    const newer = ensureFlowDerivedCache(row, {
+      afterRowRead: async () => {
+        newerRead();
+        await newerResume;
+      },
+    });
+    try {
+      await newerPaused;
+      allowOlder();
+      await older;
+      expect((await Flow.findById(row._id))?.name).toBe("Intervening");
+    } finally {
+      allowOlder();
+      allowNewer();
+      await newer;
+    }
+    const stored = await Flow.findById(row._id);
+    expect(stored?.name).toBe("Original");
+    expect(stored?.writeMode).toBe("append");
+    expect(stored?.sourceBlobSha).toBe(blobOid(newest));
+  });
+  it.each(["desired", "effective"] as const)(
+    "rejects an older snapshot after a newer %s observation",
+    async observation => {
+      const sourceA = new Types.ObjectId();
+      const sourceB = new Types.ObjectId();
+      await SourceConnection.collection.insertMany(
+        [sourceA, sourceB].map(_id => ({
+          _id,
+          workspaceId: new Types.ObjectId(WS),
+          name: "Alternative",
+          type: "close",
+        })) as never,
+      );
+      await push({ "flows/ordered.yml": flowYaml("Original") });
+      await syncFlowsFromRepo(WS, "user-42");
+      const row = (await Flow.findOne({ workspaceId: WS, slug: "ordered" }))!;
+      if (observation === "desired") {
+        await WebhookEvent.create({
+          flowId: row._id,
+          workspaceId: WS,
+          eventId: "retained-ordering",
+          eventType: "lead.updated",
+          status: "dormant",
+          applyStatus: "dormant",
+          dataSourceId: CONNECTOR,
+          rawPayload: { id: "lead-1" },
+        });
+      }
+      const older = flowYaml("Older").replace(CONNECTOR, sourceA.toString());
+      const newer = flowYaml("Newer").replace(CONNECTOR, sourceB.toString());
+      await push({ "flows/ordered.yml": older });
+      let release!: () => void;
+      let read!: () => void;
+      const paused = new Promise<void>(resolve => {
+        read = resolve;
+      });
+      const resume = new Promise<void>(resolve => {
+        release = resolve;
+      });
+      const olderApply = syncFlowsFromRepo(WS, "user-42", {
+        afterCandidateRead: async () => {
+          read();
+          await resume;
+        },
+      });
+      try {
+        await paused;
+        await push({ "flows/ordered.yml": newer });
+        await ensureFlowDerivedCache(row, {});
+      } finally {
+        release();
+        await olderApply;
+      }
+      const { stdout } = await promisify(execFile)(process.execPath, [
+        "-e",
+        `const mongoose = require('mongoose');
+        (async () => {
+          const db = await mongoose.createConnection(process.argv[1]).asPromise();
+          const row = await db.db.collection(process.argv[2]).findOne({ _id: new mongoose.Types.ObjectId(process.argv[3]) });
+          process.stdout.write(JSON.stringify(row));
+          await db.close();
+        })().catch(error => { process.stderr.write(String(error)); process.exitCode = 1; });`,
+        mongo.getUri(),
+        Flow.collection.collectionName,
+        String(row._id),
+      ]);
+      const stored = JSON.parse(stdout) as {
+        bindingApply?: { desiredBlobSha?: string };
+        dataSourceId?: string;
+        sourceBlobSha?: string;
+      };
+      expect(stored.bindingApply?.desiredBlobSha).toBe(
+        observation === "desired" ? blobOid(newer) : undefined,
+      );
+      expect(stored.dataSourceId).toBe(
+        observation === "desired" ? CONNECTOR : sourceB.toString(),
+      );
+      expect(stored.sourceBlobSha).toBe(
+        observation === "desired"
+          ? blobOid(flowYaml("Original"))
+          : blobOid(newer),
+      );
+    },
+  );
+});
+
+describe("transactional retained binding prototype", () => {
+  it.each([
+    ["retention", "repo"],
+    ["retention", "cache"],
+    ["replacement", "repo"],
+    ["replacement", "cache"],
+  ] as const)(
+    "%s commits first against %s without accepting the wrong source",
+    async (first, writer) => {
+      const nextSource = new Types.ObjectId();
+      await SourceConnection.collection.insertOne({
+        _id: nextSource,
+        workspaceId: new Types.ObjectId(WS),
+        name: "Alternative",
+        type: "close",
+      } as never);
+      const original = flowYaml("Original");
+      const desired = flowYaml("Desired")
+        .replace(CONNECTOR, nextSource.toString())
+        .replace("write_mode: append_dedup", "write_mode: append");
+      await push({ "flows/transactional.yml": original });
+      await syncFlowsFromRepo(WS, "user-42");
+      const row = (await Flow.findOne({
+        workspaceId: WS,
+        slug: "transactional",
+      }))!;
+      const priorDefinition = flowToFile(row);
+      const scope = {
+        workspaceId: new Types.ObjectId(WS),
+        flowId: row._id,
+        sourceConnectionId: new Types.ObjectId(CONNECTOR),
+      };
+      const workerA = await mongoose
+        .createConnection(mongo.getUri())
+        .asPromise();
+      const workerB = await mongoose
+        .createConnection(mongo.getUri())
+        .asPromise();
+      try {
+        await closeInlineWebhookAdmission(workerA, scope);
+        await push({ "flows/transactional.yml": desired });
+        let entered!: () => void;
+        let release!: () => void;
+        const locked = new Promise<void>(resolve => {
+          entered = resolve;
+        });
+        const resume = new Promise<void>(resolve => {
+          release = resolve;
+        });
+        const hold = async () => {
+          entered();
+          await resume;
+        };
+        const delivery = {
+          sourceConnectionId: scope.sourceConnectionId,
+          eventId: "race-delivery",
+          eventType: "lead.updated",
+          rawPayload: { id: "lead-1" },
+        };
+        let admitted: "retained" | "duplicate" | undefined;
+        let failure: unknown;
+        const apply = (guard: InternalBindingGuard) =>
+          writer === "repo"
+            ? syncFlowsFromRepo(WS, "user-42", guard)
+            : ensureFlowDerivedCache(row, guard);
+        if (first === "retention") {
+          const retaining = retainClosedInlineWebhook(
+            workerA,
+            scope,
+            delivery,
+            { afterFlowWrite: hold },
+          );
+          await locked;
+          let candidateRead!: () => void;
+          const candidate = new Promise<void>(resolve => {
+            candidateRead = resolve;
+          });
+          const applying = apply({
+            connection: workerB,
+            beforeFlowWrite: async () => {
+              candidateRead();
+            },
+          });
+          await candidate;
+          release();
+          admitted = await retaining;
+          await applying;
+        } else {
+          const applying = apply({
+            connection: workerA,
+            afterFlowWrite: hold,
+          });
+          await locked;
+          let retentionReady!: () => void;
+          const retentionAtWrite = new Promise<void>(resolve => {
+            retentionReady = resolve;
+          });
+          const retaining = retainClosedInlineWebhook(
+            workerB,
+            scope,
+            delivery,
+            {
+              beforeFlowWrite: async () => {
+                retentionReady();
+              },
+            },
+          ).then(
+            value => {
+              admitted = value;
+            },
+            error => {
+              failure = error;
+            },
+          );
+          await retentionAtWrite;
+          release();
+          await applying;
+          await retaining;
+        }
+        const { stdout } = await promisify(execFile)(process.execPath, [
+          "-e",
+          `const mongoose = require('mongoose');
+          (async () => {
+            const db = await mongoose.createConnection(process.argv[1]).asPromise();
+            const id = new mongoose.Types.ObjectId(process.argv[2]);
+            const row = await db.db.collection('flows').findOne({ _id: id });
+            const count = await db.db.collection('webhookevents').countDocuments({ flowId: id, eventId: 'race-delivery' });
+            process.stdout.write(JSON.stringify({ row, count }));
+            await db.close();
+          })().catch(error => { process.stderr.write(String(error)); process.exitCode = 1; });`,
+          mongo.getUri(),
+          String(row._id),
+        ]);
+        const { row: stored, count } = JSON.parse(stdout) as {
+          row: {
+            dataSourceId?: string;
+            name?: string;
+            writeMode?: string;
+            sourceBlobSha?: string;
+            bindingApply?: { desiredBlobSha?: string };
+          };
+          count: number;
+        };
+        if (first === "retention") {
+          expect(admitted).toBe("retained");
+          expect(count).toBe(1);
+          expect(stored.dataSourceId).toBe(CONNECTOR);
+          expect(flowToFile(Flow.hydrate(stored))).toEqual(priorDefinition);
+          expect(stored.name).toBe("Original");
+          expect(stored.writeMode).toBe("append_dedup");
+          expect(stored.sourceBlobSha).toBe(blobOid(original));
+          expect(stored.bindingApply?.desiredBlobSha).toBe(blobOid(desired));
+        } else {
+          expect(admitted).toBeUndefined();
+          expect(failure).toBeInstanceOf(Error);
+          expect(String(failure)).toContain("source no longer matches");
+          expect(count).toBe(0);
+          expect(stored.dataSourceId).toBe(nextSource.toString());
+          expect(stored.sourceBlobSha).toBe(blobOid(desired));
+        }
+      } finally {
+        await workerA.close();
+        await workerB.close();
+      }
+    },
+    30_000,
+  );
 });
 
 describe("markers, reverts, and resolution", () => {

@@ -23,6 +23,11 @@ function scopeKey(scope: InlineWebhookScope): string {
     .join(":");
 }
 
+interface InternalRetentionGuard {
+  beforeFlowWrite?: () => Promise<void>;
+  afterFlowWrite?: () => Promise<void>;
+}
+
 export interface VerifiedLateWebhook {
   sourceConnectionId: Types.ObjectId;
   eventId: string;
@@ -36,9 +41,18 @@ export async function retainClosedInlineWebhook(
   connection: Connection,
   scope: InlineWebhookScope,
   delivery: VerifiedLateWebhook,
+  internalBindingGuard?: InternalRetentionGuard,
 ): Promise<"retained" | "duplicate"> {
   if (!delivery.sourceConnectionId.equals(scope.sourceConnectionId)) {
     throw new Error("Verified webhook source does not match the closed scope");
+  }
+  if (internalBindingGuard) {
+    return retainWithBindingGuard(
+      connection,
+      scope,
+      delivery,
+      internalBindingGuard,
+    );
   }
   const gate = await records(connection).findOne(
     { _id: scopeKey(scope), closed: true },
@@ -78,6 +92,86 @@ export async function retainClosedInlineWebhook(
     });
     if (!existing) throw error;
     return "duplicate";
+  }
+}
+
+/** Test-only binding transaction. Production retention remains unchanged. */
+async function retainWithBindingGuard(
+  connection: Connection,
+  scope: InlineWebhookScope,
+  delivery: VerifiedLateWebhook,
+  guard: InternalRetentionGuard,
+): Promise<"retained" | "duplicate"> {
+  if (!connection.db) throw new Error("MongoDB connection is not open");
+  const db = connection.db;
+  const binding = {
+    flowId: scope.flowId,
+    workspaceId: scope.workspaceId,
+    dataSourceId: scope.sourceConnectionId,
+    eventId: delivery.eventId,
+  };
+  const session = await connection.startSession();
+  try {
+    try {
+      return await session.withTransaction(
+        async () => {
+          const gate = await records(connection).findOne(
+            { _id: scopeKey(scope), closed: true },
+            { session },
+          );
+          if (!gate) {
+            throw new Error("Webhook admission scope is not confirmed closed");
+          }
+          if (guard.beforeFlowWrite) await guard.beforeFlowWrite();
+          const locked = await db.collection("flows").updateOne(
+            {
+              _id: scope.flowId,
+              workspaceId: scope.workspaceId,
+              sourceType: "connector",
+              dataSourceId: scope.sourceConnectionId,
+            },
+            { $inc: { bindingRetentionEpoch: 1 } },
+            { session },
+          );
+          if (!locked.matchedCount) {
+            throw new Error(
+              "Webhook source no longer matches the effective flow binding",
+            );
+          }
+          if (guard.afterFlowWrite) await guard.afterFlowWrite();
+          await db.collection("webhookevents").insertOne(
+            {
+              ...binding,
+              eventType: delivery.eventType,
+              rawPayload: delivery.rawPayload,
+              ...(delivery.signature === undefined
+                ? {}
+                : { signature: delivery.signature }),
+              receivedAt: new Date(),
+              status: "dormant",
+              applyStatus: "dormant",
+              attempts: 0,
+              applyAttempts: 0,
+            },
+            { session },
+          );
+          return "retained" as const;
+        },
+        { writeConcern: { w: "majority" } },
+      );
+    } catch (error) {
+      if ((error as { code?: number }).code !== 11000) throw error;
+      if (
+        !(await db
+          .collection("webhookevents")
+          .findOne(binding, { readConcern: { level: "majority" } }))
+      ) {
+        throw error;
+      }
+      return "duplicate";
+    }
+  } finally {
+    await session.endSession();
   }
 }
 
