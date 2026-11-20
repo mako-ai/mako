@@ -202,6 +202,7 @@ test("staged: in a hidden tab (requestAnimationFrame never fires) a 100 ms timer
   const { win, mod, h, mount, wait } = env;
   globalThis.requestAnimationFrame = () => 1;
   globalThis.cancelAnimationFrame = () => {};
+  Object.defineProperty(win.document, "visibilityState", { value: "hidden", configurable: true });
   await mount(h("div", null, ...["a", "b"].map((id) => h(mod.Staged, { key: id, minHeight: 50 }, h("p", { id }, id)))));
   await wait(60);
   assert.equal(win.document.getElementById("a"), null, "not before the fallback delay");
@@ -210,6 +211,43 @@ test("staged: in a hidden tab (requestAnimationFrame never fires) a 100 ms timer
   assert.equal(win.document.getElementById("b"), null, "second panel waits for its own turn");
   await wait(150);
   assert.ok(win.document.getElementById("b"), "second panel after about 200 ms");
+});
+
+test("staged: frames slower than 100 ms still mount 1 panel per frame, none before the first frame (2.31.1)", async (t) => {
+  const env = await setup(t);
+  if (!env) return;
+  const { React, mod, h, mount, wait } = env;
+  // A visible tab under load: each frame takes 150 ms, longer than the hidden-tab timer.
+  let frames = 0;
+  globalThis.requestAnimationFrame = (cb) => setTimeout(() => (frames++, cb(performance.now())), 150);
+  globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
+  const at = [];
+  const Mark = ({ id }) => {
+    React.useEffect(() => {
+      at.push(frames);
+    }, [id]);
+    return h("p", { id }, id);
+  };
+  await mount(h("div", null, ...["a", "b", "c"].map((id) => h(mod.Staged, { key: id, minHeight: 10 }, h(Mark, { id })))));
+  await wait(700);
+  assert.equal(at.length, 3, "all 3 panels mount");
+  assert.ok(at[0] >= 1, `first panel waits for a painted frame (mounted after frame ${at[0]})`);
+  assert.equal(new Set(at).size, 3, `1 mount per frame: frames ${at.join(", ")}`);
+});
+
+test("staged: a tab hidden while waiting for a frame switches to the 100 ms timer", async (t) => {
+  const env = await setup(t);
+  if (!env) return;
+  const { win, mod, h, mount, wait } = env;
+  globalThis.requestAnimationFrame = () => 1;
+  globalThis.cancelAnimationFrame = () => {};
+  await mount(h(mod.Staged, { minHeight: 10 }, h("p", { id: "a" }, "a")));
+  await wait(150);
+  assert.equal(win.document.getElementById("a"), null, "visible tab: no timer, waits for the frame");
+  Object.defineProperty(win.document, "visibilityState", { value: "hidden", configurable: true });
+  win.document.dispatchEvent(new win.Event("visibilitychange"));
+  await wait(150);
+  assert.ok(win.document.getElementById("a"), "hidden tab: the timer mounts it");
 });
 
 test("staged: a panel unmounted before its turn spends no frame", async (t) => {
@@ -226,6 +264,42 @@ test("staged: a panel unmounted before its turn spends no frame", async (t) => {
   assert.ok(win.document.getElementById("a") && win.document.getElementById("c"));
   assert.equal(win.document.getElementById("b"), null);
   assert.equal(frames, 2, "2 frames for 2 live panels; the unmounted one took none");
+});
+
+test("staged: unmounting the active panel releases frame 1 to the next panel", async (t) => {
+  const env = await setup(t);
+  if (!env) return;
+  const { React, win, mod, h, mount } = env;
+  const frames = new Map();
+  let nextId = 0;
+  globalThis.requestAnimationFrame = (cb) => {
+    frames.set(++nextId, cb);
+    return nextId;
+  };
+  globalThis.cancelAnimationFrame = (id) => frames.delete(id);
+  const addListener = t.mock.method(win.document, "addEventListener");
+  const removeListener = t.mock.method(win.document, "removeEventListener");
+  const panel = (id) => h(mod.Staged, { key: id, minHeight: 10 }, h("p", { id }, id));
+
+  await mount(h("div", null, panel("a"), panel("b")));
+  assert.deepEqual([...frames.keys()], [1], "the first panel already holds the active request");
+  const [, firstListener] = addListener.mock.calls.find(({ arguments: args }) => args[0] === "visibilitychange").arguments;
+  await mount(h("div", null, panel("b")));
+  const firstRequestCancelled = !frames.has(1);
+  const firstListenerRemoved = removeListener.mock.calls.some(({ arguments: args }) => args[0] === "visibilitychange" && args[1] === firstListener);
+  assert.equal(win.document.getElementById("b"), null, "the next panel still waits for the frame");
+
+  await React.act(async () => {
+    const callbacks = [...frames.values()];
+    frames.clear();
+    for (const cb of callbacks) cb(performance.now());
+    await sleep(20);
+  });
+  assert.ok(win.document.getElementById("b"), "the next live panel mounts after frame 1");
+  assert.equal(win.document.getElementById("a"), null);
+  assert.ok(firstRequestCancelled, "unmount cancels the active request");
+  assert.ok(firstListenerRemoved, "unmount removes the old visibility listener");
+  assert.equal(frames.size, 0, "no second frame is needed");
 });
 
 test("useStagedMount: steps 0 to count, one per frame, then stops", async (t) => {

@@ -66,29 +66,40 @@ function Deferred({ minHeight, rootMargin = "800px 0px", mode = "visible", place
 // turn in this one queue: one panel per painted frame, in mount order.
 let turn: Promise<void> = Promise.resolve()
 
-// Runs `cb` after the next painted frame and one task. A hidden tab never fires requestAnimationFrame, so a
-// 100 ms timer races it: whichever fires first runs `cb`, and the other is cancelled.
+// Runs `run` once: after the next painted frame and one task in a visible tab, or after a 100 ms timer in a
+// hidden one (a hidden tab never fires requestAnimationFrame). The timer runs only while the tab is hidden, so
+// frames slower than 100 ms never let it fire between paints. A visibilitychange swaps the waiting path.
 const FRAME_FALLBACK_MS = 100
-function afterFrame(cb: () => void): () => void {
+function afterFrame(run: () => void): () => void {
   let frame = 0
   let task = 0
   let fallback = 0
-  const cancel = () => {
+  const cb = () => {
+    stop()
+    run()
+  }
+  const stop = () => {
     cancelAnimationFrame(frame)
     window.clearTimeout(task)
     window.clearTimeout(fallback)
+    document.removeEventListener("visibilitychange", arm)
   }
-  frame = requestAnimationFrame(() => {
-    window.clearTimeout(fallback)
-    task = window.setTimeout(cb, 0)
-  })
-  fallback = window.setTimeout(() => {
+  function arm() {
     cancelAnimationFrame(frame)
-    cb()
-  }, FRAME_FALLBACK_MS)
-  return cancel
+    window.clearTimeout(fallback)
+    if (document.visibilityState === "hidden") {
+      fallback = window.setTimeout(cb, FRAME_FALLBACK_MS)
+      return
+    }
+    frame = requestAnimationFrame(() => {
+      document.removeEventListener("visibilitychange", arm)
+      task = window.setTimeout(cb, 0)
+    })
+  }
+  document.addEventListener("visibilitychange", arm)
+  arm()
+  return stop
 }
-const nextFrame = () => new Promise<void>((done) => afterFrame(done))
 
 /** Shows a Skeleton of `minHeight`, then mounts `children` on its own frame, one panel at a time. */
 function Staged({ minHeight, placeholder, children }: {
@@ -101,10 +112,23 @@ function Staged({ minHeight, placeholder, children }: {
   const [ready, setReady] = React.useState(false)
   React.useEffect(() => {
     let live = true
-    // A panel unmounted before its turn spends no frame.
-    turn = turn.then(() => (live ? nextFrame().then(() => { if (live) setReady(true) }) : undefined))
+    let cancel: (() => void) | undefined
+    turn = turn.then(() => {
+      if (!live) return
+      return new Promise<void>((done) => {
+        const stop = afterFrame(done)
+        cancel = () => {
+          stop()
+          done() // Release the queue without waiting for the cancelled frame or timer.
+        }
+      }).then(() => {
+        cancel = undefined
+        if (live) setReady(true)
+      })
+    })
     return () => {
       live = false
+      cancel?.()
     }
   }, [])
   return ready ? <>{children}</> : <Placeholder slot="staged" minHeight={minHeight} placeholder={placeholder} />
