@@ -70,17 +70,6 @@ void test("connector.yaml is a node folder with its entry", () => {
   assert.equal(parsed.value.entry, "connector.ts");
 });
 
-void test("users re-reads every membership, so it declares no incremental mode", () => {
-  const entities = spec?.mako?.entities ?? {};
-  assert.equal(entities.users?.incremental, undefined);
-  // custom_fields and the 5 Search entities keep theirs.
-  assert.equal(entities.custom_fields?.incremental, "native");
-  assert.equal(entities.leads?.incremental, "native");
-  // Its cursor still stamps the record time.
-  const users = streams.find(s => s.name === "users");
-  assert.deepEqual(users?.default_cursor_field, ["date_updated"]);
-});
-
 /** Every file under golden/, as paths relative to it. */
 function goldenFiles(dir: string, prefix = ""): string[] {
   return fs

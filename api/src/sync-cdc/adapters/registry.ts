@@ -109,28 +109,6 @@ export interface CdcDestinationAdapter {
   ): Promise<void>;
 
   /**
-   * Live (not soft-deleted) rows of the entity's table, and how many of them
-   * have a key outside `ids`. Undefined when the table is missing or the
-   * count failed. Backs the poll's soft-delete sweep.
-   */
-  countLiveRows?(
-    layout: CdcEntityLayout,
-    keyColumn: string,
-    ids: readonly string[],
-  ): Promise<{ live: number; missing: number } | undefined>;
-  /**
-   * Soft-delete every live row whose key column is not in `ids`: one UPDATE
-   * setting is_deleted, deleted_at and _mako_deleted_at. The caller owns the
-   * guards (sync-cdc/soft-delete-missing.ts). Absent on adapters that cannot
-   * do it; the caller then logs and does nothing.
-   */
-  softDeleteRowsNotIn?(
-    layout: CdcEntityLayout,
-    keyColumn: string,
-    ids: readonly string[],
-  ): Promise<{ marked: number | undefined }>;
-
-  /**
    * Rewrite an existing live table's partitioning/clustering in place by
    * copying its current rows into a freshly-laid-out table and atomically
    * swapping it in — avoiding a full re-fetch from the source. Returns

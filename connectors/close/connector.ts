@@ -195,14 +195,8 @@ const CUSTOM_FIELD_ENTITIES = new Set([
   "custom_objects",
 ]);
 
-/**
- * Entities with a cursor that read in full: they keep `cursorField` (record
- * timestamps) but declare no incremental mode, so Mako treats them as "none".
- * `users` re-reads every membership on every poll and ignores `since`.
- */
-const CURSOR_ONLY = new Set(["users"]);
-/** Search entities and `custom_fields` report a native anchor. */
-const INCREMENTAL = new Set(["custom_fields"]);
+/** Search entities and `users`/`custom_fields` report a native anchor. */
+const INCREMENTAL = new Set(["users", "custom_fields"]);
 
 function entity(
   name: string,
@@ -218,13 +212,10 @@ function entity(
     ...(description ? { description } : {}),
     primaryKey: ["id"],
     // `native` where in-process reports it: the Search entities filter on
-    // `date_updated`; custom_fields reports it but re-reads all. `users`
-    // re-reads all too and declares none.
+    // `date_updated`; users and custom_fields report it but re-read all.
     ...(incremental
       ? { cursorField: "date_updated", incremental: "native" as const }
-      : CURSOR_ONLY.has(name)
-        ? { cursorField: "date_updated" }
-        : {}),
+      : {}),
     layout: LAYOUT,
     schema: fields,
     // A whole JSON Schema, so `id` can be required and custom fields typed.
