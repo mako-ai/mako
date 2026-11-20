@@ -17,8 +17,8 @@ import {
   freezeClock,
   searchLimits,
   startRecordingServer,
-} from "../../../../connectors/close/fixtures/harness.mjs";
-import { buildDataset } from "../../../../connectors/close/fixtures/dataset.mjs";
+} from "../../../connectors/close/fixtures/harness.mjs";
+import { buildDataset } from "../../../connectors/close/fixtures/dataset.mjs";
 
 /**
  * The folder's modules, loaded at run time: they import with `.ts`

@@ -26,9 +26,8 @@ import {
 
 /**
  * Four ways, whatever the service: a bearer token, an API key in a header or
- * in the query string, or basic auth. A connector fixes its own (Close sends
- * its key as basic auth, Stripe as a bearer token); a Custom API
- * connection picks one, or a Google service account, whose key makes a
+ * in the query string, or basic auth. A connector fixes its own (Stripe
+ * sends its key as a bearer token); a Custom API connection picks one, or a Google service account, whose key makes a
  * short-lived bearer token for each request (`wireCredential`).
  */
 const CREDENTIAL_TYPES = [
@@ -259,8 +258,8 @@ function carriedSecrets(credential: Credential): string[] {
     case "none":
       return [];
     case "basic":
-      // The password, or the username when it is the key (Close, no
-      // password); a plain username like `api` would scrub ordinary text.
+      // The password, or the username when it is the key (no password); a
+      // plain username like `api` would scrub ordinary text.
       return [credential.password || credential.username];
     case "google_service_account":
     case "google_id_token":
@@ -403,48 +402,6 @@ function safeJson(value: string): unknown {
 // ---------------------------------------------------------------------------
 // Built-in connectors: each fixes its own credential type
 // ---------------------------------------------------------------------------
-
-/** The base URL the built-in Close connector uses (connectors/close). */
-const CLOSE_BASE_URL = "https://api.close.com/api/v1";
-
-/** A POST the caller asked Close to read as a GET. */
-function closeReadsAsGet(request: RequestShape): boolean {
-  return request.method === "POST" && request.methodOverride === "GET";
-}
-
-const close: CallableConnection = {
-  type: "close",
-  baseUrl: () => CLOSE_BASE_URL,
-  baseUrlFields: [],
-  // Close: the API key as the basic-auth username, no password.
-  credential: config => ({
-    type: "basic",
-    username: text(config.api_key),
-    password: "",
-  }),
-  reads(request) {
-    // Only a POST can be a read here: Close reads a POST as a GET when told
-    // so (the connector lists leads that way), and its search API only
-    // searches. Any other method writes, whatever its headers say.
-    if (request.method !== "POST") return false;
-    if (closeReadsAsGet(request)) return true;
-    return /^\/data\/search\/?$/.test(request.path);
-  },
-  // The caller's override is never forwarded; this is the one Mako sends.
-  methodOverrides: ["GET"],
-  extraHeaders: (request): Record<string, string> =>
-    closeReadsAsGet(request) ? { "x-http-method-override": "GET" } : {},
-  rateGate(connection) {
-    // The connector's own gate: keyed by the key, at least 500 ms apart.
-    return {
-      key: text(connection.config?.api_key) || connectionGateKey(connection),
-      minDelayMs: Math.max(
-        500,
-        Number(connection.settings?.rate_limit_delay_ms) || 200,
-      ),
-    };
-  },
-};
 
 const stripe: CallableConnection = {
   type: "stripe",
@@ -829,7 +786,7 @@ export const customApi: CallableConnection = {
 };
 
 const CALLABLE = new Map<string, CallableConnection>(
-  [close, stripe, posthog, customApi].map(c => [c.type, c]),
+  [stripe, posthog, customApi].map(c => [c.type, c]),
 );
 
 /** How Mako calls a connection of `type`, or null when it cannot yet. */

@@ -5,14 +5,14 @@
  * files. Close is a small local server that serves single objects, so every
  * request the handler makes is seen. No real data, no network.
  *
- * The rule is the in-process connector's (PR 1314): a Close payload leaves
+ * The rule (PR 1314): a Close payload leaves
  * out an object's expansions, so a partial upsert is filled from
  * `GET /<object>/<id>/?_fields=<missing>` before it is answered. Only absent
  * keys are filled and the webhook's own values win. A 404 drops the record.
  * A failed read fails the event for a retry. A spent budget defers it. A
  * partial record is never answered unfilled, so it never writes NULLs.
  *
- * Run: node --import tsx src/connectors/close/folder-webhook-batches.test.ts
+ * Run: node --import tsx src/connectors/close-folder-webhook-batches.test.ts
  */
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
@@ -22,24 +22,32 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { SandboxedConnector } from "../workspace/SandboxedConnector";
-import type { LoadedConnector } from "../workspace/resolver";
-import type { ConnectorCommand, RunResult } from "../workspace/sync-box";
+import { SandboxedConnector } from "./workspace/SandboxedConnector";
+import type { LoadedConnector } from "./workspace/resolver";
+import type { ConnectorCommand, RunResult } from "./workspace/sync-box";
 import {
   FOLDER,
   RUNNER,
   ensureFolderInstalled,
   folderEnv,
   runFolderCommand,
-} from "../../../../connectors/close/fixtures/harness.mjs";
-import { buildWebhookEvents } from "../../../../connectors/close/fixtures/webhook-events.mjs";
-import { CloseConnector } from "./connector";
-import { CLOSE_WEBHOOK_FILL_FIELDS } from "./webhooks";
+} from "../../../connectors/close/fixtures/harness.mjs";
+import { buildWebhookEvents } from "../../../connectors/close/fixtures/webhook-events.mjs";
 
 process.env.CONNECTOR_WEBHOOK_BATCHES = "true";
 
 const API_KEY = "api_test_webhooks";
 let spec: Record<string, any>;
+/** The folder's own fill table (webhook-handler.ts), loaded at run time. */
+let CLOSE_WEBHOOK_FILL_FIELDS: Record<
+  string,
+  {
+    path: string;
+    fields: readonly string[];
+    search?: string;
+    fillEmpty?: boolean;
+  }
+>;
 
 /** A Close that serves objects by id. Every request is recorded. */
 const objects = new Map<string, Record<string, unknown>>();
@@ -198,14 +206,16 @@ function partial(
 const outcomesOf = (result: RunResult): any[] =>
   result.messages.filter(m => m.type === "WEBHOOK").map(m => m.webhook);
 
-void test("the folder fills the same fields from the same objects as the in-process connector", async () => {
+void test("the folder declares its fill table, verification and 86 events", async () => {
   const folder = await import(
     pathToFileURL(path.join(FOLDER, "webhook-handler.ts")).href
   );
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(folder.CLOSE_WEBHOOK_FILL_FIELDS)),
-    JSON.parse(JSON.stringify(CLOSE_WEBHOOK_FILL_FIELDS)),
+  CLOSE_WEBHOOK_FILL_FIELDS = JSON.parse(
+    JSON.stringify(folder.CLOSE_WEBHOOK_FILL_FIELDS),
   );
+  for (const entity of ["leads", "contacts", "opportunities"]) {
+    assert.ok(CLOSE_WEBHOOK_FILL_FIELDS[entity].fields.length > 0, entity);
+  }
   assert.deepEqual(spec.mako.webhooks.verification, {
     scheme: "hmac-sha256",
     secretEncoding: "hex",
@@ -244,19 +254,6 @@ void test("partial upserts are filled by object GET, the webhook's values win, a
     buildWebhookEvents(["activity.call.created"])[0],
     buildWebhookEvents(["lead.deleted"])[0],
   ].map(e => ({ receivedAt: "2026-11-16T11:00:00.000Z", ...e }));
-
-  // The problem, as the extraction alone has it: the columns are absent.
-  const builtIn = new CloseConnector({
-    _id: "665f000000000000000000c0",
-    name: "PL Close",
-    type: "close",
-    config: { api_key: API_KEY },
-  } as never);
-  const extracted = builtIn.extractWebhookCdcRecords(
-    events[0].rawPayload,
-    "lead.updated",
-  )[0].payload as Record<string, unknown>;
-  for (const field of lead) assert.equal(field in extracted, false, field);
 
   handed.length = 0;
   requests.length = 0;

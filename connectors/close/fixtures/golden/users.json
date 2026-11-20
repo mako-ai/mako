@@ -1,0 +1,123 @@
+[
+  {
+    "_mako_deleted_at": null,
+    "date_created": "2024-01-02T08:00:00.000000+00:00",
+    "date_updated": "2026-10-01T08:00:00.000000+00:00",
+    "email": "user0001@example.com",
+    "email_verified_at": "2024-01-02T08:00:00.000000+00:00",
+    "first_name": "User",
+    "google_profile_image_url": null,
+    "id": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "image": null,
+    "is_active": true,
+    "last_name": "0001",
+    "last_used_timezone": "Europe/Warsaw",
+    "organizations": [
+      "orga_fixture000000000000000000000000000000"
+    ]
+  },
+  {
+    "_mako_deleted_at": null,
+    "date_created": "2024-01-03T08:00:00.000000+00:00",
+    "date_updated": "2026-10-02T08:00:00.000000+00:00",
+    "email": "user0002@example.com",
+    "email_verified_at": "2024-01-03T08:00:00.000000+00:00",
+    "first_name": "User",
+    "google_profile_image_url": null,
+    "id": "user_1PZkoDAFFKzMQKr2ccKA3VVcxe8j9oTh1PZkoDAFF",
+    "image": null,
+    "is_active": true,
+    "last_name": "0002",
+    "last_used_timezone": "Europe/Warsaw",
+    "organizations": [
+      "orga_fixture000000000000000000000000000000"
+    ]
+  },
+  {
+    "_mako_deleted_at": null,
+    "date_created": "2024-01-04T08:00:00.000000+00:00",
+    "date_updated": "2026-10-03T08:00:00.000000+00:00",
+    "email": "user0003@example.com",
+    "email_verified_at": "2024-01-04T08:00:00.000000+00:00",
+    "first_name": "User",
+    "google_profile_image_url": null,
+    "id": "user_DuFeuefkocQPG3JA47cEC4XbOWocLJTlDuFeuefko",
+    "image": null,
+    "is_active": true,
+    "last_name": "0003",
+    "last_used_timezone": "Europe/Warsaw",
+    "organizations": [
+      "orga_fixture000000000000000000000000000000"
+    ]
+  },
+  {
+    "_mako_deleted_at": null,
+    "date_created": "2024-01-05T08:00:00.000000+00:00",
+    "date_updated": "2026-10-04T08:00:00.000000+00:00",
+    "email": "user0004@example.com",
+    "email_verified_at": "2024-01-05T08:00:00.000000+00:00",
+    "first_name": "User",
+    "google_profile_image_url": null,
+    "id": "user_Qs5zCJd6IC3QBVisUnumqCkvttXO8YvNQs5zCJd6I",
+    "image": null,
+    "is_active": true,
+    "last_name": "0004",
+    "last_used_timezone": "Europe/Warsaw",
+    "organizations": [
+      "orga_fixture000000000000000000000000000000"
+    ]
+  },
+  {
+    "_mako_deleted_at": null,
+    "date_created": "2024-01-06T08:00:00.000000+00:00",
+    "date_updated": "2026-10-05T08:00:00.000000+00:00",
+    "email": "user0005@example.com",
+    "email_verified_at": "2024-01-06T08:00:00.000000+00:00",
+    "first_name": "User",
+    "google_profile_image_url": null,
+    "id": "user_9kI3GczSq1aUdi3DI47Ze2i1qEHsYIoX9kI3GczSq",
+    "image": null,
+    "is_active": true,
+    "last_name": "0005",
+    "last_used_timezone": "Europe/Warsaw",
+    "organizations": [
+      "orga_fixture000000000000000000000000000000"
+    ]
+  },
+  {
+    "_mako_deleted_at": "2026-10-06T08:00:00.000000+00:00",
+    "date_created": "2024-01-07T08:00:00.000000+00:00",
+    "date_updated": "2026-10-06T08:00:00.000000+00:00",
+    "email": "user0006@example.com",
+    "email_verified_at": "2024-01-07T08:00:00.000000+00:00",
+    "first_name": "User",
+    "google_profile_image_url": null,
+    "id": "user_X7KYNGABai69doEmC5kLcAN07LmLJPZQX7KYNGABa",
+    "image": null,
+    "is_active": false,
+    "is_deleted": true,
+    "last_name": "0006",
+    "last_used_timezone": "Europe/Warsaw",
+    "organizations": [
+      "orga_fixture000000000000000000000000000000"
+    ]
+  },
+  {
+    "_mako_deleted_at": "2026-10-07T08:00:00.000000+00:00",
+    "date_created": "2024-01-08T08:00:00.000000+00:00",
+    "date_updated": "2026-10-07T08:00:00.000000+00:00",
+    "email": "user0007@example.com",
+    "email_verified_at": "2024-01-08T08:00:00.000000+00:00",
+    "first_name": "User",
+    "google_profile_image_url": null,
+    "id": "user_W3Doo6OUutk22MfTPr3KLEB0DRju9X9JW3Doo6OUu",
+    "image": null,
+    "is_active": false,
+    "is_deleted": true,
+    "last_name": "0007",
+    "last_used_timezone": "Europe/Warsaw",
+    "organizations": [
+      "orga_fixture000000000000000000000000000000"
+    ]
+  }
+]

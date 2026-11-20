@@ -1,6 +1,7 @@
 /**
- * What the Close folder (`connectors/close/`) reads by polling that the
- * in-process connector gets only from webhooks (the harness's `FOLDER_ONLY`):
+ * What the Close folder (`connectors/close/`) reads by polling, which the
+ * deleted in-process connector got only from webhooks (the harness's
+ * `FOLDER_ONLY`):
  *
  * - `custom_fields` reads all 6 custom-field lists, activity and
  *   custom-object fields included, each typed;
@@ -22,10 +23,10 @@ import {
   FOLDER_ONLY,
   startRecordingServer,
   withoutFolderOnly,
-} from "../../../../connectors/close/fixtures/harness.mjs";
-import { buildDataset } from "../../../../connectors/close/fixtures/dataset.mjs";
-import { jsonSchemaToEntitySchema } from "../workspace/spec-translation";
-import { normalizePayloadBySchema } from "../../sync-cdc/normalization";
+} from "../../../connectors/close/fixtures/harness.mjs";
+import { buildDataset } from "../../../connectors/close/fixtures/dataset.mjs";
+import { jsonSchemaToEntitySchema } from "./workspace/spec-translation";
+import { normalizePayloadBySchema } from "../sync-cdc/normalization";
 
 /** The folder's modules: they import with `.ts` extensions. */
 const load = (file: string) =>

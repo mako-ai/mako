@@ -210,7 +210,7 @@ beforeEach(async () => {
     _id: new Types.ObjectId(CONNECTOR),
     workspaceId,
     name: "Close",
-    type: "close",
+    type: "stripe",
   } as any);
   await DatabaseConnection.collection.insertOne({
     _id: new Types.ObjectId(DEST),

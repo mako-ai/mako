@@ -81,6 +81,12 @@ const CAPTURED_WORKFLOW = "RunBindingProof";
 const WORKER_KEY = "revops_worker_proxy_key_tests_only";
 const PERSON_KEY = "revops_person_proxy_key_tests_only";
 const CLOSE_KEY = "api_closekey_do_not_leak_4f9a2c";
+/** A Custom API connection sending its key as the basic-auth username. */
+const CLOSE_STYLE_CONFIG = {
+  base_url: "https://api.close.com/api/v1",
+  auth_type: "basic",
+  username: CLOSE_KEY,
+};
 const TENANT = "11111111-1111-1111-1111-111111111111";
 const HATCHET_TOKEN = `x.${Buffer.from(
   JSON.stringify({ sub: TENANT, server_url: "https://hatchet.example" }),
@@ -360,15 +366,15 @@ async function main() {
     const close = await SourceConnection.create({
       workspaceId: ws,
       name: "ch_close",
-      type: "close",
-      config: { api_key: encryptString(CLOSE_KEY) },
+      type: "custom_api",
+      config: CLOSE_STYLE_CONFIG,
       settings,
       createdBy: "deployer",
     });
     const twin = {
       workspaceId: ws,
-      type: "close",
-      config: { api_key: encryptString(CLOSE_KEY) },
+      type: "custom_api",
+      config: CLOSE_STYLE_CONFIG,
       settings,
       createdBy: "deployer",
       liveReads: true,
@@ -1136,6 +1142,9 @@ async function main() {
     // Live readers listed: only they, and the writers, read live.
     const limited = await SourceConnection.create({
       ...twin,
+      // A Stripe connection: the one built-in with named operations here.
+      type: "stripe",
+      config: { api_key: encryptString(CLOSE_KEY) },
       name: "ch_limited",
       liveReaders: [{ principal: "user:deployer" }],
     });
@@ -1325,7 +1334,7 @@ async function main() {
         () =>
           callTool.execute({
             connectionId: "ch_limited",
-            operation: "search_leads",
+            operation: "search_customers",
             params: { query: "Dupont" },
           }),
       );
@@ -1353,7 +1362,7 @@ async function main() {
         connectionRequest({
           workspaceId: String(ws),
           connection: "ch_limited",
-          operation: { name: "search_leads", params: { query: "Dupont" } },
+          operation: { name: "search_customers", params: { query: "Dupont" } },
           actor: "user:deployer",
           readOnly: true,
           agentBudget: true,
@@ -1363,7 +1372,7 @@ async function main() {
     assert.equal(await search(), "ok");
     assert.equal(sent.length, sentBeforeOperation + 1);
     const searched = new URL(sent[sent.length - 1].url);
-    assert.equal(searched.pathname, "/api/v1/lead/");
+    assert.equal(searched.pathname, "/v1/customers/search");
     assert.equal(searched.searchParams.get("query"), "Dupont");
     assert.equal(await search(), "ok");
     assert.match(
@@ -1401,8 +1410,8 @@ async function main() {
     const builtin = await createSourceConnection({
       workspaceId: String(ws),
       userId: "deployer",
-      name: "new_close",
-      type: "close",
+      name: "new_stripe",
+      type: "stripe",
       config: { api_key: "k3y_value" },
     });
     assert.equal(builtin.liveReads, undefined);

@@ -1,0 +1,32 @@
+[
+  {
+    "api_create_only": false,
+    "back_reference_fields": [],
+    "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "date_created": "2024-03-05T08:00:00.000000+00:00",
+    "date_updated": "2024-03-05T08:00:00.000000+00:00",
+    "description": null,
+    "editable_with_roles": [],
+    "fields": [],
+    "id": "cotype_pcqAA3KjmsQ17gDvIzm15F6XAaIRWW11pcqAA3Kjm",
+    "name": "Object 1",
+    "name_plural": "Objects 1",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+  },
+  {
+    "api_create_only": false,
+    "back_reference_fields": [],
+    "created_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U",
+    "date_created": "2024-03-06T08:00:00.000000+00:00",
+    "date_updated": "2024-03-06T08:00:00.000000+00:00",
+    "description": null,
+    "editable_with_roles": [],
+    "fields": [],
+    "id": "cotype_O2e6xF5SgfHX1BPX2UD2yqv6iRk9COedO2e6xF5Sg",
+    "name": "Object 2",
+    "name_plural": "Objects 2",
+    "organization_id": "orga_fixture000000000000000000000000000000",
+    "updated_by": "user_l9ezENF9Ug1WcC9UjnjvOmXOgPniDEzql9ezENF9U"
+  }
+]

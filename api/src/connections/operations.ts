@@ -1,6 +1,6 @@
 /**
- * Named read operations on a source connection: "search Close leads", "run
- * a HogQL query", "get a Stripe customer", without knowing the vendor's API.
+ * Named read operations on a source connection: "run a HogQL
+ * query", "get a Stripe customer", without knowing the vendor's API.
  *
  * Code, not stored. An operation only builds an ordinary request (method,
  * path, query, body) from a few parameters. That request then goes through
@@ -52,16 +52,6 @@ function required(params: Params, name: string): string {
   return value.trim();
 }
 
-/** An optional string parameter. */
-function optional(params: Params, name: string): string | undefined {
-  const value = params[name];
-  if (value === undefined || value === null || value === "") return undefined;
-  if (typeof value !== "string") {
-    throw new ConnectionRequestError(`params.${name} must be a string.`);
-  }
-  return value.trim();
-}
-
 /** An id that goes into a path: one segment, nothing a server could split. */
 function idParam(params: Params, name: string): string {
   const value = required(params, name);
@@ -86,90 +76,10 @@ export function limitParam(params: Params): number {
   return Math.min(value, OPERATION_MAX_LIMIT);
 }
 
-/** `params.skip`: a non-negative integer, default 0. */
-function skipParam(params: Params): number {
-  const value = Number(params.skip ?? 0);
-  if (!Number.isInteger(value) || value < 0) {
-    throw new ConnectionRequestError(
-      "params.skip must be a non-negative integer.",
-    );
-  }
-  return value;
-}
-
 const LIMIT = param(
   "limit",
   `Records per page (default ${OPERATION_DEFAULT_LIMIT}, max ${OPERATION_MAX_LIMIT}).`,
 );
-
-// ---------------------------------------------------------------------------
-// Close
-// ---------------------------------------------------------------------------
-
-const CLOSE_LEAD_FIELDS =
-  "id,display_name,status_label,contacts,date_created,date_updated,url";
-
-const CLOSE: ConnectionOperation[] = [
-  {
-    name: "search_leads",
-    description:
-      'Search leads with Close\'s search syntax: a name, an email, a phone, or a query like `email_address:"a@b.com"` or `name:"Dupont"`.',
-    params: [
-      param("query", "Close search text or query.", true),
-      LIMIT,
-      param("skip", "Records to skip, for the next page."),
-      param("fields", `Comma-separated fields (default ${CLOSE_LEAD_FIELDS}).`),
-    ],
-    build: params => ({
-      method: "GET",
-      path: "/lead/",
-      query: {
-        query: required(params, "query"),
-        _limit: limitParam(params),
-        _skip: skipParam(params),
-        _fields: optional(params, "fields") ?? CLOSE_LEAD_FIELDS,
-      },
-    }),
-  },
-  {
-    name: "get_lead",
-    description: "One lead with its contacts, opportunities and custom fields.",
-    params: [param("id", "Lead id (lead_…).", true)],
-    build: params => ({
-      method: "GET",
-      path: `/lead/${idParam(params, "id")}/`,
-    }),
-  },
-  {
-    name: "list_opportunities",
-    description:
-      "Opportunities, filtered by lead and status type, most recently updated first.",
-    params: [
-      param("lead_id", "Only this lead's opportunities."),
-      param("status_type", "active, won or lost."),
-      param("updated_since", "ISO date: only those updated since."),
-      LIMIT,
-      param("skip", "Records to skip, for the next page."),
-    ],
-    build: params => {
-      const lead = optional(params, "lead_id");
-      const status = optional(params, "status_type");
-      const since = optional(params, "updated_since");
-      return {
-        method: "GET",
-        path: "/opportunity/",
-        query: {
-          ...(lead ? { lead_id: lead } : {}),
-          ...(status ? { status_type: status } : {}),
-          ...(since ? { date_updated__gte: since } : {}),
-          _order_by: "-date_updated",
-          _limit: limitParam(params),
-          _skip: skipParam(params),
-        },
-      };
-    },
-  },
-];
 
 // ---------------------------------------------------------------------------
 // PostHog
@@ -262,7 +172,6 @@ const STRIPE: ConnectionOperation[] = [
 ];
 
 const OPERATIONS: Record<string, ConnectionOperation[]> = {
-  close: CLOSE,
   posthog: POSTHOG,
   stripe: STRIPE,
 };
