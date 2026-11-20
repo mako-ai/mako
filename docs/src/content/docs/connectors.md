@@ -77,6 +77,7 @@ From a workflow, see [Workflows](/workflows/#calling-a-service-through-a-connect
 | Connector | Operations                                                                                                           |
 | --------- | -------------------------------------------------------------------------------------------------------------------- |
 | Close     | `search_leads` { query }, `get_lead` { id }, `list_opportunities` { lead_id, status_type, updated_since }            |
+| PostHog   | `hogql` { query }, `search_persons` { search }                                                                       |
 | Stripe    | `search_customers` { query }, `get_customer` { id }, `list_subscriptions` { customer }, `list_invoices` { customer } |
 
 `inspect_connection` lists a connection's operations under `access.operations`. Answers over 40,000 characters come back cut, and every answer is fenced as untrusted data.
