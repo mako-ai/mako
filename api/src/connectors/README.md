@@ -71,7 +71,6 @@ connectors/
 ├── calendly/
 ├── posthog/
 ├── graphql/
-├── bigquery/
 ├── rest/
 ├── registry.ts              # Runtime connector discovery for the API server
 └── README.md               # This file
