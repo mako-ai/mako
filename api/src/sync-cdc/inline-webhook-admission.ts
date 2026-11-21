@@ -47,10 +47,13 @@ export async function closeInlineWebhookAdmission(
 }
 
 /**
- * Persists a delivery only while its scope is open. The callback MUST persist
- * the delivery using the supplied session and must have no external side
- * effects: MongoDB may retry it. Every write needed to admit the delivery must
- * use that same session. The gate write and those writes commit together.
+ * Persists a delivery only while its scope is open. Admissions in the same
+ * scope serialize on one gate document until the transaction finishes.
+ * The driver can retry the transaction after a gate conflict. The failed
+ * attempt never reaches `persist`. A transient failure after `persist` starts
+ * can make the driver rerun it.
+ * `persist` MUST use the supplied MongoDB session for every write and MUST NOT
+ * perform external side effects. The gate and delivery writes commit together.
  * A successful admission does not imply that the delivery has been processed.
  */
 export async function admitInlineWebhook<T>(
