@@ -266,7 +266,7 @@ let failingMerges = new Set<number>();
 let mergeCalls = 0;
 const missingMergeCounts = new Set<number>();
 let failAfterDroppingStaging = false;
-let loseStagingBeforeMerge = false;
+let stagingLossPath: "flush" | "final" | undefined;
 /**
  * Rows a flush leaves in the buffer, as when flushBulkBuffer stops early on
  * an empty parquet: put back into the buffer by the next staging cleanup.
@@ -337,7 +337,11 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
     _s: unknown,
     o?: any,
   ) => {
-    if (loseStagingBeforeMerge && o?.expectStagedRows) {
+    if (
+      stagingLossPath &&
+      stagingLossPath === o?.mergePath &&
+      o.expectStagedRows
+    ) {
       staging.set(suffixOf(o), []);
     }
     const rowsInStaging = stagingOf(o);
@@ -381,6 +385,7 @@ vi.mock("../sync-cdc/adapters/registry", async () => {
 
 import { syncBackfillEntityFunction } from "../inngest/functions/sync-entity";
 import { cdcBackfillCheckpointService } from "../sync-cdc/sync-state";
+import { BULK_STAGED_FIELD, bulkBufferName } from "./sync-orchestrator";
 
 // ── Driver ────────────────────────────────────────────────────────────────
 
@@ -412,7 +417,7 @@ async function invoke(params: {
   poll?: boolean;
   interleave?: boolean;
   attempt?: number;
-  retryStep?: string;
+  retry?: { stepId: string; firstError: string; remainsFailed?: boolean };
   executionId?: string;
 }): Promise<{ completed: boolean; rowsWritten: number | null }> {
   const journal = collection(params.executionId ? "flow_executions" : "flows");
@@ -438,7 +443,7 @@ async function invoke(params: {
       const serialized =
         out === undefined ? undefined : JSON.parse(JSON.stringify(out));
       memo.set(id, serialized);
-      if (attempt === 1 && id === params.retryStep) throw yieldAfterRetry;
+      if (attempt === 1 && id === params.retry?.stepId) throw yieldAfterRetry;
       return serialized;
     },
     sleep: async () => undefined,
@@ -486,12 +491,12 @@ async function invoke(params: {
       return attempt;
     },
   };
-  if (params.retryStep) {
-    await expect(handler(context)).rejects.toThrow(
-      "MongoDB disconnected after the staging drop",
-    );
-    expect(memo.has(params.retryStep)).toBe(false);
+  if (params.retry) {
+    const { stepId, firstError, remainsFailed } = params.retry;
+    await expect(handler(context)).rejects.toThrow(firstError);
+    expect(memo.has(stepId)).toBe(false);
     attempt = 1;
+    if (remainsFailed) return handler(context);
     await expect(handler(context)).rejects.toBe(yieldAfterRetry);
     attempt = 0;
   }
@@ -776,7 +781,10 @@ describe("a backfill checkpoint never runs ahead of the flushed rows", () => {
       failAfterDroppingStaging = true;
       const result = await invoke({
         runId: "run-A",
-        retryStep: stepId,
+        retry: {
+          stepId,
+          firstError: "MongoDB disconnected after the staging drop",
+        },
         executionId: "69c781737eb58b93e5ac3386",
       });
       expectEveryRowExactlyOnce();
@@ -786,22 +794,45 @@ describe("a backfill checkpoint never runs ahead of the flushed rows", () => {
     120_000,
   );
 
-  it("rejects missing staging on retry without a completed merge receipt", async () => {
+  it("preserves the staged buffer and prior checkpoint when final staging is missing on replay", async () => {
     writeModeOfRun = "append";
-    sourceRows = rows(10);
-    loseStagingBeforeMerge = true;
+    sourceRows = rows(15_000);
+    stagingLossPath = "final";
+    const missingStaging = "Expected BigQuery staging table is missing";
     try {
-      await expect(invoke({ runId: "run-A", attempt: 1 })).rejects.toThrow(
-        "Expected BigQuery staging table is missing",
+      await expect(
+        invoke({
+          runId: "run-A",
+          retry: {
+            stepId: "merge-final-opportunities",
+            firstError: missingStaging,
+            remainsFailed: true,
+          },
+        }),
+      ).rejects.toThrow(missingStaging);
+      expect(live).toHaveLength(10_000);
+      expect(mergeCalls).toBe(1);
+      const checkpoint = entityStates.find(doc => doc.entity === ENTITY);
+      expect(checkpoint?.backfillCursor).toMatchObject({
+        totalProcessed: 10_000,
+        hasMore: true,
+        metadata: { rowsWrittenTotal: 10_000 },
+      });
+      expect(checkpoint?.backfillCompletedAt).toBeUndefined();
+      const buffer = collection(bulkBufferName(FLOW_ID, ENTITY, true));
+      expect(await buffer.countDocuments({ [BULK_STAGED_FIELD]: true })).toBe(
+        5_000,
       );
-      expect(live).toHaveLength(0);
-      expect(
-        entityStates.find(doc => doc.entity === ENTITY)?.backfillCursor,
-      ).toBeUndefined();
     } finally {
-      loseStagingBeforeMerge = false;
+      stagingLossPath = undefined;
     }
-  });
+
+    chunkStartOffsets = [];
+    const recovered = await invoke({ runId: "run-A" });
+    expect(chunkStartOffsets[0]).toBe(10_000);
+    expect(recovered).toMatchObject({ completed: true, rowsWritten: 15_000 });
+    expectEveryRowExactlyOnce();
+  }, 120_000);
 
   it("keeps an unknown partial flush count on the earlier checkpoint", async () => {
     sourceRows = rows(25_000);
