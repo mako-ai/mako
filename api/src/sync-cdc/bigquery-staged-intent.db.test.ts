@@ -4,9 +4,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   cleanupBigQueryStagedInput,
   holdBigQueryStagedInput,
+  holdBigQueryStagedMerge,
   initializeBigQueryStagedInputStore,
   readBigQueryStagedInput,
+  readPendingBigQueryQueryRequest,
   recordBigQueryStagedReceipt,
+  recordObservedBigQueryQueryResult,
   type BigQueryStagedIntent,
   type BigQueryTerminalReceipt,
 } from "./bigquery-staged-intent";
@@ -24,7 +27,9 @@ afterAll(async () => {
   await mongo.stop();
 });
 
-function makeIntent(suffix: string): BigQueryStagedIntent {
+function makeIntent(
+  suffix: string,
+): Extract<BigQueryStagedIntent, { configurationFingerprint: string }> {
   return {
     job: { project: "proj", location: "eu", id: `merge_${suffix}` },
     input: {
@@ -39,6 +44,186 @@ function makeIntent(suffix: string): BigQueryStagedIntent {
     configurationFingerprint: "synthetic-fixed-SQL-digest",
   };
 }
+
+function makeMerge(suffix: string) {
+  const { job, input, destination } = makeIntent(suffix);
+  return {
+    binding: { job, input, destination },
+    merge: {
+      columns: ["id"],
+      keyColumns: ["id"],
+      stagingCols: new Set(["id"]),
+      liveTypes: new Map([["id", "STRING"]]),
+    },
+    options: {
+      query: {
+        useLegacySql: false as const,
+        priority: "BATCH" as const,
+        maximumBytesBilled: "100000000",
+      },
+      labels: { pipeline: "cdc" },
+      jobTimeoutMs: "100000",
+    },
+  };
+}
+
+describe("BigQuery retained dispatch", () => {
+  it.each([false, true])(
+    "recovers the same warehouse request after reconnect, submitted before disconnect %s",
+    async submittedBeforeDisconnect => {
+      const { binding, merge, options } = makeMerge(
+        `dispatch_${submittedBeforeDisconnect}`,
+      );
+      const { job, input } = binding;
+      await holdBigQueryStagedMerge(binding, merge, options);
+      const original = await readPendingBigQueryQueryRequest(job);
+      if (!original) throw new Error("Missing original request");
+      expect(original).toEqual({
+        jobReference: {
+          projectId: job.project,
+          location: job.location,
+          jobId: job.id,
+        },
+        configuration: {
+          ...options,
+          query: { ...options.query, query: expect.any(String) },
+        },
+      });
+      expect(original.configuration.query.query).toContain(
+        "MERGE INTO `proj`.`live`.`recordings` __live",
+      );
+      expect(original.configuration.query.query).toContain(
+        `FROM \`proj\`.\`stage\`.\`${input.snapshot.table}\``,
+      );
+
+      const warehouse = new Map<string, typeof original>();
+      function submit(request: NonNullable<typeof original>) {
+        const jobId = request.jobReference.jobId;
+        if (warehouse.has(jobId)) return 409;
+        warehouse.set(jobId, structuredClone(request));
+        return 200;
+      }
+      if (submittedBeforeDisconnect) submit(original);
+
+      await mongoose.disconnect();
+      await mongoose.connect(mongo.getUri());
+      const recovered = await readPendingBigQueryQueryRequest(job);
+      if (!recovered) throw new Error("Missing recovered request");
+      expect(JSON.stringify(recovered)).toBe(JSON.stringify(original));
+      expect(submit(recovered)).toBe(submittedBeforeDisconnect ? 409 : 200);
+      expect(warehouse.size).toBe(1);
+      const done = {
+        ...warehouse.get(job.id),
+        status: { state: "DONE", errors: [{ reason: "warning" }] },
+        statistics: { query: { statementType: "MERGE" } },
+      };
+      await expect(recordObservedBigQueryQueryResult(job, done)).resolves.toBe(
+        true,
+      );
+      expect(await readPendingBigQueryQueryRequest(job)).toBeNull();
+      expect((await readBigQueryStagedInput(job))?.terminal).toMatchObject({
+        state: "DONE",
+        outcome: "succeeded",
+      });
+      const drop = vi.fn(async () => undefined);
+      expect(await cleanupBigQueryStagedInput(job, drop)).toBe(false);
+      expect(drop).not.toHaveBeenCalled();
+    },
+  );
+
+  it("holds a reservation until a matching job gives a terminal result", async () => {
+    const { binding, merge, options } = makeMerge("ambiguous");
+    const { job } = binding;
+    await holdBigQueryStagedMerge(binding, merge, options);
+    const request = await readPendingBigQueryQueryRequest(job);
+    if (!request) throw new Error("Missing staged request");
+    const completed = {
+      ...request,
+      status: { state: "DONE" },
+      statistics: { query: { statementType: "MERGE" } },
+    };
+    const { configuration, jobReference } = completed;
+    for (const observed of [
+      undefined,
+      { ...completed, status: { state: "RUNNING" } },
+      { ...completed, status: { state: "DONE", errorResult: {} } },
+      { ...completed, jobReference: { ...jobReference, projectId: "other" } },
+      { ...completed, jobReference: { ...jobReference, location: "us" } },
+      { ...completed, jobReference: { ...jobReference, jobId: "other" } },
+      { ...completed, configuration: { ...configuration, dryRun: true } },
+      {
+        ...completed,
+        configuration: { ...configuration, jobTimeoutMs: "100" },
+      },
+      { ...completed, configuration: { ...configuration, labels: {} } },
+      {
+        ...completed,
+        configuration: {
+          ...configuration,
+          query: {
+            ...configuration.query,
+            query: configuration.query.query.replace("`live`", "`other`"),
+          },
+        },
+      },
+      {
+        ...completed,
+        configuration: {
+          ...configuration,
+          query: { ...configuration.query, priority: "INTERACTIVE" },
+        },
+      },
+      {
+        ...completed,
+        configuration: {
+          ...configuration,
+          query: {
+            ...configuration.query,
+            defaultDataset: { datasetId: "other" },
+          },
+        },
+      },
+      { ...completed, statistics: { query: { statementType: "SELECT" } } },
+    ]) {
+      expect(await recordObservedBigQueryQueryResult(job, observed)).toBe(
+        false,
+      );
+    }
+    expect(await readPendingBigQueryQueryRequest(job)).toEqual(request);
+
+    const failure = {
+      ...completed,
+      jobReference: { ...jobReference, location: "EU" },
+      status: { state: "DONE", errorResult: { reason: "backendError" } },
+      statistics: { query: {} },
+    };
+    expect(await recordObservedBigQueryQueryResult(job, failure)).toBe(true);
+    expect(await recordObservedBigQueryQueryResult(job, completed)).toBe(false);
+    expect((await readBigQueryStagedInput(job))?.terminal).toMatchObject({
+      state: "DONE",
+      outcome: "failed",
+    });
+  });
+
+  it("keeps digest-only records out of the retained dispatch path", async () => {
+    const intent = makeIntent("legacy-digest");
+    await holdBigQueryStagedInput(intent);
+    expect(await readPendingBigQueryQueryRequest(intent.job)).toBeNull();
+    expect(await recordObservedBigQueryQueryResult(intent.job, {})).toBe(false);
+  });
+
+  it("keeps the original request when the same job ID is held with different SQL", async () => {
+    const { binding, merge, options } = makeMerge("same_job");
+    const { job } = binding;
+    await holdBigQueryStagedMerge(binding, merge, options);
+    const original = await readPendingBigQueryQueryRequest(job);
+    const edited = { ...merge, columns: ["id", "new_column"] };
+    await expect(
+      holdBigQueryStagedMerge(binding, edited, options),
+    ).rejects.toThrow("different staged write");
+    expect(await readPendingBigQueryQueryRequest(job)).toEqual(original);
+  });
+});
 
 describe("BigQuery staged input retention", () => {
   for (const submittedBeforeCrash of [false, true]) {
@@ -59,7 +244,9 @@ describe("BigQuery staged input retention", () => {
       await mongoose.connect(mongo.getUri());
       const restored = await readBigQueryStagedInput(intent.job);
       expect(restored?.intent).toEqual(intent);
-      if (!restored) throw new Error("Missing retained input after restart");
+      if (!restored || restored.intent.configuration !== undefined) {
+        throw new Error("Missing digest-only intent after restart");
+      }
       expect(await cleanupBigQueryStagedInput(restored.intent.job, drop)).toBe(
         false,
       );

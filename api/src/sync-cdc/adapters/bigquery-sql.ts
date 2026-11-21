@@ -97,6 +97,14 @@ function buildColumnSelectExpr(
 /** A backtick-quoted BigQuery identifier. */
 export const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
 
+/** Quote each part of a fully qualified BigQuery table name. */
+export function fullTableName(
+  target: { projectId: string; dataset: string },
+  table: string,
+): string {
+  return `${escId(target.projectId)}.${escId(target.dataset)}.${escId(table)}`;
+}
+
 // ---------------------------------------------------------------------------
 // Pure MERGE statement builder.
 // ---------------------------------------------------------------------------
