@@ -55,7 +55,11 @@ import {
 import { operationRequest } from "./operations";
 import { connectionAccessUrl } from "./access-url";
 import { addToCounter } from "../middleware/rate-limit";
-import { sourceConnectionManager } from "../sync/database-data-source-manager";
+import {
+  getSourceConnectionManager,
+  sourceConnectionManager,
+} from "../sync/database-data-source-manager";
+import { CUSTOM_API_TYPE } from "./kinds";
 import { loggers } from "../logging";
 import { getRequestContext } from "../logging/context";
 import type { RunOrigin } from "../workflows/runs";
@@ -363,10 +367,12 @@ export async function connectionRequest(
   if (row.isActive === false) {
     throw new ConnectionRequestError(`${row.name} is disabled.`, 403);
   }
-  // The stored credential, decrypted by the connector's own schema.
-  const loaded = await sourceConnectionManager.getSourceConnection(
-    String(row._id),
-  );
+  // Authorize Custom API calls against the same stored row as the credential.
+  // A second read could pick up an address or key with different grants.
+  const loaded =
+    row.type === CUSTOM_API_TYPE
+      ? await getSourceConnectionManager().toConfig(row)
+      : await sourceConnectionManager.getSourceConnection(String(row._id));
   if (!loaded) {
     throw new ConnectionRequestError(
       `No connection ${params.connection}.`,
