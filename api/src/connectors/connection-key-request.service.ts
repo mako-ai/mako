@@ -36,7 +36,12 @@ import {
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { syncConnectorRegistry } from "../sync/connector-registry";
-import { boxBusyProbeError, probeConnection } from "./probe.service";
+import {
+  boxBusyProbeError,
+  ProbeError,
+  probeConnection,
+} from "./probe.service";
+import { isCalendlyReleaseSelected } from "./workspace/registry/calendly-binding";
 import {
   SourceConnectionInputError,
   applySchemaEncryption,
@@ -452,6 +457,16 @@ export async function submitKey(input: {
     const busy = boxBusyProbeError(error);
     if (busy) {
       return { ...identity, check: { skipped: true, message: busy.message } };
+    }
+    if (
+      isCalendlyReleaseSelected(row.type) &&
+      error instanceof ProbeError &&
+      error.code === "connector_unavailable"
+    ) {
+      return {
+        ...identity,
+        check: { skipped: true, message: `Key saved. ${error.message}` },
+      };
     }
     result = {
       success: false,

@@ -65,6 +65,7 @@ import { syncConnectorRegistry } from "../sync/connector-registry";
 import {
   bindCalendlyRelease,
   isCalendlyReleaseSelected,
+  type CalendlyBinding,
 } from "./workspace/registry/calendly-binding";
 import {
   sourceConnectionManager,
@@ -397,9 +398,19 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
   }
   if (input.entity) await assertMayProbeEntity(workspaceId, owned);
 
-  const binding = useCalendlyRelease
-    ? await bindCalendlyRelease({ workspaceId, connectionId, type })
-    : null;
+  let binding: CalendlyBinding | null = null;
+  if (useCalendlyRelease) {
+    try {
+      binding = await bindCalendlyRelease({ workspaceId, connectionId, type });
+    } catch (error) {
+      const busy = boxBusyProbeError(error);
+      if (busy) throw busy;
+      throw new ProbeError(
+        "connector_unavailable",
+        "The selected Calendly release is unavailable. Retry the connection check.",
+      );
+    }
+  }
   const sourceConnection = binding
     ? await sourceConnectionManager.getBoundCalendlyConnection(binding)
     : await sourceConnectionManager.getSourceConnection(connectionId);

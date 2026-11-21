@@ -557,14 +557,15 @@ describe("Calendly real entrypoints with a synthetic box", () => {
       "does not match its recorded sha256",
     );
     const http = await callRoute("probe", { entity: "events", limit: 1 });
-    expect(http.status).toBeGreaterThanOrEqual(400);
-    expect(JSON.stringify(await http.json())).toContain(
-      "does not match its recorded sha256",
-    );
-    expect(await mcpProbe()).toHaveProperty(
-      "error",
-      expect.stringContaining("does not match its recorded sha256"),
-    );
+    expect(http.status).toBe(500);
+    expect(await http.json()).toMatchObject({
+      code: "connector_unavailable",
+      error: expect.stringContaining("Calendly release is unavailable"),
+    });
+    expect(await mcpProbe()).toMatchObject({
+      code: "connector_unavailable",
+      error: expect.stringContaining("Calendly release is unavailable"),
+    });
     expect(state.loads).toBe(0);
     expect(state.specCommands).toBe(0);
     expect(state.verifiedBytes).toEqual([]);

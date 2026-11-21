@@ -34,6 +34,7 @@ const ctx = vi.hoisted(() => ({
   role: "member" as string | null,
   /** Runs inside the probe: a write that lands during the check window. */
   duringProbe: null as null | (() => Promise<void>),
+  probeCalendlyRelease: false,
   authType: "session" as string,
   probe: { success: true, message: "ok" } as {
     success: boolean;
@@ -106,19 +107,40 @@ vi.mock("../connectors/registry", () => ({
   },
 }));
 
-vi.mock("../connectors/probe.service", async importOriginal => ({
-  ...(await importOriginal<typeof import("../connectors/probe.service")>()),
-  probeConnection: vi.fn(async () => {
-    await ctx.duringProbe?.();
-    return { check: ctx.probe };
+vi.mock("../connectors/probe.service", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../connectors/probe.service")>();
+  return {
+    ...actual,
+    probeConnection: vi.fn(
+      async (input: Parameters<typeof actual.probeConnection>[0]) => {
+        await ctx.duringProbe?.();
+        return ctx.probeCalendlyRelease
+          ? actual.probeConnection(input)
+          : { check: ctx.probe };
+      },
+    ),
+  };
+});
+
+vi.mock(
+  "../connectors/workspace/registry/calendly-binding",
+  async importOriginal => ({
+    ...(await importOriginal<
+      typeof import("../connectors/workspace/registry/calendly-binding")
+    >()),
+    bindCalendlyRelease: vi.fn(async () => {
+      throw new Error("Synthetic registry read failure");
+    }),
   }),
-}));
+);
 
 import { sourceConnectionRoutes } from "./source-connections";
 import { SourceConnection } from "../database/workspace-schema";
 import { createConnectionWriteTools } from "../agent-lib/tools/connection-write-tools";
 import { createConnectorTools } from "../agent-lib/tools/connector-tools";
 import { hashKeyToken } from "../connectors/connection-key-request.service";
+import { CALENDLY_RELEASE_PIN } from "../connectors/workspace/registry/calendly-binding";
 import { decryptString, encryptString } from "../services/crypto.service";
 
 let mongo: MongoMemoryServer;
@@ -210,6 +232,7 @@ beforeEach(async () => {
   ctx.role = "member";
   ctx.authType = "session";
   ctx.duringProbe = null;
+  ctx.probeCalendlyRelease = false;
   ctx.probe = { success: true, message: "ok" };
   await SourceConnection.deleteMany({});
 });
@@ -365,6 +388,38 @@ describe("the key link", () => {
     const fixed = await call("POST", token, { config: { api_key: SECRET } });
     expect(fixed.status).toBe(200);
     expect((await inspect(connectionId)).status).toBe("ready");
+  });
+
+  it("keeps the saved Calendly key when the selected release is unavailable", async () => {
+    const { connectionId, token } = await createWithoutKey(
+      "calendly_main",
+      "calendly",
+    );
+    ctx.probeCalendlyRelease = true;
+    CALENDLY_RELEASE_PIN.version = "1.0.0";
+    CALENDLY_RELEASE_PIN.sha256 = "a".repeat(64);
+    try {
+      const response = await call("POST", token, {
+        config: { api_key: SECRET },
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        data: {
+          connectionId,
+          check: {
+            skipped: true,
+            message: expect.stringContaining("Calendly"),
+          },
+        },
+      });
+      const row = await SourceConnection.findById(connectionId).lean();
+      expect(decryptString(String(row?.config.api_key))).toBe(SECRET);
+      expect(row?.keyRequest).toBeUndefined();
+      expect(row?.isActive).toBe(true);
+    } finally {
+      delete CALENDLY_RELEASE_PIN.version;
+      delete CALENDLY_RELEASE_PIN.sha256;
+    }
   });
 
   it("is for the connection's managers, not any member", async () => {
