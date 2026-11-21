@@ -22,6 +22,7 @@ import {
   compareEntitySchema,
   compareForm,
   ensureFolderInstalled,
+  expectedFolderSchema,
   formatReport,
   loadCassettes,
   runFolderCommand,
@@ -161,7 +162,11 @@ async function main() {
       entity,
       streams.find(s => s.name === entity),
     );
-    const result = compareEntitySchema(inProcess, folder, system);
+    const result = compareEntitySchema(
+      expectedFolderSchema(entity, inProcess),
+      folder,
+      system,
+    );
     if (!result.ok) failures++;
     const detail = result.ok
       ? "match"

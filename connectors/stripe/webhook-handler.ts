@@ -32,6 +32,7 @@
  * - Any other 4xx: `extract_failed`, retried up to Mako's 5 attempts.
  */
 import Stripe from "stripe";
+import { completeRefund } from "./refunds.ts";
 import type {
   Context,
   WebhookChangeRecord,
@@ -135,6 +136,8 @@ export const STRIPE_WEBHOOK_FILL_FIELDS: Readonly<
 > = Object.fromEntries(
   Object.keys(RETRIEVE).map(entity => {
     const skip = new Set(STRIPE_NOT_RETURNED[entity] ?? []);
+    // Stripe omits the reason on a complete refund once it is no longer pending.
+    if (entity === "refunds") skip.add("pending_reason");
     return [
       entity,
       Object.keys(STRIPE_ENTITY_SCHEMA_MAP[entity]).filter(f => !skip.has(f)),
@@ -250,11 +253,16 @@ async function fillRecord(
   const fields = STRIPE_WEBHOOK_FILL_FIELDS[record.entity];
   const retrieve = RETRIEVE[record.entity];
   if (!fields || !retrieve) return { kind: "record", record };
-  const payload = record.payload;
-  const missing = fields.filter(field => !(field in payload));
   // A delete writes the row's tombstone, never its columns: no read.
-  if (record.operation !== "upsert" || (!thin && missing.length === 0)) {
-    return { kind: "record", record };
+  if (record.operation !== "upsert") return { kind: "record", record };
+  const payload = record.payload;
+  const refund = record.entity === "refunds";
+  const missing = fields.some(field => !(field in payload));
+  if (!thin && !missing) {
+    return {
+      kind: "record",
+      record: refund ? { ...record, payload: completeRefund(payload) } : record,
+    };
   }
   if (!safeId(record.recordId)) {
     return {
@@ -297,11 +305,15 @@ async function fillRecord(
     return { kind: "gone" };
   }
 
-  // The fetched object wins: it is at least as new as the event. The
-  // event's keys stay only where the object has none.
+  if (refund && object.id !== record.recordId) {
+    return { kind: "failed", reason: "Stripe returned a different refund" };
+  }
+  // The current object wins. For a refund its omitted reason must clear
+  // an older value carried in the event before the fields are merged.
+  const current = refund ? completeRefund(object) : object;
   const filled: Record<string, unknown> = thin
-    ? { ...object }
-    : { ...payload, ...object };
+    ? { ...current }
+    : { ...payload, ...current };
   for (const field of fields) {
     if (!(field in filled))
       filled[field] = field in object ? object[field] : null;

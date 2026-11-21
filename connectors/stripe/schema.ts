@@ -331,6 +331,7 @@ const REFUND_SCHEMA: Fields = {
   failure_balance_transaction: "string",
   failure_reason: "string",
   payment_intent: "string",
+  pending_reason: "string",
   reason: "string",
   receipt_number: "string",
   status: "string",

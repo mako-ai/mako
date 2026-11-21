@@ -42,6 +42,7 @@ import {
   compareForm,
   compareRuns,
   ensureFolderInstalled,
+  expectedFolderSchema,
   formatReport,
   runFolderCommand,
   runParity,
@@ -222,7 +223,7 @@ void test("shared entities, labels and credential form, plus two boxed readers",
   assert.ok(form.ok, JSON.stringify(form, null, 2));
 });
 
-void test("same schema for every entity, the 8 system columns included", async () => {
+void test("shared schemas and the boxed refund reason, with matching system columns", async () => {
   const system = new Set(Object.keys(MAKO_SYSTEM_FIELDS));
   const connector = makeInProcess({
     api_key: "sk_test_list",
@@ -230,7 +231,10 @@ void test("same schema for every entity, the 8 system columns included", async (
   });
   const boxed = makeBoxed({ api_key: "sk_test_schema", api_base_url: "" });
   for (const entity of ENTITIES) {
-    const inProcess = await connector.resolveSchema(entity);
+    const inProcess = expectedFolderSchema(
+      entity,
+      await connector.resolveSchema(entity),
+    );
     const result = compareEntitySchema(
       inProcess,
       jsonSchemaToEntitySchema(

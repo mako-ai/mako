@@ -29,6 +29,7 @@ import type {
   EntitySchema,
 } from "@makoai/connector-sdk";
 import { listStripePage } from "./lists.ts";
+import { completeRefund } from "./refunds.ts";
 import { STRIPE_ENTITY_SCHEMA_MAP, stripeJsonSchema } from "./schema.ts";
 import { readSetupAttempts, type SetupAttemptWalk } from "./setup-attempts.ts";
 import {
@@ -228,7 +229,8 @@ function entity(
         if (hasMore) cursor = nextCursor;
 
         yield {
-          records: page.data,
+          records:
+            name === "refunds" ? page.data.map(completeRefund) : page.data,
           state: {
             ...(cursor ? { cursor } : {}),
             ...(anchor ? { mako: { since: anchor } } : {}),

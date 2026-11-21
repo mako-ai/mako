@@ -624,6 +624,14 @@ export async function runParity({
     const inProcess = await run("in-process", () =>
       readInProcess(inConnector, options),
     );
+    // The folder deliberately clears omitted refund reasons. Keep IDs,
+    // rows, values, checkpoint states and requests under the same comparison.
+    if (entity === "refunds") {
+      inProcess.rows = inProcess.rows.map(row => ({
+        ...row,
+        pending_reason: row.pending_reason ?? null,
+      }));
+    }
     inProcess.requests = server.requests(inKey);
     let folder;
     if (makeBoxed) {
@@ -750,6 +758,20 @@ export function formatReport(results) {
 // ---------------------------------------------------------------------------
 // Schemas and the credential form
 // ---------------------------------------------------------------------------
+
+/** The folder declares the refund field that it writes explicitly. */
+export function expectedFolderSchema(entity, schema) {
+  if (entity !== "refunds" || !schema || "pending_reason" in schema.fields) {
+    return schema;
+  }
+  return {
+    ...schema,
+    fields: {
+      ...schema.fields,
+      pending_reason: { type: "string", nullable: true },
+    },
+  };
+}
 
 /**
  * The in-process `ConnectorEntitySchema` against the folder's stream as the

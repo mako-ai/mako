@@ -508,7 +508,13 @@ void test("every event type applies the same rows on both paths, with no request
     assert.equal(rows[i]?.length, expected, event.eventType);
     assert.deepEqual(
       rows[i]!.map(comparable),
-      theirs.records.map(comparable),
+      theirs.records.map(record => {
+        const expected = comparable(record);
+        if (expected.entity === "refunds") {
+          expected.payload.pending_reason ??= null;
+        }
+        return expected;
+      }),
       event.eventType,
     );
     assert.equal(rows[i]![0].entity, entity);

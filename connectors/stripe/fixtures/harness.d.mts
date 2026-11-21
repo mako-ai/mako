@@ -176,6 +176,8 @@ export function checkParity(options: {
   server: FixtureServer;
 }): Promise<CheckOutcome[]>;
 export function formatReport(results: Comparison[]): string;
+export function expectedFolderSchema<T>(entity: string, schema: T): T;
+
 export function compareEntitySchema(
   inProcess: any,
   folder: any,
