@@ -230,6 +230,30 @@ function testAgentCaps(): void {
     }),
     { maximumBytesBilled: 5 },
   );
+  // An invalid internal ceiling must never disable an existing cap.
+  for (const bytesCeiling of [0, -1, 0.5, NaN, Infinity]) {
+    assert.throws(
+      () =>
+        resolveAgentJobCaps({
+          connection: { agent_max_bytes_billed_gb: 2 },
+          labels: { mako_source: "agent" },
+          bytesCeiling,
+        }),
+      /positive safe integer/,
+    );
+  }
+  const ceilingCaps = resolveAgentJobCaps({
+    connection: { agent_max_bytes_billed_gb: 50 },
+    labels: { mako_trigger: "mcp" },
+    bytesCeiling: 20_000_000_000,
+  });
+  const refused = describeAgentCapError(
+    "Query exceeded limit for bytes billed",
+    ceilingCaps,
+  );
+  assert.match(refused ?? "", /This call supplied its own billing ceiling/);
+  assert.doesNotMatch(refused ?? "", /agent_max_bytes_billed_gb/);
+
   // Invalid settings fall back to the defaults.
   assert.equal(
     resolveAgentJobCaps({

@@ -43,6 +43,8 @@ export interface AgentJobCaps {
   jobTimeoutMs?: number;
   /** BigQuery `maximumBytesBilled`; undefined: none. */
   maximumBytesBilled?: number;
+  /** The query's own ceiling is at least as restrictive as the server cap. */
+  perQueryBytesCap?: true;
 }
 
 /** Whether a job with these (final, sanitized) labels serves an agent. */
@@ -74,30 +76,46 @@ function setting(raw: unknown): number | undefined {
  * The caps for one job. `explicitBytes` is the caller's own
  * `maximumBytesBilled`: a positive number wins, `0` means no byte cap (an
  * agent write by someone allowed to write), undefined takes the default.
+ * A read's `bytesCeiling` can only tighten the resolved cap.
  */
 export function resolveAgentJobCaps(input: {
   connection: Record<string, unknown> | undefined;
   labels: Record<string, string> | undefined;
   explicitBytes?: number;
+  bytesCeiling?: number;
 }): AgentJobCaps {
   const caps: AgentJobCaps = {};
   const explicit = input.explicitBytes;
   if (typeof explicit === "number" && explicit > 0) {
     caps.maximumBytesBilled = Math.floor(explicit);
   }
-  if (!isAgentJob(input.labels)) return caps;
+  if (isAgentJob(input.labels)) {
+    const timeout =
+      setting(input.connection?.[AGENT_JOB_TIMEOUT_SETTING]) ??
+      AGENT_BIGQUERY_JOB_TIMEOUT_MS;
+    // BigQuery refuses a jobTimeoutMs under 1 s.
+    if (timeout > 0) caps.jobTimeoutMs = Math.max(1000, Math.floor(timeout));
 
-  const timeout =
-    setting(input.connection?.[AGENT_JOB_TIMEOUT_SETTING]) ??
-    AGENT_BIGQUERY_JOB_TIMEOUT_MS;
-  // BigQuery refuses a jobTimeoutMs under 1 s.
-  if (timeout > 0) caps.jobTimeoutMs = Math.max(1000, Math.floor(timeout));
-
-  if (explicit === undefined) {
-    const gb = setting(input.connection?.[AGENT_MAX_BYTES_SETTING]);
-    const bytes =
-      gb !== undefined ? Math.floor(gb * GIB) : AGENT_BIGQUERY_MAX_BYTES_BILLED;
-    if (bytes > 0) caps.maximumBytesBilled = bytes;
+    if (explicit === undefined) {
+      const gb = setting(input.connection?.[AGENT_MAX_BYTES_SETTING]);
+      const bytes =
+        gb !== undefined
+          ? Math.floor(gb * GIB)
+          : AGENT_BIGQUERY_MAX_BYTES_BILLED;
+      if (bytes > 0) caps.maximumBytesBilled = bytes;
+    }
+  }
+  const ceiling = input.bytesCeiling;
+  if (ceiling !== undefined) {
+    if (!Number.isSafeInteger(ceiling) || ceiling <= 0) {
+      throw new Error(
+        "BigQuery billing ceiling must be a positive safe integer",
+      );
+    }
+    if (ceiling <= (caps.maximumBytesBilled || Infinity)) {
+      caps.maximumBytesBilled = ceiling;
+      caps.perQueryBytesCap = true;
+    }
   }
   return caps;
 }

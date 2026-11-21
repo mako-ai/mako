@@ -1,3 +1,5 @@
+import type { AgentJobCaps } from "./agent-caps";
+
 /**
  * Extract a human-readable message from a Google/BigQuery API error.
  *
@@ -89,6 +91,7 @@ function formatBytes(bytes: number): string {
 export function describeBytesBilledCap(
   error: string | undefined,
   capBytes: number,
+  perQueryBytesCap?: true,
 ): string | null {
   if (
     !error ||
@@ -101,7 +104,10 @@ export function describeBytesBilledCap(
     Number.isFinite(required) && required > 0
       ? `would bill ${formatBytes(required)}`
       : "would bill more";
-  return `This query ${scan} on BigQuery, over the ${formatBytes(capBytes)} maximumBytesBilled cap on agent and MCP queries, so it did not run and cost nothing. Read fewer bytes: filter on the table's partition column, select only the columns you need, or narrow the date range. To raise the cap, set "agent_max_bytes_billed_gb" on this BigQuery connection (0 turns it off); the default for every connection is AGENT_BIGQUERY_MAX_BYTES_BILLED.`;
+  const guidance = perQueryBytesCap
+    ? "This call supplied its own billing ceiling. The server cap still applies."
+    : 'To raise the cap, set "agent_max_bytes_billed_gb" on this BigQuery connection (0 turns it off); the default for every connection is AGENT_BIGQUERY_MAX_BYTES_BILLED.';
+  return `This query ${scan} on BigQuery, over the ${formatBytes(capBytes)} maximumBytesBilled cap on agent and MCP queries, so it did not run and cost nothing. Read fewer bytes: filter on the table's partition column, select only the columns you need, or narrow the date range. ${guidance}`;
 }
 
 function formatDuration(ms: number): string {
@@ -134,11 +140,15 @@ export function describeJobTimeoutCap(
 /** Either cap's rewording for a failed agent job, or null. */
 export function describeAgentCapError(
   error: string | undefined,
-  caps: { jobTimeoutMs?: number; maximumBytesBilled?: number },
+  caps: AgentJobCaps,
 ): string | null {
   return (
     (caps.maximumBytesBilled
-      ? describeBytesBilledCap(error, caps.maximumBytesBilled)
+      ? describeBytesBilledCap(
+          error,
+          caps.maximumBytesBilled,
+          caps.perQueryBytesCap,
+        )
       : null) ??
     (caps.jobTimeoutMs ? describeJobTimeoutCap(error, caps.jobTimeoutMs) : null)
   );
