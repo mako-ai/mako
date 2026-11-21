@@ -11,6 +11,17 @@ import {
   type BigQueryJobIdentity,
   type RetainedQueryConfiguration,
 } from "./bigquery-retained-query";
+import {
+  applyClaimedBigQueryCdcEvents,
+  bigQueryCdcScope,
+  CdcBigQueryBindingChangedError,
+  claimBigQueryCdcEvents,
+  haveClaimedBigQueryCdcEvents,
+  normalizeBigQueryCdcBinding,
+  requireCurrentBigQueryCdcFlow,
+  type BigQueryCdcBinding,
+  type BigQueryCdcScope,
+} from "./bigquery-staged-cdc";
 import { stableStringify } from "./normalization";
 
 interface BigQueryTableIdentity {
@@ -34,11 +45,13 @@ interface StagedWriteBinding {
 interface DigestOnlyIntent extends StagedWriteBinding {
   configurationFingerprint: string;
   configuration?: never;
+  cdc?: never;
 }
 
 interface RetainedQueryIntent extends StagedWriteBinding {
   configuration: RetainedQueryConfiguration;
   configurationFingerprint?: never;
+  cdc?: BigQueryCdcBinding;
 }
 
 type RetainedMergeOptions = Omit<RetainedQueryConfiguration, "query"> & {
@@ -62,10 +75,13 @@ interface StagedWriteRecord {
   _id: string;
   fingerprint: string;
   snapshotKey: string;
+  eventClaimKeys?: string[];
   intent: BigQueryStagedIntent;
   terminal?: BigQueryTerminalReceipt | VerifiedQueryReceipt;
   cleanedAt?: Date;
 }
+
+const eventClaimIndexFilter = { eventClaimKeys: { $exists: true } };
 
 // The short-lived table lease can be deleted on release. Cleanup needs its own durable receipt.
 const StagedWrite =
@@ -78,6 +94,7 @@ const StagedWrite =
         _id: { type: String, required: true },
         fingerprint: { type: String, required: true },
         snapshotKey: { type: String, required: true, unique: true },
+        eventClaimKeys: { type: [String], default: undefined },
         intent: { type: Schema.Types.Mixed, required: true },
         terminal: { type: Schema.Types.Mixed },
         cleanedAt: { type: Date },
@@ -87,10 +104,17 @@ const StagedWrite =
         versionKey: false,
         autoIndex: false,
       },
+    ).index(
+      { eventClaimKeys: 1 },
+      { unique: true, partialFilterExpression: eventClaimIndexFilter },
     ),
   );
 
 const writeConcern = { w: "majority" as const };
+const cdcTransaction = {
+  readConcern: { level: "snapshot" as const },
+  writeConcern,
+};
 const digest = (value: unknown) =>
   createHash("sha256").update(stableStringify(value)).digest("hex");
 
@@ -107,7 +131,7 @@ export async function initializeBigQueryStagedInputStore(): Promise<void> {
   await StagedWrite.createIndexes();
 }
 
-async function requireSnapshotIndex(): Promise<void> {
+async function requireIndexes(cdc: boolean): Promise<void> {
   const indexes = await StagedWrite.listIndexes();
   if (
     !indexes.some(
@@ -121,6 +145,20 @@ async function requireSnapshotIndex(): Promise<void> {
   ) {
     throw new Error("The staged-write snapshot ownership index is missing");
   }
+  if (
+    cdc &&
+    !indexes.some(
+      index =>
+        index.unique &&
+        !index.sparse &&
+        index.key.eventClaimKeys === 1 &&
+        Object.keys(index.key).length === 1 &&
+        stableStringify(index.partialFilterExpression) ===
+          stableStringify(eventClaimIndexFilter),
+    )
+  ) {
+    throw new Error("The staged-write CDC event claim index is missing");
+  }
 }
 
 export function stagedWriteFingerprint(intent: BigQueryStagedIntent): string {
@@ -132,13 +170,14 @@ export function stagedWriteFingerprint(intent: BigQueryStagedIntent): string {
     intent.configuration === undefined
       ? intent.configurationFingerprint
       : ["jobs.insert", intent.configuration],
+    ...(intent.cdc ? [["cdc", intent.cdc]] : []),
   ]);
 }
 
 export async function holdBigQueryStagedInput(
   requested: DigestOnlyIntent,
 ): Promise<"held" | "terminal"> {
-  if (requested.configuration !== undefined) {
+  if (requested.configuration !== undefined || requested.cdc !== undefined) {
     throw new Error("A retained query must be built from its table bindings");
   }
   return holdStagedWrite(requested);
@@ -150,6 +189,27 @@ export function holdBigQueryStagedMerge(
   merge: Omit<BuildMergeStatementParams, "fullLive" | "fullStaging">,
   options: RetainedMergeOptions,
 ): Promise<"held" | "terminal"> {
+  return holdStagedWrite(buildRetainedMergeIntent(binding, merge, options));
+}
+
+/** Bind an authorized webhook upsert batch and its immutable warehouse request. */
+export async function holdBigQueryStagedCdcMerge(
+  binding: StagedWriteBinding,
+  merge: Omit<BuildMergeStatementParams, "fullLive" | "fullStaging">,
+  options: RetainedMergeOptions,
+  authorized: BigQueryCdcBinding,
+): Promise<"held" | "terminal"> {
+  return holdStagedWrite({
+    ...buildRetainedMergeIntent(binding, merge, options),
+    cdc: normalizeBigQueryCdcBinding(authorized),
+  });
+}
+
+function buildRetainedMergeIntent(
+  { job, input, destination }: StagedWriteBinding,
+  merge: Omit<BuildMergeStatementParams, "fullLive" | "fullStaging">,
+  options: RetainedMergeOptions,
+): RetainedQueryIntent {
   const qualify = (table: BigQueryTableIdentity) =>
     fullTableName(
       { projectId: table.project, dataset: table.dataset },
@@ -161,12 +221,12 @@ export function holdBigQueryStagedMerge(
       ...options.query,
       query: buildMergeStatement({
         ...merge,
-        fullLive: qualify(binding.destination),
-        fullStaging: qualify(binding.input.snapshot),
+        fullLive: qualify(destination),
+        fullStaging: qualify(input.snapshot),
       }),
     },
   });
-  return holdStagedWrite({ ...binding, configuration });
+  return { job, input, destination, configuration };
 }
 
 /** Bind a sealed input to a caller-assigned job before the warehouse dispatches it. */
@@ -192,19 +252,87 @@ async function holdStagedWrite(
     );
   }
   // Every retained snapshot name belongs to one job for its entire lifetime.
-  await requireSnapshotIndex();
+  await requireIndexes(intent.cdc !== undefined);
   const snapshotKey = digest(tableIdentity(intent.input.snapshot));
+  const insert = { _id, fingerprint, snapshotKey, intent };
+  const cdc = intent.cdc;
+  if (cdc) {
+    return StagedWrite.db.transaction(async session => {
+      const existing = await StagedWrite.findById(_id).session(session).lean();
+      if (existing) return stagedWriteState(existing, fingerprint);
+      await requireCurrentBigQueryCdcFlow(
+        cdc.scope,
+        intent.destination,
+        session,
+      );
+      await claimBigQueryCdcEvents(cdc, fingerprint, session);
+      await StagedWrite.create(
+        [
+          {
+            ...insert,
+            eventClaimKeys: cdc.events.map(event =>
+              eventClaimKey(cdc.scope, event.deliveryKey),
+            ),
+          },
+        ],
+        { session },
+      );
+      return "held" as const;
+    }, cdcTransaction);
+  }
   const record = await StagedWrite.findOneAndUpdate(
     { _id },
-    { $setOnInsert: { fingerprint, snapshotKey, intent } },
+    { $setOnInsert: insert },
     { upsert: true, returnDocument: "after", writeConcern },
   ).lean();
+  return stagedWriteState(record, fingerprint);
+}
+
+function stagedWriteState(
+  record: StagedWriteRecord | null,
+  fingerprint: string,
+): "held" | "terminal" {
   if (record?.fingerprint !== fingerprint) {
     throw new Error(
       "The BigQuery job ID already holds a different staged write",
     );
   }
   return record.terminal ? "terminal" : "held";
+}
+
+function eventClaimKey(scope: BigQueryCdcScope, deliveryKey: string): string {
+  // The claim survives changes to a flow, destination, or CDC row ID.
+  return digest([
+    scope.workspaceId,
+    scope.originNamespace,
+    scope.entity,
+    deliveryKey,
+  ]);
+}
+
+/** Find previously reserved writes for deliveries present in a retry. */
+export async function findBigQueryStagedCdcWrites(
+  authorizedScope: BigQueryCdcScope,
+  deliveryKeys: string[],
+): Promise<StagedWriteRecord[]> {
+  const scope = bigQueryCdcScope.parse(authorizedScope);
+  const records = await StagedWrite.find({
+    eventClaimKeys: {
+      $exists: true,
+      $in: deliveryKeys.map(key => eventClaimKey(scope, key.trim())),
+    },
+  })
+    .readConcern("majority")
+    .lean();
+  const scopeKey = stableStringify(scope);
+  return records.filter(record => {
+    const cdc = record.intent.cdc;
+    return (
+      cdc &&
+      stableStringify(cdc.scope) === scopeKey &&
+      record.fingerprint === stagedWriteFingerprint(record.intent)
+    );
+  });
 }
 
 export async function readBigQueryStagedInput(
@@ -222,6 +350,18 @@ export async function readPendingBigQueryQueryRequest(
   const configuration = record?.intent.configuration;
   if (!record || !configuration) return null;
   if (record.fingerprint !== stagedWriteFingerprint(record.intent)) return null;
+  if (record.intent.cdc) {
+    const cdc = record.intent.cdc;
+    try {
+      await requireCurrentBigQueryCdcFlow(cdc.scope, record.intent.destination);
+    } catch (error) {
+      if (error instanceof CdcBigQueryBindingChangedError) return null;
+      throw error;
+    }
+    if (!(await haveClaimedBigQueryCdcEvents(cdc, record.fingerprint))) {
+      return null;
+    }
+  }
   const { project, location, id } = record.intent.job;
   return {
     jobReference: { projectId: project, location, jobId: id },
@@ -246,11 +386,66 @@ export async function recordObservedBigQueryQueryResult(
     providerJob,
   );
   if (!outcome) return false;
-  return writeTerminalReceipt(job, record.fingerprint, {
+  const receipt: VerifiedQueryReceipt = {
     state: "DONE",
     outcome,
     fingerprint: record.fingerprint,
-  });
+  };
+  const cdc = record.intent.cdc;
+  if (cdc) return settleBigQueryCdcWrite(record, cdc, receipt);
+  return writeTerminalReceipt(job, record.fingerprint, receipt);
+}
+
+async function settleBigQueryCdcWrite(
+  record: StagedWriteRecord,
+  cdc: BigQueryCdcBinding,
+  receipt: VerifiedQueryReceipt,
+): Promise<boolean> {
+  const identity = { _id: record._id, fingerprint: record.fingerprint };
+  try {
+    return await StagedWrite.db.transaction(async session => {
+      const current = await StagedWrite.findOne(identity)
+        .session(session)
+        .lean();
+      if (
+        !current ||
+        current.cleanedAt ||
+        current.fingerprint !== stagedWriteFingerprint(current.intent)
+      ) {
+        return false;
+      }
+      if (current.terminal) {
+        return (
+          "fingerprint" in current.terminal &&
+          current.terminal.fingerprint === receipt.fingerprint &&
+          current.terminal.state === receipt.state &&
+          current.terminal.outcome === receipt.outcome
+        );
+      }
+      await requireCurrentBigQueryCdcFlow(
+        cdc.scope,
+        record.intent.destination,
+        session,
+      );
+      if (receipt.outcome === "succeeded") {
+        await applyClaimedBigQueryCdcEvents(cdc, record.fingerprint, session);
+      }
+      const result = await StagedWrite.updateOne(
+        { ...identity, terminal: { $exists: false } },
+        { $set: { terminal: receipt } },
+        { session },
+      );
+      if (result.matchedCount !== 1) {
+        throw new CdcBigQueryBindingChangedError(
+          "The retained CDC receipt changed during settlement",
+        );
+      }
+      return true;
+    }, cdcTransaction);
+  } catch (error) {
+    if (error instanceof CdcBigQueryBindingChangedError) return false;
+    throw error;
+  }
 }
 
 /** Only a verified jobs.get DONE receipt can make a retained input eligible for cleanup. */

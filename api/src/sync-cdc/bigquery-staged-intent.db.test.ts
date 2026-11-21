@@ -1,8 +1,11 @@
 import { MongoMemoryReplSet } from "mongodb-memory-server";
-import mongoose from "mongoose";
+import mongoose, { Types } from "mongoose";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { CdcChangeEvent, Flow } from "../database/workspace-schema";
 import {
   cleanupBigQueryStagedInput,
+  findBigQueryStagedCdcWrites,
+  holdBigQueryStagedCdcMerge,
   holdBigQueryStagedInput,
   holdBigQueryStagedMerge,
   initializeBigQueryStagedInputStore,
@@ -66,6 +69,269 @@ function makeMerge(suffix: string) {
     },
   };
 }
+
+async function makeCdcMerge(suffix: string) {
+  const { binding, merge, options } = makeMerge(suffix);
+  const scope = {
+    workspaceId: new Types.ObjectId().toHexString(),
+    flowId: new Types.ObjectId().toHexString(),
+    sourceConnectionId: new Types.ObjectId().toHexString(),
+    destinationConnectionId: new Types.ObjectId().toHexString(),
+    definitionSha: "synthetic-flow-definition",
+    entity: "recordings",
+    authorizationId: "synthetic-approved-binding",
+    originNamespace: "synthetic-claap-workspace",
+  };
+  await Flow.create({
+    _id: scope.flowId,
+    workspaceId: scope.workspaceId,
+    dataSourceId: scope.sourceConnectionId,
+    destinationDatabaseId: scope.destinationConnectionId,
+    tableDestination: {
+      connectionId: scope.destinationConnectionId,
+      schema: binding.destination.dataset,
+    },
+    syncEngine: "cdc",
+    schedule: { enabled: false },
+    sourceBlobSha: scope.definitionSha,
+    createdBy: new Types.ObjectId().toHexString(),
+  });
+  async function event(
+    deliveryKey: string,
+    ingestSeq: number,
+    entity = scope.entity,
+  ) {
+    const row = await CdcChangeEvent.create({
+      workspaceId: scope.workspaceId,
+      flowId: scope.flowId,
+      entity,
+      recordId: deliveryKey,
+      sourceKind: "webhook",
+      op: "upsert",
+      sourceTs: new Date(),
+      ingestSeq,
+      idempotencyKey: `${scope.flowId}:${ingestSeq}`,
+    });
+    return { id: String(row._id), deliveryKey };
+  }
+  return {
+    binding,
+    merge,
+    options,
+    scope,
+    event,
+    hold: (events: Awaited<ReturnType<typeof event>>[]) =>
+      holdBigQueryStagedCdcMerge(binding, merge, options, { scope, events }),
+  };
+}
+
+describe("BigQuery CDC event settlement", () => {
+  it("recovers an overlapping retry after the warehouse accepted one write and lost its response", async () => {
+    const first = await makeCdcMerge("cdc_lost_ack");
+    const a = await first.event("a", 1);
+    const b = await first.event("b", 2);
+    const c = await first.event("c", 3);
+    const { job } = first.binding;
+    await expect(first.hold([a, b])).resolves.toBe("held");
+    const request = await readPendingBigQueryQueryRequest(job);
+    if (!request) throw new Error("Missing original warehouse request");
+    const warehouse = new Map<string, typeof request>();
+    const submitAndLoseResponse = () => {
+      warehouse.set(job.id, request);
+      throw new Error("Simulated lost warehouse response");
+    };
+    expect(submitAndLoseResponse).toThrow("Simulated lost warehouse response");
+    await mongoose.disconnect();
+    await mongoose.connect(mongo.getUri());
+
+    const changed = makeMerge("cdc_overlap");
+    await expect(
+      holdBigQueryStagedCdcMerge(
+        changed.binding,
+        changed.merge,
+        changed.options,
+        {
+          scope: first.scope,
+          events: [b, c],
+        },
+      ),
+    ).rejects.toThrow("The exact pending CDC events could not be reserved");
+    expect(await readBigQueryStagedInput(changed.binding.job)).toBeNull();
+    const [original] = await findBigQueryStagedCdcWrites(first.scope, [
+      "b",
+      "c",
+    ]);
+    expect(original?.intent.job).toEqual(job);
+    expect(original?.intent.cdc?.events).toEqual(
+      [a, b].sort((left, right) => left.id.localeCompare(right.id)),
+    );
+    expect(
+      await findBigQueryStagedCdcWrites(
+        { ...first.scope, authorizationId: "other-authorization" },
+        ["b", "c"],
+      ),
+    ).toEqual([]);
+    const metadata = {
+      ...warehouse.get(job.id),
+      status: { state: "DONE" },
+      statistics: { query: { statementType: "MERGE" } },
+    };
+    await expect(
+      Promise.all([
+        recordObservedBigQueryQueryResult(job, metadata),
+        recordObservedBigQueryQueryResult(job, metadata),
+      ]),
+    ).resolves.toEqual([true, true]);
+    const rows = await CdcChangeEvent.find({ flowId: first.scope.flowId })
+      .sort({ ingestSeq: 1 })
+      .readConcern("majority")
+      .lean();
+    expect(
+      rows.map(row => [
+        row.materializationStatus,
+        row.materializationAttemptCount,
+      ]),
+    ).toEqual([
+      ["applied", 1],
+      ["applied", 1],
+      ["pending", 0],
+    ]);
+    expect(rows[2]?.retainedBigQueryWrite).toBeUndefined();
+    expect(warehouse.size).toBe(1);
+    expect(await readPendingBigQueryQueryRequest(job)).toBeNull();
+    expect((await readBigQueryStagedInput(job))?.terminal).toMatchObject({
+      state: "DONE",
+      outcome: "succeeded",
+    });
+  });
+
+  it("keeps the stable delivery claim after the original applied CDC row is removed", async () => {
+    const first = await makeCdcMerge("cdc_original");
+    const a = await first.event("same-delivery", 1);
+    const { job } = first.binding;
+    await first.hold([a]);
+    const request = await readPendingBigQueryQueryRequest(job);
+    expect(
+      await recordObservedBigQueryQueryResult(job, {
+        ...request,
+        status: { state: "DONE" },
+        statistics: { query: { statementType: "MERGE" } },
+      }),
+    ).toBe(true);
+    await CdcChangeEvent.deleteOne({ _id: a.id });
+    const rebuilt = await first.event("same-delivery", 2);
+    const changed = makeMerge("cdc_rebuilt");
+    await expect(
+      holdBigQueryStagedCdcMerge(
+        changed.binding,
+        changed.merge,
+        changed.options,
+        {
+          scope: first.scope,
+          events: [rebuilt],
+        },
+      ),
+    ).rejects.toMatchObject({ code: 11000 });
+    expect(
+      (await CdcChangeEvent.findById(rebuilt.id).lean())?.retainedBigQueryWrite,
+    ).toBeUndefined();
+    const [original] = await findBigQueryStagedCdcWrites(first.scope, [
+      "same-delivery",
+    ]);
+    expect(original?.intent.job).toEqual(job);
+    expect(original?.terminal?.outcome).toBe("succeeded");
+  });
+
+  it("rejects out-of-scope CDC rows and stops dispatch and settlement after source replacement", async () => {
+    const first = await makeCdcMerge("cdc_wrong_scope");
+    const a = await first.event("a", 1);
+    const other = await first.event("other", 2, "recording_transcripts");
+    await expect(first.hold([a, other])).rejects.toThrow(
+      "The exact pending CDC events could not be reserved",
+    );
+    const { job } = first.binding;
+    expect(await readBigQueryStagedInput(job)).toBeNull();
+    expect(
+      (await CdcChangeEvent.findById(a.id).lean())?.retainedBigQueryWrite,
+    ).toBeUndefined();
+
+    await first.hold([a]);
+    const request = await readPendingBigQueryQueryRequest(job);
+    await Flow.updateOne(
+      { _id: first.scope.flowId },
+      {
+        $set: { dataSourceId: new Types.ObjectId() },
+      },
+    );
+    expect(await readPendingBigQueryQueryRequest(job)).toBeNull();
+    expect(
+      await recordObservedBigQueryQueryResult(job, {
+        ...request,
+        status: { state: "DONE" },
+        statistics: { query: { statementType: "MERGE" } },
+      }),
+    ).toBe(false);
+    expect((await readBigQueryStagedInput(job))?.terminal).toBeUndefined();
+    expect(
+      (await CdcChangeEvent.findById(a.id).lean())?.materializationStatus,
+    ).toBe("pending");
+  });
+
+  it("keeps the receipt and remaining CDC rows pending if part of a bound batch disappears", async () => {
+    const first = await makeCdcMerge("cdc_missing_row");
+    const a = await first.event("a", 1);
+    const b = await first.event("b", 2);
+    const { job } = first.binding;
+    await first.hold([a, b]);
+    const request = await readPendingBigQueryQueryRequest(job);
+    await CdcChangeEvent.deleteOne({ _id: b.id });
+    expect(
+      await recordObservedBigQueryQueryResult(job, {
+        ...request,
+        status: { state: "DONE" },
+        statistics: { query: { statementType: "MERGE" } },
+      }),
+    ).toBe(false);
+    expect(await readPendingBigQueryQueryRequest(job)).toBeNull();
+    expect((await readBigQueryStagedInput(job))?.terminal).toBeUndefined();
+    expect(await CdcChangeEvent.findById(a.id).lean()).toMatchObject({
+      materializationStatus: "pending",
+      materializationAttemptCount: 0,
+    });
+  });
+
+  it("keeps CDC events pending when BigQuery reports a verified terminal failure", async () => {
+    const first = await makeCdcMerge("cdc_failed_job");
+    const change = await first.event("failed", 1);
+    const { job } = first.binding;
+    await first.hold([change]);
+    const request = await readPendingBigQueryQueryRequest(job);
+    expect(
+      await recordObservedBigQueryQueryResult(job, {
+        ...request,
+        status: { state: "RUNNING" },
+      }),
+    ).toBe(false);
+    expect((await readBigQueryStagedInput(job))?.terminal).toBeUndefined();
+    expect(
+      await recordObservedBigQueryQueryResult(job, {
+        ...request,
+        status: { state: "DONE", errorResult: { reason: "backendError" } },
+      }),
+    ).toBe(true);
+    expect(await CdcChangeEvent.findById(change.id).lean()).toMatchObject({
+      materializationStatus: "pending",
+      materializationAttemptCount: 0,
+    });
+    expect((await readBigQueryStagedInput(job))?.terminal?.outcome).toBe(
+      "failed",
+    );
+    expect(await readPendingBigQueryQueryRequest(job)).toBeNull();
+    const drop = vi.fn(async () => undefined);
+    expect(await cleanupBigQueryStagedInput(job, drop)).toBe(false);
+    expect(drop).not.toHaveBeenCalled();
+  });
+});
 
 describe("BigQuery retained dispatch", () => {
   it.each([false, true])(
