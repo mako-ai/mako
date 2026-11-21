@@ -13,11 +13,15 @@ import {
   CdcEntityState as CdcEntityStateModel,
   type ICdcEntityState,
 } from "../database/models/cdc";
-import { closeRestEntityAdmission } from "../sync-cdc/rest-entity-admission";
+import {
+  closeRestEntityAdmission,
+  type RestEntityOverwrite,
+} from "../sync-cdc/rest-entity-admission";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import { closeInlineWebhookAdmission } from "../sync-cdc/inline-webhook-admission";
 import { DuckDBInstance } from "@duckdb/node-api";
 import type { CdcDestinationAdapter } from "../sync-cdc/adapters/registry";
+import { sourceConnectionManager } from "./database-data-source-manager";
 
 /**
  * Regression for the Close FR backfill loss of 17 Nov 2026.
@@ -291,6 +295,8 @@ vi.mock("./connector-registry", () => ({
 let staging = new Map<string, string[]>();
 let live: string[] = [];
 let writeModeOfRun: "append_dedup" | "append" | "overwrite" = "append_dedup";
+let useDirectDestination = false;
+let beforeTruncate: (() => Promise<void>) | undefined;
 /**
  * Merges of a non-empty staging table (1-based) that fail, as the 17 Nov
  * schema reads did. Merges of an empty staging table are not counted.
@@ -328,6 +334,7 @@ async function idsInParquet(filePath: string): Promise<string[]> {
 const fakeAdapter: Partial<CdcDestinationAdapter> = {
   destinationType: "bigquery",
   truncateLiveTable: (async () => {
+    await beforeTruncate?.();
     live = [];
   }) as any,
   prepareStaging: (async (_l: unknown, _f: string, o?: any) => {
@@ -380,13 +387,24 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
   }) as any,
 };
 
+const directAdapter: Partial<CdcDestinationAdapter> = {
+  destinationType: "postgresql",
+  truncateLiveTable: fakeAdapter.truncateLiveTable,
+  applyBatch: async ({ records }) => {
+    live.push(...records.map(record => String(record.id)));
+    return { written: records.length };
+  },
+};
+
 vi.mock("../sync-cdc/adapters/registry", async () => {
   const actual = await vi.importActual<
     typeof import("../sync-cdc/adapters/registry")
   >("../sync-cdc/adapters/registry");
   return {
     ...actual,
-    resolveCdcDestinationAdapter: vi.fn(() => fakeAdapter),
+    resolveCdcDestinationAdapter: vi.fn(() =>
+      useDirectDestination ? directAdapter : fakeAdapter,
+    ),
   };
 });
 
@@ -752,6 +770,21 @@ describe("queued REST entity admission", () => {
     if (!db) throw new Error("Synthetic MongoDB is not connected");
     return db;
   };
+  const admissionId = [
+    scope.workspaceId,
+    scope.flowId,
+    scope.sourceConnectionId,
+  ]
+    .map(value => value.toHexString())
+    .join(":");
+  const admissionRecord = () =>
+    database()
+      .collection<{
+        _id: string;
+        closed: boolean;
+        pendingOverwrites?: RestEntityOverwrite[];
+      }>("rest_entity_admissions")
+      .findOne({ _id: admissionId });
   const entityState = { flowId: scope.flowId, entity: ENTITY };
   const anchor = async () => {
     const row = await admissionEntityState?.findOne(entityState).lean();
@@ -824,6 +857,8 @@ describe("queued REST entity admission", () => {
     onSyntheticRead = undefined;
   });
   afterEach(() => {
+    useDirectDestination = false;
+    beforeTruncate = undefined;
     vi.unstubAllEnvs();
   });
 
@@ -864,15 +899,90 @@ describe("queued REST entity admission", () => {
     expect(await anchor()).toEqual(runStartedAt);
   });
 
+  it("keeps a truncated overwrite admitted under the stored connection and grants", async () => {
+    writeModeOfRun = "overwrite";
+    live = ["previous-live-row"];
+    const sources = database().collection("connectors");
+    const source = {
+      _id: scope.sourceConnectionId,
+      workspaceId: scope.workspaceId,
+      type: "rest",
+      managers: ["synthetic-manager"],
+      liveReads: true,
+      liveReaders: [{ principal: "synthetic-reader" }],
+      writers: [{ principal: "synthetic-writer" }],
+    };
+    await sources.insertOne(source);
+    vi.mocked(sourceConnectionManager.getSourceConnection).mockClear();
+    const memo = new Map<string, unknown>();
+    await expect(
+      invoke({ ...poll, memo, cancelAt: `sync-${ENTITY}-chunk-0` }),
+    ).rejects.toBeInstanceOf(Cancelled);
+    expect(memo.has(`prepare-staging-${ENTITY}`)).toBe(true);
+    expect(chunkStartOffsets).toEqual([]);
+    expect(live).toEqual([]);
+    expect(await anchor()).toEqual(previousAnchor);
+
+    const close = () => closeRestEntityAdmission(connection(), scope);
+    await expect(close()).rejects.toThrow("REST overwrite is still in flight");
+    await expect(
+      closeRestEntityAdmission(connection(), {
+        ...scope,
+        sourceConnectionId: new Types.ObjectId(),
+      }),
+    ).resolves.toBeUndefined();
+    await expect(invokeQueued(memo)).resolves.toEqual({
+      completed: true,
+      rowsWritten: 1,
+    });
+    expect(chunkStartOffsets).toEqual([0]);
+    expect(live).toEqual(["opp_00000"]);
+    expect(await anchor()).toEqual(previousAnchor);
+    expect(sourceConnectionManager.getSourceConnection).toHaveBeenCalledWith(
+      source._id.toHexString(),
+      source.workspaceId.toHexString(),
+    );
+    expect(await sources.findOne({ _id: source._id })).toEqual(source);
+    expect(await admissionRecord()).toMatchObject({
+      closed: false,
+      pendingOverwrites: [
+        {
+          runId: poll.executionId,
+          entity: ENTITY,
+          destinationId: "dest1",
+          destinationDatabaseName: null,
+          destinationConnectionId: "69c2719490eb18199aafa882",
+          schema: "fr_close_crm",
+          tableName: ENTITY,
+        },
+      ],
+    });
+    // A completed worker does not supply a destination settlement receipt.
+    await expect(close()).rejects.toThrow("REST overwrite is still in flight");
+  });
+
+  it("reserves a direct overwrite before the first chunk truncates", async () => {
+    useDirectDestination = true;
+    writeModeOfRun = "overwrite";
+    live = ["previous-live-row"];
+    beforeTruncate = async () => {
+      expect(live).toEqual(["previous-live-row"]);
+      await expect(
+        closeRestEntityAdmission(connection(), scope),
+      ).rejects.toThrow("REST overwrite is still in flight");
+    };
+    await expect(invoke(poll)).resolves.toEqual({
+      completed: true,
+      rowsWritten: 1,
+    });
+    expect(live).toEqual(["opp_00000"]);
+    expect((await admissionRecord())?.pendingOverwrites).toHaveLength(1);
+  });
+
   it("denies a queued retry after REST closure without moving its anchor", async () => {
     const memo = await queue();
     await closeRestEntityAdmission(connection(), scope);
-    const id = [scope.workspaceId, scope.flowId, scope.sourceConnectionId]
-      .map(value => value.toHexString())
-      .join(":");
-    const gate = await database()
-      .collection<{ _id: string; closed: boolean }>("rest_entity_admissions")
-      .findOne({ _id: id });
+    const gate = await admissionRecord();
     expect(gate?.closed).toBe(true);
     await expect(invokeQueued(memo)).rejects.toThrow(
       "REST entity admission is closed",
