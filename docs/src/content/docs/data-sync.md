@@ -168,6 +168,7 @@ Cursor, etc.) uses to add, edit, or remove flows without touching the UI.
   parse/id-resolution problems, schema issues, and the reconciliation plan
   (`wouldCreate` / `wouldReconfigure` / `wouldTeardown`) against currently
   running streams.
+- **Layout vs. destination table (BigQuery).** Saving a flow, pushing flow files and `check_flow_files` compare each entity layout's partition field, granularity and cluster fields with the existing BigQuery table's metadata (a free metadata read) and refuse a mismatch, naming the entity, table, the layout's value and the table's real value. A table that does not exist yet passes. Only new flows and layouts a save adds or edits are refused: an existing flow is never paused for an old mismatch, and `check_flow_files` reports it as a note. The flow view shows it as a layout warning until the layout is fixed. Separately, a MERGE that runs without partition pruning on a partitioned table logs a warning (at most one per table per hour) with the reason and the job's billed bytes.
 
 See the `flows-as-code` system skill (loaded automatically by MCP-connected
 agents) for the full file format and step-by-step workflow.

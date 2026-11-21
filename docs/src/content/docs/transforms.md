@@ -117,6 +117,8 @@ Every execution produces a **run** record with per-node status, timing, and logs
 | `catalog` | Column-level metadata from `docs generate` |
 | `sources` | Source freshness results |
 
+Every run also records **who started it** as a structured `actor`, returned by the run list and detail routes (`GET /projects/:projectId/runs[/:runId]`) and by `dbt_get_run`. Its `kind` is one of `schedule`, `user`, `api_key`, `agent`, `mcp`, `deploy_on_push`, `ci` or `retry`, with the matching identifiers: the person's handle for a user, the API key's id and label (never the key), the MCP OAuth client or desktop agent session, the chat id for the in-app agent, the schedule's job id, the pushed commit (`sha`, PR number and author) for deploy-on-push, and the retried run for a retry. A person appears by handle only, never by email. Runs recorded before this field existed have no `actor`; `trigger` and `triggeredBy` are unchanged.
+
 ## Access control (RBAC)
 
 Transforms access is enforced by a pure policy (`api/src/dbt/rbac.ts`):
