@@ -17,10 +17,7 @@ const normalizedCdcEventSchema = z.object({
 export type CdcEventSource = z.infer<typeof cdcSourceSchema>;
 export type CdcEventOperation = z.infer<typeof cdcOperationSchema>;
 export type CdcMaterializationStatus =
-  | "pending"
-  | "applied"
-  | "failed"
-  | "dropped";
+  "pending" | "applied" | "failed" | "dropped";
 export type NormalizedCdcEvent = z.infer<typeof normalizedCdcEventSchema>;
 
 export interface CdcEventInput {
@@ -80,6 +77,13 @@ export interface CdcEventStore {
     afterIngestSeq: number;
     limit: number;
   }): Promise<CdcStoredEvent[]>;
+
+  claimOrdinaryWebhookUpserts(params: {
+    workspaceId: string;
+    flowId: string;
+    entity: string;
+    eventIds: string[];
+  }): Promise<boolean>;
 
   markEventsApplied(eventIds: string[]): Promise<void>;
 

@@ -310,8 +310,7 @@ class MongoCdcEventStore implements CdcEventStore {
     afterIngestSeq: number;
     limit: number;
   }): Promise<CdcStoredEvent[]> {
-    // Authoritative selection is `materializationStatus: "pending"` ONLY —
-    // we intentionally do NOT gate on `ingestSeq > lastMaterializedSeq`.
+    // Select pending events visible to this consumer irrespective of the cursor.
     //
     // Gating on the cursor caused permanent "cursor drift": if the consumer
     // cursor (lastMaterializedSeq) ever advanced past a still-pending event
@@ -326,6 +325,7 @@ class MongoCdcEventStore implements CdcEventStore {
       flowId: new Types.ObjectId(params.flowId),
       entity: params.entity,
       materializationStatus: "pending",
+      retainedBigQueryWrite: { $exists: false },
     })
       .sort({ ingestSeq: 1 })
       .limit(Math.max(params.limit, 1))
@@ -354,6 +354,33 @@ class MongoCdcEventStore implements CdcEventStore {
         },
       ),
     );
+  }
+
+  /** Give ordinary retries durable ownership before they can dispatch upstream. */
+  async claimOrdinaryWebhookUpserts(params: {
+    workspaceId: string;
+    flowId: string;
+    entity: string;
+    eventIds: string[];
+  }): Promise<boolean> {
+    if (params.eventIds.length === 0) return true;
+    const ids = normalizeIds(params.eventIds);
+    if (ids.length !== params.eventIds.length) return false;
+    const result = await CdcChangeEvent.updateMany(
+      {
+        _id: { $in: ids },
+        workspaceId: new Types.ObjectId(params.workspaceId),
+        flowId: new Types.ObjectId(params.flowId),
+        entity: params.entity,
+        sourceKind: "webhook",
+        op: "upsert",
+        materializationStatus: "pending",
+        retainedBigQueryWrite: { $exists: false },
+      },
+      { $set: { ordinaryWebhookWriteStarted: true } },
+      { writeConcern: { w: "majority" } },
+    );
+    return result.matchedCount === ids.length;
   }
 
   async markEventsApplied(eventIds: string[]): Promise<void> {

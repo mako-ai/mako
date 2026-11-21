@@ -123,7 +123,11 @@ export async function claimBigQueryCdcEvents(
   session: ClientSession,
 ): Promise<void> {
   const result = await CdcChangeEvent.updateMany(
-    { ...pendingEvents(binding), retainedBigQueryWrite: { $exists: false } },
+    {
+      ...pendingEvents(binding),
+      retainedBigQueryWrite: { $exists: false },
+      ordinaryWebhookWriteStarted: { $ne: true },
+    },
     { $set: { retainedBigQueryWrite: fingerprint } },
     { session },
   );
