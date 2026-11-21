@@ -1464,15 +1464,21 @@ async function reserveOverwriteForCutover(
  */
 export async function performOverwriteTruncate(
   options: SyncChunkOptions,
+  prepareStaging?: () => Promise<void>,
 ): Promise<void> {
   const { tableDestination, restEntityAdmission } = options;
-  if (!tableDestination?.connectionId || !options.flowId) return;
-  if (options.writeMode !== "overwrite") return;
+  if (
+    !tableDestination?.connectionId ||
+    !options.flowId ||
+    options.writeMode !== "overwrite"
+  ) {
+    return prepareStaging?.();
+  }
   const flowId = options.flowId;
   const { entity, entityTableName, cdcAdapter } =
     await resolveAdapterContext(options);
 
-  if (!cdcAdapter.truncateLiveTable) return;
+  if (!cdcAdapter.truncateLiveTable) return prepareStaging?.();
 
   const cdcLayout = buildCdcEntityLayout({
     entity,
@@ -1488,6 +1494,8 @@ export async function performOverwriteTruncate(
       entityTableName,
     );
   }
+  // Cutover must be blocked before dropping staging or discarding the buffer.
+  if (prepareStaging) await prepareStaging();
   await cdcAdapter.truncateLiveTable(cdcLayout);
   orchestratorLogger.info("Overwrite mode: cleared live table (once per run)", {
     entity,

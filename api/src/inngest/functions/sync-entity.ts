@@ -420,36 +420,37 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             }
           }
 
-          // Rescue orphaned staging data from a previously crashed invocation
-          // before dropping the staging table. A merge failure fails the
-          // step: dropping rows we could not merge would lose them. Keyed
-          // merges only: staged rows lie past the resume cursor, so this
-          // invocation fetches them again, and a plain INSERT of them here
-          // (append / overwrite) would write them twice.
-          const { rescued } = await performRescueAndPrepareStaging(
-            bulkSyncOptions as any,
-            { dedupOnly: true },
-          );
-          if (rescued > 0) {
-            logExec(
-              "info",
-              `Rescued ${rescued} orphaned staging rows into live table before fresh start`,
-              { entity, rescued },
+          const prepareStaging = async () => {
+            // Rescue keyed rows from an earlier invocation before dropping
+            // staging. Append and overwrite re-fetch those rows from the last
+            // flushed position, so rescuing them would write them twice.
+            const { rescued } = await performRescueAndPrepareStaging(
+              bulkSyncOptions as any,
+              { dedupOnly: true },
             );
-          }
+            if (rescued > 0) {
+              logExec(
+                "info",
+                `Rescued ${rescued} orphaned staging rows into live table before fresh start`,
+                { entity, rescued },
+              );
+            }
 
-          // A resume cursor is saved only with an empty buffer, so rows
-          // still buffered here lie past it: a cancelled or failed attempt
-          // fetched them and never flushed them. This invocation fetches
-          // them again from the cursor; keeping them would write them twice.
-          const discarded = await discardBulkBuffer(flowId, entity, fullRead);
-          if (discarded > 0) {
-            logExec(
-              "info",
-              `Discarded ${discarded} unflushed ${entity} buffer rows; they are fetched again from the last flushed position`,
-              { entity, discarded },
-            );
-          }
+            // Checkpoints only advance with an empty buffer. Re-fetch any
+            // rows still buffered from the last flushed position.
+            const discarded = await discardBulkBuffer(flowId, entity, fullRead);
+            if (discarded > 0) {
+              logExec(
+                "info",
+                `Discarded ${discarded} unflushed ${entity} buffer rows; they are fetched again from the last flushed position`,
+                { entity, discarded },
+              );
+            }
+          };
+
+          const reserveBeforeStaging =
+            restSource && writeMode === "overwrite" && !state;
+          if (!reserveBeforeStaging) await prepareStaging();
 
           // Overwrite mode: clear the live table exactly once, here, before
           // any flush of this run writes. Do NOT call this from the
@@ -460,10 +461,15 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           // carried over from a checkpoint or the previous invocation)
           // already truncated in its first invocation.
           if (!state) {
-            await performOverwriteTruncate({
-              ...bulkSyncOptions,
-              restEntityAdmission: restSource ? restEntityAdmission : undefined,
-            } as any);
+            await performOverwriteTruncate(
+              {
+                ...bulkSyncOptions,
+                restEntityAdmission: restSource
+                  ? restEntityAdmission
+                  : undefined,
+              } as any,
+              reserveBeforeStaging ? prepareStaging : undefined,
+            );
           }
         }),
       );

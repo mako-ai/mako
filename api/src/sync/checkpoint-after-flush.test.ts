@@ -297,6 +297,7 @@ let live: string[] = [];
 let writeModeOfRun: "append_dedup" | "append" | "overwrite" = "append_dedup";
 let useDirectDestination = false;
 let beforeTruncate: (() => Promise<void>) | undefined;
+let beforePrepareStaging: (() => Promise<void>) | undefined;
 /**
  * Merges of a non-empty staging table (1-based) that fail, as the 17 Nov
  * schema reads did. Merges of an empty staging table are not counted.
@@ -338,6 +339,7 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
     live = [];
   }) as any,
   prepareStaging: (async (_l: unknown, _f: string, o?: any) => {
+    await beforePrepareStaging?.();
     staging.set(suffixOf(o), []);
   }) as any,
   cleanupStaging: (async (_l: unknown, _f: string, o?: any) => {
@@ -859,6 +861,7 @@ describe("queued REST entity admission", () => {
   afterEach(() => {
     useDirectDestination = false;
     beforeTruncate = undefined;
+    beforePrepareStaging = undefined;
     vi.unstubAllEnvs();
   });
 
@@ -870,6 +873,23 @@ describe("queued REST entity admission", () => {
     expect(chunkStartOffsets).toEqual([0]);
     expect(live).toEqual(["opp_00000"]);
     expect(await anchor()).toEqual(runStartedAt);
+  });
+
+  it("prepares staging without a reservation when REST admission is disabled", async () => {
+    vi.stubEnv("REST_ENTITY_ADMISSION_ENABLED", undefined);
+    writeModeOfRun = "overwrite";
+    await closeRestEntityAdmission(connection(), scope);
+    const prepare = vi.fn(async () => {
+      expect((await admissionRecord())?.pendingOverwrites).toBeUndefined();
+    });
+    beforePrepareStaging = prepare;
+
+    await expect(invoke(poll)).resolves.toEqual({
+      completed: true,
+      rowsWritten: 1,
+    });
+    expect(prepare).toHaveBeenCalled();
+    expect(live).toEqual(["opp_00000"]);
   });
 
   it("denies a fresh overwrite before staging or clearing the live table", async () => {
@@ -884,6 +904,30 @@ describe("queued REST entity admission", () => {
     expect(chunkStartOffsets).toEqual([]);
     expect(live).toEqual(["previous-live-row"]);
     expect(staging.get("poll_staging")).toEqual(["previous-staged-row"]);
+  });
+
+  it("holds REST admission before clearing existing overwrite staging", async () => {
+    writeModeOfRun = "overwrite";
+    live = ["previous-live-row"];
+    staging.set("poll_staging", ["previous-staged-row"]);
+    const close = () => closeRestEntityAdmission(connection(), scope);
+    const prepare = vi.fn(async () => {
+      expect(live).toEqual(["previous-live-row"]);
+      expect(staging.get("poll_staging")).toEqual(["previous-staged-row"]);
+      await expect(close()).rejects.toThrow(
+        "REST overwrite is still in flight",
+      );
+    });
+    beforePrepareStaging = prepare;
+
+    await expect(
+      invoke({ ...poll, cancelAt: `sync-${ENTITY}-chunk-0` }),
+    ).rejects.toBeInstanceOf(Cancelled);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(staging.get("poll_staging")).toEqual([]);
+    expect(live).toEqual([]);
+    expect(chunkStartOffsets).toEqual([]);
+    await expect(close()).rejects.toThrow("REST overwrite is still in flight");
   });
 
   it("advances the stored anchor when an open REST poll lands its rows", async () => {
