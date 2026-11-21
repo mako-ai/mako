@@ -119,7 +119,10 @@ export async function executeDbSyncChunk(options: {
 
   // Prepare staging on first chunk for full sync
   if (syncMode === "full" && !currentState.stagingPrepared) {
-    await destinationWriter.prepareFullSync();
+    await destinationWriter.prepareFullSync({
+      sourceSchema: currentState.sourceSchema,
+      typeCoercions,
+    });
     currentState.stagingPrepared = true;
   } else if (syncMode === "full" && currentState.stagingPrepared) {
     // Restore staging state for subsequent chunks (new writer instances

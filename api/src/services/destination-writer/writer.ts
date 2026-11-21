@@ -36,7 +36,6 @@ import {
   prepareMongoStaging,
   writeBatchToMongo,
 } from "./mongo-target";
-import { applyTypeCoercionsToSchema } from "./type-coercion";
 import type { DestinationConfig, WriteOptions, WriteResult } from "./types";
 
 const log = loggers.sync("destination-writer");
@@ -393,8 +392,69 @@ export class DestinationWriter {
           `Failed to create staging table: ${result?.error || "Unknown error"}`,
         );
       }
+    } else if (
+      this.config.tableDestination.createIfNotExists &&
+      (options.typeCoercions?.length || options.sourceSchema?.length)
+    ) {
+      // Empty queries have no first batch to create staging before the swap.
+      await this.createSqlTable(stagingName, stagingSchema, [], options);
     }
-    // If original doesn't exist, we'll create it when we get the first batch
+  }
+
+  private async createSqlTable(
+    table: string,
+    schema: string | undefined,
+    rows: Record<string, unknown>[],
+    options: WriteOptions,
+  ): Promise<void> {
+    if (!this.driver || !this.connection) {
+      throw new Error("SQL destination not configured");
+    }
+
+    if (!this.inferredColumns) {
+      if (options.typeCoercions?.length) {
+        // Explicit types are already in the destination dialect.
+        this.inferredColumns = options.typeCoercions.map(tc => ({
+          name: tc.column,
+          type: tc.targetType,
+          nullable: true,
+        }));
+        if (this.driver.requiresTypedColumns?.()) {
+          this.columnTypeMap = new Map(
+            this.inferredColumns.map(c => [c.name.toLowerCase(), c.type]),
+          );
+        }
+      } else {
+        if (options.sourceSchema?.length) {
+          this.inferredColumns = options.sourceSchema;
+        } else {
+          // A later batch may contain nulls even when the first batch did not.
+          this.inferredColumns = this.driver
+            .inferSchema?.(rows)
+            ?.map(c => ({ ...c, nullable: true }));
+          if (!this.inferredColumns) {
+            throw new Error("Failed to infer schema from data");
+          }
+        }
+        this.applyDestinationColumnTypes();
+      }
+    }
+
+    const result = await this.driver.createTable?.(
+      this.connection,
+      table,
+      this.inferredColumns,
+      {
+        ...this.getInsertOptionsWithLayout(),
+        schema,
+      },
+    );
+    if (!result?.success) {
+      throw new Error(
+        `Failed to create table: ${result?.error || "Unknown error"}`,
+      );
+    }
+    this.existingSqlTables.add(`${schema || ""}.${table}`);
   }
 
   private async writeBatchToTable(
@@ -442,79 +502,7 @@ export class DestinationWriter {
       }
 
       if (!tableExists && createIfNotExists) {
-        // Get schema for table creation
-        // Priority order:
-        // 1. typeCoercions (explicit user-defined schema from ETL mapping) - AUTHORITATIVE
-        // 2. sourceSchema (pre-fetched from source database)
-        // 3. inferred from data (fallback, less reliable for NULLs)
-        if (!this.inferredColumns) {
-          // Priority 1: Use typeCoercions as AUTHORITATIVE schema if available
-          // This is the explicit mapping configured by the user in the schema mapping step
-          if (options.typeCoercions && options.typeCoercions.length > 0) {
-            // Convert typeCoercions directly to column definitions
-            // The targetType from typeCoercions IS the authoritative destination type
-            this.inferredColumns = options.typeCoercions.map(tc => ({
-              name: tc.column,
-              type: tc.targetType, // Use targetType directly (already in destination format)
-              nullable: true, // Default to nullable for safety
-            }));
-
-            // typeCoercions are already in the destination's native format;
-            // just record them for typed writes when the driver needs them.
-            if (this.driver?.requiresTypedColumns?.()) {
-              this.columnTypeMap = new Map(
-                this.inferredColumns.map(c => [c.name.toLowerCase(), c.type]),
-              );
-            }
-          }
-          // Priority 2: Use pre-fetched source schema (most reliable after explicit mapping)
-          else if (options.sourceSchema && options.sourceSchema.length > 0) {
-            this.inferredColumns = options.sourceSchema;
-
-            // Apply type coercions as overrides if present
-            if (options.typeCoercions && options.typeCoercions.length > 0) {
-              this.inferredColumns = applyTypeCoercionsToSchema(
-                this.inferredColumns,
-                options.typeCoercions,
-              );
-            }
-
-            this.applyDestinationColumnTypes();
-          } else {
-            // Priority 3: Fallback to inferring from data (less reliable for NULLs)
-            this.inferredColumns = this.driver.inferSchema?.(rows);
-            if (!this.inferredColumns) {
-              throw new Error("Failed to infer schema from data");
-            }
-
-            // Defensive default: inferred webhook/CDC schemas can miss nullability
-            // when first batches don't contain null values yet.
-            this.inferredColumns = this.inferredColumns.map(c => ({
-              ...c,
-              nullable: true,
-            }));
-
-            this.applyDestinationColumnTypes();
-          }
-        }
-
-        // Create table with layout config
-        const createResult = await this.driver.createTable?.(
-          this.connection,
-          targetTable,
-          this.inferredColumns,
-          {
-            ...this.getInsertOptionsWithLayout(),
-            schema: targetSchema,
-          },
-        );
-
-        if (!createResult?.success) {
-          throw new Error(
-            `Failed to create table: ${createResult?.error || "Unknown error"}`,
-          );
-        }
-        this.existingSqlTables.add(tableCacheKey);
+        await this.createSqlTable(targetTable, targetSchema, rows, options);
       }
 
       // Ensure destination table has all columns present in this batch.

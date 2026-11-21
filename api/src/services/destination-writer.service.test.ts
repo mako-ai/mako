@@ -1,4 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { databaseRegistry } from "../databases/registry";
+import { executeDbSyncChunk } from "./destination-writer/db-sync";
 import { DestinationWriter } from "./destination-writer.service";
 import { BigQueryDatabaseDriver } from "../databases/drivers/bigquery/driver";
 import { PostgreSQLDatabaseDriver } from "../databases/drivers/postgresql/driver";
@@ -220,4 +222,69 @@ describe("DestinationWriter finalize after a committed swap", () => {
       "Failed to swap staging table: Staging table mako_internal.crm_asns_staging not found",
     );
   });
+});
+
+describe("first full sync of an empty database query", () => {
+  it.each([
+    { coercions: [{ column: "id", targetType: "STRING" }], expected: "STRING" },
+    { coercions: [], expected: "INT64" },
+  ])(
+    "creates and promotes empty staging using $expected",
+    async ({ coercions, expected }) => {
+      const source = new PostgreSQLDatabaseDriver();
+      source.getQuerySchema = async () => ({
+        success: true,
+        columns: [{ name: "id", type: "integer", nullable: true }],
+      });
+      source.executeQuery = async () => ({ success: true, data: [] });
+      const lookup = vi
+        .spyOn(databaseRegistry, "getDriver")
+        .mockReturnValue(source);
+      try {
+        const driver = new BigQueryDatabaseDriver();
+        const tables = new Map<string, ColumnDefinition[]>();
+        driver.ensureSchema = async () => ({ success: true, created: false });
+        driver.tableExists = async (_, name) => tables.has(name);
+        driver.dropTable = async (_, name) => {
+          tables.delete(name);
+          return { success: true };
+        };
+        driver.createTable = async (_, name, columns, options) => {
+          expect(options?.schema).toBe(BIGQUERY_WORKING_DATASET);
+          tables.set(name, columns);
+          return { success: true };
+        };
+        driver.swapStagingTable = async (_, live, stage) => {
+          const columns = tables.get(stage);
+          if (!columns) {
+            return { success: false, error: "missing staging table" };
+          }
+          tables.set(live, columns);
+          tables.delete(stage);
+          return { success: true };
+        };
+        const insert = vi
+          .spyOn(driver, "insertBatch")
+          .mockRejectedValue(new Error("Unexpected insert on empty restore"));
+        const { writer } = makeWriter(driver, "bigquery", {
+          createIfNotExists: true,
+        });
+        const chunk = await executeDbSyncChunk({
+          sourceConnection: makeFakeConnection("postgresql"),
+          sourceQuery: "select id from users",
+          syncMode: "full",
+          typeCoercions: coercions,
+          destinationWriter: writer,
+        });
+        expect(chunk).toMatchObject({ completed: true, rowsProcessed: 0 });
+        await writer.finalize();
+        expect(tables.get("users")).toEqual([
+          { name: "id", type: expected, nullable: true },
+        ]);
+        expect(insert).not.toHaveBeenCalled();
+      } finally {
+        lookup.mockRestore();
+      }
+    },
+  );
 });
