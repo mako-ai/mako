@@ -16,6 +16,7 @@ const CHILD_LIST_MAX = 10_000;
 /** Customers per page for payment_methods: one extra call per customer. */
 export const PAYMENT_METHOD_PARENT_PAGE = 25;
 const CHECKOUT_SESSION_PARENT_PAGE = 25;
+export const CHECKOUT_LINE_ITEM_ENTITY = "checkout_sessions_line_items";
 
 export interface StripePageRequest {
   limit: number;
@@ -66,25 +67,23 @@ const TOP_LEVEL_LISTERS: Record<string, Lister> = {
 };
 
 /**
- * Entities that live inside a parent object: an invoice's `lines` and a
- * subscription's `items`. A list page of the parent embeds the first 10;
- * a longer list is read from the child endpoint. Webhooks on the parent
- * carry the same embedded list, so both paths share `childRowsOf`.
+ * Child entities use their parent's cursor and lifecycle events. Invoices
+ * and subscriptions can carry their children inline. Checkout needs its
+ * dedicated line-item endpoint.
  */
-export const EMBEDDED_CHILD_PARENTS = {
+export const CHILD_PARENTS = {
   invoice_line_items: "invoices",
   subscription_items: "subscriptions",
+  [CHECKOUT_LINE_ITEM_ENTITY]: "checkout_sessions",
 } as const;
 
-export type EmbeddedChildEntity = keyof typeof EMBEDDED_CHILD_PARENTS;
+export type ChildEntity = keyof typeof CHILD_PARENTS;
 
-export const isEmbeddedChild = (
-  entity: string,
-): entity is EmbeddedChildEntity =>
-  Object.prototype.hasOwnProperty.call(EMBEDDED_CHILD_PARENTS, entity);
+const isChildEntity = (entity: string): entity is ChildEntity =>
+  Object.prototype.hasOwnProperty.call(CHILD_PARENTS, entity);
 
 /** Where the parent embeds the child list. */
-export const EMBEDDED_CHILD_KEY: Record<EmbeddedChildEntity, string> = {
+const EMBEDDED_CHILD_KEY = {
   invoice_line_items: "lines",
   subscription_items: "items",
 };
@@ -108,10 +107,11 @@ function embeddedList(
 }
 
 /** Whether the parent's embedded list is cut short, so reading it costs a call. */
-export function childListIsPartial(
-  entity: EmbeddedChildEntity,
+export function childNeedsRequest(
+  entity: ChildEntity,
   parent: StripeRow,
 ): boolean {
+  if (entity === CHECKOUT_LINE_ITEM_ENTITY) return true;
   return embeddedList(parent, EMBEDDED_CHILD_KEY[entity])?.has_more === true;
 }
 
@@ -130,10 +130,15 @@ export function childListIsPartial(
  */
 export async function childRowsOf(
   stripe: Stripe,
-  entity: EmbeddedChildEntity,
+  entity: ChildEntity,
   parent: StripeRow,
-  { fetchMore = true }: { fetchMore?: boolean } = {},
+  {
+    fetchMore = true,
+    budgetSpent,
+  }: { fetchMore?: boolean; budgetSpent?: () => boolean } = {},
 ): Promise<StripeRow[] | null> {
+  if (entity === CHECKOUT_LINE_ITEM_ENTITY)
+    return fetchMore ? checkoutLineItems(stripe, parent, budgetSpent) : null;
   const parentId = typeof parent.id === "string" ? parent.id : undefined;
   if (!parentId) return null;
   const list = embeddedList(parent, EMBEDDED_CHILD_KEY[entity]);
@@ -199,23 +204,18 @@ export function listStripePage(
   request: StripePageRequest,
 ): Promise<StripePage> {
   if (isNested(entity)) return fetchNestedPage(stripe, entity, request);
-  if (isEmbeddedChild(entity))
-    return fetchChildPage(
-      stripe,
-      EMBEDDED_CHILD_PARENTS[entity],
-      request,
-      parent => childRowsOf(stripe, entity, parent),
+  if (isChildEntity(entity)) {
+    const options =
+      entity === CHECKOUT_LINE_ITEM_ENTITY
+        ? {
+            ...request,
+            limit: Math.min(request.limit, CHECKOUT_SESSION_PARENT_PAGE),
+          }
+        : request;
+    return fetchChildPage(stripe, CHILD_PARENTS[entity], options, parent =>
+      childRowsOf(stripe, entity, parent),
     );
-  if (entity === "checkout_sessions_line_items")
-    return fetchChildPage(
-      stripe,
-      "checkout_sessions",
-      {
-        ...request,
-        limit: Math.min(request.limit, CHECKOUT_SESSION_PARENT_PAGE),
-      },
-      parent => checkoutLineItems(stripe, parent),
-    );
+  }
   const lister = TOP_LEVEL_LISTERS[entity];
   if (!lister) throw new Error(`Unsupported entity: ${entity}`);
   return lister(stripe, listParams(request));
@@ -321,6 +321,7 @@ async function fetchChildPage(
 async function checkoutLineItems(
   stripe: Stripe,
   session: StripeRow,
+  budgetSpent?: () => boolean,
 ): Promise<StripeRow[]> {
   const { id, created, expires_at } = session;
   if (!id || typeof created !== "number" || !Number.isInteger(created))
@@ -331,6 +332,10 @@ async function checkoutLineItems(
   const seen = new Set<string>();
   let cursor: string | undefined;
   while (true) {
+    if (budgetSpent?.())
+      throw new Error(
+        "Stripe webhook fill budget reached during Checkout line-item pagination",
+      );
     const page = await stripe.checkout.sessions.listLineItems(id, {
       limit: 100,
       expand: ["data.discounts", "data.taxes"],
