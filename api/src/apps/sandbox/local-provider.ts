@@ -30,6 +30,7 @@ import type {
   SandboxTerminal,
 } from "./provider";
 import { commandToRun } from "./hidden-command";
+import { assertLaunchDeadline, launchTimeout } from "./launch-deadline";
 
 const logger = loggers.api("apps-local-sandbox");
 
@@ -158,6 +159,22 @@ async function execLocal(
   }
   await fs.mkdir(cwd, { recursive: true });
   const run = commandToRun(command, options);
+  const launchMs = launchTimeout(
+    options.timeoutMs ?? 120_000,
+    options.remainingMs,
+    1,
+  );
+  if (launchMs === null) {
+    return {
+      exitCode: 124,
+      stdout: "",
+      stderr: "",
+      timedOut: true,
+      preLaunchDeadline: true,
+      durationMs: Date.now() - startedAt,
+      truncated: false,
+    };
+  }
 
   return new Promise(resolve => {
     execFile(
@@ -165,7 +182,7 @@ async function execLocal(
       ["-lc", run.command],
       {
         cwd,
-        timeout: options.timeoutMs ?? 120_000,
+        timeout: launchMs,
         maxBuffer: MAX_OUTPUT_BYTES * 4,
         encoding: "utf8",
         env: sandboxEnv(run.env),
@@ -244,17 +261,18 @@ export const localSandboxProvider: SandboxProvider = {
       : null;
   },
 
-  async writeFile(ctx, remotePath, bytes) {
+  async writeFile(ctx, remotePath, bytes, options) {
     assertNotProduction();
     await ensureDirs(ctx);
     const target = toLocal(ctx, remotePath);
     await fs.mkdir(path.dirname(target), { recursive: true });
+    assertLaunchDeadline(options?.remainingMs);
     await fs.writeFile(target, bytes);
   },
 
-  async writeFiles(ctx, files) {
+  async writeFiles(ctx, files, options) {
     for (const file of files) {
-      await localSandboxProvider.writeFile(ctx, file.path, file.bytes);
+      await localSandboxProvider.writeFile(ctx, file.path, file.bytes, options);
     }
   },
 

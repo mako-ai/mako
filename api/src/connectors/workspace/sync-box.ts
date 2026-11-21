@@ -51,6 +51,10 @@ import {
   type SandboxFileOptions,
 } from "../../apps/sandbox/provider";
 import { BoxLowMemoryError } from "../../apps/sandbox/box-memory";
+import {
+  assertLaunchDeadline,
+  LaunchDeadlineError,
+} from "../../apps/sandbox/launch-deadline";
 import { loggers } from "../../logging";
 
 const logger = loggers.connector();
@@ -922,6 +926,8 @@ export async function runConnectorCommand(input: {
    */
   maxBytes?: number;
   timeoutMs?: number;
+  /** Remaining caller budget, checked immediately before launching the command. */
+  remainingMs?: () => number;
   entry?: string;
   /**
    * Called when the run's cleanup failed. The result still returns; the
@@ -929,6 +935,7 @@ export async function runConnectorCommand(input: {
    */
   onCleanupFailure?: (reason: string) => void;
 }): Promise<RunResult> {
+  assertLaunchDeadline(input.remainingMs);
   const { ctx } = input;
   const encoder = new TextEncoder();
   const inputs: RunFiles = [];
@@ -1027,12 +1034,14 @@ export async function writeAll(
   if (files.length === 0) return;
   const provider = getSandboxProvider();
   if (provider.writeFiles) {
+    assertLaunchDeadline(options?.remainingMs);
     await (options
       ? provider.writeFiles(ctx, files, options)
       : provider.writeFiles(ctx, files));
     return;
   }
   for (const file of files) {
+    assertLaunchDeadline(options?.remainingMs);
     await (options
       ? provider.writeFile(ctx, file.path, file.bytes, options)
       : provider.writeFile(ctx, file.path, file.bytes));
@@ -1060,10 +1069,14 @@ async function runIsolated(
   // Every call of the run is pinned to the box that was prepared. A box
   // replaced since then fails the call instead of receiving the credential.
   const owner = { asRoot: true as const, expectSandboxId: pinned };
+  const inputOwner = input.remainingMs
+    ? { ...owner, remainingMs: input.remainingMs }
+    : owner;
 
   let lastError = "";
   // A random UID can collide with one in use; a fresh user and run fixes it.
   for (let attempt = 0; attempt < 3; attempt++) {
+    assertLaunchDeadline(input.remainingMs);
     const layout = runLayout(
       randomBytes(8).toString("hex"),
       `mkc${randomBytes(6).toString("hex")}`,
@@ -1083,8 +1096,9 @@ async function runIsolated(
           path: incomingPath(layout.runId, file.name),
           bytes: file.bytes,
         })),
-        owner,
+        inputOwner,
       );
+      assertLaunchDeadline(input.remainingMs);
       // Round trip 2: setup, launch, bound, cleanup.
       result = await provider.exec(
         ctx,
@@ -1094,7 +1108,14 @@ async function runIsolated(
           argv(layout.dir),
           MAX_CONNECTOR_PROTOCOL_BYTES,
         ),
-        { ...owner, timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS },
+        {
+          ...owner,
+          timeoutMs: Math.min(
+            input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+            input.remainingMs?.() ?? Infinity,
+          ),
+          ...(input.remainingMs ? { remainingMs: input.remainingMs } : {}),
+        },
       );
       marker = lastMarker(result.stdout, CHUNK_MARKER);
       noteHidepidOff(result.stdout, ctx, result.sandboxId, "chunk");
@@ -1108,6 +1129,7 @@ async function runIsolated(
     // may not have run, so it runs now, and the chunk fails.
     if (!marker || result.timedOut) {
       await abandonRun(input, layout, owner);
+      if (result.preLaunchDeadline) throw new LaunchDeadlineError();
       if (result.timedOut) {
         return {
           exitCode: result.exitCode,
@@ -1272,7 +1294,12 @@ async function runShared(
   let inputsDeleted = false;
   try {
     // Round trip 1: every input in one request.
-    await writeAll(ctx, files);
+    await writeAll(
+      ctx,
+      files,
+      input.remainingMs ? { remainingMs: input.remainingMs } : undefined,
+    );
+    assertLaunchDeadline(input.remainingMs);
 
     // Round trip 2: run, delete the inputs, bound the output, report its
     // size. `head` makes an immutable snapshot of at most limit + 1 bytes,
@@ -1292,11 +1319,16 @@ async function runShared(
       `exit $status`,
     ].join("\n");
     const result = await provider.exec(ctx, script, {
-      timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      timeoutMs: Math.min(
+        input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        input.remainingMs?.() ?? Infinity,
+      ),
+      ...(input.remainingMs ? { remainingMs: input.remainingMs } : {}),
       // Nothing is ADDED to the environment on purpose: a connector has no
       // business reading even what an app may read. What it does see is the
       // provider's own fixed allowlist.
     });
+    if (result.preLaunchDeadline) throw new LaunchDeadlineError();
     if (result.timedOut) {
       return {
         exitCode: result.exitCode,

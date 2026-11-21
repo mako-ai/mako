@@ -29,6 +29,7 @@ vi.mock("../sync-box", async importOriginal => ({
 
 import { loadStripeRegistryMetadata } from "../registry/stripe-metadata";
 import { bindCalendlyRelease } from "../registry/calendly-binding";
+import { LaunchDeadlineError } from "../../../apps/sandbox/launch-deadline";
 
 const registry = {
   ref: "mako/stripe@1.2.3",
@@ -108,6 +109,28 @@ describe("Calendly verified binding", () => {
     await expect(bindCalendlyRelease(input)).rejects.toThrow(
       "missing artifact",
     );
+    expect(mocks.run).not.toHaveBeenCalled();
+  });
+
+  it("refuses to lease a box after the probe expires", async () => {
+    mocks.resolveTrusted.mockResolvedValueOnce(release);
+    await expect(
+      bindCalendlyRelease({ ...input, remainingMs: () => 0 }),
+    ).rejects.toBeInstanceOf(LaunchDeadlineError);
+    expect(mocks.withLease).not.toHaveBeenCalled();
+  });
+
+  it("refuses SPEC when bundle preparation exhausts the probe budget", async () => {
+    let remaining = 50;
+    mocks.resolveTrusted.mockResolvedValueOnce(release);
+    mocks.prepare.mockImplementationOnce(async () => {
+      remaining = 0;
+      return { dir: "/box/verified", entry: "bundle.mjs" };
+    });
+    await expect(
+      bindCalendlyRelease({ ...input, remainingMs: () => remaining }),
+    ).rejects.toBeInstanceOf(LaunchDeadlineError);
+    expect(mocks.withLease).toHaveBeenCalledOnce();
     expect(mocks.run).not.toHaveBeenCalled();
   });
 });

@@ -233,6 +233,7 @@ class SyncConnectorRegistry {
     connection: SourceConnectionConfig,
     binding: StripeTestBinding | CalendlyBinding,
     type: "stripe" | "calendly",
+    remainingMs?: () => number,
   ): BaseConnector {
     if (
       connection.type !== type ||
@@ -246,6 +247,7 @@ class SyncConnectorRegistry {
     return new SandboxedConnector(
       asSourceConnection(connection),
       binding.definition,
+      remainingMs,
     );
   }
 
@@ -257,7 +259,12 @@ class SyncConnectorRegistry {
     binding?: CalendlyBinding | null,
   ): Promise<BaseConnector | null> {
     if (binding) {
-      return this.getBoundRegistryConnector(connection, binding, "calendly");
+      return this.getBoundRegistryConnector(
+        connection,
+        binding,
+        "calendly",
+        binding.remainingMs,
+      );
     }
     if (isWorkspaceConnectorType(connection.type)) {
       if (!connection.workspaceId) {

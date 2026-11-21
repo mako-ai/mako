@@ -39,6 +39,8 @@ export interface SandboxExecOptions {
   /** Working directory relative to the session root ("" = root). */
   cwd?: string;
   timeoutMs?: number;
+  /** Caller budget rechecked immediately before each command launch. */
+  remainingMs?: () => number;
   /**
    * Extra env vars visible to the command. Never a Mako API secret — the
    * only credentials that may enter a box are the tenant's own (the git
@@ -81,6 +83,8 @@ export interface SandboxFileOptions {
   asRoot?: boolean;
   /** See {@link SandboxExecOptions.expectSandboxId}. */
   expectSandboxId?: string;
+  /** Caller budget rechecked immediately before writing bytes. */
+  remainingMs?: () => number;
 }
 
 /** Identity of the sandbox a command runs against. */
@@ -94,6 +98,8 @@ export interface SandboxExecResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  /** The caller's deadline left too little time to start a command. */
+  preLaunchDeadline?: true;
   durationMs: number;
   /** True when stdout/stderr were truncated to the output cap. */
   truncated: boolean;

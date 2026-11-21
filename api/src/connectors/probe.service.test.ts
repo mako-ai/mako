@@ -43,6 +43,10 @@ const SECRET = "vck_live_0123456789abcdefXYZ";
 const WS = new Types.ObjectId();
 const WS_THEIRS = new Types.ObjectId();
 
+type AuthorizeCalendlyReload = NonNullable<
+  Parameters<typeof sourceConnectionManager.getBoundCalendlyConnection>[1]
+>;
+
 const state = vi.hoisted(() => ({
   connector: null as unknown,
   recorded: [] as Array<Record<string, unknown>>,
@@ -50,14 +54,22 @@ const state = vi.hoisted(() => ({
   roles: {} as Record<string, string>,
   release: null as null | Record<string, string>,
   metadataError: null as Error | null,
+  beforeResolve: undefined as (() => void) | undefined,
+  beforeMetadata: undefined as (() => void | Promise<void>) | undefined,
+  beforeReload: undefined as (() => void) | undefined,
+  reloadPolicy: null as Parameters<AuthorizeCalendlyReload>[0] | null,
   loads: 0,
 }));
 
 vi.mock("./workspace/registry/stripe-release", () => ({
-  resolveTrustedRelease: vi.fn(async () => state.release),
+  resolveTrustedRelease: vi.fn(async () => {
+    state.beforeResolve?.();
+    return state.release;
+  }),
 }));
 vi.mock("./workspace/registry/stripe-metadata", () => ({
   loadVerifiedRegistryMetadata: vi.fn(async () => {
+    await state.beforeMetadata?.();
     if (state.metadataError) throw state.metadataError;
     return {
       registry: state.release,
@@ -102,8 +114,15 @@ vi.mock("../sync/database-data-source-manager", () => {
     sourceConnectionManager: {
       getSourceConnection,
       getBoundCalendlyConnection: vi.fn(
-        async (binding: { connectionId: string }) =>
-          getSourceConnection(binding.connectionId),
+        async (
+          binding: { connectionId: string },
+          authorize?: AuthorizeCalendlyReload,
+        ) => {
+          state.beforeReload?.();
+          if (!state.reloadPolicy) return null;
+          await authorize?.(state.reloadPolicy);
+          return getSourceConnection(binding.connectionId);
+        },
       ),
     },
   };
@@ -118,10 +137,14 @@ vi.mock("./workspace/reconcile.service", () => ({
 
 import { SourceConnection } from "../database/workspace-schema";
 import { syncConnectorRegistry } from "../sync/connector-registry";
+import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { requestContextStorage } from "../logging/context";
+import { LaunchDeadlineError } from "../apps/sandbox/launch-deadline";
+import { loadVerifiedRegistryMetadata } from "./workspace/registry/stripe-metadata";
 import { CALENDLY_RELEASE_PIN } from "./workspace/registry/calendly-binding";
 import {
   PROBE_MAX_LIMIT,
+  PROBE_TIMEOUT_MS,
   ProbeError,
   probeConnection,
   redactSecrets,
@@ -244,6 +267,14 @@ beforeEach(async () => {
   CALENDLY_RELEASE_PIN.version = undefined;
   CALENDLY_RELEASE_PIN.sha256 = undefined;
   state.metadataError = null;
+  state.beforeResolve = undefined;
+  state.beforeMetadata = undefined;
+  state.beforeReload = undefined;
+  state.reloadPolicy = {
+    name: "Vercel AI Gateway Usage",
+    liveReads: true,
+    createdBy: "u1",
+  };
   state.loads = 0;
   state.dataSourceType = "stripe";
   state.roles = { u1: "member", u2: "member", u3: "viewer", boss: "owner" };
@@ -283,6 +314,8 @@ describe("Calendly probe binding", () => {
     state.release = release;
     CALENDLY_RELEASE_PIN.version = release.version;
     CALENDLY_RELEASE_PIN.sha256 = release.sha256;
+    vi.mocked(loadVerifiedRegistryMetadata).mockClear();
+    vi.mocked(sourceConnectionManager.getBoundCalendlyConnection).mockClear();
     vi.mocked(syncConnectorRegistry.getConnectorFor).mockClear();
   });
 
@@ -301,6 +334,7 @@ describe("Calendly probe binding", () => {
     ).toMatchObject({
       workspaceId: WS.toString(),
       connectionId: mine.toString(),
+      remainingMs: expect.any(Function),
       definition: { registry: { sha256: release.sha256 } },
     });
   });
@@ -308,6 +342,151 @@ describe("Calendly probe binding", () => {
   it("rejects an unavailable artifact before loading a credential", async () => {
     state.metadataError = new Error("missing artifact");
     await expect(probe()).rejects.toThrow("missing artifact");
+    expect(state.loads).toBe(0);
+    expect(syncConnectorRegistry.getConnectorFor).not.toHaveBeenCalled();
+  });
+
+  it("refuses to start metadata after a late catalog lookup", async () => {
+    const start = performance.now();
+    const clock = vi.spyOn(performance, "now").mockReturnValue(start);
+    try {
+      state.beforeResolve = () => {
+        clock.mockReturnValue(start + PROBE_TIMEOUT_MS);
+      };
+      expect(await failure(probe())).toMatchObject({
+        code: "timeout",
+        status: 504,
+      });
+      expect(loadVerifiedRegistryMetadata).not.toHaveBeenCalled();
+      expect(state.loads).toBe(0);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("does not reload a credential when metadata completes after expiry", async () => {
+    const start = performance.now();
+    const clock = vi.spyOn(performance, "now").mockReturnValue(start);
+    try {
+      state.beforeMetadata = () => {
+        clock.mockReturnValue(start + PROBE_TIMEOUT_MS);
+      };
+      expect(await failure(probe())).toMatchObject({
+        code: "timeout",
+        status: 504,
+      });
+      expect(loadVerifiedRegistryMetadata).toHaveBeenCalledOnce();
+      expect(state.loads).toBe(0);
+      expect(syncConnectorRegistry.getConnectorFor).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("shares its budget between metadata and credential reload", async () => {
+    const start = performance.now();
+    const clock = vi.spyOn(performance, "now").mockReturnValue(start);
+    try {
+      state.beforeMetadata = () => {
+        clock.mockReturnValue(start + 60_000);
+      };
+      state.beforeReload = () => {
+        clock.mockReturnValue(start + PROBE_TIMEOUT_MS);
+      };
+      expect(await failure(probe())).toMatchObject({
+        code: "timeout",
+        status: 504,
+      });
+      expect(state.loads).toBe(1);
+      expect(
+        vi.mocked(sourceConnectionManager.getBoundCalendlyConnection).mock
+          .lastCall?.[1],
+      ).toBeUndefined();
+      expect(syncConnectorRegistry.getConnectorFor).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("times out while metadata is held and cannot resume credential reload", async () => {
+    let signalEntry!: () => void;
+    let releaseMetadata!: () => void;
+    const entered = new Promise<void>(resolve => {
+      signalEntry = resolve;
+    });
+    const release = new Promise<void>(resolve => {
+      releaseMetadata = resolve;
+    });
+    state.beforeMetadata = async () => {
+      signalEntry();
+      await release;
+    };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const completed = vi.fn();
+    const response = probe({ timeoutMs: 200 }).catch(completed);
+    try {
+      await Promise.race([entered, response]);
+      expect(loadVerifiedRegistryMetadata).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(200);
+      expect(completed).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "timeout", status: 504 }),
+      );
+      releaseMetadata();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(state.loads).toBe(0);
+      expect(syncConnectorRegistry.getConnectorFor).not.toHaveBeenCalled();
+    } finally {
+      releaseMetadata();
+      vi.useRealTimers();
+      await response;
+    }
+  });
+
+  it("returns a timeout when the launch guard refuses metadata", async () => {
+    state.metadataError = new LaunchDeadlineError();
+    expect(await failure(probe())).toMatchObject({
+      code: "timeout",
+      status: 504,
+    });
+    expect(state.loads).toBe(0);
+  });
+
+  it("authorizes the exact reload snapshot before loading credentials", async () => {
+    await SourceConnection.updateOne(
+      { _id: mine },
+      { $set: { liveReads: true } },
+    );
+    state.beforeReload = () => {
+      state.reloadPolicy = {
+        name: "Vercel AI Gateway Usage",
+        liveReads: false,
+        createdBy: "u1",
+      };
+    };
+    const error = await requestContextStorage.run(
+      { requestId: "r", method: "POST", path: "/", startTime: 0, userId: "u2" },
+      () => failure(probe({ entity: "daily-usage" })),
+    );
+    expect(error).toMatchObject({ code: "forbidden", status: 403 });
+    expect(loadVerifiedRegistryMetadata).toHaveBeenCalledOnce();
+    expect(
+      sourceConnectionManager.getBoundCalendlyConnection,
+    ).toHaveBeenCalledOnce();
+    expect(state.loads).toBe(0);
+    expect(syncConnectorRegistry.getConnectorFor).not.toHaveBeenCalled();
+  });
+
+  it("returns not found when the scoped reload misses a retyped connection", async () => {
+    state.beforeReload = () => {
+      state.reloadPolicy = null;
+    };
+    expect(await failure(probe())).toMatchObject({
+      code: "not_found",
+      status: 404,
+    });
+    expect(
+      sourceConnectionManager.getBoundCalendlyConnection,
+    ).toHaveBeenCalledOnce();
     expect(state.loads).toBe(0);
     expect(syncConnectorRegistry.getConnectorFor).not.toHaveBeenCalled();
   });

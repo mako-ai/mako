@@ -56,6 +56,7 @@ import {
   noteSessionPaused,
   resetHeldSandboxesForTests,
 } from "./e2b-provider";
+import { LaunchDeadlineError } from "./launch-deadline";
 
 /** The 4 shapes e2b 2.55 gives a dead, paused or unreachable box. */
 const proxyNotFound = () =>
@@ -138,6 +139,167 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe("E2B launch deadline", () => {
+  const deadlineOptions = (deadline: number) => ({
+    timeoutMs: 30_000,
+    remainingMs: () => deadline - Date.now(),
+  });
+
+  it("refuses to start after a slow lifetime setup", async () => {
+    const box = oneBox();
+    const deadline = Date.now() + 10_000;
+    box.setTimeout.mockImplementationOnce(async () => {
+      vi.setSystemTime(Date.now() + 10_001);
+    });
+    const result = await provider.exec(
+      ctx,
+      "synthetic",
+      deadlineOptions(deadline),
+    );
+    expect(result.timedOut).toBe(true);
+    expect(result.preLaunchDeadline).toBe(true);
+    expect(box.commands.run).not.toHaveBeenCalled();
+    expect(e2b.Sandbox.connect).toHaveBeenCalledTimes(1);
+    expect(heldSandboxCountForTests()).toBe(1);
+  });
+
+  it("refuses the E2B sub-second floor rather than extending the budget", async () => {
+    const box = oneBox();
+    const result = await provider.exec(
+      ctx,
+      "synthetic",
+      deadlineOptions(Date.now() + 999),
+    );
+    expect(result.timedOut).toBe(true);
+    expect(box.commands.run).not.toHaveBeenCalled();
+  });
+
+  it("refuses a sub-second command limit when a deadline is supplied", async () => {
+    const box = oneBox();
+    const result = await provider.exec(ctx, "synthetic", {
+      ...deadlineOptions(Date.now() + 15_000),
+      timeoutMs: 500,
+    });
+    expect(result.timedOut).toBe(true);
+    expect(box.commands.run).not.toHaveBeenCalled();
+  });
+
+  it("caps the launch timeout after setup", async () => {
+    const box = oneBox();
+    const deadline = Date.now() + 15_000;
+    box.setTimeout.mockImplementationOnce(async () => {
+      vi.setSystemTime(Date.now() + 5_000);
+    });
+    expect(
+      (await provider.exec(ctx, "synthetic", deadlineOptions(deadline)))
+        .exitCode,
+    ).toBe(0);
+    expect(box.commands.run.mock.calls[0][1].timeoutMs).toBe(10_000);
+  });
+
+  it("does not start a second command after a permitted reconnect expires", async () => {
+    const box = oneBox();
+    await provider.exec(ctx, "warm", { timeoutMs: 30_000 });
+    box.commands.run.mockClear();
+    box.commands.run.mockRejectedValueOnce(proxyNotFound());
+    const deadline = Date.now() + 10_000;
+    e2b.Sandbox.connect.mockImplementationOnce(async () => {
+      vi.setSystemTime(Date.now() + 10_001);
+      return box;
+    });
+    const result = await provider.exec(
+      ctx,
+      "synthetic",
+      deadlineOptions(deadline),
+    );
+    expect(result.timedOut).toBe(true);
+    expect(box.commands.run).toHaveBeenCalledTimes(1);
+    expect(e2b.Sandbox.connect).toHaveBeenCalledTimes(2);
+  });
+
+  it("recomputes the timeout after a permitted reconnect", async () => {
+    const box = oneBox();
+    await provider.exec(ctx, "warm", { timeoutMs: 30_000 });
+    box.commands.run.mockClear();
+    box.commands.run.mockRejectedValueOnce(proxyNotFound());
+    const deadline = Date.now() + 15_000;
+    e2b.Sandbox.connect.mockImplementationOnce(async () => {
+      vi.setSystemTime(Date.now() + 5_000);
+      return box;
+    });
+    expect(
+      (await provider.exec(ctx, "synthetic", deadlineOptions(deadline)))
+        .exitCode,
+    ).toBe(0);
+    expect(box.commands.run.mock.calls.map(call => call[1].timeoutMs)).toEqual([
+      15_000, 10_000,
+    ]);
+  });
+
+  it("does not treat an unrelated budget error as a timeout or retry", async () => {
+    const box = oneBox();
+    await expect(
+      provider.exec(ctx, "synthetic", {
+        timeoutMs: 30_000,
+        remainingMs: () => {
+          throw new Error("bad budget");
+        },
+      }),
+    ).rejects.toThrow("bad budget");
+    expect(box.commands.run).not.toHaveBeenCalled();
+    expect(e2b.Sandbox.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the original timeout when no deadline is supplied", async () => {
+    const box = oneBox();
+    expect(
+      (await provider.exec(ctx, "synthetic", { timeoutMs: 30_000 })).exitCode,
+    ).toBe(0);
+    expect(box.commands.run.mock.calls[0][1].timeoutMs).toBe(30_000);
+  });
+});
+
+describe("E2B file write deadline", () => {
+  const bytes = new Uint8Array([1, 2, 3]);
+
+  it("refuses a file write after a slow connect", async () => {
+    const box = oneBox();
+    const deadline = Date.now() + 10_000;
+    e2b.Sandbox.connect.mockImplementationOnce(async () => {
+      vi.setSystemTime(deadline + 1);
+      return box;
+    });
+
+    await expect(
+      provider.writeFile(ctx, "/tmp/config.json", bytes, {
+        remainingMs: () => deadline - Date.now(),
+      }),
+    ).rejects.toBeInstanceOf(LaunchDeadlineError);
+    expect(box.files.write).not.toHaveBeenCalled();
+    expect(heldSandboxCountForTests()).toBe(1);
+  });
+
+  it("refuses the second batch write if a reconnect exhausts the budget", async () => {
+    const box = oneBox();
+    await provider.writeFile(ctx, "/tmp/warm.json", bytes);
+    box.files.write.mockClear().mockRejectedValueOnce(proxyNotFound());
+    const deadline = Date.now() + 10_000;
+    e2b.Sandbox.connect.mockImplementationOnce(async () => {
+      vi.setSystemTime(deadline + 1);
+      return box;
+    });
+
+    await expect(
+      writeFiles(ctx, [{ path: "/tmp/config.json", bytes }], {
+        remainingMs: () => deadline - Date.now(),
+      }),
+    ).rejects.toBeInstanceOf(LaunchDeadlineError);
+    expect(box.files.write).toHaveBeenCalledTimes(1);
+    expect(e2b.Sandbox.connect).toHaveBeenCalledTimes(2);
+    expect(heldSandboxCountForTests()).toBe(1);
+  });
 });
 
 describe("held E2B handles", () => {
@@ -405,6 +567,7 @@ describe("held E2B handles", () => {
       timeoutMs: 30_000,
     });
     expect(result).toMatchObject({ exitCode: 124, timedOut: true });
+    expect(result).not.toHaveProperty("preLaunchDeadline");
     // The command carried a unique tag; the sweep, as root, aims at it.
     expect(box.commands.run).toHaveBeenCalledTimes(2);
     const execId = box.commands.run.mock.calls[0][1].envs[EXEC_ID_ENV];

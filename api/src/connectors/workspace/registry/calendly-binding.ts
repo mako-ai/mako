@@ -1,4 +1,5 @@
 import { ObjectId } from "mongodb";
+import { assertLaunchDeadline } from "../../../apps/sandbox/launch-deadline";
 import { specToForm, type FormSchema } from "../spec-translation";
 import type { LoadedConnector } from "../resolver";
 import { loadVerifiedRegistryMetadata } from "./stripe-metadata";
@@ -21,6 +22,7 @@ export interface CalendlyBinding {
   connectionId: string;
   schema: FormSchema;
   definition: LoadedConnector;
+  remainingMs?: () => number;
 }
 
 /** Resolve and verify before reading a stored credential. */
@@ -28,13 +30,20 @@ export async function bindCalendlyRelease(input: {
   workspaceId: string;
   connectionId: string;
   type: string;
+  remainingMs?: () => number;
 }): Promise<CalendlyBinding | null> {
   if (input.type !== "calendly") return null;
   const release = await resolveTrustedRelease("calendly", CALENDLY_RELEASE_PIN);
   if (!release) return null;
   const workspaceId = new ObjectId(input.workspaceId).toHexString();
   const connectionId = new ObjectId(input.connectionId).toHexString();
-  const metadata = await loadVerifiedRegistryMetadata(workspaceId, release);
+  const { remainingMs } = input;
+  assertLaunchDeadline(remainingMs);
+  const metadata = await loadVerifiedRegistryMetadata(
+    workspaceId,
+    release,
+    remainingMs,
+  );
   if (
     metadata.registry.slug !== "calendly" ||
     metadata.registry.version !== release.version ||
@@ -54,6 +63,7 @@ export async function bindCalendlyRelease(input: {
   return {
     workspaceId,
     connectionId,
+    ...(remainingMs ? { remainingMs } : {}),
     schema: specToForm(metadata.spec),
     definition: {
       slug: "calendly",

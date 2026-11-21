@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { assertLaunchDeadline } from "../../../apps/sandbox/launch-deadline";
 import { getBoxScheduler } from "../boxes/scheduler";
 import { validateSpec } from "../connector-file";
 import { ensureConnectorRuntime } from "../resolver";
@@ -35,7 +36,9 @@ export async function loadStripeRegistryMetadata(input: {
 export async function loadVerifiedRegistryMetadata(
   workspaceId: string,
   registry: import("./registry.service").RegistryResolution,
+  remainingMs?: () => number,
 ): Promise<StripeRegistryMetadata> {
+  assertLaunchDeadline(remainingMs);
   return getBoxScheduler().withLease(
     {
       workspaceId,
@@ -48,13 +51,16 @@ export async function loadVerifiedRegistryMetadata(
       oneOff: true,
     },
     async lease => {
+      assertLaunchDeadline(remainingMs);
       if (!lease.fresh) throw new Error("Stripe spec requires a fresh box.");
       const runtimeId = await ensureConnectorRuntime(lease.ctx);
+      assertLaunchDeadline(remainingMs);
       const installed = await prepareRegistryConnector({
         ctx: lease.ctx,
         runtimeId,
         registry,
       });
+      assertLaunchDeadline(remainingMs);
       const result = await runConnectorCommand({
         ctx: lease.ctx,
         runtimeId,
@@ -62,6 +68,7 @@ export async function loadVerifiedRegistryMetadata(
         entry: installed.entry,
         command: "spec",
         timeoutMs: 60_000,
+        ...(remainingMs ? { remainingMs } : {}),
         onCleanupFailure: reason => lease.markUnhealthy(reason),
       });
       if (result.timedOut) lease.markFailed("timed out");
