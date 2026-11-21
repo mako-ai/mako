@@ -172,8 +172,13 @@ describe("the gate: mako/stripe@1 installed by reference", () => {
       authType: "api_key",
       changelog: expect.stringContaining("setup_attempts"),
     });
-    expect(published.entry.entities).toHaveLength(27);
-    expect(published.entry.entities).toContain("setup_attempts");
+    expect(published.entry.entities).toHaveLength(28);
+    expect(published.entry.entities).toEqual(
+      expect.arrayContaining([
+        "setup_attempts",
+        "checkout_sessions_line_items",
+      ]),
+    );
 
     // The workspace installs it with one committed line.
     await initRepo(

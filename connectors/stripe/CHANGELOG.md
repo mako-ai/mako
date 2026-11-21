@@ -5,9 +5,13 @@ Releases of `mako/stripe`. A workspace installs it with
 
 ## 1.5.0
 
-- 27 entities with the addition of `setup_attempts`. The reader walks Setup
-  Intents of every age and applies the incremental cutoff to attempt creation
-  time. Each batch makes one Stripe request and saves both paging positions.
+- 28 entities with `setup_attempts` and `checkout_sessions_line_items`.
+  Setup Attempts walks Setup Intents of every age and applies the incremental
+  cutoff to attempt creation. Each batch makes one Stripe request and saves
+  both paging positions.
+- Checkout Session line items include all child pages, parent creation and
+  expiry. Opted-in flows refresh children on the four existing Checkout
+  lifecycle events and record the actual event creation time.
 
 ## 1.4.0
 
