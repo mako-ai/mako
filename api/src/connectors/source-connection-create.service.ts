@@ -275,6 +275,7 @@ export async function createSourceConnection(
     type,
     description: input.description,
     config: applySchemaEncryption(input.config || {}, schema),
+    configRevision: 0,
     settings: {
       sync_batch_size: settings.sync_batch_size || 100,
       rate_limit_delay_ms: settings.rate_limit_delay_ms || 200,

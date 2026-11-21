@@ -115,6 +115,7 @@ vi.mock("../connectors/probe.service", async importOriginal => ({
 }));
 
 import { sourceConnectionRoutes } from "./source-connections";
+import { syncConnectorRegistry } from "../sync/connector-registry";
 import { SourceConnection } from "../database/workspace-schema";
 import { createConnectionWriteTools } from "../agent-lib/tools/connection-write-tools";
 import { createConnectorTools } from "../agent-lib/tools/connector-tools";
@@ -260,8 +261,113 @@ describe("create_connection without the key", () => {
 });
 
 describe("the key link", () => {
+  it("rejects a stale form after an MCP config edit increments the revision", async () => {
+    const { connectionId } = await createWithoutKey();
+    let reached!: () => void;
+    let release!: () => void;
+    const waiting = new Promise<void>(resolve => {
+      reached = resolve;
+    });
+    const resume = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const schema = vi.mocked(syncConnectorRegistry.getConfigSchemaForType);
+    const original = schema.getMockImplementation()!;
+    schema.mockImplementationOnce(async (...args) => {
+      reached();
+      await resume;
+      return original(...args);
+    });
+    try {
+      const form = Promise.resolve(
+        app.request(
+          `/api/workspaces/${WS}/connections/sources/${connectionId}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ config: { account: "form_value" } }),
+          },
+        ),
+      );
+      await waiting;
+      const update = createConnectionWriteTools(WS, "u1").update_connection
+        .execute as unknown as (input: unknown) => Promise<ToolResult>;
+      const result = await update({
+        connectionId,
+        config: { account: "mcp_value" },
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.changed).toEqual(["config.account"]);
+      const afterMcp = await SourceConnection.findById(connectionId)
+        .select("+configRevision")
+        .lean();
+      expect(afterMcp?.config.account).toBe("mcp_value");
+      expect(afterMcp?.configRevision).toBe(1);
+      release();
+      expect((await form).status).toBe(409);
+      const final = await SourceConnection.findById(connectionId)
+        .select("+configRevision")
+        .lean();
+      expect(final?.config.account).toBe("mcp_value");
+      expect(final?.configRevision).toBe(1);
+    } finally {
+      release();
+    }
+  });
+  it("keeps a claimed key when a stale form saves concurrently", async () => {
+    const { connectionId, token } = await createWithoutKey();
+    let reached!: () => void;
+    let release!: () => void;
+    const waiting = new Promise<void>(resolve => {
+      reached = resolve;
+    });
+    const resume = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const schema = vi.mocked(syncConnectorRegistry.getConfigSchemaForType);
+    const original = schema.getMockImplementation()!;
+    schema.mockImplementationOnce(async (...args) => {
+      reached();
+      await resume;
+      return original(...args);
+    });
+    try {
+      const form = Promise.resolve(
+        app.request(
+          `/api/workspaces/${WS}/connections/sources/${connectionId}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ config: { account: "acct_2" } }),
+          },
+        ),
+      );
+      await waiting;
+      expect(
+        (await call("POST", token, { config: { api_key: SECRET } })).status,
+      ).toBe(200);
+      release();
+      expect((await form).status).toBe(409);
+      const row = await SourceConnection.findById(connectionId)
+        .select("+configRevision")
+        .lean();
+      expect(row?.config.api_key).toBeDefined();
+      expect(decryptString(row!.config.api_key!)).toBe(SECRET);
+      expect(row?.config.account).toBe("acct_1");
+      expect(row?.configRevision).toBe(1);
+    } finally {
+      release();
+    }
+  });
   it("shows the requested fields and stores the key once, encrypted", async () => {
     const { connectionId, token } = await createWithoutKey();
+    expect(
+      (
+        await SourceConnection.findById(connectionId)
+          .select("+configRevision")
+          .lean()
+      )?.configRevision,
+    ).toBe(0);
 
     const shown = await call("GET", token);
     expect(shown.status).toBe(200);
@@ -294,6 +400,13 @@ describe("the key link", () => {
     expect(row.isActive).toBe(true);
     expect(row.config.api_key).not.toBe(SECRET);
     expect(decryptString(row.config.api_key)).toBe(SECRET);
+    expect(
+      (
+        await SourceConnection.findById(connectionId)
+          .select("+configRevision")
+          .lean()
+      )?.configRevision,
+    ).toBe(1);
     expect((await inspect(connectionId)).status).toBe("ready");
 
     // Works once.
@@ -360,6 +473,13 @@ describe("the key link", () => {
     expect(row.config.api_key).toBeUndefined();
     expect(row.isActive).toBe(false);
     expect(row.keyRequest.tokenHash).toBe(hashKeyToken(token));
+    expect(
+      (
+        await SourceConnection.findById(connectionId)
+          .select("+configRevision")
+          .lean()
+      )?.configRevision,
+    ).toBe(2);
 
     ctx.probe = { success: true, message: "ok" };
     const fixed = await call("POST", token, { config: { api_key: SECRET } });

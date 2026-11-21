@@ -416,7 +416,11 @@ export async function submitKey(input: {
       "keyRequest.tokenHash": request.tokenHash,
       "keyRequest.expiresAt": { $gt: new Date() },
     },
-    { $set: { ...sets, isActive: true }, $unset: { keyRequest: "" } },
+    {
+      $set: { ...sets, isActive: true },
+      $unset: { keyRequest: "" },
+      $inc: { configRevision: 1 },
+    },
   );
   if (claimed.modifiedCount !== 1) {
     throw new KeyRequestError("not_found", KEY_LINK_NOT_FOUND);
@@ -473,6 +477,7 @@ export async function submitKey(input: {
     {
       $unset: Object.fromEntries(Object.keys(sets).map(key => [key, ""])),
       $set: { keyRequest: request, isActive: false },
+      $inc: { configRevision: 1 },
     },
   );
   logger.info("Key from a key link failed its check and was removed", {

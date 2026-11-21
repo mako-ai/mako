@@ -66,6 +66,7 @@ import {
 } from "../database/workspace-schema";
 import { writersOutsideRefusal } from "../access/connection-writers-list";
 import { ConnectionWriteEvent } from "../access/connection-write-event";
+import { syncConnectorRegistry } from "../sync/connector-registry";
 
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId();
@@ -98,6 +99,8 @@ function req(
 }
 
 beforeAll(async () => {
+  process.env.ENCRYPTION_KEY ??=
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 });
@@ -126,6 +129,100 @@ beforeEach(async () => {
     createdBy: "manager1",
   });
   id = String(row._id);
+});
+
+describe("source connection revision characterization", () => {
+  it("can store two config values with the same updatedAt and __v in one millisecond", async () => {
+    const clock = vi
+      .spyOn(mongoose, "now")
+      .mockReturnValue(new Date("2026-01-01T00:00:00.000Z"));
+    try {
+      await SourceConnection.updateOne(
+        { _id: id },
+        { $set: { "config.endpoint": "https://first.invalid" } },
+      );
+      const firstWrite = await SourceConnection.findById(id).lean();
+      await SourceConnection.updateOne(
+        { _id: id },
+        { $set: { "config.endpoint": "https://second.invalid" } },
+      );
+      const secondWrite = await SourceConnection.findById(id).lean();
+      expect(firstWrite?.config.endpoint).toBe("https://first.invalid");
+      expect(secondWrite?.config.endpoint).toBe("https://second.invalid");
+      expect(secondWrite?.updatedAt).toEqual(firstWrite?.updatedAt);
+      expect(secondWrite?.__v).toBe(firstWrite?.__v);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+});
+
+describe("source connection config revisions", () => {
+  it("increments legacy rows for config and active edits, without exposing the counter", async () => {
+    const edited = await req("PUT", `/${id}`, { config: { example: "one" } });
+    const body = await edited.json();
+    expect(edited.status, JSON.stringify(body)).toBe(200);
+    expect(body.data.configRevision).toBeUndefined();
+    expect(
+      (await SourceConnection.findById(id).select("+configRevision").lean())
+        ?.configRevision,
+    ).toBe(1);
+
+    const disabled = await req("PATCH", `/${id}/enable`, { enabled: false });
+    expect(disabled.status).toBe(200);
+    expect(
+      (await SourceConnection.findById(id).select("+configRevision").lean())
+        ?.configRevision,
+    ).toBe(2);
+    await req("PATCH", `/${id}/enable`, { enabled: false });
+    expect(
+      (await SourceConnection.findById(id).select("+configRevision").lean())
+        ?.configRevision,
+    ).toBe(2);
+  });
+
+  it("rejects a stale hydrated config after a concurrent active edit", async () => {
+    let release!: () => void;
+    let reached!: () => void;
+    const waiting = new Promise<void>(resolve => {
+      reached = resolve;
+    });
+    const resume = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const original = syncConnectorRegistry.getConfigSchemaForType.bind(
+      syncConnectorRegistry,
+    );
+    let paused = false;
+    const spy = vi
+      .spyOn(syncConnectorRegistry, "getConfigSchemaForType")
+      .mockImplementation(async (...args) => {
+        if (!paused) {
+          paused = true;
+          reached();
+          await resume;
+        }
+        return original(...args);
+      });
+    try {
+      const edit = req("PUT", `/${id}`, { config: { example: "stale" } });
+      await waiting;
+      expect(
+        (await req("PATCH", `/${id}/enable`, { enabled: false })).status,
+      ).toBe(200);
+      release();
+      expect((await edit).status).toBe(409);
+      const row = await SourceConnection.findById(id)
+        .select("+configRevision")
+        .lean();
+      expect(row?.isActive).toBe(false);
+      expect(row?.config.example).toBeUndefined();
+      expect(row?.configRevision).toBe(1);
+    } finally {
+      release();
+      spy.mockRestore();
+    }
+  });
 });
 
 describe("source connection writers", () => {
