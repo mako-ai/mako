@@ -6,6 +6,7 @@ import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConne
 import { databaseConnectionService } from "../services/database-connection.service";
 import { loggers } from "../logging";
 import type { StripeTestBinding } from "../connectors/workspace/registry/stripe-binding";
+import type { CalendlyBinding } from "../connectors/workspace/registry/calendly-binding";
 
 dotenv.config({ quiet: true });
 
@@ -200,9 +201,22 @@ class SourceConnectionManager {
     return source ? this.toConfig(source) : null;
   }
 
-  /** Recheck the selected Stripe row before decrypting with its verified spec. */
-  async getBoundStripeTestConnection(
+  getBoundStripeTestConnection(
     binding: StripeTestBinding,
+  ): Promise<SourceConnectionConfig | null> {
+    return this.getBoundRegistryConnection(binding, "stripe");
+  }
+
+  getBoundCalendlyConnection(
+    binding: CalendlyBinding,
+  ): Promise<SourceConnectionConfig | null> {
+    return this.getBoundRegistryConnection(binding, "calendly");
+  }
+
+  /** Reload the scoped row before decrypting it with the verified spec. */
+  private async getBoundRegistryConnection(
+    binding: StripeTestBinding | CalendlyBinding,
+    type: "stripe" | "calendly",
   ): Promise<SourceConnectionConfig | null> {
     const { workspaceId, connectionId } = binding;
     if (!ObjectId.isValid(connectionId) || !ObjectId.isValid(workspaceId)) {
@@ -213,13 +227,13 @@ class SourceConnectionManager {
     ).findOne({
       _id: new ObjectId(connectionId),
       workspaceId: new ObjectId(workspaceId),
-      type: "stripe",
+      type,
     });
     if (
       !source ||
       String(source._id) !== connectionId ||
       String(source.workspaceId) !== workspaceId ||
-      source.type !== "stripe"
+      source.type !== type
     ) {
       return null;
     }
@@ -421,6 +435,9 @@ function proxyManager() {
     },
     async getBoundStripeTestConnection(binding: StripeTestBinding) {
       return getSourceConnectionManager().getBoundStripeTestConnection(binding);
+    },
+    async getBoundCalendlyConnection(binding: CalendlyBinding) {
+      return getSourceConnectionManager().getBoundCalendlyConnection(binding);
     },
     async getSourceConnectionsByType(type: string) {
       return getSourceConnectionManager().getSourceConnectionsByType(type);

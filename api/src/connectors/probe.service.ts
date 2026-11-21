@@ -63,6 +63,10 @@ import { boxLowMemoryRefusal } from "../apps/sandbox/box-memory";
 import { redactSecrets, secretValuesOf } from "../connections/redact";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import {
+  bindCalendlyRelease,
+  isCalendlyReleaseSelected,
+} from "./workspace/registry/calendly-binding";
+import {
   sourceConnectionManager,
   type SourceConnectionConfig,
 } from "../sync/database-data-source-manager";
@@ -386,21 +390,28 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
       'Connection not found in this workspace. Call list_connections({ kind: "source" }) for valid ids.',
     );
   }
-  if (await isOrphanConnectorType(String(owned.type ?? ""), workspaceId)) {
+  const type = String(owned.type ?? "");
+  const useCalendlyRelease = isCalendlyReleaseSelected(type);
+  if (!useCalendlyRelease && (await isOrphanConnectorType(type, workspaceId))) {
     throw new ProbeError("connector_unavailable", ORPHAN_TYPE_MESSAGE);
   }
   if (input.entity) await assertMayProbeEntity(workspaceId, owned);
 
-  const sourceConnection =
-    await sourceConnectionManager.getSourceConnection(connectionId);
+  const binding = useCalendlyRelease
+    ? await bindCalendlyRelease({ workspaceId, connectionId, type })
+    : null;
+  const sourceConnection = binding
+    ? await sourceConnectionManager.getBoundCalendlyConnection(binding)
+    : await sourceConnectionManager.getSourceConnection(connectionId);
   if (!sourceConnection) {
     throw new ProbeError("not_found", "Connection not found");
   }
   const secrets = secretValuesOf(sourceConnection.connection);
 
   const run = async (): Promise<ProbeResult> => {
-    const connector =
-      await syncConnectorRegistry.getConnectorFor(sourceConnection);
+    const connector = binding
+      ? await syncConnectorRegistry.getConnectorFor(sourceConnection, binding)
+      : await syncConnectorRegistry.getConnectorFor(sourceConnection);
     if (!connector) {
       throw new ProbeError(
         "connector_unavailable",

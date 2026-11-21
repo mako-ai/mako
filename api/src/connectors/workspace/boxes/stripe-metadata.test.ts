@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   resolve: vi.fn(),
+  resolveTrusted: vi.fn(),
   prepare: vi.fn(),
   runtime: vi.fn(),
   run: vi.fn(),
@@ -12,6 +13,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../registry/stripe-release", () => ({
   resolveStripeRelease: mocks.resolve,
+  resolveTrustedRelease: mocks.resolveTrusted,
 }));
 vi.mock("../registry/registry.service", () => ({
   prepareRegistryConnector: mocks.prepare,
@@ -26,6 +28,7 @@ vi.mock("../sync-box", async importOriginal => ({
 }));
 
 import { loadStripeRegistryMetadata } from "../registry/stripe-metadata";
+import { bindCalendlyRelease } from "../registry/calendly-binding";
 
 const registry = {
   ref: "mako/stripe@1.2.3",
@@ -63,6 +66,50 @@ beforeEach(() => {
       markUnhealthy: mocks.markUnhealthy,
     }),
   );
+});
+
+describe("Calendly verified binding", () => {
+  const release = { ...registry, slug: "calendly", ref: "mako/calendly@1.2.3" };
+  const input = {
+    workspaceId: "507f1f77bcf86cd799439011",
+    connectionId: "507f1f77bcf86cd799439012",
+    type: "calendly",
+  };
+
+  it("leaves the existing route untouched when no release is selected", async () => {
+    mocks.resolveTrusted.mockResolvedValueOnce(null);
+    await expect(bindCalendlyRelease(input)).resolves.toBeNull();
+    expect(mocks.withLease).not.toHaveBeenCalled();
+  });
+
+  it("keeps the verified digest and spec together without credentials", async () => {
+    mocks.resolveTrusted.mockResolvedValueOnce(release);
+    const binding = await bindCalendlyRelease(input);
+    expect(binding).toMatchObject({
+      workspaceId: input.workspaceId,
+      connectionId: input.connectionId,
+      definition: { slug: "calendly", registry: release, spec },
+    });
+    expect(mocks.prepare).toHaveBeenCalledWith({
+      ctx,
+      runtimeId: "runtime",
+      registry: release,
+    });
+    expect(mocks.withLease.mock.calls[0][0].bundleHash).toBe(release.sha256);
+    expect(mocks.run.mock.calls[0][0]).not.toHaveProperty("input");
+  });
+
+  it("rejects an absent or mismatched artifact before a binding exists", async () => {
+    mocks.resolveTrusted.mockRejectedValueOnce(new Error("digest mismatch"));
+    await expect(bindCalendlyRelease(input)).rejects.toThrow("digest mismatch");
+    expect(mocks.withLease).not.toHaveBeenCalled();
+    mocks.resolveTrusted.mockResolvedValueOnce(release);
+    mocks.prepare.mockRejectedValueOnce(new Error("missing artifact"));
+    await expect(bindCalendlyRelease(input)).rejects.toThrow(
+      "missing artifact",
+    );
+    expect(mocks.run).not.toHaveBeenCalled();
+  });
 });
 
 describe("Stripe registry metadata", () => {

@@ -12,6 +12,7 @@ import {
 } from "../../connectors/probe.service";
 import { sourceConnectionManager } from "../../sync/database-data-source-manager";
 import { bindStripeTest } from "../../connectors/workspace/registry/stripe-binding";
+import { bindCalendlyRelease } from "../../connectors/workspace/registry/calendly-binding";
 import { loggers } from "../../logging";
 import {
   AUTH_SECURITY,
@@ -58,23 +59,35 @@ sourceConnectionVerificationRoutes.openapi(
         return fail(c, 404, "Source connection not found in this workspace");
       }
 
-      const binding = await bindStripeTest({
+      const selection = {
         workspaceId,
         connectionId: id,
         type: String(ownershipCheck.type ?? ""),
-      });
-      const ds = binding
-        ? await sourceConnectionManager.getBoundStripeTestConnection(binding)
-        : await sourceConnectionManager.getSourceConnection(id);
+      };
+      const stripeBinding = await bindStripeTest(selection);
+      const calendlyBinding = stripeBinding
+        ? null
+        : await bindCalendlyRelease(selection);
+      const ds = stripeBinding
+        ? await sourceConnectionManager.getBoundStripeTestConnection(
+            stripeBinding,
+          )
+        : calendlyBinding
+          ? await sourceConnectionManager.getBoundCalendlyConnection(
+              calendlyBinding,
+            )
+          : await sourceConnectionManager.getSourceConnection(id);
 
       if (!ds) {
         return fail(c, 404, "Source connection not found");
       }
 
       // Get connector and test connection
-      const connector = binding
-        ? syncConnectorRegistry.getStripeTestConnector(ds, binding)
-        : await syncConnectorRegistry.getConnectorFor(ds);
+      const connector = stripeBinding
+        ? syncConnectorRegistry.getStripeTestConnector(ds, stripeBinding)
+        : calendlyBinding
+          ? await syncConnectorRegistry.getConnectorFor(ds, calendlyBinding)
+          : await syncConnectorRegistry.getConnectorFor(ds);
       if (!connector) {
         return fail(c, 500, `No connector available for type: ${ds.type}`);
       }
