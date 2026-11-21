@@ -17,6 +17,7 @@ import { hasCdcDestinationAdapter } from "../adapters/registry";
 import { resolveOrphanedWebhookApplyStatusForFlow } from "../cdc-orphan-applystatus";
 import { resolveConfiguredEntities } from "../entity-selection";
 import { cdcLiveTableName, cdcStageTableName } from "../normalization";
+import { webhookReceiptIdsReadyToApply } from "../webhook-apply-status";
 
 const log = loggers.sync("cdc.backfill");
 
@@ -66,6 +67,7 @@ export async function reconcileWebhookApplyStatus(
       "webhookEventId",
       {
         flowId: flowOid,
+        workspaceId: wsOid,
         materializationStatus: "applied",
         webhookEventId: { $type: "string" },
       },
@@ -75,10 +77,15 @@ export async function reconcileWebhookApplyStatus(
     const oids = appliedCdcWebhookIds
       .filter(id => Types.ObjectId.isValid(id))
       .map(id => new Types.ObjectId(id));
+    const readyIds = await webhookReceiptIdsReadyToApply(
+      { flowId: flowOid, workspaceId: wsOid },
+      oids,
+    );
+    if (readyIds.length === 0) return 0;
 
     const result = await WebhookEvent.updateMany(
       {
-        _id: { $in: oids },
+        _id: { $in: readyIds },
         flowId: flowOid,
         workspaceId: wsOid,
         applyStatus: { $ne: "applied" },

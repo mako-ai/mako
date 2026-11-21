@@ -1,6 +1,7 @@
 import { Types } from "mongoose";
-import { CdcChangeEvent, WebhookEvent } from "../database/workspace-schema";
+import { WebhookEvent } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { webhookReceiptIdsReadyToApply } from "./webhook-apply-status";
 
 const log = loggers.sync("cdc.orphan-applystatus");
 
@@ -18,22 +19,24 @@ const MAX_ITERATIONS = 10_000;
  * Cursor-paginates by _id so EVERY stuck row is inspected exactly once (the old
  * single-shot .limit(1000) only ever cleared 1000 per call, which is why the
  * "Reprocess pending events" button appeared to do nothing against a 50k+
- * backlog). Rows whose CDC event is still materialization-pending are skipped —
- * the consumer will resolve those when it materializes them.
+ * backlog). A pending or failed CDC sibling keeps the receipt unresolved.
  */
 export async function resolveOrphanedWebhookApplyStatusForFlow(params: {
   flowId: string;
   workspaceId?: string;
 }): Promise<number> {
   const flowOid = new Types.ObjectId(params.flowId);
-  const baseQuery: Record<string, unknown> = {
+  const scope = {
     flowId: flowOid,
+    ...(params.workspaceId && {
+      workspaceId: new Types.ObjectId(params.workspaceId),
+    }),
+  };
+  const baseQuery = {
+    ...scope,
     status: "completed",
     applyStatus: "pending",
-  };
-  if (params.workspaceId) {
-    baseQuery.workspaceId = new Types.ObjectId(params.workspaceId);
-  }
+  } as const;
 
   let totalResolved = 0;
   let cursor: Types.ObjectId | null = null;
@@ -50,24 +53,14 @@ export async function resolveOrphanedWebhookApplyStatusForFlow(params: {
       if (stuck.length === 0) break;
       cursor = stuck[stuck.length - 1]._id as Types.ObjectId;
 
-      const stuckIds = stuck.map(e => String(e._id));
-      const withPendingCdc: string[] = await CdcChangeEvent.distinct(
-        "webhookEventId",
-        {
-          flowId: flowOid,
-          webhookEventId: { $in: stuckIds },
-          materializationStatus: "pending",
-        },
+      const orphanedOids = await webhookReceiptIdsReadyToApply(
+        scope,
+        stuck.map(e => e._id as Types.ObjectId),
       );
-      const pendingSet = new Set(withPendingCdc);
-
-      const orphanedOids = stuck
-        .filter(e => !pendingSet.has(String(e._id)))
-        .map(e => e._id as Types.ObjectId);
 
       if (orphanedOids.length > 0) {
         const result = await WebhookEvent.updateMany(
-          { _id: { $in: orphanedOids } },
+          { ...baseQuery, _id: { $in: orphanedOids } },
           { $set: { applyStatus: "applied" }, $unset: { applyError: "" } },
         );
         totalResolved += result.modifiedCount || 0;

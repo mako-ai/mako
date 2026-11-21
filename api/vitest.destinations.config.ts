@@ -34,6 +34,7 @@ export default defineConfig({
       "src/sync-cdc/adapters/**/*.test.ts",
       "src/sync-cdc/backlog.test.ts",
       "src/sync-cdc/consumer.test.ts",
+      "src/sync-cdc/webhook-apply-status.db.test.ts",
       // Coalesced materialization lands the same rows as one MERGE per batch.
       "src/sync-cdc/materialize-coalesce.test.ts",
       // One writer per live table: the lease, and the MERGE races it closes.

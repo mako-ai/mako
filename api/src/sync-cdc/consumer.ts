@@ -29,6 +29,7 @@ import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import type { ConnectorEntitySchema } from "../connectors/base/BaseConnector";
 import { boxLowMemoryRefusal } from "../apps/sandbox/box-memory";
 import { ensureFlowDerivedCache } from "../services/flow-sync.service";
+import { webhookReceiptIdsReadyToApply } from "./webhook-apply-status";
 import {
   FLOW_PAUSED_CODE,
   isWebhookPaused,
@@ -351,6 +352,7 @@ export class CdcConsumerService {
 
       await eventStore.markEventsApplied(pending.map(event => event.id));
       await this.syncWebhookApplyStatus(
+        { flowId: params.flowId, workspaceId: params.workspaceId },
         pending.map(event => event.webhookEventId),
       );
       await cdcSyncStateService.advanceConsumerCursor({
@@ -458,6 +460,7 @@ export class CdcConsumerService {
   }
 
   private async syncWebhookApplyStatus(
+    scope: { flowId: string; workspaceId: string },
     webhookEventIds: Array<string | undefined>,
   ): Promise<void> {
     const ids = Array.from(
@@ -468,12 +471,17 @@ export class CdcConsumerService {
         ),
       ),
     );
-    if (ids.length === 0) {
-      return;
-    }
+    if (ids.length === 0) return;
+    const flowId = new Types.ObjectId(scope.flowId);
+    const workspaceId = new Types.ObjectId(scope.workspaceId);
+    const readyIds = await webhookReceiptIdsReadyToApply(
+      { flowId, workspaceId },
+      ids.map(id => new Types.ObjectId(id)),
+    );
+    if (readyIds.length === 0) return;
 
     await WebhookEvent.updateMany(
-      { _id: { $in: ids.map(id => new Types.ObjectId(id)) } },
+      { _id: { $in: readyIds }, flowId, workspaceId },
       {
         $set: {
           applyStatus: "applied",

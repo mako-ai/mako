@@ -116,6 +116,10 @@ CdcChangeEventSchema.index({
   stageStatus: 1,
   ingestSeq: 1,
 });
+CdcChangeEventSchema.index(
+  { flowId: 1, webhookEventId: 1, materializationStatus: 1 },
+  { partialFilterExpression: { webhookEventId: { $type: "string" } } },
+);
 /** Successfully materialized rows — shorter retention. */
 CdcChangeEventSchema.index(
   { appliedAt: 1 },
