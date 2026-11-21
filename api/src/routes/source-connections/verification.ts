@@ -11,6 +11,7 @@ import {
   runConnectionCheck,
 } from "../../connectors/probe.service";
 import { sourceConnectionManager } from "../../sync/database-data-source-manager";
+import { bindStripeTest } from "../../connectors/workspace/registry/stripe-binding";
 import { loggers } from "../../logging";
 import {
   AUTH_SECURITY,
@@ -51,21 +52,29 @@ sourceConnectionVerificationRoutes.openapi(
       // now that the outcome is recorded, write to another's index row.
       const ownershipCheck = await SourceConnection.findOne(
         { _id: id, workspaceId },
-        { _id: 1 },
+        { _id: 1, type: 1 },
       ).lean();
       if (!ownershipCheck) {
         return fail(c, 404, "Source connection not found in this workspace");
       }
 
-      // Use manager to load decrypted configuration before testing
-      const ds = await sourceConnectionManager.getSourceConnection(id);
+      const binding = await bindStripeTest({
+        workspaceId,
+        connectionId: id,
+        type: String(ownershipCheck.type ?? ""),
+      });
+      const ds = binding
+        ? await sourceConnectionManager.getBoundStripeTestConnection(binding)
+        : await sourceConnectionManager.getSourceConnection(id);
 
       if (!ds) {
         return fail(c, 404, "Source connection not found");
       }
 
       // Get connector and test connection
-      const connector = await syncConnectorRegistry.getConnectorFor(ds);
+      const connector = binding
+        ? syncConnectorRegistry.getStripeTestConnector(ds, binding)
+        : await syncConnectorRegistry.getConnectorFor(ds);
       if (!connector) {
         return fail(c, 500, `No connector available for type: ${ds.type}`);
       }

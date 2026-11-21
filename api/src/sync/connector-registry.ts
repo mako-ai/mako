@@ -12,6 +12,7 @@ import {
 import { loadConnectorDefinition } from "../connectors/workspace/resolver";
 import { specToForm } from "../connectors/workspace/spec-translation";
 import { callableProfileSchemaFor } from "../connections/callable-profiles";
+import type { StripeTestBinding } from "../connectors/workspace/registry/stripe-binding";
 
 const logger = loggers.sync("connector-registry");
 
@@ -217,6 +218,24 @@ class SyncConnectorRegistry {
    */
   register(entry: ConnectorRegistryEntry) {
     this.connectors.set(entry.type, entry);
+  }
+
+  /** Dispatch a verified platform release only for its saved Stripe test. */
+  getStripeTestConnector(
+    connection: SourceConnectionConfig,
+    binding: StripeTestBinding,
+  ): BaseConnector {
+    if (
+      connection.type !== "stripe" ||
+      connection.id !== binding.connectionId ||
+      connection.workspaceId !== binding.workspaceId
+    ) {
+      throw new Error("Connection does not match the verified Stripe binding.");
+    }
+    return new SandboxedConnector(
+      asSourceConnection(connection),
+      binding.definition,
+    );
   }
 
   /**

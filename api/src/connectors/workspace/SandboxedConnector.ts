@@ -421,6 +421,26 @@ function withSince(metadata: unknown, since: string | undefined): unknown {
 
 export class SandboxedConnector extends BaseConnector {
   protected loaded: LoadedConnector | null = null;
+  private trustedDefinition = false;
+
+  constructor(
+    connection: ConstructorParameters<typeof BaseConnector>[0],
+    trustedDefinition?: LoadedConnector,
+  ) {
+    super(connection);
+    if (trustedDefinition) {
+      if (
+        !trustedDefinition.registry ||
+        connection.type !== "stripe" ||
+        trustedDefinition.slug !== "stripe" ||
+        trustedDefinition.registry.slug !== "stripe"
+      ) {
+        throw new Error("Invalid trusted Stripe connector definition.");
+      }
+      this.loaded = trustedDefinition;
+      this.trustedDefinition = true;
+    }
+  }
   private materializedDir: string | null = null;
   private runtimeId: string | null = null;
   /** The bundle's entry when this connector runs from one; else the definition's. */
@@ -428,7 +448,9 @@ export class SandboxedConnector extends BaseConnector {
   private catalogCache: ProtocolMessage | null = null;
 
   private get slug(): string {
-    return slugFromType(this.sourceConnection.type);
+    return this.trustedDefinition && this.loaded
+      ? this.loaded.slug
+      : slugFromType(this.sourceConnection.type);
   }
 
   private get workspaceId(): string {
@@ -538,7 +560,11 @@ export class SandboxedConnector extends BaseConnector {
   }
 
   private requireRegistryEnabled(definition: LoadedConnector): void {
-    if (definition.registry && !connectorRegistryEnabled()) {
+    if (
+      definition.registry &&
+      !this.trustedDefinition &&
+      !connectorRegistryEnabled()
+    ) {
       throw new Error(
         `The connector "${definition.slug}" is installed by reference (${definition.registry.ref}), ` +
           `and install by reference is off on this Mako (CONNECTOR_REGISTRY_ENABLED).`,
