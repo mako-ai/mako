@@ -181,6 +181,19 @@ const executeQuerySchema = z.object({
     ),
 });
 
+// Only the MCP bridge exposes the caller's billing ceiling. Keep the
+// in-product agent's tool definition unchanged under its token budget.
+const mcpExecuteQuerySchema = executeQuerySchema.extend({
+  maximumBytesBilled: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "BigQuery reads only. Optional billing ceiling in bytes. The lower of this ceiling and the server's effective cap applies.",
+    ),
+});
+
 // ============================================================================
 // sql_list_connections
 // ============================================================================
@@ -1174,8 +1187,10 @@ export function trackSqlExecution(input: {
   });
 }
 
-/** What a caller other than sql_execute_query may set on a query. */
+/** Additional options for the shared SQL query executor. */
 export interface ExecuteQueryExtras {
+  /** Caller-supplied ceiling in bytes, for BigQuery reads only. */
+  maximumBytesBilledCeiling?: number;
   /** Database to use when neither the caller nor the connection names one. */
   fallbackDatabase?: string;
   /** A shorter timeout than the agent's default (a budget shared with other work). */
@@ -1210,12 +1225,24 @@ export async function executeQueryImpl(
     extras.fallbackDatabase,
   );
   const { database, dialect, databaseName, options } = target;
+  const { maximumBytesBilledCeiling } = extras;
+  if (maximumBytesBilledCeiling !== undefined) {
+    if (dialect !== "bigquery") {
+      throw new Error("maximumBytesBilled is only supported on BigQuery");
+    }
+    if (sqlReadOnlyAccessError(query, database.type)) {
+      throw new Error("maximumBytesBilled requires read-only SQL");
+    }
+  }
 
   const safeQuery = appendLimitIfMissing(query, dialect);
   // The BigQuery engine caps every agent job's bytes and run time
   // (bigquery/agent-caps.ts). A write by someone on the writers list is not
   // byte-capped: 0 turns that cap off for this job.
-  const uncapBytes = dialect === "bigquery" && isWrite(database.type, query);
+  const uncapBytes =
+    maximumBytesBilledCeiling === undefined &&
+    dialect === "bigquery" &&
+    isWrite(database.type, query);
 
   const { executionId, signal, release } = registerAgentExecution(
     toolExecutionContext,
@@ -1235,8 +1262,10 @@ export async function executeQueryImpl(
             ...options,
             executionId: registeredExecutionId,
             signal,
-            readOnly: target.readOnly,
+            readOnly:
+              target.readOnly || maximumBytesBilledCeiling !== undefined,
             ...(uncapBytes ? { maximumBytesBilled: 0 } : {}),
+            maximumBytesBilledCeiling,
           },
         ),
       { signal, timeoutMs },
@@ -1330,8 +1359,8 @@ export const createSqlToolsV2 = (
   userId?: string,
   toolExecutionContext?: AgentToolExecutionContext,
   queryAccess: QueryAccess = "write",
-  /** sql_execute_query's timeout when shorter than the agent default (MCP). */
-  executeTimeoutMs?: number,
+  /** Overrides for the MCP bridge. Other callers keep the agent schema. */
+  mcp?: { executeTimeoutMs: number },
 ) => {
   return {
     sql_list_connections: tool({
@@ -1435,8 +1464,14 @@ export const createSqlToolsV2 = (
     sql_execute_query: tool({
       description:
         "Execute a SQL query and return results as a markdown table, fenced as untrusted data (columns with types listed separately; long cells shortened; `note` says what was left out). Shows up to 50 rows by default within a size budget — pass maxRows for more, but prefer aggregating in SQL. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. The 'database' parameter is optional: when omitted, the query runs against the connection's default database (Postgres/MySQL) — for BigQuery/ClickHouse fully qualify tables (dataset.table) or pass the dataset as 'database'. IMPORTANT for Cloudflare D1: use the UUID from list_databases 'id' field as the database parameter.",
-      inputSchema: executeQuerySchema,
-      execute: async ({ connectionId, database, query, maxRows }) => {
+      inputSchema: mcp ? mcpExecuteQuerySchema : executeQuerySchema,
+      execute: async ({
+        connectionId,
+        database,
+        query,
+        maxRows,
+        maximumBytesBilled,
+      }: z.infer<typeof mcpExecuteQuerySchema>) => {
         try {
           return await executeQueryImpl(
             connectionId,
@@ -1447,7 +1482,10 @@ export const createSqlToolsV2 = (
             toolExecutionContext,
             queryAccess,
             maxRows,
-            executeTimeoutMs ? { timeoutMs: executeTimeoutMs } : {},
+            {
+              timeoutMs: mcp?.executeTimeoutMs,
+              maximumBytesBilledCeiling: mcp ? maximumBytesBilled : undefined,
+            },
           );
         } catch (error) {
           return {

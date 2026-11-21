@@ -180,13 +180,17 @@ export class BigQueryEngine implements QueryEngine {
    */
   private agentJobCaps(
     database: IDatabaseConnection,
-    options?: Pick<QueryExecuteOptions, "labels" | "maximumBytesBilled">,
+    options?: Pick<
+      QueryExecuteOptions,
+      "labels" | "maximumBytesBilled" | "maximumBytesBilledCeiling"
+    >,
   ): AgentJobCaps {
     const config = bigQueryConfig(database);
     return resolveAgentJobCaps({
       connection: config as Record<string, unknown>,
       labels: this.jobLabels(database, config.api_base_url, options),
       explicitBytes: options?.maximumBytesBilled,
+      bytesCeiling: options?.maximumBytesBilledCeiling,
     });
   }
 

@@ -118,6 +118,8 @@ export interface QueryExecuteOptions {
    * (`maximumBytesBilled`). Unset: no cap. Set for agent and MCP reads.
    */
   maximumBytesBilled?: number;
+  /** BigQuery read only: a positive byte ceiling that can only lower the resolved cap. */
+  maximumBytesBilledCeiling?: number;
   /**
    * The most rows to read, where the engine can stop early (MongoDB shell
    * queries read their cursor up to it). Engines that cannot ignore it; the

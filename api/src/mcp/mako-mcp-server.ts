@@ -233,7 +233,7 @@ export function buildMakoMcpCandidateTools(
     undefined,
     queryAccess,
     // Answer before the MCP client's 60s abort.
-    MCP_QUERY_SOFT_TIMEOUT_MS,
+    { executeTimeoutMs: MCP_QUERY_SOFT_TIMEOUT_MS },
   );
   // Read-only for a query:read key: a write is refused before it runs and
   // the shell interpreter refuses any write method on a read.

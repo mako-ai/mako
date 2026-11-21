@@ -4,12 +4,16 @@
  * Pure-logic coverage of the stateless JSON-RPC exchange: initialize
  * handshake, tools/list bridging (AI SDK zod schemas → JSON Schema),
  * unknown-tool errors, skill resources, and notification-only exchanges.
- * Tool *execution* is DB-backed and covered by route-level usage, not here.
+ * The BigQuery ceiling test runs the registered SQL tool with a fake transport.
  *
  * Run: tsx src/mcp/mako-mcp-server.test.ts
  */
 import assert from "node:assert/strict";
+import { mock } from "node:test";
 import { Types } from "mongoose";
+import { AGENT_BIGQUERY_MAX_BYTES_BILLED } from "../config/long-running-queries";
+import { DatabaseConnection } from "../database/workspace-schema";
+import { bigQueryEngine } from "../databases/drivers/bigquery/engine";
 
 process.env.ENCRYPTION_KEY =
   process.env.ENCRYPTION_KEY ??
@@ -37,7 +41,10 @@ import {
 } from "../auth/api-key-scopes";
 import { parseMcpOAuthScopes } from "../auth/mcp-oauth.service";
 import { mcpOAuthWellKnownRoutes } from "../routes/mcp-oauth.routes";
-import { effectiveSqlQueryAccess } from "../agent-lib/tools/sql-tools";
+import {
+  createSqlToolsV2,
+  effectiveSqlQueryAccess,
+} from "../agent-lib/tools/sql-tools";
 import { requestContextStorage } from "../logging/context";
 import { sqlReadOnlyAccessError } from "../services/read-only-query.service";
 import {
@@ -80,7 +87,172 @@ async function exchange(
   }
 }
 
+async function testBigQueryBillingCeiling(): Promise<void> {
+  const connectionId = new Types.ObjectId();
+  const database = {
+    _id: connectionId,
+    workspaceId: new Types.ObjectId(WORKSPACE_ID),
+    type: "bigquery",
+    allowAgentWrites: true,
+    connection: {
+      project_id: "fake-project",
+      service_account_json: "{}",
+      agent_max_bytes_billed_gb: undefined as number | undefined,
+      agent_job_timeout_ms: 30_000,
+    },
+  };
+  const posts: Record<string, unknown>[] = [];
+  const findOne = mock.method(
+    DatabaseConnection,
+    "findOne",
+    (filter: { _id: unknown; workspaceId: unknown }) => {
+      assert.equal(String(filter._id), String(connectionId));
+      assert.equal(String(filter.workspaceId), WORKSPACE_ID);
+      return database;
+    },
+  );
+  const http = mock.method(bigQueryEngine, "getHttpClient", async () => ({
+    post: async (path: string, body: Record<string, unknown>) => {
+      assert.equal(path, "/projects/fake-project/queries");
+      posts.push(body);
+      return { data: { jobComplete: true, totalRows: "0" } };
+    },
+  }));
+  const ceiling = 20_000_000_000;
+  const call = async (
+    args: Record<string, unknown>,
+    scopes?: WorkspaceApiKeyScope[],
+  ) => {
+    const [response] = await exchange(
+      [
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "sql_execute_query",
+            arguments: {
+              connectionId: String(connectionId),
+              query: "SELECT 1",
+              ...args,
+            },
+          },
+        },
+      ],
+      scopes,
+    );
+    return (response.result as { content: { text: string }[] }).content[0].text;
+  };
+  try {
+    const [response] = await exchange([
+      { jsonrpc: "2.0", id: 1, method: "tools/list" },
+    ]);
+    const { tools } = response.result as {
+      tools: {
+        name: string;
+        inputSchema: {
+          properties: Record<string, unknown>;
+          required?: string[];
+        };
+      }[];
+    };
+    const schema = tools.find(
+      tool => tool.name === "sql_execute_query",
+    )?.inputSchema;
+    assert.ok(schema?.properties.maximumBytesBilled);
+    assert.ok(!schema.required?.includes("maximumBytesBilled"));
+    const agentSchema = createSqlToolsV2(WORKSPACE_ID, []).sql_execute_query
+      .inputSchema;
+    assert.ok(agentSchema instanceof z.ZodObject);
+    assert.equal("maximumBytesBilled" in agentSchema.shape, false);
+
+    assert.equal(JSON.parse(await call({})).success, true);
+    assert.equal(
+      posts[0].maximumBytesBilled,
+      AGENT_BIGQUERY_MAX_BYTES_BILLED > 0
+        ? String(AGENT_BIGQUERY_MAX_BYTES_BILLED)
+        : undefined,
+    );
+
+    database.connection.agent_max_bytes_billed_gb = 50;
+    assert.equal(
+      JSON.parse(
+        await call({
+          maximumBytesBilled: ceiling,
+          labels: {
+            mako_source: "cdc",
+            mako_trigger: "scheduler",
+            agent: "caller",
+          },
+        }),
+      ).success,
+      true,
+    );
+    assert.equal(posts[1].maximumBytesBilled, "20000000000");
+    assert.equal(posts[1].jobTimeoutMs, "30000");
+    assert.deepEqual(posts[1].labels, {
+      mako_source: "agent",
+      mako_trigger: "mcp",
+      mako_tool: "sql_execute_query",
+      mako_workspace: WORKSPACE_ID,
+    });
+
+    database.connection.agent_max_bytes_billed_gb = 2;
+    assert.equal(
+      JSON.parse(await call({ maximumBytesBilled: ceiling })).success,
+      true,
+    );
+    assert.equal(posts[2].maximumBytesBilled, String(2 * 1024 ** 3));
+
+    database.connection.agent_max_bytes_billed_gb = 0;
+    assert.equal(
+      JSON.parse(await call({ maximumBytesBilled: ceiling })).success,
+      true,
+    );
+    assert.equal(posts[3].maximumBytesBilled, "20000000000");
+    assert.equal(JSON.parse(await call({})).success, true);
+    assert.equal("maximumBytesBilled" in posts[4], false);
+
+    const lookups = findOne.mock.callCount();
+    for (const invalid of [
+      0,
+      -1,
+      1.5,
+      Number.MAX_SAFE_INTEGER + 1,
+      "20000000000",
+      null,
+    ]) {
+      assert.match(
+        await call({ maximumBytesBilled: invalid }),
+        /Invalid arguments.*maximumBytesBilled/s,
+      );
+    }
+    assert.equal(findOne.mock.callCount(), lookups);
+    assert.match(await call({ maximumBytesBilled: ceiling }, ["mcp"]), /query/);
+    assert.equal(findOne.mock.callCount(), lookups);
+    const write = await call(
+      { maximumBytesBilled: ceiling, query: "DELETE FROM t WHERE TRUE" },
+      ["mcp", "query:read", "query:write"],
+    );
+    assert.equal(
+      JSON.parse(write).error,
+      "maximumBytesBilled requires read-only SQL",
+    );
+
+    database.type = "clickhouse";
+    assert.match(
+      await call({ maximumBytesBilled: ceiling }),
+      /maximumBytesBilled is only supported on BigQuery/,
+    );
+    assert.equal(posts.length, 5);
+  } finally {
+    findOne.mock.restore();
+    http.mock.restore();
+  }
+}
+
 async function main() {
+  await testBigQueryBillingCeiling();
   // 1. Legacy keys receive the safe default; unknown scopes cannot be
   //    granted, and stored unknown scopes (e.g. since-removed ones) are
   //    dropped without killing the key's remaining grants.
