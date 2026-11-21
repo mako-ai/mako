@@ -35,6 +35,8 @@ import {
   resolveEntityClustering,
 } from "../../sync-cdc/adapters/registry";
 import { withBoxMemoryWaits } from "./flow/box-memory-wait";
+import { sourceConnectionManager } from "../../sync/database-data-source-manager";
+import { assertRestEntityAdmission } from "../../sync-cdc/rest-entity-admission";
 
 /**
  * Max steps to use before yielding back to the parent for re-invocation.
@@ -141,6 +143,19 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       resumeState,
     } = data;
 
+    // Keep disabled until destination receipts can settle overwrite reservations
+    // and the cutover can drain already-admitted work.
+    const restEntityAdmission =
+      process.env.REST_ENTITY_ADMISSION_ENABLED === "1"
+        ? {
+            scope: {
+              workspaceId: new Types.ObjectId(workspaceId),
+              flowId: new Types.ObjectId(flowId),
+              sourceConnectionId: new Types.ObjectId(dataSourceId),
+            },
+            runId: cdcBackfillRunId || executionId || event.id,
+          }
+        : undefined;
     const safeEntityStepId = entity.replace(/[^a-zA-Z0-9_-]/g, "_");
     let stepsUsed = 0;
     // Backfills and scheduled resyncs read the source in full; polls do not.
@@ -387,36 +402,55 @@ export const syncBackfillEntityFunction = inngest.createFunction(
 
       await step.run(`prepare-staging-${safeEntityStepId}`, () =>
         withHeartbeat(executionId, async () => {
-          // Rescue orphaned staging data from a previously crashed invocation
-          // before dropping the staging table. A merge failure fails the
-          // step: dropping rows we could not merge would lose them. Keyed
-          // merges only: staged rows lie past the resume cursor, so this
-          // invocation fetches them again, and a plain INSERT of them here
-          // (append / overwrite) would write them twice.
-          const { rescued } = await performRescueAndPrepareStaging(
-            bulkSyncOptions as any,
-            { dedupOnly: true },
-          );
-          if (rescued > 0) {
-            logExec(
-              "info",
-              `Rescued ${rescued} orphaned staging rows into live table before fresh start`,
-              { entity, rescued },
+          let restSource = false;
+          if (restEntityAdmission) {
+            const source = await sourceConnectionManager.getSourceConnection(
+              dataSourceId,
+              workspaceId,
             );
+            if (!source) {
+              throw new Error(`Data source not found: ${dataSourceId}`);
+            }
+            restSource = source.type === "rest";
+            if (restSource) {
+              await assertRestEntityAdmission(
+                Flow.db,
+                restEntityAdmission.scope,
+              );
+            }
           }
 
-          // A resume cursor is saved only with an empty buffer, so rows
-          // still buffered here lie past it: a cancelled or failed attempt
-          // fetched them and never flushed them. This invocation fetches
-          // them again from the cursor; keeping them would write them twice.
-          const discarded = await discardBulkBuffer(flowId, entity, fullRead);
-          if (discarded > 0) {
-            logExec(
-              "info",
-              `Discarded ${discarded} unflushed ${entity} buffer rows; they are fetched again from the last flushed position`,
-              { entity, discarded },
+          const prepareStaging = async () => {
+            // Rescue keyed rows from an earlier invocation before dropping
+            // staging. Append and overwrite re-fetch those rows from the last
+            // flushed position, so rescuing them would write them twice.
+            const { rescued } = await performRescueAndPrepareStaging(
+              bulkSyncOptions as any,
+              { dedupOnly: true },
             );
-          }
+            if (rescued > 0) {
+              logExec(
+                "info",
+                `Rescued ${rescued} orphaned staging rows into live table before fresh start`,
+                { entity, rescued },
+              );
+            }
+
+            // Checkpoints only advance with an empty buffer. Re-fetch any
+            // rows still buffered from the last flushed position.
+            const discarded = await discardBulkBuffer(flowId, entity, fullRead);
+            if (discarded > 0) {
+              logExec(
+                "info",
+                `Discarded ${discarded} unflushed ${entity} buffer rows; they are fetched again from the last flushed position`,
+                { entity, discarded },
+              );
+            }
+          };
+
+          const reserveBeforeStaging =
+            restSource && writeMode === "overwrite" && !state;
+          if (!reserveBeforeStaging) await prepareStaging();
 
           // Overwrite mode: clear the live table exactly once, here, before
           // any flush of this run writes. Do NOT call this from the
@@ -427,7 +461,15 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           // carried over from a checkpoint or the previous invocation)
           // already truncated in its first invocation.
           if (!state) {
-            await performOverwriteTruncate(bulkSyncOptions as any);
+            await performOverwriteTruncate(
+              {
+                ...bulkSyncOptions,
+                restEntityAdmission: restSource
+                  ? restEntityAdmission
+                  : undefined,
+              } as any,
+              reserveBeforeStaging ? prepareStaging : undefined,
+            );
           }
         }),
       );
@@ -717,6 +759,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                 destinationDatabaseName,
                 flowId,
                 workspaceId,
+                restEntityAdmission,
                 syncEngine,
                 backfillRunId: backfill
                   ? cdcBackfillRunId || executionId

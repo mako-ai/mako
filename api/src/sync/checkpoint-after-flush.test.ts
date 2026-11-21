@@ -1,6 +1,27 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import {
+  describe,
+  it,
+  expect,
+  vi,
+  beforeEach,
+  beforeAll,
+  afterEach,
+  afterAll,
+} from "vitest";
+import mongoose, { Types, type Connection } from "mongoose";
+import {
+  CdcEntityState as CdcEntityStateModel,
+  type ICdcEntityState,
+} from "../database/models/cdc";
+import {
+  closeRestEntityAdmission,
+  type RestEntityOverwrite,
+} from "../sync-cdc/rest-entity-admission";
+import { MongoMemoryReplSet } from "mongodb-memory-server";
+import { closeInlineWebhookAdmission } from "../sync-cdc/inline-webhook-admission";
 import { DuckDBInstance } from "@duckdb/node-api";
 import type { CdcDestinationAdapter } from "../sync-cdc/adapters/registry";
+import { sourceConnectionManager } from "./database-data-source-manager";
 
 /**
  * Regression for the Close FR backfill loss of 17 Nov 2026.
@@ -110,9 +131,14 @@ function collection(name: string): FakeCollection {
 
 /** CdcEntityState: the calls sync-state.ts makes for checkpoints. */
 let entityStates: Doc[] = [];
+let admissionConnection: Connection | undefined;
+let admissionEntityState: typeof CdcEntityStateModel | undefined;
 const fakeEntityState = {
   findOne: (filter: Doc) => ({
     lean: async () => entityStates.find(d => matches(d, filter)) ?? null,
+    select: () => ({
+      lean: async () => entityStates.find(d => matches(d, filter)) ?? null,
+    }),
   }),
   find: (filter: Doc) => ({
     select: () => ({
@@ -152,9 +178,19 @@ vi.mock("../database/workspace-schema", () => ({
       }),
     })),
   },
-  Flow: { db: { collection: (name: string) => collection(name) } },
+  Flow: {
+    db: {
+      collection: (name: string) =>
+        name === "flow_executions" && admissionConnection?.db
+          ? admissionConnection.db.collection(name)
+          : collection(name),
+      get db() {
+        return admissionConnection?.db;
+      },
+    },
+  },
   get CdcEntityState() {
-    return fakeEntityState;
+    return admissionEntityState ?? fakeEntityState;
   },
 }));
 
@@ -175,9 +211,11 @@ vi.mock("../sync-cdc/backfill-fetch-resolver", () => ({
   resolveBackfillFetchForEntity: vi.fn(async () => null),
 }));
 
-vi.mock("../sync-cdc/poll-cursor-resolver", () => ({
-  resolvePollCursorForEntity: vi.fn(),
-  stampPollRunStartedAt: vi.fn(),
+vi.mock("../services/destination-writer.service", () => ({
+  getMaxTrackingValue: vi.fn(async () => ({
+    success: true,
+    maxValue: "2026-01-01T00:00:00.000Z",
+  })),
 }));
 
 // ── Fake source: offset paging, records where each chunk starts ──────────
@@ -185,6 +223,9 @@ vi.mock("../sync-cdc/poll-cursor-resolver", () => ({
 const PAGE = 50;
 let sourceRows: Doc[] = [];
 let chunkStartOffsets: number[] = [];
+let failSyntheticRead = false;
+let sourceType = "fake";
+let onSyntheticRead: (() => Promise<void>) | undefined;
 
 /**
  * When set, the fake grows its page cap the way SandboxedConnector does:
@@ -205,6 +246,8 @@ const fakeConnector = {
   }) => {
     let offset = o.state?.metadata?.offset ?? 0;
     chunkStartOffsets.push(offset);
+    await onSyntheticRead?.();
+    if (failSyntheticRead) throw new Error("synthetic source read failed");
     const base = o.maxIterations ?? 10;
     const carried = o.state?.chunkPages;
     const cap = growChunkPages ? Math.min(carried ?? base, base * 8) : base;
@@ -234,7 +277,7 @@ vi.mock("./database-data-source-manager", () => ({
     getSourceConnection: vi.fn(async () => ({
       id: "69c781737eb58b93e5ac3385",
       name: "fake_close",
-      type: "fake",
+      type: sourceType,
       active: true,
       settings: { rate_limit_delay_ms: 1 },
       connection: {},
@@ -251,7 +294,10 @@ vi.mock("./connector-registry", () => ({
 /** Staging tables by suffix: each lane (backfill, poll) has its own. */
 let staging = new Map<string, string[]>();
 let live: string[] = [];
-let writeModeOfRun: "append_dedup" | "append" = "append_dedup";
+let writeModeOfRun: "append_dedup" | "append" | "overwrite" = "append_dedup";
+let useDirectDestination = false;
+let beforeTruncate: (() => Promise<void>) | undefined;
+let beforePrepareStaging: (() => Promise<void>) | undefined;
 /**
  * Merges of a non-empty staging table (1-based) that fail, as the 17 Nov
  * schema reads did. Merges of an empty staging table are not counted.
@@ -289,9 +335,11 @@ async function idsInParquet(filePath: string): Promise<string[]> {
 const fakeAdapter: Partial<CdcDestinationAdapter> = {
   destinationType: "bigquery",
   truncateLiveTable: (async () => {
+    await beforeTruncate?.();
     live = [];
   }) as any,
   prepareStaging: (async (_l: unknown, _f: string, o?: any) => {
+    await beforePrepareStaging?.();
     staging.set(suffixOf(o), []);
   }) as any,
   cleanupStaging: (async (_l: unknown, _f: string, o?: any) => {
@@ -341,13 +389,24 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
   }) as any,
 };
 
+const directAdapter: Partial<CdcDestinationAdapter> = {
+  destinationType: "postgresql",
+  truncateLiveTable: fakeAdapter.truncateLiveTable,
+  applyBatch: async ({ records }) => {
+    live.push(...records.map(record => String(record.id)));
+    return { written: records.length };
+  },
+};
+
 vi.mock("../sync-cdc/adapters/registry", async () => {
   const actual = await vi.importActual<
     typeof import("../sync-cdc/adapters/registry")
   >("../sync-cdc/adapters/registry");
   return {
     ...actual,
-    resolveCdcDestinationAdapter: vi.fn(() => fakeAdapter),
+    resolveCdcDestinationAdapter: vi.fn(() =>
+      useDirectDestination ? directAdapter : fakeAdapter,
+    ),
   };
 });
 
@@ -370,6 +429,7 @@ class Cancelled extends Error {}
  */
 async function invoke(params: {
   runId: string;
+  executionId?: string;
   cancelAt?: string;
   /** Cancel the step that follows this one. */
   cancelAfter?: string;
@@ -381,10 +441,13 @@ async function invoke(params: {
   tableName?: string;
   poll?: boolean;
   interleave?: boolean;
+  incremental?: boolean;
+  memo?: Map<string, unknown>;
 }): Promise<{ completed: boolean; rowsWritten: number }> {
   let cancelNext = false;
   const step = {
     run: async (id: string, fn: () => Promise<unknown>) => {
+      if (params.memo?.has(id)) return params.memo.get(id);
       if (id === params.cancelAt || cancelNext) throw new Cancelled(id);
       if (id === params.cancelAfter) cancelNext = true;
       if (params.interleave) {
@@ -393,7 +456,10 @@ async function invoke(params: {
       const out = await fn();
       if (params.legacyNullSteps?.includes(id)) return null;
       // Inngest stores step output as JSON.
-      return out === undefined ? undefined : JSON.parse(JSON.stringify(out));
+      const saved =
+        out === undefined ? undefined : JSON.parse(JSON.stringify(out));
+      params.memo?.set(id, saved);
+      return saved;
     },
     sleep: async () => undefined,
   };
@@ -414,12 +480,13 @@ async function invoke(params: {
         entity: ENTITY,
         dataSourceId: "69c781737eb58b93e5ac3385",
         workspaceId: WORKSPACE_ID,
+        executionId: params.executionId,
         backfill: !params.poll,
         backfillRunId: params.poll ? undefined : params.runId,
         checkpointEnabled: !params.poll,
         cdcBackfillRunId: params.poll ? undefined : params.runId,
         destinationId: "dest1",
-        syncMode: "full",
+        syncMode: params.incremental ? "incremental" : "full",
         writeMode: writeModeOfRun,
         syncEngine: "cdc",
         tableDestination: {
@@ -682,6 +749,344 @@ describe("a backfill checkpoint never runs ahead of the flushed rows", () => {
     // The legacy flush counted nothing; the later flushes count theirs.
     expect(result.rowsWritten).toBe(15_000);
   }, 120_000);
+});
+
+describe("queued REST entity admission", () => {
+  let mongo: MongoMemoryReplSet;
+  const previousAnchor = new Date("2026-01-01T00:00:00.000Z");
+  const runStartedAt = new Date("2026-01-02T00:00:00.000Z");
+  const executionId = new Types.ObjectId();
+  const scope = {
+    workspaceId: new Types.ObjectId(WORKSPACE_ID),
+    flowId: new Types.ObjectId(FLOW_ID),
+    sourceConnectionId: new Types.ObjectId("69c781737eb58b93e5ac3385"),
+  };
+  const connection = () => {
+    if (!admissionConnection?.db) {
+      throw new Error("Synthetic MongoDB is not connected");
+    }
+    return admissionConnection;
+  };
+  const database = () => {
+    const db = connection().db;
+    if (!db) throw new Error("Synthetic MongoDB is not connected");
+    return db;
+  };
+  const admissionId = [
+    scope.workspaceId,
+    scope.flowId,
+    scope.sourceConnectionId,
+  ]
+    .map(value => value.toHexString())
+    .join(":");
+  const admissionRecord = () =>
+    database()
+      .collection<{
+        _id: string;
+        closed: boolean;
+        pendingOverwrites?: RestEntityOverwrite[];
+      }>("rest_entity_admissions")
+      .findOne({ _id: admissionId });
+  const entityState = { flowId: scope.flowId, entity: ENTITY };
+  const anchor = async () => {
+    const row = await admissionEntityState?.findOne(entityState).lean();
+    return row?.lastPollRunStartedAt;
+  };
+  const poll = {
+    runId: "queued",
+    poll: true,
+    incremental: true,
+    executionId: executionId.toHexString(),
+  };
+  const invokeQueued = (memo: Map<string, unknown>) =>
+    invoke({ ...poll, memo });
+  const queue = async () => {
+    const memo = new Map<string, unknown>();
+    await expect(
+      invoke({
+        ...poll,
+        memo,
+        cancelAt: `sync-${ENTITY}-chunk-0`,
+      }),
+    ).rejects.toBeInstanceOf(Cancelled);
+    expect(memo.get(`resolve-poll-cursor-${ENTITY}`)).toMatchObject({
+      runStartedAt: runStartedAt.toISOString(),
+    });
+    expect(chunkStartOffsets).toHaveLength(0);
+    return memo;
+  };
+
+  beforeAll(async () => {
+    mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
+    admissionConnection = await mongoose
+      .createConnection(mongo.getUri())
+      .asPromise();
+    const model = admissionConnection.model<ICdcEntityState>(
+      CdcEntityStateModel.modelName,
+      CdcEntityStateModel.schema,
+    );
+    await model.init();
+    admissionEntityState = model;
+  }, 120_000);
+  afterAll(async () => {
+    await admissionConnection?.close();
+    await mongo?.stop();
+    admissionConnection = undefined;
+    admissionEntityState = undefined;
+    sourceType = "fake";
+    failSyntheticRead = false;
+    onSyntheticRead = undefined;
+  });
+  beforeEach(async () => {
+    vi.stubEnv("REST_ENTITY_ADMISSION_ENABLED", "1");
+    await database().dropDatabase();
+    collections.clear();
+    await admissionEntityState?.create({
+      ...entityState,
+      workspaceId: scope.workspaceId,
+      lastPollRunStartedAt: previousAnchor,
+    });
+    await database()
+      .collection("flow_executions")
+      .insertOne({ _id: executionId, startedAt: runStartedAt });
+    staging = new Map();
+    live = [];
+    sourceRows = rows(1);
+    chunkStartOffsets = [];
+    sourceType = "rest";
+    writeModeOfRun = "append_dedup";
+    failSyntheticRead = false;
+    onSyntheticRead = undefined;
+  });
+  afterEach(() => {
+    useDirectDestination = false;
+    beforeTruncate = undefined;
+    beforePrepareStaging = undefined;
+    vi.unstubAllEnvs();
+  });
+
+  it("runs the native path with a closed REST admission gate by default", async () => {
+    vi.stubEnv("REST_ENTITY_ADMISSION_ENABLED", undefined);
+    await closeRestEntityAdmission(connection(), scope);
+
+    await expect(invoke(poll)).resolves.toMatchObject({ completed: true });
+    expect(chunkStartOffsets).toEqual([0]);
+    expect(live).toEqual(["opp_00000"]);
+    expect(await anchor()).toEqual(runStartedAt);
+  });
+
+  it("prepares staging without a reservation when REST admission is disabled", async () => {
+    vi.stubEnv("REST_ENTITY_ADMISSION_ENABLED", undefined);
+    writeModeOfRun = "overwrite";
+    await closeRestEntityAdmission(connection(), scope);
+    const prepare = vi.fn(async () => {
+      expect((await admissionRecord())?.pendingOverwrites).toBeUndefined();
+    });
+    beforePrepareStaging = prepare;
+
+    await expect(invoke(poll)).resolves.toEqual({
+      completed: true,
+      rowsWritten: 1,
+    });
+    expect(prepare).toHaveBeenCalled();
+    expect(live).toEqual(["opp_00000"]);
+  });
+
+  it("denies a fresh overwrite before staging or clearing the live table", async () => {
+    writeModeOfRun = "overwrite";
+    live = ["previous-live-row"];
+    staging.set("poll_staging", ["previous-staged-row"]);
+    await closeRestEntityAdmission(connection(), scope);
+
+    await expect(invoke(poll)).rejects.toThrow(
+      "REST entity admission is closed",
+    );
+    expect(chunkStartOffsets).toEqual([]);
+    expect(live).toEqual(["previous-live-row"]);
+    expect(staging.get("poll_staging")).toEqual(["previous-staged-row"]);
+  });
+
+  it("holds REST admission before clearing existing overwrite staging", async () => {
+    writeModeOfRun = "overwrite";
+    live = ["previous-live-row"];
+    staging.set("poll_staging", ["previous-staged-row"]);
+    const close = () => closeRestEntityAdmission(connection(), scope);
+    const prepare = vi.fn(async () => {
+      expect(live).toEqual(["previous-live-row"]);
+      expect(staging.get("poll_staging")).toEqual(["previous-staged-row"]);
+      await expect(close()).rejects.toThrow(
+        "REST overwrite is still in flight",
+      );
+    });
+    beforePrepareStaging = prepare;
+
+    await expect(
+      invoke({ ...poll, cancelAt: `sync-${ENTITY}-chunk-0` }),
+    ).rejects.toBeInstanceOf(Cancelled);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(staging.get("poll_staging")).toEqual([]);
+    expect(live).toEqual([]);
+    expect(chunkStartOffsets).toEqual([]);
+    await expect(close()).rejects.toThrow("REST overwrite is still in flight");
+  });
+
+  it("advances the stored anchor when an open REST poll lands its rows", async () => {
+    expect(await anchor()).toEqual(previousAnchor);
+    const memo = await queue();
+
+    await expect(invokeQueued(memo)).resolves.toEqual({
+      completed: true,
+      rowsWritten: 1,
+    });
+    expect(chunkStartOffsets).toEqual([0]);
+    expect(live).toEqual(["opp_00000"]);
+    expect(await anchor()).toEqual(runStartedAt);
+  });
+
+  it("keeps a truncated overwrite admitted under the stored connection and grants", async () => {
+    writeModeOfRun = "overwrite";
+    live = ["previous-live-row"];
+    const sources = database().collection("connectors");
+    const source = {
+      _id: scope.sourceConnectionId,
+      workspaceId: scope.workspaceId,
+      type: "rest",
+      managers: ["synthetic-manager"],
+      liveReads: true,
+      liveReaders: [{ principal: "synthetic-reader" }],
+      writers: [{ principal: "synthetic-writer" }],
+    };
+    await sources.insertOne(source);
+    vi.mocked(sourceConnectionManager.getSourceConnection).mockClear();
+    const memo = new Map<string, unknown>();
+    await expect(
+      invoke({ ...poll, memo, cancelAt: `sync-${ENTITY}-chunk-0` }),
+    ).rejects.toBeInstanceOf(Cancelled);
+    expect(memo.has(`prepare-staging-${ENTITY}`)).toBe(true);
+    expect(chunkStartOffsets).toEqual([]);
+    expect(live).toEqual([]);
+    expect(await anchor()).toEqual(previousAnchor);
+
+    const close = () => closeRestEntityAdmission(connection(), scope);
+    await expect(close()).rejects.toThrow("REST overwrite is still in flight");
+    await expect(
+      closeRestEntityAdmission(connection(), {
+        ...scope,
+        sourceConnectionId: new Types.ObjectId(),
+      }),
+    ).resolves.toBeUndefined();
+    await expect(invokeQueued(memo)).resolves.toEqual({
+      completed: true,
+      rowsWritten: 1,
+    });
+    expect(chunkStartOffsets).toEqual([0]);
+    expect(live).toEqual(["opp_00000"]);
+    expect(await anchor()).toEqual(previousAnchor);
+    expect(sourceConnectionManager.getSourceConnection).toHaveBeenCalledWith(
+      source._id.toHexString(),
+      source.workspaceId.toHexString(),
+    );
+    expect(await sources.findOne({ _id: source._id })).toEqual(source);
+    expect(await admissionRecord()).toMatchObject({
+      closed: false,
+      pendingOverwrites: [
+        {
+          runId: poll.executionId,
+          entity: ENTITY,
+          destinationId: "dest1",
+          destinationDatabaseName: null,
+          destinationConnectionId: "69c2719490eb18199aafa882",
+          schema: "fr_close_crm",
+          tableName: ENTITY,
+        },
+      ],
+    });
+    // A completed worker does not supply a destination settlement receipt.
+    await expect(close()).rejects.toThrow("REST overwrite is still in flight");
+  });
+
+  it("reserves a direct overwrite before the first chunk truncates", async () => {
+    useDirectDestination = true;
+    writeModeOfRun = "overwrite";
+    live = ["previous-live-row"];
+    beforeTruncate = async () => {
+      expect(live).toEqual(["previous-live-row"]);
+      await expect(
+        closeRestEntityAdmission(connection(), scope),
+      ).rejects.toThrow("REST overwrite is still in flight");
+    };
+    await expect(invoke(poll)).resolves.toEqual({
+      completed: true,
+      rowsWritten: 1,
+    });
+    expect(live).toEqual(["opp_00000"]);
+    expect((await admissionRecord())?.pendingOverwrites).toHaveLength(1);
+  });
+
+  it("denies a queued retry after REST closure without moving its anchor", async () => {
+    const memo = await queue();
+    await closeRestEntityAdmission(connection(), scope);
+    const gate = await admissionRecord();
+    expect(gate?.closed).toBe(true);
+    await expect(invokeQueued(memo)).rejects.toThrow(
+      "REST entity admission is closed",
+    );
+    expect(chunkStartOffsets).toHaveLength(0);
+    expect(live).toEqual([]);
+    expect(await anchor()).toEqual(previousAnchor);
+  });
+
+  it("admits one REST source read after webhook-only closure", async () => {
+    const memo = await queue();
+    await closeInlineWebhookAdmission(connection(), scope);
+    await expect(invokeQueued(memo)).resolves.toMatchObject({
+      completed: true,
+    });
+    expect(chunkStartOffsets).toHaveLength(1);
+    expect(await anchor()).toEqual(runStartedAt);
+  });
+
+  it("does not apply a closed REST gate to another connector type", async () => {
+    sourceType = "fake";
+    const memo = await queue();
+    await closeRestEntityAdmission(connection(), scope);
+    await expect(invokeQueued(memo)).resolves.toMatchObject({
+      completed: true,
+    });
+    expect(chunkStartOffsets).toHaveLength(1);
+    expect(await anchor()).toEqual(runStartedAt);
+  });
+
+  it("keeps an admitted attempt valid and denies its later retry after closure", async () => {
+    const memo = await queue();
+    failSyntheticRead = true;
+    let entered!: () => void;
+    let release!: () => void;
+    const enteredSource = new Promise<void>(resolve => {
+      entered = resolve;
+    });
+    const resumeSource = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    onSyntheticRead = async () => {
+      entered();
+      await resumeSource;
+    };
+    const first = invokeQueued(memo);
+    await Promise.race([enteredSource, first]);
+    try {
+      await closeRestEntityAdmission(connection(), scope);
+    } finally {
+      release();
+    }
+    await expect(first).rejects.toThrow("synthetic source read failed");
+    onSyntheticRead = undefined;
+    await expect(invokeQueued(memo)).rejects.toThrow(
+      "REST entity admission is closed",
+    );
+    expect(chunkStartOffsets).toHaveLength(1);
+    expect(await anchor()).toEqual(previousAnchor);
+  });
 });
 
 describe("an engine-owned chunkPages survives the checkpoint", () => {

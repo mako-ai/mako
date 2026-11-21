@@ -3,7 +3,6 @@ import {
   performBulkFlush as performBulkFlushOrchestrated,
   performPrepareStaging as performPrepareStagingOrchestrated,
   performRescueAndPrepareStaging as performRescueAndPrepareStagingOrchestrated,
-  performOverwriteTruncate as performOverwriteTruncateOrchestrated,
   getTempCollectionCount as getTempCollectionCountOrchestrated,
   discardBulkBuffer as discardBulkBufferOrchestrated,
   performStagingMerge as performStagingMergeOrchestrated,
@@ -11,6 +10,7 @@ import {
   SyncChunkOptions,
   SyncChunkResult,
 } from "../sync/sync-orchestrator";
+export { performOverwriteTruncate } from "../sync/sync-orchestrator";
 import type { CdcMergePath } from "../sync-cdc/table-write-lease";
 
 // Logger interface for sync execution
@@ -52,12 +52,6 @@ export async function performRescueAndPrepareStaging(
   opts?: { dedupOnly?: boolean },
 ): Promise<{ rescued: number }> {
   return performRescueAndPrepareStagingOrchestrated(options, opts);
-}
-
-export async function performOverwriteTruncate(
-  options: SyncChunkOptions,
-): Promise<void> {
-  return performOverwriteTruncateOrchestrated(options);
 }
 
 export function getTempCollectionCount(
