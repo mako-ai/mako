@@ -74,6 +74,7 @@ vi.mock("../sync/connector-registry", () => ({
                 required: true,
               },
               { name: "auth_type", label: "Credential type", type: "select" },
+              { name: "test_path", label: "Test path", type: "string" },
               {
                 name: "token",
                 label: "Key",
@@ -515,6 +516,56 @@ describe("the key link", () => {
 });
 
 describe("a Custom API connection", () => {
+  it("rejects an MCP config edit when a manager changes the validated row", async () => {
+    const { connectionId, token } = await createWithoutKey(
+      "changing-test-path",
+      "custom_api",
+      {
+        base_url: "https://api.example.com/v1",
+        auth_type: "bearer",
+        test_path: "/before",
+      },
+    );
+    const schema = vi.mocked(syncConnectorRegistry.getConfigSchemaForType);
+    const original = schema.getMockImplementation();
+    if (!original) throw new Error("Missing connector schema fixture");
+    schema.mockImplementationOnce(async (...args) => {
+      const response = await app.request(
+        `/api/workspaces/${WS}/connections/sources/${connectionId}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ config: { test_path: "/manager" } }),
+        },
+      );
+      expect(response.status).toBe(200);
+      return original(...args);
+    });
+    const update = createConnectionWriteTools(WS, "u1").update_connection
+      .execute as unknown as (input: unknown) => Promise<ToolResult>;
+    const config = { test_path: "/mcp" };
+    await expect(update({ connectionId, config })).resolves.toMatchObject({
+      error: "Connection changed. Read it again and retry.",
+    });
+    const read = () =>
+      SourceConnection.findById(connectionId).select("+configRevision").lean();
+    expect(await read()).toMatchObject({
+      config: { test_path: "/manager" },
+      configRevision: 1,
+      keyRequest: { tokenHash: hashKeyToken(token) },
+    });
+
+    await expect(update({ connectionId, config })).resolves.toMatchObject({
+      connectionId,
+      changed: ["config.test_path"],
+    });
+    expect(await read()).toMatchObject({
+      config: { test_path: "/mcp" },
+      configRevision: 2,
+      keyRequest: { tokenHash: hashKeyToken(token) },
+    });
+  });
+
   it("keeps the key link when the address changes during submission", async () => {
     const { connectionId, token } = await createWithoutKey(
       "changing-api",

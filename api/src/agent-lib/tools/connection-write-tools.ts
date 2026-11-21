@@ -654,39 +654,38 @@ export function createConnectionWriteTools(
           }
 
           const changed = Object.keys(set).map(key =>
-            key.startsWith("config.")
-              ? key
-              : key === "isActive"
-                ? "active"
-                : key,
+            key === "isActive" ? "active" : key,
           );
           if (changed.length > 0) {
             const enabling = set.isActive === true;
+            const configChanged = changed.some(key =>
+              key.startsWith("config."),
+            );
+            const usesValidatedRevision = enabling || configChanged;
             const updated = await SourceConnection.updateOne(
               {
                 _id: row._id,
                 workspaceId: new Types.ObjectId(workspaceId),
-                // A key check can restore the waiting state after validation.
-                ...(enabling
+                // Configuration and eligibility were checked on this row.
+                ...(usesValidatedRevision
                   ? {
                       type: row.type,
-                      keyRequest: null,
                       configRevision: sourceConfigRevisionMatch(
                         row.configRevision,
                       ),
                     }
                   : {}),
+                // A key check can restore the waiting state after validation.
+                ...(enabling ? { keyRequest: null } : {}),
               },
               {
                 $set: set,
-                ...(Object.keys(set).some(
-                  key => key === "isActive" || key.startsWith("config."),
-                )
+                ...(configChanged || set.isActive !== undefined
                   ? { $inc: { configRevision: 1 } }
                   : {}),
               },
             );
-            if (enabling && updated.matchedCount !== 1) {
+            if (usesValidatedRevision && updated.matchedCount !== 1) {
               return { error: "Connection changed. Read it again and retry." };
             }
             logger.info("Source connection updated over MCP", {
