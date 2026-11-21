@@ -10,6 +10,7 @@
 import { googleClientCredentials } from "../../connections/google-service-account";
 import { inWorkspace } from "../../utils/workspace-scope";
 import { BigQuery } from "@google-cloud/bigquery";
+import { readFile, rm } from "node:fs/promises";
 import {
   isLocalBigQueryEmulator,
   bigQueryEmulatorEndpoint,
@@ -27,6 +28,8 @@ import {
   withSyncedAt,
 } from "../normalization";
 import type { CdcStoredEvent } from "../events";
+import type { BigQueryCdcBinding } from "../bigquery-staged-cdc";
+import type { BigQueryJobIdentity } from "../bigquery-retained-query";
 import type {
   CdcDestinationAdapter,
   CdcEntityLayout,
@@ -168,6 +171,32 @@ function coerceToDate(value: unknown): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function toBigQueryCdcRow(
+  event: Pick<
+    CdcStoredEvent,
+    "recordId" | "sourceTs" | "ingestSeq" | "payload"
+  >,
+  fallbackDataSourceId: string | undefined,
+  deletedAt: Date | null,
+  now?: Date,
+) {
+  const payload = normalizePayloadKeys(event.payload || {});
+  const sourceTs = resolveSourceTimestamp(payload, new Date(event.sourceTs));
+  return withSyncedAt(
+    {
+      ...payload,
+      id: event.recordId,
+      _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
+      _mako_source_ts: sourceTs,
+      _mako_ingest_seq: Number(event.ingestSeq),
+      _mako_deleted_at: deletedAt,
+      is_deleted: deletedAt !== null,
+      deleted_at: deletedAt,
+    },
+    now,
+  );
+}
+
 export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   readonly destinationType = "bigquery";
   readonly honoursAbsentColumns = true;
@@ -183,6 +212,89 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     tableName: string,
   ): Promise<LiveTableDescription | undefined> {
     return getLiveTableMeta(await this.resolveBqClient(), tableName);
+  }
+
+  /** Build and seal the exact retained replay rows before any live MERGE. */
+  async prepareRetainedReplayInput(params: {
+    mergeJob: BigQueryJobIdentity;
+    cdc: BigQueryCdcBinding;
+    layout: CdcEntityLayout;
+    stagedAt: Date;
+    entitySchema?: ConnectorEntitySchema;
+  }) {
+    const {
+      normalizeBigQueryCdcBinding,
+      readBigQueryReplayInputRows,
+      requireCurrentBigQueryCdcFlow,
+    } = await import("../bigquery-staged-cdc");
+    const { retainedInputWarehouse, sealRetainedBigQueryInput } =
+      await import("./bigquery-retained-input");
+    const target = await this.resolveBqClient();
+    const cdc = normalizeBigQueryCdcBinding(params.cdc);
+    const warehouseTarget = this.leaseJobTarget(
+      target,
+      params.layout.tableName,
+    );
+    if (
+      warehouseTarget.workspaceId !== cdc.scope.workspaceId ||
+      warehouseTarget.destinationConnectionId !==
+        cdc.scope.destinationConnectionId ||
+      params.mergeJob.project !== target.projectId ||
+      params.mergeJob.location.trim().toLowerCase() !==
+        target.datasetLocation?.trim().toLowerCase() ||
+      params.layout.entity !== cdc.scope.entity ||
+      !Number.isFinite(params.stagedAt.valueOf())
+    ) {
+      throw new Error(
+        "Retained replay input does not match this destination flow",
+      );
+    }
+    await requireCurrentBigQueryCdcFlow(cdc.scope, warehouseTarget);
+    const warehouse = retainedInputWarehouse(target);
+    const existing = await sealRetainedBigQueryInput(
+      warehouse,
+      params.mergeJob,
+      target.dataset,
+      cdc,
+    );
+    if (existing.state !== "needs-artifact") return existing;
+    const events = await readBigQueryReplayInputRows(cdc);
+    const rows = events.map(event => {
+      const payload = event.payload;
+      if (
+        payload !== undefined &&
+        (!payload || typeof payload !== "object" || Array.isArray(payload))
+      ) {
+        throw new Error(
+          "A retained replay CDC event has an invalid row payload",
+        );
+      }
+      return toBigQueryCdcRow(
+        { ...event, payload: payload as Record<string, unknown> | undefined },
+        cdc.scope.sourceConnectionId,
+        null,
+        params.stagedAt,
+      );
+    });
+    const parquet = await buildCdcParquet(
+      params.layout.entity,
+      rows,
+      params.entitySchema,
+    );
+    try {
+      return await sealRetainedBigQueryInput(
+        warehouse,
+        params.mergeJob,
+        target.dataset,
+        cdc,
+        {
+          parquet: await readFile(parquet.filePath),
+          rows: parquet.rowCount,
+        },
+      );
+    } finally {
+      await rm(parquet.filePath, { force: true }).catch(() => undefined);
+    }
   }
 
   /** Submit an already-held CDC intent through the same lease as live writes. */
@@ -362,30 +474,12 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const deleteMode =
       params.flow.deleteMode || params.layout.deleteMode || "hard";
 
-    const toRow = (event: CdcStoredEvent, deletedAt: Date | null) => {
-      const payload = normalizePayloadKeys(event.payload || {});
-      const sourceTs = resolveSourceTimestamp(
-        payload,
-        new Date(event.sourceTs),
-      );
-      return withSyncedAt({
-        ...payload,
-        id: event.recordId,
-        _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-        _mako_source_ts: sourceTs,
-        _mako_ingest_seq: Number(event.ingestSeq),
-        _mako_deleted_at: deletedAt,
-        is_deleted: deletedAt !== null,
-        deleted_at: deletedAt,
-      });
-    };
-
     const rows: Record<string, unknown>[] = upserts.map(event =>
-      toRow(event, null),
+      toBigQueryCdcRow(event, fallbackDataSourceId, null),
     );
     if (deleteMode === "soft") {
       for (const event of deletes) {
-        rows.push(toRow(event, new Date()));
+        rows.push(toBigQueryCdcRow(event, fallbackDataSourceId, new Date()));
       }
     }
 

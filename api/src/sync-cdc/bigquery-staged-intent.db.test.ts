@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import { mkdtemp, rmdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Writable } from "node:stream";
+import { DuckDBInstance } from "@duckdb/node-api";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose, { Types } from "mongoose";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -16,6 +21,7 @@ import { BigQueryDatabaseDriver } from "../databases/drivers/bigquery/driver";
 import * as dataDiff from "./data-diff";
 import * as backfillLifecycle from "./backfill/lifecycle";
 import { BigQueryDestinationAdapter } from "./adapters/bigquery";
+import { enableLoadJobLabels } from "./adapters/bigquery-load-labels";
 import { buildCdcEntityLayout } from "./adapters/registry";
 import * as adapterRegistry from "./adapters/registry";
 import { bigQuerySnapshotGeneration } from "./bigquery-retained-query";
@@ -234,6 +240,338 @@ async function makeResyncFlow(suffix: string, dataset: string) {
 }
 
 describe("BigQuery CDC event settlement", () => {
+  it("seals exact CDC rows from one load and one copy across lost acknowledgements", async () => {
+    const target = await makeCdcMerge("sealed_replay_input", "sealed_target");
+    const readyAt = new Date("2026-11-21T18:00:00.000Z");
+    const eventId = "synthetic-sealed-input-provider-event";
+    const origin = {
+      _id: new Types.ObjectId(),
+      workspaceId: new Types.ObjectId(target.scope.workspaceId),
+      flowId: new Types.ObjectId(),
+      dataSourceId: new Types.ObjectId(),
+      eventId,
+      eventType: "recording_added",
+      receivedAt: readyAt,
+      status: "dormant",
+      applyStatus: "dormant",
+      rawPayload: { eventId },
+    };
+    await WebhookEvent.collection.insertOne(origin);
+    const expectedRows = [
+      { id: "rec-a", title: "First" },
+      { id: "rec-b", title: "Second" },
+    ];
+    const tag = createHash("sha256").update(eventId).digest("hex");
+    const events = await Promise.all(
+      expectedRows.map(async ({ id, title }, index) => {
+        const row = await target.event(id, index + 1);
+        await CdcChangeEvent.updateOne(
+          { _id: row.id },
+          {
+            $set: {
+              webhookEventId: String(origin._id),
+              payload: { id: "payload-id-must-not-win", title },
+            },
+          },
+        );
+        return {
+          id: row.id,
+          deliveryKey: bigQueryReplayDeliveryKey(tag, id),
+          originalReceipt: {
+            id: String(origin._id),
+            flowId: String(origin.flowId),
+            sourceConnectionId: String(origin.dataSourceId),
+            eventIdSha256: tag,
+            receivedAt: readyAt.toISOString(),
+            recordId: id,
+          },
+        };
+      }),
+    );
+    const cdc = { scope: target.scope, events };
+    const { job: mergeJob, destination } = target.binding;
+    const jobs = new Map<string, unknown>();
+    const notFound = Object.assign(new Error("not found"), { code: 404 });
+    const loadEnd = readyAt.valueOf() + 500;
+    const copyEnd = loadEnd + 1000;
+    let upload:
+      | { bytes: Buffer; jobId: string; labels: unknown; table: string }
+      | undefined;
+    let snapshot: unknown;
+    let defaultTableExpirationMs: string | undefined = "86400000";
+    const copy = vi.fn(
+      async (request: {
+        jobId: string;
+        configuration: {
+          copy: { sourceTables: unknown[]; destinationTable: unknown };
+        };
+      }) => {
+        expect(request.configuration.copy).toMatchObject({
+          operationType: "SNAPSHOT",
+          writeDisposition: "WRITE_EMPTY",
+        });
+        throw new Error("Simulated lost copy acknowledgement");
+      },
+    );
+    const uploadStream = vi.fn(
+      (table: string, metadata: Record<string, unknown>) => {
+        const chunks: Buffer[] = [];
+        return new Writable({
+          write: (chunk, _encoding, done) => {
+            chunks.push(Buffer.from(chunk));
+            done();
+          },
+          final: done => {
+            upload = {
+              bytes: Buffer.concat(chunks),
+              jobId: String(metadata.jobId),
+              labels: metadata.labels,
+              table,
+            };
+            done(new Error("Simulated lost upload acknowledgement"));
+          },
+        });
+      },
+    );
+    const bq = {
+      makeAuthenticatedRequest: () => undefined,
+      createJob: copy,
+      job: (id: string) => ({
+        getMetadata: async () => {
+          if (!jobs.has(id)) throw notFound;
+          return [jobs.get(id)];
+        },
+      }),
+      dataset: () => ({
+        getMetadata: async () => [{ defaultTableExpirationMs }],
+        table: (table: string) => ({
+          createWriteStream: (metadata: Record<string, unknown>) =>
+            uploadStream(table, metadata),
+          getMetadata: async () => {
+            if (!snapshot) throw notFound;
+            return [snapshot];
+          },
+        }),
+      }),
+    };
+    enableLoadJobLabels(bq);
+    const adapter = new BigQueryDestinationAdapter({
+      destinationDatabaseId: target.scope.destinationConnectionId,
+      workspaceId: target.scope.workspaceId,
+      tableDestination: {
+        connectionId: target.scope.destinationConnectionId,
+        schema: destination.dataset,
+        tableName: destination.table,
+      },
+    });
+    (adapter as unknown as { _resolvedClient: unknown })._resolvedClient = {
+      bq,
+      projectId: destination.project,
+      dataset: destination.dataset,
+      datasetLocation: mergeJob.location,
+      destination: {
+        _id: target.scope.destinationConnectionId,
+        workspaceId: target.scope.workspaceId,
+        type: "bigquery",
+      },
+    };
+    const prepare = () =>
+      adapter.prepareRetainedReplayInput({
+        mergeJob,
+        cdc,
+        stagedAt: readyAt,
+        layout: buildCdcEntityLayout({
+          entity: target.scope.entity,
+          tableName: destination.table,
+        }),
+      });
+    await expect(prepare()).rejects.toThrow("without automatic table expiry");
+    expect(uploadStream).not.toHaveBeenCalled();
+    defaultTableExpirationMs = undefined;
+    await expect(prepare()).resolves.toEqual({
+      state: "pending",
+      phase: "load",
+    });
+    if (!upload) throw new Error("Missing retained Parquet upload");
+    const sent = upload;
+    const digest = createHash("sha256").update(sent.bytes).digest("hex");
+    expect(sent.labels).toEqual({
+      replay_input: digest.slice(0, 32),
+      replay_input_hash: digest.slice(32),
+    });
+    const tempDir = await mkdtemp(join(tmpdir(), "claap-replay-input-"));
+    const file = join(tempDir, "sealed.parquet");
+    const db = await DuckDBInstance.create(":memory:");
+    const conn = await db.connect();
+    try {
+      await writeFile(file, sent.bytes);
+      const reader = await conn.runAndReadAll(
+        `SELECT id, title FROM read_parquet('${file.replace(/'/g, "''")}') ORDER BY id`,
+      );
+      expect(reader.getRowObjects()).toEqual(expectedRows);
+    } finally {
+      conn.closeSync();
+      db.closeSync();
+      await rm(file, { force: true });
+      await rmdir(tempDir);
+    }
+    const jobRef = (jobId: string) => ({
+      projectId: mergeJob.project,
+      location: mergeJob.location,
+      jobId,
+    });
+    const sourceTable = {
+      projectId: destination.project,
+      datasetId: destination.dataset,
+      tableId: sent.table,
+    };
+    await expect(
+      mongoose.connection.transaction(session =>
+        assertRetainedWritesDrainedForResync(
+          {
+            workspaceId: target.scope.workspaceId,
+            flowId: target.scope.flowId,
+            tables: [{ ...destination, table: sent.table }],
+          },
+          session,
+        ),
+      ),
+    ).rejects.toThrow("retained replay input table");
+    const load = {
+      jobReference: jobRef(sent.jobId),
+      status: { state: "DONE" },
+      configuration: {
+        load: {
+          destinationTable: sourceTable,
+          sourceFormat: "PARQUET",
+          writeDisposition: "WRITE_EMPTY",
+          createDisposition: "CREATE_IF_NEEDED",
+        },
+        labels: sent.labels,
+      },
+      statistics: {
+        endTime: String(loadEnd),
+        load: {
+          inputFiles: "1",
+          inputFileBytes: String(sent.bytes.length),
+          outputRows: "1",
+        },
+      },
+    };
+    await mongoose.disconnect();
+    await mongoose.connect(mongo.getUri());
+    await expect(prepare()).resolves.toEqual({
+      state: "pending",
+      phase: "load",
+    });
+    jobs.set(sent.jobId, load);
+    await expect(prepare()).rejects.toThrow("load counts differ");
+    expect(copy).not.toHaveBeenCalled();
+    load.statistics.load.outputRows = "2";
+    await expect(prepare()).resolves.toEqual({
+      state: "pending",
+      phase: "copy",
+    });
+    await expect(prepare()).resolves.toEqual({
+      state: "pending",
+      phase: "copy",
+    });
+    expect(uploadStream).toHaveBeenCalledTimes(1);
+    expect(copy).toHaveBeenCalledTimes(1);
+    const request = copy.mock.calls[0]?.[0];
+    if (!request) throw new Error("Missing snapshot copy request");
+    const snapshotTable = request.configuration.copy.destinationTable;
+    const copyReceipt = {
+      ...request,
+      jobReference: jobRef(request.jobId),
+      status: { state: "DONE" },
+      statistics: { endTime: String(copyEnd) },
+    };
+    jobs.set(request.jobId, {
+      ...copyReceipt,
+      configuration: {
+        copy: {
+          ...request.configuration.copy,
+          sourceTables: [{ ...sourceTable, tableId: "different" }],
+        },
+      },
+    });
+    await expect(prepare()).rejects.toThrow("copy job differs");
+    jobs.set(request.jobId, copyReceipt);
+    snapshot = {
+      type: "SNAPSHOT",
+      tableReference: snapshotTable,
+      location: mergeJob.location,
+      creationTime: String(copyEnd),
+      etag: "sealed-input-fixture",
+      expirationTime: String(copyEnd + 1_000),
+      numRows: "2",
+      snapshotDefinition: {
+        baseTableReference: sourceTable,
+        snapshotTime: new Date(loadEnd + 1).toISOString(),
+      },
+    };
+    await expect(prepare()).rejects.toThrow("snapshot metadata differs");
+    snapshot = {
+      ...(snapshot as Record<string, unknown>),
+      expirationTime: undefined,
+    };
+    const sealed = await prepare();
+    if (sealed.state !== "ready") {
+      throw new Error("Missing retained input seal");
+    }
+    const plan = {
+      expectedRecords: expectedRows.map(row => ({
+        entity: target.scope.entity,
+        recordId: row.id,
+      })),
+      jobs: [
+        {
+          binding: { ...target.binding, input: sealed.input },
+          merge: {
+            ...target.merge,
+            columns: [...target.merge.columns, "_syncedAt"],
+            stagingCols: new Set([...target.merge.stagingCols, "_syncedAt"]),
+            liveTypes: new Map([
+              ...target.merge.liveTypes,
+              ["_syncedAt", "TIMESTAMP"],
+            ]),
+          },
+          options: target.options,
+          cdc,
+        },
+      ],
+    };
+    const member = plan.jobs[0];
+    if (!member) throw new Error("Missing sealed replay job");
+    await expect(
+      holdBigQueryStagedCdcReplay({
+        ...plan,
+        jobs: [
+          {
+            ...member,
+            cdc: {
+              ...cdc,
+              scope: { ...cdc.scope, originNamespace: "different" },
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow("input seal differs");
+    await expect(holdBigQueryStagedCdcReplay(plan)).resolves.toMatchObject({
+      status: "held",
+    });
+    await expect(
+      readPendingBigQueryQueryRequest(mergeJob),
+    ).resolves.toMatchObject({
+      configuration: {
+        query: {
+          query: expect.stringContaining("CURRENT_TIMESTAMP() AS `_syncedAt`"),
+        },
+      },
+    });
+  });
+
   const replayOutcomes = ["succeeded", "failed"] as const;
   it.each(replayOutcomes)(
     "recovers a %s replay after expiry",

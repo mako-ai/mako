@@ -6,6 +6,10 @@ import {
   type BuildMergeStatementParams,
 } from "./adapters/bigquery-sql";
 import {
+  assertRetainedBigQueryInputSeal,
+  assertRetainedInputTablesAvailableForResync,
+} from "./adapters/bigquery-retained-input";
+import {
   retainedQueryConfiguration,
   retainedQueryOutcome,
   type BigQueryJobIdentity,
@@ -36,6 +40,7 @@ export interface BigQueryStagedInput {
   snapshot: BigQueryTableIdentity;
   /** Provider identity of this read-only snapshot. A table name alone is reusable. */
   generation: string;
+  seal?: string;
 }
 
 interface StagedWriteBinding {
@@ -208,6 +213,7 @@ export function stagedWriteFingerprint(intent: BigQueryStagedIntent): string {
     jobKey(intent.job),
     tableIdentity(intent.input.snapshot),
     intent.input.generation,
+    ...(intent.input.seal === undefined ? [] : [["seal", intent.input.seal]]),
     tableIdentity(intent.destination),
     intent.configuration === undefined
       ? intent.configurationFingerprint
@@ -327,6 +333,17 @@ export async function holdBigQueryStagedCdcReplay(
     .sort((left, right) => left.key.localeCompare(right.key));
   if (new Set(members.map(member => member.key)).size !== members.length) {
     throw new Error("A retained replay requires distinct warehouse jobs");
+  }
+
+  for (const { intent } of writes) {
+    const { input, job, cdc } = intent;
+    if (input.seal !== undefined) {
+      await assertRetainedBigQueryInputSeal(
+        { ...input, seal: input.seal },
+        job,
+        cdc,
+      );
+    }
   }
 
   await requireIndexes(true);
@@ -591,6 +608,7 @@ function buildRetainedMergeIntent(
         ...merge,
         fullLive: qualify(destination),
         fullStaging: qualify(input.snapshot),
+        stampSyncedAt: input.seal !== undefined,
       }),
     },
   });
@@ -670,6 +688,7 @@ export async function assertRetainedWritesDrainedForResync(
   scope: CdcResyncScope,
   session: ClientSession,
 ): Promise<void> {
+  await assertRetainedInputTablesAvailableForResync(scope.tables, session);
   const flow = {
     "intent.cdc.scope.workspaceId": scope.workspaceId,
     "intent.cdc.scope.flowId": scope.flowId,

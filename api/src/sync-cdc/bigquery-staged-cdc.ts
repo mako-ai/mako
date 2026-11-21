@@ -207,6 +207,39 @@ function pendingEvents(binding: BigQueryCdcBinding) {
   };
 }
 
+/** Read the verified original receipt and exact pending rows at one Mongo snapshot. */
+export async function readBigQueryReplayInputRows(binding: BigQueryCdcBinding) {
+  if (binding.events.some(event => !event.originalReceipt)) {
+    throw new Error(
+      "A retained replay input requires original receipts for every row",
+    );
+  }
+  return CdcChangeEvent.db.transaction(
+    async session => {
+      await requireOriginalReceipts(binding, session);
+      const rows = await CdcChangeEvent.find({
+        ...pendingEvents(binding),
+        retainedBigQueryWrite: { $exists: false },
+        ordinaryWebhookWriteStarted: { $ne: true },
+      })
+        .select({ recordId: 1, sourceTs: 1, ingestSeq: 1, payload: 1 })
+        .sort({ _id: 1 })
+        .session(session)
+        .lean();
+      if (
+        rows.length !== binding.events.length ||
+        new Set(rows.map(row => row.recordId)).size !== rows.length
+      ) {
+        throw new CdcBigQueryBindingChangedError(
+          "The exact replay input rows are unavailable or repeat a record",
+        );
+      }
+      return rows;
+    },
+    { readConcern: { level: "snapshot" }, writeConcern: { w: "majority" } },
+  );
+}
+
 export async function claimBigQueryCdcEvents(
   binding: BigQueryCdcBinding,
   fingerprint: string,

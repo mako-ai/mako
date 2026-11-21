@@ -144,6 +144,8 @@ export interface BuildMergeStatementParams {
    * the marker.
    */
   absentColumns?: ReadonlySet<string>;
+  /** A retained snapshot can be prepared much earlier than its MERGE. */
+  stampSyncedAt?: boolean;
 }
 
 /** How far behind the live `_mako_source_ts` a full-read row may be and still win. */
@@ -167,6 +169,7 @@ export function buildMergeStatement(p: BuildMergeStatementParams): string {
     livePartitionFilter,
     fullRead,
     absentColumns,
+    stampSyncedAt,
   } = p;
 
   // Only consider staging cols that also exist on live (an ALTER TABLE add may
@@ -201,7 +204,9 @@ export function buildMergeStatement(p: BuildMergeStatementParams): string {
   // key keeping the newest record per ordering expression.
   const stagingSelectCols = [
     ...effectiveStagingCols.map(c =>
-      buildColumnSelectExpr(c, escId, entitySchema, liveTypes.get(c)),
+      stampSyncedAt && c === "_syncedAt"
+        ? `CURRENT_TIMESTAMP() AS ${escId(c)}`
+        : buildColumnSelectExpr(c, escId, entitySchema, liveTypes.get(c)),
     ),
     ...(hasAbsentMarker ? [escId(ABSENT_COLUMNS_FIELD)] : []),
   ].join(", ");
