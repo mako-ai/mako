@@ -21,6 +21,8 @@ export interface QueryResult {
   data?: any;
   error?: string;
   rowCount?: number;
+  /** DML count reported by the database. Missing when the receipt has no count. */
+  dmlAffectedRows?: number;
   fields?: any[];
   /** Rows were cut at the caller's `maxRows`: `data` holds the first ones. */
   truncated?: boolean;

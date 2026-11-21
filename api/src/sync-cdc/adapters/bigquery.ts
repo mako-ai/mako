@@ -27,9 +27,11 @@ import {
   withSyncedAt,
 } from "../normalization";
 import type { CdcStoredEvent } from "../events";
+import { bigQueryDmlAffectedRows } from "../../databases/drivers/bigquery/rows";
 import type {
   CdcDestinationAdapter,
   CdcEntityLayout,
+  CdcStagingMergeResult,
   LiveTableDescription,
 } from "./registry";
 import {
@@ -132,8 +134,9 @@ interface BigQueryAdapterConfig {
 }
 
 type FlowRef = Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
+type MergeJob = { jobId: string; location?: string };
 
-const UNPRUNED_WARN_JOB_READ_TIMEOUT_MS = 5000;
+const JOB_METADATA_TIMEOUT_MS = 5000;
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -399,8 +402,10 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       absentColumns?: ReadonlySet<string>;
       /** Which write path merges: the lease wait and the `mako_merge_path` label. Default "final". */
       mergePath?: CdcMergePath;
+      /** The direct Parquet path accounts for its batch separately. */
+      collectAffectedRows?: boolean;
     },
-  ): Promise<{ written: number }> {
+  ): Promise<CdcStagingMergeResult> {
     const stagingTable = bigQueryStagingTableName(
       layout.tableName,
       flowId,
@@ -412,6 +417,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       absentColumns: options?.absentColumns,
       mergePath: options?.mergePath ?? "final",
       flowId,
+      collectAffectedRows: options?.collectAffectedRows ?? true,
     });
   }
 
@@ -573,7 +579,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
               location: p.job.location ?? target.datasetLocation,
             })
             .getMetadata(),
-          UNPRUNED_WARN_JOB_READ_TIMEOUT_MS,
+          JOB_METADATA_TIMEOUT_MS,
         );
         totalBytesBilled = (
           meta as { statistics?: { query?: { totalBytesBilled?: string } } }
@@ -600,6 +606,42 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     });
   }
 
+  private async readMergeJobCount(
+    target: BigQueryTarget,
+    job: MergeJob | undefined,
+    statementType: "MERGE" | "INSERT",
+    failedAttempt: boolean,
+  ): Promise<number | null> {
+    if (!job) return null;
+    try {
+      const location = job.location ?? target.datasetLocation;
+      const [meta] = await withTimeout(
+        target.bq.job(job.jobId, { location }).getMetadata(),
+        JOB_METADATA_TIMEOUT_MS,
+      );
+      const ref = meta?.jobReference;
+      if (
+        meta?.status?.state !== "DONE" ||
+        (ref?.jobId && ref.jobId !== job.jobId) ||
+        (ref?.projectId && ref.projectId !== target.projectId) ||
+        (ref?.location &&
+          location &&
+          ref.location.toLowerCase() !== location.toLowerCase())
+      ) {
+        return null;
+      }
+      if (meta.status.errorResult) return failedAttempt ? 0 : null;
+      const stats = meta.statistics?.query;
+      if (stats?.statementType && stats.statementType !== statementType) {
+        return null;
+      }
+      return bigQueryDmlAffectedRows(stats) ?? null;
+    } catch {
+      // The DML finished. Retrying after a metadata error can append rows twice.
+      return null;
+    }
+  }
+
   private async mergeStagingToLive(
     layout: CdcEntityLayout,
     stagingTable: string,
@@ -610,8 +652,9 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       absentColumns?: ReadonlySet<string>;
       mergePath: CdcMergePath;
       flowId?: string;
+      collectAffectedRows: boolean;
     },
-  ): Promise<{ written: number }> {
+  ): Promise<CdcStagingMergeResult> {
     const target = await this.resolveBqClient();
     const { projectId, dataset } = target;
     const liveTable = layout.tableName;
@@ -711,7 +754,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       }
     }
 
-    const stagingRowCount = options.knownStagingRowCount ?? 0;
+    const stagingRowCount = options.knownStagingRowCount;
 
     // Airbyte-style write modes: "append" inserts staging rows as-is
     // (history accumulates); "overwrite" is handled by truncateLiveTable at
@@ -736,11 +779,9 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
     // Set by the MERGE closure, read after the lease is released.
     let unpruned: UnprunedMerge | undefined;
-    let mergeJob: { jobId: string; location?: string } | undefined;
+    const failedAttempts: Array<MergeJob | undefined> = [];
 
-    const runMerge = async (
-      lease: TableWriteLease | undefined,
-    ): Promise<void> => {
+    const runMerge = async (lease: TableWriteLease | undefined) => {
       // Every dedup path prunes. The probe and the MERGE run under the table
       // write lease, so no other writer moves or inserts a key in between.
       unpruned = undefined;
@@ -756,7 +797,6 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
             },
           })
         : undefined;
-      mergeJob = undefined;
       const mergeStmt = !isDedup
         ? `INSERT INTO ${fullLive} (${insertColList}) SELECT ${insertColList} FROM ${fullStaging}`
         : buildMergeStatement({
@@ -790,7 +830,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       }
 
       const maxWaitMs = mergeMaxWaitMs();
-      await withQueryLabels(
+      return withQueryLabels(
         {
           mako_merge_path: path,
           mako_lease_wait_ms:
@@ -799,24 +839,34 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         () =>
           retryOnQuota(
             async () => {
-              const mergeResult = await runBigQueryWrite(target, mergeStmt, {
-                bigQueryJobMaxWaitMs: maxWaitMs,
-                onJobStarted: job => {
-                  mergeJob = job;
-                  lease?.recordJob(job);
-                },
-              });
-              if (!mergeResult.success) {
-                invalidateCachedSchema(liveCacheKey);
-                log.error("BigQuery MERGE failed", {
-                  liveTable,
-                  stagingTable,
-                  error: mergeResult.error,
-                  mergePreview: mergeStmt.slice(0, 900),
+              let attemptJob: MergeJob | undefined;
+              try {
+                const mergeResult = await runBigQueryWrite(target, mergeStmt, {
+                  bigQueryJobMaxWaitMs: maxWaitMs,
+                  onJobStarted: job => {
+                    attemptJob = job;
+                    lease?.recordJob(job);
+                  },
                 });
-                throw new Error(mergeResult.error || "BigQuery MERGE failed");
+                if (!mergeResult.success) {
+                  invalidateCachedSchema(liveCacheKey);
+                  log.error("BigQuery MERGE failed", {
+                    liveTable,
+                    stagingTable,
+                    error: mergeResult.error,
+                    mergePreview: mergeStmt.slice(0, 900),
+                  });
+                  throw new Error(mergeResult.error || "BigQuery MERGE failed");
+                }
+                if (attemptJob) lease?.markJobDone();
+                return {
+                  job: attemptJob,
+                  affected: mergeResult.dmlAffectedRows,
+                };
+              } catch (error) {
+                failedAttempts.push(attemptJob);
+                throw error;
               }
-              lease?.markJobDone();
             },
             { label: `mergeStagingToLive:MERGE(${liveTable})` },
           ),
@@ -824,15 +874,49 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     };
 
     // A plain INSERT (append, overwrite) probes nothing: no lease.
-    if (isDedup) {
-      await this.underTableWriteLease(
+    const merge = isDedup
+      ? await this.underTableWriteLease(
+          target,
+          liveTable,
+          { path, flowId: options.flowId },
+          runMerge,
+        )
+      : await runMerge(undefined);
+
+    let written = merge.affected ?? null;
+    if (options.collectAffectedRows) {
+      const statementType = isDedup ? "MERGE" : "INSERT";
+      written ??= await this.readMergeJobCount(
         target,
-        liveTable,
-        { path, flowId: options.flowId },
-        runMerge,
+        merge.job,
+        statementType,
+        false,
       );
-    } else {
-      await runMerge(undefined);
+      const jobKey = (job: MergeJob | undefined) =>
+        job
+          ? `${(job.location ?? target.datasetLocation)?.toLowerCase() ?? ""}:${job.jobId}`
+          : undefined;
+      const previousJobs = new Map(
+        failedAttempts.map(job => [jobKey(job), job]),
+      );
+      if (merge.job) previousJobs.delete(jobKey(merge.job));
+      const previous = await Promise.all(
+        Array.from(previousJobs.values(), attempt =>
+          this.readMergeJobCount(target, attempt, statementType, true),
+        ),
+      );
+      for (const count of previous) {
+        written = written === null || count === null ? null : written + count;
+      }
+      if (written === null || !Number.isSafeInteger(written)) {
+        written = null;
+        log.warn("BigQuery merge affected-row count unavailable", {
+          liveTable,
+          stagingTable,
+          path,
+          jobId: merge.job?.jobId,
+        });
+      }
     }
 
     // After the lease: a slow jobs.get must not hold the table's writer slot,
@@ -843,7 +927,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         liveTable,
         flowId: options.flowId,
         path,
-        job: mergeJob,
+        job: merge.job,
       }).catch(() => undefined);
     }
 
@@ -852,11 +936,12 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       stagingTable,
       dataset,
       stagingRowCount,
+      written,
       skippedLiveAdds,
       path,
     });
 
-    return { written: stagingRowCount };
+    return { written, stagingSettled: true };
   }
 
   /** Full Refresh | Overwrite: clear the live table (no-op when absent). */
@@ -1113,6 +1198,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         {
           stagingSuffix,
           knownStagingRowCount: loadResult.loaded,
+          collectAffectedRows: false,
           absentColumns: parquet.absentColumns,
           mergePath: params.mergePath,
         },

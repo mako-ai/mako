@@ -258,11 +258,13 @@ let writeModeOfRun: "append_dedup" | "append" = "append_dedup";
  */
 let failingMerges = new Set<number>();
 let mergeCalls = 0;
+const missingMergeCounts = new Set<number>();
 /**
  * Rows a flush leaves in the buffer, as when flushBulkBuffer stops early on
  * an empty parquet: put back into the buffer by the next staging cleanup.
  */
 let leftoverOnCleanup: Doc[] = [];
+let leftoverOnMerge: number | undefined;
 
 const suffixOf = (o?: { stagingSuffix?: string }) =>
   o?.stagingSuffix ?? "backfill_staging";
@@ -296,7 +298,10 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
   }) as any,
   cleanupStaging: (async (_l: unknown, _f: string, o?: any) => {
     staging.set(suffixOf(o), []);
-    if (leftoverOnCleanup.length > 0) {
+    if (
+      leftoverOnCleanup.length > 0 &&
+      (leftoverOnMerge === undefined || leftoverOnMerge === mergeCalls)
+    ) {
       await collection(`backfill_tmp_${FLOW_ID}_${ENTITY}`).insertMany(
         leftoverOnCleanup,
       );
@@ -337,7 +342,11 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
     } else {
       live.push(...rowsInStaging);
     }
-    return { written };
+    return {
+      written:
+        written > 0 && missingMergeCounts.has(mergeCalls) ? null : written,
+      stagingSettled: written > 0,
+    };
   }) as any,
 };
 
@@ -381,7 +390,8 @@ async function invoke(params: {
   tableName?: string;
   poll?: boolean;
   interleave?: boolean;
-}): Promise<{ completed: boolean; rowsWritten: number }> {
+  attempt?: number;
+}): Promise<{ completed: boolean; rowsWritten: number | null }> {
   let cancelNext = false;
   const step = {
     run: async (id: string, fn: () => Promise<unknown>) => {
@@ -433,6 +443,7 @@ async function invoke(params: {
     },
     step,
     logger,
+    attempt: params.attempt ?? 0,
   });
 }
 
@@ -679,8 +690,57 @@ describe("a backfill checkpoint never runs ahead of the flushed rows", () => {
     });
     expect(result.completed).toBe(true);
     expectEveryRowExactlyOnce();
-    // The legacy flush counted nothing; the later flushes count theirs.
-    expect(result.rowsWritten).toBe(15_000);
+    // The legacy flush committed without an affected-row receipt.
+    expect(result.rowsWritten).toBeNull();
+  }, 120_000);
+
+  it("cleans up committed staging and keeps an unavailable count through resume", async () => {
+    writeModeOfRun = "append";
+    sourceRows = rows(15_000);
+    missingMergeCounts.add(1);
+    try {
+      await expect(
+        invoke({ runId: "run-A", cancelAt: "sync-opportunities-chunk-26" }),
+      ).rejects.toBeInstanceOf(Cancelled);
+      expect(live).toHaveLength(10_000);
+
+      chunkStartOffsets = [];
+      const result = await invoke({ runId: "run-A" });
+      expect(chunkStartOffsets[0]).toBe(10_000);
+      expectEveryRowExactlyOnce();
+      expect(result).toMatchObject({ completed: true, rowsWritten: null });
+    } finally {
+      missingMergeCounts.clear();
+    }
+  }, 120_000);
+
+  it("keeps an unknown partial flush count on the earlier checkpoint", async () => {
+    sourceRows = rows(25_000);
+    missingMergeCounts.add(2);
+    leftoverOnMerge = 2;
+    leftoverOnCleanup = [{ ...sourceRows[0], _bulkRunId: "run-A" }];
+    try {
+      await expect(
+        invoke({ runId: "run-A", cancelAt: "sync-opportunities-chunk-46" }),
+      ).rejects.toBeInstanceOf(Cancelled);
+      expect(live).toHaveLength(20_000);
+
+      chunkStartOffsets = [];
+      const result = await invoke({ runId: "run-A" });
+      expect(chunkStartOffsets[0]).toBe(10_000);
+      expectEveryRowExactlyOnce();
+      expect(result).toMatchObject({ completed: true, rowsWritten: null });
+    } finally {
+      missingMergeCounts.clear();
+      leftoverOnMerge = undefined;
+    }
+  }, 120_000);
+
+  it("does not attribute the prior attempt to the replayed step's new DML count", async () => {
+    sourceRows = rows(10);
+    const result = await invoke({ runId: "run-A", attempt: 1 });
+    expectEveryRowExactlyOnce();
+    expect(result).toMatchObject({ completed: true, rowsWritten: null });
   }, 120_000);
 });
 

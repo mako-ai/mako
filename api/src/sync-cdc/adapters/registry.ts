@@ -46,6 +46,12 @@ export interface LiveTableDescription {
   clusterFields: string[];
 }
 
+export interface CdcStagingMergeResult {
+  written: number | null;
+  /** A write completed and consumed the staged input, even when its count is unavailable. */
+  stagingSettled?: boolean;
+}
+
 export interface CdcDestinationAdapter {
   destinationType: string;
   /**
@@ -95,7 +101,7 @@ export interface CdcDestinationAdapter {
       /** The write path: a flush, the final merge or a rescue (table-write-lease.ts). */
       mergePath?: CdcMergePath;
     },
-  ): Promise<{ written: number }>;
+  ): Promise<CdcStagingMergeResult>;
   cleanupStaging?(
     layout: CdcEntityLayout,
     flowId: string,

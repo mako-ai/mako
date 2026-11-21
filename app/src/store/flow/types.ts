@@ -406,7 +406,7 @@ export interface ExecutionDetails {
     metadata?: unknown;
   }>;
   stats?: {
-    recordsProcessed?: number;
+    recordsProcessed?: number | null;
     entityStats?: Record<string, unknown>;
     entityStatus?: Record<string, unknown>;
     plannedEntities?: string[];

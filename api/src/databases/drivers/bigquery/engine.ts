@@ -46,10 +46,12 @@ import {
   describeGoogleApiError,
 } from "./errors";
 import {
+  bigQueryDmlAffectedRows,
   flattenSchemaFields,
   mapRowsToObjects,
   schemaToFields,
   type BigQueryRow,
+  type BigQueryDmlStats,
   type BigQuerySchema,
 } from "./rows";
 
@@ -73,14 +75,13 @@ export const MISSING_CREDENTIALS =
   "BigQuery requires 'project_id' and 'service_account_json' in connection";
 
 /** What jobs.query and getQueryResults answer (the parts read here). */
-interface QueryResponse {
+interface QueryResponse extends BigQueryDmlStats {
   jobComplete?: boolean;
   jobReference?: { jobId?: string; location?: string };
   schema?: BigQuerySchema;
   rows?: BigQueryRow[];
   pageToken?: string;
   errors?: Array<{ reason?: string; message?: string }>;
-  numDmlAffectedRows?: string;
 }
 
 /** The longest pause between two jobs.get checks on a queued BATCH job. */
@@ -471,14 +472,15 @@ export class BigQueryEngine implements QueryEngine {
       }
 
       // A DML statement returns no rows; BigQuery says how many it changed.
-      const affected = Number(data.numDmlAffectedRows);
+      const affected = bigQueryDmlAffectedRows(data);
       return {
         success: true,
         data: rowsAccum,
         rowCount:
-          rowsAccum.length === 0 && Number.isFinite(affected)
+          rowsAccum.length === 0 && affected !== undefined
             ? affected
             : rowsAccum.length,
+        ...(affected === undefined ? {} : { dmlAffectedRows: affected }),
       };
     } catch (error) {
       if ((error as Error | null)?.message === "Query cancelled") {

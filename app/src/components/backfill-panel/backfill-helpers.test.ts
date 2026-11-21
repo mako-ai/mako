@@ -115,6 +115,17 @@ describe("configuredEntityNames", () => {
 });
 
 describe("buildEntityRows / entityTotals", () => {
+  it("keeps an unavailable write count distinct from zero", () => {
+    const rows = buildEntityRows(
+      { entityFilter: ["missing", "zero"] },
+      [],
+      null,
+      { missing: null, zero: 0 },
+      {},
+    );
+    expect(rows.map(row => row.execRows)).toEqual([null, 0]);
+  });
+
   it("merges configured entities, CDC state, counts and live stats", () => {
     const rows = buildEntityRows(
       { entityFilter: ["customers", "orders"] },

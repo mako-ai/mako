@@ -22,6 +22,46 @@ export interface BigQueryRow {
   f?: Array<{ v?: unknown }>;
 }
 
+export interface BigQueryDmlStats {
+  numDmlAffectedRows?: unknown;
+  dmlStats?: {
+    insertedRowCount?: unknown;
+    updatedRowCount?: unknown;
+    deletedRowCount?: unknown;
+  };
+}
+
+/** BigQuery serializes its int64 counts as strings. Keep explicit zero. */
+export function bigQueryDmlAffectedRows(
+  stats: BigQueryDmlStats | undefined,
+): number | undefined {
+  const count = (value: unknown) => {
+    const number =
+      typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
+    return typeof number === "number" &&
+      Number.isSafeInteger(number) &&
+      number >= 0
+      ? number
+      : undefined;
+  };
+  const total = count(stats?.numDmlAffectedRows);
+  if (total !== undefined) return total;
+  const dml = stats?.dmlStats;
+  const fields = [
+    dml?.insertedRowCount,
+    dml?.updatedRowCount,
+    dml?.deletedRowCount,
+  ].filter(value => value !== undefined);
+  if (fields.length === 0) return undefined;
+  let sum = 0;
+  for (const field of fields) {
+    const value = count(field);
+    if (value === undefined) return undefined;
+    sum += value;
+  }
+  return Number.isSafeInteger(sum) ? sum : undefined;
+}
+
 /** The schema's fields, or ones inferred from the rows when it has none. */
 export function schemaToFields(
   schema: BigQuerySchema | undefined,

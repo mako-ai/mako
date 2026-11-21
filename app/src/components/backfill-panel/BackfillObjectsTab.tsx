@@ -101,7 +101,6 @@ export function BackfillObjectsTab({ model }: { model: BackfillPanelModel }) {
                   typeof e.destinationRowCount === "number"
                     ? Math.max(e.destinationRowCount, 0)
                     : null;
-                const syncingRowsWritten = Math.max(e.execRows || 0, 0);
                 const eventCount = e.lifetimeEventsProcessed || 0;
                 const isExpanded = expandedEntity === e.entity;
                 const schemaData = entitySchemaCache[e.entity];
@@ -218,7 +217,9 @@ export function BackfillObjectsTab({ model }: { model: BackfillPanelModel }) {
                                 whiteSpace: "nowrap",
                               }}
                             >
-                              {syncingRowsWritten.toLocaleString()} written
+                              {e.execRows === null
+                                ? "Write count unavailable"
+                                : `${Math.max(e.execRows, 0).toLocaleString()} written`}
                             </Typography>
                           )}
                         </Box>
