@@ -5,6 +5,7 @@
  * are not blocked forever. Always rethrows: Inngest owns the retry.
  */
 import { inWorkspace } from "../../../utils/workspace-scope";
+import { readBoxedReadFailure } from "../../../connectors/workspace/boxed-read-failure";
 import { Types } from "mongoose";
 import {
   DatabaseConnection,
@@ -23,14 +24,17 @@ import { isInfrastructureFailure } from "./infra-failure";
 type FlowRunError = Error & { code?: unknown };
 
 /** Inngest's cancellation, under any of the names and messages it uses. */
-export function isCancellationError(error: FlowRunError): boolean {
+export function isCancellationError(
+  error: FlowRunError,
+  allowMessageMatch = true,
+): boolean {
   return (
     error.name === "InngestFunctionCancelledError" ||
     error.name === "FunctionCancelledError" ||
     error.code === "FUNCTION_CANCELLED" ||
-    Boolean(error.message?.includes("cancelled")) ||
-    Boolean(error.message?.includes("canceled")) ||
-    Boolean(error.message?.includes("Function cancelled"))
+    (allowMessageMatch &&
+      (Boolean(error.message?.includes("cancelled")) ||
+        Boolean(error.message?.includes("canceled"))))
   );
 }
 
@@ -60,8 +64,9 @@ export async function handleFlowRunFailure(
     stack: error.stack,
   });
 
-  // Check if this is a cancellation from Inngest
-  const isCancelled = isCancellationError(error);
+  // Boxed provider errors can describe a cancellation in their message.
+  const readFailure = readBoxedReadFailure(error);
+  const isCancelled = isCancellationError(error, !readFailure);
 
   logger.info("Error analysis", {
     flowId,
@@ -152,6 +157,7 @@ export async function handleFlowRunFailure(
                     : error.message,
                   stack: isCancelled ? undefined : error.stack,
                   code: isCancelled ? "USER_CANCELLED" : error.code,
+                  ...(!isCancelled && readFailure ? { readFailure } : {}),
                 },
               },
             },

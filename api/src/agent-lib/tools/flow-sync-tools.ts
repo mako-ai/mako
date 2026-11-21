@@ -22,6 +22,7 @@
 import { tool, type ToolSet } from "ai";
 import { Types } from "mongoose";
 import { z } from "zod";
+import { boxedReadFailure } from "../../connectors/workspace/boxed-read-failure";
 
 import { RepoRequiredError, appsRequireConnectedRepo } from "../../apps/config";
 import {
@@ -378,7 +379,7 @@ export function createFlowSyncTools({
             .sort({ startedAt: -1 })
             .limit(executions ?? RECENT_EXECUTIONS)
             .select(
-              "status success startedAt completedAt duration error.message",
+              "status success startedAt completedAt duration error.message error.readFailure",
             )
             .lean();
           return {
@@ -411,6 +412,10 @@ export function createFlowSyncTools({
               completedAt: r.completedAt ?? null,
               durationMs: r.duration ?? null,
               error: r.error?.message ?? null,
+              readFailure:
+                r.status === "failed"
+                  ? (boxedReadFailure(r.error?.readFailure) ?? null)
+                  : null,
             })),
           };
         } catch (error) {
