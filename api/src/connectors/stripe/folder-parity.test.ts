@@ -198,10 +198,15 @@ void test("the folder pins the stripe package the API resolves", () => {
   assert.equal(lock.packages["node_modules/stripe"].version, apiStripe);
 });
 
-void test("same entities, labels and credential form", () => {
+void test("shared entities, labels and credential form match", () => {
+  const names = streams.map(s => s.name);
   assert.deepEqual(
-    streams.map(s => s.name),
+    names.filter(name => name !== "checkout_sessions_line_items"),
     ENTITIES,
+  );
+  assert.equal(
+    names.filter(name => name === "checkout_sessions_line_items").length,
+    1,
   );
   const metadata = makeInProcess({
     api_key: "sk_test_list",
@@ -247,7 +252,7 @@ void test("same schema for every entity, the 8 system columns included", async (
   }
 });
 
-void test("same table layout and incremental mode for every entity", async () => {
+void test("same table layout and incremental mode for shared entities", async () => {
   const inProcess = makeInProcess({
     api_key: "sk_test_list",
     api_base_url: "",
@@ -256,7 +261,10 @@ void test("same table layout and incremental mode for every entity", async () =>
   await boxed.loadDefinition();
   const layouts = (c: { getEntityMetadata(): any[] }) =>
     Object.fromEntries(
-      c.getEntityMetadata().map(e => [e.name, e.layoutSuggestion ?? null]),
+      c
+        .getEntityMetadata()
+        .filter(e => e.name !== "checkout_sessions_line_items")
+        .map(e => [e.name, e.layoutSuggestion ?? null]),
     );
   assert.deepEqual(layouts(boxed), layouts(inProcess));
 
@@ -270,6 +278,16 @@ void test("same table layout and incremental mode for every entity", async () =>
   for (const entity of ENTITIES) {
     assert.equal(effective(boxCaps, entity), effective(inCaps, entity), entity);
   }
+  const line = "checkout_sessions_line_items";
+  assert.equal(effective(boxCaps, line), "created-anchor");
+  await boxed.resolveSchema(line);
+  const created = Date.parse("2026-11-12T00:00:00.000Z") / 1000;
+  const checkout = boxed.normalizeBackfillRecord(line, {
+    id: "li_checkout_fixture",
+    checkout_session_id: "cs_test_fixture",
+    checkout_session_created: created,
+  });
+  assert.equal(checkout?.sourceTs?.toISOString(), "2026-11-12T00:00:00.000Z");
 });
 
 void test("check agrees on a valid key and on a revoked one", async () => {
