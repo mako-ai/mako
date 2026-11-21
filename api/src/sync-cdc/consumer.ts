@@ -11,6 +11,10 @@ import {
 import { loggers } from "../logging";
 import { getCdcEventStore } from "./event-store";
 import {
+  excludeRetainedInboxPeers,
+  withCdcFlowWriteFence,
+} from "./cdc-flow-write-fence";
+import {
   buildCdcEntityLayout,
   resolveCdcDestinationAdapter,
   resolveEntityPartitioning,
@@ -47,55 +51,73 @@ export async function parkPausedFlowWebhookEvents(params: {
   flowId: string;
   entity: string;
 }): Promise<number> {
-  const parkable = await CdcChangeEvent.find(
-    {
-      flowId: new Types.ObjectId(params.flowId),
+  const flowId = new Types.ObjectId(params.flowId);
+  return withCdcFlowWriteFence([flowId], async session => {
+    const pending = {
+      flowId,
       entity: params.entity,
       sourceKind: "webhook",
       materializationStatus: { $in: ["pending", "failed"] },
-    },
-    { _id: 1, webhookEventId: 1 },
-  ).lean();
-  if (parkable.length === 0) return 0;
-
-  const failure = {
-    code: FLOW_PAUSED_CODE,
-    message: "The flow's webhook is switched off; event parked",
-  };
-  const result = await CdcChangeEvent.updateMany(
-    {
-      _id: { $in: parkable.map(event => event._id) },
-      materializationStatus: { $in: ["pending", "failed"] },
-    },
-    {
-      $set: {
-        materializationStatus: "dropped",
-        materializationError: failure,
-        appliedAt: new Date(),
-      },
-    },
-  );
-
-  const webhookEventIds = Array.from(
-    new Set(
-      parkable
-        .map(event => event.webhookEventId)
-        .filter(
-          (eventId): eventId is string =>
-            typeof eventId === "string" && Types.ObjectId.isValid(eventId),
-        ),
-    ),
-  );
-  if (webhookEventIds.length > 0) {
-    await WebhookEvent.updateMany(
-      { _id: { $in: webhookEventIds.map(id => new Types.ObjectId(id)) } },
-      {
-        $set: { applyStatus: "dropped", applyError: failure },
-        $unset: { appliedAt: "" },
-      },
+      retainedBigQueryWrite: { $exists: false },
+    } as const;
+    const candidates = await CdcChangeEvent.find(pending, {
+      _id: 1,
+      webhookEventId: 1,
+    })
+      .session(session)
+      .lean();
+    const parkable = await excludeRetainedInboxPeers(
+      candidates,
+      [flowId],
+      session,
     );
-  }
-  return result.modifiedCount ?? 0;
+    if (parkable.length === 0) return 0;
+
+    const failure = {
+      code: FLOW_PAUSED_CODE,
+      message: "The flow's webhook is switched off; event parked",
+    };
+    const result = await CdcChangeEvent.updateMany(
+      { ...pending, _id: { $in: parkable.map(event => event._id) } },
+      {
+        $set: {
+          materializationStatus: "dropped",
+          materializationError: failure,
+          appliedAt: new Date(),
+        },
+      },
+      { session },
+    );
+
+    const webhookEventIds = Array.from(
+      new Set(
+        parkable
+          .map(event => event.webhookEventId)
+          .filter(
+            (eventId): eventId is string =>
+              typeof eventId === "string" && Types.ObjectId.isValid(eventId),
+          ),
+      ),
+    );
+    if (webhookEventIds.length > 0) {
+      await WebhookEvent.updateMany(
+        {
+          _id: { $in: webhookEventIds.map(id => new Types.ObjectId(id)) },
+          flowId,
+          status: { $in: ["pending", "processing", "completed", "failed"] },
+          applyStatus: {
+            $in: ["pending", "applied", "failed", "dropped", null],
+          },
+        },
+        {
+          $set: { applyStatus: "dropped", applyError: failure },
+          $unset: { appliedAt: "" },
+        },
+        { session },
+      );
+    }
+    return result.modifiedCount ?? 0;
+  });
 }
 
 export class CdcConsumerService {

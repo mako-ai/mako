@@ -1,5 +1,5 @@
 import * as crypto from "crypto";
-import { Types } from "mongoose";
+import { Types, type ClientSession } from "mongoose";
 import {
   CdcChangeEvent,
   Flow,
@@ -422,11 +422,12 @@ class MongoCdcEventStore implements CdcEventStore {
     eventIds: string[];
     errorCode?: string;
     errorMessage: string;
+    session?: ClientSession;
   }): Promise<void> {
     const ids = normalizeIds(params.eventIds);
     if (ids.length === 0) return;
     await CdcChangeEvent.updateMany(
-      { _id: { $in: ids } },
+      { _id: { $in: ids }, retainedBigQueryWrite: { $exists: false } },
       {
         $set: {
           materializationStatus: "dropped",
@@ -438,6 +439,7 @@ class MongoCdcEventStore implements CdcEventStore {
         },
         $inc: { materializationAttemptCount: 1 },
       },
+      { session: params.session },
     );
   }
 

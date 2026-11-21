@@ -36,12 +36,14 @@ vi.mock("../database/workspace-schema", () => ({
   CdcChangeEvent: {
     countDocuments: vi.fn(() => Promise.resolve(0)),
     find: vi.fn(() => ({
-      lean: () =>
-        Promise.resolve([
-          { _id: "e1", webhookEventId: "507f1f77bcf86cd799439021" },
-          { _id: "e2", webhookEventId: "507f1f77bcf86cd799439021" },
-          { _id: "e3" },
-        ]),
+      session: () => ({
+        lean: () =>
+          Promise.resolve([
+            { _id: "e1", webhookEventId: "507f1f77bcf86cd799439021" },
+            { _id: "e2", webhookEventId: "507f1f77bcf86cd799439021" },
+            { _id: "e3" },
+          ]),
+      }),
     })),
     updateMany: vi.fn(() => Promise.resolve({ modifiedCount: 3 })),
   },
@@ -75,6 +77,11 @@ vi.mock("./event-store", () => ({
     readAfter,
     claimOrdinaryWebhookUpserts,
   }),
+}));
+vi.mock("./cdc-flow-write-fence", () => ({
+  withCdcFlowWriteFence: (_flowIds: unknown, run: () => Promise<unknown>) =>
+    run(),
+  excludeRetainedInboxPeers: async (rows: unknown[]) => rows,
 }));
 
 import { CdcConsumerService } from "./consumer";
