@@ -4,7 +4,11 @@
  * tokens, dry-run schemas, and cancellation by jobs.cancel — including of a
  * job we stopped waiting for.
  */
-import { isAxiosError, type AxiosInstance } from "axios";
+import {
+  isAxiosError,
+  type AxiosInstance,
+  type AxiosRequestConfig,
+} from "axios";
 import type { IDatabaseConnection } from "../../../database/workspace-schema";
 import { loggers } from "../../../logging";
 import { bigQueryJobLabels } from "../../../services/bigquery-labels";
@@ -85,10 +89,13 @@ interface QueryResponse {
 
 /** The longest pause between two jobs.get checks on a queued BATCH job. */
 const BATCH_PENDING_POLL_CAP_MS = 10_000;
+const JOB_STATUS_AFTER_POLL_ERROR_TIMEOUT_MS = 5_000;
+
+type BigQueryJobState = "PENDING" | "RUNNING" | "DONE";
 
 /** The part of a jobs.get answer read here. */
 interface BigQueryJobResource {
-  status?: { state?: "PENDING" | "RUNNING" | "DONE" };
+  status?: { state?: BigQueryJobState };
 }
 
 /**
@@ -259,6 +266,7 @@ export class BigQueryEngine implements QueryEngine {
     const signal = options?.signal;
     let submitting = false;
     let jobOutcomeUnknown = false;
+    let job: RunningJob | undefined;
 
     const checkAborted = () => {
       if (signal?.aborted) throw new Error("Query cancelled");
@@ -336,13 +344,14 @@ export class BigQueryEngine implements QueryEngine {
       const rowsAccum: Record<string, unknown>[] = [];
 
       // Track running job for cancellation
-      if (executionId && jobId) {
-        this.runningJobs.set(executionId, {
+      if (jobId) {
+        job = {
           projectId: project_id,
           jobId,
           location: jobLocation,
           client,
-        });
+        };
+        if (executionId) this.runningJobs.set(executionId, job);
       }
       if (jobId && options?.onJobStarted) {
         try {
@@ -522,6 +531,15 @@ export class BigQueryEngine implements QueryEngine {
       ) {
         jobOutcomeUnknown = false;
       }
+      if (jobOutcomeUnknown && job && !signal?.aborted) {
+        // getQueryResults can surface a terminal job's error as an HTTP
+        // failure. Verify completion before suppressing a retry or cleanup.
+        const state = await this.getJobState(job, {
+          timeout: JOB_STATUS_AFTER_POLL_ERROR_TIMEOUT_MS,
+          signal,
+        }).catch(() => undefined);
+        if (state === "DONE") jobOutcomeUnknown = false;
+      }
       return {
         success: false,
         error:
@@ -533,6 +551,17 @@ export class BigQueryEngine implements QueryEngine {
     } finally {
       if (executionId) this.runningJobs.delete(executionId);
     }
+  }
+
+  private async getJobState(
+    { client, projectId, jobId, location }: RunningJob,
+    options?: Pick<AxiosRequestConfig, "timeout" | "signal">,
+  ): Promise<BigQueryJobState | undefined> {
+    const response = await client.get<BigQueryJobResource>(
+      `/projects/${projectId}/jobs/${jobId}`,
+      { params: location ? { location } : {}, ...options },
+    );
+    return response.data?.status?.state;
   }
 
   /**
@@ -547,20 +576,13 @@ export class BigQueryEngine implements QueryEngine {
     pendingMaxMs: number;
     pollIntervalMs: number;
     checkAborted: () => void;
-  }): Promise<"PENDING" | "RUNNING" | "DONE" | undefined> {
+  }): Promise<BigQueryJobState | undefined> {
     const deadline = Date.now() + input.pendingMaxMs;
-    const params: Record<string, unknown> = {};
-    if (input.location) params.location = input.location;
     // Back off to 10 s: dozens of queued sync jobs must not flood jobs.get.
     let waitMs = input.pollIntervalMs;
     for (;;) {
       input.checkAborted();
-      const response = await input.client.get(
-        `/projects/${input.projectId}/jobs/${input.jobId}`,
-        { params },
-      );
-      const state = (response.data as BigQueryJobResource | undefined)?.status
-        ?.state;
+      const state = await this.getJobState(input);
       if (state !== "PENDING") return state;
       const remaining = deadline - Date.now();
       if (remaining <= 0) {

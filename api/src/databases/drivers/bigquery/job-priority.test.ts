@@ -404,6 +404,40 @@ describe("the BigQuery job completion status on failure", () => {
     expect(result.bigQueryJobOutcomeUnknown).toBeUndefined();
   });
 
+  it.each(["DONE", "RUNNING"] as const)(
+    "checks exact job metadata after a quota error while polling, state %s",
+    async state => {
+      jobStates = ["RUNNING", state];
+      const get = vi.fn((url: string, _options?: unknown) =>
+        url.includes("/jobs/")
+          ? fakeClient.get(url)
+          : Promise.reject({
+              isAxiosError: true,
+              response: {
+                status: 403,
+                data: { error: { message: "Exceeded table update quota" } },
+              },
+            }),
+      );
+      engine.getHttpClient = async () => ({ ...fakeClient, get });
+
+      const result = await bigQueryEngine.executeQuery(database, "MERGE t", {
+        priority: "BATCH",
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Exceeded table update quota");
+      expect(result.bigQueryJobOutcomeUnknown).toBe(
+        state === "DONE" ? undefined : true,
+      );
+      expect(get).toHaveBeenCalledTimes(3);
+      expect(get).toHaveBeenLastCalledWith(
+        "/projects/proj/jobs/batch_job",
+        expect.objectContaining({ params: { location: "EU" }, timeout: 5000 }),
+      );
+    },
+  );
+
   it("fails a BATCH submission response with no job ID", async () => {
     const post = vi
       .fn()
