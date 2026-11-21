@@ -1,4 +1,4 @@
-import { Types } from "mongoose";
+import { Types, type ClientSession } from "mongoose";
 import type { FetchState } from "../connectors/base/BaseConnector";
 import {
   CdcChangeEvent,
@@ -350,6 +350,7 @@ class CdcSyncStateService {
     entity: string;
     cursor: FetchState;
     scope: string;
+    session?: ClientSession;
   }): Promise<void> {
     await CdcEntityState.updateOne(
       {
@@ -367,7 +368,7 @@ class CdcSyncStateService {
           updatedAt: new Date(),
         },
       },
-      { upsert: true },
+      { upsert: true, session: params.session },
     );
   }
 
@@ -592,6 +593,7 @@ export const cdcBackfillCheckpointService = {
     scope: string;
     entity: string;
     fetchState?: FetchState;
+    session?: ClientSession;
     /** Rows this backfill run wrote to the destination for this entity. */
     rowsWritten?: number;
     /**
@@ -617,6 +619,7 @@ export const cdcBackfillCheckpointService = {
       entity: params.entity,
       cursor,
       scope: params.scope,
+      session: params.session,
     });
 
     // Backfills write directly via the adapter (applyBatch / staging merge),
@@ -632,6 +635,7 @@ export const cdcBackfillCheckpointService = {
 
     await CdcEntityState.updateOne(
       {
+        workspaceId: new Types.ObjectId(params.workspaceId),
         flowId: new Types.ObjectId(params.flowId),
         entity: params.entity,
       },
@@ -644,6 +648,7 @@ export const cdcBackfillCheckpointService = {
           ? { $inc: { lifetimeRowsApplied: rowsWritten } }
           : {}),
       },
+      { session: params.session },
     );
   },
   clearRun: async (params: { workspaceId: string; flowId: string }) => {

@@ -6,14 +6,15 @@
  * its meta, which the consumer's self-heal reads.
  */
 import assert from "node:assert/strict";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose, { Types } from "mongoose";
 
-import { Flow } from "../database/workspace-schema";
+import { CdcEntityState, Flow } from "../database/workspace-schema";
 import { markCdcBackfillCompletedForFlow } from "./backfill";
+import { cdcBackfillCheckpointService } from "./sync-state";
 
 async function main() {
-  const mongo = await MongoMemoryServer.create();
+  const mongo = await MongoMemoryReplSet.create();
   await mongoose.connect(mongo.getUri());
   try {
     const workspaceId = new Types.ObjectId();
@@ -56,7 +57,10 @@ async function main() {
       },
     });
     assert.equal(streamError.backfillState.status, "completed");
-    assert.equal(streamError.syncStateMeta.lastErrorCode, "MATERIALIZATION_FAILED");
+    assert.equal(
+      streamError.syncStateMeta.lastErrorCode,
+      "MATERIALIZATION_FAILED",
+    );
 
     const clean = await insert({
       streamState: "active",
@@ -65,6 +69,57 @@ async function main() {
     });
     assert.equal(clean.syncStateMeta.lastEvent, "stream:START");
     assert.equal(clean.syncStateUpdatedAt.getTime(), 0);
+
+    const identity = {
+      flowId: String(clean._id),
+      workspaceId: String(workspaceId),
+      entity: "orders",
+    };
+    const scope = "fixture-checkpoint";
+    const fetchState = {
+      totalProcessed: 2,
+      hasMore: true,
+      iterationsInChunk: 1,
+      metadata: { offset: 2 },
+    };
+    await cdcBackfillCheckpointService.saveEntityCheckpoint({
+      ...identity,
+      scope,
+      fetchState,
+    });
+    const readState = () => CdcEntityState.findOne(identity).lean();
+    const before = await readState();
+    const completion = {
+      ...identity,
+      scope,
+      fetchState: { ...fetchState, totalProcessed: 5, metadata: { offset: 5 } },
+      rowsWritten: 5,
+    };
+    await assert.rejects(
+      mongoose.connection.transaction(async session => {
+        await cdcBackfillCheckpointService.markEntityCompleted({
+          ...completion,
+          session,
+        });
+        throw new Error("abort checkpoint settlement");
+      }),
+      /abort checkpoint settlement/,
+    );
+    assert.deepEqual(await readState(), before);
+
+    await mongoose.connection.transaction(session =>
+      cdcBackfillCheckpointService.markEntityCompleted({
+        ...completion,
+        session,
+      }),
+    );
+    const completed = await readState();
+    assert.deepEqual(completed?.backfillCursor, {
+      ...completion.fetchState,
+      hasMore: false,
+    });
+    assert.equal(completed?.lifetimeRowsApplied, 5);
+    assert.ok(completed?.backfillCompletedAt instanceof Date);
 
     console.log("backfill-complete.db.test: ok");
   } finally {
