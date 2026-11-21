@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ClientSession } from "mongoose";
 
 const cdcOperationSchema = z.enum(["upsert", "delete"]);
 const cdcSourceSchema = z.enum(["webhook", "backfill"]);
@@ -97,6 +98,7 @@ export interface CdcEventStore {
     eventIds: string[];
     errorCode?: string;
     errorMessage: string;
+    session?: ClientSession;
   }): Promise<void>;
 
   countEvents(params: {

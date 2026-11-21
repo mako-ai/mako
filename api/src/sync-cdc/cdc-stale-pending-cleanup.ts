@@ -6,6 +6,10 @@ import {
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { getCdcEventStore } from "./event-store";
+import {
+  excludeRetainedInboxPeers,
+  withCdcFlowWriteFence,
+} from "./cdc-flow-write-fence";
 
 const log = loggers.sync("cdc.stale-pending-cleanup");
 
@@ -59,28 +63,76 @@ export async function cleanupStalePendingCdcEvents(): Promise<{
     };
   }
 
-  const webhookIds = staleWebhooks.map(w => String(w._id));
+  const webhookIds = staleWebhooks.map(w => w._id);
   const flowIds = Array.from(
     new Set(staleWebhooks.map(w => String(w.flowId))),
   ).map(id => new Types.ObjectId(id));
 
-  const cdcRows = (await CdcChangeEvent.find({
-    flowId: { $in: flowIds },
-    materializationStatus: "pending",
-    webhookEventId: { $in: webhookIds },
-  })
-    .select({
-      _id: 1,
-      workspaceId: 1,
-      flowId: 1,
-      entity: 1,
-      ingestSeq: 1,
-      webhookEventId: 1,
-    })
-    .lean()) as StaleCdcRow[];
+  const { cdcRows, droppedWebhooks } = await withCdcFlowWriteFence(
+    flowIds,
+    async session => {
+      const inboxFilter = {
+        status: "completed",
+        applyStatus: "pending",
+        receivedAt: { $lte: cutoff },
+      } as const;
+      const current = await WebhookEvent.find(
+        { ...inboxFilter, _id: { $in: webhookIds } },
+        { _id: 1 },
+      )
+        .session(session)
+        .lean();
+      const candidates: StaleCdcRow[] = await CdcChangeEvent.find({
+        flowId: { $in: flowIds },
+        materializationStatus: "pending",
+        retainedBigQueryWrite: { $exists: false },
+        webhookEventId: { $in: current.map(row => String(row._id)) },
+      })
+        .select({
+          _id: 1,
+          workspaceId: 1,
+          flowId: 1,
+          entity: 1,
+          ingestSeq: 1,
+          webhookEventId: 1,
+        })
+        .session(session)
+        .lean();
+      const cdcRows = await excludeRetainedInboxPeers(
+        candidates,
+        flowIds,
+        session,
+      );
+      if (cdcRows.length === 0) return { cdcRows, droppedWebhooks: 0 };
+
+      await getCdcEventStore().markEventsDropped({
+        eventIds: cdcRows.map(row => String(row._id)),
+        errorCode: STALE_APPLY_ERROR.code,
+        errorMessage: STALE_APPLY_ERROR.message,
+        session,
+      });
+      const droppedInboxIds = new Set(cdcRows.map(row => row.webhookEventId));
+      const webhookResult = await WebhookEvent.updateMany(
+        {
+          ...inboxFilter,
+          _id: {
+            $in: current
+              .map(row => row._id)
+              .filter(id => droppedInboxIds.has(String(id))),
+          },
+        },
+        {
+          $set: { applyStatus: "dropped", applyError: STALE_APPLY_ERROR },
+          $unset: { appliedAt: "" },
+        },
+        { session },
+      );
+      return { cdcRows, droppedWebhooks: webhookResult.modifiedCount || 0 };
+    },
+  );
 
   if (cdcRows.length === 0) {
-    log.warn("Stale webhook rows with no matching pending CDC events", {
+    log.info("No stale CDC events eligible for cleanup", {
       webhookCount: staleWebhooks.length,
     });
     return {
@@ -90,40 +142,6 @@ export async function cleanupStalePendingCdcEvents(): Promise<{
       cursorsAdvanced: 0,
     };
   }
-
-  const eventStore = getCdcEventStore();
-  const cdcEventIds = cdcRows.map(r => String(r._id));
-  await eventStore.markEventsDropped({
-    eventIds: cdcEventIds,
-    errorCode: STALE_APPLY_ERROR.code,
-    errorMessage: STALE_APPLY_ERROR.message,
-  });
-
-  const webhookObjectIds = Array.from(
-    new Set(
-      cdcRows
-        .map(r => r.webhookEventId)
-        .filter(
-          (id): id is string =>
-            typeof id === "string" && Types.ObjectId.isValid(id),
-        ),
-    ),
-  ).map(id => new Types.ObjectId(id));
-
-  const webhookResult = await WebhookEvent.updateMany(
-    {
-      _id: { $in: webhookObjectIds },
-      status: "completed",
-      applyStatus: "pending",
-    },
-    {
-      $set: {
-        applyStatus: "dropped",
-        applyError: STALE_APPLY_ERROR,
-      },
-      $unset: { appliedAt: "" },
-    },
-  );
 
   const maxIngestByEntity = new Map<string, number>();
   for (const row of cdcRows) {
@@ -195,7 +213,6 @@ export async function cleanupStalePendingCdcEvents(): Promise<{
   }
 
   const droppedCdc = cdcRows.length;
-  const droppedWebhooks = webhookResult.modifiedCount || 0;
 
   if (droppedCdc > 0) {
     log.info("Cleaned up stale pending CDC events", {

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { CdcChangeEvent } from "../database/models/cdc";
 import { Flow } from "../database/workspace-schema";
 import { cdcLiveTableName } from "./normalization";
+import { cdcFlowWriteRevision } from "./cdc-flow-write-fence";
 
 const objectId = z
   .string()
@@ -94,7 +95,7 @@ export async function requireCurrentBigQueryCdcFlow(
     // A concurrent replacement of the flow must conflict with this transaction.
     const result = await Flow.collection.updateOne(
       filter,
-      { $inc: { retainedBigQueryWriteRevision: 1 } },
+      cdcFlowWriteRevision,
       { session },
     );
     if (result.matchedCount !== 1) {

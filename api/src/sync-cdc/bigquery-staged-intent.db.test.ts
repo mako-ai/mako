@@ -1,12 +1,18 @@
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose, { Types } from "mongoose";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { CdcChangeEvent, Flow } from "../database/workspace-schema";
+import {
+  CdcChangeEvent,
+  Flow,
+  WebhookEvent,
+} from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { BigQueryDestinationAdapter } from "./adapters/bigquery";
 import { buildCdcEntityLayout } from "./adapters/registry";
 import { bigQuerySnapshotGeneration } from "./bigquery-retained-query";
 import { getCdcEventStore } from "./event-store";
+import { parkPausedFlowWebhookEvents } from "./consumer";
+import { cleanupStalePendingCdcEvents } from "./cdc-stale-pending-cleanup";
 import {
   cleanupBigQueryStagedInput,
   findBigQueryStagedCdcWrites,
@@ -32,7 +38,15 @@ import {
 let mongo: MongoMemoryReplSet;
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({
-    replSet: { count: 3, args: ["--setParameter", "enableTestCommands=1"] },
+    replSet: {
+      count: 3,
+      args: [
+        "--setParameter",
+        "enableTestCommands=1",
+        "--setParameter",
+        "ttlMonitorEnabled=false",
+      ],
+    },
   });
   await mongoose.connect(mongo.getUri());
   await initializeBigQueryStagedInputStore();
@@ -138,6 +152,110 @@ async function makeCdcMerge(suffix: string) {
 }
 
 describe("BigQuery CDC event settlement", () => {
+  it("preserves retained and sibling rows during parking and a stale cleanup race", async () => {
+    const first = await makeCdcMerge("cdc_maintenance_fence");
+    const { workspaceId, flowId } = first.scope;
+    const staleAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    const inbox = (eventId: string, receivedAt: Date) =>
+      WebhookEvent.create({
+        workspaceId,
+        flowId,
+        eventId,
+        eventType: "synthetic_delivery",
+        receivedAt,
+        status: "completed",
+        applyStatus: "pending",
+        rawPayload: { synthetic: true },
+      });
+    const sharedInbox = await inbox("shared", staleAt);
+    const parkedInbox = await inbox("parked", new Date());
+    const staleInbox = await inbox("stale-control", staleAt);
+    const racingInbox = await inbox("stale-race", staleAt);
+    const retained = await first.event("retained", 1);
+    const sibling = await first.event("sibling", 2, "transcripts");
+    const parked = await first.event("parked", 3, "transcripts");
+    const stale = await first.event("stale", 4);
+    const racing = await first.event("racing", 5);
+    const link = (eventId: string, inboxId: Types.ObjectId) =>
+      CdcChangeEvent.updateOne(
+        { _id: eventId },
+        { $set: { webhookEventId: String(inboxId) } },
+      );
+    await Promise.all([
+      link(retained.id, sharedInbox._id),
+      link(sibling.id, sharedInbox._id),
+      link(parked.id, parkedInbox._id),
+      link(stale.id, staleInbox._id),
+      link(racing.id, racingInbox._id),
+    ]);
+    await expect(first.hold([retained])).resolves.toBe("held");
+    await expect(
+      parkPausedFlowWebhookEvents({ flowId, entity: "transcripts" }),
+    ).resolves.toBe(1);
+
+    const second = makeMerge("cdc_maintenance_after_scan");
+    const find = WebhookEvent.find.bind(WebhookEvent);
+    const scan = vi
+      .spyOn(WebhookEvent, "find")
+      .mockImplementationOnce((filter, projection, options) => {
+        const query = find(filter, projection, options);
+        const exec = query.exec.bind(query);
+        query.exec = async () => {
+          const candidates = await exec();
+          await expect(
+            holdBigQueryStagedCdcMerge(
+              second.binding,
+              second.merge,
+              second.options,
+              {
+                scope: first.scope,
+                events: [racing],
+              },
+            ),
+          ).resolves.toBe("held");
+          return candidates;
+        };
+        return query;
+      });
+    try {
+      await expect(cleanupStalePendingCdcEvents()).resolves.toMatchObject({
+        scanned: 3,
+        droppedCdc: 1,
+        droppedWebhooks: 1,
+      });
+    } finally {
+      scan.mockRestore();
+    }
+    const rows = await CdcChangeEvent.find({ flowId })
+      .sort({ ingestSeq: 1 })
+      .readConcern("majority")
+      .lean();
+    expect(rows.map(row => row.materializationStatus)).toEqual([
+      "pending",
+      "pending",
+      "dropped",
+      "dropped",
+      "pending",
+    ]);
+    const receipts = await WebhookEvent.find({ flowId })
+      .readConcern("majority")
+      .lean();
+    expect(
+      Object.fromEntries(receipts.map(row => [row.eventId, row.applyStatus])),
+    ).toEqual({
+      shared: "pending",
+      parked: "dropped",
+      "stale-control": "dropped",
+      "stale-race": "pending",
+    });
+    await expect(
+      readPendingBigQueryQueryRequest(first.binding.job),
+    ).resolves.not.toBeNull();
+    await expect(
+      readPendingBigQueryQueryRequest(second.binding.job),
+    ).resolves.not.toBeNull();
+  });
+
   it("gives retained and ordinary retries exclusive ownership of the same pending event", async () => {
     const first = await makeCdcMerge("cdc_ownership_fence");
     const retained = await first.event("retained-wins", 1);
