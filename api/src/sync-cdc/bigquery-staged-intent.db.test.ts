@@ -16,6 +16,12 @@ import {
   type BigQueryStagedIntent,
   type BigQueryTerminalReceipt,
 } from "./bigquery-staged-intent";
+import {
+  acquireTableWriteLease,
+  CdcTableWriteLease,
+  TableWriteLeaseBusyError,
+  type LeaseJobControl,
+} from "./table-write-lease";
 
 let mongo: MongoMemoryReplSet;
 beforeAll(async () => {
@@ -275,6 +281,185 @@ describe("BigQuery CDC event settlement", () => {
     expect(
       (await CdcChangeEvent.findById(a.id).lean())?.materializationStatus,
     ).toBe("pending");
+  });
+
+  it("settles the exact reserved job only after the authorized binding is restored", async () => {
+    const first = await makeCdcMerge("cdc_rollback");
+    const event = await first.event("rollback-delivery", 1);
+    const { job, destination } = first.binding;
+    const tableKey = ({ project, dataset, table }: typeof destination) =>
+      `${project}.${dataset}.${table}`;
+    const key = tableKey(destination);
+    const replacement = makeMerge("cdc_rollback_competitor");
+    replacement.binding.destination.dataset = "wrong";
+    const replacementScope = {
+      ...first.scope,
+      sourceConnectionId: new Types.ObjectId().toHexString(),
+      definitionSha: "replacement-flow-definition",
+    };
+    const setBinding = (scope: typeof first.scope, dataset: string) =>
+      Flow.updateOne(
+        { _id: scope.flowId },
+        {
+          $set: {
+            dataSourceId: scope.sourceConnectionId,
+            sourceBlobSha: scope.definitionSha,
+            "tableDestination.schema": dataset,
+          },
+        },
+        { writeConcern: { w: "majority" } },
+      );
+
+    type Request = NonNullable<
+      Awaited<ReturnType<typeof readPendingBigQueryQueryRequest>>
+    >;
+    const rows = new Map<string, string[]>();
+    const metadata = new Map<string, Request & { status: { state: "DONE" } }>();
+    const submit = vi.fn((request: Request) => {
+      const target = /^MERGE INTO `([^`]+)`\.`([^`]+)`\.`([^`]+)` /u.exec(
+        request.configuration.query.query,
+      );
+      if (!target) throw new Error("Missing synthetic MERGE destination");
+      const targetKey = target.slice(1).join(".");
+      rows.set(targetKey, [...(rows.get(targetKey) ?? []), event.deliveryKey]);
+      metadata.set(request.jobReference.jobId, {
+        ...structuredClone(request),
+        status: { state: "DONE" },
+      });
+      throw new Error("Simulated lost warehouse acknowledgement");
+    });
+    const dispatchPending = async (identity: typeof job) => {
+      const request = await readPendingBigQueryQueryRequest(identity);
+      if (request) submit(request);
+    };
+    const isDone = vi.fn(async () => true);
+    const cancel = vi.fn(async () => undefined);
+    const jobs: LeaseJobControl = {
+      isDone,
+      cancel,
+      isReservedJobDone: async ref => {
+        if (!ref.location) return false;
+        const identity = {
+          project: job.project,
+          location: ref.location,
+          id: ref.jobId,
+        };
+        const staged = await readBigQueryStagedInput(identity);
+        if (!staged || staged.fingerprint !== ref.intentFingerprint) {
+          return false;
+        }
+        return recordObservedBigQueryQueryResult(identity, {
+          ...metadata.get(ref.jobId),
+          statistics: { query: { statementType: "MERGE" } },
+        });
+      },
+    };
+    const acquire = (holder: string, table = key) =>
+      acquireTableWriteLease(table, {
+        holder,
+        jobs,
+        path: "live",
+        maxWaitMs: 0,
+      });
+    const expire = () =>
+      CdcTableWriteLease.updateOne(
+        { _id: key },
+        { $set: { expiresAt: new Date(0) } },
+        { writeConcern: { w: "majority" } },
+      );
+
+    const original = await acquire("rollback-original");
+    try {
+      await expect(first.hold([event])).resolves.toBe("held");
+      const staged = await readBigQueryStagedInput(job);
+      if (!staged) throw new Error("Missing durable staged intent");
+      await original.reserveJob({
+        jobId: job.id,
+        location: job.location,
+        intentFingerprint: staged.fingerprint,
+      });
+      await expect(
+        CdcTableWriteLease.findById(key).readConcern("majority").lean(),
+      ).resolves.toMatchObject({
+        jobId: job.id,
+        jobLocation: job.location,
+        jobIntentFingerprint: staged.fingerprint,
+        jobReservedBeforeDispatch: true,
+      });
+      await expect(dispatchPending(job)).rejects.toThrow(
+        "Simulated lost warehouse acknowledgement",
+      );
+      await setBinding(
+        replacementScope,
+        replacement.binding.destination.dataset,
+      );
+    } finally {
+      await original.release();
+    }
+    await mongoose.disconnect();
+    await mongoose.connect(mongo.getUri());
+
+    await expect(readPendingBigQueryQueryRequest(job)).resolves.toBeNull();
+    await expire();
+    await expect(acquire("rollback-blocked")).rejects.toBeInstanceOf(
+      TableWriteLeaseBusyError,
+    );
+    expect((await CdcTableWriteLease.findById(key).lean())?.jobId).toBe(job.id);
+    expect((await readBigQueryStagedInput(job))?.terminal).toBeUndefined();
+    expect(await CdcChangeEvent.findById(event.id).lean()).toMatchObject({
+      materializationStatus: "pending",
+      materializationAttemptCount: 0,
+    });
+
+    // A different dataset has its own table lease. The existing CDC claim
+    // still blocks a competing dispatch for the same event.
+    const wrongKey = tableKey(replacement.binding.destination);
+    const competing = await acquire("rollback-competing", wrongKey);
+    try {
+      await expect(
+        holdBigQueryStagedCdcMerge(
+          replacement.binding,
+          replacement.merge,
+          replacement.options,
+          { scope: replacementScope, events: [event] },
+        ),
+      ).rejects.toThrow("The exact pending CDC events could not be reserved");
+      await dispatchPending(replacement.binding.job);
+    } finally {
+      await competing.release();
+    }
+    expect(submit).toHaveBeenCalledTimes(1);
+
+    await setBinding(first.scope, destination.dataset);
+    await expire();
+    const restored = await acquire("rollback-restored");
+    try {
+      const settled = await readBigQueryStagedInput(job);
+      expect(settled?.terminal).toMatchObject({
+        state: "DONE",
+        outcome: "succeeded",
+        fingerprint: settled?.fingerprint,
+      });
+      expect(
+        await CdcChangeEvent.findById(event.id).readConcern("majority").lean(),
+      ).toMatchObject({
+        materializationStatus: "applied",
+        materializationAttemptCount: 1,
+        retainedBigQueryWrite: settled?.fingerprint,
+      });
+      await expect(first.hold([event])).resolves.toBe("terminal");
+      await dispatchPending(job);
+    } finally {
+      await restored.release();
+    }
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(metadata.size).toBe(1);
+    expect(rows.get(key)).toEqual([event.deliveryKey]);
+    expect(rows.get(wrongKey) ?? []).toEqual([]);
+    expect(await readBigQueryStagedInput(replacement.binding.job)).toBeNull();
+    expect(await CdcTableWriteLease.countDocuments()).toBe(0);
+    expect(isDone).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
   });
 
   it("keeps the receipt and remaining CDC rows pending if part of a bound batch disappears", async () => {

@@ -66,12 +66,38 @@ export function tableWriteLeaseEnabled(): boolean {
 export interface LeaseJobRef {
   jobId: string;
   location?: string;
+  /** A dispatch may still land after a status lookup returns not found. */
+  reservedBeforeDispatch?: boolean;
+  intentFingerprint?: string;
+}
+
+type ReservedJob = {
+  jobId: string;
+  location: string;
+  intentFingerprint: string;
+};
+
+function reservedJobFilter(job: LeaseJobRef) {
+  return {
+    jobId: job.jobId,
+    jobLocation: job.location,
+    jobReservedBeforeDispatch: true,
+    jobIntentFingerprint: job.intentFingerprint,
+  };
+}
+
+function validReservation(job: LeaseJobRef): boolean {
+  return Boolean(
+    job.jobId.trim() && job.location?.trim() && job.intentFingerprint?.trim(),
+  );
 }
 
 /** Reads and stops a warehouse job. The adapter supplies BigQuery's. */
 export interface LeaseJobControl {
-  /** True once the job is DONE (finished, failed or cancelled), or unknown to the warehouse. */
+  /** Legacy lookups may treat a missing job as done. */
   isDone(job: LeaseJobRef): Promise<boolean>;
+  /** Reserved jobs require a matching immutable intent and an explicit DONE receipt. */
+  isReservedJobDone?(job: LeaseJobRef): Promise<boolean>;
   cancel(job: LeaseJobRef): Promise<void>;
 }
 
@@ -81,6 +107,8 @@ interface TableWriteLeaseDoc {
   expiresAt: Date;
   jobId?: string | null;
   jobLocation?: string | null;
+  jobReservedBeforeDispatch?: boolean | null;
+  jobIntentFingerprint?: string | null;
   flowId?: string | null;
   path?: string | null;
   acquiredAt?: Date;
@@ -97,6 +125,8 @@ export const CdcTableWriteLease =
         expiresAt: { type: Date, required: true },
         jobId: { type: String },
         jobLocation: { type: String },
+        jobReservedBeforeDispatch: { type: Boolean },
+        jobIntentFingerprint: { type: String },
         flowId: { type: String },
         path: { type: String },
         acquiredAt: { type: Date },
@@ -149,6 +179,9 @@ export class TableWriteLease {
   private pendingWrites: Promise<unknown>[] = [];
   private renewTimer: NodeJS.Timeout | undefined;
   private released = false;
+  private releasing = false;
+  private reservationWrite?: Promise<void>;
+  private reservationFailed = false;
 
   constructor(
     readonly key: string,
@@ -196,17 +229,97 @@ export class TableWriteLease {
     }
   }
 
+  /** Persist a caller-assigned job ID before the caller can dispatch it. */
+  async reserveJob(job: ReservedJob): Promise<void> {
+    if (!validReservation(job)) {
+      throw new Error(
+        "A write reservation requires a job ID, location and intent fingerprint",
+      );
+    }
+    if (
+      this.releasing ||
+      this.reservationWrite ||
+      this.reservationFailed ||
+      !this.jobDone ||
+      !this.opts.jobs?.isReservedJobDone
+    ) {
+      throw new TableWriteLeaseBusyError(this.key, this.waitMs);
+    }
+    this.reservationWrite = this.persistReservation({ ...job });
+    try {
+      await this.reservationWrite;
+      if (this.releasing) {
+        throw new TableWriteLeaseBusyError(this.key, this.waitMs);
+      }
+    } catch (error) {
+      this.reservationFailed = true;
+      throw error;
+    } finally {
+      this.reservationWrite = undefined;
+    }
+  }
+
+  private async persistReservation(job: ReservedJob): Promise<void> {
+    await Promise.all(this.pendingWrites);
+    const now = new Date();
+    const result = await CdcTableWriteLease.updateOne(
+      {
+        _id: this.key,
+        holder: this.holder,
+        expiresAt: { $gt: now },
+        jobId: this.job?.jobId ?? null,
+      },
+      {
+        $set: {
+          jobId: job.jobId,
+          jobLocation: job.location,
+          jobReservedBeforeDispatch: true,
+          jobIntentFingerprint: job.intentFingerprint,
+          expiresAt: new Date(now.getTime() + this.opts.ttlMs),
+        },
+      },
+      { writeConcern: { w: "majority" } },
+    );
+    if (result.matchedCount !== 1) {
+      throw new TableWriteLeaseBusyError(this.key, this.waitMs);
+    }
+    this.job = { ...job, reservedBeforeDispatch: true };
+    this.jobDone = false;
+  }
+
   /**
    * Record the job this holder started. Called from the query's job-started
    * callback, so the write is queued and awaited before release.
    */
   recordJob(job: LeaseJobRef): void {
+    if (this.job?.reservedBeforeDispatch) {
+      if (
+        this.job.jobId !== job.jobId ||
+        (job.location && this.job.location !== job.location)
+      ) {
+        throw new TableWriteLeaseBusyError(this.key, this.waitMs);
+      }
+      return;
+    }
+    if (this.reservationWrite || this.reservationFailed || this.releasing) {
+      throw new TableWriteLeaseBusyError(this.key, this.waitMs);
+    }
     this.job = job;
     this.jobDone = false;
     this.pendingWrites.push(
       CdcTableWriteLease.updateOne(
-        { _id: this.key, holder: this.holder },
-        { $set: { jobId: job.jobId, jobLocation: job.location ?? null } },
+        {
+          _id: this.key,
+          holder: this.holder,
+          jobReservedBeforeDispatch: { $ne: true },
+        },
+        {
+          $set: {
+            jobId: job.jobId,
+            jobLocation: job.location ?? null,
+            jobReservedBeforeDispatch: false,
+          },
+        },
       ).catch(err => {
         log.warn("Could not record the job on the table write lease", {
           table: this.key,
@@ -217,9 +330,20 @@ export class TableWriteLease {
     );
   }
 
-  /** The recorded job finished (its query returned). */
+  /** Legacy acknowledgement. A reservation still requires its separate verifier. */
   markJobDone(): void {
-    this.jobDone = true;
+    if (!this.job?.reservedBeforeDispatch) this.jobDone = true;
+  }
+
+  private async isJobDone(job: LeaseJobRef): Promise<boolean> {
+    const jobs = this.opts.jobs;
+    if (job.reservedBeforeDispatch) {
+      return (
+        validReservation(job) &&
+        ((await jobs?.isReservedJobDone?.(job)) ?? false)
+      );
+    }
+    return (await jobs?.isDone(job)) ?? true;
   }
 
   /**
@@ -227,13 +351,11 @@ export class TableWriteLease {
    * does). False when it is still running at the deadline.
    */
   private async waitJobDone(job: LeaseJobRef, deadline: number) {
-    const jobs = this.opts.jobs;
-    if (!jobs) return true;
     let delay = this.opts.backoffMinMs ?? TABLE_WRITE_LEASE_BACKOFF_MIN_MS;
     const maxDelay = this.opts.backoffMaxMs ?? TABLE_WRITE_LEASE_BACKOFF_MAX_MS;
     for (;;) {
       try {
-        if (await jobs.isDone(job)) return true;
+        if (await this.isJobDone(job)) return true;
       } catch (err) {
         log.warn("Could not read a lease job's state", {
           table: this.key,
@@ -255,12 +377,28 @@ export class TableWriteLease {
     if (!done) {
       throw new TableWriteLeaseBusyError(this.key, this.waitMs);
     }
+    const result = await CdcTableWriteLease.updateOne(
+      {
+        _id: this.key,
+        holder: this.holder,
+        ...(job.reservedBeforeDispatch
+          ? reservedJobFilter(job)
+          : { jobId: job.jobId, jobReservedBeforeDispatch: { $ne: true } }),
+      },
+      {
+        $set: {
+          jobId: null,
+          jobLocation: null,
+          jobReservedBeforeDispatch: null,
+          jobIntentFingerprint: null,
+        },
+      },
+    );
+    if (result.matchedCount !== 1) {
+      throw new TableWriteLeaseBusyError(this.key, this.waitMs);
+    }
     this.jobDone = true;
     this.job = undefined;
-    await CdcTableWriteLease.updateOne(
-      { _id: this.key, holder: this.holder },
-      { $set: { jobId: null, jobLocation: null } },
-    );
   }
 
   /**
@@ -269,13 +407,15 @@ export class TableWriteLease {
    * will not stop keeps the lease until it expires, with its id recorded.
    */
   async release(): Promise<void> {
-    if (this.released) return;
+    if (this.releasing) return;
+    this.releasing = true;
+    await this.reservationWrite?.catch(() => undefined);
     await Promise.all(this.pendingWrites);
     if (this.job && !this.jobDone) {
       const jobs = this.opts.jobs;
       if (jobs) {
-        let done = await jobs.isDone(this.job).catch(() => false);
-        if (!done) {
+        let done = await this.isJobDone(this.job).catch(() => false);
+        if (!done && !this.job.reservedBeforeDispatch) {
           await jobs.cancel(this.job).catch(err => {
             log.warn("Could not cancel the lease holder's job", {
               table: this.key,
@@ -304,7 +444,14 @@ export class TableWriteLease {
     }
     this.stopRenewing();
     this.released = true;
-    await CdcTableWriteLease.deleteOne({ _id: this.key, holder: this.holder });
+    await CdcTableWriteLease.deleteOne({
+      _id: this.key,
+      holder: this.holder,
+      // An ambiguous Mongo acknowledgement may have stored a reservation we never saw.
+      ...(this.job?.reservedBeforeDispatch
+        ? reservedJobFilter(this.job)
+        : { jobReservedBeforeDispatch: { $ne: true } }),
+    });
   }
 
   private stopRenewing(): void {
@@ -360,7 +507,7 @@ export async function acquireTableWriteLease(
       });
       lease.waitMs = Date.now() - started;
       lease.startRenewing();
-      if (previous?.jobId) {
+      if (previous?.jobId || previous?.jobReservedBeforeDispatch) {
         log.warn("Previous table writer expired with a job; waiting for it", {
           table: key,
           jobId: previous.jobId,
@@ -370,8 +517,11 @@ export async function acquireTableWriteLease(
         try {
           await lease.waitForInheritedJob(
             {
-              jobId: previous.jobId,
+              jobId: previous.jobId ?? "",
               location: previous.jobLocation ?? undefined,
+              reservedBeforeDispatch:
+                previous.jobReservedBeforeDispatch === true,
+              intentFingerprint: previous.jobIntentFingerprint ?? undefined,
             },
             deadline,
           );
