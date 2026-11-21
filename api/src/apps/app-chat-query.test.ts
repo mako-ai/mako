@@ -20,6 +20,7 @@ import {
 } from "./app-chat-query";
 import {
   bakeExtensions,
+  duckdbExtensionDirectory,
   DUCKDB_EXTENSION_DIR_ENV,
   loadBakedExtension,
 } from "./duckdb-extensions";
@@ -132,13 +133,22 @@ describe("direct httpfs mode", () => {
   let forbiddenUrl: string;
   let remoteTables: AppDataTable[];
   let extensionDir: string;
+  let temporaryExtensionDir: string | undefined;
   const originalExtensionDir = process.env[DUCKDB_EXTENSION_DIR_ENV];
 
   beforeAll(async () => {
-    // Same path as the Docker build: bake httpfs once, runtime only LOADs.
-    extensionDir = fs.mkdtempSync(path.join(os.tmpdir(), "duckdb-ext-"));
-    await bakeExtensions(extensionDir);
-    process.env[DUCKDB_EXTENSION_DIR_ENV] = extensionDir;
+    const configuredExtensionDir = duckdbExtensionDirectory();
+    if (configuredExtensionDir) {
+      extensionDir = configuredExtensionDir;
+    } else {
+      // Same path as the Docker build: bake httpfs once, runtime only LOADs.
+      temporaryExtensionDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), "duckdb-ext-"),
+      );
+      extensionDir = temporaryExtensionDir;
+      await bakeExtensions(extensionDir);
+      process.env[DUCKDB_EXTENSION_DIR_ENV] = extensionDir;
+    }
     const secretParquet = tables[1]?.file;
     const ordersParquet = tables[0]?.file;
     if (!secretParquet || !ordersParquet) {
@@ -178,12 +188,14 @@ describe("direct httpfs mode", () => {
     } else {
       process.env[DUCKDB_EXTENSION_DIR_ENV] = originalExtensionDir;
     }
-    fs.rmSync(extensionDir, {
-      recursive: true,
-      force: true,
-      maxRetries: 5,
-      retryDelay: 100,
-    });
+    if (temporaryExtensionDir) {
+      fs.rmSync(temporaryExtensionDir, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      });
+    }
   });
 
   it("fails loudly when httpfs is not baked, without downloading", async () => {
