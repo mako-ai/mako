@@ -45,10 +45,11 @@ import {
   STRIPE_ENTITY_SCHEMA_MAP,
 } from "./schema.ts";
 import {
-  EMBEDDED_CHILD_PARENTS,
-  childListIsPartial,
+  CHECKOUT_LINE_ITEM_ENTITY,
+  CHILD_PARENTS,
+  childNeedsRequest,
   childRowsOf,
-  type EmbeddedChildEntity,
+  type ChildEntity,
 } from "./lists.ts";
 import {
   stripeRecordTimestamp,
@@ -318,29 +319,54 @@ type Children =
   | { kind: "deferred"; reason: string }
   | { kind: "failed"; reason: string };
 
+function eventCreatedAt(
+  event: WebhookEvent,
+): { seconds: number; iso: string } | null {
+  const seconds = isObject(event.rawPayload)
+    ? event.rawPayload.created
+    : undefined;
+  if (
+    typeof seconds !== "number" ||
+    !Number.isSafeInteger(seconds) ||
+    seconds <= 0 ||
+    seconds > 253_402_300_799
+  )
+    return null;
+  return { seconds, iso: new Date(seconds * 1000).toISOString() };
+}
+
 /**
- * An invoice's `lines` and a subscription's `items` as records of their own
- * entity, with the parent's operation and change id, as the in-process
- * `enrichWebhookCdcRecords` builds them. Only for the child entities the
- * flow syncs (all when Mako does not say). A list longer than the 10 a
- * payload embeds is read whole on an upsert; a delete uses what it embeds.
+ * A parent's children inherit its operation and change id. Invoices and
+ * subscriptions keep their embedded-list behavior. Checkout lifecycle
+ * events refresh their opted-in line items and carry the event's own time.
  * A failed read defers or fails the whole event, so a parent is never
  * written without all of its children.
  */
 async function childRecords(
   deps: StripeWebhookDeps,
   parent: WebhookChangeRecord,
+  event: WebhookEvent,
   enabled: (entity: string) => boolean,
   budgetSpent: () => boolean,
 ): Promise<Children> {
   const records: WebhookChangeRecord[] = [];
-  for (const [child, parentEntity] of Object.entries(
-    EMBEDDED_CHILD_PARENTS,
-  ) as Array<[EmbeddedChildEntity, string]>) {
+  for (const [child, parentEntity] of Object.entries(CHILD_PARENTS) as Array<
+    [ChildEntity, string]
+  >) {
     if (parent.entity !== parentEntity || !enabled(child)) continue;
     const fetchMore =
-      parent.operation === "upsert" &&
-      childListIsPartial(child, parent.payload);
+      parent.operation === "upsert" && childNeedsRequest(child, parent.payload);
+    let checkoutTime: ReturnType<typeof eventCreatedAt> = null;
+    if (child === CHECKOUT_LINE_ITEM_ENTITY && fetchMore) {
+      checkoutTime = eventCreatedAt(event);
+      if (!checkoutTime || !safeId(parent.recordId)) {
+        return {
+          kind: "failed",
+          reason:
+            "Stripe Checkout event is missing a valid event creation time or Session id",
+        };
+      }
+    }
     if (fetchMore && budgetSpent()) {
       return {
         kind: "deferred",
@@ -351,6 +377,7 @@ async function childRecords(
     try {
       rows = await childRowsOf(deps.stripe(), child, parent.payload, {
         fetchMore,
+        budgetSpent,
       });
     } catch (error) {
       const status = (error as { statusCode?: number })?.statusCode;
@@ -363,12 +390,14 @@ async function childRecords(
     }
     for (const row of rows ?? []) {
       if (typeof row.id !== "string" || !row.id) continue;
-      const sourceTs = stripeRecordTimestamp(row);
+      const sourceTs = checkoutTime?.iso ?? stripeRecordTimestamp(row);
       records.push({
         entity: child,
         recordId: row.id,
         operation: parent.operation,
-        payload: row,
+        payload: checkoutTime
+          ? { ...row, checkout_session_updated: checkoutTime.seconds }
+          : row,
         ...(sourceTs ? { sourceTs } : {}),
         changeId: `${parent.changeId || parent.recordId}:${child}:${row.id}`,
       });
@@ -386,7 +415,10 @@ export async function handleStripeWebhookBatch(
   const enabledSet = options.enabledEntities
     ? new Set(options.enabledEntities)
     : null;
-  const enabled = (entity: string) => !enabledSet || enabledSet.has(entity);
+  const enabled = (entity: string) =>
+    entity === CHECKOUT_LINE_ITEM_ENTITY
+      ? enabledSet?.has(entity) === true
+      : !enabledSet || enabledSet.has(entity);
   const now = deps.now ?? (() => Date.now());
   const budgetMs = deps.budgetMs ?? STRIPE_WEBHOOK_FILL_BUDGET_MS;
   const startedAt = now();
@@ -417,6 +449,7 @@ export async function handleStripeWebhookBatch(
       const children = await childRecords(
         deps,
         filled.record,
+        event,
         enabled,
         budgetSpent,
       );

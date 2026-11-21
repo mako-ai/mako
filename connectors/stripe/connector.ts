@@ -1,14 +1,14 @@
 /**
  * Stripe on @makoai/connector-sdk: `spec`, `check`, `discover` and `read`.
  *
- * A port of the in-process connector in `api/src/connectors/stripe/`, with the
- * same 26 entities, schemas, cursors and pagination. Nothing runs it in
- * production yet. `fixtures/parity.mjs` runs both against the same recorded
- * Stripe responses and compares them entity by entity.
+ * A port of the in-process connector in `api/src/connectors/stripe/`.
+ * `fixtures/parity.mjs` compares the shared entities against recorded responses.
+ * The boxed connector also reads Checkout Session line items and Setup Attempts.
  *
  * Read state is `{ cursor, mako: { since } }`:
  * - `cursor` is Stripe's `starting_after`, the in-process `FetchState.cursor`.
- *   Nested entities carry the last parent id (payout or customer).
+ *   Nested entities carry the last parent id.
+ * - Setup Attempts use `setupAttempts` for parent and attempt paging.
  * - `mako.since` (ISO 8601) is the incremental anchor, sent as `created[gte]`.
  *   Mako owns the `mako` key. The
  *   connector never moves it. The engine passes `since` to the in-process
@@ -30,6 +30,7 @@ import type {
 } from "@makoai/connector-sdk";
 import { listStripePage } from "./lists.ts";
 import { STRIPE_ENTITY_SCHEMA_MAP, stripeJsonSchema } from "./schema.ts";
+import { readSetupAttempts, type SetupAttemptWalk } from "./setup-attempts.ts";
 import {
   STRIPE_WEBHOOK_FILL_TIMEOUT_MS,
   stripeWebhookDefinition,
@@ -79,6 +80,7 @@ function pageSize(config: StripeConfig): number {
 
 interface StripeReadState {
   cursor?: string;
+  setupAttempts?: SetupAttemptWalk;
   /** Mako's own keys; `since` is the incremental anchor. */
   mako?: { since?: string };
 }
@@ -109,6 +111,7 @@ const ENTITIES: Array<[name: string, label: string, incremental: boolean]> = [
   ["coupons", "Coupons", true],
   ["promotion_codes", "Promotion Codes", true],
   ["checkout_sessions", "Checkout Sessions", true],
+  ["checkout_sessions_line_items", "Checkout Session Line Items", true],
   ["setup_intents", "Setup Intents", true],
   ["early_fraud_warnings", "Early Fraud Warnings", true],
   // Rows inside a parent object: an invoice's lines, a subscription's items.
@@ -118,11 +121,13 @@ const ENTITIES: Array<[name: string, label: string, incremental: boolean]> = [
   ["subscription_items", "Subscription Items", true],
   // The account's event log. Stripe keeps 30 days; polled only.
   ["events", "Events", true],
+  ["setup_attempts", "Setup Attempts", true],
 ];
 
-/** A line has no `created`: its time is its invoice's. */
+/** Invoice and Checkout line items use the parent's creation time. */
 const CURSOR_FIELD: Record<string, string> = {
   invoice_line_items: "invoice_created",
+  checkout_sessions_line_items: "checkout_session_created",
 };
 
 /**
@@ -196,6 +201,15 @@ function entity(
       const stripe = stripeClient(ctx);
       const anchor = state.mako?.since;
       const since = incremental ? parseSince(anchor) : undefined;
+      if (name === "setup_attempts") {
+        yield* readSetupAttempts(stripe, state.setupAttempts, {
+          limit: pageSize(ctx.config),
+          delayMs: rateLimitDelay(ctx.config),
+          since,
+          anchor,
+        });
+        return;
+      }
       let cursor = typeof state.cursor === "string" ? state.cursor : undefined;
       let first = true;
 
@@ -229,7 +243,7 @@ function entity(
 
 export default defineConnector<StripeConfig>({
   name: "stripe",
-  version: "1.4.0",
+  version: "1.5.0",
   title: "Stripe",
   documentationUrl: "https://docs.stripe.com/api",
   config: {

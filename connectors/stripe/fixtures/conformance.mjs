@@ -4,8 +4,8 @@
  *
  * It starts the replay server, points `api_base_url` at it with a test key,
  * and runs the CLI exactly as an author would. A request the cassettes do not
- * hold fails the read, so this also proves the conformance run sends only
- * requests the in-process connector sent when the cassettes were recorded.
+ * hold fails the read. The Setup Attempts fixture separately checks nested
+ * pagination and incremental reads.
  *
  *   node connectors/stripe/fixtures/conformance.mjs
  */
@@ -17,11 +17,26 @@ import {
   FOLDER,
   REPO_ROOT,
   ensureFolderInstalled,
+  loadCassettes,
   startReplayServer,
 } from "./harness.mjs";
+import {
+  checkoutLineItemsCassettes,
+  verifyCheckoutLineItems,
+} from "./checkout-line-items.mjs";
+import { checkSetupAttempts } from "./setup-attempts.mjs";
 
 ensureFolderInstalled();
-const server = await startReplayServer();
+await checkSetupAttempts();
+const server = await startReplayServer(
+  new Map([...loadCassettes(), ...checkoutLineItemsCassettes()]),
+);
+try {
+  await verifyCheckoutLineItems(server);
+} catch (error) {
+  await server.close();
+  throw error;
+}
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mako-stripe-conformance-"));
 const config = path.join(dir, "config.json");
 fs.writeFileSync(

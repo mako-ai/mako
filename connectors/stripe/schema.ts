@@ -1,7 +1,6 @@
 /**
- * Stripe entity schemas, field for field the same as the in-process
- * connector's (`api/src/connectors/stripe/schema.ts`). The parity harness in
- * `fixtures/` fails if the two drift.
+ * The parity harness in `fixtures/` checks shared Stripe schemas against
+ * the in-process connector (`api/src/connectors/stripe/schema.ts`).
  *
  * Two things differ in form, not in meaning:
  * - Mako's system columns (`_mako_*`, `_syncedAt`, `is_deleted`, ...) are not
@@ -519,6 +518,25 @@ const CHECKOUT_SESSION_SCHEMA: Fields = {
   url: "string",
 };
 
+const CHECKOUT_SESSION_LINE_ITEM_SCHEMA: Fields = {
+  id: "string",
+  object: "string",
+  amount_discount: "integer",
+  amount_subtotal: "integer",
+  amount_tax: "integer",
+  amount_total: "integer",
+  checkout_session_created: "integer",
+  checkout_session_expires_at: "integer",
+  checkout_session_id: "string",
+  checkout_session_updated: "integer",
+  currency: "string",
+  description: "string",
+  discounts: "json",
+  price: "json",
+  quantity: "integer",
+  taxes: "json",
+};
+
 const SETUP_INTENT_SCHEMA: Fields = {
   ...COMMON_STRIPE_SCHEMA,
   cancellation_reason: "string",
@@ -527,6 +545,23 @@ const SETUP_INTENT_SCHEMA: Fields = {
   last_setup_error: "json",
   payment_method: "string",
   payment_method_types: "json",
+  status: "string",
+  usage: "string",
+};
+
+const SETUP_ATTEMPT_SCHEMA: Fields = {
+  id: "string",
+  object: "string",
+  created: "timestamp",
+  livemode: "boolean",
+  application: "string",
+  customer: "string",
+  flow_directions: "json",
+  on_behalf_of: "string",
+  payment_method: "string",
+  payment_method_details: "json",
+  setup_error: "json",
+  setup_intent: "string",
   status: "string",
   usage: "string",
 };
@@ -620,7 +655,9 @@ export const STRIPE_ENTITY_SCHEMA_MAP: Record<string, Fields> = {
   coupons: COUPON_SCHEMA,
   promotion_codes: PROMOTION_CODE_SCHEMA,
   checkout_sessions: CHECKOUT_SESSION_SCHEMA,
+  checkout_sessions_line_items: CHECKOUT_SESSION_LINE_ITEM_SCHEMA,
   setup_intents: SETUP_INTENT_SCHEMA,
+  setup_attempts: SETUP_ATTEMPT_SCHEMA,
   early_fraud_warnings: EARLY_FRAUD_WARNING_SCHEMA,
   invoice_line_items: INVOICE_LINE_ITEM_SCHEMA,
   subscription_items: SUBSCRIPTION_ITEM_SCHEMA,
