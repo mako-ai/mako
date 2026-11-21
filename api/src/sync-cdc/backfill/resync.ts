@@ -70,6 +70,7 @@ export async function resyncFlow(params: {
     await WebhookEvent.deleteMany({
       workspaceId: workspaceObjectId,
       flowId: flowObjectId,
+      status: { $ne: "dormant" },
     });
   }
 
