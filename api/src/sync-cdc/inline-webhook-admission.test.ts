@@ -1,8 +1,8 @@
-import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
-import type { CommandStartedEvent } from "mongodb";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import assert from "node:assert/strict";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
+import type { CommandStartedEvent } from "mongodb";
 import mongoose, { type Connection, Types } from "mongoose";
 import {
   admitInlineWebhook,
@@ -30,9 +30,7 @@ function scope(): InlineWebhookScope {
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   workerA = await mongoose.createConnection(mongo.getUri()).asPromise();
-  workerB = await mongoose
-    .createConnection(mongo.getUri(), { monitorCommands: true })
-    .asPromise();
+  workerB = await mongoose.createConnection(mongo.getUri()).asPromise();
 });
 
 afterAll(async () => {
@@ -87,60 +85,80 @@ describe("inline webhook admission", () => {
           .insertOne({ flow: key.flowId, eventId }, { session });
         return eventId;
       };
-    let markFirstWritten!: () => void;
-    let releaseFirst!: () => void;
-    let markSecondAtGate!: () => void;
-    const firstWritten = new Promise<void>(resolve => {
-      markFirstWritten = resolve;
-    });
-    const holdFirst = new Promise<void>(resolve => {
-      releaseFirst = resolve;
-    });
-    const secondAtGate = new Promise<void>(resolve => {
-      markSecondAtGate = resolve;
-    });
-    const client = workerB.getClient();
+    function barrier() {
+      let open!: () => void;
+      const wait = new Promise<void>(resolve => {
+        open = resolve;
+      });
+      return { open, wait };
+    }
+    const firstWritten = barrier();
+    const holdFirst = barrier();
+    const secondReady = barrier();
+    const holdSecond = barrier();
+    const secondRetried = barrier();
+    const contender = await mongoose
+      .createConnection(mongo.getUri(), { monitorCommands: true })
+      .asPromise();
+    const startSession = contender.startSession.bind(contender);
+    const pauseSecond = vi
+      .spyOn(contender, "startSession")
+      .mockImplementationOnce(async () => {
+        // Finish the gate upsert before worker A holds the transactional lock.
+        secondReady.open();
+        await holdSecond.wait;
+        return startSession();
+      });
+    const client = contender.getClient();
+    const gateTransactions = new Set<string>();
     const observeGate = ({ commandName, command }: CommandStartedEvent) => {
       if (
         commandName === "update" &&
         command.update === "inline_webhook_admissions" &&
         command.autocommit === false
       ) {
-        markSecondAtGate();
+        gateTransactions.add(String(command.txnNumber));
+        if (gateTransactions.size === 2) secondRetried.open();
       }
     };
     const timer = new AbortController();
+    let waitingFor = "the second gate initialization";
     const deadline = delay(10_000, undefined, { signal: timer.signal }).then(
       () => {
-        throw new Error("Timed out coordinating the two admissions");
+        throw new Error(`Timed out waiting for ${waitingFor}`);
       },
     );
     client.on("commandStarted", observeGate);
     try {
+      const persistSecond = vi.fn(writeDelivery(contender, "second"));
+      const second = admitInlineWebhook(contender, key, persistSecond);
+      await Promise.race([secondReady.wait, second, deadline]);
+      waitingFor = "the first delivery write";
       const first = admitInlineWebhook(workerA, key, async session => {
         const eventId = await writeDelivery(workerA, "first")(session);
-        markFirstWritten();
-        await holdFirst;
+        firstWritten.open();
+        await holdFirst.wait;
         return eventId;
       });
-      await Promise.race([firstWritten, first, deadline]);
-      const second = admitInlineWebhook(
-        workerB,
-        key,
-        writeDelivery(workerB, "second"),
-      );
       const admitted = Promise.all([first, second]);
-      // Worker B issues its transactional update while worker A holds the gate.
-      await Promise.race([secondAtGate, admitted, deadline]);
-      releaseFirst();
+      await Promise.race([firstWritten.wait, admitted, deadline]);
+      waitingFor = "a second transaction from the competing admission";
+      holdSecond.open();
+      await Promise.race([secondRetried.wait, admitted, deadline]);
+      waitingFor = "both admissions to commit";
+      holdFirst.open();
       expect(await Promise.race([admitted, deadline])).toEqual([
         { admitted: true, value: "first" },
         { admitted: true, value: "second" },
       ]);
+      expect(persistSecond).toHaveBeenCalledTimes(1);
     } finally {
-      releaseFirst();
+      holdFirst.open();
+      holdSecond.open();
+      pauseSecond.mockRestore();
       client.off("commandStarted", observeGate);
       timer.abort();
+      await contender.close();
     }
 
     await closeInlineWebhookAdmission(workerA, key);
