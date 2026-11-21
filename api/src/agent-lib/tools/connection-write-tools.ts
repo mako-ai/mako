@@ -79,7 +79,11 @@ import {
   ORPHAN_TYPE_MESSAGE,
   type ConnectorFieldSchema,
 } from "../../connectors/source-connection-create.service";
-import { Flow, SourceConnection } from "../../database/workspace-schema";
+import {
+  Flow,
+  SourceConnection,
+  sourceConfigRevisionMatch,
+} from "../../database/workspace-schema";
 import { loggers } from "../../logging";
 import { workspaceService } from "../../services/workspace.service";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
@@ -308,7 +312,7 @@ const OBJECT_ID = /^[0-9a-f]{24}$/i;
 async function findOwnSourceConnection(workspaceId: string, ref: string) {
   const workspace = new Types.ObjectId(workspaceId);
   const fields =
-    "_id name type description isActive createdBy managers config keyRequest";
+    "_id name type description isActive createdBy managers config keyRequest configRevision";
   if (OBJECT_ID.test(ref)) {
     const row = await SourceConnection.findOne({
       workspaceId: workspace,
@@ -657,8 +661,22 @@ export function createConnectionWriteTools(
                 : key,
           );
           if (changed.length > 0) {
-            await SourceConnection.updateOne(
-              { _id: row._id, workspaceId: new Types.ObjectId(workspaceId) },
+            const enabling = set.isActive === true;
+            const updated = await SourceConnection.updateOne(
+              {
+                _id: row._id,
+                workspaceId: new Types.ObjectId(workspaceId),
+                // A key check can restore the waiting state after validation.
+                ...(enabling
+                  ? {
+                      type: row.type,
+                      keyRequest: null,
+                      configRevision: sourceConfigRevisionMatch(
+                        row.configRevision,
+                      ),
+                    }
+                  : {}),
+              },
               {
                 $set: set,
                 ...(Object.keys(set).some(
@@ -668,6 +686,9 @@ export function createConnectionWriteTools(
                   : {}),
               },
             );
+            if (enabling && updated.matchedCount !== 1) {
+              return { error: "Connection changed. Read it again and retry." };
+            }
             logger.info("Source connection updated over MCP", {
               workspaceId,
               userId,

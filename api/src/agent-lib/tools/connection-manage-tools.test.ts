@@ -44,6 +44,7 @@ import {
   WorkspaceMember,
 } from "../../database/workspace-schema";
 import { encryptString } from "../../services/crypto.service";
+import { syncConnectorRegistry } from "../../sync/connector-registry";
 import { createConnectorTools, nonSecretConfig } from "./connector-tools";
 import {
   configUpdateProblem,
@@ -187,6 +188,56 @@ describe("inspect_connection: plain settings and access, never a secret", () => 
 });
 
 describe("update_connection", () => {
+  it("refuses enable when key verification restores the waiting state during the update", async () => {
+    await SourceConnection.updateOne(
+      { _id: API },
+      { $set: { isActive: false, configRevision: 1 } },
+    );
+    const original = syncConnectorRegistry.getConfigSchemaForType.bind(
+      syncConnectorRegistry,
+    );
+    const spy = vi
+      .spyOn(syncConnectorRegistry, "getConfigSchemaForType")
+      .mockImplementationOnce(async (...args) => {
+        await SourceConnection.updateOne(
+          { _id: API, workspaceId: WS },
+          {
+            $set: {
+              keyRequest: {
+                tokenHash: "restored-link",
+                expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+                fields: ["token"],
+                requestedBy: "manager1",
+                createdAt: new Date("2026-01-01T00:00:00.000Z"),
+              },
+              isActive: false,
+            },
+            $unset: { "config.token": "" },
+            $inc: { configRevision: 1 },
+          },
+        );
+        return original(...args);
+      });
+    try {
+      const result = await writeTools("manager1").update_connection.execute({
+        connectionId: API.toString(),
+        active: true,
+      });
+      expect(result).toEqual({
+        error: "Connection changed. Read it again and retry.",
+      });
+      const row = await SourceConnection.findById(API)
+        .select("+configRevision")
+        .lean();
+      expect(row?.isActive).toBe(false);
+      expect(row?.keyRequest?.tokenHash).toBe("restored-link");
+      expect(row?.config.token).toBeUndefined();
+      expect(row?.configRevision).toBe(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("increments the revision for an active edit but not a rename", async () => {
     expect(
       (
@@ -212,6 +263,18 @@ describe("update_connection", () => {
       (await SourceConnection.findById(API).select("+configRevision").lean())
         ?.configRevision,
     ).toBe(1);
+    const enabled = await writeTools("manager1").update_connection.execute({
+      connectionId: "renamed",
+      active: true,
+    });
+    expect(enabled).toMatchObject({
+      connectionId: API.toString(),
+      changed: ["active"],
+    });
+    expect(enabled.error).toBeUndefined();
+    expect(
+      await SourceConnection.findById(API).select("+configRevision").lean(),
+    ).toMatchObject({ isActive: true, configRevision: 2 });
   });
   it("renames, and warns that references by name break", async () => {
     const result = await writeTools("manager1").update_connection.execute({

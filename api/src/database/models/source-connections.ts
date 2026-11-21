@@ -11,6 +11,11 @@ function decryptSourceConnectionConfig<T>(config: T): T {
   return config;
 }
 
+/** Match a request-affecting writer's revision, including legacy rows. */
+export function sourceConfigRevisionMatch(revision?: number) {
+  return revision ? revision : { $in: [0, null] };
+}
+
 /**
  * Source connection: a credential a workspace configured with a connector
  * (Stripe key, Close account, …). Stored in collection `connectors`.

@@ -15,7 +15,10 @@
 import { serviceAccountConfigRefusal } from "../connections/google-service-account";
 import { createRoute } from "@hono/zod-openapi";
 import { isEncryptedValue } from "../services/crypto.service";
-import { SourceConnection } from "../database/workspace-schema";
+import {
+  SourceConnection,
+  sourceConfigRevisionMatch,
+} from "../database/workspace-schema";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import {
   type ConnectorFieldSchema,
@@ -62,10 +65,6 @@ import { fail, failFromThrown } from "./lib/respond";
 import { requireWorkspaceAccess } from "./lib/workspace-access";
 
 const logger = loggers.connector();
-
-function configRevisionMatch(revision?: number) {
-  return revision ? revision : { $in: [0, null] };
-}
 
 export const sourceConnectionRoutes = createRouter();
 
@@ -587,7 +586,9 @@ sourceConnectionRoutes.openapi(
           // relying on this guard across replicas.
           sourceConnection.$where = {
             workspaceId: sourceConnection.workspaceId,
-            configRevision: configRevisionMatch(currentValues.configRevision),
+            configRevision: sourceConfigRevisionMatch(
+              currentValues.configRevision,
+            ),
           };
           sourceConnection.$inc("configRevision", 1);
         }
@@ -740,7 +741,9 @@ sourceConnectionRoutes.openapi(
               ? {
                   type: existing.type,
                   keyRequest: null,
-                  configRevision: configRevisionMatch(existing.configRevision),
+                  configRevision: sourceConfigRevisionMatch(
+                    existing.configRevision,
+                  ),
                 }
               : {}),
           },
