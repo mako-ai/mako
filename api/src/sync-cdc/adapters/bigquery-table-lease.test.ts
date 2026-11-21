@@ -7,6 +7,7 @@ import {
   expect,
   it,
   vi,
+  type MockInstance,
 } from "vitest";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose, { Types } from "mongoose";
@@ -401,7 +402,7 @@ afterAll(async () => {
   await mongo.stop();
 });
 
-let spy: ReturnType<typeof vi.spyOn>;
+let spy: MockInstance<typeof databaseConnectionService.executeQuery>;
 beforeEach(() => {
   warehouse = new FakeWarehouse();
   dataset = `ds_lease_${++tableSeq}`;
@@ -428,6 +429,71 @@ afterEach(async () => {
 });
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+describe("staging cleanup for ordinary writes", () => {
+  it.each([
+    {
+      failure: {
+        success: false,
+        error: "request outcome unknown after rate limit",
+        bigQueryJobOutcomeUnknown: true as const,
+      },
+      retainsStaging: true,
+      failsLeaseRelease: false,
+    },
+    {
+      failure: { success: false, error: "invalid MERGE" },
+      retainsStaging: false,
+      failsLeaseRelease: false,
+    },
+    {
+      failure: {
+        success: false,
+        error: "lost acknowledgement before lease release failed",
+        bigQueryJobOutcomeUnknown: true as const,
+      },
+      retainsStaging: true,
+      failsLeaseRelease: true,
+    },
+  ])(
+    "handles $failure.error",
+    async ({ failure, retainsStaging, failsLeaseRelease }) => {
+      const write = vi.fn(async () => failure);
+      spy.mockImplementation(async (_db, sql, options) =>
+        String(sql).startsWith("MERGE INTO")
+          ? write()
+          : warehouse.run(String(sql), options as never),
+      );
+      const releaseError = new Error("lost Mongo connection on release");
+      const release = failsLeaseRelease
+        ? vi
+            .spyOn(CdcTableWriteLease, "deleteOne")
+            .mockRejectedValueOnce(releaseError)
+        : undefined;
+      try {
+        await expect(
+          makeAdapter().applyBatch({
+            records: [row("K", D1, D1)],
+            layout,
+            flow: flowRef(FLOW_A) as never,
+          }),
+        ).rejects.toThrow(failsLeaseRelease ? releaseError : failure.error);
+      } finally {
+        release?.mockRestore();
+      }
+
+      expect(write).toHaveBeenCalledTimes(1);
+      const stagingPrefix = bigQueryStagingTableName(liveTable, FLOW_A, "stg_");
+      const stagingTables = [...warehouse.tables.keys()].filter(name =>
+        name.startsWith(stagingPrefix),
+      );
+      expect(stagingTables).toHaveLength(retainsStaging ? 1 : 0);
+      if (retainsStaging) {
+        expect(warehouse.countOf(stagingTables[0], "K")).toBe(1);
+      }
+    },
+  );
+});
 
 // --- 2. Bulk merge: lease, probe, MERGE, release --------------------------
 

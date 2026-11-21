@@ -24,6 +24,8 @@ export interface QueryResult {
   fields?: any[];
   /** Rows were cut at the caller's `maxRows`: `data` holds the first ones. */
   truncated?: boolean;
+  /** BigQuery submission may have succeeded and the job was not observed terminal. */
+  bigQueryJobOutcomeUnknown?: true;
 }
 
 export interface QueryField {

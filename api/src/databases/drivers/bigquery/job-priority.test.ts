@@ -333,6 +333,74 @@ describe("a queued BATCH job does not trip the sync timeout", () => {
     });
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/BATCH query still queued after 1 seconds/);
+    expect(result.bigQueryJobOutcomeUnknown).toBe(true);
     expect(calls.some(c => c.url.endsWith("/cancel"))).toBe(true);
+  });
+});
+
+describe("the BigQuery job completion status on failure", () => {
+  it.each(["BATCH", "INTERACTIVE"] as const)(
+    "is unknown when the %s submission response is lost",
+    async priority => {
+      const post = vi.fn().mockRejectedValue(new Error("socket hang up"));
+      engine.getHttpClient = async () => ({ ...fakeClient, post });
+
+      const result = await bigQueryEngine.executeQuery(database, "MERGE t", {
+        priority,
+      });
+
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({
+        success: false,
+        error: expect.stringContaining("socket hang up"),
+        bigQueryJobOutcomeUnknown: true,
+      });
+    },
+  );
+
+  it("distinguishes a 403 submission rejection from a 404 polling failure", async () => {
+    engine.getHttpClient = async () => ({
+      ...fakeClient,
+      post: vi.fn().mockRejectedValue({
+        isAxiosError: true,
+        response: { status: 403 },
+      }),
+    });
+    const rejected = await bigQueryEngine.executeQuery(database, "MERGE t", {
+      priority: "BATCH",
+    });
+    expect(rejected.success).toBe(false);
+    expect(rejected.bigQueryJobOutcomeUnknown).toBeUndefined();
+
+    engine.getHttpClient = async () => ({
+      ...fakeClient,
+      get: vi.fn().mockRejectedValue({
+        isAxiosError: true,
+        response: { status: 404 },
+      }),
+    });
+    const unconfirmed = await bigQueryEngine.executeQuery(database, "MERGE t", {
+      priority: "BATCH",
+    });
+    expect(unconfirmed.success).toBe(false);
+    expect(unconfirmed.bigQueryJobOutcomeUnknown).toBe(true);
+  });
+
+  it("recognizes an observed terminal job even if fetching results fails", async () => {
+    jobStates = ["DONE"];
+    engine.getHttpClient = async () => ({
+      ...fakeClient,
+      get: (url: string) =>
+        url.includes("/jobs/")
+          ? fakeClient.get(url)
+          : Promise.reject(new Error("results unavailable")),
+    });
+
+    const result = await bigQueryEngine.executeQuery(database, "MERGE t", {
+      priority: "BATCH",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.bigQueryJobOutcomeUnknown).toBeUndefined();
   });
 });

@@ -610,6 +610,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       absentColumns?: ReadonlySet<string>;
       mergePath: CdcMergePath;
       flowId?: string;
+      onUnsettledWrite?: () => void;
     },
   ): Promise<{ written: number }> {
     const target = await this.resolveBqClient();
@@ -790,7 +791,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       }
 
       const maxWaitMs = mergeMaxWaitMs();
-      await withQueryLabels(
+      const unsettled = await withQueryLabels(
         {
           mako_merge_path: path,
           mako_lease_wait_ms:
@@ -814,6 +815,9 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
                   error: mergeResult.error,
                   mergePreview: mergeStmt.slice(0, 900),
                 });
+                // Return through the quota retry wrapper without resubmitting
+                // a write that BigQuery may already be running.
+                if (mergeResult.bigQueryJobOutcomeUnknown) return mergeResult;
                 throw new Error(mergeResult.error || "BigQuery MERGE failed");
               }
               lease?.markJobDone();
@@ -821,6 +825,11 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
             { label: `mergeStagingToLive:MERGE(${liveTable})` },
           ),
       );
+      if (unsettled) {
+        // Record this before releasing the lease, which can fail separately.
+        options.onUnsettledWrite?.();
+        throw new Error(unsettled.error || "BigQuery MERGE outcome unknown");
+      }
     };
 
     // A plain INSERT (append, overwrite) probes nothing: no lease.
@@ -1068,6 +1077,11 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
     const flowId = String(params.flow._id);
     const stagingSuffix = `stg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const stagingTable = bigQueryStagingTableName(
+      params.layout.tableName,
+      flowId,
+      stagingSuffix,
+    );
 
     await this.ensureDataset();
 
@@ -1085,6 +1099,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       stagingSuffix,
     });
 
+    let retainStaging = false;
     try {
       // The suffix is new on every call, so no table by that name exists:
       // skip the DROP TABLE IF EXISTS job before the load.
@@ -1094,40 +1109,42 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         flowId,
         { stagingSuffix, skipDrop: true },
       );
-      // The finally below drops the table, but not when the worker dies
-      // mid-batch (deploy, timeout): such tables piled up for months, one
-      // per crash. BigQuery deletes it on its own a day later regardless.
-      await expireStagingTable(
-        await this.resolveBqClient(),
-        bigQueryStagingTableName(
-          params.layout.tableName,
-          flowId,
-          stagingSuffix,
-        ),
-      );
-      await this.mergeFromStaging(
+      // BigQuery can remove the table a day later if the worker dies or
+      // a submitted write still needs its input when this call fails.
+      await expireStagingTable(await this.resolveBqClient(), stagingTable);
+      await this.mergeStagingToLive(
         params.layout,
-        params.flow,
-        flowId,
+        stagingTable,
         params.entitySchema,
         {
-          stagingSuffix,
           knownStagingRowCount: loadResult.loaded,
           absentColumns: parquet.absentColumns,
           mergePath: params.mergePath,
+          flowId,
+          onUnsettledWrite: () => {
+            retainStaging = true;
+          },
         },
       );
     } finally {
-      await this.cleanupStaging(params.layout, flowId, { stagingSuffix }).catch(
-        err => {
+      if (retainStaging) {
+        log.warn("Retaining CDC staging table for unsettled BigQuery write", {
+          flowId,
+          table: params.layout.tableName,
+          stagingSuffix,
+        });
+      } else {
+        await this.cleanupStaging(params.layout, flowId, {
+          stagingSuffix,
+        }).catch(err => {
           log.warn("Failed to cleanup CDC staging table", {
             flowId,
             table: params.layout.tableName,
             stagingSuffix,
             error: err instanceof Error ? err.message : String(err),
           });
-        },
-      );
+        });
+      }
     }
 
     return { written: params.records.length };

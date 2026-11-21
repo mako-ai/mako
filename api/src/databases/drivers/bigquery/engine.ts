@@ -4,7 +4,7 @@
  * tokens, dry-run schemas, and cancellation by jobs.cancel — including of a
  * job we stopped waiting for.
  */
-import type { AxiosInstance } from "axios";
+import { isAxiosError, type AxiosInstance } from "axios";
 import type { IDatabaseConnection } from "../../../database/workspace-schema";
 import { loggers } from "../../../logging";
 import { bigQueryJobLabels } from "../../../services/bigquery-labels";
@@ -257,6 +257,8 @@ export class BigQueryEngine implements QueryEngine {
   ): Promise<QueryResult> {
     const executionId = options?.executionId;
     const signal = options?.signal;
+    let submitting = false;
+    let jobOutcomeUnknown = false;
 
     const checkAborted = () => {
       if (signal?.aborted) throw new Error("Query cancelled");
@@ -305,6 +307,8 @@ export class BigQueryEngine implements QueryEngine {
       if (labels) startBody.labels = labels;
       applyAgentJobCaps(startBody, caps);
       checkAborted();
+      submitting = true;
+      jobOutcomeUnknown = true;
       let response =
         priority === "BATCH"
           ? await client.post(
@@ -312,11 +316,18 @@ export class BigQueryEngine implements QueryEngine {
               batchJobInsertBody(project_id, startBody),
             )
           : await client.post(`/projects/${project_id}/queries`, startBody);
+      submitting = false;
 
       let data: QueryResponse =
         priority === "BATCH"
           ? { jobComplete: false, jobReference: response.data?.jobReference }
           : response.data || {};
+      if (
+        data.jobComplete === true ||
+        response.data?.status?.state === "DONE"
+      ) {
+        jobOutcomeUnknown = false;
+      }
       const jobId: string | undefined = data.jobReference?.jobId;
       const jobLocation: string | undefined =
         data.jobReference?.location || configuredLocation;
@@ -362,7 +373,7 @@ export class BigQueryEngine implements QueryEngine {
       // the start, so a queued sync write is never cancelled as a timeout.
       if (priority === "BATCH" && jobId) {
         const pendingMaxMs = batchPendingMaxWaitMs();
-        const started = await this.waitForBatchJobStart({
+        const state = await this.waitForBatchJobStart({
           client,
           projectId: project_id,
           jobId,
@@ -371,7 +382,8 @@ export class BigQueryEngine implements QueryEngine {
           pollIntervalMs,
           checkAborted,
         });
-        if (!started) {
+        if (state === "DONE") jobOutcomeUnknown = false;
+        if (state === "PENDING") {
           const stopped = await this.cancelAbandonedJob({
             client,
             projectId: project_id,
@@ -382,6 +394,7 @@ export class BigQueryEngine implements QueryEngine {
           return {
             success: false,
             error: `BATCH query still queued after ${pendingMaxMs / 1000} seconds${abandonedSuffix(stopped)}`,
+            bigQueryJobOutcomeUnknown: true,
           };
         }
       }
@@ -407,21 +420,23 @@ export class BigQueryEngine implements QueryEngine {
           { params },
         );
         data = response.data || {};
+        if (data.jobComplete === true) jobOutcomeUnknown = false;
         schema = data.schema || schema;
       }
 
       checkAborted();
-      if (data.jobComplete === false) {
+      if (data.jobComplete === false && jobId) {
         const stopped = await this.cancelAbandonedJob({
           client,
           projectId: project_id,
-          jobId: jobId as string,
+          jobId,
           location: jobLocation,
           executionId,
         });
         return {
           success: false,
           error: `Query timed out after ${maxWaitMs / 1000} seconds${abandonedSuffix(stopped)}`,
+          bigQueryJobOutcomeUnknown: jobOutcomeUnknown ? true : undefined,
         };
       }
 
@@ -439,8 +454,17 @@ export class BigQueryEngine implements QueryEngine {
                   "BigQuery job error",
               )
               .join("; "),
+            bigQueryJobOutcomeUnknown: jobOutcomeUnknown ? true : undefined,
           };
         }
+      }
+
+      if (jobOutcomeUnknown) {
+        return {
+          success: false,
+          error: "BigQuery did not confirm query completion",
+          bigQueryJobOutcomeUnknown: true,
+        };
       }
 
       // Collect results
@@ -481,12 +505,23 @@ export class BigQueryEngine implements QueryEngine {
             : rowsAccum.length,
       };
     } catch (error) {
-      if ((error as Error | null)?.message === "Query cancelled") {
-        return { success: false, error: "Query cancelled" };
+      // A direct rejection of the submission can be retried or cleaned up.
+      // The same response from a poll says nothing about job completion.
+      const status = isAxiosError(error) ? error.response?.status : undefined;
+      if (
+        submitting &&
+        status !== undefined &&
+        [400, 401, 403, 404, 429].includes(status)
+      ) {
+        jobOutcomeUnknown = false;
       }
       return {
         success: false,
-        error: describeGoogleApiError(error, "BigQuery query failed"),
+        error:
+          (error as Error | null)?.message === "Query cancelled"
+            ? "Query cancelled"
+            : describeGoogleApiError(error, "BigQuery query failed"),
+        bigQueryJobOutcomeUnknown: jobOutcomeUnknown ? true : undefined,
       };
     } finally {
       if (executionId) this.runningJobs.delete(executionId);
@@ -494,8 +529,8 @@ export class BigQueryEngine implements QueryEngine {
   }
 
   /**
-   * Wait while a BATCH job is PENDING (jobs.get). True once it runs or is
-   * done; false when it is still queued after `pendingMaxMs`.
+   * Wait while a BATCH job is PENDING (jobs.get). Return PENDING if it is
+   * still queued at the deadline, or its observed state otherwise.
    */
   async waitForBatchJobStart(input: {
     client: AxiosInstance;
@@ -505,7 +540,7 @@ export class BigQueryEngine implements QueryEngine {
     pendingMaxMs: number;
     pollIntervalMs: number;
     checkAborted: () => void;
-  }): Promise<boolean> {
+  }): Promise<"PENDING" | "RUNNING" | "DONE" | undefined> {
     const deadline = Date.now() + input.pendingMaxMs;
     const params: Record<string, unknown> = {};
     if (input.location) params.location = input.location;
@@ -519,14 +554,14 @@ export class BigQueryEngine implements QueryEngine {
       );
       const state = (response.data as BigQueryJobResource | undefined)?.status
         ?.state;
-      if (state !== "PENDING") return true;
+      if (state !== "PENDING") return state;
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
         logger.warn("BATCH job still pending; giving up", {
           jobId: input.jobId,
           pendingMaxMs: input.pendingMaxMs,
         });
-        return false;
+        return "PENDING";
       }
       await new Promise(resolve =>
         setTimeout(resolve, Math.min(waitMs, remaining)),
