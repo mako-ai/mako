@@ -31,11 +31,31 @@ void test("skip every sweep inside the throttle cooldown, then allow resume", ()
   assert.equal(isInfrastructureFailure(throttle), false);
 });
 
+void test("only the exact ads error starts its cooldown", () => {
+  const ads = throttle.replaceAll("ad_creatives", "ads");
+  const providerRetryAt = providerBackfillRetryAt(
+    readProviderThrottle(ads),
+    failureAt,
+  );
+  assert.deepEqual(providerRetryAt, after(30));
+  assert.equal(
+    backfillResumeDue({ providerRetryAt }, new Date(+after(30) - 1)),
+    false,
+  );
+  assert.equal(backfillResumeDue({ providerRetryAt }, after(30)), true);
+  assert.equal(isInfrastructureFailure(ads), false);
+});
+
 void test("ordinary failures and other streams keep their current retry policy", () => {
   for (const message of [
     undefined,
     "HTTP 400: code 80004: subcode 2446079",
+    "HTTP 500: code 80004: subcode 2446079",
+    `unrelated text: ${throttle}`,
+    `${throttle}: extra text`,
     throttle.replace("ad_creatives read failed", "ads read failed"),
+    throttle.replaceAll("ad_creatives", "campaigns"),
+    throttle.replace("80004", "17"),
     throttle.replace("2446079", "33"),
     throttle.replace("HTTP 400", "HTTP 500"),
   ]) {

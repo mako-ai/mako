@@ -53,10 +53,10 @@ export function infraResumeBackoffMs(infraFailures: number): number {
   return Math.min(INFRA_BACKOFF_BASE_MS * 2 ** (n - 1), INFRA_BACKOFF_MAX_MS);
 }
 
-// Match the structured failure from the Meta creative connector. Do not
-// classify arbitrary HTTP 400s or transport failures as provider throttles.
-const META_CREATIVE_THROTTLE =
-  /\bmeta-ads ad_creatives read failed: HTTP 400: code 80004: subcode 2446079\s*$/;
+// Match only Meta's numeric-only object error, optionally wrapped by the
+// boxed reader with the same entity. No other error text is a throttle signal.
+const META_OBJECT_THROTTLE =
+  /^(?:read failed for "(ads|ad_creatives)": )?meta-ads (ads|ad_creatives) read failed: HTTP 400: code 80004: subcode 2446079\s*$/;
 
 type ProviderThrottle = { kind: "provider-throttle"; retryAfterMs?: number };
 
@@ -64,7 +64,8 @@ type ProviderThrottle = { kind: "provider-throttle"; retryAfterMs?: number };
 export function readProviderThrottle(
   message: string | undefined,
 ): ProviderThrottle | undefined {
-  if (message && META_CREATIVE_THROTTLE.test(message)) {
+  const match = message?.match(META_OBJECT_THROTTLE);
+  if (match && (!match[1] || match[1] === match[2])) {
     return { kind: "provider-throttle" };
   }
 }
