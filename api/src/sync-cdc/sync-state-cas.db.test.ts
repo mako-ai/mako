@@ -11,6 +11,8 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose, { Types } from "mongoose";
 
 import { CdcStateTransition, Flow } from "../database/workspace-schema";
+import { pauseStream } from "./backfill/lifecycle";
+import { CdcConsumerService } from "./consumer";
 import { cdcSyncStateService } from "./sync-state";
 
 async function main(): Promise<void> {
@@ -30,6 +32,51 @@ async function main(): Promise<void> {
   const ids = { workspaceId: String(workspaceId) };
 
   try {
+    // Idle (including old documents without a state) and error flows can
+    // both dispatch materialization. The pause service must stop new runs.
+    for (const streamState of ["idle", undefined, "error"]) {
+      const flowId = await insert(streamState ? { streamState } : {});
+      assert.deepEqual(await pauseStream(ids.workspaceId, flowId), {
+        paused: true,
+      });
+      assert.equal((await Flow.findById(flowId).lean())?.streamState, "paused");
+      assert.deepEqual(
+        await new CdcConsumerService().materializeEntity({
+          ...ids,
+          flowId,
+          entity: "recordings",
+        }),
+        { skipped: true, reason: "streamState is paused" },
+      );
+      const backfillStarted = await cdcSyncStateService.applyStreamTransition({
+        ...ids,
+        flowId,
+        event: { type: "START" },
+      });
+      assert.equal(backfillStarted.toState, "paused");
+      const inFlightFailed = await cdcSyncStateService.applyStreamTransition({
+        ...ids,
+        flowId,
+        event: { type: "FAIL", errorCode: "MATERIALIZATION_FAILED" },
+      });
+      assert.equal(inFlightFailed.toState, "paused");
+      const inFlightRecovered = await cdcSyncStateService.applyStreamTransition(
+        {
+          ...ids,
+          flowId,
+          event: { type: "RECOVER" },
+          onlyFrom: ["error"],
+        },
+      );
+      assert.equal(inFlightRecovered.toState, "paused");
+      const resumed = await cdcSyncStateService.applyStreamTransition({
+        ...ids,
+        flowId,
+        event: { type: "RESUME" },
+      });
+      assert.equal(resumed.toState, "active");
+    }
+
     // 1. Ten concurrent PAUSEs from `active`: exactly one applies.
     const racing = await insert({ streamState: "active" });
     const results = await Promise.all(
@@ -53,9 +100,7 @@ async function main(): Promise<void> {
     assert.equal(audit.length, 1);
     assert.equal(audit[0].fromState, "active");
 
-    // 2. PAUSE racing FAIL from `active`: whichever loses re-reads and is
-    //    applied (or not) against the winner's state, so the audit rows
-    //    form a chain (each fromState is the previous toState).
+    // 2. An in-flight failure cannot undo a racing operator pause.
     const chained = await insert({ streamState: "active" });
     await Promise.all([
       cdcSyncStateService.applyStreamTransition({
@@ -82,6 +127,7 @@ async function main(): Promise<void> {
       _id: new Types.ObjectId(chained),
     });
     assert.equal(final?.streamState, rows[rows.length - 1].toState);
+    assert.equal(final?.streamState, "paused");
 
     // 3. A missing state reads as idle and is CAS-matched as idle.
     const fresh = await insert({});

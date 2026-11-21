@@ -375,6 +375,7 @@ export class CdcConsumerService {
           await cdcSyncStateService.applyStreamTransition({
             workspaceId: params.workspaceId,
             flowId: params.flowId,
+            onlyFrom: ["error"],
             event: {
               type: "RECOVER",
               reason: "Materialization succeeded again",

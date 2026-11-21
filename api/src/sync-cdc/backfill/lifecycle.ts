@@ -360,11 +360,14 @@ export async function pauseStream(workspaceId: string, flowId: string) {
     throw new Error("Stream pause requires syncEngine=cdc");
   }
 
-  await cdcSyncStateService.applyStreamTransition({
+  const result = await cdcSyncStateService.applyStreamTransition({
     workspaceId,
     flowId,
     event: { type: "PAUSE", reason: "Stream paused via API" },
   });
+  if (result.toState !== "paused") {
+    throw new Error(`Cannot pause CDC stream from ${result.toState}`);
+  }
 
   return { paused: true };
 }

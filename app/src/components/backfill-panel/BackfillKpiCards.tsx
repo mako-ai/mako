@@ -153,7 +153,7 @@ export function BackfillKpiCards({ model }: { model: BackfillPanelModel }) {
                       Start
                     </CompactButton>
                   )}
-                  {streamState === "active" && (
+                  {streamState !== "paused" && (
                     <CompactButton
                       size="small"
                       variant="outlined"

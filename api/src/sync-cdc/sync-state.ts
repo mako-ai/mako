@@ -54,19 +54,19 @@ const STREAM_TRANSITIONS: Record<
   idle: {
     START: "active",
     RESUME: "active",
+    PAUSE: "paused",
   },
   active: {
     PAUSE: "paused",
     FAIL: "error",
   },
   paused: {
-    START: "active",
     RESUME: "active",
     RECOVER: "active",
-    FAIL: "error",
   },
   error: {
     RECOVER: "active",
+    PAUSE: "paused",
   },
 };
 
@@ -107,6 +107,8 @@ interface ApplyStreamTransitionInput {
   workspaceId: string;
   flowId: string;
   event: StreamMachineEvent;
+  /** Restrict automatic transitions to the state the caller meant to change. */
+  onlyFrom?: StreamState[];
 }
 
 interface ApplyBackfillTransitionInput {
@@ -316,7 +318,10 @@ class CdcSyncStateService {
       ...eventDetails(input.event),
       statePath: "streamState",
       readState: flow => (flow.streamState || "idle") as StreamState,
-      resolve: from => STREAM_TRANSITIONS[from]?.[input.event.type] || null,
+      resolve: from =>
+        input.onlyFrom && !input.onlyFrom.includes(from)
+          ? null
+          : STREAM_TRANSITIONS[from]?.[input.event.type] || null,
     });
   }
 
