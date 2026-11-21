@@ -58,6 +58,10 @@ interface RetainedQueryIntent extends StagedWriteBinding {
 type RetainedMergeOptions = Omit<RetainedQueryConfiguration, "query"> & {
   query: Omit<RetainedQueryConfiguration["query"], "query">;
 };
+type RetainedMerge = Omit<
+  BuildMergeStatementParams,
+  "fullLive" | "fullStaging"
+>;
 
 export type BigQueryStagedIntent = DigestOnlyIntent | RetainedQueryIntent;
 
@@ -81,6 +85,24 @@ interface StagedWriteRecord {
   terminal?: BigQueryTerminalReceipt | VerifiedQueryReceipt;
   cleanedAt?: Date;
 }
+
+interface ReplayDelivery {
+  _id: string;
+  workspaceId: string;
+  members: Array<{ key: string; fingerprint: string }>;
+}
+
+interface BigQueryCdcReplayPlan {
+  expectedRecords: Array<{ entity: string; recordId: string }>;
+  jobs: Array<{
+    binding: StagedWriteBinding;
+    merge: RetainedMerge;
+    options: RetainedMergeOptions;
+    cdc: BigQueryCdcBinding;
+  }>;
+}
+
+type ReplayDeliveryStatus = "held" | "succeeded" | "failed";
 
 const eventClaimIndexFilter = { eventClaimKeys: { $exists: true } };
 
@@ -118,6 +140,12 @@ const cdcTransaction = {
 };
 const digest = (value: unknown) =>
   createHash("sha256").update(stableStringify(value)).digest("hex");
+
+function replayDeliveries() {
+  const database = StagedWrite.db.db;
+  if (!database) throw new Error("MongoDB connection is not open");
+  return database.collection<ReplayDelivery>("cdc_bigquery_replay_deliveries");
+}
 
 function tableIdentity(table: BigQueryTableIdentity) {
   return [table.project, table.dataset, table.table];
@@ -187,7 +215,7 @@ export async function holdBigQueryStagedInput(
 /** Build the MERGE from the sealed snapshot and target bound to the job. */
 export function holdBigQueryStagedMerge(
   binding: StagedWriteBinding,
-  merge: Omit<BuildMergeStatementParams, "fullLive" | "fullStaging">,
+  merge: RetainedMerge,
   options: RetainedMergeOptions,
 ): Promise<"held" | "terminal"> {
   return holdStagedWrite(buildRetainedMergeIntent(binding, merge, options));
@@ -196,19 +224,188 @@ export function holdBigQueryStagedMerge(
 /** Bind an authorized webhook upsert batch and its immutable warehouse request. */
 export async function holdBigQueryStagedCdcMerge(
   binding: StagedWriteBinding,
-  merge: Omit<BuildMergeStatementParams, "fullLive" | "fullStaging">,
+  merge: RetainedMerge,
   options: RetainedMergeOptions,
   authorized: BigQueryCdcBinding,
 ): Promise<"held" | "terminal"> {
+  if (authorized.events.some(event => event.originalReceipt)) {
+    throw new Error("A retained replay requires the complete delivery plan");
+  }
   return holdStagedWrite({
     ...buildRetainedMergeIntent(binding, merge, options),
     cdc: normalizeBigQueryCdcBinding(authorized),
   });
 }
 
+/** Reserve every job for a delivery in one majority-committed transaction. */
+export async function holdBigQueryStagedCdcReplay(
+  plan: BigQueryCdcReplayPlan,
+): Promise<{ replayId: string; status: ReplayDeliveryStatus }> {
+  const writes = plan.jobs.map(job =>
+    prepareStagedWrite({
+      ...buildRetainedMergeIntent(job.binding, job.merge, job.options),
+      cdc: normalizeBigQueryCdcBinding(job.cdc),
+    }),
+  );
+  const first = writes[0]?.intent;
+  const receipt = first?.cdc.events[0]?.originalReceipt;
+  if (!first || !receipt) {
+    throw new Error("A retained replay requires an original inbox receipt");
+  }
+
+  const { workspaceId, originNamespace } = first.cdc.scope;
+  const replayId = digest([
+    workspaceId,
+    originNamespace,
+    receipt.eventIdSha256,
+  ]);
+  const receiptIdentity = stableStringify({ ...receipt, recordId: undefined });
+  const scopeIdentity = (
+    scope: BigQueryCdcScope,
+    table: BigQueryTableIdentity,
+  ) =>
+    stableStringify([
+      { ...scope, entity: undefined },
+      table.project,
+      table.dataset,
+    ]);
+  const targetIdentity = scopeIdentity(first.cdc.scope, first.destination);
+  const records = new Set<string>();
+  for (const { intent } of writes) {
+    if (
+      scopeIdentity(intent.cdc.scope, intent.destination) !== targetIdentity
+    ) {
+      throw new Error("A retained replay requires one target flow and dataset");
+    }
+    for (const { originalReceipt } of intent.cdc.events) {
+      if (
+        !originalReceipt ||
+        stableStringify({ ...originalReceipt, recordId: undefined }) !==
+          receiptIdentity
+      ) {
+        throw new Error(
+          "Retained CDC replay does not match the original inbox receipt",
+        );
+      }
+      const key = stableStringify([
+        intent.cdc.scope.entity,
+        originalReceipt.recordId,
+      ]);
+      if (records.has(key)) {
+        throw new Error("A retained replay repeats a planned record");
+      }
+      records.add(key);
+    }
+  }
+  const expected = new Set(
+    plan.expectedRecords.map(({ entity, recordId }) =>
+      stableStringify([entity, recordId]),
+    ),
+  );
+  if (
+    expected.size !== plan.expectedRecords.length ||
+    expected.size !== records.size ||
+    [...expected].some(key => !records.has(key))
+  ) {
+    throw new Error("Retained replay jobs must cover every expected record");
+  }
+  const members = writes
+    .map(write => ({ key: write._id, fingerprint: write.fingerprint }))
+    .sort((left, right) => left.key.localeCompare(right.key));
+  if (new Set(members.map(member => member.key)).size !== members.length) {
+    throw new Error("A retained replay requires distinct warehouse jobs");
+  }
+
+  await requireIndexes(true);
+  const deliveries = replayDeliveries();
+  return StagedWrite.db.transaction(async session => {
+    const existing = await deliveries.findOne(
+      { _id: replayId, workspaceId },
+      { session },
+    );
+    if (existing) {
+      if (stableStringify(existing.members) !== stableStringify(members)) {
+        throw new Error(
+          "This delivery already has a different retained replay plan",
+        );
+      }
+      const status = await readReplayMemberStatus(existing, session);
+      if (!status) {
+        throw new Error("The retained replay jobs no longer match the plan");
+      }
+      return { replayId, status };
+    }
+    for (const write of writes) {
+      if (await StagedWrite.exists({ _id: write._id }).session(session)) {
+        throw new Error(
+          "A retained replay job was previously reserved outside this plan",
+        );
+      }
+      await reserveStagedWrite(write, session);
+    }
+    await deliveries.insertOne(
+      { _id: replayId, workspaceId, members },
+      { session },
+    );
+    return { replayId, status: "held" as const };
+  }, cdcTransaction);
+}
+
+export async function readBigQueryStagedCdcReplay(
+  workspaceId: string,
+  replayId: string,
+): Promise<ReplayDeliveryStatus | null> {
+  const delivery = await replayDeliveries().findOne(
+    { _id: replayId, workspaceId },
+    { readConcern: { level: "majority" } },
+  );
+  return delivery ? readReplayMemberStatus(delivery) : null;
+}
+
+async function readReplayMemberStatus(
+  delivery: ReplayDelivery,
+  session?: ClientSession,
+): Promise<ReplayDeliveryStatus | null> {
+  if (delivery.members.length === 0) return null;
+  const query = StagedWrite.find({
+    _id: { $in: delivery.members.map(member => member.key) },
+  });
+  const writes = await (
+    session ? query.session(session) : query.readConcern("majority")
+  ).lean();
+  const byId = new Map(writes.map(write => [write._id, write]));
+  let pending = false;
+  let failed = false;
+  for (const { key, fingerprint } of delivery.members) {
+    const write = byId.get(key);
+    if (
+      !write?.intent.cdc ||
+      write.fingerprint !== fingerprint ||
+      stagedWriteFingerprint(write.intent) !== fingerprint
+    ) {
+      return null;
+    }
+    if (!write.terminal) {
+      pending = true;
+      continue;
+    }
+    if (
+      !("fingerprint" in write.terminal) ||
+      write.terminal.fingerprint !== fingerprint ||
+      write.terminal.state !== "DONE" ||
+      !["succeeded", "failed"].includes(write.terminal.outcome)
+    ) {
+      return null;
+    }
+    failed ||= write.terminal.outcome === "failed";
+  }
+  if (pending) return "held";
+  return failed ? "failed" : "succeeded";
+}
+
 function buildRetainedMergeIntent(
   { job, input, destination }: StagedWriteBinding,
-  merge: Omit<BuildMergeStatementParams, "fullLive" | "fullStaging">,
+  merge: RetainedMerge,
   options: RetainedMergeOptions,
 ): RetainedQueryIntent {
   const qualify = (table: BigQueryTableIdentity) =>
@@ -234,6 +431,20 @@ function buildRetainedMergeIntent(
 async function holdStagedWrite(
   requested: BigQueryStagedIntent,
 ): Promise<"held" | "terminal"> {
+  const write = prepareStagedWrite(requested);
+  // Every retained snapshot name belongs to one job for its entire lifetime.
+  await requireIndexes(write.intent.cdc !== undefined);
+  return StagedWrite.db.transaction(async session => {
+    const existing = await StagedWrite.findById(write._id)
+      .session(session)
+      .lean();
+    if (existing) return stagedWriteState(existing, write.fingerprint);
+    await reserveStagedWrite(write, session);
+    return "held";
+  }, cdcTransaction);
+}
+
+function prepareStagedWrite<T extends BigQueryStagedIntent>(requested: T) {
   const intent = structuredClone(requested);
   intent.job.location = intent.job.location.trim().toLowerCase();
   const _id = jobKey(intent.job);
@@ -252,40 +463,36 @@ async function holdStagedWrite(
       "A staged write requires a complete job, input and destination identity",
     );
   }
-  // Every retained snapshot name belongs to one job for its entire lifetime.
-  await requireIndexes(intent.cdc !== undefined);
   const snapshotKey = digest(tableIdentity(intent.input.snapshot));
-  const insert = { _id, fingerprint, snapshotKey, intent };
+  return { _id, fingerprint, snapshotKey, intent };
+}
+
+async function reserveStagedWrite(
+  write: ReturnType<typeof prepareStagedWrite>,
+  session: ClientSession,
+): Promise<void> {
+  const { intent, fingerprint } = write;
   const cdc = intent.cdc;
-  return StagedWrite.db.transaction(async session => {
-    const existing = await StagedWrite.findById(_id).session(session).lean();
-    if (existing) return stagedWriteState(existing, fingerprint);
-    await reserveRetainedWriteAgainstResync(
-      [intent.destination, intent.input.snapshot],
-      cdc?.scope,
-      session,
-    );
-    if (cdc) {
-      await requireCurrentBigQueryCdcFlow(
-        cdc.scope,
-        intent.destination,
-        session,
-      );
-      await claimBigQueryCdcEvents(cdc, fingerprint, session);
-    }
-    await StagedWrite.create(
-      [
-        {
-          ...insert,
-          eventClaimKeys: cdc?.events.map(event =>
-            eventClaimKey(cdc.scope, event.deliveryKey),
-          ),
-        },
-      ],
-      { session },
-    );
-    return "held" as const;
-  }, cdcTransaction);
+  await reserveRetainedWriteAgainstResync(
+    [intent.destination, intent.input.snapshot],
+    cdc?.scope,
+    session,
+  );
+  if (cdc) {
+    await requireCurrentBigQueryCdcFlow(cdc.scope, intent.destination, session);
+    await claimBigQueryCdcEvents(cdc, fingerprint, session);
+  }
+  await StagedWrite.create(
+    [
+      {
+        ...write,
+        eventClaimKeys: cdc?.events.map(event =>
+          eventClaimKey(cdc.scope, event.deliveryKey),
+        ),
+      },
+    ],
+    { session },
+  );
 }
 
 /** Check the durable intent even if the table-write lease has not been acquired. */
