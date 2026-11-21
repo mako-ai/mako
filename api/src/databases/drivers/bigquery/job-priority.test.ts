@@ -403,4 +403,19 @@ describe("the BigQuery job completion status on failure", () => {
     expect(result.success).toBe(false);
     expect(result.bigQueryJobOutcomeUnknown).toBeUndefined();
   });
+
+  it("fails a BATCH submission response with no job ID", async () => {
+    const post = vi
+      .fn()
+      .mockResolvedValue({ data: { status: { state: "DONE" } } });
+    engine.getHttpClient = async () => ({ ...fakeClient, post });
+
+    const result = await bigQueryEngine.executeQuery(database, "MERGE t", {
+      priority: "BATCH",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("BigQuery did not return a job ID");
+    expect(post).toHaveBeenCalledTimes(1);
+  });
 });

@@ -425,7 +425,14 @@ export class BigQueryEngine implements QueryEngine {
       }
 
       checkAborted();
-      if (data.jobComplete === false && jobId) {
+      if (data.jobComplete === false) {
+        if (!jobId) {
+          return {
+            success: false,
+            error: "BigQuery did not return a job ID",
+            bigQueryJobOutcomeUnknown: jobOutcomeUnknown ? true : undefined,
+          };
+        }
         const stopped = await this.cancelAbandonedJob({
           client,
           projectId: project_id,
