@@ -2,6 +2,9 @@ import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose, { Types } from "mongoose";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { CdcChangeEvent, Flow } from "../database/workspace-schema";
+import { databaseConnectionService } from "../services/database-connection.service";
+import { BigQueryDestinationAdapter } from "./adapters/bigquery";
+import { buildCdcEntityLayout } from "./adapters/registry";
 import {
   cleanupBigQueryStagedInput,
   findBigQueryStagedCdcWrites,
@@ -13,6 +16,7 @@ import {
   readPendingBigQueryQueryRequest,
   recordBigQueryStagedReceipt,
   recordObservedBigQueryQueryResult,
+  settleReservedBigQueryCdcJob,
   type BigQueryStagedIntent,
   type BigQueryTerminalReceipt,
 } from "./bigquery-staged-intent";
@@ -334,25 +338,24 @@ describe("BigQuery CDC event settlement", () => {
     };
     const isDone = vi.fn(async () => true);
     const cancel = vi.fn(async () => undefined);
+    const target = {
+      ...destination,
+      workspaceId: first.scope.workspaceId,
+      destinationConnectionId: first.scope.destinationConnectionId,
+    };
+    const readMetadata = vi.fn(async (id: string) => {
+      const record = metadata.get(id);
+      return record
+        ? { ...record, statistics: { query: { statementType: "MERGE" } } }
+        : null;
+    });
     const jobs: LeaseJobControl = {
       isDone,
       cancel,
-      isReservedJobDone: async ref => {
-        if (!ref.location) return false;
-        const identity = {
-          project: job.project,
-          location: ref.location,
-          id: ref.jobId,
-        };
-        const staged = await readBigQueryStagedInput(identity);
-        if (!staged || staged.fingerprint !== ref.intentFingerprint) {
-          return false;
-        }
-        return recordObservedBigQueryQueryResult(identity, {
-          ...metadata.get(ref.jobId),
-          statistics: { query: { statementType: "MERGE" } },
-        });
-      },
+      isReservedJobDone: ref =>
+        settleReservedBigQueryCdcJob(target, ref, () =>
+          readMetadata(ref.jobId),
+        ),
     };
     const acquire = (holder: string, table = key) =>
       acquireTableWriteLease(table, {
@@ -373,11 +376,13 @@ describe("BigQuery CDC event settlement", () => {
       await expect(first.hold([event])).resolves.toBe("held");
       const staged = await readBigQueryStagedInput(job);
       if (!staged) throw new Error("Missing durable staged intent");
-      await original.reserveJob({
+      const reservation = {
         jobId: job.id,
         location: job.location,
         intentFingerprint: staged.fingerprint,
-      });
+        reservedBeforeDispatch: true,
+      };
+      await original.reserveJob(reservation);
       await expect(
         CdcTableWriteLease.findById(key).readConcern("majority").lean(),
       ).resolves.toMatchObject({
@@ -386,6 +391,31 @@ describe("BigQuery CDC event settlement", () => {
         jobIntentFingerprint: staged.fingerprint,
         jobReservedBeforeDispatch: true,
       });
+      for (const other of [
+        { ...target, dataset: "wrong" },
+        { ...target, table: "wrong" },
+        { ...target, workspaceId: new Types.ObjectId().toHexString() },
+        {
+          ...target,
+          destinationConnectionId: new Types.ObjectId().toHexString(),
+        },
+      ]) {
+        expect(
+          await settleReservedBigQueryCdcJob(other, reservation, () =>
+            readMetadata(job.id),
+          ),
+        ).toBe(false);
+      }
+      expect(
+        await settleReservedBigQueryCdcJob(
+          target,
+          { ...reservation, intentFingerprint: "different-intent" },
+          () => readMetadata(job.id),
+        ),
+      ).toBe(false);
+      expect(readMetadata).not.toHaveBeenCalled();
+      expect(await jobs.isReservedJobDone?.(reservation)).toBe(false);
+      expect((await readBigQueryStagedInput(job))?.terminal).toBeUndefined();
       await expect(dispatchPending(job)).rejects.toThrow(
         "Simulated lost warehouse acknowledgement",
       );
@@ -432,14 +462,72 @@ describe("BigQuery CDC event settlement", () => {
 
     await setBinding(first.scope, destination.dataset);
     await expire();
-    const restored = await acquire("rollback-restored");
+    const warehouseJob = vi.fn((jobId: string) => ({
+      getMetadata: async () => [await readMetadata(jobId)],
+      cancel,
+    }));
+    const adapter = new BigQueryDestinationAdapter({
+      destinationDatabaseId: target.destinationConnectionId,
+      workspaceId: target.workspaceId,
+      tableDestination: {
+        connectionId: target.destinationConnectionId,
+        schema: target.dataset,
+        tableName: target.table,
+      },
+    });
+    (adapter as unknown as { _resolvedClient: unknown })._resolvedClient = {
+      bq: {
+        dataset: () => ({ table: () => ({ exists: async () => [true] }) }),
+        job: warehouseJob,
+      },
+      projectId: target.project,
+      dataset: target.dataset,
+      datasetLocation: job.location,
+      destination: {
+        _id: target.destinationConnectionId,
+        workspaceId: target.workspaceId,
+        type: "bigquery",
+      },
+    };
+    const runWarehouseStatement = vi
+      .spyOn(databaseConnectionService, "executeQuery")
+      .mockImplementation(async () => {
+        expect((await readBigQueryStagedInput(job))?.terminal).toMatchObject({
+          state: "DONE",
+          outcome: "succeeded",
+        });
+        return { success: true, data: [] };
+      });
     try {
+      await expect(
+        adapter.repartitionLiveTable(
+          buildCdcEntityLayout({
+            entity: first.scope.entity,
+            tableName: target.table,
+          }),
+        ),
+      ).resolves.toEqual({ repartitioned: true });
+      expect(warehouseJob).toHaveBeenCalledWith(job.id, {
+        location: job.location,
+      });
+      expect(runWarehouseStatement).toHaveBeenCalledTimes(3);
       const settled = await readBigQueryStagedInput(job);
       expect(settled?.terminal).toMatchObject({
         state: "DONE",
         outcome: "succeeded",
         fingerprint: settled?.fingerprint,
       });
+      if (!settled) throw new Error("Missing durable terminal receipt");
+      readMetadata.mockClear();
+      expect(
+        await jobs.isReservedJobDone?.({
+          jobId: job.id,
+          location: job.location,
+          intentFingerprint: settled.fingerprint,
+          reservedBeforeDispatch: true,
+        }),
+      ).toBe(true);
+      expect(readMetadata).not.toHaveBeenCalled();
       expect(
         await CdcChangeEvent.findById(event.id).readConcern("majority").lean(),
       ).toMatchObject({
@@ -450,7 +538,7 @@ describe("BigQuery CDC event settlement", () => {
       await expect(first.hold([event])).resolves.toBe("terminal");
       await dispatchPending(job);
     } finally {
-      await restored.release();
+      runWarehouseStatement.mockRestore();
     }
     expect(submit).toHaveBeenCalledTimes(1);
     expect(metadata.size).toBe(1);

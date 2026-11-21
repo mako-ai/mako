@@ -913,7 +913,10 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   // ---------------------------------------------------------------------------
 
   /** Read and cancel BigQuery jobs for the table write lease. */
-  private leaseJobControl(target: BigQueryTarget): LeaseJobControl {
+  private leaseJobControl(
+    target: BigQueryTarget,
+    liveTable: string,
+  ): LeaseJobControl {
     const jobOf = (job: { jobId: string; location?: string }) =>
       target.bq.job(job.jobId, {
         location: job.location ?? target.datasetLocation,
@@ -930,6 +933,32 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           if ((err as { code?: number } | null)?.code === 404) return true;
           throw err;
         }
+      },
+      isReservedJobDone: async job => {
+        const { settleReservedBigQueryCdcJob } =
+          await import("../bigquery-staged-intent");
+        return settleReservedBigQueryCdcJob(
+          {
+            project: target.projectId,
+            dataset: target.dataset,
+            table: liveTable,
+            workspaceId: String(target.destination.workspaceId),
+            destinationConnectionId: String(target.destination._id),
+          },
+          job,
+          async () => {
+            try {
+              const [metadata] = await jobOf(job).getMetadata();
+              return metadata;
+            } catch (error) {
+              // A reserved job may still be submitted after a 404.
+              if ((error as { code?: number } | null)?.code === 404) {
+                return null;
+              }
+              throw error;
+            }
+          },
+        );
       },
       cancel: async job => {
         await jobOf(job).cancel();
@@ -956,7 +985,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         path: p.path,
         flowId,
         maxWaitMs: tableWriteLeaseMaxWaitMs(p.path),
-        jobs: this.leaseJobControl(target),
+        jobs: this.leaseJobControl(target, liveTable),
         ...this.config.hooks?.lease,
       },
       async lease => {
