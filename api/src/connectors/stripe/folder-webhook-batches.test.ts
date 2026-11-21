@@ -148,7 +148,8 @@ function serve(
       error: { type: "invalid_request_error", message: "No" },
     });
   }
-  const object = objects.get(route);
+  const cursor = url.searchParams.get("starting_after");
+  const object = objects.get(cursor ? `${route}#${cursor}` : route);
   if (!object) {
     return send(404, {
       error: { type: "invalid_request_error", code: "resource_missing" },
@@ -271,9 +272,12 @@ const outcomesOf = (result: RunResult): any[] =>
   result.messages.filter(m => m.type === "WEBHOOK").map(m => m.webhook);
 
 /** The folder's applied rows, through the API's own checks and shaping. */
-async function folderRows(events: ReturnType<typeof buildWebhookEvents>) {
+async function folderRows(
+  events: ReturnType<typeof buildWebhookEvents>,
+  enabledEntities?: string[],
+) {
   const result = await boxed().runWebhookBatch(
-    { events },
+    { events, ...(enabledEntities && { enabledEntities }) },
     { timeoutMs: 60_000 },
   );
   assert.equal(result.exitCode, 0, result.stderr);
@@ -749,6 +753,148 @@ void test("children the flow does not sync cost no request and no record", async
     ["invoices"],
   );
   assert.deepEqual(requests, []);
+});
+
+void test("the four existing Checkout lifecycle events refresh an opted-in older session's line items", async () => {
+  const rowsOf = rowsByEntity();
+  const created = Date.parse("2026-11-12T03:30:00.000Z") / 1000;
+  const parent = {
+    ...rowsOf.checkout_sessions[0],
+    id: "cs_test_checkout_lifecycle",
+    created,
+    expires_at: created + 86_400,
+  };
+  const eventTypes = [
+    "checkout.session.completed",
+    "checkout.session.expired",
+    "checkout.session.async_payment_succeeded",
+    "checkout.session.async_payment_failed",
+  ];
+  const events = buildWebhookEvents(eventTypes, {
+    ...rowsOf,
+    checkout_sessions: [parent],
+  });
+  const firstEventTime = Date.parse("2026-11-13T05:00:00.000Z") / 1000;
+  for (const [index, event] of events.entries()) {
+    event.rawPayload.created = firstEventTime + index;
+  }
+  const route = `/v1/checkout/sessions/${parent.id}/line_items`;
+  const first = {
+    id: "li_checkout_lifecycle_a",
+    object: "item",
+    amount_total: 100,
+    currency: "eur",
+  };
+  const second = { ...first, id: "li_checkout_lifecycle_b" };
+  objects.set(route, {
+    object: "list",
+    data: [first],
+    has_more: true,
+    url: route,
+  });
+  objects.set(`${route}#${first.id}`, {
+    object: "list",
+    data: [second],
+    has_more: false,
+    url: route,
+  });
+  try {
+    requests.length = 0;
+    const result = await folderRows(events, [
+      "checkout_sessions",
+      "checkout_sessions_line_items",
+    ]);
+    assert.deepEqual(
+      result.outcomes.map(outcome => outcome.outcome),
+      eventTypes.map(() => "records"),
+    );
+    assert.deepEqual(
+      requests,
+      Array.from({ length: 8 }, () => `GET ${route}`),
+    );
+    for (const [index, event] of events.entries()) {
+      const children =
+        result.rows[index]?.filter(
+          row => row.entity === "checkout_sessions_line_items",
+        ) ?? [];
+      assert.deepEqual(
+        children.map(row => row.recordId),
+        [first.id, second.id],
+      );
+      for (const child of children) {
+        assert.equal(child.operation, "upsert");
+        assert.equal(child.payload.checkout_session_id, parent.id);
+        assert.equal(child.payload.checkout_session_created, created);
+        assert.equal(
+          child.payload.checkout_session_expires_at,
+          parent.expires_at,
+        );
+        assert.equal(
+          child.payload.checkout_session_updated,
+          event.rawPayload.created,
+        );
+        assert.equal(
+          child.sourceTs.toISOString(),
+          new Date(event.rawPayload.created * 1000).toISOString(),
+        );
+        assert.equal(
+          child.changeId,
+          `${event.eventId}:checkout_sessions_line_items:${child.recordId}`,
+        );
+      }
+    }
+
+    for (const enabled of [undefined, ["checkout_sessions"]]) {
+      requests.length = 0;
+      const result = await folderRows([events[1]], enabled);
+      assert.deepEqual(
+        result.rows[0]?.map(row => row.entity),
+        ["checkout_sessions"],
+      );
+      assert.deepEqual(requests, []);
+    }
+
+    requests.length = 0;
+    events[1].rawPayload.created = 0;
+    const invalid = await folderRows(
+      [events[1]],
+      ["checkout_sessions_line_items"],
+    );
+    assert.equal(invalid.outcomes[0].outcome, "extract_failed");
+    assert.match(invalid.outcomes[0].reason, /event creation time/);
+    assert.deepEqual(requests, []);
+  } finally {
+    objects.delete(route);
+    objects.delete(`${route}#${first.id}`);
+  }
+});
+
+void test("Checkout child pagination defers the entire event when the budget expires mid-parent", async () => {
+  const folder = await import(
+    pathToFileURL(path.join(FOLDER, "webhook-handler.ts")).href
+  );
+  const events = buildWebhookEvents(["checkout.session.expired"]);
+  let clock = 0;
+  let calls = 0;
+  const stripe = {
+    checkout: {
+      sessions: {
+        async listLineItems() {
+          calls++;
+          clock += 600;
+          return { data: [{ id: "li_budget" }], has_more: true };
+        },
+      },
+    },
+  };
+  const [outcome] = await folder.handleStripeWebhookBatch(
+    { stripe: () => stripe, log: () => {}, budgetMs: 500, now: () => clock },
+    events,
+    { enabledEntities: ["checkout_sessions_line_items"] },
+  );
+  assert.equal(calls, 1);
+  assert.equal(outcome.outcome, "deferred");
+  assert.equal("records" in outcome, false);
 });
 
 void test("a long list that cannot be read defers the whole event, never half of it", async () => {

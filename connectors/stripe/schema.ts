@@ -529,6 +529,7 @@ const CHECKOUT_SESSION_LINE_ITEM_SCHEMA: Fields = {
   checkout_session_created: "integer",
   checkout_session_expires_at: "integer",
   checkout_session_id: "string",
+  checkout_session_updated: "integer",
   currency: "string",
   description: "string",
   discounts: "json",
