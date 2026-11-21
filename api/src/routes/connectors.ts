@@ -195,6 +195,7 @@ connectorRoutes.openapi(
   }),
   async c => {
     try {
+      await connectorRegistry.ready();
       const connectors = connectorRegistry.getAllMetadata();
       const built = connectors.map(entry => ({
         type: entry.type,

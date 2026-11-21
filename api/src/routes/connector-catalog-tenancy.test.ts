@@ -69,6 +69,7 @@ vi.mock("../services/workspace.service", () => ({
 }));
 
 import { connectorRoutes } from "./connectors";
+import { connectorRegistry } from "../connectors/registry";
 import { ConnectorDefinition } from "../database/workspace-schema";
 
 let mongo: MongoMemoryServer;
@@ -122,6 +123,33 @@ beforeEach(async () => {
 const bodyOf = async (response: Response): Promise<any> => response.json();
 
 describe("GET /api/connectors/types", () => {
+  it("waits for built-in discovery before reading the public catalog", async () => {
+    const waitForDiscovery = connectorRegistry.ready.bind(connectorRegistry);
+    const getMetadata =
+      connectorRegistry.getAllMetadata.bind(connectorRegistry);
+    let discoveryComplete = false;
+    let readyWhenRead = false;
+    const ready = vi
+      .spyOn(connectorRegistry, "ready")
+      .mockImplementationOnce(async () => {
+        await waitForDiscovery();
+        discoveryComplete = true;
+      });
+    const metadata = vi
+      .spyOn(connectorRegistry, "getAllMetadata")
+      .mockImplementationOnce(() => {
+        readyWhenRead = discoveryComplete;
+        return getMetadata();
+      });
+    try {
+      expect((await get("/types")).status).toBe(200);
+      expect(readyWhenRead).toBe(true);
+    } finally {
+      ready.mockRestore();
+      metadata.mockRestore();
+    }
+  });
+
   it("does not list a workspace's connectors for an anonymous caller", async () => {
     ctx.signedIn = false;
     const response = await get("/types", WS_THEIRS);
