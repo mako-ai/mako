@@ -56,6 +56,14 @@ afterAll(async () => {
   await mongo.stop();
 });
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 function makeIntent(
   suffix: string,
 ): Extract<BigQueryStagedIntent, { configurationFingerprint: string }> {
@@ -254,6 +262,91 @@ describe("BigQuery CDC event settlement", () => {
     await expect(
       readPendingBigQueryQueryRequest(second.binding.job),
     ).resolves.not.toBeNull();
+  });
+
+  it("rejects a retained reservation after stale cleanup wins the flow fence", async () => {
+    const candidate = await makeCdcMerge("cdc_cleanup_wins");
+    const { workspaceId, flowId } = candidate.scope;
+    const receipt = await WebhookEvent.create({
+      workspaceId,
+      flowId,
+      eventId: "stale-cleanup-wins",
+      eventType: "synthetic_delivery",
+      receivedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+      status: "completed",
+      applyStatus: "pending",
+      rawPayload: { synthetic: true },
+    });
+    const event = await candidate.event("stale-cleanup-wins", 1);
+    await CdcChangeEvent.updateOne(
+      { _id: event.id },
+      { $set: { webhookEventId: String(receipt._id) } },
+    );
+
+    const cleanupOwnsFence = deferred();
+    const cleanupMayCommit = deferred();
+    const admissionReachedFence = deferred();
+    const updateCdcRows = CdcChangeEvent.collection.updateMany.bind(
+      CdcChangeEvent.collection,
+    );
+    const updateFlow = Flow.collection.updateOne.bind(Flow.collection);
+    const cdcUpdates = vi
+      .spyOn(CdcChangeEvent.collection, "updateMany")
+      .mockImplementationOnce(async (...args) => {
+        const result = await updateCdcRows(...args);
+        cleanupOwnsFence.resolve();
+        await cleanupMayCommit.promise;
+        return result;
+      });
+    const flowUpdates = vi
+      .spyOn(Flow.collection, "updateOne")
+      .mockImplementation((...args) => {
+        const update = updateFlow(...args);
+        admissionReachedFence.resolve();
+        return update;
+      });
+    const cleanup = cleanupStalePendingCdcEvents();
+    const timeout = AbortSignal.timeout(3000);
+    const deadline = new Promise<never>((_, reject) =>
+      timeout.addEventListener("abort", () => reject(timeout.reason), {
+        once: true,
+      }),
+    );
+    let reservation: ReturnType<typeof candidate.hold> | undefined;
+    try {
+      await Promise.race([cleanupOwnsFence.promise, cleanup, deadline]);
+      reservation = candidate.hold([event]);
+      await Promise.race([
+        admissionReachedFence.promise,
+        reservation,
+        deadline,
+      ]);
+    } finally {
+      cleanupMayCommit.resolve();
+      await Promise.allSettled([cleanup, reservation]);
+      flowUpdates.mockRestore();
+      cdcUpdates.mockRestore();
+    }
+    await expect(reservation).rejects.toThrow(
+      "The exact pending CDC events could not be reserved",
+    );
+    await expect(cleanup).resolves.toMatchObject({
+      droppedCdc: 1,
+      droppedWebhooks: 1,
+    });
+    await expect(
+      CdcChangeEvent.findById(event.id).lean(),
+    ).resolves.toMatchObject({
+      materializationStatus: "dropped",
+    });
+    await expect(
+      WebhookEvent.findById(receipt._id).lean(),
+    ).resolves.toMatchObject({
+      applyStatus: "dropped",
+    });
+    await expect(
+      readBigQueryStagedInput(candidate.binding.job),
+    ).resolves.toBeNull();
   });
 
   it("gives retained and ordinary retries exclusive ownership of the same pending event", async () => {
