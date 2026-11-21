@@ -198,6 +198,57 @@ async function testRequestBody(): Promise<void> {
     assert.equal(timedOut.success, false);
     // The fake refuses with the bytes error: the engine reworded it.
     assert.match(timedOut.error ?? "", /maximumBytesBilled cap/);
+
+    const cappedDatabase = {
+      ...database,
+      connection: { ...database.connection, agent_max_bytes_billed_gb: 2 },
+    };
+    for (const [ceiling, expectedCap, description] of [
+      [
+        1024 ** 3,
+        "1073741824",
+        /1 GiB caller-supplied maximumBytesBilled ceiling/,
+      ],
+      [
+        2 * 1024 ** 3,
+        "2147483648",
+        /2 GiB caller-supplied maximumBytesBilled ceiling and server cap/,
+      ],
+      [
+        3 * 1024 ** 3,
+        "2147483648",
+        /2 GiB maximumBytesBilled cap on agent and MCP queries/,
+      ],
+    ] as const) {
+      for (const method of [
+        "executeQuery",
+        "executePreviewQuery",
+        "executeStreamingQuery",
+      ]) {
+        for (const priority of ["INTERACTIVE", "BATCH"]) {
+          posts.length = 0;
+          const result = (await withQueryLabels({ mako_trigger: "mcp" }, () =>
+            service[method](cappedDatabase, "SELECT 1", {
+              maximumBytesBilledCeiling: ceiling,
+              priority,
+              onBatch: async () => {},
+            }),
+          )) as { success: boolean; error?: string };
+          const body = posts[0].body;
+          const query = posts[0].url.endsWith("/jobs")
+            ? (body.configuration as { query: Record<string, unknown> }).query
+            : body;
+          assert.equal(query.maximumBytesBilled, expectedCap);
+          assert.equal(result.success, false);
+          assert.match(result.error ?? "", description);
+          assert.match(result.error ?? "", /Read fewer bytes/);
+          assert.doesNotMatch(
+            result.error ?? "",
+            /To raise the cap|agent_max_bytes_billed_gb/,
+          );
+        }
+      }
+    }
   } finally {
     service.getHttpClient = original;
   }
@@ -251,8 +302,20 @@ function testAgentCaps(): void {
     "Query exceeded limit for bytes billed",
     ceilingCaps,
   );
-  assert.match(refused ?? "", /This call supplied its own billing ceiling/);
+  assert.equal(ceilingCaps.maximumBytesBilled, 20_000_000_000);
+  assert.match(refused ?? "", /caller-supplied maximumBytesBilled ceiling/);
   assert.doesNotMatch(refused ?? "", /agent_max_bytes_billed_gb/);
+  const equalCaps = resolveAgentJobCaps({
+    connection: { agent_max_bytes_billed_gb: 2 },
+    labels: { mako_trigger: "mcp" },
+    bytesCeiling: 2 * 1024 ** 3,
+  });
+  assert.equal(equalCaps.maximumBytesBilled, 2 * 1024 ** 3);
+  assert.match(
+    describeAgentCapError("Query exceeded limit for bytes billed", equalCaps) ??
+      "",
+    /caller-supplied maximumBytesBilled ceiling and server cap/,
+  );
 
   // Invalid settings fall back to the defaults.
   assert.equal(

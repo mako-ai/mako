@@ -43,8 +43,8 @@ export interface AgentJobCaps {
   jobTimeoutMs?: number;
   /** BigQuery `maximumBytesBilled`; undefined: none. */
   maximumBytesBilled?: number;
-  /** The query's own ceiling is at least as restrictive as the server cap. */
-  perQueryBytesCap?: true;
+  /** How the caller's ceiling compares with the resolved server limit. */
+  perQueryBytesCap?: "lower" | "equal" | "higher";
 }
 
 /** Whether a job with these (final, sanitized) labels serves an agent. */
@@ -112,9 +112,15 @@ export function resolveAgentJobCaps(input: {
         "BigQuery billing ceiling must be a positive safe integer",
       );
     }
-    if (ceiling <= (caps.maximumBytesBilled || Infinity)) {
+    const serverCap = caps.maximumBytesBilled || undefined;
+    caps.perQueryBytesCap =
+      serverCap === undefined || ceiling < serverCap
+        ? "lower"
+        : ceiling === serverCap
+          ? "equal"
+          : "higher";
+    if (serverCap === undefined || ceiling < serverCap) {
       caps.maximumBytesBilled = ceiling;
-      caps.perQueryBytesCap = true;
     }
   }
   return caps;
