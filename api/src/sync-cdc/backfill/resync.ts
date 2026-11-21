@@ -26,6 +26,8 @@ import {
 import { getCdcEventStore } from "../event-store";
 import { openFlowDataDiff } from "../data-diff";
 import { cdcLiveTableName, cdcStageTableName } from "../normalization";
+import { assertRetainedWritesDrainedForResync } from "../bigquery-staged-intent";
+import { withCdcResyncFence, type CdcResyncScope } from "../cdc-resync-fence";
 
 import { assertCanStartBackfill } from "./execution-guard";
 import { startBackfill } from "./lifecycle";
@@ -56,40 +58,34 @@ export async function resyncFlow(params: {
 
   await assertCanStartBackfill(workspaceId, flowId);
 
-  await getCdcEventStore().deleteFlowEvents({ workspaceId, flowId });
-  await CdcEntityState.deleteMany({
-    workspaceId: workspaceObjectId,
-    flowId: flowObjectId,
+  await withCdcEventReset(flow, { deleteDestination }, async drop => {
+    await getCdcEventStore().deleteFlowEvents({ workspaceId, flowId });
+    const eventScope = { workspaceId: workspaceObjectId, flowId: flowObjectId };
+    await CdcEntityState.deleteMany(eventScope);
+    await CdcStateTransition.deleteMany(eventScope);
+
+    if (clearWebhookEvents) {
+      await WebhookEvent.deleteMany({
+        ...eventScope,
+        status: { $in: ["pending", "processing", "completed", "failed"] },
+      });
+    }
+
+    await drop();
+    flow.streamState = "idle";
+    flow.syncStateUpdatedAt = new Date();
+    flow.syncStateMeta = {
+      lastEvent: "RESYNC",
+      lastReason: "Operator initiated resync",
+    };
+    flow.backfillState = {
+      status: "idle",
+      runId: undefined,
+      startedAt: undefined,
+      completedAt: undefined,
+    };
+    await flow.save();
   });
-  await CdcStateTransition.deleteMany({
-    workspaceId: workspaceObjectId,
-    flowId: flowObjectId,
-  });
-
-  if (clearWebhookEvents) {
-    await WebhookEvent.deleteMany({
-      workspaceId: workspaceObjectId,
-      flowId: flowObjectId,
-    });
-  }
-
-  if (deleteDestination) {
-    await deleteDestinationTables(flow);
-  }
-
-  flow.streamState = "idle";
-  flow.syncStateUpdatedAt = new Date();
-  flow.syncStateMeta = {
-    lastEvent: "RESYNC",
-    lastReason: "Operator initiated resync",
-  };
-  flow.backfillState = {
-    status: "idle",
-    runId: undefined,
-    startedAt: undefined,
-    completedAt: undefined,
-  };
-  await flow.save();
 
   await startBackfill(workspaceId, flowId);
 
@@ -160,18 +156,31 @@ export async function resyncEntities(params: {
   return { queued: entities };
 }
 
-export async function deleteDestinationTables(
-  flow: Pick<
-    IFlow,
-    | "_id"
-    | "workspaceId"
-    | "tableDestination"
-    | "destinationDatabaseId"
-    | "entityLayouts"
-  >,
-  /** Restrict to these entities (omit to drop all configured entities). */
-  onlyEntities?: string[],
-) {
+export async function withCdcEventReset(
+  flow: IFlow,
+  options: { entities?: string[]; deleteDestination?: boolean },
+  reset: (drop: () => Promise<void>) => Promise<void>,
+): Promise<void> {
+  const plan = options.deleteDestination
+    ? await prepareDestinationReset(flow, options.entities)
+    : undefined;
+  const scope = {
+    workspaceId: String(flow.workspaceId),
+    flowId: String(flow._id),
+    entities: options.entities,
+    tables: plan?.tables ?? [],
+  };
+  await withCdcResyncFence(
+    scope,
+    session => assertRetainedWritesDrainedForResync(scope, session),
+    () =>
+      reset(async () => {
+        await plan?.drop();
+      }),
+  );
+}
+
+async function prepareDestinationReset(flow: IFlow, onlyEntities?: string[]) {
   if (!flow.tableDestination?.connectionId || !flow.tableDestination?.schema) {
     return;
   }
@@ -199,16 +208,8 @@ export async function deleteDestinationTables(
   const stageSchema = driver.getStagingSchema?.(schema) ?? schema;
   const flowId = flow._id.toString();
 
-  // Count what the tables hold before they go, for the data-diff check the
-  // refilling backfill closes.
-  await openFlowDataDiff({
-    flow,
-    entities: enabledEntities,
-    reasons: ["resync"],
-  });
-
   const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
-  for (const entity of enabledEntities) {
+  const resetTables = enabledEntities.flatMap(entity => {
     const liveTable = cdcLiveTableName(tablePrefix, entity, flowId);
     const oldStageTables = [
       cdcStageTableName(tablePrefix, entity, flowId),
@@ -219,30 +220,54 @@ export async function deleteDestinationTables(
       fullRead => `${liveTable}__${flowToken}__${bulkStagingSuffix(fullRead)}`,
     );
 
-    await driver.dropTable(destination, liveTable, { schema });
-    for (const stageTable of oldStageTables) {
-      await driver.dropTable(destination, stageTable, {
-        schema: stageSchema,
-      });
-    }
-    await driver.dropTable(destination, bulkStagingTable, { schema });
-    for (const table of laneStagingTables) {
-      await driver.dropTable(destination, table, { schema });
-    }
-  }
-
-  const db = Flow.db;
-  for (const entity of enabledEntities) {
-    for (const fullRead of [true, false]) {
-      await db
-        .collection(bulkBufferName(flowId, entity, fullRead))
-        .drop()
-        .catch(() => undefined);
-    }
-  }
-
-  log.info("CDC destination tables dropped during resync", {
-    flowId: flow._id.toString(),
-    entityCount: enabledEntities.length,
+    return [
+      { dataset: schema, table: liveTable },
+      ...oldStageTables.map(table => ({ dataset: stageSchema, table })),
+      { dataset: schema, table: bulkStagingTable },
+      ...laneStagingTables.map(table => ({ dataset: schema, table })),
+    ];
   });
+  const bigQuery = destination.type === "bigquery";
+  const tables: CdcResyncScope["tables"] = [];
+  if (bigQuery) {
+    const connection = destination.connection as { project_id?: unknown };
+    const project = connection?.project_id;
+    if (typeof project !== "string" || !project.trim()) {
+      throw new Error("BigQuery resync requires a destination project");
+    }
+    tables.push(...resetTables.map(table => ({ project, ...table })));
+  }
+  const dropTable = driver.dropTable.bind(driver);
+
+  return {
+    tables,
+    drop: async () => {
+      // Count what the tables hold before the refilling backfill.
+      await openFlowDataDiff({
+        flow,
+        entities: enabledEntities,
+        reasons: ["resync"],
+      });
+      for (const { dataset, table } of resetTables) {
+        const result = await dropTable(destination, table, { schema: dataset });
+        if (bigQuery && !result.success) {
+          throw new Error("BigQuery resync could not verify a table drop");
+        }
+      }
+
+      const db = Flow.db;
+      for (const entity of enabledEntities) {
+        for (const fullRead of [true, false]) {
+          await db
+            .collection(bulkBufferName(flowId, entity, fullRead))
+            .drop()
+            .catch(() => undefined);
+        }
+      }
+      log.info("CDC destination tables dropped during resync", {
+        flowId,
+        entityCount: enabledEntities.length,
+      });
+    },
+  };
 }

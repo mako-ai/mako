@@ -3,16 +3,23 @@ import mongoose, { Types } from "mongoose";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   CdcChangeEvent,
+  DatabaseConnection,
   Flow,
   WebhookEvent,
 } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
+import { databaseRegistry } from "../databases/registry";
+import { BigQueryDatabaseDriver } from "../databases/drivers/bigquery/driver";
+import * as dataDiff from "./data-diff";
+import * as backfillLifecycle from "./backfill/lifecycle";
 import { BigQueryDestinationAdapter } from "./adapters/bigquery";
 import { buildCdcEntityLayout } from "./adapters/registry";
 import { bigQuerySnapshotGeneration } from "./bigquery-retained-query";
 import { getCdcEventStore } from "./event-store";
 import { parkPausedFlowWebhookEvents } from "./consumer";
 import { cleanupStalePendingCdcEvents } from "./cdc-stale-pending-cleanup";
+import { resyncFlow, withCdcEventReset } from "./backfill/resync";
+import { backfillEntitiesFallback } from "./backfill/repartition";
 import {
   cleanupBigQueryStagedInput,
   findBigQueryStagedCdcWrites,
@@ -37,6 +44,11 @@ import {
 
 let mongo: MongoMemoryReplSet;
 beforeAll(async () => {
+  vi.stubEnv("ENCRYPTION_KEY", "0".repeat(64));
+  databaseRegistry.getOrRegister(
+    "bigquery",
+    () => new BigQueryDatabaseDriver(),
+  );
   mongo = await MongoMemoryReplSet.create({
     replSet: {
       count: 3,
@@ -54,6 +66,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await mongoose.disconnect();
   await mongo.stop();
+  vi.unstubAllEnvs();
 });
 
 function makeIntent(
@@ -96,8 +109,9 @@ function makeMerge(suffix: string) {
   };
 }
 
-async function makeCdcMerge(suffix: string) {
+async function makeCdcMerge(suffix: string, dataset = "live") {
   const { binding, merge, options } = makeMerge(suffix);
+  binding.destination.dataset = dataset;
   const scope = {
     workspaceId: new Types.ObjectId().toHexString(),
     flowId: new Types.ObjectId().toHexString(),
@@ -151,7 +165,176 @@ async function makeCdcMerge(suffix: string) {
   };
 }
 
+async function makeResyncFlow(suffix: string, dataset: string) {
+  const fixture = await makeCdcMerge(suffix, dataset);
+  const { workspaceId, flowId, destinationConnectionId } = fixture.scope;
+  await DatabaseConnection.create({
+    _id: destinationConnectionId,
+    workspaceId,
+    name: "Synthetic resync connection",
+    type: "bigquery",
+    connection: { project_id: fixture.binding.destination.project },
+    createdBy: "synthetic-test",
+  });
+  const flow = await Flow.findByIdAndUpdate(
+    flowId,
+    { $set: { entityFilter: ["recordings"] } },
+    { returnDocument: "after" },
+  );
+  if (!flow) throw new Error("Missing synthetic resync flow");
+  return { ...fixture, flow };
+}
+
 describe("BigQuery CDC event settlement", () => {
+  it("blocks full and subset resets before deleting rows for a shared retained table", async () => {
+    const retained = await makeResyncFlow("resync_retained", "reset_shared");
+    const neighbor = await makeResyncFlow("resync_neighbor", "reset_shared");
+    const first = await retained.event("held-for-resync", 1);
+    const second = await neighbor.event("neighbor-unclaimed", 1);
+    const inbox = await WebhookEvent.create({
+      workspaceId: retained.scope.workspaceId,
+      flowId: retained.scope.flowId,
+      eventId: "resync-retained-inbox",
+      eventType: "synthetic_delivery",
+      rawPayload: { synthetic: true },
+    });
+    await expect(retained.hold([first])).resolves.toBe("held");
+    const observe = vi
+      .spyOn(dataDiff, "openFlowDataDiff")
+      .mockResolvedValue(undefined);
+    const queue = vi
+      .spyOn(backfillLifecycle, "startBackfill")
+      .mockRejectedValue(new Error("Unexpected backfill"));
+    const driver = databaseRegistry.getDriver("bigquery");
+    if (!driver?.dropTable) throw new Error("Missing BigQuery driver");
+    const drop = vi
+      .spyOn(driver, "dropTable")
+      .mockRejectedValue(new Error("Unexpected BigQuery drop"));
+    try {
+      await expect(
+        resyncFlow({
+          workspaceId: retained.scope.workspaceId,
+          flowId: retained.scope.flowId,
+          clearWebhookEvents: true,
+        }),
+      ).rejects.toThrow(
+        "CDC resync is blocked by an unsettled write or retained snapshot",
+      );
+      await expect(
+        backfillEntitiesFallback(
+          neighbor.flow,
+          neighbor.scope.workspaceId,
+          neighbor.scope.flowId,
+          ["recordings"],
+          true,
+        ),
+      ).rejects.toThrow(
+        "CDC resync is blocked by an unsettled write or retained snapshot",
+      );
+      expect(observe).not.toHaveBeenCalled();
+      expect(drop).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    } finally {
+      observe.mockRestore();
+      drop.mockRestore();
+      queue.mockRestore();
+    }
+    await expect(
+      WebhookEvent.findById(inbox._id).lean(),
+    ).resolves.not.toBeNull();
+    for (const event of [first, second]) {
+      await expect(
+        CdcChangeEvent.findById(event.id).lean(),
+      ).resolves.toMatchObject({ materializationStatus: "pending" });
+    }
+    await expect(
+      readPendingBigQueryQueryRequest(retained.binding.job),
+    ).resolves.not.toBeNull();
+  });
+
+  it("blocks cross-flow admission during a reset and preserves an interrupted reset fence", async () => {
+    const retained = await makeResyncFlow("resync_claim", "reset_then_resume");
+    const neighbor = await makeResyncFlow("resync_owner", "reset_then_resume");
+    const event = await retained.event("claim-after-reset", 1);
+    const options = { entities: ["recordings"], deleteDestination: true };
+    await withCdcEventReset(neighbor.flow, options, async () => {
+      await expect(retained.hold([event])).rejects.toThrow(
+        "A CDC resync is holding this flow or table",
+      );
+      await expect(
+        readBigQueryStagedInput(retained.binding.job),
+      ).resolves.toBeNull();
+    });
+    await expect(retained.hold([event])).resolves.toBe("held");
+
+    const interrupted = await makeResyncFlow(
+      "resync_interrupted",
+      "reset_no_ack",
+    );
+    const pending = await interrupted.event("never-admitted", 1);
+    const observe = vi
+      .spyOn(dataDiff, "openFlowDataDiff")
+      .mockResolvedValue(undefined);
+    const driver = databaseRegistry.getDriver("bigquery");
+    if (!driver?.dropTable) throw new Error("Missing BigQuery driver");
+    const drop = vi.spyOn(driver, "dropTable").mockResolvedValue({
+      success: false,
+      error: "Simulated lost acknowledgement",
+    });
+    try {
+      await expect(
+        withCdcEventReset(interrupted.flow, options, drop => drop()),
+      ).rejects.toThrow("BigQuery resync could not verify a table drop");
+      expect(drop).toHaveBeenCalledTimes(1);
+    } finally {
+      observe.mockRestore();
+      drop.mockRestore();
+    }
+    await mongoose.disconnect();
+    await mongoose.connect(mongo.getUri());
+    await expect(interrupted.hold([pending])).rejects.toThrow(
+      "A CDC resync is holding this flow or table",
+    );
+    await expect(
+      readBigQueryStagedInput(interrupted.binding.job),
+    ).resolves.toBeNull();
+  });
+
+  it("keeps a retained snapshot protected after a terminal receipt", async () => {
+    const retained = await makeResyncFlow(
+      "resync_snapshot_owner",
+      "snapshot_write_target",
+    );
+    const snapshotFlow = await makeResyncFlow(
+      "resync_snapshot_table",
+      "snapshot_table",
+    );
+    retained.binding.input.snapshot = snapshotFlow.binding.destination;
+    const event = await retained.event("settled-before-snapshot-reset", 1);
+    const job = retained.binding.job;
+    await expect(retained.hold([event])).resolves.toBe("held");
+    const request = await readPendingBigQueryQueryRequest(job);
+    await expect(
+      recordObservedBigQueryQueryResult(job, {
+        ...request,
+        status: { state: "DONE" },
+        statistics: { query: { statementType: "MERGE" } },
+      }),
+    ).resolves.toBe(true);
+
+    const reset = vi.fn(async () => undefined);
+    await expect(
+      withCdcEventReset(snapshotFlow.flow, { deleteDestination: true }, reset),
+    ).rejects.toThrow(
+      "CDC resync is blocked by an unsettled write or retained snapshot",
+    );
+    expect(reset).not.toHaveBeenCalled();
+    await expect(
+      withCdcEventReset(retained.flow, {}, reset),
+    ).resolves.toBeUndefined();
+    expect(reset).toHaveBeenCalledOnce();
+  });
+
   it("preserves retained and sibling rows during parking and a stale cleanup race", async () => {
     const first = await makeCdcMerge("cdc_maintenance_fence");
     const { workspaceId, flowId } = first.scope;

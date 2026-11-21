@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import mongoose, { Schema } from "mongoose";
+import mongoose, { Schema, type ClientSession } from "mongoose";
 import {
   buildMergeStatement,
   fullTableName,
@@ -25,6 +25,11 @@ import {
 } from "./bigquery-staged-cdc";
 import { stableStringify } from "./normalization";
 import type { LeaseJobRef } from "./table-write-lease";
+import {
+  CdcResyncConflictError,
+  reserveRetainedWriteAgainstResync,
+  type CdcResyncScope,
+} from "./cdc-resync-fence";
 
 export interface BigQueryStagedInput {
   snapshot: BigQueryTableIdentity;
@@ -252,36 +257,84 @@ async function holdStagedWrite(
   const snapshotKey = digest(tableIdentity(intent.input.snapshot));
   const insert = { _id, fingerprint, snapshotKey, intent };
   const cdc = intent.cdc;
-  if (cdc) {
-    return StagedWrite.db.transaction(async session => {
-      const existing = await StagedWrite.findById(_id).session(session).lean();
-      if (existing) return stagedWriteState(existing, fingerprint);
+  return StagedWrite.db.transaction(async session => {
+    const existing = await StagedWrite.findById(_id).session(session).lean();
+    if (existing) return stagedWriteState(existing, fingerprint);
+    await reserveRetainedWriteAgainstResync(
+      [intent.destination, intent.input.snapshot],
+      cdc?.scope,
+      session,
+    );
+    if (cdc) {
       await requireCurrentBigQueryCdcFlow(
         cdc.scope,
         intent.destination,
         session,
       );
       await claimBigQueryCdcEvents(cdc, fingerprint, session);
-      await StagedWrite.create(
-        [
+    }
+    await StagedWrite.create(
+      [
+        {
+          ...insert,
+          eventClaimKeys: cdc?.events.map(event =>
+            eventClaimKey(cdc.scope, event.deliveryKey),
+          ),
+        },
+      ],
+      { session },
+    );
+    return "held" as const;
+  }, cdcTransaction);
+}
+
+/** Check the durable intent even if the table-write lease has not been acquired. */
+export async function assertRetainedWritesDrainedForResync(
+  scope: CdcResyncScope,
+  session: ClientSession,
+): Promise<void> {
+  const flow = {
+    "intent.cdc.scope.workspaceId": scope.workspaceId,
+    "intent.cdc.scope.flowId": scope.flowId,
+    ...(scope.entities?.length
+      ? { "intent.cdc.scope.entity": { $in: scope.entities } }
+      : {}),
+  };
+  const tables = scope.tables.map(({ project, dataset, table }) => ({
+    "intent.destination.project": project,
+    "intent.destination.dataset": dataset,
+    "intent.destination.table": table,
+  }));
+  const snapshots = scope.tables.map(({ project, dataset, table }) => ({
+    "intent.input.snapshot.project": project,
+    "intent.input.snapshot.dataset": dataset,
+    "intent.input.snapshot.table": table,
+    cleanedAt: { $exists: false },
+  }));
+  const unresolved = await StagedWrite.exists({
+    $or: [
+      {
+        $and: [
+          { $or: [flow, ...tables] },
           {
-            ...insert,
-            eventClaimKeys: cdc.events.map(event =>
-              eventClaimKey(cdc.scope, event.deliveryKey),
-            ),
+            $or: [
+              { "terminal.state": { $ne: "DONE" } },
+              {
+                "intent.cdc": { $exists: true },
+                "terminal.outcome": { $ne: "succeeded" },
+              },
+            ],
           },
         ],
-        { session },
-      );
-      return "held" as const;
-    }, cdcTransaction);
+      },
+      ...snapshots,
+    ],
+  }).session(session);
+  if (unresolved) {
+    throw new CdcResyncConflictError(
+      "CDC resync is blocked by an unsettled write or retained snapshot",
+    );
   }
-  const record = await StagedWrite.findOneAndUpdate(
-    { _id },
-    { $setOnInsert: insert },
-    { upsert: true, returnDocument: "after", writeConcern },
-  ).lean();
-  return stagedWriteState(record, fingerprint);
 }
 
 function stagedWriteState(

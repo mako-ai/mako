@@ -26,7 +26,7 @@ import { getCdcEventStore } from "../event-store";
 import { cdcLiveTableName } from "../normalization";
 
 import { startBackfill } from "./lifecycle";
-import { deleteDestinationTables } from "./resync";
+import { withCdcEventReset } from "./resync";
 
 const log = loggers.sync("cdc.backfill");
 
@@ -296,20 +296,19 @@ export async function backfillEntitiesFallback(
   entities: string[],
   deleteDestination?: boolean,
 ): Promise<void> {
-  await getCdcEventStore().deleteFlowEvents({
-    workspaceId,
-    flowId,
-    entities,
+  await withCdcEventReset(flow, { entities, deleteDestination }, async drop => {
+    await getCdcEventStore().deleteFlowEvents({
+      workspaceId,
+      flowId,
+      entities,
+    });
+    await CdcEntityState.deleteMany({
+      workspaceId: new Types.ObjectId(workspaceId),
+      flowId: new Types.ObjectId(flowId),
+      entity: { $in: entities },
+    });
+    await drop();
   });
-  await CdcEntityState.deleteMany({
-    workspaceId: new Types.ObjectId(workspaceId),
-    flowId: new Types.ObjectId(flowId),
-    entity: { $in: entities },
-  });
-
-  if (deleteDestination) {
-    await deleteDestinationTables(flow, entities);
-  }
 
   await startBackfill(workspaceId, flowId, {
     entities,
