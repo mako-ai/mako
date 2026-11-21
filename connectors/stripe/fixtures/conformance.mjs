@@ -17,13 +17,26 @@ import {
   FOLDER,
   REPO_ROOT,
   ensureFolderInstalled,
+  loadCassettes,
   startReplayServer,
 } from "./harness.mjs";
+import {
+  checkoutLineItemsCassettes,
+  verifyCheckoutLineItems,
+} from "./checkout-line-items.mjs";
 import { checkSetupAttempts } from "./setup-attempts.mjs";
 
 ensureFolderInstalled();
 await checkSetupAttempts();
-const server = await startReplayServer();
+const server = await startReplayServer(
+  new Map([...loadCassettes(), ...checkoutLineItemsCassettes()]),
+);
+try {
+  await verifyCheckoutLineItems(server);
+} catch (error) {
+  await server.close();
+  throw error;
+}
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mako-stripe-conformance-"));
 const config = path.join(dir, "config.json");
 fs.writeFileSync(

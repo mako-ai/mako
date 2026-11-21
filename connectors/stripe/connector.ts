@@ -1,14 +1,13 @@
 /**
  * Stripe on @makoai/connector-sdk: `spec`, `check`, `discover` and `read`.
  *
- * A port of the in-process connector in `api/src/connectors/stripe/`, with the
- * shared entities, schemas, cursors and pagination. `fixtures/parity.mjs`
- * runs both against the same recorded Stripe responses. Setup Attempts are
- * available in this folder.
+ * A port of the in-process connector in `api/src/connectors/stripe/`.
+ * `fixtures/parity.mjs` compares the shared entities against recorded responses.
+ * The boxed connector also reads Checkout Session line items and Setup Attempts.
  *
  * Read state is `{ cursor, mako: { since } }`:
  * - `cursor` is Stripe's `starting_after`, the in-process `FetchState.cursor`.
- *   Nested entities carry the last parent id (payout or customer).
+ *   Nested entities carry the last parent id.
  * - Setup Attempts use `setupAttempts` for parent and attempt paging.
  * - `mako.since` (ISO 8601) is the incremental anchor, sent as `created[gte]`.
  *   Mako owns the `mako` key. The
@@ -112,6 +111,7 @@ const ENTITIES: Array<[name: string, label: string, incremental: boolean]> = [
   ["coupons", "Coupons", true],
   ["promotion_codes", "Promotion Codes", true],
   ["checkout_sessions", "Checkout Sessions", true],
+  ["checkout_sessions_line_items", "Checkout Session Line Items", true],
   ["setup_intents", "Setup Intents", true],
   ["early_fraud_warnings", "Early Fraud Warnings", true],
   // Rows inside a parent object: an invoice's lines, a subscription's items.
@@ -124,9 +124,10 @@ const ENTITIES: Array<[name: string, label: string, incremental: boolean]> = [
   ["setup_attempts", "Setup Attempts", true],
 ];
 
-/** A line has no `created`: its time is its invoice's. */
+/** Invoice and Checkout line items use the parent's creation time. */
 const CURSOR_FIELD: Record<string, string> = {
   invoice_line_items: "invoice_created",
+  checkout_sessions_line_items: "checkout_session_created",
 };
 
 /**

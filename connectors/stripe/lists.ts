@@ -15,6 +15,7 @@ const CHILD_LIST_MAX = 10_000;
 
 /** Customers per page for payment_methods: one extra call per customer. */
 export const PAYMENT_METHOD_PARENT_PAGE = 25;
+const CHECKOUT_SESSION_PARENT_PAGE = 25;
 
 export interface StripePageRequest {
   limit: number;
@@ -198,7 +199,23 @@ export function listStripePage(
   request: StripePageRequest,
 ): Promise<StripePage> {
   if (isNested(entity)) return fetchNestedPage(stripe, entity, request);
-  if (isEmbeddedChild(entity)) return fetchChildPage(stripe, entity, request);
+  if (isEmbeddedChild(entity))
+    return fetchChildPage(
+      stripe,
+      EMBEDDED_CHILD_PARENTS[entity],
+      request,
+      parent => childRowsOf(stripe, entity, parent),
+    );
+  if (entity === "checkout_sessions_line_items")
+    return fetchChildPage(
+      stripe,
+      "checkout_sessions",
+      {
+        ...request,
+        limit: Math.min(request.limit, CHECKOUT_SESSION_PARENT_PAGE),
+      },
+      parent => checkoutLineItems(stripe, parent),
+    );
   const lister = TOP_LEVEL_LISTERS[entity];
   if (!lister) throw new Error(`Unsupported entity: ${entity}`);
   return lister(stripe, listParams(request));
@@ -280,28 +297,61 @@ async function fetchNestedPage(
 }
 
 /**
- * One page of an embedded child entity: one page of its parent list, with
- * `since` on the parent's `created`, and every child of each parent. A
- * child added to an older parent arrives by the parent's webhook, and the
- * weekly resync reads every parent. Returns the parent cursor.
+ * Read every child of each parent on one parent page. The parent cursor
+ * advances only after all its child pages have been read.
  */
 async function fetchChildPage(
   stripe: Stripe,
-  entity: EmbeddedChildEntity,
+  parentEntity: string,
   options: StripePageRequest,
+  childrenOf: (parent: StripeRow) => Promise<StripeRow[] | null>,
 ): Promise<StripePage> {
-  const parents = await listStripePage(
-    stripe,
-    EMBEDDED_CHILD_PARENTS[entity],
-    options,
-  );
+  const parents = await listStripePage(stripe, parentEntity, options);
   const records: StripePage["data"] = [];
   for (const parent of parents.data as StripeRow[]) {
-    records.push(...((await childRowsOf(stripe, entity, parent)) ?? []));
+    records.push(...((await childrenOf(parent)) ?? []));
   }
   return {
     data: records,
     has_more: parents.has_more,
     nextCursor: parents.data[parents.data.length - 1]?.id,
   };
+}
+
+async function checkoutLineItems(
+  stripe: Stripe,
+  session: StripeRow,
+): Promise<StripeRow[]> {
+  const { id, created, expires_at } = session;
+  if (!id || typeof created !== "number" || !Number.isInteger(created))
+    throw new Error(
+      "Stripe Checkout Session is missing its id or creation date",
+    );
+  const records: StripeRow[] = [];
+  const seen = new Set<string>();
+  let cursor: string | undefined;
+  while (true) {
+    const page = await stripe.checkout.sessions.listLineItems(id, {
+      limit: 100,
+      expand: ["data.discounts", "data.taxes"],
+      ...(cursor && { starting_after: cursor }),
+    });
+    for (const item of page.data) {
+      if (!item.id || seen.has(item.id))
+        throw new Error(
+          "Stripe Checkout line-item pagination returned a missing or repeated id",
+        );
+      seen.add(item.id);
+      records.push({
+        ...item,
+        checkout_session_id: id,
+        checkout_session_created: created,
+        checkout_session_expires_at: expires_at ?? null,
+      });
+    }
+    if (!page.has_more) return records;
+    cursor = page.data.at(-1)?.id;
+    if (!cursor)
+      throw new Error("Stripe Checkout line-item pagination did not advance");
+  }
 }
