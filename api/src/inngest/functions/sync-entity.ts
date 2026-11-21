@@ -598,10 +598,11 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                 { entity, flushIndex, rescued },
               );
             }
-            await performBulkFlush(bulkSyncOptions as any, () =>
-              touchHeartbeat(executionId),
+            const { flushed } = await performBulkFlush(
+              bulkSyncOptions as any,
+              () => touchHeartbeat(executionId),
             );
-            return { rowsWritten: writeCountForAttempt(rescued) };
+            return { rowsWritten: writeCountForAttempt(rescued), flushed };
           }),
       );
       stepsUsed++;
@@ -625,6 +626,10 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           withHeartbeat(executionId, async () => {
             const result = await performStagingMerge(bulkSyncOptions as any, {
               mergePath: "flush",
+              expectStagedRows:
+                rescuedInFlush?.flushed === undefined
+                  ? undefined
+                  : rescuedInFlush.flushed > 0,
             });
             await performStagingCleanup(bulkSyncOptions as any);
             const left = await getTempCollectionCount(flowId, entity, fullRead);
@@ -882,7 +887,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                                   ? `${entity} fetch completed (${fetched} fetched, ${writtenSummary} so far); flushing the rest`
                                   : result.completed
                                     ? `${entity} sync completed (${written} written, ${fetched} fetched)`
-                                    : `${entity} sync in progress (${written} written, ${fetched} fetched)`,
+                                    : `${entity} sync in progress (${writtenSummary}, ${fetched} fetched)`,
                               metadata: {
                                 flowId,
                                 executionId,
@@ -1015,10 +1020,11 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                   { entity, rescued },
                 );
               }
-              await performBulkFlush(bulkSyncOptions as any, () =>
-                touchHeartbeat(executionId),
+              const { flushed } = await performBulkFlush(
+                bulkSyncOptions as any,
+                () => touchHeartbeat(executionId),
               );
-              return { rowsWritten: writeCountForAttempt(rescued) };
+              return { rowsWritten: writeCountForAttempt(rescued), flushed };
             }),
         );
 
@@ -1031,7 +1037,13 @@ export const syncBackfillEntityFunction = inngest.createFunction(
               });
               const mergeResult = await performStagingMerge(
                 bulkSyncOptions as any,
-                { mergePath: "final" },
+                {
+                  mergePath: "final",
+                  expectStagedRows:
+                    rescuedInFinal?.flushed === undefined
+                      ? undefined
+                      : rescuedInFinal.flushed > 0,
+                },
               );
               await performStagingCleanup(bulkSyncOptions as any);
               const rowsWritten = writeCountForAttempt(mergeResult.written);

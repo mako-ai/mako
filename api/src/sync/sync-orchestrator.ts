@@ -1602,7 +1602,7 @@ export function getTempCollectionCount(
 
 export async function performStagingMerge(
   options: SyncChunkOptions,
-  opts?: { mergePath?: CdcMergePath },
+  opts?: { mergePath?: CdcMergePath; expectStagedRows?: boolean },
 ): Promise<CdcStagingMergeResult> {
   if (!options.tableDestination?.connectionId || !options.flowId) {
     return { written: 0 };
@@ -1639,11 +1639,23 @@ export async function performStagingMerge(
   // the second time.
   const isDedup =
     options.writeMode !== "append" && options.writeMode !== "overwrite";
-  if (!isDedup) {
+  const mergePath = opts?.mergePath ?? "final";
+  const isBigQuery = cdcAdapter.destinationType === "bigquery";
+  const expectStagedRows =
+    isBigQuery && mergePath !== "rescue"
+      ? (opts?.expectStagedRows ??
+        (await bulkBufferCollection(
+          flowId,
+          entity,
+          options.fullRead,
+        ).countDocuments({ [BULK_STAGED_FIELD]: true })) > 0)
+      : undefined;
+  const releaseStagedBuffer = async () => {
     await bulkBufferCollection(flowId, entity, options.fullRead).deleteMany({
       [BULK_STAGED_FIELD]: true,
     });
-  }
+  };
+  if (!isDedup && !isBigQuery) await releaseStagedBuffer();
 
   const cdcLayout = buildCdcEntityLayout({
     entity,
@@ -1675,7 +1687,9 @@ export async function performStagingMerge(
     {
       stagingSuffix: bulkStagingSuffix(options.fullRead),
       fullRead: options.fullRead,
-      mergePath: opts?.mergePath ?? "final",
+      mergePath,
+      expectStagedRows,
+      beforeWrite: !isDedup && isBigQuery ? releaseStagedBuffer : undefined,
     },
   );
 }

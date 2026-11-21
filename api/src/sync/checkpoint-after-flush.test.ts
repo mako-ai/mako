@@ -326,6 +326,7 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
     o?: any,
   ) => {
     const rowsInStaging = stagingOf(o);
+    await o?.beforeWrite?.();
     if (rowsInStaging.length > 0) mergeCalls++;
     if (rowsInStaging.length > 0 && failingMerges.has(mergeCalls)) {
       throw new Error("git ls-tree failed: fatal: not a tree object");

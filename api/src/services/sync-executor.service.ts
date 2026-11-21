@@ -79,7 +79,7 @@ export function discardBulkBuffer(
 
 export async function performStagingMerge(
   options: SyncChunkOptions,
-  opts?: { mergePath?: CdcMergePath },
+  opts?: { mergePath?: CdcMergePath; expectStagedRows?: boolean },
 ): Promise<CdcStagingMergeResult> {
   return performStagingMergeOrchestrated(options, opts);
 }

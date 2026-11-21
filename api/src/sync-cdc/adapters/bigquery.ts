@@ -397,6 +397,8 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     options?: {
       stagingSuffix?: string;
       knownStagingRowCount?: number;
+      expectStagedRows?: boolean;
+      beforeWrite?: () => Promise<void>;
       fullRead?: boolean;
       /** The columns some staged row lacks (prepareSparseBatch). Unset: read from staging. */
       absentColumns?: ReadonlySet<string>;
@@ -413,6 +415,8 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     );
     return this.mergeStagingToLive(layout, stagingTable, entitySchema, {
       knownStagingRowCount: options?.knownStagingRowCount,
+      expectStagedRows: options?.expectStagedRows,
+      beforeWrite: options?.beforeWrite,
       fullRead: options?.fullRead,
       absentColumns: options?.absentColumns,
       mergePath: options?.mergePath ?? "final",
@@ -648,6 +652,8 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     entitySchema: ConnectorEntitySchema | undefined,
     options: {
       knownStagingRowCount?: number;
+      expectStagedRows?: boolean;
+      beforeWrite?: () => Promise<void>;
       fullRead?: boolean;
       absentColumns?: ReadonlySet<string>;
       mergePath: CdcMergePath;
@@ -678,6 +684,11 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     stagingCols.delete(ABSENT_COLUMNS_FIELD);
 
     if (stagingCols.size === 0) {
+      if (options.expectStagedRows || (options.knownStagingRowCount ?? 0) > 0) {
+        throw new Error(
+          `Expected BigQuery staging table ${stagingTable} is missing or has no columns`,
+        );
+      }
       log.info("Staging table not found or empty, nothing to merge", {
         stagingTable,
         liveTable,
@@ -776,6 +787,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           )))
         : undefined;
     const path = options.mergePath;
+    await options.beforeWrite?.();
 
     // Set by the MERGE closure, read after the lease is released.
     let unpruned: UnprunedMerge | undefined;
@@ -906,7 +918,12 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         ),
       );
       for (const count of previous) {
-        written = written === null || count === null ? null : written + count;
+        // A keyed retry can update the same rows an earlier job committed.
+        // The counts alone cannot identify the overlap.
+        written =
+          written === null || count === null || (isDedup && count > 0)
+            ? null
+            : written + count;
       }
       if (written === null || !Number.isSafeInteger(written)) {
         written = null;

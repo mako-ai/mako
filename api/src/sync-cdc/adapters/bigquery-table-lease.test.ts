@@ -533,6 +533,28 @@ describe("bulk MERGE under the table write lease", () => {
     },
   );
 
+  it("rejects missing staging after a successful load without releasing the buffer", async () => {
+    const adapter = makeAdapter();
+    const stagingSuffix = "missing_after_load";
+    const beforeWrite = vi.fn(async () => undefined);
+    await expect(
+      adapter.mergeFromStaging(layout, flowRef(FLOW_A), FLOW_A, undefined, {
+        stagingSuffix,
+        expectStagedRows: true,
+        beforeWrite,
+      }),
+    ).rejects.toThrow(/Expected BigQuery staging table .* is missing/);
+    expect(beforeWrite).not.toHaveBeenCalled();
+    expect(warehouse.merges).toHaveLength(0);
+
+    await expect(
+      adapter.mergeFromStaging(layout, flowRef(FLOW_A), FLOW_A, undefined, {
+        stagingSuffix,
+        mergePath: "rescue",
+      }),
+    ).resolves.toEqual({ written: 0 });
+  });
+
   it("settles staging when the write completed without affected-row statistics", async () => {
     warehouse.mergeCountInJobMetadataOnly = true;
     warehouse.exposeMergeJobCounts = false;
@@ -559,6 +581,12 @@ describe("bulk MERGE under the table write lease", () => {
       reportSuccessfulJob: true,
       previousFailed: true,
       expected: 1,
+    },
+    {
+      receipt: "a committed keyed attempt whose overlap is unknown",
+      reportSuccessfulJob: true,
+      previousFailed: false,
+      expected: null,
     },
     {
       receipt: "no attributable successful job",
