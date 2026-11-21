@@ -28,10 +28,12 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import {
   FOLDER,
   ensureFolderInstalled,
+  readBoxed,
   runFolderCommand,
   startReplayServer,
   type ReplayServer,
 } from "../../../../../connectors/stripe/fixtures/harness.mjs";
+import { checkSetupAttempts } from "../../../../../connectors/stripe/fixtures/setup-attempts.mjs";
 
 vi.mock("../bundle/build-box", async importOriginal => {
   const actual = await importOriginal<typeof import("../bundle/build-box")>();
@@ -160,17 +162,18 @@ describe("the gate: mako/stripe@1 installed by reference", () => {
     const published = await publishConnector({
       folder: FOLDER,
       slug: "stripe",
-      version: "1.4.0",
+      version: "1.5.0",
     });
     expect(published.published).toBe(true);
     const catalog = await readCatalog();
     expect(catalog.connectors.stripe.versions[0]).toMatchObject({
-      version: "1.4.0",
+      version: "1.5.0",
       hash: published.hash,
       authType: "api_key",
-      changelog: expect.stringContaining("payment_method.attached"),
+      changelog: expect.stringContaining("setup_attempts"),
     });
-    expect(published.entry.entities).toHaveLength(26);
+    expect(published.entry.entities).toHaveLength(27);
+    expect(published.entry.entities).toContain("setup_attempts");
 
     // The workspace installs it with one committed line.
     await initRepo(
@@ -201,7 +204,7 @@ describe("the gate: mako/stripe@1 installed by reference", () => {
     expect(row?.status).toBe("indexed");
     expect(row?.registry).toMatchObject({
       ref: "mako/stripe@1",
-      version: "1.4.0",
+      version: "1.5.0",
       hash: published.hash,
     });
     expect(row?.entities).toEqual(published.entry.entities);
@@ -220,8 +223,10 @@ describe("the gate: mako/stripe@1 installed by reference", () => {
       type: "ws:stripe",
       config,
       settings: {},
-    } as unknown as ISourceConnection;
-    const connector = new SandboxedConnector(connection);
+    };
+    const connector = new SandboxedConnector(
+      connection as unknown as ISourceConnection,
+    );
     await connector.loadDefinition();
 
     const boxed = (await (
@@ -261,5 +266,13 @@ describe("the gate: mako/stripe@1 installed by reference", () => {
       folderRead.messages.filter(m => m.type === "STATE").at(-1)?.state,
     );
     expect(server.misses).toEqual([]);
+
+    await checkSetupAttempts(async ({ config, ...options }) => {
+      const setupAttempts = new SandboxedConnector({
+        ...connection,
+        config,
+      } as unknown as ISourceConnection);
+      return readBoxed(setupAttempts, { ...options, pageSize: 2 });
+    });
   }, 300_000);
 });

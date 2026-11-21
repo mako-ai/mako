@@ -1,7 +1,6 @@
 /**
- * Stripe entity schemas, field for field the same as the in-process
- * connector's (`api/src/connectors/stripe/schema.ts`). The parity harness in
- * `fixtures/` fails if the two drift.
+ * The parity harness in `fixtures/` checks shared Stripe schemas against
+ * the in-process connector (`api/src/connectors/stripe/schema.ts`).
  *
  * Two things differ in form, not in meaning:
  * - Mako's system columns (`_mako_*`, `_syncedAt`, `is_deleted`, ...) are not
@@ -531,6 +530,23 @@ const SETUP_INTENT_SCHEMA: Fields = {
   usage: "string",
 };
 
+const SETUP_ATTEMPT_SCHEMA: Fields = {
+  id: "string",
+  object: "string",
+  created: "timestamp",
+  livemode: "boolean",
+  application: "string",
+  customer: "string",
+  flow_directions: "json",
+  on_behalf_of: "string",
+  payment_method: "string",
+  payment_method_details: "json",
+  setup_error: "json",
+  setup_intent: "string",
+  status: "string",
+  usage: "string",
+};
+
 const EARLY_FRAUD_WARNING_SCHEMA: Fields = {
   ...COMMON_STRIPE_SCHEMA,
   actionable: "boolean",
@@ -621,6 +637,7 @@ export const STRIPE_ENTITY_SCHEMA_MAP: Record<string, Fields> = {
   promotion_codes: PROMOTION_CODE_SCHEMA,
   checkout_sessions: CHECKOUT_SESSION_SCHEMA,
   setup_intents: SETUP_INTENT_SCHEMA,
+  setup_attempts: SETUP_ATTEMPT_SCHEMA,
   early_fraud_warnings: EARLY_FRAUD_WARNING_SCHEMA,
   invoice_line_items: INVOICE_LINE_ITEM_SCHEMA,
   subscription_items: SUBSCRIPTION_ITEM_SCHEMA,

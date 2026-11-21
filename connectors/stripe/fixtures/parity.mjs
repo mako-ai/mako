@@ -124,10 +124,11 @@ async function main() {
 
   const folderEntities = streams.map(s => s.name);
   const sameEntities =
-    JSON.stringify(folderEntities) === JSON.stringify(entities);
+    JSON.stringify(folderEntities) ===
+    JSON.stringify([...entities, "setup_attempts"]);
   if (!sameEntities) failures++;
   console.info(
-    `Entities: ${entities.length} in-process, ${folderEntities.length} folder, ${sameEntities ? "same list and order" : "DIFFERENT"}`,
+    `Entities: ${entities.length} in-process, ${folderEntities.length} folder, ${sameEntities ? "Setup Attempts added on the folder" : "DIFFERENT"}`,
   );
 
   const form = compareForm(

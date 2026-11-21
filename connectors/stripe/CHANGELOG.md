@@ -3,6 +3,12 @@
 Releases of `mako/stripe`. A workspace installs it with
 `source: mako/stripe@1` in `connectors/<slug>/connector.yaml`.
 
+## 1.5.0
+
+- 27 entities with the addition of `setup_attempts`. The reader walks Setup
+  Intents of every age and applies the incremental cutoff to attempt creation
+  time. Each batch makes one Stripe request and saves both paging positions.
+
 ## 1.4.0
 
 - `payment_methods`: a 26th entity, as the realadvisor workspace folder has

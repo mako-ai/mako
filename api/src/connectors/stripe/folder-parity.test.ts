@@ -198,10 +198,10 @@ void test("the folder pins the stripe package the API resolves", () => {
   assert.equal(lock.packages["node_modules/stripe"].version, apiStripe);
 });
 
-void test("same entities, labels and credential form", () => {
+void test("same shared entities, labels and credential form, plus boxed Setup Attempts", () => {
   assert.deepEqual(
     streams.map(s => s.name),
-    ENTITIES,
+    [...ENTITIES, "setup_attempts"],
   );
   const metadata = makeInProcess({
     api_key: "sk_test_list",
@@ -247,7 +247,7 @@ void test("same schema for every entity, the 8 system columns included", async (
   }
 });
 
-void test("same table layout and incremental mode for every entity", async () => {
+void test("shared table layouts and incremental modes, plus boxed Setup Attempts", async () => {
   const inProcess = makeInProcess({
     api_key: "sk_test_list",
     api_base_url: "",
@@ -258,7 +258,11 @@ void test("same table layout and incremental mode for every entity", async () =>
     Object.fromEntries(
       c.getEntityMetadata().map(e => [e.name, e.layoutSuggestion ?? null]),
     );
-  assert.deepEqual(layouts(boxed), layouts(inProcess));
+  const inProcessLayouts = layouts(inProcess);
+  assert.deepEqual(layouts(boxed), {
+    ...inProcessLayouts,
+    setup_attempts: inProcessLayouts.setup_intents,
+  });
 
   const effective = (
     caps: ReturnType<StripeConnector["getIncrementalCapabilities"]>,
@@ -270,6 +274,7 @@ void test("same table layout and incremental mode for every entity", async () =>
   for (const entity of ENTITIES) {
     assert.equal(effective(boxCaps, entity), effective(inCaps, entity), entity);
   }
+  assert.equal(effective(boxCaps, "setup_attempts"), "created-anchor");
 });
 
 void test("check agrees on a valid key and on a revoked one", async () => {
