@@ -866,7 +866,7 @@ describe("queued REST entity admission", () => {
       invoke({
         ...poll,
         memo,
-        cancelAt: `sync-${ENTITY}-chunk-0`,
+        cancelAt: `reserve-rest-entity-run-${ENTITY}`,
       }),
     ).rejects.toBeInstanceOf(Cancelled);
     expect(memo.get(`resolve-poll-cursor-${ENTITY}`)).toMatchObject({
@@ -1039,6 +1039,85 @@ describe("queued REST entity admission", () => {
     expect(chunkStartOffsets).toEqual([0]);
     expect(live).toEqual(["opp_00000"]);
     expect(await anchor()).toEqual(runStartedAt);
+  });
+
+  it("blocks REST closure until an admitted poll lands its rows and anchor", async () => {
+    const close = () => closeRestEntityAdmission(connection(), scope);
+    beforePrepareStaging = async () => {
+      await expect(close()).rejects.toThrow(
+        "REST entity run is still in flight",
+      );
+    };
+    onSyntheticRead = async () => {
+      expect(live).toEqual([]);
+      expect(await anchor()).toEqual(previousAnchor);
+      await expect(close()).rejects.toThrow(
+        "REST entity run is still in flight",
+      );
+    };
+
+    const memo = new Map<string, unknown>();
+    await expect(
+      invoke({ ...poll, memo, cancelAt: `settle-rest-entity-run-${ENTITY}` }),
+    ).rejects.toBeInstanceOf(Cancelled);
+    expect(live).toEqual(["opp_00000"]);
+    expect(await anchor()).toEqual(previousAnchor);
+    await expect(close()).rejects.toThrow("REST entity run is still in flight");
+
+    const mongo = connection();
+    const transact = mongo.transaction.bind(mongo);
+    const abort = vi
+      .spyOn(mongo, "transaction")
+      .mockImplementationOnce((fn, options) =>
+        transact(async session => {
+          await fn(session);
+          throw new Error("synthetic abort after poll cursor write");
+        }, options),
+      );
+    try {
+      await expect(invokeQueued(memo)).rejects.toThrow(
+        "synthetic abort after poll cursor write",
+      );
+      expect(await anchor()).toEqual(previousAnchor);
+      await expect(close()).rejects.toThrow(
+        "REST entity run is still in flight",
+      );
+    } finally {
+      abort.mockRestore();
+    }
+
+    await expect(invokeQueued(memo)).resolves.toEqual({
+      completed: true,
+      rowsWritten: 1,
+    });
+    expect(live).toEqual(["opp_00000"]);
+    expect(chunkStartOffsets).toEqual([0]);
+    expect(await anchor()).toEqual(runStartedAt);
+    await expect(close()).resolves.toBeUndefined();
+  });
+
+  it("settles an append backfill once after the settlement response is lost", async () => {
+    writeModeOfRun = "append";
+    const memo = new Map<string, unknown>();
+    const request = { runId: "append-retry", memo };
+    await expect(invoke(request)).resolves.toEqual({
+      completed: true,
+      rowsWritten: 1,
+    });
+    await closeRestEntityAdmission(connection(), scope);
+    expect(memo.delete(`settle-rest-entity-run-${ENTITY}`)).toBe(true);
+    await expect(invoke(request)).resolves.toEqual({
+      completed: true,
+      rowsWritten: 1,
+    });
+    expect(live).toEqual(["opp_00000"]);
+    expect(chunkStartOffsets).toEqual([0]);
+    expect(
+      await admissionEntityState?.findOne(entityState).lean(),
+    ).toMatchObject({
+      lifetimeRowsApplied: 1,
+      backfillCursor: { totalProcessed: 1, hasMore: false },
+    });
   });
 
   it("keeps a truncated overwrite admitted under the stored connection and grants", async () => {
@@ -1517,7 +1596,7 @@ describe("queued REST entity admission", () => {
     expect(await anchor()).toEqual(runStartedAt);
   });
 
-  it("keeps an admitted attempt valid and denies its later retry after closure", async () => {
+  it("keeps a failed admitted attempt pending until a retry completes", async () => {
     const memo = await queue();
     failSyntheticRead = true;
     let entered!: () => void;
@@ -1535,17 +1614,29 @@ describe("queued REST entity admission", () => {
     const first = invokeQueued(memo);
     await Promise.race([enteredSource, first]);
     try {
-      await closeRestEntityAdmission(connection(), scope);
+      await expect(
+        closeRestEntityAdmission(connection(), scope),
+      ).rejects.toThrow("REST entity run is still in flight");
     } finally {
       release();
     }
     await expect(first).rejects.toThrow("synthetic source read failed");
     onSyntheticRead = undefined;
-    await expect(invokeQueued(memo)).rejects.toThrow(
-      "REST entity admission is closed",
+    await expect(closeRestEntityAdmission(connection(), scope)).rejects.toThrow(
+      "REST entity run is still in flight",
     );
     expect(chunkStartOffsets).toHaveLength(1);
     expect(await anchor()).toEqual(previousAnchor);
+    failSyntheticRead = false;
+    await expect(invokeQueued(memo)).resolves.toEqual({
+      completed: true,
+      rowsWritten: 1,
+    });
+    expect(live).toEqual(["opp_00000"]);
+    expect(await anchor()).toEqual(runStartedAt);
+    await expect(
+      closeRestEntityAdmission(connection(), scope),
+    ).resolves.toBeUndefined();
   });
 });
 

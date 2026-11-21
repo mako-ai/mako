@@ -2,7 +2,7 @@
  * Mongo side of the poll cursor (see poll-cursor.ts): load an entity's
  * stamps and this run's start, and stamp a completed poll.
  */
-import { Types } from "mongoose";
+import { Types, type ClientSession } from "mongoose";
 import { CdcEntityState, Flow } from "../database/workspace-schema";
 import { decidePollSince, pollOverlapMsFromEnv, toDate } from "./poll-cursor";
 
@@ -131,6 +131,7 @@ export async function stampPollRunStartedAt(params: {
   flowId: string;
   entity: string;
   runStartedAt: string | Date;
+  session?: ClientSession;
 }): Promise<void> {
   const startedAt = toDate(params.runStartedAt);
   if (!startedAt) return;
@@ -140,6 +141,6 @@ export async function stampPollRunStartedAt(params: {
       $setOnInsert: { workspaceId: new Types.ObjectId(params.workspaceId) },
       $max: { lastPollRunStartedAt: startedAt },
     },
-    { upsert: true },
+    { upsert: true, session: params.session },
   );
 }

@@ -15,6 +15,11 @@ export interface RestEntityAdmissionContext {
   runId?: string;
 }
 
+export interface RestEntityRun {
+  runId: string;
+  entity: string;
+}
+
 export interface RestEntityOverwrite {
   runId: string;
   entity: string;
@@ -34,6 +39,7 @@ interface AdmissionRecord {
   _id: string;
   closed: boolean;
   admissions: number;
+  pendingRuns?: RestEntityRun[];
   pendingOverwrites?: RestEntityOverwrite[];
   overwriteWriteRevision?: number;
   verifiedOverwrites?: Array<{
@@ -128,20 +134,62 @@ async function ensureAdmissionRecord(
   return { collection, _id };
 }
 
-/** Close new admissions only if there are no pending overwrites. */
+/** Close new admissions only after the admitted work has drained. */
 export async function closeRestEntityAdmission(
   connection: Connection,
   scope: RestEntityAdmissionScope,
 ): Promise<void> {
   const { collection, _id } = await ensureAdmissionRecord(connection, scope);
   const result = await collection.updateOne(
-    { _id, "pendingOverwrites.0": { $exists: false } },
+    {
+      _id,
+      "pendingRuns.0": { $exists: false },
+      "pendingOverwrites.0": { $exists: false },
+    },
     { $set: { closed: true } },
     { writeConcern: { w: "majority" } },
   );
-  if (result.matchedCount !== 1) {
-    throw new Error("REST overwrite is still in flight");
-  }
+  if (result.matchedCount === 1) return;
+  const pendingRun = await collection.findOne(
+    { _id, "pendingRuns.0": { $exists: true } },
+    { readConcern: { level: "majority" }, projection: { _id: 1 } },
+  );
+  if (pendingRun) throw new Error("REST entity run is still in flight");
+  throw new Error("REST overwrite is still in flight");
+}
+
+/** A retry uses the same reservation until its destination and cursor settle. */
+export async function reserveRestEntityRun(
+  connection: Connection,
+  scope: RestEntityAdmissionScope,
+  run: RestEntityRun,
+): Promise<void> {
+  const { collection, _id } = await ensureAdmissionRecord(connection, scope);
+  const result = await collection.updateOne(
+    { _id, closed: false },
+    { $addToSet: { pendingRuns: run } },
+    { writeConcern: { w: "majority" } },
+  );
+  if (result.matchedCount !== 1) throw new RestEntityAdmissionClosedError();
+}
+
+export async function settleRestEntityRun(
+  connection: Connection,
+  scope: RestEntityAdmissionScope,
+  run: RestEntityRun,
+  checkpoint: (session: ClientSession) => Promise<void>,
+): Promise<void> {
+  await connection.transaction(
+    async session => {
+      const released = await records(connection).updateOne(
+        { _id: scopeKey(scope), pendingRuns: { $elemMatch: run } },
+        { $pull: { pendingRuns: run } },
+        { session },
+      );
+      if (released.matchedCount === 1) await checkpoint(session);
+    },
+    { writeConcern: { w: "majority" } },
+  );
 }
 
 /** Reserve on the admission record before truncation can reach the destination. */

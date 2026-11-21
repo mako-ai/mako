@@ -39,6 +39,8 @@ import { withBoxMemoryWaits } from "./flow/box-memory-wait";
 import { sourceConnectionManager } from "../../sync/database-data-source-manager";
 import {
   assertRestEntityAdmission,
+  reserveRestEntityRun,
+  settleRestEntityRun,
   type RestEntityOverwriteReservation,
 } from "../../sync-cdc/rest-entity-admission";
 import type { RestBigQueryOverwriteBatch } from "../../sync-cdc/bigquery-rest-overwrite-snapshot";
@@ -338,6 +340,34 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       stepsUsed++;
     }
 
+    const trackedAdmission =
+      writeMode === "overwrite" ? undefined : restEntityAdmission;
+    const restRun = trackedAdmission
+      ? await step.run(
+          `reserve-rest-entity-run-${safeEntityStepId}`,
+          async () => {
+            const source = await sourceConnectionManager.getSourceConnection(
+              dataSourceId,
+              workspaceId,
+            );
+            if (!source) {
+              throw new Error(`Data source not found: ${dataSourceId}`);
+            }
+            if (source.type !== "rest") return null;
+            if (!source.active) {
+              throw new Error(`Data source '${source.name}' is not active`);
+            }
+            if (!durableRunId) {
+              throw new Error("REST admission requires a durable run ID");
+            }
+            const run = { runId: durableRunId, entity };
+            await reserveRestEntityRun(Flow.db, trackedAdmission.scope, run);
+            return run;
+          },
+        )
+      : null;
+    if (trackedAdmission) stepsUsed++;
+
     // ── Resolve bulk path options ────────────────────────────────────
     const cdcAdapter =
       isCdcEnabled && destinationType && (tableDestination as any)?.connectionId
@@ -432,6 +462,12 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             );
             if (!source) {
               throw new Error(`Data source not found: ${dataSourceId}`);
+            }
+            if (
+              trackedAdmission &&
+              (source.type === "rest") !== Boolean(restRun)
+            ) {
+              throw new Error("REST source type changed during entity sync");
             }
             admission =
               source.type === "rest" ? restEntityAdmission : undefined;
@@ -871,6 +907,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                     }
                   : restEntityAdmission,
                 restBigQueryOverwritePrepared: Boolean(restOverwrite),
+                restRunTracked: trackedAdmission ? Boolean(restRun) : undefined,
                 syncEngine,
                 backfillRunId: backfill
                   ? cdcBackfillRunId || executionId
@@ -1189,7 +1226,17 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         // non-critical
       }
     };
-    if (!restOverwrite) await reportBulkCompletion();
+    if (restRun && useBulkPath) {
+      await step.run(
+        `verify-rest-entity-buffer-${safeEntityStepId}`,
+        async () => {
+          if ((await getTempCollectionCount(flowId, entity, fullRead)) > 0) {
+            throw new Error("REST entity run left buffered source rows");
+          }
+        },
+      );
+    }
+    if (!restOverwrite && !restRun) await reportBulkCompletion();
 
     // ── Mark checkpoint completed ────────────────────────────────────
     const completedCheckpoint =
@@ -1209,7 +1256,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
               : {}),
           }
         : undefined;
-    if (completedCheckpoint && !restOverwrite) {
+    if (completedCheckpoint && !restOverwrite && !restRun) {
       await step.run(
         `complete-cdc-backfill-checkpoint-${safeEntityStepId}`,
         () =>
@@ -1221,7 +1268,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
     // Only after every row of this run reached the live table: the next poll
     // re-reads from this run's start (minus the overlap).
     const pollRunStartedAt = pollCursor?.runStartedAt;
-    if (pollRunStartedAt) {
+    if (pollRunStartedAt && !restRun) {
       await step.run(`stamp-poll-cursor-${safeEntityStepId}`, async () => {
         await stampPollRunStartedAt({
           workspaceId,
@@ -1230,6 +1277,34 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           runStartedAt: pollRunStartedAt,
         });
       });
+    }
+
+    if (trackedAdmission && restRun) {
+      await step.run(`settle-rest-entity-run-${safeEntityStepId}`, () =>
+        settleRestEntityRun(
+          Flow.db,
+          trackedAdmission.scope,
+          restRun,
+          async session => {
+            if (completedCheckpoint) {
+              await cdcBackfillCheckpointService.markEntityCompleted({
+                ...completedCheckpoint,
+                session,
+              });
+            }
+            if (pollRunStartedAt) {
+              await stampPollRunStartedAt({
+                workspaceId,
+                flowId,
+                entity,
+                runStartedAt: pollRunStartedAt,
+                session,
+              });
+            }
+          },
+        ),
+      );
+      await reportBulkCompletion();
     }
 
     if (restOverwrite) {

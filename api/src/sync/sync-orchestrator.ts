@@ -251,6 +251,8 @@ export interface SyncChunkOptions {
   /** The flow's workspace: the source connection is looked up in it only. */
   workspaceId: string;
   restEntityAdmission?: RestEntityAdmissionContext;
+  /** Connector type selected when an enabled REST gate checked this run. */
+  restRunTracked?: boolean;
   /** The bulk runner already verified the retained REST truncate. */
   restBigQueryOverwritePrepared?: boolean;
   /** Bind staging changes to the retained REST overwrite's physical target. */
@@ -429,6 +431,12 @@ export async function performSyncChunk(
       sourceConnection.type !== "rest"
     ) {
       throw new Error("REST source type changed during overwrite");
+    }
+    if (
+      options.restRunTracked !== undefined &&
+      (sourceConnection.type === "rest") !== options.restRunTracked
+    ) {
+      throw new Error("REST source type changed during entity sync");
     }
     if (options.restEntityAdmission && sourceConnection.type === "rest") {
       await assertRestEntityAdmission(
