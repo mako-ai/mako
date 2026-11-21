@@ -137,8 +137,10 @@ async function makeCdcMerge(suffix: string) {
 }
 
 describe("BigQuery CDC event settlement", () => {
-  it("submits the sealed request after reservation and recovers a late job without a second insert", async () => {
-    const first = await makeCdcMerge("cdc_retained_dispatch");
+  async function expectSingleDispatch(reservationType: "new" | "inherited") {
+    const first = await makeCdcMerge(
+      `cdc_retained_dispatch_${reservationType}`,
+    );
     const event = await first.event("dispatch-delivery", 1);
     const { job, input, destination } = first.binding;
     const snapshot = input.snapshot;
@@ -183,6 +185,7 @@ describe("BigQuery CDC event settlement", () => {
         jobLocation: job.location,
         jobReservedBeforeDispatch: true,
         jobIntentFingerprint: staged.fingerprint,
+        jobDispatchState: "attempted",
       });
       throw lostAcknowledgement;
     });
@@ -203,6 +206,7 @@ describe("BigQuery CDC event settlement", () => {
           schema: destination.dataset,
           tableName: destination.table,
         },
+        hooks: { lease: { maxWaitMs: 0 } },
       });
       (instance as unknown as { _resolvedClient: unknown })._resolvedClient = {
         bq: {
@@ -242,7 +246,49 @@ describe("BigQuery CDC event settlement", () => {
     expect(createJob).not.toHaveBeenCalled();
     expect(await CdcTableWriteLease.findById(key)).toBeNull();
 
-    await expect(dispatch()).rejects.toBe(lostAcknowledgement);
+    const expire = () =>
+      CdcTableWriteLease.updateOne(
+        { _id: key },
+        { $set: { expiresAt: new Date(0) } },
+        { writeConcern: { w: "majority" } },
+      );
+    if (reservationType === "inherited") {
+      const old = await acquireTableWriteLease(key, {
+        path: "live",
+        maxWaitMs: 0,
+        jobs: {
+          isDone: async () => false,
+          isReservedJobDone: async () => false,
+          cancel,
+        },
+      });
+      const reservation = {
+        jobId: job.id,
+        location: job.location,
+        intentFingerprint: staged.fingerprint,
+      };
+      try {
+        await old.reserveJob(reservation, { guardDispatch: true });
+        await expect(
+          CdcTableWriteLease.findById(key).readConcern("majority").lean(),
+        ).resolves.toMatchObject({
+          jobDispatchState: "ready",
+          jobId: job.id,
+        });
+        await expire();
+        getSnapshot.mockImplementationOnce(async () => {
+          await expect(
+            old.beginReservedJobDispatch(reservation),
+          ).rejects.toBeInstanceOf(TableWriteLeaseBusyError);
+          return [snapshotMetadata];
+        });
+        await expect(dispatch()).rejects.toBe(lostAcknowledgement);
+      } finally {
+        await old.release();
+      }
+    } else {
+      await expect(dispatch()).rejects.toBe(lostAcknowledgement);
+    }
     expect(dataset).toHaveBeenLastCalledWith(snapshot.dataset, {
       projectId: snapshot.project,
       location: job.location,
@@ -263,10 +309,10 @@ describe("BigQuery CDC event settlement", () => {
 
     await mongoose.disconnect();
     await mongoose.connect(mongo.getUri());
-    await CdcTableWriteLease.updateOne(
-      { _id: key },
-      { $set: { expiresAt: new Date(0) } },
-    );
+    await expire();
+    await expect(dispatch()).rejects.toBeInstanceOf(TableWriteLeaseBusyError);
+    expect(createJob).toHaveBeenCalledTimes(1);
+    await expire();
     getJob.mockImplementation(async () => [
       {
         ...request,
@@ -288,7 +334,12 @@ describe("BigQuery CDC event settlement", () => {
       materializationStatus: "applied",
       materializationAttemptCount: 1,
     });
-  });
+  }
+
+  it.each(["new", "inherited"] as const)(
+    "dispatches a %s reservation once and recovers a late job",
+    expectSingleDispatch,
+  );
 
   it("recovers an overlapping retry after the warehouse accepted one write and lost its response", async () => {
     const first = await makeCdcMerge("cdc_lost_ack");

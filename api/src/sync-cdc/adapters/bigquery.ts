@@ -126,7 +126,7 @@ interface BigQueryAdapterConfig {
     /** Shorter lease backoff for tests. */
     lease?: Pick<
       AcquireTableWriteLeaseOptions,
-      "backoffMinMs" | "backoffMaxMs"
+      "backoffMinMs" | "backoffMaxMs" | "maxWaitMs"
     >;
   };
 }
@@ -210,12 +210,17 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       throw new Error("No retained BigQuery write for this flow and table");
     }
     if (staged.terminal) return staged.terminal.outcome;
+    const reservation = {
+      jobId,
+      location,
+      intentFingerprint: staged.fingerprint,
+    };
 
     let submissionError: { cause: unknown } | undefined;
     await this.underTableWriteLease(
       target,
       table.table,
-      { path: "live", flowId },
+      { path: "live", flowId, resumeReservedJob: reservation },
       async lease => {
         if (!lease) throw new Error("Retained BigQuery writes require a lease");
         const current = await readBigQueryStagedCdcWrite(
@@ -245,11 +250,10 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         if (!request) {
           throw new Error("Retained BigQuery write binding changed");
         }
-        await lease.reserveJob({
-          jobId,
-          location,
-          intentFingerprint: staged.fingerprint,
-        });
+        if (!lease.currentJob) {
+          await lease.reserveJob(reservation, { guardDispatch: true });
+        }
+        await lease.beginReservedJobDispatch(reservation);
         try {
           // The SDK uses this explicit ID and location for jobs.insert.
           await target.bq.createJob({
@@ -1067,7 +1071,10 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   private async underTableWriteLease<T>(
     target: BigQueryTarget,
     liveTable: string,
-    p: { path: CdcMergePath; flowId?: string },
+    p: Pick<
+      AcquireTableWriteLeaseOptions,
+      "path" | "flowId" | "resumeReservedJob"
+    >,
     fn: (lease: TableWriteLease | undefined) => Promise<T>,
   ): Promise<T> {
     const key = getSchemaCacheKey(target.projectId, target.dataset, liveTable);
@@ -1075,7 +1082,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     return withTableWriteLease(
       key,
       {
-        path: p.path,
+        ...p,
         flowId,
         maxWaitMs: tableWriteLeaseMaxWaitMs(p.path),
         jobs: this.leaseJobControl(target, liveTable),
