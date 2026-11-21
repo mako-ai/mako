@@ -240,6 +240,7 @@ export default defineConfig({
       // Webhook batches for boxed connectors: ingress, lanes, caps and the
       // box's untrusted answer, against a real in-memory Mongo.
       "src/connectors/workspace/webhook-batch.test.ts",
+      "src/sync-cdc/inline-webhook-admission.test.ts",
       "src/apps/sandbox/e2b-provider.boxes.test.ts",
       // One held E2B handle per session: connect and setTimeout counts.
       "src/apps/sandbox/e2b-provider.handles.test.ts",
