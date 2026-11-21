@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { Types, type ClientSession } from "mongoose";
 import { z } from "zod";
 import { CdcChangeEvent } from "../database/models/cdc";
+import { WebhookEvent } from "../database/models/webhooks";
 import { Flow } from "../database/workspace-schema";
 import { cdcLiveTableName } from "./normalization";
 import { cdcFlowWriteRevision } from "./cdc-flow-write-fence";
@@ -23,16 +25,31 @@ export const bigQueryCdcScope = z.strictObject({
 const cdcBinding = z.strictObject({
   scope: bigQueryCdcScope,
   events: z
-    .array(z.strictObject({ id: objectId, deliveryKey: nonempty }))
+    .array(
+      z.strictObject({
+        id: objectId,
+        deliveryKey: nonempty,
+        originalReceipt: z
+          .strictObject({
+            id: objectId,
+            flowId: objectId,
+            sourceConnectionId: objectId,
+            eventIdSha256: z.string().regex(/^[a-f0-9]{64}$/),
+            receivedAt: z.iso.datetime({ precision: 3 }),
+            recordId: z.string().min(1),
+          })
+          .optional(),
+      }),
+    )
     .min(1),
 });
 
 export type BigQueryCdcScope = z.infer<typeof bigQueryCdcScope>;
 
 /**
- * The authorizing caller derives each key from its exact webhook-backed CDC
- * event and revalidates the destination connection revision and BigQuery
- * project. This schema holds the resulting trusted binding.
+ * The authorizing caller verifies the provider origin and revalidates the
+ * destination connection revision and BigQuery project. Replay additionally
+ * supplies the exact original inbox receipt for each target CDC row.
  */
 export type BigQueryCdcBinding = z.infer<typeof cdcBinding>;
 
@@ -49,11 +66,73 @@ export function normalizeBigQueryCdcBinding(
       "Retained BigQuery writes require distinct CDC events and delivery keys",
     );
   }
+  if (
+    events.some(event => event.originalReceipt) &&
+    events.some(event => !event.originalReceipt)
+  ) {
+    throw new Error(
+      "Each row in a retained replay must bind its original receipt",
+    );
+  }
   events.sort((left, right) => left.id.localeCompare(right.id));
   return binding;
 }
 
 export class CdcBigQueryBindingChangedError extends Error {}
+
+const sha256 = (value: string) =>
+  createHash("sha256").update(value).digest("hex");
+
+/** A single delivery can produce multiple records in the same entity. */
+export function bigQueryReplayDeliveryKey(
+  eventIdSha256: string,
+  recordId: string,
+): string {
+  return sha256(JSON.stringify([eventIdSha256, recordId]));
+}
+
+async function requireOriginalReceipts(
+  binding: BigQueryCdcBinding,
+  session: ClientSession,
+): Promise<void> {
+  const linked = binding.events.flatMap(event =>
+    event.originalReceipt
+      ? [{ ...event.originalReceipt, key: event.deliveryKey }]
+      : [],
+  );
+  if (linked.length === 0) return;
+  const receipts = await WebhookEvent.find({
+    _id: { $in: linked.map(link => new Types.ObjectId(link.id)) },
+    workspaceId: new Types.ObjectId(binding.scope.workspaceId),
+    lane: null,
+    $expr: {
+      $and: [
+        { $eq: ["$status", "dormant"] },
+        { $eq: ["$applyStatus", "dormant"] },
+      ],
+    },
+  })
+    .select({ flowId: 1, dataSourceId: 1, receivedAt: 1, eventId: 1 })
+    .session(session)
+    .lean();
+  const byId = new Map(receipts.map(receipt => [String(receipt._id), receipt]));
+  for (const link of linked) {
+    const receipt = byId.get(link.id);
+    if (
+      !receipt ||
+      String(receipt.flowId) !== link.flowId ||
+      String(receipt.dataSourceId) !== link.sourceConnectionId ||
+      receipt.receivedAt?.toJSON() !== link.receivedAt ||
+      !receipt.eventId?.trim() ||
+      sha256(receipt.eventId) !== link.eventIdSha256 ||
+      bigQueryReplayDeliveryKey(link.eventIdSha256, link.recordId) !== link.key
+    ) {
+      throw new CdcBigQueryBindingChangedError(
+        "Retained CDC replay does not match the original inbox receipt",
+      );
+    }
+  }
+}
 
 interface CdcTarget {
   dataset: string;
@@ -107,8 +186,18 @@ export async function requireCurrentBigQueryCdcFlow(
 }
 
 function pendingEvents(binding: BigQueryCdcBinding) {
+  const { events } = binding;
+  const idFilter = events.some(event => event.originalReceipt)
+    ? {
+        $or: events.map(({ id, originalReceipt }) => ({
+          _id: new Types.ObjectId(id),
+          webhookEventId: originalReceipt?.id,
+          recordId: originalReceipt?.recordId,
+        })),
+      }
+    : { _id: { $in: events.map(event => new Types.ObjectId(event.id)) } };
   return {
-    _id: { $in: binding.events.map(event => new Types.ObjectId(event.id)) },
+    ...idFilter,
     workspaceId: new Types.ObjectId(binding.scope.workspaceId),
     flowId: new Types.ObjectId(binding.scope.flowId),
     entity: binding.scope.entity,
@@ -123,6 +212,7 @@ export async function claimBigQueryCdcEvents(
   fingerprint: string,
   session: ClientSession,
 ): Promise<void> {
+  await requireOriginalReceipts(binding, session);
   const result = await CdcChangeEvent.updateMany(
     {
       ...pendingEvents(binding),

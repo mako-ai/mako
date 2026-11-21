@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose, { Types } from "mongoose";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -18,6 +19,7 @@ import { BigQueryDestinationAdapter } from "./adapters/bigquery";
 import { buildCdcEntityLayout } from "./adapters/registry";
 import * as adapterRegistry from "./adapters/registry";
 import { bigQuerySnapshotGeneration } from "./bigquery-retained-query";
+import { bigQueryReplayDeliveryKey } from "./bigquery-staged-cdc";
 import { getCdcEventStore } from "./event-store";
 import { CdcConsumerService, parkPausedFlowWebhookEvents } from "./consumer";
 import { cleanupStalePendingCdcEvents } from "./cdc-stale-pending-cleanup";
@@ -194,6 +196,174 @@ async function makeResyncFlow(suffix: string, dataset: string) {
 }
 
 describe("BigQuery CDC event settlement", () => {
+  it("binds both transcript records to one original receipt after inbox retention expires", async () => {
+    const target = await makeCdcMerge("original_inbox_receipt", "boxed_target");
+    target.scope.entity = "recording_transcripts";
+    target.binding.destination.table = "recording_transcripts";
+    const eventId = "synthetic-provider-event-for-two-languages";
+    const receivedAt = new Date("2026-11-18T17:35:16.117Z");
+    const origin = {
+      _id: new Types.ObjectId(),
+      workspaceId: new Types.ObjectId(target.scope.workspaceId),
+      flowId: new Types.ObjectId(),
+      dataSourceId: new Types.ObjectId(),
+      eventId,
+      eventType: "recording_added",
+      receivedAt,
+      status: "dormant",
+      applyStatus: "dormant",
+      rawPayload: { eventId },
+    };
+    // The closed intake writes this receipt through the raw collection.
+    await WebhookEvent.collection.insertOne(origin);
+    const eventIdSha256 = createHash("sha256").update(eventId).digest("hex");
+    const receipt = {
+      id: String(origin._id),
+      flowId: String(origin.flowId),
+      sourceConnectionId: String(origin.dataSourceId),
+      eventIdSha256,
+      receivedAt: receivedAt.toISOString(),
+    };
+    const english = await target.event("recording:en", 1, target.scope.entity);
+    const french = await target.event("recording:fr", 2, target.scope.entity);
+    const rows = [english, french];
+    const events = rows.map(row => ({
+      id: row.id,
+      deliveryKey: bigQueryReplayDeliveryKey(eventIdSha256, row.deliveryKey),
+      originalReceipt: { ...receipt, recordId: row.deliveryKey },
+    }));
+    const hold = (binding = target.binding, replayEvents = events) =>
+      holdBigQueryStagedCdcMerge(binding, target.merge, target.options, {
+        scope: target.scope,
+        events: replayEvents,
+      });
+    await expect(hold()).rejects.toThrow("could not be reserved");
+    await CdcChangeEvent.updateMany(
+      { _id: { $in: rows.map(row => row.id) } },
+      { $set: { webhookEventId: receipt.id } },
+    );
+    const [first, ...rest] = events;
+    if (!first) throw new Error("Missing test replay event");
+    await WebhookEvent.collection.updateOne(
+      { _id: origin._id },
+      { $set: { workspaceId: new Types.ObjectId() } },
+    );
+    await expect(hold()).rejects.toThrow(
+      "does not match the original inbox receipt",
+    );
+    await WebhookEvent.collection.updateOne(
+      { _id: origin._id },
+      { $set: { workspaceId: origin.workspaceId } },
+    );
+    for (const invalid of [
+      { ...first, deliveryKey: "unbound-retry-key" },
+      {
+        ...first,
+        originalReceipt: {
+          ...first.originalReceipt,
+          flowId: target.scope.flowId,
+        },
+      },
+      {
+        ...first,
+        originalReceipt: {
+          ...first.originalReceipt,
+          sourceConnectionId: target.scope.sourceConnectionId,
+        },
+      },
+      {
+        ...first,
+        originalReceipt: {
+          ...first.originalReceipt,
+          receivedAt: new Date(0).toISOString(),
+        },
+      },
+      {
+        ...first,
+        originalReceipt: {
+          ...first.originalReceipt,
+          eventIdSha256: "0".repeat(64),
+        },
+      },
+    ]) {
+      await expect(hold(target.binding, [invalid, ...rest])).rejects.toThrow(
+        "does not match the original inbox receipt",
+      );
+    }
+    const job = target.binding.job;
+    await expect(readBigQueryStagedInput(job)).resolves.toBeNull();
+    await expect(hold()).resolves.toBe("held");
+
+    const duplicate = await target.event(
+      english.deliveryKey,
+      3,
+      target.scope.entity,
+    );
+    await CdcChangeEvent.updateOne(
+      { _id: duplicate.id },
+      { $set: { webhookEventId: receipt.id } },
+    );
+    const alternate = makeMerge("competing_original_inbox").binding;
+    alternate.destination = target.binding.destination;
+    await expect(
+      hold(alternate, [{ ...first, id: duplicate.id }]),
+    ).rejects.toMatchObject({
+      code: 11000,
+    });
+    await expect(readBigQueryStagedInput(alternate.job)).resolves.toBeNull();
+    await expect(
+      CdcChangeEvent.findById(duplicate.id).lean(),
+    ).resolves.not.toHaveProperty("retainedBigQueryWrite");
+
+    const request = await readPendingBigQueryQueryRequest(job);
+    expect(request).not.toBeNull();
+    await CdcChangeEvent.updateOne(
+      { _id: english.id },
+      { $set: { webhookEventId: String(new Types.ObjectId()) } },
+    );
+    await expect(readPendingBigQueryQueryRequest(job)).resolves.toBeNull();
+    const done = {
+      ...request,
+      status: { state: "DONE" },
+      statistics: { query: { statementType: "MERGE" } },
+    };
+    await expect(recordObservedBigQueryQueryResult(job, done)).resolves.toBe(
+      false,
+    );
+    await CdcChangeEvent.updateOne(
+      { _id: english.id },
+      { $set: { webhookEventId: receipt.id } },
+    );
+    await expect(recordObservedBigQueryQueryResult(job, done)).resolves.toBe(
+      true,
+    );
+    // The per-entity result must leave the original inbox available for the recordings job.
+    await expect(
+      WebhookEvent.findById(origin._id).lean(),
+    ).resolves.toMatchObject({
+      applyStatus: "dormant",
+    });
+    for (const row of rows) {
+      await expect(
+        CdcChangeEvent.findById(row.id).lean(),
+      ).resolves.toMatchObject({
+        materializationStatus: "applied",
+        materializationAttemptCount: 1,
+      });
+    }
+    await WebhookEvent.deleteOne({ _id: origin._id });
+    await CdcChangeEvent.deleteMany({ _id: { $in: rows.map(row => row.id) } });
+    await mongoose.disconnect();
+    await mongoose.connect(mongo.getUri());
+    await expect(hold()).resolves.toBe("terminal");
+    const retained = await readBigQueryStagedInput(job);
+    expect(retained).toMatchObject({
+      intent: { destination: target.binding.destination, cdc: { events } },
+      terminal: { state: "DONE", outcome: "succeeded" },
+    });
+    expect(JSON.stringify(retained)).not.toContain(eventId);
+  });
+
   it.each(["applied", "failed", "dropped"] as const)(
     "keeps a shared receipt pending when ordinary CDC marks a sibling %s",
     async outcome => {
