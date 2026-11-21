@@ -172,11 +172,12 @@ describe("the gate: mako/stripe@1 installed by reference", () => {
       authType: "api_key",
       changelog: expect.stringContaining("setup_attempts"),
     });
-    expect(published.entry.entities).toHaveLength(28);
+    expect(published.entry.entities).toHaveLength(29);
     expect(published.entry.entities).toEqual(
       expect.arrayContaining([
         "setup_attempts",
         "checkout_sessions_line_items",
+        "files",
       ]),
     );
 
