@@ -185,6 +185,95 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     return getLiveTableMeta(await this.resolveBqClient(), tableName);
   }
 
+  /** Submit an already-held CDC intent through the same lease as live writes. */
+  async dispatchRetainedCdcMerge(
+    layout: CdcEntityLayout,
+    flowId: string,
+    jobId: string,
+  ): Promise<"succeeded" | "failed" | "pending"> {
+    const { bigQuerySnapshotGeneration } =
+      await import("../bigquery-retained-query");
+    const { readBigQueryStagedCdcWrite, readPendingBigQueryQueryRequest } =
+      await import("../bigquery-staged-intent");
+    const target = await this.resolveBqClient();
+    const location = target.datasetLocation?.trim().toLowerCase();
+    if (!location) {
+      throw new Error("Retained BigQuery writes require a location");
+    }
+    const table = this.leaseJobTarget(target, layout.tableName);
+    const job = { project: table.project, location, id: jobId };
+    const staged = await readBigQueryStagedCdcWrite(job, table);
+    if (
+      staged?.intent.cdc?.scope.flowId !== flowId ||
+      staged.intent.cdc.scope.entity !== layout.entity
+    ) {
+      throw new Error("No retained BigQuery write for this flow and table");
+    }
+    if (staged.terminal) return staged.terminal.outcome;
+
+    let submissionError: { cause: unknown } | undefined;
+    await this.underTableWriteLease(
+      target,
+      table.table,
+      { path: "live", flowId },
+      async lease => {
+        if (!lease) throw new Error("Retained BigQuery writes require a lease");
+        const current = await readBigQueryStagedCdcWrite(
+          job,
+          table,
+          staged.fingerprint,
+        );
+        if (!current) {
+          throw new Error("Retained BigQuery write binding changed");
+        }
+        if (current.terminal) return;
+        const { snapshot, generation } = current.intent.input;
+        const [metadata] = await target.bq
+          .dataset(snapshot.dataset, { projectId: snapshot.project, location })
+          .table(snapshot.table)
+          .getMetadata();
+        if (
+          bigQuerySnapshotGeneration(snapshot, location, metadata) !==
+          generation
+        ) {
+          throw new Error("Retained BigQuery snapshot generation changed");
+        }
+        const request = await readPendingBigQueryQueryRequest(
+          job,
+          staged.fingerprint,
+        );
+        if (!request) {
+          throw new Error("Retained BigQuery write binding changed");
+        }
+        await lease.reserveJob({
+          jobId,
+          location,
+          intentFingerprint: staged.fingerprint,
+        });
+        try {
+          // The SDK uses this explicit ID and location for jobs.insert.
+          await target.bq.createJob({
+            jobId: request.jobReference.jobId,
+            location: request.jobReference.location,
+            configuration: request.configuration,
+          });
+        } catch (cause) {
+          // The lease verifier still gets a chance to settle a lost acknowledgement.
+          submissionError = { cause };
+        }
+      },
+    );
+
+    const settled = await readBigQueryStagedCdcWrite(
+      job,
+      table,
+      staged.fingerprint,
+    );
+    if (settled?.terminal) return settled.terminal.outcome;
+    if (submissionError) throw submissionError.cause;
+    return "pending";
+  }
+
   async repartitionLiveTable(
     layout: CdcEntityLayout,
   ): Promise<{ repartitioned: boolean }> {
@@ -912,6 +1001,16 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   // Private helpers
   // ---------------------------------------------------------------------------
 
+  private leaseJobTarget(target: BigQueryTarget, table: string) {
+    return {
+      project: target.projectId,
+      dataset: target.dataset,
+      table,
+      workspaceId: String(target.destination.workspaceId),
+      destinationConnectionId: String(target.destination._id),
+    };
+  }
+
   /** Read and cancel BigQuery jobs for the table write lease. */
   private leaseJobControl(
     target: BigQueryTarget,
@@ -938,13 +1037,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         const { settleReservedBigQueryCdcJob } =
           await import("../bigquery-staged-intent");
         return settleReservedBigQueryCdcJob(
-          {
-            project: target.projectId,
-            dataset: target.dataset,
-            table: liveTable,
-            workspaceId: String(target.destination.workspaceId),
-            destinationConnectionId: String(target.destination._id),
-          },
+          this.leaseJobTarget(target, liveTable),
           job,
           async () => {
             try {

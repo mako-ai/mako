@@ -9,6 +9,7 @@ import {
   retainedQueryConfiguration,
   retainedQueryOutcome,
   type BigQueryJobIdentity,
+  type BigQueryTableIdentity,
   type RetainedQueryConfiguration,
 } from "./bigquery-retained-query";
 import {
@@ -24,12 +25,6 @@ import {
 } from "./bigquery-staged-cdc";
 import { stableStringify } from "./normalization";
 import type { LeaseJobRef } from "./table-write-lease";
-
-interface BigQueryTableIdentity {
-  project: string;
-  dataset: string;
-  table: string;
-}
 
 export interface BigQueryStagedInput {
   snapshot: BigQueryTableIdentity;
@@ -342,12 +337,39 @@ export async function readBigQueryStagedInput(
   return StagedWrite.findById(jobKey(job)).readConcern("majority").lean();
 }
 
+type CdcDispatchTarget = BigQueryTableIdentity & {
+  workspaceId: string;
+  destinationConnectionId: string;
+};
+
+export async function readBigQueryStagedCdcWrite(
+  job: BigQueryJobIdentity,
+  target: CdcDispatchTarget,
+  expectedFingerprint?: string,
+): Promise<StagedWriteRecord | null> {
+  const record = await readBigQueryStagedInput(job);
+  const scope = record?.intent.cdc?.scope;
+  if (
+    !record ||
+    !scope ||
+    record.cleanedAt ||
+    (expectedFingerprint !== undefined &&
+      record.fingerprint !== expectedFingerprint) ||
+    record.fingerprint !== stagedWriteFingerprint(record.intent) ||
+    scope.workspaceId !== target.workspaceId ||
+    scope.destinationConnectionId !== target.destinationConnectionId ||
+    record.intent.destination.project !== target.project ||
+    record.intent.destination.dataset !== target.dataset ||
+    record.intent.destination.table !== target.table
+  ) {
+    return null;
+  }
+  return record;
+}
+
 /** A reserved table lease needs proof from the exact job and destination. */
 export async function settleReservedBigQueryCdcJob(
-  target: BigQueryTableIdentity & {
-    workspaceId: string;
-    destinationConnectionId: string;
-  },
+  target: CdcDispatchTarget,
   reservation: LeaseJobRef,
   readJobMetadata: () => Promise<unknown>,
 ): Promise<boolean> {
@@ -361,22 +383,12 @@ export async function settleReservedBigQueryCdcJob(
     return false;
   }
   const job = { project: target.project, location, id: jobId };
-  const record = await readBigQueryStagedInput(job);
-  const scope = record?.intent.cdc?.scope;
-  if (
-    !record ||
-    !scope ||
-    record.cleanedAt ||
-    record.fingerprint !== intentFingerprint ||
-    record.fingerprint !== stagedWriteFingerprint(record.intent) ||
-    scope.workspaceId !== target.workspaceId ||
-    scope.destinationConnectionId !== target.destinationConnectionId ||
-    record.intent.destination.project !== target.project ||
-    record.intent.destination.dataset !== target.dataset ||
-    record.intent.destination.table !== target.table
-  ) {
-    return false;
-  }
+  const record = await readBigQueryStagedCdcWrite(
+    job,
+    target,
+    intentFingerprint,
+  );
+  if (!record) return false;
   if (record.terminal) {
     return (
       "fingerprint" in record.terminal &&
@@ -396,12 +408,19 @@ export async function settleReservedBigQueryCdcJob(
 /** Use the majority-confirmed request for the first submission and any recovery. */
 export async function readPendingBigQueryQueryRequest(
   job: BigQueryJobIdentity,
+  expectedFingerprint?: string,
 ) {
   const record = await readBigQueryStagedInput(job);
   if (record?.terminal || record?.cleanedAt) return null;
   const configuration = record?.intent.configuration;
   if (!record || !configuration) return null;
-  if (record.fingerprint !== stagedWriteFingerprint(record.intent)) return null;
+  if (
+    (expectedFingerprint !== undefined &&
+      record.fingerprint !== expectedFingerprint) ||
+    record.fingerprint !== stagedWriteFingerprint(record.intent)
+  ) {
+    return null;
+  }
   if (record.intent.cdc) {
     const cdc = record.intent.cdc;
     try {

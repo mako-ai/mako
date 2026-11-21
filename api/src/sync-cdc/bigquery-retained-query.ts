@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { stableStringify } from "./normalization";
 
@@ -23,6 +24,53 @@ export interface BigQueryJobIdentity {
   project: string;
   location: string;
   id: string;
+}
+
+export interface BigQueryTableIdentity {
+  project: string;
+  dataset: string;
+  table: string;
+}
+
+const nonempty = z.string().min(1);
+const tableReference = z.object({
+  projectId: nonempty,
+  datasetId: nonempty,
+  tableId: nonempty,
+});
+const retainedSnapshot = z.object({
+  type: z.literal("SNAPSHOT"),
+  tableReference,
+  location: nonempty,
+  creationTime: nonnegativeInteger,
+  etag: nonempty,
+  expirationTime: z.undefined().optional(),
+  snapshotDefinition: z.object({
+    baseTableReference: tableReference,
+    snapshotTime: z.iso.datetime({ offset: true }),
+  }),
+});
+
+/** Pin provider metadata for a read-only input with no automatic expiry. */
+export function bigQuerySnapshotGeneration(
+  table: BigQueryTableIdentity,
+  location: string,
+  metadata: unknown,
+): string | null {
+  const parsed = retainedSnapshot.safeParse(metadata);
+  if (!parsed.success) return null;
+  const reference = parsed.data.tableReference;
+  if (
+    reference.projectId !== table.project ||
+    reference.datasetId !== table.dataset ||
+    reference.tableId !== table.table ||
+    !sameBigQueryLocation(parsed.data.location, location)
+  ) {
+    return null;
+  }
+  return createHash("sha256")
+    .update(stableStringify(parsed.data))
+    .digest("hex");
 }
 
 const observedJob = z.object({
