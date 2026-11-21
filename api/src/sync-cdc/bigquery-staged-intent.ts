@@ -1,12 +1,17 @@
 import { createHash } from "node:crypto";
 import mongoose, { Schema } from "mongoose";
+import {
+  buildMergeStatement,
+  fullTableName,
+  type BuildMergeStatementParams,
+} from "./adapters/bigquery-sql";
+import {
+  retainedQueryConfiguration,
+  retainedQueryOutcome,
+  type BigQueryJobIdentity,
+  type RetainedQueryConfiguration,
+} from "./bigquery-retained-query";
 import { stableStringify } from "./normalization";
-
-interface BigQueryJobIdentity {
-  project: string;
-  location: string;
-  id: string;
-}
 
 interface BigQueryTableIdentity {
   project: string;
@@ -20,17 +25,37 @@ export interface BigQueryStagedInput {
   generation: string;
 }
 
-export interface BigQueryStagedIntent {
+interface StagedWriteBinding {
   job: BigQueryJobIdentity;
   input: BigQueryStagedInput;
   destination: BigQueryTableIdentity;
-  /** Digest of the immutable dispatch configuration, including the exact SQL. */
-  configurationFingerprint: string;
 }
 
-export interface BigQueryTerminalReceipt extends BigQueryStagedIntent {
+interface DigestOnlyIntent extends StagedWriteBinding {
+  configurationFingerprint: string;
+  configuration?: never;
+}
+
+interface RetainedQueryIntent extends StagedWriteBinding {
+  configuration: RetainedQueryConfiguration;
+  configurationFingerprint?: never;
+}
+
+type RetainedMergeOptions = Omit<RetainedQueryConfiguration, "query"> & {
+  query: Omit<RetainedQueryConfiguration["query"], "query">;
+};
+
+export type BigQueryStagedIntent = DigestOnlyIntent | RetainedQueryIntent;
+
+interface TerminalOutcome {
   state: "DONE";
   outcome: "succeeded" | "failed";
+}
+
+export type BigQueryTerminalReceipt = DigestOnlyIntent & TerminalOutcome;
+
+interface VerifiedQueryReceipt extends TerminalOutcome {
+  fingerprint: string;
 }
 
 interface StagedWriteRecord {
@@ -38,7 +63,7 @@ interface StagedWriteRecord {
   fingerprint: string;
   snapshotKey: string;
   intent: BigQueryStagedIntent;
-  terminal?: BigQueryTerminalReceipt;
+  terminal?: BigQueryTerminalReceipt | VerifiedQueryReceipt;
   cleanedAt?: Date;
 }
 
@@ -104,12 +129,48 @@ export function stagedWriteFingerprint(intent: BigQueryStagedIntent): string {
     tableIdentity(intent.input.snapshot),
     intent.input.generation,
     tableIdentity(intent.destination),
-    intent.configurationFingerprint,
+    intent.configuration === undefined
+      ? intent.configurationFingerprint
+      : ["jobs.insert", intent.configuration],
   ]);
 }
 
-/** Bind a sealed input to a caller-assigned job before the warehouse dispatches it. */
 export async function holdBigQueryStagedInput(
+  requested: DigestOnlyIntent,
+): Promise<"held" | "terminal"> {
+  if (requested.configuration !== undefined) {
+    throw new Error("A retained query must be built from its table bindings");
+  }
+  return holdStagedWrite(requested);
+}
+
+/** Build the MERGE from the sealed snapshot and target bound to the job. */
+export function holdBigQueryStagedMerge(
+  binding: StagedWriteBinding,
+  merge: Omit<BuildMergeStatementParams, "fullLive" | "fullStaging">,
+  options: RetainedMergeOptions,
+): Promise<"held" | "terminal"> {
+  const qualify = (table: BigQueryTableIdentity) =>
+    fullTableName(
+      { projectId: table.project, dataset: table.dataset },
+      table.table,
+    );
+  const configuration = retainedQueryConfiguration.parse({
+    ...options,
+    query: {
+      ...options.query,
+      query: buildMergeStatement({
+        ...merge,
+        fullLive: qualify(binding.destination),
+        fullStaging: qualify(binding.input.snapshot),
+      }),
+    },
+  });
+  return holdStagedWrite({ ...binding, configuration });
+}
+
+/** Bind a sealed input to a caller-assigned job before the warehouse dispatches it. */
+async function holdStagedWrite(
   requested: BigQueryStagedIntent,
 ): Promise<"held" | "terminal"> {
   const intent = structuredClone(requested);
@@ -123,9 +184,9 @@ export async function holdBigQueryStagedInput(
     ...tableIdentity(intent.input.snapshot),
     intent.input.generation,
     ...tableIdentity(intent.destination),
-    intent.configurationFingerprint,
+    intent.configuration?.query.query ?? intent.configurationFingerprint,
   ];
-  if (fields.some(field => !field.trim())) {
+  if (fields.some(field => !field?.trim())) {
     throw new Error(
       "A staged write requires a complete job, input and destination identity",
     );
@@ -152,6 +213,46 @@ export async function readBigQueryStagedInput(
   return StagedWrite.findById(jobKey(job)).readConcern("majority").lean();
 }
 
+/** Use the majority-confirmed request for the first submission and any recovery. */
+export async function readPendingBigQueryQueryRequest(
+  job: BigQueryJobIdentity,
+) {
+  const record = await readBigQueryStagedInput(job);
+  if (record?.terminal || record?.cleanedAt) return null;
+  const configuration = record?.intent.configuration;
+  if (!record || !configuration) return null;
+  if (record.fingerprint !== stagedWriteFingerprint(record.intent)) return null;
+  const { project, location, id } = record.intent.job;
+  return {
+    jobReference: { projectId: project, location, jobId: id },
+    configuration,
+  };
+}
+
+/** A missing, unfinished or ambiguous lookup leaves the reserved job pending. */
+export async function recordObservedBigQueryQueryResult(
+  job: BigQueryJobIdentity,
+  providerJob: unknown,
+): Promise<boolean> {
+  const record = await readBigQueryStagedInput(job);
+  const configuration = record?.intent.configuration;
+  if (!record || !configuration) return false;
+  if (record.fingerprint !== stagedWriteFingerprint(record.intent)) {
+    return false;
+  }
+  const outcome = retainedQueryOutcome(
+    record.intent.job,
+    configuration,
+    providerJob,
+  );
+  if (!outcome) return false;
+  return writeTerminalReceipt(job, record.fingerprint, {
+    state: "DONE",
+    outcome,
+    fingerprint: record.fingerprint,
+  });
+}
+
 /** Only a verified jobs.get DONE receipt can make a retained input eligible for cleanup. */
 export async function recordBigQueryStagedReceipt(
   reported: BigQueryTerminalReceipt,
@@ -164,10 +265,24 @@ export async function recordBigQueryStagedReceipt(
   ) {
     return false;
   }
+  // Retained queries settle through the BigQuery job metadata matcher.
+  if (receipt.configuration !== undefined) return false;
+  return writeTerminalReceipt(
+    receipt.job,
+    stagedWriteFingerprint(receipt),
+    receipt,
+  );
+}
+
+async function writeTerminalReceipt(
+  job: BigQueryJobIdentity,
+  fingerprint: string,
+  receipt: BigQueryTerminalReceipt | VerifiedQueryReceipt,
+): Promise<boolean> {
   const result = await StagedWrite.updateOne(
     {
-      _id: jobKey(receipt.job),
-      fingerprint: stagedWriteFingerprint(receipt),
+      _id: jobKey(job),
+      fingerprint,
       $or: [
         { terminal: { $exists: false } },
         { "terminal.outcome": receipt.outcome },
@@ -187,6 +302,7 @@ export async function cleanupBigQueryStagedInput(
   const record = await readBigQueryStagedInput(job);
   if (
     record?.terminal?.state !== "DONE" ||
+    "fingerprint" in record.terminal ||
     record.fingerprint !== stagedWriteFingerprint(record.intent) ||
     record.fingerprint !== stagedWriteFingerprint(record.terminal)
   ) {

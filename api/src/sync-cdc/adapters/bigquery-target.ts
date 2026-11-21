@@ -8,7 +8,6 @@ import type { IDatabaseConnection } from "../../database/workspace-schema";
 import type { QueryExecuteOptions } from "../../databases/query-types";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { loggers } from "../../logging";
-import { escId } from "./bigquery-sql";
 import {
   syncWritePriority,
   type BigQueryJobPriority,
@@ -24,10 +23,7 @@ export interface BigQueryTarget {
   datasetLocation: string | undefined;
 }
 
-/** `project`.`dataset`.`table`, quoted. */
-export function fullTableName(target: BigQueryTarget, table: string): string {
-  return `${escId(target.projectId)}.${escId(target.dataset)}.${escId(table)}`;
-}
+export { fullTableName } from "./bigquery-sql";
 
 /** Run one statement in the dataset's location. */
 export function runBigQuery(
