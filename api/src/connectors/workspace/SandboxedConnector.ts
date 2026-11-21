@@ -431,11 +431,11 @@ export class SandboxedConnector extends BaseConnector {
     if (trustedDefinition) {
       if (
         !trustedDefinition.registry ||
-        connection.type !== "stripe" ||
-        trustedDefinition.slug !== "stripe" ||
-        trustedDefinition.registry.slug !== "stripe"
+        (connection.type !== "stripe" && connection.type !== "calendly") ||
+        trustedDefinition.slug !== connection.type ||
+        trustedDefinition.registry.slug !== connection.type
       ) {
-        throw new Error("Invalid trusted Stripe connector definition.");
+        throw new Error("Invalid trusted connector definition.");
       }
       this.loaded = trustedDefinition;
       this.trustedDefinition = true;

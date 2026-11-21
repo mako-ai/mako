@@ -13,6 +13,7 @@ import { loadConnectorDefinition } from "../connectors/workspace/resolver";
 import { specToForm } from "../connectors/workspace/spec-translation";
 import { callableProfileSchemaFor } from "../connections/callable-profiles";
 import type { StripeTestBinding } from "../connectors/workspace/registry/stripe-binding";
+import type { CalendlyBinding } from "../connectors/workspace/registry/calendly-binding";
 
 const logger = loggers.sync("connector-registry");
 
@@ -225,12 +226,22 @@ class SyncConnectorRegistry {
     connection: SourceConnectionConfig,
     binding: StripeTestBinding,
   ): BaseConnector {
+    return this.getBoundRegistryConnector(connection, binding, "stripe");
+  }
+
+  private getBoundRegistryConnector(
+    connection: SourceConnectionConfig,
+    binding: StripeTestBinding | CalendlyBinding,
+    type: "stripe" | "calendly",
+  ): BaseConnector {
     if (
-      connection.type !== "stripe" ||
+      connection.type !== type ||
       connection.id !== binding.connectionId ||
       connection.workspaceId !== binding.workspaceId
     ) {
-      throw new Error("Connection does not match the verified Stripe binding.");
+      throw new Error(
+        "Connection does not match the verified release binding.",
+      );
     }
     return new SandboxedConnector(
       asSourceConnection(connection),
@@ -243,7 +254,11 @@ class SyncConnectorRegistry {
    */
   async getConnectorFor(
     connection: SourceConnectionConfig,
+    binding?: CalendlyBinding | null,
   ): Promise<BaseConnector | null> {
+    if (binding) {
+      return this.getBoundRegistryConnector(connection, binding, "calendly");
+    }
     if (isWorkspaceConnectorType(connection.type)) {
       if (!connection.workspaceId) {
         throw new Error(

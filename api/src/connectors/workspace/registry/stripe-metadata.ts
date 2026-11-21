@@ -28,10 +28,17 @@ export async function loadStripeRegistryMetadata(input: {
 }): Promise<StripeRegistryMetadata> {
   const registry = await resolveStripeRelease(input.pin, input.catalog);
   if (!registry) throw new Error("The Stripe release pin is missing.");
+  return loadVerifiedRegistryMetadata(input.workspaceId, registry);
+}
 
+/** Verify the artifact and read its spec without supplying a credential. */
+export async function loadVerifiedRegistryMetadata(
+  workspaceId: string,
+  registry: import("./registry.service").RegistryResolution,
+): Promise<StripeRegistryMetadata> {
   return getBoxScheduler().withLease(
     {
-      workspaceId: input.workspaceId,
+      workspaceId,
       // A unique key prevents reuse of a prior box or its snapshot. Omitting
       // runtimeId also prevents the scheduler from selecting a template.
       connectionId: `stripe-spec:${randomUUID()}`,

@@ -48,6 +48,23 @@ const state = vi.hoisted(() => ({
   recorded: [] as Array<Record<string, unknown>>,
   dataSourceType: "stripe",
   roles: {} as Record<string, string>,
+  release: null as null | Record<string, string>,
+  metadataError: null as Error | null,
+  loads: 0,
+}));
+
+vi.mock("./workspace/registry/stripe-release", () => ({
+  resolveTrustedRelease: vi.fn(async () => state.release),
+}));
+vi.mock("./workspace/registry/stripe-metadata", () => ({
+  loadVerifiedRegistryMetadata: vi.fn(async () => {
+    if (state.metadataError) throw state.metadataError;
+    return {
+      registry: state.release,
+      entry: "bundle.mjs",
+      spec: { connectionSpecification: { properties: {} } },
+    };
+  }),
 }));
 
 vi.mock("../services/workspace.service", () => ({
@@ -69,18 +86,25 @@ vi.mock("../sync/connector-registry", () => ({
 }));
 
 vi.mock("../sync/database-data-source-manager", () => {
-  const getSourceConnection = vi.fn(async (id: string) => ({
-    id,
-    name: "Vercel AI Gateway Usage",
-    type: state.dataSourceType,
-    workspaceId: WS.toString(),
-    active: true,
-    connection: { apiKey: SECRET, lookbackDays: 30, region: "eu" },
-    settings: {},
-  }));
+  const getSourceConnection = vi.fn(async (id: string) => {
+    state.loads++;
+    return {
+      id,
+      name: "Vercel AI Gateway Usage",
+      type: state.dataSourceType,
+      workspaceId: WS.toString(),
+      active: true,
+      connection: { apiKey: SECRET, lookbackDays: 30, region: "eu" },
+      settings: {},
+    };
+  });
   return {
     sourceConnectionManager: {
       getSourceConnection,
+      getBoundCalendlyConnection: vi.fn(
+        async (binding: { connectionId: string }) =>
+          getSourceConnection(binding.connectionId),
+      ),
     },
   };
 });
@@ -93,7 +117,9 @@ vi.mock("./workspace/reconcile.service", () => ({
 }));
 
 import { SourceConnection } from "../database/workspace-schema";
+import { syncConnectorRegistry } from "../sync/connector-registry";
 import { requestContextStorage } from "../logging/context";
+import { CALENDLY_RELEASE_PIN } from "./workspace/registry/calendly-binding";
 import {
   PROBE_MAX_LIMIT,
   ProbeError,
@@ -182,6 +208,8 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
+  CALENDLY_RELEASE_PIN.version = undefined;
+  CALENDLY_RELEASE_PIN.sha256 = undefined;
   await mongoose.disconnect();
   await mongo.stop();
 });
@@ -212,6 +240,11 @@ beforeEach(async () => {
   } as never);
   state.connector = fake;
   state.recorded = [];
+  state.release = null;
+  CALENDLY_RELEASE_PIN.version = undefined;
+  CALENDLY_RELEASE_PIN.sha256 = undefined;
+  state.metadataError = null;
+  state.loads = 0;
   state.dataSourceType = "stripe";
   state.roles = { u1: "member", u2: "member", u3: "viewer", boss: "owner" };
 });
@@ -232,6 +265,53 @@ async function failure(promise: Promise<unknown>): Promise<ProbeError> {
   }
   throw new Error("expected the probe to fail");
 }
+
+describe("Calendly probe binding", () => {
+  const release = {
+    slug: "calendly",
+    ref: "mako/calendly@1.0.0",
+    version: "1.0.0",
+    hash: "artifact",
+    sha256: "a".repeat(64),
+  };
+  beforeEach(async () => {
+    await SourceConnection.updateOne(
+      { _id: mine },
+      { $set: { type: "calendly" } },
+    );
+    state.dataSourceType = "calendly";
+    state.release = release;
+    CALENDLY_RELEASE_PIN.version = release.version;
+    CALENDLY_RELEASE_PIN.sha256 = release.sha256;
+    vi.mocked(syncConnectorRegistry.getConnectorFor).mockClear();
+  });
+
+  it("keeps the verified digest through the real probe boundary", async () => {
+    fake.page = [{ day: "today", secret: SECRET }];
+    const result = await probe({ entity: "daily-usage", limit: 1 });
+    expect(result.connection.connector).toBe("calendly");
+    expect(JSON.stringify(result)).not.toContain(SECRET);
+    expect(fake.calls[0]).toMatchObject({
+      batchSize: 1,
+      maxIterations: 1,
+      singleChunk: true,
+    });
+    expect(
+      vi.mocked(syncConnectorRegistry.getConnectorFor).mock.calls[0][1],
+    ).toMatchObject({
+      workspaceId: WS.toString(),
+      connectionId: mine.toString(),
+      definition: { registry: { sha256: release.sha256 } },
+    });
+  });
+
+  it("rejects an unavailable artifact before loading a credential", async () => {
+    state.metadataError = new Error("missing artifact");
+    await expect(probe()).rejects.toThrow("missing artifact");
+    expect(state.loads).toBe(0);
+    expect(syncConnectorRegistry.getConnectorFor).not.toHaveBeenCalled();
+  });
+});
 
 describe("tenancy", () => {
   it("a connector from another workspace is not found, not probed", async () => {

@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { parseConnectorFile } from "../connector-file";
 import { maxSatisfying, parseRange, parseRegistryReference } from "./semver";
 import { resolveReference } from "./registry.service";
-import { resolveStripeRelease } from "./stripe-release";
+import { resolveStripeRelease, resolveTrustedRelease } from "./stripe-release";
 import {
   authTypeOf,
   changelogFor,
@@ -150,6 +150,35 @@ function catalogWith(...versions: string[]): RegistryCatalog {
     versions: versions.map(v => version(v)),
   });
 }
+
+describe("platform Calendly release", () => {
+  const sha256 = "f".repeat(64);
+  const catalog = withVersion(emptyCatalog(), {
+    slug: "calendly",
+    name: "calendly",
+    versions: [version("1.0.0")],
+  });
+
+  it("selects the exact platform-selected slug and digest", async () => {
+    await expect(
+      resolveTrustedRelease("calendly", { version: "1.0.0", sha256 }, catalog),
+    ).resolves.toMatchObject({
+      ref: "mako/calendly@1.0.0",
+      slug: "calendly",
+      sha256,
+    });
+    await expect(
+      resolveTrustedRelease(
+        "calendly",
+        { version: "1.0.0", sha256: "a".repeat(64) },
+        catalog,
+      ),
+    ).rejects.toThrow(/reviewed SHA-256/);
+    await expect(
+      resolveTrustedRelease("calendly", {}, catalog),
+    ).resolves.toBeNull();
+  });
+});
 
 describe("platform Stripe release", () => {
   const sha256 = "f".repeat(64);
