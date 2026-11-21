@@ -67,7 +67,8 @@ export async function resyncFlow(params: {
     if (clearWebhookEvents) {
       await WebhookEvent.deleteMany({
         ...eventScope,
-        status: { $in: ["pending", "processing", "completed", "failed"] },
+        // Mongo's null match includes inbox rows created before status was stored.
+        status: { $in: ["pending", "processing", "completed", "failed", null] },
       });
     }
 
