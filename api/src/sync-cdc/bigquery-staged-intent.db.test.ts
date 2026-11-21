@@ -5,6 +5,7 @@ import { CdcChangeEvent, Flow } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { BigQueryDestinationAdapter } from "./adapters/bigquery";
 import { buildCdcEntityLayout } from "./adapters/registry";
+import { bigQuerySnapshotGeneration } from "./bigquery-retained-query";
 import {
   cleanupBigQueryStagedInput,
   findBigQueryStagedCdcWrites,
@@ -136,6 +137,159 @@ async function makeCdcMerge(suffix: string) {
 }
 
 describe("BigQuery CDC event settlement", () => {
+  it("submits the sealed request after reservation and recovers a late job without a second insert", async () => {
+    const first = await makeCdcMerge("cdc_retained_dispatch");
+    const event = await first.event("dispatch-delivery", 1);
+    const { job, input, destination } = first.binding;
+    const snapshot = input.snapshot;
+    const key = `${destination.project}.${destination.dataset}.${destination.table}`;
+    const snapshotMetadata = {
+      type: "SNAPSHOT",
+      location: "EU",
+      tableReference: {
+        projectId: snapshot.project,
+        datasetId: snapshot.dataset,
+        tableId: snapshot.table,
+      },
+      creationTime: "1795276800000",
+      etag: "sealed-generation",
+      snapshotDefinition: {
+        baseTableReference: {
+          projectId: snapshot.project,
+          datasetId: snapshot.dataset,
+          tableId: "staging",
+        },
+        snapshotTime: "2026-11-21T16:00:00.000Z",
+      },
+    };
+    const generation = bigQuerySnapshotGeneration(
+      snapshot,
+      job.location,
+      snapshotMetadata,
+    );
+    if (!generation) throw new Error("Missing snapshot generation");
+    input.generation = generation;
+    await expect(first.hold([event])).resolves.toBe("held");
+    const staged = await readBigQueryStagedInput(job);
+    const request = await readPendingBigQueryQueryRequest(job);
+    if (!staged || !request) throw new Error("Missing staged request");
+
+    const lostAcknowledgement = new Error("Warehouse acknowledgement lost");
+    const createJob = vi.fn(async () => {
+      expect(
+        await CdcTableWriteLease.findById(key).readConcern("majority").lean(),
+      ).toMatchObject({
+        jobId: job.id,
+        jobLocation: job.location,
+        jobReservedBeforeDispatch: true,
+        jobIntentFingerprint: staged.fingerprint,
+      });
+      throw lostAcknowledgement;
+    });
+    const cancel = vi.fn();
+    const getJob = vi.fn(async (): Promise<unknown[]> => {
+      throw Object.assign(new Error("Job not visible yet"), { code: 404 });
+    });
+    const getSnapshot = vi.fn().mockResolvedValue([snapshotMetadata]);
+    const snapshotTable = vi.fn(() => ({ getMetadata: getSnapshot }));
+    const dataset = vi.fn(() => ({ table: snapshotTable }));
+    const warehouseJob = vi.fn(() => ({ getMetadata: getJob, cancel }));
+    const adapter = () => {
+      const instance = new BigQueryDestinationAdapter({
+        destinationDatabaseId: first.scope.destinationConnectionId,
+        workspaceId: first.scope.workspaceId,
+        tableDestination: {
+          connectionId: first.scope.destinationConnectionId,
+          schema: destination.dataset,
+          tableName: destination.table,
+        },
+      });
+      (instance as unknown as { _resolvedClient: unknown })._resolvedClient = {
+        bq: {
+          dataset,
+          job: warehouseJob,
+          createJob,
+        },
+        projectId: destination.project,
+        dataset: destination.dataset,
+        datasetLocation: "EU",
+        destination: {
+          _id: first.scope.destinationConnectionId,
+          workspaceId: first.scope.workspaceId,
+          type: "bigquery",
+        },
+      };
+      return instance;
+    };
+    const dispatch = () =>
+      adapter().dispatchRetainedCdcMerge(
+        buildCdcEntityLayout({
+          entity: first.scope.entity,
+          tableName: destination.table,
+        }),
+        first.scope.flowId,
+        job.id,
+      );
+
+    getSnapshot.mockResolvedValueOnce([
+      { ...snapshotMetadata, expirationTime: "1795363200000" },
+    ]);
+    await expect(dispatch()).rejects.toThrow("snapshot generation changed");
+    getSnapshot.mockResolvedValueOnce([
+      { ...snapshotMetadata, etag: "recreated-generation" },
+    ]);
+    await expect(dispatch()).rejects.toThrow("snapshot generation changed");
+    expect(createJob).not.toHaveBeenCalled();
+    expect(await CdcTableWriteLease.findById(key)).toBeNull();
+
+    await expect(dispatch()).rejects.toBe(lostAcknowledgement);
+    expect(dataset).toHaveBeenLastCalledWith(snapshot.dataset, {
+      projectId: snapshot.project,
+      location: job.location,
+    });
+    expect(snapshotTable).toHaveBeenLastCalledWith(snapshot.table);
+    expect(createJob).toHaveBeenCalledExactlyOnceWith({
+      jobId: job.id,
+      location: job.location,
+      configuration: request.configuration,
+    });
+    expect(
+      await CdcTableWriteLease.findById(key).readConcern("majority").lean(),
+    ).toMatchObject({ jobId: job.id });
+    expect(await CdcChangeEvent.findById(event.id).lean()).toMatchObject({
+      materializationStatus: "pending",
+      materializationAttemptCount: 0,
+    });
+
+    await mongoose.disconnect();
+    await mongoose.connect(mongo.getUri());
+    await CdcTableWriteLease.updateOne(
+      { _id: key },
+      { $set: { expiresAt: new Date(0) } },
+    );
+    getJob.mockImplementation(async () => [
+      {
+        ...request,
+        status: { state: "DONE" },
+        statistics: { query: { statementType: "MERGE" } },
+      },
+    ]);
+    await expect(dispatch()).resolves.toBe("succeeded");
+    await expect(dispatch()).resolves.toBe("succeeded");
+    expect(warehouseJob).toHaveBeenLastCalledWith(job.id, {
+      location: job.location,
+    });
+    expect(createJob).toHaveBeenCalledTimes(1);
+    expect(cancel).not.toHaveBeenCalled();
+    expect(await CdcTableWriteLease.findById(key)).toBeNull();
+    expect(
+      await CdcChangeEvent.findById(event.id).readConcern("majority").lean(),
+    ).toMatchObject({
+      materializationStatus: "applied",
+      materializationAttemptCount: 1,
+    });
+  });
+
   it("recovers an overlapping retry after the warehouse accepted one write and lost its response", async () => {
     const first = await makeCdcMerge("cdc_lost_ack");
     const a = await first.event("a", 1);
