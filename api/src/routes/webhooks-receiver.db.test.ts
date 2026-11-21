@@ -14,22 +14,30 @@
  * Run: npx tsx src/routes/webhooks-receiver.db.test.ts
  */
 import assert from "node:assert/strict";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose, { Types } from "mongoose";
 
 async function main(): Promise<void> {
-  const mongo = await MongoMemoryServer.create();
+  const mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(mongo.getUri());
   try {
-    const { Flow, WebhookEvent, SourceConnection } =
+    const { CdcChangeEvent, Flow, WebhookEvent, SourceConnection } =
       await import("../database/workspace-schema");
     const { connectorRegistry } = await import("../connectors/registry");
-    const { webhookRoutes } = await import("./webhooks");
+    const { verifyClaapWebhook } = await import("../connectors/claap/webhooks");
+    const { closeInlineWebhookAdmission } =
+      await import("../sync-cdc/inline-webhook-admission");
+    const { ingestPendingWebhookEvents } =
+      await import("../inngest/functions/webhook-flow");
+    const { createRouter } = await import("../openapi/core");
+    const { registerWebhookReceiver, webhookRoutes } =
+      await import("./webhooks");
 
-    // A connector without signature verification: the body is taken as JSON.
-    (connectorRegistry as any).getConnectorFor = () => ({
-      supportsWebhooks: () => false,
-    });
+    // Only the Claap fixture uses connector verification. Neither calls a provider.
+    (connectorRegistry as any).getConnectorFor = (source: { type: string }) =>
+      source.type === "claap"
+        ? { supportsWebhooks: () => true, verifyWebhook: verifyClaapWebhook }
+        : { supportsWebhooks: () => false };
 
     const workspaceId = new Types.ObjectId();
     const source = await SourceConnection.collection.insertOne({
@@ -213,7 +221,162 @@ async function main(): Promise<void> {
       "no secret configured: fail closed",
     );
 
-    console.log("webhooks receiver tests passed");
+    // Isolate the hold from the earlier receiver fixtures before running the pump.
+    await WebhookEvent.deleteMany({ workspaceId });
+    await WebhookEvent.init();
+    const claapSource = await SourceConnection.collection.insertOne({
+      workspaceId,
+      name: "synthetic Claap source",
+      type: "claap",
+      config: {},
+    });
+    const heldFlowId = await flow({
+      type: "webhook",
+      dataSourceId: claapSource.insertedId,
+      webhookConfig: { enabled: true, totalReceived: 0, secret: SECRET },
+    });
+    const scope = {
+      workspaceId,
+      flowId: new Types.ObjectId(heldFlowId),
+      sourceConnectionId: claapSource.insertedId,
+    };
+    const receiver = () => registerWebhookReceiver(createRouter(), scope);
+    const postClaap = (
+      route: ReturnType<typeof receiver>,
+      eventId: string | undefined,
+      options: {
+        secret?: string;
+        target?: string;
+        indent?: number;
+        id?: string;
+      } = {},
+    ) =>
+      route.request(
+        `/webhooks/${workspaceId}/${options.target ?? heldFlowId}`,
+        {
+          method: "POST",
+          body: JSON.stringify(
+            {
+              eventId,
+              id: options.id,
+              event: {
+                type: "recording_added",
+                recording: { id: "rec_synthetic" },
+              },
+            },
+            null,
+            options.indent,
+          ),
+          headers: {
+            "content-type": "application/json",
+            "x-claap-webhook-secret": options.secret ?? SECRET,
+          },
+        },
+      );
+    const inbox = {
+      flowId: scope.flowId,
+      workspaceId,
+      dataSourceId: scope.sourceConnectionId,
+    };
+    const first = receiver();
+    const beforeHold = await postClaap(first, "evt-before-hold");
+    assert.equal(beforeHold.status, 200);
+    assert.equal(
+      await WebhookEvent.countDocuments({ ...inbox, status: "pending" }),
+      1,
+    );
+    await WebhookEvent.deleteOne({ ...inbox, eventId: "evt-before-hold" });
+
+    await closeInlineWebhookAdmission(mongoose.connection, scope);
+    assert.equal(
+      (await postClaap(first, "evt-invalid", { secret: "wrong" })).status,
+      400,
+    );
+    assert.equal(
+      (await postClaap(first, "evt-disabled", { target: String(offId) }))
+        .status,
+      403,
+    );
+    assert.equal((await postClaap(first, undefined)).status, 400);
+    assert.equal(
+      (await postClaap(first, undefined, { id: "rec_synthetic" })).status,
+      400,
+    );
+    assert.equal((await postClaap(first, " ")).status, 400);
+    assert.equal(await WebhookEvent.countDocuments(), 0);
+
+    // The server commits and returns 200. The sender loses that acknowledgement.
+    const lost = await postClaap(first, "evt-during-hold");
+    assert.equal(lost.status, 200);
+    await lost.body?.cancel();
+    const committed = await WebhookEvent.findOne(inbox)
+      .readConcern("majority")
+      .lean();
+    assert.ok(committed);
+    await mongoose.disconnect();
+    await mongoose.connect(mongo.getUri());
+    const restarted = receiver();
+    const retried = await postClaap(restarted, "evt-during-hold", {
+      indent: 2,
+    });
+    assert.equal(retried.status, 200);
+    assert.deepEqual(await retried.json(), {
+      received: true,
+      eventId: "evt-during-hold",
+    });
+    const retained = await WebhookEvent.find(inbox)
+      .readConcern("majority")
+      .lean();
+    assert.equal(retained.length, 1);
+    assert.equal(String(retained[0]?._id), String(committed._id));
+    assert.equal(retained[0]?.eventId, "evt-during-hold");
+    assert.equal(retained[0]?.status, "dormant");
+    assert.equal(retained[0]?.applyStatus, "dormant");
+    assert.equal(retained[0]?.attempts, 0);
+    assert.equal(retained[0]?.signature, undefined);
+
+    // The same recording can produce another delivery with its own provider ID.
+    const second = await postClaap(restarted, "evt-same-recording");
+    assert.equal(second.status, 200);
+    const deliveryIds = await WebhookEvent.find({ ...inbox, status: "dormant" })
+      .readConcern("majority")
+      .sort({ eventId: 1 })
+      .lean();
+    assert.deepEqual(
+      deliveryIds.map(row => row.eventId),
+      ["evt-during-hold", "evt-same-recording"],
+    );
+
+    // The synthetic Mongo validator rejects exactly this write.
+    const db = mongoose.connection.db;
+    assert.ok(db);
+    await db.command({
+      collMod: "webhookevents",
+      validator: { eventId: { $ne: "evt-storage-fails" } },
+    });
+    const failed = await postClaap(restarted, "evt-storage-fails");
+    assert.equal(failed.status, 503);
+    assert.equal(
+      await WebhookEvent.countDocuments({ eventId: "evt-storage-fails" }),
+      0,
+    );
+    assert.equal(
+      await Flow.countDocuments({
+        _id: scope.flowId,
+        "webhookConfig.enabled": true,
+      }),
+      1,
+    );
+    const pumped = await ingestPendingWebhookEvents({ info() {}, warn() {} });
+    assert.deepEqual(pumped, { ingested: 0, dropped: 0, failed: 0 });
+    assert.equal(
+      await CdcChangeEvent.countDocuments({ flowId: scope.flowId }),
+      0,
+    );
+    console.info(
+      "Claap hold: reformatted retry kept 1 row; 2 delivery IDs kept 2 rows; 3 ambiguous IDs returned 400; 0 inline dispatches; failed storage returned 503",
+    );
+    console.info("webhooks receiver tests passed");
   } finally {
     await mongoose.disconnect();
     await mongo.stop();

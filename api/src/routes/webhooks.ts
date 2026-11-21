@@ -1,4 +1,4 @@
-import { createRoute, z } from "@hono/zod-openapi";
+import { createRoute, type RouteHandler, z } from "@hono/zod-openapi";
 import { inWorkspace } from "../utils/workspace-scope";
 import type { Context } from "hono";
 import { Types } from "mongoose";
@@ -9,6 +9,11 @@ import {
 } from "../database/workspace-schema";
 import { randomUUID } from "crypto";
 import { connectorRegistry } from "../connectors/registry";
+import {
+  admitInlineWebhook,
+  retainClosedInlineWebhook,
+  type InlineWebhookScope,
+} from "../sync-cdc/inline-webhook-admission";
 import { isWebhookFlow } from "../services/flow-triggers.service";
 import {
   presentedWebhookToken,
@@ -57,20 +62,29 @@ async function requireWebhookTestAccess(
  * no per-webhook Inngest events are emitted. The legacy real-time webhook
  * processing pipeline (webhook/event.process) has been decommissioned.
  */
-router.openapi(
-  createRoute({
-    method: "post",
-    path: "/webhooks/{workspaceId}/{flowId}",
-    tags: ["Webhooks"],
-    summary: "Receive an inbound connector webhook",
-    description:
-      "Inbound webhook receiver for connector flows. Public — authenticated via the connector's signature, or, for connectors without one, the flow's shared secret (X-Mako-Webhook-Token header, Bearer token or ?token=). Not session/API key.",
-    security: [],
-    request: { params: WebhookParam },
-    responses: { ...OPEN_RESPONSES },
-  }),
+const webhookReceiverRoute = createRoute({
+  method: "post",
+  path: "/webhooks/{workspaceId}/{flowId}",
+  tags: ["Webhooks"],
+  summary: "Receive an inbound connector webhook",
+  description:
+    "Inbound webhook receiver for connector flows. Public — authenticated via the connector's signature, or, for connectors without one, the flow's shared secret (X-Mako-Webhook-Token header, Bearer token or ?token=). Not session/API key.",
+  security: [],
+  request: { params: WebhookParam },
+  responses: { ...OPEN_RESPONSES },
+});
+
+const receiveWebhook =
+  (
+    scope?: InlineWebhookScope,
+  ): RouteHandler<typeof webhookReceiverRoute, AuthEnv> =>
   async c => {
     const { workspaceId, flowId } = c.req.param();
+    const guarded =
+      scope?.workspaceId.toHexString() === workspaceId.toLowerCase() &&
+      scope.flowId.toHexString() === flowId.toLowerCase()
+        ? scope
+        : undefined;
 
     logger.debug("Webhook received", { workspaceId, flowId });
 
@@ -121,6 +135,14 @@ router.openapi(
       // never sees them, so a slow box cannot hold up anyone else's. Only a
       // `ws:` connector with CONNECTOR_WEBHOOK_BATCHES on is "box".
       const boxLane = connector.webhookDelivery?.() === "box";
+      if (
+        guarded &&
+        (boxLane ||
+          sourceConnection.type !== "claap" ||
+          !guarded.sourceConnectionId.equals(sourceConnection._id))
+      ) {
+        return fail(c, 503, "Webhook admission binding changed");
+      }
 
       if (connector.supportsWebhooks()) {
         const secret = flow.webhookConfig.secret;
@@ -159,6 +181,9 @@ router.openapi(
 
         event = verificationResult.event;
       } else {
+        if (guarded) {
+          return fail(c, 503, "Webhook verification is unavailable");
+        }
         // No native signature verification: fail closed unless the sender
         // presents the flow's shared secret (utils/webhook-token.ts). A flow
         // without a secret configured takes no deliveries at all.
@@ -196,25 +221,63 @@ router.openapi(
         ? connector.webhookEventIdentity?.(event, rawBodyText, headers)
         : undefined;
 
+      const eventType =
+        boxIdentity?.eventType ||
+        event.type ||
+        event.event_type ||
+        event.action ||
+        (event.event?.object_type && event.event?.action
+          ? `${event.event.object_type}.${event.event.action}`
+          : "unknown");
+
+      if (guarded) {
+        // Claap's verifier maps the delivery's eventId to id. Its legacy id
+        // fallback is ambiguous here and could conflate two deliveries.
+        const eventId = event.eventId;
+        if (
+          typeof eventId !== "string" ||
+          !eventId.trim() ||
+          eventId !== event.id
+        ) {
+          return fail(c, 400, "Claap webhook eventId is required");
+        }
+        const admitted = await admitInlineWebhook(Flow.db, guarded, session =>
+          WebhookEvent.updateOne(
+            {
+              flowId: guarded.flowId,
+              workspaceId: guarded.workspaceId,
+              dataSourceId: sourceConnection._id,
+              eventId,
+            },
+            {
+              $setOnInsert: {
+                eventType,
+                rawPayload: event,
+                receivedAt: new Date(),
+                status: "pending",
+              },
+            },
+            { upsert: true, session },
+          ).exec(),
+        );
+        if (!admitted.admitted) {
+          await retainClosedInlineWebhook(Flow.db, guarded, {
+            sourceConnectionId: sourceConnection._id,
+            eventId,
+            eventType,
+            rawPayload: event,
+          });
+        }
+        return c.json({ received: true, eventId }, 200);
+      }
+
       const webhookEvent = new WebhookEvent({
         flowId,
         workspaceId,
         ...(boxLane ? { lane: "box", dataSourceId: sourceConnection._id } : {}),
-        // Close (and some other vendors) nest the unique event id at
-        // `event.event.id`; the top-level `event.id` is the OBJECT id, which is
-        // stable across updates. Falling back to it would defeat the
-        // (flowId,eventId) unique index for vendor retries. Prefer the nested
-        // event id, then top-level, then a random id as a last resort.
         eventId:
           boxIdentity?.eventId || event.id || event.event?.id || randomUUID(),
-        eventType:
-          boxIdentity?.eventType ||
-          event.type ||
-          event.event_type ||
-          event.action ||
-          (event.event?.object_type && event.event?.action
-            ? `${event.event.object_type}.${event.event.action}`
-            : "unknown"),
+        eventType,
         receivedAt: new Date(),
         status: "pending",
         attempts: 0,
@@ -248,14 +311,29 @@ router.openapi(
       });
       return c.json({ received: true, eventId: webhookEvent.eventId }, 200);
     } catch (error) {
+      if (guarded) {
+        logger.error("Guarded webhook intake could not confirm receipt", {
+          flowId,
+        });
+        return fail(c, 503, "Webhook receipt unavailable");
+      }
       logger.error("Webhook handler error", { error });
       return c.json(
         { received: false, error: "Internal processing error" },
         200,
       );
     }
-  },
-);
+  };
+
+/** The optional scope must be configured on every receiver before closing its gate. */
+export function registerWebhookReceiver(
+  receiver: ReturnType<typeof createRouter>,
+  scope?: InlineWebhookScope,
+) {
+  return receiver.openapi(webhookReceiverRoute, receiveWebhook(scope));
+}
+
+registerWebhookReceiver(router);
 
 /**
  * Test webhook endpoint
