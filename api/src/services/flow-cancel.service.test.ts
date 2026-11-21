@@ -179,6 +179,7 @@ describe("cancelFlowRuns", () => {
     for (const status of ["running", "paused"]) {
       state.backfillCancels.length = 0;
       const flow = await makeFlow({
+        slug: `fr-close-bigquery-${status}`,
         backfillState: { status, runId: `run_${status}` },
       });
       const result = await cancelFlowRuns(WS.toString(), flow, undefined, {
