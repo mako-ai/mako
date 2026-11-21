@@ -6,11 +6,10 @@ import { boxedReadError } from "../../../connectors/workspace/boxed-read-failure
 import { Flow } from "../../../database/workspace-schema";
 import { handleFlowRunFailure } from "./failure";
 
-void test("terminal boxed read records only the catalog entity and rethrows the original error", async t => {
+void test("a boxed provider cancellation records the catalog entity alongside the failure", async t => {
   const executionId = new Types.ObjectId().toString();
   const executionUpdates: unknown[] = [];
   const flowUpdates: unknown[] = [];
-  const logs: unknown[] = [];
   t.mock.method(Flow.db, "collection", (name: string) => {
     assert.equal(name, "flow_executions");
     return {
@@ -28,18 +27,14 @@ void test("terminal boxed read records only the catalog entity and rethrows the 
       flowUpdates.push(update);
     },
   );
-  const capture = (_message: string, payload: unknown) => logs.push(payload);
+  const noop = () => undefined;
   const ctx = {
     step: { run: async (_name: string, fn: () => Promise<void>) => fn() },
-    logger: { error: capture, info: capture },
+    logger: { error: noop, info: noop },
     flowId: new Types.ObjectId().toString(),
     data: { backfill: false },
     state: { executionId },
-    appendExecutionLog: async (
-      _level: string,
-      message: string,
-      payload: unknown,
-    ) => capture(message, payload),
+    appendExecutionLog: async () => undefined,
   } as unknown as Parameters<typeof handleFlowRunFailure>[0];
   const boxed = boxedReadError(
     "request canceled with synthetic provider payload",
@@ -59,12 +54,10 @@ void test("terminal boxed read records only the catalog entity and rethrows the 
   const { $set } = executionUpdates[0] as { $set: Record<string, unknown> };
   assert.equal($set.status, "failed");
   assert.deepEqual($set.error, {
-    message: "Boxed connector read failed",
+    message: boxed.message,
+    stack: terminal.stack,
+    code: undefined,
     readFailure: { entity: "ads" },
   });
-  assert.deepEqual(flowUpdates, [{ lastError: "Boxed connector read failed" }]);
-  assert.doesNotMatch(
-    JSON.stringify([executionUpdates, flowUpdates, logs]),
-    /request canceled|synthetic provider payload/,
-  );
+  assert.deepEqual(flowUpdates, [{ lastError: boxed.message }]);
 });

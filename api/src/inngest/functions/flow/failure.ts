@@ -48,35 +48,31 @@ export async function handleFlowRunFailure(
   const { backfill } = ctx.data;
   const { executionId, flowRef } = ctx.state;
 
-  // Classify and rethrow the original error. The execution receipt only
-  // needs the safe metadata when the boxed read identified its entity.
-  const readFailure = readBoxedReadFailure(error);
-  const isCancelled = isCancellationError(error, !readFailure);
-  const storedErrorMessage = readFailure
-    ? "Boxed connector read failed"
-    : error.message;
-  const diagnostic = readFailure
-    ? { error: storedErrorMessage, readFailure }
-    : {
-        error: error?.message || String(error),
-        errorName: error?.name,
-        errorCode: error?.code,
-        stack: error?.stack,
-      };
   void ctx.appendExecutionLog("error", "Flow execution failed", {
     flowId,
-    ...diagnostic,
+    error: error?.message || String(error),
+    errorName: error?.name,
+    errorCode: error?.code,
+    stack: error?.stack,
   });
-  logger.error("Flow failed", { flowId, ...diagnostic });
+
+  logger.error("Flow failed", {
+    flowId,
+    error: error.message,
+    errorName: error.name,
+    errorCode: error.code,
+    stack: error.stack,
+  });
+
+  // Boxed provider errors can describe a cancellation in their message.
+  const readFailure = readBoxedReadFailure(error);
+  const isCancelled = isCancellationError(error, !readFailure);
+
   logger.info("Error analysis", {
     flowId,
-    ...(readFailure
-      ? { readFailure }
-      : {
-          errorName: error.name,
-          errorCode: error.code,
-          errorMessage: error.message,
-        }),
+    errorName: error.name,
+    errorCode: error.code,
+    errorMessage: error.message,
     isCancelled,
   });
 
@@ -155,16 +151,14 @@ export async function handleFlowRunFailure(
                 duration,
                 status: isCancelled ? "cancelled" : "failed",
                 success: false,
-                error:
-                  readFailure && !isCancelled
-                    ? { message: storedErrorMessage, readFailure }
-                    : {
-                        message: isCancelled
-                          ? "Flow execution cancelled by user"
-                          : error.message,
-                        stack: isCancelled ? undefined : error.stack,
-                        code: isCancelled ? "USER_CANCELLED" : error.code,
-                      },
+                error: {
+                  message: isCancelled
+                    ? "Flow execution cancelled by user"
+                    : error.message,
+                  stack: isCancelled ? undefined : error.stack,
+                  code: isCancelled ? "USER_CANCELLED" : error.code,
+                  ...(!isCancelled && readFailure ? { readFailure } : {}),
+                },
               },
             },
           );
@@ -190,7 +184,7 @@ export async function handleFlowRunFailure(
         logger.error("Failed to complete error execution logging", {
           flowId,
           executionId,
-          originalError: diagnostic.error,
+          originalError: error.message,
           completeError:
             completeError instanceof Error
               ? completeError.message
@@ -204,7 +198,7 @@ export async function handleFlowRunFailure(
   // Update error status (unless cancelled)
   if (!isCancelled) {
     await Flow.findByIdAndUpdate(flowId, {
-      lastError: storedErrorMessage || "Unknown error",
+      lastError: error.message || "Unknown error",
     });
   }
 
@@ -214,13 +208,7 @@ export async function handleFlowRunFailure(
   // backfill leaves backfillState.status stuck on "running", which blocks
   // the reconcile scheduler and the auto-recovery loop forever.
   if (backfill && flowRef) {
-    await releaseCdcBackfillGate(
-      ctx,
-      flowRef,
-      error,
-      isCancelled,
-      storedErrorMessage,
-    );
+    await releaseCdcBackfillGate(ctx, flowRef, error, isCancelled);
   }
 
   throw error;
@@ -245,7 +233,6 @@ async function releaseCdcBackfillGate(
   flowRef: IFlow,
   error: FlowRunError,
   isCancelled: boolean,
-  storedErrorMessage: string,
 ): Promise<void> {
   const { step, flowId } = ctx;
   const destinationType = flowRef.tableDestination?.connectionId
@@ -285,7 +272,7 @@ async function releaseCdcBackfillGate(
         type: "FAIL",
         reason: "Backfill execution failed",
         errorCode: error?.code ? String(error.code) : "FLOW_EXECUTION_FAILED",
-        errorMessage: storedErrorMessage,
+        errorMessage: error.message,
       },
     });
   });

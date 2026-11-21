@@ -176,14 +176,14 @@ afterEach(() => {
 for (const mode of ["session", "chunk", "retry succeeds"] as const) {
   void test(`Inngest HTTP replay carries the boxed diagnostic: ${mode}`, async t => {
     const executionId = new Types.ObjectId().toString();
-    const writes: unknown[] = [];
+    const writes: { message: string; readFailure?: unknown }[] = [];
     let readAttempts = 0;
     let caught: unknown;
     t.mock.method(Flow.db, "collection", () => ({
       findOne: async () => ({ startedAt: new Date() }),
       updateOne: async (
         filter: { _id: Types.ObjectId },
-        update: { $set: { error: unknown } },
+        update: { $set: { error: (typeof writes)[number] } },
       ) => {
         assert.equal(String(filter._id), executionId);
         writes.push(update.$set.error);
@@ -336,12 +336,11 @@ for (const mode of ["session", "chunk", "retry succeeds"] as const) {
     assert.deepEqual(writes, []);
     const receipt = await post("parent", terminal.id, invokeState);
     assert.equal(receipt.status, 206);
-    assert.deepEqual(writes, [
-      {
-        message: "Boxed connector read failed",
-        readFailure: { entity: "rows" },
-      },
-    ]);
+    assert.ok("message" in invocationResult);
+    assert.deepEqual(
+      writes.map(({ message, readFailure }) => ({ message, readFailure })),
+      [{ message: invocationResult.message, readFailure: { entity: "rows" } }],
+    );
   });
 }
 
