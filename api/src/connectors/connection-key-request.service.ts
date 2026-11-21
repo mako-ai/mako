@@ -487,6 +487,9 @@ export async function submitKey(input: {
     {
       _id: row._id,
       workspaceId: new Types.ObjectId(workspaceId),
+      type: row.type,
+      // An edit can change the Test path while retaining this key.
+      configRevision: (row.configRevision ?? 0) + 1,
       keyRequest: { $exists: false },
       ...sets,
     },

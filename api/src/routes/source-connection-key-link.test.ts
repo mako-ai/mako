@@ -516,6 +516,42 @@ describe("the key link", () => {
 });
 
 describe("a Custom API connection", () => {
+  it("keeps a newer Test path when the earlier key check fails", async () => {
+    const { connectionId, token } = await createWithoutKey(
+      "changed-during-check",
+      "custom_api",
+      {
+        base_url: "https://api.example.com/v1",
+        auth_type: "bearer",
+        test_path: "/before",
+      },
+    );
+    const read = () =>
+      SourceConnection.findById(connectionId).select("+configRevision").lean();
+    const update = createConnectionWriteTools(WS, "u1").update_connection
+      .execute as unknown as (input: unknown) => Promise<ToolResult>;
+    ctx.probe = { success: false, message: "Old Test path failed" };
+    ctx.duringProbe = async () => {
+      const claimed = await read();
+      expect(claimed?.configRevision).toBe(1);
+      await expect(
+        update({ connectionId, config: { test_path: "/manager" } }),
+      ).resolves.toMatchObject({ connectionId, changed: ["config.test_path"] });
+      expect((await read())?.config.token).toBe(claimed?.config.token);
+    };
+
+    const submitted = await call("POST", token, { config: { token: SECRET } });
+    expect(submitted.status).toBe(422);
+    const row = await read();
+    expect(row).toMatchObject({
+      config: { test_path: "/manager" },
+      configRevision: 2,
+      isActive: true,
+    });
+    expect(row?.keyRequest).toBeUndefined();
+    expect(decryptString(row?.config.token as string)).toBe(SECRET);
+  });
+
   it("rejects an MCP config edit when a manager changes the validated row", async () => {
     const { connectionId, token } = await createWithoutKey(
       "changing-test-path",
