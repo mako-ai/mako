@@ -78,6 +78,10 @@ interface MergeRecord {
 
 class FakeWarehouse {
   tables = new Map<string, Row[]>();
+  mergeJobCounts = new Map<string, number>();
+  mergeCountInJobMetadataOnly = false;
+  exposeMergeJobCounts = true;
+  failedMergeJobs = new Set<string>();
   log: Array<{
     kind: string;
     sql: string;
@@ -112,7 +116,13 @@ class FakeWarehouse {
   async run(
     sql: string,
     options?: { onJobStarted?: (j: { jobId: string }) => void },
-  ): Promise<{ success: boolean; data?: Row[]; error?: string }> {
+  ): Promise<{
+    success: boolean;
+    data?: Row[];
+    error?: string;
+    rowCount?: number;
+    dmlAffectedRows?: number;
+  }> {
     const leaseDoc = await CdcTableWriteLease.findOne({}).lean();
     if (/INFORMATION_SCHEMA\.COLUMNS/.test(sql)) {
       this.log.push({ kind: "schema", sql });
@@ -152,9 +162,18 @@ class FakeWarehouse {
     }
     if (sql.startsWith("MERGE INTO")) {
       this.log.push({ kind: "merge", sql, leaseHolder: leaseDoc?.holder });
-      options?.onJobStarted?.({ jobId: `job_${++this.jobSeq}` });
-      this.merge(sql);
-      return { success: true, data: [] };
+      const jobId = `job_${++this.jobSeq}`;
+      options?.onJobStarted?.({ jobId });
+      const affected = this.merge(sql);
+      this.mergeJobCounts.set(jobId, affected);
+      return {
+        success: true,
+        data: [],
+        rowCount: this.mergeCountInJobMetadataOnly ? 0 : affected,
+        ...(this.mergeCountInJobMetadataOnly
+          ? {}
+          : { dmlAffectedRows: affected }),
+      };
     }
     if (sql.startsWith("DROP TABLE IF EXISTS")) {
       const m = sql.match(/`([^`]+)`$/);
@@ -170,7 +189,7 @@ class FakeWarehouse {
     return { success: true, data: [] };
   }
 
-  private merge(sql: string): void {
+  private merge(sql: string): number {
     const live = sql.match(
       /^MERGE INTO `[^`]+`\.`[^`]+`\.`([^`]+)` __live/,
     )![1];
@@ -227,6 +246,7 @@ class FakeWarehouse {
         newest.set(k, row);
       }
     }
+    let affected = 0;
     for (const [k, s] of newest) {
       const absent = new Set(
         String(s[ABSENT_COLUMNS_FIELD] ?? "")
@@ -239,6 +259,7 @@ class FakeWarehouse {
           if ((ms(s._mako_source_ts) ?? 0) < (ms(m._mako_source_ts) ?? 0)) {
             continue;
           }
+          affected++;
           for (const [c, v] of Object.entries(s)) {
             if (c === "id" || c === ABSENT_COLUMNS_FIELD) continue;
             if (absent.has(c)) continue;
@@ -252,7 +273,9 @@ class FakeWarehouse {
         inserted[c] = absent.has(c) ? null : (s[c] ?? null);
       }
       liveRows.push(inserted);
+      affected++;
     }
+    return affected;
   }
 }
 
@@ -308,8 +331,31 @@ function fakeTarget() {
   return {
     bq: {
       dataset: () => ({ table, get: async () => [{}] }),
-      job: () => ({
-        getMetadata: async () => [{ status: { state: "DONE" } }],
+      job: (jobId: string) => ({
+        getMetadata: async () => {
+          const affected = warehouse.exposeMergeJobCounts
+            ? warehouse.mergeJobCounts.get(jobId)
+            : undefined;
+          return [
+            {
+              status: {
+                state: "DONE",
+                ...(warehouse.failedMergeJobs.has(jobId)
+                  ? { errorResult: { reason: "quotaExceeded" } }
+                  : {}),
+              },
+              ...(affected !== undefined
+                ? {
+                    statistics: {
+                      query: {
+                        dmlStats: { updatedRowCount: String(affected) },
+                      },
+                    },
+                  }
+                : {}),
+            },
+          ];
+        },
         cancel: async () => [{}],
       }),
     },
@@ -432,6 +478,163 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 // --- 2. Bulk merge: lease, probe, MERGE, release --------------------------
 
 describe("bulk MERGE under the table write lease", () => {
+  it.each([
+    {
+      source: "query results",
+      metadataOnly: false,
+      sourceTimestamp: D2,
+      expected: 1,
+      knownStagingRowCount: undefined,
+    },
+    {
+      source: "job metadata",
+      metadataOnly: true,
+      sourceTimestamp: D2,
+      expected: 1,
+      knownStagingRowCount: undefined,
+    },
+    {
+      source: "a stale staged row",
+      metadataOnly: true,
+      sourceTimestamp: D1,
+      expected: 0,
+      knownStagingRowCount: 1,
+    },
+  ])(
+    "reports the final affected-row count from $source",
+    async ({
+      metadataOnly,
+      sourceTimestamp,
+      expected,
+      knownStagingRowCount,
+    }) => {
+      warehouse.mergeCountInJobMetadataOnly = metadataOnly;
+      warehouse.stage(liveTable, [
+        row("K", D1, "2026-11-03T10:00:00.000Z", "stored"),
+      ]);
+      const stagingSuffix = "final_count";
+      warehouse.stage(
+        bigQueryStagingTableName(liveTable, FLOW_A, stagingSuffix),
+        [row("K", D1, sourceTimestamp, "incoming")],
+      );
+
+      const result = await makeAdapter().mergeFromStaging(
+        layout,
+        flowRef(FLOW_A),
+        FLOW_A,
+        undefined,
+        { stagingSuffix, mergePath: "final", knownStagingRowCount },
+      );
+
+      expect(warehouse.rowsOf(liveTable).map(r => r.name)).toEqual([
+        expected ? "incoming" : "stored",
+      ]);
+      expect(result.written).toBe(expected);
+    },
+  );
+
+  it("rejects missing staging after a successful load without releasing the buffer", async () => {
+    const adapter = makeAdapter();
+    const stagingSuffix = "missing_after_load";
+    const beforeWrite = vi.fn(async () => undefined);
+    await expect(
+      adapter.mergeFromStaging(layout, flowRef(FLOW_A), FLOW_A, undefined, {
+        stagingSuffix,
+        expectStagedRows: true,
+        beforeWrite,
+      }),
+    ).rejects.toThrow(/Expected BigQuery staging table .* is missing/);
+    expect(beforeWrite).not.toHaveBeenCalled();
+    expect(warehouse.merges).toHaveLength(0);
+
+    await expect(
+      adapter.mergeFromStaging(layout, flowRef(FLOW_A), FLOW_A, undefined, {
+        stagingSuffix,
+        mergePath: "rescue",
+      }),
+    ).resolves.toEqual({ written: 0 });
+  });
+
+  it("settles staging when the write completed without affected-row statistics", async () => {
+    warehouse.mergeCountInJobMetadataOnly = true;
+    warehouse.exposeMergeJobCounts = false;
+    const stagingSuffix = "missing_count";
+    warehouse.stage(
+      bigQueryStagingTableName(liveTable, FLOW_A, stagingSuffix),
+      [row("K", D1, D2)],
+    );
+    const result = await makeAdapter().mergeFromStaging(
+      layout,
+      flowRef(FLOW_A),
+      FLOW_A,
+      undefined,
+      { stagingSuffix, knownStagingRowCount: 9 },
+    );
+    expect(result).toEqual({ written: null, stagingSettled: true });
+    expect(warehouse.countOf(liveTable, "K")).toBe(1);
+    expect(warehouse.merges).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      receipt: "the retry's successful job",
+      reportSuccessfulJob: true,
+      previousFailed: true,
+      expected: 1,
+    },
+    {
+      receipt: "a committed keyed attempt whose overlap is unknown",
+      reportSuccessfulJob: true,
+      previousFailed: false,
+      expected: null,
+    },
+    {
+      receipt: "no attributable successful job",
+      reportSuccessfulJob: false,
+      previousFailed: false,
+      expected: null,
+    },
+  ])(
+    "only counts retries with $receipt",
+    async ({ reportSuccessfulJob, previousFailed, expected }) => {
+      warehouse.mergeCountInJobMetadataOnly = true;
+      const stagingSuffix = "retried_count";
+      warehouse.stage(
+        bigQueryStagingTableName(liveTable, FLOW_A, stagingSuffix),
+        [row("K", D1, D2)],
+      );
+      let attempts = 0;
+      const execute: typeof databaseConnectionService.executeQuery = async (
+        _db,
+        sql,
+        options,
+      ) => {
+        if (String(sql).startsWith("MERGE INTO")) {
+          if (++attempts === 1) {
+            options?.onJobStarted?.({ jobId: "previous" });
+            if (previousFailed) warehouse.failedMergeJobs.add("previous");
+            else warehouse.mergeJobCounts.set("previous", 17);
+            return { success: false, error: "quota exceeded" };
+          }
+          if (!reportSuccessfulJob) return warehouse.run(String(sql));
+        }
+        return warehouse.run(String(sql), options as never);
+      };
+      spy.mockImplementation(execute);
+
+      const result = await makeAdapter().mergeFromStaging(
+        layout,
+        flowRef(FLOW_A),
+        FLOW_A,
+        undefined,
+        { stagingSuffix },
+      );
+      expect(result).toEqual({ written: expected, stagingSettled: true });
+      expect(attempts).toBe(2);
+      expect(warehouse.countOf(liveTable, "K")).toBe(1);
+    },
+  );
+
   it("probes and filters, in the order lease → probe → MERGE → release", async () => {
     warehouse.rowsOf(liveTable).push(row("K", D1, "2026-11-01T10:00:00Z"));
     warehouse.rowsOf(liveTable).push(row("Z", D2, "2026-11-05T10:00:00Z"));

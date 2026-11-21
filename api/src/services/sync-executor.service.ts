@@ -12,6 +12,7 @@ import {
   SyncChunkResult,
 } from "../sync/sync-orchestrator";
 import type { CdcMergePath } from "../sync-cdc/table-write-lease";
+import type { CdcStagingMergeResult } from "../sync-cdc/adapters/registry";
 
 // Logger interface for sync execution
 export interface SyncLogger {
@@ -50,7 +51,7 @@ export async function performPrepareStaging(
 export async function performRescueAndPrepareStaging(
   options: SyncChunkOptions,
   opts?: { dedupOnly?: boolean },
-): Promise<{ rescued: number }> {
+): Promise<{ rescued: number | null }> {
   return performRescueAndPrepareStagingOrchestrated(options, opts);
 }
 
@@ -78,8 +79,8 @@ export function discardBulkBuffer(
 
 export async function performStagingMerge(
   options: SyncChunkOptions,
-  opts?: { mergePath?: CdcMergePath },
-): Promise<{ written: number }> {
+  opts?: { mergePath?: CdcMergePath; expectStagedRows?: boolean },
+): Promise<CdcStagingMergeResult> {
   return performStagingMergeOrchestrated(options, opts);
 }
 

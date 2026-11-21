@@ -50,6 +50,7 @@ import {
   hasCdcDestinationAdapter,
   resolveCdcDestinationAdapter,
   type CdcDestinationAdapter,
+  type CdcStagingMergeResult,
 } from "../sync-cdc/adapters/registry";
 
 const orchestratorLogger = loggers.sync("orchestrator");
@@ -1521,24 +1522,23 @@ export async function performPrepareStaging(
 export async function performRescueAndPrepareStaging(
   options: SyncChunkOptions,
   opts?: { dedupOnly?: boolean },
-): Promise<{ rescued: number }> {
+): Promise<{ rescued: number | null }> {
   const isDedup =
     options.writeMode !== "append" && options.writeMode !== "overwrite";
-  let rescued = 0;
+  let rescued: number | null = 0;
+  let stagingSettled = false;
+  const rescueFullRead = opts?.dedupOnly ? options.fullRead : false;
   if (isDedup || !opts?.dedupOnly) {
     try {
       // A per-flush rescue (dedupOnly) merges rows an earlier attempt of the
       // same step loaded, so they keep this run's guard. The run-start
       // rescue may merge an earlier run of another kind (a poll): strict.
-      rescued = (
-        await performStagingMerge(
-          {
-            ...options,
-            fullRead: opts?.dedupOnly ? options.fullRead : false,
-          },
-          { mergePath: "rescue" },
-        )
-      ).written;
+      const result = await performStagingMerge(
+        { ...options, fullRead: rescueFullRead },
+        { mergePath: "rescue" },
+      );
+      rescued = result.written;
+      stagingSettled = result.stagingSettled ?? (rescued ?? 0) > 0;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (!STAGING_CONTAINER_MISSING.test(message)) {
@@ -1546,7 +1546,7 @@ export async function performRescueAndPrepareStaging(
       }
     }
   }
-  if (rescued > 0) {
+  if (stagingSettled) {
     orchestratorLogger.warn(
       "Rescued staging rows left by a previous attempt before dropping staging",
       { entity: options.entity, flowId: options.flowId, rescued },
@@ -1602,8 +1602,8 @@ export function getTempCollectionCount(
 
 export async function performStagingMerge(
   options: SyncChunkOptions,
-  opts?: { mergePath?: CdcMergePath },
-): Promise<{ written: number }> {
+  opts?: { mergePath?: CdcMergePath; expectStagedRows?: boolean },
+): Promise<CdcStagingMergeResult> {
   if (!options.tableDestination?.connectionId || !options.flowId) {
     return { written: 0 };
   }
@@ -1639,11 +1639,23 @@ export async function performStagingMerge(
   // the second time.
   const isDedup =
     options.writeMode !== "append" && options.writeMode !== "overwrite";
-  if (!isDedup) {
+  const mergePath = opts?.mergePath ?? "final";
+  const isBigQuery = cdcAdapter.destinationType === "bigquery";
+  const expectStagedRows =
+    isBigQuery && mergePath !== "rescue"
+      ? (opts?.expectStagedRows ??
+        (await bulkBufferCollection(
+          flowId,
+          entity,
+          options.fullRead,
+        ).countDocuments({ [BULK_STAGED_FIELD]: true })) > 0)
+      : undefined;
+  const releaseStagedBuffer = async () => {
     await bulkBufferCollection(flowId, entity, options.fullRead).deleteMany({
       [BULK_STAGED_FIELD]: true,
     });
-  }
+  };
+  if (!isDedup && !isBigQuery) await releaseStagedBuffer();
 
   const cdcLayout = buildCdcEntityLayout({
     entity,
@@ -1675,7 +1687,9 @@ export async function performStagingMerge(
     {
       stagingSuffix: bulkStagingSuffix(options.fullRead),
       fullRead: options.fullRead,
-      mergePath: opts?.mergePath ?? "final",
+      mergePath,
+      expectStagedRows,
+      beforeWrite: !isDedup && isBigQuery ? releaseStagedBuffer : undefined,
     },
   );
 }

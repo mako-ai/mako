@@ -62,7 +62,7 @@ export function useBackfillPolling({
   const [cdc, setCdc] = useState<any | null>(null);
   const [executionId, setExecutionId] = useState<string | null>(null);
   const [liveLogs, setLiveLogs] = useState<LogEntry[]>([]);
-  const [execStats, setExecStats] = useState<Record<string, number>>({});
+  const [execStats, setExecStats] = useState<Record<string, number | null>>({});
   const [execStatus, setExecStatus] = useState<Record<string, string>>({});
   // Webhook event rows are untyped upstream.
   const [webhookEvents, setWebhookEvents] = useState<any[]>([]);
@@ -212,7 +212,7 @@ export function useBackfillPolling({
       }
       if (details?.stats) {
         const es = details.stats.entityStats as
-          Record<string, number> | undefined;
+          Record<string, number | null> | undefined;
         const est = details.stats.entityStatus as
           Record<string, string> | undefined;
         if (es) {

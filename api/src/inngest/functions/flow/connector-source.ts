@@ -25,7 +25,12 @@ import {
   syncMachineService,
 } from "../../../sync-cdc/sync-state";
 import type { FetchState } from "../../../connectors/base/BaseConnector";
-import { syncBackfillEntityFunction } from "../sync-entity";
+import {
+  addRowsWritten,
+  checkpointRowsWritten,
+  syncBackfillEntityFunction,
+  type SyncBackfillEntityResult,
+} from "../sync-entity";
 import {
   completeExecutionStep,
   emitSuccessNotification,
@@ -136,7 +141,7 @@ export async function runConnectorSourceFlow(
   const throwIfExecutionCancelled = ctx.throwIfExecutionCancelled;
 
   // Rows written per entity, for the execution's stats
-  const entityStatsMap: Record<string, number> = {};
+  const entityStatsMap: Record<string, number | null> = {};
 
   // Ensure dataSourceId is defined for connector execution
   if (!flow.dataSourceId) {
@@ -173,23 +178,26 @@ export async function runConnectorSourceFlow(
   // Checkpointed backfills apply to any CDC backfill run.
   const checkpointEnabled =
     Boolean(backfill) && isCdcEnabled && Boolean(cdcBackfillRunId);
+  const checkpointScope =
+    checkpointEnabled && cdcBackfillRunId
+      ? backfillCheckpointScope({
+          runId: cdcBackfillRunId,
+          destinationId: String(flow.destinationDatabaseId),
+          tableDestination: flow.tableDestination as unknown as Record<
+            string,
+            unknown
+          >,
+        })
+      : undefined;
   let checkpointCompletedEntities = new Set<string>();
-  if (checkpointEnabled && cdcBackfillRunId) {
-    const runId = cdcBackfillRunId;
+  if (checkpointScope) {
     const completedEntities = (await step.run(
       "load-cdc-backfill-completed-entities",
       async () => {
         return cdcBackfillCheckpointService.listCompletedEntities({
           workspaceId: String(flow.workspaceId),
           flowId: String(flow._id),
-          scope: backfillCheckpointScope({
-            runId,
-            destinationId: String(flow.destinationDatabaseId),
-            tableDestination: flow.tableDestination as unknown as Record<
-              string,
-              unknown
-            >,
-          }),
+          scope: checkpointScope,
         });
       },
     )) as string[];
@@ -282,13 +290,27 @@ export async function runConnectorSourceFlow(
       entity,
     });
 
-    if (checkpointEnabled && checkpointCompletedEntities.has(entity)) {
+    if (checkpointScope && checkpointCompletedEntities.has(entity)) {
       logger.info("Skipping entity already completed in checkpointed run", {
         flowId,
         entity,
         runId: cdcBackfillRunId,
       });
-      entityStatsMap[entity] = Math.max(entityStatsMap[entity] || 0, 1);
+      if (destinationType === "bigquery") {
+        const checkpoint = await step.run(
+          `load-completed-count-${safeEntityStepId}`,
+          () =>
+            cdcBackfillCheckpointService.loadEntityCheckpoint({
+              workspaceId: String(flow.workspaceId),
+              flowId: String(flow._id),
+              scope: checkpointScope,
+              entity,
+            }),
+        );
+        entityStatsMap[entity] = checkpointRowsWritten(checkpoint ?? undefined);
+      } else {
+        entityStatsMap[entity] = Math.max(entityStatsMap[entity] || 0, 1);
+      }
       if (executionId) {
         await step.run(`mark-entity-skipped-${safeEntityStepId}`, async () => {
           const db = Flow.db;
@@ -339,6 +361,7 @@ export async function runConnectorSourceFlow(
     let entityCompleted = false;
     let invocationIndex = 0;
     let resumeState: FetchState | undefined;
+    let previousWriteCountUnavailable = false;
     while (!entityCompleted) {
       const result = (await step.invoke(
         `sync-entity-${safeEntityStepId}-${invocationIndex}`,
@@ -347,14 +370,25 @@ export async function runConnectorSourceFlow(
           data: {
             ...entityPayload,
             ...(resumeState ? { resumeState } : {}),
+            ...(previousWriteCountUnavailable
+              ? { previousWriteCountUnavailable }
+              : {}),
           },
         },
-      )) as { completed: boolean; rowsWritten: number; state?: FetchState };
+      )) as SyncBackfillEntityResult;
       entityCompleted = result.completed;
       // A poll that yielded hands back its fetch state; the next invocation
       // resumes from it (backfills resume from their checkpoint instead).
       resumeState = result.state;
-      entityStatsMap[entity] = result.rowsWritten;
+      previousWriteCountUnavailable =
+        previousWriteCountUnavailable ||
+        (destinationType === "bigquery" &&
+          isCdcEnabled &&
+          result.bigQueryAffectedRows !== true) ||
+        result.rowsWritten === null;
+      entityStatsMap[entity] = previousWriteCountUnavailable
+        ? null
+        : result.rowsWritten;
       invocationIndex++;
       if (invocationIndex > 100) {
         throw new Error(
@@ -395,10 +429,7 @@ export async function runConnectorSourceFlow(
   await completeExecutionStep(ctx, {
     strict: true,
     stats: {
-      recordsProcessed: Object.values(entityStatsMap).reduce(
-        (sum, value) => sum + value,
-        0,
-      ),
+      recordsProcessed: Object.values(entityStatsMap).reduce(addRowsWritten, 0),
       recordsCreated: 0,
       recordsUpdated: 0,
       recordsDeleted: 0,

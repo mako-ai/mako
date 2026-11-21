@@ -263,7 +263,7 @@ export function buildEntityRows(
   flow: EntityRowFlow | undefined,
   cdcEntities: any[],
   destinationCounts: Record<string, number | null> | null,
-  execStats: Record<string, number>,
+  execStats: Record<string, number | null>,
   execStatus: Record<string, string>,
 ) {
   const cdcByEntity = new Map(cdcEntities.map((e: any) => [e.entity, e]));
@@ -296,7 +296,7 @@ export function buildEntityRows(
       backfillDone: s?.backfillDone === true,
       failedCount: (s as any)?.failedCount || 0,
       repartition: (s as any)?.repartition ?? null,
-      execRows: execStats[name] || 0,
+      execRows: execStats[name] === undefined ? 0 : execStats[name],
       execStatus: execStatus[name] || null,
     };
   });

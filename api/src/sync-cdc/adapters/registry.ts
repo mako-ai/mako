@@ -46,6 +46,12 @@ export interface LiveTableDescription {
   clusterFields: string[];
 }
 
+export interface CdcStagingMergeResult {
+  written: number | null;
+  /** A write completed and consumed the staged input, even when its count is unavailable. */
+  stagingSettled?: boolean;
+}
+
 export interface CdcDestinationAdapter {
   destinationType: string;
   /**
@@ -90,12 +96,16 @@ export interface CdcDestinationAdapter {
     options?: {
       stagingSuffix?: string;
       knownStagingRowCount?: number;
+      /** A successful load or a marked bulk buffer says staging must exist. */
+      expectStagedRows?: boolean;
+      /** Release append buffer rows after staging is verified and before DML. */
+      beforeWrite?: () => Promise<void>;
       /** Staged rows come from a backfill or resync (bigquery-sql.ts). */
       fullRead?: boolean;
       /** The write path: a flush, the final merge or a rescue (table-write-lease.ts). */
       mergePath?: CdcMergePath;
     },
-  ): Promise<{ written: number }>;
+  ): Promise<CdcStagingMergeResult>;
   cleanupStaging?(
     layout: CdcEntityLayout,
     flowId: string,

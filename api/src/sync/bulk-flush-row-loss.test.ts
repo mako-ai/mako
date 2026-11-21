@@ -244,7 +244,14 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
     staging.push(...ids);
     return { loaded: ids.length };
   }) as any,
-  mergeFromStaging: (async () => {
+  mergeFromStaging: (async (
+    _layout: unknown,
+    _flow: unknown,
+    _flowId: string,
+    _schema: unknown,
+    options?: { beforeWrite?: () => Promise<void> },
+  ) => {
+    await options?.beforeWrite?.();
     if (mergesThatFail.has(mergeCalls + 1)) {
       mergeCalls++;
       throw new Error("Job exceeded rate limits");

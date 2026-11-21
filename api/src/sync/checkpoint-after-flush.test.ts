@@ -86,8 +86,14 @@ class FakeCollection {
     }
     return { modifiedCount };
   }
-  async updateOne() {
-    return { modifiedCount: 0 };
+  async findOne(filter: Doc) {
+    return this.docs.find(doc => matches(doc, filter)) ?? null;
+  }
+  async updateOne(filter: Doc, update: { $set?: Doc }) {
+    const doc = await this.findOne(filter);
+    if (!doc) return { matchedCount: 0, modifiedCount: 0 };
+    Object.assign(doc, update.$set ?? {});
+    return { matchedCount: 1, modifiedCount: 1 };
   }
   async deleteMany(filter: Doc = {}) {
     const before = this.docs.length;
@@ -258,11 +264,15 @@ let writeModeOfRun: "append_dedup" | "append" = "append_dedup";
  */
 let failingMerges = new Set<number>();
 let mergeCalls = 0;
+const missingMergeCounts = new Set<number>();
+let failAfterDroppingStaging = false;
+let stagingLossPath: "flush" | "final" | undefined;
 /**
  * Rows a flush leaves in the buffer, as when flushBulkBuffer stops early on
  * an empty parquet: put back into the buffer by the next staging cleanup.
  */
 let leftoverOnCleanup: Doc[] = [];
+let leftoverOnMerge: number | undefined;
 
 const suffixOf = (o?: { stagingSuffix?: string }) =>
   o?.stagingSuffix ?? "backfill_staging";
@@ -296,7 +306,14 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
   }) as any,
   cleanupStaging: (async (_l: unknown, _f: string, o?: any) => {
     staging.set(suffixOf(o), []);
-    if (leftoverOnCleanup.length > 0) {
+    if (failAfterDroppingStaging) {
+      failAfterDroppingStaging = false;
+      throw new Error("MongoDB disconnected after the staging drop");
+    }
+    if (
+      leftoverOnCleanup.length > 0 &&
+      (leftoverOnMerge === undefined || leftoverOnMerge === mergeCalls)
+    ) {
       await collection(`backfill_tmp_${FLOW_ID}_${ENTITY}`).insertMany(
         leftoverOnCleanup,
       );
@@ -320,7 +337,18 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
     _s: unknown,
     o?: any,
   ) => {
+    if (
+      stagingLossPath &&
+      stagingLossPath === o?.mergePath &&
+      o.expectStagedRows
+    ) {
+      staging.set(suffixOf(o), []);
+    }
     const rowsInStaging = stagingOf(o);
+    if (o?.expectStagedRows && rowsInStaging.length === 0) {
+      throw new Error("Expected BigQuery staging table is missing");
+    }
+    await o?.beforeWrite?.();
     if (rowsInStaging.length > 0) mergeCalls++;
     if (rowsInStaging.length > 0 && failingMerges.has(mergeCalls)) {
       throw new Error("git ls-tree failed: fatal: not a tree object");
@@ -337,7 +365,11 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
     } else {
       live.push(...rowsInStaging);
     }
-    return { written };
+    return {
+      written:
+        written > 0 && missingMergeCounts.has(mergeCalls) ? null : written,
+      stagingSettled: written > 0,
+    };
   }) as any,
 };
 
@@ -353,6 +385,7 @@ vi.mock("../sync-cdc/adapters/registry", async () => {
 
 import { syncBackfillEntityFunction } from "../inngest/functions/sync-entity";
 import { cdcBackfillCheckpointService } from "../sync-cdc/sync-state";
+import { BULK_STAGED_FIELD, bulkBufferName } from "./sync-orchestrator";
 
 // ── Driver ────────────────────────────────────────────────────────────────
 
@@ -368,6 +401,8 @@ class Cancelled extends Error {}
  * yields before each step, so two invocations run their steps in turn, as
  * Inngest runs two executions of one flow.
  */
+let nextInngestRunId = 0;
+
 async function invoke(params: {
   runId: string;
   cancelAt?: string;
@@ -381,8 +416,19 @@ async function invoke(params: {
   tableName?: string;
   poll?: boolean;
   interleave?: boolean;
-}): Promise<{ completed: boolean; rowsWritten: number }> {
+  attempt?: number;
+  retry?: { stepId: string; firstError: string; remainsFailed?: boolean };
+  executionId?: string;
+}): Promise<{ completed: boolean; rowsWritten: number | null }> {
+  const journal = collection(params.executionId ? "flow_executions" : "flows");
+  const journalId = params.executionId ?? FLOW_ID;
+  if (!journal.docs.some(doc => doc._id === journalId)) {
+    journal.docs.push({ _id: journalId });
+  }
   let cancelNext = false;
+  let attempt = params.attempt ?? 0;
+  const memo = new Map<string, unknown>();
+  const yieldAfterRetry = new Error("Inngest memoized the retried step");
   const step = {
     run: async (id: string, fn: () => Promise<unknown>) => {
       if (id === params.cancelAt || cancelNext) throw new Cancelled(id);
@@ -390,10 +436,15 @@ async function invoke(params: {
       if (params.interleave) {
         await new Promise(resolve => setImmediate(resolve));
       }
+      if (memo.has(id)) return memo.get(id);
       const out = await fn();
       if (params.legacyNullSteps?.includes(id)) return null;
       // Inngest stores step output as JSON.
-      return out === undefined ? undefined : JSON.parse(JSON.stringify(out));
+      const serialized =
+        out === undefined ? undefined : JSON.parse(JSON.stringify(out));
+      memo.set(id, serialized);
+      if (attempt === 1 && id === params.retry?.stepId) throw yieldAfterRetry;
+      return serialized;
     },
     sleep: async () => undefined,
   };
@@ -403,15 +454,17 @@ async function invoke(params: {
     error: () => undefined,
     debug: () => undefined,
   };
-  return (
+  const handler = (
     syncBackfillEntityFunction as unknown as {
       handler: (ctx: unknown) => Promise<any>;
     }
-  ).handler({
+  ).handler;
+  const context = {
     event: {
       data: {
         flowId: FLOW_ID,
         entity: ENTITY,
+        executionId: params.executionId,
         dataSourceId: "69c781737eb58b93e5ac3385",
         workspaceId: WORKSPACE_ID,
         backfill: !params.poll,
@@ -433,7 +486,21 @@ async function invoke(params: {
     },
     step,
     logger,
-  });
+    runId: `inngest-${++nextInngestRunId}`,
+    get attempt() {
+      return attempt;
+    },
+  };
+  if (params.retry) {
+    const { stepId, firstError, remainsFailed } = params.retry;
+    await expect(handler(context)).rejects.toThrow(firstError);
+    expect(memo.has(stepId)).toBe(false);
+    attempt = 1;
+    if (remainsFailed) return handler(context);
+    await expect(handler(context)).rejects.toBe(yieldAfterRetry);
+    attempt = 0;
+  }
+  return handler(context);
 }
 
 function expectEveryRowExactlyOnce() {
@@ -679,8 +746,121 @@ describe("a backfill checkpoint never runs ahead of the flushed rows", () => {
     });
     expect(result.completed).toBe(true);
     expectEveryRowExactlyOnce();
-    // The legacy flush counted nothing; the later flushes count theirs.
-    expect(result.rowsWritten).toBe(15_000);
+    // The legacy flush committed without an affected-row receipt.
+    expect(result.rowsWritten).toBeNull();
+  }, 120_000);
+
+  it("cleans up committed staging and keeps an unavailable count through resume", async () => {
+    writeModeOfRun = "append";
+    sourceRows = rows(15_000);
+    missingMergeCounts.add(1);
+    try {
+      await expect(
+        invoke({ runId: "run-A", cancelAt: "sync-opportunities-chunk-26" }),
+      ).rejects.toBeInstanceOf(Cancelled);
+      expect(live).toHaveLength(10_000);
+
+      chunkStartOffsets = [];
+      const result = await invoke({ runId: "run-A" });
+      expect(chunkStartOffsets[0]).toBe(10_000);
+      expectEveryRowExactlyOnce();
+      expect(result).toMatchObject({ completed: true, rowsWritten: null });
+    } finally {
+      missingMergeCounts.clear();
+    }
+  }, 120_000);
+
+  it.each([
+    { size: 15_000, stepId: "flush-apply-opportunities-0", mergeCount: 2 },
+    { size: 10, stepId: "merge-final-opportunities", mergeCount: 1 },
+  ])(
+    "retries $stepId after staging was dropped without repeating the merge",
+    async ({ size, stepId, mergeCount }) => {
+      writeModeOfRun = "append";
+      sourceRows = rows(size);
+      failAfterDroppingStaging = true;
+      const result = await invoke({
+        runId: "run-A",
+        retry: {
+          stepId,
+          firstError: "MongoDB disconnected after the staging drop",
+        },
+        executionId: "69c781737eb58b93e5ac3386",
+      });
+      expectEveryRowExactlyOnce();
+      expect(mergeCalls).toBe(mergeCount);
+      expect(result).toMatchObject({ completed: true, rowsWritten: size });
+    },
+    120_000,
+  );
+
+  it("preserves the staged buffer and prior checkpoint when final staging is missing on replay", async () => {
+    writeModeOfRun = "append";
+    sourceRows = rows(15_000);
+    stagingLossPath = "final";
+    const missingStaging = "Expected BigQuery staging table is missing";
+    try {
+      await expect(
+        invoke({
+          runId: "run-A",
+          retry: {
+            stepId: "merge-final-opportunities",
+            firstError: missingStaging,
+            remainsFailed: true,
+          },
+        }),
+      ).rejects.toThrow(missingStaging);
+      expect(live).toHaveLength(10_000);
+      expect(mergeCalls).toBe(1);
+      const checkpoint = entityStates.find(doc => doc.entity === ENTITY);
+      expect(checkpoint?.backfillCursor).toMatchObject({
+        totalProcessed: 10_000,
+        hasMore: true,
+        metadata: { rowsWrittenTotal: 10_000 },
+      });
+      expect(checkpoint?.backfillCompletedAt).toBeUndefined();
+      const buffer = collection(bulkBufferName(FLOW_ID, ENTITY, true));
+      expect(await buffer.countDocuments({ [BULK_STAGED_FIELD]: true })).toBe(
+        5_000,
+      );
+    } finally {
+      stagingLossPath = undefined;
+    }
+
+    chunkStartOffsets = [];
+    const recovered = await invoke({ runId: "run-A" });
+    expect(chunkStartOffsets[0]).toBe(10_000);
+    expect(recovered).toMatchObject({ completed: true, rowsWritten: 15_000 });
+    expectEveryRowExactlyOnce();
+  }, 120_000);
+
+  it("keeps an unknown partial flush count on the earlier checkpoint", async () => {
+    sourceRows = rows(25_000);
+    missingMergeCounts.add(2);
+    leftoverOnMerge = 2;
+    leftoverOnCleanup = [{ ...sourceRows[0], _bulkRunId: "run-A" }];
+    try {
+      await expect(
+        invoke({ runId: "run-A", cancelAt: "sync-opportunities-chunk-46" }),
+      ).rejects.toBeInstanceOf(Cancelled);
+      expect(live).toHaveLength(20_000);
+
+      chunkStartOffsets = [];
+      const result = await invoke({ runId: "run-A" });
+      expect(chunkStartOffsets[0]).toBe(10_000);
+      expectEveryRowExactlyOnce();
+      expect(result).toMatchObject({ completed: true, rowsWritten: null });
+    } finally {
+      missingMergeCounts.clear();
+      leftoverOnMerge = undefined;
+    }
+  }, 120_000);
+
+  it("does not attribute the prior attempt to the replayed step's new DML count", async () => {
+    sourceRows = rows(10);
+    const result = await invoke({ runId: "run-A", attempt: 1 });
+    expectEveryRowExactlyOnce();
+    expect(result).toMatchObject({ completed: true, rowsWritten: null });
   }, 120_000);
 });
 

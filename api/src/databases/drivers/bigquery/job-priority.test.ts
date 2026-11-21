@@ -197,6 +197,38 @@ describe("read paths stay INTERACTIVE", () => {
   });
 });
 
+describe("DML receipts", () => {
+  it.each([
+    {
+      stats: {
+        dmlStats: {
+          insertedRowCount: "2",
+          updatedRowCount: "3",
+          deletedRowCount: "1",
+        },
+      },
+      expected: 6,
+    },
+    { stats: { numDmlAffectedRows: "0" }, expected: 0 },
+    { stats: {}, expected: undefined },
+  ])(
+    "exposes the affected count $expected independently of rowCount",
+    async ({ stats, expected }) => {
+      engine.getHttpClient = async () => ({
+        ...fakeClient,
+        post: async () => ({ data: { jobComplete: true, ...stats } }),
+      });
+      const result = await bigQueryEngine.executeQuery(
+        database,
+        "MERGE fixture",
+      );
+      expect(result.success).toBe(true);
+      expect(result.rowCount).toBe(expected ?? 0);
+      expect(result.dmlAffectedRows).toBe(expected);
+    },
+  );
+});
+
 describe("sync write paths run at BATCH", () => {
   function cdcAdapter(): BigQueryDestinationAdapter {
     const adapter = new BigQueryDestinationAdapter({
