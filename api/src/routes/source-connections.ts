@@ -156,6 +156,7 @@ async function publicSourceConnection(
   caller: Caller,
 ): Promise<Record<string, unknown>> {
   const record = asSourceRecord(doc);
+  delete record.configRevision;
   let schema: { fields: ConnectorFieldSchema[] } | null = null;
   try {
     schema = await syncConnectorRegistry.getConfigSchemaForType(
@@ -368,7 +369,7 @@ sourceConnectionRoutes.openapi(
       const sourceConnection = await SourceConnection.findOne({
         _id: id,
         workspaceId,
-      });
+      }).select("+configRevision");
 
       if (!sourceConnection) {
         return fail(c, 404, "Source connection not found");
@@ -569,7 +570,35 @@ sourceConnectionRoutes.openapi(
 
       // Only save if there were actual changes
       if (hasChanges) {
-        await sourceConnection.save();
+        if (
+          sourceConnection.isModified([
+            "config",
+            "type",
+            "isActive",
+            "settings",
+          ])
+        ) {
+          // A hydrated config must not overwrite a key saved after the read.
+          // Missing legacy counters start at zero; retire old writers before
+          // relying on this guard across replicas.
+          const revision = currentValues.configRevision ?? 0;
+          sourceConnection.$where = {
+            workspaceId: sourceConnection.workspaceId,
+            configRevision: revision === 0 ? { $in: [0, null] } : revision,
+          };
+          sourceConnection.$inc("configRevision", 1);
+        }
+        try {
+          await sourceConnection.save();
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            error.name === "DocumentNotFoundError"
+          ) {
+            return fail(c, 409, "Connection changed. Refresh and try again.");
+          }
+          throw error;
+        }
       }
 
       return c.json({
@@ -690,18 +719,21 @@ sourceConnectionRoutes.openapi(
         );
       }
 
-      const sourceConnection = await SourceConnection.findOneAndUpdate(
-        {
-          _id: id,
-          workspaceId,
-        },
-        {
-          isActive: body.enabled,
-        },
-        {
-          returnDocument: "after",
-        },
-      );
+      const sourceConnection =
+        (await SourceConnection.findOneAndUpdate(
+          {
+            _id: id,
+            workspaceId,
+            isActive: { $ne: body.enabled },
+          },
+          {
+            $set: { isActive: body.enabled },
+            $inc: { configRevision: 1 },
+          },
+          {
+            returnDocument: "after",
+          },
+        )) ?? (await SourceConnection.findOne({ _id: id, workspaceId }));
 
       if (!sourceConnection) {
         return fail(c, 404, "Source connection not found");

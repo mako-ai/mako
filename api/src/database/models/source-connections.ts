@@ -89,6 +89,8 @@ export interface ISourceConnection extends Document {
   updatedAt: Date;
   lastSyncedAt?: Date;
   isActive: boolean;
+  /** Internal counter for request-affecting changes. Legacy rows may lack it. */
+  configRevision?: number;
   /**
    * Set while the connection waits for a person to paste its key in the app
    * (connectors/connection-key-request.service.ts). An agent creates the
@@ -190,6 +192,7 @@ const SourceConnectionSchema = new Schema<ISourceConnection>(
       type: Boolean,
       default: true,
     },
+    configRevision: { type: Number, select: false },
     keyRequest: {
       type: new Schema<ISourceConnectionKeyRequest>(
         {

@@ -187,6 +187,32 @@ describe("inspect_connection: plain settings and access, never a secret", () => 
 });
 
 describe("update_connection", () => {
+  it("increments the revision for an active edit but not a rename", async () => {
+    expect(
+      (
+        await writeTools("manager1").update_connection.execute({
+          connectionId: API.toString(),
+          name: "renamed",
+        })
+      ).error,
+    ).toBeUndefined();
+    expect(
+      (await SourceConnection.findById(API).select("+configRevision").lean())
+        ?.configRevision,
+    ).toBeUndefined();
+    expect(
+      (
+        await writeTools("manager1").update_connection.execute({
+          connectionId: API.toString(),
+          active: false,
+        })
+      ).error,
+    ).toBeUndefined();
+    expect(
+      (await SourceConnection.findById(API).select("+configRevision").lean())
+        ?.configRevision,
+    ).toBe(1);
+  });
   it("renames, and warns that references by name break", async () => {
     const result = await writeTools("manager1").update_connection.execute({
       connectionId: API.toString(),

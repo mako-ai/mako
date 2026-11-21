@@ -46,6 +46,7 @@
  *   - A connection whose credential check fails is deleted again, so a wrong
  *     key does not leave a dead credential behind for someone to sync from.
  */
+import { isDeepStrictEqual } from "node:util";
 import { hasMinimumWorkspaceRole } from "@mako/agent-tools";
 import { tool } from "ai";
 import { Types } from "mongoose";
@@ -642,7 +643,9 @@ export function createConnectionWriteTools(
             // One path per plain field: a secret stored next to them is
             // neither read nor written again.
             for (const [key, value] of Object.entries(config)) {
-              set[`config.${key}`] = value;
+              if (!isDeepStrictEqual(value, row.config?.[key])) {
+                set[`config.${key}`] = value;
+              }
             }
           }
 
@@ -656,7 +659,14 @@ export function createConnectionWriteTools(
           if (changed.length > 0) {
             await SourceConnection.updateOne(
               { _id: row._id, workspaceId: new Types.ObjectId(workspaceId) },
-              { $set: set },
+              {
+                $set: set,
+                ...(Object.keys(set).some(
+                  key => key === "isActive" || key.startsWith("config."),
+                )
+                  ? { $inc: { configRevision: 1 } }
+                  : {}),
+              },
             );
             logger.info("Source connection updated over MCP", {
               workspaceId,
