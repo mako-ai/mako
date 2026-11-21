@@ -11,12 +11,14 @@ import { googleClientCredentials } from "../../connections/google-service-accoun
 import { inWorkspace } from "../../utils/workspace-scope";
 import { BigQuery } from "@google-cloud/bigquery";
 import { readFile, rm } from "node:fs/promises";
+import { setTimeout as sleep } from "node:timers/promises";
 import {
   isLocalBigQueryEmulator,
   bigQueryEmulatorEndpoint,
 } from "../../utils/bigquery-emulator";
 import {
   DatabaseConnection,
+  Flow,
   type IFlow,
   type IDatabaseConnection,
 } from "../../database/workspace-schema";
@@ -74,9 +76,34 @@ import {
 } from "./bigquery-load";
 import { ABSENT_COLUMNS_FIELD } from "../sparse-rows";
 import {
+  bigQueryJobLabels,
   currentQueryLabels,
   withQueryLabels,
 } from "../../services/bigquery-labels";
+import { syncWritePriority } from "../../services/bigquery-job-priority";
+import { resolveAgentJobCaps } from "../../databases/drivers/bigquery/agent-caps";
+import type { RestEntityOverwriteReservation } from "../rest-entity-admission";
+import {
+  dispatchRestBigQueryTruncate,
+  isRestBigQueryTruncateJob,
+  readRestBigQueryTruncateReceipt,
+  matchesRestBigQueryTruncateDestination,
+  recordRestBigQueryTruncateAbsence,
+  RestBigQueryTruncateNeedsLease,
+  retainRestBigQueryTruncate,
+  settleReservedBigQueryRestTruncate,
+} from "../bigquery-rest-overwrite-intent";
+import {
+  captureRestBigQueryOverwriteSnapshot,
+  restBigQueryReplacementJobId,
+  type RestBigQueryOverwriteBatch,
+} from "../bigquery-rest-overwrite-snapshot";
+import {
+  dispatchRestBigQueryReplacement,
+  holdBigQueryRestOverwriteInsert,
+  readBigQueryStagedInput,
+  RestBigQueryReplacementNeedsLease,
+} from "../bigquery-staged-intent";
 import {
   tableWriteLeaseMaxWaitMs,
   withTableWriteLease,
@@ -575,7 +602,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
   async mergeFromStaging(
     layout: CdcEntityLayout,
-    _flow: FlowRef,
+    flow: FlowRef,
     flowId: string,
     entitySchema?: ConnectorEntitySchema,
     options?: {
@@ -586,8 +613,18 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       absentColumns?: ReadonlySet<string>;
       /** Which write path merges: the lease wait and the `mako_merge_path` label. Default "final". */
       mergePath?: CdcMergePath;
+      restBigQueryOverwrite?: RestBigQueryOverwriteBatch;
     },
   ): Promise<{ written: number }> {
+    const restScope = options?.restBigQueryOverwrite?.reservation.scope;
+    if (
+      restScope &&
+      String(flow.dataSourceId) !== restScope.sourceConnectionId.toHexString()
+    ) {
+      throw new Error(
+        "BigQuery staging does not match the REST source connection",
+      );
+    }
     const stagingTable = bigQueryStagingTableName(
       layout.tableName,
       flowId,
@@ -599,6 +636,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       absentColumns: options?.absentColumns,
       mergePath: options?.mergePath ?? "final",
       flowId,
+      restBigQueryOverwrite: options?.restBigQueryOverwrite,
     });
   }
 
@@ -797,11 +835,65 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       absentColumns?: ReadonlySet<string>;
       mergePath: CdcMergePath;
       flowId?: string;
+      restBigQueryOverwrite?: RestBigQueryOverwriteBatch;
     },
   ): Promise<{ written: number }> {
     const target = await this.resolveBqClient();
     const { projectId, dataset } = target;
     const liveTable = layout.tableName;
+    const restBatch = options.restBigQueryOverwrite;
+    let restJob: BigQueryJobIdentity | undefined;
+    if (restBatch) {
+      const { reservation, expectedRows, sourceRowsBefore } = restBatch;
+      const { scope, overwrite } = reservation;
+      const location = target.datasetLocation?.trim().toLowerCase();
+      if (
+        layout.writeMode !== "overwrite" ||
+        options.flowId !== scope.flowId.toHexString() ||
+        layout.entity !== overwrite.entity ||
+        liveTable !== overwrite.tableName ||
+        dataset !== overwrite.schema ||
+        String(target.destination.workspaceId) !==
+          scope.workspaceId.toHexString() ||
+        String(target.destination._id) !== overwrite.destinationId ||
+        this.config.tableDestination.connectionId !==
+          overwrite.destinationConnectionId ||
+        (this.config.destinationDatabaseName ?? null) !==
+          overwrite.destinationDatabaseName ||
+        !location ||
+        !Number.isSafeInteger(sourceRowsBefore) ||
+        sourceRowsBefore < 0 ||
+        !Number.isSafeInteger(expectedRows) ||
+        expectedRows <= 0 ||
+        !Number.isSafeInteger(sourceRowsBefore + expectedRows)
+      ) {
+        throw new Error(
+          "BigQuery staging does not match the REST overwrite batch",
+        );
+      }
+      if (!(await this.hasCompletedRestOverwriteTruncate(reservation))) {
+        throw new Error("BigQuery replacement requires its completed truncate");
+      }
+      restJob = {
+        project: projectId,
+        location,
+        id: restBigQueryReplacementJobId(restBatch),
+      };
+      const retained = await readBigQueryStagedInput(restJob);
+      if (retained) {
+        if (retained.intent.restOverwrite?.expectedRows !== expectedRows) {
+          throw new Error("BigQuery replacement source row count changed");
+        }
+        await this.finishRestReplacement(
+          target,
+          liveTable,
+          options.mergePath,
+          restJob,
+          retained.fingerprint,
+        );
+        return { written: expectedRows };
+      }
+    }
 
     const fullLive = fullTableName(target, liveTable);
     const fullStaging = fullTableName(target, stagingTable);
@@ -822,6 +914,9 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     stagingCols.delete(ABSENT_COLUMNS_FIELD);
 
     if (stagingCols.size === 0) {
+      if (restBatch) {
+        throw new Error("BigQuery REST overwrite staging is missing");
+      }
       log.info("Staging table not found or empty, nothing to merge", {
         stagingTable,
         liveTable,
@@ -905,6 +1000,61 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     // run start, then appends; default dedups via MERGE.
     const writeMode = layout.writeMode || "append_dedup";
     const insertCols = allColumns.filter(c => stagingCols.has(c));
+    if (restBatch && restJob) {
+      const source = { project: projectId, dataset, table: stagingTable };
+      const [staging] = await target.bq
+        .dataset(dataset)
+        .table(stagingTable)
+        .getMetadata();
+      const modifiedAt = Number(staging.lastModifiedTime);
+      if (
+        !Number.isSafeInteger(modifiedAt) ||
+        modifiedAt <= 0 ||
+        Number(staging.numRows) !== restBatch.expectedRows
+      ) {
+        throw new Error(
+          "BigQuery staging metadata does not match the REST batch",
+        );
+      }
+      const configuration = this.restOverwriteConfiguration(
+        target,
+        options.mergePath,
+      );
+      const captured = await captureRestBigQueryOverwriteSnapshot(
+        Flow.db,
+        target,
+        restBatch.reservation,
+        { ...restBatch, source, asOf: new Date(modifiedAt) },
+        configuration,
+      );
+      if (!captured) {
+        throw new Error("BigQuery REST overwrite snapshot is pending");
+      }
+      await holdBigQueryRestOverwriteInsert(
+        {
+          job: restJob,
+          input: captured.input,
+          destination: { project: projectId, dataset, table: liveTable },
+        },
+        insertCols,
+        configuration,
+        {
+          ...restBatch.reservation,
+          sourceRowsBefore: restBatch.sourceRowsBefore,
+          expectedRows: restBatch.expectedRows,
+        },
+      );
+      const held = await readBigQueryStagedInput(restJob);
+      if (!held) throw new Error("BigQuery replacement intent is missing");
+      await this.finishRestReplacement(
+        target,
+        liveTable,
+        options.mergePath,
+        restJob,
+        held.fingerprint,
+      );
+      return { written: restBatch.expectedRows };
+    }
     const insertColList = insertCols.map(escId).join(", ");
     const isDedup = writeMode !== "append" && writeMode !== "overwrite";
     // The MERGE reads from live only the columns some staged row lacks. The
@@ -1046,9 +1196,80 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     return { written: stagingRowCount };
   }
 
-  /** Full Refresh | Overwrite: clear the live table (no-op when absent). */
-  async truncateLiveTable(layout: CdcEntityLayout): Promise<void> {
+  private async finishRestReplacement(
+    target: BigQueryTarget,
+    table: string,
+    path: CdcMergePath,
+    job: BigQueryJobIdentity,
+    intentFingerprint: string,
+  ): Promise<void> {
+    const ref = { jobId: job.id, location: job.location, intentFingerprint };
+    const destination = {
+      connectionId: this.config.tableDestination.connectionId,
+      databaseName: this.config.destinationDatabaseName ?? null,
+    };
+    const finish = async (lease?: TableWriteLease) => {
+      const deadline = Date.now() + mergeMaxWaitMs();
+      for (;;) {
+        const result = await dispatchRestBigQueryReplacement(
+          target,
+          table,
+          destination,
+          { ...ref, reservedBeforeDispatch: true },
+        );
+        if (result) {
+          lease?.markJobDone();
+          if (result === "failed") {
+            throw new Error("Reserved BigQuery replacement failed");
+          }
+          return;
+        }
+        if (Date.now() >= deadline) {
+          throw new Error("Reserved BigQuery replacement is still pending");
+        }
+        await sleep(1000);
+      }
+    };
+    try {
+      await finish();
+    } catch (error) {
+      if (!(error instanceof RestBigQueryReplacementNeedsLease)) throw error;
+      await this.underTableWriteLease(target, table, { path }, async lease => {
+        if (!lease) throw error;
+        await lease.reserveJob(ref);
+        await finish(lease);
+      });
+    }
+  }
+
+  /** A retained truncate can only settle work against its original target. */
+  async hasCompletedRestOverwriteTruncate(
+    reservation: RestEntityOverwriteReservation,
+  ): Promise<boolean> {
+    const receipt = await readRestBigQueryTruncateReceipt(Flow.db, reservation);
+    if (!receipt) return false;
     const target = await this.resolveBqClient();
+    if (!matchesRestBigQueryTruncateDestination(target, receipt)) {
+      throw new Error(
+        "BigQuery REST overwrite destination changed after truncate",
+      );
+    }
+    return true;
+  }
+
+  /** Full Refresh | Overwrite: clear the live table (no-op when absent). */
+  async truncateLiveTable(
+    layout: CdcEntityLayout,
+    reservation?: RestEntityOverwriteReservation,
+  ): Promise<void> {
+    const target = await this.resolveBqClient();
+    if (reservation) {
+      return this.truncateReservedRestOverwrite(
+        target,
+        layout.tableName,
+        reservation,
+      );
+    }
     const result = await runBigQueryWrite(
       target,
       `DELETE FROM ${fullTableName(target, layout.tableName)} WHERE TRUE`,
@@ -1061,6 +1282,102 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         result.error || "Failed to clear BigQuery live table for overwrite",
       );
     }
+  }
+
+  private async truncateReservedRestOverwrite(
+    target: BigQueryTarget,
+    liveTable: string,
+    { scope, overwrite }: RestEntityOverwriteReservation,
+  ): Promise<void> {
+    if (!target.datasetLocation) {
+      throw new Error("Reserved BigQuery truncate requires a dataset location");
+    }
+    const retained = await retainRestBigQueryTruncate(
+      Flow.db,
+      scope,
+      overwrite,
+      {
+        projectId: target.projectId,
+        dataset: target.dataset,
+        location: target.datasetLocation,
+        table: liveTable,
+      },
+      this.restOverwriteConfiguration(target, "truncate"),
+    );
+
+    const waitForReceipt = async () => {
+      const deadline = Date.now() + mergeMaxWaitMs();
+      for (;;) {
+        const result = await dispatchRestBigQueryTruncate(
+          Flow.db,
+          target,
+          retained,
+        );
+        if (result === "succeeded" || result === "absent") return;
+        if (result === "failed") {
+          throw new Error("Reserved BigQuery truncate failed");
+        }
+        if (Date.now() >= deadline) {
+          throw new Error("Reserved BigQuery truncate is still pending");
+        }
+        await sleep(1000);
+      }
+    };
+
+    try {
+      await waitForReceipt();
+      return;
+    } catch (error) {
+      if (!(error instanceof RestBigQueryTruncateNeedsLease)) throw error;
+    }
+    await this.underTableWriteLease(
+      target,
+      liveTable,
+      { path: "truncate", flowId: scope.flowId.toHexString() },
+      async lease => {
+        if (!lease) throw new RestBigQueryTruncateNeedsLease();
+        await lease.reserveJob({
+          jobId: retained.job.id,
+          location: retained.job.location,
+          intentFingerprint: retained.fingerprint,
+        });
+        if (
+          await recordRestBigQueryTruncateAbsence(Flow.db, target, retained)
+        ) {
+          return;
+        }
+        await waitForReceipt();
+      },
+    );
+  }
+
+  private restOverwriteConfiguration(
+    target: BigQueryTarget,
+    path: CdcMergePath,
+  ) {
+    const config = target.destination.connection as Record<string, unknown>;
+    const apiBaseUrl = config?.api_base_url;
+    const emulator = isLocalBigQueryEmulator(
+      typeof apiBaseUrl === "string" ? apiBaseUrl : undefined,
+    );
+    const labels = emulator
+      ? undefined
+      : bigQueryJobLabels({
+          workspaceId: target.destination.workspaceId,
+          explicit: { mako_merge_path: path },
+        });
+    const caps = resolveAgentJobCaps({ connection: config, labels });
+    return {
+      query: {
+        useLegacySql: false as const,
+        priority: emulator ? "INTERACTIVE" : syncWritePriority(),
+        ...(caps.maximumBytesBilled
+          ? { maximumBytesBilled: String(caps.maximumBytesBilled) }
+          : {}),
+      },
+      ...(labels ? { labels } : {}),
+      ...(caps.jobTimeoutMs ? { jobTimeoutMs: String(caps.jobTimeoutMs) } : {}),
+    };
   }
 
   async cleanupStaging(
@@ -1132,10 +1449,25 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         }
       },
       isReservedJobDone: async job => {
-        const { settleReservedBigQueryCdcJob } =
+        if (isRestBigQueryTruncateJob(job.jobId)) {
+          return settleReservedBigQueryRestTruncate(
+            Flow.db,
+            target,
+            liveTable,
+            job,
+          );
+        }
+        const { settleReservedBigQueryStagedJob } =
           await import("../bigquery-staged-intent");
-        return settleReservedBigQueryCdcJob(
-          this.leaseJobTarget(target, liveTable),
+        return settleReservedBigQueryStagedJob(
+          {
+            ...this.leaseJobTarget(target, liveTable),
+            restDestination: {
+              connectionId: this.config.tableDestination.connectionId,
+              databaseName: this.config.destinationDatabaseName ?? null,
+              location: target.datasetLocation,
+            },
+          },
           job,
           async () => {
             try {

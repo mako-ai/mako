@@ -16,12 +16,31 @@ import {
 import {
   closeRestEntityAdmission,
   type RestEntityOverwrite,
+  type RestEntityOverwriteReservation,
 } from "../sync-cdc/rest-entity-admission";
+import {
+  recordRestBigQueryTruncateResult,
+  retainRestBigQueryTruncate,
+} from "../sync-cdc/bigquery-rest-overwrite-intent";
+import {
+  captureRestBigQueryOverwriteSnapshot,
+  restBigQueryReplacementJobId,
+  type RestBigQueryOverwriteBatch,
+} from "../sync-cdc/bigquery-rest-overwrite-snapshot";
+import type { BigQueryTarget } from "../sync-cdc/adapters/bigquery-target";
+import { BigQueryDestinationAdapter } from "../sync-cdc/adapters/bigquery";
+import {
+  holdBigQueryRestOverwriteInsert,
+  initializeBigQueryStagedInputStore,
+  readPendingBigQueryQueryRequest,
+  recordObservedBigQueryQueryResult,
+} from "../sync-cdc/bigquery-staged-intent";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import { closeInlineWebhookAdmission } from "../sync-cdc/inline-webhook-admission";
 import { DuckDBInstance } from "@duckdb/node-api";
 import type { CdcDestinationAdapter } from "../sync-cdc/adapters/registry";
 import { sourceConnectionManager } from "./database-data-source-manager";
+import { bulkBufferName } from "./sync-orchestrator";
 
 /**
  * Regression for the Close FR backfill loss of 17 Nov 2026.
@@ -181,11 +200,18 @@ vi.mock("../database/workspace-schema", () => ({
   Flow: {
     db: {
       collection: (name: string) =>
-        name === "flow_executions" && admissionConnection?.db
+        (name === "flow_executions" || name === "cdc_resync_fences") &&
+        admissionConnection?.db
           ? admissionConnection.db.collection(name)
           : collection(name),
       get db() {
         return admissionConnection?.db;
+      },
+      transaction: (...args: Parameters<Connection["transaction"]>) => {
+        if (!admissionConnection) {
+          throw new Error("Synthetic MongoDB is not connected");
+        }
+        return admissionConnection.transaction(...args);
       },
     },
   },
@@ -226,6 +252,7 @@ let chunkStartOffsets: number[] = [];
 let failSyntheticRead = false;
 let sourceType = "fake";
 let onSyntheticRead: (() => Promise<void>) | undefined;
+let currentBigQueryProject = "fixture-project";
 
 /**
  * When set, the fake grows its page cap the way SandboxedConnector does:
@@ -296,8 +323,12 @@ let staging = new Map<string, string[]>();
 let live: string[] = [];
 let writeModeOfRun: "append_dedup" | "append" | "overwrite" = "append_dedup";
 let useDirectDestination = false;
-let beforeTruncate: (() => Promise<void>) | undefined;
+let beforeTruncate:
+  ((reservation?: RestEntityOverwriteReservation) => Promise<void>) | undefined;
 let beforePrepareStaging: (() => Promise<void>) | undefined;
+let overwriteBatches: RestBigQueryOverwriteBatch[] = [];
+let onOverwriteBatch:
+  ((batch: RestBigQueryOverwriteBatch) => Promise<void>) | undefined;
 /**
  * Merges of a non-empty staging table (1-based) that fail, as the 17 Nov
  * schema reads did. Merges of an empty staging table are not counted.
@@ -334,10 +365,35 @@ async function idsInParquet(filePath: string): Promise<string[]> {
 
 const fakeAdapter: Partial<CdcDestinationAdapter> = {
   destinationType: "bigquery",
-  truncateLiveTable: (async () => {
-    await beforeTruncate?.();
+  hasCompletedRestOverwriteTruncate: async reservation => {
+    const { scope, overwrite } = reservation;
+    const adapter = new BigQueryDestinationAdapter({
+      workspaceId: scope.workspaceId.toHexString(),
+      destinationDatabaseId: overwrite.destinationId,
+      tableDestination: {
+        connectionId: overwrite.destinationConnectionId,
+        schema: overwrite.schema,
+        tableName: overwrite.tableName,
+      },
+    });
+    vi.spyOn(
+      adapter as unknown as { resolveBqClient: () => Promise<BigQueryTarget> },
+      "resolveBqClient",
+    ).mockResolvedValue({
+      projectId: currentBigQueryProject,
+      dataset: overwrite.schema,
+      datasetLocation: "EU",
+      destination: {
+        _id: overwrite.destinationId,
+        workspaceId: scope.workspaceId,
+      },
+    } as unknown as BigQueryTarget);
+    return adapter.hasCompletedRestOverwriteTruncate(reservation);
+  },
+  truncateLiveTable: async (_layout, reservation) => {
+    await beforeTruncate?.(reservation);
     live = [];
-  }) as any,
+  },
   prepareStaging: (async (_l: unknown, _f: string, o?: any) => {
     await beforePrepareStaging?.();
     staging.set(suffixOf(o), []);
@@ -369,6 +425,10 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
     o?: any,
   ) => {
     const rowsInStaging = stagingOf(o);
+    if (o?.restBigQueryOverwrite) {
+      overwriteBatches.push(o.restBigQueryOverwrite);
+      await onOverwriteBatch?.(o.restBigQueryOverwrite);
+    }
     if (rowsInStaging.length > 0) mergeCalls++;
     if (rowsInStaging.length > 0 && failingMerges.has(mergeCalls)) {
       throw new Error("git ls-tree failed: fatal: not a tree object");
@@ -816,11 +876,41 @@ describe("queued REST entity admission", () => {
     return memo;
   };
 
+  const recordTruncate = async (
+    reservation?: RestEntityOverwriteReservation,
+  ) => {
+    if (!reservation) throw new Error("Missing synthetic REST reservation");
+    const { scope, overwrite } = reservation;
+    const retained = await retainRestBigQueryTruncate(
+      connection(),
+      scope,
+      overwrite,
+      {
+        projectId: "fixture-project",
+        dataset: overwrite.schema,
+        table: overwrite.tableName,
+        location: "EU",
+      },
+      { query: { useLegacySql: false, priority: "BATCH" } },
+    );
+    await expect(
+      recordRestBigQueryTruncateResult(connection(), retained, {
+        jobReference: {
+          projectId: retained.job.project,
+          location: retained.job.location,
+          jobId: retained.job.id,
+        },
+        configuration: retained.configuration,
+        status: { state: "DONE" },
+        statistics: { query: { statementType: "DELETE" } },
+      }),
+    ).resolves.toBe("succeeded");
+  };
+
   beforeAll(async () => {
     mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
-    admissionConnection = await mongoose
-      .createConnection(mongo.getUri())
-      .asPromise();
+    await mongoose.connect(mongo.getUri());
+    admissionConnection = mongoose.connection;
     const model = admissionConnection.model<ICdcEntityState>(
       CdcEntityStateModel.modelName,
       CdcEntityStateModel.schema,
@@ -836,6 +926,7 @@ describe("queued REST entity admission", () => {
     sourceType = "fake";
     failSyntheticRead = false;
     onSyntheticRead = undefined;
+    currentBigQueryProject = "fixture-project";
   });
   beforeEach(async () => {
     vi.stubEnv("REST_ENTITY_ADMISSION_ENABLED", "1");
@@ -851,6 +942,7 @@ describe("queued REST entity admission", () => {
       .insertOne({ _id: executionId, startedAt: runStartedAt });
     staging = new Map();
     live = [];
+    overwriteBatches = [];
     sourceRows = rows(1);
     chunkStartOffsets = [];
     sourceType = "rest";
@@ -860,8 +952,10 @@ describe("queued REST entity admission", () => {
   });
   afterEach(() => {
     useDirectDestination = false;
+    currentBigQueryProject = "fixture-project";
     beforeTruncate = undefined;
     beforePrepareStaging = undefined;
+    onOverwriteBatch = undefined;
     vi.unstubAllEnvs();
   });
 
@@ -883,13 +977,17 @@ describe("queued REST entity admission", () => {
       expect((await admissionRecord())?.pendingOverwrites).toBeUndefined();
     });
     beforePrepareStaging = prepare;
-
+    beforeTruncate = async reservation => {
+      expect(reservation).toBeUndefined();
+    };
     await expect(invoke(poll)).resolves.toEqual({
       completed: true,
       rowsWritten: 1,
     });
     expect(prepare).toHaveBeenCalled();
     expect(live).toEqual(["opp_00000"]);
+    expect(overwriteBatches).toEqual([]);
+    expect((await admissionRecord())?.pendingOverwrites).toBeUndefined();
   });
 
   it("denies a fresh overwrite before staging or clearing the live table", async () => {
@@ -975,12 +1073,12 @@ describe("queued REST entity admission", () => {
         sourceConnectionId: new Types.ObjectId(),
       }),
     ).resolves.toBeUndefined();
-    await expect(invokeQueued(memo)).resolves.toEqual({
-      completed: true,
-      rowsWritten: 1,
-    });
+    vi.stubEnv("REST_ENTITY_ADMISSION_ENABLED", undefined);
+    await expect(invokeQueued(memo)).rejects.toThrow(
+      "BigQuery REST staging requires its completed truncate",
+    );
     expect(chunkStartOffsets).toEqual([0]);
-    expect(live).toEqual(["opp_00000"]);
+    expect(live).toEqual([]);
     expect(await anchor()).toEqual(previousAnchor);
     expect(sourceConnectionManager.getSourceConnection).toHaveBeenCalledWith(
       source._id.toHexString(),
@@ -1001,9 +1099,351 @@ describe("queued REST entity admission", () => {
         },
       ],
     });
-    // A completed worker does not supply a destination settlement receipt.
+    // A prepared step alone cannot settle or close the overwrite.
     await expect(close()).rejects.toThrow("REST overwrite is still in flight");
   });
+
+  it("settles an empty REST overwrite after the actual source end", async () => {
+    writeModeOfRun = "overwrite";
+    sourceRows = [];
+    const truncate = vi.fn(recordTruncate);
+    beforeTruncate = truncate;
+    await expect(invoke(poll)).resolves.toEqual({
+      completed: true,
+      rowsWritten: 0,
+    });
+    expect(chunkStartOffsets).toEqual([0]);
+    expect(overwriteBatches).toEqual([]);
+    expect((await admissionRecord())?.pendingOverwrites).toEqual([]);
+    await expect(
+      closeRestEntityAdmission(connection(), scope),
+    ).resolves.toBeUndefined();
+    vi.stubEnv("REST_ENTITY_ADMISSION_ENABLED", undefined);
+    sourceType = "fake";
+    chunkStartOffsets = [];
+    await expect(invoke(poll)).resolves.toEqual({
+      completed: true,
+      rowsWritten: 0,
+    });
+    expect(chunkStartOffsets).toEqual([]);
+    expect(truncate).toHaveBeenCalledTimes(1);
+    currentBigQueryProject = "different-project";
+    await expect(invoke(poll)).rejects.toThrow(
+      "BigQuery REST overwrite destination changed after truncate",
+    );
+    expect(chunkStartOffsets).toEqual([]);
+    expect(truncate).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not settle an empty REST overwrite against a repointed destination", async () => {
+    writeModeOfRun = "overwrite";
+    sourceRows = [];
+    beforeTruncate = recordTruncate;
+    onSyntheticRead = async () => {
+      currentBigQueryProject = "different-project";
+    };
+    await expect(invoke(poll)).rejects.toThrow(
+      "BigQuery REST overwrite destination changed after truncate",
+    );
+    expect(chunkStartOffsets).toEqual([0]);
+    expect((await admissionRecord())?.pendingOverwrites).toHaveLength(1);
+    await expect(closeRestEntityAdmission(connection(), scope)).rejects.toThrow(
+      "REST overwrite is still in flight",
+    );
+    expect(await anchor()).toEqual(previousAnchor);
+  });
+
+  it.each(["fresh", "memoized"])(
+    "holds a pending REST overwrite on a %s retry after the source type changes",
+    async retry => {
+      writeModeOfRun = "overwrite";
+      const truncate = vi.fn(
+        async (reservation?: RestEntityOverwriteReservation) => {
+          if (reservation) await recordTruncate(reservation);
+        },
+      );
+      beforeTruncate = truncate;
+      const prepare = vi.fn(async () => undefined);
+      beforePrepareStaging = prepare;
+      const memo = new Map<string, unknown>();
+      await expect(
+        invoke({ ...poll, memo, cancelAt: `sync-${ENTITY}-chunk-0` }),
+      ).rejects.toBeInstanceOf(Cancelled);
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect(truncate).toHaveBeenCalledTimes(1);
+
+      sourceType = "fake";
+      vi.stubEnv("REST_ENTITY_ADMISSION_ENABLED", undefined);
+      live = ["retained-live-row"];
+      staging.set("poll_staging", ["retained-staging-row"]);
+      const result = await invoke(
+        retry === "memoized" ? { ...poll, memo } : poll,
+      ).catch(error => error);
+      expect(chunkStartOffsets).toEqual([]);
+      expect(result).toMatchObject({
+        message: expect.stringContaining(
+          "REST source type changed during overwrite",
+        ),
+      });
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect(truncate).toHaveBeenCalledTimes(1);
+      expect(live).toEqual(["retained-live-row"]);
+      expect(staging.get("poll_staging")).toEqual(["retained-staging-row"]);
+      expect((await admissionRecord())?.pendingOverwrites).toHaveLength(1);
+      expect(await anchor()).toEqual(previousAnchor);
+    },
+  );
+
+  it("keeps staging and buffered rows on a repointed REST overwrite retry", async () => {
+    writeModeOfRun = "overwrite";
+    beforeTruncate = recordTruncate;
+    const prepare = vi.fn(async () => undefined);
+    beforePrepareStaging = prepare;
+    const memo = new Map<string, unknown>();
+    await expect(
+      invoke({ ...poll, memo, cancelAt: `sync-${ENTITY}-chunk-0` }),
+    ).rejects.toBeInstanceOf(Cancelled);
+    expect(memo.has(`prepare-staging-${ENTITY}`)).toBe(true);
+    expect(prepare).toHaveBeenCalledTimes(1);
+
+    currentBigQueryProject = "different-project";
+    staging.set("poll_staging", ["existing-target-staging-row"]);
+    await expect(invoke({ ...poll, memo })).rejects.toThrow(
+      "BigQuery REST overwrite destination changed after truncate",
+    );
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(staging.get("poll_staging")).toEqual([
+      "existing-target-staging-row",
+    ]);
+    expect(overwriteBatches).toEqual([]);
+    expect(
+      await collection(bulkBufferName(FLOW_ID, ENTITY, false)).countDocuments(),
+    ).toBe(1);
+    expect((await admissionRecord())?.pendingOverwrites).toHaveLength(1);
+    expect(await anchor()).toEqual(previousAnchor);
+  });
+
+  it("keeps retained REST settlement across a checkpoint after new admissions are disabled", async () => {
+    writeModeOfRun = "overwrite";
+    sourceRows = rows(15_000);
+    const truncate = vi.fn(recordTruncate);
+    beforeTruncate = truncate;
+    await initializeBigQueryStagedInputStore();
+    onOverwriteBatch = async batch => {
+      const { reservation, sourceRowsBefore, expectedRows } = batch;
+      const { overwrite } = reservation;
+      const project = "fixture-project";
+      const dataset = overwrite.schema;
+      const stagingTable = "fixture-staging";
+      const asOf = new Date("2026-01-02T00:00:00.000Z");
+      let snapshotJob: unknown;
+      const provider = {
+        bq: {
+          createJob: async ({
+            jobId,
+            location,
+            configuration,
+          }: {
+            jobId: string;
+            location: string;
+            configuration: unknown;
+          }) => {
+            snapshotJob = {
+              jobReference: { projectId: project, location, jobId },
+              configuration,
+              status: { state: "DONE" },
+              statistics: { query: { statementType: "CREATE_SNAPSHOT_TABLE" } },
+            };
+          },
+          job: () => ({
+            getMetadata: async () => {
+              if (!snapshotJob) throw { code: 404 };
+              return [snapshotJob];
+            },
+          }),
+          dataset: () => ({
+            table: (tableId: string) => ({
+              getMetadata: async () => [
+                {
+                  type: "SNAPSHOT",
+                  tableReference: {
+                    projectId: project,
+                    datasetId: dataset,
+                    tableId,
+                  },
+                  location: "EU",
+                  id: tableId,
+                  etag: "run-fixture",
+                  creationTime: String(asOf.getTime() + 1000),
+                  numRows: String(expectedRows),
+                  snapshotDefinition: {
+                    baseTableReference: {
+                      projectId: project,
+                      datasetId: dataset,
+                      tableId: stagingTable,
+                    },
+                    snapshotTime: asOf.toISOString(),
+                  },
+                },
+              ],
+            }),
+          }),
+        },
+        projectId: project,
+        dataset,
+        datasetLocation: "EU",
+        destination: {
+          _id: overwrite.destinationId,
+          workspaceId: reservation.scope.workspaceId,
+        },
+      } as unknown as BigQueryTarget;
+      const options = {
+        query: { useLegacySql: false, priority: "BATCH" },
+      } as const;
+      const captured = await captureRestBigQueryOverwriteSnapshot(
+        connection(),
+        provider,
+        reservation,
+        {
+          source: { project, dataset, table: stagingTable },
+          asOf,
+          sourceRowsBefore,
+          expectedRows,
+        },
+        options,
+      );
+      if (!captured) throw new Error("Missing synthetic capture");
+      const job = {
+        project,
+        location: "eu",
+        id: restBigQueryReplacementJobId(batch),
+      };
+      await holdBigQueryRestOverwriteInsert(
+        {
+          job,
+          input: captured.input,
+          destination: { project, dataset, table: overwrite.tableName },
+        },
+        ["id"],
+        options,
+        { ...reservation, sourceRowsBefore, expectedRows },
+      );
+      const pending = await readPendingBigQueryQueryRequest(job);
+      if (!pending) throw new Error("Missing synthetic replacement");
+      await expect(
+        recordObservedBigQueryQueryResult(job, {
+          ...pending,
+          status: { state: "DONE" },
+          statistics: {
+            query: {
+              statementType: "INSERT",
+              numDmlAffectedRows: String(expectedRows),
+            },
+          },
+        }),
+      ).resolves.toBe(true);
+    };
+    const request = { runId: "rest-resume" };
+    await expect(
+      invoke({ ...request, cancelAt: `sync-${ENTITY}-chunk-26` }),
+    ).rejects.toBeInstanceOf(Cancelled);
+    expect(live).toHaveLength(10_000);
+    await expect(closeRestEntityAdmission(connection(), scope)).rejects.toThrow(
+      "REST overwrite is still in flight",
+    );
+    const buffer = collection(`backfill_tmp_${FLOW_ID}_${ENTITY}`);
+    const buffered = await buffer.countDocuments();
+    expect(buffered).toBeGreaterThan(0);
+    chunkStartOffsets = [];
+    currentBigQueryProject = "different-project";
+    await expect(invoke(request)).rejects.toThrow(
+      "BigQuery REST overwrite destination changed after truncate",
+    );
+    expect(await buffer.countDocuments()).toBe(buffered);
+    expect(chunkStartOffsets).toEqual([]);
+    expect(live).toHaveLength(10_000);
+    expect(truncate).toHaveBeenCalledTimes(1);
+    currentBigQueryProject = "fixture-project";
+    for (const flag of ["1", undefined]) {
+      vi.stubEnv("REST_ENTITY_ADMISSION_ENABLED", flag);
+      await expect(invoke({ runId: "competing-overwrite" })).rejects.toThrow(
+        "Another REST overwrite for this destination is still in flight",
+      );
+      expect(await buffer.countDocuments()).toBe(buffered);
+      expect(chunkStartOffsets).toEqual([]);
+      expect(live).toHaveLength(10_000);
+      expect(truncate).toHaveBeenCalledTimes(1);
+    }
+    vi.stubEnv("REST_ENTITY_ADMISSION_ENABLED", undefined);
+    chunkStartOffsets = [];
+    await expect(
+      invoke({
+        ...request,
+        cancelAt: `release-rest-bigquery-overwrite-${ENTITY}`,
+      }),
+    ).rejects.toBeInstanceOf(Cancelled);
+    expect(chunkStartOffsets[0]).toBe(10_000);
+    expect(truncate).toHaveBeenCalledTimes(1);
+    expect(
+      overwriteBatches.map(({ sourceRowsBefore, expectedRows }) => [
+        sourceRowsBefore,
+        expectedRows,
+      ]),
+    ).toEqual([
+      [0, 10_000],
+      [10_000, 5_000],
+    ]);
+    expectEveryRowExactlyOnce();
+    await expect(closeRestEntityAdmission(connection(), scope)).rejects.toThrow(
+      "REST overwrite is still in flight",
+    );
+    chunkStartOffsets = [];
+    const readCheckpoint = () =>
+      admissionEntityState?.findOne(entityState).lean();
+    const previousCheckpoint = await readCheckpoint();
+    const markCompleted = cdcBackfillCheckpointService.markEntityCompleted;
+    const abortAfterCheckpoint = vi
+      .spyOn(cdcBackfillCheckpointService, "markEntityCompleted")
+      .mockImplementationOnce(async params => {
+        await markCompleted(params);
+        throw new Error("synthetic abort after checkpoint writes");
+      });
+    try {
+      await expect(invoke(request)).rejects.toThrow(
+        "synthetic abort after checkpoint writes",
+      );
+      expect(abortAfterCheckpoint).toHaveBeenCalledTimes(1);
+      expect(await readCheckpoint()).toEqual(previousCheckpoint);
+    } finally {
+      abortAfterCheckpoint.mockRestore();
+    }
+    expect(chunkStartOffsets).toEqual([]);
+    await expect(closeRestEntityAdmission(connection(), scope)).rejects.toThrow(
+      "REST overwrite is still in flight",
+    );
+    await expect(invoke(request)).resolves.toEqual({
+      completed: true,
+      rowsWritten: 15_000,
+    });
+    await expect(
+      closeRestEntityAdmission(connection(), scope),
+    ).resolves.toBeUndefined();
+    await expect(invoke(request)).resolves.toEqual({
+      completed: true,
+      rowsWritten: 15_000,
+    });
+    expect(chunkStartOffsets).toEqual([]);
+    expect(truncate).toHaveBeenCalledTimes(1);
+    expect(await readCheckpoint()).toMatchObject({
+      lifetimeRowsApplied: 15_000,
+      backfillCursor: {
+        hasMore: false,
+        totalProcessed: 15_000,
+        metadata: { offset: 15_000, rowsWrittenTotal: 15_000 },
+      },
+    });
+    expectEveryRowExactlyOnce();
+  }, 120_000);
 
   it("reserves a direct overwrite before the first chunk truncates", async () => {
     useDirectDestination = true;

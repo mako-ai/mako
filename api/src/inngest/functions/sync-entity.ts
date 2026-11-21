@@ -5,6 +5,7 @@ import {
   performBulkFlush,
   performRescueAndPrepareStaging,
   performOverwriteTruncate,
+  findRecordedRestBigQueryOverwrite,
   getTempCollectionCount,
   discardBulkBuffer,
   performStagingMerge,
@@ -36,7 +37,17 @@ import {
 } from "../../sync-cdc/adapters/registry";
 import { withBoxMemoryWaits } from "./flow/box-memory-wait";
 import { sourceConnectionManager } from "../../sync/database-data-source-manager";
-import { assertRestEntityAdmission } from "../../sync-cdc/rest-entity-admission";
+import {
+  assertRestEntityAdmission,
+  type RestEntityOverwriteReservation,
+} from "../../sync-cdc/rest-entity-admission";
+import type { RestBigQueryOverwriteBatch } from "../../sync-cdc/bigquery-rest-overwrite-snapshot";
+import {
+  readVerifiedRestBigQueryOverwriteManifest,
+  sealRestBigQueryOverwriteManifest,
+  settleRestBigQueryOverwriteManifest,
+} from "../../sync-cdc/bigquery-rest-overwrite-manifest";
+import { readBigQueryRestOverwriteWrites } from "../../sync-cdc/bigquery-staged-intent";
 
 /**
  * Max steps to use before yielding back to the parent for re-invocation.
@@ -145,16 +156,18 @@ export const syncBackfillEntityFunction = inngest.createFunction(
 
     // Keep disabled until destination receipts can settle overwrite reservations
     // and the cutover can drain already-admitted work.
+    const durableRunId = cdcBackfillRunId || executionId;
+    const restAdmissionFor = (runId: string | undefined) => ({
+      scope: {
+        workspaceId: new Types.ObjectId(workspaceId),
+        flowId: new Types.ObjectId(flowId),
+        sourceConnectionId: new Types.ObjectId(dataSourceId),
+      },
+      runId,
+    });
     const restEntityAdmission =
       process.env.REST_ENTITY_ADMISSION_ENABLED === "1"
-        ? {
-            scope: {
-              workspaceId: new Types.ObjectId(workspaceId),
-              flowId: new Types.ObjectId(flowId),
-              sourceConnectionId: new Types.ObjectId(dataSourceId),
-            },
-            runId: cdcBackfillRunId || executionId || event.id,
-          }
+        ? restAdmissionFor(durableRunId || event.id)
         : undefined;
     const safeEntityStepId = entity.replace(/[^a-zA-Z0-9_-]/g, "_");
     let stepsUsed = 0;
@@ -344,8 +357,16 @@ export const syncBackfillEntityFunction = inngest.createFunction(
     const useBulkPath = isCdcEnabled && hasStagingSupport(cdcAdapter);
     let flushIndex = 0;
     let bulkSyncOptions: Record<string, unknown> | undefined;
+    let restOverwrite: RestEntityOverwriteReservation | undefined;
+    let restoredRows: number | undefined;
 
     if (useBulkPath) {
+      const isBigQueryOverwrite =
+        cdcAdapter.destinationType === "bigquery" && writeMode === "overwrite";
+      const continuationAdmission =
+        isBigQueryOverwrite && durableRunId
+          ? (restEntityAdmission ?? restAdmissionFor(durableRunId))
+          : undefined;
       const bulkEntityLayout = (entityLayouts || []).find(
         (l: any) => l.entity === entity || l.entity === entity.split(":")[0],
       );
@@ -400,10 +421,11 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         logger: bulkLogger,
       };
 
-      await step.run(`prepare-staging-${safeEntityStepId}`, () =>
+      const prepareStepId = `prepare-staging-${safeEntityStepId}`;
+      const prepared = await step.run(prepareStepId, () =>
         withHeartbeat(executionId, async () => {
-          let restSource = false;
-          if (restEntityAdmission) {
+          let admission: typeof restEntityAdmission;
+          if (restEntityAdmission || continuationAdmission) {
             const source = await sourceConnectionManager.getSourceConnection(
               dataSourceId,
               workspaceId,
@@ -411,15 +433,47 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             if (!source) {
               throw new Error(`Data source not found: ${dataSourceId}`);
             }
-            restSource = source.type === "rest";
-            if (restSource) {
-              await assertRestEntityAdmission(
-                Flow.db,
-                restEntityAdmission.scope,
-              );
+            admission =
+              source.type === "rest" ? restEntityAdmission : undefined;
+            if (continuationAdmission) {
+              const recorded = await findRecordedRestBigQueryOverwrite({
+                ...bulkSyncOptions,
+                restEntityAdmission: continuationAdmission,
+              } as any);
+              if (recorded) {
+                const manifest =
+                  await readVerifiedRestBigQueryOverwriteManifest(
+                    Flow.db,
+                    recorded,
+                  );
+                if (manifest) {
+                  return {
+                    overwrite: recorded.overwrite,
+                    sealedRows: manifest.sourceRows,
+                  };
+                }
+                if (source.type !== "rest") {
+                  throw new Error("REST source type changed during overwrite");
+                }
+                admission = continuationAdmission;
+              }
+            }
+            if (admission) {
+              await assertRestEntityAdmission(Flow.db, admission.scope);
             }
           }
 
+          const retainedOverwrite = Boolean(admission && isBigQueryOverwrite);
+          if (retainedOverwrite && !durableRunId) {
+            throw new Error(
+              "BigQuery REST overwrite requires a durable run ID",
+            );
+          }
+
+          const truncateOptions = {
+            ...bulkSyncOptions,
+            restEntityAdmission: admission,
+          } as any;
           const prepareStaging = async () => {
             // Rescue keyed rows from an earlier invocation before dropping
             // staging. Append and overwrite re-fetch those rows from the last
@@ -448,10 +502,6 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             }
           };
 
-          const reserveBeforeStaging =
-            restSource && writeMode === "overwrite" && !state;
-          if (!reserveBeforeStaging) await prepareStaging();
-
           // Overwrite mode: clear the live table exactly once, here, before
           // any flush of this run writes. Do NOT call this from the
           // flush-merge/flush-final steps below — they re-run
@@ -460,29 +510,77 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           // docs/sync-modes-hardening-plan.md). A resumed invocation (state
           // carried over from a checkpoint or the previous invocation)
           // already truncated in its first invocation.
-          if (!state) {
-            await performOverwriteTruncate(
+          if (retainedOverwrite) {
+            const reservation = await performOverwriteTruncate(
+              truncateOptions,
               {
-                ...bulkSyncOptions,
-                restEntityAdmission: restSource
-                  ? restEntityAdmission
-                  : undefined,
-              } as any,
-              reserveBeforeStaging ? prepareStaging : undefined,
+                resume: Boolean(state),
+                prepareStaging,
+              },
             );
+            if (!reservation) {
+              throw new Error("BigQuery REST overwrite reservation is missing");
+            }
+            return { overwrite: reservation.overwrite };
           }
+          await prepareStaging();
+          if (!state) await performOverwriteTruncate(truncateOptions);
         }),
       );
+      if (continuationAdmission && prepared) {
+        restOverwrite = {
+          scope: continuationAdmission.scope,
+          overwrite: prepared.overwrite,
+        };
+        bulkSyncOptions.restOverwriteReservation = restOverwrite;
+        if ("sealedRows" in prepared) {
+          const sealedRows = prepared.sealedRows;
+          restoredRows = sealedRows;
+          state = withRowsWritten(
+            {
+              ...state,
+              totalProcessed: sealedRows,
+              hasMore: false,
+              iterationsInChunk: 0,
+            },
+            sealedRows,
+          );
+        }
+      }
       stepsUsed++;
     }
 
     // ── Chunk loop ───────────────────────────────────────────────────
     let chunkIndex = 0;
-    let completed = false;
+    let completed = restoredRows !== undefined;
     let totalWrittenForEntity = rowsWrittenIn(state);
     // The last state whose fetched rows are all in the destination: where a
     // resume may start. The buffer is empty here (discarded at start).
     let resumePoint: FetchState | undefined = state;
+
+    const retainedBatch = (
+      bufferRows: number,
+    ): RestBigQueryOverwriteBatch | undefined => {
+      if (!restOverwrite) return;
+      const sourceRowsBefore = resumePoint?.totalProcessed ?? 0;
+      const sourceRowsAfter = state?.totalProcessed ?? 0;
+      if (
+        !Number.isSafeInteger(sourceRowsBefore) ||
+        sourceRowsBefore < 0 ||
+        !Number.isSafeInteger(sourceRowsAfter) ||
+        sourceRowsAfter - sourceRowsBefore !== bufferRows
+      ) {
+        throw new Error(
+          "BigQuery REST overwrite buffer does not match the source range",
+        );
+      }
+      if (bufferRows === 0) return;
+      return {
+        reservation: restOverwrite,
+        sourceRowsBefore,
+        expectedRows: bufferRows,
+      };
+    };
 
     // Save the resume cursor. Only call it when every row before `state`
     // reached the destination: the bulk path flushes its buffer first.
@@ -556,6 +654,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           }),
       );
       stepsUsed++;
+      const restBigQueryOverwrite = retainedBatch(tempCount);
       if (tempCount === 0) {
         resumePoint = state;
         return true;
@@ -611,9 +710,15 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           withHeartbeat(executionId, async () => {
             const result = await performStagingMerge(bulkSyncOptions as any, {
               mergePath: "flush",
+              restBigQueryOverwrite,
             });
             await performStagingCleanup(bulkSyncOptions as any);
             const left = await getTempCollectionCount(flowId, entity, fullRead);
+            if (restBigQueryOverwrite && left > 0) {
+              throw new Error(
+                "BigQuery REST overwrite left buffered source rows",
+              );
+            }
             const written = writtenBefore + result.written;
             if (left > 0) {
               logExec(
@@ -759,7 +864,13 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                 destinationDatabaseName,
                 flowId,
                 workspaceId,
-                restEntityAdmission,
+                restEntityAdmission: restOverwrite
+                  ? {
+                      scope: restOverwrite.scope,
+                      runId: restOverwrite.overwrite.runId,
+                    }
+                  : restEntityAdmission,
+                restBigQueryOverwritePrepared: Boolean(restOverwrite),
                 syncEngine,
                 backfillRunId: backfill
                   ? cdcBackfillRunId || executionId
@@ -923,7 +1034,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
     });
 
     // ── Flush remaining + merge for bulk path ─────────────────────────
-    if (useBulkPath && bulkSyncOptions) {
+    if (useBulkPath && bulkSyncOptions && restoredRows === undefined) {
       const finalRowsInTemp = await step.run(
         `count-temp-final-${safeEntityStepId}`,
         () =>
@@ -941,6 +1052,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             return count;
           }),
       );
+      const restBigQueryOverwrite = retainedBatch(finalRowsInTemp);
 
       if (finalRowsInTemp > 0) {
         const rescuedInFinal = await boxStep(
@@ -980,7 +1092,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
               });
               const mergeResult = await performStagingMerge(
                 bulkSyncOptions as any,
-                { mergePath: "final" },
+                { mergePath: "final", restBigQueryOverwrite },
               );
               await performStagingCleanup(bulkSyncOptions as any);
               logExec(
@@ -1001,40 +1113,86 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           (Number(rescuedInFinal) || 0) + (Number(mergedFinal) || 0);
       }
 
-      if (executionId) {
-        try {
-          await Flow.db.collection("flow_executions").updateOne(
-            { _id: new Types.ObjectId(executionId) },
-            {
-              $set: {
-                lastHeartbeat: new Date(),
-                [`stats.entityStatus.${entity}`]: "completed",
-                [`stats.entityStats.${entity}`]: totalWrittenForEntity,
-              },
-              $addToSet: { "stats.syncedEntities": entity },
-            },
+      if (restOverwrite) {
+        const reservation = restOverwrite;
+        if (
+          !state ||
+          state.hasMore ||
+          state.totalProcessed !== totalWrittenForEntity
+        ) {
+          throw new Error(
+            "BigQuery REST overwrite requires a complete source read",
           );
-          logExec(
-            "info",
-            `${entity} sync completed (${totalWrittenForEntity} written, ${totalFetched} fetched)`,
-            {
-              entity,
-              totalWritten: totalWrittenForEntity,
-              totalFetched,
-            },
-          );
-        } catch {
-          // non-critical
         }
+        const finalState = state;
+        const sourceRows = finalState.totalProcessed;
+        await step.run(`seal-rest-bigquery-overwrite-${safeEntityStepId}`, () =>
+          withHeartbeat(executionId, async () => {
+            const left = await getTempCollectionCount(flowId, entity, fullRead);
+            if (left > 0) {
+              throw new Error(
+                "BigQuery REST overwrite left buffered source rows",
+              );
+            }
+            if (
+              !(await cdcAdapter.hasCompletedRestOverwriteTruncate?.(
+                reservation,
+              ))
+            ) {
+              throw new Error(
+                "BigQuery REST overwrite receipts did not settle",
+              );
+            }
+            const writes = await readBigQueryRestOverwriteWrites(reservation);
+            const manifest = {
+              reservation,
+              sourceRows,
+              replacementFingerprints: writes.map(write => write.fingerprint),
+              ...(checkpointEnabled
+                ? { fetchState: withRowsWritten(finalState, sourceRows) }
+                : {}),
+            };
+            if (!(await sealRestBigQueryOverwriteManifest(Flow.db, manifest))) {
+              throw new Error(
+                "BigQuery REST overwrite receipts did not settle",
+              );
+            }
+          }),
+        );
+      }
+    }
+
+    if (useBulkPath && bulkSyncOptions && executionId) {
+      try {
+        await Flow.db.collection("flow_executions").updateOne(
+          { _id: new Types.ObjectId(executionId) },
+          {
+            $set: {
+              lastHeartbeat: new Date(),
+              [`stats.entityStatus.${entity}`]: "completed",
+              [`stats.entityStats.${entity}`]: totalWrittenForEntity,
+            },
+            $addToSet: { "stats.syncedEntities": entity },
+          },
+        );
+        logExec(
+          "info",
+          `${entity} sync completed (${totalWrittenForEntity} written, ${totalFetched} fetched)`,
+          {
+            entity,
+            totalWritten: totalWrittenForEntity,
+            totalFetched,
+          },
+        );
+      } catch {
+        // non-critical
       }
     }
 
     // ── Mark checkpoint completed ────────────────────────────────────
-    if (checkpointEnabled && state) {
-      await step.run(
-        `complete-cdc-backfill-checkpoint-${safeEntityStepId}`,
-        async () => {
-          await cdcBackfillCheckpointService.markEntityCompleted({
+    const completedCheckpoint =
+      checkpointEnabled && state
+        ? {
             workspaceId,
             flowId,
             scope: checkpointScope,
@@ -1047,8 +1205,13 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                   fetchMode: backfillFetch.mode,
                 }
               : {}),
-          });
-        },
+          }
+        : undefined;
+    if (completedCheckpoint && !restOverwrite) {
+      await step.run(
+        `complete-cdc-backfill-checkpoint-${safeEntityStepId}`,
+        () =>
+          cdcBackfillCheckpointService.markEntityCompleted(completedCheckpoint),
       );
     }
 
@@ -1065,6 +1228,55 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           runStartedAt: pollRunStartedAt,
         });
       });
+    }
+
+    if (restOverwrite) {
+      const reservation = restOverwrite;
+      // Persist the checkpoint and release the reservation together. A retry
+      // after a committed release must not count the same rows again.
+      await step.run(
+        `release-rest-bigquery-overwrite-${safeEntityStepId}`,
+        () =>
+          withHeartbeat(executionId, async () => {
+            const db = Flow.db;
+            const recorded = await findRecordedRestBigQueryOverwrite({
+              ...bulkSyncOptions,
+              restEntityAdmission: {
+                scope: reservation.scope,
+                runId: reservation.overwrite.runId,
+              },
+            } as any);
+            const manifest = recorded
+              ? await readVerifiedRestBigQueryOverwriteManifest(db, recorded)
+              : undefined;
+            if (
+              !manifest ||
+              manifest.sourceRows !== totalWrittenForEntity ||
+              !(await settleRestBigQueryOverwriteManifest(
+                db,
+                manifest,
+                completedCheckpoint
+                  ? async session => {
+                      if (!manifest.fetchState) {
+                        throw new Error(
+                          "BigQuery REST overwrite is missing its sealed checkpoint",
+                        );
+                      }
+                      await cdcBackfillCheckpointService.markEntityCompleted({
+                        ...completedCheckpoint,
+                        fetchState: manifest.fetchState,
+                        session,
+                      });
+                    }
+                  : undefined,
+              ))
+            ) {
+              throw new Error(
+                "BigQuery REST overwrite receipts did not settle",
+              );
+            }
+          }),
+      );
     }
 
     return { completed: true, rowsWritten: totalWrittenForEntity };

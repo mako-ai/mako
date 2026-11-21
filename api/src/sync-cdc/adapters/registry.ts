@@ -12,6 +12,8 @@ import { PostgreSqlDestinationAdapter } from "./postgresql";
 import { MySqlDestinationAdapter } from "./mysql";
 import { withQueryLabels } from "../../services/bigquery-labels";
 import type { CdcMergePath } from "../table-write-lease";
+import type { RestEntityOverwriteReservation } from "../rest-entity-admission";
+import type { RestBigQueryOverwriteBatch } from "../bigquery-rest-overwrite-snapshot";
 
 /** Airbyte-style destination write mode. Default: "append_dedup" (upsert). */
 export type CdcWriteMode = "append_dedup" | "append" | "overwrite";
@@ -58,7 +60,14 @@ export interface CdcDestinationAdapter {
    * Clear the live table at the start of a Full Refresh | Overwrite run.
    * Must be a no-op when the table does not exist yet.
    */
-  truncateLiveTable?(layout: CdcEntityLayout): Promise<void>;
+  truncateLiveTable?(
+    layout: CdcEntityLayout,
+    reservation?: RestEntityOverwriteReservation,
+  ): Promise<void>;
+  /** True for a terminal truncate receipt. Throws if its target has changed. */
+  hasCompletedRestOverwriteTruncate?(
+    reservation: RestEntityOverwriteReservation,
+  ): Promise<boolean>;
   applyEvents(params: {
     events: CdcStoredEvent[];
     layout: CdcEntityLayout;
@@ -94,6 +103,7 @@ export interface CdcDestinationAdapter {
       fullRead?: boolean;
       /** The write path: a flush, the final merge or a rescue (table-write-lease.ts). */
       mergePath?: CdcMergePath;
+      restBigQueryOverwrite?: RestBigQueryOverwriteBatch;
     },
   ): Promise<{ written: number }>;
   cleanupStaging?(

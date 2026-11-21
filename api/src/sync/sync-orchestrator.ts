@@ -35,11 +35,14 @@ import {
 } from "../sync-cdc/poll-cursor";
 import { LEGACY_ENGINE_REMOVED } from "../services/flow-triggers.service";
 import type { CdcMergePath } from "../sync-cdc/table-write-lease";
+import type { RestBigQueryOverwriteBatch } from "../sync-cdc/bigquery-rest-overwrite-snapshot";
 import {
   assertRestEntityAdmission,
+  hasRecordedRestEntityOverwrite,
   reserveRestEntityOverwrite,
   RestEntityAdmissionClosedError,
   type RestEntityAdmissionContext,
+  type RestEntityOverwriteReservation,
 } from "../sync-cdc/rest-entity-admission";
 import {
   SandboxedConnector,
@@ -248,6 +251,10 @@ export interface SyncChunkOptions {
   /** The flow's workspace: the source connection is looked up in it only. */
   workspaceId: string;
   restEntityAdmission?: RestEntityAdmissionContext;
+  /** The bulk runner already verified the retained REST truncate. */
+  restBigQueryOverwritePrepared?: boolean;
+  /** Bind staging changes to the retained REST overwrite's physical target. */
+  restOverwriteReservation?: RestEntityOverwriteReservation;
   syncEngine?: string;
   backfillRunId?: string;
   /**
@@ -417,6 +424,12 @@ export async function performSyncChunk(
       throw new Error(`Data source '${sourceConnection.name}' is not active`);
     }
 
+    if (
+      options.restBigQueryOverwritePrepared &&
+      sourceConnection.type !== "rest"
+    ) {
+      throw new Error("REST source type changed during overwrite");
+    }
     if (options.restEntityAdmission && sourceConnection.type === "rest") {
       await assertRestEntityAdmission(
         Flow.db,
@@ -699,17 +712,19 @@ async function performSyncChunkSql(
     cdcAdapter?.truncateLiveTable &&
     cdcLayout &&
     options.writeMode === "overwrite" &&
+    !options.restBigQueryOverwritePrepared &&
     !state
   ) {
-    if (options.restEntityAdmission && sourceConnection.type === "rest") {
-      await reserveOverwriteForCutover(
-        options.restEntityAdmission,
-        options,
-        tableDestination,
-        entityTableName,
-      );
-    }
-    await cdcAdapter.truncateLiveTable(cdcLayout);
+    const reservation =
+      options.restEntityAdmission && sourceConnection.type === "rest"
+        ? await reserveOverwriteForCutover(
+            options.restEntityAdmission,
+            options,
+            tableDestination,
+            entityTableName,
+          )
+        : undefined;
+    await cdcAdapter.truncateLiveTable(cdcLayout, reservation);
     logger?.log(
       "info",
       `Overwrite mode: cleared live table ${entityTableName}`,
@@ -1379,6 +1394,25 @@ async function resolveAdapterContext(options: SyncChunkOptions) {
     },
   });
 
+  const reservation = options.restOverwriteReservation;
+  if (reservation) {
+    const { scope, overwrite } = reservation;
+    if (
+      options.writeMode !== "overwrite" ||
+      !scope.flowId.equals(options.flowId) ||
+      !scope.sourceConnectionId.equals(options.dataSourceId) ||
+      entity !== overwrite.entity ||
+      entityTableName !== overwrite.tableName ||
+      String(tableDestination.connectionId) !==
+        overwrite.destinationConnectionId ||
+      (options.destinationDatabaseName ?? null) !==
+        overwrite.destinationDatabaseName ||
+      !(await cdcAdapter.hasCompletedRestOverwriteTruncate?.(reservation))
+    ) {
+      throw new Error("BigQuery REST staging requires its completed truncate");
+    }
+  }
+
   return { entity, entityTableName, cdcAdapter };
 }
 
@@ -1434,14 +1468,14 @@ export async function performBulkFlush(
   );
 }
 
-async function reserveOverwriteForCutover(
+function overwriteReservation(
   admission: RestEntityAdmissionContext,
   options: SyncChunkOptions,
   tableDestination: ITableDestination,
   entityTableName: string,
-): Promise<void> {
+): RestEntityOverwriteReservation {
   if (!admission.runId) throw new Error("REST overwrite requires a run ID");
-  await reserveRestEntityOverwrite(Flow.db, admission.scope, {
+  const overwrite = {
     runId: admission.runId,
     entity: options.entity,
     destinationId: options.destinationId,
@@ -1449,7 +1483,61 @@ async function reserveOverwriteForCutover(
     destinationConnectionId: String(tableDestination.connectionId),
     schema: tableDestination.schema || "public",
     tableName: entityTableName,
-  });
+  };
+  return { scope: admission.scope, overwrite };
+}
+
+async function reserveOverwriteForCutover(
+  admission: RestEntityAdmissionContext,
+  options: SyncChunkOptions,
+  tableDestination: ITableDestination,
+  entityTableName: string,
+): Promise<RestEntityOverwriteReservation> {
+  const reservation = overwriteReservation(
+    admission,
+    options,
+    tableDestination,
+    entityTableName,
+  );
+  await reserveRestEntityOverwrite(
+    Flow.db,
+    reservation.scope,
+    reservation.overwrite,
+  );
+  return reservation;
+}
+
+/** Identify an overwrite already admitted by the guarded BigQuery path. */
+export async function findRecordedRestBigQueryOverwrite(
+  options: SyncChunkOptions,
+): Promise<RestEntityOverwriteReservation | undefined> {
+  const { tableDestination, restEntityAdmission } = options;
+  if (
+    !tableDestination?.connectionId ||
+    !options.flowId ||
+    !restEntityAdmission?.runId ||
+    options.writeMode !== "overwrite"
+  ) {
+    return undefined;
+  }
+  const { entityTableName, cdcAdapter } = await resolveAdapterContext(options);
+  if (cdcAdapter.destinationType !== "bigquery") return undefined;
+  const reservation = overwriteReservation(
+    restEntityAdmission,
+    options,
+    tableDestination,
+    entityTableName,
+  );
+  if (!(await hasRecordedRestEntityOverwrite(Flow.db, reservation))) return;
+  if (!cdcAdapter.hasCompletedRestOverwriteTruncate) {
+    throw new Error(
+      "BigQuery REST overwrite receipt verification is unavailable",
+    );
+  }
+  // A reservation can precede the truncate. Any existing terminal receipt
+  // must still name the current destination before it can be recovered.
+  await cdcAdapter.hasCompletedRestOverwriteTruncate(reservation);
+  return reservation;
 }
 
 /**
@@ -1464,21 +1552,42 @@ async function reserveOverwriteForCutover(
  */
 export async function performOverwriteTruncate(
   options: SyncChunkOptions,
-  prepareStaging?: () => Promise<void>,
-): Promise<void> {
+  guardedRestOverwrite?: {
+    resume: boolean;
+    prepareStaging: () => Promise<void>;
+  },
+): Promise<RestEntityOverwriteReservation | undefined> {
   const { tableDestination, restEntityAdmission } = options;
-  if (
-    !tableDestination?.connectionId ||
-    !options.flowId ||
-    options.writeMode !== "overwrite"
-  ) {
-    return prepareStaging?.();
-  }
+  if (!tableDestination?.connectionId || !options.flowId) return;
+  if (options.writeMode !== "overwrite") return;
   const flowId = options.flowId;
   const { entity, entityTableName, cdcAdapter } =
     await resolveAdapterContext(options);
 
-  if (!cdcAdapter.truncateLiveTable) return prepareStaging?.();
+  if (
+    guardedRestOverwrite &&
+    (!restEntityAdmission || cdcAdapter.destinationType !== "bigquery")
+  ) {
+    throw new Error("REST overwrite preparation requires a BigQuery admission");
+  }
+
+  if (guardedRestOverwrite?.resume && restEntityAdmission) {
+    const reservation = overwriteReservation(
+      restEntityAdmission,
+      options,
+      tableDestination,
+      entityTableName,
+    );
+    if (!(await cdcAdapter.hasCompletedRestOverwriteTruncate?.(reservation))) {
+      throw new Error(
+        "REST overwrite resume requires a completed BigQuery truncate",
+      );
+    }
+    await guardedRestOverwrite.prepareStaging();
+    return reservation;
+  }
+
+  if (!cdcAdapter.truncateLiveTable) return;
 
   const cdcLayout = buildCdcEntityLayout({
     entity,
@@ -1486,21 +1595,23 @@ export async function performOverwriteTruncate(
     writeMode: options.writeMode,
   });
 
-  if (restEntityAdmission) {
-    await reserveOverwriteForCutover(
-      restEntityAdmission,
-      options,
-      tableDestination,
-      entityTableName,
-    );
-  }
-  // Cutover must be blocked before dropping staging or discarding the buffer.
-  if (prepareStaging) await prepareStaging();
-  await cdcAdapter.truncateLiveTable(cdcLayout);
+  const reservation = restEntityAdmission
+    ? await reserveOverwriteForCutover(
+        restEntityAdmission,
+        options,
+        tableDestination,
+        entityTableName,
+      )
+    : undefined;
+  // Closure must be blocked before a guarded run discards staging or the
+  // buffer. A failed reservation leaves both and the live table untouched.
+  await guardedRestOverwrite?.prepareStaging();
+  await cdcAdapter.truncateLiveTable(cdcLayout, reservation);
   orchestratorLogger.info("Overwrite mode: cleared live table (once per run)", {
     entity,
     flowId,
   });
+  return reservation;
 }
 
 export async function performPrepareStaging(
@@ -1660,7 +1771,10 @@ export function getTempCollectionCount(
 
 export async function performStagingMerge(
   options: SyncChunkOptions,
-  opts?: { mergePath?: CdcMergePath },
+  opts?: {
+    mergePath?: CdcMergePath;
+    restBigQueryOverwrite?: RestBigQueryOverwriteBatch;
+  },
 ): Promise<{ written: number }> {
   if (!options.tableDestination?.connectionId || !options.flowId) {
     return { written: 0 };
@@ -1675,6 +1789,16 @@ export async function performStagingMerge(
     options.dataSourceId,
     options.workspaceId,
   );
+  if (
+    opts?.restBigQueryOverwrite &&
+    (sourceConnection?.type !== "rest" ||
+      cdcAdapter.destinationType !== "bigquery" ||
+      options.writeMode !== "overwrite")
+  ) {
+    throw new Error(
+      "REST overwrite batch requires the original REST to BigQuery sync",
+    );
+  }
   const entitySchema = await resolveEntitySchema({
     entity,
     sourceConnection,
@@ -1697,7 +1821,7 @@ export async function performStagingMerge(
   // the second time.
   const isDedup =
     options.writeMode !== "append" && options.writeMode !== "overwrite";
-  if (!isDedup) {
+  if (!isDedup && !opts?.restBigQueryOverwrite) {
     await bulkBufferCollection(flowId, entity, options.fullRead).deleteMany({
       [BULK_STAGED_FIELD]: true,
     });
@@ -1716,7 +1840,7 @@ export async function performStagingMerge(
     entity,
     flowId,
   });
-  return cdcAdapter.mergeFromStaging(
+  const result = await cdcAdapter.mergeFromStaging(
     cdcLayout,
     {
       _id: new Types.ObjectId(flowId),
@@ -1734,8 +1858,22 @@ export async function performStagingMerge(
       stagingSuffix: bulkStagingSuffix(options.fullRead),
       fullRead: options.fullRead,
       mergePath: opts?.mergePath ?? "final",
+      ...(opts?.restBigQueryOverwrite
+        ? { restBigQueryOverwrite: opts.restBigQueryOverwrite }
+        : {}),
     },
   );
+  if (opts?.restBigQueryOverwrite) {
+    if (result.written !== opts.restBigQueryOverwrite.expectedRows) {
+      throw new Error(
+        "REST overwrite replacement did not write its complete batch",
+      );
+    }
+    await bulkBufferCollection(flowId, entity, options.fullRead).deleteMany({
+      [BULK_STAGED_FIELD]: true,
+    });
+  }
+  return result;
 }
 
 export async function performStagingCleanup(

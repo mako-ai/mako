@@ -1,15 +1,24 @@
 import { createHash } from "node:crypto";
-import mongoose, { Schema, type ClientSession } from "mongoose";
+import mongoose, { Schema, Types, type ClientSession } from "mongoose";
+import { getSchemaCacheKey } from "./adapters/bigquery-schema";
 import {
   buildMergeStatement,
+  escId,
   fullTableName,
   type BuildMergeStatementParams,
 } from "./adapters/bigquery-sql";
+import type { BigQueryTarget } from "./adapters/bigquery-target";
 import {
   assertRetainedBigQueryInputSeal,
   assertRetainedInputTablesAvailableForResync,
 } from "./adapters/bigquery-retained-input";
+import { assertRestBigQueryTruncatesDrainedForResync } from "./bigquery-rest-overwrite-intent";
 import {
+  hasCapturedRestBigQueryInput,
+  readBigQueryInputSnapshot,
+} from "./bigquery-rest-overwrite-snapshot";
+import {
+  readRetainedBigQueryJob,
   retainedQueryConfiguration,
   retainedQueryOutcome,
   type BigQueryJobIdentity,
@@ -29,12 +38,18 @@ import {
   type BigQueryCdcScope,
 } from "./bigquery-staged-cdc";
 import { stableStringify } from "./normalization";
-import type { LeaseJobRef } from "./table-write-lease";
 import {
   CdcResyncConflictError,
   reserveRetainedWriteAgainstResync,
   type CdcResyncScope,
 } from "./cdc-resync-fence";
+import {
+  hasPendingRestEntityOverwrite,
+  registerRestEntityOverwriteWrite,
+  type RestEntityOverwrite,
+  type RestEntityOverwriteReservation,
+} from "./rest-entity-admission";
+import { CdcTableWriteLease, type LeaseJobRef } from "./table-write-lease";
 
 export interface BigQueryStagedInput {
   snapshot: BigQueryTableIdentity;
@@ -53,15 +68,26 @@ interface DigestOnlyIntent extends StagedWriteBinding {
   configurationFingerprint: string;
   configuration?: never;
   cdc?: never;
+  restOverwrite?: never;
+}
+
+interface StagedRestOverwrite {
+  workspaceId: string;
+  flowId: string;
+  sourceConnectionId: string;
+  overwrite: RestEntityOverwrite;
+  sourceRowsBefore: number;
+  expectedRows: number;
 }
 
 interface RetainedQueryIntent extends StagedWriteBinding {
   configuration: RetainedQueryConfiguration;
   configurationFingerprint?: never;
   cdc?: BigQueryCdcBinding;
+  restOverwrite?: StagedRestOverwrite;
 }
 
-type RetainedMergeOptions = Omit<RetainedQueryConfiguration, "query"> & {
+type RetainedQueryOptions = Omit<RetainedQueryConfiguration, "query"> & {
   query: Omit<RetainedQueryConfiguration["query"], "query">;
 };
 type RetainedMerge = Omit<
@@ -80,6 +106,7 @@ export type BigQueryTerminalReceipt = DigestOnlyIntent & TerminalOutcome;
 
 interface VerifiedQueryReceipt extends TerminalOutcome {
   fingerprint: string;
+  affectedRows?: number;
 }
 
 interface StagedWriteRecord {
@@ -112,7 +139,7 @@ interface BigQueryCdcReplayPlan {
   jobs: Array<{
     binding: StagedWriteBinding;
     merge: RetainedMerge;
-    options: RetainedMergeOptions;
+    options: RetainedQueryOptions;
     cdc: BigQueryCdcBinding;
   }>;
 }
@@ -152,7 +179,7 @@ const StagedWrite =
   );
 
 const writeConcern = { w: "majority" as const };
-const cdcTransaction = {
+const retainedWriteTransaction = {
   readConcern: { level: "snapshot" as const },
   writeConcern,
 };
@@ -219,13 +246,18 @@ export function stagedWriteFingerprint(intent: BigQueryStagedIntent): string {
       ? intent.configurationFingerprint
       : ["jobs.insert", intent.configuration],
     ...(intent.cdc ? [["cdc", intent.cdc]] : []),
+    ...(intent.restOverwrite ? [["rest-overwrite", intent.restOverwrite]] : []),
   ]);
 }
 
 export async function holdBigQueryStagedInput(
   requested: DigestOnlyIntent,
 ): Promise<"held" | "terminal"> {
-  if (requested.configuration !== undefined || requested.cdc !== undefined) {
+  if (
+    requested.configuration !== undefined ||
+    requested.cdc !== undefined ||
+    requested.restOverwrite !== undefined
+  ) {
     throw new Error("A retained query must be built from its table bindings");
   }
   return holdStagedWrite(requested);
@@ -235,16 +267,111 @@ export async function holdBigQueryStagedInput(
 export function holdBigQueryStagedMerge(
   binding: StagedWriteBinding,
   merge: RetainedMerge,
-  options: RetainedMergeOptions,
+  options: RetainedQueryOptions,
 ): Promise<"held" | "terminal"> {
   return holdStagedWrite(buildRetainedMergeIntent(binding, merge, options));
+}
+
+/** Pin one replacement batch to its sealed input and pending REST overwrite. */
+export async function holdBigQueryRestOverwriteInsert(
+  binding: StagedWriteBinding,
+  columns: string[],
+  options: RetainedQueryOptions,
+  {
+    scope,
+    overwrite,
+    sourceRowsBefore,
+    expectedRows,
+  }: RestEntityOverwriteReservation & {
+    sourceRowsBefore: number;
+    expectedRows: number;
+  },
+): Promise<"held" | "terminal"> {
+  if (
+    binding.destination.dataset !== overwrite.schema ||
+    binding.destination.table !== overwrite.tableName
+  ) {
+    throw new Error(
+      "BigQuery replacement must match the reserved REST destination",
+    );
+  }
+  if (
+    !columns.length ||
+    columns.some(column => !column.trim()) ||
+    new Set(columns.map(column => column.toLowerCase())).size !== columns.length
+  ) {
+    throw new Error("BigQuery replacement requires distinct columns");
+  }
+  if (!Number.isSafeInteger(expectedRows) || expectedRows <= 0) {
+    throw new Error(
+      "BigQuery replacement requires a positive sealed row count",
+    );
+  }
+  if (
+    !Number.isSafeInteger(sourceRowsBefore) ||
+    sourceRowsBefore < 0 ||
+    !Number.isSafeInteger(sourceRowsBefore + expectedRows)
+  ) {
+    throw new Error("BigQuery replacement requires a valid source row range");
+  }
+  const list = columns.map(escId).join(", ");
+  const configuration = retainedQueryConfiguration.parse({
+    ...options,
+    query: {
+      ...options.query,
+      query: `INSERT INTO ${qualify(binding.destination)} (${list}) SELECT ${list} FROM ${qualify(binding.input.snapshot)}`,
+    },
+  });
+  return holdStagedWrite({
+    ...binding,
+    configuration,
+    restOverwrite: {
+      workspaceId: scope.workspaceId.toHexString(),
+      flowId: scope.flowId.toHexString(),
+      sourceConnectionId: scope.sourceConnectionId.toHexString(),
+      overwrite,
+      sourceRowsBefore,
+      expectedRows,
+    },
+  });
+}
+
+function restOverwriteReservation({
+  workspaceId,
+  flowId,
+  sourceConnectionId,
+  overwrite,
+}: StagedRestOverwrite): RestEntityOverwriteReservation {
+  return {
+    scope: {
+      workspaceId: new Types.ObjectId(workspaceId),
+      flowId: new Types.ObjectId(flowId),
+      sourceConnectionId: new Types.ObjectId(sourceConnectionId),
+    },
+    overwrite,
+  };
+}
+
+function hasRestOverwriteCapture(
+  input: BigQueryStagedInput,
+  binding: StagedRestOverwrite,
+): Promise<boolean> {
+  return hasCapturedRestBigQueryInput(
+    StagedWrite.db,
+    restOverwriteReservation(binding),
+    {
+      input,
+      sourceRowsBefore: binding.sourceRowsBefore,
+      expectedRows: binding.expectedRows,
+    },
+  );
 }
 
 /** Bind an authorized webhook upsert batch and its immutable warehouse request. */
 export async function holdBigQueryStagedCdcMerge(
   binding: StagedWriteBinding,
   merge: RetainedMerge,
-  options: RetainedMergeOptions,
+  options: RetainedQueryOptions,
   authorized: BigQueryCdcBinding,
 ): Promise<"held" | "terminal"> {
   if (authorized.events.some(event => event.originalReceipt)) {
@@ -382,7 +509,7 @@ export async function holdBigQueryStagedCdcReplay(
       { session },
     );
     return { replayId, status: "held" as const };
-  }, cdcTransaction);
+  }, retainedWriteTransaction);
 }
 
 /** Reserve a new job ID only after an exact replay MERGE has a verified failed receipt. */
@@ -522,7 +649,7 @@ export async function retryFailedBigQueryReplayMember(
       );
     }
     return job;
-  }, cdcTransaction);
+  }, retainedWriteTransaction);
 }
 
 export async function readBigQueryStagedCdcReplay(
@@ -590,16 +717,18 @@ function verifiedTerminalOutcome(
   return null;
 }
 
+function qualify(table: BigQueryTableIdentity) {
+  return fullTableName(
+    { projectId: table.project, dataset: table.dataset },
+    table.table,
+  );
+}
+
 function buildRetainedMergeIntent(
   { job, input, destination }: StagedWriteBinding,
   merge: RetainedMerge,
-  options: RetainedMergeOptions,
+  options: RetainedQueryOptions,
 ): RetainedQueryIntent {
-  const qualify = (table: BigQueryTableIdentity) =>
-    fullTableName(
-      { projectId: table.project, dataset: table.dataset },
-      table.table,
-    );
   const configuration = retainedQueryConfiguration.parse({
     ...options,
     query: {
@@ -629,7 +758,7 @@ async function holdStagedWrite(
     if (existing) return stagedWriteState(existing, write.fingerprint);
     await reserveStagedWrite(write, session);
     return "held";
-  }, cdcTransaction);
+  }, retainedWriteTransaction);
 }
 
 function prepareStagedWrite<T extends BigQueryStagedIntent>(requested: T) {
@@ -663,9 +792,16 @@ async function reserveStagedWrite(
   const cdc = intent.cdc;
   await reserveRetainedWriteAgainstResync(
     [intent.destination, intent.input.snapshot],
-    cdc?.scope,
+    cdc?.scope ?? intent.restOverwrite,
     session,
   );
+  if (intent.restOverwrite) {
+    await registerRestEntityOverwriteWrite(
+      StagedWrite.db,
+      restOverwriteReservation(intent.restOverwrite),
+      session,
+    );
+  }
   if (cdc) {
     await requireCurrentBigQueryCdcFlow(cdc.scope, intent.destination, session);
     await claimBigQueryCdcEvents(cdc, fingerprint, session);
@@ -689,6 +825,11 @@ export async function assertRetainedWritesDrainedForResync(
   session: ClientSession,
 ): Promise<void> {
   await assertRetainedInputTablesAvailableForResync(scope.tables, session);
+  await assertRestBigQueryTruncatesDrainedForResync(
+    StagedWrite.db,
+    scope,
+    session,
+  );
   const flow = {
     "intent.cdc.scope.workspaceId": scope.workspaceId,
     "intent.cdc.scope.flowId": scope.flowId,
@@ -832,12 +973,38 @@ export async function readBigQueryStagedCdcWrite(
   return record;
 }
 
-/** A reserved table lease needs proof from the exact job and destination. */
-export async function settleReservedBigQueryCdcJob(
-  target: CdcDispatchTarget,
+/** Load every write claimed for this run and entity, including unfinished jobs. */
+export function readBigQueryRestOverwriteWrites(
+  { scope, overwrite }: RestEntityOverwriteReservation,
+  session?: ClientSession,
+) {
+  const query = StagedWrite.find({
+    "intent.restOverwrite.workspaceId": scope.workspaceId.toHexString(),
+    "intent.restOverwrite.flowId": scope.flowId.toHexString(),
+    "intent.restOverwrite.sourceConnectionId":
+      scope.sourceConnectionId.toHexString(),
+    "intent.restOverwrite.overwrite.runId": overwrite.runId,
+    "intent.restOverwrite.overwrite.entity": overwrite.entity,
+  });
+  return (
+    session ? query.session(session) : query.readConcern("majority")
+  ).lean();
+}
+
+type StagedWriteTarget = BigQueryTableIdentity & {
+  workspaceId: string;
+  destinationConnectionId: string;
+  restDestination?: {
+    connectionId: string;
+    databaseName: string | null;
+    location?: string;
+  };
+};
+
+async function readReservedBigQueryStagedWrite(
+  target: StagedWriteTarget,
   reservation: LeaseJobRef,
-  readJobMetadata: () => Promise<unknown>,
-): Promise<boolean> {
+): Promise<StagedWriteRecord | null> {
   const { jobId, location, intentFingerprint } = reservation;
   if (
     !reservation.reservedBeforeDispatch ||
@@ -845,29 +1012,189 @@ export async function settleReservedBigQueryCdcJob(
     !location ||
     !intentFingerprint
   ) {
-    return false;
+    return null;
   }
   const job = { project: target.project, location, id: jobId };
-  const record = await readBigQueryStagedCdcWrite(
-    job,
-    target,
-    intentFingerprint,
-  );
+  const record = await readBigQueryStagedInput(job);
+  if (
+    !record ||
+    record.cleanedAt ||
+    record.fingerprint !== intentFingerprint ||
+    record.fingerprint !== stagedWriteFingerprint(record.intent) ||
+    record.intent.destination.project !== target.project ||
+    record.intent.destination.dataset !== target.dataset ||
+    record.intent.destination.table !== target.table
+  ) {
+    return null;
+  }
+  const restOverwrite = record.intent.restOverwrite;
+  if (restOverwrite) {
+    const { overwrite } = restOverwrite;
+    if (
+      !target.restDestination ||
+      restOverwrite.workspaceId !== target.workspaceId ||
+      overwrite.destinationId !== target.destinationConnectionId ||
+      overwrite.destinationConnectionId !==
+        target.restDestination.connectionId ||
+      overwrite.destinationDatabaseName !==
+        target.restDestination.databaseName ||
+      overwrite.schema !== target.dataset ||
+      overwrite.tableName !== target.table ||
+      record.intent.job.location !==
+        target.restDestination.location?.trim().toLowerCase()
+    ) {
+      return null;
+    }
+  } else {
+    const scope = record.intent.cdc?.scope;
+    if (
+      !scope ||
+      scope.workspaceId !== target.workspaceId ||
+      scope.destinationConnectionId !== target.destinationConnectionId
+    ) {
+      return null;
+    }
+  }
+  return record;
+}
+
+function verifiedStagedOutcome({
+  intent,
+  terminal,
+  fingerprint,
+}: StagedWriteRecord): TerminalOutcome["outcome"] | null {
+  if (
+    !terminal ||
+    !("fingerprint" in terminal) ||
+    terminal.fingerprint !== fingerprint ||
+    terminal.state !== "DONE"
+  ) {
+    return null;
+  }
+  if (terminal.outcome === "failed") return "failed";
+  if (
+    terminal.outcome === "succeeded" &&
+    (!intent.restOverwrite ||
+      terminal.affectedRows === intent.restOverwrite.expectedRows)
+  ) {
+    return "succeeded";
+  }
+  return null;
+}
+
+/** A reserved table lease needs proof from the exact job and destination. */
+export async function settleReservedBigQueryStagedJob(
+  target: StagedWriteTarget,
+  reservation: LeaseJobRef,
+  readJobMetadata: () => Promise<unknown>,
+): Promise<boolean> {
+  const record = await readReservedBigQueryStagedWrite(target, reservation);
   if (!record) return false;
+  const { restOverwrite, input } = record.intent;
+  if (restOverwrite && !(await hasRestOverwriteCapture(input, restOverwrite))) {
+    return false;
+  }
   if (record.terminal) {
-    return (
-      "fingerprint" in record.terminal &&
-      record.terminal.fingerprint === intentFingerprint &&
-      record.terminal.state === "DONE" &&
-      (record.terminal.outcome === "succeeded" ||
-        record.terminal.outcome === "failed")
-    );
+    return verifiedStagedOutcome(record) !== null;
+  }
+  if (restOverwrite) {
+    const { scope, overwrite } = restOverwriteReservation(restOverwrite);
+    if (
+      !(await hasPendingRestEntityOverwrite(StagedWrite.db, scope, overwrite))
+    ) {
+      return false;
+    }
   }
   return recordObservedBigQueryQueryResult(
-    job,
+    record.intent.job,
     await readJobMetadata(),
-    intentFingerprint,
+    record.fingerprint,
   );
+}
+
+export class RestBigQueryReplacementNeedsLease extends Error {
+  constructor() {
+    super("BigQuery replacement requires its table lease");
+  }
+}
+
+/** Submit one retained INSERT after verifying both its reservation and snapshot. */
+export async function dispatchRestBigQueryReplacement(
+  target: BigQueryTarget,
+  table: string,
+  destination: { connectionId: string; databaseName: string | null },
+  lease: LeaseJobRef,
+): Promise<TerminalOutcome["outcome"] | null> {
+  const record = await readReservedBigQueryStagedWrite(
+    {
+      project: target.projectId,
+      dataset: target.dataset,
+      table,
+      workspaceId: String(target.destination.workspaceId),
+      destinationConnectionId: String(target.destination._id),
+      restDestination: { ...destination, location: target.datasetLocation },
+    },
+    lease,
+  );
+  const restOverwrite = record?.intent.restOverwrite;
+  if (!record || !restOverwrite) {
+    throw new Error(
+      "BigQuery replacement does not match the reserved destination",
+    );
+  }
+  const { job, input } = record.intent;
+  if (
+    !record.terminal &&
+    !(await CdcTableWriteLease.exists({
+      _id: getSchemaCacheKey(target.projectId, target.dataset, table),
+      jobId: job.id,
+      jobLocation: lease.location,
+      jobReservedBeforeDispatch: true,
+      jobIntentFingerprint: record.fingerprint,
+    }).readConcern("majority"))
+  ) {
+    throw new RestBigQueryReplacementNeedsLease();
+  }
+  if (!(await hasRestOverwriteCapture(input, restOverwrite))) {
+    throw new Error("BigQuery replacement has no capture for its source range");
+  }
+  if (record.terminal) return verifiedStagedOutcome(record);
+  const request = await readPendingBigQueryQueryRequest(
+    job,
+    record.fingerprint,
+  );
+  if (!request) return null;
+  let metadata = await readRetainedBigQueryJob(target, job);
+  if (!metadata) {
+    const observed = await readBigQueryInputSnapshot(target, input.snapshot);
+    if (
+      observed?.input.generation !== input.generation ||
+      observed.rows !== restOverwrite.expectedRows
+    ) {
+      throw new Error("BigQuery replacement input snapshot changed");
+    }
+    try {
+      await target.bq.createJob({
+        jobId: job.id,
+        location: job.location,
+        configuration: request.configuration,
+      });
+    } catch (error) {
+      if ((error as { code?: number })?.code !== 409) throw error;
+    }
+    metadata = await readRetainedBigQueryJob(target, job);
+  }
+  if (
+    !(await recordObservedBigQueryQueryResult(
+      job,
+      metadata,
+      record.fingerprint,
+    ))
+  ) {
+    return null;
+  }
+  const terminal = await readBigQueryStagedInput(job);
+  return terminal ? verifiedStagedOutcome(terminal) : null;
 }
 
 /** Use the majority-confirmed request for the first submission and any recovery. */
@@ -885,6 +1212,16 @@ export async function readPendingBigQueryQueryRequest(
     record.fingerprint !== stagedWriteFingerprint(record.intent)
   ) {
     return null;
+  }
+  if (record.intent.restOverwrite) {
+    const { scope, overwrite } = restOverwriteReservation(
+      record.intent.restOverwrite,
+    );
+    if (
+      !(await hasPendingRestEntityOverwrite(StagedWrite.db, scope, overwrite))
+    ) {
+      return null;
+    }
   }
   if (record.intent.cdc) {
     const cdc = record.intent.cdc;
@@ -925,12 +1262,17 @@ export async function recordObservedBigQueryQueryResult(
     record.intent.job,
     configuration,
     providerJob,
+    record.intent.restOverwrite ? "INSERT" : "MERGE",
+    record.intent.restOverwrite?.expectedRows,
   );
   if (!outcome) return false;
   const receipt: VerifiedQueryReceipt = {
     state: "DONE",
     outcome,
     fingerprint: record.fingerprint,
+    ...(record.intent.restOverwrite && outcome === "succeeded"
+      ? { affectedRows: record.intent.restOverwrite.expectedRows }
+      : {}),
   };
   const cdc = record.intent.cdc;
   if (cdc) return settleBigQueryCdcWrite(record, cdc, receipt);
@@ -982,7 +1324,7 @@ async function settleBigQueryCdcWrite(
         );
       }
       return true;
-    }, cdcTransaction);
+    }, retainedWriteTransaction);
   } catch (error) {
     if (error instanceof CdcBigQueryBindingChangedError) return false;
     throw error;

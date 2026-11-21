@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import type { BigQueryTarget } from "./adapters/bigquery-target";
 import { stableStringify } from "./normalization";
 
 const nonnegativeInteger = z.string().regex(/^(0|[1-9]\d*)$/);
@@ -73,6 +74,21 @@ export function bigQuerySnapshotGeneration(
     .digest("hex");
 }
 
+export async function readRetainedBigQueryJob(
+  target: BigQueryTarget,
+  job: BigQueryJobIdentity,
+) {
+  try {
+    const [metadata] = await target.bq
+      .job(job.id, { location: job.location })
+      .getMetadata();
+    return metadata;
+  } catch (error) {
+    if ((error as { code?: number })?.code === 404) return null;
+    throw error;
+  }
+}
+
 const observedJob = z.object({
   jobReference: z.object({
     projectId: z.string(),
@@ -90,7 +106,12 @@ const observedJob = z.object({
   }),
   statistics: z
     .object({
-      query: z.object({ statementType: z.string().optional() }).optional(),
+      query: z
+        .object({
+          statementType: z.string().optional(),
+          numDmlAffectedRows: z.unknown().optional(),
+        })
+        .optional(),
     })
     .optional(),
 });
@@ -104,6 +125,9 @@ export function retainedQueryOutcome(
   job: BigQueryJobIdentity,
   expected: RetainedQueryConfiguration,
   response: unknown,
+  statementType:
+    "MERGE" | "DELETE" | "INSERT" | "CREATE_SNAPSHOT_TABLE" = "MERGE",
+  expectedAffectedRows?: number,
 ): "succeeded" | "failed" | null {
   const parsed = observedJob.safeParse(response);
   if (!parsed.success) return null;
@@ -126,6 +150,14 @@ export function retainedQueryOutcome(
   ) {
     return null;
   }
+  const observedType = statistics?.query?.statementType;
+  if (observedType && observedType !== statementType) return null;
   if (status.errorResult) return "failed";
-  return statistics?.query?.statementType === "MERGE" ? "succeeded" : null;
+  if (
+    expectedAffectedRows !== undefined &&
+    statistics?.query?.numDmlAffectedRows !== String(expectedAffectedRows)
+  ) {
+    return null;
+  }
+  return observedType === statementType ? "succeeded" : null;
 }

@@ -10,8 +10,12 @@ import {
   SyncChunkOptions,
   SyncChunkResult,
 } from "../sync/sync-orchestrator";
-export { performOverwriteTruncate } from "../sync/sync-orchestrator";
+export {
+  findRecordedRestBigQueryOverwrite,
+  performOverwriteTruncate,
+} from "../sync/sync-orchestrator";
 import type { CdcMergePath } from "../sync-cdc/table-write-lease";
+import type { RestBigQueryOverwriteBatch } from "../sync-cdc/bigquery-rest-overwrite-snapshot";
 
 // Logger interface for sync execution
 export interface SyncLogger {
@@ -72,7 +76,10 @@ export function discardBulkBuffer(
 
 export async function performStagingMerge(
   options: SyncChunkOptions,
-  opts?: { mergePath?: CdcMergePath },
+  opts?: {
+    mergePath?: CdcMergePath;
+    restBigQueryOverwrite?: RestBigQueryOverwriteBatch;
+  },
 ): Promise<{ written: number }> {
   return performStagingMergeOrchestrated(options, opts);
 }

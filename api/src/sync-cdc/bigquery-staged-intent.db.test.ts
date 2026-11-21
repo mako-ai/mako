@@ -22,9 +22,10 @@ import * as dataDiff from "./data-diff";
 import * as backfillLifecycle from "./backfill/lifecycle";
 import { BigQueryDestinationAdapter } from "./adapters/bigquery";
 import { enableLoadJobLabels } from "./adapters/bigquery-load-labels";
+import { getSchemaCacheKey } from "./adapters/bigquery-schema";
+import type { BigQueryTarget } from "./adapters/bigquery-target";
 import { buildCdcEntityLayout } from "./adapters/registry";
 import * as adapterRegistry from "./adapters/registry";
-import { bigQuerySnapshotGeneration } from "./bigquery-retained-query";
 import { bigQueryReplayDeliveryKey } from "./bigquery-staged-cdc";
 import { getCdcEventStore } from "./event-store";
 import { CdcConsumerService, parkPausedFlowWebhookEvents } from "./consumer";
@@ -36,25 +37,54 @@ import {
   resetFailedWebhookEvents,
 } from "./backfill/webhook-maintenance";
 import { resolveOrphanedWebhookApplyStatusForFlow } from "./cdc-orphan-applystatus";
+import { withCdcResyncFence } from "./cdc-resync-fence";
+import { bigQueryStagingTableName } from "./adapters/bigquery-sql";
+import {
+  dispatchRestBigQueryTruncate,
+  recordRestBigQueryTruncateResult,
+  retainRestBigQueryTruncate,
+  settleReservedBigQueryRestTruncate,
+} from "./bigquery-rest-overwrite-intent";
+import {
+  bigQuerySnapshotGeneration,
+  retainedQueryOutcome,
+} from "./bigquery-retained-query";
+import { captureRestBigQueryOverwriteSnapshot } from "./bigquery-rest-overwrite-snapshot";
+import {
+  readVerifiedRestBigQueryOverwriteManifest,
+  sealRestBigQueryOverwriteManifest,
+  settleRestBigQueryOverwriteManifest,
+  verifyRestBigQueryOverwriteManifest,
+} from "./bigquery-rest-overwrite-manifest";
 import {
   assertRetainedWritesDrainedForResync,
   cleanupBigQueryStagedInput,
+  dispatchRestBigQueryReplacement,
   findBigQueryStagedCdcWrites,
   holdBigQueryStagedCdcMerge,
   holdBigQueryStagedCdcReplay,
+  holdBigQueryRestOverwriteInsert,
   holdBigQueryStagedInput,
   holdBigQueryStagedMerge,
   initializeBigQueryStagedInputStore,
+  readBigQueryRestOverwriteWrites,
   readBigQueryStagedInput,
   readBigQueryStagedCdcReplay,
   readPendingBigQueryQueryRequest,
   recordBigQueryStagedReceipt,
   recordObservedBigQueryQueryResult,
   retryFailedBigQueryReplayMember,
-  settleReservedBigQueryCdcJob,
+  settleReservedBigQueryStagedJob,
   type BigQueryStagedIntent,
   type BigQueryTerminalReceipt,
 } from "./bigquery-staged-intent";
+import {
+  admitRestEntity,
+  closeRestEntityAdmission,
+  hasPendingRestEntityOverwrite,
+  reserveRestEntityOverwrite,
+  type RestEntityOverwriteReservation,
+} from "./rest-entity-admission";
 import {
   acquireTableWriteLease,
   CdcTableWriteLease,
@@ -106,6 +136,1533 @@ function makeIntent(
     configurationFingerprint: "synthetic-fixed-SQL-digest",
   };
 }
+
+async function captureFixture(
+  { scope, overwrite }: RestEntityOverwriteReservation,
+  sourceRowsBefore: number,
+  expectedRows: number,
+) {
+  const project = "proj";
+  const dataset = overwrite.schema;
+  const asOf = new Date("2026-11-21T16:00:00.000Z");
+  let providerJob: unknown;
+  const target = {
+    bq: {
+      async createJob({
+        jobId,
+        location,
+        configuration,
+      }: {
+        jobId: string;
+        location: string;
+        configuration: unknown;
+      }) {
+        providerJob = {
+          jobReference: { projectId: project, location, jobId },
+          configuration,
+          status: { state: "DONE" },
+          statistics: { query: { statementType: "CREATE_SNAPSHOT_TABLE" } },
+        };
+      },
+      job: () => ({
+        async getMetadata() {
+          if (!providerJob) throw { code: 404 };
+          return [providerJob];
+        },
+      }),
+      dataset: () => ({
+        table: (tableId: string) => ({
+          async getMetadata() {
+            return [
+              {
+                type: "SNAPSHOT",
+                tableReference: {
+                  projectId: project,
+                  datasetId: dataset,
+                  tableId,
+                },
+                location: "EU",
+                id: tableId,
+                etag: "fixture-generation",
+                creationTime: String(asOf.getTime() + 1000),
+                numRows: String(expectedRows),
+                snapshotDefinition: {
+                  baseTableReference: {
+                    projectId: project,
+                    datasetId: dataset,
+                    tableId: "staging",
+                  },
+                  snapshotTime: asOf.toISOString(),
+                },
+              },
+            ];
+          },
+        }),
+      }),
+    },
+    projectId: project,
+    dataset,
+    datasetLocation: "EU",
+    destination: {
+      _id: overwrite.destinationId,
+      workspaceId: scope.workspaceId,
+    },
+  } as unknown as BigQueryTarget;
+  const captured = await captureRestBigQueryOverwriteSnapshot(
+    mongoose.connection,
+    target,
+    { scope, overwrite },
+    {
+      sourceRowsBefore,
+      source: { project, dataset, table: "staging" },
+      asOf,
+      expectedRows,
+    },
+    { query: { useLegacySql: false, priority: "BATCH" } },
+  );
+  if (!captured) throw new Error("Missing captured fixture");
+  return captured.input;
+}
+
+describe("retained overwrite query metadata", () => {
+  it("reserves only one unfinished overwrite per destination in a source scope", async () => {
+    const scope = {
+      workspaceId: new Types.ObjectId(),
+      flowId: new Types.ObjectId(),
+      sourceConnectionId: new Types.ObjectId(),
+    };
+    const overwrite = {
+      runId: "first",
+      entity: "contacts",
+      destinationId: "fixture-database",
+      destinationConnectionId: "fixture-connection",
+      destinationDatabaseName: null,
+      schema: "live",
+      tableName: "contacts",
+    };
+    const competing = { ...overwrite, runId: "second" };
+    const reserve = (input: typeof overwrite) =>
+      reserveRestEntityOverwrite(mongoose.connection, scope, input);
+    const results = await Promise.allSettled([
+      reserve(overwrite),
+      reserve(competing),
+    ]);
+    expect(
+      results.filter(result => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    const rejected = results.find(result => result.status === "rejected");
+    expect(rejected?.reason).toMatchObject({
+      message: "Another REST overwrite for this destination is still in flight",
+    });
+    const admitted = results[0].status === "fulfilled" ? overwrite : competing;
+    await expect(reserve(admitted)).resolves.toBeUndefined();
+    await expect(
+      reserve({ ...competing, tableName: "other_contacts" }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("serializes a retained REST replacement with resync of the same table", async () => {
+    const fixture = makeIntent("rest_resync_fence");
+    const destination = { ...fixture.destination, table: "rest_resync_fence" };
+    const scope = {
+      workspaceId: new Types.ObjectId(),
+      flowId: new Types.ObjectId(),
+      sourceConnectionId: new Types.ObjectId(),
+    };
+    const overwrite = {
+      runId: "rest-resync-fence",
+      entity: "recordings",
+      destinationId: "fixture-database",
+      destinationConnectionId: "fixture-connection",
+      destinationDatabaseName: null,
+      schema: destination.dataset,
+      tableName: destination.table,
+    };
+    const reservation = { scope, overwrite };
+    await reserveRestEntityOverwrite(mongoose.connection, scope, overwrite);
+    const input = await captureFixture(reservation, 0, 2);
+    const hold = () =>
+      holdBigQueryRestOverwriteInsert(
+        { job: fixture.job, input, destination },
+        ["id", "body"],
+        { query: { useLegacySql: false, priority: "BATCH" } },
+        { ...reservation, sourceRowsBefore: 0, expectedRows: 2 },
+      );
+    const resync = {
+      workspaceId: scope.workspaceId.toHexString(),
+      flowId: new Types.ObjectId().toHexString(),
+      tables: [destination],
+    };
+    await withCdcResyncFence(
+      resync,
+      session => assertRetainedWritesDrainedForResync(resync, session),
+      async () => {
+        await expect(hold()).rejects.toThrow(
+          "A CDC resync is holding this flow or table",
+        );
+        await expect(readBigQueryStagedInput(fixture.job)).resolves.toBeNull();
+      },
+    );
+    await expect(hold()).resolves.toBe("held");
+    const reset = vi.fn(async () => undefined);
+    await expect(
+      withCdcResyncFence(
+        resync,
+        session => assertRetainedWritesDrainedForResync(resync, session),
+        reset,
+      ),
+    ).rejects.toThrow(
+      "CDC resync is blocked by an unsettled write or retained snapshot",
+    );
+    expect(reset).not.toHaveBeenCalled();
+  });
+
+  it("blocks resync and another REST truncate until empty overwrite settlement", async () => {
+    const connection = mongoose.connection;
+    const scope = {
+      workspaceId: new Types.ObjectId(),
+      flowId: new Types.ObjectId(),
+      sourceConnectionId: new Types.ObjectId(),
+    };
+    const table = {
+      project: "proj",
+      dataset: "live",
+      table: "rest_empty_resync_fence",
+    };
+    const overwrite = {
+      runId: "empty-rest-overwrite",
+      entity: "recordings",
+      destinationId: "fixture-database",
+      destinationConnectionId: "fixture-connection",
+      destinationDatabaseName: null,
+      schema: table.dataset,
+      tableName: table.table,
+    };
+    const reservation = { scope, overwrite };
+    const competing = {
+      scope: { ...scope, flowId: new Types.ObjectId() },
+      overwrite: { ...overwrite, destinationId: "fixture-database-alias" },
+    };
+    await reserveRestEntityOverwrite(connection, scope, overwrite);
+    await reserveRestEntityOverwrite(
+      connection,
+      competing.scope,
+      competing.overwrite,
+    );
+    const retain = (owner: RestEntityOverwriteReservation) =>
+      retainRestBigQueryTruncate(
+        connection,
+        owner.scope,
+        owner.overwrite,
+        {
+          projectId: table.project,
+          dataset: table.dataset,
+          table: table.table,
+          location: "EU",
+        },
+        { query: { useLegacySql: false, priority: "BATCH" } },
+      );
+    const resync = {
+      workspaceId: scope.workspaceId.toHexString(),
+      flowId: new Types.ObjectId().toHexString(),
+      tables: [table],
+    };
+    const runResync = (reset: () => Promise<void>) =>
+      withCdcResyncFence(
+        resync,
+        session => assertRetainedWritesDrainedForResync(resync, session),
+        reset,
+      );
+    await runResync(async () => {
+      await expect(retain(reservation)).rejects.toThrow(
+        "A CDC resync is holding this flow or table",
+      );
+    });
+    const reset = vi.fn(async () => undefined);
+    const blocked = "CDC resync is blocked by an unsettled REST overwrite";
+    const competingBlocked = "Another REST overwrite is holding this table";
+    const [first, second] = await Promise.allSettled([
+      retain(reservation),
+      retain(competing),
+    ]);
+    const [accepted, refused, owner, waiter] =
+      first.status === "fulfilled"
+        ? ([first, second, reservation, competing] as const)
+        : ([second, first, competing, reservation] as const);
+    expect(refused).toMatchObject({
+      status: "rejected",
+      reason: { message: competingBlocked },
+    });
+    if (accepted.status !== "fulfilled") throw accepted.reason;
+    const truncate = accepted.value;
+    await expect(runResync(reset)).rejects.toThrow(blocked);
+    await expect(retain(owner)).resolves.toEqual(truncate);
+    await expect(
+      recordRestBigQueryTruncateResult(connection, truncate, {
+        jobReference: {
+          projectId: truncate.job.project,
+          location: truncate.job.location,
+          jobId: truncate.job.id,
+        },
+        configuration: truncate.configuration,
+        status: { state: "DONE" },
+        statistics: { query: { statementType: "DELETE" } },
+      }),
+    ).resolves.toBe("succeeded");
+    const manifest = {
+      reservation: owner,
+      sourceRows: 0,
+      replacementFingerprints: [],
+    };
+    await expect(
+      sealRestBigQueryOverwriteManifest(connection, manifest),
+    ).resolves.toBe(true);
+    await expect(runResync(reset)).rejects.toThrow(blocked);
+    await expect(retain(waiter)).rejects.toThrow(competingBlocked);
+    expect(reset).not.toHaveBeenCalled();
+    await expect(
+      settleRestBigQueryOverwriteManifest(connection, manifest),
+    ).resolves.toBe(true);
+    await runResync(reset);
+    expect(reset).toHaveBeenCalledTimes(1);
+    await expect(retain(waiter)).resolves.toMatchObject(waiter);
+  });
+
+  it.each([
+    { coverage: "contiguous", start: 2 },
+    { coverage: "overlapping", start: 1 },
+    { coverage: "gapped", start: 3 },
+    { coverage: "uncaptured", start: 2 },
+  ])("checks $coverage REST ranges", async ({ coverage, start }) => {
+    const {
+      job,
+      input,
+      destination: fixtureDestination,
+    } = makeIntent(`rest_replacement_${coverage}`);
+    const destination = {
+      ...fixtureDestination,
+      table: `${fixtureDestination.table}_${coverage}`,
+    };
+    const scope = {
+      workspaceId: new Types.ObjectId(),
+      flowId: new Types.ObjectId(),
+      sourceConnectionId: new Types.ObjectId(),
+    };
+    const overwrite = {
+      runId: "rest-overwrite-run",
+      entity: "recordings",
+      destinationId: "fixture-database",
+      destinationConnectionId: "fixture-connection",
+      destinationDatabaseName: null,
+      schema: destination.dataset,
+      tableName: destination.table,
+    };
+    const binding = { job, input, destination };
+    const options = {
+      query: { useLegacySql: false, priority: "BATCH" },
+    } as const;
+    const hold = () =>
+      holdBigQueryRestOverwriteInsert(binding, ["id", "body"], options, {
+        scope,
+        overwrite,
+        sourceRowsBefore: 0,
+        expectedRows: 2,
+      });
+    const pendingError = "requires a pending, unsealed REST overwrite";
+    await expect(hold()).rejects.toThrow(pendingError);
+    await reserveRestEntityOverwrite(mongoose.connection, scope, overwrite);
+    binding.input = await captureFixture({ scope, overwrite }, 0, 2);
+    await expect(hold()).resolves.toBe("held");
+    const request = await readPendingBigQueryQueryRequest(job);
+    expect(request?.configuration.query.query).toBe(
+      `INSERT INTO \`proj\`.\`live\`.\`${destination.table}\` (\`id\`, \`body\`) SELECT \`id\`, \`body\` FROM \`proj\`.\`live\`.\`${binding.input.snapshot.table}\``,
+    );
+    const held = await readBigQueryStagedInput(job);
+    if (!held) throw new Error("Missing held replacement");
+    expect(held.intent).toMatchObject({
+      input: binding.input,
+      destination,
+      restOverwrite: {
+        workspaceId: scope.workspaceId.toHexString(),
+        flowId: scope.flowId.toHexString(),
+        sourceConnectionId: scope.sourceConnectionId.toHexString(),
+        overwrite,
+        sourceRowsBefore: 0,
+        expectedRows: 2,
+      },
+    });
+    const providerJob = { ...request, status: { state: "DONE" } };
+    await expect(
+      recordObservedBigQueryQueryResult(job, {
+        ...providerJob,
+        statistics: { query: { statementType: "MERGE" } },
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      recordObservedBigQueryQueryResult(job, {
+        ...providerJob,
+        statistics: { query: { statementType: "INSERT" } },
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      recordObservedBigQueryQueryResult(job, {
+        ...providerJob,
+        statistics: {
+          query: { statementType: "INSERT", numDmlAffectedRows: "1" },
+        },
+      }),
+    ).resolves.toBe(false);
+    const getMetadata = vi.fn<() => Promise<[unknown]>>();
+    const adapter = new BigQueryDestinationAdapter({
+      destinationDatabaseId: overwrite.destinationId,
+      workspaceId: String(scope.workspaceId),
+      tableDestination: {
+        connectionId: overwrite.destinationConnectionId,
+        schema: destination.dataset,
+        tableName: destination.table,
+      },
+    });
+    const target = {
+      bq: { job: () => ({ getMetadata }) },
+      projectId: destination.project,
+      dataset: destination.dataset,
+      datasetLocation: job.location,
+      destination: {
+        _id: overwrite.destinationId,
+        workspaceId: scope.workspaceId,
+      },
+    } as unknown as BigQueryTarget;
+    const control = adapter["leaseJobControl"](target, destination.table);
+    const ref = {
+      jobId: job.id,
+      location: job.location,
+      intentFingerprint: held.fingerprint,
+      reservedBeforeDispatch: true,
+    };
+    const wrongLocation = adapter["leaseJobControl"](
+      { ...target, datasetLocation: "us" },
+      destination.table,
+    );
+    await expect(wrongLocation.isReservedJobDone?.(ref)).resolves.toBe(false);
+    expect(getMetadata).not.toHaveBeenCalled();
+    const key = getSchemaCacheKey(
+      destination.project,
+      destination.dataset,
+      destination.table,
+    );
+    const acquire = () =>
+      acquireTableWriteLease(key, {
+        jobs: control,
+        path: "final",
+        maxWaitMs: 0,
+      });
+    const original = await acquire();
+    getMetadata.mockRejectedValue({ code: 404 });
+    try {
+      await original.reserveJob(ref);
+    } finally {
+      await original.release();
+    }
+    const expire = () =>
+      CdcTableWriteLease.updateOne(
+        { _id: key },
+        { $set: { expiresAt: new Date(0) } },
+        { writeConcern: { w: "majority" } },
+      );
+    const metadata = (numDmlAffectedRows: string) => ({
+      ...providerJob,
+      statistics: { query: { statementType: "INSERT", numDmlAffectedRows } },
+    });
+    await expire();
+    getMetadata.mockResolvedValue([metadata("1")]);
+    await expect(acquire()).rejects.toBeInstanceOf(TableWriteLeaseBusyError);
+    expect((await readBigQueryStagedInput(job))?.terminal).toBeUndefined();
+    await expire();
+    getMetadata.mockResolvedValue([metadata("2")]);
+    const recovered = await acquire();
+    await recovered.release();
+    expect((await readBigQueryStagedInput(job))?.terminal).toMatchObject({
+      state: "DONE",
+      outcome: "succeeded",
+      affectedRows: 2,
+    });
+    expect(await readPendingBigQueryQueryRequest(job)).toBeNull();
+    const replacement = await readBigQueryStagedInput(job);
+    if (!replacement) throw new Error("Missing replacement fixture");
+    const manifest = {
+      reservation: { scope, overwrite },
+      sourceRows: 2,
+      replacementFingerprints: [replacement.fingerprint],
+    };
+    const verify = (candidate = manifest) =>
+      verifyRestBigQueryOverwriteManifest(mongoose.connection, candidate);
+    await expect(verify()).resolves.toBe(false);
+    const truncate = await retainRestBigQueryTruncate(
+      mongoose.connection,
+      scope,
+      overwrite,
+      {
+        projectId: destination.project,
+        dataset: destination.dataset,
+        location: job.location,
+        table: destination.table,
+      },
+      options,
+    );
+    await expect(
+      recordRestBigQueryTruncateResult(mongoose.connection, truncate, {
+        jobReference: {
+          projectId: truncate.job.project,
+          location: truncate.job.location,
+          jobId: truncate.job.id,
+        },
+        configuration: truncate.configuration,
+        status: { state: "DONE" },
+        statistics: { query: { statementType: "DELETE" } },
+      }),
+    ).resolves.toBe("succeeded");
+    await expect(verify()).resolves.toBe(true);
+    await expect(
+      closeRestEntityAdmission(mongoose.connection, scope),
+    ).rejects.toThrow("REST overwrite is still in flight");
+    await expect(verify({ ...manifest, sourceRows: 3 })).resolves.toBe(false);
+    await expect(
+      verify({
+        ...manifest,
+        replacementFingerprints: [
+          replacement.fingerprint,
+          replacement.fingerprint,
+        ],
+      }),
+    ).resolves.toBe(false);
+
+    const seal = (candidate = manifest) =>
+      sealRestBigQueryOverwriteManifest(mongoose.connection, candidate);
+    const settle = (candidate = manifest) =>
+      settleRestBigQueryOverwriteManifest(mongoose.connection, candidate);
+    await expect(settle()).resolves.toBe(false);
+    await expect(seal({ ...manifest, sourceRows: 3 })).resolves.toBe(false);
+
+    const holdExtra = (extra: ReturnType<typeof makeIntent>) =>
+      holdBigQueryRestOverwriteInsert(
+        { ...binding, input: extra.input, job: extra.job },
+        ["id", "body"],
+        options,
+        { scope, overwrite, sourceRowsBefore: start, expectedRows: 1 },
+      );
+    const extra = makeIntent(`rest_replacement_unlisted_${coverage}`);
+    if (coverage !== "uncaptured") {
+      extra.input = await captureFixture({ scope, overwrite }, start, 1);
+    }
+    const recordExtra = async () => {
+      const pending = await readPendingBigQueryQueryRequest(extra.job);
+      const retained = await readBigQueryStagedInput(extra.job);
+      if (!pending || !retained) throw new Error("Missing extra replacement");
+      manifest.sourceRows++;
+      manifest.replacementFingerprints.push(retained.fingerprint);
+      await expect(seal()).resolves.toBe(false);
+      await expect(
+        recordObservedBigQueryQueryResult(extra.job, {
+          ...pending,
+          status: { state: "DONE" },
+          statistics: {
+            query: { statementType: "INSERT", numDmlAffectedRows: "1" },
+          },
+        }),
+      ).resolves.toBe(true);
+    };
+    if (coverage !== "contiguous") {
+      await expect(holdExtra(extra)).resolves.toBe("held");
+      await recordExtra();
+      await expect(seal()).resolves.toBe(false);
+      await expect(settle()).resolves.toBe(false);
+      await expect(
+        closeRestEntityAdmission(mongoose.connection, scope),
+      ).rejects.toThrow("REST overwrite is still in flight");
+      return;
+    }
+    const [sealedFirst, extraHeld] = await Promise.all([
+      seal(),
+      holdExtra(extra).then(
+        () => true,
+        error => {
+          expect(error.message).toContain(pendingError);
+          return false;
+        },
+      ),
+    ]);
+    expect(sealedFirst).not.toBe(extraHeld);
+
+    if (extraHeld) {
+      await expect(seal()).resolves.toBe(false);
+      await recordExtra();
+    }
+    await expect(seal()).resolves.toBe(true);
+    await expect(
+      seal({
+        ...manifest,
+        replacementFingerprints: [
+          ...manifest.replacementFingerprints,
+        ].reverse(),
+      }),
+    ).resolves.toBe(true);
+    await expect(hold()).resolves.toBe("terminal");
+    const late = makeIntent("rest_replacement_after_seal");
+    await expect(holdExtra(late)).rejects.toThrow(pendingError);
+    await expect(readBigQueryStagedInput(late.job)).resolves.toBeNull();
+    await expect(
+      closeRestEntityAdmission(mongoose.connection, scope),
+    ).rejects.toThrow("REST overwrite is still in flight");
+    await expect(
+      settle({ ...manifest, sourceRows: manifest.sourceRows + 1 }),
+    ).resolves.toBe(false);
+    await expect(
+      settle({
+        ...manifest,
+        reservation: {
+          scope: { ...scope, sourceConnectionId: new Types.ObjectId() },
+          overwrite,
+        },
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      settle({
+        ...manifest,
+        reservation: {
+          scope,
+          overwrite: { ...overwrite, tableName: "wrong_destination" },
+        },
+      }),
+    ).resolves.toBe(false);
+    const pendingOverwrite = () =>
+      hasPendingRestEntityOverwrite(mongoose.connection, scope, overwrite);
+    await expect(pendingOverwrite()).resolves.toBe(true);
+    await expect(settle()).resolves.toBe(true);
+    await expect(pendingOverwrite()).resolves.toBe(false);
+    await expect(admitRestEntity(mongoose.connection, scope)).resolves.toBe(
+      true,
+    );
+    await expect(
+      reserveRestEntityOverwrite(mongoose.connection, scope, overwrite),
+    ).rejects.toThrow("already has a verified manifest");
+    await expect(holdExtra(late)).rejects.toThrow(pendingError);
+    await expect(
+      closeRestEntityAdmission(mongoose.connection, scope),
+    ).resolves.toBeUndefined();
+    await expect(admitRestEntity(mongoose.connection, scope)).resolves.toBe(
+      false,
+    );
+    await expect(settle()).resolves.toBe(true);
+  });
+
+  it("keeps the same staging snapshot time and job across an ambiguous submission", async () => {
+    const scope = {
+      workspaceId: new Types.ObjectId(),
+      flowId: new Types.ObjectId(),
+      sourceConnectionId: new Types.ObjectId(),
+    };
+    const source = {
+      project: "proj",
+      dataset: "rest_snapshot",
+      table: "staging",
+    };
+    const overwrite = {
+      runId: "snapshot-run",
+      entity: "recordings",
+      destinationId: new Types.ObjectId().toHexString(),
+      destinationConnectionId: new Types.ObjectId().toHexString(),
+      destinationDatabaseName: null,
+      schema: source.dataset,
+      tableName: "recordings",
+    };
+    const batch = {
+      sourceRowsBefore: 10,
+      source,
+      asOf: new Date("2026-11-21T16:00:00.000Z"),
+      expectedRows: 2,
+    };
+    let providerJob: unknown;
+    let snapshotTable: string | undefined;
+    let providerTime = batch.asOf.toISOString();
+    const jobMetadata = vi.fn(async () => {
+      if (!providerJob) throw { code: 404 };
+      return [providerJob];
+    });
+    const tableMetadata = vi.fn(async () => [
+      {
+        type: "SNAPSHOT",
+        tableReference: {
+          projectId: source.project,
+          datasetId: source.dataset,
+          tableId: snapshotTable,
+        },
+        location: "EU",
+        id: "synthetic-provider-table",
+        etag: "synthetic-generation",
+        creationTime: String(batch.asOf.getTime() + 1000),
+        numRows: "2",
+        snapshotDefinition: {
+          baseTableReference: {
+            projectId: source.project,
+            datasetId: source.dataset,
+            tableId: source.table,
+          },
+          snapshotTime: providerTime,
+        },
+      },
+    ]);
+    const createJob = vi.fn(
+      async (submitted: {
+        jobId: string;
+        location: string;
+        configuration: unknown;
+      }) => {
+        snapshotTable = `_${submitted.jobId}`;
+        providerJob = {
+          jobReference: {
+            projectId: source.project,
+            location: submitted.location,
+            jobId: submitted.jobId,
+          },
+          configuration: submitted.configuration,
+          status: { state: "DONE" },
+          statistics: { query: { statementType: "CREATE_SNAPSHOT_TABLE" } },
+        };
+        throw { code: 503, message: "Lost snapshot acknowledgement" };
+      },
+    );
+    const target = {
+      bq: {
+        createJob,
+        job: () => ({ getMetadata: jobMetadata }),
+        dataset: () => ({
+          table: (table: string) => {
+            expect(table).toBe(snapshotTable);
+            return { getMetadata: tableMetadata };
+          },
+        }),
+      },
+      projectId: source.project,
+      dataset: source.dataset,
+      datasetLocation: "EU",
+      destination: {
+        _id: overwrite.destinationId,
+        workspaceId: scope.workspaceId,
+      },
+    } as unknown as BigQueryTarget;
+    const capture = (input = batch) =>
+      captureRestBigQueryOverwriteSnapshot(
+        mongoose.connection,
+        target,
+        { scope, overwrite },
+        input,
+        { query: { useLegacySql: false, priority: "BATCH" } },
+      );
+    await expect(capture()).rejects.toThrow(
+      "requires a pending REST overwrite",
+    );
+    expect(jobMetadata).not.toHaveBeenCalled();
+    await reserveRestEntityOverwrite(mongoose.connection, scope, overwrite);
+    await expect(capture()).rejects.toMatchObject({ code: 503 });
+    expect(createJob).toHaveBeenCalledTimes(1);
+    const submitted = createJob.mock.calls[0]?.[0];
+    expect(submitted).toMatchObject({
+      jobId: expect.stringMatching(/^mako_rest_snapshot_/),
+      location: "eu",
+      configuration: {
+        query: {
+          query: `CREATE SNAPSHOT TABLE \`proj\`.\`rest_snapshot\`.\`${snapshotTable}\` CLONE \`proj\`.\`rest_snapshot\`.\`staging\` FOR SYSTEM_TIME AS OF TIMESTAMP_MILLIS(${batch.asOf.getTime()})`,
+        },
+      },
+    });
+    await expect(
+      capture({ ...batch, asOf: new Date(batch.asOf.getTime() + 1) }),
+    ).rejects.toThrow("snapshot batch changed");
+    await expect(capture({ ...batch, expectedRows: 3 })).rejects.toThrow(
+      "snapshot batch changed",
+    );
+    expect(createJob).toHaveBeenCalledTimes(1);
+    providerTime = new Date(batch.asOf.getTime() + 1).toISOString();
+    await expect(capture()).rejects.toThrow(
+      "does not match the retained staging version",
+    );
+    providerTime = batch.asOf.toISOString();
+    const captured = await capture();
+    expect(captured).toMatchObject({
+      input: { snapshot: { ...source, table: snapshotTable } },
+      rows: 2,
+      baseTable: source,
+      asOf: providerTime,
+    });
+    jobMetadata.mockClear();
+    tableMetadata.mockClear();
+    await expect(capture()).resolves.toEqual(captured);
+    expect(jobMetadata).not.toHaveBeenCalled();
+    expect(tableMetadata).not.toHaveBeenCalled();
+    expect(createJob).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([0, 1])("dispatch checks range %i", async start => {
+    const fixture = makeIntent(`rest_replacement_dispatch_${start}`);
+    const { job, destination } = fixture;
+    destination.table = `replacement_dispatch_${start}`;
+    const snapshot = { ...destination, table: "" };
+    const sourceTable = "staging_recordings";
+    const scope = {
+      workspaceId: new Types.ObjectId(),
+      flowId: new Types.ObjectId(),
+      sourceConnectionId: new Types.ObjectId(),
+    };
+    const overwrite = {
+      runId: "replacement-dispatch",
+      entity: "recordings",
+      destinationId: new Types.ObjectId().toHexString(),
+      destinationConnectionId: new Types.ObjectId().toHexString(),
+      destinationDatabaseName: null,
+      schema: destination.dataset,
+      tableName: destination.table,
+    };
+    const table = {
+      type: "SNAPSHOT",
+      tableReference: {
+        projectId: snapshot.project,
+        datasetId: snapshot.dataset,
+        tableId: snapshot.table,
+      },
+      location: "EU",
+      id: "synthetic-snapshot",
+      etag: "original-generation",
+      creationTime: "1720000000000",
+      numRows: "2",
+      snapshotDefinition: {
+        baseTableReference: {
+          projectId: snapshot.project,
+          datasetId: snapshot.dataset,
+          tableId: sourceTable,
+        },
+        snapshotTime: "2024-07-03T09:46:40Z",
+      },
+    };
+    const readTable = vi.fn(async () => [table]);
+    const providerJobs = new Map<string, unknown>();
+    const getMetadata = vi.fn(async (id: string) => {
+      if (providerJobs.has(id)) return [providerJobs.get(id)];
+      throw { code: 404 };
+    });
+    const createJob = vi.fn(
+      async (submitted: {
+        jobId: string;
+        location: string;
+        configuration: unknown;
+      }) => {
+        const isSnapshot = submitted.jobId.startsWith("mako_rest_snapshot_");
+        if (isSnapshot) {
+          snapshot.table = `_${submitted.jobId}`;
+          table.tableReference.tableId = snapshot.table;
+        }
+        providerJobs.set(submitted.jobId, {
+          jobReference: {
+            projectId: job.project,
+            jobId: submitted.jobId,
+            location: submitted.location,
+          },
+          configuration: structuredClone(submitted.configuration),
+          status: { state: "DONE" },
+          statistics: {
+            query: isSnapshot
+              ? { statementType: "CREATE_SNAPSHOT_TABLE" }
+              : { statementType: "INSERT", numDmlAffectedRows: "2" },
+          },
+        });
+        if (isSnapshot) return;
+        throw { code: 503, message: "Lost submission acknowledgement" };
+      },
+    );
+    const target = {
+      bq: {
+        dataset: (name: string) => {
+          expect(name).toBe(snapshot.dataset);
+          return {
+            table: (name: string) => {
+              expect(name).toBe(snapshot.table);
+              return { getMetadata: readTable };
+            },
+          };
+        },
+        job: (id: string) => ({ getMetadata: () => getMetadata(id) }),
+        createJob,
+      },
+      projectId: destination.project,
+      dataset: destination.dataset,
+      datasetLocation: job.location,
+      destination: {
+        _id: overwrite.destinationId,
+        workspaceId: scope.workspaceId,
+      },
+    } as unknown as BigQueryTarget;
+    const reservation = { scope, overwrite };
+    await reserveRestEntityOverwrite(mongoose.connection, scope, overwrite);
+    const query = {
+      query: { useLegacySql: false, priority: "BATCH" },
+    } as const;
+    const captured = await captureRestBigQueryOverwriteSnapshot(
+      mongoose.connection,
+      target,
+      reservation,
+      {
+        sourceRowsBefore: start,
+        source: { ...snapshot, table: sourceTable },
+        asOf: new Date(table.snapshotDefinition.snapshotTime),
+        expectedRows: 2,
+      },
+      query,
+    );
+    if (!captured) throw new Error("Missing captured snapshot");
+    expect(captured.rows).toBe(2);
+    getMetadata.mockClear();
+    readTable.mockClear();
+    createJob.mockClear();
+    await holdBigQueryRestOverwriteInsert(
+      { job, destination, input: captured.input },
+      ["id", "body"],
+      query,
+      { ...reservation, sourceRowsBefore: 0, expectedRows: captured.rows },
+    );
+    const held = await readBigQueryStagedInput(job);
+    if (!held) throw new Error("Missing retained replacement");
+    const ref = {
+      jobId: job.id,
+      location: job.location,
+      intentFingerprint: held.fingerprint,
+      reservedBeforeDispatch: true,
+    };
+    const dispatch = () =>
+      dispatchRestBigQueryReplacement(
+        target,
+        destination.table,
+        {
+          connectionId: overwrite.destinationConnectionId,
+          databaseName: overwrite.destinationDatabaseName,
+        },
+        ref,
+      );
+    await expect(dispatch()).rejects.toThrow("requires its table lease");
+    expect(getMetadata).not.toHaveBeenCalled();
+
+    const adapter = new BigQueryDestinationAdapter({
+      destinationDatabaseId: overwrite.destinationId,
+      workspaceId: String(scope.workspaceId),
+      tableDestination: {
+        connectionId: overwrite.destinationConnectionId,
+        schema: destination.dataset,
+        tableName: destination.table,
+      },
+    });
+    const key = getSchemaCacheKey(
+      destination.project,
+      destination.dataset,
+      destination.table,
+    );
+    const lease = await acquireTableWriteLease(key, {
+      jobs: adapter["leaseJobControl"](target, destination.table),
+      path: "final",
+      maxWaitMs: 0,
+    });
+    try {
+      await lease.reserveJob(ref);
+      if (start !== 0) {
+        await expect(dispatch()).rejects.toThrow(
+          "no capture for its source range",
+        );
+        await expect(
+          adapter["leaseJobControl"](
+            target,
+            destination.table,
+          ).isReservedJobDone?.(ref),
+        ).resolves.toBe(false);
+        expect(getMetadata).not.toHaveBeenCalled();
+        expect(readTable).not.toHaveBeenCalled();
+        expect(createJob).not.toHaveBeenCalled();
+        return;
+      }
+      readTable.mockResolvedValueOnce([
+        { ...table, etag: "replacement-generation" },
+      ]);
+      await expect(dispatch()).rejects.toThrow("input snapshot changed");
+      readTable.mockResolvedValueOnce([{ ...table, numRows: "3" }]);
+      await expect(dispatch()).rejects.toThrow("input snapshot changed");
+      expect(createJob).not.toHaveBeenCalled();
+      await expect(dispatch()).rejects.toMatchObject({ code: 503 });
+      expect(createJob).toHaveBeenCalledExactlyOnceWith({
+        jobId: job.id,
+        location: job.location,
+        configuration: held.intent.configuration,
+      });
+      await expect(dispatch()).resolves.toBe("succeeded");
+      await expect(dispatch()).resolves.toBe("succeeded");
+      expect(createJob).toHaveBeenCalledTimes(1);
+      expect((await readBigQueryStagedInput(job))?.terminal).toMatchObject({
+        fingerprint: held.fingerprint,
+        state: "DONE",
+        outcome: "succeeded",
+        affectedRows: 2,
+      });
+    } finally {
+      await lease.release();
+      if (start !== 0) {
+        const heldLease = await CdcTableWriteLease.findOneAndDelete({
+          _id: key,
+          jobId: job.id,
+        });
+        expect(heldLease).not.toBeNull();
+      }
+    }
+    expect(await CdcTableWriteLease.exists({ _id: key })).toBeNull();
+    await expect(
+      closeRestEntityAdmission(mongoose.connection, scope),
+    ).rejects.toThrow("REST overwrite is still in flight");
+  });
+
+  it("recovers leased REST truncate and replacement through the adapter", async () => {
+    const scope = {
+      workspaceId: new Types.ObjectId(),
+      flowId: new Types.ObjectId(),
+      sourceConnectionId: new Types.ObjectId(),
+    };
+    const destinationId = new Types.ObjectId().toHexString();
+    const overwrite = {
+      runId: "adapter-run",
+      entity: "contacts",
+      destinationId,
+      destinationConnectionId: destinationId,
+      destinationDatabaseName: null,
+      schema: "lease_recovery",
+      tableName: "contacts",
+    };
+    const reservation = { scope, overwrite };
+    const tableKey = getSchemaCacheKey(
+      "project",
+      overwrite.schema,
+      overwrite.tableName,
+    );
+    const layout = buildCdcEntityLayout({
+      entity: overwrite.entity,
+      tableName: overwrite.tableName,
+      writeMode: "overwrite",
+    });
+    await reserveRestEntityOverwrite(mongoose.connection, scope, overwrite);
+
+    const jobs = new Map<string, unknown>();
+    let canRead = false;
+    let liveTableExists = true;
+    let stageRows = 1;
+    const stageTime = Date.parse("2026-11-21T16:00:00.000Z");
+    const stageTable = bigQueryStagingTableName(
+      overwrite.tableName,
+      scope.flowId.toHexString(),
+    );
+    const createJob = vi.fn(
+      async (request: {
+        jobId: string;
+        location: string;
+        configuration: unknown;
+      }) => {
+        const snapshot = request.jobId.startsWith("mako_rest_snapshot_");
+        const insert = request.jobId.startsWith("mako_rest_replacement_");
+        if (!snapshot) {
+          expect(
+            await CdcTableWriteLease.findById(tableKey).lean(),
+          ).toMatchObject({
+            jobId: request.jobId,
+            jobLocation: request.location,
+            jobReservedBeforeDispatch: true,
+            jobIntentFingerprint: expect.any(String),
+          });
+        }
+        jobs.set(request.jobId, {
+          jobReference: {
+            projectId: "project",
+            location: request.location,
+            jobId: request.jobId,
+          },
+          configuration: request.configuration,
+          status: { state: "DONE" },
+          statistics: {
+            query: snapshot
+              ? { statementType: "CREATE_SNAPSHOT_TABLE" }
+              : insert
+                ? { statementType: "INSERT", numDmlAffectedRows: "2" }
+                : { statementType: "DELETE" },
+          },
+        });
+        if (snapshot) return;
+        throw Object.assign(new Error("ambiguous submit"), { code: 503 });
+      },
+    );
+    const provider = {
+      projectId: "project",
+      dataset: overwrite.schema,
+      datasetLocation: "EU",
+      destination: {
+        _id: destinationId,
+        workspaceId: scope.workspaceId,
+        connection: {},
+      },
+      bq: {
+        dataset: () => ({
+          table: (tableId: string) => ({
+            exists: async () => [liveTableExists],
+            getMetadata: async () =>
+              tableId === stageTable
+                ? [
+                    {
+                      numRows: String(stageRows),
+                      lastModifiedTime: String(stageTime),
+                    },
+                  ]
+                : [
+                    {
+                      type: "SNAPSHOT",
+                      tableReference: {
+                        projectId: "project",
+                        datasetId: overwrite.schema,
+                        tableId,
+                      },
+                      location: "EU",
+                      id: tableId,
+                      etag: "adapter-generation",
+                      creationTime: String(stageTime + 1000),
+                      numRows: "2",
+                      snapshotDefinition: {
+                        baseTableReference: {
+                          projectId: "project",
+                          datasetId: overwrite.schema,
+                          tableId: stageTable,
+                        },
+                        snapshotTime: new Date(stageTime).toISOString(),
+                      },
+                    },
+                  ],
+          }),
+        }),
+        createJob,
+        job: (id: string) => ({
+          getMetadata: async () => {
+            const metadata = canRead && jobs.get(id);
+            if (!metadata) {
+              throw Object.assign(new Error("missing job"), { code: 404 });
+            }
+            return [metadata];
+          },
+        }),
+      },
+    } as unknown as BigQueryTarget;
+    const adapter = new BigQueryDestinationAdapter({
+      destinationDatabaseId: destinationId,
+      workspaceId: scope.workspaceId.toHexString(),
+      tableDestination: {
+        connectionId: destinationId,
+        schema: overwrite.schema,
+        tableName: overwrite.tableName,
+      },
+    });
+    (
+      adapter as unknown as { _resolvedClient: BigQueryTarget }
+    )._resolvedClient = provider;
+
+    const replace = () =>
+      adapter.mergeFromStaging(
+        layout,
+        { _id: scope.flowId, dataSourceId: scope.sourceConnectionId },
+        scope.flowId.toHexString(),
+        undefined,
+        {
+          restBigQueryOverwrite: {
+            reservation,
+            sourceRowsBefore: 0,
+            expectedRows: 2,
+          },
+        },
+      );
+    await expect(replace()).rejects.toThrow("requires its completed truncate");
+
+    await expect(
+      adapter.truncateLiveTable(layout, reservation),
+    ).rejects.toThrow("ambiguous submit");
+    expect(await CdcTableWriteLease.findById(tableKey).lean()).toMatchObject({
+      jobReservedBeforeDispatch: true,
+    });
+    canRead = true;
+    await expect(
+      adapter.truncateLiveTable(layout, reservation),
+    ).resolves.toBeUndefined();
+    await expect(
+      adapter.truncateLiveTable(layout, reservation),
+    ).resolves.toBeUndefined();
+    expect(createJob).toHaveBeenCalledTimes(1);
+    await expect(
+      closeRestEntityAdmission(mongoose.connection, scope),
+    ).rejects.toThrow("REST overwrite is still in flight");
+
+    await CdcTableWriteLease.updateOne(
+      { _id: tableKey },
+      { $set: { expiresAt: new Date(0) } },
+    );
+    const successor = await acquireTableWriteLease(tableKey, {
+      path: "truncate",
+      jobs: {
+        isDone: async () => false,
+        isReservedJobDone: job =>
+          settleReservedBigQueryRestTruncate(
+            mongoose.connection,
+            provider,
+            overwrite.tableName,
+            job,
+          ),
+        cancel: async () => undefined,
+      },
+    });
+    await successor.release();
+    expect(await CdcTableWriteLease.exists({ _id: tableKey })).toBeNull();
+
+    const query = vi
+      .spyOn(databaseConnectionService, "executeQuery")
+      .mockResolvedValue({
+        success: true,
+        data: [stageTable, overwrite.tableName].map(table_name => ({
+          table_name,
+          column_name: "id",
+          data_type: "STRING",
+        })),
+      });
+    try {
+      await expect(replace()).rejects.toThrow(
+        "staging metadata does not match",
+      );
+      expect(createJob).toHaveBeenCalledTimes(1);
+      stageRows = 2;
+      await expect(replace()).rejects.toThrow("ambiguous submit");
+      expect(createJob).toHaveBeenCalledTimes(3);
+      query.mockClear();
+      stageRows = 0;
+      await expect(replace()).resolves.toEqual({ written: 2 });
+      await expect(replace()).resolves.toEqual({ written: 2 });
+      expect(query).not.toHaveBeenCalled();
+      expect(createJob).toHaveBeenCalledTimes(3);
+    } finally {
+      query.mockRestore();
+    }
+
+    await CdcTableWriteLease.updateOne(
+      { _id: tableKey },
+      { $set: { expiresAt: new Date(0) } },
+    );
+    const afterReplacement = await acquireTableWriteLease(tableKey, {
+      path: "final",
+      jobs: adapter["leaseJobControl"](provider, overwrite.tableName),
+    });
+    await afterReplacement.release();
+
+    const writes = await readBigQueryRestOverwriteWrites(reservation);
+    const manifest = {
+      reservation,
+      sourceRows: 2,
+      replacementFingerprints: writes.map(write => write.fingerprint),
+    };
+    const fetchState = {
+      hasMore: false,
+      totalProcessed: 2,
+      iterationsInChunk: 1,
+      metadata: { offset: 2 },
+    };
+    const sealed = { ...manifest, fetchState };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(
+        sealRestBigQueryOverwriteManifest(mongoose.connection, sealed),
+      ).resolves.toBe(true);
+    }
+    await expect(
+      sealRestBigQueryOverwriteManifest(mongoose.connection, {
+        ...manifest,
+        fetchState: { ...fetchState, metadata: { offset: 1 } },
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      closeRestEntityAdmission(mongoose.connection, scope),
+    ).rejects.toThrow("REST overwrite is still in flight");
+    await expect(
+      readVerifiedRestBigQueryOverwriteManifest(
+        mongoose.connection,
+        reservation,
+      ),
+    ).resolves.toEqual(sealed);
+    await expect(
+      closeRestEntityAdmission(mongoose.connection, scope),
+    ).rejects.toThrow("REST overwrite is still in flight");
+    await expect(
+      settleRestBigQueryOverwriteManifest(mongoose.connection, sealed),
+    ).resolves.toBe(true);
+    await expect(
+      readVerifiedRestBigQueryOverwriteManifest(
+        mongoose.connection,
+        reservation,
+      ),
+    ).resolves.toEqual(manifest);
+
+    const firstWrite = {
+      scope,
+      overwrite: { ...overwrite, runId: "absent-table" },
+    };
+    await reserveRestEntityOverwrite(
+      mongoose.connection,
+      scope,
+      firstWrite.overwrite,
+    );
+    liveTableExists = false;
+    await expect(
+      adapter.truncateLiveTable(layout, firstWrite),
+    ).resolves.toBeUndefined();
+    expect(await CdcTableWriteLease.exists({ _id: tableKey })).toBeNull();
+    liveTableExists = true;
+    await expect(
+      adapter.truncateLiveTable(layout, firstWrite),
+    ).resolves.toBeUndefined();
+    expect(createJob).toHaveBeenCalledTimes(3);
+  });
+
+  it("retains one provider request under the original REST source and grants", async () => {
+    const database = mongoose.connection.db;
+    if (!database) throw new Error("Synthetic MongoDB is not connected");
+    const scope = {
+      workspaceId: new Types.ObjectId(),
+      flowId: new Types.ObjectId(),
+      sourceConnectionId: new Types.ObjectId(),
+    };
+    const source = {
+      _id: scope.sourceConnectionId,
+      workspaceId: scope.workspaceId,
+      type: "rest",
+      managers: ["synthetic-manager"],
+      liveReads: true,
+      liveReaders: [{ principal: "synthetic-reader" }],
+      writers: [{ principal: "synthetic-writer" }],
+    };
+    const sources = database.collection("connectors");
+    await sources.insertOne(source);
+    const overwrite = {
+      runId: "original-run",
+      entity: "recordings",
+      destinationId: new Types.ObjectId().toHexString(),
+      destinationDatabaseName: null,
+      destinationConnectionId: new Types.ObjectId().toHexString(),
+      schema: "live",
+      tableName: "recordings",
+    };
+    const target = {
+      projectId: "proj",
+      dataset: "live",
+      location: "EU",
+      table: "recordings",
+    };
+    const options = {
+      query: { useLegacySql: false, priority: "BATCH" },
+    } as const;
+    const retain = () =>
+      retainRestBigQueryTruncate(
+        mongoose.connection,
+        scope,
+        overwrite,
+        target,
+        options,
+      );
+    await expect(retain()).rejects.toThrow("requires a pending REST overwrite");
+    await reserveRestEntityOverwrite(mongoose.connection, scope, overwrite);
+    const record = await retain();
+    expect(await retain()).toEqual(record);
+    expect(record.overwrite).toEqual(overwrite);
+    expect(record.scope).toEqual(scope);
+    expect(record.configuration.query.query).toBe(
+      "DELETE FROM `proj`.`live`.`recordings` WHERE TRUE",
+    );
+
+    const completed = {
+      jobReference: { projectId: "proj", location: "EU", jobId: record.job.id },
+      configuration: record.configuration,
+      status: { state: "DONE" },
+      statistics: { query: { statementType: "DELETE" } },
+    };
+    await expect(
+      recordRestBigQueryTruncateResult(mongoose.connection, record, {
+        ...completed,
+        jobReference: {
+          ...completed.jobReference,
+          projectId: "another-project",
+        },
+      }),
+    ).resolves.toBeNull();
+    expect((await retain()).terminal).toBeUndefined();
+    await expect(
+      recordRestBigQueryTruncateResult(
+        mongoose.connection,
+        {
+          ...record,
+          fingerprint: "different-reservation",
+        },
+        completed,
+      ),
+    ).resolves.toBeNull();
+    const getMetadata = vi
+      .fn()
+      .mockRejectedValueOnce({ code: 404 })
+      .mockRejectedValueOnce({ code: 404 })
+      .mockRejectedValueOnce({ code: 404 })
+      .mockResolvedValue([completed]);
+    const createJob = vi
+      .fn()
+      .mockRejectedValueOnce({ code: 503 })
+      .mockRejectedValueOnce({ code: 409 });
+    const provider = {
+      projectId: target.projectId,
+      dataset: target.dataset,
+      datasetLocation: target.location,
+      destination: {
+        _id: overwrite.destinationId,
+        workspaceId: scope.workspaceId,
+      },
+      bq: { job: () => ({ getMetadata }), createJob },
+    } as unknown as BigQueryTarget;
+    const dispatch = () =>
+      dispatchRestBigQueryTruncate(mongoose.connection, provider, record);
+    await expect(dispatch()).rejects.toThrow(
+      "requires its table and REST reservations",
+    );
+    expect(getMetadata).not.toHaveBeenCalled();
+    expect(createJob).not.toHaveBeenCalled();
+
+    const tableKey = getSchemaCacheKey(
+      target.projectId,
+      target.dataset,
+      target.table,
+    );
+    const lease = await acquireTableWriteLease(tableKey, {
+      path: "final",
+      jobs: {
+        isDone: async () => false,
+        isReservedJobDone: job =>
+          settleReservedBigQueryRestTruncate(
+            mongoose.connection,
+            provider,
+            target.table,
+            job,
+          ),
+        cancel: async () => undefined,
+      },
+    });
+    try {
+      const jobRef = {
+        jobId: record.job.id,
+        location: record.job.location,
+        intentFingerprint: record.fingerprint,
+        reservedBeforeDispatch: true,
+      };
+      await lease.reserveJob(jobRef);
+      await expect(dispatch()).rejects.toMatchObject({ code: 503 });
+      expect((await retain()).terminal).toBeUndefined();
+      await expect(
+        settleReservedBigQueryRestTruncate(
+          mongoose.connection,
+          provider,
+          target.table,
+          jobRef,
+        ),
+      ).resolves.toBe(false);
+      await expect(dispatch()).resolves.toBe("succeeded");
+      getMetadata.mockClear();
+      await expect(dispatch()).resolves.toBe("succeeded");
+      expect(getMetadata).not.toHaveBeenCalled();
+      const exactOptions = {
+        jobId: record.job.id,
+        location: record.job.location,
+        configuration: record.configuration,
+      };
+      expect(createJob.mock.calls).toEqual([[exactOptions], [exactOptions]]);
+    } finally {
+      await lease.release();
+    }
+    expect(await CdcTableWriteLease.exists({ _id: tableKey })).toBeNull();
+    expect((await retain()).terminal).toBe("succeeded");
+    await expect(
+      closeRestEntityAdmission(mongoose.connection, scope),
+    ).rejects.toThrow("REST overwrite is still in flight");
+    expect(await sources.findOne({ _id: source._id })).toEqual(source);
+  });
+
+  it.each(["DELETE", "INSERT"] as const)(
+    "accepts only the exact terminal %s under the reserved provider identity",
+    statementType => {
+      const job = { project: "proj", location: "eu", id: "rest_run" };
+      const sql =
+        statementType === "DELETE"
+          ? "DELETE FROM `proj`.`live`.`recordings` WHERE TRUE"
+          : "INSERT INTO `proj`.`live`.`recordings` SELECT * FROM `proj`.`stage`.`sealed_input`";
+      const configuration = {
+        query: {
+          query: sql,
+          useLegacySql: false as const,
+          priority: "BATCH" as const,
+        },
+      };
+      const completed = {
+        jobReference: { projectId: job.project, location: "EU", jobId: job.id },
+        configuration,
+        status: { state: "DONE" },
+        statistics: { query: { statementType } },
+      };
+      expect(
+        retainedQueryOutcome(job, configuration, completed, statementType),
+      ).toBe("succeeded");
+      expect(retainedQueryOutcome(job, configuration, completed)).toBeNull();
+      expect(
+        retainedQueryOutcome(
+          job,
+          configuration,
+          {
+            ...completed,
+            configuration: {
+              query: {
+                ...configuration.query,
+                query: sql.replace("`live`", "`other`"),
+              },
+            },
+          },
+          statementType,
+        ),
+      ).toBeNull();
+      expect(
+        retainedQueryOutcome(
+          job,
+          configuration,
+          {
+            ...completed,
+            jobReference: { ...completed.jobReference, jobId: "another_run" },
+          },
+          statementType,
+        ),
+      ).toBeNull();
+      expect(
+        retainedQueryOutcome(
+          job,
+          configuration,
+          {
+            ...completed,
+            status: { state: "RUNNING" },
+          },
+          statementType,
+        ),
+      ).toBeNull();
+    },
+  );
+});
 
 function makeMerge(suffix: string) {
   const { job, input, destination } = makeIntent(suffix);
@@ -909,7 +2466,7 @@ describe("BigQuery CDC event settlement", () => {
         if (!predecessor) throw new Error("Missing failed recording receipt");
         const readAgain = vi.fn(async () => null);
         await expect(
-          settleReservedBigQueryCdcJob(
+          settleReservedBigQueryStagedJob(
             {
               ...table,
               workspaceId: recordingScope.workspaceId,
@@ -1890,7 +3447,7 @@ describe("BigQuery CDC event settlement", () => {
       isDone,
       cancel,
       isReservedJobDone: ref =>
-        settleReservedBigQueryCdcJob(target, ref, () =>
+        settleReservedBigQueryStagedJob(target, ref, () =>
           readMetadata(ref.jobId),
         ),
     };
@@ -1938,13 +3495,13 @@ describe("BigQuery CDC event settlement", () => {
         },
       ]) {
         expect(
-          await settleReservedBigQueryCdcJob(other, reservation, () =>
+          await settleReservedBigQueryStagedJob(other, reservation, () =>
             readMetadata(job.id),
           ),
         ).toBe(false);
       }
       expect(
-        await settleReservedBigQueryCdcJob(
+        await settleReservedBigQueryStagedJob(
           target,
           { ...reservation, intentFingerprint: "different-intent" },
           () => readMetadata(job.id),
