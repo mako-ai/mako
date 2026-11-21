@@ -5,6 +5,7 @@ import { syncConnectorRegistry } from "./connector-registry";
 import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { loggers } from "../logging";
+import type { StripeTestBinding } from "../connectors/workspace/registry/stripe-binding";
 
 dotenv.config({ quiet: true });
 
@@ -132,6 +133,7 @@ class SourceConnectionManager {
   /** One stored `connectors` row as a decrypted source-connection config. */
   private async toConfig(
     source: WithId<Document>,
+    schema?: ConnectorSchema,
   ): Promise<SourceConnectionConfig> {
     const workspaceId = source.workspaceId
       ? String(source.workspaceId)
@@ -147,6 +149,7 @@ class SourceConnectionManager {
         source.config,
         source.type,
         workspaceId,
+        schema,
       ),
       settings: {
         sync_batch_size: source.settings?.sync_batch_size || 100,
@@ -195,6 +198,32 @@ class SourceConnectionManager {
         : {}),
     });
     return source ? this.toConfig(source) : null;
+  }
+
+  /** Recheck the selected Stripe row before decrypting with its verified spec. */
+  async getBoundStripeTestConnection(
+    binding: StripeTestBinding,
+  ): Promise<SourceConnectionConfig | null> {
+    const { workspaceId, connectionId } = binding;
+    if (!ObjectId.isValid(connectionId) || !ObjectId.isValid(workspaceId)) {
+      return null;
+    }
+    const source = await (
+      await this.connectors()
+    ).findOne({
+      _id: new ObjectId(connectionId),
+      workspaceId: new ObjectId(workspaceId),
+      type: "stripe",
+    });
+    if (
+      !source ||
+      String(source._id) !== connectionId ||
+      String(source.workspaceId) !== workspaceId ||
+      source.type !== "stripe"
+    ) {
+      return null;
+    }
+    return this.toConfig(source, binding.schema);
   }
 
   /** Active source connections of one connector type. */
@@ -266,10 +295,13 @@ class SourceConnectionManager {
     config: any,
     connectorType: string,
     workspaceId?: string,
+    verifiedSchema?: ConnectorSchema,
   ): Promise<any> {
     if (!config) return config;
 
-    const schema = await this.getConnectorSchema(connectorType, workspaceId);
+    const schema =
+      verifiedSchema ??
+      (await this.getConnectorSchema(connectorType, workspaceId));
     if (!schema) {
       logger.warn("No schema found for connector type, config withheld", {
         connectorType,
@@ -386,6 +418,9 @@ function proxyManager() {
     },
     async getSourceConnection(id: string, workspaceId?: string) {
       return getSourceConnectionManager().getSourceConnection(id, workspaceId);
+    },
+    async getBoundStripeTestConnection(binding: StripeTestBinding) {
+      return getSourceConnectionManager().getBoundStripeTestConnection(binding);
     },
     async getSourceConnectionsByType(type: string) {
       return getSourceConnectionManager().getSourceConnectionsByType(type);

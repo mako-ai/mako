@@ -12,6 +12,11 @@ export interface StripeReleasePin {
   sha256?: string;
 }
 
+/** No platform release is selected for saved tests. */
+export function stripeTestReleasePin(): StripeReleasePin {
+  return {};
+}
+
 /** Resolve the reviewed release without consulting a workspace. */
 export async function resolveStripeRelease(
   pin: StripeReleasePin,
