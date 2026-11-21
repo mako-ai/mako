@@ -7,7 +7,8 @@ Releases of `mako/stripe`. A workspace installs it with
 
 - Clear omitted refund pending reasons on complete list and webhook reads.
 
-- 28 entities with `setup_attempts` and `checkout_sessions_line_items`.
+- Add optional `files` metadata with a creation-time anchor and cursor paging.
+- 29 entities with `files`, `setup_attempts` and `checkout_sessions_line_items`.
   Setup Attempts walks Setup Intents of every age and applies the incremental
   cutoff to attempt creation. Each batch makes one Stripe request and saves
   both paging positions.

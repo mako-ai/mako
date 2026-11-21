@@ -129,10 +129,10 @@ async function main() {
       .length === 1 &&
     JSON.stringify(
       folderEntities.filter(name => name !== "checkout_sessions_line_items"),
-    ) === JSON.stringify([...entities, "setup_attempts"]);
+    ) === JSON.stringify([...entities, "setup_attempts", "files"]);
   if (!sameEntities) failures++;
   console.info(
-    `Entities: ${entities.length} in-process, ${folderEntities.length} folder, ${sameEntities ? "shared entities match in order, with both boxed readers" : "DIFFERENT"}`,
+    `Entities: ${entities.length} in-process, ${folderEntities.length} folder, ${sameEntities ? "shared entities match in order, with the boxed readers" : "DIFFERENT"}`,
   );
 
   const form = compareForm(

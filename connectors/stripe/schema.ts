@@ -634,6 +634,18 @@ const EVENT_SCHEMA: Fields = {
   type: "string",
 };
 
+const FILE_SCHEMA: Fields = {
+  id: "string",
+  object: "string",
+  created: "timestamp",
+  expires_at: "timestamp",
+  filename: "string",
+  purpose: "string",
+  size: "integer",
+  title: "string",
+  type: "string",
+};
+
 export const STRIPE_ENTITY_SCHEMA_MAP: Record<string, Fields> = {
   customers: CUSTOMER_SCHEMA,
   subscriptions: SUBSCRIPTION_SCHEMA,
@@ -663,6 +675,7 @@ export const STRIPE_ENTITY_SCHEMA_MAP: Record<string, Fields> = {
   invoice_line_items: INVOICE_LINE_ITEM_SCHEMA,
   subscription_items: SUBSCRIPTION_ITEM_SCHEMA,
   events: EVENT_SCHEMA,
+  files: FILE_SCHEMA,
 };
 
 /** Field type -> JSON Schema, as `discover` emits it. */

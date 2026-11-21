@@ -123,6 +123,7 @@ const ENTITIES: Array<[name: string, label: string, incremental: boolean]> = [
   // The account's event log. Stripe keeps 30 days; polled only.
   ["events", "Events", true],
   ["setup_attempts", "Setup Attempts", true],
+  ["files", "Files", true],
 ];
 
 /** Invoice and Checkout line items use the parent's creation time. */

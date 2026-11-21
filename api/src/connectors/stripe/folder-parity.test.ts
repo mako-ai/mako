@@ -199,11 +199,11 @@ void test("the folder pins the stripe package the API resolves", () => {
   assert.equal(lock.packages["node_modules/stripe"].version, apiStripe);
 });
 
-void test("shared entities, labels and credential form, plus two boxed readers", () => {
+void test("shared entities, labels and credential form, plus boxed readers", () => {
   const names = streams.map(s => s.name);
   assert.deepEqual(
     names.filter(name => name !== "checkout_sessions_line_items"),
-    [...ENTITIES, "setup_attempts"],
+    [...ENTITIES, "setup_attempts", "files"],
   );
   assert.equal(
     names.filter(name => name === "checkout_sessions_line_items").length,
@@ -256,7 +256,7 @@ void test("shared schemas and the boxed refund reason, with matching system colu
   }
 });
 
-void test("shared table layouts and incremental modes, plus two boxed readers", async () => {
+void test("shared table layouts and incremental modes, plus boxed readers", async () => {
   const inProcess = makeInProcess({
     api_key: "sk_test_list",
     api_base_url: "",
@@ -274,6 +274,7 @@ void test("shared table layouts and incremental modes, plus two boxed readers", 
   assert.deepEqual(layouts(boxed), {
     ...inProcessLayouts,
     setup_attempts: inProcessLayouts.setup_intents,
+    files: inProcessLayouts.setup_intents,
   });
 
   const effective = (
@@ -287,6 +288,7 @@ void test("shared table layouts and incremental modes, plus two boxed readers", 
     assert.equal(effective(boxCaps, entity), effective(inCaps, entity), entity);
   }
   assert.equal(effective(boxCaps, "setup_attempts"), "created-anchor");
+  assert.equal(effective(boxCaps, "files"), "created-anchor");
   const line = "checkout_sessions_line_items";
   assert.equal(effective(boxCaps, line), "created-anchor");
   await boxed.resolveSchema(line);

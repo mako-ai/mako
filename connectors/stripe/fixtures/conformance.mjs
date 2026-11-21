@@ -24,6 +24,7 @@ import {
   checkoutLineItemsCassettes,
   verifyCheckoutLineItems,
 } from "./checkout-line-items.mjs";
+import { fileCassettes, verifyFiles } from "./files.mjs";
 import { checkSetupAttempts } from "./setup-attempts.mjs";
 import { checkRefundPendingReason } from "./refund-pending-reason.mjs";
 
@@ -31,10 +32,15 @@ ensureFolderInstalled();
 await checkSetupAttempts();
 await checkRefundPendingReason();
 const server = await startReplayServer(
-  new Map([...loadCassettes(), ...checkoutLineItemsCassettes()]),
+  new Map([
+    ...loadCassettes(),
+    ...checkoutLineItemsCassettes(),
+    ...fileCassettes(),
+  ]),
 );
 try {
   await verifyCheckoutLineItems(server);
+  await verifyFiles(server);
 } catch (error) {
   await server.close();
   throw error;
