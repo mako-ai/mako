@@ -185,6 +185,18 @@ export async function reserveRestEntityRun(
   if (result.matchedCount !== 1) throw new RestEntityAdmissionClosedError();
 }
 
+export async function hasPendingRestEntityRun(
+  connection: Connection,
+  scope: RestEntityAdmissionScope,
+  run: RestEntityRun,
+): Promise<boolean> {
+  const pending = await records(connection).findOne(
+    { _id: scopeKey(scope), pendingRuns: { $elemMatch: run } },
+    { readConcern: { level: "majority" }, projection: { _id: 1 } },
+  );
+  return pending !== null;
+}
+
 export async function settleRestEntityRun(
   connection: Connection,
   scope: RestEntityAdmissionScope,

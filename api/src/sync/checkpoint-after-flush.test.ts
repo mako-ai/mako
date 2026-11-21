@@ -93,6 +93,9 @@ class FakeCollection {
   async countDocuments(filter: Doc = {}) {
     return this.docs.filter(d => matches(d, filter)).length;
   }
+  async findOne(filter: Doc) {
+    return this.docs.find(d => matches(d, filter)) ?? null;
+  }
   find(filter: Doc, opts?: { projection?: Record<string, 0> }) {
     let limit = Infinity;
     const omit = Object.keys(opts?.projection ?? {});
@@ -205,7 +208,7 @@ vi.mock("../database/workspace-schema", () => ({
           ? admissionConnection.db.collection(name)
           : collection(name),
       get db() {
-        return admissionConnection?.db;
+        return admissionConnection?.db ?? { collection };
       },
       transaction: (...args: Parameters<Connection["transaction"]>) => {
         if (!admissionConnection) {
@@ -1131,6 +1134,32 @@ describe("queued REST entity admission", () => {
       backfillCursor: { totalProcessed: 1, hasMore: false },
     });
   });
+
+  it.each(["memoized", "fresh"])(
+    "settles a retained REST poll on a %s retry with new admissions disabled",
+    async mode => {
+      const memo = new Map<string, unknown>();
+      await expect(
+        invoke({ ...poll, memo, cancelAt: `sync-${ENTITY}-chunk-0` }),
+      ).rejects.toBeInstanceOf(Cancelled);
+      const close = () => closeRestEntityAdmission(connection(), scope);
+      await expect(close()).rejects.toThrow(
+        "REST entity run is still in flight",
+      );
+      vi.stubEnv("REST_ENTITY_ADMISSION_ENABLED", undefined);
+
+      await expect(
+        invoke({ ...poll, memo: mode === "memoized" ? memo : undefined }),
+      ).resolves.toEqual({
+        completed: true,
+        rowsWritten: 1,
+      });
+      expect(chunkStartOffsets).toEqual([0]);
+      expect(live).toEqual(["opp_00000"]);
+      expect(await anchor()).toEqual(runStartedAt);
+      await expect(close()).resolves.toBeUndefined();
+    },
+  );
 
   it("keeps a truncated overwrite admitted under the stored connection and grants", async () => {
     writeModeOfRun = "overwrite";

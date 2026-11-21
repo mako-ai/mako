@@ -39,6 +39,7 @@ import { withBoxMemoryWaits } from "./flow/box-memory-wait";
 import { sourceConnectionManager } from "../../sync/database-data-source-manager";
 import {
   assertRestEntityAdmission,
+  hasPendingRestEntityRun,
   reserveRestEntityRun,
   settleRestEntityRun,
   type RestEntityOverwriteReservation,
@@ -340,12 +341,30 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       stepsUsed++;
     }
 
-    const trackedAdmission =
-      writeMode === "overwrite" ? undefined : restEntityAdmission;
-    const restRun = trackedAdmission
+    const runAdmission =
+      writeMode === "overwrite"
+        ? undefined
+        : (restEntityAdmission ??
+          (durableRunId ? restAdmissionFor(durableRunId) : undefined));
+    const restRun = runAdmission
       ? await step.run(
           `reserve-rest-entity-run-${safeEntityStepId}`,
           async () => {
+            const run = durableRunId ? { runId: durableRunId, entity } : null;
+            if (!restEntityAdmission) {
+              // Disabling admission leaves existing reservations recoverable.
+              if (
+                run &&
+                (await hasPendingRestEntityRun(
+                  Flow.db,
+                  runAdmission.scope,
+                  run,
+                ))
+              ) {
+                return run;
+              }
+              return null;
+            }
             const source = await sourceConnectionManager.getSourceConnection(
               dataSourceId,
               workspaceId,
@@ -357,16 +376,18 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             if (!source.active) {
               throw new Error(`Data source '${source.name}' is not active`);
             }
-            if (!durableRunId) {
+            if (!run) {
               throw new Error("REST admission requires a durable run ID");
             }
-            const run = { runId: durableRunId, entity };
-            await reserveRestEntityRun(Flow.db, trackedAdmission.scope, run);
+            await reserveRestEntityRun(Flow.db, runAdmission.scope, run);
             return run;
           },
         )
       : null;
-    if (trackedAdmission) stepsUsed++;
+    if (runAdmission) stepsUsed++;
+    const activeAdmission = restRun ? runAdmission : restEntityAdmission;
+    const trackedAdmission =
+      writeMode === "overwrite" ? undefined : activeAdmission;
 
     // ── Resolve bulk path options ────────────────────────────────────
     const cdcAdapter =
@@ -455,7 +476,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       const prepared = await step.run(prepareStepId, () =>
         withHeartbeat(executionId, async () => {
           let admission: typeof restEntityAdmission;
-          if (restEntityAdmission || continuationAdmission) {
+          if (activeAdmission || continuationAdmission) {
             const source = await sourceConnectionManager.getSourceConnection(
               dataSourceId,
               workspaceId,
@@ -469,8 +490,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             ) {
               throw new Error("REST source type changed during entity sync");
             }
-            admission =
-              source.type === "rest" ? restEntityAdmission : undefined;
+            admission = source.type === "rest" ? activeAdmission : undefined;
             if (continuationAdmission) {
               const recorded = await findRecordedRestBigQueryOverwrite({
                 ...bulkSyncOptions,
@@ -905,7 +925,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                       scope: restOverwrite.scope,
                       runId: restOverwrite.overwrite.runId,
                     }
-                  : restEntityAdmission,
+                  : activeAdmission,
                 restBigQueryOverwritePrepared: Boolean(restOverwrite),
                 restRunTracked: trackedAdmission ? Boolean(restRun) : undefined,
                 syncEngine,
