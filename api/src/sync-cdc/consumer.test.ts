@@ -68,9 +68,12 @@ vi.mock("./adapters/registry", async () => {
   };
 });
 
+const readAfter = vi.fn().mockResolvedValue([]);
+const claimOrdinaryWebhookUpserts = vi.fn();
 vi.mock("./event-store", () => ({
   getCdcEventStore: () => ({
-    readAfter: vi.fn().mockResolvedValue([]), // empty → early return, no need to mock beyond layout construction
+    readAfter,
+    claimOrdinaryWebhookUpserts,
   }),
 }));
 
@@ -124,6 +127,35 @@ describe("CdcConsumerService.materializeEntity — writeMode propagation (bug B3
     }
     flowDoc.writeMode = "append";
   });
+});
+
+it("skips a stale webhook batch before dispatch when retained ownership wins", async () => {
+  const workspaceId = "507f1f77bcf86cd799439012";
+  const eventId = "507f1f77bcf86cd799439013";
+  readAfter.mockResolvedValueOnce([
+    { id: eventId, source: "webhook", operation: "upsert" },
+  ]);
+  claimOrdinaryWebhookUpserts.mockResolvedValueOnce(false);
+  fakeAdapter.applyEvents.mockClear();
+
+  await expect(
+    new CdcConsumerService().materializeEntity({
+      workspaceId,
+      flowId: FLOW_ID,
+      entity: "users",
+    }),
+  ).resolves.toMatchObject({
+    skipped: true,
+    reason: "retained_cdc_ownership_changed",
+    processed: 0,
+  });
+  expect(claimOrdinaryWebhookUpserts).toHaveBeenCalledExactlyOnceWith({
+    workspaceId,
+    flowId: FLOW_ID,
+    entity: "users",
+    eventIds: [eventId],
+  });
+  expect(fakeAdapter.applyEvents).not.toHaveBeenCalled();
 });
 
 describe("CdcConsumerService.materializeEntity — paused flow", () => {

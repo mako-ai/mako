@@ -6,6 +6,7 @@ import { databaseConnectionService } from "../services/database-connection.servi
 import { BigQueryDestinationAdapter } from "./adapters/bigquery";
 import { buildCdcEntityLayout } from "./adapters/registry";
 import { bigQuerySnapshotGeneration } from "./bigquery-retained-query";
+import { getCdcEventStore } from "./event-store";
 import {
   cleanupBigQueryStagedInput,
   findBigQueryStagedCdcWrites,
@@ -137,6 +138,49 @@ async function makeCdcMerge(suffix: string) {
 }
 
 describe("BigQuery CDC event settlement", () => {
+  it("gives retained and ordinary retries exclusive ownership of the same pending event", async () => {
+    const first = await makeCdcMerge("cdc_ownership_fence");
+    const retained = await first.event("retained-wins", 1);
+    const ordinary = await first.event("ordinary-wins", 2);
+    const store = getCdcEventStore();
+    const { workspaceId, flowId, entity } = first.scope;
+    const read = () =>
+      store.readAfter({ flowId, entity, afterIngestSeq: 0, limit: 10 });
+    const claim = (eventIds: string[]) =>
+      store.claimOrdinaryWebhookUpserts({
+        workspaceId,
+        flowId,
+        entity,
+        eventIds,
+      });
+    const seen = await read();
+    expect(seen.map(event => event.id)).toEqual([retained.id, ordinary.id]);
+
+    await expect(first.hold([retained])).resolves.toBe("held");
+    await expect(claim(seen.map(event => event.id))).resolves.toBe(false);
+    expect((await read()).map(event => event.id)).toEqual([ordinary.id]);
+    await expect(claim([ordinary.id])).resolves.toBe(true);
+    await expect(claim([ordinary.id])).resolves.toBe(true);
+
+    const second = makeMerge("cdc_ordinary_already_claimed");
+    await expect(
+      holdBigQueryStagedCdcMerge(second.binding, second.merge, second.options, {
+        scope: first.scope,
+        events: [ordinary],
+      }),
+    ).rejects.toThrow("The exact pending CDC events could not be reserved");
+    await expect(
+      readBigQueryStagedInput(second.binding.job),
+    ).resolves.toBeNull();
+    await expect(
+      readPendingBigQueryQueryRequest(first.binding.job),
+    ).resolves.not.toBeNull();
+    const persisted = await CdcChangeEvent.findById(retained.id)
+      .readConcern("majority")
+      .lean();
+    expect(persisted?.ordinaryWebhookWriteStarted).toBeUndefined();
+  });
+
   async function expectSingleDispatch(reservationType: "new" | "inherited") {
     const first = await makeCdcMerge(
       `cdc_retained_dispatch_${reservationType}`,

@@ -28,6 +28,7 @@ export interface ICdcChangeEvent extends Document {
   };
   materializationStatus: "pending" | "applied" | "failed" | "dropped";
   retainedBigQueryWrite?: string;
+  ordinaryWebhookWriteStarted?: boolean;
   materializationAttemptCount: number;
   appliedAt?: Date;
   materializationError?: {
@@ -81,6 +82,7 @@ const CdcChangeEventSchema = new Schema<ICdcChangeEvent>(
       required: true,
     },
     retainedBigQueryWrite: String,
+    ordinaryWebhookWriteStarted: Boolean,
     materializationAttemptCount: { type: Number, default: 0 },
     appliedAt: Date,
     materializationError: {
