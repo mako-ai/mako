@@ -20,6 +20,7 @@ import {
   haveClaimedBigQueryCdcEvents,
   normalizeBigQueryCdcBinding,
   requireCurrentBigQueryCdcFlow,
+  transferClaimedBigQueryCdcEvents,
   type BigQueryCdcBinding,
   type BigQueryCdcScope,
 } from "./bigquery-staged-cdc";
@@ -84,12 +85,21 @@ interface StagedWriteRecord {
   intent: BigQueryStagedIntent;
   terminal?: BigQueryTerminalReceipt | VerifiedQueryReceipt;
   cleanedAt?: Date;
+  /** The initial write keeps the unique snapshot and event reservations. */
+  claimOwner?: string;
+  latestAttempt?: string;
+  supersededBy?: string;
+}
+
+interface ReplayJobRef {
+  key: string;
+  fingerprint: string;
 }
 
 interface ReplayDelivery {
   _id: string;
   workspaceId: string;
-  members: Array<{ key: string; fingerprint: string }>;
+  members: Array<ReplayJobRef & { activeAttempt?: ReplayJobRef }>;
 }
 
 interface BigQueryCdcReplayPlan {
@@ -121,6 +131,9 @@ const StagedWrite =
         intent: { type: Schema.Types.Mixed, required: true },
         terminal: { type: Schema.Types.Mixed },
         cleanedAt: { type: Date },
+        claimOwner: String,
+        latestAttempt: String,
+        supersededBy: String,
       },
       {
         collection: "cdc_bigquery_staged_writes",
@@ -324,7 +337,11 @@ export async function holdBigQueryStagedCdcReplay(
       { session },
     );
     if (existing) {
-      if (stableStringify(existing.members) !== stableStringify(members)) {
+      const initial = existing.members.map(({ key, fingerprint }) => ({
+        key,
+        fingerprint,
+      }));
+      if (stableStringify(initial) !== stableStringify(members)) {
         throw new Error(
           "This delivery already has a different retained replay plan",
         );
@@ -351,6 +368,146 @@ export async function holdBigQueryStagedCdcReplay(
   }, cdcTransaction);
 }
 
+/** Reserve a new job ID only after an exact replay MERGE has a verified failed receipt. */
+export async function retryFailedBigQueryReplayMember(
+  workspaceId: string,
+  replayId: string,
+  failedJob: BigQueryJobIdentity,
+): Promise<BigQueryJobIdentity> {
+  await requireIndexes(true);
+  const deliveries = replayDeliveries();
+  return StagedWrite.db.transaction(async session => {
+    const delivery = await deliveries.findOne(
+      { _id: replayId, workspaceId },
+      { session },
+    );
+    const previous = await StagedWrite.findById(jobKey(failedJob))
+      .session(session)
+      .lean();
+    const cdc = previous?.intent.cdc;
+    const root = previous?.claimOwner ?? previous?._id;
+    const member = delivery?.members.find(candidate => candidate.key === root);
+    if (
+      !delivery ||
+      !previous ||
+      !cdc ||
+      !root ||
+      !member ||
+      cdc.scope.workspaceId !== workspaceId ||
+      previous.cleanedAt ||
+      previous.fingerprint !== stagedWriteFingerprint(previous.intent) ||
+      verifiedTerminalOutcome(previous) !== "failed"
+    ) {
+      throw new Error(
+        "A replay retry requires a verified failed member of this delivery",
+      );
+    }
+
+    const job = {
+      ...previous.intent.job,
+      id: `mako_replay_retry_${previous._id}`,
+    };
+    const write = prepareStagedWrite({ ...previous.intent, job });
+    if (previous.supersededBy) {
+      const saved = await StagedWrite.findById(write._id)
+        .session(session)
+        .lean();
+      if (
+        previous.supersededBy === write._id &&
+        saved?.claimOwner === root &&
+        saved.fingerprint === write.fingerprint &&
+        stagedWriteFingerprint(saved.intent) === write.fingerprint
+      ) {
+        return job;
+      }
+      throw new Error("The saved replay retry does not match its predecessor");
+    }
+
+    const active = member.activeAttempt ?? member;
+    if (
+      active.key !== previous._id ||
+      active.fingerprint !== previous.fingerprint
+    ) {
+      throw new Error("The failed job is no longer the active replay member");
+    }
+    const owner =
+      root === previous._id
+        ? previous
+        : await StagedWrite.findById(root).session(session).lean();
+    if (
+      !owner ||
+      owner.fingerprint !== member.fingerprint ||
+      owner.fingerprint !== stagedWriteFingerprint(owner.intent) ||
+      owner.snapshotKey !== write.snapshotKey ||
+      owner.cleanedAt ||
+      !owner.eventClaimKeys?.length ||
+      (owner.latestAttempt ?? root) !== previous._id
+    ) {
+      throw new Error("The retained replay claim owner changed");
+    }
+
+    await reserveRetainedWriteAgainstResync(
+      [write.intent.destination, write.intent.input.snapshot],
+      cdc.scope,
+      session,
+    );
+    await requireCurrentBigQueryCdcFlow(
+      cdc.scope,
+      write.intent.destination,
+      session,
+    );
+    await transferClaimedBigQueryCdcEvents(
+      cdc,
+      previous.fingerprint,
+      write.fingerprint,
+      session,
+    );
+    await StagedWrite.create(
+      [
+        {
+          ...write,
+          // Keep the original unique index entries for the lifetime of this chain.
+          snapshotKey: `retry:${write._id}`,
+          claimOwner: root,
+        },
+      ],
+      { session },
+    );
+    const predecessorUpdate = await StagedWrite.updateOne(
+      { _id: previous._id, supersededBy: { $exists: false } },
+      { $set: { supersededBy: write._id } },
+      { session },
+    );
+    const ownerUpdate = await StagedWrite.updateOne(
+      { _id: root },
+      { $set: { latestAttempt: write._id } },
+      { session },
+    );
+    const deliveryUpdate = await deliveries.updateOne(
+      { _id: replayId, workspaceId, "members.key": root },
+      {
+        $set: {
+          "members.$.activeAttempt": {
+            key: write._id,
+            fingerprint: write.fingerprint,
+          },
+        },
+      },
+      { session },
+    );
+    if (
+      [predecessorUpdate, ownerUpdate, deliveryUpdate].some(
+        update => update.matchedCount !== 1,
+      )
+    ) {
+      throw new Error(
+        "The retained replay plan changed before the retry was reserved",
+      );
+    }
+    return job;
+  }, cdcTransaction);
+}
+
 export async function readBigQueryStagedCdcReplay(
   workspaceId: string,
   replayId: string,
@@ -367,8 +524,11 @@ async function readReplayMemberStatus(
   session?: ClientSession,
 ): Promise<ReplayDeliveryStatus | null> {
   if (delivery.members.length === 0) return null;
+  const members = delivery.members.map(
+    member => member.activeAttempt ?? member,
+  );
   const query = StagedWrite.find({
-    _id: { $in: delivery.members.map(member => member.key) },
+    _id: { $in: members.map(member => member.key) },
   });
   const writes = await (
     session ? query.session(session) : query.readConcern("majority")
@@ -376,7 +536,7 @@ async function readReplayMemberStatus(
   const byId = new Map(writes.map(write => [write._id, write]));
   let pending = false;
   let failed = false;
-  for (const { key, fingerprint } of delivery.members) {
+  for (const { key, fingerprint } of members) {
     const write = byId.get(key);
     if (
       !write?.intent.cdc ||
@@ -389,18 +549,28 @@ async function readReplayMemberStatus(
       pending = true;
       continue;
     }
-    if (
-      !("fingerprint" in write.terminal) ||
-      write.terminal.fingerprint !== fingerprint ||
-      write.terminal.state !== "DONE" ||
-      !["succeeded", "failed"].includes(write.terminal.outcome)
-    ) {
-      return null;
-    }
-    failed ||= write.terminal.outcome === "failed";
+    const outcome = verifiedTerminalOutcome(write);
+    if (!outcome) return null;
+    failed ||= outcome === "failed";
   }
   if (pending) return "held";
   return failed ? "failed" : "succeeded";
+}
+
+function verifiedTerminalOutcome(
+  write: StagedWriteRecord,
+): TerminalOutcome["outcome"] | null {
+  const receipt = write.terminal;
+  if (
+    receipt &&
+    "fingerprint" in receipt &&
+    receipt.fingerprint === write.fingerprint &&
+    receipt.state === "DONE" &&
+    (receipt.outcome === "succeeded" || receipt.outcome === "failed")
+  ) {
+    return receipt.outcome;
+  }
+  return null;
 }
 
 function buildRetainedMergeIntent(
@@ -519,6 +689,8 @@ export async function assertRetainedWritesDrainedForResync(
     cleanedAt: { $exists: false },
   }));
   const unresolved = await StagedWrite.exists({
+    // The replacement is committed with the predecessor's claim transfer.
+    supersededBy: { $exists: false },
     $or: [
       {
         $and: [
@@ -572,7 +744,7 @@ export async function findBigQueryStagedCdcWrites(
   deliveryKeys: string[],
 ): Promise<StagedWriteRecord[]> {
   const scope = bigQueryCdcScope.parse(authorizedScope);
-  const records = await StagedWrite.find({
+  const owners = await StagedWrite.find({
     eventClaimKeys: {
       $exists: true,
       $in: deliveryKeys.map(key => eventClaimKey(scope, key.trim())),
@@ -581,13 +753,27 @@ export async function findBigQueryStagedCdcWrites(
     .readConcern("majority")
     .lean();
   const scopeKey = stableStringify(scope);
-  return records.filter(record => {
+  const latest = owners.flatMap(owner =>
+    owner.latestAttempt ? [owner.latestAttempt] : [],
+  );
+  const attempts =
+    latest.length === 0
+      ? []
+      : await StagedWrite.find({ _id: { $in: latest } })
+          .readConcern("majority")
+          .lean();
+  const byId = new Map(attempts.map(attempt => [attempt._id, attempt]));
+  return owners.flatMap(owner => {
+    const record = owner.latestAttempt ? byId.get(owner.latestAttempt) : owner;
+    if (!record || (record !== owner && record.claimOwner !== owner._id)) {
+      return [];
+    }
     const cdc = record.intent.cdc;
-    return (
-      cdc &&
+    return cdc &&
       stableStringify(cdc.scope) === scopeKey &&
       record.fingerprint === stagedWriteFingerprint(record.intent)
-    );
+      ? [record]
+      : [];
   });
 }
 

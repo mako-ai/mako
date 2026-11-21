@@ -31,6 +31,7 @@ import {
 } from "./backfill/webhook-maintenance";
 import { resolveOrphanedWebhookApplyStatusForFlow } from "./cdc-orphan-applystatus";
 import {
+  assertRetainedWritesDrainedForResync,
   cleanupBigQueryStagedInput,
   findBigQueryStagedCdcWrites,
   holdBigQueryStagedCdcMerge,
@@ -43,6 +44,7 @@ import {
   readPendingBigQueryQueryRequest,
   recordBigQueryStagedReceipt,
   recordObservedBigQueryQueryResult,
+  retryFailedBigQueryReplayMember,
   settleReservedBigQueryCdcJob,
   type BigQueryStagedIntent,
   type BigQueryTerminalReceipt,
@@ -119,6 +121,40 @@ function makeMerge(suffix: string) {
       jobTimeoutMs: "100000",
     },
   };
+}
+
+function sealFixtureSnapshot({
+  job,
+  input,
+}: ReturnType<typeof makeMerge>["binding"]) {
+  const { snapshot } = input;
+  const metadata = {
+    type: "SNAPSHOT",
+    location: job.location,
+    tableReference: {
+      projectId: snapshot.project,
+      datasetId: snapshot.dataset,
+      tableId: snapshot.table,
+    },
+    creationTime: "1795276800000",
+    etag: "sealed-generation",
+    snapshotDefinition: {
+      baseTableReference: {
+        projectId: snapshot.project,
+        datasetId: snapshot.dataset,
+        tableId: "staging",
+      },
+      snapshotTime: "2026-11-21T16:00:00.000Z",
+    },
+  };
+  const generation = bigQuerySnapshotGeneration(
+    snapshot,
+    job.location,
+    metadata,
+  );
+  if (!generation) throw new Error("Missing snapshot generation");
+  input.generation = generation;
+  return metadata;
 }
 
 async function makeCdcMerge(suffix: string, dataset = "live") {
@@ -248,6 +284,7 @@ describe("BigQuery CDC event settlement", () => {
       const recording = await target.event("recording", 3, "recordings");
       const recordingJob = makeMerge(`recording_replay_${outcome}`).binding;
       recordingJob.destination.dataset = target.binding.destination.dataset;
+      const snapshotMetadata = sealFixtureSnapshot(recordingJob);
       const recordingIntent = {
         binding: recordingJob,
         merge: target.merge,
@@ -428,6 +465,13 @@ describe("BigQuery CDC event settlement", () => {
         recordingJob.job,
       );
       expect(recordingRequest).not.toBeNull();
+      const retryRecording = () =>
+        retryFailedBigQueryReplayMember(
+          target.scope.workspaceId,
+          replayId,
+          recordingJob.job,
+        );
+      await expect(retryRecording()).rejects.toThrow("verified failed member");
       await expect(
         recordObservedBigQueryQueryResult(recordingJob.job, {
           ...recordingRequest,
@@ -441,13 +485,186 @@ describe("BigQuery CDC event settlement", () => {
       await expect(
         readBigQueryStagedCdcReplay(target.scope.workspaceId, replayId),
       ).resolves.toBe(outcome);
+      if (outcome === "failed") {
+        await expect(
+          retryFailedBigQueryReplayMember(
+            target.scope.workspaceId,
+            replayId,
+            job,
+          ),
+        ).rejects.toThrow("verified failed member");
+        await CdcChangeEvent.updateOne(
+          { _id: recording.id },
+          { $unset: { webhookEventId: "" } },
+        );
+        await expect(retryRecording()).rejects.toThrow("claims could not move");
+        await expect(
+          readBigQueryStagedCdcReplay(target.scope.workspaceId, replayId),
+        ).resolves.toBe("failed");
+        await CdcChangeEvent.updateOne(
+          { _id: recording.id },
+          { $set: { webhookEventId: receipt.id } },
+        );
+        const [replacement, concurrent] = await Promise.all([
+          retryRecording(),
+          retryRecording(),
+        ]);
+        expect(concurrent).toEqual(replacement);
+        expect(replacement.id).not.toBe(recordingJob.job.id);
+        const replacementRequest =
+          await readPendingBigQueryQueryRequest(replacement);
+        expect(replacementRequest).toEqual({
+          ...recordingRequest,
+          jobReference: {
+            projectId: replacement.project,
+            location: replacement.location,
+            jobId: replacement.id,
+          },
+        });
+        const { scope: recordingScope, events: recordingEvents } =
+          recordingIntent.cdc;
+        await expect(
+          findBigQueryStagedCdcWrites(
+            recordingScope,
+            recordingEvents.map(event => event.deliveryKey),
+          ),
+        ).resolves.toMatchObject([
+          {
+            intent: {
+              job: replacement,
+              input: recordingJob.input,
+              destination: recordingJob.destination,
+            },
+          },
+        ]);
+        await expect(
+          readPendingBigQueryQueryRequest(recordingJob.job),
+        ).resolves.toBeNull();
+        await expect(
+          recordObservedBigQueryQueryResult(recordingJob.job, {
+            ...recordingRequest,
+            status: { state: "DONE" },
+            statistics: { query: { statementType: "MERGE" } },
+          }),
+        ).resolves.toBe(false);
+        await expect(
+          readBigQueryStagedCdcReplay(target.scope.workspaceId, replayId),
+        ).resolves.toBe("held");
+
+        const table = recordingJob.destination;
+        const assertDrained = (targetTable = table) =>
+          mongoose.connection.transaction(session =>
+            assertRetainedWritesDrainedForResync(
+              {
+                workspaceId: recordingScope.workspaceId,
+                flowId: recordingScope.flowId,
+                entities: [recordingScope.entity],
+                tables: [targetTable],
+              },
+              session,
+            ),
+          );
+        await expect(assertDrained()).rejects.toThrow(
+          "unsettled write or retained snapshot",
+        );
+        const predecessor = await readBigQueryStagedInput(recordingJob.job);
+        if (!predecessor) throw new Error("Missing failed recording receipt");
+        const readAgain = vi.fn(async () => null);
+        await expect(
+          settleReservedBigQueryCdcJob(
+            {
+              ...table,
+              workspaceId: recordingScope.workspaceId,
+              destinationConnectionId: recordingScope.destinationConnectionId,
+            },
+            {
+              jobId: recordingJob.job.id,
+              location: recordingJob.job.location,
+              intentFingerprint: predecessor.fingerprint,
+              reservedBeforeDispatch: true,
+            },
+            readAgain,
+          ),
+        ).resolves.toBe(true);
+        expect(readAgain).not.toHaveBeenCalled();
+        const createJob = vi.fn(async () => {
+          throw new Error("Simulated lost retry acknowledgement");
+        });
+        const warehouseJob = vi.fn((id: string) => ({
+          getMetadata: async () => {
+            expect(id).toBe(replacement.id);
+            return [
+              {
+                ...replacementRequest,
+                status: { state: "DONE" },
+                statistics: { query: { statementType: "MERGE" } },
+              },
+            ];
+          },
+        }));
+        const adapter = new BigQueryDestinationAdapter({
+          destinationDatabaseId: recordingScope.destinationConnectionId,
+          workspaceId: recordingScope.workspaceId,
+          tableDestination: {
+            connectionId: recordingScope.destinationConnectionId,
+            schema: table.dataset,
+            tableName: table.table,
+          },
+          hooks: { lease: { maxWaitMs: 0 } },
+        });
+        (adapter as unknown as { _resolvedClient: unknown })._resolvedClient = {
+          bq: {
+            createJob,
+            job: warehouseJob,
+            dataset: () => ({
+              table: () => ({ getMetadata: async () => [snapshotMetadata] }),
+            }),
+          },
+          projectId: table.project,
+          dataset: table.dataset,
+          datasetLocation: replacement.location,
+          destination: {
+            _id: recordingScope.destinationConnectionId,
+            workspaceId: recordingScope.workspaceId,
+            type: "bigquery",
+          },
+        };
+        const dispatch = () =>
+          adapter.dispatchRetainedCdcMerge(
+            buildCdcEntityLayout({
+              entity: recordingScope.entity,
+              tableName: table.table,
+            }),
+            recordingScope.flowId,
+            replacement.id,
+          );
+        await expect(dispatch()).resolves.toBe("succeeded");
+        await expect(dispatch()).resolves.toBe("succeeded");
+        expect(createJob).toHaveBeenCalledExactlyOnceWith({
+          jobId: replacement.id,
+          location: replacement.location,
+          configuration: replacementRequest?.configuration,
+        });
+        await expect(
+          readBigQueryStagedInput(recordingJob.job),
+        ).resolves.toMatchObject({
+          terminal: { state: "DONE", outcome: "failed" },
+        });
+        await expect(
+          readBigQueryStagedCdcReplay(target.scope.workspaceId, replayId),
+        ).resolves.toBe("succeeded");
+        await expect(assertDrained()).resolves.toBeUndefined();
+        await expect(
+          assertDrained(recordingJob.input.snapshot),
+        ).rejects.toThrow("unsettled write or retained snapshot");
+      }
       // The per-entity result must leave the original inbox available for the recordings job.
       await expect(
         WebhookEvent.findById(origin._id).lean(),
       ).resolves.toMatchObject({
         applyStatus: "dormant",
       });
-      for (const row of rows) {
+      for (const row of [...rows, recording]) {
         await expect(
           CdcChangeEvent.findById(row.id).lean(),
         ).resolves.toMatchObject({
@@ -466,10 +683,10 @@ describe("BigQuery CDC event settlement", () => {
           ...plan,
           jobs: [...plan.jobs].reverse(),
         }),
-      ).resolves.toEqual({ replayId, status: outcome });
+      ).resolves.toEqual({ replayId, status: "succeeded" });
       await expect(
         readBigQueryStagedCdcReplay(target.scope.workspaceId, replayId),
-      ).resolves.toBe(outcome);
+      ).resolves.toBe("succeeded");
       const retained = await readBigQueryStagedInput(job);
       expect(retained).toMatchObject({
         intent: { destination: target.binding.destination, cdc: { events } },
@@ -945,34 +1162,9 @@ describe("BigQuery CDC event settlement", () => {
     );
     const event = await first.event("dispatch-delivery", 1);
     const { job, input, destination } = first.binding;
-    const snapshot = input.snapshot;
+    const { snapshot } = input;
     const key = `${destination.project}.${destination.dataset}.${destination.table}`;
-    const snapshotMetadata = {
-      type: "SNAPSHOT",
-      location: "EU",
-      tableReference: {
-        projectId: snapshot.project,
-        datasetId: snapshot.dataset,
-        tableId: snapshot.table,
-      },
-      creationTime: "1795276800000",
-      etag: "sealed-generation",
-      snapshotDefinition: {
-        baseTableReference: {
-          projectId: snapshot.project,
-          datasetId: snapshot.dataset,
-          tableId: "staging",
-        },
-        snapshotTime: "2026-11-21T16:00:00.000Z",
-      },
-    };
-    const generation = bigQuerySnapshotGeneration(
-      snapshot,
-      job.location,
-      snapshotMetadata,
-    );
-    if (!generation) throw new Error("Missing snapshot generation");
-    input.generation = generation;
+    const snapshotMetadata = sealFixtureSnapshot(first.binding);
     await expect(first.hold([event])).resolves.toBe("held");
     const staged = await readBigQueryStagedInput(job);
     const request = await readPendingBigQueryQueryRequest(job);

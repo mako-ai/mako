@@ -250,6 +250,29 @@ export async function applyClaimedBigQueryCdcEvents(
   }
 }
 
+/** Move the exact pending rows without making them visible to ordinary dispatch. */
+export async function transferClaimedBigQueryCdcEvents(
+  binding: BigQueryCdcBinding,
+  previousFingerprint: string,
+  nextFingerprint: string,
+  session: ClientSession,
+): Promise<void> {
+  const result = await CdcChangeEvent.updateMany(
+    {
+      ...pendingEvents(binding),
+      retainedBigQueryWrite: previousFingerprint,
+      ordinaryWebhookWriteStarted: { $ne: true },
+    },
+    { $set: { retainedBigQueryWrite: nextFingerprint } },
+    { session },
+  );
+  if (result.matchedCount !== binding.events.length) {
+    throw new CdcBigQueryBindingChangedError(
+      "The exact pending CDC claims could not move to the retry",
+    );
+  }
+}
+
 export async function haveClaimedBigQueryCdcEvents(
   binding: BigQueryCdcBinding,
   fingerprint: string,
