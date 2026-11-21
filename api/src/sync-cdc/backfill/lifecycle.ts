@@ -142,6 +142,11 @@ export async function startBackfill(
     runId,
     attemptId: triggerEventId,
     dispatchPendingAt: now,
+    // A queued recovery does not own the checkpoint until a worker starts.
+    // Keep its scheduler exclusion if this dispatch expires before then.
+    ...(recoveryState?.providerRetryAt
+      ? { providerRetryAt: recoveryState.providerRetryAt }
+      : {}),
     startedAt: reusedRunId ? flow.backfillState?.startedAt || now : now,
     completedAt: undefined,
     consecutiveFailures: previousFailures,
@@ -156,7 +161,7 @@ export async function startBackfill(
     const gate = recoveryState
       ? automaticRecoveryFilter(recoveryState, now)
       : {
-          ...scheduledBackfillGate,
+          ...scheduledBackfillGate(now),
           ...backfillAttemptFilter(flow.backfillState ?? {}),
         };
     if (!gate) throw new Error("Automatic backfill is no longer due");

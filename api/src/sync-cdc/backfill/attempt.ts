@@ -27,13 +27,8 @@ export function automaticRecoveryFilter(
   state: BackfillState | undefined,
   now: Date,
 ) {
-  const pendingExpired =
-    state?.status === "running" &&
-    state.attemptId &&
-    state.dispatchPendingAt &&
-    state.dispatchPendingAt <= staleBackfillDispatchAt(now);
   if (
-    (state?.status !== "error" && !pendingExpired) ||
+    state?.status !== "error" ||
     !state?.runId ||
     (state.consecutiveFailures ?? 0) >= MAX_BACKFILL_RECOVERY_FAILURES ||
     !backfillResumeDue(state, now)
@@ -51,12 +46,50 @@ export function automaticRecoveryFilter(
   };
 }
 
-// The scheduled run uses a fresh checkpoint. Leave a throttled checkpoint
-// to automatic recovery or an explicit operator action, even once due.
-export const scheduledBackfillGate = {
-  "backfillState.providerRetryAt": null,
+export function expiredBackfillDispatchFilter(
+  state: BackfillState | undefined,
+  now: Date,
+) {
+  if (
+    state?.status !== "running" ||
+    !state.runId ||
+    !state.attemptId ||
+    !state.dispatchPendingAt ||
+    state.dispatchPendingAt > staleBackfillDispatchAt(now)
+  ) {
+    return null;
+  }
+  return {
+    ...backfillAttemptFilter(state),
+    "backfillState.status": "running" as const,
+    "backfillState.dispatchPendingAt": state.dispatchPendingAt,
+  };
+}
+
+/** A completed attempt keeps its dispatch ID but releases its checkpoint. */
+export function completedBackfillAttemptFilter(attemptId: string) {
+  return {
+    "backfillState.attemptId": attemptId,
+    "backfillState.status": "completed" as const,
+    "backfillState.runId": null,
+  };
+}
+
+// Leave a throttled checkpoint to automatic recovery while it has budget.
+// After both the cap and the deadline, the next scheduled run may reconcile.
+export const scheduledBackfillGate = (now: Date) => ({
+  $or: [
+    { "backfillState.providerRetryAt": null },
+    {
+      "backfillState.status": "error" as const,
+      "backfillState.providerRetryAt": { $lte: now },
+      "backfillState.consecutiveFailures": {
+        $gte: MAX_BACKFILL_RECOVERY_FAILURES,
+      },
+    },
+  ],
   "backfillState.status": {
     $nin: ["running", "paused"] as ("running" | "paused")[],
   },
   streamState: { $ne: "paused" as const },
-};
+});

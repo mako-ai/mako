@@ -1,14 +1,36 @@
 import { inngest } from "../../client";
-import { Flow } from "../../../database/workspace-schema";
+import { Flow, type IFlow } from "../../../database/workspace-schema";
 import { Types } from "mongoose";
 import { syncMachineService } from "../../../sync-cdc/sync-state";
 import { cdcBackfillService } from "../../../sync-cdc/backfill";
 import { EXECUTION_HEARTBEAT_STALE_MS } from "../../../services/flow-execution-tracking";
 import {
   automaticRecoveryFilter,
+  expiredBackfillDispatchFilter,
   MAX_BACKFILL_RECOVERY_FAILURES,
   staleBackfillDispatchAt,
 } from "../../../sync-cdc/backfill/attempt";
+
+/** Charge a dispatch that never started once. Do not cancel flow-wide work. */
+export async function recordExpiredBackfillDispatch(
+  flow: Pick<IFlow, "_id" | "workspaceId" | "backfillState">,
+  now: Date,
+) {
+  const filter = expiredBackfillDispatchFilter(flow.backfillState, now);
+  if (!filter) return false;
+  const result = await Flow.updateOne(
+    { _id: flow._id, workspaceId: flow.workspaceId, ...filter },
+    {
+      $set: {
+        "backfillState.status": "error",
+        lastError: "Backfill dispatch expired before a worker started",
+      },
+      $inc: { "backfillState.consecutiveFailures": 1 },
+      $unset: { "backfillState.dispatchPendingAt": "" },
+    },
+  );
+  return result.modifiedCount > 0;
+}
 
 // Cleanup function for abandoned flows
 export const cleanupAbandonedFlowsFunction = inngest.createFunction(
@@ -121,13 +143,15 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
           );
 
           if (staleGateFlowIds.length > 0) {
-            const gatedFlows = await Flow.find(
-              {
-                _id: { $in: staleGateFlowIds },
-                "backfillState.status": "running",
-              },
-              { _id: 1, workspaceId: 1, syncEngine: 1 },
-            ).lean();
+            const gatedFlows = await Flow.find({
+              _id: { $in: staleGateFlowIds },
+              "backfillState.status": "running",
+              "backfillState.dispatchPendingAt": null,
+            })
+              .select(
+                "_id workspaceId syncEngine backfillState.runId backfillState.attemptId",
+              )
+              .lean();
 
             // Through the state machine (running -FAIL-> error, CAS): a
             // backfill the user paused, or that completed, since the read
@@ -148,6 +172,8 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
                         errorCode: "WORKER_TIMEOUT",
                       },
                       onlyFrom: ["running"],
+                      expectedAttempt: gated.backfillState ?? {},
+                      requireStartedDispatch: true,
                     });
                   if (transition.changed) resetFlowIds.push(fId);
                 } else {
@@ -220,24 +246,22 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
       const interruptedCdcFlows = await Flow.find({
         syncEngine: "cdc",
         "backfillState.runId": { $exists: true, $ne: null },
-        $and: [
+        $or: [
           {
+            "backfillState.status": "error",
             $or: [
-              { "backfillState.status": "error" },
+              { "backfillState.consecutiveFailures": { $exists: false } },
               {
-                "backfillState.status": "running",
-                "backfillState.dispatchPendingAt": {
-                  $lte: staleBackfillDispatchAt(now),
+                "backfillState.consecutiveFailures": {
+                  $lt: MAX_BACKFILL_RECOVERY_FAILURES,
                 },
               },
             ],
           },
-        ],
-        $or: [
-          { "backfillState.consecutiveFailures": { $exists: false } },
           {
-            "backfillState.consecutiveFailures": {
-              $lt: MAX_BACKFILL_RECOVERY_FAILURES,
+            "backfillState.status": "running",
+            "backfillState.dispatchPendingAt": {
+              $lte: staleBackfillDispatchAt(now),
             },
           },
         ],
@@ -253,6 +277,16 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
           status: "running",
         });
         if (hasRunningExec) continue;
+        if (cdcFlow.backfillState?.status === "running") {
+          if (await recordExpiredBackfillDispatch(cdcFlow, now)) {
+            logger.warn("Backfill dispatch expired before a worker started", {
+              flowId: fId,
+              consecutiveFailures: failures + 1,
+            });
+          }
+          // A later sweep may resume the preserved checkpoint if budget remains.
+          continue;
+        }
         // A platform failure does not use up an attempt; it waits 1, 2,
         // 4 … 30 min before the next resume instead (infra-failure.ts).
         const recoveryState = cdcFlow.backfillState;

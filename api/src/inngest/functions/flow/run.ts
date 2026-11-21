@@ -193,7 +193,12 @@ export const flowFunction = inngest.createFunction(
               }),
               "backfillState.status": "running",
             },
-            { $unset: { "backfillState.dispatchPendingAt": "" } },
+            {
+              $unset: {
+                "backfillState.dispatchPendingAt": "",
+                "backfillState.providerRetryAt": "",
+              },
+            },
           );
         }
 

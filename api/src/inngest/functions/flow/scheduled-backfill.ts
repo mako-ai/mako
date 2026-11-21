@@ -33,7 +33,7 @@ export const cdcScheduledBackfillFunction = inngest.createFunction(
           syncEngine: "cdc",
           "backfillSchedule.enabled": true,
           enabled: { $ne: false },
-          ...scheduledBackfillGate,
+          ...scheduledBackfillGate(now),
         })
           .select("_id workspaceId backfillSchedule backfillState streamState")
           .lean();
@@ -87,7 +87,7 @@ export const cdcScheduledBackfillFunction = inngest.createFunction(
             {
               _id: flow._id,
               workspaceId: flow.workspaceId,
-              ...scheduledBackfillGate,
+              ...scheduledBackfillGate(now),
               "backfillSchedule.lastRunAt":
                 flow.backfillSchedule?.lastRunAt ?? null,
             },

@@ -16,7 +16,10 @@ import { emitFlowExecutionTerminalEvent } from "../../../services/flow-run-notif
 import { hasCdcDestinationAdapter } from "../../../sync-cdc/adapters/registry";
 import { forceDrainCdcFlow } from "../../../sync-cdc/backfill";
 import { syncMachineService } from "../../../sync-cdc/sync-state";
-import { backfillAttemptFilter } from "../../../sync-cdc/backfill/attempt";
+import {
+  backfillAttemptFilter,
+  completedBackfillAttemptFilter,
+} from "../../../sync-cdc/backfill/attempt";
 import { createDbSourceWriter } from "./database-source";
 import type { FlowRunContext } from "./run-context";
 import {
@@ -230,6 +233,23 @@ export function backfillFailureUpdate(message: string | undefined): {
   };
 }
 
+/** Report an epilogue failure without reopening the completed checkpoint. */
+export async function recordCompletedBackfillError(
+  flowId: string,
+  workspaceId: string,
+  attemptId: string,
+  message: string,
+) {
+  const result = await Flow.updateOne(
+    {
+      ...inWorkspace(flowId, workspaceId),
+      ...completedBackfillAttemptFilter(attemptId),
+    },
+    { $set: { lastError: message || "Unknown error" } },
+  );
+  return result.matchedCount > 0;
+}
+
 async function releaseCdcBackfillGate(
   ctx: FlowRunContext,
   flowRef: IFlow,
@@ -304,13 +324,38 @@ async function releaseCdcBackfillGate(
       );
     });
   } else if (!failed.changed) {
-    return;
+    const attemptId = ctx.data.backfillAttemptId;
+    if (isCancelled || !attemptId) return;
+    const recorded = await step.run("record-completed-backfill-error", () =>
+      recordCompletedBackfillError(
+        flowId,
+        String(flowRef.workspaceId),
+        attemptId,
+        error.message,
+      ),
+    );
+    if (!recorded) return;
   }
   if (!isCdcEnabled) return;
   await step.run("drain-cdc-on-failure", async () => {
+    if (failed && !failed.changed) {
+      const attemptId = ctx.data.backfillAttemptId;
+      if (
+        !attemptId ||
+        !(await Flow.exists({
+          ...inWorkspace(flowId, flowRef.workspaceId),
+          ...completedBackfillAttemptFilter(attemptId),
+        }))
+      ) {
+        return;
+      }
+    }
     await forceDrainCdcFlow({
       workspaceId: String(flowRef.workspaceId),
       flowId: String(flowId),
+      ...(failed && !failed.changed
+        ? { completedAttemptId: ctx.data.backfillAttemptId }
+        : {}),
     });
   });
 }

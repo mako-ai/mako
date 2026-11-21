@@ -130,6 +130,7 @@ interface ApplyBackfillTransitionInput {
   onlyFrom?: BackfillStatus[];
   /** Fence a failure to its attempt, including legacy rows without an ID. */
   expectedAttempt?: BackfillAttempt;
+  requireStartedDispatch?: boolean;
   failureUpdate?: {
     $inc: Record<string, number>;
     $set: Record<string, unknown>;
@@ -201,6 +202,7 @@ interface CasTransitionInput<S extends string> {
     resolved: S,
   ) => Record<string, unknown>;
   expectedAttempt?: BackfillAttempt;
+  requireStartedDispatch?: boolean;
   updateIncrements?: Record<string, number>;
   updateUnset?: Record<string, "">;
   /** Throws when the transition is not allowed (guards). */
@@ -227,7 +229,7 @@ async function casTransition<S extends string>(
   for (let attempt = 1; attempt <= MAX_TRANSITION_ATTEMPTS; attempt++) {
     const flow = await Flow.findOne(scope)
       .select(
-        "syncEngine streamState backfillState.status backfillState.runId backfillState.attemptId",
+        "syncEngine streamState backfillState.status backfillState.runId backfillState.attemptId backfillState.dispatchPendingAt",
       )
       .lean();
     if (!flow) {
@@ -238,6 +240,9 @@ async function casTransition<S extends string>(
     }
 
     const fromState = input.readState(flow);
+    if (input.requireStartedDispatch && flow.backfillState?.dispatchPendingAt) {
+      return { changed: false, fromState, toState: fromState };
+    }
     if (
       attemptFilter &&
       ((flow.backfillState?.runId ?? null) !==
@@ -260,6 +265,9 @@ async function casTransition<S extends string>(
         syncEngine: "cdc",
         ...stateFilter(input.statePath, fromState),
         ...attemptFilter,
+        ...(input.requireStartedDispatch
+          ? { "backfillState.dispatchPendingAt": null }
+          : {}),
       },
       {
         ...(input.updateIncrements ? { $inc: input.updateIncrements } : {}),
@@ -363,6 +371,7 @@ class CdcSyncStateService {
       ...eventDetails(input.event),
       statePath: "backfillState.status",
       expectedAttempt: input.expectedAttempt,
+      requireStartedDispatch: input.requireStartedDispatch,
       updateIncrements: input.failureUpdate?.$inc,
       updateUnset:
         input.event.type === "CANCEL"

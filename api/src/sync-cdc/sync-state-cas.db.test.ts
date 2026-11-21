@@ -7,6 +7,7 @@
  * Run: npx tsx src/sync-cdc/sync-state-cas.db.test.ts
  */
 import assert from "node:assert/strict";
+import { mock } from "node:test";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose, { Types } from "mongoose";
 
@@ -14,15 +15,24 @@ import { CdcStateTransition, Flow } from "../database/workspace-schema";
 import { cdcSyncStateService } from "./sync-state";
 import {
   automaticRecoveryFilter,
+  MAX_BACKFILL_RECOVERY_FAILURES,
   scheduledBackfillGate,
 } from "./backfill/attempt";
 import { startBackfill } from "./backfill/lifecycle";
-import { markCdcBackfillCompletedForFlow } from "./backfill/completion";
+import {
+  forceDrainCdcFlow,
+  markCdcBackfillCompletedForFlow,
+} from "./backfill/completion";
+import { getCdcEventStore } from "./event-store";
+import { inngest } from "../inngest/client";
+import { runCdcMaterialization } from "../inngest/functions/webhook-flow";
 import {
   createFlowRunContext,
   type FlowRunContext,
 } from "../inngest/functions/flow/run-context";
 import { backfillResumeDue } from "../inngest/functions/flow/infra-failure";
+import { recordExpiredBackfillDispatch } from "../inngest/functions/flow/cleanup-abandoned";
+import { recordCompletedBackfillError } from "../inngest/functions/flow/failure";
 
 async function main(): Promise<void> {
   const mongo = await MongoMemoryServer.create();
@@ -282,7 +292,7 @@ async function main(): Promise<void> {
       },
     });
     const claim = await Flow.updateOne(
-      { _id: scheduleTarget, ...scheduledBackfillGate },
+      { _id: scheduleTarget, ...scheduledBackfillGate(scheduledAt) },
       { $set: { "backfillSchedule.lastRunAt": scheduledAt } },
     );
     assert.equal(claim.modifiedCount, 0);
@@ -373,7 +383,7 @@ async function main(): Promise<void> {
       backfillState: { status: "paused", runId },
     });
     const pausedClaim = await Flow.updateOne(
-      { _id: pausedWithoutDeadline, ...scheduledBackfillGate },
+      { _id: pausedWithoutDeadline, ...scheduledBackfillGate(scheduledAt) },
       { $set: { "backfillSchedule.lastRunAt": scheduledAt } },
     );
     assert.equal(pausedClaim.modifiedCount, 0);
@@ -391,7 +401,10 @@ async function main(): Promise<void> {
     assert.equal(discarded?.backfillState?.attemptId, undefined);
     assert.equal(discarded?.backfillState?.providerRetryAt, undefined);
     assert.ok(
-      await Flow.exists({ _id: scheduleTarget, ...scheduledBackfillGate }),
+      await Flow.exists({
+        _id: scheduleTarget,
+        ...scheduledBackfillGate(scheduledAt),
+      }),
     );
 
     // 16. An earlier attempt cannot complete a replacement on the same cursor.
@@ -412,55 +425,220 @@ async function main(): Promise<void> {
     assert.equal(await finish("replacement"), true);
     assert.equal(await finish("replacement"), true);
 
-    // 17. A returned dispatch with no execution is replaceable after 10 minutes.
-    // A worker which started after the sweep read the flow wins that race.
+    // 17. A missing worker consumes one attempt after 10 minutes. A worker
+    // clearing the marker after the sweep's read wins the compare-and-swap.
     const dispatchPendingAt = new Date("2026-11-20T20:00:00Z");
+    const expiredAt = new Date(+dispatchPendingAt + 600_000);
     const queuedState = {
       status: "running" as const,
       runId,
       attemptId: "pending",
       dispatchPendingAt,
+      consecutiveFailures: MAX_BACKFILL_RECOVERY_FAILURES - 1,
     };
     const missingWorker = await insert({ backfillState: queuedState });
+    const pending = {
+      _id: new Types.ObjectId(missingWorker),
+      workspaceId,
+      backfillState: queuedState,
+    };
     assert.equal(
-      automaticRecoveryFilter(
-        queuedState,
-        new Date(+dispatchPendingAt + 599_999),
-      ),
-      null,
+      await recordExpiredBackfillDispatch(pending, new Date(+expiredAt - 1)),
+      false,
     );
-    const elapsed = automaticRecoveryFilter(
-      queuedState,
-      new Date(+dispatchPendingAt + 600_000),
-    );
-    assert.ok(elapsed);
     await Flow.updateOne(
       { _id: missingWorker },
       { $unset: { "backfillState.dispatchPendingAt": "" } },
     );
     assert.equal(
-      (
-        await Flow.updateOne(
-          { _id: missingWorker, ...elapsed },
-          { $set: { "backfillState.attemptId": "wrong" } },
-        )
-      ).matchedCount,
-      0,
+      await recordExpiredBackfillDispatch(pending, expiredAt),
+      false,
     );
     const stillPending = await insert({ backfillState: queuedState });
+    const stuck = { ...pending, _id: new Types.ObjectId(stillPending) };
+    assert.equal(await recordExpiredBackfillDispatch(stuck, expiredAt), true);
+    assert.equal(await recordExpiredBackfillDispatch(stuck, expiredAt), false);
+    const exhausted = (await Flow.findById(stillPending).lean())?.backfillState;
+    assert.equal(exhausted?.runId, runId);
+    assert.equal(exhausted?.status, "error");
+    assert.equal(exhausted?.dispatchPendingAt, undefined);
     assert.equal(
-      (
-        await Flow.updateOne(
-          { _id: stillPending, ...elapsed },
-          { $set: { "backfillState.attemptId": "recovered" } },
-        )
-      ).matchedCount,
-      1,
+      exhausted?.consecutiveFailures,
+      MAX_BACKFILL_RECOVERY_FAILURES,
+    );
+    assert.equal(automaticRecoveryFilter(exhausted, expiredAt), null);
+
+    // 18. A throttle at the cap permits a fresh scheduled run only after its deadline.
+    const capped = await insert({
+      backfillState: {
+        status: "error",
+        runId,
+        attemptId: "exhausted",
+        providerRetryAt: deadline,
+        consecutiveFailures: MAX_BACKFILL_RECOVERY_FAILURES,
+      },
+    });
+    assert.equal(
+      await Flow.exists({
+        _id: capped,
+        ...scheduledBackfillGate(new Date(+deadline - 1)),
+      }),
+      null,
+    );
+    assert.ok(
+      await Flow.exists({ _id: capped, ...scheduledBackfillGate(deadline) }),
     );
     assert.equal(
-      (await Flow.findById(stillPending).lean())?.backfillState?.runId,
+      (await Flow.findById(capped).lean())?.backfillState?.runId,
       runId,
     );
+
+    // 19. A queued recovery retains the deadline when an unrelated abandoned
+    // execution and a due schedule both see it before the next recovery sweep.
+    const recoverable = (await Flow.findById(capped).lean())?.backfillState;
+    assert.ok(recoverable);
+    await Flow.updateOne(
+      { _id: capped },
+      { $set: { "backfillState.consecutiveFailures": 0 } },
+    );
+    recoverable.consecutiveFailures = 0;
+    const send = mock.method(inngest, "send", async () => ({
+      ids: ["offline"],
+    }));
+    try {
+      assert.equal(
+        (
+          await startBackfill(ids.workspaceId, capped, {
+            reuseExistingRunId: true,
+            automaticRecovery: recoverable,
+          })
+        ).runId,
+        runId,
+      );
+    } finally {
+      send.mock.restore();
+    }
+    const undispatched = await Flow.findById(capped).lean();
+    assert.ok(undispatched?.backfillState?.dispatchPendingAt);
+    assert.deepEqual(undispatched.backfillState.providerRetryAt, deadline);
+    const abandonedPoll = await cdcSyncStateService.applyBackfillTransition({
+      ...ids,
+      flowId: capped,
+      onlyFrom: ["running"],
+      requireStartedDispatch: true,
+      expectedAttempt: undispatched.backfillState,
+      event: { type: "FAIL", errorCode: "WORKER_TIMEOUT" },
+    });
+    assert.equal(abandonedPoll.changed, false);
+    const expireRecoveryAt = new Date(
+      +undispatched.backfillState.dispatchPendingAt + 600_000,
+    );
+    assert.equal(
+      await recordExpiredBackfillDispatch(undispatched, expireRecoveryAt),
+      true,
+    );
+    assert.equal(
+      await Flow.exists({
+        _id: capped,
+        ...scheduledBackfillGate(expireRecoveryAt),
+      }),
+      null,
+    );
+    const afterExpiry = (await Flow.findById(capped).lean())?.backfillState;
+    assert.equal(afterExpiry?.consecutiveFailures, 1);
+    assert.equal(afterExpiry?.runId, runId);
+    assert.ok(automaticRecoveryFilter(afterExpiry, expireRecoveryAt));
+
+    // 20. Only the completed attempt may record an epilogue failure.
+    assert.equal(
+      await recordCompletedBackfillError(
+        finished,
+        ids.workspaceId,
+        "finishing",
+        "epilogue failed",
+      ),
+      true,
+    );
+    const completed = await Flow.findById(finished).lean();
+    assert.equal(completed?.lastError, "epilogue failed");
+    assert.equal(completed?.backfillState?.status, "completed");
+    assert.equal(completed?.backfillState?.runId, undefined);
+    const count = mock.method(
+      getCdcEventStore(),
+      "countEventsByEntity",
+      async () => [{ entity: "ads", count: 1 }],
+    );
+    const events: Array<{ name: string; data: unknown }> = [];
+    const sendDrain = mock.method(
+      inngest,
+      "send",
+      async (event: (typeof events)[number]) => {
+        events.push(event);
+        return { ids: ["offline"] };
+      },
+    );
+    try {
+      await forceDrainCdcFlow({
+        ...ids,
+        flowId: finished,
+        completedAttemptId: "finishing",
+      });
+    } finally {
+      count.mock.restore();
+      sendDrain.mock.restore();
+    }
+    assert.deepEqual(events, [
+      {
+        name: "cdc/materialize",
+        data: {
+          ...ids,
+          flowId: finished,
+          entity: "ads",
+          force: true,
+          completedAttemptId: "finishing",
+        },
+      },
+    ]);
+    await Flow.updateOne(
+      { _id: finished },
+      {
+        $set: {
+          backfillState: {
+            status: "running",
+            runId,
+            attemptId: "new",
+            consecutiveFailures: 0,
+          },
+        },
+      },
+    );
+    assert.equal(
+      await recordCompletedBackfillError(
+        finished,
+        ids.workspaceId,
+        "finishing",
+        "stale",
+      ),
+      false,
+    );
+    assert.equal(
+      (await Flow.findById(finished).lean())?.lastError,
+      "epilogue failed",
+    );
+
+    const ranSteps: string[] = [];
+    const skipped = await runCdcMaterialization({
+      eventData: events[0].data,
+      step: {
+        run: async (name: string, fn: () => unknown) => {
+          ranSteps.push(name);
+          return fn();
+        },
+      },
+      logger: {},
+    });
+    assert.equal(skipped.reason, "backfill_attempt_superseded");
+    assert.deepEqual(ranSteps, ["check-completed-drain-attempt"]);
 
     console.info("sync-state-cas.db.test: ok");
   } finally {
