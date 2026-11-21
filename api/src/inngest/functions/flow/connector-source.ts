@@ -425,10 +425,19 @@ async function finishCdcBackfill(
   const { executionId, cdcBackfillRunId } = ctx.state;
 
   await step.run("mark-cdc-backfill-complete", async () => {
-    await markCdcBackfillCompletedForFlow({
+    const completed = await markCdcBackfillCompletedForFlow({
       flowId: String(flowId),
       workspaceId: String(flow.workspaceId),
+      expectedAttempt:
+        ctx.data.backfillAttemptId || cdcBackfillRunId
+          ? { runId: cdcBackfillRunId, attemptId: ctx.data.backfillAttemptId }
+          : undefined,
     });
+    if (!completed) {
+      throw new Error(
+        "Backfill attempt cancelled or superseded before completion",
+      );
+    }
   });
   await step.run("drain-cdc-pending-events", () =>
     withHeartbeat(executionId, () =>
@@ -439,17 +448,6 @@ async function finishCdcBackfill(
     ),
   );
   await step.run("cdc-transition-backfill-complete", async () => {
-    await syncMachineService.applyBackfillTransition({
-      workspaceId: String(flow.workspaceId),
-      flowId: String(flow._id),
-      event: {
-        type: "COMPLETE",
-        reason: "Backfill cursor exhausted",
-      },
-      context: {
-        backfillCursorExhausted: true,
-      },
-    });
     await syncMachineService.applyStreamTransition({
       workspaceId: String(flow.workspaceId),
       flowId: String(flow._id),
@@ -472,16 +470,32 @@ async function finishCdcBackfill(
     // markCdcBackfillCompletedForFlow already set status=completed,
     // completedAt, and unset runId. Only reset the failure counter
     // and clear checkpoint data here.
-    await Flow.findByIdAndUpdate(flowId, {
-      $set: {
-        "backfillState.consecutiveFailures": 0,
-        "backfillState.infraFailures": 0,
+    const result = await Flow.updateOne(
+      {
+        _id: flowId,
+        workspaceId: flow.workspaceId,
+        "backfillState.status": "completed",
+        "backfillState.attemptId": ctx.data.backfillAttemptId ?? null,
       },
-    });
-    if (cdcBackfillRunId) {
+      {
+        $set: {
+          "backfillState.consecutiveFailures": 0,
+          "backfillState.infraFailures": 0,
+        },
+      },
+    );
+    if (result.matchedCount && cdcBackfillRunId) {
       await cdcBackfillCheckpointService.clearRun({
         workspaceId: String(flow.workspaceId),
         flowId: String(flow._id),
+        scope: backfillCheckpointScope({
+          runId: cdcBackfillRunId,
+          destinationId: String(flow.destinationDatabaseId),
+          tableDestination: flow.tableDestination as unknown as Record<
+            string,
+            unknown
+          >,
+        }),
       });
     }
   });

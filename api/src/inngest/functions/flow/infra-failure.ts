@@ -53,6 +53,50 @@ export function infraResumeBackoffMs(infraFailures: number): number {
   return Math.min(INFRA_BACKOFF_BASE_MS * 2 ** (n - 1), INFRA_BACKOFF_MAX_MS);
 }
 
+// Match only Meta's numeric-only object error, optionally wrapped by the
+// boxed reader with the same entity. No other error text is a throttle signal.
+const META_OBJECT_THROTTLE =
+  /^(?:read failed for "(ads|ad_creatives)": )?meta-ads (ads|ad_creatives) read failed: HTTP 400: code 80004: subcode 2446079\s*$/;
+
+type ProviderThrottle = { kind: "provider-throttle"; retryAfterMs?: number };
+
+/** Compatibility boundary: boxed reads currently forward only error text. */
+export function readProviderThrottle(
+  message: string | undefined,
+): ProviderThrottle | undefined {
+  const match = message?.match(META_OBJECT_THROTTLE);
+  if (match && (!match[1] || match[1] === match[2])) {
+    return { kind: "provider-throttle" };
+  }
+}
+
+/** A provider's longer delay wins when the error transport carries one. */
+export function providerBackfillRetryAt(
+  throttle: ProviderThrottle | undefined,
+  now: Date,
+): Date | undefined {
+  if (!throttle) return undefined;
+  const supplied = throttle.retryAfterMs;
+  const delay =
+    typeof supplied === "number" && Number.isFinite(supplied)
+      ? Math.max(INFRA_BACKOFF_MAX_MS, supplied)
+      : INFRA_BACKOFF_MAX_MS;
+  return new Date(Math.min(now.getTime() + delay, 8.64e15));
+}
+
+/** Combine provider cooldown with the existing infrastructure retry policy. */
+export function backfillResumeDue(
+  state:
+    | (NonNullable<Parameters<typeof infraResumeDue>[0]> & {
+        providerRetryAt?: Date | null;
+      })
+    | undefined,
+  now: Date,
+): boolean {
+  const retryAt = state?.providerRetryAt;
+  return (!retryAt || now >= retryAt) && infraResumeDue(state, now);
+}
+
 /** May an interrupted backfill resume now, given its last infrastructure failure? */
 export function infraResumeDue(
   state:

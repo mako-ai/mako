@@ -10,6 +10,10 @@ import {
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import {
+  backfillAttemptFilter,
+  type BackfillAttempt,
+} from "./backfill/attempt";
+import {
   computeEntityPendingBacklog,
   computePendingLagSeconds,
 } from "./backlog";
@@ -43,6 +47,7 @@ type BackfillMachineEvent =
       reason?: string;
       errorCode?: string;
       errorMessage?: string;
+      providerRetryAt?: Date;
     }
   | { type: "RECOVER"; reason?: string }
   | { type: "CANCEL"; reason?: string };
@@ -93,6 +98,8 @@ const BACKFILL_TRANSITIONS: Record<
     START: "running",
   },
   error: {
+    PAUSE: "paused",
+    CANCEL: "idle",
     RECOVER: "running",
     START: "running",
   },
@@ -121,6 +128,13 @@ interface ApplyBackfillTransitionInput {
    * fails a `running` backfill but must leave one the user just paused.
    */
   onlyFrom?: BackfillStatus[];
+  /** Fence a failure to its attempt, including legacy rows without an ID. */
+  expectedAttempt?: BackfillAttempt;
+  requireStartedDispatch?: boolean;
+  failureUpdate?: {
+    $inc: Record<string, number>;
+    $set: Record<string, unknown>;
+  };
 }
 
 interface ApplyTransitionResult {
@@ -187,6 +201,10 @@ interface CasTransitionInput<S extends string> {
     flow: { backfillState?: { status?: string | null } | null },
     resolved: S,
   ) => Record<string, unknown>;
+  expectedAttempt?: BackfillAttempt;
+  requireStartedDispatch?: boolean;
+  updateIncrements?: Record<string, number>;
+  updateUnset?: Record<string, "">;
   /** Throws when the transition is not allowed (guards). */
   assertGuards?: () => void;
 }
@@ -205,10 +223,14 @@ async function casTransition<S extends string>(
   const workspaceObjectId = new Types.ObjectId(input.workspaceId);
   const flowObjectId = new Types.ObjectId(input.flowId);
   const scope = { _id: flowObjectId, workspaceId: workspaceObjectId };
+  const attemptFilter =
+    input.expectedAttempt && backfillAttemptFilter(input.expectedAttempt);
 
   for (let attempt = 1; attempt <= MAX_TRANSITION_ATTEMPTS; attempt++) {
     const flow = await Flow.findOne(scope)
-      .select("syncEngine streamState backfillState.status")
+      .select(
+        "syncEngine streamState backfillState.status backfillState.runId backfillState.attemptId backfillState.dispatchPendingAt",
+      )
       .lean();
     if (!flow) {
       throw new Error("Flow not found");
@@ -218,6 +240,18 @@ async function casTransition<S extends string>(
     }
 
     const fromState = input.readState(flow);
+    if (input.requireStartedDispatch && flow.backfillState?.dispatchPendingAt) {
+      return { changed: false, fromState, toState: fromState };
+    }
+    if (
+      attemptFilter &&
+      ((flow.backfillState?.runId ?? null) !==
+        attemptFilter["backfillState.runId"] ||
+        (flow.backfillState?.attemptId ?? null) !==
+          attemptFilter["backfillState.attemptId"])
+    ) {
+      return { changed: false, fromState, toState: fromState };
+    }
     const resolved = input.resolve(fromState);
     if (!resolved) {
       return { changed: false, fromState, toState: fromState };
@@ -230,8 +264,14 @@ async function casTransition<S extends string>(
         ...scope,
         syncEngine: "cdc",
         ...stateFilter(input.statePath, fromState),
+        ...attemptFilter,
+        ...(input.requireStartedDispatch
+          ? { "backfillState.dispatchPendingAt": null }
+          : {}),
       },
       {
+        ...(input.updateIncrements ? { $inc: input.updateIncrements } : {}),
+        ...(input.updateUnset ? { $unset: input.updateUnset } : {}),
         $set: {
           ...(input.buildSet
             ? input.buildSet(flow, resolved)
@@ -330,16 +370,48 @@ class CdcSyncStateService {
       eventType: input.event.type,
       ...eventDetails(input.event),
       statePath: "backfillState.status",
+      expectedAttempt: input.expectedAttempt,
+      requireStartedDispatch: input.requireStartedDispatch,
+      updateIncrements: input.failureUpdate?.$inc,
+      updateUnset:
+        input.event.type === "CANCEL"
+          ? {
+              "backfillState.runId": "",
+              "backfillState.attemptId": "",
+              "backfillState.dispatchPendingAt": "",
+              "backfillState.providerRetryAt": "",
+            }
+          : input.event.type === "FAIL" && input.expectedAttempt
+            ? { "backfillState.dispatchPendingAt": "" }
+            : undefined,
       readState: flow =>
         (flow.backfillState?.status || "idle") as BackfillStatus,
       resolve: from =>
         input.onlyFrom && !input.onlyFrom.includes(from)
           ? null
           : BACKFILL_TRANSITIONS[from]?.[input.event.type] || null,
-      buildSet: (flow, resolved) =>
-        flow.backfillState == null
-          ? { backfillState: { status: resolved } }
-          : { "backfillState.status": resolved },
+      buildSet: (flow, resolved) => {
+        const providerRetryAt =
+          input.event.type === "FAIL" ? input.event.providerRetryAt : undefined;
+        const failureSet = input.failureUpdate?.$set;
+        return flow.backfillState == null
+          ? {
+              backfillState: {
+                status: resolved,
+                ...(providerRetryAt ? { providerRetryAt } : {}),
+              },
+            }
+          : {
+              ...failureSet,
+              "backfillState.status": resolved,
+              ...(input.event.type === "PAUSE" || input.event.type === "CANCEL"
+                ? { "backfillState.completedAt": null }
+                : {}),
+              ...(providerRetryAt
+                ? { "backfillState.providerRetryAt": providerRetryAt }
+                : {}),
+            };
+      },
       assertGuards: () => assertBackfillGuards(input.event, input.context),
     });
   }
@@ -390,11 +462,13 @@ class CdcSyncStateService {
   async clearBackfillCursorsForFlow(params: {
     workspaceId: string;
     flowId: string;
+    scope?: string;
   }): Promise<void> {
     await CdcEntityState.updateMany(
       {
         workspaceId: new Types.ObjectId(params.workspaceId),
         flowId: new Types.ObjectId(params.flowId),
+        ...(params.scope ? { backfillCursorScope: params.scope } : {}),
       },
       {
         $unset: {
@@ -646,12 +720,8 @@ export const cdcBackfillCheckpointService = {
       },
     );
   },
-  clearRun: async (params: { workspaceId: string; flowId: string }) => {
-    await cdcSyncStateService.clearBackfillCursorsForFlow({
-      workspaceId: params.workspaceId,
-      flowId: params.flowId,
-    });
-  },
+  clearRun: (params: { workspaceId: string; flowId: string; scope: string }) =>
+    cdcSyncStateService.clearBackfillCursorsForFlow(params),
 };
 
 export async function getCdcFlowStats(params: { flowId: string }): Promise<{

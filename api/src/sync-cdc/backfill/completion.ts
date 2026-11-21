@@ -12,17 +12,36 @@ import { loggers } from "../../logging";
 import { resolveConfiguredEntities } from "../entity-selection";
 import { getCdcEventStore } from "../event-store";
 import { cdcLiveTableName } from "../normalization";
+import { backfillAttemptFilter, type BackfillAttempt } from "./attempt";
 
 const log = loggers.sync("cdc.backfill");
 
 export async function markCdcBackfillCompletedForFlow(params: {
   workspaceId: string;
   flowId: string;
-}) {
-  await Flow.updateOne(
+  expectedAttempt?: BackfillAttempt;
+}): Promise<boolean> {
+  const scope = {
+    _id: new Types.ObjectId(params.flowId),
+    workspaceId: new Types.ObjectId(params.workspaceId),
+  };
+  const expected = params.expectedAttempt;
+  const terminalOwner = expected
+    ? {
+        "backfillState.attemptId": expected.attemptId ?? null,
+        "backfillState.status": "completed" as const,
+        "backfillState.runId": null,
+      }
+    : {};
+  const update = await Flow.updateOne(
     {
-      _id: new Types.ObjectId(params.flowId),
-      workspaceId: new Types.ObjectId(params.workspaceId),
+      ...scope,
+      ...(expected
+        ? {
+            ...backfillAttemptFilter(expected),
+            "backfillState.status": "running" as const,
+          }
+        : {}),
     },
     {
       $set: {
@@ -31,17 +50,26 @@ export async function markCdcBackfillCompletedForFlow(params: {
       },
       $unset: {
         "backfillState.runId": "",
+        "backfillState.dispatchPendingAt": "",
       },
     },
   );
+  // A retry of the same step may reach this write after it already set
+  // completed. Only the original dispatch may continue the epilogue.
+  if (
+    !update.matchedCount &&
+    (!expected || !(await Flow.exists({ ...scope, ...terminalOwner })))
+  ) {
+    return false;
+  }
   // The COMPLETE transition that follows finds the status already completed
   // and changes nothing, so it never replaces an old failure's meta: a flow
   // whose backfill failed once kept that error for months of clean runs.
   // A live stream error keeps its meta (the consumer's self-heal reads it).
   await Flow.updateOne(
     {
-      _id: new Types.ObjectId(params.flowId),
-      workspaceId: new Types.ObjectId(params.workspaceId),
+      ...scope,
+      ...terminalOwner,
       streamState: { $ne: "error" },
       "syncStateMeta.lastErrorCode": { $exists: true, $ne: null },
     },
@@ -55,6 +83,7 @@ export async function markCdcBackfillCompletedForFlow(params: {
       },
     },
   );
+  return true;
 }
 
 export async function purgeSoftDeletesAfterBackfill(params: {
@@ -110,6 +139,7 @@ export async function purgeSoftDeletesAfterBackfill(params: {
 export async function forceDrainCdcFlow(params: {
   workspaceId: string;
   flowId: string;
+  completedAttemptId?: string;
 }) {
   const byEntity = await getCdcEventStore().countEventsByEntity({
     workspaceId: params.workspaceId,
@@ -129,6 +159,9 @@ export async function forceDrainCdcFlow(params: {
         flowId: params.flowId,
         entity: item.entity,
         force: true,
+        ...(params.completedAttemptId
+          ? { completedAttemptId: params.completedAttemptId }
+          : {}),
       },
     });
   }

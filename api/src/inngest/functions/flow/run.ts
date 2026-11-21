@@ -15,6 +15,7 @@ import {
   type IFlow,
 } from "../../../database/workspace-schema";
 import { hasCdcDestinationAdapter } from "../../../sync-cdc/adapters/registry";
+import { backfillAttemptFilter } from "../../../sync-cdc/backfill/attempt";
 import { resolveConfiguredEntities } from "../../../sync-cdc/entity-selection";
 import { flowDisplayName as resolveFlowDisplayName } from "../../../services/flow-identity.service";
 import { ensureFlowDerivedCache } from "../../../services/flow-sync.service";
@@ -175,10 +176,31 @@ export const flowFunction = inngest.createFunction(
         });
       }
 
+      await ctx.throwIfExecutionCancelled("before-initialize-logger");
+
       // Initialize logger and get execution ID
       ctx.state.executionId = await step.run("initialize-logger", async () => {
         const execLogger = createExecutionLogger(flowId, flow);
         await execLogger.start();
+        if (data.backfillAttemptId) {
+          await Flow.updateOne(
+            {
+              _id: flowId,
+              workspaceId: flow.workspaceId,
+              ...backfillAttemptFilter({
+                runId: data.backfillRunId,
+                attemptId: data.backfillAttemptId,
+              }),
+              "backfillState.status": "running",
+            },
+            {
+              $unset: {
+                "backfillState.dispatchPendingAt": "",
+                "backfillState.providerRetryAt": "",
+              },
+            },
+          );
+        }
 
         const flowDisplayName = await resolveFlowDisplayName(flow);
         logger.info("Starting flow execution", {

@@ -16,9 +16,17 @@ import { emitFlowExecutionTerminalEvent } from "../../../services/flow-run-notif
 import { hasCdcDestinationAdapter } from "../../../sync-cdc/adapters/registry";
 import { forceDrainCdcFlow } from "../../../sync-cdc/backfill";
 import { syncMachineService } from "../../../sync-cdc/sync-state";
+import {
+  backfillAttemptFilter,
+  completedBackfillAttemptFilter,
+} from "../../../sync-cdc/backfill/attempt";
 import { createDbSourceWriter } from "./database-source";
 import type { FlowRunContext } from "./run-context";
-import { isInfrastructureFailure } from "./infra-failure";
+import {
+  isInfrastructureFailure,
+  providerBackfillRetryAt,
+  readProviderThrottle,
+} from "./infra-failure";
 
 type FlowRunError = Error & { code?: unknown };
 
@@ -190,7 +198,7 @@ export async function handleFlowRunFailure(
   });
 
   // Update error status (unless cancelled)
-  if (!isCancelled) {
+  if (!isCancelled && !(backfill && flowRef?.syncEngine === "cdc")) {
     await Flow.findByIdAndUpdate(flowId, {
       lastError: error.message || "Unknown error",
     });
@@ -209,7 +217,10 @@ export async function handleFlowRunFailure(
 }
 
 /** The counter a failed backfill bumps: platform failures do not count. */
-export function backfillFailureUpdate(message: string | undefined) {
+export function backfillFailureUpdate(message: string | undefined): {
+  $inc: Record<string, number>;
+  $set: Record<string, number | Date>;
+} {
   if (isInfrastructureFailure(message)) {
     return {
       $inc: { "backfillState.infraFailures": 1 },
@@ -220,6 +231,23 @@ export function backfillFailureUpdate(message: string | undefined) {
     $inc: { "backfillState.consecutiveFailures": 1 },
     $set: { "backfillState.infraFailures": 0 },
   };
+}
+
+/** Report an epilogue failure without reopening the completed checkpoint. */
+export async function recordCompletedBackfillError(
+  flowId: string,
+  workspaceId: string,
+  attemptId: string,
+  message: string,
+) {
+  const result = await Flow.updateOne(
+    {
+      ...inWorkspace(flowId, workspaceId),
+      ...completedBackfillAttemptFilter(attemptId),
+    },
+    { $set: { lastError: message || "Unknown error" } },
+  );
+  return result.matchedCount > 0;
 }
 
 async function releaseCdcBackfillGate(
@@ -245,21 +273,15 @@ async function releaseCdcBackfillGate(
     flowRef.syncEngine === "cdc" &&
     Boolean(flowRef.tableDestination?.connectionId) &&
     hasCdcDestinationAdapter(destinationType);
-  if (!isCdcEnabled) return;
+  if (flowRef.syncEngine !== "cdc") return;
 
-  const wasPausedByUser = await step.run("check-pause-vs-cancel", async () => {
-    const freshFlow = await Flow.findById(flowId)
-      .select("backfillState")
-      .lean();
-    return isCancelled && freshFlow?.backfillState?.status === "paused";
-  });
-
-  if (wasPausedByUser) {
-    throw error;
-  }
-
-  await step.run("cdc-transition-fail", async () => {
-    await syncMachineService.applyBackfillTransition({
+  const failed = await step.run("cdc-transition-fail", async () => {
+    const providerRetryAt = providerBackfillRetryAt(
+      readProviderThrottle(error.message),
+      new Date(),
+    );
+    const retryUpdate = backfillFailureUpdate(error.message);
+    return syncMachineService.applyBackfillTransition({
       workspaceId: String(flowRef.workspaceId),
       flowId: String(flowId),
       event: {
@@ -267,19 +289,73 @@ async function releaseCdcBackfillGate(
         reason: "Backfill execution failed",
         errorCode: error?.code ? String(error.code) : "FLOW_EXECUTION_FAILED",
         errorMessage: error.message,
+        providerRetryAt,
+      },
+      onlyFrom: ["running"],
+      expectedAttempt: {
+        runId: ctx.data.backfillRunId ?? flowRef.backfillState?.runId,
+        attemptId: ctx.data.backfillAttemptId,
+      },
+      failureUpdate: {
+        $inc: retryUpdate.$inc,
+        $set: {
+          ...retryUpdate.$set,
+          ...(!isCancelled
+            ? { lastError: error.message || "Unknown error" }
+            : {}),
+        },
       },
     });
   });
-  await step.run("mark-cdc-backfill-interrupted", async () => {
-    // cdc-transition-fail already set status=error via the state
-    // machine. Only bump a failure counter here: the platform's own
-    // failures never use up a resume attempt (infra-failure.ts).
-    await Flow.findByIdAndUpdate(flowId, backfillFailureUpdate(error.message));
-  });
+  if (failed == null) {
+    // An older worker already wrote the error transition. Complete its
+    // memoized two-step path once, but never charge an identified successor.
+    await step.run("mark-cdc-backfill-interrupted", async () => {
+      await Flow.updateOne(
+        {
+          _id: flowId,
+          workspaceId: flowRef.workspaceId,
+          ...backfillAttemptFilter({
+            runId: ctx.data.backfillRunId ?? flowRef.backfillState?.runId,
+          }),
+          "backfillState.status": "error",
+        },
+        backfillFailureUpdate(error.message),
+      );
+    });
+  } else if (!failed.changed) {
+    const attemptId = ctx.data.backfillAttemptId;
+    if (isCancelled || !attemptId) return;
+    const recorded = await step.run("record-completed-backfill-error", () =>
+      recordCompletedBackfillError(
+        flowId,
+        String(flowRef.workspaceId),
+        attemptId,
+        error.message,
+      ),
+    );
+    if (!recorded) return;
+  }
+  if (!isCdcEnabled) return;
   await step.run("drain-cdc-on-failure", async () => {
+    if (failed && !failed.changed) {
+      const attemptId = ctx.data.backfillAttemptId;
+      if (
+        !attemptId ||
+        !(await Flow.exists({
+          ...inWorkspace(flowId, flowRef.workspaceId),
+          ...completedBackfillAttemptFilter(attemptId),
+        }))
+      ) {
+        return;
+      }
+    }
     await forceDrainCdcFlow({
       workspaceId: String(flowRef.workspaceId),
       flowId: String(flowId),
+      ...(failed && !failed.changed
+        ? { completedAttemptId: ctx.data.backfillAttemptId }
+        : {}),
     });
   });
 }

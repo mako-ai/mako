@@ -34,6 +34,7 @@ import {
 } from "../../sync-cdc/materialize-window";
 import { withBoxMemoryWaits } from "./flow/box-memory-wait";
 import { cdcBackfillService } from "../../sync-cdc/backfill";
+import { completedBackfillAttemptFilter } from "../../sync-cdc/backfill/attempt";
 import { cleanupStalePendingCdcEvents } from "../../sync-cdc/cdc-stale-pending-cleanup";
 import { reconcileOrphanedWebhookApplyStatus } from "../../sync-cdc/cdc-orphan-applystatus";
 
@@ -336,17 +337,38 @@ const CDC_MATERIALIZE_MAX_ITERATIONS = 5;
 /** Box memory waits per materialize step: 5 to 7.5 min, inside the 30 min finish. */
 const CDC_MATERIALIZE_MAX_MEMORY_WAITS = 5;
 
-async function runCdcMaterialization(params: {
+export async function runCdcMaterialization(params: {
   eventData: unknown;
   step: any;
   logger: any;
 }) {
-  const { workspaceId, flowId, entity, force } = params.eventData as {
-    workspaceId: string;
-    flowId: string;
-    entity: string;
-    force?: boolean;
-  };
+  const { workspaceId, flowId, entity, force, completedAttemptId } =
+    params.eventData as {
+      workspaceId: string;
+      flowId: string;
+      entity: string;
+      force?: boolean;
+      completedAttemptId?: string;
+    };
+  const ownsCompletedAttempt = async (attemptId: string) =>
+    Boolean(
+      await Flow.exists({
+        ...inWorkspace(flowId, workspaceId),
+        ...completedBackfillAttemptFilter(attemptId),
+      }),
+    );
+  if (
+    completedAttemptId &&
+    !(await params.step.run("check-completed-drain-attempt", () =>
+      ownsCompletedAttempt(completedAttemptId),
+    ))
+  ) {
+    return {
+      success: true,
+      skipped: true,
+      reason: "backfill_attempt_superseded",
+    };
+  }
 
   const circuitCheck = (await params.step.run(
     "check-circuit-breaker",
@@ -443,6 +465,18 @@ async function runCdcMaterialization(params: {
           ? CDC_MATERIALIZE_MAX_EVENTS_BACKFILL
           : CDC_MATERIALIZE_MAX_EVENTS;
 
+        if (
+          completedAttemptId &&
+          !(await ownsCompletedAttempt(completedAttemptId))
+        ) {
+          return {
+            skipped: true,
+            reason: "backfill_attempt_superseded",
+            processed: 0,
+            applied: 0,
+            maxEvents,
+          };
+        }
         const materializeResult = await cdcConsumerService.materializeEntity({
           workspaceId,
           flowId,
