@@ -5,6 +5,7 @@ import { syncConnectorRegistry } from "./connector-registry";
 import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { loggers } from "../logging";
+import type { ISourceConnection } from "../database/models/source-connections";
 
 dotenv.config({ quiet: true });
 
@@ -130,8 +131,8 @@ class SourceConnectionManager {
   }
 
   /** One stored `connectors` row as a decrypted source-connection config. */
-  private async toConfig(
-    source: WithId<Document>,
+  async toConfig(
+    source: WithId<Document> | ISourceConnection,
   ): Promise<SourceConnectionConfig> {
     const workspaceId = source.workspaceId
       ? String(source.workspaceId)

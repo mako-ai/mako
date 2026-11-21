@@ -46,6 +46,7 @@ import { createConnectorTools } from "../agent-lib/tools/connector-tools";
 import { workflowRuntimeRoutes } from "../routes/workflows";
 import { encryptString } from "../services/crypto.service";
 import { databaseConnectionService } from "../services/database-connection.service";
+import { syncConnectorRegistry } from "../sync/connector-registry";
 import { ConnectionRequestError, setTransportForTests } from "./forward";
 import { connectorRegistry } from "../connectors/registry";
 import { createSourceConnection } from "../connectors/source-connection-create.service";
@@ -1415,6 +1416,80 @@ async function main() {
       config: { api_key: "k3y_value" },
     });
     assert.equal(builtin.liveReads, undefined);
+
+    // A workflow's grant and request configuration come from one source row.
+    const snapshot = await SourceConnection.create({
+      ...twin,
+      name: "snapshot_api",
+      config: {
+        base_url: "https://original.example.test",
+        auth_type: "bearer",
+        token: encryptString("synthetic-original"),
+      },
+      writers: [{ principal: "workflow:fr-offer-to-cash" }],
+      liveReaders: [{ principal: "workflow:other-flow" }],
+    });
+    const connection = worker.connection(String(snapshot._id));
+    assert.equal(
+      await running.run("other-flow", () =>
+        attempt(() => connection.get("/members/example")),
+      ),
+      "ok",
+    );
+    const read = sent.at(-1);
+    assert.equal(read?.headers.authorization, "Bearer synthetic-original");
+
+    const revoke = () => connection.request("DELETE", "/members/example");
+    const getSchema = syncConnectorRegistry.getConfigSchemaForType;
+    let changed = false;
+    syncConnectorRegistry.getConfigSchemaForType = async (...args) => {
+      if (!changed && args[0] === "custom_api") {
+        changed = true;
+        await SourceConnection.updateOne(
+          { _id: snapshot._id },
+          {
+            $set: {
+              "config.base_url": "https://replacement.example.test",
+              "config.token": encryptString("synthetic-replacement"),
+              writers: [],
+            },
+          },
+        );
+      }
+      return getSchema.apply(syncConnectorRegistry, args);
+    };
+    try {
+      assert.equal((await running.run("fr-offer-to-cash", revoke)).status, 200);
+      assert.equal(changed, true);
+      const wire = sent.at(-1);
+      assert.equal(
+        wire?.url,
+        "https://original.example.test/members/example",
+        "an admitted write keeps the address from the authorized row",
+      );
+      assert.equal(wire?.headers.authorization, "Bearer synthetic-original");
+      assert.ok(
+        await ConnectionWriteEvent.exists({
+          connectionId: snapshot._id,
+          principal: "workflow:fr-offer-to-cash",
+          target: "DELETE /members/example",
+          allowed: true,
+          status: 200,
+        }),
+      );
+      const sentBeforeRefusal = sent.length;
+      assert.match(
+        await running.run("fr-offer-to-cash", () => attempt(revoke)),
+        /not allowed to write/,
+      );
+      assert.equal(
+        sent.length,
+        sentBeforeRefusal,
+        "the next request sees the updated grant",
+      );
+    } finally {
+      syncConnectorRegistry.getConfigSchemaForType = getSchema;
+    }
 
     console.info("connection proxy tests passed");
   } finally {
