@@ -441,7 +441,8 @@ export async function performSyncChunk(
     if (options.restEntityAdmission && sourceConnection.type === "rest") {
       await assertRestEntityAdmission(
         Flow.db,
-        options.restEntityAdmission.scope,
+        options.restEntityAdmission,
+        options.entity,
       );
     }
 

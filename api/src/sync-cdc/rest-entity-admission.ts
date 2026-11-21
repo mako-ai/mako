@@ -38,6 +38,7 @@ export interface RestEntityOverwriteReservation {
 interface AdmissionRecord {
   _id: string;
   closed: boolean;
+  draining?: boolean;
   admissions: number;
   pendingRuns?: RestEntityRun[];
   pendingOverwrites?: RestEntityOverwrite[];
@@ -64,9 +65,11 @@ class RestEntityOverwriteSealedError extends NonRetriableError {
 
 export async function assertRestEntityAdmission(
   connection: Connection,
-  scope: RestEntityAdmissionScope,
+  { scope, runId }: RestEntityAdmissionContext,
+  entity: string,
 ): Promise<void> {
-  if (!(await admitRestEntity(connection, scope))) {
+  const run = runId ? { runId, entity } : undefined;
+  if (!(await admitRestEntity(connection, scope, run))) {
     throw new RestEntityAdmissionClosedError();
   }
 }
@@ -134,12 +137,17 @@ async function ensureAdmissionRecord(
   return { collection, _id };
 }
 
-/** Close new admissions only after the admitted work has drained. */
+/** Stop new admissions immediately and close once existing work has drained. */
 export async function closeRestEntityAdmission(
   connection: Connection,
   scope: RestEntityAdmissionScope,
 ): Promise<void> {
   const { collection, _id } = await ensureAdmissionRecord(connection, scope);
+  await collection.updateOne(
+    { _id, closed: false, draining: { $ne: true } },
+    { $set: { draining: true } },
+    { writeConcern: { w: "majority" } },
+  );
   const result = await collection.updateOne(
     {
       _id,
@@ -166,7 +174,11 @@ export async function reserveRestEntityRun(
 ): Promise<void> {
   const { collection, _id } = await ensureAdmissionRecord(connection, scope);
   const result = await collection.updateOne(
-    { _id, closed: false },
+    {
+      _id,
+      closed: false,
+      $or: [{ draining: { $ne: true } }, { pendingRuns: { $elemMatch: run } }],
+    },
     { $addToSet: { pendingRuns: run } },
     { writeConcern: { w: "majority" } },
   );
@@ -205,6 +217,10 @@ export async function reserveRestEntityOverwrite(
       _id,
       closed: false,
       "verifiedOverwrites.overwriteHash": { $ne: overwriteHash },
+      $or: [
+        { draining: { $ne: true } },
+        { pendingOverwrites: { $elemMatch: overwrite } },
+      ],
       pendingOverwrites: {
         $not: { $elemMatch: conflictingOverwrite(overwrite) },
       },
@@ -372,14 +388,27 @@ export async function releaseVerifiedRestEntityOverwrite(
   return "released";
 }
 
-/** Atomically order this attempt against closure without holding a read open. */
+/** Admit new work while open, or an exact retained run while draining. */
 export async function admitRestEntity(
   connection: Connection,
   scope: RestEntityAdmissionScope,
+  run?: RestEntityRun,
 ): Promise<boolean> {
   const { collection, _id } = await ensureAdmissionRecord(connection, scope);
   const result = await collection.updateOne(
-    { _id, closed: false },
+    {
+      _id,
+      closed: false,
+      $or: [
+        { draining: { $ne: true } },
+        ...(run
+          ? [
+              { pendingRuns: { $elemMatch: run } },
+              { pendingOverwrites: { $elemMatch: run } },
+            ]
+          : []),
+      ],
+    },
     { $inc: { admissions: 1 } },
     { writeConcern: { w: "majority" } },
   );

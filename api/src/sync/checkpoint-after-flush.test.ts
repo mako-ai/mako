@@ -1064,6 +1064,18 @@ describe("queued REST entity admission", () => {
     expect(await anchor()).toEqual(previousAnchor);
     await expect(close()).rejects.toThrow("REST entity run is still in flight");
 
+    beforePrepareStaging = undefined;
+    onSyntheticRead = undefined;
+    const nextExecutionId = new Types.ObjectId();
+    await database()
+      .collection("flow_executions")
+      .insertOne({ _id: nextExecutionId, startedAt: runStartedAt });
+    await expect(
+      invoke({ ...poll, executionId: nextExecutionId.toHexString() }),
+    ).rejects.toThrow("REST entity admission is closed");
+    expect(chunkStartOffsets).toEqual([0]);
+    expect(live).toEqual(["opp_00000"]);
+
     const mongo = connection();
     const transact = mongo.transaction.bind(mongo);
     const abort = vi

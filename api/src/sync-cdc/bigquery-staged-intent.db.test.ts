@@ -259,6 +259,13 @@ describe("retained overwrite query metadata", () => {
     await expect(
       reserve({ ...competing, tableName: "other_contacts" }),
     ).resolves.toBeUndefined();
+    await expect(
+      closeRestEntityAdmission(mongoose.connection, scope),
+    ).rejects.toThrow("REST overwrite is still in flight");
+    await expect(reserve(admitted)).resolves.toBeUndefined();
+    await expect(
+      reserve({ ...admitted, tableName: "unreserved_contacts" }),
+    ).rejects.toThrow("REST entity admission is closed");
   });
 
   it("serializes a retained REST replacement with resync of the same table", async () => {
@@ -740,7 +747,7 @@ describe("retained overwrite query metadata", () => {
     await expect(settle()).resolves.toBe(true);
     await expect(pendingOverwrite()).resolves.toBe(false);
     await expect(admitRestEntity(mongoose.connection, scope)).resolves.toBe(
-      true,
+      false,
     );
     await expect(
       reserveRestEntityOverwrite(mongoose.connection, scope, overwrite),
@@ -1410,12 +1417,12 @@ describe("retained overwrite query metadata", () => {
     ).resolves.toEqual(manifest);
 
     const firstWrite = {
-      scope,
+      scope: { ...scope, sourceConnectionId: new Types.ObjectId() },
       overwrite: { ...overwrite, runId: "absent-table" },
     };
     await reserveRestEntityOverwrite(
       mongoose.connection,
-      scope,
+      firstWrite.scope,
       firstWrite.overwrite,
     );
     liveTableExists = false;

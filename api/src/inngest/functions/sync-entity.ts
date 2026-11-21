@@ -495,7 +495,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
               }
             }
             if (admission) {
-              await assertRestEntityAdmission(Flow.db, admission.scope);
+              await assertRestEntityAdmission(Flow.db, admission, entity);
             }
           }
 
