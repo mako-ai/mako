@@ -69,6 +69,7 @@ export interface LeaseJobRef {
   /** A dispatch may still land after a status lookup returns not found. */
   reservedBeforeDispatch?: boolean;
   intentFingerprint?: string;
+  dispatchState?: "ready" | "attempted";
 }
 
 type ReservedJob = {
@@ -83,7 +84,17 @@ function reservedJobFilter(job: LeaseJobRef) {
     jobLocation: job.location,
     jobReservedBeforeDispatch: true,
     jobIntentFingerprint: job.intentFingerprint,
+    jobDispatchState: job.dispatchState ?? null,
   };
+}
+
+function sameReservedJob(current: LeaseJobRef, expected: ReservedJob): boolean {
+  return (
+    current.reservedBeforeDispatch === true &&
+    current.jobId === expected.jobId &&
+    current.location === expected.location &&
+    current.intentFingerprint === expected.intentFingerprint
+  );
 }
 
 function validReservation(job: LeaseJobRef): boolean {
@@ -109,6 +120,7 @@ interface TableWriteLeaseDoc {
   jobLocation?: string | null;
   jobReservedBeforeDispatch?: boolean | null;
   jobIntentFingerprint?: string | null;
+  jobDispatchState?: LeaseJobRef["dispatchState"] | null;
   flowId?: string | null;
   path?: string | null;
   acquiredAt?: Date;
@@ -127,6 +139,7 @@ export const CdcTableWriteLease =
         jobLocation: { type: String },
         jobReservedBeforeDispatch: { type: Boolean },
         jobIntentFingerprint: { type: String },
+        jobDispatchState: { type: String, enum: ["ready", "attempted"] },
         flowId: { type: String },
         path: { type: String },
         acquiredAt: { type: Date },
@@ -161,6 +174,8 @@ export interface AcquireTableWriteLeaseOptions {
   settleMs?: number;
   /** Needed to wait on a dead holder's job and to settle a failed one. */
   jobs?: LeaseJobControl;
+  /** Resume only this exact reservation if dispatch has never been authorized. */
+  resumeReservedJob?: ReservedJob;
   /** Tests name the holder; default a random UUID. */
   holder?: string;
 }
@@ -230,7 +245,10 @@ export class TableWriteLease {
   }
 
   /** Persist a caller-assigned job ID before the caller can dispatch it. */
-  async reserveJob(job: ReservedJob): Promise<void> {
+  async reserveJob(
+    job: ReservedJob,
+    { guardDispatch = false }: { guardDispatch?: boolean } = {},
+  ): Promise<void> {
     if (!validReservation(job)) {
       throw new Error(
         "A write reservation requires a job ID, location and intent fingerprint",
@@ -245,7 +263,29 @@ export class TableWriteLease {
     ) {
       throw new TableWriteLeaseBusyError(this.key, this.waitMs);
     }
-    this.reservationWrite = this.persistReservation({ ...job });
+    await this.finishReservationWrite(
+      this.persistReservation({ ...job }, guardDispatch),
+    );
+  }
+
+  /** Authorize one dispatch from the current holder of the exact reservation. */
+  async beginReservedJobDispatch(expected: ReservedJob): Promise<void> {
+    const current = this.job;
+    if (
+      this.releasing ||
+      this.reservationWrite ||
+      this.reservationFailed ||
+      !current ||
+      current.dispatchState !== "ready" ||
+      !sameReservedJob(current, expected)
+    ) {
+      throw new TableWriteLeaseBusyError(this.key, this.waitMs);
+    }
+    await this.finishReservationWrite(this.persistDispatchStart(current));
+  }
+
+  private async finishReservationWrite(write: Promise<void>): Promise<void> {
+    this.reservationWrite = write;
     try {
       await this.reservationWrite;
       if (this.releasing) {
@@ -259,9 +299,13 @@ export class TableWriteLease {
     }
   }
 
-  private async persistReservation(job: ReservedJob): Promise<void> {
+  private async persistReservation(
+    job: ReservedJob,
+    guardDispatch: boolean,
+  ): Promise<void> {
     await Promise.all(this.pendingWrites);
     const now = new Date();
+    const dispatchState = guardDispatch ? "ready" : undefined;
     const result = await CdcTableWriteLease.updateOne(
       {
         _id: this.key,
@@ -275,6 +319,7 @@ export class TableWriteLease {
           jobLocation: job.location,
           jobReservedBeforeDispatch: true,
           jobIntentFingerprint: job.intentFingerprint,
+          jobDispatchState: dispatchState ?? null,
           expiresAt: new Date(now.getTime() + this.opts.ttlMs),
         },
       },
@@ -283,8 +328,31 @@ export class TableWriteLease {
     if (result.matchedCount !== 1) {
       throw new TableWriteLeaseBusyError(this.key, this.waitMs);
     }
-    this.job = { ...job, reservedBeforeDispatch: true };
+    this.job = { ...job, reservedBeforeDispatch: true, dispatchState };
     this.jobDone = false;
+  }
+
+  private async persistDispatchStart(job: LeaseJobRef): Promise<void> {
+    const now = new Date();
+    const result = await CdcTableWriteLease.updateOne(
+      {
+        _id: this.key,
+        holder: this.holder,
+        expiresAt: { $gt: now },
+        ...reservedJobFilter(job),
+      },
+      {
+        $set: {
+          jobDispatchState: "attempted",
+          expiresAt: new Date(now.getTime() + this.opts.ttlMs),
+        },
+      },
+      { writeConcern: { w: "majority" } },
+    );
+    if (result.matchedCount !== 1) {
+      throw new TableWriteLeaseBusyError(this.key, this.waitMs);
+    }
+    this.job = { ...job, dispatchState: "attempted" };
   }
 
   /**
@@ -318,6 +386,7 @@ export class TableWriteLease {
             jobId: job.jobId,
             jobLocation: job.location ?? null,
             jobReservedBeforeDispatch: false,
+            jobDispatchState: null,
           },
         },
       ).catch(err => {
@@ -373,6 +442,14 @@ export class TableWriteLease {
   async waitForInheritedJob(job: LeaseJobRef, deadline: number) {
     this.job = job;
     this.jobDone = false;
+    const resume = this.opts.resumeReservedJob;
+    if (
+      job.dispatchState === "ready" &&
+      resume &&
+      sameReservedJob(job, resume)
+    ) {
+      return;
+    }
     const done = await this.waitJobDone(job, deadline);
     if (!done) {
       throw new TableWriteLeaseBusyError(this.key, this.waitMs);
@@ -391,6 +468,7 @@ export class TableWriteLease {
           jobLocation: null,
           jobReservedBeforeDispatch: null,
           jobIntentFingerprint: null,
+          jobDispatchState: null,
         },
       },
     );
@@ -522,6 +600,7 @@ export async function acquireTableWriteLease(
               reservedBeforeDispatch:
                 previous.jobReservedBeforeDispatch === true,
               intentFingerprint: previous.jobIntentFingerprint ?? undefined,
+              dispatchState: previous.jobDispatchState ?? undefined,
             },
             deadline,
           );
