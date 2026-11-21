@@ -38,6 +38,10 @@ import { NonRetriableError } from "inngest";
 import { loggers } from "../../logging";
 import { boxLowMemoryRefusal } from "../../apps/sandbox/box-memory";
 import {
+  assertLaunchDeadline,
+  LaunchDeadlineError,
+} from "../../apps/sandbox/launch-deadline";
+import {
   ensureBundle,
   ConnectorOutputTooLargeError,
   MAX_CONNECTOR_PROTOCOL_BYTES,
@@ -426,6 +430,7 @@ export class SandboxedConnector extends BaseConnector {
   constructor(
     connection: ConstructorParameters<typeof BaseConnector>[0],
     trustedDefinition?: LoadedConnector,
+    private readonly remainingMs?: () => number,
   ) {
     super(connection);
     if (trustedDefinition) {
@@ -600,6 +605,7 @@ export class SandboxedConnector extends BaseConnector {
       timeoutMs?: number;
     },
   ): Promise<RunResult> {
+    assertLaunchDeadline(this.remainingMs);
     if (!connectorBoxLeasesEnabled()) {
       const { dir, runtimeId, entry, ctx } = await this.ready();
       let cleanupFailure: string | null = null;
@@ -612,6 +618,7 @@ export class SandboxedConnector extends BaseConnector {
           command,
           entry,
           ...options,
+          ...(this.remainingMs ? { remainingMs: this.remainingMs } : {}),
           onCleanupFailure: reason => {
             cleanupFailure = reason;
           },
@@ -638,6 +645,8 @@ export class SandboxedConnector extends BaseConnector {
     const definition = await this.definition();
     this.requireRegistryEnabled(definition);
     const saved = this.connectionId();
+    const requestedRuntimeId = await connectorRuntimeId();
+    assertLaunchDeadline(this.remainingMs);
     return getBoxScheduler().withLease(
       {
         workspaceId: this.workspaceId,
@@ -646,20 +655,23 @@ export class SandboxedConnector extends BaseConnector {
         connectionId: saved ?? `unsaved:${randomBytes(8).toString("hex")}`,
         bundleHash: definition.registry?.sha256 ?? definition.sourceSha,
         command,
-        runtimeId: await connectorRuntimeId(),
+        runtimeId: requestedRuntimeId,
         timeoutMs: options.timeoutMs,
         oneOff: saved === null,
       },
       async lease => {
+        assertLaunchDeadline(this.remainingMs);
         // Registry bundles must be checked against their digest on every reuse.
         // Workspace bundles retain their per-box memo.
-        const { dir, runtimeId, entry } = definition.registry
+        const registry = definition.registry;
+        const { dir, runtimeId, entry } = registry
           ? await (async () => {
               const runtimeId = await ensureConnectorRuntime(lease.ctx);
+              assertLaunchDeadline(this.remainingMs);
               const installed = await prepareRegistryConnector({
                 ctx: lease.ctx,
                 runtimeId,
-                registry: definition.registry!,
+                registry,
               });
               return { ...installed, runtimeId };
             })()
@@ -686,6 +698,7 @@ export class SandboxedConnector extends BaseConnector {
             );
         lease.noteRuntime(runtimeId);
         // Before any credentialed command: the template must hold none.
+        assertLaunchDeadline(this.remainingMs);
         await lease.snapshotPristine(runtimeId);
         const result = await runConnectorCommand({
           ctx: lease.ctx,
@@ -694,6 +707,7 @@ export class SandboxedConnector extends BaseConnector {
           command,
           entry,
           ...options,
+          ...(this.remainingMs ? { remainingMs: this.remainingMs } : {}),
           // A run whose cleanup failed may have left its credential or a
           // process behind: the box is killed, never handed to the next run.
           onCleanupFailure: reason => lease.markUnhealthy(reason),
@@ -901,7 +915,9 @@ export class SandboxedConnector extends BaseConnector {
     } catch (error) {
       // A box memory refusal never ran the check, so it is no verdict on
       // the credential: thrown, never recorded as a failed check.
-      if (boxLowMemoryRefusal(error)) throw error;
+      if (boxLowMemoryRefusal(error) || error instanceof LaunchDeadlineError) {
+        throw error;
+      }
       return {
         success: false,
         message: error instanceof Error ? error.message : String(error),

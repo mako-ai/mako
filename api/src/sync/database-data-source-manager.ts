@@ -7,6 +7,8 @@ import { databaseConnectionService } from "../services/database-connection.servi
 import { loggers } from "../logging";
 import type { StripeTestBinding } from "../connectors/workspace/registry/stripe-binding";
 import type { CalendlyBinding } from "../connectors/workspace/registry/calendly-binding";
+import { assertLaunchDeadline } from "../apps/sandbox/launch-deadline";
+import type { ISourceConnection } from "../database/models/source-connections";
 
 dotenv.config({ quiet: true });
 
@@ -22,6 +24,16 @@ type ConnectorFieldSchema = {
 };
 
 type ConnectorSchema = { fields: ConnectorFieldSchema[] };
+
+type BoundConnectionPolicy = Partial<
+  Pick<
+    ISourceConnection,
+    "name" | "liveReads" | "liveReaders" | "writers" | "managers" | "createdBy"
+  >
+>;
+type AuthorizeBoundConnection = (
+  policy: BoundConnectionPolicy,
+) => Promise<void>;
 
 /**
  * Decrypted runtime config for a source connection (a credential configured
@@ -209,26 +221,38 @@ class SourceConnectionManager {
 
   getBoundCalendlyConnection(
     binding: CalendlyBinding,
+    authorize?: AuthorizeBoundConnection,
   ): Promise<SourceConnectionConfig | null> {
-    return this.getBoundRegistryConnection(binding, "calendly");
+    return this.getBoundRegistryConnection(
+      binding,
+      "calendly",
+      binding.remainingMs,
+      authorize,
+    );
   }
 
   /** Reload the scoped row before decrypting it with the verified spec. */
   private async getBoundRegistryConnection(
     binding: StripeTestBinding | CalendlyBinding,
     type: "stripe" | "calendly",
+    remainingMs?: () => number,
+    authorize?: AuthorizeBoundConnection,
   ): Promise<SourceConnectionConfig | null> {
+    assertLaunchDeadline(remainingMs);
     const { workspaceId, connectionId } = binding;
     if (!ObjectId.isValid(connectionId) || !ObjectId.isValid(workspaceId)) {
       return null;
     }
-    const source = await (
-      await this.connectors()
-    ).findOne({
+    const connections = await this.connectors();
+    assertLaunchDeadline(remainingMs);
+    const source = await connections.findOne<
+      WithId<Document> & BoundConnectionPolicy
+    >({
       _id: new ObjectId(connectionId),
       workspaceId: new ObjectId(workspaceId),
       type,
     });
+    assertLaunchDeadline(remainingMs);
     if (
       !source ||
       String(source._id) !== connectionId ||
@@ -236,6 +260,18 @@ class SourceConnectionManager {
       source.type !== type
     ) {
       return null;
+    }
+    if (authorize) {
+      // Check policy from the same scoped row that will supply the credential.
+      await authorize({
+        name: source.name,
+        liveReads: source.liveReads,
+        liveReaders: source.liveReaders,
+        writers: source.writers,
+        managers: source.managers,
+        createdBy: source.createdBy,
+      });
+      assertLaunchDeadline(remainingMs);
     }
     return this.toConfig(source, binding.schema);
   }
@@ -436,8 +472,14 @@ function proxyManager() {
     async getBoundStripeTestConnection(binding: StripeTestBinding) {
       return getSourceConnectionManager().getBoundStripeTestConnection(binding);
     },
-    async getBoundCalendlyConnection(binding: CalendlyBinding) {
-      return getSourceConnectionManager().getBoundCalendlyConnection(binding);
+    async getBoundCalendlyConnection(
+      binding: CalendlyBinding,
+      authorize?: AuthorizeBoundConnection,
+    ) {
+      return getSourceConnectionManager().getBoundCalendlyConnection(
+        binding,
+        authorize,
+      );
     },
     async getSourceConnectionsByType(type: string) {
       return getSourceConnectionManager().getSourceConnectionsByType(type);

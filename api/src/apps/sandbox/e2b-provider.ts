@@ -45,6 +45,11 @@ import type {
 import { viteAllowedHostEnv } from "./e2b-domain";
 import { isPersonActorId } from "../actor-id";
 import { commandToRun } from "./hidden-command";
+import {
+  assertLaunchDeadline,
+  LaunchDeadlineError,
+  launchTimeout,
+} from "./launch-deadline";
 import { killByEnvScript } from "./kill-by-env";
 
 const logger = loggers.api("apps-e2b");
@@ -713,6 +718,8 @@ async function withSandbox<T>(
     phase = "call";
     return await fn(entry.sandbox);
   } catch (error) {
+    // A local deadline refusal says nothing about the connected box.
+    if (error instanceof LaunchDeadlineError) throw error;
     // A missing file says nothing about the box: keep the handle, and spare
     // the next call a connect (about 176 ms).
     if (reused && !isFileNotFound(unwrapNotStarted(error))) {
@@ -860,10 +867,25 @@ async function execE2b(
     // still be running). Only the first may be retried; see withSandbox.
     const run = commandToRun(command, options);
     const execId = randomUUID();
+    const limit = options.remainingMs
+      ? Math.min(timeoutMs, options.timeoutMs ?? timeoutMs)
+      : timeoutMs;
+    const launchMs = launchTimeout(limit, options.remainingMs, 1_000);
+    if (launchMs === null) {
+      return {
+        exitCode: 124,
+        stdout: "",
+        stderr: "",
+        timedOut: true,
+        preLaunchDeadline: true,
+        truncated: false,
+        sandboxId: sandbox.sandboxId,
+      };
+    }
     const handle = await startCommand(sandbox, run.command, {
       user: userFor(options),
       cwd,
-      timeoutMs,
+      timeoutMs: launchMs,
       envs: {
         HOME: "/home/user",
         LANG: "C.UTF-8",
@@ -1040,10 +1062,13 @@ async function writeFileE2b(
   await withSandbox(
     ctx.sessionKey,
     undefined,
-    sandbox =>
-      sandbox.files.write(remotePath, toArrayBuffer(bytes), {
+    sandbox => {
+      const data = toArrayBuffer(bytes);
+      assertLaunchDeadline(options?.remainingMs);
+      return sandbox.files.write(remotePath, data, {
         user: userFor(options),
-      }),
+      });
+    },
     { expectSandboxId: options?.expectSandboxId },
   );
 }
@@ -1058,14 +1083,14 @@ async function writeFilesE2b(
   await withSandbox(
     ctx.sessionKey,
     undefined,
-    sandbox =>
-      sandbox.files.write(
-        files.map(file => ({
-          path: file.path,
-          data: toArrayBuffer(file.bytes),
-        })),
-        { user: userFor(options) },
-      ),
+    sandbox => {
+      const entries = files.map(file => ({
+        path: file.path,
+        data: toArrayBuffer(file.bytes),
+      }));
+      assertLaunchDeadline(options?.remainingMs);
+      return sandbox.files.write(entries, { user: userFor(options) });
+    },
     { expectSandboxId: options?.expectSandboxId },
   );
 }

@@ -60,11 +60,13 @@ import {
 import { mayReadLive } from "../connections/proxy.service";
 import { loggers } from "../logging";
 import { boxLowMemoryRefusal } from "../apps/sandbox/box-memory";
+import { LaunchDeadlineError } from "../apps/sandbox/launch-deadline";
 import { redactSecrets, secretValuesOf } from "../connections/redact";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import {
   bindCalendlyRelease,
   isCalendlyReleaseSelected,
+  type CalendlyBinding,
 } from "./workspace/registry/calendly-binding";
 import {
   sourceConnectionManager,
@@ -256,24 +258,23 @@ function pickFields(record: unknown, fields: string[]): unknown {
   return picked;
 }
 
+function probeTimeout(ms: number, what: string): ProbeError {
+  return new ProbeError(
+    "timeout",
+    `${what} did not finish within ${Math.round(ms / 1000)}s. ` +
+      "A probe reads one page; if the platform is that slow, sync it with a flow instead.",
+  );
+}
+
 function withDeadline<T>(
   promise: Promise<T>,
   ms: number,
   what: string,
+  totalMs = ms,
 ): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () =>
-        reject(
-          new ProbeError(
-            "timeout",
-            `${what} did not finish within ${Math.round(ms / 1000)}s. ` +
-              "A probe reads one page; if the platform is that slow, sync it with a flow instead.",
-          ),
-        ),
-      ms,
-    );
+    timer = setTimeout(() => reject(probeTimeout(totalMs, what)), ms);
   });
   return Promise.race([promise, deadline]).finally(() => {
     if (timer) clearTimeout(timer);
@@ -356,6 +357,7 @@ async function assertMayProbeEntity(
  */
 export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
   const started = Date.now();
+  const startedMonotonic = performance.now();
   const { workspaceId, connectionId } = input;
   const limit = normalizeLimit(input.limit);
   const fields = normalizeFields(input.fields);
@@ -391,27 +393,39 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
     );
   }
   const type = String(owned.type ?? "");
-  const useCalendlyRelease = isCalendlyReleaseSelected(type);
-  if (!useCalendlyRelease && (await isOrphanConnectorType(type, workspaceId))) {
+  const remainingMs = isCalendlyReleaseSelected(type)
+    ? () => Math.floor(startedMonotonic + timeoutMs - performance.now())
+    : undefined;
+  if (!remainingMs && (await isOrphanConnectorType(type, workspaceId))) {
     throw new ProbeError("connector_unavailable", ORPHAN_TYPE_MESSAGE);
   }
-  if (input.entity) await assertMayProbeEntity(workspaceId, owned);
-
-  const binding = useCalendlyRelease
-    ? await bindCalendlyRelease({ workspaceId, connectionId, type })
-    : null;
-  const sourceConnection = binding
-    ? await sourceConnectionManager.getBoundCalendlyConnection(binding)
-    : await sourceConnectionManager.getSourceConnection(connectionId);
-  if (!sourceConnection) {
-    throw new ProbeError("not_found", "Connection not found");
+  if (!remainingMs && input.entity) {
+    await assertMayProbeEntity(workspaceId, owned);
   }
-  const secrets = secretValuesOf(sourceConnection.connection);
+  const nativeSource = remainingMs
+    ? null
+    : await sourceConnectionManager.getSourceConnection(connectionId);
+  let secrets = nativeSource ? secretValuesOf(nativeSource.connection) : [];
 
-  const run = async (): Promise<ProbeResult> => {
+  const requireBudget = () => {
+    if (!remainingMs) return timeoutMs;
+    const budget = remainingMs();
+    if (budget <= 0) throw probeTimeout(timeoutMs, "The probe");
+    return budget;
+  };
+
+  const run = async (
+    sourceConnection: SourceConnectionConfig | null,
+    binding?: CalendlyBinding,
+  ): Promise<ProbeResult> => {
+    if (!sourceConnection) {
+      throw new ProbeError("not_found", "Connection not found");
+    }
+    requireBudget();
     const connector = binding
       ? await syncConnectorRegistry.getConnectorFor(sourceConnection, binding)
       : await syncConnectorRegistry.getConnectorFor(sourceConnection);
+    requireBudget();
     if (!connector) {
       throw new ProbeError(
         "connector_unavailable",
@@ -430,6 +444,7 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
       sourceConnection,
       connector,
     });
+    requireBudget();
 
     if (!input.entity || !check.success) {
       return {
@@ -472,7 +487,9 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
       },
     });
 
+    requireBudget();
     const schema = await connector.resolveSchema(entity).catch(error => {
+      if (remainingMs && error instanceof LaunchDeadlineError) throw error;
       logger.warn("Probe could not resolve the entity schema", {
         workspaceId,
         connectionId,
@@ -481,6 +498,7 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
       });
       return null;
     });
+    requireBudget();
 
     return {
       connection: identity,
@@ -499,10 +517,56 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
     };
   };
 
+  const runWithSelectedRelease = async (): Promise<ProbeResult> => {
+    if (!remainingMs) return run(nativeSource);
+
+    requireBudget();
+    if (input.entity) await assertMayProbeEntity(workspaceId, owned);
+    requireBudget();
+    const binding = await bindCalendlyRelease({
+      workspaceId,
+      connectionId,
+      type,
+      remainingMs,
+    });
+    requireBudget();
+    if (!binding) {
+      throw new ProbeError(
+        "connector_unavailable",
+        "No verified Calendly release is selected.",
+      );
+    }
+
+    // Check the policy on the same snapshot that supplies the credential.
+    const sourceConnection =
+      await sourceConnectionManager.getBoundCalendlyConnection(
+        binding,
+        input.entity
+          ? async policy => {
+              requireBudget();
+              await assertMayProbeEntity(binding.workspaceId, policy);
+              requireBudget();
+            }
+          : undefined,
+      );
+    requireBudget();
+    if (sourceConnection) secrets = secretValuesOf(sourceConnection.connection);
+    return run(sourceConnection, binding);
+  };
+
   try {
-    const result = await withDeadline(run(), timeoutMs, "The probe");
+    const budget = requireBudget();
+    const result = await withDeadline(
+      runWithSelectedRelease(),
+      budget,
+      "The probe",
+      timeoutMs,
+    );
     return redactValue(result, secrets);
   } catch (error) {
+    if (remainingMs && error instanceof LaunchDeadlineError) {
+      throw probeTimeout(timeoutMs, "The probe");
+    }
     if (error instanceof ProbeError) {
       error.message = redactSecrets(error.message, secrets);
       throw error;

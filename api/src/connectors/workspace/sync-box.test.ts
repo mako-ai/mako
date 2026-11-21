@@ -34,6 +34,10 @@ import {
   verifyRuntimeShell,
   verifyTreeShell,
 } from "./sync-box";
+import {
+  assertLaunchDeadline,
+  LaunchDeadlineError,
+} from "../../apps/sandbox/launch-deadline";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -240,6 +244,34 @@ describe("workspace connector protocol output", () => {
     expect(output.timedOut).toBe(true);
     // The credential may still be on disk: the call returns only after rm.
     expect(cleanedUp).toBe(true);
+    expect(sandbox.readFile).not.toHaveBeenCalled();
+  });
+
+  it("cleans up a credential upload refused by a shared provider", async () => {
+    let budget = 10_000;
+    const remainingMs = () => budget;
+    sandbox.writeFiles.mockImplementationOnce(async (_ctx, _files, options) => {
+      expect(options).toEqual({ remainingMs });
+      budget = 0;
+      assertLaunchDeadline(options?.remainingMs);
+    });
+    const ctx = { sessionKey: "connector-sync:test" };
+
+    await expect(
+      runConnectorCommand({
+        ctx,
+        runtimeId: "runtime",
+        connectorDir: "/scratch/connector",
+        command: "read",
+        config: { api_key: "secret" },
+        remainingMs,
+      }),
+    ).rejects.toBeInstanceOf(LaunchDeadlineError);
+    expect(sandbox.exec).toHaveBeenCalledExactlyOnceWith(
+      ctx,
+      expect.stringMatching(/^rm -rf /),
+      { timeoutMs: 30_000 },
+    );
     expect(sandbox.readFile).not.toHaveBeenCalled();
   });
 
@@ -757,7 +789,10 @@ describe("per-run Unix users on providers with real users", () => {
     sandbox.supportsRunUsers = undefined;
   });
 
-  const runOnce = (onCleanupFailure?: (reason: string) => void) =>
+  const runOnce = (
+    onCleanupFailure?: (reason: string) => void,
+    remainingMs?: () => number,
+  ) =>
     runConnectorCommand({
       ctx,
       runtimeId: "runtime",
@@ -767,6 +802,7 @@ describe("per-run Unix users on providers with real users", () => {
       config: { apiKey: "secret" },
       state: [{ type: "STREAM" }],
       onCleanupFailure,
+      remainingMs,
     });
 
   const calls = () =>
@@ -945,6 +981,33 @@ describe("per-run Unix users on providers with real users", () => {
       asRoot: true,
       expectSandboxId: "sbx_1",
     });
+  });
+
+  it("cleans the root-only inbox when input transfer expires", async () => {
+    let budget = 10_000;
+    const remainingMs = () => budget;
+    sandbox.writeFiles.mockImplementationOnce(async (_ctx, _files, options) => {
+      expect(options).toEqual({
+        asRoot: true,
+        expectSandboxId: "sbx_1",
+        remainingMs,
+      });
+      budget = 0;
+      assertLaunchDeadline(options?.remainingMs);
+    });
+
+    await expect(runOnce(undefined, remainingMs)).rejects.toBeInstanceOf(
+      LaunchDeadlineError,
+    );
+    expect(chunks()).toHaveLength(0);
+    const abandon = calls().find(c => c.command.includes('userdel "$user" ||'));
+    expect(abandon?.command).toContain("'/var/lib/mako-connectors/incoming/");
+    expect(abandon?.options).toMatchObject({
+      asRoot: true,
+      expectSandboxId: "sbx_1",
+    });
+    expect(abandon?.options).not.toHaveProperty("remainingMs");
+    expect(sandbox.readFile).not.toHaveBeenCalled();
   });
 
   it("writes the runtime and connector folders as root under /var/lib, read-only to runs", async () => {
