@@ -63,6 +63,10 @@ import { requireWorkspaceAccess } from "./lib/workspace-access";
 
 const logger = loggers.connector();
 
+function configRevisionMatch(revision?: number) {
+  return revision ? revision : { $in: [0, null] };
+}
+
 export const sourceConnectionRoutes = createRouter();
 
 // Apply unified auth middleware to all source-connection routes
@@ -581,10 +585,9 @@ sourceConnectionRoutes.openapi(
           // A hydrated config must not overwrite a key saved after the read.
           // Missing legacy counters start at zero; retire old writers before
           // relying on this guard across replicas.
-          const revision = currentValues.configRevision ?? 0;
           sourceConnection.$where = {
             workspaceId: sourceConnection.workspaceId,
-            configRevision: revision === 0 ? { $in: [0, null] } : revision,
+            configRevision: configRevisionMatch(currentValues.configRevision),
           };
           sourceConnection.$inc("configRevision", 1);
         }
@@ -694,7 +697,13 @@ sourceConnectionRoutes.openapi(
 
       const existing = await SourceConnection.findOne(
         { _id: id, workspaceId },
-        { createdBy: 1, managers: 1, keyRequest: 1, type: 1 },
+        {
+          createdBy: 1,
+          managers: 1,
+          keyRequest: 1,
+          type: 1,
+          configRevision: 1,
+        },
       ).lean();
       if (!existing) {
         return fail(c, 404, "Source connection not found");
@@ -725,6 +734,15 @@ sourceConnectionRoutes.openapi(
             _id: id,
             workspaceId,
             isActive: { $ne: body.enabled },
+            // A key check can restore the request after the enable check.
+            // Bind enabling to the eligible state that we checked above.
+            ...(body.enabled
+              ? {
+                  type: existing.type,
+                  keyRequest: null,
+                  configRevision: configRevisionMatch(existing.configRevision),
+                }
+              : {}),
           },
           {
             $set: { isActive: body.enabled },
@@ -737,6 +755,14 @@ sourceConnectionRoutes.openapi(
 
       if (!sourceConnection) {
         return fail(c, 404, "Source connection not found");
+      }
+      if (
+        sourceConnection.isActive !== body.enabled ||
+        (body.enabled &&
+          (sourceConnection.type !== existing.type ||
+            sourceConnection.keyRequest))
+      ) {
+        return fail(c, 409, "Connection changed. Refresh and try again.");
       }
 
       return c.json({

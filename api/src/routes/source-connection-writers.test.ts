@@ -174,11 +174,20 @@ describe("source connection config revisions", () => {
       (await SourceConnection.findById(id).select("+configRevision").lean())
         ?.configRevision,
     ).toBe(2);
-    await req("PATCH", `/${id}/enable`, { enabled: false });
+    const alreadyDisabled = await req("PATCH", `/${id}/enable`, {
+      enabled: false,
+    });
+    expect(alreadyDisabled.status).toBe(200);
     expect(
       (await SourceConnection.findById(id).select("+configRevision").lean())
         ?.configRevision,
     ).toBe(2);
+    const enabled = await req("PATCH", `/${id}/enable`, { enabled: true });
+    expect(enabled.status).toBe(200);
+    expect(
+      (await SourceConnection.findById(id).select("+configRevision").lean())
+        ?.configRevision,
+    ).toBe(3);
   });
 
   it("rejects a stale hydrated config after a concurrent active edit", async () => {
@@ -220,6 +229,52 @@ describe("source connection config revisions", () => {
       expect(row?.configRevision).toBe(1);
     } finally {
       release();
+      spy.mockRestore();
+    }
+  });
+
+  it("rejects enabling a connection when its key link is restored during the check", async () => {
+    await SourceConnection.updateOne(
+      { _id: id },
+      { $set: { isActive: false } },
+    );
+    const original = syncConnectorRegistry.getConfigSchemaForType.bind(
+      syncConnectorRegistry,
+    );
+    const spy = vi
+      .spyOn(syncConnectorRegistry, "getConfigSchemaForType")
+      .mockImplementationOnce(async (...args) => {
+        await SourceConnection.updateOne(
+          { _id: id, workspaceId: WS },
+          {
+            $set: {
+              keyRequest: {
+                tokenHash: "restored-link",
+                expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+                fields: ["api_key"],
+                requestedBy: "manager1",
+                createdAt: new Date("2026-01-01T00:00:00.000Z"),
+              },
+              isActive: false,
+            },
+            $unset: { "config.api_key": "" },
+            $inc: { configRevision: 1 },
+          },
+        );
+        return original(...args);
+      });
+    try {
+      expect(
+        (await req("PATCH", `/${id}/enable`, { enabled: true })).status,
+      ).toBe(409);
+      const row = await SourceConnection.findById(id)
+        .select("+configRevision")
+        .lean();
+      expect(row?.isActive).toBe(false);
+      expect(row?.keyRequest?.tokenHash).toBe("restored-link");
+      expect(row?.config.api_key).toBeUndefined();
+      expect(row?.configRevision).toBe(1);
+    } finally {
       spy.mockRestore();
     }
   });
