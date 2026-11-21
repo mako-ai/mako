@@ -353,9 +353,10 @@ describe("the key link", () => {
     ctx.probe = { success: false, message: "Invalid API key" };
     const failed = await call("POST", token, { config: { api_key: "typo" } });
     expect(failed.status).toBe(422);
-    expect(((await failed.json()) as { error: string }).error).toMatch(
-      /Invalid API key/,
-    );
+    expect(await failed.json()).toMatchObject({
+      code: "check_failed",
+      error: "The key did not work, so it was not kept: Invalid API key",
+    });
     const row = (await SourceConnection.findById(connectionId).lean()) as any;
     expect(row.config.api_key).toBeUndefined();
     expect(row.isActive).toBe(false);
@@ -389,8 +390,15 @@ describe("the key link", () => {
     };
     const res = await call("POST", token, { config: { api_key: "typo" } });
     expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({
+      code: "check_failed",
+      error:
+        "The key check failed. The connection changed during the check. Review its settings in Mako.",
+    });
     const row = (await SourceConnection.findById(connectionId).lean()) as any;
     expect(row.config.api_key).toBe(theirs);
+    expect(row.isActive).toBe(true);
+    expect(row.keyRequest).toBeUndefined();
   });
 });
 

@@ -463,7 +463,7 @@ export async function submitKey(input: {
   // A wrong key: take it back out and put the request back, so the same link
   // works for the corrected one. Only if the row still holds exactly what
   // this call wrote: a key a manager saved in the form meanwhile is theirs.
-  await SourceConnection.updateOne(
+  const rollback = await SourceConnection.updateOne(
     {
       _id: row._id,
       workspaceId: new Types.ObjectId(workspaceId),
@@ -475,6 +475,17 @@ export async function submitKey(input: {
       $set: { keyRequest: request, isActive: false },
     },
   );
+  if (rollback.matchedCount === 0) {
+    logger.info("Key link rollback skipped after the connection changed", {
+      workspaceId,
+      connectionId,
+      connector: row.type,
+    });
+    throw new KeyRequestError(
+      "check_failed",
+      "The key check failed. The connection changed during the check. Review its settings in Mako.",
+    );
+  }
   logger.info("Key from a key link failed its check and was removed", {
     workspaceId,
     connectionId,
