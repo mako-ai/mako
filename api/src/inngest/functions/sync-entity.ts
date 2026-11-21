@@ -35,6 +35,8 @@ import {
   resolveEntityClustering,
 } from "../../sync-cdc/adapters/registry";
 import { withBoxMemoryWaits } from "./flow/box-memory-wait";
+import { sourceConnectionManager } from "../../sync/database-data-source-manager";
+import { assertRestEntityAdmission } from "../../sync-cdc/rest-entity-admission";
 
 /**
  * Max steps to use before yielding back to the parent for re-invocation.
@@ -141,6 +143,15 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       resumeState,
     } = data;
 
+    // Enable only once already-admitted work and destination writes can drain.
+    const restEntityAdmission =
+      process.env.REST_ENTITY_ADMISSION_ENABLED === "1"
+        ? {
+            workspaceId: new Types.ObjectId(workspaceId),
+            flowId: new Types.ObjectId(flowId),
+            sourceConnectionId: new Types.ObjectId(dataSourceId),
+          }
+        : undefined;
     const safeEntityStepId = entity.replace(/[^a-zA-Z0-9_-]/g, "_");
     let stepsUsed = 0;
     // Backfills and scheduled resyncs read the source in full; polls do not.
@@ -387,6 +398,19 @@ export const syncBackfillEntityFunction = inngest.createFunction(
 
       await step.run(`prepare-staging-${safeEntityStepId}`, () =>
         withHeartbeat(executionId, async () => {
+          if (restEntityAdmission) {
+            const source = await sourceConnectionManager.getSourceConnection(
+              dataSourceId,
+              workspaceId,
+            );
+            if (!source) {
+              throw new Error(`Data source not found: ${dataSourceId}`);
+            }
+            if (source.type === "rest") {
+              await assertRestEntityAdmission(Flow.db, restEntityAdmission);
+            }
+          }
+
           // Rescue orphaned staging data from a previously crashed invocation
           // before dropping the staging table. A merge failure fails the
           // step: dropping rows we could not merge would lose them. Keyed
@@ -717,6 +741,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                 destinationDatabaseName,
                 flowId,
                 workspaceId,
+                restEntityAdmission,
                 syncEngine,
                 backfillRunId: backfill
                   ? cdcBackfillRunId || executionId
