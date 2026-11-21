@@ -432,6 +432,56 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 // --- 2. Bulk merge: lease, probe, MERGE, release --------------------------
 
 describe("bulk MERGE under the table write lease", () => {
+  it.each(["cold", "warm"])(
+    "recovers one schema connection timeout with a %s live cache",
+    async cache => {
+      const adapter = makeAdapter();
+      if (cache === "warm") {
+        await stageAndMerge(adapter, FLOW_A, [row("old", D1, D1)], "live");
+      }
+      const before = warehouse.merges.length;
+      const read = vi.spyOn(warehouse, "run").mockResolvedValueOnce({
+        success: false,
+        error: "connect ETIMEDOUT 192.0.2.1:443",
+      });
+
+      await stageAndMerge(adapter, FLOW_A, [row("new", D2, D2)], "live");
+
+      const first = read.mock.calls[0][0];
+      expect(first).toContain("INFORMATION_SCHEMA.COLUMNS");
+      expect(read.mock.calls[1][0]).toBe(first);
+      expect(warehouse.merges.length - before).toBe(1);
+      expect(warehouse.countOf(liveTable, "new")).toBe(1);
+    },
+  );
+
+  it.each([
+    { error: "Access denied", started: false, reads: 1 },
+    { error: "connect ETIMEDOUT 192.0.2.1:443", started: true, reads: 1 },
+    { error: "connect ETIMEDOUT 192.0.2.1:443", started: false, reads: 2 },
+  ])(
+    "stops schema discovery after $reads read(s) for $error, job started $started",
+    async ({ error, started, reads }) => {
+      const read = vi
+        .spyOn(warehouse, "run")
+        .mockImplementation(async (_sql, options) => {
+          if (started) options?.onJobStarted?.({ jobId: "existing-read" });
+          return { success: false, error };
+        });
+
+      await expect(
+        stageAndMerge(makeAdapter(), FLOW_A, [row("new", D2, D2)], "live"),
+      ).rejects.toThrow(error);
+      expect(read).toHaveBeenCalledTimes(reads);
+      expect(
+        read.mock.calls.every(([sql]) =>
+          sql.includes("INFORMATION_SCHEMA.COLUMNS"),
+        ),
+      ).toBe(true);
+      expect(warehouse.merges).toHaveLength(0);
+    },
+  );
+
   it("probes and filters, in the order lease → probe → MERGE → release", async () => {
     warehouse.rowsOf(liveTable).push(row("K", D1, "2026-11-01T10:00:00Z"));
     warehouse.rowsOf(liveTable).push(row("Z", D2, "2026-11-05T10:00:00Z"));

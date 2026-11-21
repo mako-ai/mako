@@ -158,6 +158,28 @@ type InformationSchemaRow = {
 const informationSchema = (target: BigQueryTarget) =>
   `${escId(target.projectId)}.${escId(target.dataset)}.INFORMATION_SCHEMA.COLUMNS`;
 
+// Only used for the read-only column lookup. A connect timeout can occur
+// before submission or while fetching results for an already accepted job.
+async function readMergeColumns(target: BigQueryTarget, sql: string) {
+  let jobStarted = false;
+  const result = await runBigQuery(target, sql, {
+    onJobStarted: () => {
+      jobStarted = true;
+    },
+  });
+  if (
+    !jobStarted &&
+    !result.success &&
+    /^connect ETIMEDOUT\b/.test(result.error ?? "")
+  ) {
+    log.warn("Retrying BigQuery column lookup after a connection timeout", {
+      dataset: target.dataset,
+    });
+    return runBigQuery(target, sql);
+  }
+  return result;
+}
+
 export interface MergeSchemas {
   stagingCols: Set<string>;
   liveCols: Set<string>;
@@ -189,7 +211,7 @@ export async function discoverMergeSchemas(
     const liveCols = new Set(cachedLive.columns.keys());
     const liveTypes = new Map(cachedLive.columns);
 
-    const stagingResult = await runBigQuery(
+    const stagingResult = await readMergeColumns(
       target,
       `SELECT column_name FROM ${informationSchema(target)} WHERE table_name = ${sqlString(stagingTable)}`,
     );
@@ -220,7 +242,7 @@ export async function discoverMergeSchemas(
   const liveCols = new Set<string>();
   const liveTypes = new Map<string, string>();
 
-  const schemaResult = await runBigQuery(
+  const schemaResult = await readMergeColumns(
     target,
     `SELECT table_name, column_name, data_type FROM ${informationSchema(target)} WHERE table_name IN (${sqlString(stagingTable)}, ${sqlString(liveTable)})`,
   );
