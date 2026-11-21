@@ -69,7 +69,10 @@ async function ensureAdmissionRecord(
   return { collection, _id };
 }
 
-/** Close new admissions once all destructive overwrite reservations settle. */
+/**
+ * Close new admissions only if there are no pending overwrites.
+ * Reservations have no release path until destination receipt settlement lands.
+ */
 export async function closeRestEntityAdmission(
   connection: Connection,
   scope: RestEntityAdmissionScope,

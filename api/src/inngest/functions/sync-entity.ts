@@ -143,7 +143,8 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       resumeState,
     } = data;
 
-    // Enable only once already-admitted work and destination writes can drain.
+    // Keep disabled until destination receipts can settle overwrite reservations
+    // and the cutover can drain already-admitted work.
     const restEntityAdmission =
       process.env.REST_ENTITY_ADMISSION_ENABLED === "1"
         ? {
