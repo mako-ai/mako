@@ -41,7 +41,10 @@ import {
 } from "../auth/api-key-scopes";
 import { parseMcpOAuthScopes } from "../auth/mcp-oauth.service";
 import { mcpOAuthWellKnownRoutes } from "../routes/mcp-oauth.routes";
-import { effectiveSqlQueryAccess } from "../agent-lib/tools/sql-tools";
+import {
+  createSqlToolsV2,
+  effectiveSqlQueryAccess,
+} from "../agent-lib/tools/sql-tools";
 import { requestContextStorage } from "../logging/context";
 import { sqlReadOnlyAccessError } from "../services/read-only-query.service";
 import {
@@ -158,6 +161,10 @@ async function testBigQueryBillingCeiling(): Promise<void> {
     )?.inputSchema;
     assert.ok(schema?.properties.maximumBytesBilled);
     assert.ok(!schema.required?.includes("maximumBytesBilled"));
+    const agentSchema = createSqlToolsV2(WORKSPACE_ID, []).sql_execute_query
+      .inputSchema;
+    assert.ok(agentSchema instanceof z.ZodObject);
+    assert.equal("maximumBytesBilled" in agentSchema.shape, false);
 
     assert.equal(JSON.parse(await call({})).success, true);
     assert.equal(
