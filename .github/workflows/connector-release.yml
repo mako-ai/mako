@@ -10,7 +10,7 @@ name: Connector release
 #    catalog entry is printed. Nothing is written.
 #  - A tag `connector-<slug>-v<MAJOR.MINOR.PATCH>` on a master commit: job
 #    `build` builds once, with no credential, and uploads the bytes as an
-#    artifact. Job `publish` verifies them and writes the same bytes to the
+#    artifact. The publish jobs verify and write the same bytes to the
 #    dev registry, then the production one, with CONNECTOR_REGISTRY_WRITER_SA.
 #    A version is immutable: re-tagging the same content is a no-op,
 #    different content under a published version fails.
@@ -135,36 +135,30 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Job B: publishes the SAME bytes, dev first, then production. It
+  # The publish jobs write the SAME bytes, dev first, then production. Each
   # re-verifies the sha256s and the source hash and runs no connector code.
   # Its credential, CONNECTOR_REGISTRY_WRITER_SA, may only create objects in
   # the registry (see docs/src/content/docs/guides/building-connectors.md,
   # "Publishing Mako's connectors"). It never uses the `production`
   # environment or the deploy service account.
-  publish:
-    name: Publish to ${{ matrix.target }}
+  publish-dev:
+    name: Publish to dev
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    strategy:
-      # Dev first: a release that fails there never reaches production.
-      max-parallel: 1
-      fail-fast: true
-      matrix:
-        target: [dev, prod]
     environment:
-      name: connector-registry-${{ matrix.target }}
-    env:
+      name: connector-registry-dev
+    env: &registry-env
       # Set per environment. CONNECTOR_REGISTRY_BUCKET is the dedicated
       # registry bucket the API reads (CONNECTOR_REGISTRY_BUCKET there too).
       CONNECTOR_REGISTRY_BUCKET: ${{ vars.CONNECTOR_REGISTRY_BUCKET }}
       CONNECTOR_REGISTRY_PREFIX: connector-registry
-    steps:
+    steps: &publish-steps
       - name: Require the registry bucket
         run: |
           if [ -z "$CONNECTOR_REGISTRY_BUCKET" ]; then
-            echo "::error::Set CONNECTOR_REGISTRY_BUCKET on the connector-registry-${{ matrix.target }} environment."
+            echo "::error::Set CONNECTOR_REGISTRY_BUCKET on the registry environment."
             exit 1
           fi
       # Mako's publish script and the connector folder at the tagged commit,
@@ -211,3 +205,14 @@ jobs:
         # Only the tagged release, and only if its source equals this
         # checkout's folder at the tagged commit.
         run: pnpm --filter api exec tsx src/scripts/publish-connector.ts --upload "$RUNNER_TEMP/release" --tag "$TAG" --commit "$RELEASE_COMMIT"
+
+  publish-prod:
+    name: Publish to prod
+    needs: publish-dev
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment:
+      name: connector-registry-prod
+    env: *registry-env
+    steps: *publish-steps

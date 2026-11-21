@@ -270,22 +270,23 @@ Each top-level `connectors/<slug>/` folder of the Mako repository is a
 registry connector. To release one, set the version in `defineConnector` and
 `package.json`, add a `## <version>` section to its `CHANGELOG.md`, merge, and
 push a tag `connector-<slug>-v<version>` on a master commit.
-`.github/workflows/connector-release.yml` then runs two jobs:
+`.github/workflows/connector-release.yml` then runs three jobs.
 
 - **build** checks the tag points at master, builds the folder once with the
   same bundler workspace connectors use, and runs `spec` and `discover` on the
   bundle. It holds no credential, because this is the connector's own code
   running. It uploads the bundle, the source and a manifest with their
   sha256s as a workflow artifact.
-- **publish** downloads that artifact, re-verifies both sha256s and
-  recomputes the source hash from the files, and writes the same bytes to the
-  dev registry and then the production one. It runs no connector code. It
-  authenticates with `CONNECTOR_REGISTRY_WRITER_SA` in the environments
-  `connector-registry-dev` and `connector-registry-prod`, never `production`.
+- **publish-dev** and **publish-prod** download that artifact, verify both
+  sha256s again and recompute the source hash before publishing. They run the
+  trusted publisher from the tagged commit. Production starts only after the
+  dev publish succeeds. The jobs authenticate with
+  `CONNECTOR_REGISTRY_WRITER_SA` in `connector-registry-dev` and
+  `connector-registry-prod`, respectively.
 
 Every pull request that touches `connectors/` runs the build as a dry run.
 
-Infrastructure the publish job needs, per environment:
+Each publish job needs the following infrastructure in its environment.
 
 - `CONNECTOR_REGISTRY_BUCKET` (variable): a dedicated registry bucket. The API
   reads the registry from the same variable. `deploy-app.yml` passes it from
