@@ -515,6 +515,58 @@ describe("the key link", () => {
 });
 
 describe("a Custom API connection", () => {
+  it("keeps the key link when the address changes during submission", async () => {
+    const { connectionId, token } = await createWithoutKey(
+      "changing-api",
+      "custom_api",
+      { base_url: "https://api.example.com/v1", auth_type: "bearer" },
+    );
+    const schema = vi.mocked(syncConnectorRegistry.getConfigSchemaForType);
+    const original = schema.getMockImplementation();
+    if (!original) throw new Error("Missing connector schema fixture");
+    schema.mockImplementationOnce(async (...args) => {
+      const edit = await app.request(
+        `/api/workspaces/${WS}/connections/sources/${connectionId}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            config: { base_url: "https://other.example.com/v1" },
+          }),
+        },
+      );
+      expect(edit.status).toBe(200);
+      return original(...args);
+    });
+    const probe = vi.fn(async () => undefined);
+    ctx.duringProbe = probe;
+
+    const submitted = await call("POST", token, { config: { token: SECRET } });
+    expect(submitted.status).toBe(409);
+    expect(await submitted.json()).toMatchObject({ code: "changed" });
+    expect(probe).not.toHaveBeenCalled();
+    const row = await SourceConnection.findById(connectionId)
+      .select("+configRevision")
+      .lean();
+    expect(row?.config.base_url).toBe("https://other.example.com/v1");
+    expect(row?.config.token).toBeUndefined();
+    expect(row?.keyRequest?.tokenHash).toBe(hashKeyToken(token));
+    expect(row?.isActive).toBe(false);
+    expect(row?.configRevision).toBe(1);
+
+    const refreshed = await call("GET", token);
+    expect(await refreshed.json()).toMatchObject({
+      data: {
+        connectionId,
+        destination: { address: "https://other.example.com/v1" },
+      },
+    });
+    expect(
+      (await call("POST", token, { config: { token: SECRET } })).status,
+    ).toBe(200);
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
   it("gets a link when its key is left out, showing the address it goes to", async () => {
     const { connectionId, token, result } = await createWithoutKey(
       "probo",

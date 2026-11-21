@@ -17,7 +17,8 @@
  *     key or MCP client;
  *   - expires after {@link KEY_REQUEST_TTL_MS};
  *   - works once: the key is stored and the request removed in one atomic
- *     update filtered on the token, so two submissions cannot both win. A key
+ *     update filtered on the token and validated configuration revision, so
+ *     two submissions cannot both win. A key
  *     that fails the connector's check is taken back out and the request put
  *     back, so the person can correct a typo with the same link;
  *   - sets only the fields the request names (the connector's secret
@@ -32,6 +33,7 @@ import { Types } from "mongoose";
 import { callableFor } from "../connections/callable";
 import {
   SourceConnection,
+  sourceConfigRevisionMatch,
   type ISourceConnectionKeyRequest,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
@@ -128,7 +130,12 @@ export function describeKeyStatus(
 export class KeyRequestError extends Error {
   constructor(
     public readonly code:
-      "not_found" | "expired" | "forbidden" | "invalid_input" | "check_failed",
+      | "not_found"
+      | "expired"
+      | "forbidden"
+      | "invalid_input"
+      | "changed"
+      | "check_failed",
     message: string,
   ) {
     super(message);
@@ -155,6 +162,7 @@ interface PendingRow {
   name: string;
   type: string;
   config?: Record<string, unknown>;
+  configRevision?: number;
   createdBy?: string;
   managers?: string[];
   keyRequest?: ISourceConnectionKeyRequest;
@@ -180,7 +188,7 @@ async function findPending(
     workspaceId: new Types.ObjectId(workspaceId),
     "keyRequest.tokenHash": hashKeyToken(token),
   })
-    .select("_id name type config createdBy managers keyRequest")
+    .select("_id name type config configRevision createdBy managers keyRequest")
     .lean()) as PendingRow | null;
   if (!row?.keyRequest) {
     throw new KeyRequestError("not_found", KEY_LINK_NOT_FOUND);
@@ -407,12 +415,14 @@ export async function submitKey(input: {
     Object.entries(encrypted).map(([key, value]) => [`config.${key}`, value]),
   );
 
-  // The claim: stores the key and consumes the link in one update, filtered
-  // on the token and its expiry. A second submission finds nothing.
+  // Consume the link and save the key against the configuration validated
+  // above. A concurrent edit leaves the link available for a fresh submission.
   const claimed = await SourceConnection.updateOne(
     {
       _id: row._id,
       workspaceId: new Types.ObjectId(workspaceId),
+      type: row.type,
+      configRevision: sourceConfigRevisionMatch(row.configRevision),
       "keyRequest.tokenHash": request.tokenHash,
       "keyRequest.expiresAt": { $gt: new Date() },
     },
@@ -423,7 +433,13 @@ export async function submitKey(input: {
     },
   );
   if (claimed.modifiedCount !== 1) {
-    throw new KeyRequestError("not_found", KEY_LINK_NOT_FOUND);
+    // Preserve the normal refusal for a consumed or expired link and
+    // recheck the current manager's access before exposing a conflict.
+    await findPending(workspaceId, token, input.authorize);
+    throw new KeyRequestError(
+      "changed",
+      "The connection changed. Reload this key link and confirm its settings again.",
+    );
   }
   const connectionId = String(row._id);
   logger.info("Source connection key set from a key link", {

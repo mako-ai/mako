@@ -44,6 +44,7 @@ const KEY_REQUEST_HTTP_STATUS = {
   expired: 410,
   forbidden: 403,
   invalid_input: 400,
+  changed: 409,
   check_failed: 422,
 } as const;
 
