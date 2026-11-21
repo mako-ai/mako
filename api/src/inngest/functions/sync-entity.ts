@@ -143,13 +143,17 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       resumeState,
     } = data;
 
-    // Enable only once already-admitted work and destination writes can drain.
+    // Keep disabled until destination receipts can settle overwrite reservations
+    // and the cutover can drain already-admitted work.
     const restEntityAdmission =
       process.env.REST_ENTITY_ADMISSION_ENABLED === "1"
         ? {
-            workspaceId: new Types.ObjectId(workspaceId),
-            flowId: new Types.ObjectId(flowId),
-            sourceConnectionId: new Types.ObjectId(dataSourceId),
+            scope: {
+              workspaceId: new Types.ObjectId(workspaceId),
+              flowId: new Types.ObjectId(flowId),
+              sourceConnectionId: new Types.ObjectId(dataSourceId),
+            },
+            runId: cdcBackfillRunId || executionId || event.id,
           }
         : undefined;
     const safeEntityStepId = entity.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -398,6 +402,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
 
       await step.run(`prepare-staging-${safeEntityStepId}`, () =>
         withHeartbeat(executionId, async () => {
+          let restSource = false;
           if (restEntityAdmission) {
             const source = await sourceConnectionManager.getSourceConnection(
               dataSourceId,
@@ -406,8 +411,12 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             if (!source) {
               throw new Error(`Data source not found: ${dataSourceId}`);
             }
-            if (source.type === "rest") {
-              await assertRestEntityAdmission(Flow.db, restEntityAdmission);
+            restSource = source.type === "rest";
+            if (restSource) {
+              await assertRestEntityAdmission(
+                Flow.db,
+                restEntityAdmission.scope,
+              );
             }
           }
 
@@ -451,7 +460,10 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           // carried over from a checkpoint or the previous invocation)
           // already truncated in its first invocation.
           if (!state) {
-            await performOverwriteTruncate(bulkSyncOptions as any);
+            await performOverwriteTruncate({
+              ...bulkSyncOptions,
+              restEntityAdmission: restSource ? restEntityAdmission : undefined,
+            } as any);
           }
         }),
       );

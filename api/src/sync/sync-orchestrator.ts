@@ -37,8 +37,9 @@ import { LEGACY_ENGINE_REMOVED } from "../services/flow-triggers.service";
 import type { CdcMergePath } from "../sync-cdc/table-write-lease";
 import {
   assertRestEntityAdmission,
+  reserveRestEntityOverwrite,
   RestEntityAdmissionClosedError,
-  type RestEntityAdmissionScope,
+  type RestEntityAdmissionContext,
 } from "../sync-cdc/rest-entity-admission";
 import {
   SandboxedConnector,
@@ -246,7 +247,7 @@ export interface SyncChunkOptions {
   flowId?: string;
   /** The flow's workspace: the source connection is looked up in it only. */
   workspaceId: string;
-  restEntityAdmission?: RestEntityAdmissionScope;
+  restEntityAdmission?: RestEntityAdmissionContext;
   syncEngine?: string;
   backfillRunId?: string;
   /**
@@ -417,7 +418,10 @@ export async function performSyncChunk(
     }
 
     if (options.restEntityAdmission && sourceConnection.type === "rest") {
-      await assertRestEntityAdmission(Flow.db, options.restEntityAdmission);
+      await assertRestEntityAdmission(
+        Flow.db,
+        options.restEntityAdmission.scope,
+      );
     }
 
     // Inject transfer queries into sourceConnection for GraphQL/PostHog connectors
@@ -697,6 +701,14 @@ async function performSyncChunkSql(
     options.writeMode === "overwrite" &&
     !state
   ) {
+    if (options.restEntityAdmission && sourceConnection.type === "rest") {
+      await reserveOverwriteForCutover(
+        options.restEntityAdmission,
+        options,
+        tableDestination,
+        entityTableName,
+      );
+    }
     await cdcAdapter.truncateLiveTable(cdcLayout);
     logger?.log(
       "info",
@@ -1422,6 +1434,24 @@ export async function performBulkFlush(
   );
 }
 
+async function reserveOverwriteForCutover(
+  admission: RestEntityAdmissionContext,
+  options: SyncChunkOptions,
+  tableDestination: ITableDestination,
+  entityTableName: string,
+): Promise<void> {
+  if (!admission.runId) throw new Error("REST overwrite requires a run ID");
+  await reserveRestEntityOverwrite(Flow.db, admission.scope, {
+    runId: admission.runId,
+    entity: options.entity,
+    destinationId: options.destinationId,
+    destinationDatabaseName: options.destinationDatabaseName ?? null,
+    destinationConnectionId: String(tableDestination.connectionId),
+    schema: tableDestination.schema || "public",
+    tableName: entityTableName,
+  });
+}
+
 /**
  * Clears the live table for `writeMode: "overwrite"` bulk-staging runs.
  *
@@ -1435,7 +1465,8 @@ export async function performBulkFlush(
 export async function performOverwriteTruncate(
   options: SyncChunkOptions,
 ): Promise<void> {
-  if (!options.tableDestination?.connectionId || !options.flowId) return;
+  const { tableDestination, restEntityAdmission } = options;
+  if (!tableDestination?.connectionId || !options.flowId) return;
   if (options.writeMode !== "overwrite") return;
   const flowId = options.flowId;
   const { entity, entityTableName, cdcAdapter } =
@@ -1449,6 +1480,14 @@ export async function performOverwriteTruncate(
     writeMode: options.writeMode,
   });
 
+  if (restEntityAdmission) {
+    await reserveOverwriteForCutover(
+      restEntityAdmission,
+      options,
+      tableDestination,
+      entityTableName,
+    );
+  }
   await cdcAdapter.truncateLiveTable(cdcLayout);
   orchestratorLogger.info("Overwrite mode: cleared live table (once per run)", {
     entity,
