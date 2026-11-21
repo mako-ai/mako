@@ -42,7 +42,7 @@ import {
   serializeFlowFile,
   serializeFlowFileV1,
   parseFlowFile,
-  flowMeaning,
+  flowDefinitionMeanings,
   sameFlowMeaning,
 } from "./flow-config-files";
 
@@ -282,7 +282,8 @@ export async function flowDefinitionDrift(
   // carry the parser's defaults and empty-field rules.
   const rowFile = flowToFile(flow);
   const fromRow = parseFlowFile(serializeFlowFile(rowFile)) ?? rowFile;
-  if (sameFlowMeaning(parsed, fromRow)) {
+  const [a, b] = flowDefinitionMeanings(parsed, fromRow);
+  if (JSON.stringify(a) === JSON.stringify(b)) {
     return {
       commit: head,
       inSync: true,
@@ -291,10 +292,7 @@ export async function flowDefinitionDrift(
       differs: [],
     };
   }
-  // The same normalisation as sameFlowMeaning, so `differs` never names a
-  // key whose only difference is how it was stored (layout _id, sync.engine).
-  const a = flowMeaning(parsed);
-  const b = flowMeaning(fromRow);
+  // Use the same normalized values for the verdict and the differing keys.
   const differs = [...new Set([...Object.keys(a), ...Object.keys(b)])]
     .filter(k => JSON.stringify(a[k]) !== JSON.stringify(b[k]))
     .sort();

@@ -242,6 +242,61 @@ export function flowMeaning(f: FlowFile): Record<string, unknown> {
   return sortDeep(o) as Record<string, unknown>;
 }
 
+/** Apply the same drift policy to both sides. Leave cross-scope values intact. */
+export function flowDefinitionMeanings(
+  a: FlowFile,
+  b: FlowFile,
+): [Record<string, unknown>, Record<string, unknown>] {
+  const inScope = (f: FlowFile) =>
+    f.source.type === "database" &&
+    f.sync.mode === "full" &&
+    f.sync.writeMode === "overwrite";
+  if (!inScope(a) || !inScope(b)) return [flowMeaning(a), flowMeaning(b)];
+  return [driftMeaning(a), driftMeaning(b)];
+}
+
+/** Drift-only normalization. Keep the write-through comparator conservative. */
+function driftMeaning(f: FlowFile): Record<string, unknown> {
+  const o = flowMeaning(f);
+  // Mongo supplies these defaults even when the file has no conflict block.
+  const conflict = o.conflict;
+  if (
+    conflict &&
+    typeof conflict === "object" &&
+    !Array.isArray(conflict) &&
+    Object.keys(conflict).every(k => k === "strategy" || k === "keyColumns")
+  ) {
+    const { strategy, keyColumns } = conflict as Record<string, unknown>;
+    if (
+      (strategy === undefined || strategy === "update") &&
+      (keyColumns === undefined ||
+        (Array.isArray(keyColumns) && keyColumns.length === 0))
+    ) {
+      delete o.conflict;
+    }
+  }
+  // Offset pagination never reads the keyset direction. Only strip its default.
+  const pagination = o.pagination;
+  if (
+    pagination &&
+    typeof pagination === "object" &&
+    !Array.isArray(pagination)
+  ) {
+    const page = pagination as Record<string, unknown>;
+    if (page.mode === "offset" && page.keysetDirection === "asc") {
+      delete page.keysetDirection;
+    }
+  }
+  if (Array.isArray(o.typeCoercions)) {
+    o.typeCoercions = o.typeCoercions.map((rule: unknown) => {
+      if (!rule || typeof rule !== "object" || Array.isArray(rule)) return rule;
+      const { _id: _coercionId, ...kept } = rule as Record<string, unknown>;
+      return kept;
+    });
+  }
+  return o;
+}
+
 export function sameFlowMeaning(a: FlowFile, b: FlowFile): boolean {
   return JSON.stringify(flowMeaning(a)) === JSON.stringify(flowMeaning(b));
 }

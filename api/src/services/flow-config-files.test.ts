@@ -21,6 +21,7 @@ import {
   slugFromFlowFilePath,
   flowMeaning,
   sameFlowMeaning,
+  flowDefinitionMeanings,
   serializeFlowFileV1,
 } from "./flow-config-files";
 import type { IFlow } from "../database/workspace-schema";
@@ -459,6 +460,200 @@ console.log("flow-config-files tests passed");
   assert.equal(both.schedule, null);
   // A real change is not the same meaning.
   assert.ok(!sameFlowMeaning(a, { ...a, webhookEnabled: false }));
+}
+
+// Compare the file with a serialized database row, as definition drift does.
+{
+  const parsed = parseFlowFile(`name: synthetic
+source:
+  type: database
+  connection_id: source
+  query: SELECT 1
+destination:
+  connection_id: dest
+sync:
+  mode: full
+  write_mode: overwrite
+pagination:
+  mode: offset
+type_coercions:
+  - column: a
+    targetType: STRING
+    nullValue: { _id: retained }
+  - column: b
+    targetType: INTEGER
+`);
+  assert.ok(parsed, "expected a valid database flow fixture");
+  const file = parsed;
+  assert.ok(file.typeCoercions, "expected coercion rules in the fixture");
+  const row = {
+    ...file,
+    conflict: { strategy: "update", keyColumns: [] },
+    pagination: { mode: "offset", keysetDirection: "asc" },
+    typeCoercions: file.typeCoercions.map((rule, i) => ({
+      ...rule,
+      _id: String(i),
+    })),
+  };
+  const directMeaning = (f: typeof file) =>
+    JSON.stringify(flowDefinitionMeanings(f, f)[0]);
+  const noConflict = { ...file, conflict: undefined };
+  assert.equal(
+    directMeaning(noConflict),
+    directMeaning({ ...file, conflict: {} }),
+  );
+  assert.equal(
+    directMeaning(noConflict),
+    directMeaning({
+      ...file,
+      conflict: { strategy: "update", keyColumns: [] },
+    }),
+  );
+  assert.notEqual(
+    directMeaning(noConflict),
+    directMeaning({
+      ...file,
+      conflict: { strategy: "ignore", keyColumns: [] },
+    }),
+  );
+  assert.notEqual(
+    directMeaning(noConflict),
+    directMeaning({
+      ...file,
+      conflict: { strategy: "update", keyColumns: ["a"] },
+    }),
+  );
+
+  // The write-through comparator remains stricter than the drift comparator.
+  assert.equal(sameFlowMeaning(file, row), false);
+  const roundTrip = (f: typeof file) => {
+    const result = parseFlowFile(serializeFlowFile(f));
+    assert.ok(result, "expected the serialized flow to parse");
+    return result;
+  };
+  const meaning = (f: typeof file) =>
+    JSON.stringify(flowDefinitionMeanings(roundTrip(f), roundTrip(f))[0]);
+  assert.equal(meaning(file), meaning(row));
+  const realConflict = roundTrip({
+    ...row,
+    conflict: { strategy: "ignore", keyColumns: [] },
+  });
+  const [baselineMeaning, changedMeaning] = flowDefinitionMeanings(
+    file,
+    realConflict,
+  );
+  const differs = [
+    ...new Set([
+      ...Object.keys(baselineMeaning),
+      ...Object.keys(changedMeaning),
+    ]),
+  ]
+    .filter(
+      k =>
+        JSON.stringify(baselineMeaning[k]) !==
+        JSON.stringify(changedMeaning[k]),
+    )
+    .sort();
+  assert.deepEqual(differs, ["conflict"]);
+  // Identical stored fields must not become drift when only the scope changes.
+  for (const other of [
+    { ...row, sync: { mode: "incremental", writeMode: "overwrite" } },
+    { ...row, sync: { mode: "full", writeMode: "append_dedup" } },
+    { ...row, source: { type: "connector" as const, connectionId: "source" } },
+  ]) {
+    for (const [left, right] of [
+      flowDefinitionMeanings(row, other),
+      flowDefinitionMeanings(other, row),
+    ]) {
+      const keys = [...new Set([...Object.keys(left), ...Object.keys(right)])]
+        .filter(k => JSON.stringify(left[k]) !== JSON.stringify(right[k]))
+        .sort();
+      assert.deepEqual(keys, [
+        other.source.type === "connector" ? "source" : "sync",
+      ]);
+    }
+    const [left, right] = flowDefinitionMeanings(file, other);
+    assert.notEqual(
+      JSON.stringify(left.conflict),
+      JSON.stringify(right.conflict),
+    );
+    assert.notEqual(
+      JSON.stringify(left.typeCoercions),
+      JSON.stringify(right.typeCoercions),
+    );
+  }
+  assert.notEqual(
+    meaning(file),
+    meaning({ ...row, conflict: { strategy: "update", keyColumns: ["a"] } }),
+  );
+  assert.notEqual(
+    meaning(file),
+    meaning({
+      ...row,
+      pagination: { mode: "offset", keysetDirection: "desc" },
+    }),
+  );
+  assert.notEqual(
+    meaning({ ...file, pagination: { mode: "keyset", keysetColumn: "a" } }),
+    meaning({
+      ...row,
+      pagination: { mode: "keyset", keysetColumn: "a", keysetDirection: "asc" },
+    }),
+  );
+  assert.notEqual(
+    meaning(file),
+    meaning({
+      ...row,
+      pagination: { mode: "offset", keysetColumn: "a", keysetDirection: "asc" },
+    }),
+  );
+  assert.notEqual(
+    meaning(file),
+    meaning({ ...row, typeCoercions: [...row.typeCoercions].reverse() }),
+  );
+  assert.notEqual(
+    meaning(file),
+    meaning({
+      ...row,
+      typeCoercions: [
+        { ...row.typeCoercions[0], targetType: "INTEGER" },
+        row.typeCoercions[1],
+      ],
+    }),
+  );
+  assert.notEqual(
+    meaning(file),
+    meaning({
+      ...row,
+      typeCoercions: [
+        { ...row.typeCoercions[0], nullValue: { _id: "changed" } },
+        row.typeCoercions[1],
+      ],
+    }),
+  );
+  for (const sync of [
+    { mode: "incremental", writeMode: "overwrite" },
+    { mode: "full", writeMode: "append_dedup" },
+  ]) {
+    const baseline = { ...file, sync };
+    assert.notEqual(
+      meaning(baseline),
+      meaning({ ...baseline, conflict: row.conflict }),
+    );
+    assert.notEqual(
+      meaning(baseline),
+      meaning({ ...baseline, pagination: row.pagination }),
+    );
+    assert.notEqual(
+      meaning(baseline),
+      meaning({ ...baseline, typeCoercions: row.typeCoercions }),
+    );
+  }
+  const connector = { type: "connector" as const, connectionId: "source" };
+  assert.notEqual(
+    meaning({ ...file, source: connector }),
+    meaning({ ...row, source: connector }),
+  );
 }
 
 // A row's entity layouts carry the _id Mongo gave them; a file written by
