@@ -1,5 +1,15 @@
-import { type ClientSession, type Types } from "mongoose";
-import { CdcChangeEvent, Flow } from "../database/workspace-schema";
+import {
+  Types,
+  type ClientSession,
+  type QueryFilter,
+  type UpdateQuery,
+} from "mongoose";
+import {
+  CdcChangeEvent,
+  Flow,
+  WebhookEvent,
+  type IWebhookEvent,
+} from "../database/workspace-schema";
 
 export const cdcFlowWriteRevision = {
   $inc: { retainedBigQueryWriteRevision: 1 },
@@ -46,4 +56,42 @@ export async function excludeRetainedInboxPeers<
     .lean();
   const held = new Set(retained.map(row => row.webhookEventId));
   return rows.filter(row => !held.has(row.webhookEventId));
+}
+
+/** Call under the flow fence so a claim cannot win between the check and update. */
+export async function updateOrdinaryWebhookReceipts(
+  flowId: Types.ObjectId,
+  ids: string[],
+  filter: QueryFilter<IWebhookEvent>,
+  update: UpdateQuery<IWebhookEvent>,
+  session: ClientSession,
+): Promise<number> {
+  const eligible = await excludeRetainedInboxPeers(
+    ids.map(webhookEventId => ({ webhookEventId })),
+    [flowId],
+    session,
+  );
+  if (eligible.length === 0) return 0;
+  const result = await WebhookEvent.updateMany(
+    {
+      $and: [
+        filter,
+        {
+          _id: {
+            $in: eligible.map(row => new Types.ObjectId(row.webhookEventId)),
+          },
+          flowId,
+          status: {
+            $in: ["pending", "processing", "completed", "failed", null],
+          },
+          applyStatus: {
+            $in: ["pending", "applied", "failed", "dropped", null],
+          },
+        },
+      ],
+    },
+    update,
+    { session },
+  );
+  return result.modifiedCount ?? 0;
 }

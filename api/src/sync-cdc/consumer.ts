@@ -1,4 +1,4 @@
-import { Types } from "mongoose";
+import { Types, type UpdateQuery } from "mongoose";
 import { inWorkspace } from "../utils/workspace-scope";
 import {
   CdcChangeEvent,
@@ -6,12 +6,14 @@ import {
   DatabaseConnection,
   Flow,
   IEntityLayout,
+  type IWebhookEvent,
   WebhookEvent,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { getCdcEventStore } from "./event-store";
 import {
   excludeRetainedInboxPeers,
+  updateOrdinaryWebhookReceipts,
   withCdcFlowWriteFence,
 } from "./cdc-flow-write-fence";
 import {
@@ -325,11 +327,18 @@ export class CdcConsumerService {
         errorCode: "ENTITY_DISABLED",
         errorMessage: `Entity '${params.entity}' disabled for this flow`,
       });
-      await this.syncWebhookApplyDroppedStatus(
+      await this.syncOrdinaryWebhookOutcome(
+        params,
         pending.map(event => event.webhookEventId),
         {
-          code: "ENTITY_DISABLED",
-          message: `Entity '${params.entity}' is disabled for this flow`,
+          $set: {
+            applyStatus: "dropped",
+            applyError: {
+              code: "ENTITY_DISABLED",
+              message: `Entity '${params.entity}' is disabled for this flow`,
+            },
+          },
+          $unset: { appliedAt: "" },
         },
       );
       await cdcSyncStateService.advanceConsumerCursor({
@@ -392,8 +401,10 @@ export class CdcConsumerService {
       }
 
       await eventStore.markEventsApplied(pending.map(event => event.id));
-      await this.syncWebhookApplyStatus(
+      await this.syncOrdinaryWebhookOutcome(
+        params,
         pending.map(event => event.webhookEventId),
+        { $set: { applyStatus: "applied", applyError: null } },
       );
       await cdcSyncStateService.advanceConsumerCursor({
         workspaceId: params.workspaceId,
@@ -460,11 +471,18 @@ export class CdcConsumerService {
         errorCode: "MATERIALIZATION_FAILED",
         errorMessage,
       });
-      await this.syncWebhookApplyFailedStatus(
+      const failure = { code: "MATERIALIZATION_FAILED", message: errorMessage };
+      await this.syncOrdinaryWebhookOutcome(
+        params,
         pending.map(event => event.webhookEventId),
         {
-          code: "MATERIALIZATION_FAILED",
-          message: errorMessage,
+          $set: {
+            applyStatus: "failed",
+            applyError: failure,
+            status: "failed",
+            error: failure,
+          },
+          $unset: { appliedAt: "" },
         },
       );
       await CdcEntityState.updateOne(
@@ -499,8 +517,10 @@ export class CdcConsumerService {
     }
   }
 
-  private async syncWebhookApplyStatus(
+  private async syncOrdinaryWebhookOutcome(
+    scope: { workspaceId: string; flowId: string },
     webhookEventIds: Array<string | undefined>,
+    update: UpdateQuery<IWebhookEvent>,
   ): Promise<void> {
     const ids = Array.from(
       new Set(
@@ -514,73 +534,16 @@ export class CdcConsumerService {
       return;
     }
 
-    await WebhookEvent.updateMany(
-      { _id: { $in: ids.map(id => new Types.ObjectId(id)) } },
-      {
-        $set: {
-          applyStatus: "applied",
-          applyError: null,
-        },
-      },
-    );
-  }
-
-  private async syncWebhookApplyDroppedStatus(
-    webhookEventIds: Array<string | undefined>,
-    failure: { code: string; message: string },
-  ): Promise<void> {
-    const ids = Array.from(
-      new Set(
-        webhookEventIds.filter(
-          (eventId): eventId is string =>
-            typeof eventId === "string" && Types.ObjectId.isValid(eventId),
-        ),
-      ),
-    );
-    if (ids.length === 0) {
-      return;
-    }
-
-    await WebhookEvent.updateMany(
-      { _id: { $in: ids.map(id => new Types.ObjectId(id)) } },
-      {
-        $set: {
-          applyStatus: "dropped",
-          applyError: failure,
-        },
-        $unset: { appliedAt: "" },
-      },
-    );
-  }
-
-  private async syncWebhookApplyFailedStatus(
-    webhookEventIds: Array<string | undefined>,
-    failure: { code: string; message: string },
-  ): Promise<void> {
-    const ids = Array.from(
-      new Set(
-        webhookEventIds.filter(
-          (eventId): eventId is string =>
-            typeof eventId === "string" && Types.ObjectId.isValid(eventId),
-        ),
-      ),
-    );
-    if (ids.length === 0) {
-      return;
-    }
-
-    await WebhookEvent.updateMany(
-      { _id: { $in: ids.map(id => new Types.ObjectId(id)) } },
-      {
-        $set: {
-          applyStatus: "failed",
-          applyError: failure,
-          status: "failed",
-          error: failure,
-        },
-        $unset: { appliedAt: "" },
-      },
-    );
+    const flowId = new Types.ObjectId(scope.flowId);
+    await withCdcFlowWriteFence([flowId], async session => {
+      await updateOrdinaryWebhookReceipts(
+        flowId,
+        ids,
+        { workspaceId: new Types.ObjectId(scope.workspaceId) },
+        update,
+        session,
+      );
+    });
   }
 }
 

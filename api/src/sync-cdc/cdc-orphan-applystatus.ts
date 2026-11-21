@@ -1,6 +1,14 @@
-import { Types } from "mongoose";
-import { CdcChangeEvent, WebhookEvent } from "../database/workspace-schema";
+import { Types, type QueryFilter } from "mongoose";
+import {
+  CdcChangeEvent,
+  WebhookEvent,
+  type IWebhookEvent,
+} from "../database/workspace-schema";
 import { loggers } from "../logging";
+import {
+  updateOrdinaryWebhookReceipts,
+  withCdcFlowWriteFence,
+} from "./cdc-flow-write-fence";
 
 const log = loggers.sync("cdc.orphan-applystatus");
 
@@ -12,8 +20,8 @@ const MAX_ITERATIONS = 10_000;
  * Resolves WebhookEvents stuck at applyStatus:"pending" whose CDC events have
  * all reached a terminal state (applied/dropped) or were never created (e.g.
  * deduped at ingest). Such rows can never be flipped by the materializer — no
- * pending CdcChangeEvent references them — so the consumer's syncWebhookApplyStatus
- * never runs and the flow's "pending" count grows forever.
+ * pending CdcChangeEvent references them, so the consumer never updates the
+ * receipt and the flow's "pending" count grows forever.
  *
  * Cursor-paginates by _id so EVERY stuck row is inspected exactly once (the old
  * single-shot .limit(1000) only ever cleared 1000 per call, which is why the
@@ -26,7 +34,7 @@ export async function resolveOrphanedWebhookApplyStatusForFlow(params: {
   workspaceId?: string;
 }): Promise<number> {
   const flowOid = new Types.ObjectId(params.flowId);
-  const baseQuery: Record<string, unknown> = {
+  const baseQuery: QueryFilter<IWebhookEvent> = {
     flowId: flowOid,
     status: "completed",
     applyStatus: "pending",
@@ -51,27 +59,24 @@ export async function resolveOrphanedWebhookApplyStatusForFlow(params: {
       cursor = stuck[stuck.length - 1]._id as Types.ObjectId;
 
       const stuckIds = stuck.map(e => String(e._id));
-      const withPendingCdc: string[] = await CdcChangeEvent.distinct(
-        "webhookEventId",
-        {
+      totalResolved += await withCdcFlowWriteFence([flowOid], async session => {
+        const pending = await CdcChangeEvent.find({
           flowId: flowOid,
           webhookEventId: { $in: stuckIds },
           materializationStatus: "pending",
-        },
-      );
-      const pendingSet = new Set(withPendingCdc);
-
-      const orphanedOids = stuck
-        .filter(e => !pendingSet.has(String(e._id)))
-        .map(e => e._id as Types.ObjectId);
-
-      if (orphanedOids.length > 0) {
-        const result = await WebhookEvent.updateMany(
-          { _id: { $in: orphanedOids } },
+        })
+          .select({ webhookEventId: 1 })
+          .session(session)
+          .lean();
+        const pendingIds = new Set(pending.map(row => row.webhookEventId));
+        return updateOrdinaryWebhookReceipts(
+          flowOid,
+          stuckIds.filter(id => !pendingIds.has(id)),
+          baseQuery,
           { $set: { applyStatus: "applied" }, $unset: { applyError: "" } },
+          session,
         );
-        totalResolved += result.modifiedCount || 0;
-      }
+      });
 
       if (stuck.length < BATCH) break;
     }

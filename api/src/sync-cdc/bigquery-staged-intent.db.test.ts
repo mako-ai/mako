@@ -8,18 +8,26 @@ import {
   WebhookEvent,
 } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
+import * as flowSync from "../services/flow-sync.service";
+import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import { databaseRegistry } from "../databases/registry";
 import { BigQueryDatabaseDriver } from "../databases/drivers/bigquery/driver";
 import * as dataDiff from "./data-diff";
 import * as backfillLifecycle from "./backfill/lifecycle";
 import { BigQueryDestinationAdapter } from "./adapters/bigquery";
 import { buildCdcEntityLayout } from "./adapters/registry";
+import * as adapterRegistry from "./adapters/registry";
 import { bigQuerySnapshotGeneration } from "./bigquery-retained-query";
 import { getCdcEventStore } from "./event-store";
-import { parkPausedFlowWebhookEvents } from "./consumer";
+import { CdcConsumerService, parkPausedFlowWebhookEvents } from "./consumer";
 import { cleanupStalePendingCdcEvents } from "./cdc-stale-pending-cleanup";
 import { resyncFlow, withCdcEventReset } from "./backfill/resync";
 import { backfillEntitiesFallback } from "./backfill/repartition";
+import {
+  reconcileWebhookApplyStatus,
+  resetFailedWebhookEvents,
+} from "./backfill/webhook-maintenance";
+import { resolveOrphanedWebhookApplyStatusForFlow } from "./cdc-orphan-applystatus";
 import {
   cleanupBigQueryStagedInput,
   findBigQueryStagedCdcWrites,
@@ -186,6 +194,170 @@ async function makeResyncFlow(suffix: string, dataset: string) {
 }
 
 describe("BigQuery CDC event settlement", () => {
+  it.each(["applied", "failed", "dropped"] as const)(
+    "keeps a shared receipt pending when ordinary CDC marks a sibling %s",
+    async outcome => {
+      const first = await makeResyncFlow(
+        `receipt_${outcome}`,
+        `receipt_${outcome}`,
+      );
+      const { workspaceId, flowId } = first.scope;
+      await Flow.updateOne(
+        { _id: flowId },
+        {
+          $set: {
+            streamState: "active",
+            entityFilter:
+              outcome === "dropped"
+                ? ["recordings"]
+                : ["recordings", "transcripts"],
+          },
+        },
+      );
+      const receipt = (eventId: string) =>
+        WebhookEvent.create({
+          workspaceId,
+          flowId,
+          eventId,
+          eventType: "synthetic_delivery",
+          status: "completed",
+          applyStatus: "pending",
+          rawPayload: { synthetic: true },
+        });
+      const shared = await receipt("shared-receipt");
+      const ordinary = await receipt("ordinary-receipt");
+      const retainedEvent = await first.event("retained-peer", 1);
+      const sibling = await first.event("ordinary-peer", 2, "transcripts");
+      const control = await first.event("ordinary-control", 3, "transcripts");
+      await CdcChangeEvent.updateMany(
+        { _id: { $in: [retainedEvent.id, sibling.id] } },
+        {
+          $set: { webhookEventId: String(shared._id) },
+        },
+      );
+      await CdcChangeEvent.updateOne(
+        { _id: control.id },
+        { $set: { webhookEventId: String(ordinary._id) } },
+      );
+      if (outcome === "dropped") {
+        await expect(first.hold([retainedEvent])).resolves.toBe("held");
+      }
+
+      const warehouseFailure = new Error(
+        "Simulated ordinary warehouse failure",
+      );
+      const applyEvents = vi.fn(async () => {
+        // The normal batch already owns its rows when the other entity claims this delivery.
+        await expect(first.hold([retainedEvent])).resolves.toBe("held");
+        if (outcome === "failed") throw warehouseFailure;
+        return { applied: 2 };
+      });
+      const adapter = vi
+        .spyOn(adapterRegistry, "resolveCdcDestinationAdapter")
+        .mockReturnValue({
+          destinationType: "bigquery",
+          ensureLiveTable: async () => undefined,
+          applyEvents,
+          applyBatch: async () => ({ written: 0 }),
+        });
+      const freshness = vi
+        .spyOn(flowSync, "ensureFlowDerivedCache")
+        .mockResolvedValue("ok");
+      const connector = vi
+        .spyOn(sourceConnectionManager, "getSourceConnection")
+        .mockResolvedValue(null);
+      try {
+        const run = new CdcConsumerService().materializeEntity({
+          workspaceId,
+          flowId,
+          entity: "transcripts",
+        });
+        if (outcome === "failed") {
+          await expect(run).rejects.toBe(warehouseFailure);
+        } else {
+          await expect(run).resolves.toMatchObject({
+            processed: 2,
+            [outcome]: 2,
+          });
+        }
+        expect(applyEvents).toHaveBeenCalledTimes(
+          outcome === "dropped" ? 0 : 1,
+        );
+      } finally {
+        adapter.mockRestore();
+        freshness.mockRestore();
+        connector.mockRestore();
+      }
+      await expect(
+        WebhookEvent.findById(shared._id).readConcern("majority").lean(),
+      ).resolves.toMatchObject({
+        status: "completed",
+        applyStatus: "pending",
+      });
+      await expect(
+        WebhookEvent.findById(ordinary._id).readConcern("majority").lean(),
+      ).resolves.toMatchObject({
+        status: outcome === "failed" ? "failed" : "completed",
+        applyStatus: outcome,
+      });
+      await expect(
+        CdcChangeEvent.findById(sibling.id).lean(),
+      ).resolves.toMatchObject({ materializationStatus: outcome });
+      await expect(
+        readPendingBigQueryQueryRequest(first.binding.job),
+      ).resolves.not.toBeNull();
+
+      if (outcome === "applied") {
+        await WebhookEvent.updateOne(
+          { _id: ordinary._id },
+          { $set: { applyStatus: "pending" } },
+        );
+        await expect(
+          reconcileWebhookApplyStatus(workspaceId, flowId),
+        ).resolves.toBe(1);
+        await expect(
+          WebhookEvent.findById(shared._id).lean(),
+        ).resolves.toMatchObject({ applyStatus: "pending" });
+
+        const request = await readPendingBigQueryQueryRequest(
+          first.binding.job,
+        );
+        await expect(
+          recordObservedBigQueryQueryResult(first.binding.job, {
+            ...request,
+            status: { state: "DONE" },
+            statistics: { query: { statementType: "MERGE" } },
+          }),
+        ).resolves.toBe(true);
+        await WebhookEvent.updateOne(
+          { _id: ordinary._id },
+          { $set: { applyStatus: "pending" } },
+        );
+        await expect(
+          resolveOrphanedWebhookApplyStatusForFlow({ workspaceId, flowId }),
+        ).resolves.toBe(1);
+        await expect(
+          WebhookEvent.findById(shared._id).lean(),
+        ).resolves.toMatchObject({ applyStatus: "pending" });
+      }
+      if (outcome === "failed") {
+        await WebhookEvent.updateOne(
+          { _id: shared._id },
+          { $set: { status: "failed", applyStatus: "failed" } },
+        );
+        await expect(
+          resetFailedWebhookEvents(workspaceId, flowId),
+        ).resolves.toBe(1);
+        await expect(
+          WebhookEvent.findById(shared._id).lean(),
+        ).resolves.toMatchObject({ applyStatus: "failed" });
+        await expect(
+          WebhookEvent.findById(ordinary._id).lean(),
+        ).resolves.toMatchObject({ applyStatus: "pending" });
+      }
+    },
+  );
+
   it("blocks full and subset resets before deleting rows for a shared retained table", async () => {
     const retained = await makeResyncFlow("resync_retained", "reset_shared");
     const neighbor = await makeResyncFlow("resync_neighbor", "reset_shared");

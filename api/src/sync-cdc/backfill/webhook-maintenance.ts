@@ -4,11 +4,12 @@
  * drain pending events into the CDC store.
  */
 import { inWorkspace } from "../../utils/workspace-scope";
-import { Types } from "mongoose";
+import { Types, type QueryFilter } from "mongoose";
 import {
   CdcChangeEvent,
   DatabaseConnection,
   IFlow,
+  type IWebhookEvent,
   WebhookEvent,
 } from "../../database/workspace-schema";
 import { databaseRegistry } from "../../databases/registry";
@@ -17,6 +18,10 @@ import { hasCdcDestinationAdapter } from "../adapters/registry";
 import { resolveOrphanedWebhookApplyStatusForFlow } from "../cdc-orphan-applystatus";
 import { resolveConfiguredEntities } from "../entity-selection";
 import { cdcLiveTableName, cdcStageTableName } from "../normalization";
+import {
+  updateOrdinaryWebhookReceipts,
+  withCdcFlowWriteFence,
+} from "../cdc-flow-write-fence";
 
 const log = loggers.sync("cdc.backfill");
 
@@ -26,25 +31,34 @@ export async function resetFailedWebhookEvents(
 ): Promise<number> {
   try {
     // Includes ENQUEUE_FAILED (status + applyStatus both "failed") and materialization failures.
-    const result = await WebhookEvent.updateMany(
-      {
-        flowId: new Types.ObjectId(flowId),
-        workspaceId: new Types.ObjectId(workspaceId),
-        $or: [{ status: "failed" }, { applyStatus: "failed" }],
-        attempts: { $lt: 5 },
-      },
-      {
-        $set: { status: "pending", applyStatus: "pending" },
-        $unset: { applyError: "", error: "", processedAt: "" },
-      },
+    const flowOid = new Types.ObjectId(flowId);
+    const failed: QueryFilter<IWebhookEvent> = {
+      flowId: flowOid,
+      workspaceId: new Types.ObjectId(workspaceId),
+      $or: [{ status: "failed" }, { applyStatus: "failed" }],
+      attempts: { $lt: 5 },
+    };
+    const ids = await WebhookEvent.find(failed, { _id: 1 }).lean();
+    if (ids.length === 0) return 0;
+    const reset = await withCdcFlowWriteFence([flowOid], session =>
+      updateOrdinaryWebhookReceipts(
+        flowOid,
+        ids.map(row => String(row._id)),
+        failed,
+        {
+          $set: { status: "pending", applyStatus: "pending" },
+          $unset: { applyError: "", error: "", processedAt: "" },
+        },
+        session,
+      ),
     );
-    if (result.modifiedCount > 0) {
+    if (reset > 0) {
       log.info("Reset failed webhook events during recover", {
         flowId,
-        count: result.modifiedCount,
+        count: reset,
       });
     }
-    return result.modifiedCount || 0;
+    return reset;
   } catch (error) {
     log.warn("Failed to reset failed webhook events", {
       flowId,
@@ -72,30 +86,27 @@ export async function reconcileWebhookApplyStatus(
     );
     if (appliedCdcWebhookIds.length === 0) return 0;
 
-    const oids = appliedCdcWebhookIds
-      .filter(id => Types.ObjectId.isValid(id))
-      .map(id => new Types.ObjectId(id));
-
-    const result = await WebhookEvent.updateMany(
-      {
-        _id: { $in: oids },
-        flowId: flowOid,
-        workspaceId: wsOid,
-        applyStatus: { $ne: "applied" },
-      },
-      {
-        $set: { applyStatus: "applied", status: "completed" },
-        $unset: { applyError: "" },
-      },
+    const ids = appliedCdcWebhookIds.filter(id => Types.ObjectId.isValid(id));
+    const reconciled = await withCdcFlowWriteFence([flowOid], session =>
+      updateOrdinaryWebhookReceipts(
+        flowOid,
+        ids,
+        { workspaceId: wsOid, applyStatus: { $ne: "applied" } },
+        {
+          $set: { applyStatus: "applied", status: "completed" },
+          $unset: { applyError: "" },
+        },
+        session,
+      ),
     );
 
-    if (result.modifiedCount > 0) {
+    if (reconciled > 0) {
       log.info("Reconciled webhook applyStatus from CDC state", {
         flowId,
-        reconciled: result.modifiedCount,
+        reconciled,
       });
     }
-    return result.modifiedCount || 0;
+    return reconciled;
   } catch (error) {
     log.warn("Failed to reconcile webhook apply status", {
       flowId,
