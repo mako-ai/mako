@@ -528,6 +528,15 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
       connectionId,
       type,
       remainingMs,
+    }).catch(error => {
+      if (error instanceof LaunchDeadlineError) throw error;
+      throw (
+        boxBusyProbeError(error) ??
+        new ProbeError(
+          "connector_unavailable",
+          "The selected Calendly release is unavailable. Retry the connection check.",
+        )
+      );
     });
     requireBudget();
     if (!binding) {

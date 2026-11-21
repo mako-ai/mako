@@ -28,6 +28,7 @@ import {
   vi,
 } from "vitest";
 import mongoose, { Types } from "mongoose";
+import { BoxLowMemoryError } from "../apps/sandbox/box-memory";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
 import {
@@ -341,7 +342,18 @@ describe("Calendly probe binding", () => {
 
   it("rejects an unavailable artifact before loading a credential", async () => {
     state.metadataError = new Error("missing artifact");
-    await expect(probe()).rejects.toThrow("missing artifact");
+    const error = await failure(probe());
+    expect(error.code).toBe("connector_unavailable");
+    expect(error.message).not.toContain("missing artifact");
+    expect(state.loads).toBe(0);
+    expect(syncConnectorRegistry.getConnectorFor).not.toHaveBeenCalled();
+  });
+
+  it("reports spec box memory pressure as a retryable refusal", async () => {
+    state.metadataError = new BoxLowMemoryError("synthetic refusal", 100, 512);
+    const error = await failure(probe());
+    expect(error.code).toBe("box_busy");
+    expect(error.status).toBe(503);
     expect(state.loads).toBe(0);
     expect(syncConnectorRegistry.getConnectorFor).not.toHaveBeenCalled();
   });
