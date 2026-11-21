@@ -5,6 +5,7 @@
  * are not blocked forever. Always rethrows: Inngest owns the retry.
  */
 import { inWorkspace } from "../../../utils/workspace-scope";
+import { readBoxedReadFailure } from "../../../connectors/workspace/boxed-read-failure";
 import { Types } from "mongoose";
 import {
   DatabaseConnection,
@@ -23,14 +24,17 @@ import { isInfrastructureFailure } from "./infra-failure";
 type FlowRunError = Error & { code?: unknown };
 
 /** Inngest's cancellation, under any of the names and messages it uses. */
-export function isCancellationError(error: FlowRunError): boolean {
+export function isCancellationError(
+  error: FlowRunError,
+  allowMessageMatch = true,
+): boolean {
   return (
     error.name === "InngestFunctionCancelledError" ||
     error.name === "FunctionCancelledError" ||
     error.code === "FUNCTION_CANCELLED" ||
-    Boolean(error.message?.includes("cancelled")) ||
-    Boolean(error.message?.includes("canceled")) ||
-    Boolean(error.message?.includes("Function cancelled"))
+    (allowMessageMatch &&
+      (Boolean(error.message?.includes("cancelled")) ||
+        Boolean(error.message?.includes("canceled"))))
   );
 }
 
@@ -44,30 +48,35 @@ export async function handleFlowRunFailure(
   const { backfill } = ctx.data;
   const { executionId, flowRef } = ctx.state;
 
+  // Classify and rethrow the original error. The execution receipt only
+  // needs the safe metadata when the boxed read identified its entity.
+  const readFailure = readBoxedReadFailure(error);
+  const isCancelled = isCancellationError(error, !readFailure);
+  const storedErrorMessage = readFailure
+    ? "Boxed connector read failed"
+    : error.message;
+  const diagnostic = readFailure
+    ? { error: storedErrorMessage, readFailure }
+    : {
+        error: error?.message || String(error),
+        errorName: error?.name,
+        errorCode: error?.code,
+        stack: error?.stack,
+      };
   void ctx.appendExecutionLog("error", "Flow execution failed", {
     flowId,
-    error: error?.message || String(error),
-    errorName: error?.name,
-    errorCode: error?.code,
-    stack: error?.stack,
+    ...diagnostic,
   });
-
-  logger.error("Flow failed", {
-    flowId,
-    error: error.message,
-    errorName: error.name,
-    errorCode: error.code,
-    stack: error.stack,
-  });
-
-  // Check if this is a cancellation from Inngest
-  const isCancelled = isCancellationError(error);
-
+  logger.error("Flow failed", { flowId, ...diagnostic });
   logger.info("Error analysis", {
     flowId,
-    errorName: error.name,
-    errorCode: error.code,
-    errorMessage: error.message,
+    ...(readFailure
+      ? { readFailure }
+      : {
+          errorName: error.name,
+          errorCode: error.code,
+          errorMessage: error.message,
+        }),
     isCancelled,
   });
 
@@ -146,13 +155,16 @@ export async function handleFlowRunFailure(
                 duration,
                 status: isCancelled ? "cancelled" : "failed",
                 success: false,
-                error: {
-                  message: isCancelled
-                    ? "Flow execution cancelled by user"
-                    : error.message,
-                  stack: isCancelled ? undefined : error.stack,
-                  code: isCancelled ? "USER_CANCELLED" : error.code,
-                },
+                error:
+                  readFailure && !isCancelled
+                    ? { message: storedErrorMessage, readFailure }
+                    : {
+                        message: isCancelled
+                          ? "Flow execution cancelled by user"
+                          : error.message,
+                        stack: isCancelled ? undefined : error.stack,
+                        code: isCancelled ? "USER_CANCELLED" : error.code,
+                      },
               },
             },
           );
@@ -178,7 +190,7 @@ export async function handleFlowRunFailure(
         logger.error("Failed to complete error execution logging", {
           flowId,
           executionId,
-          originalError: error.message,
+          originalError: diagnostic.error,
           completeError:
             completeError instanceof Error
               ? completeError.message
@@ -192,7 +204,7 @@ export async function handleFlowRunFailure(
   // Update error status (unless cancelled)
   if (!isCancelled) {
     await Flow.findByIdAndUpdate(flowId, {
-      lastError: error.message || "Unknown error",
+      lastError: storedErrorMessage || "Unknown error",
     });
   }
 
@@ -202,7 +214,13 @@ export async function handleFlowRunFailure(
   // backfill leaves backfillState.status stuck on "running", which blocks
   // the reconcile scheduler and the auto-recovery loop forever.
   if (backfill && flowRef) {
-    await releaseCdcBackfillGate(ctx, flowRef, error, isCancelled);
+    await releaseCdcBackfillGate(
+      ctx,
+      flowRef,
+      error,
+      isCancelled,
+      storedErrorMessage,
+    );
   }
 
   throw error;
@@ -227,6 +245,7 @@ async function releaseCdcBackfillGate(
   flowRef: IFlow,
   error: FlowRunError,
   isCancelled: boolean,
+  storedErrorMessage: string,
 ): Promise<void> {
   const { step, flowId } = ctx;
   const destinationType = flowRef.tableDestination?.connectionId
@@ -266,7 +285,7 @@ async function releaseCdcBackfillGate(
         type: "FAIL",
         reason: "Backfill execution failed",
         errorCode: error?.code ? String(error.code) : "FLOW_EXECUTION_FAILED",
-        errorMessage: error.message,
+        errorMessage: storedErrorMessage,
       },
     });
   });

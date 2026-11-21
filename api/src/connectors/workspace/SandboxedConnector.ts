@@ -53,6 +53,7 @@ import {
   type RunResult,
 } from "./sync-box";
 import { jsonSchemaToEntitySchema } from "./spec-translation";
+import { boxedReadError } from "./boxed-read-failure";
 import {
   BundleBuildError,
   prepareBundledConnector,
@@ -1065,7 +1066,11 @@ export class SandboxedConnector extends BaseConnector {
 
     const failure = failureMessage(result);
     if (failure) {
-      throw new Error(`read failed for "${options.entity}": ${failure}`);
+      throw boxedReadError(
+        `read failed for "${options.entity}": ${failure}`,
+        options.entity,
+        this.getAvailableEntities(),
+      );
     }
     const state = await this.applyRead(result, options, maxIterations);
     if (sessionUnsupported) state.readSession = { unsupported: true };
@@ -1274,7 +1279,11 @@ export class SandboxedConnector extends BaseConnector {
     const failure = failureMessage(outcome.result);
     if (failure) {
       await transport.close(current);
-      throw new Error(`read failed for "${options.entity}": ${failure}`);
+      throw boxedReadError(
+        `read failed for "${options.entity}": ${failure}`,
+        options.entity,
+        this.getAvailableEntities(),
+      );
     }
     // A failed write leaves a resumed session as it is: the retry asks for
     // this same batch, which stays until the next one is pulled. A session

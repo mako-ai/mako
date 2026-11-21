@@ -11,6 +11,17 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
+import { Hono } from "hono";
+import { Inngest, StepError } from "inngest";
+import { serve } from "inngest/hono";
+import { Types } from "mongoose";
+import { Flow } from "../../database/workspace-schema";
+import { handleFlowRunFailure } from "../../inngest/functions/flow/failure";
+import {
+  boxedReadError,
+  boxedReadFailure,
+  readBoxedReadFailure,
+} from "./boxed-read-failure";
 import {
   CHUNK_BYTE_BUDGET,
   MAKO_SESSION_KEY,
@@ -162,6 +173,178 @@ afterEach(() => {
   delete process.env.CONNECTOR_SESSION_READS;
 });
 
+for (const mode of ["session", "chunk", "retry succeeds"] as const) {
+  void test(`Inngest HTTP replay carries the boxed diagnostic: ${mode}`, async t => {
+    const executionId = new Types.ObjectId().toString();
+    const writes: unknown[] = [];
+    let readAttempts = 0;
+    let caught: unknown;
+    t.mock.method(Flow.db, "collection", () => ({
+      findOne: async () => ({ startedAt: new Date() }),
+      updateOne: async (
+        filter: { _id: Types.ObjectId },
+        update: { $set: { error: unknown } },
+      ) => {
+        assert.equal(String(filter._id), executionId);
+        writes.push(update.$set.error);
+      },
+    }));
+    t.mock.method(Flow, "findByIdAndUpdate", async () => undefined);
+    const client = new Inngest({
+      id: "boxed-fixture",
+      isDev: true,
+      fetch: async () => {
+        throw new Error("unexpected external Inngest request");
+      },
+    });
+    const child = client.createFunction(
+      { id: "child", retries: 1 },
+      async ({ step }) => {
+        return await step.run("read", async () => {
+          readAttempts++;
+          const box = make();
+          box.useSession = mode !== "chunk";
+          const result =
+            mode === "retry succeeds" && readAttempts === 2
+              ? ok([stateMessage("done", false)])
+              : ok(
+                  [
+                    {
+                      type: "TRACE",
+                      trace: {
+                        type: "ERROR",
+                        error: { message: "synthetic secret; HTTP 500" },
+                      },
+                    },
+                  ],
+                  1,
+                );
+          if (box.useSession) {
+            box.session.starts.push({ kind: "batch", seq: 1, result });
+          } else {
+            box.runAnswers.push(result);
+          }
+          return box.fetchEntityChunk({ entity: "rows", ...collect() });
+        });
+      },
+    );
+    const parent = client.createFunction({ id: "parent" }, async ({ step }) => {
+      try {
+        return await step.invoke("invoke-read", { function: child, data: {} });
+      } catch (error) {
+        caught = error;
+        const noop = () => undefined;
+        return handleFlowRunFailure(
+          {
+            step,
+            flowId: new Types.ObjectId().toString(),
+            data: { backfill: false },
+            state: { executionId },
+            logger: { error: noop, info: noop },
+            appendExecutionLog: noop,
+          } as unknown as Parameters<typeof handleFlowRunFailure>[0],
+          error,
+        );
+      }
+    });
+    const app = new Hono();
+    app.post("/api/inngest", serve({ client, functions: [child, parent] }));
+    const post = (
+      fn: "child" | "parent",
+      stepId = "step",
+      steps = {},
+      attempt = 0,
+    ) =>
+      app.request(`/api/inngest?fnId=boxed-fixture-${fn}&stepId=${stepId}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          event: { name: "inngest/function.invoked", data: {} },
+          steps,
+          ctx: {
+            run_id: `fixture-${fn}`,
+            attempt,
+            max_attempts: 2,
+            disable_immediate_execution: true,
+          },
+        }),
+      });
+    const discover = async (fn: "child" | "parent") => {
+      const response = await post(fn);
+      assert.equal(response.status, 206);
+      const [operation] = (await response.json()) as { id: string }[];
+      return operation.id;
+    };
+    const readId = await discover("child");
+    const invokeId = await discover("parent");
+    const first = await post("child", readId);
+    assert.equal(first.status, 206);
+    assert.equal(first.headers.get("x-inngest-no-retry"), "false");
+    const [failed] = (await first.json()) as { error: { cause: unknown } }[];
+    assert.deepEqual(failed.error.cause, {
+      kind: "mako:boxed-read-failure",
+      entity: "rows",
+    });
+    assert.deepEqual(writes, []);
+
+    // Replay the same read step once, as the executor does on an ordinary retry.
+    const second = await post("child", readId, {}, 1);
+    assert.equal(second.status, 206);
+    const [retried] = (await second.json()) as {
+      data?: unknown;
+      error?: unknown;
+    }[];
+    assert.equal(readAttempts, 2);
+    const childResult = await post(
+      "child",
+      "step",
+      {
+        [readId]: retried.error
+          ? { type: "error", error: retried.error }
+          : { type: "data", data: retried.data },
+      },
+      1,
+    );
+    const invocationResult = await childResult.json();
+    if (mode === "retry succeeds") {
+      assert.equal(childResult.status, 200);
+      const done = await post("parent", "step", {
+        [invokeId]: { type: "data", data: invocationResult },
+      });
+      assert.equal(done.status, 200);
+      assert.deepEqual(writes, []);
+      assert.equal(caught, undefined);
+      return;
+    }
+
+    // Use the child's actual SDK response as the executor's failed invoke result.
+    assert.equal(childResult.status, 400);
+    assert.ok(invocationResult && typeof invocationResult === "object");
+    assert.ok("cause" in invocationResult);
+    assert.deepEqual(invocationResult.cause, failed.error.cause);
+    const invokeState = {
+      [invokeId]: { type: "error", error: invocationResult },
+    };
+    const pending = await post("parent", "step", invokeState);
+    assert.equal(pending.status, 206);
+    const [terminal] = (await pending.json()) as {
+      id: string;
+      displayName: string;
+    }[];
+    assert.equal(terminal.displayName, "complete-execution-error");
+    assert.deepEqual(readBoxedReadFailure(caught), { entity: "rows" });
+    assert.deepEqual(writes, []);
+    const receipt = await post("parent", terminal.id, invokeState);
+    assert.equal(receipt.status, 206);
+    assert.deepEqual(writes, [
+      {
+        message: "Boxed connector read failed",
+        readFailure: { entity: "rows" },
+      },
+    ]);
+  });
+}
+
 void test("a read takes batch 1, 2, 3 of one session and closes it after the last", async () => {
   const box = make();
   box.session.starts.push(batch(1, [1, 2], "c1", true));
@@ -295,11 +478,80 @@ void test("a failed read closes its session, and its retry starts a new one", as
   });
   await assert.rejects(
     box.fetchEntityChunk({ entity: "rows", state: first, ...sink }),
-    /read failed for "rows": 401: key revoked/,
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, 'read failed for "rows": 401: key revoked');
+      const stepError = new StepError("read", {
+        name: error.name,
+        message: error.message,
+        cause: structuredClone(error.cause),
+      });
+      assert.deepEqual(readBoxedReadFailure(stepError), { entity: "rows" });
+      return true;
+    },
   );
   assert.deepEqual(box.session.ops(), ["start", "pull 2", "close"]);
   // Rows of the failed batch were never applied.
   assert.deepEqual(sink.rows, [{ id: 1 }]);
+  box.session.pulls.push({ kind: "lost", reason: "session already closed" });
+  box.session.starts.push(batch(1, [2], "c2", false));
+  await box.fetchEntityChunk({ entity: "rows", state: first, ...sink });
+  const restart = box.session.calls.filter(call => call.op === "start")[1];
+  assert.ok(restart);
+  const entry = (restart.input.state as any[])[0];
+  assert.equal(entry.stream.stream_state.cursor, "c1");
+  assert.deepEqual(sink.rows, [{ id: 1 }, { id: 2 }]);
+});
+
+void test("a failed chunk process reports only its catalog entity and keeps its cursor", async () => {
+  const box = make();
+  box.useSession = false;
+  box.runAnswers.push(ok([stateMessage("saved", true)]));
+  const sink = collect();
+  const first = await box.fetchEntityChunk({ entity: "rows", ...sink });
+  const input = { entity: "rows", state: first, ...sink };
+  box.runAnswers.push({
+    ...ok(
+      [{ type: "RECORD", record: { stream: "rows", data: { id: 99 } } }],
+      1,
+    ),
+    stderr: "HTTP 500 with fixture token and code 2446079",
+  });
+  await assert.rejects(box.fetchEntityChunk(input), (error: unknown) => {
+    assert.deepEqual(readBoxedReadFailure(error), { entity: "rows" });
+    return true;
+  });
+  assert.deepEqual(sink.rows, []);
+  box.runAnswers.push(ok([stateMessage("done", false)]));
+  await box.fetchEntityChunk(input);
+  assert.deepEqual(box.runs[1].options.state, box.runs[2].options.state);
+  assert.equal(
+    box.runs[2].options.state[0].stream.stream_state.cursor,
+    "saved",
+  );
+});
+
+void test("an unmarked error and an undeclared entity have no read diagnostic", () => {
+  assert.equal(
+    readBoxedReadFailure(new Error('read failed for "rows": HTTP 500')),
+    undefined,
+  );
+  assert.equal(
+    readBoxedReadFailure(boxedReadError("failure", "rows", [])),
+    undefined,
+  );
+  assert.equal(
+    boxedReadFailure({ entity: "https://fixture.invalid/?token=value" }),
+    undefined,
+  );
+  assert.deepEqual(
+    boxedReadFailure({
+      entity: "rows",
+      message: "fixture token",
+      httpStatus: 500,
+    }),
+    { entity: "rows" },
+  );
 });
 
 void test("a runner without sessions falls back to chunk processes for the rest of the read", async () => {

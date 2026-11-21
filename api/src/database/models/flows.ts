@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document, Types } from "mongoose";
+import type { BoxedReadFailure } from "../../connectors/workspace/boxed-read-failure";
 import {
   FLOW_EXECUTION_TTL_INDEX_NAME,
   FLOW_EXECUTION_TTL_KEY,
@@ -757,6 +758,7 @@ export interface IFlowExecution extends Document {
     message: string;
     stack?: string;
     code?: string | number | null;
+    readFailure?: BoxedReadFailure;
   } | null;
   context?: unknown;
   system?: unknown;
