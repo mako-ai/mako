@@ -1343,7 +1343,16 @@ describe("queued REST entity admission", () => {
         }),
       ).resolves.toBe(true);
     };
-    const request = { runId: "rest-resume" };
+    const request = {
+      runId: "rest-resume",
+      executionId: executionId.toHexString(),
+    };
+    const readProgress = async () =>
+      (
+        await database()
+          .collection("flow_executions")
+          .findOne({ _id: executionId })
+      )?.stats;
     await expect(
       invoke({ ...request, cancelAt: `sync-${ENTITY}-chunk-26` }),
     ).rejects.toBeInstanceOf(Cancelled);
@@ -1382,6 +1391,9 @@ describe("queued REST entity admission", () => {
         cancelAt: `release-rest-bigquery-overwrite-${ENTITY}`,
       }),
     ).rejects.toBeInstanceOf(Cancelled);
+    expect(await readProgress()).toMatchObject({
+      entityStatus: { [ENTITY]: "syncing" },
+    });
     expect(chunkStartOffsets[0]).toBe(10_000);
     expect(truncate).toHaveBeenCalledTimes(1);
     expect(
@@ -1414,6 +1426,9 @@ describe("queued REST entity admission", () => {
       );
       expect(abortAfterCheckpoint).toHaveBeenCalledTimes(1);
       expect(await readCheckpoint()).toEqual(previousCheckpoint);
+      expect(await readProgress()).toMatchObject({
+        entityStatus: { [ENTITY]: "syncing" },
+      });
     } finally {
       abortAfterCheckpoint.mockRestore();
     }
@@ -1441,6 +1456,11 @@ describe("queued REST entity admission", () => {
         totalProcessed: 15_000,
         metadata: { offset: 15_000, rowsWrittenTotal: 15_000 },
       },
+    });
+    expect(await readProgress()).toMatchObject({
+      entityStatus: { [ENTITY]: "completed" },
+      entityStats: { [ENTITY]: 15_000 },
+      syncedEntities: [ENTITY],
     });
     expectEveryRowExactlyOnce();
   }, 120_000);

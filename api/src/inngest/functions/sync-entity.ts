@@ -1162,7 +1162,8 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       }
     }
 
-    if (useBulkPath && bulkSyncOptions && executionId) {
+    const reportBulkCompletion = async () => {
+      if (!useBulkPath || !bulkSyncOptions || !executionId) return;
       try {
         await Flow.db.collection("flow_executions").updateOne(
           { _id: new Types.ObjectId(executionId) },
@@ -1187,7 +1188,8 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       } catch {
         // non-critical
       }
-    }
+    };
+    if (!restOverwrite) await reportBulkCompletion();
 
     // ── Mark checkpoint completed ────────────────────────────────────
     const completedCheckpoint =
@@ -1277,6 +1279,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             }
           }),
       );
+      await reportBulkCompletion();
     }
 
     return { completed: true, rowsWritten: totalWrittenForEntity };
