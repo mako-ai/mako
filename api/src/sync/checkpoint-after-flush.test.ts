@@ -86,8 +86,14 @@ class FakeCollection {
     }
     return { modifiedCount };
   }
-  async updateOne() {
-    return { modifiedCount: 0 };
+  async findOne(filter: Doc) {
+    return this.docs.find(doc => matches(doc, filter)) ?? null;
+  }
+  async updateOne(filter: Doc, update: { $set?: Doc }) {
+    const doc = await this.findOne(filter);
+    if (!doc) return { matchedCount: 0, modifiedCount: 0 };
+    Object.assign(doc, update.$set ?? {});
+    return { matchedCount: 1, modifiedCount: 1 };
   }
   async deleteMany(filter: Doc = {}) {
     const before = this.docs.length;
@@ -259,6 +265,8 @@ let writeModeOfRun: "append_dedup" | "append" = "append_dedup";
 let failingMerges = new Set<number>();
 let mergeCalls = 0;
 const missingMergeCounts = new Set<number>();
+let failAfterDroppingStaging = false;
+let loseStagingBeforeMerge = false;
 /**
  * Rows a flush leaves in the buffer, as when flushBulkBuffer stops early on
  * an empty parquet: put back into the buffer by the next staging cleanup.
@@ -298,6 +306,10 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
   }) as any,
   cleanupStaging: (async (_l: unknown, _f: string, o?: any) => {
     staging.set(suffixOf(o), []);
+    if (failAfterDroppingStaging) {
+      failAfterDroppingStaging = false;
+      throw new Error("MongoDB disconnected after the staging drop");
+    }
     if (
       leftoverOnCleanup.length > 0 &&
       (leftoverOnMerge === undefined || leftoverOnMerge === mergeCalls)
@@ -325,7 +337,13 @@ const fakeAdapter: Partial<CdcDestinationAdapter> = {
     _s: unknown,
     o?: any,
   ) => {
+    if (loseStagingBeforeMerge && o?.expectStagedRows) {
+      staging.set(suffixOf(o), []);
+    }
     const rowsInStaging = stagingOf(o);
+    if (o?.expectStagedRows && rowsInStaging.length === 0) {
+      throw new Error("Expected BigQuery staging table is missing");
+    }
     await o?.beforeWrite?.();
     if (rowsInStaging.length > 0) mergeCalls++;
     if (rowsInStaging.length > 0 && failingMerges.has(mergeCalls)) {
@@ -378,6 +396,8 @@ class Cancelled extends Error {}
  * yields before each step, so two invocations run their steps in turn, as
  * Inngest runs two executions of one flow.
  */
+let nextInngestRunId = 0;
+
 async function invoke(params: {
   runId: string;
   cancelAt?: string;
@@ -392,8 +412,18 @@ async function invoke(params: {
   poll?: boolean;
   interleave?: boolean;
   attempt?: number;
+  retryStep?: string;
+  executionId?: string;
 }): Promise<{ completed: boolean; rowsWritten: number | null }> {
+  const journal = collection(params.executionId ? "flow_executions" : "flows");
+  const journalId = params.executionId ?? FLOW_ID;
+  if (!journal.docs.some(doc => doc._id === journalId)) {
+    journal.docs.push({ _id: journalId });
+  }
   let cancelNext = false;
+  let attempt = params.attempt ?? 0;
+  const memo = new Map<string, unknown>();
+  const yieldAfterRetry = new Error("Inngest memoized the retried step");
   const step = {
     run: async (id: string, fn: () => Promise<unknown>) => {
       if (id === params.cancelAt || cancelNext) throw new Cancelled(id);
@@ -401,10 +431,15 @@ async function invoke(params: {
       if (params.interleave) {
         await new Promise(resolve => setImmediate(resolve));
       }
+      if (memo.has(id)) return memo.get(id);
       const out = await fn();
       if (params.legacyNullSteps?.includes(id)) return null;
       // Inngest stores step output as JSON.
-      return out === undefined ? undefined : JSON.parse(JSON.stringify(out));
+      const serialized =
+        out === undefined ? undefined : JSON.parse(JSON.stringify(out));
+      memo.set(id, serialized);
+      if (attempt === 1 && id === params.retryStep) throw yieldAfterRetry;
+      return serialized;
     },
     sleep: async () => undefined,
   };
@@ -414,15 +449,17 @@ async function invoke(params: {
     error: () => undefined,
     debug: () => undefined,
   };
-  return (
+  const handler = (
     syncBackfillEntityFunction as unknown as {
       handler: (ctx: unknown) => Promise<any>;
     }
-  ).handler({
+  ).handler;
+  const context = {
     event: {
       data: {
         flowId: FLOW_ID,
         entity: ENTITY,
+        executionId: params.executionId,
         dataSourceId: "69c781737eb58b93e5ac3385",
         workspaceId: WORKSPACE_ID,
         backfill: !params.poll,
@@ -444,8 +481,21 @@ async function invoke(params: {
     },
     step,
     logger,
-    attempt: params.attempt ?? 0,
-  });
+    runId: `inngest-${++nextInngestRunId}`,
+    get attempt() {
+      return attempt;
+    },
+  };
+  if (params.retryStep) {
+    await expect(handler(context)).rejects.toThrow(
+      "MongoDB disconnected after the staging drop",
+    );
+    expect(memo.has(params.retryStep)).toBe(false);
+    attempt = 1;
+    await expect(handler(context)).rejects.toBe(yieldAfterRetry);
+    attempt = 0;
+  }
+  return handler(context);
 }
 
 function expectEveryRowExactlyOnce() {
@@ -714,6 +764,44 @@ describe("a backfill checkpoint never runs ahead of the flushed rows", () => {
       missingMergeCounts.clear();
     }
   }, 120_000);
+
+  it.each([
+    { size: 15_000, stepId: "flush-apply-opportunities-0", mergeCount: 2 },
+    { size: 10, stepId: "merge-final-opportunities", mergeCount: 1 },
+  ])(
+    "retries $stepId after staging was dropped without repeating the merge",
+    async ({ size, stepId, mergeCount }) => {
+      writeModeOfRun = "append";
+      sourceRows = rows(size);
+      failAfterDroppingStaging = true;
+      const result = await invoke({
+        runId: "run-A",
+        retryStep: stepId,
+        executionId: "69c781737eb58b93e5ac3386",
+      });
+      expectEveryRowExactlyOnce();
+      expect(mergeCalls).toBe(mergeCount);
+      expect(result).toMatchObject({ completed: true, rowsWritten: size });
+    },
+    120_000,
+  );
+
+  it("rejects missing staging on retry without a completed merge receipt", async () => {
+    writeModeOfRun = "append";
+    sourceRows = rows(10);
+    loseStagingBeforeMerge = true;
+    try {
+      await expect(invoke({ runId: "run-A", attempt: 1 })).rejects.toThrow(
+        "Expected BigQuery staging table is missing",
+      );
+      expect(live).toHaveLength(0);
+      expect(
+        entityStates.find(doc => doc.entity === ENTITY)?.backfillCursor,
+      ).toBeUndefined();
+    } finally {
+      loseStagingBeforeMerge = false;
+    }
+  });
 
   it("keeps an unknown partial flush count on the earlier checkpoint", async () => {
     sourceRows = rows(25_000);

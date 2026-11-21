@@ -158,6 +158,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
     step,
     logger,
     attempt,
+    runId,
   }): Promise<SyncBackfillEntityResult> => {
     const data = event.data as SyncBackfillEntityPayload;
     const {
@@ -489,6 +490,51 @@ export const syncBackfillEntityFunction = inngest.createFunction(
     // failed. Its new job's count covers only that attempt.
     const writeCountForAttempt = (written: number | null) =>
       countsBigQueryWrites && attempt > 0 ? null : written;
+    // Keep one confirmed merge per execution. Cleanup and checkpoint writes
+    // stay in the merge step, so cancellation cannot land between them.
+    const mergeBulkStaging = async (
+      stepId: string,
+      mergePath: "flush" | "final",
+      flushed: number | undefined,
+    ): Promise<number | null> => {
+      const merge = () =>
+        performStagingMerge(bulkSyncOptions as any, {
+          mergePath,
+          expectStagedRows: flushed === undefined ? undefined : flushed > 0,
+        });
+      if (!countsBigQueryWrites) return (await merge()).written;
+
+      const receipts = Flow.db.collection<{
+        _id: Types.ObjectId;
+        lastBigQueryBulkMerge?: {
+          runId: string;
+          stepId: string;
+          written: number | null;
+        };
+      }>(executionId ? "flow_executions" : "flows");
+      const filter = { _id: new Types.ObjectId(executionId ?? flowId) };
+      const document = await receipts.findOne(filter, {
+        projection: { lastBigQueryBulkMerge: 1 },
+      });
+      if (!document) {
+        throw new Error("Could not find the BigQuery bulk merge receipt owner");
+      }
+      const receipt = document.lastBigQueryBulkMerge;
+      if (receipt && receipt.runId === runId && receipt.stepId === stepId) {
+        return receipt.written;
+      }
+
+      const written = writeCountForAttempt((await merge()).written);
+      // Cleanup may drop staging and then fail. Persist the write result
+      // before the drop so a retry can finish without another DML job.
+      const { matchedCount } = await receipts.updateOne(filter, {
+        $set: { lastBigQueryBulkMerge: { runId, stepId, written } },
+      });
+      if (matchedCount !== 1) {
+        throw new Error("Could not save the BigQuery bulk merge receipt");
+      }
+      return written;
+    };
     const countSource = countsBigQueryWrites
       ? { bigQueryAffectedRows: true as const }
       : {};
@@ -620,49 +666,43 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         memoizedMergeCount(rescuedInFlush, !countsBigQueryWrites),
       );
       const flushedState = state;
-      const applied = (await boxStep(
-        `flush-apply-${safeEntityStepId}-${flushIndex}`,
-        () =>
-          withHeartbeat(executionId, async () => {
-            const result = await performStagingMerge(bulkSyncOptions as any, {
-              mergePath: "flush",
-              expectStagedRows:
-                rescuedInFlush?.flushed === undefined
-                  ? undefined
-                  : rescuedInFlush.flushed > 0,
-            });
-            await performStagingCleanup(bulkSyncOptions as any);
-            const left = await getTempCollectionCount(flowId, entity, fullRead);
-            const written = addRowsWritten(
-              writtenBefore,
-              writeCountForAttempt(result.written),
+      const applyStepId = `flush-apply-${safeEntityStepId}-${flushIndex}`;
+      const applied = (await boxStep(applyStepId, () =>
+        withHeartbeat(executionId, async () => {
+          const merged = await mergeBulkStaging(
+            applyStepId,
+            "flush",
+            rescuedInFlush?.flushed,
+          );
+          await performStagingCleanup(bulkSyncOptions as any);
+          const left = await getTempCollectionCount(flowId, entity, fullRead);
+          const written = addRowsWritten(writtenBefore, merged);
+          if (left > 0) {
+            logExec(
+              "warn",
+              `${entity}: ${left} rows stayed in the flush buffer; the resume cursor stays at the last complete flush`,
+              { entity, flushIndex, left },
             );
-            if (left > 0) {
-              logExec(
-                "warn",
-                `${entity}: ${left} rows stayed in the flush buffer; the resume cursor stays at the last complete flush`,
-                { entity, flushIndex, left },
-              );
-              if (written === null && checkpointEnabled && resumePoint) {
-                await cdcBackfillCheckpointService.saveEntityCheckpoint({
-                  workspaceId,
-                  flowId,
-                  scope: checkpointScope,
-                  entity,
-                  fetchState: withRowsWritten(resumePoint, null),
-                });
-              }
-            } else if (checkpointEnabled && flushedState) {
+            if (written === null && checkpointEnabled && resumePoint) {
               await cdcBackfillCheckpointService.saveEntityCheckpoint({
                 workspaceId,
                 flowId,
                 scope: checkpointScope,
                 entity,
-                fetchState: withRowsWritten(flushedState, written),
+                fetchState: withRowsWritten(resumePoint, null),
               });
             }
-            return { rowsWritten: written, left };
-          }),
+          } else if (checkpointEnabled && flushedState) {
+            await cdcBackfillCheckpointService.saveEntityCheckpoint({
+              workspaceId,
+              flowId,
+              scope: checkpointScope,
+              entity,
+              fetchState: withRowsWritten(flushedState, written),
+            });
+          }
+          return { rowsWritten: written, left };
+        }),
       )) as {
         rowsWritten?: number | null;
         written?: unknown;
@@ -1028,38 +1068,31 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             }),
         );
 
-        const mergedFinal = await boxStep(
-          `merge-final-${safeEntityStepId}`,
-          () =>
-            withHeartbeat(executionId, async () => {
-              logExec("info", `Merging ${entity} staging table to live`, {
-                entity,
-              });
-              const mergeResult = await performStagingMerge(
-                bulkSyncOptions as any,
-                {
-                  mergePath: "final",
-                  expectStagedRows:
-                    rescuedInFinal?.flushed === undefined
-                      ? undefined
-                      : rescuedInFinal.flushed > 0,
-                },
-              );
-              await performStagingCleanup(bulkSyncOptions as any);
-              const rowsWritten = writeCountForAttempt(mergeResult.written);
-              logExec(
-                "info",
-                `✅ ${entity} bulk backfill complete (${rowsWritten === null ? "merge count unavailable" : `${rowsWritten} rows merged`})`,
-                { entity, mergedRows: rowsWritten },
-              );
-              logger.info("Final merge result", {
-                flowId,
-                entity,
-                mergedRows: rowsWritten,
-                totalFetched,
-              });
-              return { rowsWritten };
-            }),
+        const mergeStepId = `merge-final-${safeEntityStepId}`;
+        const mergedFinal = await boxStep(mergeStepId, () =>
+          withHeartbeat(executionId, async () => {
+            logExec("info", `Merging ${entity} staging table to live`, {
+              entity,
+            });
+            const rowsWritten = await mergeBulkStaging(
+              mergeStepId,
+              "final",
+              rescuedInFinal?.flushed,
+            );
+            await performStagingCleanup(bulkSyncOptions as any);
+            logExec(
+              "info",
+              `✅ ${entity} bulk backfill complete (${rowsWritten === null ? "merge count unavailable" : `${rowsWritten} rows merged`})`,
+              { entity, mergedRows: rowsWritten },
+            );
+            logger.info("Final merge result", {
+              flowId,
+              entity,
+              mergedRows: rowsWritten,
+              totalFetched,
+            });
+            return { rowsWritten };
+          }),
         );
         totalWrittenForEntity = addRowsWritten(
           addRowsWritten(
