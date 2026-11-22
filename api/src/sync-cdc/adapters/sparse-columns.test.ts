@@ -472,7 +472,7 @@ describe("row writers: one column list per key set", () => {
   });
 });
 
-describe("MongoDB CDC adapter: sparse rows against a real mongod", () => {
+describe("MongoDB CDC adapter against a real mongod", () => {
   let mongo: MongoMemoryServer;
   let client: MongoClient;
   let collection: Collection;
@@ -490,7 +490,8 @@ describe("MongoDB CDC adapter: sparse rows against a real mongod", () => {
     collection = client.db("t").collection("leads");
     adapter = new MongoDbDestinationAdapter({} as never);
     const a = adapter as unknown as Record<string, unknown>;
-    a.getCollection = async () => collection;
+    a.getCollection = async (tableName: string) =>
+      client.db("t").collection(tableName);
   });
 
   afterAll(async () => {
@@ -532,6 +533,123 @@ describe("MongoDB CDC adapter: sparse rows against a real mongod", () => {
       { id: "a", name: "A2", source: "webhook" },
       { id: "b", name: "B2", source: null },
     ]);
+  });
+
+  it("rejects a batch without ids instead of updating the legacy missing-id row", async () => {
+    const tableName = "legacy_missing_id";
+    const target = client.db("t").collection(tableName);
+    await target.insertOne({ metric: "legacy" });
+    const before = await target.find().toArray();
+    await expect(
+      adapter.applyBatch({
+        records: Array.from({ length: 10 }, (_, metric) => ({ metric })),
+        layout: { ...layout, tableName, writeMode: "append_dedup" },
+        flow,
+      }),
+    ).rejects.toThrow(/record 1.*"id"/);
+    expect(await target.find().toArray()).toEqual(before);
+    expect((await target.indexes()).map(index => index.name)).toEqual(["_id_"]);
+  });
+
+  it.each([
+    ["missing", { other: "value" }],
+    ["undefined", { account: undefined }],
+    ["null", { account: null }],
+    ["blank", { account: "" }],
+    ["whitespace", { account: " \t\n" }],
+    ["nonfinite", { account: Number.NaN }],
+  ])(
+    "rejects a mixed batch with a %s composite key part before creating the collection",
+    async (kind, invalid) => {
+      const tableName = `invalid_${kind}`;
+      await expect(
+        adapter.applyBatch({
+          records: [
+            { id: 0, account: false },
+            { id: 1, ...invalid },
+          ],
+          layout: {
+            ...layout,
+            tableName,
+            keyColumns: ["id", "account"],
+            writeMode: "overwrite",
+            clustering: { fields: ["other"] },
+          },
+          flow,
+        }),
+      ).rejects.toThrow(/record 2.*"account"/);
+      expect(
+        await client.db("t").listCollections({ name: tableName }).hasNext(),
+      ).toBe(false);
+    },
+  );
+
+  it("rejects a deduplicating layout without key columns", async () => {
+    const tableName = "empty_key_layout";
+    await expect(
+      adapter.applyBatch({
+        records: [{ id: "a" }],
+        layout: { ...layout, tableName, keyColumns: [] },
+        flow,
+      }),
+    ).rejects.toThrow(/requires at least one dedup key column/);
+    expect(
+      await client.db("t").listCollections({ name: tableName }).hasNext(),
+    ).toBe(false);
+  });
+
+  it("matches composite keys with false, zero and exact nonblank strings", async () => {
+    const tableName = "valid_composite";
+    const composite = { ...layout, tableName, keyColumns: ["id", "account"] };
+    const records = [
+      { id: 0, account: false, name: "before", preserved: "webhook" },
+      { id: 0, account: " account ", name: "spaced" },
+      { id: 0, account: "account", name: "unspaced" },
+    ];
+    expect(
+      await adapter.applyBatch({ records, layout: composite, flow }),
+    ).toEqual({ written: 3 });
+    expect(
+      await adapter.applyBatch({
+        records: [{ id: 0, account: false, name: "after" }],
+        layout: composite,
+        flow,
+      }),
+    ).toEqual({ written: 1 });
+    const docs = await client
+      .db("t")
+      .collection(tableName)
+      .find(
+        {},
+        {
+          projection: { _id: 0, id: 1, account: 1, name: 1, preserved: 1 },
+        },
+      )
+      .toArray();
+    expect(docs).toHaveLength(3);
+    expect(docs).toEqual(
+      expect.arrayContaining([
+        { id: 0, account: false, name: "after", preserved: "webhook" },
+        ...records.slice(1),
+      ]),
+    );
+  });
+
+  it("appends every row without requiring an id and reports the inserted count", async () => {
+    const tableName = "plain_append";
+    const records = [{ metric: "first" }, { metric: "second", id: null }];
+    const append = { ...layout, tableName, writeMode: "append" } as const;
+    expect(await adapter.applyBatch({ records, layout: append, flow })).toEqual(
+      { written: 2 },
+    );
+    const target = client.db("t").collection(tableName);
+    expect(await target.find({}, { projection: { _id: 0 } }).toArray()).toEqual(
+      expect.arrayContaining(
+        records.map(record => expect.objectContaining(record)),
+      ),
+    );
+    expect(await target.countDocuments()).toBe(2);
+    expect((await target.indexes()).map(index => index.name)).toEqual(["_id_"]);
   });
 });
 

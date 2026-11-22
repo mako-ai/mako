@@ -282,19 +282,23 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
   }): Promise<{ written: number }> {
     if (params.records.length === 0) return { written: 0 };
 
-    const collection = await this.getCollection(params.layout.tableName);
-    if (params.layout.writeMode !== "append") {
-      await this.ensureKeyIndex(collection, params.layout.keyColumns);
+    const { keyColumns, tableName, writeMode } = params.layout;
+    const append = writeMode === "append";
+    if (!append && keyColumns.length === 0) {
+      throw new Error(
+        `MongoDB CDC batch for ${tableName} requires at least one dedup key column`,
+      );
     }
-    await this.ensureLayoutIndexes(collection, params.layout);
 
     const fallbackDataSourceId = params.flow.dataSourceId
       ? String(params.flow.dataSourceId)
       : undefined;
 
-    const ops = params.records.map(record => {
+    // Prepare the entire batch before touching MongoDB. A null filter can
+    // match an existing document without the key and overwrite it.
+    const ops = params.records.map((record, index) => {
       const payload = normalizePayloadKeys(record);
-      const row = withSyncedAt({
+      const row: Record<string, unknown> = withSyncedAt({
         ...payload,
         _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
         _mako_source_ts: resolveSourceTimestamp(payload),
@@ -304,10 +308,24 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
             : undefined,
       });
 
-      if (params.layout.writeMode === "append") {
+      if (append) {
         return { insertOne: { document: row } };
       }
-      const filter = this.buildKeyFilter(params.layout.keyColumns, row);
+      const invalidColumn = keyColumns.find(column => {
+        const value = row[column];
+        return (
+          !Object.hasOwn(row, column) ||
+          value == null ||
+          (typeof value === "string" && value.trim() === "") ||
+          (typeof value === "number" && !Number.isFinite(value))
+        );
+      });
+      if (invalidColumn !== undefined) {
+        throw new Error(
+          `MongoDB CDC batch for ${tableName}: record ${index + 1} has an unusable dedup key in column ${JSON.stringify(invalidColumn)}`,
+        );
+      }
+      const filter = this.buildKeyFilter(keyColumns, row);
       return {
         updateOne: {
           filter,
@@ -319,16 +337,23 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
       };
     });
 
+    const collection = await this.getCollection(tableName);
+    if (!append) await this.ensureKeyIndex(collection, keyColumns);
+    await this.ensureLayoutIndexes(collection, params.layout);
     const result = await collection.bulkWrite(ops, { ordered: false });
 
     log.info("MongoDB CDC applyBatch complete", {
-      table: params.layout.tableName,
+      table: tableName,
       total: params.records.length,
+      inserted: result.insertedCount,
       upserted: result.upsertedCount,
       modified: result.modifiedCount,
     });
 
-    return { written: result.upsertedCount + result.modifiedCount };
+    return {
+      written:
+        result.insertedCount + result.upsertedCount + result.modifiedCount,
+    };
   }
 
   private buildKeyFilter(
