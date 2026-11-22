@@ -1,0 +1,83 @@
+{
+  "chunks": [
+    {
+      "cursor": "ch_fx0029",
+      "hasMore": true
+    },
+    {
+      "cursor": "ch_fx0027",
+      "hasMore": true
+    },
+    {
+      "cursor": "ch_fx0025",
+      "hasMore": true
+    },
+    {
+      "cursor": "ch_fx0023",
+      "hasMore": true
+    },
+    {
+      "cursor": "ch_fx0021",
+      "hasMore": true
+    },
+    {
+      "cursor": "ch_fx0019",
+      "hasMore": true
+    },
+    {
+      "cursor": "ch_fx0017",
+      "hasMore": true
+    },
+    {
+      "cursor": "ch_fx0015",
+      "hasMore": true
+    },
+    {
+      "cursor": "ch_fx0013",
+      "hasMore": true
+    },
+    {
+      "cursor": "ch_fx0011",
+      "hasMore": true
+    },
+    {
+      "cursor": "ch_fx0009",
+      "hasMore": true
+    },
+    {
+      "cursor": "ch_fx0007",
+      "hasMore": true
+    },
+    {
+      "cursor": "ch_fx0005",
+      "hasMore": true
+    },
+    {
+      "cursor": "ch_fx0003",
+      "hasMore": true
+    },
+    {
+      "cursor": "ch_fx0003",
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/charges?limit=2 (Stripe-Version 2023-10-16)",
+    "GET /v1/charges?limit=2&starting_after=ch_fx0029 (Stripe-Version 2023-10-16)",
+    "GET /v1/charges?limit=2&starting_after=ch_fx0027 (Stripe-Version 2023-10-16)",
+    "GET /v1/charges?limit=2&starting_after=ch_fx0025 (Stripe-Version 2023-10-16)",
+    "GET /v1/charges?limit=2&starting_after=ch_fx0023 (Stripe-Version 2023-10-16)",
+    "GET /v1/charges?limit=2&starting_after=ch_fx0021 (Stripe-Version 2023-10-16)",
+    "GET /v1/charges?limit=2&starting_after=ch_fx0019 (Stripe-Version 2023-10-16)",
+    "GET /v1/charges?limit=2&starting_after=ch_fx0017 (Stripe-Version 2023-10-16)",
+    "GET /v1/charges?limit=2&starting_after=ch_fx0015 (Stripe-Version 2023-10-16)",
+    "GET /v1/charges?limit=2&starting_after=ch_fx0013 (Stripe-Version 2023-10-16)",
+    "GET /v1/charges?limit=2&starting_after=ch_fx0011 (Stripe-Version 2023-10-16)",
+    "GET /v1/charges?limit=2&starting_after=ch_fx0009 (Stripe-Version 2023-10-16)",
+    "GET /v1/charges?limit=2&starting_after=ch_fx0007 (Stripe-Version 2023-10-16)",
+    "GET /v1/charges?limit=2&starting_after=ch_fx0005 (Stripe-Version 2023-10-16)",
+    "GET /v1/charges?limit=2&starting_after=ch_fx0003 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 30,
+  "rowsSha256": "3a2f5b72fe6eb2ee0306da2ab595d41d25c7e4ad2d712570412ddc549bc99ed7"
+}

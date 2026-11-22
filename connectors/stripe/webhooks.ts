@@ -1,14 +1,14 @@
 /**
  * Stripe webhook events: which ones Mako subscribes to, and the entity and
- * operation each writes. A copy of the in-process table in
- * `api/src/connectors/stripe/webhooks.ts`; the API test
- * `folder-webhook-batches.test.ts` holds the two equal, event for event.
+ * operation each writes. A copy of the in-process table (deleted); the API
+ * test `stripe-folder-webhook-batches.test.ts` holds it to the API's own
+ * subscription table in `api/src/webhook-provisioning/stripe.ts`.
  *
  * balance_transactions, payout_balance_transactions,
  * customer_balance_transactions and events have no Stripe events: polled
  * only. invoice_line_items and subscription_items ride on their parent's
- * events (webhook-handler.ts). The in-process table's comment lists the 6
- * Stripe events left out, and why.
+ * events (webhook-handler.ts). The API table's comment lists the 6 Stripe
+ * events left out, and why.
  */
 
 export interface StripeEventMapping {

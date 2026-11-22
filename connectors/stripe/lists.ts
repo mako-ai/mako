@@ -1,8 +1,8 @@
 /**
- * Stripe list pages, one entry per entity. A port of
- * `api/src/connectors/stripe/lists.ts`: the same calls, the same parameters,
- * the same nested walks. The parity harness checks the two send identical
- * requests.
+ * Stripe list pages, one entry per entity. A port of the in-process
+ * connector's lists (deleted): the same calls, the same parameters, the same
+ * nested walks. The golden files in `fixtures/golden/` hold the requests
+ * each read sends.
  *
  * Every top-level list takes `limit`, `starting_after` and `created[gte]` (for
  * incremental reads). The nested entities page over their parent list.

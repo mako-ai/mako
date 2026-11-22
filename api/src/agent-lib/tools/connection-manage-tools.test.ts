@@ -424,8 +424,8 @@ describe("delete_connection", () => {
 describe("create_connection reports access", () => {
   it("a new connection starts with live reads off and no writers, and links to the Access tab", async () => {
     const result = await writeTools("member2").create_connection.execute({
-      connector: "stripe",
-      name: "new_stripe",
+      connector: "claap",
+      name: "new_claap",
       config: { api_key: SECRET },
     });
     expect(result.error).toBeUndefined();

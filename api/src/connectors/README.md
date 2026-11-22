@@ -8,8 +8,8 @@ Two words, two things — decided 2026-09-02 (mako#954), because until then
 "connector" meant three different rows depending on the file you were in.
 
 - A **connector** is **code**: the thing that knows how to check a credential
-  and read entities. Built-in connectors are the directories here (`stripe`,
-  `close`, …, type = directory name); workspace connectors are
+  and read entities. Built-in connectors are the directories here (`claap`,
+  `rest`, …, type = directory name); workspace connectors are
   `connectors/<slug>/` in a workspace repo, written with
   `@makoai/connector-sdk`, indexed as `ConnectorDefinition` rows and typed
   `ws:<slug>`.
@@ -65,7 +65,6 @@ connectors/
 │   ├── pagination.ts        # Offset and next-token page loops
 │   ├── incremental.ts       # Date windows, the client-side `since` filter
 │   └── webhook-signature.ts # Raw body, HMAC, constant-time compare
-├── stripe/
 ├── claap/
 ├── calendly/
 ├── rest/
@@ -161,6 +160,7 @@ table of connectors and entities. Summary:
 
 ### Stripe
 
+- A connector folder, `connectors/stripe/` (type `ws:stripe`). The in-process connector is deleted.
 - Syncs payment data from Stripe
 - Supported entities: customers, subscriptions, disputes, charges, invoices, products, prices, plans, payment intents, balance_transactions, payouts, payout_balance_transactions, refunds, credit_notes, customer_balance_transactions, payment_methods, invoice_items, subscription_schedules, coupons, promotion_codes, checkout_sessions, setup_intents, early_fraud_warnings, invoice_line_items, subscription_items, events
 - Required config: `api_key`

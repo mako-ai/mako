@@ -1,0 +1,193 @@
+{
+  "requests": [
+    "GET /v1/subscription_schedules?limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "canceled_at": null,
+      "completed_at": 1786233600,
+      "created": 1781049600,
+      "current_phase": {
+        "end_date": 1783641600,
+        "start_date": 1781049600
+      },
+      "customer": "cus_fx0005",
+      "default_settings": {
+        "billing_cycle_anchor": "automatic",
+        "collection_method": "charge_automatically"
+      },
+      "end_behavior": "release",
+      "id": "sub_sched_fx0005",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "subscription_schedule",
+      "phases": [
+        {
+          "end_date": 1783641600,
+          "items": [
+            {
+              "price": "price_fx0005",
+              "quantity": 1
+            }
+          ],
+          "start_date": 1781049600
+        }
+      ],
+      "released_at": null,
+      "released_subscription": null,
+      "status": "completed",
+      "subscription": "sub_fx0005",
+      "test_clock": null
+    },
+    {
+      "canceled_at": null,
+      "completed_at": null,
+      "created": 1771977600,
+      "current_phase": {
+        "end_date": 1774569600,
+        "start_date": 1771977600
+      },
+      "customer": "cus_fx0004",
+      "default_settings": {
+        "billing_cycle_anchor": "automatic",
+        "collection_method": "charge_automatically"
+      },
+      "end_behavior": "release",
+      "id": "sub_sched_fx0004",
+      "livemode": false,
+      "metadata": {},
+      "object": "subscription_schedule",
+      "phases": [
+        {
+          "end_date": 1774569600,
+          "items": [
+            {
+              "price": "price_fx0004",
+              "quantity": 1
+            }
+          ],
+          "start_date": 1771977600
+        }
+      ],
+      "released_at": null,
+      "released_subscription": null,
+      "status": "active",
+      "subscription": "sub_fx0004",
+      "test_clock": null
+    },
+    {
+      "canceled_at": null,
+      "completed_at": null,
+      "created": 1762905600,
+      "current_phase": {
+        "end_date": 1765497600,
+        "start_date": 1762905600
+      },
+      "customer": "cus_fx0003",
+      "default_settings": {
+        "billing_cycle_anchor": "automatic",
+        "collection_method": "charge_automatically"
+      },
+      "end_behavior": "release",
+      "id": "sub_sched_fx0003",
+      "livemode": false,
+      "metadata": {},
+      "object": "subscription_schedule",
+      "phases": [
+        {
+          "end_date": 1765497600,
+          "items": [
+            {
+              "price": "price_fx0003",
+              "quantity": 1
+            }
+          ],
+          "start_date": 1762905600
+        }
+      ],
+      "released_at": null,
+      "released_subscription": null,
+      "status": "active",
+      "subscription": "sub_fx0003",
+      "test_clock": null
+    },
+    {
+      "canceled_at": null,
+      "completed_at": null,
+      "created": 1753833600,
+      "current_phase": {
+        "end_date": 1756425600,
+        "start_date": 1753833600
+      },
+      "customer": "cus_fx0002",
+      "default_settings": {
+        "billing_cycle_anchor": "automatic",
+        "collection_method": "charge_automatically"
+      },
+      "end_behavior": "release",
+      "id": "sub_sched_fx0002",
+      "livemode": false,
+      "metadata": {},
+      "object": "subscription_schedule",
+      "phases": [
+        {
+          "end_date": 1756425600,
+          "items": [
+            {
+              "price": "price_fx0002",
+              "quantity": 1
+            }
+          ],
+          "start_date": 1753833600
+        }
+      ],
+      "released_at": null,
+      "released_subscription": null,
+      "status": "active",
+      "subscription": "sub_fx0002",
+      "test_clock": null
+    },
+    {
+      "canceled_at": null,
+      "completed_at": null,
+      "created": 1744761600,
+      "current_phase": {
+        "end_date": 1747353600,
+        "start_date": 1744761600
+      },
+      "customer": "cus_fx0001",
+      "default_settings": {
+        "billing_cycle_anchor": "automatic",
+        "collection_method": "charge_automatically"
+      },
+      "end_behavior": "release",
+      "id": "sub_sched_fx0001",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "subscription_schedule",
+      "phases": [
+        {
+          "end_date": 1747353600,
+          "items": [
+            {
+              "price": "price_fx0001",
+              "quantity": 1
+            }
+          ],
+          "start_date": 1744761600
+        }
+      ],
+      "released_at": null,
+      "released_subscription": null,
+      "status": "active",
+      "subscription": "sub_fx0001",
+      "test_clock": null
+    }
+  ]
+}

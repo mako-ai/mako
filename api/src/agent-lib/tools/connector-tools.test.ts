@@ -208,13 +208,16 @@ describe("vocabulary: connectors are code, connections are credentials", () => {
     const result = (await tools().list_connectors.execute({})) as {
       connectors: Array<Record<string, unknown>>;
     };
-    const stripe = result.connectors.find(c => c.connector === "stripe");
-    expect(stripe).toBeTruthy();
-    expect(stripe?.source).toBe("builtin");
-    expect(stripe?.entities).toContain("customers");
-    expect(stripe?.connections).toEqual([
-      { id: STRIPE.toString(), name: "fr_stripe", active: true },
-    ]);
+    const claap = result.connectors.find(c => c.connector === "claap");
+    expect(claap).toBeTruthy();
+    expect(claap?.source).toBe("builtin");
+    expect(claap?.entities).toContain("recordings");
+    expect(claap?.connections).toEqual([]);
+    // The in-process Stripe connector is deleted: fr_stripe is an orphan,
+    // and the catalog has no built-in stripe to link it to.
+    expect(
+      result.connectors.find(c => c.connector === "stripe"),
+    ).toBeUndefined();
     // Configured elsewhere, so unconfigured here — and the stranger's row
     // is not attached to it.
     const calendly = result.connectors.find(c => c.connector === "calendly");
@@ -224,10 +227,10 @@ describe("vocabulary: connectors are code, connections are credentials", () => {
 
   it("inspect_connector describes a type; inspect_connection describes a credential", async () => {
     const type = await tools().inspect_connector.execute({
-      connector: "stripe",
+      connector: "claap",
     });
-    expect(type.connector).toBe("stripe");
-    expect(type.entities).toContain("customers");
+    expect(type.connector).toBe("claap");
+    expect(type.entities).toContain("recordings");
     const fields = type.configFields as Array<{
       name: string;
       secret: boolean;
@@ -239,7 +242,8 @@ describe("vocabulary: connectors are code, connections are credentials", () => {
     });
     expect(source.kind).toBe("source");
     expect(source.connector).toBe("stripe");
-    expect(source.entities).toContain("customers");
+    // An orphan: its in-process connector is deleted, so it lists no entity.
+    expect(source.entities).toEqual([]);
     expect(JSON.stringify(source)).not.toContain(SECRET);
 
     const database = await tools().inspect_connection.execute({

@@ -1,0 +1,4088 @@
+{
+  "requests": [
+    "GET /v1/payment_intents?limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "amount": 34900,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 34900,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0100_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1789582669,
+      "currency": "eur",
+      "customer": "cus_fx0100",
+      "description": null,
+      "id": "pi_fx0100",
+      "invoice": "in_fx0100",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0100",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0100",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 10800,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 10800,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0099_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1789043738,
+      "currency": "eur",
+      "customer": "cus_fx0099",
+      "description": null,
+      "id": "pi_fx0099",
+      "invoice": "in_fx0099",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0099",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0099",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 60400,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 60400,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0098_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1788504807,
+      "currency": "eur",
+      "customer": "cus_fx0098",
+      "description": null,
+      "id": "pi_fx0098",
+      "invoice": "in_fx0098",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0098",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0098",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 197500,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 197500,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0097_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1787965877,
+      "currency": "eur",
+      "customer": "cus_fx0097",
+      "description": null,
+      "id": "pi_fx0097",
+      "invoice": "in_fx0097",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0097",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0097",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 21600,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 21600,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0096_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1787426946,
+      "currency": "eur",
+      "customer": "cus_fx0096",
+      "description": null,
+      "id": "pi_fx0096",
+      "invoice": "in_fx0096",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0096",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0096",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 123600,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 123600,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0095_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1786888015,
+      "currency": "eur",
+      "customer": "cus_fx0095",
+      "description": null,
+      "id": "pi_fx0095",
+      "invoice": "in_fx0095",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0095",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0095",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 118800,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 118800,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0094_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1786349085,
+      "currency": "eur",
+      "customer": "cus_fx0094",
+      "description": null,
+      "id": "pi_fx0094",
+      "invoice": "in_fx0094",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0094",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0094",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 127500,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 127500,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0093_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1785810154,
+      "currency": "eur",
+      "customer": "cus_fx0093",
+      "description": null,
+      "id": "pi_fx0093",
+      "invoice": "in_fx0093",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0093",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0093",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 17700,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 17700,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0092_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1785271223,
+      "currency": "eur",
+      "customer": "cus_fx0092",
+      "description": null,
+      "id": "pi_fx0092",
+      "invoice": "in_fx0092",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0092",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0092",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 122700,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 122700,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0091_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1784732293,
+      "currency": "eur",
+      "customer": "cus_fx0091",
+      "description": null,
+      "id": "pi_fx0091",
+      "invoice": "in_fx0091",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0091",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0091",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 95500,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 95500,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0090_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1784193362,
+      "currency": "eur",
+      "customer": "cus_fx0090",
+      "description": null,
+      "id": "pi_fx0090",
+      "invoice": "in_fx0090",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0090",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0090",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 156500,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 156500,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0089_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1783654431,
+      "currency": "eur",
+      "customer": "cus_fx0089",
+      "description": null,
+      "id": "pi_fx0089",
+      "invoice": "in_fx0089",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0089",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0089",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 94300,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 94300,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0088_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1783115500,
+      "currency": "eur",
+      "customer": "cus_fx0088",
+      "description": null,
+      "id": "pi_fx0088",
+      "invoice": "in_fx0088",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0088",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0088",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 93200,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 93200,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0087_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1782576570,
+      "currency": "eur",
+      "customer": "cus_fx0087",
+      "description": null,
+      "id": "pi_fx0087",
+      "invoice": "in_fx0087",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0087",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0087",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 105600,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 105600,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0086_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1782037639,
+      "currency": "eur",
+      "customer": "cus_fx0086",
+      "description": null,
+      "id": "pi_fx0086",
+      "invoice": "in_fx0086",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0086",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0086",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 27100,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 27100,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0085_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1781498708,
+      "currency": "eur",
+      "customer": "cus_fx0085",
+      "description": null,
+      "id": "pi_fx0085",
+      "invoice": "in_fx0085",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0085",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0085",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 140000,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 140000,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0084_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1780959778,
+      "currency": "eur",
+      "customer": "cus_fx0084",
+      "description": null,
+      "id": "pi_fx0084",
+      "invoice": "in_fx0084",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0084",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0084",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 22600,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 22600,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0083_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1780420847,
+      "currency": "eur",
+      "customer": "cus_fx0083",
+      "description": null,
+      "id": "pi_fx0083",
+      "invoice": "in_fx0083",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0083",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0083",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 64000,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 64000,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0082_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1779881916,
+      "currency": "eur",
+      "customer": "cus_fx0082",
+      "description": null,
+      "id": "pi_fx0082",
+      "invoice": "in_fx0082",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0082",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0082",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 58000,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 58000,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0081_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1779342986,
+      "currency": "eur",
+      "customer": "cus_fx0081",
+      "description": null,
+      "id": "pi_fx0081",
+      "invoice": "in_fx0081",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0081",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0081",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 126800,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 126800,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0080_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1778804055,
+      "currency": "eur",
+      "customer": "cus_fx0080",
+      "description": null,
+      "id": "pi_fx0080",
+      "invoice": "in_fx0080",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0080",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0080",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 81500,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 81500,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0079_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1778265124,
+      "currency": "eur",
+      "customer": "cus_fx0079",
+      "description": null,
+      "id": "pi_fx0079",
+      "invoice": "in_fx0079",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0079",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0079",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 23900,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 23900,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0078_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1777726194,
+      "currency": "eur",
+      "customer": "cus_fx0078",
+      "description": null,
+      "id": "pi_fx0078",
+      "invoice": "in_fx0078",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0078",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0078",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 8600,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 8600,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0077_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1777187263,
+      "currency": "eur",
+      "customer": "cus_fx0077",
+      "description": null,
+      "id": "pi_fx0077",
+      "invoice": "in_fx0077",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0077",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0077",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 105300,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 105300,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0076_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1776648332,
+      "currency": "eur",
+      "customer": "cus_fx0076",
+      "description": null,
+      "id": "pi_fx0076",
+      "invoice": "in_fx0076",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0076",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0076",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 80600,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 80600,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0075_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1776109401,
+      "currency": "eur",
+      "customer": "cus_fx0075",
+      "description": null,
+      "id": "pi_fx0075",
+      "invoice": "in_fx0075",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0075",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0075",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 163600,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 163600,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0074_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1775570471,
+      "currency": "eur",
+      "customer": "cus_fx0074",
+      "description": null,
+      "id": "pi_fx0074",
+      "invoice": "in_fx0074",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0074",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0074",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 72300,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 72300,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0073_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1775031540,
+      "currency": "eur",
+      "customer": "cus_fx0073",
+      "description": null,
+      "id": "pi_fx0073",
+      "invoice": "in_fx0073",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0073",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0073",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 156700,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 156700,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0072_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1774492609,
+      "currency": "eur",
+      "customer": "cus_fx0072",
+      "description": null,
+      "id": "pi_fx0072",
+      "invoice": "in_fx0072",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0072",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0072",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 166500,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 166500,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0071_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1773953679,
+      "currency": "eur",
+      "customer": "cus_fx0071",
+      "description": null,
+      "id": "pi_fx0071",
+      "invoice": "in_fx0071",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0071",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0071",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 176200,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 176200,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0070_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1773414748,
+      "currency": "eur",
+      "customer": "cus_fx0070",
+      "description": null,
+      "id": "pi_fx0070",
+      "invoice": "in_fx0070",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0070",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0070",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 2100,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 2100,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0069_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1772875817,
+      "currency": "eur",
+      "customer": "cus_fx0069",
+      "description": null,
+      "id": "pi_fx0069",
+      "invoice": "in_fx0069",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0069",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0069",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 166200,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 166200,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0068_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1772336887,
+      "currency": "eur",
+      "customer": "cus_fx0068",
+      "description": null,
+      "id": "pi_fx0068",
+      "invoice": "in_fx0068",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0068",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0068",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 148500,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 148500,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0067_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1771797956,
+      "currency": "eur",
+      "customer": "cus_fx0067",
+      "description": null,
+      "id": "pi_fx0067",
+      "invoice": "in_fx0067",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0067",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0067",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 84600,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 84600,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0066_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1771259025,
+      "currency": "eur",
+      "customer": "cus_fx0066",
+      "description": null,
+      "id": "pi_fx0066",
+      "invoice": "in_fx0066",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0066",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0066",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 181300,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 181300,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0065_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1770720095,
+      "currency": "eur",
+      "customer": "cus_fx0065",
+      "description": null,
+      "id": "pi_fx0065",
+      "invoice": "in_fx0065",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0065",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0065",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 72700,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 72700,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0064_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1770181164,
+      "currency": "eur",
+      "customer": "cus_fx0064",
+      "description": null,
+      "id": "pi_fx0064",
+      "invoice": "in_fx0064",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0064",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0064",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 189200,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 189200,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0063_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1769642233,
+      "currency": "eur",
+      "customer": "cus_fx0063",
+      "description": null,
+      "id": "pi_fx0063",
+      "invoice": "in_fx0063",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0063",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0063",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 51500,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 51500,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0062_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1769103302,
+      "currency": "eur",
+      "customer": "cus_fx0062",
+      "description": null,
+      "id": "pi_fx0062",
+      "invoice": "in_fx0062",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0062",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0062",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 166500,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 166500,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0061_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1768564372,
+      "currency": "eur",
+      "customer": "cus_fx0061",
+      "description": null,
+      "id": "pi_fx0061",
+      "invoice": "in_fx0061",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0061",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0061",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 107200,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 107200,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0060_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1768025441,
+      "currency": "eur",
+      "customer": "cus_fx0060",
+      "description": null,
+      "id": "pi_fx0060",
+      "invoice": "in_fx0060",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0060",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0060",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 76700,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 76700,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0059_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1767486510,
+      "currency": "eur",
+      "customer": "cus_fx0059",
+      "description": null,
+      "id": "pi_fx0059",
+      "invoice": "in_fx0059",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0059",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0059",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 138800,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 138800,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0058_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1766947580,
+      "currency": "eur",
+      "customer": "cus_fx0058",
+      "description": null,
+      "id": "pi_fx0058",
+      "invoice": "in_fx0058",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0058",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0058",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 30200,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 30200,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0057_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1766408649,
+      "currency": "eur",
+      "customer": "cus_fx0057",
+      "description": null,
+      "id": "pi_fx0057",
+      "invoice": "in_fx0057",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0057",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0057",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 58600,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 58600,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0056_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1765869718,
+      "currency": "eur",
+      "customer": "cus_fx0056",
+      "description": null,
+      "id": "pi_fx0056",
+      "invoice": "in_fx0056",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0056",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0056",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 36200,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 36200,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0055_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1765330788,
+      "currency": "eur",
+      "customer": "cus_fx0055",
+      "description": null,
+      "id": "pi_fx0055",
+      "invoice": "in_fx0055",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0055",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0055",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 39300,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 39300,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0054_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1764791857,
+      "currency": "eur",
+      "customer": "cus_fx0054",
+      "description": null,
+      "id": "pi_fx0054",
+      "invoice": "in_fx0054",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0054",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0054",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 93100,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 93100,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0053_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1764252926,
+      "currency": "eur",
+      "customer": "cus_fx0053",
+      "description": null,
+      "id": "pi_fx0053",
+      "invoice": "in_fx0053",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0053",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0053",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 129400,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 129400,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0052_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1763713996,
+      "currency": "eur",
+      "customer": "cus_fx0052",
+      "description": null,
+      "id": "pi_fx0052",
+      "invoice": "in_fx0052",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0052",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0052",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 53400,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 53400,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0051_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1763175065,
+      "currency": "eur",
+      "customer": "cus_fx0051",
+      "description": null,
+      "id": "pi_fx0051",
+      "invoice": "in_fx0051",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0051",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0051",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 138000,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 138000,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0050_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1762636134,
+      "currency": "eur",
+      "customer": "cus_fx0050",
+      "description": null,
+      "id": "pi_fx0050",
+      "invoice": "in_fx0050",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0050",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0050",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 43900,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 43900,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0049_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1762097203,
+      "currency": "eur",
+      "customer": "cus_fx0049",
+      "description": null,
+      "id": "pi_fx0049",
+      "invoice": "in_fx0049",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0049",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0049",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 169200,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 169200,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0048_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1761558273,
+      "currency": "eur",
+      "customer": "cus_fx0048",
+      "description": null,
+      "id": "pi_fx0048",
+      "invoice": "in_fx0048",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0048",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0048",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 115200,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 115200,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0047_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1761019342,
+      "currency": "eur",
+      "customer": "cus_fx0047",
+      "description": null,
+      "id": "pi_fx0047",
+      "invoice": "in_fx0047",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0047",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0047",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 164800,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 164800,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0046_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1760480411,
+      "currency": "eur",
+      "customer": "cus_fx0046",
+      "description": null,
+      "id": "pi_fx0046",
+      "invoice": "in_fx0046",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0046",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0046",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 98500,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 98500,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0045_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1759941481,
+      "currency": "eur",
+      "customer": "cus_fx0045",
+      "description": null,
+      "id": "pi_fx0045",
+      "invoice": "in_fx0045",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0045",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0045",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 107800,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 107800,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0044_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1759402550,
+      "currency": "eur",
+      "customer": "cus_fx0044",
+      "description": null,
+      "id": "pi_fx0044",
+      "invoice": "in_fx0044",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0044",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0044",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 112300,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 112300,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0043_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1758863619,
+      "currency": "eur",
+      "customer": "cus_fx0043",
+      "description": null,
+      "id": "pi_fx0043",
+      "invoice": "in_fx0043",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0043",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0043",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 14800,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 14800,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0042_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1758324689,
+      "currency": "eur",
+      "customer": "cus_fx0042",
+      "description": null,
+      "id": "pi_fx0042",
+      "invoice": "in_fx0042",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0042",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0042",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 143900,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 143900,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0041_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1757785758,
+      "currency": "eur",
+      "customer": "cus_fx0041",
+      "description": null,
+      "id": "pi_fx0041",
+      "invoice": "in_fx0041",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0041",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0041",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 154700,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 154700,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0040_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1757246827,
+      "currency": "eur",
+      "customer": "cus_fx0040",
+      "description": null,
+      "id": "pi_fx0040",
+      "invoice": "in_fx0040",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0040",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0040",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 159500,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 159500,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0039_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1756707897,
+      "currency": "eur",
+      "customer": "cus_fx0039",
+      "description": null,
+      "id": "pi_fx0039",
+      "invoice": "in_fx0039",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0039",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0039",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 189200,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 189200,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0038_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1756168966,
+      "currency": "eur",
+      "customer": "cus_fx0038",
+      "description": null,
+      "id": "pi_fx0038",
+      "invoice": "in_fx0038",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0038",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0038",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 192300,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 192300,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0037_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1755630035,
+      "currency": "eur",
+      "customer": "cus_fx0037",
+      "description": null,
+      "id": "pi_fx0037",
+      "invoice": "in_fx0037",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0037",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0037",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 47400,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 47400,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0036_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1755091104,
+      "currency": "eur",
+      "customer": "cus_fx0036",
+      "description": null,
+      "id": "pi_fx0036",
+      "invoice": "in_fx0036",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0036",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0036",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 181900,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 181900,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0035_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1754552174,
+      "currency": "eur",
+      "customer": "cus_fx0035",
+      "description": null,
+      "id": "pi_fx0035",
+      "invoice": "in_fx0035",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0035",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0035",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 195900,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 195900,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0034_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1754013243,
+      "currency": "eur",
+      "customer": "cus_fx0034",
+      "description": null,
+      "id": "pi_fx0034",
+      "invoice": "in_fx0034",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0034",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0034",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 134100,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 134100,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0033_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1753474312,
+      "currency": "eur",
+      "customer": "cus_fx0033",
+      "description": null,
+      "id": "pi_fx0033",
+      "invoice": "in_fx0033",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0033",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0033",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 147300,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 147300,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0032_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1752935382,
+      "currency": "eur",
+      "customer": "cus_fx0032",
+      "description": null,
+      "id": "pi_fx0032",
+      "invoice": "in_fx0032",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0032",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0032",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 184400,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 184400,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0031_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1752396451,
+      "currency": "eur",
+      "customer": "cus_fx0031",
+      "description": null,
+      "id": "pi_fx0031",
+      "invoice": "in_fx0031",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0031",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0031",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 132300,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 132300,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0030_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1751857520,
+      "currency": "eur",
+      "customer": "cus_fx0030",
+      "description": null,
+      "id": "pi_fx0030",
+      "invoice": "in_fx0030",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0030",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0030",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 129100,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 129100,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0029_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1751318590,
+      "currency": "eur",
+      "customer": "cus_fx0029",
+      "description": null,
+      "id": "pi_fx0029",
+      "invoice": "in_fx0029",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0029",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0029",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 186800,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 186800,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0028_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1750779659,
+      "currency": "eur",
+      "customer": "cus_fx0028",
+      "description": null,
+      "id": "pi_fx0028",
+      "invoice": "in_fx0028",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0028",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0028",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 100300,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 100300,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0027_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1750240728,
+      "currency": "eur",
+      "customer": "cus_fx0027",
+      "description": null,
+      "id": "pi_fx0027",
+      "invoice": "in_fx0027",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0027",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0027",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 107600,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 107600,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0026_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1749701798,
+      "currency": "eur",
+      "customer": "cus_fx0026",
+      "description": null,
+      "id": "pi_fx0026",
+      "invoice": "in_fx0026",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0026",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0026",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 116300,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 116300,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0025_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1749162867,
+      "currency": "eur",
+      "customer": "cus_fx0025",
+      "description": null,
+      "id": "pi_fx0025",
+      "invoice": "in_fx0025",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0025",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0025",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 108300,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 108300,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0024_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1748623936,
+      "currency": "eur",
+      "customer": "cus_fx0024",
+      "description": null,
+      "id": "pi_fx0024",
+      "invoice": "in_fx0024",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0024",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0024",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 104400,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 104400,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0023_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1748085005,
+      "currency": "eur",
+      "customer": "cus_fx0023",
+      "description": null,
+      "id": "pi_fx0023",
+      "invoice": "in_fx0023",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0023",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0023",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 114500,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 114500,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0022_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1747546075,
+      "currency": "eur",
+      "customer": "cus_fx0022",
+      "description": null,
+      "id": "pi_fx0022",
+      "invoice": "in_fx0022",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0022",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0022",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 111600,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 111600,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0021_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1747007144,
+      "currency": "eur",
+      "customer": "cus_fx0021",
+      "description": null,
+      "id": "pi_fx0021",
+      "invoice": "in_fx0021",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0021",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0021",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 132600,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 132600,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0020_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1746468213,
+      "currency": "eur",
+      "customer": "cus_fx0020",
+      "description": null,
+      "id": "pi_fx0020",
+      "invoice": "in_fx0020",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0020",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0020",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 98700,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 98700,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0019_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1745929283,
+      "currency": "eur",
+      "customer": "cus_fx0019",
+      "description": null,
+      "id": "pi_fx0019",
+      "invoice": "in_fx0019",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0019",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0019",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 40300,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 40300,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0018_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1745390352,
+      "currency": "eur",
+      "customer": "cus_fx0018",
+      "description": null,
+      "id": "pi_fx0018",
+      "invoice": "in_fx0018",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0018",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0018",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 167700,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 167700,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0017_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1744851421,
+      "currency": "eur",
+      "customer": "cus_fx0017",
+      "description": null,
+      "id": "pi_fx0017",
+      "invoice": "in_fx0017",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0017",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0017",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 99700,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 99700,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0016_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1744312491,
+      "currency": "eur",
+      "customer": "cus_fx0016",
+      "description": null,
+      "id": "pi_fx0016",
+      "invoice": "in_fx0016",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0016",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0016",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 41800,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 41800,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0015_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1743773560,
+      "currency": "eur",
+      "customer": "cus_fx0015",
+      "description": null,
+      "id": "pi_fx0015",
+      "invoice": "in_fx0015",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0015",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0015",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 10500,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 10500,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0014_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1743234629,
+      "currency": "eur",
+      "customer": "cus_fx0014",
+      "description": null,
+      "id": "pi_fx0014",
+      "invoice": "in_fx0014",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0014",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0014",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 136400,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 136400,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0013_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1742695699,
+      "currency": "eur",
+      "customer": "cus_fx0013",
+      "description": null,
+      "id": "pi_fx0013",
+      "invoice": "in_fx0013",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0013",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0013",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 175600,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 175600,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0012_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1742156768,
+      "currency": "eur",
+      "customer": "cus_fx0012",
+      "description": null,
+      "id": "pi_fx0012",
+      "invoice": "in_fx0012",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0012",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0012",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 174000,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 174000,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0011_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1741617837,
+      "currency": "eur",
+      "customer": "cus_fx0011",
+      "description": null,
+      "id": "pi_fx0011",
+      "invoice": "in_fx0011",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0011",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0011",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 108000,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 108000,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0010_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1741078906,
+      "currency": "eur",
+      "customer": "cus_fx0010",
+      "description": null,
+      "id": "pi_fx0010",
+      "invoice": "in_fx0010",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0010",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0010",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 129300,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 129300,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0009_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1740539976,
+      "currency": "eur",
+      "customer": "cus_fx0009",
+      "description": null,
+      "id": "pi_fx0009",
+      "invoice": "in_fx0009",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0009",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0009",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 58300,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 58300,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0008_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1740001045,
+      "currency": "eur",
+      "customer": "cus_fx0008",
+      "description": null,
+      "id": "pi_fx0008",
+      "invoice": "in_fx0008",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0008",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0008",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 57600,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 57600,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0007_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1739462114,
+      "currency": "eur",
+      "customer": "cus_fx0007",
+      "description": null,
+      "id": "pi_fx0007",
+      "invoice": "in_fx0007",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0007",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0007",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 140500,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 140500,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0006_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1738923184,
+      "currency": "eur",
+      "customer": "cus_fx0006",
+      "description": null,
+      "id": "pi_fx0006",
+      "invoice": "in_fx0006",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0006",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0006",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 27100,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 27100,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0005_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1738384253,
+      "currency": "eur",
+      "customer": "cus_fx0005",
+      "description": null,
+      "id": "pi_fx0005",
+      "invoice": "in_fx0005",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0005",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0005",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 53400,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 53400,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0004_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1737845322,
+      "currency": "eur",
+      "customer": "cus_fx0004",
+      "description": null,
+      "id": "pi_fx0004",
+      "invoice": "in_fx0004",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0004",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0004",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 145700,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 145700,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0003_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1737306392,
+      "currency": "eur",
+      "customer": "cus_fx0003",
+      "description": null,
+      "id": "pi_fx0003",
+      "invoice": "in_fx0003",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0003",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0003",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 29300,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 29300,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0002_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1736767461,
+      "currency": "eur",
+      "customer": "cus_fx0002",
+      "description": null,
+      "id": "pi_fx0002",
+      "invoice": "in_fx0002",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0002",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0002",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 40600,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 40600,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_fx0001_secret_redacted",
+      "confirmation_method": "automatic",
+      "created": 1736228530,
+      "currency": "eur",
+      "customer": "cus_fx0001",
+      "description": null,
+      "id": "pi_fx0001",
+      "invoice": "in_fx0001",
+      "last_payment_error": null,
+      "latest_charge": "ch_fx0001",
+      "livemode": false,
+      "metadata": {},
+      "next_action": null,
+      "object": "payment_intent",
+      "payment_method": "pm_fx0001",
+      "payment_method_options": {
+        "card": {
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "receipt_email": null,
+      "setup_future_usage": "off_session",
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "chunks": [
+    {
+      "cursor": "promo_fx0002",
+      "hasMore": true
+    },
+    {
+      "cursor": "promo_fx0002",
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/promotion_codes?limit=2 (Stripe-Version 2023-10-16)",
+    "GET /v1/promotion_codes?limit=2&starting_after=promo_fx0002 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 3,
+  "rowsSha256": "a13a76158df227a6d631740e84d93f8de0376d263e4a11b8a3d642118d2ee904"
+}

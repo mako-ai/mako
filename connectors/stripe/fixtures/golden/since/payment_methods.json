@@ -1,0 +1,1196 @@
+{
+  "requests": [
+    "GET /v1/customers?created[gte]=1767225600&limit=25 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0130/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0129/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0128/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0127/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0126/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0125/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0124/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0123/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0122/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0121/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0120/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0119/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0118/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0117/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0116/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0115/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0114/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0113/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0112/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0111/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0110/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0109/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0108/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0107/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0106/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers?created[gte]=1767225600&limit=25&starting_after=cus_fx0106 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0105/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0104/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0103/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0102/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0101/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0100/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0099/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0098/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0097/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0096/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0095/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0094/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0093/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0092/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0091/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0090/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0089/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0088/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0087/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0086/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0085/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0084/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0083/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0082/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0081/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers?created[gte]=1767225600&limit=25&starting_after=cus_fx0081 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0080/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0079/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0078/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0077/payment_methods?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers/cus_fx0076/payment_methods?limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "billing_details": {
+        "address": null,
+        "email": "customer130@example.test",
+        "name": "Fixture Customer 130",
+        "phone": null
+      },
+      "created": 1789713288,
+      "customer": "cus_fx0130",
+      "id": "pm_fx0130_sepa",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "sepa_debit": {
+        "bank_code": "37040044",
+        "branch_code": null,
+        "country": "DE",
+        "fingerprint": "fpfx0130sepa",
+        "generated_from": {
+          "charge": null,
+          "setup_attempt": null
+        },
+        "last4": "3000"
+      },
+      "type": "sepa_debit"
+    },
+    {
+      "billing_details": {
+        "address": null,
+        "email": "customer129@example.test",
+        "name": "Fixture Customer 129",
+        "phone": null
+      },
+      "card": {
+        "brand": "visa",
+        "checks": {
+          "address_line1_check": null,
+          "address_postal_code_check": null,
+          "cvc_check": "pass"
+        },
+        "country": "CH",
+        "exp_month": 2,
+        "exp_year": 2028,
+        "fingerprint": "fpfx01290001",
+        "funding": "credit",
+        "generated_from": null,
+        "last4": "4001",
+        "networks": {
+          "available": [
+            "visa"
+          ],
+          "preferred": null
+        },
+        "three_d_secure_usage": {
+          "supported": true
+        },
+        "wallet": null
+      },
+      "created": 1789294177,
+      "customer": "cus_fx0129",
+      "id": "pm_fx0129_0001",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "type": "card"
+    },
+    {
+      "billing_details": {
+        "address": null,
+        "email": "customer126@example.test",
+        "name": "Fixture Customer 126",
+        "phone": null
+      },
+      "card": {
+        "brand": "visa",
+        "checks": {
+          "address_line1_check": null,
+          "address_postal_code_check": null,
+          "cvc_check": "pass"
+        },
+        "country": "CH",
+        "exp_month": 2,
+        "exp_year": 2028,
+        "fingerprint": "fpfx01260001",
+        "funding": "credit",
+        "generated_from": null,
+        "last4": "4001",
+        "networks": {
+          "available": [
+            "visa"
+          ],
+          "preferred": null
+        },
+        "three_d_secure_usage": {
+          "supported": true
+        },
+        "wallet": null
+      },
+      "created": 1788047642,
+      "customer": "cus_fx0126",
+      "id": "pm_fx0126_0001",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "type": "card"
+    },
+    {
+      "billing_details": {
+        "address": {
+          "city": "Warszawa",
+          "country": "ES",
+          "line1": "125 Fixture Street",
+          "line2": null,
+          "postal_code": "1125",
+          "state": null
+        },
+        "email": "customer125@example.test",
+        "name": "Fixture Customer 125",
+        "phone": null
+      },
+      "created": 1787635731,
+      "customer": "cus_fx0125",
+      "id": "pm_fx0125_sepa",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "sepa_debit": {
+        "bank_code": "37040044",
+        "branch_code": null,
+        "country": "DE",
+        "fingerprint": "fpfx0125sepa",
+        "generated_from": {
+          "charge": null,
+          "setup_attempt": null
+        },
+        "last4": "3000"
+      },
+      "type": "sepa_debit"
+    },
+    {
+      "billing_details": {
+        "address": null,
+        "email": "customer123@example.test",
+        "name": "Fixture Customer 123",
+        "phone": null
+      },
+      "card": {
+        "brand": "visa",
+        "checks": {
+          "address_line1_check": null,
+          "address_postal_code_check": null,
+          "cvc_check": "pass"
+        },
+        "country": "CH",
+        "exp_month": 2,
+        "exp_year": 2028,
+        "fingerprint": "fpfx01230001",
+        "funding": "credit",
+        "generated_from": null,
+        "last4": "4001",
+        "networks": {
+          "available": [
+            "visa"
+          ],
+          "preferred": null
+        },
+        "three_d_secure_usage": {
+          "supported": true
+        },
+        "wallet": null
+      },
+      "created": 1786801108,
+      "customer": "cus_fx0123",
+      "id": "pm_fx0123_0001",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "type": "card"
+    },
+    {
+      "billing_details": {
+        "address": null,
+        "email": "customer120@example.test",
+        "name": "Fixture Customer 120",
+        "phone": null
+      },
+      "created": 1785558174,
+      "customer": "cus_fx0120",
+      "id": "pm_fx0120_sepa",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "sepa_debit": {
+        "bank_code": "37040044",
+        "branch_code": null,
+        "country": "DE",
+        "fingerprint": "fpfx0120sepa",
+        "generated_from": {
+          "charge": null,
+          "setup_attempt": null
+        },
+        "last4": "3000"
+      },
+      "type": "sepa_debit"
+    },
+    {
+      "billing_details": {
+        "address": null,
+        "email": "customer120@example.test",
+        "name": "Fixture Customer 120",
+        "phone": null
+      },
+      "card": {
+        "brand": "visa",
+        "checks": {
+          "address_line1_check": null,
+          "address_postal_code_check": null,
+          "cvc_check": "pass"
+        },
+        "country": "CH",
+        "exp_month": 2,
+        "exp_year": 2028,
+        "fingerprint": "fpfx01200001",
+        "funding": "credit",
+        "generated_from": null,
+        "last4": "4001",
+        "networks": {
+          "available": [
+            "visa"
+          ],
+          "preferred": null
+        },
+        "three_d_secure_usage": {
+          "supported": true
+        },
+        "wallet": null
+      },
+      "created": 1785554574,
+      "customer": "cus_fx0120",
+      "id": "pm_fx0120_0001",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "type": "card"
+    },
+    {
+      "billing_details": {
+        "address": {
+          "city": "Paris",
+          "country": "CH",
+          "line1": "117 Fixture Street",
+          "line2": null,
+          "postal_code": "1117",
+          "state": null
+        },
+        "email": "customer117@example.test",
+        "name": "Fixture Customer 117",
+        "phone": null
+      },
+      "card": {
+        "brand": "visa",
+        "checks": {
+          "address_line1_check": null,
+          "address_postal_code_check": null,
+          "cvc_check": "pass"
+        },
+        "country": "CH",
+        "exp_month": 2,
+        "exp_year": 2028,
+        "fingerprint": "fpfx01170001",
+        "funding": "credit",
+        "generated_from": null,
+        "last4": "4001",
+        "networks": {
+          "available": [
+            "visa"
+          ],
+          "preferred": null
+        },
+        "three_d_secure_usage": {
+          "supported": true
+        },
+        "wallet": null
+      },
+      "created": 1784308039,
+      "customer": "cus_fx0117",
+      "id": "pm_fx0117_0001",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "type": "card"
+    },
+    {
+      "billing_details": {
+        "address": null,
+        "email": "customer115@example.test",
+        "name": "Fixture Customer 115",
+        "phone": null
+      },
+      "created": 1783480616,
+      "customer": "cus_fx0115",
+      "id": "pm_fx0115_sepa",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "sepa_debit": {
+        "bank_code": "37040044",
+        "branch_code": null,
+        "country": "DE",
+        "fingerprint": "fpfx0115sepa",
+        "generated_from": {
+          "charge": null,
+          "setup_attempt": null
+        },
+        "last4": "3000"
+      },
+      "type": "sepa_debit"
+    },
+    {
+      "billing_details": {
+        "address": {
+          "city": "Madrid",
+          "country": "FR",
+          "line1": "114 Fixture Street",
+          "line2": null,
+          "postal_code": "1114",
+          "state": null
+        },
+        "email": "customer114@example.test",
+        "name": "Fixture Customer 114",
+        "phone": null
+      },
+      "card": {
+        "brand": "visa",
+        "checks": {
+          "address_line1_check": null,
+          "address_postal_code_check": null,
+          "cvc_check": "pass"
+        },
+        "country": "CH",
+        "exp_month": 2,
+        "exp_year": 2028,
+        "fingerprint": "fpfx01140001",
+        "funding": "credit",
+        "generated_from": null,
+        "last4": "4001",
+        "networks": {
+          "available": [
+            "visa"
+          ],
+          "preferred": null
+        },
+        "three_d_secure_usage": {
+          "supported": true
+        },
+        "wallet": null
+      },
+      "created": 1783061505,
+      "customer": "cus_fx0114",
+      "id": "pm_fx0114_0001",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "type": "card"
+    },
+    {
+      "billing_details": {
+        "address": {
+          "city": "Warszawa",
+          "country": "IT",
+          "line1": "111 Fixture Street",
+          "line2": null,
+          "postal_code": "1111",
+          "state": null
+        },
+        "email": "customer111@example.test",
+        "name": "Fixture Customer 111",
+        "phone": null
+      },
+      "card": {
+        "brand": "visa",
+        "checks": {
+          "address_line1_check": null,
+          "address_postal_code_check": null,
+          "cvc_check": "pass"
+        },
+        "country": "CH",
+        "exp_month": 2,
+        "exp_year": 2028,
+        "fingerprint": "fpfx01110001",
+        "funding": "credit",
+        "generated_from": null,
+        "last4": "4001",
+        "networks": {
+          "available": [
+            "visa"
+          ],
+          "preferred": null
+        },
+        "three_d_secure_usage": {
+          "supported": true
+        },
+        "wallet": null
+      },
+      "created": 1781814970,
+      "customer": "cus_fx0111",
+      "id": "pm_fx0111_0001",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "type": "card"
+    },
+    {
+      "billing_details": {
+        "address": null,
+        "email": "customer110@example.test",
+        "name": "Fixture Customer 110",
+        "phone": null
+      },
+      "created": 1781403059,
+      "customer": "cus_fx0110",
+      "id": "pm_fx0110_sepa",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "sepa_debit": {
+        "bank_code": "37040044",
+        "branch_code": null,
+        "country": "DE",
+        "fingerprint": "fpfx0110sepa",
+        "generated_from": {
+          "charge": null,
+          "setup_attempt": null
+        },
+        "last4": "3000"
+      },
+      "type": "sepa_debit"
+    },
+    {
+      "billing_details": {
+        "address": null,
+        "email": "customer108@example.test",
+        "name": "Fixture Customer 108",
+        "phone": null
+      },
+      "card": {
+        "brand": "visa",
+        "checks": {
+          "address_line1_check": null,
+          "address_postal_code_check": null,
+          "cvc_check": "pass"
+        },
+        "country": "CH",
+        "exp_month": 2,
+        "exp_year": 2028,
+        "fingerprint": "fpfx01080001",
+        "funding": "credit",
+        "generated_from": null,
+        "last4": "4001",
+        "networks": {
+          "available": [
+            "visa"
+          ],
+          "preferred": null
+        },
+        "three_d_secure_usage": {
+          "supported": true
+        },
+        "wallet": null
+      },
+      "created": 1780568436,
+      "customer": "cus_fx0108",
+      "id": "pm_fx0108_0001",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "type": "card"
+    },
+    {
+      "billing_details": {
+        "address": {
+          "city": "Lausanne",
+          "country": "FR",
+          "line1": "105 Fixture Street",
+          "line2": null,
+          "postal_code": "1105",
+          "state": null
+        },
+        "email": "customer105@example.test",
+        "name": "Fixture Customer 105",
+        "phone": null
+      },
+      "created": 1779325502,
+      "customer": "cus_fx0105",
+      "id": "pm_fx0105_sepa",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "sepa_debit": {
+        "bank_code": "37040044",
+        "branch_code": null,
+        "country": "DE",
+        "fingerprint": "fpfx0105sepa",
+        "generated_from": {
+          "charge": null,
+          "setup_attempt": null
+        },
+        "last4": "3000"
+      },
+      "type": "sepa_debit"
+    },
+    {
+      "billing_details": {
+        "address": {
+          "city": "Lausanne",
+          "country": "FR",
+          "line1": "105 Fixture Street",
+          "line2": null,
+          "postal_code": "1105",
+          "state": null
+        },
+        "email": "customer105@example.test",
+        "name": "Fixture Customer 105",
+        "phone": null
+      },
+      "card": {
+        "brand": "visa",
+        "checks": {
+          "address_line1_check": null,
+          "address_postal_code_check": null,
+          "cvc_check": "pass"
+        },
+        "country": "CH",
+        "exp_month": 2,
+        "exp_year": 2028,
+        "fingerprint": "fpfx01050001",
+        "funding": "credit",
+        "generated_from": null,
+        "last4": "4001",
+        "networks": {
+          "available": [
+            "visa"
+          ],
+          "preferred": null
+        },
+        "three_d_secure_usage": {
+          "supported": true
+        },
+        "wallet": null
+      },
+      "created": 1779321902,
+      "customer": "cus_fx0105",
+      "id": "pm_fx0105_0001",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "type": "card"
+    },
+    {
+      "billing_details": {
+        "address": {
+          "city": "Milano",
+          "country": "FR",
+          "line1": "102 Fixture Street",
+          "line2": null,
+          "postal_code": "1102",
+          "state": null
+        },
+        "email": "customer102@example.test",
+        "name": "Fixture Customer 102",
+        "phone": null
+      },
+      "card": {
+        "brand": "visa",
+        "checks": {
+          "address_line1_check": null,
+          "address_postal_code_check": null,
+          "cvc_check": "pass"
+        },
+        "country": "CH",
+        "exp_month": 2,
+        "exp_year": 2028,
+        "fingerprint": "fpfx01020001",
+        "funding": "credit",
+        "generated_from": null,
+        "last4": "4001",
+        "networks": {
+          "available": [
+            "visa"
+          ],
+          "preferred": null
+        },
+        "three_d_secure_usage": {
+          "supported": true
+        },
+        "wallet": null
+      },
+      "created": 1778075367,
+      "customer": "cus_fx0102",
+      "id": "pm_fx0102_0001",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "type": "card"
+    },
+    {
+      "billing_details": {
+        "address": null,
+        "email": "customer100@example.test",
+        "name": "Fixture Customer 100",
+        "phone": null
+      },
+      "created": 1777247945,
+      "customer": "cus_fx0100",
+      "id": "pm_fx0100_sepa",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "sepa_debit": {
+        "bank_code": "37040044",
+        "branch_code": null,
+        "country": "DE",
+        "fingerprint": "fpfx0100sepa",
+        "generated_from": {
+          "charge": null,
+          "setup_attempt": null
+        },
+        "last4": "3000"
+      },
+      "type": "sepa_debit"
+    },
+    {
+      "billing_details": {
+        "address": {
+          "city": "Paris",
+          "country": "FR",
+          "line1": "99 Fixture Street",
+          "line2": null,
+          "postal_code": "1099",
+          "state": null
+        },
+        "email": "customer99@example.test",
+        "name": "Fixture Customer 99",
+        "phone": null
+      },
+      "card": {
+        "brand": "visa",
+        "checks": {
+          "address_line1_check": null,
+          "address_postal_code_check": null,
+          "cvc_check": "pass"
+        },
+        "country": "CH",
+        "exp_month": 2,
+        "exp_year": 2028,
+        "fingerprint": "fpfx00990001",
+        "funding": "credit",
+        "generated_from": null,
+        "last4": "4001",
+        "networks": {
+          "available": [
+            "visa"
+          ],
+          "preferred": null
+        },
+        "three_d_secure_usage": {
+          "supported": true
+        },
+        "wallet": null
+      },
+      "created": 1776828833,
+      "customer": "cus_fx0099",
+      "id": "pm_fx0099_0001",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "type": "card"
+    },
+    {
+      "billing_details": {
+        "address": {
+          "city": "Lausanne",
+          "country": "ES",
+          "line1": "96 Fixture Street",
+          "line2": null,
+          "postal_code": "1096",
+          "state": null
+        },
+        "email": "customer96@example.test",
+        "name": "Fixture Customer 96",
+        "phone": null
+      },
+      "card": {
+        "brand": "visa",
+        "checks": {
+          "address_line1_check": null,
+          "address_postal_code_check": null,
+          "cvc_check": "pass"
+        },
+        "country": "CH",
+        "exp_month": 2,
+        "exp_year": 2028,
+        "fingerprint": "fpfx00960001",
+        "funding": "credit",
+        "generated_from": null,
+        "last4": "4001",
+        "networks": {
+          "available": [
+            "visa"
+          ],
+          "preferred": null
+        },
+        "three_d_secure_usage": {
+          "supported": true
+        },
+        "wallet": null
+      },
+      "created": 1775582299,
+      "customer": "cus_fx0096",
+      "id": "pm_fx0096_0001",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "type": "card"
+    },
+    {
+      "billing_details": {
+        "address": null,
+        "email": "customer95@example.test",
+        "name": "Fixture Customer 95",
+        "phone": null
+      },
+      "created": 1775170387,
+      "customer": "cus_fx0095",
+      "id": "pm_fx0095_sepa",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "sepa_debit": {
+        "bank_code": "37040044",
+        "branch_code": null,
+        "country": "DE",
+        "fingerprint": "fpfx0095sepa",
+        "generated_from": {
+          "charge": null,
+          "setup_attempt": null
+        },
+        "last4": "3000"
+      },
+      "type": "sepa_debit"
+    },
+    {
+      "billing_details": {
+        "address": {
+          "city": "Paris",
+          "country": "FR",
+          "line1": "93 Fixture Street",
+          "line2": null,
+          "postal_code": "1093",
+          "state": null
+        },
+        "email": "customer93@example.test",
+        "name": "Fixture Customer 93",
+        "phone": null
+      },
+      "card": {
+        "brand": "visa",
+        "checks": {
+          "address_line1_check": null,
+          "address_postal_code_check": null,
+          "cvc_check": "pass"
+        },
+        "country": "CH",
+        "exp_month": 2,
+        "exp_year": 2028,
+        "fingerprint": "fpfx00930001",
+        "funding": "credit",
+        "generated_from": null,
+        "last4": "4001",
+        "networks": {
+          "available": [
+            "visa"
+          ],
+          "preferred": null
+        },
+        "three_d_secure_usage": {
+          "supported": true
+        },
+        "wallet": null
+      },
+      "created": 1774335764,
+      "customer": "cus_fx0093",
+      "id": "pm_fx0093_0001",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "type": "card"
+    },
+    {
+      "billing_details": {
+        "address": {
+          "city": "Lausanne",
+          "country": "IT",
+          "line1": "90 Fixture Street",
+          "line2": null,
+          "postal_code": "1090",
+          "state": null
+        },
+        "email": "customer90@example.test",
+        "name": "Fixture Customer 90",
+        "phone": null
+      },
+      "created": 1773092830,
+      "customer": "cus_fx0090",
+      "id": "pm_fx0090_sepa",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "sepa_debit": {
+        "bank_code": "37040044",
+        "branch_code": null,
+        "country": "DE",
+        "fingerprint": "fpfx0090sepa",
+        "generated_from": {
+          "charge": null,
+          "setup_attempt": null
+        },
+        "last4": "3000"
+      },
+      "type": "sepa_debit"
+    },
+    {
+      "billing_details": {
+        "address": {
+          "city": "Lausanne",
+          "country": "IT",
+          "line1": "90 Fixture Street",
+          "line2": null,
+          "postal_code": "1090",
+          "state": null
+        },
+        "email": "customer90@example.test",
+        "name": "Fixture Customer 90",
+        "phone": null
+      },
+      "card": {
+        "brand": "visa",
+        "checks": {
+          "address_line1_check": null,
+          "address_postal_code_check": null,
+          "cvc_check": "pass"
+        },
+        "country": "CH",
+        "exp_month": 2,
+        "exp_year": 2028,
+        "fingerprint": "fpfx00900001",
+        "funding": "credit",
+        "generated_from": null,
+        "last4": "4001",
+        "networks": {
+          "available": [
+            "visa"
+          ],
+          "preferred": null
+        },
+        "three_d_secure_usage": {
+          "supported": true
+        },
+        "wallet": null
+      },
+      "created": 1773089230,
+      "customer": "cus_fx0090",
+      "id": "pm_fx0090_0001",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "type": "card"
+    },
+    {
+      "billing_details": {
+        "address": {
+          "city": "Lausanne",
+          "country": "PL",
+          "line1": "87 Fixture Street",
+          "line2": null,
+          "postal_code": "1087",
+          "state": null
+        },
+        "email": "customer87@example.test",
+        "name": "Fixture Customer 87",
+        "phone": null
+      },
+      "card": {
+        "brand": "visa",
+        "checks": {
+          "address_line1_check": null,
+          "address_postal_code_check": null,
+          "cvc_check": "pass"
+        },
+        "country": "CH",
+        "exp_month": 2,
+        "exp_year": 2028,
+        "fingerprint": "fpfx00870001",
+        "funding": "credit",
+        "generated_from": null,
+        "last4": "4001",
+        "networks": {
+          "available": [
+            "visa"
+          ],
+          "preferred": null
+        },
+        "three_d_secure_usage": {
+          "supported": true
+        },
+        "wallet": null
+      },
+      "created": 1771842696,
+      "customer": "cus_fx0087",
+      "id": "pm_fx0087_0001",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "type": "card"
+    },
+    {
+      "billing_details": {
+        "address": {
+          "city": "Madrid",
+          "country": "CH",
+          "line1": "85 Fixture Street",
+          "line2": null,
+          "postal_code": "1085",
+          "state": null
+        },
+        "email": "customer85@example.test",
+        "name": "Fixture Customer 85",
+        "phone": null
+      },
+      "created": 1771015273,
+      "customer": "cus_fx0085",
+      "id": "pm_fx0085_sepa",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "sepa_debit": {
+        "bank_code": "37040044",
+        "branch_code": null,
+        "country": "DE",
+        "fingerprint": "fpfx0085sepa",
+        "generated_from": {
+          "charge": null,
+          "setup_attempt": null
+        },
+        "last4": "3000"
+      },
+      "type": "sepa_debit"
+    },
+    {
+      "billing_details": {
+        "address": {
+          "city": "Madrid",
+          "country": "ES",
+          "line1": "84 Fixture Street",
+          "line2": null,
+          "postal_code": "1084",
+          "state": null
+        },
+        "email": "customer84@example.test",
+        "name": "Fixture Customer 84",
+        "phone": null
+      },
+      "card": {
+        "brand": "visa",
+        "checks": {
+          "address_line1_check": null,
+          "address_postal_code_check": null,
+          "cvc_check": "pass"
+        },
+        "country": "CH",
+        "exp_month": 2,
+        "exp_year": 2028,
+        "fingerprint": "fpfx00840001",
+        "funding": "credit",
+        "generated_from": null,
+        "last4": "4001",
+        "networks": {
+          "available": [
+            "visa"
+          ],
+          "preferred": null
+        },
+        "three_d_secure_usage": {
+          "supported": true
+        },
+        "wallet": null
+      },
+      "created": 1770596161,
+      "customer": "cus_fx0084",
+      "id": "pm_fx0084_0001",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "type": "card"
+    },
+    {
+      "billing_details": {
+        "address": {
+          "city": "Warszawa",
+          "country": "IT",
+          "line1": "81 Fixture Street",
+          "line2": null,
+          "postal_code": "1081",
+          "state": null
+        },
+        "email": "customer81@example.test",
+        "name": "Fixture Customer 81",
+        "phone": null
+      },
+      "card": {
+        "brand": "visa",
+        "checks": {
+          "address_line1_check": null,
+          "address_postal_code_check": null,
+          "cvc_check": "pass"
+        },
+        "country": "CH",
+        "exp_month": 2,
+        "exp_year": 2028,
+        "fingerprint": "fpfx00810001",
+        "funding": "credit",
+        "generated_from": null,
+        "last4": "4001",
+        "networks": {
+          "available": [
+            "visa"
+          ],
+          "preferred": null
+        },
+        "three_d_secure_usage": {
+          "supported": true
+        },
+        "wallet": null
+      },
+      "created": 1769349627,
+      "customer": "cus_fx0081",
+      "id": "pm_fx0081_0001",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "type": "card"
+    },
+    {
+      "billing_details": {
+        "address": {
+          "city": "Milano",
+          "country": "PL",
+          "line1": "80 Fixture Street",
+          "line2": null,
+          "postal_code": "1080",
+          "state": null
+        },
+        "email": "customer80@example.test",
+        "name": "Fixture Customer 80",
+        "phone": null
+      },
+      "created": 1768937716,
+      "customer": "cus_fx0080",
+      "id": "pm_fx0080_sepa",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "sepa_debit": {
+        "bank_code": "37040044",
+        "branch_code": null,
+        "country": "DE",
+        "fingerprint": "fpfx0080sepa",
+        "generated_from": {
+          "charge": null,
+          "setup_attempt": null
+        },
+        "last4": "3000"
+      },
+      "type": "sepa_debit"
+    },
+    {
+      "billing_details": {
+        "address": {
+          "city": "Madrid",
+          "country": "CH",
+          "line1": "78 Fixture Street",
+          "line2": null,
+          "postal_code": "1078",
+          "state": null
+        },
+        "email": "customer78@example.test",
+        "name": "Fixture Customer 78",
+        "phone": null
+      },
+      "card": {
+        "brand": "visa",
+        "checks": {
+          "address_line1_check": null,
+          "address_postal_code_check": null,
+          "cvc_check": "pass"
+        },
+        "country": "CH",
+        "exp_month": 2,
+        "exp_year": 2028,
+        "fingerprint": "fpfx00780001",
+        "funding": "credit",
+        "generated_from": null,
+        "last4": "4001",
+        "networks": {
+          "available": [
+            "visa"
+          ],
+          "preferred": null
+        },
+        "three_d_secure_usage": {
+          "supported": true
+        },
+        "wallet": null
+      },
+      "created": 1768103093,
+      "customer": "cus_fx0078",
+      "id": "pm_fx0078_0001",
+      "livemode": false,
+      "metadata": {},
+      "object": "payment_method",
+      "type": "card"
+    }
+  ]
+}

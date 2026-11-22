@@ -1,0 +1,18 @@
+{
+  "chunks": [
+    {
+      "cursor": "dp_fx0002",
+      "hasMore": true
+    },
+    {
+      "cursor": "dp_fx0002",
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/disputes?limit=2 (Stripe-Version 2023-10-16)",
+    "GET /v1/disputes?limit=2&starting_after=dp_fx0002 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 3,
+  "rowsSha256": "0788013783ca2c98751560d735fb32735b04034a677fafeb990caf49411286d2"
+}

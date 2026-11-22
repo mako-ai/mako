@@ -1,0 +1,12 @@
+{
+  "chunks": [
+    {
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/refunds?limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 14,
+  "rowsSha256": "b91d26cf13f50e6293fa5857b7cab6a6bbbee3dd1c269dc454d2a771f7d9f8bd"
+}

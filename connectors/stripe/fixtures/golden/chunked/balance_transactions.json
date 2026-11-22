@@ -1,0 +1,12 @@
+{
+  "chunks": [
+    {
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/balance_transactions?limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 40,
+  "rowsSha256": "ddb1488785d38453664e3caee13a261698f33b9ad72a08556244cc7332572ce6"
+}

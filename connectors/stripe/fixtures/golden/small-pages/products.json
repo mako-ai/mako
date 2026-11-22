@@ -1,0 +1,23 @@
+{
+  "chunks": [
+    {
+      "cursor": "prod_fx0005",
+      "hasMore": true
+    },
+    {
+      "cursor": "prod_fx0003",
+      "hasMore": true
+    },
+    {
+      "cursor": "prod_fx0003",
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/products?limit=2 (Stripe-Version 2023-10-16)",
+    "GET /v1/products?limit=2&starting_after=prod_fx0005 (Stripe-Version 2023-10-16)",
+    "GET /v1/products?limit=2&starting_after=prod_fx0003 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 6,
+  "rowsSha256": "7135e43294251bf450faaaefb9b56e4d654fe398344106092d1f85f822aae5a7"
+}

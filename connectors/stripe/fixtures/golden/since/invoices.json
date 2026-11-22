@@ -1,0 +1,1906 @@
+{
+  "requests": [
+    "GET /v1/invoices?created[gte]=1767225600&limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "amount_due": 169100,
+      "amount_paid": 169100,
+      "amount_remaining": 0,
+      "attempt_count": 1,
+      "attempted": true,
+      "auto_advance": false,
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null,
+        "status": null
+      },
+      "billing_reason": "subscription_create",
+      "charge": "ch_fx0040",
+      "collection_method": "charge_automatically",
+      "created": 1788793990,
+      "currency": "eur",
+      "customer": "cus_fx0040",
+      "customer_address": null,
+      "customer_email": "customer40@example.test",
+      "customer_name": "Fixture Customer 40",
+      "customer_shipping": null,
+      "discount": null,
+      "discounts": [],
+      "due_date": null,
+      "ending_balance": 0,
+      "from_invoice": null,
+      "hosted_invoice_url": "https://invoice.stripe.test/i/in_fx0040",
+      "id": "in_fx0040",
+      "invoice_pdf": "https://pay.stripe.test/invoice/in_fx0040/pdf",
+      "issuer": {
+        "type": "self"
+      },
+      "lines": {
+        "data": [
+          {
+            "amount": 169100,
+            "amount_excluding_tax": 169100,
+            "currency": "eur",
+            "description": "1 × Fixture Plan (at €1691 / month)",
+            "discount_amounts": [],
+            "discountable": true,
+            "discounts": [],
+            "id": "il_fx0040_0001",
+            "invoice_item": null,
+            "livemode": false,
+            "metadata": {},
+            "object": "line_item",
+            "period": {
+              "end": 1788793990,
+              "start": 1786201990
+            },
+            "plan": {
+              "amount": 169100,
+              "id": "price_fx0001",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0001",
+              "object": "price",
+              "unit_amount": 169100
+            },
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0040",
+            "subscription_item": "si_fx0040",
+            "tax_amounts": [],
+            "tax_rates": [],
+            "type": "subscription",
+            "unit_amount_excluding_tax": "169100"
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/invoices/in_fx0040/lines"
+      },
+      "livemode": false,
+      "metadata": {},
+      "number": "FX0040-0001",
+      "object": "invoice",
+      "paid": true,
+      "paid_out_of_band": false,
+      "payment_intent": "pi_fx0040",
+      "payment_settings": {
+        "default_mandate": null,
+        "payment_method_options": null,
+        "payment_method_types": null
+      },
+      "period_end": 1788793990,
+      "period_start": 1786201990,
+      "starting_balance": 0,
+      "status": "paid",
+      "status_transitions": {
+        "finalized_at": 1788793990,
+        "marked_uncollectible_at": null,
+        "paid_at": 1788794050,
+        "voided_at": null
+      },
+      "subscription": "sub_fx0040",
+      "subtotal": 169100,
+      "subtotal_excluding_tax": 169100,
+      "tax": null,
+      "total": 169100,
+      "total_excluding_tax": 169100,
+      "total_tax_amounts": [],
+      "transfer_data": null
+    },
+    {
+      "amount_due": 197500,
+      "amount_paid": 197500,
+      "amount_remaining": 0,
+      "attempt_count": 1,
+      "attempted": true,
+      "auto_advance": false,
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null,
+        "status": null
+      },
+      "billing_reason": "subscription_cycle",
+      "charge": "ch_fx0039",
+      "collection_method": "charge_automatically",
+      "created": 1787466380,
+      "currency": "eur",
+      "customer": "cus_fx0039",
+      "customer_address": null,
+      "customer_email": "customer39@example.test",
+      "customer_name": "Fixture Customer 39",
+      "customer_shipping": null,
+      "discount": null,
+      "discounts": [],
+      "due_date": null,
+      "ending_balance": 0,
+      "from_invoice": null,
+      "hosted_invoice_url": "https://invoice.stripe.test/i/in_fx0039",
+      "id": "in_fx0039",
+      "invoice_pdf": "https://pay.stripe.test/invoice/in_fx0039/pdf",
+      "issuer": {
+        "type": "self"
+      },
+      "lines": {
+        "data": [
+          {
+            "amount": 197500,
+            "amount_excluding_tax": 197500,
+            "currency": "eur",
+            "description": "1 × Fixture Plan (at €1975 / month)",
+            "discount_amounts": [],
+            "discountable": true,
+            "discounts": [],
+            "id": "il_fx0039_0001",
+            "invoice_item": null,
+            "livemode": false,
+            "metadata": {},
+            "object": "line_item",
+            "period": {
+              "end": 1787466380,
+              "start": 1784874380
+            },
+            "plan": {
+              "amount": 197500,
+              "id": "price_fx0001",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0001",
+              "object": "price",
+              "unit_amount": 197500
+            },
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0039",
+            "subscription_item": "si_fx0039",
+            "tax_amounts": [],
+            "tax_rates": [],
+            "type": "subscription",
+            "unit_amount_excluding_tax": "197500"
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/invoices/in_fx0039/lines"
+      },
+      "livemode": false,
+      "metadata": {},
+      "number": "FX0039-0001",
+      "object": "invoice",
+      "paid": true,
+      "paid_out_of_band": false,
+      "payment_intent": "pi_fx0039",
+      "payment_settings": {
+        "default_mandate": null,
+        "payment_method_options": null,
+        "payment_method_types": null
+      },
+      "period_end": 1787466380,
+      "period_start": 1784874380,
+      "starting_balance": 0,
+      "status": "paid",
+      "status_transitions": {
+        "finalized_at": 1787466380,
+        "marked_uncollectible_at": null,
+        "paid_at": 1787466440,
+        "voided_at": null
+      },
+      "subscription": "sub_fx0039",
+      "subtotal": 197500,
+      "subtotal_excluding_tax": 197500,
+      "tax": null,
+      "total": 197500,
+      "total_excluding_tax": 197500,
+      "total_tax_amounts": [],
+      "transfer_data": null
+    },
+    {
+      "amount_due": 75800,
+      "amount_paid": 75800,
+      "amount_remaining": 0,
+      "attempt_count": 1,
+      "attempted": true,
+      "auto_advance": false,
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null,
+        "status": null
+      },
+      "billing_reason": "subscription_cycle",
+      "charge": "ch_fx0038",
+      "collection_method": "charge_automatically",
+      "created": 1786138770,
+      "currency": "eur",
+      "customer": "cus_fx0038",
+      "customer_address": null,
+      "customer_email": "customer38@example.test",
+      "customer_name": "Fixture Customer 38",
+      "customer_shipping": null,
+      "discount": null,
+      "discounts": [],
+      "due_date": null,
+      "ending_balance": 0,
+      "from_invoice": null,
+      "hosted_invoice_url": "https://invoice.stripe.test/i/in_fx0038",
+      "id": "in_fx0038",
+      "invoice_pdf": "https://pay.stripe.test/invoice/in_fx0038/pdf",
+      "issuer": {
+        "type": "self"
+      },
+      "lines": {
+        "data": [
+          {
+            "amount": 75800,
+            "amount_excluding_tax": 75800,
+            "currency": "eur",
+            "description": "1 × Fixture Plan (at €758 / month)",
+            "discount_amounts": [],
+            "discountable": true,
+            "discounts": [],
+            "id": "il_fx0038_0001",
+            "invoice_item": null,
+            "livemode": false,
+            "metadata": {},
+            "object": "line_item",
+            "period": {
+              "end": 1786138770,
+              "start": 1783546770
+            },
+            "plan": {
+              "amount": 75800,
+              "id": "price_fx0001",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0001",
+              "object": "price",
+              "unit_amount": 75800
+            },
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0038",
+            "subscription_item": "si_fx0038",
+            "tax_amounts": [],
+            "tax_rates": [],
+            "type": "subscription",
+            "unit_amount_excluding_tax": "75800"
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/invoices/in_fx0038/lines"
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "number": "FX0038-0001",
+      "object": "invoice",
+      "paid": true,
+      "paid_out_of_band": false,
+      "payment_intent": "pi_fx0038",
+      "payment_settings": {
+        "default_mandate": null,
+        "payment_method_options": null,
+        "payment_method_types": null
+      },
+      "period_end": 1786138770,
+      "period_start": 1783546770,
+      "starting_balance": 0,
+      "status": "paid",
+      "status_transitions": {
+        "finalized_at": 1786138770,
+        "marked_uncollectible_at": null,
+        "paid_at": 1786138830,
+        "voided_at": null
+      },
+      "subscription": "sub_fx0038",
+      "subtotal": 75800,
+      "subtotal_excluding_tax": 75800,
+      "tax": null,
+      "total": 75800,
+      "total_excluding_tax": 75800,
+      "total_tax_amounts": [],
+      "transfer_data": null
+    },
+    {
+      "amount_due": 1100,
+      "amount_paid": 1100,
+      "amount_remaining": 0,
+      "attempt_count": 1,
+      "attempted": true,
+      "auto_advance": false,
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null,
+        "status": null
+      },
+      "billing_reason": "subscription_cycle",
+      "charge": "ch_fx0037",
+      "collection_method": "charge_automatically",
+      "created": 1784811160,
+      "currency": "eur",
+      "customer": "cus_fx0037",
+      "customer_address": null,
+      "customer_email": "customer37@example.test",
+      "customer_name": "Fixture Customer 37",
+      "customer_shipping": null,
+      "discount": null,
+      "discounts": [],
+      "due_date": null,
+      "ending_balance": 0,
+      "from_invoice": null,
+      "hosted_invoice_url": "https://invoice.stripe.test/i/in_fx0037",
+      "id": "in_fx0037",
+      "invoice_pdf": "https://pay.stripe.test/invoice/in_fx0037/pdf",
+      "issuer": {
+        "type": "self"
+      },
+      "lines": {
+        "data": [
+          {
+            "amount": 1100,
+            "amount_excluding_tax": 1100,
+            "currency": "eur",
+            "description": "1 × Fixture Plan (at €11 / month)",
+            "discount_amounts": [],
+            "discountable": true,
+            "discounts": [],
+            "id": "il_fx0037_0001",
+            "invoice_item": null,
+            "livemode": false,
+            "metadata": {},
+            "object": "line_item",
+            "period": {
+              "end": 1784811160,
+              "start": 1782219160
+            },
+            "plan": {
+              "amount": 1100,
+              "id": "price_fx0001",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0001",
+              "object": "price",
+              "unit_amount": 1100
+            },
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0037",
+            "subscription_item": "si_fx0037",
+            "tax_amounts": [],
+            "tax_rates": [],
+            "type": "subscription",
+            "unit_amount_excluding_tax": "1100"
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/invoices/in_fx0037/lines"
+      },
+      "livemode": false,
+      "metadata": {},
+      "number": "FX0037-0001",
+      "object": "invoice",
+      "paid": true,
+      "paid_out_of_band": false,
+      "payment_intent": "pi_fx0037",
+      "payment_settings": {
+        "default_mandate": null,
+        "payment_method_options": null,
+        "payment_method_types": null
+      },
+      "period_end": 1784811160,
+      "period_start": 1782219160,
+      "starting_balance": 0,
+      "status": "paid",
+      "status_transitions": {
+        "finalized_at": 1784811160,
+        "marked_uncollectible_at": null,
+        "paid_at": 1784811220,
+        "voided_at": null
+      },
+      "subscription": "sub_fx0037",
+      "subtotal": 1100,
+      "subtotal_excluding_tax": 1100,
+      "tax": null,
+      "total": 1100,
+      "total_excluding_tax": 1100,
+      "total_tax_amounts": [],
+      "transfer_data": null
+    },
+    {
+      "amount_due": 60900,
+      "amount_paid": 0,
+      "amount_remaining": 60900,
+      "attempt_count": 1,
+      "attempted": true,
+      "auto_advance": false,
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null,
+        "status": null
+      },
+      "billing_reason": "subscription_create",
+      "charge": "ch_fx0036",
+      "collection_method": "charge_automatically",
+      "created": 1783483551,
+      "currency": "eur",
+      "customer": "cus_fx0036",
+      "customer_address": null,
+      "customer_email": "customer36@example.test",
+      "customer_name": "Fixture Customer 36",
+      "customer_shipping": null,
+      "discount": null,
+      "discounts": [],
+      "due_date": null,
+      "ending_balance": 0,
+      "from_invoice": null,
+      "hosted_invoice_url": "https://invoice.stripe.test/i/in_fx0036",
+      "id": "in_fx0036",
+      "invoice_pdf": "https://pay.stripe.test/invoice/in_fx0036/pdf",
+      "issuer": {
+        "type": "self"
+      },
+      "lines": {
+        "data": [
+          {
+            "amount": 60900,
+            "amount_excluding_tax": 60900,
+            "currency": "eur",
+            "description": "1 × Fixture Plan (at €609 / month)",
+            "discount_amounts": [],
+            "discountable": true,
+            "discounts": [],
+            "id": "il_fx0036_0001",
+            "invoice_item": null,
+            "livemode": false,
+            "metadata": {},
+            "object": "line_item",
+            "period": {
+              "end": 1783483551,
+              "start": 1780891551
+            },
+            "plan": {
+              "amount": 60900,
+              "id": "price_fx0001",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0001",
+              "object": "price",
+              "unit_amount": 60900
+            },
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0036",
+            "subscription_item": "si_fx0036",
+            "tax_amounts": [],
+            "tax_rates": [],
+            "type": "subscription",
+            "unit_amount_excluding_tax": "60900"
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/invoices/in_fx0036/lines"
+      },
+      "livemode": false,
+      "metadata": {},
+      "number": "FX0036-0001",
+      "object": "invoice",
+      "paid": false,
+      "paid_out_of_band": false,
+      "payment_intent": "pi_fx0036",
+      "payment_settings": {
+        "default_mandate": null,
+        "payment_method_options": null,
+        "payment_method_types": null
+      },
+      "period_end": 1783483551,
+      "period_start": 1780891551,
+      "starting_balance": 0,
+      "status": "open",
+      "status_transitions": {
+        "finalized_at": 1783483551,
+        "marked_uncollectible_at": null,
+        "paid_at": null,
+        "voided_at": null
+      },
+      "subscription": "sub_fx0036",
+      "subtotal": 60900,
+      "subtotal_excluding_tax": 60900,
+      "tax": null,
+      "total": 60900,
+      "total_excluding_tax": 60900,
+      "total_tax_amounts": [],
+      "transfer_data": null
+    },
+    {
+      "amount_due": 7100,
+      "amount_paid": 7100,
+      "amount_remaining": 0,
+      "attempt_count": 1,
+      "attempted": true,
+      "auto_advance": false,
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null,
+        "status": null
+      },
+      "billing_reason": "subscription_cycle",
+      "charge": "ch_fx0035",
+      "collection_method": "charge_automatically",
+      "created": 1782155941,
+      "currency": "eur",
+      "customer": "cus_fx0035",
+      "customer_address": null,
+      "customer_email": "customer35@example.test",
+      "customer_name": "Fixture Customer 35",
+      "customer_shipping": null,
+      "discount": null,
+      "discounts": [],
+      "due_date": null,
+      "ending_balance": 0,
+      "from_invoice": null,
+      "hosted_invoice_url": "https://invoice.stripe.test/i/in_fx0035",
+      "id": "in_fx0035",
+      "invoice_pdf": "https://pay.stripe.test/invoice/in_fx0035/pdf",
+      "issuer": {
+        "type": "self"
+      },
+      "lines": {
+        "data": [
+          {
+            "amount": 7100,
+            "amount_excluding_tax": 7100,
+            "currency": "eur",
+            "description": "1 × Fixture Plan (at €71 / month)",
+            "discount_amounts": [],
+            "discountable": true,
+            "discounts": [],
+            "id": "il_fx0035_0001",
+            "invoice_item": null,
+            "livemode": false,
+            "metadata": {},
+            "object": "line_item",
+            "period": {
+              "end": 1782155941,
+              "start": 1779563941
+            },
+            "plan": {
+              "amount": 7100,
+              "id": "price_fx0001",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0001",
+              "object": "price",
+              "unit_amount": 7100
+            },
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0035",
+            "subscription_item": "si_fx0035",
+            "tax_amounts": [],
+            "tax_rates": [],
+            "type": "subscription",
+            "unit_amount_excluding_tax": "7100"
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/invoices/in_fx0035/lines"
+      },
+      "livemode": false,
+      "metadata": {},
+      "number": "FX0035-0001",
+      "object": "invoice",
+      "paid": true,
+      "paid_out_of_band": false,
+      "payment_intent": "pi_fx0035",
+      "payment_settings": {
+        "default_mandate": null,
+        "payment_method_options": null,
+        "payment_method_types": null
+      },
+      "period_end": 1782155941,
+      "period_start": 1779563941,
+      "starting_balance": 0,
+      "status": "paid",
+      "status_transitions": {
+        "finalized_at": 1782155941,
+        "marked_uncollectible_at": null,
+        "paid_at": 1782156001,
+        "voided_at": null
+      },
+      "subscription": "sub_fx0035",
+      "subtotal": 7100,
+      "subtotal_excluding_tax": 7100,
+      "tax": null,
+      "total": 7100,
+      "total_excluding_tax": 7100,
+      "total_tax_amounts": [],
+      "transfer_data": null
+    },
+    {
+      "amount_due": 80900,
+      "amount_paid": 80900,
+      "amount_remaining": 0,
+      "attempt_count": 1,
+      "attempted": true,
+      "auto_advance": false,
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null,
+        "status": null
+      },
+      "billing_reason": "subscription_cycle",
+      "charge": "ch_fx0034",
+      "collection_method": "charge_automatically",
+      "created": 1780828331,
+      "currency": "eur",
+      "customer": "cus_fx0034",
+      "customer_address": null,
+      "customer_email": "customer34@example.test",
+      "customer_name": "Fixture Customer 34",
+      "customer_shipping": null,
+      "discount": null,
+      "discounts": [],
+      "due_date": null,
+      "ending_balance": 0,
+      "from_invoice": null,
+      "hosted_invoice_url": "https://invoice.stripe.test/i/in_fx0034",
+      "id": "in_fx0034",
+      "invoice_pdf": "https://pay.stripe.test/invoice/in_fx0034/pdf",
+      "issuer": {
+        "type": "self"
+      },
+      "lines": {
+        "data": [
+          {
+            "amount": 80900,
+            "amount_excluding_tax": 80900,
+            "currency": "eur",
+            "description": "1 × Fixture Plan (at €809 / month)",
+            "discount_amounts": [],
+            "discountable": true,
+            "discounts": [],
+            "id": "il_fx0034_0001",
+            "invoice_item": null,
+            "livemode": false,
+            "metadata": {},
+            "object": "line_item",
+            "period": {
+              "end": 1780828331,
+              "start": 1778236331
+            },
+            "plan": {
+              "amount": 80900,
+              "id": "price_fx0001",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0001",
+              "object": "price",
+              "unit_amount": 80900
+            },
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0034",
+            "subscription_item": "si_fx0034",
+            "tax_amounts": [],
+            "tax_rates": [],
+            "type": "subscription",
+            "unit_amount_excluding_tax": "80900"
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/invoices/in_fx0034/lines"
+      },
+      "livemode": false,
+      "metadata": {},
+      "number": "FX0034-0001",
+      "object": "invoice",
+      "paid": true,
+      "paid_out_of_band": true,
+      "payment_intent": "pi_fx0034",
+      "payment_settings": {
+        "default_mandate": null,
+        "payment_method_options": null,
+        "payment_method_types": null
+      },
+      "period_end": 1780828331,
+      "period_start": 1778236331,
+      "starting_balance": 0,
+      "status": "paid",
+      "status_transitions": {
+        "finalized_at": 1780828331,
+        "marked_uncollectible_at": null,
+        "paid_at": 1780828391,
+        "voided_at": null
+      },
+      "subscription": "sub_fx0034",
+      "subtotal": 80900,
+      "subtotal_excluding_tax": 80900,
+      "tax": null,
+      "total": 80900,
+      "total_excluding_tax": 80900,
+      "total_tax_amounts": [],
+      "transfer_data": null
+    },
+    {
+      "amount_due": 122200,
+      "amount_paid": 122200,
+      "amount_remaining": 0,
+      "attempt_count": 1,
+      "attempted": true,
+      "auto_advance": false,
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null,
+        "status": null
+      },
+      "billing_reason": "subscription_cycle",
+      "charge": "ch_fx0033",
+      "collection_method": "charge_automatically",
+      "created": 1779500721,
+      "currency": "eur",
+      "customer": "cus_fx0033",
+      "customer_address": null,
+      "customer_email": "customer33@example.test",
+      "customer_name": "Fixture Customer 33",
+      "customer_shipping": null,
+      "discount": null,
+      "discounts": [],
+      "due_date": null,
+      "ending_balance": 0,
+      "from_invoice": null,
+      "hosted_invoice_url": "https://invoice.stripe.test/i/in_fx0033",
+      "id": "in_fx0033",
+      "invoice_pdf": "https://pay.stripe.test/invoice/in_fx0033/pdf",
+      "issuer": {
+        "type": "self"
+      },
+      "lines": {
+        "data": [
+          {
+            "amount": 122200,
+            "amount_excluding_tax": 122200,
+            "currency": "eur",
+            "description": "1 × Fixture Plan (at €1222 / month)",
+            "discount_amounts": [],
+            "discountable": true,
+            "discounts": [],
+            "id": "il_fx0033_0001",
+            "invoice_item": null,
+            "livemode": false,
+            "metadata": {},
+            "object": "line_item",
+            "period": {
+              "end": 1779500721,
+              "start": 1776908721
+            },
+            "plan": {
+              "amount": 122200,
+              "id": "price_fx0001",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0001",
+              "object": "price",
+              "unit_amount": 122200
+            },
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0033",
+            "subscription_item": "si_fx0033",
+            "tax_amounts": [],
+            "tax_rates": [],
+            "type": "subscription",
+            "unit_amount_excluding_tax": "122200"
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/invoices/in_fx0033/lines"
+      },
+      "livemode": false,
+      "metadata": {},
+      "number": "FX0033-0001",
+      "object": "invoice",
+      "paid": true,
+      "paid_out_of_band": false,
+      "payment_intent": "pi_fx0033",
+      "payment_settings": {
+        "default_mandate": null,
+        "payment_method_options": null,
+        "payment_method_types": null
+      },
+      "period_end": 1779500721,
+      "period_start": 1776908721,
+      "starting_balance": 0,
+      "status": "paid",
+      "status_transitions": {
+        "finalized_at": 1779500721,
+        "marked_uncollectible_at": null,
+        "paid_at": 1779500781,
+        "voided_at": null
+      },
+      "subscription": "sub_fx0033",
+      "subtotal": 122200,
+      "subtotal_excluding_tax": 122200,
+      "tax": null,
+      "total": 122200,
+      "total_excluding_tax": 122200,
+      "total_tax_amounts": [],
+      "transfer_data": null
+    },
+    {
+      "amount_due": 5400,
+      "amount_paid": 5400,
+      "amount_remaining": 0,
+      "attempt_count": 1,
+      "attempted": true,
+      "auto_advance": false,
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null,
+        "status": null
+      },
+      "billing_reason": "subscription_create",
+      "charge": "ch_fx0032",
+      "collection_method": "charge_automatically",
+      "created": 1778173112,
+      "currency": "eur",
+      "customer": "cus_fx0032",
+      "customer_address": null,
+      "customer_email": "customer32@example.test",
+      "customer_name": "Fixture Customer 32",
+      "customer_shipping": null,
+      "discount": null,
+      "discounts": [],
+      "due_date": null,
+      "ending_balance": 0,
+      "from_invoice": null,
+      "hosted_invoice_url": "https://invoice.stripe.test/i/in_fx0032",
+      "id": "in_fx0032",
+      "invoice_pdf": "https://pay.stripe.test/invoice/in_fx0032/pdf",
+      "issuer": {
+        "type": "self"
+      },
+      "lines": {
+        "data": [
+          {
+            "amount": 5400,
+            "amount_excluding_tax": 5400,
+            "currency": "eur",
+            "description": "1 × Fixture Plan (at €54 / month)",
+            "discount_amounts": [],
+            "discountable": true,
+            "discounts": [],
+            "id": "il_fx0032_0001",
+            "invoice_item": null,
+            "livemode": false,
+            "metadata": {},
+            "object": "line_item",
+            "period": {
+              "end": 1778173112,
+              "start": 1775581112
+            },
+            "plan": {
+              "amount": 5400,
+              "id": "price_fx0001",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0001",
+              "object": "price",
+              "unit_amount": 5400
+            },
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0032",
+            "subscription_item": "si_fx0032",
+            "tax_amounts": [],
+            "tax_rates": [],
+            "type": "subscription",
+            "unit_amount_excluding_tax": "5400"
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/invoices/in_fx0032/lines"
+      },
+      "livemode": false,
+      "metadata": {},
+      "number": "FX0032-0001",
+      "object": "invoice",
+      "paid": true,
+      "paid_out_of_band": false,
+      "payment_intent": "pi_fx0032",
+      "payment_settings": {
+        "default_mandate": null,
+        "payment_method_options": null,
+        "payment_method_types": null
+      },
+      "period_end": 1778173112,
+      "period_start": 1775581112,
+      "starting_balance": 0,
+      "status": "paid",
+      "status_transitions": {
+        "finalized_at": 1778173112,
+        "marked_uncollectible_at": null,
+        "paid_at": 1778173172,
+        "voided_at": null
+      },
+      "subscription": "sub_fx0032",
+      "subtotal": 5400,
+      "subtotal_excluding_tax": 5400,
+      "tax": null,
+      "total": 5400,
+      "total_excluding_tax": 5400,
+      "total_tax_amounts": [],
+      "transfer_data": null
+    },
+    {
+      "amount_due": 168600,
+      "amount_paid": 168600,
+      "amount_remaining": 0,
+      "attempt_count": 1,
+      "attempted": true,
+      "auto_advance": false,
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null,
+        "status": null
+      },
+      "billing_reason": "subscription_cycle",
+      "charge": "ch_fx0031",
+      "collection_method": "charge_automatically",
+      "created": 1776845502,
+      "currency": "eur",
+      "customer": "cus_fx0031",
+      "customer_address": null,
+      "customer_email": "customer31@example.test",
+      "customer_name": "Fixture Customer 31",
+      "customer_shipping": null,
+      "discount": null,
+      "discounts": [],
+      "due_date": null,
+      "ending_balance": 0,
+      "from_invoice": null,
+      "hosted_invoice_url": "https://invoice.stripe.test/i/in_fx0031",
+      "id": "in_fx0031",
+      "invoice_pdf": "https://pay.stripe.test/invoice/in_fx0031/pdf",
+      "issuer": {
+        "type": "self"
+      },
+      "lines": {
+        "data": [
+          {
+            "amount": 168600,
+            "amount_excluding_tax": 168600,
+            "currency": "eur",
+            "description": "1 × Fixture Plan (at €1686 / month)",
+            "discount_amounts": [],
+            "discountable": true,
+            "discounts": [],
+            "id": "il_fx0031_0001",
+            "invoice_item": null,
+            "livemode": false,
+            "metadata": {},
+            "object": "line_item",
+            "period": {
+              "end": 1776845502,
+              "start": 1774253502
+            },
+            "plan": {
+              "amount": 168600,
+              "id": "price_fx0001",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0001",
+              "object": "price",
+              "unit_amount": 168600
+            },
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0031",
+            "subscription_item": "si_fx0031",
+            "tax_amounts": [],
+            "tax_rates": [],
+            "type": "subscription",
+            "unit_amount_excluding_tax": "168600"
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/invoices/in_fx0031/lines"
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "number": "FX0031-0001",
+      "object": "invoice",
+      "paid": true,
+      "paid_out_of_band": false,
+      "payment_intent": "pi_fx0031",
+      "payment_settings": {
+        "default_mandate": null,
+        "payment_method_options": null,
+        "payment_method_types": null
+      },
+      "period_end": 1776845502,
+      "period_start": 1774253502,
+      "starting_balance": 0,
+      "status": "paid",
+      "status_transitions": {
+        "finalized_at": 1776845502,
+        "marked_uncollectible_at": null,
+        "paid_at": 1776845562,
+        "voided_at": null
+      },
+      "subscription": "sub_fx0031",
+      "subtotal": 168600,
+      "subtotal_excluding_tax": 168600,
+      "tax": null,
+      "total": 168600,
+      "total_excluding_tax": 168600,
+      "total_tax_amounts": [],
+      "transfer_data": null
+    },
+    {
+      "amount_due": 22300,
+      "amount_paid": 22300,
+      "amount_remaining": 0,
+      "attempt_count": 1,
+      "attempted": true,
+      "auto_advance": false,
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null,
+        "status": null
+      },
+      "billing_reason": "subscription_cycle",
+      "charge": "ch_fx0030",
+      "collection_method": "charge_automatically",
+      "created": 1775517892,
+      "currency": "eur",
+      "customer": "cus_fx0030",
+      "customer_address": null,
+      "customer_email": "customer30@example.test",
+      "customer_name": "Fixture Customer 30",
+      "customer_shipping": null,
+      "discount": null,
+      "discounts": [],
+      "due_date": null,
+      "ending_balance": 0,
+      "from_invoice": null,
+      "hosted_invoice_url": "https://invoice.stripe.test/i/in_fx0030",
+      "id": "in_fx0030",
+      "invoice_pdf": "https://pay.stripe.test/invoice/in_fx0030/pdf",
+      "issuer": {
+        "type": "self"
+      },
+      "lines": {
+        "data": [
+          {
+            "amount": 22300,
+            "amount_excluding_tax": 22300,
+            "currency": "eur",
+            "description": "1 × Fixture Plan (at €223 / month)",
+            "discount_amounts": [],
+            "discountable": true,
+            "discounts": [],
+            "id": "il_fx0030_0001",
+            "invoice_item": null,
+            "livemode": false,
+            "metadata": {},
+            "object": "line_item",
+            "period": {
+              "end": 1775517892,
+              "start": 1772925892
+            },
+            "plan": {
+              "amount": 22300,
+              "id": "price_fx0001",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0001",
+              "object": "price",
+              "unit_amount": 22300
+            },
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0030",
+            "subscription_item": "si_fx0030",
+            "tax_amounts": [],
+            "tax_rates": [],
+            "type": "subscription",
+            "unit_amount_excluding_tax": "22300"
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/invoices/in_fx0030/lines"
+      },
+      "livemode": false,
+      "metadata": {},
+      "number": "FX0030-0001",
+      "object": "invoice",
+      "paid": true,
+      "paid_out_of_band": false,
+      "payment_intent": "pi_fx0030",
+      "payment_settings": {
+        "default_mandate": null,
+        "payment_method_options": null,
+        "payment_method_types": null
+      },
+      "period_end": 1775517892,
+      "period_start": 1772925892,
+      "starting_balance": 0,
+      "status": "paid",
+      "status_transitions": {
+        "finalized_at": 1775517892,
+        "marked_uncollectible_at": null,
+        "paid_at": 1775517952,
+        "voided_at": null
+      },
+      "subscription": "sub_fx0030",
+      "subtotal": 22300,
+      "subtotal_excluding_tax": 22300,
+      "tax": null,
+      "total": 22300,
+      "total_excluding_tax": 22300,
+      "total_tax_amounts": [],
+      "transfer_data": null
+    },
+    {
+      "amount_due": 82000,
+      "amount_paid": 82000,
+      "amount_remaining": 0,
+      "attempt_count": 1,
+      "attempted": true,
+      "auto_advance": false,
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null,
+        "status": null
+      },
+      "billing_reason": "subscription_cycle",
+      "charge": "ch_fx0029",
+      "collection_method": "charge_automatically",
+      "created": 1774190282,
+      "currency": "eur",
+      "customer": "cus_fx0029",
+      "customer_address": null,
+      "customer_email": "customer29@example.test",
+      "customer_name": "Fixture Customer 29",
+      "customer_shipping": null,
+      "discount": null,
+      "discounts": [],
+      "due_date": null,
+      "ending_balance": 0,
+      "from_invoice": null,
+      "hosted_invoice_url": "https://invoice.stripe.test/i/in_fx0029",
+      "id": "in_fx0029",
+      "invoice_pdf": "https://pay.stripe.test/invoice/in_fx0029/pdf",
+      "issuer": {
+        "type": "self"
+      },
+      "lines": {
+        "data": [
+          {
+            "amount": 82000,
+            "amount_excluding_tax": 82000,
+            "currency": "eur",
+            "description": "1 × Fixture Plan (at €820 / month)",
+            "discount_amounts": [],
+            "discountable": true,
+            "discounts": [],
+            "id": "il_fx0029_0001",
+            "invoice_item": null,
+            "livemode": false,
+            "metadata": {},
+            "object": "line_item",
+            "period": {
+              "end": 1774190282,
+              "start": 1771598282
+            },
+            "plan": {
+              "amount": 82000,
+              "id": "price_fx0001",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0001",
+              "object": "price",
+              "unit_amount": 82000
+            },
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0029",
+            "subscription_item": "si_fx0029",
+            "tax_amounts": [],
+            "tax_rates": [],
+            "type": "subscription",
+            "unit_amount_excluding_tax": "82000"
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/invoices/in_fx0029/lines"
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "number": "FX0029-0001",
+      "object": "invoice",
+      "paid": true,
+      "paid_out_of_band": false,
+      "payment_intent": "pi_fx0029",
+      "payment_settings": {
+        "default_mandate": null,
+        "payment_method_options": null,
+        "payment_method_types": null
+      },
+      "period_end": 1774190282,
+      "period_start": 1771598282,
+      "starting_balance": 0,
+      "status": "paid",
+      "status_transitions": {
+        "finalized_at": 1774190282,
+        "marked_uncollectible_at": null,
+        "paid_at": 1774190342,
+        "voided_at": null
+      },
+      "subscription": "sub_fx0029",
+      "subtotal": 82000,
+      "subtotal_excluding_tax": 82000,
+      "tax": null,
+      "total": 82000,
+      "total_excluding_tax": 82000,
+      "total_tax_amounts": [],
+      "transfer_data": null
+    },
+    {
+      "amount_due": 108100,
+      "amount_paid": 108100,
+      "amount_remaining": 0,
+      "attempt_count": 1,
+      "attempted": true,
+      "auto_advance": false,
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null,
+        "status": null
+      },
+      "billing_reason": "subscription_create",
+      "charge": "ch_fx0028",
+      "collection_method": "charge_automatically",
+      "created": 1772862673,
+      "currency": "eur",
+      "customer": "cus_fx0028",
+      "customer_address": null,
+      "customer_email": "customer28@example.test",
+      "customer_name": "Fixture Customer 28",
+      "customer_shipping": null,
+      "discount": null,
+      "discounts": [],
+      "due_date": null,
+      "ending_balance": 0,
+      "from_invoice": null,
+      "hosted_invoice_url": "https://invoice.stripe.test/i/in_fx0028",
+      "id": "in_fx0028",
+      "invoice_pdf": "https://pay.stripe.test/invoice/in_fx0028/pdf",
+      "issuer": {
+        "type": "self"
+      },
+      "lines": {
+        "data": [
+          {
+            "amount": 108100,
+            "amount_excluding_tax": 108100,
+            "currency": "eur",
+            "description": "1 × Fixture Plan (at €1081 / month)",
+            "discount_amounts": [],
+            "discountable": true,
+            "discounts": [],
+            "id": "il_fx0028_0001",
+            "invoice_item": null,
+            "livemode": false,
+            "metadata": {},
+            "object": "line_item",
+            "period": {
+              "end": 1772862673,
+              "start": 1770270673
+            },
+            "plan": {
+              "amount": 108100,
+              "id": "price_fx0001",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0001",
+              "object": "price",
+              "unit_amount": 108100
+            },
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0028",
+            "subscription_item": "si_fx0028",
+            "tax_amounts": [],
+            "tax_rates": [],
+            "type": "subscription",
+            "unit_amount_excluding_tax": "108100"
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/invoices/in_fx0028/lines"
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "number": "FX0028-0001",
+      "object": "invoice",
+      "paid": true,
+      "paid_out_of_band": false,
+      "payment_intent": "pi_fx0028",
+      "payment_settings": {
+        "default_mandate": null,
+        "payment_method_options": null,
+        "payment_method_types": null
+      },
+      "period_end": 1772862673,
+      "period_start": 1770270673,
+      "starting_balance": 0,
+      "status": "paid",
+      "status_transitions": {
+        "finalized_at": 1772862673,
+        "marked_uncollectible_at": null,
+        "paid_at": 1772862733,
+        "voided_at": null
+      },
+      "subscription": "sub_fx0028",
+      "subtotal": 108100,
+      "subtotal_excluding_tax": 108100,
+      "tax": null,
+      "total": 108100,
+      "total_excluding_tax": 108100,
+      "total_tax_amounts": [],
+      "transfer_data": null
+    },
+    {
+      "amount_due": 15600,
+      "amount_paid": 0,
+      "amount_remaining": 15600,
+      "attempt_count": 1,
+      "attempted": true,
+      "auto_advance": false,
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null,
+        "status": null
+      },
+      "billing_reason": "subscription_cycle",
+      "charge": "ch_fx0027",
+      "collection_method": "charge_automatically",
+      "created": 1771535063,
+      "currency": "eur",
+      "customer": "cus_fx0027",
+      "customer_address": null,
+      "customer_email": "customer27@example.test",
+      "customer_name": "Fixture Customer 27",
+      "customer_shipping": null,
+      "discount": null,
+      "discounts": [],
+      "due_date": null,
+      "ending_balance": 0,
+      "from_invoice": null,
+      "hosted_invoice_url": "https://invoice.stripe.test/i/in_fx0027",
+      "id": "in_fx0027",
+      "invoice_pdf": "https://pay.stripe.test/invoice/in_fx0027/pdf",
+      "issuer": {
+        "type": "self"
+      },
+      "lines": {
+        "data": [
+          {
+            "amount": 15600,
+            "amount_excluding_tax": 15600,
+            "currency": "eur",
+            "description": "1 × Fixture Plan (at €156 / month)",
+            "discount_amounts": [],
+            "discountable": true,
+            "discounts": [],
+            "id": "il_fx0027_0001",
+            "invoice_item": null,
+            "livemode": false,
+            "metadata": {},
+            "object": "line_item",
+            "period": {
+              "end": 1771535063,
+              "start": 1768943063
+            },
+            "plan": {
+              "amount": 15600,
+              "id": "price_fx0001",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0001",
+              "object": "price",
+              "unit_amount": 15600
+            },
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0027",
+            "subscription_item": "si_fx0027",
+            "tax_amounts": [],
+            "tax_rates": [],
+            "type": "subscription",
+            "unit_amount_excluding_tax": "15600"
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/invoices/in_fx0027/lines"
+      },
+      "livemode": false,
+      "metadata": {},
+      "number": "FX0027-0001",
+      "object": "invoice",
+      "paid": false,
+      "paid_out_of_band": false,
+      "payment_intent": "pi_fx0027",
+      "payment_settings": {
+        "default_mandate": null,
+        "payment_method_options": null,
+        "payment_method_types": null
+      },
+      "period_end": 1771535063,
+      "period_start": 1768943063,
+      "starting_balance": 0,
+      "status": "open",
+      "status_transitions": {
+        "finalized_at": 1771535063,
+        "marked_uncollectible_at": null,
+        "paid_at": null,
+        "voided_at": null
+      },
+      "subscription": "sub_fx0027",
+      "subtotal": 15600,
+      "subtotal_excluding_tax": 15600,
+      "tax": null,
+      "total": 15600,
+      "total_excluding_tax": 15600,
+      "total_tax_amounts": [],
+      "transfer_data": null
+    },
+    {
+      "amount_due": 50900,
+      "amount_paid": 50900,
+      "amount_remaining": 0,
+      "attempt_count": 1,
+      "attempted": true,
+      "auto_advance": false,
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null,
+        "status": null
+      },
+      "billing_reason": "subscription_cycle",
+      "charge": "ch_fx0026",
+      "collection_method": "charge_automatically",
+      "created": 1770207453,
+      "currency": "eur",
+      "customer": "cus_fx0026",
+      "customer_address": null,
+      "customer_email": "customer26@example.test",
+      "customer_name": "Fixture Customer 26",
+      "customer_shipping": null,
+      "discount": null,
+      "discounts": [],
+      "due_date": null,
+      "ending_balance": 0,
+      "from_invoice": null,
+      "hosted_invoice_url": "https://invoice.stripe.test/i/in_fx0026",
+      "id": "in_fx0026",
+      "invoice_pdf": "https://pay.stripe.test/invoice/in_fx0026/pdf",
+      "issuer": {
+        "type": "self"
+      },
+      "lines": {
+        "data": [
+          {
+            "amount": 50900,
+            "amount_excluding_tax": 50900,
+            "currency": "eur",
+            "description": "1 × Fixture Plan (at €509 / month)",
+            "discount_amounts": [],
+            "discountable": true,
+            "discounts": [],
+            "id": "il_fx0026_0001",
+            "invoice_item": null,
+            "livemode": false,
+            "metadata": {},
+            "object": "line_item",
+            "period": {
+              "end": 1770207453,
+              "start": 1767615453
+            },
+            "plan": {
+              "amount": 50900,
+              "id": "price_fx0001",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0001",
+              "object": "price",
+              "unit_amount": 50900
+            },
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0026",
+            "subscription_item": "si_fx0026",
+            "tax_amounts": [],
+            "tax_rates": [],
+            "type": "subscription",
+            "unit_amount_excluding_tax": "50900"
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/invoices/in_fx0026/lines"
+      },
+      "livemode": false,
+      "metadata": {},
+      "number": "FX0026-0001",
+      "object": "invoice",
+      "paid": true,
+      "paid_out_of_band": false,
+      "payment_intent": "pi_fx0026",
+      "payment_settings": {
+        "default_mandate": null,
+        "payment_method_options": null,
+        "payment_method_types": null
+      },
+      "period_end": 1770207453,
+      "period_start": 1767615453,
+      "starting_balance": 0,
+      "status": "paid",
+      "status_transitions": {
+        "finalized_at": 1770207453,
+        "marked_uncollectible_at": null,
+        "paid_at": 1770207513,
+        "voided_at": null
+      },
+      "subscription": "sub_fx0026",
+      "subtotal": 50900,
+      "subtotal_excluding_tax": 50900,
+      "tax": null,
+      "total": 50900,
+      "total_excluding_tax": 50900,
+      "total_tax_amounts": [],
+      "transfer_data": null
+    },
+    {
+      "amount_due": 158700,
+      "amount_paid": 158700,
+      "amount_remaining": 0,
+      "attempt_count": 1,
+      "attempted": true,
+      "auto_advance": false,
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null,
+        "status": null
+      },
+      "billing_reason": "subscription_cycle",
+      "charge": "ch_fx0025",
+      "collection_method": "charge_automatically",
+      "created": 1768879843,
+      "currency": "eur",
+      "customer": "cus_fx0025",
+      "customer_address": null,
+      "customer_email": "customer25@example.test",
+      "customer_name": "Fixture Customer 25",
+      "customer_shipping": null,
+      "discount": null,
+      "discounts": [],
+      "due_date": null,
+      "ending_balance": 0,
+      "from_invoice": null,
+      "hosted_invoice_url": "https://invoice.stripe.test/i/in_fx0025",
+      "id": "in_fx0025",
+      "invoice_pdf": "https://pay.stripe.test/invoice/in_fx0025/pdf",
+      "issuer": {
+        "type": "self"
+      },
+      "lines": {
+        "data": [
+          {
+            "amount": 158700,
+            "amount_excluding_tax": 158700,
+            "currency": "eur",
+            "description": "1 × Fixture Plan (at €1587 / month)",
+            "discount_amounts": [],
+            "discountable": true,
+            "discounts": [],
+            "id": "il_fx0025_0001",
+            "invoice_item": null,
+            "livemode": false,
+            "metadata": {},
+            "object": "line_item",
+            "period": {
+              "end": 1768879843,
+              "start": 1766287843
+            },
+            "plan": {
+              "amount": 158700,
+              "id": "price_fx0001",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0001",
+              "object": "price",
+              "unit_amount": 158700
+            },
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0025",
+            "subscription_item": "si_fx0025",
+            "tax_amounts": [],
+            "tax_rates": [],
+            "type": "subscription",
+            "unit_amount_excluding_tax": "158700"
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/invoices/in_fx0025/lines"
+      },
+      "livemode": false,
+      "metadata": {},
+      "number": "FX0025-0001",
+      "object": "invoice",
+      "paid": true,
+      "paid_out_of_band": false,
+      "payment_intent": "pi_fx0025",
+      "payment_settings": {
+        "default_mandate": null,
+        "payment_method_options": null,
+        "payment_method_types": null
+      },
+      "period_end": 1768879843,
+      "period_start": 1766287843,
+      "starting_balance": 0,
+      "status": "paid",
+      "status_transitions": {
+        "finalized_at": 1768879843,
+        "marked_uncollectible_at": null,
+        "paid_at": 1768879903,
+        "voided_at": null
+      },
+      "subscription": "sub_fx0025",
+      "subtotal": 158700,
+      "subtotal_excluding_tax": 158700,
+      "tax": null,
+      "total": 158700,
+      "total_excluding_tax": 158700,
+      "total_tax_amounts": [],
+      "transfer_data": null
+    },
+    {
+      "amount_due": 10500,
+      "amount_paid": 10500,
+      "amount_remaining": 0,
+      "attempt_count": 1,
+      "attempted": true,
+      "auto_advance": false,
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null,
+        "status": null
+      },
+      "billing_reason": "subscription_create",
+      "charge": "ch_fx0024",
+      "collection_method": "charge_automatically",
+      "created": 1767552234,
+      "currency": "eur",
+      "customer": "cus_fx0024",
+      "customer_address": null,
+      "customer_email": "customer24@example.test",
+      "customer_name": "Fixture Customer 24",
+      "customer_shipping": null,
+      "discount": null,
+      "discounts": [],
+      "due_date": null,
+      "ending_balance": 0,
+      "from_invoice": null,
+      "hosted_invoice_url": "https://invoice.stripe.test/i/in_fx0024",
+      "id": "in_fx0024",
+      "invoice_pdf": "https://pay.stripe.test/invoice/in_fx0024/pdf",
+      "issuer": {
+        "type": "self"
+      },
+      "lines": {
+        "data": [
+          {
+            "amount": 10500,
+            "amount_excluding_tax": 10500,
+            "currency": "eur",
+            "description": "1 × Fixture Plan (at €105 / month)",
+            "discount_amounts": [],
+            "discountable": true,
+            "discounts": [],
+            "id": "il_fx0024_0001",
+            "invoice_item": null,
+            "livemode": false,
+            "metadata": {},
+            "object": "line_item",
+            "period": {
+              "end": 1767552234,
+              "start": 1764960234
+            },
+            "plan": {
+              "amount": 10500,
+              "id": "price_fx0001",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0001",
+              "object": "price",
+              "unit_amount": 10500
+            },
+            "proration": false,
+            "proration_details": {
+              "credited_items": null
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0024",
+            "subscription_item": "si_fx0024",
+            "tax_amounts": [],
+            "tax_rates": [],
+            "type": "subscription",
+            "unit_amount_excluding_tax": "10500"
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/invoices/in_fx0024/lines"
+      },
+      "livemode": false,
+      "metadata": {},
+      "number": "FX0024-0001",
+      "object": "invoice",
+      "paid": true,
+      "paid_out_of_band": false,
+      "payment_intent": "pi_fx0024",
+      "payment_settings": {
+        "default_mandate": null,
+        "payment_method_options": null,
+        "payment_method_types": null
+      },
+      "period_end": 1767552234,
+      "period_start": 1764960234,
+      "starting_balance": 0,
+      "status": "paid",
+      "status_transitions": {
+        "finalized_at": 1767552234,
+        "marked_uncollectible_at": null,
+        "paid_at": 1767552294,
+        "voided_at": null
+      },
+      "subscription": "sub_fx0024",
+      "subtotal": 10500,
+      "subtotal_excluding_tax": 10500,
+      "tax": null,
+      "total": 10500,
+      "total_excluding_tax": 10500,
+      "total_tax_amounts": [],
+      "transfer_data": null
+    }
+  ]
+}

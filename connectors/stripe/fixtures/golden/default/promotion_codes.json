@@ -1,0 +1,79 @@
+{
+  "requests": [
+    "GET /v1/promotion_codes?limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "active": true,
+      "code": "WELCOME3",
+      "coupon": {
+        "id": "FIXTURE3",
+        "object": "coupon",
+        "percent_off": 25
+      },
+      "created": 1776513600,
+      "customer": null,
+      "expires_at": null,
+      "id": "promo_fx0003",
+      "livemode": false,
+      "max_redemptions": null,
+      "metadata": {},
+      "object": "promotion_code",
+      "restrictions": {
+        "first_time_transaction": true,
+        "minimum_amount": null,
+        "minimum_amount_currency": null
+      },
+      "times_redeemed": 3
+    },
+    {
+      "active": true,
+      "code": "WELCOME2",
+      "coupon": {
+        "id": "FIXTURE2",
+        "object": "coupon",
+        "percent_off": 25
+      },
+      "created": 1762905600,
+      "customer": null,
+      "expires_at": null,
+      "id": "promo_fx0002",
+      "livemode": false,
+      "max_redemptions": null,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "promotion_code",
+      "restrictions": {
+        "first_time_transaction": true,
+        "minimum_amount": null,
+        "minimum_amount_currency": null
+      },
+      "times_redeemed": 2
+    },
+    {
+      "active": true,
+      "code": "WELCOME1",
+      "coupon": {
+        "id": "FIXTURE1",
+        "object": "coupon",
+        "percent_off": 25
+      },
+      "created": 1749297600,
+      "customer": null,
+      "expires_at": null,
+      "id": "promo_fx0001",
+      "livemode": false,
+      "max_redemptions": null,
+      "metadata": {},
+      "object": "promotion_code",
+      "restrictions": {
+        "first_time_transaction": true,
+        "minimum_amount": null,
+        "minimum_amount_currency": null
+      },
+      "times_redeemed": 1
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "chunks": [
+    {
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/payment_intents?limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 100,
+  "rowsSha256": "ab0c8151e900ffbbcf7913af0c2e66e7ab1543b1048d2744766d86581f87c51f"
+}

@@ -1,0 +1,43 @@
+{
+  "chunks": [
+    {
+      "cursor": "re_fx0013",
+      "hasMore": true
+    },
+    {
+      "cursor": "re_fx0011",
+      "hasMore": true
+    },
+    {
+      "cursor": "re_fx0009",
+      "hasMore": true
+    },
+    {
+      "cursor": "re_fx0007",
+      "hasMore": true
+    },
+    {
+      "cursor": "re_fx0005",
+      "hasMore": true
+    },
+    {
+      "cursor": "re_fx0003",
+      "hasMore": true
+    },
+    {
+      "cursor": "re_fx0003",
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/refunds?limit=2 (Stripe-Version 2023-10-16)",
+    "GET /v1/refunds?limit=2&starting_after=re_fx0013 (Stripe-Version 2023-10-16)",
+    "GET /v1/refunds?limit=2&starting_after=re_fx0011 (Stripe-Version 2023-10-16)",
+    "GET /v1/refunds?limit=2&starting_after=re_fx0009 (Stripe-Version 2023-10-16)",
+    "GET /v1/refunds?limit=2&starting_after=re_fx0007 (Stripe-Version 2023-10-16)",
+    "GET /v1/refunds?limit=2&starting_after=re_fx0005 (Stripe-Version 2023-10-16)",
+    "GET /v1/refunds?limit=2&starting_after=re_fx0003 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 14,
+  "rowsSha256": "b91d26cf13f50e6293fa5857b7cab6a6bbbee3dd1c269dc454d2a771f7d9f8bd"
+}

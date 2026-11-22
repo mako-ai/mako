@@ -1,0 +1,1973 @@
+{
+  "requests": [
+    "GET /v1/customers?created[gte]=1767225600&limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1789706088,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer130@example.test",
+      "id": "cus_fx0130",
+      "invoice_prefix": "FX0130",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "name": "Fixture Customer 130",
+      "next_invoice_sequence": 5,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1789290577,
+      "currency": "chf",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer129@example.test",
+      "id": "cus_fx0129",
+      "invoice_prefix": "FX0129",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 129",
+      "next_invoice_sequence": 4,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Madrid",
+        "country": "CH",
+        "line1": "128 Fixture Street",
+        "line2": null,
+        "postal_code": "1128",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1788875065,
+      "currency": "chf",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer128@example.test",
+      "id": "cus_fx0128",
+      "invoice_prefix": "FX0128",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "name": "Fixture Customer 128",
+      "next_invoice_sequence": 3,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Paris",
+        "country": "ES",
+        "line1": "127 Fixture Street",
+        "line2": null,
+        "postal_code": "1127",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1788459554,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer127@example.test",
+      "id": "cus_fx0127",
+      "invoice_prefix": "FX0127",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "name": "Fixture Customer 127",
+      "next_invoice_sequence": 2,
+      "object": "customer",
+      "phone": "+41210000127",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": -1500,
+      "created": 1788044042,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer126@example.test",
+      "id": "cus_fx0126",
+      "invoice_prefix": "FX0126",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 126",
+      "next_invoice_sequence": 1,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Warszawa",
+        "country": "ES",
+        "line1": "125 Fixture Street",
+        "line2": null,
+        "postal_code": "1125",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1787628531,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": "Agency 125",
+      "discount": null,
+      "email": "customer125@example.test",
+      "id": "cus_fx0125",
+      "invoice_prefix": "FX0125",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 125",
+      "next_invoice_sequence": 9,
+      "object": "customer",
+      "phone": "+41210000125",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Milano",
+        "country": "PL",
+        "line1": "124 Fixture Street",
+        "line2": null,
+        "postal_code": "1124",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1787213019,
+      "currency": "pln",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer124@example.test",
+      "id": "cus_fx0124",
+      "invoice_prefix": "FX0124",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 124",
+      "next_invoice_sequence": 8,
+      "object": "customer",
+      "phone": "+41210000124",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1786797508,
+      "currency": "pln",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer123@example.test",
+      "id": "cus_fx0123",
+      "invoice_prefix": "FX0123",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 123",
+      "next_invoice_sequence": 7,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1786381996,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer122@example.test",
+      "id": "cus_fx0122",
+      "invoice_prefix": "FX0122",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "name": "Fixture Customer 122",
+      "next_invoice_sequence": 6,
+      "object": "customer",
+      "phone": "+41210000122",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1785966485,
+      "currency": "pln",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer121@example.test",
+      "id": "cus_fx0121",
+      "invoice_prefix": "FX0121",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 121",
+      "next_invoice_sequence": 5,
+      "object": "customer",
+      "phone": "+41210000121",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1785550974,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer120@example.test",
+      "id": "cus_fx0120",
+      "invoice_prefix": "FX0120",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "name": "Fixture Customer 120",
+      "next_invoice_sequence": 4,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": -1500,
+      "created": 1785135462,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": true,
+      "description": null,
+      "discount": null,
+      "email": "customer119@example.test",
+      "id": "cus_fx0119",
+      "invoice_prefix": "FX0119",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "name": "Fixture Customer 119",
+      "next_invoice_sequence": 3,
+      "object": "customer",
+      "phone": "+41210000119",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Lausanne",
+        "country": "PL",
+        "line1": "118 Fixture Street",
+        "line2": null,
+        "postal_code": "1118",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1784719951,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer118@example.test",
+      "id": "cus_fx0118",
+      "invoice_prefix": "FX0118",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 118",
+      "next_invoice_sequence": 2,
+      "object": "customer",
+      "phone": "+41210000118",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Paris",
+        "country": "CH",
+        "line1": "117 Fixture Street",
+        "line2": null,
+        "postal_code": "1117",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1784304439,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": "Agency 117",
+      "discount": null,
+      "email": "customer117@example.test",
+      "id": "cus_fx0117",
+      "invoice_prefix": "FX0117",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 117",
+      "next_invoice_sequence": 1,
+      "object": "customer",
+      "phone": "+41210000117",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1783888928,
+      "currency": "chf",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer116@example.test",
+      "id": "cus_fx0116",
+      "invoice_prefix": "FX0116",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 116",
+      "next_invoice_sequence": 9,
+      "object": "customer",
+      "phone": "+41210000116",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1783473416,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer115@example.test",
+      "id": "cus_fx0115",
+      "invoice_prefix": "FX0115",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "name": "Fixture Customer 115",
+      "next_invoice_sequence": 8,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Madrid",
+        "country": "FR",
+        "line1": "114 Fixture Street",
+        "line2": null,
+        "postal_code": "1114",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1783057905,
+      "currency": "chf",
+      "default_source": null,
+      "delinquent": false,
+      "description": "Agency 114",
+      "discount": null,
+      "email": "customer114@example.test",
+      "id": "cus_fx0114",
+      "invoice_prefix": "FX0114",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "name": "Fixture Customer 114",
+      "next_invoice_sequence": 7,
+      "object": "customer",
+      "phone": "+41210000114",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1782642393,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": "Agency 113",
+      "discount": null,
+      "email": "customer113@example.test",
+      "id": "cus_fx0113",
+      "invoice_prefix": "FX0113",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 113",
+      "next_invoice_sequence": 6,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": -1500,
+      "created": 1782226882,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer112@example.test",
+      "id": "cus_fx0112",
+      "invoice_prefix": "FX0112",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 112",
+      "next_invoice_sequence": 5,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Warszawa",
+        "country": "IT",
+        "line1": "111 Fixture Street",
+        "line2": null,
+        "postal_code": "1111",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1781811370,
+      "currency": "pln",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer111@example.test",
+      "id": "cus_fx0111",
+      "invoice_prefix": "FX0111",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 111",
+      "next_invoice_sequence": 4,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1781395859,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": true,
+      "description": null,
+      "discount": null,
+      "email": "customer110@example.test",
+      "id": "cus_fx0110",
+      "invoice_prefix": "FX0110",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 110",
+      "next_invoice_sequence": 3,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Warszawa",
+        "country": "CH",
+        "line1": "109 Fixture Street",
+        "line2": null,
+        "postal_code": "1109",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1780980348,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer109@example.test",
+      "id": "cus_fx0109",
+      "invoice_prefix": "FX0109",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 109",
+      "next_invoice_sequence": 2,
+      "object": "customer",
+      "phone": "+41210000109",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1780564836,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": "Agency 108",
+      "discount": null,
+      "email": "customer108@example.test",
+      "id": "cus_fx0108",
+      "invoice_prefix": "FX0108",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 108",
+      "next_invoice_sequence": 1,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1780149325,
+      "currency": "chf",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer107@example.test",
+      "id": "cus_fx0107",
+      "invoice_prefix": "FX0107",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 107",
+      "next_invoice_sequence": 9,
+      "object": "customer",
+      "phone": "+41210000107",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Paris",
+        "country": "PL",
+        "line1": "106 Fixture Street",
+        "line2": null,
+        "postal_code": "1106",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1779733813,
+      "currency": "pln",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer106@example.test",
+      "id": "cus_fx0106",
+      "invoice_prefix": "FX0106",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 106",
+      "next_invoice_sequence": 8,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Lausanne",
+        "country": "FR",
+        "line1": "105 Fixture Street",
+        "line2": null,
+        "postal_code": "1105",
+        "state": null
+      },
+      "balance": -1500,
+      "created": 1779318302,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer105@example.test",
+      "id": "cus_fx0105",
+      "invoice_prefix": "FX0105",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 105",
+      "next_invoice_sequence": 7,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Warszawa",
+        "country": "CH",
+        "line1": "104 Fixture Street",
+        "line2": null,
+        "postal_code": "1104",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1778902790,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer104@example.test",
+      "id": "cus_fx0104",
+      "invoice_prefix": "FX0104",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 104",
+      "next_invoice_sequence": 6,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1778487279,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer103@example.test",
+      "id": "cus_fx0103",
+      "invoice_prefix": "FX0103",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "name": "Fixture Customer 103",
+      "next_invoice_sequence": 5,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Milano",
+        "country": "FR",
+        "line1": "102 Fixture Street",
+        "line2": null,
+        "postal_code": "1102",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1778071767,
+      "currency": "chf",
+      "default_source": null,
+      "delinquent": false,
+      "description": "Agency 102",
+      "discount": null,
+      "email": "customer102@example.test",
+      "id": "cus_fx0102",
+      "invoice_prefix": "FX0102",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 102",
+      "next_invoice_sequence": 4,
+      "object": "customer",
+      "phone": "+41210000102",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1777656256,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": "Agency 101",
+      "discount": null,
+      "email": "customer101@example.test",
+      "id": "cus_fx0101",
+      "invoice_prefix": "FX0101",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "name": "Fixture Customer 101",
+      "next_invoice_sequence": 3,
+      "object": "customer",
+      "phone": "+41210000101",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1777240745,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": "Agency 100",
+      "discount": null,
+      "email": "customer100@example.test",
+      "id": "cus_fx0100",
+      "invoice_prefix": "FX0100",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 100",
+      "next_invoice_sequence": 2,
+      "object": "customer",
+      "phone": "+41210000100",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Paris",
+        "country": "FR",
+        "line1": "99 Fixture Street",
+        "line2": null,
+        "postal_code": "1099",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1776825233,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer99@example.test",
+      "id": "cus_fx0099",
+      "invoice_prefix": "FX0099",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 99",
+      "next_invoice_sequence": 1,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": -1500,
+      "created": 1776409722,
+      "currency": "pln",
+      "default_source": null,
+      "delinquent": false,
+      "description": "Agency 98",
+      "discount": null,
+      "email": "customer98@example.test",
+      "id": "cus_fx0098",
+      "invoice_prefix": "FX0098",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 98",
+      "next_invoice_sequence": 9,
+      "object": "customer",
+      "phone": "+41210000098",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Madrid",
+        "country": "ES",
+        "line1": "97 Fixture Street",
+        "line2": null,
+        "postal_code": "1097",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1775994210,
+      "currency": "chf",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer97@example.test",
+      "id": "cus_fx0097",
+      "invoice_prefix": "FX0097",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 97",
+      "next_invoice_sequence": 8,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Lausanne",
+        "country": "ES",
+        "line1": "96 Fixture Street",
+        "line2": null,
+        "postal_code": "1096",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1775578699,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": true,
+      "description": null,
+      "discount": null,
+      "email": "customer96@example.test",
+      "id": "cus_fx0096",
+      "invoice_prefix": "FX0096",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 96",
+      "next_invoice_sequence": 7,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1775163187,
+      "currency": "chf",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer95@example.test",
+      "id": "cus_fx0095",
+      "invoice_prefix": "FX0095",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 95",
+      "next_invoice_sequence": 6,
+      "object": "customer",
+      "phone": "+41210000095",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Paris",
+        "country": "IT",
+        "line1": "94 Fixture Street",
+        "line2": null,
+        "postal_code": "1094",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1774747676,
+      "currency": "chf",
+      "default_source": null,
+      "delinquent": false,
+      "description": "Agency 94",
+      "discount": null,
+      "email": "customer94@example.test",
+      "id": "cus_fx0094",
+      "invoice_prefix": "FX0094",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "name": "Fixture Customer 94",
+      "next_invoice_sequence": 5,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Paris",
+        "country": "FR",
+        "line1": "93 Fixture Street",
+        "line2": null,
+        "postal_code": "1093",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1774332164,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer93@example.test",
+      "id": "cus_fx0093",
+      "invoice_prefix": "FX0093",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "name": "Fixture Customer 93",
+      "next_invoice_sequence": 4,
+      "object": "customer",
+      "phone": "+41210000093",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Madrid",
+        "country": "FR",
+        "line1": "92 Fixture Street",
+        "line2": null,
+        "postal_code": "1092",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1773916653,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": "Agency 92",
+      "discount": null,
+      "email": "customer92@example.test",
+      "id": "cus_fx0092",
+      "invoice_prefix": "FX0092",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 92",
+      "next_invoice_sequence": 3,
+      "object": "customer",
+      "phone": "+41210000092",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Milano",
+        "country": "ES",
+        "line1": "91 Fixture Street",
+        "line2": null,
+        "postal_code": "1091",
+        "state": null
+      },
+      "balance": -1500,
+      "created": 1773501141,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer91@example.test",
+      "id": "cus_fx0091",
+      "invoice_prefix": "FX0091",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 91",
+      "next_invoice_sequence": 2,
+      "object": "customer",
+      "phone": "+41210000091",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Lausanne",
+        "country": "IT",
+        "line1": "90 Fixture Street",
+        "line2": null,
+        "postal_code": "1090",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1773085630,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": "Agency 90",
+      "discount": null,
+      "email": "customer90@example.test",
+      "id": "cus_fx0090",
+      "invoice_prefix": "FX0090",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 90",
+      "next_invoice_sequence": 1,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1772670119,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": true,
+      "description": null,
+      "discount": null,
+      "email": "customer89@example.test",
+      "id": "cus_fx0089",
+      "invoice_prefix": "FX0089",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 89",
+      "next_invoice_sequence": 9,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1772254607,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": "Agency 88",
+      "discount": null,
+      "email": "customer88@example.test",
+      "id": "cus_fx0088",
+      "invoice_prefix": "FX0088",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "name": "Fixture Customer 88",
+      "next_invoice_sequence": 8,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Lausanne",
+        "country": "PL",
+        "line1": "87 Fixture Street",
+        "line2": null,
+        "postal_code": "1087",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1771839096,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": "Agency 87",
+      "discount": null,
+      "email": "customer87@example.test",
+      "id": "cus_fx0087",
+      "invoice_prefix": "FX0087",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 87",
+      "next_invoice_sequence": 7,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Lausanne",
+        "country": "CH",
+        "line1": "86 Fixture Street",
+        "line2": null,
+        "postal_code": "1086",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1771423584,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer86@example.test",
+      "id": "cus_fx0086",
+      "invoice_prefix": "FX0086",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "name": "Fixture Customer 86",
+      "next_invoice_sequence": 6,
+      "object": "customer",
+      "phone": "+41210000086",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Madrid",
+        "country": "CH",
+        "line1": "85 Fixture Street",
+        "line2": null,
+        "postal_code": "1085",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1771008073,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer85@example.test",
+      "id": "cus_fx0085",
+      "invoice_prefix": "FX0085",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 85",
+      "next_invoice_sequence": 5,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Madrid",
+        "country": "ES",
+        "line1": "84 Fixture Street",
+        "line2": null,
+        "postal_code": "1084",
+        "state": null
+      },
+      "balance": -1500,
+      "created": 1770592561,
+      "currency": "pln",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer84@example.test",
+      "id": "cus_fx0084",
+      "invoice_prefix": "FX0084",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 84",
+      "next_invoice_sequence": 4,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Milano",
+        "country": "ES",
+        "line1": "83 Fixture Street",
+        "line2": null,
+        "postal_code": "1083",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1770177050,
+      "currency": "pln",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer83@example.test",
+      "id": "cus_fx0083",
+      "invoice_prefix": "FX0083",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 83",
+      "next_invoice_sequence": 3,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1769761538,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer82@example.test",
+      "id": "cus_fx0082",
+      "invoice_prefix": "FX0082",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 82",
+      "next_invoice_sequence": 2,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Warszawa",
+        "country": "IT",
+        "line1": "81 Fixture Street",
+        "line2": null,
+        "postal_code": "1081",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1769346027,
+      "currency": "pln",
+      "default_source": null,
+      "delinquent": false,
+      "description": "Agency 81",
+      "discount": null,
+      "email": "customer81@example.test",
+      "id": "cus_fx0081",
+      "invoice_prefix": "FX0081",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 81",
+      "next_invoice_sequence": 1,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Milano",
+        "country": "PL",
+        "line1": "80 Fixture Street",
+        "line2": null,
+        "postal_code": "1080",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1768930516,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": true,
+      "description": "Agency 80",
+      "discount": null,
+      "email": "customer80@example.test",
+      "id": "cus_fx0080",
+      "invoice_prefix": "FX0080",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "name": "Fixture Customer 80",
+      "next_invoice_sequence": 9,
+      "object": "customer",
+      "phone": "+41210000080",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": 0,
+      "created": 1768515004,
+      "currency": "eur",
+      "default_source": null,
+      "delinquent": false,
+      "description": "Agency 79",
+      "discount": null,
+      "email": "customer79@example.test",
+      "id": "cus_fx0079",
+      "invoice_prefix": "FX0079",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 79",
+      "next_invoice_sequence": 8,
+      "object": "customer",
+      "phone": "+41210000079",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Madrid",
+        "country": "CH",
+        "line1": "78 Fixture Street",
+        "line2": null,
+        "postal_code": "1078",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1768099493,
+      "currency": "chf",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer78@example.test",
+      "id": "cus_fx0078",
+      "invoice_prefix": "FX0078",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "name": "Fixture Customer 78",
+      "next_invoice_sequence": 7,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": null,
+      "balance": -1500,
+      "created": 1767683981,
+      "currency": "pln",
+      "default_source": null,
+      "delinquent": false,
+      "description": "Agency 77",
+      "discount": null,
+      "email": "customer77@example.test",
+      "id": "cus_fx0077",
+      "invoice_prefix": "FX0077",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {},
+      "name": "Fixture Customer 77",
+      "next_invoice_sequence": 6,
+      "object": "customer",
+      "phone": null,
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    },
+    {
+      "address": {
+        "city": "Madrid",
+        "country": "ES",
+        "line1": "76 Fixture Street",
+        "line2": null,
+        "postal_code": "1076",
+        "state": null
+      },
+      "balance": 0,
+      "created": 1767268470,
+      "currency": "pln",
+      "default_source": null,
+      "delinquent": false,
+      "description": null,
+      "discount": null,
+      "email": "customer76@example.test",
+      "id": "cus_fx0076",
+      "invoice_prefix": "FX0076",
+      "invoice_settings": {
+        "custom_fields": null,
+        "default_payment_method": null,
+        "footer": null,
+        "rendering_options": null
+      },
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "name": "Fixture Customer 76",
+      "next_invoice_sequence": 5,
+      "object": "customer",
+      "phone": "+41210000076",
+      "preferred_locales": [
+        "fr"
+      ],
+      "shipping": null,
+      "tax_exempt": "none",
+      "test_clock": null
+    }
+  ]
+}

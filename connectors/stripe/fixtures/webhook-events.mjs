@@ -120,6 +120,19 @@ export function rowsByEntity(interactions = loadCassettes()) {
 }
 
 /**
+ * Rows whose embedded `lines` or `items` are whole: their events cost no
+ * request.
+ */
+export function wholeRows(rows = rowsByEntity()) {
+  const whole = (row, key) => row?.[key]?.has_more !== true;
+  return {
+    ...rows,
+    invoices: rows.invoices.filter(r => whole(r, "lines")),
+    subscriptions: rows.subscriptions.filter(r => whole(r, "items")),
+  };
+}
+
+/**
  * One snapshot event per type, `data.object` a row of its entity (the n-th
  * event of an entity takes its n-th row), as Stripe delivers it.
  */

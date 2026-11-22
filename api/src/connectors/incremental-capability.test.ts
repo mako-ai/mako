@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { StripeConnector } from "./stripe/connector";
 import { ClaapConnector } from "./claap/connector";
 import { CalendlyConnector } from "./calendly/connector";
 import { RestConnector } from "./rest/connector";
@@ -60,16 +59,6 @@ const connectors: Array<{
   make: () => BaseConnector;
 }> = [
   {
-    label: "stripe",
-    make: () =>
-      new StripeConnector({
-        id: "ds_stripe",
-        name: "Stripe",
-        type: "stripe",
-        config: { api_key: "sk_test_123" },
-      } as any),
-  },
-  {
     label: "claap",
     make: () =>
       new ClaapConnector({
@@ -121,13 +110,6 @@ function testEveryConnectorReturnsWellFormedCapabilities() {
 }
 
 function testCreatedAnchorConnectorsWarnAboutMissedUpdates() {
-  // Stripe filters every entity by `created[gte]` only — updates to
-  // existing records are invisible to a poll.
-  const stripe = capabilitiesFor("stripe");
-  assert.equal(stripe.mode, "created-anchor");
-  assert.equal(stripe.supported, true);
-  assert.ok(stripe.warning && stripe.warning.length > 0);
-
   // Claap: recordings is created-anchor, workspace is none.
   const claap = capabilitiesFor("claap");
   assert.equal(claap.mode, "none"); // fallback (workspace)
@@ -140,38 +122,9 @@ function testRestDeclaresClientFilterWithWarning() {
   assert.ok(rest.warning && rest.warning.length > 0);
 }
 
-async function testStripeCreatedGteWhenSinceSet() {
-  const connector = new StripeConnector({
-    id: "ds_stripe",
-    name: "Stripe",
-    type: "stripe",
-    config: { api_key: "sk_test_123" },
-  } as any);
-
-  let captured: any;
-  (connector as any).stripe = {
-    customers: {
-      list: async (params: any) => {
-        captured = params;
-        return { data: [], has_more: false };
-      },
-    },
-  };
-
-  await connector.fetchEntityChunk({
-    entity: "customers",
-    since: new Date("2026-07-15T00:00:00.000Z"),
-    onBatch: async () => {},
-  } as any);
-
-  assert.equal(typeof captured?.created?.gte, "number");
-  assert.ok(captured.created.gte > 0);
-}
-
 async function main() {
   testEveryConnectorReturnsWellFormedCapabilities();
   testCreatedAnchorConnectorsWarnAboutMissedUpdates();
-  await testStripeCreatedGteWhenSinceSet();
   testRestDeclaresClientFilterWithWarning();
 }
 
