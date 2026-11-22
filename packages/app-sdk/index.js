@@ -17,6 +17,7 @@ export {
   bindingPhaseStage,
 } from "./progress.js";
 
+import * as dataCore from "./data-core.js";
 import {
   missingBinding,
   mentionedBindings,
@@ -1414,14 +1415,21 @@ function bindingIndex() {
 // Out of Memory on a query: free tables, pinned ones the query reads last, and
 // try again. Each pass demotes at least one table, so this ends. With nothing left
 // to free, DuckDB's error surfaces and the hook decides (useAsyncQuery).
-async function runSql(sql, rowLimit, format, reads) {
+async function runSql(sql, rowLimit, format, reads, conversion) {
   for (;;) {
+    conversion?.signal.throwIfAborted();
     try {
-      return await runSqlOnce(sql, rowLimit, format);
+      return await runSqlOnce(sql, rowLimit, format, conversion);
     } catch (error) {
+      conversion?.signal.throwIfAborted();
       if (!isEngineOom(error)) throw error;
       const engine = await getDb();
-      const freed = await catalog(() => relieveNow(engine, null, reads)).catch(() => 0);
+      conversion?.signal.throwIfAborted();
+      const freed = await catalog(() => {
+        conversion?.signal.throwIfAborted();
+        return relieveNow(engine, null, reads);
+      }).catch(() => 0);
+      conversion?.signal.throwIfAborted();
       if (!freed) throw error;
     }
   }
@@ -1442,7 +1450,7 @@ function blameFirstTrap(sql, error, engine) {
   culprits.set(sql, (culprits.get(sql) ?? 0) + 1);
 }
 
-async function runSqlOnce(sql, rowLimit, format) {
+async function runSqlOnce(sql, rowLimit, format, conversion) {
   if ((culprits.get(sql) ?? 0) >= CULPRIT_LIMIT) {
     throw new Error("This query crashed the data engine twice, so it stopped running. Change the filter or reload the page.");
   }
@@ -1454,6 +1462,7 @@ async function runSqlOnce(sql, rowLimit, format) {
     const db = await getDb();
     const conn = await db.connect();
     try {
+      conversion?.signal.throwIfAborted();
       const table = await conn.query(sql);
       // No load follows to measure what the app just made, and the report owes it.
       if (writes) catalog(() => measureNow(db)).catch(() => {});
@@ -1463,7 +1472,11 @@ async function runSqlOnce(sql, rowLimit, format) {
         // normalization, no row limit.
         return { rows: table, fields: table.schema.fields.map(f => f.name), rowCount, truncated: false };
       }
-      const { rows, fields } = toPlainRows(table, cap);
+      conversion?.signal.throwIfAborted();
+      const { rows, fields } = conversion
+        ? await dataCore.toPlainRowsCooperative(table, cap, { signal: conversion.signal })
+        : toPlainRows(table, cap);
+      conversion?.signal.throwIfAborted();
       return { rows, fields, rowCount, truncated: rowCount > rows.length };
     } catch (error) {
       blameFirstTrap(sql, error, db);
@@ -1553,7 +1566,7 @@ if (typeof window !== "undefined" && typeof window.addEventListener === "functio
   }
 }
 
-function useAsyncQuery(run, deps, isRefreshing) {
+function useAsyncQuery(run, deps, isRefreshing, keepPrevious = false, resultFormat) {
   const bindings = useBindingState();
   const [state, setState] = React.useState(EMPTY);
   const [attempt, setAttempt] = React.useState(0);
@@ -1563,6 +1576,7 @@ function useAsyncQuery(run, deps, isRefreshing) {
   const retrying = React.useRef(false);
   React.useEffect(() => {
     let active = true;
+    const controller = new AbortController();
     let timer = null;
     let waiter = null;
     const isRefresh = seenVersion.current !== bindings.version;
@@ -1572,28 +1586,31 @@ function useAsyncQuery(run, deps, isRefreshing) {
     retrying.current = false;
     if (!isRetry) {
       retries.current = 0;
-      setState(s => (isRefresh && s.data !== null ? { ...s, refreshing: true } : EMPTY));
+      setState(s => ((isRefresh || keepPrevious) && s.data !== null && (!resultFormat || s._format === resultFormat)
+        ? keepPrevious ? { ...s, error: null, loading: false, refreshing: true } : { ...s, refreshing: true }
+        : EMPTY));
     }
     const held = [];
     // From the first await to the last. Between a hook's load and its query
     // nothing else is in flight, and a release there would end the engine
     // holding the table the query is about to read.
     busy++;
-    const settled = run(name => held.push(pin(name)));
+    const settled = run(name => held.push(pin(name)), controller.signal);
     settled.catch(() => {}).finally(() => {
       busy--;
     });
     settled.then(
       result => {
-        if (active) setState({ ...result, error: null, loading: false, refreshing: false });
+        if (active) setState({ ...result, ...(resultFormat ? { _format: resultFormat } : {}), error: null, loading: false, refreshing: false });
       },
       error => {
         if (!active) return;
-        setState({
-          ...EMPTY,
+        setState(s => ({
+          ...(keepPrevious && s.data !== null && (!resultFormat || s._format === resultFormat) ? s : EMPTY),
           error: error instanceof Error ? error.message : String(error),
           loading: false,
-        });
+          refreshing: false,
+        }));
         const wait = retryDelayMs(error, retries.current);
         if (wait === null) return;
         retries.current++;
@@ -1611,6 +1628,7 @@ function useAsyncQuery(run, deps, isRefreshing) {
     );
     return () => {
       active = false;
+      controller.abort();
       if (timer !== null) clearTimeout(timer);
       if (waiter) retryWaiters.delete(waiter);
       const letsGo = !retrying.current;
@@ -1622,9 +1640,10 @@ function useAsyncQuery(run, deps, isRefreshing) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, bindings.version, attempt]);
+  const { _format, ...visible } = resultFormat && state.data !== null && state._format !== resultFormat ? EMPTY : state;
   return {
-    ...state,
-    refreshing: state.refreshing || isRefreshing(bindings.refreshing),
+    ...visible,
+    refreshing: visible.refreshing || isRefreshing(bindings.refreshing),
   };
 }
 
@@ -1762,18 +1781,20 @@ export function useViewer() {
  * A binding that fails to load must not sink the query silently: when the
  * SQL then fails, the load failure is what surfaces — it is the cause.
  */
-async function runOverBindings(sql, rowLimit, format, hold) {
+async function runOverBindings(sql, rowLimit, format, hold, conversion) {
   // No index still answers `select 1`. It matters only if the query then fails.
   let indexFailure = null;
   const index = await bindingIndex().catch(error => {
     indexFailure = error;
     return [];
   });
+  conversion?.signal.throwIfAborted();
   const names = [...new Set([...index, ...knownBindings])];
   const failures = new Map();
   const attempted = new Set();
   const reloaded = new Set();
   const load = n => {
+    conversion?.signal.throwIfAborted();
     attempted.add(n);
     hold(n);
     return registerBinding(n).catch(e => {
@@ -1790,8 +1811,10 @@ async function runOverBindings(sql, rowLimit, format, hold) {
   await Promise.all(wanted.map(load));
   for (;;) {
     try {
-      return await runSql(sql, rowLimit, format, attempted);
+      conversion?.signal.throwIfAborted();
+      return await runSql(sql, rowLimit, format, attempted, conversion);
     } catch (error) {
+      conversion?.signal.throwIfAborted();
       const message = error instanceof Error ? error.message : String(error);
       const missing = missingBinding(message, names);
       // Never asked for, or the SDK evicted it under this query. Once per run.
@@ -1823,10 +1846,11 @@ export function useDuckDB(sql, opts) {
   bootEngine();
   const rowLimit = opts ? opts.rowLimit : undefined;
   const format = opts && opts.format === "arrow" ? "arrow" : "rows";
-  const state = useAsyncQuery(async hold => {
-    const r = await runOverBindings(sql, rowLimit, format, hold);
+  const cooperative = format === "rows" && opts?.cooperative === true;
+  const state = useAsyncQuery(async (hold, signal) => {
+    const r = await runOverBindings(sql, rowLimit, format, hold, cooperative ? { signal } : undefined);
     return { data: r.rows, fields: r.fields, truncated: r.truncated, rowCount: r.rowCount };
-  }, [sql, rowLimit, format], refreshing => refreshing.size > 0);
+  }, [sql, rowLimit, format, cooperative], refreshing => refreshing.size > 0, cooperative, format);
   // Every binding the query can read: the combined record says what the
   // slowest of them is waiting on; `bindings` has each one.
   const bindings = useBindingProgress();

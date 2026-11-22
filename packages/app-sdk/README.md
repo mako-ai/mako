@@ -113,6 +113,14 @@ or 502 with the query's error.
 `useTheme` follows the OS preference. Theme tokens (`--background`,
 `--chart-1`, …) match the ones the scaffold's `styles.css` declares.
 
+### Cooperative row conversion
+
+`useDuckDB(sql, { cooperative: true })` yields while converting Arrow results to
+rows. The default remains synchronous. `format: "arrow"` bypasses conversion
+and ignores this option. The hook keeps the last complete rows and metadata
+visible while a new query runs or fails. `error` reports a failed query. A
+superseded conversion is cancelled and cannot replace a newer result.
+
 ### Custom data work: one engine (2.8)
 
 Never import `@duckdb/duckdb-wasm`, `hyparquet` or `apache-arrow` parquet

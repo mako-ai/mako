@@ -166,6 +166,8 @@ export interface DuckDBOptions extends QueryOptions {
    * date/BigInt normalization, `rowLimit` ignored). Default "rows".
    */
   format?: "rows" | "arrow";
+  /** Yield during row conversion. Ignored for Arrow results. */
+  cooperative?: boolean;
 }
 
 /**
@@ -231,7 +233,7 @@ export const SDK_VERSION: string;
  */
 export function useDuckDB<Row = Record<string, unknown>>(
   sql: string,
-  opts?: QueryOptions & { format?: "rows" },
+  opts?: DuckDBOptions & { format?: "rows" },
 ): DuckDBState<Row> & {
   refresh: () => Promise<RefreshResult[]>;
   /** The slowest pending binding's wait, with sums; null when none. */
