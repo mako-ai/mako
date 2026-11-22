@@ -1,0 +1,28 @@
+{
+  "chunks": [
+    {
+      "cursor": "cs_test_fx0006",
+      "hasMore": true
+    },
+    {
+      "cursor": "cs_test_fx0004",
+      "hasMore": true
+    },
+    {
+      "cursor": "cs_test_fx0002",
+      "hasMore": true
+    },
+    {
+      "cursor": "cs_test_fx0002",
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/checkout/sessions?limit=2 (Stripe-Version 2023-10-16)",
+    "GET /v1/checkout/sessions?limit=2&starting_after=cs_test_fx0006 (Stripe-Version 2023-10-16)",
+    "GET /v1/checkout/sessions?limit=2&starting_after=cs_test_fx0004 (Stripe-Version 2023-10-16)",
+    "GET /v1/checkout/sessions?limit=2&starting_after=cs_test_fx0002 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 7,
+  "rowsSha256": "86cbc6c5ce9ba70c3f863897ba1d87a3ca0191511a5373a220ca3ce2402584c5"
+}

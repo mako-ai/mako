@@ -1,0 +1,13 @@
+{
+  "chunks": [
+    {
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/subscriptions?limit=100&status=all (Stripe-Version 2023-10-16)",
+    "GET /v1/subscription_items?limit=100&subscription=sub_fx0006 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 41,
+  "rowsSha256": "676152d2b9aebbff648fe6b88d238669213690f525faeeb0d2562493a5bed1df"
+}

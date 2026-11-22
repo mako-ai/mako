@@ -1,4 +1,4 @@
-// Types for harness.mjs, for the API test that imports it.
+// Types for harness.mjs, for the API tests that import it.
 
 export const FOLDER: string;
 export const REPO_ROOT: string;
@@ -11,7 +11,7 @@ export interface Scenario {
   name: string;
   maxIterations: number;
   since?: string;
-  /** Rows per page; the default is 100 on both sides. */
+  /** Rows per page; the default is 100. */
   pageSize?: number;
 }
 export const SCENARIOS: Scenario[];
@@ -28,6 +28,18 @@ export interface ChunkState {
   hasMore: boolean;
 }
 
+/** What `readBoxed` drives: `SandboxedConnector` as the engine calls it. */
+export interface BoxedConnector {
+  fetchEntityChunk(
+    options: any,
+  ): Promise<{ cursor?: string; hasMore: boolean; metadata?: any }>;
+  resolveSchema?(entity: string): Promise<unknown>;
+  normalizeBackfillRecord?(
+    entity: string,
+    record: Record<string, unknown>,
+  ): { sourceTs: Date } | null;
+}
+
 export interface SourceTimestamps {
   byId: Map<string, string | null>;
   /** Rows whose timestamp came out within a minute of now. */
@@ -39,18 +51,6 @@ export interface Run {
   chunks: ChunkState[];
   requests?: string[];
   timestamps?: SourceTimestamps;
-}
-
-export interface InProcessConnector {
-  fetchEntityChunk(
-    options: any,
-  ): Promise<{ cursor?: string; hasMore: boolean; metadata?: any }>;
-  testConnection(): Promise<{ success: boolean; message?: string }>;
-  resolveSchema?(entity: string): Promise<unknown>;
-  normalizeBackfillRecord?(
-    entity: string,
-    record: Record<string, unknown>,
-  ): { sourceTs: Date } | null;
 }
 
 export interface FixtureServer {
@@ -66,54 +66,10 @@ export interface ReplayServer extends FixtureServer {
   misses: string[];
 }
 
-export interface Comparison {
-  entity: string;
-  scenario: string;
-  rows: [number, number];
-  keys: boolean;
-  order: boolean;
-  columns: boolean;
-  columnCount: number;
-  checksumMismatches: string[];
-  chunks: [number, number];
-  chunkStates: boolean;
-  requests: [number, number];
-  requestsEqual: boolean;
-  /** Row ids whose source timestamp differs between the two sides. */
-  timestampMismatches: string[];
-  timestampsChecked: number;
-  /** Rows per side whose timestamp fell back to now. */
-  timestampsFellBackToNow?: [number, number];
-  /** Set when either side threw; such a run never counts as a match. */
-  error?: string;
-  ok: boolean;
-}
-
-export interface CheckOutcome {
-  variant: "valid" | "revoked";
-  inProcess: boolean;
-  folder: boolean;
-  folderMessage?: string;
-  requestsEqual: boolean;
-}
-
 export interface FolderCommandResult {
   code: number | null;
   messages: Array<Record<string, any>>;
   stderr: string;
-}
-
-export interface SchemaComparison {
-  fields: [number, number];
-  missing: string[];
-  extra: string[];
-  fieldDiffs: string[];
-  keyColumns: boolean;
-  policy: boolean;
-  systemFields: number;
-  /** Ignored (system) columns whose definitions differ between the sides. */
-  systemDiffs: string[];
-  ok: boolean;
 }
 
 export function ensureFolderInstalled(): void;
@@ -130,6 +86,7 @@ export function runFolderCommand(
     config?: Record<string, unknown>;
     catalog?: unknown;
     state?: unknown;
+    batch?: unknown;
     maxIterations?: number;
     maxBytes?: number;
   },
@@ -141,8 +98,8 @@ export function readFolder(options: {
   maxIterations: number;
   pageSize?: number;
 }): Promise<Run>;
-export function readInProcess(
-  connector: InProcessConnector,
+export function readBoxed(
+  connector: BoxedConnector,
   options: {
     entity: string;
     since?: string;
@@ -150,38 +107,10 @@ export function readInProcess(
     pageSize?: number;
   },
 ): Promise<Run>;
-export const readBoxed: typeof readInProcess;
 export function sourceTimestamps(
-  connector: InProcessConnector,
+  connector: BoxedConnector,
   entity: string,
   rows: Array<Record<string, unknown>>,
 ): SourceTimestamps;
 export function canonicalJson(value: unknown): string;
 export function rowChecksum(row: unknown): string;
-export function compareRuns(
-  inProcess: Run,
-  folder: Run,
-): Omit<Comparison, "entity" | "scenario">;
-export function runParity(options: {
-  entities: string[];
-  makeInProcess: (config: StripeTestConfig) => InProcessConnector;
-  /** Run the folder through SandboxedConnector instead of the bare runner. */
-  makeBoxed?: (config: StripeTestConfig) => InProcessConnector;
-  server: FixtureServer;
-  scenarios?: Scenario[];
-  concurrency?: number;
-}): Promise<Comparison[]>;
-export function checkParity(options: {
-  makeInProcess: (config: StripeTestConfig) => InProcessConnector;
-  server: FixtureServer;
-}): Promise<CheckOutcome[]>;
-export function formatReport(results: Comparison[]): string;
-export function compareEntitySchema(
-  inProcess: any,
-  folder: any,
-  ignore?: Set<string>,
-): SchemaComparison;
-export function compareForm(
-  inProcessFields: Array<Record<string, any>>,
-  folderFields: Array<Record<string, any>>,
-): { ok: boolean; inProcess: unknown[]; folder: unknown[] };

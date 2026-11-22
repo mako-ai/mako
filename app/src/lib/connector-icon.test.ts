@@ -9,8 +9,8 @@ describe("connectorIconUrl", () => {
   });
 
   it("keeps built-in connector icons public", () => {
-    expect(connectorIconUrl("stripe", "workspace 1")).toBe(
-      "/api/connectors/stripe/icon.svg",
+    expect(connectorIconUrl("rest", "workspace 1")).toBe(
+      "/api/connectors/rest/icon.svg",
     );
   });
 });

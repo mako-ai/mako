@@ -1,0 +1,12 @@
+{
+  "chunks": [
+    {
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/plans?limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 4,
+  "rowsSha256": "63d030bcaaa1f5027e268215a9f419169c6bfc9428d9186a698469114cc193d1"
+}

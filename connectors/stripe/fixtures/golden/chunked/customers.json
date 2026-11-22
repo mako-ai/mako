@@ -1,0 +1,18 @@
+{
+  "chunks": [
+    {
+      "cursor": "cus_fx0031",
+      "hasMore": true
+    },
+    {
+      "cursor": "cus_fx0031",
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/customers?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/customers?limit=100&starting_after=cus_fx0031 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 130,
+  "rowsSha256": "01648a022bf8cef801c0fdd0c35d7b93aebf2914c63d1f4e6c5a595df05751b6"
+}

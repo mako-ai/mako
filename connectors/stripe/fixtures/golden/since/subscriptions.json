@@ -1,0 +1,1006 @@
+{
+  "requests": [
+    "GET /v1/subscriptions?created[gte]=1767225600&limit=100&status=all (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null
+      },
+      "billing_cycle_anchor": 1788365729,
+      "cancel_at": null,
+      "cancel_at_period_end": false,
+      "canceled_at": null,
+      "cancellation_details": {
+        "comment": null,
+        "feedback": null,
+        "reason": null
+      },
+      "collection_method": "charge_automatically",
+      "created": 1788365729,
+      "currency": "eur",
+      "current_period_end": 1790957729,
+      "current_period_start": 1788365729,
+      "customer": "cus_fx0030",
+      "days_until_due": null,
+      "default_payment_method": "pm_fx0030",
+      "default_source": null,
+      "default_tax_rates": [],
+      "description": null,
+      "discount": null,
+      "ended_at": null,
+      "id": "sub_fx0030",
+      "items": {
+        "data": [
+          {
+            "billing_thresholds": null,
+            "created": 1788365729,
+            "discounts": [],
+            "id": "si_fx0030",
+            "metadata": {},
+            "object": "subscription_item",
+            "plan": {
+              "amount": 5900,
+              "id": "price_fx0003",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0003",
+              "object": "price",
+              "unit_amount": 5900
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0030",
+            "tax_rates": []
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/subscription_items?subscription=sub_fx0030"
+      },
+      "latest_invoice": "in_fx0030",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "subscription",
+      "pause_collection": null,
+      "pending_update": null,
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0002",
+        "object": "plan"
+      },
+      "quantity": 1,
+      "schedule": null,
+      "start_date": 1788365729,
+      "status": "active",
+      "trial_end": null,
+      "trial_start": null
+    },
+    {
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null
+      },
+      "billing_cycle_anchor": 1786609858,
+      "cancel_at": null,
+      "cancel_at_period_end": false,
+      "canceled_at": 1794385858,
+      "cancellation_details": {
+        "comment": null,
+        "feedback": null,
+        "reason": "cancellation_requested"
+      },
+      "collection_method": "charge_automatically",
+      "created": 1786609858,
+      "currency": "eur",
+      "current_period_end": 1789201858,
+      "current_period_start": 1786609858,
+      "customer": "cus_fx0029",
+      "days_until_due": null,
+      "default_payment_method": "pm_fx0029",
+      "default_source": null,
+      "default_tax_rates": [],
+      "description": null,
+      "discount": null,
+      "ended_at": 1794385858,
+      "id": "sub_fx0029",
+      "items": {
+        "data": [
+          {
+            "billing_thresholds": null,
+            "created": 1786609858,
+            "discounts": [],
+            "id": "si_fx0029",
+            "metadata": {},
+            "object": "subscription_item",
+            "plan": {
+              "amount": 5900,
+              "id": "price_fx0002",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0002",
+              "object": "price",
+              "unit_amount": 5900
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0029",
+            "tax_rates": []
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/subscription_items?subscription=sub_fx0029"
+      },
+      "latest_invoice": "in_fx0029",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "subscription",
+      "pause_collection": null,
+      "pending_update": null,
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "quantity": 1,
+      "schedule": null,
+      "start_date": 1786609858,
+      "status": "incomplete_expired",
+      "trial_end": null,
+      "trial_start": null
+    },
+    {
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null
+      },
+      "billing_cycle_anchor": 1784853987,
+      "cancel_at": null,
+      "cancel_at_period_end": false,
+      "canceled_at": null,
+      "cancellation_details": {
+        "comment": null,
+        "feedback": null,
+        "reason": null
+      },
+      "collection_method": "charge_automatically",
+      "created": 1784853987,
+      "currency": "eur",
+      "current_period_end": 1787445987,
+      "current_period_start": 1784853987,
+      "customer": "cus_fx0028",
+      "days_until_due": null,
+      "default_payment_method": "pm_fx0028",
+      "default_source": null,
+      "default_tax_rates": [],
+      "description": null,
+      "discount": null,
+      "ended_at": null,
+      "id": "sub_fx0028",
+      "items": {
+        "data": [
+          {
+            "billing_thresholds": null,
+            "created": 1784853987,
+            "discounts": [],
+            "id": "si_fx0028",
+            "metadata": {},
+            "object": "subscription_item",
+            "plan": {
+              "amount": 5900,
+              "id": "price_fx0001",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0001",
+              "object": "price",
+              "unit_amount": 5900
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0028",
+            "tax_rates": []
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/subscription_items?subscription=sub_fx0028"
+      },
+      "latest_invoice": "in_fx0028",
+      "livemode": false,
+      "metadata": {},
+      "object": "subscription",
+      "pause_collection": null,
+      "pending_update": null,
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0004",
+        "object": "plan"
+      },
+      "quantity": 1,
+      "schedule": null,
+      "start_date": 1784853987,
+      "status": "trialing",
+      "trial_end": 1786063587,
+      "trial_start": 1784853987
+    },
+    {
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null
+      },
+      "billing_cycle_anchor": 1783098116,
+      "cancel_at": null,
+      "cancel_at_period_end": false,
+      "canceled_at": 1790874116,
+      "cancellation_details": {
+        "comment": null,
+        "feedback": null,
+        "reason": "cancellation_requested"
+      },
+      "collection_method": "charge_automatically",
+      "created": 1783098116,
+      "currency": "eur",
+      "current_period_end": 1785690116,
+      "current_period_start": 1783098116,
+      "customer": "cus_fx0027",
+      "days_until_due": null,
+      "default_payment_method": "pm_fx0027",
+      "default_source": null,
+      "default_tax_rates": [],
+      "description": null,
+      "discount": null,
+      "ended_at": 1790874116,
+      "id": "sub_fx0027",
+      "items": {
+        "data": [
+          {
+            "billing_thresholds": null,
+            "created": 1783098116,
+            "discounts": [],
+            "id": "si_fx0027",
+            "metadata": {},
+            "object": "subscription_item",
+            "plan": {
+              "amount": 5900,
+              "id": "price_fx0009",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0009",
+              "object": "price",
+              "unit_amount": 5900
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0027",
+            "tax_rates": []
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/subscription_items?subscription=sub_fx0027"
+      },
+      "latest_invoice": "in_fx0027",
+      "livemode": false,
+      "metadata": {},
+      "object": "subscription",
+      "pause_collection": null,
+      "pending_update": null,
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0003",
+        "object": "plan"
+      },
+      "quantity": 1,
+      "schedule": null,
+      "start_date": 1783098116,
+      "status": "canceled",
+      "trial_end": null,
+      "trial_start": null
+    },
+    {
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null
+      },
+      "billing_cycle_anchor": 1781342245,
+      "cancel_at": null,
+      "cancel_at_period_end": false,
+      "canceled_at": null,
+      "cancellation_details": {
+        "comment": null,
+        "feedback": null,
+        "reason": null
+      },
+      "collection_method": "charge_automatically",
+      "created": 1781342245,
+      "currency": "eur",
+      "current_period_end": 1783934245,
+      "current_period_start": 1781342245,
+      "customer": "cus_fx0026",
+      "days_until_due": null,
+      "default_payment_method": "pm_fx0026",
+      "default_source": null,
+      "default_tax_rates": [],
+      "description": null,
+      "discount": null,
+      "ended_at": null,
+      "id": "sub_fx0026",
+      "items": {
+        "data": [
+          {
+            "billing_thresholds": null,
+            "created": 1781342245,
+            "discounts": [],
+            "id": "si_fx0026",
+            "metadata": {},
+            "object": "subscription_item",
+            "plan": {
+              "amount": 5900,
+              "id": "price_fx0008",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0008",
+              "object": "price",
+              "unit_amount": 5900
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0026",
+            "tax_rates": []
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/subscription_items?subscription=sub_fx0026"
+      },
+      "latest_invoice": "in_fx0026",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "subscription",
+      "pause_collection": null,
+      "pending_update": null,
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0002",
+        "object": "plan"
+      },
+      "quantity": 1,
+      "schedule": null,
+      "start_date": 1781342245,
+      "status": "past_due",
+      "trial_end": null,
+      "trial_start": null
+    },
+    {
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null
+      },
+      "billing_cycle_anchor": 1779586374,
+      "cancel_at": null,
+      "cancel_at_period_end": false,
+      "canceled_at": null,
+      "cancellation_details": {
+        "comment": null,
+        "feedback": null,
+        "reason": null
+      },
+      "collection_method": "charge_automatically",
+      "created": 1779586374,
+      "currency": "eur",
+      "current_period_end": 1782178374,
+      "current_period_start": 1779586374,
+      "customer": "cus_fx0025",
+      "days_until_due": null,
+      "default_payment_method": "pm_fx0025",
+      "default_source": null,
+      "default_tax_rates": [],
+      "description": null,
+      "discount": null,
+      "ended_at": null,
+      "id": "sub_fx0025",
+      "items": {
+        "data": [
+          {
+            "billing_thresholds": null,
+            "created": 1779586374,
+            "discounts": [],
+            "id": "si_fx0025",
+            "metadata": {},
+            "object": "subscription_item",
+            "plan": {
+              "amount": 5900,
+              "id": "price_fx0007",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0007",
+              "object": "price",
+              "unit_amount": 5900
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0025",
+            "tax_rates": []
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/subscription_items?subscription=sub_fx0025"
+      },
+      "latest_invoice": "in_fx0025",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "subscription",
+      "pause_collection": null,
+      "pending_update": null,
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "quantity": 1,
+      "schedule": null,
+      "start_date": 1779586374,
+      "status": "active",
+      "trial_end": null,
+      "trial_start": null
+    },
+    {
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null
+      },
+      "billing_cycle_anchor": 1777830503,
+      "cancel_at": null,
+      "cancel_at_period_end": false,
+      "canceled_at": null,
+      "cancellation_details": {
+        "comment": null,
+        "feedback": null,
+        "reason": null
+      },
+      "collection_method": "charge_automatically",
+      "created": 1777830503,
+      "currency": "eur",
+      "current_period_end": 1780422503,
+      "current_period_start": 1777830503,
+      "customer": "cus_fx0024",
+      "days_until_due": null,
+      "default_payment_method": "pm_fx0024",
+      "default_source": null,
+      "default_tax_rates": [],
+      "description": null,
+      "discount": null,
+      "ended_at": null,
+      "id": "sub_fx0024",
+      "items": {
+        "data": [
+          {
+            "billing_thresholds": null,
+            "created": 1777830503,
+            "discounts": [],
+            "id": "si_fx0024",
+            "metadata": {},
+            "object": "subscription_item",
+            "plan": {
+              "amount": 5900,
+              "id": "price_fx0006",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0006",
+              "object": "price",
+              "unit_amount": 5900
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0024",
+            "tax_rates": []
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/subscription_items?subscription=sub_fx0024"
+      },
+      "latest_invoice": "in_fx0024",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "subscription",
+      "pause_collection": null,
+      "pending_update": null,
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0004",
+        "object": "plan"
+      },
+      "quantity": 1,
+      "schedule": null,
+      "start_date": 1777830503,
+      "status": "active",
+      "trial_end": null,
+      "trial_start": null
+    },
+    {
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null
+      },
+      "billing_cycle_anchor": 1776074632,
+      "cancel_at": null,
+      "cancel_at_period_end": false,
+      "canceled_at": 1783850632,
+      "cancellation_details": {
+        "comment": null,
+        "feedback": null,
+        "reason": "cancellation_requested"
+      },
+      "collection_method": "charge_automatically",
+      "created": 1776074632,
+      "currency": "eur",
+      "current_period_end": 1778666632,
+      "current_period_start": 1776074632,
+      "customer": "cus_fx0023",
+      "days_until_due": null,
+      "default_payment_method": "pm_fx0023",
+      "default_source": null,
+      "default_tax_rates": [],
+      "description": null,
+      "discount": null,
+      "ended_at": 1783850632,
+      "id": "sub_fx0023",
+      "items": {
+        "data": [
+          {
+            "billing_thresholds": null,
+            "created": 1776074632,
+            "discounts": [],
+            "id": "si_fx0023",
+            "metadata": {},
+            "object": "subscription_item",
+            "plan": {
+              "amount": 5900,
+              "id": "price_fx0005",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0005",
+              "object": "price",
+              "unit_amount": 5900
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0023",
+            "tax_rates": []
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/subscription_items?subscription=sub_fx0023"
+      },
+      "latest_invoice": "in_fx0023",
+      "livemode": false,
+      "metadata": {},
+      "object": "subscription",
+      "pause_collection": null,
+      "pending_update": null,
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0003",
+        "object": "plan"
+      },
+      "quantity": 1,
+      "schedule": null,
+      "start_date": 1776074632,
+      "status": "incomplete_expired",
+      "trial_end": null,
+      "trial_start": null
+    },
+    {
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null
+      },
+      "billing_cycle_anchor": 1774318761,
+      "cancel_at": null,
+      "cancel_at_period_end": false,
+      "canceled_at": null,
+      "cancellation_details": {
+        "comment": null,
+        "feedback": null,
+        "reason": null
+      },
+      "collection_method": "charge_automatically",
+      "created": 1774318761,
+      "currency": "eur",
+      "current_period_end": 1776910761,
+      "current_period_start": 1774318761,
+      "customer": "cus_fx0022",
+      "days_until_due": null,
+      "default_payment_method": "pm_fx0022",
+      "default_source": null,
+      "default_tax_rates": [],
+      "description": null,
+      "discount": null,
+      "ended_at": null,
+      "id": "sub_fx0022",
+      "items": {
+        "data": [
+          {
+            "billing_thresholds": null,
+            "created": 1774318761,
+            "discounts": [],
+            "id": "si_fx0022",
+            "metadata": {},
+            "object": "subscription_item",
+            "plan": {
+              "amount": 5900,
+              "id": "price_fx0004",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0004",
+              "object": "price",
+              "unit_amount": 5900
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0022",
+            "tax_rates": []
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/subscription_items?subscription=sub_fx0022"
+      },
+      "latest_invoice": "in_fx0022",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "subscription",
+      "pause_collection": null,
+      "pending_update": null,
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0002",
+        "object": "plan"
+      },
+      "quantity": 1,
+      "schedule": null,
+      "start_date": 1774318761,
+      "status": "trialing",
+      "trial_end": 1775528361,
+      "trial_start": 1774318761
+    },
+    {
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null
+      },
+      "billing_cycle_anchor": 1772562890,
+      "cancel_at": null,
+      "cancel_at_period_end": false,
+      "canceled_at": 1780338890,
+      "cancellation_details": {
+        "comment": null,
+        "feedback": null,
+        "reason": "cancellation_requested"
+      },
+      "collection_method": "charge_automatically",
+      "created": 1772562890,
+      "currency": "eur",
+      "current_period_end": 1775154890,
+      "current_period_start": 1772562890,
+      "customer": "cus_fx0021",
+      "days_until_due": null,
+      "default_payment_method": "pm_fx0021",
+      "default_source": null,
+      "default_tax_rates": [],
+      "description": null,
+      "discount": null,
+      "ended_at": 1780338890,
+      "id": "sub_fx0021",
+      "items": {
+        "data": [
+          {
+            "billing_thresholds": null,
+            "created": 1772562890,
+            "discounts": [],
+            "id": "si_fx0021",
+            "metadata": {},
+            "object": "subscription_item",
+            "plan": {
+              "amount": 5900,
+              "id": "price_fx0003",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0003",
+              "object": "price",
+              "unit_amount": 5900
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0021",
+            "tax_rates": []
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/subscription_items?subscription=sub_fx0021"
+      },
+      "latest_invoice": "in_fx0021",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "subscription",
+      "pause_collection": null,
+      "pending_update": null,
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "quantity": 1,
+      "schedule": null,
+      "start_date": 1772562890,
+      "status": "canceled",
+      "trial_end": null,
+      "trial_start": null
+    },
+    {
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null
+      },
+      "billing_cycle_anchor": 1770807019,
+      "cancel_at": null,
+      "cancel_at_period_end": false,
+      "canceled_at": null,
+      "cancellation_details": {
+        "comment": null,
+        "feedback": null,
+        "reason": null
+      },
+      "collection_method": "charge_automatically",
+      "created": 1770807019,
+      "currency": "eur",
+      "current_period_end": 1773399019,
+      "current_period_start": 1770807019,
+      "customer": "cus_fx0020",
+      "days_until_due": null,
+      "default_payment_method": "pm_fx0020",
+      "default_source": null,
+      "default_tax_rates": [],
+      "description": null,
+      "discount": null,
+      "ended_at": null,
+      "id": "sub_fx0020",
+      "items": {
+        "data": [
+          {
+            "billing_thresholds": null,
+            "created": 1770807019,
+            "discounts": [],
+            "id": "si_fx0020",
+            "metadata": {},
+            "object": "subscription_item",
+            "plan": {
+              "amount": 5900,
+              "id": "price_fx0002",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0002",
+              "object": "price",
+              "unit_amount": 5900
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0020",
+            "tax_rates": []
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/subscription_items?subscription=sub_fx0020"
+      },
+      "latest_invoice": "in_fx0020",
+      "livemode": false,
+      "metadata": {},
+      "object": "subscription",
+      "pause_collection": null,
+      "pending_update": null,
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0004",
+        "object": "plan"
+      },
+      "quantity": 1,
+      "schedule": null,
+      "start_date": 1770807019,
+      "status": "past_due",
+      "trial_end": null,
+      "trial_start": null
+    },
+    {
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null
+      },
+      "billing_cycle_anchor": 1769051148,
+      "cancel_at": null,
+      "cancel_at_period_end": false,
+      "canceled_at": null,
+      "cancellation_details": {
+        "comment": null,
+        "feedback": null,
+        "reason": null
+      },
+      "collection_method": "charge_automatically",
+      "created": 1769051148,
+      "currency": "eur",
+      "current_period_end": 1771643148,
+      "current_period_start": 1769051148,
+      "customer": "cus_fx0019",
+      "days_until_due": null,
+      "default_payment_method": "pm_fx0019",
+      "default_source": null,
+      "default_tax_rates": [],
+      "description": null,
+      "discount": null,
+      "ended_at": null,
+      "id": "sub_fx0019",
+      "items": {
+        "data": [
+          {
+            "billing_thresholds": null,
+            "created": 1769051148,
+            "discounts": [],
+            "id": "si_fx0019",
+            "metadata": {},
+            "object": "subscription_item",
+            "plan": {
+              "amount": 5900,
+              "id": "price_fx0001",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0001",
+              "object": "price",
+              "unit_amount": 5900
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0019",
+            "tax_rates": []
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/subscription_items?subscription=sub_fx0019"
+      },
+      "latest_invoice": "in_fx0019",
+      "livemode": false,
+      "metadata": {},
+      "object": "subscription",
+      "pause_collection": null,
+      "pending_update": null,
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0003",
+        "object": "plan"
+      },
+      "quantity": 1,
+      "schedule": null,
+      "start_date": 1769051148,
+      "status": "active",
+      "trial_end": null,
+      "trial_start": null
+    },
+    {
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null
+      },
+      "billing_cycle_anchor": 1767295277,
+      "cancel_at": null,
+      "cancel_at_period_end": false,
+      "canceled_at": null,
+      "cancellation_details": {
+        "comment": null,
+        "feedback": null,
+        "reason": null
+      },
+      "collection_method": "charge_automatically",
+      "created": 1767295277,
+      "currency": "eur",
+      "current_period_end": 1769887277,
+      "current_period_start": 1767295277,
+      "customer": "cus_fx0018",
+      "days_until_due": null,
+      "default_payment_method": "pm_fx0018",
+      "default_source": null,
+      "default_tax_rates": [],
+      "description": null,
+      "discount": null,
+      "ended_at": null,
+      "id": "sub_fx0018",
+      "items": {
+        "data": [
+          {
+            "billing_thresholds": null,
+            "created": 1767295277,
+            "discounts": [],
+            "id": "si_fx0018",
+            "metadata": {},
+            "object": "subscription_item",
+            "plan": {
+              "amount": 5900,
+              "id": "price_fx0009",
+              "object": "plan"
+            },
+            "price": {
+              "id": "price_fx0009",
+              "object": "price",
+              "unit_amount": 5900
+            },
+            "quantity": 1,
+            "subscription": "sub_fx0018",
+            "tax_rates": []
+          }
+        ],
+        "has_more": false,
+        "object": "list",
+        "total_count": 1,
+        "url": "/v1/subscription_items?subscription=sub_fx0018"
+      },
+      "latest_invoice": "in_fx0018",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "subscription",
+      "pause_collection": null,
+      "pending_update": null,
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0002",
+        "object": "plan"
+      },
+      "quantity": 1,
+      "schedule": null,
+      "start_date": 1767295277,
+      "status": "active",
+      "trial_end": null,
+      "trial_start": null
+    }
+  ]
+}

@@ -1,0 +1,100 @@
+{
+  "requests": [
+    "GET /v1/checkout/sessions?created[gte]=1767225600&limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "amount_subtotal": 5900,
+      "amount_total": 5900,
+      "client_reference_id": null,
+      "created": 1783317600,
+      "currency": "eur",
+      "customer": "cus_fx0007",
+      "customer_details": {
+        "email": "customer7@example.test",
+        "name": null
+      },
+      "customer_email": null,
+      "expires_at": 1783404000,
+      "id": "cs_test_fx0007",
+      "invoice": null,
+      "livemode": false,
+      "metadata": {},
+      "mode": "subscription",
+      "object": "checkout.session",
+      "payment_intent": null,
+      "payment_link": null,
+      "payment_status": "paid",
+      "status": "complete",
+      "subscription": "sub_fx0007",
+      "total_details": {
+        "amount_discount": 0,
+        "amount_shipping": 0,
+        "amount_tax": 0
+      },
+      "url": null
+    },
+    {
+      "amount_subtotal": 5900,
+      "amount_total": 5900,
+      "client_reference_id": null,
+      "created": 1776513600,
+      "currency": "eur",
+      "customer": null,
+      "customer_details": {
+        "email": "customer6@example.test",
+        "name": null
+      },
+      "customer_email": null,
+      "expires_at": 1776600000,
+      "id": "cs_test_fx0006",
+      "invoice": null,
+      "livemode": false,
+      "metadata": {},
+      "mode": "subscription",
+      "object": "checkout.session",
+      "payment_intent": null,
+      "payment_link": null,
+      "payment_status": "unpaid",
+      "status": "expired",
+      "subscription": null,
+      "total_details": {
+        "amount_discount": 0,
+        "amount_shipping": 0,
+        "amount_tax": 0
+      },
+      "url": null
+    },
+    {
+      "amount_subtotal": 5900,
+      "amount_total": 5900,
+      "client_reference_id": null,
+      "created": 1769709600,
+      "currency": "eur",
+      "customer": "cus_fx0005",
+      "customer_details": {
+        "email": "customer5@example.test",
+        "name": null
+      },
+      "customer_email": null,
+      "expires_at": 1769796000,
+      "id": "cs_test_fx0005",
+      "invoice": null,
+      "livemode": false,
+      "metadata": {},
+      "mode": "subscription",
+      "object": "checkout.session",
+      "payment_intent": null,
+      "payment_link": null,
+      "payment_status": "paid",
+      "status": "complete",
+      "subscription": "sub_fx0005",
+      "total_details": {
+        "amount_discount": 0,
+        "amount_shipping": 0,
+        "amount_tax": 0
+      },
+      "url": null
+    }
+  ]
+}

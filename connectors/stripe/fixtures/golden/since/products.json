@@ -1,0 +1,51 @@
+{
+  "requests": [
+    "GET /v1/products?created[gte]=1767225600&limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "active": false,
+      "created": 1782345600,
+      "default_price": "price_fx0006",
+      "description": "Plan 6",
+      "features": [],
+      "id": "prod_fx0006",
+      "images": [],
+      "livemode": false,
+      "marketing_features": [],
+      "metadata": {},
+      "name": "Fixture Plan 6",
+      "object": "product",
+      "package_dimensions": null,
+      "shippable": null,
+      "statement_descriptor": null,
+      "tax_code": "txcd_10000000",
+      "type": "service",
+      "unit_label": null,
+      "updated": 1782349200,
+      "url": null
+    },
+    {
+      "active": true,
+      "created": 1774569600,
+      "default_price": "price_fx0005",
+      "description": "Plan 5",
+      "features": [],
+      "id": "prod_fx0005",
+      "images": [],
+      "livemode": false,
+      "marketing_features": [],
+      "metadata": {},
+      "name": "Fixture Plan 5",
+      "object": "product",
+      "package_dimensions": null,
+      "shippable": null,
+      "statement_descriptor": null,
+      "tax_code": "txcd_10000000",
+      "type": "service",
+      "unit_label": null,
+      "updated": 1774573200,
+      "url": null
+    }
+  ]
+}

@@ -1,0 +1,83 @@
+{
+  "chunks": [
+    {
+      "cursor": "sub_fx0029",
+      "hasMore": true
+    },
+    {
+      "cursor": "sub_fx0027",
+      "hasMore": true
+    },
+    {
+      "cursor": "sub_fx0025",
+      "hasMore": true
+    },
+    {
+      "cursor": "sub_fx0023",
+      "hasMore": true
+    },
+    {
+      "cursor": "sub_fx0021",
+      "hasMore": true
+    },
+    {
+      "cursor": "sub_fx0019",
+      "hasMore": true
+    },
+    {
+      "cursor": "sub_fx0017",
+      "hasMore": true
+    },
+    {
+      "cursor": "sub_fx0015",
+      "hasMore": true
+    },
+    {
+      "cursor": "sub_fx0013",
+      "hasMore": true
+    },
+    {
+      "cursor": "sub_fx0011",
+      "hasMore": true
+    },
+    {
+      "cursor": "sub_fx0009",
+      "hasMore": true
+    },
+    {
+      "cursor": "sub_fx0007",
+      "hasMore": true
+    },
+    {
+      "cursor": "sub_fx0005",
+      "hasMore": true
+    },
+    {
+      "cursor": "sub_fx0003",
+      "hasMore": true
+    },
+    {
+      "cursor": "sub_fx0003",
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/subscriptions?limit=2&status=all (Stripe-Version 2023-10-16)",
+    "GET /v1/subscriptions?limit=2&starting_after=sub_fx0029&status=all (Stripe-Version 2023-10-16)",
+    "GET /v1/subscriptions?limit=2&starting_after=sub_fx0027&status=all (Stripe-Version 2023-10-16)",
+    "GET /v1/subscriptions?limit=2&starting_after=sub_fx0025&status=all (Stripe-Version 2023-10-16)",
+    "GET /v1/subscriptions?limit=2&starting_after=sub_fx0023&status=all (Stripe-Version 2023-10-16)",
+    "GET /v1/subscriptions?limit=2&starting_after=sub_fx0021&status=all (Stripe-Version 2023-10-16)",
+    "GET /v1/subscriptions?limit=2&starting_after=sub_fx0019&status=all (Stripe-Version 2023-10-16)",
+    "GET /v1/subscriptions?limit=2&starting_after=sub_fx0017&status=all (Stripe-Version 2023-10-16)",
+    "GET /v1/subscriptions?limit=2&starting_after=sub_fx0015&status=all (Stripe-Version 2023-10-16)",
+    "GET /v1/subscriptions?limit=2&starting_after=sub_fx0013&status=all (Stripe-Version 2023-10-16)",
+    "GET /v1/subscriptions?limit=2&starting_after=sub_fx0011&status=all (Stripe-Version 2023-10-16)",
+    "GET /v1/subscriptions?limit=2&starting_after=sub_fx0009&status=all (Stripe-Version 2023-10-16)",
+    "GET /v1/subscriptions?limit=2&starting_after=sub_fx0007&status=all (Stripe-Version 2023-10-16)",
+    "GET /v1/subscriptions?limit=2&starting_after=sub_fx0005&status=all (Stripe-Version 2023-10-16)",
+    "GET /v1/subscriptions?limit=2&starting_after=sub_fx0003&status=all (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 30,
+  "rowsSha256": "9e9873e41579a46142e09289266a25f217bec69c4da687837c20f5bc6eeec4af"
+}

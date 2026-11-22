@@ -1,0 +1,1369 @@
+{
+  "requests": [
+    "GET /v1/payouts?created[gte]=1767225600&limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0110 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0109 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0108 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0107 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0106 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0105 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0104 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0103 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0102 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0101 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0100 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0099 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0098 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0097 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0096 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0095 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0094 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0093 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0092 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0091 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0090 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0089 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0088 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0087 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0086 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0085 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0084 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0083 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0082 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0081 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0080 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0079 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0078 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0077 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0076 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0075 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0074 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0073 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0072 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0071 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0070 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0069 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0068 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0067 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0066 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=100&payout=po_fx0065 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "amount": 174200,
+      "available_on": 1789803421,
+      "balance_type": "payments",
+      "created": 1789630621,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 5082,
+      "fee_details": [
+        {
+          "amount": 5082,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0110_0001",
+      "livemode": false,
+      "net": 169118,
+      "object": "balance_transaction",
+      "payout": "po_fx0110",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 69100,
+      "available_on": 1789802821,
+      "balance_type": "payments",
+      "created": 1789630021,
+      "currency": "eur",
+      "description": "Payment 2",
+      "exchange_rate": null,
+      "fee": 2034,
+      "fee_details": [
+        {
+          "amount": 2034,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0110_0002",
+      "livemode": false,
+      "net": 67066,
+      "object": "balance_transaction",
+      "payout": "po_fx0110",
+      "reporting_category": "charge",
+      "source": "ch_fx0002",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 7300,
+      "available_on": 1789313043,
+      "balance_type": "payments",
+      "created": 1789140243,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 242,
+      "fee_details": [
+        {
+          "amount": 242,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0109_0001",
+      "livemode": false,
+      "net": 7058,
+      "object": "balance_transaction",
+      "payout": "po_fx0109",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 7700,
+      "available_on": 1788332286,
+      "balance_type": "payments",
+      "created": 1788159486,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 253,
+      "fee_details": [
+        {
+          "amount": 253,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0107_0001",
+      "livemode": false,
+      "net": 7447,
+      "object": "balance_transaction",
+      "payout": "po_fx0107",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 17200,
+      "available_on": 1788331686,
+      "balance_type": "payments",
+      "created": 1788158886,
+      "currency": "eur",
+      "description": "Payment 2",
+      "exchange_rate": null,
+      "fee": 529,
+      "fee_details": [
+        {
+          "amount": 529,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0107_0002",
+      "livemode": false,
+      "net": 16671,
+      "object": "balance_transaction",
+      "payout": "po_fx0107",
+      "reporting_category": "charge",
+      "source": "ch_fx0002",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 9200,
+      "available_on": 1787841908,
+      "balance_type": "payments",
+      "created": 1787669108,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 297,
+      "fee_details": [
+        {
+          "amount": 297,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0106_0001",
+      "livemode": false,
+      "net": 8903,
+      "object": "balance_transaction",
+      "payout": "po_fx0106",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 6500,
+      "available_on": 1786861151,
+      "balance_type": "payments",
+      "created": 1786688351,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 219,
+      "fee_details": [
+        {
+          "amount": 219,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0104_0001",
+      "livemode": false,
+      "net": 6281,
+      "object": "balance_transaction",
+      "payout": "po_fx0104",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 119600,
+      "available_on": 1786860551,
+      "balance_type": "payments",
+      "created": 1786687751,
+      "currency": "eur",
+      "description": "Payment 2",
+      "exchange_rate": null,
+      "fee": 3498,
+      "fee_details": [
+        {
+          "amount": 3498,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0104_0002",
+      "livemode": false,
+      "net": 116102,
+      "object": "balance_transaction",
+      "payout": "po_fx0104",
+      "reporting_category": "charge",
+      "source": "ch_fx0002",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 133200,
+      "available_on": 1786370772,
+      "balance_type": "payments",
+      "created": 1786197972,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 3893,
+      "fee_details": [
+        {
+          "amount": 3893,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0103_0001",
+      "livemode": false,
+      "net": 129307,
+      "object": "balance_transaction",
+      "payout": "po_fx0103",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 60100,
+      "available_on": 1785390016,
+      "balance_type": "payments",
+      "created": 1785217216,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 1773,
+      "fee_details": [
+        {
+          "amount": 1773,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0101_0001",
+      "livemode": false,
+      "net": 58327,
+      "object": "balance_transaction",
+      "payout": "po_fx0101",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 155800,
+      "available_on": 1785389416,
+      "balance_type": "payments",
+      "created": 1785216616,
+      "currency": "eur",
+      "description": "Payment 2",
+      "exchange_rate": null,
+      "fee": 4548,
+      "fee_details": [
+        {
+          "amount": 4548,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0101_0002",
+      "livemode": false,
+      "net": 151252,
+      "object": "balance_transaction",
+      "payout": "po_fx0101",
+      "reporting_category": "charge",
+      "source": "ch_fx0002",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 150100,
+      "available_on": 1784899637,
+      "balance_type": "payments",
+      "created": 1784726837,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 4383,
+      "fee_details": [
+        {
+          "amount": 4383,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0100_0001",
+      "livemode": false,
+      "net": 145717,
+      "object": "balance_transaction",
+      "payout": "po_fx0100",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 8000,
+      "available_on": 1783918881,
+      "balance_type": "payments",
+      "created": 1783746081,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 262,
+      "fee_details": [
+        {
+          "amount": 262,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0098_0001",
+      "livemode": false,
+      "net": 7738,
+      "object": "balance_transaction",
+      "payout": "po_fx0098",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 127800,
+      "available_on": 1783918281,
+      "balance_type": "payments",
+      "created": 1783745481,
+      "currency": "eur",
+      "description": "Payment 2",
+      "exchange_rate": null,
+      "fee": 3736,
+      "fee_details": [
+        {
+          "amount": 3736,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0098_0002",
+      "livemode": false,
+      "net": 124064,
+      "object": "balance_transaction",
+      "payout": "po_fx0098",
+      "reporting_category": "charge",
+      "source": "ch_fx0002",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 178000,
+      "available_on": 1783428502,
+      "balance_type": "payments",
+      "created": 1783255702,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 5192,
+      "fee_details": [
+        {
+          "amount": 5192,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0097_0001",
+      "livemode": false,
+      "net": 172808,
+      "object": "balance_transaction",
+      "payout": "po_fx0097",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 137600,
+      "available_on": 1782447745,
+      "balance_type": "payments",
+      "created": 1782274945,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 4020,
+      "fee_details": [
+        {
+          "amount": 4020,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0095_0001",
+      "livemode": false,
+      "net": 133580,
+      "object": "balance_transaction",
+      "payout": "po_fx0095",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 192500,
+      "available_on": 1782447145,
+      "balance_type": "payments",
+      "created": 1782274345,
+      "currency": "eur",
+      "description": "Payment 2",
+      "exchange_rate": null,
+      "fee": 5613,
+      "fee_details": [
+        {
+          "amount": 5613,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0095_0002",
+      "livemode": false,
+      "net": 186887,
+      "object": "balance_transaction",
+      "payout": "po_fx0095",
+      "reporting_category": "charge",
+      "source": "ch_fx0002",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 47100,
+      "available_on": 1781957367,
+      "balance_type": "payments",
+      "created": 1781784567,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 1396,
+      "fee_details": [
+        {
+          "amount": 1396,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0094_0001",
+      "livemode": false,
+      "net": 45704,
+      "object": "balance_transaction",
+      "payout": "po_fx0094",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 110400,
+      "available_on": 1780976610,
+      "balance_type": "payments",
+      "created": 1780803810,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 3232,
+      "fee_details": [
+        {
+          "amount": 3232,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0092_0001",
+      "livemode": false,
+      "net": 107168,
+      "object": "balance_transaction",
+      "payout": "po_fx0092",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 32900,
+      "available_on": 1780976010,
+      "balance_type": "payments",
+      "created": 1780803210,
+      "currency": "eur",
+      "description": "Payment 2",
+      "exchange_rate": null,
+      "fee": 984,
+      "fee_details": [
+        {
+          "amount": 984,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0092_0002",
+      "livemode": false,
+      "net": 31916,
+      "object": "balance_transaction",
+      "payout": "po_fx0092",
+      "reporting_category": "charge",
+      "source": "ch_fx0002",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 109800,
+      "available_on": 1780486232,
+      "balance_type": "payments",
+      "created": 1780313432,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 3214,
+      "fee_details": [
+        {
+          "amount": 3214,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0091_0001",
+      "livemode": false,
+      "net": 106586,
+      "object": "balance_transaction",
+      "payout": "po_fx0091",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 77200,
+      "available_on": 1779505475,
+      "balance_type": "payments",
+      "created": 1779332675,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 2269,
+      "fee_details": [
+        {
+          "amount": 2269,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0089_0001",
+      "livemode": false,
+      "net": 74931,
+      "object": "balance_transaction",
+      "payout": "po_fx0089",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 145700,
+      "available_on": 1779504875,
+      "balance_type": "payments",
+      "created": 1779332075,
+      "currency": "eur",
+      "description": "Payment 2",
+      "exchange_rate": null,
+      "fee": 4255,
+      "fee_details": [
+        {
+          "amount": 4255,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0089_0002",
+      "livemode": false,
+      "net": 141445,
+      "object": "balance_transaction",
+      "payout": "po_fx0089",
+      "reporting_category": "charge",
+      "source": "ch_fx0002",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 4600,
+      "available_on": 1779015097,
+      "balance_type": "payments",
+      "created": 1778842297,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 163,
+      "fee_details": [
+        {
+          "amount": 163,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0088_0001",
+      "livemode": false,
+      "net": 4437,
+      "object": "balance_transaction",
+      "payout": "po_fx0088",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 50500,
+      "available_on": 1778034340,
+      "balance_type": "payments",
+      "created": 1777861540,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 1495,
+      "fee_details": [
+        {
+          "amount": 1495,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0086_0001",
+      "livemode": false,
+      "net": 49005,
+      "object": "balance_transaction",
+      "payout": "po_fx0086",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 44300,
+      "available_on": 1778033740,
+      "balance_type": "payments",
+      "created": 1777860940,
+      "currency": "eur",
+      "description": "Payment 2",
+      "exchange_rate": null,
+      "fee": 1315,
+      "fee_details": [
+        {
+          "amount": 1315,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0086_0002",
+      "livemode": false,
+      "net": 42985,
+      "object": "balance_transaction",
+      "payout": "po_fx0086",
+      "reporting_category": "charge",
+      "source": "ch_fx0002",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 68000,
+      "available_on": 1777543962,
+      "balance_type": "payments",
+      "created": 1777371162,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 2002,
+      "fee_details": [
+        {
+          "amount": 2002,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0085_0001",
+      "livemode": false,
+      "net": 65998,
+      "object": "balance_transaction",
+      "payout": "po_fx0085",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 102100,
+      "available_on": 1776563205,
+      "balance_type": "payments",
+      "created": 1776390405,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 2991,
+      "fee_details": [
+        {
+          "amount": 2991,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0083_0001",
+      "livemode": false,
+      "net": 99109,
+      "object": "balance_transaction",
+      "payout": "po_fx0083",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 29700,
+      "available_on": 1776562605,
+      "balance_type": "payments",
+      "created": 1776389805,
+      "currency": "eur",
+      "description": "Payment 2",
+      "exchange_rate": null,
+      "fee": 891,
+      "fee_details": [
+        {
+          "amount": 891,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0083_0002",
+      "livemode": false,
+      "net": 28809,
+      "object": "balance_transaction",
+      "payout": "po_fx0083",
+      "reporting_category": "charge",
+      "source": "ch_fx0002",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 107700,
+      "available_on": 1776072827,
+      "balance_type": "payments",
+      "created": 1775900027,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 3153,
+      "fee_details": [
+        {
+          "amount": 3153,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0082_0001",
+      "livemode": false,
+      "net": 104547,
+      "object": "balance_transaction",
+      "payout": "po_fx0082",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 193000,
+      "available_on": 1775092070,
+      "balance_type": "payments",
+      "created": 1774919270,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 5627,
+      "fee_details": [
+        {
+          "amount": 5627,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0080_0001",
+      "livemode": false,
+      "net": 187373,
+      "object": "balance_transaction",
+      "payout": "po_fx0080",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 120500,
+      "available_on": 1775091470,
+      "balance_type": "payments",
+      "created": 1774918670,
+      "currency": "eur",
+      "description": "Payment 2",
+      "exchange_rate": null,
+      "fee": 3525,
+      "fee_details": [
+        {
+          "amount": 3525,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0080_0002",
+      "livemode": false,
+      "net": 116975,
+      "object": "balance_transaction",
+      "payout": "po_fx0080",
+      "reporting_category": "charge",
+      "source": "ch_fx0002",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 48200,
+      "available_on": 1774601691,
+      "balance_type": "payments",
+      "created": 1774428891,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 1428,
+      "fee_details": [
+        {
+          "amount": 1428,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0079_0001",
+      "livemode": false,
+      "net": 46772,
+      "object": "balance_transaction",
+      "payout": "po_fx0079",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 181700,
+      "available_on": 1773620935,
+      "balance_type": "payments",
+      "created": 1773448135,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 5299,
+      "fee_details": [
+        {
+          "amount": 5299,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0077_0001",
+      "livemode": false,
+      "net": 176401,
+      "object": "balance_transaction",
+      "payout": "po_fx0077",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 25700,
+      "available_on": 1773620335,
+      "balance_type": "payments",
+      "created": 1773447535,
+      "currency": "eur",
+      "description": "Payment 2",
+      "exchange_rate": null,
+      "fee": 775,
+      "fee_details": [
+        {
+          "amount": 775,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0077_0002",
+      "livemode": false,
+      "net": 24925,
+      "object": "balance_transaction",
+      "payout": "po_fx0077",
+      "reporting_category": "charge",
+      "source": "ch_fx0002",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 99800,
+      "available_on": 1773130556,
+      "balance_type": "payments",
+      "created": 1772957756,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 2924,
+      "fee_details": [
+        {
+          "amount": 2924,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0076_0001",
+      "livemode": false,
+      "net": 96876,
+      "object": "balance_transaction",
+      "payout": "po_fx0076",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 105000,
+      "available_on": 1772149800,
+      "balance_type": "payments",
+      "created": 1771977000,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 3075,
+      "fee_details": [
+        {
+          "amount": 3075,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0074_0001",
+      "livemode": false,
+      "net": 101925,
+      "object": "balance_transaction",
+      "payout": "po_fx0074",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 155800,
+      "available_on": 1772149200,
+      "balance_type": "payments",
+      "created": 1771976400,
+      "currency": "eur",
+      "description": "Payment 2",
+      "exchange_rate": null,
+      "fee": 4548,
+      "fee_details": [
+        {
+          "amount": 4548,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0074_0002",
+      "livemode": false,
+      "net": 151252,
+      "object": "balance_transaction",
+      "payout": "po_fx0074",
+      "reporting_category": "charge",
+      "source": "ch_fx0002",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 107500,
+      "available_on": 1771659421,
+      "balance_type": "payments",
+      "created": 1771486621,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 3148,
+      "fee_details": [
+        {
+          "amount": 3148,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0073_0001",
+      "livemode": false,
+      "net": 104352,
+      "object": "balance_transaction",
+      "payout": "po_fx0073",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 135700,
+      "available_on": 1770678664,
+      "balance_type": "payments",
+      "created": 1770505864,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 3965,
+      "fee_details": [
+        {
+          "amount": 3965,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0071_0001",
+      "livemode": false,
+      "net": 131735,
+      "object": "balance_transaction",
+      "payout": "po_fx0071",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 16600,
+      "available_on": 1770678064,
+      "balance_type": "payments",
+      "created": 1770505264,
+      "currency": "eur",
+      "description": "Payment 2",
+      "exchange_rate": null,
+      "fee": 511,
+      "fee_details": [
+        {
+          "amount": 511,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0071_0002",
+      "livemode": false,
+      "net": 16089,
+      "object": "balance_transaction",
+      "payout": "po_fx0071",
+      "reporting_category": "charge",
+      "source": "ch_fx0002",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 169800,
+      "available_on": 1770188286,
+      "balance_type": "payments",
+      "created": 1770015486,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 4954,
+      "fee_details": [
+        {
+          "amount": 4954,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0070_0001",
+      "livemode": false,
+      "net": 164846,
+      "object": "balance_transaction",
+      "payout": "po_fx0070",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 86900,
+      "available_on": 1769207529,
+      "balance_type": "payments",
+      "created": 1769034729,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 2550,
+      "fee_details": [
+        {
+          "amount": 2550,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0068_0001",
+      "livemode": false,
+      "net": 84350,
+      "object": "balance_transaction",
+      "payout": "po_fx0068",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 111300,
+      "available_on": 1769206929,
+      "balance_type": "payments",
+      "created": 1769034129,
+      "currency": "eur",
+      "description": "Payment 2",
+      "exchange_rate": null,
+      "fee": 3258,
+      "fee_details": [
+        {
+          "amount": 3258,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0068_0002",
+      "livemode": false,
+      "net": 108042,
+      "object": "balance_transaction",
+      "payout": "po_fx0068",
+      "reporting_category": "charge",
+      "source": "ch_fx0002",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 17700,
+      "available_on": 1768717151,
+      "balance_type": "payments",
+      "created": 1768544351,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 543,
+      "fee_details": [
+        {
+          "amount": 543,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0067_0001",
+      "livemode": false,
+      "net": 17157,
+      "object": "balance_transaction",
+      "payout": "po_fx0067",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 145400,
+      "available_on": 1767736394,
+      "balance_type": "payments",
+      "created": 1767563594,
+      "currency": "eur",
+      "description": "Payment 1",
+      "exchange_rate": null,
+      "fee": 4247,
+      "fee_details": [
+        {
+          "amount": 4247,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0065_0001",
+      "livemode": false,
+      "net": 141153,
+      "object": "balance_transaction",
+      "payout": "po_fx0065",
+      "reporting_category": "charge",
+      "source": "ch_fx0001",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "amount": 174000,
+      "available_on": 1767735794,
+      "balance_type": "payments",
+      "created": 1767562994,
+      "currency": "eur",
+      "description": "Payment 2",
+      "exchange_rate": null,
+      "fee": 5076,
+      "fee_details": [
+        {
+          "amount": 5076,
+          "application": null,
+          "currency": "eur",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "id": "txn_fxp0065_0002",
+      "livemode": false,
+      "net": 168924,
+      "object": "balance_transaction",
+      "payout": "po_fx0065",
+      "reporting_category": "charge",
+      "source": "ch_fx0002",
+      "status": "available",
+      "type": "charge"
+    }
+  ]
+}

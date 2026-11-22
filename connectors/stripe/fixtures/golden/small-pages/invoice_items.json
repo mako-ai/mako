@@ -1,0 +1,38 @@
+{
+  "chunks": [
+    {
+      "cursor": "ii_fx0011",
+      "hasMore": true
+    },
+    {
+      "cursor": "ii_fx0009",
+      "hasMore": true
+    },
+    {
+      "cursor": "ii_fx0007",
+      "hasMore": true
+    },
+    {
+      "cursor": "ii_fx0005",
+      "hasMore": true
+    },
+    {
+      "cursor": "ii_fx0003",
+      "hasMore": true
+    },
+    {
+      "cursor": "ii_fx0003",
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/invoiceitems?limit=2 (Stripe-Version 2023-10-16)",
+    "GET /v1/invoiceitems?limit=2&starting_after=ii_fx0011 (Stripe-Version 2023-10-16)",
+    "GET /v1/invoiceitems?limit=2&starting_after=ii_fx0009 (Stripe-Version 2023-10-16)",
+    "GET /v1/invoiceitems?limit=2&starting_after=ii_fx0007 (Stripe-Version 2023-10-16)",
+    "GET /v1/invoiceitems?limit=2&starting_after=ii_fx0005 (Stripe-Version 2023-10-16)",
+    "GET /v1/invoiceitems?limit=2&starting_after=ii_fx0003 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 12,
+  "rowsSha256": "c0b53ee6ca3e43e8d310af7273d9ec4dd75c953cff8d25cb4127dabb99a7cdb9"
+}

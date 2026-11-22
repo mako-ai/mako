@@ -1,0 +1,896 @@
+{
+  "requests": [
+    "GET /v1/charges?created[gte]=1767225600&limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "amount": 116400,
+      "amount_captured": 116400,
+      "amount_refunded": 0,
+      "application_fee_amount": null,
+      "balance_transaction": "txn_fx0030",
+      "billing_details": {
+        "address": {
+          "city": "Warszawa",
+          "country": "IT",
+          "line1": "30 Fixture Street",
+          "line2": null,
+          "postal_code": "1030",
+          "state": null
+        },
+        "email": "customer30@example.test",
+        "name": "Fixture Customer 30",
+        "phone": null
+      },
+      "calculated_statement_descriptor": "REALFIXTURE",
+      "captured": true,
+      "created": 1788365729,
+      "currency": "pln",
+      "customer": "cus_fx0030",
+      "description": "Subscription payment 30",
+      "disputed": false,
+      "failure_code": null,
+      "failure_message": null,
+      "fraud_details": {},
+      "id": "ch_fx0030",
+      "invoice": "in_fx0030",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "charge",
+      "outcome": {
+        "network_status": "approved_by_network",
+        "reason": null,
+        "risk_level": "normal",
+        "seller_message": "Payment complete.",
+        "type": "authorized"
+      },
+      "paid": true,
+      "payment_intent": "pi_fx0030",
+      "payment_method": "pm_fx0030",
+      "payment_method_details": {
+        "card": {
+          "brand": "visa",
+          "country": "CH",
+          "last4": "4242"
+        },
+        "type": "card"
+      },
+      "receipt_email": null,
+      "receipt_number": null,
+      "receipt_url": "https://pay.stripe.test/receipts/ch_fx0030",
+      "refunded": false,
+      "refunds": {
+        "data": [],
+        "has_more": false,
+        "object": "list",
+        "total_count": 0,
+        "url": "/v1/charges/ch_fx0030/refunds"
+      },
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 168500,
+      "amount_captured": 168500,
+      "amount_refunded": 0,
+      "application_fee_amount": null,
+      "balance_transaction": "txn_fx0029",
+      "billing_details": {
+        "address": {
+          "city": "Paris",
+          "country": "PL",
+          "line1": "29 Fixture Street",
+          "line2": null,
+          "postal_code": "1029",
+          "state": null
+        },
+        "email": "customer29@example.test",
+        "name": "Fixture Customer 29",
+        "phone": null
+      },
+      "calculated_statement_descriptor": "REALFIXTURE",
+      "captured": true,
+      "created": 1786609858,
+      "currency": "eur",
+      "customer": "cus_fx0029",
+      "description": "Subscription payment 29",
+      "disputed": false,
+      "failure_code": null,
+      "failure_message": null,
+      "fraud_details": {},
+      "id": "ch_fx0029",
+      "invoice": "in_fx0029",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "charge",
+      "outcome": {
+        "network_status": "approved_by_network",
+        "reason": null,
+        "risk_level": "normal",
+        "seller_message": "Payment complete.",
+        "type": "authorized"
+      },
+      "paid": true,
+      "payment_intent": "pi_fx0029",
+      "payment_method": "pm_fx0029",
+      "payment_method_details": {
+        "card": {
+          "brand": "visa",
+          "country": "CH",
+          "last4": "4242"
+        },
+        "type": "card"
+      },
+      "receipt_email": null,
+      "receipt_number": null,
+      "receipt_url": "https://pay.stripe.test/receipts/ch_fx0029",
+      "refunded": false,
+      "refunds": {
+        "data": [],
+        "has_more": false,
+        "object": "list",
+        "total_count": 0,
+        "url": "/v1/charges/ch_fx0029/refunds"
+      },
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 146100,
+      "amount_captured": 146100,
+      "amount_refunded": 0,
+      "application_fee_amount": null,
+      "balance_transaction": "txn_fx0028",
+      "billing_details": {
+        "address": {
+          "city": "Madrid",
+          "country": "FR",
+          "line1": "28 Fixture Street",
+          "line2": null,
+          "postal_code": "1028",
+          "state": null
+        },
+        "email": "customer28@example.test",
+        "name": "Fixture Customer 28",
+        "phone": null
+      },
+      "calculated_statement_descriptor": "REALFIXTURE",
+      "captured": true,
+      "created": 1784853987,
+      "currency": "eur",
+      "customer": "cus_fx0028",
+      "description": "Subscription payment 28",
+      "disputed": false,
+      "failure_code": null,
+      "failure_message": null,
+      "fraud_details": {},
+      "id": "ch_fx0028",
+      "invoice": "in_fx0028",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "charge",
+      "outcome": {
+        "network_status": "approved_by_network",
+        "reason": null,
+        "risk_level": "normal",
+        "seller_message": "Payment complete.",
+        "type": "authorized"
+      },
+      "paid": true,
+      "payment_intent": "pi_fx0028",
+      "payment_method": "pm_fx0028",
+      "payment_method_details": {
+        "card": {
+          "brand": "visa",
+          "country": "CH",
+          "last4": "4242"
+        },
+        "type": "card"
+      },
+      "receipt_email": null,
+      "receipt_number": null,
+      "receipt_url": "https://pay.stripe.test/receipts/ch_fx0028",
+      "refunded": false,
+      "refunds": {
+        "data": [],
+        "has_more": false,
+        "object": "list",
+        "total_count": 0,
+        "url": "/v1/charges/ch_fx0028/refunds"
+      },
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 32700,
+      "amount_captured": 32700,
+      "amount_refunded": 0,
+      "application_fee_amount": null,
+      "balance_transaction": "txn_fx0027",
+      "billing_details": {
+        "address": {
+          "city": "Madrid",
+          "country": "ES",
+          "line1": "27 Fixture Street",
+          "line2": null,
+          "postal_code": "1027",
+          "state": null
+        },
+        "email": "customer27@example.test",
+        "name": "Fixture Customer 27",
+        "phone": null
+      },
+      "calculated_statement_descriptor": "REALFIXTURE",
+      "captured": true,
+      "created": 1783098116,
+      "currency": "eur",
+      "customer": "cus_fx0027",
+      "description": "Subscription payment 27",
+      "disputed": false,
+      "failure_code": null,
+      "failure_message": null,
+      "fraud_details": {},
+      "id": "ch_fx0027",
+      "invoice": "in_fx0027",
+      "livemode": false,
+      "metadata": {},
+      "object": "charge",
+      "outcome": {
+        "network_status": "approved_by_network",
+        "reason": null,
+        "risk_level": "normal",
+        "seller_message": "Payment complete.",
+        "type": "authorized"
+      },
+      "paid": true,
+      "payment_intent": "pi_fx0027",
+      "payment_method": "pm_fx0027",
+      "payment_method_details": {
+        "card": {
+          "brand": "visa",
+          "country": "CH",
+          "last4": "4242"
+        },
+        "type": "card"
+      },
+      "receipt_email": null,
+      "receipt_number": null,
+      "receipt_url": "https://pay.stripe.test/receipts/ch_fx0027",
+      "refunded": false,
+      "refunds": {
+        "data": [],
+        "has_more": false,
+        "object": "list",
+        "total_count": 0,
+        "url": "/v1/charges/ch_fx0027/refunds"
+      },
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 139100,
+      "amount_captured": 139100,
+      "amount_refunded": 0,
+      "application_fee_amount": null,
+      "balance_transaction": "txn_fx0026",
+      "billing_details": {
+        "address": {
+          "city": "Madrid",
+          "country": "ES",
+          "line1": "26 Fixture Street",
+          "line2": null,
+          "postal_code": "1026",
+          "state": null
+        },
+        "email": "customer26@example.test",
+        "name": "Fixture Customer 26",
+        "phone": null
+      },
+      "calculated_statement_descriptor": "REALFIXTURE",
+      "captured": true,
+      "created": 1781342245,
+      "currency": "eur",
+      "customer": "cus_fx0026",
+      "description": "Subscription payment 26",
+      "disputed": false,
+      "failure_code": "card_declined",
+      "failure_message": "Your card was declined.",
+      "fraud_details": {},
+      "id": "ch_fx0026",
+      "invoice": "in_fx0026",
+      "livemode": false,
+      "metadata": {},
+      "object": "charge",
+      "outcome": {
+        "network_status": "approved_by_network",
+        "reason": null,
+        "risk_level": "normal",
+        "seller_message": "Payment complete.",
+        "type": "authorized"
+      },
+      "paid": false,
+      "payment_intent": "pi_fx0026",
+      "payment_method": "pm_fx0026",
+      "payment_method_details": {
+        "card": {
+          "brand": "visa",
+          "country": "CH",
+          "last4": "4242"
+        },
+        "type": "card"
+      },
+      "receipt_email": null,
+      "receipt_number": null,
+      "receipt_url": "https://pay.stripe.test/receipts/ch_fx0026",
+      "refunded": false,
+      "refunds": {
+        "data": [],
+        "has_more": false,
+        "object": "list",
+        "total_count": 0,
+        "url": "/v1/charges/ch_fx0026/refunds"
+      },
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "failed"
+    },
+    {
+      "amount": 25000,
+      "amount_captured": 25000,
+      "amount_refunded": 0,
+      "application_fee_amount": null,
+      "balance_transaction": "txn_fx0025",
+      "billing_details": {
+        "address": {
+          "city": "Madrid",
+          "country": "ES",
+          "line1": "25 Fixture Street",
+          "line2": null,
+          "postal_code": "1025",
+          "state": null
+        },
+        "email": "customer25@example.test",
+        "name": "Fixture Customer 25",
+        "phone": null
+      },
+      "calculated_statement_descriptor": "REALFIXTURE",
+      "captured": true,
+      "created": 1779586374,
+      "currency": "eur",
+      "customer": "cus_fx0025",
+      "description": "Subscription payment 25",
+      "disputed": false,
+      "failure_code": null,
+      "failure_message": null,
+      "fraud_details": {},
+      "id": "ch_fx0025",
+      "invoice": "in_fx0025",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "charge",
+      "outcome": {
+        "network_status": "approved_by_network",
+        "reason": null,
+        "risk_level": "normal",
+        "seller_message": "Payment complete.",
+        "type": "authorized"
+      },
+      "paid": true,
+      "payment_intent": "pi_fx0025",
+      "payment_method": "pm_fx0025",
+      "payment_method_details": {
+        "card": {
+          "brand": "visa",
+          "country": "CH",
+          "last4": "4242"
+        },
+        "type": "card"
+      },
+      "receipt_email": null,
+      "receipt_number": null,
+      "receipt_url": "https://pay.stripe.test/receipts/ch_fx0025",
+      "refunded": false,
+      "refunds": {
+        "data": [],
+        "has_more": false,
+        "object": "list",
+        "total_count": 0,
+        "url": "/v1/charges/ch_fx0025/refunds"
+      },
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 59800,
+      "amount_captured": 59800,
+      "amount_refunded": 0,
+      "application_fee_amount": null,
+      "balance_transaction": "txn_fx0024",
+      "billing_details": {
+        "address": {
+          "city": "Paris",
+          "country": "ES",
+          "line1": "24 Fixture Street",
+          "line2": null,
+          "postal_code": "1024",
+          "state": null
+        },
+        "email": "customer24@example.test",
+        "name": "Fixture Customer 24",
+        "phone": null
+      },
+      "calculated_statement_descriptor": "REALFIXTURE",
+      "captured": true,
+      "created": 1777830503,
+      "currency": "eur",
+      "customer": "cus_fx0024",
+      "description": "Subscription payment 24",
+      "disputed": false,
+      "failure_code": null,
+      "failure_message": null,
+      "fraud_details": {},
+      "id": "ch_fx0024",
+      "invoice": "in_fx0024",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "charge",
+      "outcome": {
+        "network_status": "approved_by_network",
+        "reason": null,
+        "risk_level": "normal",
+        "seller_message": "Payment complete.",
+        "type": "authorized"
+      },
+      "paid": true,
+      "payment_intent": "pi_fx0024",
+      "payment_method": "pm_fx0024",
+      "payment_method_details": {
+        "card": {
+          "brand": "visa",
+          "country": "CH",
+          "last4": "4242"
+        },
+        "type": "card"
+      },
+      "receipt_email": null,
+      "receipt_number": null,
+      "receipt_url": "https://pay.stripe.test/receipts/ch_fx0024",
+      "refunded": false,
+      "refunds": {
+        "data": [],
+        "has_more": false,
+        "object": "list",
+        "total_count": 0,
+        "url": "/v1/charges/ch_fx0024/refunds"
+      },
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 12000,
+      "amount_captured": 12000,
+      "amount_refunded": 0,
+      "application_fee_amount": null,
+      "balance_transaction": "txn_fx0023",
+      "billing_details": {
+        "address": {
+          "city": "Lausanne",
+          "country": "FR",
+          "line1": "23 Fixture Street",
+          "line2": null,
+          "postal_code": "1023",
+          "state": null
+        },
+        "email": "customer23@example.test",
+        "name": "Fixture Customer 23",
+        "phone": null
+      },
+      "calculated_statement_descriptor": "REALFIXTURE",
+      "captured": true,
+      "created": 1776074632,
+      "currency": "pln",
+      "customer": "cus_fx0023",
+      "description": "Subscription payment 23",
+      "disputed": false,
+      "failure_code": null,
+      "failure_message": null,
+      "fraud_details": {},
+      "id": "ch_fx0023",
+      "invoice": "in_fx0023",
+      "livemode": false,
+      "metadata": {},
+      "object": "charge",
+      "outcome": {
+        "network_status": "approved_by_network",
+        "reason": null,
+        "risk_level": "normal",
+        "seller_message": "Payment complete.",
+        "type": "authorized"
+      },
+      "paid": true,
+      "payment_intent": "pi_fx0023",
+      "payment_method": "pm_fx0023",
+      "payment_method_details": {
+        "card": {
+          "brand": "visa",
+          "country": "CH",
+          "last4": "4242"
+        },
+        "type": "card"
+      },
+      "receipt_email": null,
+      "receipt_number": null,
+      "receipt_url": "https://pay.stripe.test/receipts/ch_fx0023",
+      "refunded": false,
+      "refunds": {
+        "data": [],
+        "has_more": false,
+        "object": "list",
+        "total_count": 0,
+        "url": "/v1/charges/ch_fx0023/refunds"
+      },
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 23900,
+      "amount_captured": 23900,
+      "amount_refunded": 23900,
+      "application_fee_amount": null,
+      "balance_transaction": "txn_fx0022",
+      "billing_details": {
+        "address": {
+          "city": "Milano",
+          "country": "CH",
+          "line1": "22 Fixture Street",
+          "line2": null,
+          "postal_code": "1022",
+          "state": null
+        },
+        "email": "customer22@example.test",
+        "name": "Fixture Customer 22",
+        "phone": null
+      },
+      "calculated_statement_descriptor": "REALFIXTURE",
+      "captured": true,
+      "created": 1774318761,
+      "currency": "eur",
+      "customer": "cus_fx0022",
+      "description": "Subscription payment 22",
+      "disputed": false,
+      "failure_code": null,
+      "failure_message": null,
+      "fraud_details": {},
+      "id": "ch_fx0022",
+      "invoice": "in_fx0022",
+      "livemode": false,
+      "metadata": {},
+      "object": "charge",
+      "outcome": {
+        "network_status": "approved_by_network",
+        "reason": null,
+        "risk_level": "normal",
+        "seller_message": "Payment complete.",
+        "type": "authorized"
+      },
+      "paid": true,
+      "payment_intent": "pi_fx0022",
+      "payment_method": "pm_fx0022",
+      "payment_method_details": {
+        "card": {
+          "brand": "visa",
+          "country": "CH",
+          "last4": "4242"
+        },
+        "type": "card"
+      },
+      "receipt_email": null,
+      "receipt_number": null,
+      "receipt_url": "https://pay.stripe.test/receipts/ch_fx0022",
+      "refunded": true,
+      "refunds": {
+        "data": [],
+        "has_more": false,
+        "object": "list",
+        "total_count": 0,
+        "url": "/v1/charges/ch_fx0022/refunds"
+      },
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 17600,
+      "amount_captured": 17600,
+      "amount_refunded": 0,
+      "application_fee_amount": null,
+      "balance_transaction": "txn_fx0021",
+      "billing_details": {
+        "address": {
+          "city": "Madrid",
+          "country": "IT",
+          "line1": "21 Fixture Street",
+          "line2": null,
+          "postal_code": "1021",
+          "state": null
+        },
+        "email": "customer21@example.test",
+        "name": "Fixture Customer 21",
+        "phone": null
+      },
+      "calculated_statement_descriptor": "REALFIXTURE",
+      "captured": true,
+      "created": 1772562890,
+      "currency": "eur",
+      "customer": "cus_fx0021",
+      "description": "Subscription payment 21",
+      "disputed": false,
+      "failure_code": null,
+      "failure_message": null,
+      "fraud_details": {},
+      "id": "ch_fx0021",
+      "invoice": "in_fx0021",
+      "livemode": false,
+      "metadata": {},
+      "object": "charge",
+      "outcome": {
+        "network_status": "approved_by_network",
+        "reason": null,
+        "risk_level": "normal",
+        "seller_message": "Payment complete.",
+        "type": "authorized"
+      },
+      "paid": true,
+      "payment_intent": "pi_fx0021",
+      "payment_method": "pm_fx0021",
+      "payment_method_details": {
+        "card": {
+          "brand": "visa",
+          "country": "CH",
+          "last4": "4242"
+        },
+        "type": "card"
+      },
+      "receipt_email": null,
+      "receipt_number": null,
+      "receipt_url": "https://pay.stripe.test/receipts/ch_fx0021",
+      "refunded": false,
+      "refunds": {
+        "data": [],
+        "has_more": false,
+        "object": "list",
+        "total_count": 0,
+        "url": "/v1/charges/ch_fx0021/refunds"
+      },
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 75500,
+      "amount_captured": 75500,
+      "amount_refunded": 0,
+      "application_fee_amount": null,
+      "balance_transaction": "txn_fx0020",
+      "billing_details": {
+        "address": {
+          "city": "Milano",
+          "country": "ES",
+          "line1": "20 Fixture Street",
+          "line2": null,
+          "postal_code": "1020",
+          "state": null
+        },
+        "email": "customer20@example.test",
+        "name": "Fixture Customer 20",
+        "phone": null
+      },
+      "calculated_statement_descriptor": "REALFIXTURE",
+      "captured": true,
+      "created": 1770807019,
+      "currency": "chf",
+      "customer": "cus_fx0020",
+      "description": "Subscription payment 20",
+      "disputed": false,
+      "failure_code": null,
+      "failure_message": null,
+      "fraud_details": {},
+      "id": "ch_fx0020",
+      "invoice": "in_fx0020",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "charge",
+      "outcome": {
+        "network_status": "approved_by_network",
+        "reason": null,
+        "risk_level": "normal",
+        "seller_message": "Payment complete.",
+        "type": "authorized"
+      },
+      "paid": true,
+      "payment_intent": "pi_fx0020",
+      "payment_method": "pm_fx0020",
+      "payment_method_details": {
+        "card": {
+          "brand": "visa",
+          "country": "CH",
+          "last4": "4242"
+        },
+        "type": "card"
+      },
+      "receipt_email": null,
+      "receipt_number": null,
+      "receipt_url": "https://pay.stripe.test/receipts/ch_fx0020",
+      "refunded": false,
+      "refunds": {
+        "data": [],
+        "has_more": false,
+        "object": "list",
+        "total_count": 0,
+        "url": "/v1/charges/ch_fx0020/refunds"
+      },
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 52200,
+      "amount_captured": 52200,
+      "amount_refunded": 0,
+      "application_fee_amount": null,
+      "balance_transaction": "txn_fx0019",
+      "billing_details": {
+        "address": {
+          "city": "Lausanne",
+          "country": "IT",
+          "line1": "19 Fixture Street",
+          "line2": null,
+          "postal_code": "1019",
+          "state": null
+        },
+        "email": "customer19@example.test",
+        "name": "Fixture Customer 19",
+        "phone": null
+      },
+      "calculated_statement_descriptor": "REALFIXTURE",
+      "captured": true,
+      "created": 1769051148,
+      "currency": "chf",
+      "customer": "cus_fx0019",
+      "description": "Subscription payment 19",
+      "disputed": false,
+      "failure_code": null,
+      "failure_message": null,
+      "fraud_details": {},
+      "id": "ch_fx0019",
+      "invoice": "in_fx0019",
+      "livemode": false,
+      "metadata": {},
+      "object": "charge",
+      "outcome": {
+        "network_status": "approved_by_network",
+        "reason": null,
+        "risk_level": "normal",
+        "seller_message": "Payment complete.",
+        "type": "authorized"
+      },
+      "paid": true,
+      "payment_intent": "pi_fx0019",
+      "payment_method": "pm_fx0019",
+      "payment_method_details": {
+        "card": {
+          "brand": "visa",
+          "country": "CH",
+          "last4": "4242"
+        },
+        "type": "card"
+      },
+      "receipt_email": null,
+      "receipt_number": null,
+      "receipt_url": "https://pay.stripe.test/receipts/ch_fx0019",
+      "refunded": false,
+      "refunds": {
+        "data": [],
+        "has_more": false,
+        "object": "list",
+        "total_count": 0,
+        "url": "/v1/charges/ch_fx0019/refunds"
+      },
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 5200,
+      "amount_captured": 5200,
+      "amount_refunded": 0,
+      "application_fee_amount": null,
+      "balance_transaction": "txn_fx0018",
+      "billing_details": {
+        "address": {
+          "city": "Paris",
+          "country": "CH",
+          "line1": "18 Fixture Street",
+          "line2": null,
+          "postal_code": "1018",
+          "state": null
+        },
+        "email": "customer18@example.test",
+        "name": "Fixture Customer 18",
+        "phone": null
+      },
+      "calculated_statement_descriptor": "REALFIXTURE",
+      "captured": true,
+      "created": 1767295277,
+      "currency": "chf",
+      "customer": "cus_fx0018",
+      "description": "Subscription payment 18",
+      "disputed": false,
+      "failure_code": null,
+      "failure_message": null,
+      "fraud_details": {},
+      "id": "ch_fx0018",
+      "invoice": "in_fx0018",
+      "livemode": false,
+      "metadata": {},
+      "object": "charge",
+      "outcome": {
+        "network_status": "approved_by_network",
+        "reason": null,
+        "risk_level": "normal",
+        "seller_message": "Payment complete.",
+        "type": "authorized"
+      },
+      "paid": true,
+      "payment_intent": "pi_fx0018",
+      "payment_method": "pm_fx0018",
+      "payment_method_details": {
+        "card": {
+          "brand": "visa",
+          "country": "CH",
+          "last4": "4242"
+        },
+        "type": "card"
+      },
+      "receipt_email": null,
+      "receipt_number": null,
+      "receipt_url": "https://pay.stripe.test/receipts/ch_fx0018",
+      "refunded": false,
+      "refunds": {
+        "data": [],
+        "has_more": false,
+        "object": "list",
+        "total_count": 0,
+        "url": "/v1/charges/ch_fx0018/refunds"
+      },
+      "shipping": null,
+      "statement_descriptor": null,
+      "status": "succeeded"
+    }
+  ]
+}

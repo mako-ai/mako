@@ -3,17 +3,17 @@
  * test-mode (`livemode: false`) dataset in Stripe's 2023-10-16 object shapes.
  *
  * No Stripe test key is configured for this repository, so nothing here came
- * from a real account. The shapes follow the in-process connector's unit-test
- * fixtures (`api/src/connectors/stripe/connector.test.ts`) and Stripe's API
+ * from a real account. The shapes follow the unit-test fixtures of the
+ * in-process connector this folder was ported from (deleted) and Stripe's API
  * reference. Every id is synthetic; there is no secret to redact.
  *
- * Sizes are chosen to exercise what breaks parity: two pages (customers,
+ * Sizes are chosen to exercise what breaks a read: two pages (customers,
  * payouts), a page of exactly 100 (payment_intents), an empty list
  * (setup_intents), child lists longer than one page (a payout and a customer
  * with 101 each), and canceled subscriptions that Stripe hides unless asked
  * for `status=all`.
  *
- * Only `parity.mjs --record` reads this file.
+ * Only `golden.mjs --record` reads this file.
  */
 
 // 2025-01-01T00:00:00Z. Objects are spread over the following 21 months.

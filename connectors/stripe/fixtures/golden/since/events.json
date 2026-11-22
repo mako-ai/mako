@@ -1,0 +1,1032 @@
+{
+  "requests": [
+    "GET /v1/events?created[gte]=1767225600&limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "api_version": "2023-10-16",
+      "created": 1789671748,
+      "data": {
+        "object": {
+          "id": "obj_fx0120",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0120",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 0,
+      "request": {
+        "id": "req_fx0120",
+        "idempotency_key": null
+      },
+      "type": "invoice.paid"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1789221897,
+      "data": {
+        "object": {
+          "id": "obj_fx0119",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0119",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 2,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "charge.succeeded"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1788772046,
+      "data": {
+        "object": {
+          "id": "obj_fx0118",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0118",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 1,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "customer.updated"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1788322195,
+      "data": {
+        "object": {
+          "id": "obj_fx0117",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0117",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 0,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "invoice.paid"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1787872343,
+      "data": {
+        "object": {
+          "id": "obj_fx0116",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0116",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 2,
+      "request": {
+        "id": "req_fx0116",
+        "idempotency_key": null
+      },
+      "type": "charge.succeeded"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1787422492,
+      "data": {
+        "object": {
+          "id": "obj_fx0115",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0115",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 1,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "customer.updated"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1786972641,
+      "data": {
+        "object": {
+          "id": "obj_fx0114",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0114",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 0,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "invoice.paid"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1786522790,
+      "data": {
+        "object": {
+          "id": "obj_fx0113",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0113",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 2,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "charge.succeeded"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1786072938,
+      "data": {
+        "object": {
+          "id": "obj_fx0112",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0112",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 1,
+      "request": {
+        "id": "req_fx0112",
+        "idempotency_key": null
+      },
+      "type": "customer.updated"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1785623087,
+      "data": {
+        "object": {
+          "id": "obj_fx0111",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0111",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 0,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "invoice.paid"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1785173236,
+      "data": {
+        "object": {
+          "id": "obj_fx0110",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0110",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 2,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "charge.succeeded"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1784723385,
+      "data": {
+        "object": {
+          "id": "obj_fx0109",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0109",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 1,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "customer.updated"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1784273533,
+      "data": {
+        "object": {
+          "id": "obj_fx0108",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0108",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 0,
+      "request": {
+        "id": "req_fx0108",
+        "idempotency_key": null
+      },
+      "type": "invoice.paid"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1783823682,
+      "data": {
+        "object": {
+          "id": "obj_fx0107",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0107",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 2,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "charge.succeeded"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1783373831,
+      "data": {
+        "object": {
+          "id": "obj_fx0106",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0106",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 1,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "customer.updated"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1782923980,
+      "data": {
+        "object": {
+          "id": "obj_fx0105",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0105",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 0,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "invoice.paid"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1782474128,
+      "data": {
+        "object": {
+          "id": "obj_fx0104",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0104",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 2,
+      "request": {
+        "id": "req_fx0104",
+        "idempotency_key": null
+      },
+      "type": "charge.succeeded"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1782024277,
+      "data": {
+        "object": {
+          "id": "obj_fx0103",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0103",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 1,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "customer.updated"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1781574426,
+      "data": {
+        "object": {
+          "id": "obj_fx0102",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0102",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 0,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "invoice.paid"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1781124575,
+      "data": {
+        "object": {
+          "id": "obj_fx0101",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0101",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 2,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "charge.succeeded"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1780674723,
+      "data": {
+        "object": {
+          "id": "obj_fx0100",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0100",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 1,
+      "request": {
+        "id": "req_fx0100",
+        "idempotency_key": null
+      },
+      "type": "customer.updated"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1780224872,
+      "data": {
+        "object": {
+          "id": "obj_fx0099",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0099",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 0,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "invoice.paid"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1779775021,
+      "data": {
+        "object": {
+          "id": "obj_fx0098",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0098",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 2,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "charge.succeeded"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1779325170,
+      "data": {
+        "object": {
+          "id": "obj_fx0097",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0097",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 1,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "customer.updated"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1778875319,
+      "data": {
+        "object": {
+          "id": "obj_fx0096",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0096",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 0,
+      "request": {
+        "id": "req_fx0096",
+        "idempotency_key": null
+      },
+      "type": "invoice.paid"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1778425467,
+      "data": {
+        "object": {
+          "id": "obj_fx0095",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0095",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 2,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "charge.succeeded"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1777975616,
+      "data": {
+        "object": {
+          "id": "obj_fx0094",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0094",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 1,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "customer.updated"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1777525765,
+      "data": {
+        "object": {
+          "id": "obj_fx0093",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0093",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 0,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "invoice.paid"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1777075914,
+      "data": {
+        "object": {
+          "id": "obj_fx0092",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0092",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 2,
+      "request": {
+        "id": "req_fx0092",
+        "idempotency_key": null
+      },
+      "type": "charge.succeeded"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1776626062,
+      "data": {
+        "object": {
+          "id": "obj_fx0091",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0091",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 1,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "customer.updated"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1776176211,
+      "data": {
+        "object": {
+          "id": "obj_fx0090",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0090",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 0,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "invoice.paid"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1775726360,
+      "data": {
+        "object": {
+          "id": "obj_fx0089",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0089",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 2,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "charge.succeeded"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1775276509,
+      "data": {
+        "object": {
+          "id": "obj_fx0088",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0088",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 1,
+      "request": {
+        "id": "req_fx0088",
+        "idempotency_key": null
+      },
+      "type": "customer.updated"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1774826657,
+      "data": {
+        "object": {
+          "id": "obj_fx0087",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0087",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 0,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "invoice.paid"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1774376806,
+      "data": {
+        "object": {
+          "id": "obj_fx0086",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0086",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 2,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "charge.succeeded"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1773926955,
+      "data": {
+        "object": {
+          "id": "obj_fx0085",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0085",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 1,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "customer.updated"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1773477104,
+      "data": {
+        "object": {
+          "id": "obj_fx0084",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0084",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 0,
+      "request": {
+        "id": "req_fx0084",
+        "idempotency_key": null
+      },
+      "type": "invoice.paid"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1773027252,
+      "data": {
+        "object": {
+          "id": "obj_fx0083",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0083",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 2,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "charge.succeeded"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1772577401,
+      "data": {
+        "object": {
+          "id": "obj_fx0082",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0082",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 1,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "customer.updated"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1772127550,
+      "data": {
+        "object": {
+          "id": "obj_fx0081",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0081",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 0,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "invoice.paid"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1771677699,
+      "data": {
+        "object": {
+          "id": "obj_fx0080",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0080",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 2,
+      "request": {
+        "id": "req_fx0080",
+        "idempotency_key": null
+      },
+      "type": "charge.succeeded"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1771227847,
+      "data": {
+        "object": {
+          "id": "obj_fx0079",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0079",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 1,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "customer.updated"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1770777996,
+      "data": {
+        "object": {
+          "id": "obj_fx0078",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0078",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 0,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "invoice.paid"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1770328145,
+      "data": {
+        "object": {
+          "id": "obj_fx0077",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0077",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 2,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "charge.succeeded"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1769878294,
+      "data": {
+        "object": {
+          "id": "obj_fx0076",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0076",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 1,
+      "request": {
+        "id": "req_fx0076",
+        "idempotency_key": null
+      },
+      "type": "customer.updated"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1769428442,
+      "data": {
+        "object": {
+          "id": "obj_fx0075",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0075",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 0,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "invoice.paid"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1768978591,
+      "data": {
+        "object": {
+          "id": "obj_fx0074",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0074",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 2,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "charge.succeeded"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1768528740,
+      "data": {
+        "object": {
+          "id": "obj_fx0073",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0073",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 1,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "customer.updated"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1768078889,
+      "data": {
+        "object": {
+          "id": "obj_fx0072",
+          "object": "fixture"
+        },
+        "previous_attributes": {
+          "status": "open"
+        }
+      },
+      "id": "evt_fx0072",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 0,
+      "request": {
+        "id": "req_fx0072",
+        "idempotency_key": null
+      },
+      "type": "invoice.paid"
+    },
+    {
+      "api_version": "2023-10-16",
+      "created": 1767629038,
+      "data": {
+        "object": {
+          "id": "obj_fx0071",
+          "object": "fixture"
+        }
+      },
+      "id": "evt_fx0071",
+      "livemode": false,
+      "object": "event",
+      "pending_webhooks": 2,
+      "request": {
+        "id": null,
+        "idempotency_key": null
+      },
+      "type": "charge.succeeded"
+    }
+  ]
+}

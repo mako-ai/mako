@@ -1,0 +1,12 @@
+{
+  "chunks": [
+    {
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/credit_notes?limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 8,
+  "rowsSha256": "0099d8f1b7b68edb801ae671d6c1c486b0dcbaf0e051f8ac9c79ed024991595a"
+}

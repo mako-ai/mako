@@ -1,0 +1,173 @@
+{
+  "requests": [
+    "GET /v1/invoiceitems?created[gte]=1767225600&limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "amount": 1500,
+      "created": 1785934523,
+      "currency": "eur",
+      "customer": "cus_fx0012",
+      "date": 1785934523,
+      "description": "One-off setup",
+      "discountable": true,
+      "discounts": [],
+      "id": "ii_fx0012",
+      "invoice": "in_fx0012",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "invoiceitem",
+      "period": {
+        "end": 1785934523,
+        "start": 1785934523
+      },
+      "plan": null,
+      "price": {
+        "id": "price_fx0001",
+        "object": "price"
+      },
+      "proration": true,
+      "quantity": 1,
+      "subscription": null,
+      "subscription_item": null,
+      "tax_rates": [],
+      "test_clock": null,
+      "unit_amount": 1500,
+      "unit_amount_decimal": "1500"
+    },
+    {
+      "amount": 1500,
+      "created": 1781747446,
+      "currency": "eur",
+      "customer": "cus_fx0011",
+      "date": 1781747446,
+      "description": "One-off setup",
+      "discountable": true,
+      "discounts": [],
+      "id": "ii_fx0011",
+      "invoice": "in_fx0011",
+      "livemode": false,
+      "metadata": {},
+      "object": "invoiceitem",
+      "period": {
+        "end": 1781747446,
+        "start": 1781747446
+      },
+      "plan": null,
+      "price": {
+        "id": "price_fx0001",
+        "object": "price"
+      },
+      "proration": false,
+      "quantity": 1,
+      "subscription": null,
+      "subscription_item": null,
+      "tax_rates": [],
+      "test_clock": null,
+      "unit_amount": 1500,
+      "unit_amount_decimal": "1500"
+    },
+    {
+      "amount": 1500,
+      "created": 1777560369,
+      "currency": "eur",
+      "customer": "cus_fx0010",
+      "date": 1777560369,
+      "description": "One-off setup",
+      "discountable": true,
+      "discounts": [],
+      "id": "ii_fx0010",
+      "invoice": "in_fx0010",
+      "livemode": false,
+      "metadata": {},
+      "object": "invoiceitem",
+      "period": {
+        "end": 1777560369,
+        "start": 1777560369
+      },
+      "plan": null,
+      "price": {
+        "id": "price_fx0001",
+        "object": "price"
+      },
+      "proration": false,
+      "quantity": 1,
+      "subscription": null,
+      "subscription_item": null,
+      "tax_rates": [],
+      "test_clock": null,
+      "unit_amount": 1500,
+      "unit_amount_decimal": "1500"
+    },
+    {
+      "amount": 1500,
+      "created": 1773373292,
+      "currency": "eur",
+      "customer": "cus_fx0009",
+      "date": 1773373292,
+      "description": "One-off setup",
+      "discountable": true,
+      "discounts": [],
+      "id": "ii_fx0009",
+      "invoice": "in_fx0009",
+      "livemode": false,
+      "metadata": {},
+      "object": "invoiceitem",
+      "period": {
+        "end": 1773373292,
+        "start": 1773373292
+      },
+      "plan": null,
+      "price": {
+        "id": "price_fx0001",
+        "object": "price"
+      },
+      "proration": false,
+      "quantity": 1,
+      "subscription": null,
+      "subscription_item": null,
+      "tax_rates": [],
+      "test_clock": null,
+      "unit_amount": 1500,
+      "unit_amount_decimal": "1500"
+    },
+    {
+      "amount": 1500,
+      "created": 1769186215,
+      "currency": "eur",
+      "customer": "cus_fx0008",
+      "date": 1769186215,
+      "description": "One-off setup",
+      "discountable": true,
+      "discounts": [],
+      "id": "ii_fx0008",
+      "invoice": "in_fx0008",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "invoiceitem",
+      "period": {
+        "end": 1769186215,
+        "start": 1769186215
+      },
+      "plan": null,
+      "price": {
+        "id": "price_fx0001",
+        "object": "price"
+      },
+      "proration": true,
+      "quantity": 1,
+      "subscription": null,
+      "subscription_item": null,
+      "tax_rates": [],
+      "test_clock": null,
+      "unit_amount": 1500,
+      "unit_amount_decimal": "1500"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "chunks": [
+    {
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/products?limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 6,
+  "rowsSha256": "7135e43294251bf450faaaefb9b56e4d654fe398344106092d1f85f822aae5a7"
+}

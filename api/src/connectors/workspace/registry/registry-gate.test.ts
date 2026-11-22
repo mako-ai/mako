@@ -17,7 +17,7 @@
  * what the workspace-connector suites already use.
  *
  * Stripe itself is the replay server over the recorded cassettes in
- * connectors/stripe/fixtures, the same one the parity test uses.
+ * connectors/stripe/fixtures, the same one the golden test uses.
  */
 import fs from "node:fs/promises";
 import os from "node:os";

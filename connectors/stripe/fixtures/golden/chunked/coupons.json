@@ -1,0 +1,12 @@
+{
+  "chunks": [
+    {
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/coupons?limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 4,
+  "rowsSha256": "b15f039ff0aec1b3945b7931dd8d9887a45e03740f672f8dbebd7ba218ff738c"
+}

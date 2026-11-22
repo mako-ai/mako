@@ -1,10 +1,10 @@
 /**
  * Stripe on @makoai/connector-sdk: `spec`, `check`, `discover` and `read`.
  *
- * A port of the in-process connector in `api/src/connectors/stripe/`, with the
- * same 26 entities, schemas, cursors and pagination. Nothing runs it in
- * production yet. `fixtures/parity.mjs` runs both against the same recorded
- * Stripe responses and compares them entity by entity.
+ * 26 entities with their schemas, cursors and pagination, ported from the
+ * in-process connector (deleted). `fixtures/golden/` holds the rows it reads
+ * from the recorded Stripe responses, checked byte for byte by an API test
+ * (`api/src/connectors/stripe-folder.test.ts`).
  *
  * Read state is `{ cursor, mako: { since } }`:
  * - `cursor` is Stripe's `starting_after`, the in-process `FetchState.cursor`.

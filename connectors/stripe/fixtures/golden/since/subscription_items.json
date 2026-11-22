@@ -1,0 +1,306 @@
+{
+  "requests": [
+    "GET /v1/subscriptions?created[gte]=1767225600&limit=100&status=all (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "billing_thresholds": null,
+      "created": 1788365729,
+      "current_period_end": 1790957729,
+      "current_period_start": 1788365729,
+      "discounts": [],
+      "id": "si_fx0030",
+      "metadata": {},
+      "object": "subscription_item",
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0003",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0003",
+        "object": "price",
+        "unit_amount": 5900
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0030",
+      "tax_rates": []
+    },
+    {
+      "billing_thresholds": null,
+      "created": 1786609858,
+      "current_period_end": 1789201858,
+      "current_period_start": 1786609858,
+      "discounts": [],
+      "id": "si_fx0029",
+      "metadata": {},
+      "object": "subscription_item",
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0002",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0002",
+        "object": "price",
+        "unit_amount": 5900
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0029",
+      "tax_rates": []
+    },
+    {
+      "billing_thresholds": null,
+      "created": 1784853987,
+      "current_period_end": 1787445987,
+      "current_period_start": 1784853987,
+      "discounts": [],
+      "id": "si_fx0028",
+      "metadata": {},
+      "object": "subscription_item",
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 5900
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0028",
+      "tax_rates": []
+    },
+    {
+      "billing_thresholds": null,
+      "created": 1783098116,
+      "current_period_end": 1785690116,
+      "current_period_start": 1783098116,
+      "discounts": [],
+      "id": "si_fx0027",
+      "metadata": {},
+      "object": "subscription_item",
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0009",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0009",
+        "object": "price",
+        "unit_amount": 5900
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0027",
+      "tax_rates": []
+    },
+    {
+      "billing_thresholds": null,
+      "created": 1781342245,
+      "current_period_end": 1783934245,
+      "current_period_start": 1781342245,
+      "discounts": [],
+      "id": "si_fx0026",
+      "metadata": {},
+      "object": "subscription_item",
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0008",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0008",
+        "object": "price",
+        "unit_amount": 5900
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0026",
+      "tax_rates": []
+    },
+    {
+      "billing_thresholds": null,
+      "created": 1779586374,
+      "current_period_end": 1782178374,
+      "current_period_start": 1779586374,
+      "discounts": [],
+      "id": "si_fx0025",
+      "metadata": {},
+      "object": "subscription_item",
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0007",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0007",
+        "object": "price",
+        "unit_amount": 5900
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0025",
+      "tax_rates": []
+    },
+    {
+      "billing_thresholds": null,
+      "created": 1777830503,
+      "current_period_end": 1780422503,
+      "current_period_start": 1777830503,
+      "discounts": [],
+      "id": "si_fx0024",
+      "metadata": {},
+      "object": "subscription_item",
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0006",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0006",
+        "object": "price",
+        "unit_amount": 5900
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0024",
+      "tax_rates": []
+    },
+    {
+      "billing_thresholds": null,
+      "created": 1776074632,
+      "current_period_end": 1778666632,
+      "current_period_start": 1776074632,
+      "discounts": [],
+      "id": "si_fx0023",
+      "metadata": {},
+      "object": "subscription_item",
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0005",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0005",
+        "object": "price",
+        "unit_amount": 5900
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0023",
+      "tax_rates": []
+    },
+    {
+      "billing_thresholds": null,
+      "created": 1774318761,
+      "current_period_end": 1776910761,
+      "current_period_start": 1774318761,
+      "discounts": [],
+      "id": "si_fx0022",
+      "metadata": {},
+      "object": "subscription_item",
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0004",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0004",
+        "object": "price",
+        "unit_amount": 5900
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0022",
+      "tax_rates": []
+    },
+    {
+      "billing_thresholds": null,
+      "created": 1772562890,
+      "current_period_end": 1775154890,
+      "current_period_start": 1772562890,
+      "discounts": [],
+      "id": "si_fx0021",
+      "metadata": {},
+      "object": "subscription_item",
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0003",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0003",
+        "object": "price",
+        "unit_amount": 5900
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0021",
+      "tax_rates": []
+    },
+    {
+      "billing_thresholds": null,
+      "created": 1770807019,
+      "current_period_end": 1773399019,
+      "current_period_start": 1770807019,
+      "discounts": [],
+      "id": "si_fx0020",
+      "metadata": {},
+      "object": "subscription_item",
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0002",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0002",
+        "object": "price",
+        "unit_amount": 5900
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0020",
+      "tax_rates": []
+    },
+    {
+      "billing_thresholds": null,
+      "created": 1769051148,
+      "current_period_end": 1771643148,
+      "current_period_start": 1769051148,
+      "discounts": [],
+      "id": "si_fx0019",
+      "metadata": {},
+      "object": "subscription_item",
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 5900
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0019",
+      "tax_rates": []
+    },
+    {
+      "billing_thresholds": null,
+      "created": 1767295277,
+      "current_period_end": 1769887277,
+      "current_period_start": 1767295277,
+      "discounts": [],
+      "id": "si_fx0018",
+      "metadata": {},
+      "object": "subscription_item",
+      "plan": {
+        "amount": 5900,
+        "id": "price_fx0009",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0009",
+        "object": "price",
+        "unit_amount": 5900
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0018",
+      "tax_rates": []
+    }
+  ]
+}
