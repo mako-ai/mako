@@ -271,9 +271,11 @@ void test("a declared timestamp must be signed: an unsigned window is refused", 
   assert.equal(result.valid, false);
 });
 
-void test("shared-secret: the header must hold the flow's secret, in constant time", () => {
+void test("shared-secret: the header must hold the flow's secret, in constant time", async () => {
+  // The declaration the Claap folder makes in its own spec.
+  const claap = await folderSpec("claap");
   const declaration = declaredWebhookVerification(
-    spec({ scheme: "shared-secret", secretHeader: "x-claap-webhook-secret" }),
+    spec(claap.mako.webhooks.verification),
   );
   assert.deepEqual(declaration, {
     scheme: "shared-secret",
@@ -363,7 +365,9 @@ void test("where an event id and type sit is read from the spec, plain paths onl
 // deliveries and declarations.
 // ---------------------------------------------------------------------------
 
-async function folderSpec(slug: "wise" | "calendly" | "pandadoc" | "close") {
+async function folderSpec(
+  slug: "wise" | "calendly" | "pandadoc" | "close" | "claap",
+) {
   const harness = await import(
     slug === "wise"
       ? "../../../../connectors/wise/fixtures/harness.mjs"
@@ -371,7 +375,9 @@ async function folderSpec(slug: "wise" | "calendly" | "pandadoc" | "close") {
         ? "../../../../connectors/pandadoc/fixtures/harness.mjs"
         : slug === "close"
           ? "../../../../connectors/close/fixtures/harness.mjs"
-          : "../../../../connectors/calendly/fixtures/harness.mjs"
+          : slug === "claap"
+            ? "../../../../connectors/claap/fixtures/harness.mjs"
+            : "../../../../connectors/calendly/fixtures/harness.mjs"
   );
   harness.ensureFolderInstalled();
   const run = await harness.runFolderCommand("spec");

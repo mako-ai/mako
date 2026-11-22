@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { ClaapConnector } from "./claap/connector";
 import { RestConnector } from "./rest/connector";
 import {
   BaseConnector,
@@ -58,19 +57,6 @@ const connectors: Array<{
   make: () => BaseConnector;
 }> = [
   {
-    label: "claap",
-    make: () =>
-      new ClaapConnector({
-        id: "ds_claap",
-        name: "Claap",
-        type: "claap",
-        config: {
-          api_key: "cla_test_key",
-          api_base_url: "https://api.claap.io",
-        },
-      } as any),
-  },
-  {
     label: "rest",
     make: () =>
       new RestConnector({
@@ -95,12 +81,7 @@ function testEveryConnectorReturnsWellFormedCapabilities() {
   }
 }
 
-function testCreatedAnchorConnectorsWarnAboutMissedUpdates() {
-  // Claap: recordings is created-anchor, workspace is none.
-  const claap = capabilitiesFor("claap");
-  assert.equal(claap.mode, "none"); // fallback (workspace)
-  assert.equal(claap.perEntity?.recordings?.mode, "created-anchor");
-}
+function testCreatedAnchorConnectorsWarnAboutMissedUpdates() {}
 
 function testRestDeclaresClientFilterWithWarning() {
   const rest = capabilitiesFor("rest");

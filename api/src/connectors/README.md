@@ -8,8 +8,8 @@ Two words, two things — decided 2026-09-02 (mako#954), because until then
 "connector" meant three different rows depending on the file you were in.
 
 - A **connector** is **code**: the thing that knows how to check a credential
-  and read entities. Built-in connectors are the directories here (`claap`,
-  `rest`, …, type = directory name); workspace connectors are
+  and read entities. Built-in connectors are the directories here (`rest`,
+  `custom_api`, type = directory name); workspace connectors are
   `connectors/<slug>/` in a workspace repo, written with
   `@makoai/connector-sdk`, indexed as `ConnectorDefinition` rows and typed
   `ws:<slug>`.
@@ -65,7 +65,6 @@ connectors/
 │   ├── pagination.ts        # Offset and next-token page loops
 │   ├── incremental.ts       # Date windows, the client-side `since` filter
 │   └── webhook-signature.ts # Raw body, HMAC, constant-time compare
-├── claap/
 ├── rest/
 ├── registry.ts              # Runtime connector discovery for the API server
 └── README.md               # This file

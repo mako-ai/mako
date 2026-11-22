@@ -121,7 +121,7 @@ function isPrivateHost(hostname: string): boolean {
 }
 
 /**
- * A signed link, as `safeFetch` reads it in-process: https only, no
+ * A signed link: https only, no
  * private-address host, at most 3 redirects (each checked), 50 MB and a
  * timeout. The link carries its own token; the API key is never sent.
  */

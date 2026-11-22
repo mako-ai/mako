@@ -1,1 +1,0 @@
-export { ClaapConnector } from "./connector";

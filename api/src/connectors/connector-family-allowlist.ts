@@ -9,7 +9,6 @@
  * Enforced by connector-family-boundary.test.ts (run by test:tsx).
  */
 export const ALLOWED_FAMILIES_IMPORTED_FROM_OUTSIDE: readonly string[] = [
-  "claap",
   "custom_api",
   "rest",
 ];

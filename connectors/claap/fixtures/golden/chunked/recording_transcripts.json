@@ -1,0 +1,15 @@
+{
+  "chunks": [
+    {
+      "hasMore": false,
+      "position": {
+        "cursor": null,
+        "recordingsSeen": 23,
+        "totalCount": 23,
+        "totalProcessed": 29
+      }
+    }
+  ],
+  "rowCount": 29,
+  "rowsSha256": "61a6a3fd246891d422b04d9a3bb7708bc7c37bb9b4816d2d00e6714870520989"
+}
