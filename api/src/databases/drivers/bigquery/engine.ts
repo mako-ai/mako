@@ -95,7 +95,63 @@ type BigQueryJobState = "PENDING" | "RUNNING" | "DONE";
 
 /** The part of a jobs.get answer read here. */
 interface BigQueryJobResource {
-  status?: { state?: BigQueryJobState };
+  status?: {
+    state?: BigQueryJobState;
+    errorResult?: { reason?: string; message?: string };
+  };
+  statistics?: {
+    query?: {
+      statementType?: string;
+      numDmlAffectedRows?: string;
+      dmlStats?: {
+        insertedRowCount?: string;
+        updatedRowCount?: string;
+        deletedRowCount?: string;
+      };
+    };
+  };
+}
+
+const RESULT_FREE_DML = new Set([
+  "INSERT",
+  "UPDATE",
+  "DELETE",
+  "MERGE",
+  "TRUNCATE_TABLE",
+]);
+
+function terminalQueryResult(
+  resource?: BigQueryJobResource,
+): QueryResult | undefined {
+  const status = resource?.status;
+  if (status?.state !== "DONE") return;
+  if (status.errorResult) {
+    return {
+      success: false,
+      error:
+        status.errorResult.message ||
+        status.errorResult.reason ||
+        "BigQuery job failed",
+    };
+  }
+
+  // Recover result-free writes from their terminal metadata.
+  const query = resource?.statistics?.query;
+  if (!query?.statementType || !RESULT_FREE_DML.has(query.statementType)) {
+    return;
+  }
+  const stats = query.dmlStats;
+  const affected =
+    query.numDmlAffectedRows !== undefined
+      ? Number(query.numDmlAffectedRows)
+      : Number(stats?.insertedRowCount ?? 0) +
+        Number(stats?.updatedRowCount ?? 0) +
+        Number(stats?.deletedRowCount ?? 0);
+  return {
+    success: true,
+    data: [],
+    rowCount: Number.isFinite(affected) ? affected : 0,
+  };
 }
 
 /**
@@ -330,10 +386,7 @@ export class BigQueryEngine implements QueryEngine {
         priority === "BATCH"
           ? { jobComplete: false, jobReference: response.data?.jobReference }
           : response.data || {};
-      if (
-        data.jobComplete === true ||
-        response.data?.status?.state === "DONE"
-      ) {
+      if (data.jobComplete === true) {
         jobOutcomeUnknown = false;
       }
       const jobId: string | undefined = data.jobReference?.jobId;
@@ -391,7 +444,6 @@ export class BigQueryEngine implements QueryEngine {
           pollIntervalMs,
           checkAborted,
         });
-        if (state === "DONE") jobOutcomeUnknown = false;
         if (state === "PENDING") {
           const stopped = await this.cancelAbandonedJob({
             client,
@@ -532,13 +584,14 @@ export class BigQueryEngine implements QueryEngine {
         jobOutcomeUnknown = false;
       }
       if (jobOutcomeUnknown && job && !signal?.aborted) {
-        // getQueryResults can surface a terminal job's error as an HTTP
-        // failure. Verify completion before suppressing a retry or cleanup.
-        const state = await this.getJobState(job, {
+        // A results request can fail after a write commits. Use the job's
+        // terminal result instead of retrying the write on a polling error.
+        const resource = await this.getJob(job, {
           timeout: JOB_STATUS_AFTER_POLL_ERROR_TIMEOUT_MS,
           signal,
         }).catch(() => undefined);
-        if (state === "DONE") jobOutcomeUnknown = false;
+        const terminal = terminalQueryResult(resource);
+        if (terminal) return terminal;
       }
       return {
         success: false,
@@ -553,15 +606,15 @@ export class BigQueryEngine implements QueryEngine {
     }
   }
 
-  private async getJobState(
+  private async getJob(
     { client, projectId, jobId, location }: RunningJob,
     options?: Pick<AxiosRequestConfig, "timeout" | "signal">,
-  ): Promise<BigQueryJobState | undefined> {
+  ): Promise<BigQueryJobResource | undefined> {
     const response = await client.get<BigQueryJobResource>(
       `/projects/${projectId}/jobs/${jobId}`,
       { params: location ? { location } : {}, ...options },
     );
-    return response.data?.status?.state;
+    return response.data;
   }
 
   /**
@@ -582,7 +635,7 @@ export class BigQueryEngine implements QueryEngine {
     let waitMs = input.pollIntervalMs;
     for (;;) {
       input.checkAborted();
-      const state = await this.getJobState(input);
+      const state = (await this.getJob(input))?.status?.state;
       if (state !== "PENDING") return state;
       const remaining = deadline - Date.now();
       if (remaining <= 0) {

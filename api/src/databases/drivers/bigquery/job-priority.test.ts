@@ -339,6 +339,79 @@ describe("a queued BATCH job does not trip the sync timeout", () => {
 });
 
 describe("the BigQuery job completion status on failure", () => {
+  it.each([
+    {
+      priority: "BATCH",
+      firstState: "RUNNING",
+      statementType: "MERGE",
+      stats: {
+        dmlStats: {
+          insertedRowCount: "3",
+          updatedRowCount: "2",
+          deletedRowCount: "1",
+        },
+      },
+      rowCount: 6,
+    },
+    {
+      priority: "BATCH",
+      firstState: "DONE",
+      statementType: "INSERT",
+      stats: { numDmlAffectedRows: "2" },
+      rowCount: 2,
+    },
+    {
+      priority: "INTERACTIVE",
+      firstState: "RUNNING",
+      statementType: "INSERT",
+      stats: { numDmlAffectedRows: "2" },
+      rowCount: 2,
+    },
+  ] as const)(
+    "recovers a committed $priority $statementType when $firstState was seen before a lost results response",
+    async ({ priority, firstState, statementType, stats, rowCount }) => {
+      let jobReads = 0;
+      const post = vi.fn(async (url: string, body: Record<string, unknown>) => {
+        const result = await fakeClient.post(url, body);
+        return { data: { ...result.data, jobComplete: false } };
+      });
+      const get = vi.fn(async (url: string, _options?: unknown) => {
+        if (url.includes("/jobs/")) {
+          const state =
+            priority === "BATCH" && jobReads++ === 0 ? firstState : "DONE";
+          return {
+            data: {
+              status: { state },
+              statistics: { query: { statementType, ...stats } },
+            },
+          };
+        }
+        throw {
+          isAxiosError: true,
+          response: {
+            status: 403,
+            data: { error: { message: "Results request quota exceeded" } },
+          },
+        };
+      });
+      engine.getHttpClient = async () => ({ ...fakeClient, post, get });
+
+      const result = await bigQueryEngine.executeQuery(
+        database,
+        `${statementType} t`,
+        { priority },
+      );
+
+      expect(result).toEqual({ success: true, data: [], rowCount });
+      expect(post).toHaveBeenCalledTimes(1);
+      const jobId = priority === "BATCH" ? "batch_job" : "interactive_job";
+      expect(get).toHaveBeenLastCalledWith(
+        `/projects/proj/jobs/${jobId}`,
+        expect.objectContaining({ params: { location: "EU" }, timeout: 5000 }),
+      );
+    },
+  );
+
   it.each(["BATCH", "INTERACTIVE"] as const)(
     "is unknown when the %s submission response is lost",
     async priority => {
@@ -386,7 +459,7 @@ describe("the BigQuery job completion status on failure", () => {
     expect(unconfirmed.bigQueryJobOutcomeUnknown).toBe(true);
   });
 
-  it("recognizes an observed terminal job even if fetching results fails", async () => {
+  it("preserves the uncertain write when DONE has no recoverable result", async () => {
     jobStates = ["DONE"];
     engine.getHttpClient = async () => ({
       ...fakeClient,
@@ -401,24 +474,39 @@ describe("the BigQuery job completion status on failure", () => {
     });
 
     expect(result.success).toBe(false);
-    expect(result.bigQueryJobOutcomeUnknown).toBeUndefined();
+    expect(result.bigQueryJobOutcomeUnknown).toBe(true);
   });
 
   it.each(["DONE", "RUNNING"] as const)(
     "checks exact job metadata after a quota error while polling, state %s",
     async state => {
       jobStates = ["RUNNING", state];
-      const get = vi.fn((url: string, _options?: unknown) =>
-        url.includes("/jobs/")
-          ? fakeClient.get(url)
-          : Promise.reject({
-              isAxiosError: true,
-              response: {
-                status: 403,
-                data: { error: { message: "Exceeded table update quota" } },
+      const get = vi.fn(async (url: string, _options?: unknown) => {
+        if (url.includes("/jobs/")) {
+          const response = await fakeClient.get(url);
+          if (response.data.status?.state === "DONE") {
+            return {
+              data: {
+                status: {
+                  state: "DONE",
+                  errorResult: {
+                    reason: "rateLimitExceeded",
+                    message: "Exceeded table update quota",
+                  },
+                },
               },
-            }),
-      );
+            };
+          }
+          return response;
+        }
+        throw {
+          isAxiosError: true,
+          response: {
+            status: 403,
+            data: { error: { message: "Results request quota exceeded" } },
+          },
+        };
+      });
       engine.getHttpClient = async () => ({ ...fakeClient, get });
 
       const result = await bigQueryEngine.executeQuery(database, "MERGE t", {
@@ -426,7 +514,11 @@ describe("the BigQuery job completion status on failure", () => {
       });
 
       expect(result.success).toBe(false);
-      expect(result.error).toContain("Exceeded table update quota");
+      expect(result.error).toContain(
+        state === "DONE"
+          ? "Exceeded table update quota"
+          : "Results request quota exceeded",
+      );
       expect(result.bigQueryJobOutcomeUnknown).toBe(
         state === "DONE" ? undefined : true,
       );
@@ -437,6 +529,30 @@ describe("the BigQuery job completion status on failure", () => {
       );
     },
   );
+
+  it("keeps a result-fetch failure for a completed SELECT", async () => {
+    engine.getHttpClient = async () => ({
+      ...fakeClient,
+      post: async () => ({
+        data: { jobComplete: false, jobReference: { jobId: "select_job" } },
+      }),
+      get: async (url: string) => {
+        if (url.includes("/jobs/")) {
+          return {
+            data: {
+              status: { state: "DONE" },
+              statistics: { query: { statementType: "SELECT" } },
+            },
+          };
+        }
+        throw new Error("results unavailable");
+      },
+    });
+    const result = await bigQueryEngine.executeQuery(database, "SELECT 1");
+    expect(result.success).toBe(false);
+    expect(result.data).toBeUndefined();
+    expect(result.error).toContain("results unavailable");
+  });
 
   it("fails a BATCH submission response with no job ID", async () => {
     const post = vi
