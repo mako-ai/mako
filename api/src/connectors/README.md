@@ -66,7 +66,6 @@ connectors/
 │   ├── incremental.ts       # Date windows, the client-side `since` filter
 │   └── webhook-signature.ts # Raw body, HMAC, constant-time compare
 ├── claap/
-├── calendly/
 ├── rest/
 ├── registry.ts              # Runtime connector discovery for the API server
 └── README.md               # This file
@@ -166,9 +165,13 @@ table of connectors and entities. Summary:
 - Required config: `api_key`
 - Supports backfill and CDC webhooks (auto-provisioning)
 
-### Claap, Calendly
+### Claap
 
-- Fixed-entity connectors with backfill + CDC webhook support (auto-provisioned where the provider allows it)
+- Fixed-entity connector with backfill + CDC webhook support (auto-provisioned where the provider allows it)
+
+### Calendly
+
+- A connector folder, `connectors/calendly/` (type `ws:calendly`). The in-process connector is deleted.
 
 ### GraphQL
 

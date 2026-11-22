@@ -1,5 +1,5 @@
 /**
- * A synthetic Calendly account for the parity harness. No real data: every
+ * A synthetic Calendly account for the fixture harness. No real data: every
  * name is made up and every address is @example.com. URIs use the
  * placeholder host `BASE`, which the fixture server swaps for its own URL.
  *

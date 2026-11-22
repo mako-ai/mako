@@ -160,7 +160,7 @@ beforeEach(async () => {
   await SourceConnection.create({
     workspaceId: new Types.ObjectId(),
     name: "theirs",
-    type: "calendly",
+    type: "custom_api",
     config: { api_key: encryptString("theirs_" + SECRET) },
     isActive: true,
     settings: { rate_limit_delay_ms: 100, sync_batch_size: 100 },
@@ -220,8 +220,8 @@ describe("vocabulary: connectors are code, connections are credentials", () => {
     ).toBeUndefined();
     // Configured elsewhere, so unconfigured here — and the stranger's row
     // is not attached to it.
-    const calendly = result.connectors.find(c => c.connector === "calendly");
-    expect(calendly?.connections).toEqual([]);
+    const customApi = result.connectors.find(c => c.connector === "custom_api");
+    expect(customApi?.connections).toEqual([]);
     expect(JSON.stringify(result)).not.toContain(SECRET);
   });
 

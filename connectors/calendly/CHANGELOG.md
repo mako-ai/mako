@@ -4,6 +4,9 @@ Releases of `mako/calendly`. Not released yet: no tag, no registry entry.
 
 ## 1.0.0 (unreleased)
 
+- The in-process Calendly connector is deleted. This folder is the only
+  Calendly connector. The parity run became golden rows
+  (`fixtures/golden.mjs`).
 - A fill read answered 403 lands the webhook record without the columns it
   lacks, instead of failing the event. A 401 (a dead token) still fails it. RealAdvisor's token
   belongs to another organization than its subscription: 50 of 60 replayed

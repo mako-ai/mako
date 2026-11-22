@@ -56,7 +56,7 @@ async function main() {
   // reported that every field was protected.
   // The floor guards against an empty enumeration, not a fixed count: built-in
   // families are being removed one PR at a time (connector-family-allowlist.ts).
-  // stripe, calendly and rest stay while external workspaces use them.
+  // stripe and rest stay while external workspaces use them.
   assert.ok(
     types.length >= 3,
     `expected to find the connector directories, found ${types.length} — enumeration is broken, and a census of nothing proves nothing`,

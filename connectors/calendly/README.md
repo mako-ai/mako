@@ -1,8 +1,9 @@
 # Calendly
 
-Calendly as a Mako connector folder, on `@makoai/connector-sdk`. It is a port
-of the in-process connector in `api/src/connectors/calendly/`. The parity
-harness in `fixtures/` holds the two to the same rows, chunks and requests.
+Calendly as a Mako connector folder, on `@makoai/connector-sdk`. Production
+runs it as `ws:calendly`. It was ported from an in-process connector that is
+deleted. The golden files in `fixtures/golden/` hold the rows, chunks and
+requests that connector produced on the recorded cassettes.
 
 ## Credential
 
@@ -65,12 +66,14 @@ request.
 ## Tests
 
 ```sh
-# From api/: parity through SandboxedConnector, and the webhook handler.
-node --import tsx src/connectors/calendly/folder-parity.test.ts
-node --import tsx src/connectors/calendly/folder-webhook-batches.test.ts
+# From api/: the folder against its golden files, and the webhook handler.
+node --import tsx src/connectors/calendly-folder.test.ts
+node --import tsx src/connectors/calendly-folder-webhook-batches.test.ts
 
-# The parity tables; --record rebuilds the cassettes from fixtures/dataset.mjs.
-pnpm --filter api exec tsx ../connectors/calendly/fixtures/parity.mjs
+# Rewrite the golden files after an intended change; --record rebuilds the
+# cassettes from fixtures/dataset.mjs first.
+node connectors/calendly/fixtures/golden.mjs --record
+node connectors/calendly/fixtures/golden.mjs --write
 
 # `mako connector test` on the cassettes.
 node connectors/calendly/fixtures/conformance.mjs

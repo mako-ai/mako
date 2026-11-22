@@ -1,6 +1,6 @@
 /**
  * The folder's webhook mapping, before any fill, as JSON on stdout: what
- * the parity harness compares with the in-process extraction.
+ * golden.mjs keeps as `webhooks.json`.
  *
  *   node webhook-cli.mjs input.json
  *
