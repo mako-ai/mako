@@ -11,10 +11,16 @@
  * enabling, probing, retyping, flows, entities and the connector registry
  * never see it.
  *
+ * The exception is a profile with `connection` (custom_api): a type people
+ * create, edit and Test from the form with no connector folder. Both
+ * connector registries wrap it (profile-connector.ts), so it is no orphan.
+ *
  * Nothing imported is used while a profile file loads (callable.ts and
  * operations.ts import this registry, and the profiles import them back):
  * operations are built on first use.
  */
+import type { ConnectionTestResult } from "../../connectors/base/BaseConnector";
+import type { ISourceConnection } from "../../database/workspace-schema";
 import type { CallableConnection } from "../callable";
 import type { ConnectionOperation } from "../operations";
 import { closeProfile } from "./close";
@@ -30,6 +36,15 @@ export interface CallableProfile {
   configSchema: {
     fields: ReadonlyArray<Record<string, unknown>>;
     [key: string]: unknown;
+  };
+  /**
+   * Set on a type that is created and Tested from the form without a
+   * connector folder. Never synced: it has no entities.
+   */
+  connection?: {
+    name: string;
+    description: string;
+    test(connection: ISourceConnection): Promise<ConnectionTestResult>;
   };
 }
 
@@ -49,6 +64,23 @@ function profileFor(type: string): CallableProfile | null {
     default:
       return null;
   }
+}
+
+/** The profiles with `connection`: types created without a connector folder. */
+export function connectionProfiles(): CallableProfile[] {
+  return [
+    closeProfile,
+    customApiProfile,
+    posthogProfile,
+    stripeProfile,
+    wiseProfile,
+  ].filter(profile => profile.connection);
+}
+
+/** The profile of `type` when it has `connection`, or null. */
+export function connectionProfileFor(type: string): CallableProfile | null {
+  const profile = profileFor(type);
+  return profile?.connection ? profile : null;
 }
 
 /** How Mako calls a connection of `type`, or null when it cannot yet. */

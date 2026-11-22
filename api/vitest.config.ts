@@ -44,6 +44,8 @@ export default defineConfig({
       // A write an agent's run records: the request whole, credential redacted.
       "src/connections/describe-request.test.ts",
       "src/connections/google-service-account.test.ts",
+      // Custom API Test, and its connector built from the profile.
+      "src/connections/callable-profiles/custom-api-test.test.ts",
       // Google credential type validation, at save and at every use path.
       "src/connections/google-credential-use-paths.test.ts",
       "src/connectors/rate-gate.test.ts",

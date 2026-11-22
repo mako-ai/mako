@@ -12,6 +12,7 @@ import {
 import { loadConnectorDefinition } from "../connectors/workspace/resolver";
 import { specToForm } from "../connectors/workspace/spec-translation";
 import { callableProfileSchemaFor } from "../connections/callable-profiles";
+import { profileConnectorClass } from "../connections/callable-profiles/profile-connector";
 
 const logger = loggers.sync("connector-registry");
 
@@ -53,9 +54,13 @@ type ConnectorMetadata = ConnectorRegistryEntry["metadata"];
 /**
  * The `XxxConnector` class a connector directory exports (by convention the
  * first export whose name ends in "Connector"), or undefined when it exports
- * none. Throws when the directory cannot be imported.
+ * none. A profile with `connection` (custom_api) has no directory: its class
+ * comes from profile-connector.ts. Throws when the directory cannot be
+ * imported.
  */
 async function importConnectorClass(type: string): Promise<any | undefined> {
+  const profiled = profileConnectorClass(type);
+  if (profiled) return profiled;
   const mod = await import(`../connectors/${type}`);
   const exportKey = Object.keys(mod).find(k => k.endsWith("Connector"));
   return exportKey ? (mod as Record<string, unknown>)[exportKey] : undefined;

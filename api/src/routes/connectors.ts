@@ -5,6 +5,7 @@ import path from "path";
 import { Types } from "mongoose";
 
 import { connectorRegistry } from "../connectors/registry";
+import { connectionProfileFor } from "../connections/callable-profiles";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
@@ -391,6 +392,20 @@ connectorRoutes.openapi(
         "connectors",
         type,
         "icon.svg",
+      );
+    }
+    // A type kept as a call profile with `connection` (custom_api) has no
+    // connector folder: its icon sits with the profiles. src/routes ->
+    // src/connections/..., and dist/routes -> dist/connections/...
+    // (copy-build-assets.mjs copies every .svg).
+    if (!fs.existsSync(iconPath) && connectionProfileFor(type)) {
+      iconPath = path.resolve(
+        __dirname,
+        "..",
+        "connections",
+        "callable-profiles",
+        "icons",
+        `${type}.svg`,
       );
     }
 
