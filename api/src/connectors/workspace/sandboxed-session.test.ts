@@ -163,12 +163,12 @@ afterEach(() => {
   delete process.env.CONNECTOR_SESSION_READS;
 });
 
-void test("a read takes batch 1, 2, 3 of one session and closes it after the last", async t => {
+void test("a read takes batch 1, 2, 3 of one session and closes it after the last", async () => {
   const box = make();
   box.session.starts.push(batch(1, [1, 2], "c1", true));
   box.session.pulls.push(batch(2, [3], "c2", true), batch(3, [4], "c3", false));
-  const onLog = t.mock.fn();
-  const sink = { ...collect(), onLog };
+  const logs: unknown[][] = [];
+  const sink = { ...collect(), onLog: (...args: unknown[]) => logs.push(args) };
   const since = new Date("2026-01-01T00:00:00Z");
 
   const first = await box.fetchEntityChunk({ entity: "rows", since, ...sink });
@@ -198,19 +198,16 @@ void test("a read takes batch 1, 2, 3 of one session and closes it after the las
 
   assert.deepEqual(box.session.ops(), ["start", "pull 2", "pull 3", "close"]);
   assert.deepEqual(sink.rows, [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }]);
-  assert.deepEqual(
-    onLog.mock.calls.map(call => call.arguments),
+  assert.deepEqual(logs, [
     [
-      [
-        "info",
-        "Read final source batch in sandbox",
-        {
-          entity: "rows",
-          sandboxIdSha256: createHash("sha256").update("box-1").digest("hex"),
-        },
-      ],
+      "info",
+      "Read final source batch in sandbox",
+      {
+        entity: "rows",
+        sandboxIdSha256: createHash("sha256").update("box-1").digest("hex"),
+      },
     ],
-  );
+  ]);
   assert.equal(third.hasMore, false);
   assert.equal(third.totalProcessed, 4);
   assert.equal((third as any).readSession, undefined);
