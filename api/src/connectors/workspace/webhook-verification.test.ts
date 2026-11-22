@@ -421,8 +421,7 @@ void test("the Wise declaration verifies its fixture deliveries", async () => {
   }
 });
 
-void test("Calendly's header is Stripe's: stripe-v1 agrees with the in-process check", async () => {
-  const { verifyCalendlyWebhook } = await import("../calendly/webhooks");
+void test("Calendly's header is Stripe's: stripe-v1 accepts the 2 valid fixture deliveries and refuses the other 8", async () => {
   const fixtures =
     await import("../../../../connectors/calendly/fixtures/webhook-events.mjs");
   const calendly = await folderSpec("calendly");
@@ -437,7 +436,7 @@ void test("Calendly's header is Stripe's: stripe-v1 agrees with the in-process c
   assert.equal(deliveries.length, 10);
   const at = fixtures.DELIVERY_TIMESTAMP * 1000;
   const realNow = Date.now;
-  Date.now = () => at; // the in-process check reads the clock itself
+  Date.now = () => at;
   try {
     let valid = 0;
     for (const d of deliveries) {
@@ -445,8 +444,7 @@ void test("Calendly's header is Stripe's: stripe-v1 agrees with the in-process c
         ...d,
         now: new Date(at),
       });
-      const theirs = verifyCalendlyWebhook(d);
-      assert.equal(ours.valid, theirs.valid, d.name);
+      assert.equal(ours.valid, /^valid/.test(d.name), d.name);
       if (ours.valid) valid++;
     }
     assert.equal(valid, 2);

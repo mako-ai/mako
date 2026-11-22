@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { StripeConnector } from "./stripe/connector";
 import { ClaapConnector } from "./claap/connector";
-import { CalendlyConnector } from "./calendly/connector";
 import { RestConnector } from "./rest/connector";
 import {
   BaseConnector,
@@ -79,19 +78,6 @@ const connectors: Array<{
         config: {
           api_key: "cla_test_key",
           api_base_url: "https://api.claap.io",
-        },
-      } as any),
-  },
-  {
-    label: "calendly",
-    make: () =>
-      new CalendlyConnector({
-        id: "ds_calendly",
-        name: "Calendly",
-        type: "calendly",
-        config: {
-          access_token: "pat_test_token",
-          api_base_url: "https://api.calendly.com",
         },
       } as any),
   },

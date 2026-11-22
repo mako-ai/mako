@@ -1,0 +1,315 @@
+{
+  "requestCount": 2,
+  "rows": [
+    {
+      "active": true,
+      "admin_managed": false,
+      "booking_method": "instant",
+      "color": "#0069ff",
+      "created_at": "2026-04-12T08:00:00.000000Z",
+      "custom_questions": [
+        {
+          "name": "Address",
+          "position": 0,
+          "type": "string"
+        }
+      ],
+      "deleted_at": null,
+      "description_html": "<p>About Audit</p>",
+      "description_plain": "About Audit",
+      "duration": 75,
+      "duration_options": [
+        15,
+        30
+      ],
+      "id": "ET0000000005",
+      "internal_note": null,
+      "is_paid": false,
+      "kind": "solo",
+      "locale": "en",
+      "locations": [
+        {
+          "kind": "physical",
+          "location": "Office"
+        }
+      ],
+      "name": "Audit",
+      "pooling_type": null,
+      "position": 4,
+      "profile": {
+        "name": "Member 1",
+        "owner": "https://calendly.local/users/USR0000000001",
+        "type": "User"
+      },
+      "scheduling_url": "https://calendly.example.com/t/5",
+      "secret": false,
+      "slug": "audit",
+      "type": "StandardEventType",
+      "updated_at": null,
+      "uri": "https://calendly.local/event_types/ET0000000005"
+    },
+    {
+      "active": true,
+      "admin_managed": false,
+      "booking_method": "instant",
+      "color": "#0069ff",
+      "created_at": "2026-04-12T08:00:00.000000Z",
+      "custom_questions": [
+        {
+          "name": "Address",
+          "position": 0,
+          "type": "string"
+        }
+      ],
+      "deleted_at": null,
+      "description_html": "<p>About Demo</p>",
+      "description_plain": "About Demo",
+      "duration": 45,
+      "duration_options": [
+        15,
+        30
+      ],
+      "id": "ET0000000003",
+      "internal_note": "Fixture note",
+      "is_paid": false,
+      "kind": "solo",
+      "locale": "en",
+      "locations": null,
+      "name": "Demo",
+      "pooling_type": null,
+      "position": 2,
+      "profile": {
+        "name": "Member 1",
+        "owner": "https://calendly.local/users/USR0000000001",
+        "type": "User"
+      },
+      "scheduling_url": "https://calendly.example.com/t/3",
+      "secret": false,
+      "slug": "demo",
+      "type": "StandardEventType",
+      "updated_at": "2026-07-08T20:00:00.000000Z",
+      "uri": "https://calendly.local/event_types/ET0000000003"
+    },
+    {
+      "active": true,
+      "admin_managed": false,
+      "booking_method": "instant",
+      "color": "#0069ff",
+      "created_at": "2026-04-12T08:00:00.000000Z",
+      "custom_questions": [
+        {
+          "name": "Address",
+          "position": 0,
+          "type": "string"
+        }
+      ],
+      "deleted_at": null,
+      "description_html": "<p>About Follow-up</p>",
+      "description_plain": "About Follow-up",
+      "duration": 60,
+      "duration_options": null,
+      "id": "ET0000000004",
+      "internal_note": null,
+      "is_paid": false,
+      "kind": "solo",
+      "locale": "en",
+      "locations": [
+        {
+          "kind": "physical",
+          "location": "Office"
+        }
+      ],
+      "name": "Follow-up",
+      "pooling_type": null,
+      "position": 3,
+      "profile": {
+        "name": "Member 1",
+        "owner": "https://calendly.local/users/USR0000000001",
+        "type": "User"
+      },
+      "scheduling_url": "https://calendly.example.com/t/4",
+      "secret": false,
+      "slug": "follow-up",
+      "type": "StandardEventType",
+      "updated_at": "2026-07-21T08:00:00.000000Z",
+      "uri": "https://calendly.local/event_types/ET0000000004"
+    },
+    {
+      "active": true,
+      "admin_managed": false,
+      "booking_method": "instant",
+      "color": "#0069ff",
+      "created_at": "2026-04-12T08:00:00.000000Z",
+      "custom_questions": [
+        {
+          "name": "Address",
+          "position": 0,
+          "type": "string"
+        }
+      ],
+      "deleted_at": null,
+      "description_html": "<p>About Intro call</p>",
+      "description_plain": "About Intro call",
+      "duration": 30,
+      "duration_options": null,
+      "id": "ET0000000002",
+      "internal_note": null,
+      "is_paid": false,
+      "kind": "solo",
+      "locale": "en",
+      "locations": [
+        {
+          "kind": "physical",
+          "location": "Office"
+        }
+      ],
+      "name": "Intro call",
+      "pooling_type": null,
+      "position": 1,
+      "profile": {
+        "name": "Member 1",
+        "owner": "https://calendly.local/users/USR0000000001",
+        "type": "User"
+      },
+      "scheduling_url": "https://calendly.example.com/t/2",
+      "secret": false,
+      "slug": "intro-call",
+      "type": "StandardEventType",
+      "updated_at": "2026-06-26T08:00:00.000000Z",
+      "uri": "https://calendly.local/event_types/ET0000000002"
+    },
+    {
+      "active": false,
+      "admin_managed": false,
+      "booking_method": "instant",
+      "color": "#0069ff",
+      "created_at": "2026-04-12T08:00:00.000000Z",
+      "custom_questions": [
+        {
+          "name": "Address",
+          "position": 0,
+          "type": "string"
+        }
+      ],
+      "deleted_at": null,
+      "description_html": "<p>About Kickoff</p>",
+      "description_plain": "About Kickoff",
+      "duration": 90,
+      "duration_options": null,
+      "id": "ET0000000006",
+      "internal_note": null,
+      "is_paid": false,
+      "kind": "solo",
+      "locale": "en",
+      "locations": null,
+      "name": "Kickoff",
+      "pooling_type": null,
+      "position": 5,
+      "profile": {
+        "name": "Member 1",
+        "owner": "https://calendly.local/users/USR0000000001",
+        "type": "User"
+      },
+      "scheduling_url": "https://calendly.example.com/t/6",
+      "secret": false,
+      "slug": "kickoff",
+      "type": "StandardEventType",
+      "updated_at": "2026-08-15T08:00:00.000000Z",
+      "uri": "https://calendly.local/event_types/ET0000000006"
+    },
+    {
+      "active": true,
+      "admin_managed": false,
+      "booking_method": "instant",
+      "color": "#0069ff",
+      "created_at": "2026-04-12T08:00:00.000000Z",
+      "custom_questions": [
+        {
+          "name": "Address",
+          "position": 0,
+          "type": "string"
+        }
+      ],
+      "deleted_at": null,
+      "description_html": "<p>About Valuation</p>",
+      "description_plain": "About Valuation",
+      "duration": 15,
+      "duration_options": [
+        15,
+        30
+      ],
+      "id": "ET0000000001",
+      "internal_note": null,
+      "is_paid": false,
+      "kind": "solo",
+      "locale": "en",
+      "locations": [
+        {
+          "kind": "physical",
+          "location": "Office"
+        }
+      ],
+      "name": "Valuation",
+      "pooling_type": null,
+      "position": 0,
+      "profile": {
+        "name": "Member 1",
+        "owner": "https://calendly.local/users/USR0000000001",
+        "type": "User"
+      },
+      "scheduling_url": "https://calendly.example.com/t/1",
+      "secret": false,
+      "slug": "valuation",
+      "type": "StandardEventType",
+      "updated_at": "2026-06-13T20:00:00.000000Z",
+      "uri": "https://calendly.local/event_types/ET0000000001"
+    },
+    {
+      "active": true,
+      "admin_managed": false,
+      "booking_method": "instant",
+      "color": "#0069ff",
+      "created_at": "2026-04-12T08:00:00.000000Z",
+      "custom_questions": [
+        {
+          "name": "Address",
+          "position": 0,
+          "type": "string"
+        }
+      ],
+      "deleted_at": null,
+      "description_html": "<p>About Zoom tour</p>",
+      "description_plain": "About Zoom tour",
+      "duration": 105,
+      "duration_options": [
+        15,
+        30
+      ],
+      "id": "ET0000000007",
+      "internal_note": null,
+      "is_paid": false,
+      "kind": "solo",
+      "locale": "en",
+      "locations": [
+        {
+          "kind": "physical",
+          "location": "Office"
+        }
+      ],
+      "name": "Zoom tour",
+      "pooling_type": null,
+      "position": 6,
+      "profile": {
+        "name": "Member 1",
+        "owner": "https://calendly.local/users/USR0000000001",
+        "type": "User"
+      },
+      "scheduling_url": "https://calendly.example.com/t/7",
+      "secret": false,
+      "slug": "zoom-tour",
+      "type": "StandardEventType",
+      "updated_at": "2026-08-27T20:00:00.000000Z",
+      "uri": "https://calendly.local/event_types/ET0000000007"
+    }
+  ]
+}

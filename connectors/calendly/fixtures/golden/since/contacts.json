@@ -1,0 +1,59 @@
+{
+  "requestCount": 1,
+  "rows": [
+    {
+      "avatar_url": null,
+      "company": "Example SA",
+      "created_at": "2026-06-13T20:00:00.000000Z",
+      "email": "contact.3@example.com",
+      "first_name": "Contact",
+      "id": "CON0000000003",
+      "last_name": "3",
+      "name": "Contact 3",
+      "notes": null,
+      "organization": "https://calendly.local/organizations/ORG0000000001",
+      "owner": "https://calendly.local/users/USR0000000001",
+      "phone_number": null,
+      "source": "booking",
+      "title": null,
+      "updated_at": "2026-08-02T20:00:00.000000Z",
+      "uri": "https://calendly.local/contacts/CON0000000003"
+    },
+    {
+      "avatar_url": null,
+      "company": null,
+      "created_at": "2026-06-18T00:00:00.000000Z",
+      "email": "contact.4@example.com",
+      "first_name": "Contact",
+      "id": "CON0000000004",
+      "last_name": "4",
+      "name": "Contact 4",
+      "notes": null,
+      "organization": "https://calendly.local/organizations/ORG0000000001",
+      "owner": "https://calendly.local/users/USR0000000001",
+      "phone_number": null,
+      "source": "booking",
+      "title": null,
+      "updated_at": "2026-08-23T16:00:00.000000Z",
+      "uri": "https://calendly.local/contacts/CON0000000004"
+    },
+    {
+      "avatar_url": null,
+      "company": "Example SA",
+      "created_at": "2026-06-22T04:00:00.000000Z",
+      "email": "contact.5@example.com",
+      "first_name": "Contact",
+      "id": "CON0000000005",
+      "last_name": "5",
+      "name": "Contact 5",
+      "notes": null,
+      "organization": "https://calendly.local/organizations/ORG0000000001",
+      "owner": "https://calendly.local/users/USR0000000001",
+      "phone_number": null,
+      "source": "booking",
+      "title": null,
+      "updated_at": "2026-09-13T12:00:00.000000Z",
+      "uri": "https://calendly.local/contacts/CON0000000005"
+    }
+  ]
+}

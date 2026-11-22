@@ -1,8 +1,5 @@
-# Calendly, as a connector folder (RFC connector-runtime, iteration 5).
-#
-# Production still runs the in-process connector in api/src/connectors/calendly.
-# No flow uses this folder. The parity harness in fixtures/ holds the two to
-# the same output.
+# Calendly, as a connector folder. Production runs it as `ws:calendly`.
+# The golden files in fixtures/golden/ hold its output on the cassettes.
 runtime: node
 entry: connector.ts
 page:

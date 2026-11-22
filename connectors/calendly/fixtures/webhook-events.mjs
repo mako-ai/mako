@@ -3,7 +3,7 @@
  * No real payload is used. The signing key is a fixed test value.
  *
  * A Calendly delivery body is `{ event, created_at, created_by, payload }`.
- * Mako stores it as the in-process `verifyCalendlyWebhook` returns it: the
+ * Mako stores it as the API's signature check returns it: the
  * body plus `type` (its `event`) and `id` (`<created_at>:<payload.uri>`).
  * `buildWebhookEvents` returns events in that stored shape.
  */
@@ -168,7 +168,7 @@ const sign = (key, t, body) =>
 /**
  * Signature cases for one delivery body, all sent at DELIVERY_TIMESTAMP
  * (check them with the clock at that instant): a valid one, and every way
- * the in-process check refuses one.
+ * the signature check refuses one.
  */
 export function buildDeliveries(body) {
   const payload = JSON.stringify(body);
