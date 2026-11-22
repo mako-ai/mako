@@ -183,6 +183,22 @@ function timestampColumn(source, n) {
  * and a field-name lookup per cell, and with each distinct DATE formatted
  * once. 149k rows × 16 columns: 740 ms before, 190 ms after (Chromium).
  */
+function plainValue(v, kind, dates) {
+  if (v == null) return v;
+  if (kind === DATE) {
+    let out = dates.get(v);
+    if (out === undefined) {
+      out = new Date(Number(v)).toISOString().slice(0, 10);
+      dates.set(v, out);
+    }
+    return out;
+  }
+  if (kind === TIMESTAMP) return new Date(Number(v)).toISOString();
+  return typeof v === "bigint" && v >= Number.MIN_SAFE_INTEGER && v <= Number.MAX_SAFE_INTEGER
+    ? Number(v)
+    : v;
+}
+
 export function toPlainRows(table, cap) {
   const schemaFields = table.schema.fields;
   const fields = schemaFields.map(f => f.name);
@@ -210,21 +226,140 @@ export function toPlainRows(table, cap) {
     const dates = kind === DATE ? new Map() : null;
     for (const v of source) {
       if (r >= n) break;
-      let out = v;
-      if (v != null) {
-        if (kind === DATE) {
-          out = dates.get(v);
-          if (out === undefined) {
-            out = new Date(Number(v)).toISOString().slice(0, 10);
-            dates.set(v, out);
-          }
-        } else if (kind === TIMESTAMP) out = new Date(Number(v)).toISOString();
-        else if (typeof v === "bigint" && v >= Number.MIN_SAFE_INTEGER && v <= Number.MAX_SAFE_INTEGER)
-          out = Number(v);
-      }
-      rows[r++][name] = out;
+      rows[r++][name] = plainValue(v, kind, dates);
     }
   }
+  return { rows, fields };
+}
+
+// Check the elapsed budget after bounded assignments and UTF-8 bytes. A single
+// runtime primitive, including final string assembly, can exceed that budget.
+const COOPERATIVE_CELLS = 512;
+const COOPERATIVE_BYTES = 16384;
+const COOPERATIVE_BUDGET_MS = 8;
+const now = () => typeof performance !== "undefined" ? performance.now() : Date.now();
+const yieldToTask = () => globalThis.scheduler?.yield
+  ? globalThis.scheduler.yield()
+  : new Promise(resolve => setTimeout(resolve, 0));
+
+function checkConversionAbort(signal) {
+  if (!signal?.aborted) return;
+  const error = new Error("Row conversion aborted");
+  error.name = "AbortError";
+  throw error;
+}
+
+// Arrow slices keep absolute byte offsets in a sliced offset array. Use
+// getValid rather than reading the bitmap ourselves, including for slices.
+function utf8Chunks(source) {
+  const chunks = source.data;
+  if (!Array.isArray(chunks) || !chunks.length) return null;
+  const plain = d => d && (d.type?.typeId === UTF8 || d.type?.typeId === 20) &&
+    d.values instanceof Uint8Array && (d.valueOffsets instanceof Int32Array || d.valueOffsets instanceof BigInt64Array) &&
+    typeof d.getValid === "function";
+  for (const d of chunks) {
+    if (plain(d)) continue;
+    if (d?.type?.typeId !== -1 || typeof d.getValid !== "function" || !d.values ||
+        !Array.isArray(d.dictionary?.data) || !d.dictionary.data.every(plain)) return null;
+  }
+  return chunks;
+}
+
+function* utf8Cells(chunks) {
+  for (const d of chunks) {
+    for (let i = 0; i < d.length; i++) {
+      if (!d.getValid(i)) {
+        yield null;
+      } else if (d.type.typeId !== -1) {
+        yield [d.values, Number(d.valueOffsets[i]), Number(d.valueOffsets[i + 1])];
+      } else {
+        const key = Number(d.values[i]);
+        let index = key;
+        let found = null;
+        for (const dictionary of d.dictionary.data) {
+          if (index < dictionary.length) {
+            if (dictionary.getValid(index)) found = [dictionary.values, Number(dictionary.valueOffsets[index]), Number(dictionary.valueOffsets[index + 1]), d.dictionary, key];
+            break;
+          }
+          index -= dictionary.length;
+        }
+        yield found;
+      }
+    }
+  }
+}
+
+/** Convert Arrow rows cooperatively. Cancellation rejects with AbortError. */
+export async function toPlainRowsCooperative(table, cap, { signal, yieldTask = yieldToTask } = {}) {
+  checkConversionAbort(signal);
+  const fields = table.schema.fields.map(f => f.name);
+  const n = Math.max(0, Math.min(table.numRows, cap == null ? Infinity : cap));
+  const rows = new Array(n);
+  if (n === 0) return { rows, fields };
+  let cells = 0;
+  let bytes = 0;
+  let deadline = now() + COOPERATIVE_BUDGET_MS;
+  const checkpoint = async () => {
+    checkConversionAbort(signal);
+    cells = 0;
+    bytes = 0;
+    if (now() < deadline) return;
+    checkConversionAbort(signal);
+    await yieldTask();
+    checkConversionAbort(signal);
+    deadline = now() + COOPERATIVE_BUDGET_MS;
+  };
+  const decoder = new TextDecoder();
+  const dictionaries = new Map();
+  for (let r = 0; r < n; r++) {
+    rows[r] = {};
+    if (++cells >= COOPERATIVE_CELLS) await checkpoint();
+  }
+  for (let c = 0; c < fields.length; c++) {
+    const name = fields[c];
+    const source = table.getChildAt(fields.indexOf(name));
+    const kind = columnKind(table.schema.fields[c]);
+    const dates = kind === DATE ? new Map() : null;
+    if (!source) {
+      for (let r = 0; r < n; r++) {
+        rows[r][name] = undefined;
+        if (++cells >= COOPERATIVE_CELLS) await checkpoint();
+      }
+      continue;
+    }
+    const chunks = utf8Chunks(source);
+    const values = chunks ? utf8Cells(chunks) : source;
+    let r = 0;
+    const iterator = values[Symbol.iterator]();
+    while (r < n) {
+      const next = iterator.next();
+      if (next.done) break;
+      const value = next.value;
+      let v = value;
+      if (chunks && value !== null) {
+        const [data, start, end, dictionary, key] = value;
+        let cache = dictionary && dictionaries.get(dictionary);
+        if (dictionary && !cache) dictionaries.set(dictionary, cache = new Map());
+        if (cache?.has(key)) {
+          v = cache.get(key);
+        } else {
+          const parts = [];
+          for (let at = start; at < end;) {
+            const stop = Math.min(end, at + COOPERATIVE_BYTES - bytes);
+            parts.push(decoder.decode(data.subarray(at, stop), { stream: stop < end }));
+            bytes += stop - at;
+            at = stop;
+            if (bytes >= COOPERATIVE_BYTES) await checkpoint();
+          }
+          v = parts.join("");
+          if (cache) cache.set(key, v);
+        }
+      }
+      rows[r++][name] = plainValue(v, kind, dates);
+      if (++cells >= COOPERATIVE_CELLS) await checkpoint();
+    }
+  }
+  checkConversionAbort(signal);
   return { rows, fields };
 }
 

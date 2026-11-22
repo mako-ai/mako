@@ -10,6 +10,7 @@ import {
   quoteString,
   readsCatalog,
   toPlainRows,
+  toPlainRowsCooperative,
   isReadOnlySql,
   LARGE_QUERY_ROWS,
   largeQueryWarning,
@@ -237,6 +238,170 @@ test("golden: a 20k-row random table", withArrow, () => {
     d: arrow.makeVector(int32s(new arrow.DateDay(), days)),
   });
   sameRows(table);
+});
+
+test("cooperative rows match the synchronous converter for caps, slices and batches", withArrow, async () => {
+  const table = sampleTable();
+  for (const input of [table, table.concat(table, table), table.concat(table).slice(2, 11)]) {
+    for (const cap of [undefined, null, 0, 1, 3, 8, Infinity]) {
+      assert.deepStrictEqual(canon(await toPlainRowsCooperative(input, cap, { yieldTask: async () => {} })), canon(toPlainRows(input, cap)));
+    }
+  }
+});
+
+test("cooperative rows preserve duplicate field values and errors", withArrow, async () => {
+  function duplicate(secondType, secondData) {
+    const fields = [new arrow.Field("a", new arrow.Utf8(), true), new arrow.Field("a", secondType, true)];
+    return new arrow.Table([new arrow.RecordBatch(new arrow.Schema(fields), arrow.makeData({
+      type: new arrow.Struct(fields), length: 2, nullCount: 0,
+      children: [utf8(["p", "q"]), secondData],
+    }))]);
+  }
+  const table = duplicate(new arrow.Int64(), bigints(new arrow.Int64(), [1n, 2n]));
+  assert.deepStrictEqual(await toPlainRowsCooperative(table), toPlainRows(table));
+  const invalid = duplicate(new arrow.TimestampMicrosecond(), bigints(new arrow.TimestampMicrosecond(), [1n, 2n]));
+  assert.throws(() => toPlainRows(invalid), RangeError);
+  await assert.rejects(toPlainRowsCooperative(invalid), RangeError);
+});
+
+function advanceClock(t, step = 10) {
+  const original = Object.getOwnPropertyDescriptor(globalThis, "performance");
+  let ticks = 0;
+  Object.defineProperty(globalThis, "performance", { configurable: true, value: { now: () => (ticks += step) } });
+  t.after(() => Object.defineProperty(globalThis, "performance", original));
+}
+
+test("cooperative UTF-8 decoding yields within a large cell and preserves boundaries", withArrow, async t => {
+  advanceClock(t);
+  const text = "x".repeat(16383) + "😀" + "é".repeat(25000);
+  const table = new arrow.Table({ value: arrow.makeVector(utf8(["prefix", text, null, "suffix"])) }).slice(1, 4);
+  let yields = 0;
+  const result = await toPlainRowsCooperative(table, undefined, { yieldTask: async () => { yields++; } });
+  assert.ok(yields >= 4, `expected byte-bounded yields, got ${yields}`);
+  assert.deepStrictEqual(result, toPlainRows(table));
+});
+
+test("cooperative dictionary text preserves sliced values and bounds large entries", withArrow, async t => {
+  advanceClock(t);
+  const text = "😀".repeat(18000);
+  const vector = arrow.vectorFromArray(["a", text, null, text], new arrow.Dictionary(new arrow.Utf8(), new arrow.Int32()));
+  const table = new arrow.Table({ value: vector }).slice(1, 4);
+  let yields = 0;
+  const result = await toPlainRowsCooperative(table, undefined, { yieldTask: async () => { yields++; } });
+  assert.equal(yields, 4);
+  assert.deepStrictEqual(result, toPlainRows(table));
+});
+
+test("cooperative UTF-8 conversion aborts after a byte-bound yield", withArrow, async t => {
+  advanceClock(t);
+  const table = new arrow.Table({ value: arrow.makeVector(utf8(["a".repeat(50000)])) });
+  const controller = new AbortController();
+  let yields = 0;
+  await assert.rejects(toPlainRowsCooperative(table, undefined, { signal: controller.signal, yieldTask: async () => {
+    yields++;
+    controller.abort();
+  } }), { name: "AbortError" });
+  assert.equal(yields, 1);
+});
+
+test("cooperative row assembly yields and cancellation resumes as AbortError", async t => {
+  advanceClock(t);
+  const count = 2000;
+  const table = { numRows: count, schema: { fields: [{ name: "n", type: "Int32" }] }, getChildAt: () => Array.from({ length: count }, (_, i) => i) };
+  let resume;
+  let paused;
+  const reached = new Promise(resolve => { paused = resolve; });
+  const controller = new AbortController();
+  const old = toPlainRowsCooperative(table, undefined, { signal: controller.signal, yieldTask: () => {
+    paused();
+    return new Promise(resolve => { resume = resolve; });
+  } });
+  await reached;
+  const current = await toPlainRowsCooperative(table, 3);
+  controller.abort();
+  resume();
+  await assert.rejects(old, { name: "AbortError" });
+  assert.deepStrictEqual(current, toPlainRows(table, 3));
+});
+
+test("cooperative row assignments checkpoint after at most 512 values", async t => {
+  advanceClock(t);
+  let consumed = 0;
+  let largest = 0;
+  const count = 2100;
+  const source = { *[Symbol.iterator]() { for (let i = 0; i < count; i++) { consumed++; yield i; } } };
+  const table = { numRows: count, schema: { fields: [{ name: "n", type: "Int32" }] }, getChildAt: () => source };
+  const result = await toPlainRowsCooperative(table, undefined, { yieldTask: async () => {
+    largest = Math.max(largest, consumed);
+    consumed = 0;
+  } });
+  largest = Math.max(largest, consumed);
+  assert.equal(result.rows.length, count);
+  assert.equal(largest, 512);
+});
+
+test("cooperative conversion does not yield before its elapsed budget", async t => {
+  advanceClock(t, 0);
+  let yields = 0;
+  const source = Array.from({ length: 3000 }, (_, i) => i);
+  const table = { numRows: source.length, schema: { fields: [{ name: "n", type: "Int32" }] }, getChildAt: () => source };
+  await toPlainRowsCooperative(table, undefined, { yieldTask: async () => { yields++; } });
+  assert.equal(yields, 0);
+});
+
+test("cooperative cap avoids the excluded unsafe Arrow timestamp", withArrow, async () => {
+  const table = new arrow.Table({ t: arrow.makeVector(bigints(new arrow.TimestampMillisecond(), [0n, 9223372036854775807n])) });
+  assert.deepStrictEqual(await toPlainRowsCooperative(table, 0), { rows: [], fields: ["t"] });
+  assert.deepStrictEqual(await toPlainRowsCooperative(table, 1), { rows: [{ t: "1970-01-01T00:00:00.000Z" }], fields: ["t"] });
+  await assert.rejects(toPlainRowsCooperative(table, 2), TypeError);
+});
+
+test("cooperative conversion reuses its decoder and dictionary values", withArrow, async t => {
+  const RealDecoder = globalThis.TextDecoder;
+  let decoders = 0;
+  let decodes = 0;
+  globalThis.TextDecoder = class extends RealDecoder {
+    constructor(...args) { super(...args); decoders++; }
+    decode(...args) { decodes++; return super.decode(...args); }
+  };
+  t.after(() => { globalThis.TextDecoder = RealDecoder; });
+  const values = arrow.vectorFromArray(["one", "one", "two", "one"], new arrow.Dictionary(new arrow.Utf8(), new arrow.Int32()));
+  const table = new arrow.Table({ s: values });
+  assert.deepStrictEqual((await toPlainRowsCooperative(table)).rows, [{ s: "one" }, { s: "one" }, { s: "two" }, { s: "one" }]);
+  assert.equal(decoders, 1);
+  assert.equal(decodes, 2);
+});
+
+test("cooperative conversion uses the browser scheduler when available", async t => {
+  advanceClock(t);
+  const original = Object.getOwnPropertyDescriptor(globalThis, "scheduler");
+  let yields = 0;
+  Object.defineProperty(globalThis, "scheduler", { configurable: true, value: { yield: async () => { yields++; } } });
+  t.after(() => original ? Object.defineProperty(globalThis, "scheduler", original) : delete globalThis.scheduler);
+  await toPlainRowsCooperative({ numRows: 600, schema: { fields: [] } });
+  assert.equal(yields, 1);
+});
+
+test("cooperative LargeUtf8 yields within a large cell and cancels", withArrow, async t => {
+  advanceClock(t);
+  const value = "😀".repeat(20000);
+  const table = new arrow.Table({ s: arrow.vectorFromArray(["x", value, null], new arrow.LargeUtf8()) }).slice(1);
+  let yields = 0;
+  const result = await toPlainRowsCooperative(table, undefined, { yieldTask: async () => { yields++; } });
+  assert.ok(yields >= 4);
+  assert.deepStrictEqual(result, toPlainRows(table));
+  const controller = new AbortController();
+  await assert.rejects(toPlainRowsCooperative(table, undefined, { signal: controller.signal, yieldTask: async () => controller.abort() }), { name: "AbortError" });
+});
+
+test("cooperative cancellation checks before conversion and propagates yield failures", async t => {
+  advanceClock(t);
+  const table = { numRows: 600, schema: { fields: [] } };
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(toPlainRowsCooperative(table, undefined, { signal: controller.signal }), { name: "AbortError" });
+  const failure = new Error("yield failed");
+  await assert.rejects(toPlainRowsCooperative(table, undefined, { yieldTask: async () => { throw failure; } }), error => error === failure);
 });
 
 test("toPlainRows without Arrow internals takes the iterator path", () => {
