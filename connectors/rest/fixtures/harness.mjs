@@ -1,37 +1,21 @@
 /**
- * Parity harness: the in-process REST connector and this folder, run
- * against the same recorded HTTP responses, compared entity by entity.
+ * Fixture harness for the REST folder: a local REST API that replays
+ * recorded cassettes (or emulates the dataset, to record them), and helpers
+ * that run the folder the way the SDK runner and the engine do.
  *
- * Both connectors talk to a local server through `api_base_url`. In replay
- * mode the server answers only requests it has a cassette for, so a folder
- * that sends a different request than the in-process connector fails with a
- * cassette miss, and the request logs are compared as well.
+ * The in-process connector this folder was ported from is deleted. The
+ * rows, chunk positions and requests it was checked against are kept as
+ * golden files (`golden.mjs`, one per scenario and entity), and an API test
+ * compares the folder with them byte for byte.
  *
- * For each entity and scenario it compares:
- * - row count, key set and row order;
- * - column set (the union of fields across rows);
- * - a SHA-256 checksum per row, over canonical JSON;
- * - the chunk sequence: page, offset, cursor, rows processed, total count
- *   and hasMore after every chunk;
- * - the exact request sequence each connector sent (method, path, query
- *   string, body, the header that carried the credential and the content
- *   type), the count preview included;
- * - each row's source timestamp, as each connector resolves it.
- *
- * The in-process connector is SSRF-guarded and refuses a loopback target.
- * The harness lifts only that guard (`liftSsrfGuard`) so it can reach the
- * local server; headers, query serialisation and paging are the production
- * code's.
- *
- * The folder side runs through the API's `SandboxedConnector` when the
- * caller passes `makeBoxed` (the API test), else through the SDK runner
- * directly (`parity.mjs`). This file has no dependency on the API.
+ * In replay mode the server answers only requests it has a cassette for, so
+ * a folder that sends a request the cassettes lack fails with a cassette
+ * miss. Every request is logged with the header that carried the credential
+ * and its content type. This file has no dependency on the API.
  */
 import { spawn } from "node:child_process";
-import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
-import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,8 +32,8 @@ export { ENTITIES };
 
 /** The incremental anchor of the `since` scenarios. */
 export const SINCE = "2026-01-01T00:00:00.000Z";
-export const CONNECTION_ID = "ds_parity";
-export const WORKSPACE_ID = "ws_parity";
+export const CONNECTION_ID = "ds_fixture";
+export const WORKSPACE_ID = "ws_fixture";
 
 export const SCENARIOS = [
   // One request per chunk: every page, offset and cursor crosses a boundary.
@@ -267,11 +251,11 @@ function emulate(method, rawUrl, body) {
 }
 
 // ---------------------------------------------------------------------------
-// Running the two connectors
+// Running the folder
 // ---------------------------------------------------------------------------
 
 const scratch = () =>
-  fs.mkdtempSync(path.join(os.tmpdir(), "mako-rest-parity-"));
+  fs.mkdtempSync(path.join(os.tmpdir(), "mako-rest-fixture-"));
 
 /** A connection config for `token` against `server`, with the entities. */
 export function testConfig(token, server, scenario = {}) {
@@ -285,28 +269,6 @@ export function testConfig(token, server, scenario = {}) {
     headers: JSON.stringify(headers),
     entities: ENTITIES,
   };
-}
-
-/**
- * The in-process client with only its SSRF guard lifted: no request
- * interceptor (the address check), plain agents (the guarded lookup), no
- * redirect hook. Headers, base URL and everything else stay as
- * `getHttpClient` built.
- */
-export function liftSsrfGuard(connector) {
-  let client;
-  try {
-    client = connector.getHttpClient();
-  } catch {
-    // A config the client refuses (headers that are not JSON): there is
-    // nothing to lift, and `testConnection` reports it.
-    return connector;
-  }
-  client.interceptors.request.clear();
-  client.defaults.httpAgent = new http.Agent();
-  client.defaults.httpsAgent = new https.Agent();
-  client.defaults.beforeRedirect = undefined;
-  return connector;
 }
 
 export function runFolderCommand(
@@ -374,22 +336,6 @@ export function streamPosition(source, hasMore) {
   };
 }
 
-/** In-process `FetchState`, or `SandboxedConnector`'s around the stream state. */
-export function chunkPosition(state) {
-  const stream = state?.metadata?.stream?.stream_state;
-  if (stream) return streamPosition(stream, state.hasMore);
-  return streamPosition(
-    {
-      page: state?.page,
-      offset: state?.offset,
-      cursor: state?.cursor,
-      totalProcessed: state?.totalProcessed,
-      totalCount: state?.metadata?.totalCount,
-    },
-    state?.hasMore,
-  );
-}
-
 /** Drive the folder chunk by chunk, as `SandboxedConnector` does. */
 export async function readFolder({ entity, config, since, maxIterations }) {
   const rows = [];
@@ -431,21 +377,43 @@ export async function readFolder({ entity, config, since, maxIterations }) {
   return { rows, chunks };
 }
 
+/** The token of one read: its side, scenario and entity, so a log stays apart. */
+export const tokenFor = (side, scenario, entity) =>
+  `rest_test_${side}_${scenario.name}_${entity}`;
+
 /**
- * Drive a connector as the engine does: its schema, then `fetchEntityChunk`
- * until `hasMore` is false, with a fresh connector per chunk (each chunk is
- * its own Inngest step) and the engine's `onProgress`.
+ * The config a raw runner read of `scenario` runs with, as the engine hands
+ * it over: a probe's page size, or the connection's `sync_batch_size`.
  */
-export async function readInProcess(
-  makeConnector,
+export function scenarioConfig(token, server, scenario) {
+  return {
+    ...testConfig(token, server, scenario),
+    ...(scenario.pageSize
+      ? {
+          __page_size: scenario.pageSize,
+          __requested_page_size: scenario.pageSize,
+        }
+      : {}),
+    ...(scenario.settingsBatch ? { __page_size: scenario.settingsBatch } : {}),
+    __rate_limit_delay_ms: 1,
+  };
+}
+
+/**
+ * Drive `SandboxedConnector` chunk by chunk, as the engine does: its schema
+ * first, then `fetchEntityChunk` until `hasMore` is false. The position
+ * after each chunk is read from its STATE message.
+ */
+export async function readBoxed(
+  connector,
   { entity, since, maxIterations, pageSize },
 ) {
   const rows = [];
   const chunks = [];
   let state;
-  await makeConnector().resolveSchema?.(entity);
+  await connector.resolveSchema?.(entity);
   for (let chunk = 0; chunk < 1000; chunk++) {
-    state = await makeConnector().fetchEntityChunk({
+    state = await connector.fetchEntityChunk({
       entity,
       since: since ? new Date(since) : undefined,
       maxIterations,
@@ -457,7 +425,9 @@ export async function readInProcess(
       },
       onProgress: () => {},
     });
-    chunks.push(chunkPosition(state));
+    chunks.push(
+      streamPosition(state?.metadata?.stream?.stream_state, state?.hasMore),
+    );
     if (!state.hasMore) break;
   }
   return { rows, chunks };
@@ -476,319 +446,4 @@ export function sourceTimestamps(connector, entity, rows) {
     byId.set(String(row.id), fellBack ? "now" : ts.toISOString());
   }
   return { byId, fellBackToNow };
-}
-
-// ---------------------------------------------------------------------------
-// Comparison
-// ---------------------------------------------------------------------------
-
-export const rowChecksum = row =>
-  crypto
-    .createHash("sha256")
-    .update(canonicalJson(JSON.parse(JSON.stringify(row))))
-    .digest("hex");
-
-const columnsOf = rows =>
-  [...new Set(rows.flatMap(row => Object.keys(row)))].sort();
-const sameList = (a, b) =>
-  a.length === b.length && a.every((value, i) => value === b[i]);
-
-export function compareRuns(inProcess, folder) {
-  const inIds = inProcess.rows.map(row => String(row.id));
-  const folderIds = folder.rows.map(row => String(row.id));
-  const inSums = inProcess.rows.map(rowChecksum);
-  const folderSums = folder.rows.map(rowChecksum);
-  // By position: ids repeat on purpose in nothing here, but order matters.
-  const checksumMismatches = inSums
-    .map((sum, i) => (folderSums[i] === sum ? null : inIds[i]))
-    .filter(Boolean);
-  const inColumns = columnsOf(inProcess.rows);
-  const folderColumns = columnsOf(folder.rows);
-  const result = {
-    rows: [inProcess.rows.length, folder.rows.length],
-    keys: sameList([...new Set(inIds)].sort(), [...new Set(folderIds)].sort()),
-    order: sameList(inIds, folderIds),
-    columns: sameList(inColumns, folderColumns),
-    columnCount: inColumns.length,
-    checksumMismatches,
-    chunks: [inProcess.chunks.length, folder.chunks.length],
-    chunkStates:
-      canonicalJson(inProcess.chunks) === canonicalJson(folder.chunks),
-    requests: [inProcess.requests?.length ?? 0, folder.requests?.length ?? 0],
-    requestsEqual: sameList(inProcess.requests ?? [], folder.requests ?? []),
-    timestampMismatches: [],
-    timestampsChecked: 0,
-  };
-  if (inProcess.timestamps && folder.timestamps) {
-    for (const [id, ts] of inProcess.timestamps.byId) {
-      result.timestampsChecked++;
-      if (folder.timestamps.byId.get(id) !== ts)
-        result.timestampMismatches.push(id);
-    }
-  }
-  result.ok =
-    result.rows[0] === result.rows[1] &&
-    result.keys &&
-    result.order &&
-    result.columns &&
-    checksumMismatches.length === 0 &&
-    result.chunkStates &&
-    result.requestsEqual &&
-    result.timestampMismatches.length === 0;
-  return result;
-}
-
-const tokenFor = (side, scenario, entity) =>
-  `rest_test_${side}_${scenario.name}_${entity}`;
-
-export async function runParity({
-  entities,
-  makeInProcess,
-  makeBoxed,
-  server,
-  scenarios = SCENARIOS,
-  concurrency = 4,
-}) {
-  const jobs = [];
-  for (const scenario of scenarios)
-    for (const entity of entities) jobs.push({ entity, scenario });
-  const results = [];
-  const work = async ({ entity, scenario }) => {
-    const options = {
-      entity,
-      since: scenario.since,
-      maxIterations: scenario.maxIterations,
-      pageSize: scenario.pageSize,
-    };
-    const inKey = tokenFor("inprocess", scenario, entity);
-    const folderKey = tokenFor("folder", scenario, entity);
-    const run = async (side, read) => {
-      try {
-        return await read();
-      } catch (error) {
-        return {
-          rows: [],
-          chunks: [],
-          error: `${side}: ${error instanceof Error ? error.message : String(error)}`,
-        };
-      }
-    };
-    const inConfig = testConfig(inKey, server, scenario);
-    const inProcess = await run("in-process", () =>
-      readInProcess(() => makeInProcess(inConfig, scenario), options),
-    );
-    inProcess.requests = server.requests(inKey);
-    let folder;
-    if (makeBoxed) {
-      const folderConfig = testConfig(folderKey, server, scenario);
-      // One adapter for the whole read: a read session lives in it.
-      const box = makeBoxed(folderConfig, scenario);
-      folder = await run("folder", () => readInProcess(() => box, options));
-      inProcess.timestamps = sourceTimestamps(
-        makeInProcess(inConfig, scenario),
-        entity,
-        inProcess.rows,
-      );
-      folder.timestamps = sourceTimestamps(
-        makeBoxed(folderConfig, scenario),
-        entity,
-        folder.rows,
-      );
-    } else {
-      folder = await run("folder", () =>
-        readFolder({
-          ...options,
-          config: {
-            ...testConfig(folderKey, server, scenario),
-            ...(scenario.pageSize
-              ? {
-                  __page_size: scenario.pageSize,
-                  __requested_page_size: scenario.pageSize,
-                }
-              : {}),
-            ...(scenario.settingsBatch
-              ? { __page_size: scenario.settingsBatch }
-              : {}),
-            __rate_limit_delay_ms: 1,
-          },
-        }),
-      );
-    }
-    folder.requests = server.requests(folderKey);
-    const comparison = compareRuns(inProcess, folder);
-    const error = inProcess.error ?? folder.error;
-    results.push({
-      entity,
-      scenario: scenario.name,
-      ...comparison,
-      timestampsFellBackToNow: [
-        inProcess.timestamps?.fellBackToNow ?? 0,
-        folder.timestamps?.fellBackToNow ?? 0,
-      ],
-      error,
-      ok: comparison.ok && !error,
-    });
-  };
-  const queue = [...jobs];
-  await Promise.all(
-    Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
-      while (queue.length > 0) await work(queue.shift());
-    }),
-  );
-  const order = new Map(
-    jobs.map((job, i) => [`${job.scenario.name}/${job.entity}`, i]),
-  );
-  return results.sort(
-    (a, b) =>
-      order.get(`${a.scenario}/${a.entity}`) -
-      order.get(`${b.scenario}/${b.entity}`),
-  );
-}
-
-export const CHECK_VARIANTS = [
-  "valid",
-  "revoked",
-  "notfound",
-  "redirect_ok",
-  "bad-headers",
-  "no-entities",
-  "no-base-url",
-];
-
-/**
- * `check` on both sides: a working API, a 401, a 404 on the root, a 302 to
- * a working root, headers that are not JSON, no entity and no base URL (the
- * last three send no request at all).
- */
-export async function checkParity({ makeInProcess, server }) {
-  const outcomes = [];
-  for (const variant of CHECK_VARIANTS) {
-    const suffix = ["revoked", "notfound", "redirect_ok"].includes(variant)
-      ? `_${variant}`
-      : "";
-    const inKey = `rest_test_inprocess_check_${variant}${suffix}`;
-    const folderKey = `rest_test_folder_check_${variant}${suffix}`;
-    const config = token => {
-      const connection = testConfig(token, server);
-      if (variant === "bad-headers")
-        return { ...connection, headers: "{not json" };
-      if (variant === "no-entities") return { ...connection, entities: [] };
-      if (variant === "no-base-url")
-        return { ...connection, api_base_url: undefined };
-      return connection;
-    };
-    const inResult = await makeInProcess(config(inKey)).testConnection();
-    const folderRun = await runFolderCommand("check", {
-      config: config(folderKey),
-    });
-    const status = folderRun.messages.find(
-      m => m.type === "CONNECTION_STATUS",
-    )?.connectionStatus;
-    outcomes.push({
-      variant,
-      inProcess: inResult.success,
-      folder: status?.status === "SUCCEEDED",
-      inProcessMessage: [inResult.message, inResult.details]
-        .flat()
-        .filter(Boolean)
-        .join(": "),
-      folderMessage: status?.message,
-      requests: server.requests(inKey).length,
-      requestsEqual: sameList(
-        server.requests(inKey),
-        server.requests(folderKey),
-      ),
-    });
-  }
-  return outcomes;
-}
-
-/**
- * A read that fails: every request answers 500. Both sides fail the same
- * way, after the same requests (the count preview included, which both
- * ignore, then the first page), with the same message.
- */
-export async function errorParity({ makeInProcess, server, entity }) {
-  const inKey = `rest_test_inprocess_error500_${entity}`;
-  const folderKey = `rest_test_folder_error500_${entity}`;
-  let inMessage = "";
-  try {
-    await readInProcess(() => makeInProcess(testConfig(inKey, server)), {
-      entity,
-      maxIterations: 10,
-    });
-  } catch (error) {
-    inMessage = error instanceof Error ? error.message : String(error);
-  }
-  let folderMessage = "";
-  try {
-    await readFolder({
-      entity,
-      maxIterations: 10,
-      config: { ...testConfig(folderKey, server), __rate_limit_delay_ms: 1 },
-    });
-  } catch (error) {
-    folderMessage = error instanceof Error ? error.message : String(error);
-  }
-  return {
-    entity,
-    inProcessMessage: inMessage,
-    folderMessage,
-    requestsEqual: sameList(server.requests(inKey), server.requests(folderKey)),
-    requests: server.requests(inKey).length,
-  };
-}
-
-export function formatReport(results) {
-  const scenarios = [...new Set(results.map(r => r.scenario))];
-  const entities = [...new Set(results.map(r => r.entity))];
-  const lines = [
-    ["entity", ...scenarios.map(s => `${s}: rows, chunks, requests`)].join(
-      " | ",
-    ),
-  ];
-  for (const entity of entities) {
-    const cells = [entity];
-    for (const scenario of scenarios) {
-      const r = results.find(
-        x => x.entity === entity && x.scenario === scenario,
-      );
-      const problems = [];
-      if (!r.keys) problems.push("keys");
-      if (!r.order) problems.push("order");
-      if (!r.columns) problems.push("columns");
-      if (r.checksumMismatches.length)
-        problems.push(`${r.checksumMismatches.length} checksums`);
-      if (!r.chunkStates) problems.push("chunk states");
-      if (!r.requestsEqual) problems.push("requests");
-      if (r.timestampMismatches.length)
-        problems.push(`${r.timestampMismatches.length} timestamps`);
-      if (r.error) problems.push(`error (${r.error})`);
-      cells.push(
-        `${r.rows[0]}/${r.rows[1]}, ${r.chunks[0]}/${r.chunks[1]}, ${r.requests[0]}/${r.requests[1]}, ${r.ok ? "match" : `DIFF ${problems.join(", ")}`}`,
-      );
-    }
-    lines.push(cells.join(" | "));
-  }
-  return lines.join("\n");
-}
-
-/** Form fields, compared on what a user sees and what decides encryption. */
-export function compareForm(inProcessFields, folderFields) {
-  const shape = field => ({
-    name: field.name,
-    label: field.label,
-    type: field.type,
-    required: Boolean(field.required),
-    default: field.default,
-    showIf: field.showIf,
-    helperText: field.helperText,
-    placeholder: field.placeholder,
-    rows: field.rows,
-    encrypted: Boolean(field.encrypted),
-    ...(field.itemFields ? { itemFields: field.itemFields.map(shape) } : {}),
-  });
-  const a = (inProcessFields ?? []).map(shape);
-  const b = (folderFields ?? []).map(shape);
-  return { ok: canonicalJson(a) === canonicalJson(b), inProcess: a, folder: b };
 }

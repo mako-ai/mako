@@ -1,0 +1,75 @@
+{
+  "chunks": [
+    {
+      "cursor": null,
+      "hasMore": false,
+      "offset": 12,
+      "page": 1,
+      "totalCount": null,
+      "totalProcessed": 14
+    }
+  ],
+  "requests": [
+    "GET /api/v1/wrapped?skip=0 (api-key; application/json)",
+    "GET /api/v1/wrapped?skip=6 (api-key; application/json)",
+    "GET /api/v1/wrapped?skip=12 (api-key; application/json)"
+  ],
+  "rows": [
+    {
+      "id": "w1",
+      "updated_at": "2026-04-01T00:00:00.000Z"
+    },
+    {
+      "id": "w2",
+      "updated_at": "2026-04-02T09:20:00.000Z"
+    },
+    {
+      "id": "w3",
+      "updated_at": "2026-04-03T18:40:00.000Z"
+    },
+    {
+      "id": "w4",
+      "updated_at": "2026-04-05T04:00:00.000Z"
+    },
+    {
+      "id": "w5",
+      "updated_at": "2026-04-06T13:20:00.000Z"
+    },
+    {
+      "id": "w6",
+      "updated_at": "2026-04-07T22:40:00.000Z"
+    },
+    {
+      "id": "w7",
+      "updated_at": "2026-04-09T08:00:00.000Z"
+    },
+    {
+      "id": "w8",
+      "updated_at": "2026-04-10T17:20:00.000Z"
+    },
+    {
+      "id": "w9",
+      "updated_at": "2026-04-12T02:40:00.000Z"
+    },
+    {
+      "id": "w10",
+      "updated_at": "2026-04-13T12:00:00.000Z"
+    },
+    {
+      "id": "w11",
+      "updated_at": "2026-04-14T21:20:00.000Z"
+    },
+    {
+      "id": "w12",
+      "updated_at": "2026-04-16T06:40:00.000Z"
+    },
+    {
+      "id": "w13",
+      "updated_at": "2026-04-17T16:00:00.000Z"
+    },
+    {
+      "id": "w14",
+      "updated_at": "2026-04-19T01:20:00.000Z"
+    }
+  ]
+}

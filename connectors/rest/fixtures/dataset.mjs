@@ -1,5 +1,5 @@
 /**
- * A synthetic REST API for the parity cassettes: 8 entities shaped like the
+ * A synthetic REST API for the cassettes: 8 entities shaped like the
  * ones a generic REST connection runs (page numbers with a total, offsets
  * with a has-more flag, an opaque cursor, a POST search with a body, a bare
  * array, a wrapped `data` array with no data path, a static `updated_after`

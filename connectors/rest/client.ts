@@ -13,9 +13,9 @@
  * - a non-2xx answer fails with axios's message, and nothing is retried;
  * - a body that parses as JSON is the JSON, anything else the raw text.
  *
- * It sends through the SDK's `safeRequest`, not axios. The in-process
- * client is SSRF-guarded (`createSsrfSafeAxios`) because it runs inside
- * Mako's network. A box is outside it, so the guard is the SDK's: the
+ * It sends through the SDK's `safeRequest`, not axios. The deleted
+ * in-process client was SSRF-guarded because it ran inside Mako's network.
+ * A box is outside it, so the guard is the SDK's: the
  * socket's own lookup checks every resolved address and the connection uses
  * the address it checked (no DNS rebinding window), only public unicast and
  * loopback are allowed, every redirect hop is checked, https to http with a

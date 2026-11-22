@@ -1,0 +1,86 @@
+{
+  "chunks": [
+    {
+      "cursor": null,
+      "hasMore": true,
+      "offset": 10,
+      "page": 1,
+      "totalCount": null,
+      "totalProcessed": 10
+    },
+    {
+      "cursor": null,
+      "hasMore": false,
+      "offset": 10,
+      "page": 1,
+      "totalCount": null,
+      "totalProcessed": 12
+    }
+  ],
+  "requests": [
+    "GET /api/v1/changes?updatedAfter=2020-01-01T00:00:00.000Z&limit=10&offset=0 (bearer; application/json)",
+    "GET /api/v1/changes?updatedAfter=2020-01-01T00:00:00.000Z&limit=10&offset=10 (bearer; application/json)"
+  ],
+  "rows": [
+    {
+      "id": 1,
+      "note": "change 1",
+      "updated_at": "2025-10-01T00:00:00.000Z"
+    },
+    {
+      "id": 2,
+      "note": "change 2",
+      "updated_at": "2025-10-28T18:40:00.000Z"
+    },
+    {
+      "id": 3,
+      "note": "change 3",
+      "updated_at": "2025-11-25T13:20:00.000Z"
+    },
+    {
+      "id": 4,
+      "note": "change 4",
+      "updated_at": "2025-12-23T08:00:00.000Z"
+    },
+    {
+      "id": 5,
+      "note": "change 5",
+      "updated_at": "2026-01-20T02:40:00.000Z"
+    },
+    {
+      "id": 6,
+      "note": "change 6",
+      "updated_at": "2026-02-16T21:20:00.000Z"
+    },
+    {
+      "id": 7,
+      "note": "change 7",
+      "updated_at": "2026-03-16T16:00:00.000Z"
+    },
+    {
+      "id": 8,
+      "note": "change 8",
+      "updated_at": "2026-04-13T10:40:00.000Z"
+    },
+    {
+      "id": 9,
+      "note": "change 9",
+      "updated_at": "2026-05-11T05:20:00.000Z"
+    },
+    {
+      "id": 10,
+      "note": "change 10",
+      "updated_at": "2026-06-08T00:00:00.000Z"
+    },
+    {
+      "id": 11,
+      "note": "change 11",
+      "updated_at": "2026-07-05T18:40:00.000Z"
+    },
+    {
+      "id": 12,
+      "note": "change 12",
+      "updated_at": "2026-08-02T13:20:00.000Z"
+    }
+  ]
+}

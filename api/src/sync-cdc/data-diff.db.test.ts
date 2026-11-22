@@ -17,6 +17,7 @@ process.env.ENCRYPTION_KEY =
   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 import {
+  ConnectorDefinition,
   DatabaseConnection,
   Flow,
   FlowDataDiff,
@@ -248,12 +249,20 @@ async function main() {
         connection: {},
       });
     }
+    // A workspace connector: no built-in source connector is left. Its
+    // code fingerprint is the index row's runtime and source commit.
+    await ConnectorDefinition.collection.insertOne({
+      workspaceId,
+      slug: "close",
+      runtime: "node",
+      sourceSha: "c0ffee",
+    });
     const sourceId = new Types.ObjectId();
     await SourceConnection.collection.insertOne({
       _id: sourceId,
       workspaceId,
       name: "fr_close",
-      type: "rest",
+      type: "ws:close",
       config: {},
     });
     const flowId = new Types.ObjectId();
@@ -279,7 +288,7 @@ async function main() {
       { reasons: [] },
     );
     const stamped = await Flow.findById(flowId).lean();
-    assert.match(stamped!.dataDiffFingerprint!.code!, /^rest@[0-9a-f]{16}$/);
+    assert.match(stamped!.dataDiffFingerprint!.code!, /^ws:close@node:c0ffee$/);
     assert.equal(await FlowDataDiff.countDocuments(), 0);
     assert.equal(await compareFlowDataDiff({ flowId: id }), null);
 
@@ -314,7 +323,7 @@ async function main() {
     // 4. New connector code between two plain runs opens a check.
     await Flow.updateOne(
       { _id: flowId },
-      { $set: { "dataDiffFingerprint.code": "rest@0000000000000000" } },
+      { $set: { "dataDiffFingerprint.code": "ws:close@node:0ld5ha" } },
     );
     assert.deepEqual(
       await prepareFlowDataDiff({ flowId: id, entities, backfill: false }),

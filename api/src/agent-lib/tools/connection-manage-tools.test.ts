@@ -424,11 +424,12 @@ describe("delete_connection", () => {
 describe("create_connection reports access", () => {
   it("a new connection starts with live reads off and no writers, and links to the Access tab", async () => {
     const result = await writeTools("member2").create_connection.execute({
-      connector: "rest",
-      name: "new_rest",
+      connector: "custom_api",
+      name: "new_api",
       config: {
-        api_base_url: "https://api.example.com",
-        headers: JSON.stringify({ Authorization: SECRET }),
+        base_url: "https://api.example.com",
+        auth_type: "bearer",
+        token: SECRET,
       },
     });
     expect(result.error).toBeUndefined();

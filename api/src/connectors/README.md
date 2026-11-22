@@ -8,8 +8,9 @@ Two words, two things — decided 2026-09-02 (mako#954), because until then
 "connector" meant three different rows depending on the file you were in.
 
 - A **connector** is **code**: the thing that knows how to check a credential
-  and read entities. Built-in connectors are the directories here (`rest`,
-  `custom_api`, type = directory name); workspace connectors are
+  and read entities. No built-in connector directory is left here: the
+  only built-in type is `custom_api`, a call profile
+  (`connections/callable-profiles/`). Workspace connectors are
   `connectors/<slug>/` in a workspace repo, written with
   `@makoai/connector-sdk`, indexed as `ConnectorDefinition` rows and typed
   `ws:<slug>`.
@@ -65,7 +66,7 @@ connectors/
 │   ├── pagination.ts        # Offset and next-token page loops
 │   ├── incremental.ts       # Date windows, the client-side `since` filter
 │   └── webhook-signature.ts # Raw body, HMAC, constant-time compare
-├── rest/
+├── workspace/               # The workspace connector adapter and runtime
 ├── registry.ts              # Runtime connector discovery for the API server
 └── README.md               # This file
 ```
@@ -177,6 +178,12 @@ table of connectors and entities. Summary:
 - A connector folder, `connectors/graphql/` (type `ws:graphql`). The in-process connector is deleted.
 - Supports custom queries with offset or cursor pagination
 - Required config: `endpoint`, `queries` (configured on the Flow, not the connector)
+
+### REST
+
+- A connector folder, `connectors/rest/` (type `ws:rest`). The in-process connector, the last built-in one, is deleted.
+- One untyped entity per item of the connection's `entities`, with page, offset or cursor pagination
+- Required config: `api_base_url`, `entities`
 
 ### Custom API (`custom_api`)
 Any HTTP or GraphQL API with a stored key (bearer, API key in a header or query string, basic auth, or none). Never synced: no entities, hidden from the flow source picker (`syncable: false`). It is only called, through the connection proxy (`connections/proxy.service.ts`). See the [Calling a Service Live](/connectors/#calling-a-service-live) docs.

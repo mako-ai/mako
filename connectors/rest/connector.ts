@@ -2,9 +2,10 @@
  * Generic REST on @makoai/connector-sdk: `spec`, `check`, `discover` and
  * `read`.
  *
- * A port of the in-process connector in `api/src/connectors/rest/`. Nothing
- * runs it in production yet. `fixtures/parity.mjs` runs both against the
- * same recorded HTTP responses and compares them entity by entity.
+ * Ported from the in-process connector, which is deleted. `fixtures/golden/`
+ * holds the rows, chunk positions and requests the in-process connector was
+ * checked against, and an API test compares the folder with them byte for
+ * byte.
  *
  * CONFIG is the in-process form, field for field: `api_base_url`, the
  * encrypted `headers` JSON and the `entities` list. Stored connections work

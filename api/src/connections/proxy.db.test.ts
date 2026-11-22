@@ -1407,17 +1407,18 @@ async function main() {
       config: { base_url: "https://x.example.com", token: "t0ken_value" },
     });
     assert.equal(custom.liveReads, undefined);
-    const builtin = await createSourceConnection({
-      workspaceId: String(ws),
-      userId: "deployer",
-      name: "new_rest",
-      type: "rest",
-      config: {
-        api_base_url: "https://x.example.com",
-        headers: JSON.stringify({ Authorization: "k3y_value" }),
-      },
-    });
-    assert.equal(builtin.liveReads, undefined);
+    // The in-process REST connector, the last built-in source, is deleted:
+    // a new `rest` connection is refused.
+    await assert.rejects(
+      createSourceConnection({
+        workspaceId: String(ws),
+        userId: "deployer",
+        name: "new_rest",
+        type: "rest",
+        config: { api_base_url: "https://x.example.com" },
+      }),
+      /Unsupported source type: rest/,
+    );
 
     console.info("connection proxy tests passed");
   } finally {

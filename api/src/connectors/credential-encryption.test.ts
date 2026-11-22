@@ -61,9 +61,9 @@ async function main() {
   // A census whose subject is empty passes vacuously. The first version of
   // this check enumerated the registry, found zero connectors, and cheerfully
   // reported that every field was protected.
-  // The floor guards against an empty enumeration, not a fixed count: built-in
-  // families are being removed one PR at a time (connector-family-allowlist.ts).
-  // rest stays, and custom_api is counted from its call profile.
+  // The floor guards against an empty enumeration, not a fixed count. Every
+  // built-in family is removed (connector-family-allowlist.ts is empty), so
+  // custom_api, counted from its call profile, is the 1 type left.
   assert.ok(
     types.length >= 1,
     `expected to find the connector directories, found ${types.length} — enumeration is broken, and a census of nothing proves nothing`,
