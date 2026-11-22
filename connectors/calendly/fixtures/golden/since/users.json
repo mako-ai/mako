@@ -1,0 +1,61 @@
+{
+  "requestCount": 2,
+  "rows": [
+    {
+      "created_at": "2025-11-13T08:00:00.000000Z",
+      "id": "MEM0000000004",
+      "organization": "https://calendly.local/organizations/ORG0000000001",
+      "role": "user",
+      "updated_at": "2026-08-07T00:00:00.000000Z",
+      "uri": "https://calendly.local/organization_memberships/MEM0000000004",
+      "user": {
+        "avatar_url": null,
+        "created_at": "2025-11-13T08:00:00.000000Z",
+        "email": "member.4@example.com",
+        "locale": "en",
+        "name": "Member 4",
+        "scheduling_url": "https://calendly.example.com/member-4",
+        "slug": "member-4",
+        "timezone": "Europe/Paris",
+        "updated_at": "2026-08-07T00:00:00.000000Z",
+        "uri": "https://calendly.local/users/USR0000000004"
+      },
+      "user_avatar_url": null,
+      "user_email": "member.4@example.com",
+      "user_locale": "en",
+      "user_name": "Member 4",
+      "user_scheduling_url": "https://calendly.example.com/member-4",
+      "user_slug": "member-4",
+      "user_timezone": "Europe/Paris",
+      "user_uri": "https://calendly.local/users/USR0000000004"
+    },
+    {
+      "created_at": "2025-11-13T08:00:00.000000Z",
+      "id": "MEM0000000005",
+      "organization": "https://calendly.local/organizations/ORG0000000001",
+      "role": "user",
+      "updated_at": "2026-08-23T16:00:00.000000Z",
+      "uri": "https://calendly.local/organization_memberships/MEM0000000005",
+      "user": {
+        "avatar_url": null,
+        "created_at": "2025-11-13T08:00:00.000000Z",
+        "email": "member.5@example.com",
+        "locale": "en",
+        "name": "Member 5",
+        "scheduling_url": "https://calendly.example.com/member-5",
+        "slug": "member-5",
+        "timezone": "Europe/Paris",
+        "updated_at": "2026-08-23T16:00:00.000000Z",
+        "uri": "https://calendly.local/users/USR0000000005"
+      },
+      "user_avatar_url": null,
+      "user_email": "member.5@example.com",
+      "user_locale": "en",
+      "user_name": "Member 5",
+      "user_scheduling_url": "https://calendly.example.com/member-5",
+      "user_slug": "member-5",
+      "user_timezone": "Europe/Paris",
+      "user_uri": "https://calendly.local/users/USR0000000005"
+    }
+  ]
+}

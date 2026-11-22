@@ -1,0 +1,14 @@
+{
+  "requestCount": 2,
+  "rows": [
+    {
+      "created_at": "2025-04-27T08:00:00.000000Z",
+      "id": "ORG0000000001",
+      "name": "Fixture Org",
+      "plan": "teams",
+      "stage": "paid",
+      "updated_at": "2026-07-13T00:00:00.000000Z",
+      "uri": "https://calendly.local/organizations/ORG0000000001"
+    }
+  ]
+}

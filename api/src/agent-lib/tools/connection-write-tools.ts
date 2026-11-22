@@ -206,7 +206,6 @@ const CREDENTIAL_LIKE_KEY =
 const ADDRESS_FIELDS_BY_TYPE: Readonly<Record<string, readonly string[]>> = {
   rest: ["api_base_url", "headers"],
   posthog: ["api_base_url"],
-  calendly: ["api_base_url"],
   claap: ["api_base_url"],
   pandadoc: ["api_base_url"],
   bigquery: ["api_base_url"],

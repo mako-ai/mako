@@ -1,0 +1,91 @@
+{
+  "requestCount": 2,
+  "rows": [
+    {
+      "active": false,
+      "admin_managed": false,
+      "booking_method": "instant",
+      "color": "#0069ff",
+      "created_at": "2026-04-12T08:00:00.000000Z",
+      "custom_questions": [
+        {
+          "name": "Address",
+          "position": 0,
+          "type": "string"
+        }
+      ],
+      "deleted_at": null,
+      "description_html": "<p>About Kickoff</p>",
+      "description_plain": "About Kickoff",
+      "duration": 90,
+      "duration_options": null,
+      "id": "ET0000000006",
+      "internal_note": null,
+      "is_paid": false,
+      "kind": "solo",
+      "locale": "en",
+      "locations": null,
+      "name": "Kickoff",
+      "pooling_type": null,
+      "position": 5,
+      "profile": {
+        "name": "Member 1",
+        "owner": "https://calendly.local/users/USR0000000001",
+        "type": "User"
+      },
+      "scheduling_url": "https://calendly.example.com/t/6",
+      "secret": false,
+      "slug": "kickoff",
+      "type": "StandardEventType",
+      "updated_at": "2026-08-15T08:00:00.000000Z",
+      "uri": "https://calendly.local/event_types/ET0000000006"
+    },
+    {
+      "active": true,
+      "admin_managed": false,
+      "booking_method": "instant",
+      "color": "#0069ff",
+      "created_at": "2026-04-12T08:00:00.000000Z",
+      "custom_questions": [
+        {
+          "name": "Address",
+          "position": 0,
+          "type": "string"
+        }
+      ],
+      "deleted_at": null,
+      "description_html": "<p>About Zoom tour</p>",
+      "description_plain": "About Zoom tour",
+      "duration": 105,
+      "duration_options": [
+        15,
+        30
+      ],
+      "id": "ET0000000007",
+      "internal_note": null,
+      "is_paid": false,
+      "kind": "solo",
+      "locale": "en",
+      "locations": [
+        {
+          "kind": "physical",
+          "location": "Office"
+        }
+      ],
+      "name": "Zoom tour",
+      "pooling_type": null,
+      "position": 6,
+      "profile": {
+        "name": "Member 1",
+        "owner": "https://calendly.local/users/USR0000000001",
+        "type": "User"
+      },
+      "scheduling_url": "https://calendly.example.com/t/7",
+      "secret": false,
+      "slug": "zoom-tour",
+      "type": "StandardEventType",
+      "updated_at": "2026-08-27T20:00:00.000000Z",
+      "uri": "https://calendly.local/event_types/ET0000000007"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "chunks": [
+    {
+      "hasMore": true,
+      "position": {
+        "cursor": "o:100"
+      }
+    },
+    {
+      "hasMore": true,
+      "position": {
+        "cursor": "o:200"
+      }
+    },
+    {
+      "hasMore": false,
+      "position": {
+        "cursor": null
+      }
+    }
+  ],
+  "requestCount": 6,
+  "rowCount": 210,
+  "rowsSha256": "5f5509dbfada9422b9245b82e0cfa761997fd7bd28c8eb73427bc83e9e78d3dd"
+}

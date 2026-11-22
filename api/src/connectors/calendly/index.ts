@@ -1,1 +1,0 @@
-export { CalendlyConnector } from "./connector";

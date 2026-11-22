@@ -1,36 +1,25 @@
 /**
- * Parity harness: the in-process Calendly connector and this folder, run
- * against the same recorded Calendly responses, compared entity by entity.
+ * Harness for the Calendly folder: a replay and a recording server for the
+ * Calendly API, and the helpers that run the folder's commands against them.
+ * The in-process connector this folder was ported from is deleted, so the
+ * folder is held to its own golden files (`golden.mjs`).
  *
- * Both connectors talk to a local HTTP server through `api_base_url`. In
- * replay mode the server answers only requests it has a cassette for, so a
- * folder that sends a different request than the in-process connector fails
- * with a cassette miss, and the request logs are compared as well.
+ * The folder talks to a local HTTP server through `api_base_url`. In replay
+ * mode the server answers only requests it has a cassette for, so a request
+ * the folder did not send when the cassettes were recorded fails the read
+ * with a cassette miss.
  *
- * Calendly returns absolute URIs, and both connectors call those URIs back.
+ * Calendly returns absolute URIs, and the folder calls those URIs back.
  * Cassettes hold them under the placeholder host `BASE` (dataset.mjs): the
  * server swaps it for its own URL in every answer, and back in every
  * request key.
  *
- * For each entity and scenario it compares:
- * - row count, key set and row order;
- * - column set (the union of fields across rows);
- * - a SHA-256 checksum per row, over canonical JSON;
- * - each row's source timestamp, as the engine and the connector resolve it;
- * - the chunk sequence: the read position and hasMore after every chunk;
- * - the requests sent. In exact order, except `invitees`: both sides read a
- *   wave of up to 8 events concurrently, so the order inside a wave is the
- *   network's. Those are compared as sorted lists (same requests, same
- *   count), and the rows, which keep the wave's order, exactly.
- *
  * In the folder process `clock.mjs` shortens timers under 5 s to 0, so the
  * pauses and `Retry-After: 1` retries do not slow the replay.
  *
- * This file has no dependency on the API. The caller passes the in-process
- * connector in (`parity.mjs`, and the API test).
+ * This file has no dependency on the API.
  */
 import { spawn, spawnSync } from "node:child_process";
-import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -55,7 +44,7 @@ export const SCENARIOS = [
   // stop after every events page and every wave.
   { name: "chunked", maxIterations: 1 },
   // Two rows a page (`count=2`), one page per chunk. Invitee pages are 2
-  // rows too; the events page stays 100, as in-process.
+  // rows too; the events page stays 100.
   { name: "small-pages", maxIterations: 1, pageSize: 2 },
   // The engine's default chunk of 10 pages.
   { name: "default", maxIterations: 10 },
@@ -200,7 +189,7 @@ export function saveCassettes(byFile, dir = CASSETTE_DIR) {
  * this server must never see a real token. A token containing `_revoked`
  * gets 401. A token containing `_ratelimit` gets one 429 with
  * `Retry-After: 1` for each distinct request before the real answer, so
- * both sides' retry policies run.
+ * the folder's retry policy runs.
  */
 async function startServer(answer) {
   const log = new Map();
@@ -358,11 +347,10 @@ function listPage(rows, query) {
 }
 
 // ---------------------------------------------------------------------------
-// Running the two connectors
+// Running the folder
 // ---------------------------------------------------------------------------
 
-const scratch = () =>
-  fs.mkdtempSync(path.join(os.tmpdir(), "mako-calendly-parity-"));
+const scratch = () => fs.mkdtempSync(path.join(os.tmpdir(), "mako-calendly-"));
 
 /** Run one SDK command on the folder and parse its JSON Lines. */
 export function runFolderCommand(
@@ -424,11 +412,6 @@ const positionOf = state => {
   return position;
 };
 
-/** The in-process `FetchState` as a read position: its metadata. */
-export function inProcessPosition(state) {
-  return state?.metadata ?? {};
-}
-
 /**
  * Drive the folder chunk by chunk, the way `SandboxedConnector` does: the
  * last STATE message goes back as `--state`, until `mako.hasMore` is false.
@@ -477,405 +460,6 @@ export async function readFolder({ entity, config, since, maxIterations }) {
   return { rows, chunks };
 }
 
-/**
- * Drive `SandboxedConnector` (the box path, with the box swapped for a local
- * process) chunk by chunk, as the engine does.
- */
-export async function readBoxed(
-  connector,
-  { entity, since, maxIterations, pageSize },
-) {
-  const rows = [];
-  const chunks = [];
-  let state;
-  for (let chunk = 0; chunk < 2000; chunk++) {
-    state = await connector.fetchEntityChunk({
-      entity,
-      since: since ? new Date(since) : undefined,
-      maxIterations,
-      ...(pageSize ? { batchSize: pageSize } : {}),
-      rateLimitDelay: 1,
-      state,
-      onBatch: async batch => {
-        rows.push(...batch);
-      },
-    });
-    // Pin the page cap. SandboxedConnector grows the next chunk's cap
-    // (`state.chunkPages`, up to 8x) when a chunk used little of its
-    // byte budget; the in-process side has no such growth, so chunk
-    // counts and boundary requests would differ by design. Unpinned,
-    // the folder read the same rows and checksums (PR #1386); the cap
-    // math is tested in api/src/connectors/workspace/sandboxed-chunk.test.ts.
-    const { chunkPages: _grown, ...pinned } = state;
-    state = pinned;
-    chunks.push({
-      position: positionOf(state.metadata?.stream?.stream_state),
-      hasMore: state.hasMore,
-    });
-    if (!state.hasMore) break;
-  }
-  return { rows, chunks };
-}
-
-/**
- * Drive the in-process connector chunk by chunk, as the engine does, with a
- * fresh connector per chunk: `performSyncChunk` builds one per chunk too, so
- * `/users/me` is asked for again each chunk, as in production.
- */
-export async function readInProcess(
-  makeConnector,
-  { entity, since, maxIterations, pageSize },
-) {
-  const rows = [];
-  const chunks = [];
-  let state;
-  for (let chunk = 0; chunk < 2000; chunk++) {
-    state = await makeConnector().fetchEntityChunk({
-      entity,
-      since: since ? new Date(since) : undefined,
-      maxIterations,
-      ...(pageSize ? { batchSize: pageSize } : {}),
-      rateLimitDelay: 1,
-      state,
-      onBatch: async batch => {
-        rows.push(...batch);
-      },
-    });
-    chunks.push({ position: inProcessPosition(state), hasMore: state.hasMore });
-    if (!state.hasMore) break;
-  }
-  return { rows, chunks };
-}
-
-// ---------------------------------------------------------------------------
-// Comparison
-// ---------------------------------------------------------------------------
-
-/** Checksum of a row as it lands, through JSON on both sides. */
-export const rowChecksum = row =>
-  crypto
-    .createHash("sha256")
-    .update(canonicalJson(JSON.parse(JSON.stringify(row))))
-    .digest("hex");
-
-const TIMESTAMP_CANDIDATES = [
-  "date_updated",
-  "updated_at",
-  "updatedAt",
-  "date_modified",
-  "date_created",
-  "created_at",
-  "createdAt",
-  "timestamp",
-  "_syncedAt",
-];
-
-/** Whether a row carries a time the resolvers can read; else both say "now". */
-export function hasSourceTime(row) {
-  return TIMESTAMP_CANDIDATES.some(
-    field =>
-      row?.[field] && !Number.isNaN(new Date(String(row[field])).getTime()),
-  );
-}
-
-const columnsOf = rows =>
-  [...new Set(rows.flatMap(row => Object.keys(row)))].sort();
-const sameList = (a, b) =>
-  a.length === b.length && a.every((value, i) => value === b[i]);
-
-/** Every comparison for one entity and scenario. `ok` is the conjunction. */
-export function compareRuns(inProcess, folder, sourceTs, entity) {
-  const inIds = inProcess.rows.map(row => String(row.id));
-  const folderIds = folder.rows.map(row => String(row.id));
-  const checksumMismatches = [];
-  const timestampMismatches = [];
-  let fallbacks = 0;
-  const n = Math.min(inProcess.rows.length, folder.rows.length);
-  for (let i = 0; i < n; i++) {
-    const a = inProcess.rows[i];
-    const b = folder.rows[i];
-    if (rowChecksum(a) !== rowChecksum(b)) checksumMismatches.push(inIds[i]);
-    if (sourceTs) {
-      if (!hasSourceTime(a) && !hasSourceTime(b)) {
-        fallbacks++;
-        continue;
-      }
-      if (
-        canonicalJson(sourceTs.inProcess(a, entity)) !==
-        canonicalJson(sourceTs.folder(b, entity))
-      )
-        timestampMismatches.push(inIds[i]);
-    }
-  }
-  const unordered = CONCURRENT_ENTITIES.has(entity);
-  const requests = list =>
-    unordered ? [...(list ?? [])].sort() : [...(list ?? [])];
-  const inColumns = columnsOf(inProcess.rows);
-  const folderColumns = columnsOf(folder.rows);
-  const result = {
-    rows: [inProcess.rows.length, folder.rows.length],
-    duplicates: [
-      inIds.length - new Set(inIds).size,
-      folderIds.length - new Set(folderIds).size,
-    ],
-    keys: sameList([...new Set(inIds)].sort(), [...new Set(folderIds)].sort()),
-    order: sameList(inIds, folderIds),
-    columns: sameList(inColumns, folderColumns),
-    columnCount: inColumns.length,
-    checksumMismatches,
-    timestampMismatches,
-    timestampFallbacks: fallbacks,
-    chunks: [inProcess.chunks.length, folder.chunks.length],
-    chunkStates:
-      canonicalJson(inProcess.chunks) === canonicalJson(folder.chunks),
-    requests: [inProcess.requests?.length ?? 0, folder.requests?.length ?? 0],
-    requestsEqual: sameList(
-      requests(inProcess.requests),
-      requests(folder.requests),
-    ),
-    requestOrder: unordered ? "sorted" : "exact",
-  };
-  result.ok =
-    result.rows[0] === result.rows[1] &&
-    result.duplicates[0] === result.duplicates[1] &&
-    result.keys &&
-    result.order &&
-    result.columns &&
-    checksumMismatches.length === 0 &&
-    timestampMismatches.length === 0 &&
-    result.chunkStates &&
-    result.requestsEqual;
-  return result;
-}
-
-/**
- * Run every entity in every scenario against one server.
- * `makeInProcess(config)` returns a fresh connector for one chunk.
- */
-export async function runParity({
-  entities,
-  makeInProcess,
-  makeBoxed,
-  server,
-  sourceTs,
-  scenarios = SCENARIOS,
-  concurrency = 6,
-}) {
-  const jobs = [];
-  for (const scenario of scenarios) {
-    for (const entity of entities) jobs.push({ entity, scenario });
-  }
-  const results = [];
-  const work = async ({ entity, scenario }) => {
-    const options = {
-      entity,
-      since: scenario.since,
-      maxIterations: scenario.maxIterations,
-      pageSize: scenario.pageSize,
-    };
-    const limited = scenario.rateLimited ? "_ratelimit" : "";
-    const inKey = `cal_test_inprocess${limited}_${scenario.name}_${entity}`;
-    const folderKey = `cal_test_folder${limited}_${scenario.name}_${entity}`;
-    const run = async (side, read) => {
-      try {
-        return await read();
-      } catch (error) {
-        return {
-          rows: [],
-          chunks: [],
-          error: `${side}: ${error instanceof Error ? error.message : String(error)}`,
-        };
-      }
-    };
-    const inProcess = await run("in-process", () =>
-      readInProcess(
-        () => makeInProcess({ access_token: inKey, api_base_url: server.url }),
-        options,
-      ),
-    );
-    inProcess.requests = server.requests(inKey);
-    const boxed = makeBoxed?.({
-      access_token: folderKey,
-      api_base_url: server.url,
-    });
-    const folder = await run("folder", () =>
-      boxed
-        ? readBoxed(boxed, options)
-        : readFolder({
-            ...options,
-            config: {
-              access_token: folderKey,
-              api_base_url: server.url,
-              ...(scenario.pageSize ? { __page_size: scenario.pageSize } : {}),
-            },
-          }),
-    );
-    folder.requests = server.requests(folderKey);
-    const comparison = compareRuns(inProcess, folder, sourceTs, entity);
-    const error = inProcess.error ?? folder.error;
-    results.push({
-      entity,
-      scenario: scenario.name,
-      ...comparison,
-      error,
-      ok: comparison.ok && !error,
-    });
-  };
-  const queue = [...jobs];
-  await Promise.all(
-    Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
-      while (queue.length > 0) await work(queue.shift());
-    }),
-  );
-  const order = new Map(
-    jobs.map((job, i) => [`${job.scenario.name}/${job.entity}`, i]),
-  );
-  return results.sort(
-    (a, b) =>
-      order.get(`${a.scenario}/${a.entity}`) -
-      order.get(`${b.scenario}/${b.entity}`),
-  );
-}
-
-/** `check` on both sides, with a working token and a revoked one. */
-export async function checkParity({ makeInProcess, server }) {
-  const outcomes = [];
-  for (const variant of ["valid", "revoked"]) {
-    const suffix = variant === "revoked" ? "_revoked" : "";
-    const inKey = `cal_test_inprocess_check${suffix}`;
-    const folderKey = `cal_test_folder_check${suffix}`;
-    const inResult = await makeInProcess({
-      access_token: inKey,
-      api_base_url: server.url,
-    }).testConnection();
-    const folderRun = await runFolderCommand("check", {
-      config: { access_token: folderKey, api_base_url: server.url },
-    });
-    const status = folderRun.messages.find(
-      m => m.type === "CONNECTION_STATUS",
-    )?.connectionStatus;
-    outcomes.push({
-      variant,
-      inProcess: inResult.success,
-      folder: status?.status === "SUCCEEDED",
-      folderMessage: status?.message,
-      requestsEqual: sameList(
-        server.requests(inKey),
-        server.requests(folderKey),
-      ),
-    });
-  }
-  return outcomes;
-}
-
-/** A plain-text table, one row per entity, one column group per scenario. */
-export function formatReport(results) {
-  const scenarios = [...new Set(results.map(r => r.scenario))];
-  const entities = [...new Set(results.map(r => r.entity))];
-  const header = [
-    "entity",
-    ...scenarios.map(s => `${s}: rows in/folder, chunks, requests, result`),
-  ];
-  const lines = [header.join(" | ")];
-  for (const entity of entities) {
-    const cells = [entity];
-    for (const scenario of scenarios) {
-      const r = results.find(
-        x => x.entity === entity && x.scenario === scenario,
-      );
-      if (!r) {
-        cells.push("-");
-        continue;
-      }
-      const problems = [];
-      if (!r.keys) problems.push("keys");
-      if (!r.order) problems.push("order");
-      if (!r.columns) problems.push("columns");
-      if (r.checksumMismatches.length)
-        problems.push(`${r.checksumMismatches.length} checksums`);
-      if (r.timestampMismatches.length)
-        problems.push(`${r.timestampMismatches.length} source timestamps`);
-      if (r.duplicates[1] !== r.duplicates[0])
-        problems.push(`${r.duplicates[1]}/${r.duplicates[0]} duplicates`);
-      if (!r.chunkStates) problems.push("chunk states");
-      if (!r.requestsEqual) problems.push("requests");
-      if (r.error) problems.push(`error (${r.error})`);
-      cells.push(
-        `${r.rows[0]}/${r.rows[1]}, ${r.chunks[0]}/${r.chunks[1]}, ${r.requests[0]}/${r.requests[1]}, ${r.ok ? "match" : `DIFF ${problems.join(", ")}`}`,
-      );
-    }
-    lines.push(cells.join(" | "));
-  }
-  return lines.join("\n");
-}
-
-// ---------------------------------------------------------------------------
-// Schemas and the credential form
-// ---------------------------------------------------------------------------
-
-/**
- * The in-process `ConnectorEntitySchema` against the folder's stream as the
- * engine translates it. Fields in `ignore` (Mako's system columns) are left
- * out: the in-process schema declares them, the folder does not.
- */
-export function compareEntitySchema(inProcess, folder, ignore = new Set()) {
-  const names = schema =>
-    Object.keys(schema?.fields ?? {})
-      .filter(name => !ignore.has(name))
-      .sort();
-  const inNames = names(inProcess);
-  const folderNames = names(folder);
-  const nullable = field => field.nullable ?? !field.required;
-  const fieldDiffs = [];
-  for (const name of inNames) {
-    const a = inProcess.fields[name];
-    const b = folder?.fields?.[name];
-    if (!b) continue;
-    if (a.type !== b.type)
-      fieldDiffs.push(`${name}: type ${a.type} vs ${b.type}`);
-    if (nullable(a) !== nullable(b))
-      fieldDiffs.push(`${name}: nullable ${nullable(a)} vs ${nullable(b)}`);
-    if (Boolean(a.required) !== Boolean(b.required))
-      fieldDiffs.push(
-        `${name}: required ${Boolean(a.required)} vs ${Boolean(b.required)}`,
-      );
-  }
-  const missing = inNames.filter(name => !folderNames.includes(name));
-  const extra = folderNames.filter(name => !inNames.includes(name));
-  const keyColumns =
-    canonicalJson(inProcess?.keyColumns) === canonicalJson(folder?.keyColumns);
-  const policy = inProcess?.unknownFieldPolicy === folder?.unknownFieldPolicy;
-  return {
-    fields: [inNames.length, folderNames.length],
-    missing,
-    extra,
-    fieldDiffs,
-    keyColumns,
-    policy,
-    ok:
-      missing.length === 0 &&
-      extra.length === 0 &&
-      fieldDiffs.length === 0 &&
-      keyColumns &&
-      policy,
-  };
-}
-
-/** `getConfigSchema().fields` against the form built from the folder's spec. */
-export function compareForm(inProcessFields, folderFields) {
-  const shape = field => ({
-    name: field.name,
-    label: field.label,
-    type: field.type,
-    required: Boolean(field.required),
-    default: field.default,
-    helperText: field.helperText,
-  });
-  const a = inProcessFields.map(shape);
-  const b = folderFields.map(shape);
-  return { ok: canonicalJson(a) === canonicalJson(b), inProcess: a, folder: b };
-}
-
 // ---------------------------------------------------------------------------
 // Webhooks
 // ---------------------------------------------------------------------------
@@ -904,86 +488,13 @@ export function runFolderWebhookMapping(input) {
   });
 }
 
-/**
- * The in-process connector's answer for the same batch, in the folder's
- * shape. `source: "webhook"` is the engine's tag, which the box path sets
- * itself; it is left out.
- */
-export function inProcessWebhookOutcomes(connector, events) {
-  return events.map(({ eventId, eventType, rawPayload }) => {
-    if (!connector.getWebhookEventMapping(eventType)) {
-      return { eventId, outcome: "unmapped" };
-    }
-    const records = (
-      connector.extractWebhookCdcRecords(rawPayload, eventType) ?? []
-    ).filter(Boolean);
-    if (records.length === 0) return { eventId, outcome: "extract_failed" };
-    return {
-      eventId,
-      outcome: "records",
-      records: records.map(({ source: _source, ...record }) => ({
-        ...record,
-        sourceTs: record.sourceTs.toISOString(),
-      })),
-    };
-  });
-}
+/** The token of one golden read: a test token per scenario and entity. */
+export const tokenFor = (prefix, scenario, entity) =>
+  `cal_test_${prefix}${scenario.rateLimited ? "_ratelimit" : ""}_${scenario.name}_${entity}`;
 
-/**
- * Webhook parity: the subscribed events, the events per entity selection
- * and the change records of every event, in-process against the folder.
- */
-export async function webhookParity({ connector, events }) {
-  const selections = [
-    [],
-    ["invitees"],
-    ["scheduled_events"],
-    ["event_types"],
-    ["groups"],
-    ["invitees", "event_types"],
-  ];
-  const folder = await runFolderWebhookMapping({ events, selections });
-  const inOutcomes = inProcessWebhookOutcomes(connector, events);
-  const outcomes = events.map((event, i) => ({
-    eventId: event.eventId,
-    eventType: event.eventType,
-    outcome: inOutcomes[i].outcome,
-    records: inOutcomes[i].records?.length ?? 0,
-    same: canonicalJson(inOutcomes[i]) === canonicalJson(folder.outcomes[i]),
-  }));
-  const perEntity = selections.map((entities, i) => ({
-    entities,
-    same: sameList(
-      connector.getWebhookEventsForEntities(entities),
-      folder.eventsForEntities[i],
-    ),
-  }));
-  const inEvents = connector.getSupportedWebhookEvents();
-  return {
-    eventsSame: sameList(inEvents, folder.events),
-    eventCount: inEvents.length,
-    perEntity,
-    outcomes,
-    ok:
-      sameList(inEvents, folder.events) &&
-      perEntity.every(p => p.same) &&
-      outcomes.every(o => o.same),
-  };
-}
-
-/**
- * A factory of in-process connectors pointed at `api_base_url`. Waits are
- * stubbed (retries and pauses cost nothing); the request sequence is not.
- */
-export function inProcessFactory({ CalendlyConnector }) {
-  return ({ access_token, api_base_url }) => {
-    const connector = new CalendlyConnector({
-      id: "ds_parity",
-      name: "Calendly parity",
-      type: "calendly",
-      config: { access_token, ...(api_base_url ? { api_base_url } : {}) },
-    });
-    connector.sleep = async () => {};
-    return connector;
-  };
-}
+/** The config of one scenario's read, against a fixture server. */
+export const scenarioConfig = (token, server, scenario) => ({
+  access_token: token,
+  api_base_url: server.url,
+  ...(scenario.pageSize ? { __page_size: scenario.pageSize } : {}),
+});

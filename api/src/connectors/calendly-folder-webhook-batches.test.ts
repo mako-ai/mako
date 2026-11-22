@@ -15,37 +15,38 @@
  * 404 drops the record. A failed read fails the event for a retry. A spent
  * budget defers it. A partial record is never answered unfilled.
  *
- * The in-process connector does not fill: it writes those NULLs. The test
- * holds the folder to the in-process extraction plus the REST object's
- * values for exactly the keys the payload lacks.
+ * The in-process connector this folder replaced did not fill: it wrote
+ * those NULLs. The test holds the folder to the golden mapping
+ * (`golden/webhooks.json`, the extraction before any fill) plus the REST
+ * object's values for exactly the keys the payload lacks.
  *
- * Run: node --import tsx src/connectors/calendly/folder-webhook-batches.test.ts
+ * Run: node --import tsx src/connectors/calendly-folder-webhook-batches.test.ts
  */
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { SandboxedConnector } from "../workspace/SandboxedConnector";
-import type { LoadedConnector } from "../workspace/resolver";
-import type { ConnectorCommand, RunResult } from "../workspace/sync-box";
+import { SandboxedConnector } from "./workspace/SandboxedConnector";
+import type { LoadedConnector } from "./workspace/resolver";
+import type { ConnectorCommand, RunResult } from "./workspace/sync-box";
 import {
   FOLDER,
   ensureFolderInstalled,
   runFolderCommand,
-} from "../../../../connectors/calendly/fixtures/harness.mjs";
+} from "../../../connectors/calendly/fixtures/harness.mjs";
 import {
   BASE,
   buildDataset,
-} from "../../../../connectors/calendly/fixtures/dataset.mjs";
+} from "../../../connectors/calendly/fixtures/dataset.mjs";
 import {
   buildWebhookEvents,
   storedEvent,
   webhookEventType,
-} from "../../../../connectors/calendly/fixtures/webhook-events.mjs";
-import { CalendlyConnector } from "./connector";
-import { EVENT_TYPE_SCHEMA, SCHEDULED_EVENT_SCHEMA } from "./schema";
-import { MAKO_SYSTEM_FIELDS } from "../base/BaseConnector";
+} from "../../../connectors/calendly/fixtures/webhook-events.mjs";
+import { MAKO_SYSTEM_FIELDS } from "./base/BaseConnector";
+import { jsonSchemaToEntitySchema } from "./workspace/spec-translation";
 
 process.env.CONNECTOR_WEBHOOK_BATCHES = "true";
 
@@ -115,17 +116,17 @@ const connector = () =>
     config: { access_token: TOKEN, api_base_url: baseUrl },
   } as never);
 
-const builtIn = new CalendlyConnector({
-  _id: "665f000000000000000000d0",
-  name: "Calendly",
-  type: "calendly",
-  config: { access_token: TOKEN },
-} as never);
-
 before(async () => {
   ensureFolderInstalled();
   const result = await runFolderCommand("spec");
   spec = result.messages.find(m => m.type === "SPEC")?.spec ?? {};
+  const discover = await runFolderCommand("discover", {
+    config: { access_token: "cal_test_schema" },
+  });
+  for (const stream of discover.messages.find(m => m.type === "CATALOG")
+    ?.catalog?.streams ?? []) {
+    schemas[stream.name] = jsonSchemaToEntitySchema(stream.name, stream);
+  }
   server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://calendly.local");
     requests.push(`${req.method} ${url.pathname}${url.search}`);
@@ -183,12 +184,26 @@ after(async () => {
 const outcomesOf = (result: RunResult): any[] =>
   result.messages.filter(m => m.type === "WEBHOOK").map(m => m.webhook);
 
-/** REST columns of an entity, as the in-process schema lists them. */
-const restColumns = (fields: Record<string, unknown>) =>
-  Object.keys(fields).filter(f => f !== "id" && !(f in MAKO_SYSTEM_FIELDS));
-const FILLED: Record<string, string[]> = {
-  scheduled_events: restColumns(SCHEDULED_EVENT_SCHEMA),
-  event_types: restColumns(EVENT_TYPE_SCHEMA),
+/** The folder's schemas, by entity. */
+const schemas: Record<string, { fields: Record<string, unknown> }> = {};
+
+/** REST columns of an entity, as the folder's schema lists them. */
+const restColumns = (entity: string) =>
+  Object.keys(schemas[entity].fields).filter(
+    f => f !== "id" && !(f in MAKO_SYSTEM_FIELDS),
+  );
+const FILLED = (entity: string): string[] | undefined =>
+  entity === "scheduled_events" || entity === "event_types"
+    ? restColumns(entity)
+    : undefined;
+
+/** The golden mapping of the fixture events, before any fill. */
+const goldenOutcomes = async (): Promise<any[]> => {
+  const { GOLDEN_DIR } =
+    await import("../../../connectors/calendly/fixtures/golden.mjs");
+  return local(
+    JSON.parse(fs.readFileSync(path.join(GOLDEN_DIR, "webhooks.json"), "utf8")),
+  ).outcomes;
 };
 
 const runBatch = async (events: unknown[]) => {
@@ -199,7 +214,7 @@ const runBatch = async (events: unknown[]) => {
   return outcomesOf(result);
 };
 
-void test("partial rows are filled from their object; everything else is the in-process extraction", async () => {
+void test("partial rows are filled from their object; everything else is the golden mapping", async () => {
   const events = local(buildWebhookEvents()).map((e: any) => ({
     ...e,
     receivedAt: "2026-11-16T11:00:00.000Z",
@@ -235,14 +250,12 @@ void test("partial rows are filled from their object; everything else is the in-
     ],
   );
 
+  const mapped = await goldenOutcomes();
   let filledColumns = 0;
   let nullsAvoided = 0;
-  for (const [i, event] of events.entries()) {
+  for (const i of events.keys()) {
     if (outcomes[i].outcome !== "records") continue;
-    const extracted = builtIn.extractWebhookCdcRecords(
-      event.rawPayload,
-      event.eventType,
-    );
+    const extracted = mapped[i].records;
     assert.equal(outcomes[i].records.length, extracted.length);
     for (const [k, record] of extracted.entries()) {
       const got = outcomes[i].records[k];
@@ -250,9 +263,9 @@ void test("partial rows are filled from their object; everything else is the in-
       assert.equal(got.recordId, record.recordId);
       assert.equal(got.operation, record.operation);
       assert.equal(got.changeId, record.changeId);
-      assert.equal(got.sourceTs, record.sourceTs.toISOString());
+      assert.equal(got.sourceTs, record.sourceTs);
       const expected: Record<string, unknown> = { ...record.payload };
-      const columns = FILLED[record.entity];
+      const columns = FILLED(record.entity);
       if (columns) {
         const object =
           objects.get(new URL(String(record.payload?.uri)).pathname) ?? {};

@@ -1,0 +1,563 @@
+{
+  "events": [
+    "invitee.created",
+    "invitee.canceled",
+    "invitee_no_show.created",
+    "event_type.created",
+    "event_type.updated"
+  ],
+  "eventsForEntities": [
+    [
+      "invitee.created",
+      "invitee.canceled",
+      "invitee_no_show.created",
+      "event_type.created",
+      "event_type.updated"
+    ],
+    [
+      "invitee.created",
+      "invitee.canceled",
+      "invitee_no_show.created"
+    ],
+    [
+      "invitee.created",
+      "invitee.canceled"
+    ],
+    [
+      "event_type.created",
+      "event_type.updated"
+    ],
+    [],
+    [
+      "invitee.created",
+      "invitee.canceled",
+      "invitee_no_show.created",
+      "event_type.created",
+      "event_type.updated"
+    ]
+  ],
+  "outcomes": [
+    {
+      "eventId": "2026-11-01T10:00:00.000000Z:https://calendly.local/scheduled_events/EV0000000001/invitees/INV0000001001",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "2026-11-01T10:00:00.000000Z:https://calendly.local/scheduled_events/EV0000000001/invitees/INV0000001001",
+          "entity": "invitees",
+          "operation": "upsert",
+          "payload": {
+            "cancel_url": "https://calendly.example.com/cancellations/1001",
+            "cancellation": null,
+            "created_at": "2026-05-29T20:00:01.000000Z",
+            "email": "invitee.1001@example.com",
+            "event": "https://calendly.local/scheduled_events/EV0000000001",
+            "first_name": "Invitee",
+            "id": "INV0000001001",
+            "invitee_scheduled_by": null,
+            "last_name": "1001",
+            "name": "Invitee 1001",
+            "new_invitee": null,
+            "no_show": null,
+            "old_invitee": null,
+            "payment": null,
+            "questions_and_answers": [
+              {
+                "answer": "1001 Fixture St",
+                "position": 0,
+                "question": "Address"
+              }
+            ],
+            "reconfirmation": null,
+            "reschedule_url": "https://calendly.example.com/reschedulings/1001",
+            "rescheduled": false,
+            "routing_form_submission": null,
+            "scheduled_event": {
+              "created_at": "2026-05-29T20:00:00.000000Z",
+              "end_time": "2026-06-01T21:00:00.000000Z",
+              "event_guests": [],
+              "event_memberships": [
+                {
+                  "user": "https://calendly.local/users/USR0000000001",
+                  "user_email": "owner.one@example.com"
+                }
+              ],
+              "event_type": "https://calendly.local/event_types/ET0000000002",
+              "invitees_counter": {
+                "active": 2,
+                "limit": 2,
+                "total": 2
+              },
+              "location": {
+                "location": "Office",
+                "type": "physical"
+              },
+              "meeting_notes_html": null,
+              "meeting_notes_plain": null,
+              "name": "Intro call",
+              "start_time": "2026-06-01T20:00:00.000000Z",
+              "status": "active",
+              "updated_at": "2026-05-31T20:00:00.000000Z",
+              "uri": "https://calendly.local/scheduled_events/EV0000000001"
+            },
+            "scheduling_method": null,
+            "status": "active",
+            "text_reminder_number": null,
+            "timezone": "Europe/Paris",
+            "tracking": {
+              "utm_campaign": null,
+              "utm_source": "google"
+            },
+            "updated_at": "2026-05-31T20:00:01.000000Z",
+            "uri": "https://calendly.local/scheduled_events/EV0000000001/invitees/INV0000001001"
+          },
+          "recordId": "INV0000001001",
+          "sourceTs": "2026-05-31T20:00:01.000Z"
+        },
+        {
+          "changeId": "2026-11-01T10:00:00.000000Z:https://calendly.local/scheduled_events/EV0000000001",
+          "entity": "scheduled_events",
+          "operation": "upsert",
+          "payload": {
+            "created_at": "2026-05-29T20:00:00.000000Z",
+            "end_time": "2026-06-01T21:00:00.000000Z",
+            "event_guests": [],
+            "event_memberships": [
+              {
+                "user": "https://calendly.local/users/USR0000000001",
+                "user_email": "owner.one@example.com"
+              }
+            ],
+            "event_type": "https://calendly.local/event_types/ET0000000002",
+            "id": "EV0000000001",
+            "invitees_counter": {
+              "active": 2,
+              "limit": 2,
+              "total": 2
+            },
+            "location": {
+              "location": "Office",
+              "type": "physical"
+            },
+            "meeting_notes_html": null,
+            "meeting_notes_plain": null,
+            "name": "Intro call",
+            "start_time": "2026-06-01T20:00:00.000000Z",
+            "status": "active",
+            "updated_at": "2026-05-31T20:00:00.000000Z",
+            "uri": "https://calendly.local/scheduled_events/EV0000000001"
+          },
+          "recordId": "EV0000000001",
+          "sourceTs": "2026-05-31T20:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "2026-11-02T10:00:00.000000Z:https://calendly.local/scheduled_events/EV0000000017/invitees/INV0000017001",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "2026-11-02T10:00:00.000000Z:https://calendly.local/scheduled_events/EV0000000017/invitees/INV0000017001",
+          "entity": "invitees",
+          "operation": "upsert",
+          "payload": {
+            "cancel_url": "https://calendly.example.com/cancellations/17001",
+            "cancellation": {
+              "canceled_by": "Invitee",
+              "canceler_type": "invitee",
+              "reason": "Moved"
+            },
+            "created_at": "2026-06-06T20:00:01.000000Z",
+            "email": "invitee.17001@example.com",
+            "event": "https://calendly.local/scheduled_events/EV0000000017",
+            "first_name": "Invitee",
+            "id": "INV0000017001",
+            "invitee_scheduled_by": null,
+            "last_name": "17001",
+            "name": "Invitee 17001",
+            "new_invitee": null,
+            "no_show": null,
+            "old_invitee": null,
+            "payment": null,
+            "questions_and_answers": [
+              {
+                "answer": "17001 Fixture St",
+                "position": 0,
+                "question": "Address"
+              }
+            ],
+            "reconfirmation": null,
+            "reschedule_url": "https://calendly.example.com/reschedulings/17001",
+            "rescheduled": false,
+            "routing_form_submission": null,
+            "scheduled_event": {
+              "cancellation": {
+                "canceled_by": "Member 1",
+                "canceler_type": "host",
+                "reason": null
+              },
+              "created_at": "2026-06-06T20:00:00.000000Z",
+              "end_time": "2026-06-09T21:00:00.000000Z",
+              "event_guests": [],
+              "event_memberships": [
+                {
+                  "user": "https://calendly.local/users/USR0000000001",
+                  "user_email": "owner.one@example.com"
+                }
+              ],
+              "event_type": "https://calendly.local/event_types/ET0000000004",
+              "invitees_counter": {
+                "active": 3,
+                "limit": 3,
+                "total": 3
+              },
+              "location": {
+                "location": "Office",
+                "type": "physical"
+              },
+              "meeting_notes_html": null,
+              "meeting_notes_plain": null,
+              "name": "Follow-up",
+              "start_time": "2026-06-09T20:00:00.000000Z",
+              "status": "canceled",
+              "updated_at": "2026-06-08T20:00:00.000000Z",
+              "uri": "https://calendly.local/scheduled_events/EV0000000017"
+            },
+            "scheduling_method": null,
+            "status": "canceled",
+            "text_reminder_number": null,
+            "timezone": "Europe/Paris",
+            "tracking": {
+              "utm_campaign": null,
+              "utm_source": "google"
+            },
+            "updated_at": "2026-06-08T20:00:01.000000Z",
+            "uri": "https://calendly.local/scheduled_events/EV0000000017/invitees/INV0000017001"
+          },
+          "recordId": "INV0000017001",
+          "sourceTs": "2026-06-08T20:00:01.000Z"
+        },
+        {
+          "changeId": "2026-11-02T10:00:00.000000Z:https://calendly.local/scheduled_events/EV0000000017",
+          "entity": "scheduled_events",
+          "operation": "upsert",
+          "payload": {
+            "cancellation": {
+              "canceled_by": "Member 1",
+              "canceler_type": "host",
+              "reason": null
+            },
+            "created_at": "2026-06-06T20:00:00.000000Z",
+            "end_time": "2026-06-09T21:00:00.000000Z",
+            "event_guests": [],
+            "event_memberships": [
+              {
+                "user": "https://calendly.local/users/USR0000000001",
+                "user_email": "owner.one@example.com"
+              }
+            ],
+            "event_type": "https://calendly.local/event_types/ET0000000004",
+            "id": "EV0000000017",
+            "invitees_counter": {
+              "active": 3,
+              "limit": 3,
+              "total": 3
+            },
+            "location": {
+              "location": "Office",
+              "type": "physical"
+            },
+            "meeting_notes_html": null,
+            "meeting_notes_plain": null,
+            "name": "Follow-up",
+            "start_time": "2026-06-09T20:00:00.000000Z",
+            "status": "canceled",
+            "updated_at": "2026-06-08T20:00:00.000000Z",
+            "uri": "https://calendly.local/scheduled_events/EV0000000017"
+          },
+          "recordId": "EV0000000017",
+          "sourceTs": "2026-06-08T20:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "2026-11-03T10:00:00.000000Z:https://calendly.local/scheduled_events/EV0000000005/invitees/INV0000005001",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "2026-11-03T10:00:00.000000Z:https://calendly.local/scheduled_events/EV0000000005/invitees/INV0000005001",
+          "entity": "invitees",
+          "operation": "upsert",
+          "payload": {
+            "cancel_url": "https://calendly.example.com/cancellations/5001",
+            "cancellation": null,
+            "created_at": "2026-05-31T20:00:01.000000Z",
+            "email": "invitee.5001@example.com",
+            "event": "https://calendly.local/scheduled_events/EV0000000005",
+            "first_name": "Invitee",
+            "id": "INV0000005001",
+            "invitee_scheduled_by": null,
+            "last_name": "5001",
+            "name": "Invitee 5001",
+            "new_invitee": null,
+            "no_show": {
+              "created_at": "2026-11-03T10:00:00.000000Z",
+              "uri": "https://calendly.local/invitee_no_shows/NS1"
+            },
+            "old_invitee": null,
+            "payment": null,
+            "questions_and_answers": [
+              {
+                "answer": "5001 Fixture St",
+                "position": 0,
+                "question": "Address"
+              }
+            ],
+            "reconfirmation": null,
+            "reschedule_url": "https://calendly.example.com/reschedulings/5001",
+            "rescheduled": false,
+            "routing_form_submission": null,
+            "scheduled_event": {
+              "created_at": "2026-05-31T20:00:00.000000Z",
+              "end_time": "2026-06-03T21:00:00.000000Z",
+              "event_guests": [],
+              "event_memberships": [
+                {
+                  "user": "https://calendly.local/users/USR0000000001",
+                  "user_email": "owner.one@example.com"
+                }
+              ],
+              "event_type": "https://calendly.local/event_types/ET0000000006",
+              "invitees_counter": {
+                "active": 3,
+                "limit": 3,
+                "total": 3
+              },
+              "location": {
+                "location": "Office",
+                "type": "physical"
+              },
+              "meeting_notes_html": null,
+              "meeting_notes_plain": null,
+              "name": "Kickoff",
+              "start_time": "2026-06-03T20:00:00.000000Z",
+              "status": "active",
+              "updated_at": "2026-06-02T20:00:00.000000Z",
+              "uri": "https://calendly.local/scheduled_events/EV0000000005"
+            },
+            "scheduling_method": null,
+            "status": "active",
+            "text_reminder_number": null,
+            "timezone": "Europe/Paris",
+            "tracking": {
+              "utm_campaign": null,
+              "utm_source": "google"
+            },
+            "updated_at": "2026-06-02T20:00:01.000000Z",
+            "uri": "https://calendly.local/scheduled_events/EV0000000005/invitees/INV0000005001"
+          },
+          "recordId": "INV0000005001",
+          "sourceTs": "2026-06-02T20:00:01.000Z"
+        },
+        {
+          "changeId": "2026-11-03T10:00:00.000000Z:https://calendly.local/scheduled_events/EV0000000005",
+          "entity": "scheduled_events",
+          "operation": "upsert",
+          "payload": {
+            "created_at": "2026-05-31T20:00:00.000000Z",
+            "end_time": "2026-06-03T21:00:00.000000Z",
+            "event_guests": [],
+            "event_memberships": [
+              {
+                "user": "https://calendly.local/users/USR0000000001",
+                "user_email": "owner.one@example.com"
+              }
+            ],
+            "event_type": "https://calendly.local/event_types/ET0000000006",
+            "id": "EV0000000005",
+            "invitees_counter": {
+              "active": 3,
+              "limit": 3,
+              "total": 3
+            },
+            "location": {
+              "location": "Office",
+              "type": "physical"
+            },
+            "meeting_notes_html": null,
+            "meeting_notes_plain": null,
+            "name": "Kickoff",
+            "start_time": "2026-06-03T20:00:00.000000Z",
+            "status": "active",
+            "updated_at": "2026-06-02T20:00:00.000000Z",
+            "uri": "https://calendly.local/scheduled_events/EV0000000005"
+          },
+          "recordId": "EV0000000005",
+          "sourceTs": "2026-06-02T20:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "2026-11-04T10:00:00.000000Z:https://calendly.local/event_types/ET0000000001",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "2026-11-04T10:00:00.000000Z:https://calendly.local/event_types/ET0000000001",
+          "entity": "event_types",
+          "operation": "upsert",
+          "payload": {
+            "active": true,
+            "admin_managed": false,
+            "booking_method": "instant",
+            "color": "#0069ff",
+            "created_at": "2026-04-12T08:00:00.000000Z",
+            "custom_questions": [
+              {
+                "name": "Address",
+                "position": 0,
+                "type": "string"
+              }
+            ],
+            "deleted_at": null,
+            "description_html": "<p>About Valuation</p>",
+            "description_plain": "About Valuation",
+            "duration": 15,
+            "duration_options": [
+              15,
+              30
+            ],
+            "id": "ET0000000001",
+            "is_paid": false,
+            "kind": "solo",
+            "locale": "en",
+            "locations": [
+              {
+                "kind": "physical",
+                "location": "Office"
+              }
+            ],
+            "name": "Valuation",
+            "pooling_type": null,
+            "position": 0,
+            "scheduling_url": "https://calendly.example.com/t/1",
+            "secret": false,
+            "type": "StandardEventType",
+            "updated_at": "2026-06-13T20:00:00.000000Z",
+            "uri": "https://calendly.local/event_types/ET0000000001"
+          },
+          "recordId": "ET0000000001",
+          "sourceTs": "2026-06-13T20:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "2026-11-05T10:00:00.000000Z:https://calendly.local/event_types/ET0000000003",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "2026-11-05T10:00:00.000000Z:https://calendly.local/event_types/ET0000000003",
+          "entity": "event_types",
+          "operation": "upsert",
+          "payload": {
+            "active": true,
+            "admin_managed": false,
+            "booking_method": "instant",
+            "color": "#0069ff",
+            "created_at": "2026-04-12T08:00:00.000000Z",
+            "custom_questions": [
+              {
+                "name": "Address",
+                "position": 0,
+                "type": "string"
+              }
+            ],
+            "deleted_at": null,
+            "description_html": "<p>About Demo</p>",
+            "description_plain": "About Demo",
+            "duration": 45,
+            "duration_options": [
+              15,
+              30
+            ],
+            "id": "ET0000000003",
+            "is_paid": false,
+            "kind": "solo",
+            "locale": "en",
+            "locations": null,
+            "name": "Demo",
+            "pooling_type": null,
+            "position": 2,
+            "scheduling_url": "https://calendly.example.com/t/3",
+            "secret": false,
+            "type": "StandardEventType",
+            "updated_at": "2026-07-08T20:00:00.000000Z",
+            "uri": "https://calendly.local/event_types/ET0000000003"
+          },
+          "recordId": "ET0000000003",
+          "sourceTs": "2026-07-08T20:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "2026-11-06T10:00:00.000000Z:https://calendly.local/scheduled_events/EV0000000006/invitees/INV0000006001",
+      "outcome": "records",
+      "records": [
+        {
+          "changeId": "2026-11-06T10:00:00.000000Z:https://calendly.local/scheduled_events/EV0000000006/invitees/INV0000006001",
+          "entity": "invitees",
+          "operation": "upsert",
+          "payload": {
+            "cancel_url": "https://calendly.example.com/cancellations/6001",
+            "cancellation": null,
+            "created_at": "2026-06-01T08:00:01.000000Z",
+            "email": "invitee.6001@example.com",
+            "event": "https://calendly.local/scheduled_events/EV0000000006",
+            "first_name": "Invitee",
+            "id": "INV0000006001",
+            "invitee_scheduled_by": null,
+            "last_name": "6001",
+            "name": "Invitee 6001",
+            "new_invitee": null,
+            "no_show": null,
+            "old_invitee": null,
+            "payment": null,
+            "questions_and_answers": [
+              {
+                "answer": "6001 Fixture St",
+                "position": 0,
+                "question": "Address"
+              }
+            ],
+            "reconfirmation": null,
+            "reschedule_url": "https://calendly.example.com/reschedulings/6001",
+            "rescheduled": false,
+            "routing_form_submission": null,
+            "scheduling_method": null,
+            "status": "active",
+            "text_reminder_number": null,
+            "timezone": "Europe/Paris",
+            "tracking": {
+              "utm_campaign": null,
+              "utm_source": "google"
+            },
+            "updated_at": "2026-06-03T08:00:01.000000Z",
+            "uri": "https://calendly.local/scheduled_events/EV0000000006/invitees/INV0000006001"
+          },
+          "recordId": "INV0000006001",
+          "sourceTs": "2026-06-03T08:00:01.000Z"
+        }
+      ]
+    },
+    {
+      "eventId": "2026-11-07T10:00:00.000000Z:https://calendly.local/routing_form_submissions/RFS1",
+      "outcome": "unmapped"
+    },
+    {
+      "eventId": "fixture-event-8",
+      "outcome": "extract_failed"
+    },
+    {
+      "eventId": "fixture-event-9",
+      "outcome": "extract_failed"
+    }
+  ]
+}

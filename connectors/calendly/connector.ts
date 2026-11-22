@@ -2,11 +2,11 @@
  * Calendly on @makoai/connector-sdk: `spec`, `check`, `discover`, `read`
  * and the webhook handler.
  *
- * A port of the in-process connector in `api/src/connectors/calendly/`,
- * with the same 7 entities, schemas, layouts, incremental modes, requests,
- * pagination and retry policy. Nothing runs it in production yet.
- * `fixtures/parity.mjs` runs both against the same recorded Calendly
- * responses and compares them entity by entity.
+ * Ported from an in-process connector that is deleted, with the same 7
+ * entities, schemas, layouts, incremental modes, requests, pagination and
+ * retry policy. Production runs this folder as `ws:calendly`.
+ * `fixtures/golden.mjs` holds its output on the recorded Calendly
+ * responses.
  *
  * Read state per entity:
  * - `organizations`: none; one request after `/users/me`.
