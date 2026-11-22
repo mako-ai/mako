@@ -319,6 +319,36 @@ test("query entities: discover marks an untyped stream so Mako keeps the row typ
   ]);
 });
 
+test("query entities: `key` names the config list, and the spec says so", async () => {
+  const connector = defineConnector({
+    name: "rest",
+    version: "1",
+    config: {
+      properties: {
+        entities: { type: "array", items: { type: "object", properties: {} } },
+      },
+    },
+    queryEntities: { source: "connection", key: "entities", entity: () => entity },
+  });
+  assert.equal(connector.spec().mako.queryEntities.key, "entities");
+  assert.deepEqual(
+    connector.entityNames({ entities: [{ name: "a" }, { path: "/x" }], queries: [{ name: "b" }] }),
+    ["a"],
+  );
+  assert.throws(
+    () =>
+      defineConnector({
+        name: "rest",
+        version: "1",
+        config: { properties: {} },
+        queryEntities: { source: "connection", key: "entities", entity: () => entity },
+      }),
+    /needs config.properties.entities/,
+  );
+  // The default key stays out of the spec.
+  assert.equal("key" in queryConnector("connection").spec().mako.queryEntities, false);
+});
+
 test("query entities: a bad declaration is refused", () => {
   assert.throws(
     () =>

@@ -210,7 +210,7 @@ export function defineConnector(definition) {
    */
   const queryItems = config => {
     if (!queryEntities) return [];
-    const list = config?.queries;
+    const list = config?.[queryEntities.key ?? "queries"];
     if (!Array.isArray(list)) return [];
     return list.filter(
       item => item && typeof item === "object" && typeof item.name === "string" && item.name !== "",
@@ -280,6 +280,7 @@ export function defineConnector(definition) {
             ? {
                 queryEntities: {
                   source: queryEntities.source,
+                  ...(queryEntities.key && queryEntities.key !== "queries" ? { key: queryEntities.key } : {}),
                   ...(queryEntities.incremental ? { incremental: queryEntities.incremental } : {}),
                   ...(queryEntities.form ? { form: queryEntities.form } : {}),
                 },
@@ -546,11 +547,15 @@ function validateQueryEntities(definition) {
   if (q.incremental !== undefined && !INCREMENTAL_MODES.includes(q.incremental)) {
     problems.push(`queryEntities.incremental must be one of ${INCREMENTAL_MODES.join(", ")}`);
   }
+  if (q.key !== undefined && (typeof q.key !== "string" || q.key === "")) {
+    problems.push("queryEntities.key must be a non-empty string");
+  }
   if (q.source === "connection") {
-    const property = definition.config?.properties?.queries;
+    const key = q.key ?? "queries";
+    const property = definition.config?.properties?.[key];
     if (!property || property.type !== "array" || property.items?.type !== "object") {
       problems.push(
-        'queryEntities.source "connection" needs config.properties.queries: { type: "array", items: { type: "object", properties } }',
+        `queryEntities.source "connection" needs config.properties.${key}: { type: "array", items: { type: "object", properties } }`,
       );
     }
   }

@@ -270,6 +270,11 @@ export interface QueryEntitiesDefinition<Config = Record<string, unknown>> {
    * fields `form` describes.
    */
   source: "connection" | "flow";
+  /**
+   * The config property holding the list, for `source: "connection"`.
+   * Defaults to `queries`. REST keeps its list in `entities`.
+   */
+  key?: string;
   /** What every query entity does with `state.mako.since`. */
   incremental?: "native" | "client-filter" | "created-anchor";
   /** The flow form of one query, for `source: "flow"`. */

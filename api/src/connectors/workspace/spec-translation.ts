@@ -42,6 +42,8 @@ export interface FormFieldSchema {
   encrypted?: boolean;
   /** The fields of one item, for an `object_array`. */
   itemFields?: FormFieldSchema[];
+  /** Shown only while the sibling `field` holds one of `equals`. */
+  showIf?: { field: string; equals: unknown[] };
 }
 
 export interface FormSchema {
@@ -187,6 +189,10 @@ function propertiesToFields(
           : 4;
     }
     if (secret) field.encrypted = true;
+    // A field shown only while another has a value (REST's request body).
+    if (property?.showIf && typeof property.showIf === "object") {
+      field.showIf = property.showIf;
+    }
     if (field.type === "object_array") {
       const items = property.items ?? {};
       field.itemFields = propertiesToFields(
