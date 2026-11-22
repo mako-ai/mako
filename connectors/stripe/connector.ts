@@ -124,6 +124,8 @@ const ENTITIES: Array<[name: string, label: string, incremental: boolean]> = [
   ["events", "Events", true],
   ["setup_attempts", "Setup Attempts", true],
   ["files", "Files", true],
+  // A link can expire or be updated long after creation.
+  ["file_links", "File Links", false],
 ];
 
 /** Invoice and Checkout line items use the parent's creation time. */

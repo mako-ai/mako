@@ -203,7 +203,7 @@ void test("shared entities, labels and credential form, plus boxed readers", () 
   const names = streams.map(s => s.name);
   assert.deepEqual(
     names.filter(name => name !== "checkout_sessions_line_items"),
-    [...ENTITIES, "setup_attempts", "files"],
+    [...ENTITIES, "setup_attempts", "files", "file_links"],
   );
   assert.equal(
     names.filter(name => name === "checkout_sessions_line_items").length,
@@ -275,6 +275,7 @@ void test("shared table layouts and incremental modes, plus boxed readers", asyn
     ...inProcessLayouts,
     setup_attempts: inProcessLayouts.setup_intents,
     files: inProcessLayouts.setup_intents,
+    file_links: inProcessLayouts.setup_intents,
   });
 
   const effective = (
@@ -289,6 +290,10 @@ void test("shared table layouts and incremental modes, plus boxed readers", asyn
   }
   assert.equal(effective(boxCaps, "setup_attempts"), "created-anchor");
   assert.equal(effective(boxCaps, "files"), "created-anchor");
+  assert.equal(
+    effective(boxCaps, "file_links"),
+    effective(inCaps, "customer_balance_transactions"),
+  );
   const line = "checkout_sessions_line_items";
   assert.equal(effective(boxCaps, line), "created-anchor");
   await boxed.resolveSchema(line);

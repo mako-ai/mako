@@ -64,6 +64,33 @@ const TOP_LEVEL_LISTERS: Record<string, Lister> = {
   early_fraud_warnings: (s, p) => s.radar.earlyFraudWarnings.list(p),
   // Stripe keeps events for 30 days: a backfill reaches 30 days back.
   events: (s, p) => s.events.list(p),
+  file_links: async (s, p) => {
+    const { data, has_more } = await s.fileLinks.list(p);
+    return {
+      data: data.map(
+        ({
+          id,
+          object,
+          file,
+          created,
+          expires_at,
+          expired,
+          livemode,
+          metadata,
+        }) => ({
+          id,
+          object,
+          file: typeof file === "string" ? file : file.id,
+          created,
+          expires_at,
+          expired,
+          livemode,
+          metadata,
+        }),
+      ),
+      has_more,
+    };
+  },
   files: async (s, p) => {
     const { data, has_more } = await s.files.list(p);
     return {

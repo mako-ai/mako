@@ -25,6 +25,7 @@ import {
   verifyCheckoutLineItems,
 } from "./checkout-line-items.mjs";
 import { fileCassettes, verifyFiles } from "./files.mjs";
+import { fileLinkCassettes, verifyFileLinks } from "./file-links.mjs";
 import { checkSetupAttempts } from "./setup-attempts.mjs";
 import { checkRefundPendingReason } from "./refund-pending-reason.mjs";
 
@@ -36,11 +37,13 @@ const server = await startReplayServer(
     ...loadCassettes(),
     ...checkoutLineItemsCassettes(),
     ...fileCassettes(),
+    ...fileLinkCassettes(),
   ]),
 );
 try {
   await verifyCheckoutLineItems(server);
   await verifyFiles(server);
+  await verifyFileLinks(server);
 } catch (error) {
   await server.close();
   throw error;

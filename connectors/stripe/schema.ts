@@ -676,6 +676,16 @@ export const STRIPE_ENTITY_SCHEMA_MAP: Record<string, Fields> = {
   subscription_items: SUBSCRIPTION_ITEM_SCHEMA,
   events: EVENT_SCHEMA,
   files: FILE_SCHEMA,
+  file_links: {
+    id: "string",
+    object: "string",
+    file: "string",
+    created: "timestamp",
+    expires_at: "timestamp",
+    expired: "boolean",
+    livemode: "boolean",
+    metadata: "json",
+  },
 };
 
 /** Field type -> JSON Schema, as `discover` emits it. */

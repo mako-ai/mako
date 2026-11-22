@@ -129,7 +129,8 @@ async function main() {
       .length === 1 &&
     JSON.stringify(
       folderEntities.filter(name => name !== "checkout_sessions_line_items"),
-    ) === JSON.stringify([...entities, "setup_attempts", "files"]);
+    ) ===
+      JSON.stringify([...entities, "setup_attempts", "files", "file_links"]);
   if (!sameEntities) failures++;
   console.info(
     `Entities: ${entities.length} in-process, ${folderEntities.length} folder, ${sameEntities ? "shared entities match in order, with the boxed readers" : "DIFFERENT"}`,
