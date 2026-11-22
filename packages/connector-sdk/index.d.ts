@@ -193,6 +193,8 @@ export interface WebhookChangeRecord {
   payload: Record<string, unknown>;
   /** The change's time, ISO 8601. Defaults to the row's own time. */
   sourceTs?: string;
+  /** Use the verified event clock for ordering where Mako supports it. */
+  sourceTsKind?: "provider_event";
   /** Idempotency key; the vendor's event id is a good one. */
   changeId?: string;
 }

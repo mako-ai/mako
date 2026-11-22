@@ -8,6 +8,7 @@ import {
 import { loggers } from "../logging";
 import {
   normalizePayloadKeys,
+  providerEventTime,
   resolveSourceTimestamp,
   sanitizeBackfillPayloadForIdempotency,
   stableStringify,
@@ -188,6 +189,7 @@ function toStoredEvent(
     | "recordId"
     | "op"
     | "sourceTs"
+    | "sourceTsKind"
     | "ingestTs"
     | "ingestSeq"
     | "idempotencyKey"
@@ -208,6 +210,7 @@ function toStoredEvent(
     recordId: doc.recordId,
     operation: doc.op,
     sourceTs: new Date(doc.sourceTs),
+    ...(doc.sourceTsKind ? { sourceTsKind: doc.sourceTsKind } : {}),
     ingestTs: new Date(doc.ingestTs),
     ingestSeq: Number(doc.ingestSeq),
     idempotencyKey: doc.idempotencyKey,
@@ -240,7 +243,10 @@ class MongoCdcEventStore implements CdcEventStore {
     const byEntity = new Map<string, CdcAppendEntitySummary>();
     for (const event of params.events) {
       const payload = normalizePayloadKeys(event.payload);
-      const sourceTs = resolveSourceTimestamp(payload, event.sourceTs);
+      // Only an authorized provider event clock overrides payload ordering.
+      const eventTime = providerEventTime(event);
+      const sourceTs =
+        eventTime ?? resolveSourceTimestamp(payload, event.sourceTs);
       const ingestSeq = nextSeq++;
       docs.push({
         workspaceId: workspaceObjectId,
@@ -251,6 +257,7 @@ class MongoCdcEventStore implements CdcEventStore {
         recordId: event.recordId,
         op: event.operation,
         sourceTs,
+        ...(eventTime ? { sourceTsKind: "provider_event" } : {}),
         ingestTs: now,
         ingestSeq,
         idempotencyKey: buildIdempotencyKey(
@@ -343,6 +350,7 @@ class MongoCdcEventStore implements CdcEventStore {
           | "recordId"
           | "op"
           | "sourceTs"
+          | "sourceTsKind"
           | "ingestTs"
           | "ingestSeq"
           | "idempotencyKey"
@@ -493,6 +501,7 @@ class MongoCdcEventStore implements CdcEventStore {
         | "recordId"
         | "op"
         | "sourceTs"
+        | "sourceTsKind"
         | "ingestTs"
         | "ingestSeq"
         | "idempotencyKey"
@@ -530,6 +539,7 @@ class MongoCdcEventStore implements CdcEventStore {
           | "recordId"
           | "op"
           | "sourceTs"
+          | "sourceTsKind"
           | "ingestTs"
           | "ingestSeq"
           | "idempotencyKey"

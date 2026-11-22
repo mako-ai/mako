@@ -8,6 +8,7 @@ import {
   CdcEntityState,
 } from "../../database/workspace-schema";
 import { connectorRegistry } from "../../connectors/registry";
+import { allowsProviderEventTime } from "../../connectors/webhook-clock";
 import { sourceConnectionManager } from "../../sync/database-data-source-manager";
 import type { ISourceConnection } from "../../database/models/source-connections";
 import { loggers } from "../../logging";
@@ -20,6 +21,7 @@ import { hasCdcDestinationAdapter } from "../../sync-cdc/adapters/registry";
 import { isEntityEnabledForFlow } from "../../sync-cdc/entity-selection";
 import {
   normalizePayloadKeys,
+  providerEventTime,
   resolveSourceTimestamp,
 } from "../../sync-cdc/normalization";
 import { cdcIngestService } from "../../sync-cdc/ingest";
@@ -55,6 +57,7 @@ export type WebhookCdcRecord = {
   operation: "upsert" | "delete";
   payload: Record<string, unknown>;
   sourceTs: Date;
+  sourceTsKind?: "provider_event";
   source: "webhook";
   changeId: string;
 };
@@ -84,7 +87,8 @@ export type WebhookCdcRecord = {
  */
 export async function buildWebhookCdcRecords(params: {
   connector: BaseConnector;
-  sourceConnection: { id: string; name: string };
+  sourceConnection: { id: string; name: string; type?: string };
+  destinationType?: string;
   flow: Parameters<typeof isEntityEnabledForFlow>[0];
   webhookEvent: {
     eventId: string;
@@ -97,7 +101,8 @@ export async function buildWebhookCdcRecords(params: {
   extractedCount: number;
   retry?: { mode: "defer" | "fail"; message: string };
 }> {
-  const { connector, sourceConnection, flow, webhookEvent } = params;
+  const { connector, sourceConnection, destinationType, flow, webhookEvent } =
+    params;
 
   const extractedRecords = (
     connector.extractWebhookCdcRecords(
@@ -138,6 +143,7 @@ export async function buildWebhookCdcRecords(params: {
     records: shapeWebhookCdcRecords({
       rawRecords,
       sourceConnection,
+      destinationType,
       flow,
       webhookEvent,
     }),
@@ -158,13 +164,16 @@ export function shapeWebhookCdcRecords(params: {
     operation?: string;
     payload?: unknown;
     sourceTs?: unknown;
+    sourceTsKind?: unknown;
     changeId?: unknown;
   }>;
-  sourceConnection: { id: string; name: string };
+  sourceConnection: { id: string; name: string; type?: string };
+  destinationType?: string;
   flow: Parameters<typeof isEntityEnabledForFlow>[0];
   webhookEvent: { eventId: string; receivedAt: Date | string };
 }): WebhookCdcRecord[] {
-  const { rawRecords, sourceConnection, flow, webhookEvent } = params;
+  const { rawRecords, sourceConnection, destinationType, flow, webhookEvent } =
+    params;
   const receivedAt = new Date(webhookEvent.receivedAt);
   const out: WebhookCdcRecord[] = [];
 
@@ -201,6 +210,18 @@ export function shapeWebhookCdcRecords(params: {
       record.sourceTs instanceof Date
         ? record.sourceTs
         : resolveSourceTimestamp(payload, receivedAt);
+    const eventTime =
+      allowsProviderEventTime({
+        sourceType: sourceConnection.type,
+        destinationType,
+        entity,
+        operation,
+      }) &&
+      providerEventTime({
+        source: "webhook",
+        sourceTs: record.sourceTs,
+        sourceTsKind: record.sourceTsKind,
+      });
 
     const changeId =
       typeof record.changeId === "string" && record.changeId.length > 0
@@ -213,6 +234,7 @@ export function shapeWebhookCdcRecords(params: {
       operation,
       payload,
       sourceTs,
+      ...(eventTime ? { sourceTsKind: "provider_event" } : {}),
       source: "webhook",
       changeId,
     });
@@ -863,16 +885,7 @@ export async function ingestPendingWebhookEvents(logger: {
       continue;
     }
 
-    const cdcEvents: Array<{
-      entity: string;
-      recordId: string;
-      operation: "upsert" | "delete";
-      payload: Record<string, unknown>;
-      sourceTs: Date;
-      source: "webhook";
-      changeId: string;
-      webhookEventId: string;
-    }> = [];
+    const cdcEvents: Array<WebhookCdcRecord & { webhookEventId: string }> = [];
     const processedIds: Array<{
       _id: any;
       entity: string;
@@ -911,7 +924,9 @@ export async function ingestPendingWebhookEvents(logger: {
         sourceConnection: {
           id: sourceConnection.id,
           name: sourceConnection.name,
+          type: sourceConnection.type,
         },
+        destinationType,
         flow,
         webhookEvent: {
           eventId: webhookEvent.eventId,
@@ -1012,16 +1027,7 @@ export async function ingestPendingWebhookEvents(logger: {
       }
 
       for (const record of records) {
-        cdcEvents.push({
-          entity: record.entity,
-          recordId: record.recordId,
-          operation: record.operation,
-          payload: record.payload,
-          sourceTs: record.sourceTs,
-          source: "webhook",
-          changeId: record.changeId,
-          webhookEventId: String(webhookEvent._id),
-        });
+        cdcEvents.push({ ...record, webhookEventId: String(webhookEvent._id) });
       }
 
       // Bookkeeping on the WebhookEvent uses the primary (first) record.

@@ -400,6 +400,7 @@ type CheckedOutcome =
         operation: "upsert" | "delete";
         payload: Record<string, unknown>;
         sourceTs?: Date;
+        sourceTsKind?: "provider_event";
         changeId?: string;
       }>;
       invalid: number;
@@ -530,6 +531,9 @@ export function checkOutcome(
       operation,
       payload: { ...withoutSystemKeys(record.payload), id: recordId },
       ...(ts && !Number.isNaN(ts.getTime()) ? { sourceTs: ts } : {}),
+      ...(record.sourceTsKind === "provider_event"
+        ? { sourceTsKind: "provider_event" }
+        : {}),
       ...(shortString(record.changeId)
         ? { changeId: record.changeId as string }
         : {}),
@@ -734,6 +738,7 @@ export async function processBoxWebhookBatch(input: {
   const result = await runBatch({
     flow,
     connection,
+    destinationType: database.type,
     runner,
     declared,
     secret: typeof secret === "string" && secret.length > 0 ? secret : null,
@@ -825,6 +830,7 @@ const failedOp = (
 async function runBatch(input: {
   flow: any;
   connection: any;
+  destinationType: string;
   runner: WebhookBatchRunner;
   declared: ReadonlySet<string>;
   secret: string | null;
@@ -960,7 +966,11 @@ async function runBatch(input: {
 
   const cdcEvents: Array<WebhookCdcRecord & { webhookEventId: string }> = [];
   const ops: any[] = [];
-  const source = { id: String(connection._id), name: String(connection.name) };
+  const source = {
+    id: String(connection._id),
+    name: String(connection.name),
+    type: String(connection.type),
+  };
   for (const event of events) {
     const checked = checkOutcome(
       byEvent.get(event.eventId),
@@ -1084,6 +1094,7 @@ async function runBatch(input: {
     const records = shapeWebhookCdcRecords({
       rawRecords: checked.records,
       sourceConnection: source,
+      destinationType: input.destinationType,
       flow,
       webhookEvent: { eventId: event.eventId, receivedAt: event.receivedAt },
     }).filter(record => declared.has(record.entity));

@@ -70,6 +70,24 @@ export function resolveSourceTimestamp(
   return fallback || new Date();
 }
 
+/** Read an explicit webhook clock that is representable in the destination. */
+export function providerEventTime(event: {
+  source: string;
+  sourceTsKind?: unknown;
+  sourceTs?: unknown;
+}): Date | undefined {
+  const { sourceTs } = event;
+  if (
+    event.source !== "webhook" ||
+    event.sourceTsKind !== "provider_event" ||
+    !(sourceTs instanceof Date)
+  ) {
+    return undefined;
+  }
+  const year = sourceTs.getUTCFullYear();
+  return year >= 1 && year <= 9999 ? sourceTs : undefined;
+}
+
 export function stableStringify(value: unknown): string {
   if (value === null || value === undefined) {
     return "null";

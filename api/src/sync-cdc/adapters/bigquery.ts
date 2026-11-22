@@ -22,6 +22,7 @@ import {
 import { enableLoadJobLabels } from "./bigquery-load-labels";
 import {
   normalizePayloadKeys,
+  providerEventTime,
   resolveSourceTimestamp,
   selectLatestChangePerRecord,
   withSyncedAt,
@@ -271,10 +272,9 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
     const toRow = (event: CdcStoredEvent, deletedAt: Date | null) => {
       const payload = normalizePayloadKeys(event.payload || {});
-      const sourceTs = resolveSourceTimestamp(
-        payload,
-        new Date(event.sourceTs),
-      );
+      const sourceTs =
+        providerEventTime(event) ??
+        resolveSourceTimestamp(payload, new Date(event.sourceTs));
       return withSyncedAt({
         ...payload,
         id: event.recordId,
