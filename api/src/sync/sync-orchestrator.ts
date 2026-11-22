@@ -110,7 +110,10 @@ export async function resolveEntitySchema(params: {
   dataSourceId?: string;
   workspaceId: string;
   sourceConnection?: { id?: string; type?: string } | null;
-  connector?: { resolveSchema?: (entity: string) => Promise<unknown> } | null;
+  connector?: {
+    resolveSchema?: (entity: string) => Promise<unknown>;
+    declaresUntypedSchema?: (entity: string) => Promise<boolean>;
+  } | null;
   /**
    * The flow's queries, for a connector whose entities they name (GraphQL,
    * PostHog): injected into the connection as `performSyncChunk` does, or
@@ -161,6 +164,15 @@ export async function resolveEntitySchema(params: {
           params.entity,
         )) as ConnectorEntitySchema | null) ?? null)
       : null;
+    // A workspace stream may return no schema when it explicitly declares
+    // itself untyped. Errors checking that declaration still need to retry.
+    if (
+      !schema &&
+      isWorkspaceConnector(connector, sourceType) &&
+      !(await connector?.declaresUntypedSchema?.(params.entity))
+    ) {
+      throw new Error("the workspace connector's catalog has no schema for it");
+    }
   } catch (err) {
     orchestratorLogger.warn("Schema resolution failed", {
       entity: params.entity,
@@ -168,22 +180,6 @@ export async function resolveEntitySchema(params: {
       error: err instanceof Error ? err.message : String(err),
     });
     throw new SchemaResolutionError(params.entity, params.context, err);
-  }
-  // A stream the catalog declares untyped (a user's query) has no schema on
-  // purpose; any other null from a workspace connector is a broken catalog.
-  const untyped =
-    !schema &&
-    (await (
-      connector as { declaresUntypedSchema?: (e: string) => Promise<boolean> }
-    )
-      ?.declaresUntypedSchema?.(params.entity)
-      .catch(() => false));
-  if (!schema && !untyped && isWorkspaceConnector(connector, sourceType)) {
-    throw new SchemaResolutionError(
-      params.entity,
-      params.context,
-      new Error("the workspace connector's catalog has no schema for it"),
-    );
   }
   return schema;
 }

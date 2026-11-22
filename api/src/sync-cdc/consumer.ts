@@ -24,10 +24,7 @@ import {
 } from "./normalization";
 import { isEntityEnabledForFlow } from "./entity-selection";
 import { cdcSyncStateService } from "./sync-state";
-import { syncConnectorRegistry } from "../sync/connector-registry";
-import { sourceConnectionManager } from "../sync/database-data-source-manager";
-import type { ConnectorEntitySchema } from "../connectors/base/BaseConnector";
-import { boxLowMemoryRefusal } from "../apps/sandbox/box-memory";
+import { resolveEntitySchema } from "../sync/sync-orchestrator";
 import { ensureFlowDerivedCache } from "../services/flow-sync.service";
 import {
   FLOW_PAUSED_CODE,
@@ -176,35 +173,21 @@ export class CdcConsumerService {
         tableName,
       },
     });
-    let connectorSchema: ConnectorEntitySchema | null = null;
-    if (flow.dataSourceId) {
-      try {
-        const ds = await sourceConnectionManager.getSourceConnection(
-          String(flow.dataSourceId),
-          String(flow.workspaceId),
-        );
-        const conn = ds
-          ? await syncConnectorRegistry.getConnectorFor(ds)
-          : null;
-        if (conn) {
-          connectorSchema = await conn.resolveSchema(params.entity);
-        }
-      } catch (error) {
-        // A box memory refusal is no answer: the materialization waits for
-        // memory (webhook-flow.ts) and never builds a layout without keys.
-        // Thrown before any event is read, so none is marked failed.
-        if (boxLowMemoryRefusal(error)) throw error;
-        log.warn("Schema resolution failed for layout key columns", {
+    // Retry discovery before writing a table or reading pending events.
+    const entitySchema = flow.dataSourceId
+      ? await resolveEntitySchema({
           entity: params.entity,
-          flowId: params.flowId,
-        });
-      }
-    }
+          dataSourceId: String(flow.dataSourceId),
+          workspaceId: String(flow.workspaceId),
+          queries: flow.queries,
+          context: "materializeEntity",
+        })
+      : null;
 
     const layout = buildCdcEntityLayout({
       entity: params.entity,
       tableName,
-      keyColumns: connectorSchema?.keyColumns,
+      keyColumns: entitySchema?.keyColumns,
       deleteMode: flow.deleteMode,
       // Without this, applyEvents/applyBatch default to dedup-merge
       // semantics even on `Incremental | Append` flows, silently
@@ -311,8 +294,6 @@ export class CdcConsumerService {
       const isBackfilling = flow.backfillState?.status === "running";
       const effectiveDeleteMode =
         flow.deleteMode === "hard" && isBackfilling ? "soft" : flow.deleteMode;
-
-      const entitySchema = connectorSchema;
 
       const normalizedEvents = entitySchema
         ? pending.map(event => {
