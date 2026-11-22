@@ -79,7 +79,11 @@ import {
 process.env.CONNECTOR_WEBHOOK_BATCHES = "true";
 
 const API_KEY = "sk_test_webhooks";
-const SOURCE = { id: "665f000000000000000000d1", name: "PL Stripe shadow" };
+const SOURCE = {
+  id: "665f000000000000000000d1",
+  name: "PL Stripe shadow",
+  type: "stripe",
+};
 let spec: Record<string, any>;
 
 /** A Stripe that serves objects by path. Every request is recorded. */
@@ -288,7 +292,8 @@ async function folderRows(events: ReturnType<typeof buildWebhookEvents>) {
       if (checked?.kind !== "records") return null;
       return shapeWebhookCdcRecords({
         rawRecords: checked.records,
-        sourceConnection: SOURCE,
+        sourceConnection: { ...SOURCE, type: "ws:stripe" },
+        destinationType: "bigquery",
         flow: {} as never,
         webhookEvent: events[i],
       });
@@ -305,6 +310,7 @@ const comparable = (record: Record<string, any>) => {
     operation: record.operation,
     payload,
     sourceTs: (record.sourceTs as Date).toISOString(),
+    sourceTsKind: record.sourceTsKind,
     changeId: record.changeId,
   };
 };
@@ -492,6 +498,7 @@ void test("every event type applies the same rows on both paths, with no request
     const theirs = await buildWebhookCdcRecords({
       connector,
       sourceConnection: SOURCE,
+      destinationType: "bigquery",
       flow: {} as never,
       webhookEvent: event,
     });
@@ -517,6 +524,11 @@ void test("every event type applies the same rows on both paths, with no request
         event.eventType,
       );
     }
+    assert.equal(
+      rows[i]![0].sourceTsKind,
+      entity === "payment_methods" ? "provider_event" : undefined,
+      event.eventType,
+    );
     if (entity === "payment_methods") {
       assert.equal(
         rows[i]![0].sourceTs.toISOString(),
@@ -552,6 +564,7 @@ void test("a voided invoice lands as void and a detached payment method with no 
     const theirs = await buildWebhookCdcRecords({
       connector,
       sourceConnection: SOURCE,
+      destinationType: "bigquery",
       flow: {} as never,
       webhookEvent: event,
     });
@@ -617,6 +630,7 @@ void test("payment-method changes use event time for the strict live MERGE", asy
       buildWebhookCdcRecords({
         connector,
         sourceConnection: SOURCE,
+        destinationType: "bigquery",
         flow: {} as never,
         webhookEvent,
       }),
@@ -639,6 +653,7 @@ void test("payment-method changes use event time for the strict live MERGE", asy
     thinDetached.sourceTs.toISOString(),
     detached.sourceTs.toISOString(),
   );
+  assert.equal(thinDetached.sourceTsKind, "provider_event");
   assert.equal(thinDetached.payload.customer, null);
 
   const columns = ["id", "customer", "_mako_source_ts"];
@@ -726,21 +741,36 @@ void test("payment-method events with no valid created keep the object clock", a
   });
   const endpoint = `/v1/payment_methods/${card.id}`;
   objects.set(endpoint, card);
-  const thin = {
-    ...snapshot,
-    eventId: "evt_thin_fallback",
-    rawPayload: { id: "evt_thin_fallback", related_object: { id: card.id } },
-  };
+  const thin = [undefined, "2026-02-30T00:00:00Z"].map((created, index) => {
+    const eventId = `evt_thin_fallback_${index}`;
+    return {
+      ...snapshot,
+      eventId,
+      rawPayload: {
+        id: eventId,
+        type: snapshot.eventType,
+        object: "v2.core.event",
+        created,
+        related_object: { id: card.id },
+      },
+    };
+  });
   requests.length = 0;
-  const { outcomes, rows } = await folderRows([...events, thin]);
-  assert.deepEqual(requests, [`GET ${endpoint}`]);
+  const { outcomes, rows } = await folderRows([...events, ...thin]);
+  assert.deepEqual(
+    requests,
+    thin.map(() => `GET ${endpoint}`),
+  );
   for (const outcome of outcomes) {
     assert.equal(Object.hasOwn(outcome.records[0], "sourceTsKind"), false);
+  }
+  for (const records of rows) {
+    assert.equal(Object.hasOwn(records![0], "sourceTsKind"), false);
   }
   const objectTime = new Date(card.created * 1000).toISOString();
   assert.deepEqual(
     rows.map(records => records?.[0].sourceTs.toISOString()),
-    [...events, thin].map(() => objectTime),
+    [...events, ...thin].map(() => objectTime),
   );
   for (const event of events) {
     const [record] = builtIn().extractWebhookCdcRecords(
