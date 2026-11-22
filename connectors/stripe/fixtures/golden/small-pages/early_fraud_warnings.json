@@ -1,0 +1,12 @@
+{
+  "chunks": [
+    {
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/radar/early_fraud_warnings?limit=2 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 2,
+  "rowsSha256": "4238e07855e9d2cf5007b34a569b8ae71f18b314538ee9d85564550bee05e2e6"
+}

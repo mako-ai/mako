@@ -1,0 +1,82 @@
+{
+  "requests": [
+    "GET /v1/subscription_schedules?created[gte]=1767225600&limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "canceled_at": null,
+      "completed_at": 1786233600,
+      "created": 1781049600,
+      "current_phase": {
+        "end_date": 1783641600,
+        "start_date": 1781049600
+      },
+      "customer": "cus_fx0005",
+      "default_settings": {
+        "billing_cycle_anchor": "automatic",
+        "collection_method": "charge_automatically"
+      },
+      "end_behavior": "release",
+      "id": "sub_sched_fx0005",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "subscription_schedule",
+      "phases": [
+        {
+          "end_date": 1783641600,
+          "items": [
+            {
+              "price": "price_fx0005",
+              "quantity": 1
+            }
+          ],
+          "start_date": 1781049600
+        }
+      ],
+      "released_at": null,
+      "released_subscription": null,
+      "status": "completed",
+      "subscription": "sub_fx0005",
+      "test_clock": null
+    },
+    {
+      "canceled_at": null,
+      "completed_at": null,
+      "created": 1771977600,
+      "current_phase": {
+        "end_date": 1774569600,
+        "start_date": 1771977600
+      },
+      "customer": "cus_fx0004",
+      "default_settings": {
+        "billing_cycle_anchor": "automatic",
+        "collection_method": "charge_automatically"
+      },
+      "end_behavior": "release",
+      "id": "sub_sched_fx0004",
+      "livemode": false,
+      "metadata": {},
+      "object": "subscription_schedule",
+      "phases": [
+        {
+          "end_date": 1774569600,
+          "items": [
+            {
+              "price": "price_fx0004",
+              "quantity": 1
+            }
+          ],
+          "start_date": 1771977600
+        }
+      ],
+      "released_at": null,
+      "released_subscription": null,
+      "status": "active",
+      "subscription": "sub_fx0004",
+      "test_clock": null
+    }
+  ]
+}

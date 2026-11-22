@@ -1,13 +1,12 @@
 /**
  * Stripe entity schemas, field for field the same as the in-process
- * connector's (`api/src/connectors/stripe/schema.ts`). The parity harness in
- * `fixtures/` fails if the two drift.
+ * connector's (deleted), as the parity harness checked before it went.
  *
  * Two things differ in form, not in meaning:
  * - Mako's system columns (`_mako_*`, `_syncedAt`, `is_deleted`, ...) are not
  *   declared here: a connector cannot declare them over the wire.
  *   `jsonSchemaToEntitySchema` merges all 8 on the box path, as the
- *   in-process schema spreads them, and the parity test checks they match.
+ *   in-process schema spread them.
  * - A timestamp is a Unix-seconds integer on the wire, exactly as Stripe
  *   returns it. Its JSON Schema says so (`string | integer`, `date-time`), so
  *   the engine still reads it as a timestamp and `mako connector test` does

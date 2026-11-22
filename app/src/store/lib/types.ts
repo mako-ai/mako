@@ -81,7 +81,7 @@ export interface ConsoleTab {
   settingsSection?: SettingsSection;
   /** false/undefined = pristine (replaceable), true = dirty (persistent) */
   isDirty?: boolean;
-  /** URL or path to icon, e.g., "/api/connectors/stripe/icon.svg" */
+  /** URL or path to icon, e.g., "/api/connectors/rest/icon.svg" */
   icon?: string;
   /** Additional data for special tab types */
   metadata?: Record<string, unknown>;

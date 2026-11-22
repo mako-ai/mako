@@ -1,0 +1,160 @@
+{
+  "requests": [
+    "GET /v1/refunds?created[gte]=1767225600&limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "amount": 5900,
+      "balance_transaction": "txn_fxre0014",
+      "charge": "ch_fx0154",
+      "created": 1786492800,
+      "currency": "eur",
+      "description": null,
+      "destination_details": {
+        "card": {
+          "reference_status": "available",
+          "type": "refund"
+        },
+        "type": "card"
+      },
+      "failure_balance_transaction": null,
+      "failure_reason": null,
+      "id": "re_fx0014",
+      "livemode": false,
+      "metadata": {},
+      "object": "refund",
+      "payment_intent": "pi_fx0098",
+      "reason": "requested_by_customer",
+      "receipt_number": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 5900,
+      "balance_transaction": "txn_fxre0013",
+      "charge": "ch_fx0143",
+      "created": 1782864000,
+      "currency": "eur",
+      "description": null,
+      "destination_details": {
+        "card": {
+          "reference_status": "available",
+          "type": "refund"
+        },
+        "type": "card"
+      },
+      "failure_balance_transaction": null,
+      "failure_reason": null,
+      "id": "re_fx0013",
+      "livemode": false,
+      "metadata": {},
+      "object": "refund",
+      "payment_intent": "pi_fx0091",
+      "reason": "requested_by_customer",
+      "receipt_number": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 5900,
+      "balance_transaction": "txn_fxre0012",
+      "charge": "ch_fx0132",
+      "created": 1779235200,
+      "currency": "eur",
+      "description": null,
+      "destination_details": {
+        "card": {
+          "reference_status": "available",
+          "type": "refund"
+        },
+        "type": "card"
+      },
+      "failure_balance_transaction": null,
+      "failure_reason": null,
+      "id": "re_fx0012",
+      "livemode": false,
+      "metadata": {},
+      "object": "refund",
+      "payment_intent": "pi_fx0084",
+      "reason": "requested_by_customer",
+      "receipt_number": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 5900,
+      "balance_transaction": "txn_fxre0011",
+      "charge": "ch_fx0121",
+      "created": 1775606400,
+      "currency": "eur",
+      "description": null,
+      "destination_details": {
+        "card": {
+          "reference_status": "available",
+          "type": "refund"
+        },
+        "type": "card"
+      },
+      "failure_balance_transaction": null,
+      "failure_reason": null,
+      "id": "re_fx0011",
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "object": "refund",
+      "payment_intent": "pi_fx0077",
+      "reason": "requested_by_customer",
+      "receipt_number": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 5900,
+      "balance_transaction": "txn_fxre0010",
+      "charge": "ch_fx0110",
+      "created": 1771977600,
+      "currency": "eur",
+      "description": null,
+      "destination_details": {
+        "card": {
+          "reference_status": "available",
+          "type": "refund"
+        },
+        "type": "card"
+      },
+      "failure_balance_transaction": null,
+      "failure_reason": null,
+      "id": "re_fx0010",
+      "livemode": false,
+      "metadata": {},
+      "object": "refund",
+      "payment_intent": "pi_fx0070",
+      "reason": "requested_by_customer",
+      "receipt_number": null,
+      "status": "succeeded"
+    },
+    {
+      "amount": 5900,
+      "balance_transaction": "txn_fxre0009",
+      "charge": "ch_fx0099",
+      "created": 1768348800,
+      "currency": "eur",
+      "description": null,
+      "destination_details": {
+        "card": {
+          "reference_status": "available",
+          "type": "refund"
+        },
+        "type": "card"
+      },
+      "failure_balance_transaction": null,
+      "failure_reason": null,
+      "id": "re_fx0009",
+      "livemode": false,
+      "metadata": {},
+      "object": "refund",
+      "payment_intent": "pi_fx0063",
+      "reason": "requested_by_customer",
+      "receipt_number": null,
+      "status": "succeeded"
+    }
+  ]
+}

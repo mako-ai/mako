@@ -1,0 +1,2192 @@
+{
+  "requests": [
+    "GET /v1/invoices?limit=100 (Stripe-Version 2023-10-16)",
+    "GET /v1/invoices/in_fx0005/lines?limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "amount": 169100,
+      "amount_excluding_tax": 169100,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €1691 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0040_0001",
+      "invoice": "in_fx0040",
+      "invoice_created": 1788793990,
+      "invoice_id": "in_fx0040",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1788793990,
+        "start": 1786201990
+      },
+      "plan": {
+        "amount": 169100,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 169100
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0040",
+      "subscription_item": "si_fx0040",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "169100"
+    },
+    {
+      "amount": 197500,
+      "amount_excluding_tax": 197500,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €1975 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0039_0001",
+      "invoice": "in_fx0039",
+      "invoice_created": 1787466380,
+      "invoice_id": "in_fx0039",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1787466380,
+        "start": 1784874380
+      },
+      "plan": {
+        "amount": 197500,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 197500
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0039",
+      "subscription_item": "si_fx0039",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "197500"
+    },
+    {
+      "amount": 75800,
+      "amount_excluding_tax": 75800,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €758 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0038_0001",
+      "invoice": "in_fx0038",
+      "invoice_created": 1786138770,
+      "invoice_id": "in_fx0038",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1786138770,
+        "start": 1783546770
+      },
+      "plan": {
+        "amount": 75800,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 75800
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0038",
+      "subscription_item": "si_fx0038",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "75800"
+    },
+    {
+      "amount": 1100,
+      "amount_excluding_tax": 1100,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €11 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0037_0001",
+      "invoice": "in_fx0037",
+      "invoice_created": 1784811160,
+      "invoice_id": "in_fx0037",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1784811160,
+        "start": 1782219160
+      },
+      "plan": {
+        "amount": 1100,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 1100
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0037",
+      "subscription_item": "si_fx0037",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "1100"
+    },
+    {
+      "amount": 60900,
+      "amount_excluding_tax": 60900,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €609 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0036_0001",
+      "invoice": "in_fx0036",
+      "invoice_created": 1783483551,
+      "invoice_id": "in_fx0036",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1783483551,
+        "start": 1780891551
+      },
+      "plan": {
+        "amount": 60900,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 60900
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0036",
+      "subscription_item": "si_fx0036",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "60900"
+    },
+    {
+      "amount": 7100,
+      "amount_excluding_tax": 7100,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €71 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0035_0001",
+      "invoice": "in_fx0035",
+      "invoice_created": 1782155941,
+      "invoice_id": "in_fx0035",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1782155941,
+        "start": 1779563941
+      },
+      "plan": {
+        "amount": 7100,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 7100
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0035",
+      "subscription_item": "si_fx0035",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "7100"
+    },
+    {
+      "amount": 80900,
+      "amount_excluding_tax": 80900,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €809 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0034_0001",
+      "invoice": "in_fx0034",
+      "invoice_created": 1780828331,
+      "invoice_id": "in_fx0034",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1780828331,
+        "start": 1778236331
+      },
+      "plan": {
+        "amount": 80900,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 80900
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0034",
+      "subscription_item": "si_fx0034",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "80900"
+    },
+    {
+      "amount": 122200,
+      "amount_excluding_tax": 122200,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €1222 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0033_0001",
+      "invoice": "in_fx0033",
+      "invoice_created": 1779500721,
+      "invoice_id": "in_fx0033",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1779500721,
+        "start": 1776908721
+      },
+      "plan": {
+        "amount": 122200,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 122200
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0033",
+      "subscription_item": "si_fx0033",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "122200"
+    },
+    {
+      "amount": 5400,
+      "amount_excluding_tax": 5400,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €54 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0032_0001",
+      "invoice": "in_fx0032",
+      "invoice_created": 1778173112,
+      "invoice_id": "in_fx0032",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1778173112,
+        "start": 1775581112
+      },
+      "plan": {
+        "amount": 5400,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 5400
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0032",
+      "subscription_item": "si_fx0032",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "5400"
+    },
+    {
+      "amount": 168600,
+      "amount_excluding_tax": 168600,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €1686 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0031_0001",
+      "invoice": "in_fx0031",
+      "invoice_created": 1776845502,
+      "invoice_id": "in_fx0031",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1776845502,
+        "start": 1774253502
+      },
+      "plan": {
+        "amount": 168600,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 168600
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0031",
+      "subscription_item": "si_fx0031",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "168600"
+    },
+    {
+      "amount": 22300,
+      "amount_excluding_tax": 22300,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €223 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0030_0001",
+      "invoice": "in_fx0030",
+      "invoice_created": 1775517892,
+      "invoice_id": "in_fx0030",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1775517892,
+        "start": 1772925892
+      },
+      "plan": {
+        "amount": 22300,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 22300
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0030",
+      "subscription_item": "si_fx0030",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "22300"
+    },
+    {
+      "amount": 82000,
+      "amount_excluding_tax": 82000,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €820 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0029_0001",
+      "invoice": "in_fx0029",
+      "invoice_created": 1774190282,
+      "invoice_id": "in_fx0029",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1774190282,
+        "start": 1771598282
+      },
+      "plan": {
+        "amount": 82000,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 82000
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0029",
+      "subscription_item": "si_fx0029",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "82000"
+    },
+    {
+      "amount": 108100,
+      "amount_excluding_tax": 108100,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €1081 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0028_0001",
+      "invoice": "in_fx0028",
+      "invoice_created": 1772862673,
+      "invoice_id": "in_fx0028",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1772862673,
+        "start": 1770270673
+      },
+      "plan": {
+        "amount": 108100,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 108100
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0028",
+      "subscription_item": "si_fx0028",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "108100"
+    },
+    {
+      "amount": 15600,
+      "amount_excluding_tax": 15600,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €156 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0027_0001",
+      "invoice": "in_fx0027",
+      "invoice_created": 1771535063,
+      "invoice_id": "in_fx0027",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1771535063,
+        "start": 1768943063
+      },
+      "plan": {
+        "amount": 15600,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 15600
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0027",
+      "subscription_item": "si_fx0027",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "15600"
+    },
+    {
+      "amount": 50900,
+      "amount_excluding_tax": 50900,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €509 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0026_0001",
+      "invoice": "in_fx0026",
+      "invoice_created": 1770207453,
+      "invoice_id": "in_fx0026",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1770207453,
+        "start": 1767615453
+      },
+      "plan": {
+        "amount": 50900,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 50900
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0026",
+      "subscription_item": "si_fx0026",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "50900"
+    },
+    {
+      "amount": 158700,
+      "amount_excluding_tax": 158700,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €1587 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0025_0001",
+      "invoice": "in_fx0025",
+      "invoice_created": 1768879843,
+      "invoice_id": "in_fx0025",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1768879843,
+        "start": 1766287843
+      },
+      "plan": {
+        "amount": 158700,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 158700
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0025",
+      "subscription_item": "si_fx0025",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "158700"
+    },
+    {
+      "amount": 10500,
+      "amount_excluding_tax": 10500,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €105 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0024_0001",
+      "invoice": "in_fx0024",
+      "invoice_created": 1767552234,
+      "invoice_id": "in_fx0024",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1767552234,
+        "start": 1764960234
+      },
+      "plan": {
+        "amount": 10500,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 10500
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0024",
+      "subscription_item": "si_fx0024",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "10500"
+    },
+    {
+      "amount": 114500,
+      "amount_excluding_tax": 114500,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €1145 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0023_0001",
+      "invoice": "in_fx0023",
+      "invoice_created": 1766224624,
+      "invoice_id": "in_fx0023",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1766224624,
+        "start": 1763632624
+      },
+      "plan": {
+        "amount": 114500,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 114500
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0023",
+      "subscription_item": "si_fx0023",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "114500"
+    },
+    {
+      "amount": 62900,
+      "amount_excluding_tax": 62900,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €629 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0022_0001",
+      "invoice": "in_fx0022",
+      "invoice_created": 1764897014,
+      "invoice_id": "in_fx0022",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1764897014,
+        "start": 1762305014
+      },
+      "plan": {
+        "amount": 62900,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 62900
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0022",
+      "subscription_item": "si_fx0022",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "62900"
+    },
+    {
+      "amount": 56200,
+      "amount_excluding_tax": 56200,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €562 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0021_0001",
+      "invoice": "in_fx0021",
+      "invoice_created": 1763569404,
+      "invoice_id": "in_fx0021",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1763569404,
+        "start": 1760977404
+      },
+      "plan": {
+        "amount": 56200,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 56200
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0021",
+      "subscription_item": "si_fx0021",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "56200"
+    },
+    {
+      "amount": 130700,
+      "amount_excluding_tax": 130700,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €1307 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0020_0001",
+      "invoice": "in_fx0020",
+      "invoice_created": 1762241795,
+      "invoice_id": "in_fx0020",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1762241795,
+        "start": 1759649795
+      },
+      "plan": {
+        "amount": 130700,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 130700
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0020",
+      "subscription_item": "si_fx0020",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "130700"
+    },
+    {
+      "amount": 137900,
+      "amount_excluding_tax": 137900,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €1379 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0019_0001",
+      "invoice": "in_fx0019",
+      "invoice_created": 1760914185,
+      "invoice_id": "in_fx0019",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1760914185,
+        "start": 1758322185
+      },
+      "plan": {
+        "amount": 137900,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 137900
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0019",
+      "subscription_item": "si_fx0019",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "137900"
+    },
+    {
+      "amount": 180800,
+      "amount_excluding_tax": 180800,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €1808 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0018_0001",
+      "invoice": "in_fx0018",
+      "invoice_created": 1759586575,
+      "invoice_id": "in_fx0018",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1759586575,
+        "start": 1756994575
+      },
+      "plan": {
+        "amount": 180800,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 180800
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0018",
+      "subscription_item": "si_fx0018",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "180800"
+    },
+    {
+      "amount": 65700,
+      "amount_excluding_tax": 65700,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €657 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0017_0001",
+      "invoice": "in_fx0017",
+      "invoice_created": 1758258965,
+      "invoice_id": "in_fx0017",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1758258965,
+        "start": 1755666965
+      },
+      "plan": {
+        "amount": 65700,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 65700
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0017",
+      "subscription_item": "si_fx0017",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "65700"
+    },
+    {
+      "amount": 25800,
+      "amount_excluding_tax": 25800,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €258 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0016_0001",
+      "invoice": "in_fx0016",
+      "invoice_created": 1756931356,
+      "invoice_id": "in_fx0016",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1756931356,
+        "start": 1754339356
+      },
+      "plan": {
+        "amount": 25800,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 25800
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0016",
+      "subscription_item": "si_fx0016",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "25800"
+    },
+    {
+      "amount": 65100,
+      "amount_excluding_tax": 65100,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €651 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0015_0001",
+      "invoice": "in_fx0015",
+      "invoice_created": 1755603746,
+      "invoice_id": "in_fx0015",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1755603746,
+        "start": 1753011746
+      },
+      "plan": {
+        "amount": 65100,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 65100
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0015",
+      "subscription_item": "si_fx0015",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "65100"
+    },
+    {
+      "amount": 72600,
+      "amount_excluding_tax": 72600,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €726 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0014_0001",
+      "invoice": "in_fx0014",
+      "invoice_created": 1754276136,
+      "invoice_id": "in_fx0014",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1754276136,
+        "start": 1751684136
+      },
+      "plan": {
+        "amount": 72600,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 72600
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0014",
+      "subscription_item": "si_fx0014",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "72600"
+    },
+    {
+      "amount": 8800,
+      "amount_excluding_tax": 8800,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €88 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0013_0001",
+      "invoice": "in_fx0013",
+      "invoice_created": 1752948526,
+      "invoice_id": "in_fx0013",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1752948526,
+        "start": 1750356526
+      },
+      "plan": {
+        "amount": 8800,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 8800
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0013",
+      "subscription_item": "si_fx0013",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "8800"
+    },
+    {
+      "amount": 151400,
+      "amount_excluding_tax": 151400,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €1514 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0012_0001",
+      "invoice": "in_fx0012",
+      "invoice_created": 1751620917,
+      "invoice_id": "in_fx0012",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1751620917,
+        "start": 1749028917
+      },
+      "plan": {
+        "amount": 151400,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 151400
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0012",
+      "subscription_item": "si_fx0012",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "151400"
+    },
+    {
+      "amount": 112100,
+      "amount_excluding_tax": 112100,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €1121 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0011_0001",
+      "invoice": "in_fx0011",
+      "invoice_created": 1750293307,
+      "invoice_id": "in_fx0011",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1750293307,
+        "start": 1747701307
+      },
+      "plan": {
+        "amount": 112100,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 112100
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0011",
+      "subscription_item": "si_fx0011",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "112100"
+    },
+    {
+      "amount": 26500,
+      "amount_excluding_tax": 26500,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €265 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0010_0001",
+      "invoice": "in_fx0010",
+      "invoice_created": 1748965697,
+      "invoice_id": "in_fx0010",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1748965697,
+        "start": 1746373697
+      },
+      "plan": {
+        "amount": 26500,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 26500
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0010",
+      "subscription_item": "si_fx0010",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "26500"
+    },
+    {
+      "amount": 139600,
+      "amount_excluding_tax": 139600,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €1396 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0009_0001",
+      "invoice": "in_fx0009",
+      "invoice_created": 1747638087,
+      "invoice_id": "in_fx0009",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1747638087,
+        "start": 1745046087
+      },
+      "plan": {
+        "amount": 139600,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 139600
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0009",
+      "subscription_item": "si_fx0009",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "139600"
+    },
+    {
+      "amount": 33000,
+      "amount_excluding_tax": 33000,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €330 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0008_0001",
+      "invoice": "in_fx0008",
+      "invoice_created": 1746310478,
+      "invoice_id": "in_fx0008",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1746310478,
+        "start": 1743718478
+      },
+      "plan": {
+        "amount": 33000,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 33000
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0008",
+      "subscription_item": "si_fx0008",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "33000"
+    },
+    {
+      "amount": 114800,
+      "amount_excluding_tax": 114800,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €1148 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0007_0001",
+      "invoice": "in_fx0007",
+      "invoice_created": 1744982868,
+      "invoice_id": "in_fx0007",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1744982868,
+        "start": 1742390868
+      },
+      "plan": {
+        "amount": 114800,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 114800
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0007",
+      "subscription_item": "si_fx0007",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "114800"
+    },
+    {
+      "amount": 103700,
+      "amount_excluding_tax": 103700,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €1037 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0006_0001",
+      "invoice": "in_fx0006",
+      "invoice_created": 1743655258,
+      "invoice_id": "in_fx0006",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1743655258,
+        "start": 1741063258
+      },
+      "plan": {
+        "amount": 103700,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 103700
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0006",
+      "subscription_item": "si_fx0006",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "103700"
+    },
+    {
+      "amount": 1000,
+      "amount_excluding_tax": 1000,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €10 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0005_0001",
+      "invoice": "in_fx0005",
+      "invoice_created": 1742327648,
+      "invoice_id": "in_fx0005",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1742327648,
+        "start": 1739735648
+      },
+      "plan": {
+        "amount": 1000,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 1000
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0005",
+      "subscription_item": "si_fx0005",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "1000"
+    },
+    {
+      "amount": 1100,
+      "amount_excluding_tax": 1100,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €11 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0005_0002",
+      "invoice": "in_fx0005",
+      "invoice_created": 1742327648,
+      "invoice_id": "in_fx0005",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1742327648,
+        "start": 1739735648
+      },
+      "plan": {
+        "amount": 1100,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 1100
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0005",
+      "subscription_item": "si_fx0005",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "1100"
+    },
+    {
+      "amount": 1200,
+      "amount_excluding_tax": 1200,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €12 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0005_0003",
+      "invoice": "in_fx0005",
+      "invoice_created": 1742327648,
+      "invoice_id": "in_fx0005",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1742327648,
+        "start": 1739735648
+      },
+      "plan": {
+        "amount": 1200,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 1200
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0005",
+      "subscription_item": "si_fx0005",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "1200"
+    },
+    {
+      "amount": 1300,
+      "amount_excluding_tax": 1300,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €13 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0005_0004",
+      "invoice": "in_fx0005",
+      "invoice_created": 1742327648,
+      "invoice_id": "in_fx0005",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1742327648,
+        "start": 1739735648
+      },
+      "plan": {
+        "amount": 1300,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 1300
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0005",
+      "subscription_item": "si_fx0005",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "1300"
+    },
+    {
+      "amount": 1400,
+      "amount_excluding_tax": 1400,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €14 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0005_0005",
+      "invoice": "in_fx0005",
+      "invoice_created": 1742327648,
+      "invoice_id": "in_fx0005",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1742327648,
+        "start": 1739735648
+      },
+      "plan": {
+        "amount": 1400,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 1400
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0005",
+      "subscription_item": "si_fx0005",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "1400"
+    },
+    {
+      "amount": 1500,
+      "amount_excluding_tax": 1500,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €15 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0005_0006",
+      "invoice": "in_fx0005",
+      "invoice_created": 1742327648,
+      "invoice_id": "in_fx0005",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1742327648,
+        "start": 1739735648
+      },
+      "plan": {
+        "amount": 1500,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 1500
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0005",
+      "subscription_item": "si_fx0005",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "1500"
+    },
+    {
+      "amount": 1600,
+      "amount_excluding_tax": 1600,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €16 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0005_0007",
+      "invoice": "in_fx0005",
+      "invoice_created": 1742327648,
+      "invoice_id": "in_fx0005",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1742327648,
+        "start": 1739735648
+      },
+      "plan": {
+        "amount": 1600,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 1600
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0005",
+      "subscription_item": "si_fx0005",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "1600"
+    },
+    {
+      "amount": 1700,
+      "amount_excluding_tax": 1700,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €17 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0005_0008",
+      "invoice": "in_fx0005",
+      "invoice_created": 1742327648,
+      "invoice_id": "in_fx0005",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1742327648,
+        "start": 1739735648
+      },
+      "plan": {
+        "amount": 1700,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 1700
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0005",
+      "subscription_item": "si_fx0005",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "1700"
+    },
+    {
+      "amount": 1800,
+      "amount_excluding_tax": 1800,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €18 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0005_0009",
+      "invoice": "in_fx0005",
+      "invoice_created": 1742327648,
+      "invoice_id": "in_fx0005",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1742327648,
+        "start": 1739735648
+      },
+      "plan": {
+        "amount": 1800,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 1800
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0005",
+      "subscription_item": "si_fx0005",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "1800"
+    },
+    {
+      "amount": 1900,
+      "amount_excluding_tax": 1900,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €19 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0005_0010",
+      "invoice": "in_fx0005",
+      "invoice_created": 1742327648,
+      "invoice_id": "in_fx0005",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1742327648,
+        "start": 1739735648
+      },
+      "plan": {
+        "amount": 1900,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 1900
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0005",
+      "subscription_item": "si_fx0005",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "1900"
+    },
+    {
+      "amount": 2000,
+      "amount_excluding_tax": 2000,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €20 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0005_0011",
+      "invoice": "in_fx0005",
+      "invoice_created": 1742327648,
+      "invoice_id": "in_fx0005",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1742327648,
+        "start": 1739735648
+      },
+      "plan": {
+        "amount": 2000,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 2000
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0005",
+      "subscription_item": "si_fx0005",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "2000"
+    },
+    {
+      "amount": 2100,
+      "amount_excluding_tax": 2100,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €21 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0005_0012",
+      "invoice": "in_fx0005",
+      "invoice_created": 1742327648,
+      "invoice_id": "in_fx0005",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1742327648,
+        "start": 1739735648
+      },
+      "plan": {
+        "amount": 2100,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 2100
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0005",
+      "subscription_item": "si_fx0005",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "2100"
+    },
+    {
+      "amount": 2200,
+      "amount_excluding_tax": 2200,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €22 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0005_0013",
+      "invoice": "in_fx0005",
+      "invoice_created": 1742327648,
+      "invoice_id": "in_fx0005",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1742327648,
+        "start": 1739735648
+      },
+      "plan": {
+        "amount": 2200,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 2200
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0005",
+      "subscription_item": "si_fx0005",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "2200"
+    },
+    {
+      "amount": 164700,
+      "amount_excluding_tax": 164700,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €1647 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0004_0001",
+      "invoice": "in_fx0004",
+      "invoice_created": 1741000039,
+      "invoice_id": "in_fx0004",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1741000039,
+        "start": 1738408039
+      },
+      "plan": {
+        "amount": 164700,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 164700
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0004",
+      "subscription_item": "si_fx0004",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "164700"
+    },
+    {
+      "amount": 117900,
+      "amount_excluding_tax": 117900,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €1179 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0003_0001",
+      "invoice": "in_fx0003",
+      "invoice_created": 1739672429,
+      "invoice_id": "in_fx0003",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1739672429,
+        "start": 1737080429
+      },
+      "plan": {
+        "amount": 117900,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 117900
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0003",
+      "subscription_item": "si_fx0003",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "117900"
+    },
+    {
+      "amount": 61000,
+      "amount_excluding_tax": 61000,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €610 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0002_0001",
+      "invoice": "in_fx0002",
+      "invoice_created": 1738344819,
+      "invoice_id": "in_fx0002",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1738344819,
+        "start": 1735752819
+      },
+      "plan": {
+        "amount": 61000,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 61000
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0002",
+      "subscription_item": "si_fx0002",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "61000"
+    },
+    {
+      "amount": 32200,
+      "amount_excluding_tax": 32200,
+      "currency": "eur",
+      "description": "1 × Fixture Plan (at €322 / month)",
+      "discount_amounts": [],
+      "discountable": true,
+      "discounts": [],
+      "id": "il_fx0001_0001",
+      "invoice": "in_fx0001",
+      "invoice_created": 1737017209,
+      "invoice_id": "in_fx0001",
+      "invoice_item": null,
+      "livemode": false,
+      "metadata": {},
+      "object": "line_item",
+      "period": {
+        "end": 1737017209,
+        "start": 1734425209
+      },
+      "plan": {
+        "amount": 32200,
+        "id": "price_fx0001",
+        "object": "plan"
+      },
+      "price": {
+        "id": "price_fx0001",
+        "object": "price",
+        "unit_amount": 32200
+      },
+      "proration": false,
+      "proration_details": {
+        "credited_items": null
+      },
+      "quantity": 1,
+      "subscription": "sub_fx0001",
+      "subscription_item": "si_fx0001",
+      "tax_amounts": [],
+      "tax_rates": [],
+      "type": "subscription",
+      "unit_amount_excluding_tax": "32200"
+    }
+  ]
+}

@@ -1,8 +1,8 @@
 # Stripe, as a connector folder (RFC connector-runtime, iteration 4).
 #
-# Production still runs the in-process connector in api/src/connectors/stripe.
-# This folder is the port the registry will later install as mako/stripe; the
-# parity harness in fixtures/ holds the two to the same output.
+# The in-process connector this folder was ported from is deleted. Flows run
+# this folder in a box (ws:stripe). The registry installs it as mako/stripe.
+# The golden rows in fixtures/golden/ hold the output it was checked against.
 runtime: node
 entry: connector.ts
 page:

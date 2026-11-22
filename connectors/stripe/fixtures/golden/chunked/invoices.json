@@ -1,0 +1,12 @@
+{
+  "chunks": [
+    {
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/invoices?limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 40,
+  "rowsSha256": "3ac64838a9d5bd0f234d0ff49626717aa73958c999cbbfe1384cc0651d6f5e3f"
+}

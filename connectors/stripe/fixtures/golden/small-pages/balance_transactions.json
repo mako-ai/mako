@@ -1,0 +1,108 @@
+{
+  "chunks": [
+    {
+      "cursor": "txn_fx0039",
+      "hasMore": true
+    },
+    {
+      "cursor": "txn_fx0037",
+      "hasMore": true
+    },
+    {
+      "cursor": "txn_fx0035",
+      "hasMore": true
+    },
+    {
+      "cursor": "txn_fx0033",
+      "hasMore": true
+    },
+    {
+      "cursor": "txn_fx0031",
+      "hasMore": true
+    },
+    {
+      "cursor": "txn_fx0029",
+      "hasMore": true
+    },
+    {
+      "cursor": "txn_fx0027",
+      "hasMore": true
+    },
+    {
+      "cursor": "txn_fx0025",
+      "hasMore": true
+    },
+    {
+      "cursor": "txn_fx0023",
+      "hasMore": true
+    },
+    {
+      "cursor": "txn_fx0021",
+      "hasMore": true
+    },
+    {
+      "cursor": "txn_fx0019",
+      "hasMore": true
+    },
+    {
+      "cursor": "txn_fx0017",
+      "hasMore": true
+    },
+    {
+      "cursor": "txn_fx0015",
+      "hasMore": true
+    },
+    {
+      "cursor": "txn_fx0013",
+      "hasMore": true
+    },
+    {
+      "cursor": "txn_fx0011",
+      "hasMore": true
+    },
+    {
+      "cursor": "txn_fx0009",
+      "hasMore": true
+    },
+    {
+      "cursor": "txn_fx0007",
+      "hasMore": true
+    },
+    {
+      "cursor": "txn_fx0005",
+      "hasMore": true
+    },
+    {
+      "cursor": "txn_fx0003",
+      "hasMore": true
+    },
+    {
+      "cursor": "txn_fx0003",
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/balance_transactions?limit=2 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=2&starting_after=txn_fx0039 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=2&starting_after=txn_fx0037 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=2&starting_after=txn_fx0035 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=2&starting_after=txn_fx0033 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=2&starting_after=txn_fx0031 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=2&starting_after=txn_fx0029 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=2&starting_after=txn_fx0027 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=2&starting_after=txn_fx0025 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=2&starting_after=txn_fx0023 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=2&starting_after=txn_fx0021 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=2&starting_after=txn_fx0019 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=2&starting_after=txn_fx0017 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=2&starting_after=txn_fx0015 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=2&starting_after=txn_fx0013 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=2&starting_after=txn_fx0011 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=2&starting_after=txn_fx0009 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=2&starting_after=txn_fx0007 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=2&starting_after=txn_fx0005 (Stripe-Version 2023-10-16)",
+    "GET /v1/balance_transactions?limit=2&starting_after=txn_fx0003 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 40,
+  "rowsSha256": "ddb1488785d38453664e3caee13a261698f33b9ad72a08556244cc7332572ce6"
+}

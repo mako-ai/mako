@@ -1,0 +1,28 @@
+{
+  "chunks": [
+    {
+      "cursor": "cn_fx0007",
+      "hasMore": true
+    },
+    {
+      "cursor": "cn_fx0005",
+      "hasMore": true
+    },
+    {
+      "cursor": "cn_fx0003",
+      "hasMore": true
+    },
+    {
+      "cursor": "cn_fx0003",
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/credit_notes?limit=2 (Stripe-Version 2023-10-16)",
+    "GET /v1/credit_notes?limit=2&starting_after=cn_fx0007 (Stripe-Version 2023-10-16)",
+    "GET /v1/credit_notes?limit=2&starting_after=cn_fx0005 (Stripe-Version 2023-10-16)",
+    "GET /v1/credit_notes?limit=2&starting_after=cn_fx0003 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 8,
+  "rowsSha256": "0099d8f1b7b68edb801ae671d6c1c486b0dcbaf0e051f8ac9c79ed024991595a"
+}

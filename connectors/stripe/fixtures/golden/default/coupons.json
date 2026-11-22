@@ -1,0 +1,78 @@
+{
+  "requests": [
+    "GET /v1/coupons?limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "amount_off": 1000,
+      "created": 1779235200,
+      "currency": "eur",
+      "duration": "repeating",
+      "duration_in_months": 3,
+      "id": "FIXTURE4",
+      "livemode": false,
+      "max_redemptions": null,
+      "metadata": {},
+      "name": "Fixture 4",
+      "object": "coupon",
+      "percent_off": null,
+      "redeem_by": null,
+      "times_redeemed": 12,
+      "valid": true
+    },
+    {
+      "amount_off": null,
+      "created": 1768348800,
+      "currency": null,
+      "duration": "repeating",
+      "duration_in_months": 3,
+      "id": "FIXTURE3",
+      "livemode": false,
+      "max_redemptions": null,
+      "metadata": {},
+      "name": "Fixture 3",
+      "object": "coupon",
+      "percent_off": 25,
+      "redeem_by": null,
+      "times_redeemed": 9,
+      "valid": true
+    },
+    {
+      "amount_off": 1000,
+      "created": 1757462400,
+      "currency": "eur",
+      "duration": "repeating",
+      "duration_in_months": 3,
+      "id": "FIXTURE2",
+      "livemode": false,
+      "max_redemptions": null,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "name": "Fixture 2",
+      "object": "coupon",
+      "percent_off": null,
+      "redeem_by": null,
+      "times_redeemed": 6,
+      "valid": true
+    },
+    {
+      "amount_off": null,
+      "created": 1746576000,
+      "currency": null,
+      "duration": "repeating",
+      "duration_in_months": 3,
+      "id": "FIXTURE1",
+      "livemode": false,
+      "max_redemptions": null,
+      "metadata": {},
+      "name": "Fixture 1",
+      "object": "coupon",
+      "percent_off": 12.5,
+      "redeem_by": null,
+      "times_redeemed": 3,
+      "valid": true
+    }
+  ]
+}

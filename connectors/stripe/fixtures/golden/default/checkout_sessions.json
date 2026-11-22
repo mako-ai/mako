@@ -1,0 +1,227 @@
+{
+  "requests": [
+    "GET /v1/checkout/sessions?limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "amount_subtotal": 5900,
+      "amount_total": 5900,
+      "client_reference_id": null,
+      "created": 1783317600,
+      "currency": "eur",
+      "customer": "cus_fx0007",
+      "customer_details": {
+        "email": "customer7@example.test",
+        "name": null
+      },
+      "customer_email": null,
+      "expires_at": 1783404000,
+      "id": "cs_test_fx0007",
+      "invoice": null,
+      "livemode": false,
+      "metadata": {},
+      "mode": "subscription",
+      "object": "checkout.session",
+      "payment_intent": null,
+      "payment_link": null,
+      "payment_status": "paid",
+      "status": "complete",
+      "subscription": "sub_fx0007",
+      "total_details": {
+        "amount_discount": 0,
+        "amount_shipping": 0,
+        "amount_tax": 0
+      },
+      "url": null
+    },
+    {
+      "amount_subtotal": 5900,
+      "amount_total": 5900,
+      "client_reference_id": null,
+      "created": 1776513600,
+      "currency": "eur",
+      "customer": null,
+      "customer_details": {
+        "email": "customer6@example.test",
+        "name": null
+      },
+      "customer_email": null,
+      "expires_at": 1776600000,
+      "id": "cs_test_fx0006",
+      "invoice": null,
+      "livemode": false,
+      "metadata": {},
+      "mode": "subscription",
+      "object": "checkout.session",
+      "payment_intent": null,
+      "payment_link": null,
+      "payment_status": "unpaid",
+      "status": "expired",
+      "subscription": null,
+      "total_details": {
+        "amount_discount": 0,
+        "amount_shipping": 0,
+        "amount_tax": 0
+      },
+      "url": null
+    },
+    {
+      "amount_subtotal": 5900,
+      "amount_total": 5900,
+      "client_reference_id": null,
+      "created": 1769709600,
+      "currency": "eur",
+      "customer": "cus_fx0005",
+      "customer_details": {
+        "email": "customer5@example.test",
+        "name": null
+      },
+      "customer_email": null,
+      "expires_at": 1769796000,
+      "id": "cs_test_fx0005",
+      "invoice": null,
+      "livemode": false,
+      "metadata": {},
+      "mode": "subscription",
+      "object": "checkout.session",
+      "payment_intent": null,
+      "payment_link": null,
+      "payment_status": "paid",
+      "status": "complete",
+      "subscription": "sub_fx0005",
+      "total_details": {
+        "amount_discount": 0,
+        "amount_shipping": 0,
+        "amount_tax": 0
+      },
+      "url": null
+    },
+    {
+      "amount_subtotal": 5900,
+      "amount_total": 5900,
+      "client_reference_id": null,
+      "created": 1762905600,
+      "currency": "eur",
+      "customer": null,
+      "customer_details": {
+        "email": "customer4@example.test",
+        "name": null
+      },
+      "customer_email": null,
+      "expires_at": 1762992000,
+      "id": "cs_test_fx0004",
+      "invoice": null,
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "mode": "subscription",
+      "object": "checkout.session",
+      "payment_intent": null,
+      "payment_link": null,
+      "payment_status": "paid",
+      "status": "complete",
+      "subscription": "sub_fx0004",
+      "total_details": {
+        "amount_discount": 0,
+        "amount_shipping": 0,
+        "amount_tax": 0
+      },
+      "url": null
+    },
+    {
+      "amount_subtotal": 5900,
+      "amount_total": 5900,
+      "client_reference_id": null,
+      "created": 1756101600,
+      "currency": "eur",
+      "customer": "cus_fx0003",
+      "customer_details": {
+        "email": "customer3@example.test",
+        "name": null
+      },
+      "customer_email": null,
+      "expires_at": 1756188000,
+      "id": "cs_test_fx0003",
+      "invoice": null,
+      "livemode": false,
+      "metadata": {},
+      "mode": "subscription",
+      "object": "checkout.session",
+      "payment_intent": null,
+      "payment_link": null,
+      "payment_status": "unpaid",
+      "status": "expired",
+      "subscription": null,
+      "total_details": {
+        "amount_discount": 0,
+        "amount_shipping": 0,
+        "amount_tax": 0
+      },
+      "url": null
+    },
+    {
+      "amount_subtotal": 5900,
+      "amount_total": 5900,
+      "client_reference_id": null,
+      "created": 1749297600,
+      "currency": "eur",
+      "customer": null,
+      "customer_details": {
+        "email": "customer2@example.test",
+        "name": null
+      },
+      "customer_email": null,
+      "expires_at": 1749384000,
+      "id": "cs_test_fx0002",
+      "invoice": null,
+      "livemode": false,
+      "metadata": {},
+      "mode": "subscription",
+      "object": "checkout.session",
+      "payment_intent": null,
+      "payment_link": null,
+      "payment_status": "paid",
+      "status": "complete",
+      "subscription": "sub_fx0002",
+      "total_details": {
+        "amount_discount": 0,
+        "amount_shipping": 0,
+        "amount_tax": 0
+      },
+      "url": null
+    },
+    {
+      "amount_subtotal": 5900,
+      "amount_total": 5900,
+      "client_reference_id": null,
+      "created": 1742493600,
+      "currency": "eur",
+      "customer": "cus_fx0001",
+      "customer_details": {
+        "email": "customer1@example.test",
+        "name": null
+      },
+      "customer_email": null,
+      "expires_at": 1742580000,
+      "id": "cs_test_fx0001",
+      "invoice": null,
+      "livemode": false,
+      "metadata": {},
+      "mode": "subscription",
+      "object": "checkout.session",
+      "payment_intent": null,
+      "payment_link": null,
+      "payment_status": "paid",
+      "status": "complete",
+      "subscription": "sub_fx0001",
+      "total_details": {
+        "amount_discount": 0,
+        "amount_shipping": 0,
+        "amount_tax": 0
+      },
+      "url": null
+    }
+  ]
+}

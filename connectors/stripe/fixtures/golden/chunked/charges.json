@@ -1,0 +1,12 @@
+{
+  "chunks": [
+    {
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/charges?limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 30,
+  "rowsSha256": "3a2f5b72fe6eb2ee0306da2ab595d41d25c7e4ad2d712570412ddc549bc99ed7"
+}

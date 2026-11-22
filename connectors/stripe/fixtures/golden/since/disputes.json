@@ -1,0 +1,34 @@
+{
+  "requests": [
+    "GET /v1/disputes?created[gte]=1767225600&limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "amount": 5900,
+      "balance_transaction": "txn_fxd0003",
+      "balance_transactions": [],
+      "charge": "ch_fx0030",
+      "created": 1776513600,
+      "currency": "eur",
+      "evidence": {
+        "customer_name": null,
+        "product_description": null
+      },
+      "evidence_details": {
+        "due_by": 1777118400,
+        "has_evidence": false,
+        "past_due": false,
+        "submission_count": 0
+      },
+      "id": "dp_fx0003",
+      "is_charge_refundable": false,
+      "livemode": false,
+      "metadata": {},
+      "network_reason_code": "4837",
+      "object": "dispute",
+      "payment_intent": "pi_fx0090",
+      "reason": "fraudulent",
+      "status": "won"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "requests": [
+    "GET /v1/promotion_codes?created[gte]=1767225600&limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "active": true,
+      "code": "WELCOME3",
+      "coupon": {
+        "id": "FIXTURE3",
+        "object": "coupon",
+        "percent_off": 25
+      },
+      "created": 1776513600,
+      "customer": null,
+      "expires_at": null,
+      "id": "promo_fx0003",
+      "livemode": false,
+      "max_redemptions": null,
+      "metadata": {},
+      "object": "promotion_code",
+      "restrictions": {
+        "first_time_transaction": true,
+        "minimum_amount": null,
+        "minimum_amount_currency": null
+      },
+      "times_redeemed": 3
+    }
+  ]
+}

@@ -193,7 +193,7 @@ export function stripeWebhookEventsForEntities(entities: string[]): string[] {
   if (entities.length === 0) return stripeSupportedWebhookEvents();
   const entitySet = new Set(entities.map(e => e.toLowerCase()));
   // An invoice's lines and a subscription's items ride on their parent's
-  // events (StripeConnector.enrichWebhookCdcRecords, the folder's handler).
+  // events (the folder's webhook handler).
   for (const [child, parent] of Object.entries(EMBEDDED_CHILD_PARENTS)) {
     if (entitySet.has(child)) entitySet.add(parent);
   }

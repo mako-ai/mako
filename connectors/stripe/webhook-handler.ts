@@ -8,7 +8,7 @@
  * instead, and the API test runs it against `stripe.webhooks.constructEvent`
  * on the same deliveries.
  *
- * Mapping is the in-process connector's (`webhooks.ts` here, parity-tested):
+ * Mapping is the in-process connector's (`webhooks.ts` here, golden-tested):
  * the record is `event.data.object`, its id the object's id, its change id
  * the event id, its time the object's `created`.
  *

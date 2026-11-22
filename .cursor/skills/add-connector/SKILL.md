@@ -199,7 +199,7 @@ Live smoke (credentials in UI/env only, never commit):
 - Base: `api/src/connectors/base/BaseConnector.ts`
 - Registry: `api/src/connectors/registry.ts`
 - Complex reference: `api/src/connectors/close/connector.ts`, `close/schema.ts`, `close/connector.test.ts`
-- Simple reference: `api/src/connectors/stripe/connector.ts`
+- Simple reference: `connectors/stripe/connector.ts` (a connector folder)
 - Webhook route: `api/src/routes/webhooks.ts`
 - Endpoint helper: `api/src/utils/webhook.utils.ts`
 - Rules: `.cursor/rules/15-connector-agnostic.mdc`

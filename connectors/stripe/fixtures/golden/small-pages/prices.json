@@ -1,0 +1,33 @@
+{
+  "chunks": [
+    {
+      "cursor": "price_fx0008",
+      "hasMore": true
+    },
+    {
+      "cursor": "price_fx0006",
+      "hasMore": true
+    },
+    {
+      "cursor": "price_fx0004",
+      "hasMore": true
+    },
+    {
+      "cursor": "price_fx0002",
+      "hasMore": true
+    },
+    {
+      "cursor": "price_fx0002",
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/prices?limit=2 (Stripe-Version 2023-10-16)",
+    "GET /v1/prices?limit=2&starting_after=price_fx0008 (Stripe-Version 2023-10-16)",
+    "GET /v1/prices?limit=2&starting_after=price_fx0006 (Stripe-Version 2023-10-16)",
+    "GET /v1/prices?limit=2&starting_after=price_fx0004 (Stripe-Version 2023-10-16)",
+    "GET /v1/prices?limit=2&starting_after=price_fx0002 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 9,
+  "rowsSha256": "1f3343a36e85916a568509cc9c1ccb9244051ecb867f6ebe5d9a7878ed7803e4"
+}

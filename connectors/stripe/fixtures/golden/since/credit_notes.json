@@ -1,0 +1,121 @@
+{
+  "requests": [
+    "GET /v1/credit_notes?created[gte]=1767225600&limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "amount": 2500,
+      "amount_shipping": 0,
+      "created": 1784073600,
+      "currency": "eur",
+      "customer": "cus_fx0056",
+      "customer_balance_transaction": null,
+      "discount_amount": 0,
+      "discount_amounts": [],
+      "effective_at": 1784073600,
+      "id": "cn_fx0008",
+      "invoice": "in_fx0008",
+      "lines": {
+        "data": [],
+        "has_more": false,
+        "object": "list",
+        "url": "/v1/credit_notes/cn_fx0008/lines"
+      },
+      "livemode": false,
+      "memo": null,
+      "metadata": {},
+      "number": "FX0008-CN-01",
+      "object": "credit_note",
+      "out_of_band_amount": null,
+      "pdf": "https://pay.stripe.test/credit_notes/cn_fx0008/pdf",
+      "reason": "order_change",
+      "refund": null,
+      "status": "void",
+      "subtotal": 2500,
+      "subtotal_excluding_tax": 2500,
+      "tax_amounts": [],
+      "total": 2500,
+      "total_excluding_tax": 2500,
+      "type": "pre_payment",
+      "voided_at": 1784160000
+    },
+    {
+      "amount": 2500,
+      "amount_shipping": 0,
+      "created": 1778025600,
+      "currency": "eur",
+      "customer": "cus_fx0049",
+      "customer_balance_transaction": null,
+      "discount_amount": 0,
+      "discount_amounts": [],
+      "effective_at": 1778025600,
+      "id": "cn_fx0007",
+      "invoice": "in_fx0007",
+      "lines": {
+        "data": [],
+        "has_more": false,
+        "object": "list",
+        "url": "/v1/credit_notes/cn_fx0007/lines"
+      },
+      "livemode": false,
+      "memo": null,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "number": "FX0007-CN-01",
+      "object": "credit_note",
+      "out_of_band_amount": null,
+      "pdf": "https://pay.stripe.test/credit_notes/cn_fx0007/pdf",
+      "reason": "order_change",
+      "refund": null,
+      "status": "issued",
+      "subtotal": 2500,
+      "subtotal_excluding_tax": 2500,
+      "tax_amounts": [],
+      "total": 2500,
+      "total_excluding_tax": 2500,
+      "type": "pre_payment",
+      "voided_at": null
+    },
+    {
+      "amount": 2500,
+      "amount_shipping": 0,
+      "created": 1771977600,
+      "currency": "eur",
+      "customer": "cus_fx0042",
+      "customer_balance_transaction": "cbtxn_fx0042_0001",
+      "discount_amount": 0,
+      "discount_amounts": [],
+      "effective_at": 1771977600,
+      "id": "cn_fx0006",
+      "invoice": "in_fx0006",
+      "lines": {
+        "data": [],
+        "has_more": false,
+        "object": "list",
+        "url": "/v1/credit_notes/cn_fx0006/lines"
+      },
+      "livemode": false,
+      "memo": null,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "number": "FX0006-CN-01",
+      "object": "credit_note",
+      "out_of_band_amount": null,
+      "pdf": "https://pay.stripe.test/credit_notes/cn_fx0006/pdf",
+      "reason": "order_change",
+      "refund": null,
+      "status": "issued",
+      "subtotal": 2500,
+      "subtotal_excluding_tax": 2500,
+      "tax_amounts": [],
+      "total": 2500,
+      "total_excluding_tax": 2500,
+      "type": "pre_payment",
+      "voided_at": null
+    }
+  ]
+}

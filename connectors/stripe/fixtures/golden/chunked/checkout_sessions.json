@@ -1,0 +1,12 @@
+{
+  "chunks": [
+    {
+      "hasMore": false
+    }
+  ],
+  "requests": [
+    "GET /v1/checkout/sessions?limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rowCount": 7,
+  "rowsSha256": "86cbc6c5ce9ba70c3f863897ba1d87a3ca0191511a5373a220ca3ce2402584c5"
+}

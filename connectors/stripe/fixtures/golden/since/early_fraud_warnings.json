@@ -1,0 +1,17 @@
+{
+  "requests": [
+    "GET /v1/radar/early_fraud_warnings?created[gte]=1767225600&limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "actionable": false,
+      "charge": "ch_fx0100",
+      "created": 1771977600,
+      "fraud_type": "made_with_stolen_card",
+      "id": "issfr_fx0002",
+      "livemode": false,
+      "object": "radar.early_fraud_warning",
+      "payment_intent": "pi_fx0100"
+    }
+  ]
+}

@@ -1,0 +1,91 @@
+{
+  "requests": [
+    "GET /v1/disputes?limit=100 (Stripe-Version 2023-10-16)"
+  ],
+  "rows": [
+    {
+      "amount": 5900,
+      "balance_transaction": "txn_fxd0003",
+      "balance_transactions": [],
+      "charge": "ch_fx0030",
+      "created": 1776513600,
+      "currency": "eur",
+      "evidence": {
+        "customer_name": null,
+        "product_description": null
+      },
+      "evidence_details": {
+        "due_by": 1777118400,
+        "has_evidence": false,
+        "past_due": false,
+        "submission_count": 0
+      },
+      "id": "dp_fx0003",
+      "is_charge_refundable": false,
+      "livemode": false,
+      "metadata": {},
+      "network_reason_code": "4837",
+      "object": "dispute",
+      "payment_intent": "pi_fx0090",
+      "reason": "fraudulent",
+      "status": "won"
+    },
+    {
+      "amount": 5900,
+      "balance_transaction": "txn_fxd0002",
+      "balance_transactions": [],
+      "charge": "ch_fx0020",
+      "created": 1762905600,
+      "currency": "eur",
+      "evidence": {
+        "customer_name": null,
+        "product_description": null
+      },
+      "evidence_details": {
+        "due_by": 1763510400,
+        "has_evidence": false,
+        "past_due": false,
+        "submission_count": 0
+      },
+      "id": "dp_fx0002",
+      "is_charge_refundable": false,
+      "livemode": false,
+      "metadata": {},
+      "network_reason_code": "4837",
+      "object": "dispute",
+      "payment_intent": "pi_fx0060",
+      "reason": "fraudulent",
+      "status": "lost"
+    },
+    {
+      "amount": 5900,
+      "balance_transaction": "txn_fxd0001",
+      "balance_transactions": [],
+      "charge": "ch_fx0010",
+      "created": 1749297600,
+      "currency": "eur",
+      "evidence": {
+        "customer_name": null,
+        "product_description": null
+      },
+      "evidence_details": {
+        "due_by": 1749902400,
+        "has_evidence": false,
+        "past_due": false,
+        "submission_count": 0
+      },
+      "id": "dp_fx0001",
+      "is_charge_refundable": false,
+      "livemode": false,
+      "metadata": {
+        "source": "fixture",
+        "tier": "pro"
+      },
+      "network_reason_code": "4837",
+      "object": "dispute",
+      "payment_intent": "pi_fx0030",
+      "reason": "fraudulent",
+      "status": "needs_response"
+    }
+  ]
+}

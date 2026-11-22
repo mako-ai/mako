@@ -1410,9 +1410,12 @@ async function main() {
     const builtin = await createSourceConnection({
       workspaceId: String(ws),
       userId: "deployer",
-      name: "new_stripe",
-      type: "stripe",
-      config: { api_key: "k3y_value" },
+      name: "new_rest",
+      type: "rest",
+      config: {
+        api_base_url: "https://x.example.com",
+        headers: JSON.stringify({ Authorization: "k3y_value" }),
+      },
     });
     assert.equal(builtin.liveReads, undefined);
 
