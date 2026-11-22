@@ -738,6 +738,7 @@ export async function processBoxWebhookBatch(input: {
   const result = await runBatch({
     flow,
     connection,
+    destinationType: database.type,
     runner,
     declared,
     secret: typeof secret === "string" && secret.length > 0 ? secret : null,
@@ -829,6 +830,7 @@ const failedOp = (
 async function runBatch(input: {
   flow: any;
   connection: any;
+  destinationType: string;
   runner: WebhookBatchRunner;
   declared: ReadonlySet<string>;
   secret: string | null;
@@ -1092,8 +1094,9 @@ async function runBatch(input: {
     const records = shapeWebhookCdcRecords({
       rawRecords: checked.records,
       sourceConnection: source,
+      destinationType: input.destinationType,
       flow,
-      webhookEvent: event,
+      webhookEvent: { eventId: event.eventId, receivedAt: event.receivedAt },
     }).filter(record => declared.has(record.entity));
     if (records.length === 0) {
       totals.dropped++;

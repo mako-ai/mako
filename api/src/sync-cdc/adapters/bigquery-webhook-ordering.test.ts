@@ -1,4 +1,4 @@
-import { DuckDBInstance } from "@duckdb/node-api";
+import { DuckDBInstance, type DuckDBConnection } from "@duckdb/node-api";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose, { Types } from "mongoose";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
@@ -7,25 +7,29 @@ import { shapeWebhookCdcRecords } from "../../inngest/functions/webhook-flow";
 import { getCdcEventStore } from "../event-store";
 import type { CdcEventInput } from "../events";
 import { cdcIngestService } from "../ingest";
+import { BigQueryDestinationAdapter } from "./bigquery";
 import { buildMergeStatement } from "./bigquery-sql";
 
 const workspaceId = String(new Types.ObjectId());
 const entity = "payment_methods";
 const recordId = "pm_fixture";
 const sourceCreated = new Date("2026-11-20T08:00:00Z");
-const attachment = new Date("2026-11-20T08:09:59Z");
-const detachment = new Date("2026-11-20T08:10:00Z");
+const attachment = "2026-11-20T08:09:59Z";
+const detachment = "2026-11-20T08:10:00Z";
 const detachProcessing = new Date("2026-11-20T08:11:00Z");
 const attachProcessing = new Date("2026-11-20T08:12:00Z");
 const store = getCdcEventStore();
 let mongo: MongoMemoryServer;
+let duck: DuckDBInstance;
 
 beforeAll(async () => {
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
+  duck = await DuckDBInstance.create(":memory:");
 });
 
 afterAll(async () => {
+  duck?.closeSync();
   try {
     await mongoose.disconnect();
   } finally {
@@ -34,50 +38,40 @@ afterAll(async () => {
 });
 
 function boxedRecord(options: {
-  eventType: string;
-  eventTime: Date;
-  processingTime: Date;
+  eventId?: string;
+  suppliedTime?: string;
+  processingTime?: Date;
   customer?: string | null;
   connectorType?: string;
+  destinationType?: string;
   recordEntity?: string;
-  suppliedTime?: Date;
+  operation?: "upsert" | "delete";
   providerClock?: boolean;
-  raw?: Record<string, unknown>;
 }) {
-  const payload = {
-    id: recordId,
-    object: "payment_method",
-    created: sourceCreated.getTime() / 1000,
-    customer: options.customer,
-  };
-  const eventId = "evt_fixture";
-  const rawPayload = {
-    id: eventId,
-    object: "event",
-    type: options.eventType,
-    created: options.eventTime.getTime() / 1000,
-    data: { object: payload },
-    ...options.raw,
-  };
+  const recordEntity = options.recordEntity ?? entity;
   const checked = checkOutcome(
     {
       outcome: "records",
       records: [
         {
-          entity: options.recordEntity ?? entity,
+          entity: recordEntity,
           recordId,
-          operation: "upsert",
-          sourceTs: (options.suppliedTime ?? options.eventTime).toISOString(),
+          operation: options.operation ?? "upsert",
+          sourceTs: options.suppliedTime ?? detachment,
           ...(options.providerClock ? { sourceTsKind: "provider_event" } : {}),
-          payload,
+          payload: {
+            created: sourceCreated.getTime() / 1000,
+            customer: options.customer,
+          },
         },
       ],
     },
-    new Set([options.recordEntity ?? entity]),
+    new Set([recordEntity]),
     1,
   );
   if (checked?.kind !== "records") throw new Error("Missing boxed record");
-  vi.useFakeTimers({ toFake: ["Date"], now: options.processingTime });
+  const processingTime = options.processingTime ?? detachProcessing;
+  vi.useFakeTimers({ toFake: ["Date"], now: processingTime });
   try {
     const [record] = shapeWebhookCdcRecords({
       rawRecords: checked.records,
@@ -86,12 +80,11 @@ function boxedRecord(options: {
         name: "Fixture",
         type: options.connectorType ?? "ws:stripe",
       },
+      destinationType: options.destinationType ?? "bigquery",
       flow: {},
       webhookEvent: {
-        eventId,
-        eventType: options.eventType,
-        rawPayload,
-        receivedAt: options.processingTime,
+        eventId: options.eventId ?? "evt_fixture",
+        receivedAt: processingTime,
       },
     });
     if (!record) throw new Error("Missing shaped record");
@@ -101,169 +94,236 @@ function boxedRecord(options: {
   }
 }
 
-it("lets the destination guard reject an older attachment delivered after detachment", async () => {
-  const flowId = String(new Types.ObjectId());
-  for (const delivery of [
-    boxedRecord({
-      eventType: "payment_method.detached",
-      eventTime: detachment,
-      processingTime: detachProcessing,
-      customer: null,
-      providerClock: true,
-    }),
-    boxedRecord({
-      eventType: "payment_method.attached",
-      eventTime: attachment,
-      processingTime: attachProcessing,
-      customer: "cus_fixture",
-      providerClock: true,
-    }),
-  ]) {
-    await cdcIngestService.appendNormalizedEvents({
-      workspaceId,
-      flowId,
-      events: [delivery],
-    });
-  }
-  const queued = await store.readAfter({
-    flowId,
-    entity,
-    afterIngestSeq: 0,
-    limit: 10,
+/** Inspect the file at the SDK load boundary. The adapter builds it and
+ * issues the normal load path with no credentials or network access. */
+function bigQueryLoadFixture(
+  conn: DuckDBConnection,
+  merge: () => Promise<void> = async () => undefined,
+) {
+  const clocks: string[] = [];
+  const load = vi.fn(async (filePath: string) => {
+    await conn.run(
+      "CREATE OR REPLACE TEMP TABLE staged_methods AS SELECT * FROM read_parquet(?)",
+      [filePath],
+    );
+    const rows = (
+      await conn.runAndReadAll(
+        "SELECT CAST(epoch_ms(_mako_source_ts) AS VARCHAR) AS clock FROM staged_methods",
+      )
+    ).getRowObjects();
+    clocks.push(...rows.map(row => String(row.clock)));
+    return [{ statistics: { load: { outputRows: rows.length } } }];
   });
+  const adapter = new BigQueryDestinationAdapter({
+    workspaceId,
+    destinationDatabaseId: "fixture",
+    tableDestination: {
+      connectionId: "fixture",
+      schema: "fixture",
+      tableName: entity,
+    },
+  });
+  Object.assign(adapter, {
+    _resolvedClient: {
+      bq: {
+        dataset: () => ({
+          get: async () => [{}],
+          table: () => ({ load, setMetadata: async () => [{}] }),
+        }),
+      },
+      dataset: "fixture",
+      destination: { workspaceId },
+    },
+  });
+  vi.spyOn(adapter, "mergeFromStaging").mockImplementation(async () => {
+    await merge();
+    return { written: 1 };
+  });
+  vi.spyOn(adapter, "cleanupStaging").mockResolvedValue(undefined);
+  return { adapter, clocks, load };
+}
 
-  const columns = ["id", "customer", "_mako_source_ts"];
-  // Execute the generated guard in DuckDB with equivalent identifiers and
-  // casts. Use the queue's clock as the staging input to isolate append.
-  const merge = buildMergeStatement({
-    fullLive: "payment_methods",
-    fullStaging: "staged_methods",
-    columns,
-    keyColumns: ["id"],
-    stagingCols: new Set(columns),
-    liveTypes: new Map([
-      ["id", "STRING"],
-      ["customer", "STRING"],
-      ["_mako_source_ts", "TIMESTAMP"],
-    ]),
-  })
-    .replaceAll("`", '"')
-    .replaceAll("SAFE_CAST(", "TRY_CAST(")
-    .replaceAll(" AS STRING)", " AS VARCHAR)")
-    .replaceAll(" AS TIMESTAMP)", " AS TIMESTAMPTZ)")
-    .replaceAll(
-      "TIMESTAMP('1970-01-01 00:00:00 UTC')",
-      "TIMESTAMPTZ '1970-01-01 00:00:00+00'",
-    );
-  const duck = await DuckDBInstance.create(":memory:");
-  const conn = await duck.connect();
-  try {
-    await conn.run(
-      "CREATE TABLE payment_methods (id VARCHAR, customer VARCHAR, _mako_source_ts TIMESTAMPTZ)",
-    );
-    await conn.run(
-      "CREATE TABLE staged_methods AS SELECT * FROM payment_methods",
-    );
-    await conn.run("INSERT INTO payment_methods VALUES (?, ?, ?)", [
-      recordId,
-      "cus_fixture",
-      attachment.toISOString(),
-    ]);
-    const customers = [];
-    for (const delivery of queued) {
-      await conn.run("DELETE FROM staged_methods");
-      await conn.run("INSERT INTO staged_methods VALUES (?, ?, ?)", [
-        delivery.recordId,
-        delivery.payload?.customer as string | null,
-        delivery.sourceTs.toISOString(),
-      ]);
-      await conn.run(merge);
-      customers.push(
-        (
-          await conn.runAndReadAll("SELECT customer FROM payment_methods")
-        ).getRowObjects(),
-      );
+const layout = { entity, tableName: entity, keyColumns: ["id"] };
+
+it.each([
+  { name: "snapshot", detachTime: detachment, attachTime: attachment },
+  {
+    name: "ISO thin notification",
+    detachTime: "2026-11-20T09:10:00.123+01:00",
+    attachTime: "2026-11-20T08:10:00.122Z",
+  },
+])(
+  "stages the $name clock and protects the detachment from a delayed attachment",
+  async ({ detachTime, attachTime }) => {
+    const flowId = String(new Types.ObjectId());
+    for (const delivery of [
+      boxedRecord({
+        eventId: "evt_detached",
+        suppliedTime: detachTime,
+        processingTime: detachProcessing,
+        customer: null,
+        providerClock: true,
+      }),
+      boxedRecord({
+        eventId: "evt_attached",
+        suppliedTime: attachTime,
+        processingTime: attachProcessing,
+        customer: "cus_fixture",
+        providerClock: true,
+      }),
+    ]) {
+      await cdcIngestService.appendNormalizedEvents({
+        workspaceId,
+        flowId,
+        events: [delivery],
+      });
     }
-    expect(customers).toEqual([[{ customer: null }], [{ customer: null }]]);
-    expect(queued.map(delivery => delivery.sourceTs)).toEqual([
-      detachment,
-      attachment,
-    ]);
+    const queued = await store.readAfter({
+      flowId,
+      entity,
+      afterIngestSeq: 0,
+      limit: 10,
+    });
+    const providerClocks = [new Date(detachTime), new Date(attachTime)];
+    expect(queued.map(delivery => delivery.sourceTs)).toEqual(providerClocks);
     expect(queued.map(delivery => delivery.sourceTsKind)).toEqual([
       "provider_event",
       "provider_event",
     ]);
-  } finally {
-    conn.closeSync();
-    duck.closeSync();
-  }
-});
+
+    const columns = ["id", "customer", "_mako_source_ts"];
+    // Execute the generated MERGE in DuckDB against the staged Parquet data.
+    const merge = buildMergeStatement({
+      fullLive: "payment_methods",
+      fullStaging: "staged_methods",
+      columns,
+      keyColumns: ["id"],
+      stagingCols: new Set(columns),
+      liveTypes: new Map([
+        ["id", "STRING"],
+        ["customer", "STRING"],
+        ["_mako_source_ts", "TIMESTAMP"],
+      ]),
+    })
+      .replaceAll("`", '"')
+      .replaceAll("SAFE_CAST(", "TRY_CAST(")
+      .replaceAll(" AS STRING)", " AS VARCHAR)")
+      .replaceAll(" AS TIMESTAMP)", " AS TIMESTAMPTZ)")
+      .replaceAll(
+        "TIMESTAMP('1970-01-01 00:00:00 UTC')",
+        "TIMESTAMPTZ '1970-01-01 00:00:00+00'",
+      );
+    const conn = await duck.connect();
+    try {
+      await conn.run(
+        "CREATE TEMP TABLE payment_methods (id VARCHAR, customer VARCHAR, _mako_source_ts TIMESTAMPTZ)",
+      );
+      await conn.run("INSERT INTO payment_methods VALUES (?, ?, ?)", [
+        recordId,
+        "cus_fixture",
+        attachTime,
+      ]);
+      const { adapter, clocks, load } = bigQueryLoadFixture(conn, async () => {
+        await conn.run(merge);
+        expect(
+          (
+            await conn.runAndReadAll("SELECT customer FROM payment_methods")
+          ).getRowObjects(),
+        ).toEqual([{ customer: null }]);
+      });
+      for (const delivery of queued) {
+        await adapter.applyEvents({
+          events: [delivery],
+          layout,
+          flow: { _id: new Types.ObjectId(flowId) },
+        });
+      }
+      expect(load).toHaveBeenCalledTimes(2);
+      expect(clocks).toEqual(
+        providerClocks.map(clock => String(clock.getTime())),
+      );
+    } finally {
+      conn.closeSync();
+    }
+  },
+);
 
 it.each<{
   label: string;
-  options: Partial<Parameters<typeof boxedRecord>[0]>;
+  options: Parameters<typeof boxedRecord>[0];
 }>([
   {
-    label:
-      "the older boxed Stripe release supplies object time without opting in",
-    options: { providerClock: false, suppliedTime: sourceCreated },
-  },
-  {
-    label: "an identical event time still needs an explicit opt-in",
-    options: { providerClock: false },
-  },
-  {
-    label: "Stripe invoices keep processing-time ordering",
+    label: "older boxed Stripe object timestamps",
     options: {
-      eventType: "invoice.updated",
-      recordEntity: "invoices",
-      suppliedTime: sourceCreated,
+      providerClock: false,
+      suppliedTime: sourceCreated.toISOString(),
     },
   },
   {
-    label: "another boxed connector cannot opt in even with Stripe-shaped data",
+    label: "an unmarked event timestamp",
+    options: { providerClock: false },
+  },
+  {
+    label: "Stripe invoices",
+    options: {
+      recordEntity: "invoices",
+      suppliedTime: sourceCreated.toISOString(),
+    },
+  },
+  {
+    label: "another boxed connector",
     options: { connectorType: "ws:calendly" },
   },
   {
-    label: "a mismatched receipt id cannot authorize the timestamp",
-    options: { raw: { id: "evt_another" } },
+    label: "another destination",
+    options: { destinationType: "postgresql" },
   },
   {
-    label: "a mismatched record id cannot authorize the timestamp",
-    options: { raw: { data: { object: { id: "pm_another" } } } },
+    label: "a delete",
+    options: { operation: "delete" },
   },
   {
-    label: "the timestamp must match the original receipt",
-    options: { suppliedTime: attachment },
+    label: "an invalid clock",
+    options: { suppliedTime: "invalid" },
   },
   {
-    label: "an ISO timestamp in the receipt is outside the v1 rollout",
-    options: { raw: { created: detachment.toISOString() } },
+    label: "a clock outside the BigQuery range",
+    options: { suppliedTime: "+010000-01-01T00:00:00Z" },
   },
-])("$label", async ({ options }) => {
-  const flowId = String(new Types.ObjectId());
-  const record = boxedRecord({
-    eventType: "payment_method.detached",
-    eventTime: detachment,
-    processingTime: detachProcessing,
-    providerClock: true,
-    ...options,
-  });
-  expect(record.sourceTsKind).toBeUndefined();
-  await cdcIngestService.appendNormalizedEvents({
-    workspaceId,
-    flowId,
-    events: [record],
-  });
-  const queued = await store.readAfter({
-    flowId,
-    entity: record.entity,
-    afterIngestSeq: 0,
-    limit: 1,
-  });
-  expect(queued).toMatchObject([{ sourceTs: detachProcessing }]);
-  expect(queued[0]?.sourceTsKind).toBeUndefined();
-});
+])(
+  "keeps processing time at append and staging for $label",
+  async ({ options }) => {
+    const flowId = String(new Types.ObjectId());
+    const record = boxedRecord({ providerClock: true, ...options });
+    expect(record.sourceTsKind).toBeUndefined();
+    await cdcIngestService.appendNormalizedEvents({
+      workspaceId,
+      flowId,
+      events: [record],
+    });
+    const queued = await store.readAfter({
+      flowId,
+      entity: record.entity,
+      afterIngestSeq: 0,
+      limit: 1,
+    });
+    expect(queued).toMatchObject([{ sourceTs: detachProcessing }]);
+    expect(queued[0]?.sourceTsKind).toBeUndefined();
+
+    const conn = await duck.connect();
+    try {
+      const { adapter, clocks } = bigQueryLoadFixture(conn);
+      await adapter.applyEvents({
+        events: queued,
+        layout: { ...layout, entity: record.entity, tableName: record.entity },
+        flow: { _id: new Types.ObjectId(flowId), deleteMode: "soft" },
+      });
+      expect(clocks).toEqual([String(detachProcessing.getTime())]);
+    } finally {
+      conn.closeSync();
+    }
+  },
+);
 
 it("retains legacy webhook and poll or backfill timestamp fallbacks", async () => {
   const flowId = String(new Types.ObjectId());
@@ -287,15 +347,15 @@ it("retains legacy webhook and poll or backfill timestamp fallbacks", async () =
     {
       event: {
         source: "backfill",
-        sourceTs: attachment,
+        sourceTs: new Date(attachment),
         sourceTsKind: "provider_event",
         payload,
       },
       expected: sourceCreated,
     },
     {
-      event: { source: "backfill", sourceTs: attachment },
-      expected: attachment,
+      event: { source: "backfill", sourceTs: new Date(attachment) },
+      expected: new Date(attachment),
     },
   ];
   await store.appendEvents({
@@ -320,4 +380,17 @@ it("retains legacy webhook and poll or backfill timestamp fallbacks", async () =
   expect(queued.every(delivery => delivery.sourceTsKind === undefined)).toBe(
     true,
   );
+
+  const conn = await duck.connect();
+  try {
+    const { adapter, clocks } = bigQueryLoadFixture(conn);
+    await adapter.applyBatch({
+      records: [{ id: recordId, ...payload }],
+      layout,
+      flow: { _id: new Types.ObjectId(flowId) },
+    });
+    expect(clocks).toEqual([String(sourceCreated.getTime())]);
+  } finally {
+    conn.closeSync();
+  }
 });

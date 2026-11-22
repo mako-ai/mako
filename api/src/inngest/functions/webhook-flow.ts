@@ -8,7 +8,7 @@ import {
   CdcEntityState,
 } from "../../database/workspace-schema";
 import { connectorRegistry } from "../../connectors/registry";
-import { acceptsProviderEventTime } from "../../connectors/webhook-clock";
+import { allowsProviderEventTime } from "../../connectors/webhook-clock";
 import { sourceConnectionManager } from "../../sync/database-data-source-manager";
 import type { ISourceConnection } from "../../database/models/source-connections";
 import { loggers } from "../../logging";
@@ -21,6 +21,7 @@ import { hasCdcDestinationAdapter } from "../../sync-cdc/adapters/registry";
 import { isEntityEnabledForFlow } from "../../sync-cdc/entity-selection";
 import {
   normalizePayloadKeys,
+  providerEventTime,
   resolveSourceTimestamp,
 } from "../../sync-cdc/normalization";
 import { cdcIngestService } from "../../sync-cdc/ingest";
@@ -87,6 +88,7 @@ export type WebhookCdcRecord = {
 export async function buildWebhookCdcRecords(params: {
   connector: BaseConnector;
   sourceConnection: { id: string; name: string; type?: string };
+  destinationType?: string;
   flow: Parameters<typeof isEntityEnabledForFlow>[0];
   webhookEvent: {
     eventId: string;
@@ -99,7 +101,8 @@ export async function buildWebhookCdcRecords(params: {
   extractedCount: number;
   retry?: { mode: "defer" | "fail"; message: string };
 }> {
-  const { connector, sourceConnection, flow, webhookEvent } = params;
+  const { connector, sourceConnection, destinationType, flow, webhookEvent } =
+    params;
 
   const extractedRecords = (
     connector.extractWebhookCdcRecords(
@@ -140,6 +143,7 @@ export async function buildWebhookCdcRecords(params: {
     records: shapeWebhookCdcRecords({
       rawRecords,
       sourceConnection,
+      destinationType,
       flow,
       webhookEvent,
     }),
@@ -164,15 +168,12 @@ export function shapeWebhookCdcRecords(params: {
     changeId?: unknown;
   }>;
   sourceConnection: { id: string; name: string; type?: string };
+  destinationType?: string;
   flow: Parameters<typeof isEntityEnabledForFlow>[0];
-  webhookEvent: {
-    eventId: string;
-    eventType?: string;
-    rawPayload?: unknown;
-    receivedAt: Date | string;
-  };
+  webhookEvent: { eventId: string; receivedAt: Date | string };
 }): WebhookCdcRecord[] {
-  const { rawRecords, sourceConnection, flow, webhookEvent } = params;
+  const { rawRecords, sourceConnection, destinationType, flow, webhookEvent } =
+    params;
   const receivedAt = new Date(webhookEvent.receivedAt);
   const out: WebhookCdcRecord[] = [];
 
@@ -209,15 +210,17 @@ export function shapeWebhookCdcRecords(params: {
       record.sourceTs instanceof Date
         ? record.sourceTs
         : resolveSourceTimestamp(payload, receivedAt);
-    // A connector can request this clock. The admitted receipt authorizes it.
-    const providerEventTime =
-      record.sourceTsKind === "provider_event" &&
-      record.sourceTs instanceof Date &&
-      acceptsProviderEventTime(sourceConnection.type, webhookEvent, {
+    const eventTime =
+      allowsProviderEventTime({
+        sourceType: sourceConnection.type,
+        destinationType,
         entity,
         operation,
-        recordId,
-        sourceTs,
+      }) &&
+      providerEventTime({
+        source: "webhook",
+        sourceTs: record.sourceTs,
+        sourceTsKind: record.sourceTsKind,
       });
 
     const changeId =
@@ -231,7 +234,7 @@ export function shapeWebhookCdcRecords(params: {
       operation,
       payload,
       sourceTs,
-      ...(providerEventTime ? { sourceTsKind: "provider_event" } : {}),
+      ...(eventTime ? { sourceTsKind: "provider_event" } : {}),
       source: "webhook",
       changeId,
     });
@@ -923,6 +926,7 @@ export async function ingestPendingWebhookEvents(logger: {
           name: sourceConnection.name,
           type: sourceConnection.type,
         },
+        destinationType,
         flow,
         webhookEvent: {
           eventId: webhookEvent.eventId,
