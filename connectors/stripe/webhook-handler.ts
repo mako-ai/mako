@@ -202,12 +202,15 @@ export function stripeChangeRecord(
     mapping.entity === "payment_methods"
       ? stripeEventCreatedAt(raw.created)?.toISOString()
       : undefined;
+  const providerEventClock = eventSourceTs
+    ? { sourceTs: eventSourceTs, sourceTsKind: "provider_event" as const }
+    : undefined;
 
   if (object) {
     if (object.id === undefined || object.id === null || object.id === "") {
       return null;
     }
-    const sourceTs = eventSourceTs ?? stripeRecordTimestamp(object);
+    const sourceTs = providerEventClock ? null : stripeRecordTimestamp(object);
     return {
       thin: false,
       record: {
@@ -216,6 +219,7 @@ export function stripeChangeRecord(
         operation: mapping.operation,
         payload: object,
         ...(sourceTs ? { sourceTs } : {}),
+        ...providerEventClock,
         changeId,
       },
     };
@@ -228,7 +232,7 @@ export function stripeChangeRecord(
         recordId: related.id,
         operation: mapping.operation,
         payload: { id: related.id },
-        ...(eventSourceTs ? { sourceTs: eventSourceTs } : {}),
+        ...providerEventClock,
         changeId,
       },
     };

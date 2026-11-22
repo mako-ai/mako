@@ -477,7 +477,7 @@ void test("every event type applies the same rows on both paths, with no request
   const events = buildWebhookEvents(types, wholeRows());
   handed.length = 0;
   requests.length = 0;
-  const { rows } = await folderRows(events);
+  const { outcomes, rows } = await folderRows(events);
 
   // The box got the connection's credential and the events, nothing else.
   assert.equal(handed[0].command, "webhook");
@@ -510,6 +510,13 @@ void test("every event type applies the same rows on both paths, with no request
       event.eventType,
     );
     assert.equal(rows[i]![0].entity, entity);
+    for (const record of outcomes[i].records) {
+      assert.equal(
+        record.sourceTsKind,
+        entity === "payment_methods" ? "provider_event" : undefined,
+        event.eventType,
+      );
+    }
     if (entity === "payment_methods") {
       assert.equal(
         rows[i]![0].sourceTs.toISOString(),
@@ -599,8 +606,11 @@ void test("payment-method changes use event time for the strict live MERGE", asy
     },
   };
   requests.length = 0;
-  const { rows } = await folderRows([...events, thin]);
+  const { outcomes, rows } = await folderRows([...events, thin]);
   assert.deepEqual(requests, [`GET ${endpoint}`]);
+  for (const outcome of outcomes) {
+    assert.equal(outcome.records[0].sourceTsKind, "provider_event");
+  }
   const connector = builtIn();
   const native = await Promise.all(
     events.map(webhookEvent =>
@@ -722,8 +732,11 @@ void test("payment-method events with no valid created keep the object clock", a
     rawPayload: { id: "evt_thin_fallback", related_object: { id: card.id } },
   };
   requests.length = 0;
-  const { rows } = await folderRows([...events, thin]);
+  const { outcomes, rows } = await folderRows([...events, thin]);
   assert.deepEqual(requests, [`GET ${endpoint}`]);
+  for (const outcome of outcomes) {
+    assert.equal(Object.hasOwn(outcome.records[0], "sourceTsKind"), false);
+  }
   const objectTime = new Date(card.created * 1000).toISOString();
   assert.deepEqual(
     rows.map(records => records?.[0].sourceTs.toISOString()),
@@ -735,6 +748,7 @@ void test("payment-method events with no valid created keep the object clock", a
       event.eventType,
     );
     assert.equal(record.sourceTs.toISOString(), objectTime);
+    assert.equal(Object.hasOwn(record, "sourceTsKind"), false);
   }
 });
 

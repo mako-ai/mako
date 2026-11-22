@@ -452,7 +452,11 @@ export class StripeConnector extends BaseConnector {
       (event as { created?: unknown } | null)?.created,
     );
     return sourceTs
-      ? records.map(record => ({ ...record, sourceTs }))
+      ? records.map(record => ({
+          ...record,
+          sourceTs,
+          sourceTsKind: "provider_event" as const,
+        }))
       : records;
   }
 
