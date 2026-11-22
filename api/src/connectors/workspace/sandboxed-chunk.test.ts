@@ -11,6 +11,7 @@
  * Run: node --import tsx src/connectors/workspace/sandboxed-chunk.test.ts
  */
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import {
   CHUNK_BYTE_BUDGET,
@@ -24,6 +25,7 @@ import {
 import type { LoadedConnector } from "./resolver";
 import {
   ConnectorOutputTooLargeError,
+  parseProtocol,
   type ConnectorCommand,
   type RunResult,
 } from "./sync-box";
@@ -99,6 +101,64 @@ const make = (settings: Record<string, unknown> = {}) =>
   } as any);
 
 const noop = async () => undefined;
+
+void test("only the acknowledged final source batch logs the driver's sandbox fingerprint", async t => {
+  const box = make();
+  const onLog = t.mock.fn();
+  const message = JSON.stringify({
+    type: "RECORD",
+    record: { stream: "rows", data: { sandboxId: "untrusted" } },
+  });
+  const exec = {
+    exitCode: 0,
+    stdout: "",
+    stderr: "",
+    timedOut: false,
+    durationMs: 1,
+    truncated: false,
+  };
+  const read = (hasMore: boolean, sandboxId?: string) =>
+    parseProtocol(
+      [message, JSON.stringify(state({}, hasMore))].join("\n"),
+      "read",
+      { ...exec, sandboxId },
+    );
+  const options = { entity: "rows", onLog, onBatch: noop };
+  box.answers.push(
+    read(true, "earlier"),
+    read(false),
+    read(false, "probe"),
+    read(false, "failed"),
+    read(false, "last"),
+  );
+  await box.fetchEntityChunk(options);
+  await box.fetchEntityChunk(options);
+  await box.fetchEntityChunk({ ...options, singleChunk: true });
+  await assert.rejects(
+    box.fetchEntityChunk({
+      ...options,
+      onBatch: async () => {
+        throw new Error("batch rejected");
+      },
+    }),
+    /batch rejected/,
+  );
+  assert.equal(onLog.mock.callCount(), 0);
+  await box.fetchEntityChunk(options);
+  assert.deepEqual(
+    onLog.mock.calls.map(call => call.arguments),
+    [
+      [
+        "info",
+        "Read final source batch in sandbox",
+        {
+          entity: "rows",
+          sandboxIdSha256: createHash("sha256").update("last").digest("hex"),
+        },
+      ],
+    ],
+  );
+});
 
 void test("since reaches the stream state on the first chunk and every later one", async () => {
   const box = make();

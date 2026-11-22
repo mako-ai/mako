@@ -1100,6 +1100,7 @@ export class SandboxedConnector extends BaseConnector {
     result: RunResult,
     options: ResumableFetchOptions,
     maxIterations: number,
+    sandboxId = result.sandboxId,
   ): Promise<FetchState> {
     const previous = options.state;
     const records: unknown[] = [];
@@ -1134,6 +1135,14 @@ export class SandboxedConnector extends BaseConnector {
     // "there is more" would re-read the same first chunk forever, so an absent
     // state ends the entity rather than looping.
     const hasMore = state.mako?.hasMore === true;
+    if (!hasMore && sandboxId && !options.singleChunk) {
+      // The run log is visible to workspace members. A fingerprint lets operators
+      // match provider records without exposing a routable sandbox identifier.
+      options.onLog?.("info", "Read final source batch in sandbox", {
+        entity: options.entity,
+        sandboxIdSha256: createHash("sha256").update(sandboxId).digest("hex"),
+      });
+    }
 
     return {
       totalProcessed: (previous?.totalProcessed ?? 0) + records.length,
@@ -1282,7 +1291,12 @@ export class SandboxedConnector extends BaseConnector {
     // retry starts its own from the same applied state.
     let state: FetchState;
     try {
-      state = await this.applyRead(outcome.result, options, maxIterations);
+      state = await this.applyRead(
+        outcome.result,
+        options,
+        maxIterations,
+        current.box,
+      );
     } catch (error) {
       if (fresh) await transport.close(current).catch(() => undefined);
       throw error;

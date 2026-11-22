@@ -113,6 +113,8 @@ export interface ProtocolMessage {
 }
 
 export interface RunResult {
+  /** Identity from the sandbox driver, independent of connector protocol output. */
+  sandboxId?: string;
   exitCode: number;
   messages: ProtocolMessage[];
   /** Lines that were not valid JSON. Never silently dropped. */
@@ -1388,6 +1390,9 @@ export function parseProtocol(
     });
   }
   return {
+    ...(command === "read" && result.sandboxId
+      ? { sandboxId: result.sandboxId }
+      : {}),
     exitCode: result.exitCode,
     messages,
     malformed,
