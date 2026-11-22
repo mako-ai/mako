@@ -183,7 +183,8 @@ _syncedAt < cutoff AND is_deleted IS NOT TRUE`; Mongo: `updateMany`.
 
 **Tests**
 
-- Contract test `api/src/connectors/incremental-capability.test.ts`
+- Contract test `api/src/connectors/incremental-capability.test.ts` (deleted
+  with the last in-process connector; connector folders test their own reads)
   (node:assert, wired into `pnpm --filter api test`): every registered
   connector returns a well-formed declaration; connectors declaring `native`
   for an entity are spot-checked by asserting the request their

@@ -1,8 +1,7 @@
 # REST, as a connector folder (RFC connector-runtime).
 #
-# Production still runs the in-process connector in api/src/connectors/rest.
-# No connection or flow uses this folder. The parity harness in fixtures/
-# holds the two to the same output.
+# The in-process connector this folder was ported from is deleted. The golden
+# rows in fixtures/golden/ hold the output it was checked against.
 runtime: node
 entry: connector.ts
 page:

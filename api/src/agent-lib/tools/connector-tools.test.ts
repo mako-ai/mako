@@ -208,10 +208,14 @@ describe("vocabulary: connectors are code, connections are credentials", () => {
     const result = (await tools().list_connectors.execute({})) as {
       connectors: Array<Record<string, unknown>>;
     };
-    const rest = result.connectors.find(c => c.connector === "rest");
-    expect(rest).toBeTruthy();
-    expect(rest?.source).toBe("builtin");
-    expect(rest?.connections).toEqual([]);
+    // The in-process REST connector, the last built-in source, is deleted.
+    // The only built-in sources left are callable profiles (custom_api).
+    expect(result.connectors.find(c => c.connector === "rest")).toBeUndefined();
+    expect(
+      result.connectors
+        .filter(c => c.source === "builtin")
+        .map(c => c.connector),
+    ).toEqual(["custom_api"]);
     // The in-process Stripe connector is deleted: fr_stripe is an orphan,
     // and the catalog has no built-in stripe to link it to.
     expect(
@@ -220,20 +224,21 @@ describe("vocabulary: connectors are code, connections are credentials", () => {
     // Configured elsewhere, so unconfigured here — and the stranger's row
     // is not attached to it.
     const customApi = result.connectors.find(c => c.connector === "custom_api");
+    expect(customApi?.source).toBe("builtin");
     expect(customApi?.connections).toEqual([]);
     expect(JSON.stringify(result)).not.toContain(SECRET);
   });
 
   it("inspect_connector describes a type; inspect_connection describes a credential", async () => {
     const type = await tools().inspect_connector.execute({
-      connector: "rest",
+      connector: "custom_api",
     });
-    expect(type.connector).toBe("rest");
+    expect(type.connector).toBe("custom_api");
     const fields = type.configFields as Array<{
       name: string;
       secret: boolean;
     }>;
-    expect(fields.some(f => f.name === "headers" && f.secret)).toBe(true);
+    expect(fields.some(f => f.name === "token" && f.secret)).toBe(true);
 
     const source = await tools().inspect_connection.execute({
       connectionId: STRIPE.toString(),

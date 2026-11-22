@@ -22,7 +22,6 @@ export default defineConfig({
       "src/auth/auth-page.test.ts",
       "src/auth/auth-routes.test.ts",
       "src/utils/client-ip.test.ts",
-      "src/services/safe-http-client.test.ts",
       "src/routes/mcp-oauth-base-url.test.ts",
       // ChatGPT through the edge: discovery → login → consent → iss → refresh.
       "src/routes/mcp-oauth-chatgpt-flow.test.ts",

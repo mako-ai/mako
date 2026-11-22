@@ -204,7 +204,6 @@ const CREDENTIAL_LIKE_KEY =
  * picked, then probe it there.
  */
 const ADDRESS_FIELDS_BY_TYPE: Readonly<Record<string, readonly string[]>> = {
-  rest: ["api_base_url", "headers"],
   posthog: ["api_base_url"],
   claap: ["api_base_url"],
   pandadoc: ["api_base_url"],

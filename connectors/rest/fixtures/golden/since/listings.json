@@ -1,0 +1,195 @@
+{
+  "chunks": [
+    {
+      "cursor": null,
+      "hasMore": false,
+      "offset": 0,
+      "page": 3,
+      "totalCount": 70,
+      "totalProcessed": 25
+    }
+  ],
+  "requests": [
+    "GET /api/v1/listings?status=online&tags%5B%5D=a&tags%5B%5D=b+c&sort%5Bby%5D=id&sort%5Bdir%5D=asc&per_page=25&page=1&updated_after=2026-01-01T00:00:00.000Z (bearer; application/json)",
+    "GET /api/v1/listings?status=online&tags%5B%5D=a&tags%5B%5D=b+c&sort%5Bby%5D=id&sort%5Bdir%5D=asc&per_page=25&page=1&updated_after=2026-01-01T00:00:00.000Z (bearer; application/json)",
+    "GET /api/v1/listings?status=online&tags%5B%5D=a&tags%5B%5D=b+c&sort%5Bby%5D=id&sort%5Bdir%5D=asc&per_page=25&page=2&updated_after=2026-01-01T00:00:00.000Z (bearer; application/json)",
+    "GET /api/v1/listings?status=online&tags%5B%5D=a&tags%5B%5D=b+c&sort%5Bby%5D=id&sort%5Bdir%5D=asc&per_page=25&page=3&updated_after=2026-01-01T00:00:00.000Z (bearer; application/json)"
+  ],
+  "rows": [
+    {
+      "created_at": "2025-12-16T08:45:00.000Z",
+      "id": 46,
+      "portal": "immoscout",
+      "price": 306250,
+      "updated_at": "2026-01-01T11:45:00.000Z"
+    },
+    {
+      "created_at": "2025-12-17T08:46:00.000Z",
+      "id": 47,
+      "portal": "homegate",
+      "price": 307500,
+      "updated_at": "2026-01-02T04:22:00.000Z"
+    },
+    {
+      "created_at": "2025-12-18T08:47:00.000Z",
+      "id": 48,
+      "portal": "idealista",
+      "price": 308750,
+      "updated_at": "2026-01-02T20:59:00.000Z"
+    },
+    {
+      "created_at": "2025-12-19T08:48:00.000Z",
+      "id": 49,
+      "portal": "immoscout",
+      "price": null,
+      "updated_at": "2026-01-03T13:36:00.000Z"
+    },
+    {
+      "created_at": "2025-12-20T08:49:00.000Z",
+      "id": 50,
+      "portal": "homegate",
+      "price": 311250,
+      "updated_at": "2026-01-04T06:13:00.000Z"
+    },
+    {
+      "created_at": "2025-12-21T08:50:00.000Z",
+      "id": 51,
+      "portal": "idealista",
+      "price": 312500,
+      "updated_at": "2026-01-04T22:50:00.000Z"
+    },
+    {
+      "created_at": "2025-12-22T08:51:00.000Z",
+      "id": 52,
+      "portal": "immoscout",
+      "price": 313750,
+      "updated_at": "2026-01-05T15:27:00.000Z"
+    },
+    {
+      "created_at": "2025-12-23T08:52:00.000Z",
+      "id": 53,
+      "portal": "homegate",
+      "price": null,
+      "updated_at": "2026-01-06T08:04:00.000Z"
+    },
+    {
+      "created_at": "2025-12-24T08:53:00.000Z",
+      "id": 54,
+      "portal": "idealista",
+      "price": 316250,
+      "updated_at": "2026-01-07T00:41:00.000Z"
+    },
+    {
+      "created_at": "2025-12-25T08:54:00.000Z",
+      "id": 55,
+      "portal": "immoscout",
+      "price": 317500,
+      "updated_at": "2026-01-07T17:18:00.000Z"
+    },
+    {
+      "created_at": "2025-12-26T08:55:00.000Z",
+      "id": 56,
+      "portal": "homegate",
+      "price": 318750,
+      "updated_at": "2026-01-08T09:55:00.000Z"
+    },
+    {
+      "created_at": "2025-12-27T08:56:00.000Z",
+      "id": 57,
+      "portal": "idealista",
+      "price": null,
+      "updated_at": "2026-01-09T02:32:00.000Z"
+    },
+    {
+      "created_at": "2025-12-28T08:57:00.000Z",
+      "id": 58,
+      "portal": "immoscout",
+      "price": 321250,
+      "updated_at": "2026-01-09T19:09:00.000Z"
+    },
+    {
+      "created_at": "2025-12-29T08:58:00.000Z",
+      "id": 59,
+      "portal": "homegate",
+      "price": 322500,
+      "updated_at": "2026-01-10T11:46:00.000Z"
+    },
+    {
+      "created_at": "2025-12-30T08:59:00.000Z",
+      "id": 60,
+      "portal": "idealista",
+      "price": 323750,
+      "updated_at": "2026-01-11T04:23:00.000Z"
+    },
+    {
+      "created_at": "2025-12-31T09:00:00.000Z",
+      "id": 61,
+      "portal": "immoscout",
+      "price": null,
+      "updated_at": "2026-01-11T21:00:00.000Z"
+    },
+    {
+      "created_at": "2026-01-01T09:01:00.000Z",
+      "id": 62,
+      "portal": "homegate",
+      "price": 326250,
+      "updated_at": "2026-01-12T13:37:00.000Z"
+    },
+    {
+      "created_at": "2026-01-02T09:02:00.000Z",
+      "id": 63,
+      "portal": "idealista",
+      "price": 327500,
+      "updated_at": "2026-01-13T06:14:00.000Z"
+    },
+    {
+      "created_at": "2026-01-03T09:03:00.000Z",
+      "id": 64,
+      "portal": "immoscout",
+      "price": 328750,
+      "updated_at": "2026-01-13T22:51:00.000Z"
+    },
+    {
+      "created_at": "2026-01-04T09:04:00.000Z",
+      "id": 65,
+      "portal": "homegate",
+      "price": null,
+      "updated_at": "2026-01-14T15:28:00.000Z"
+    },
+    {
+      "created_at": "2026-01-05T09:05:00.000Z",
+      "id": 66,
+      "portal": "idealista",
+      "price": 331250,
+      "updated_at": "2026-01-15T08:05:00.000Z"
+    },
+    {
+      "created_at": "2026-01-06T09:06:00.000Z",
+      "id": 67,
+      "portal": "immoscout",
+      "price": 332500,
+      "updated_at": "2026-01-16T00:42:00.000Z"
+    },
+    {
+      "created_at": "2026-01-07T09:07:00.000Z",
+      "id": 68,
+      "portal": "homegate",
+      "price": 333750,
+      "updated_at": "2026-01-16T17:19:00.000Z"
+    },
+    {
+      "created_at": "2026-01-08T09:08:00.000Z",
+      "id": 69,
+      "portal": "idealista",
+      "price": null,
+      "updated_at": "2026-01-17T09:56:00.000Z"
+    },
+    {
+      "created_at": "2026-01-09T09:09:00.000Z",
+      "id": 70,
+      "portal": "immoscout",
+      "price": 336250,
+      "updated_at": "2026-01-18T02:33:00.000Z"
+    }
+  ]
+}

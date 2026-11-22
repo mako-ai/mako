@@ -1,0 +1,184 @@
+{
+  "chunks": [
+    {
+      "cursor": null,
+      "hasMore": false,
+      "offset": 0,
+      "page": 3,
+      "totalCount": null,
+      "totalProcessed": 30
+    }
+  ],
+  "requests": [
+    "POST /api/v1/search?size=12&page=1 {\"filters\":{\"rooms\":[2,3]},\"q\":\"flat\"} (api-key; application/json)",
+    "POST /api/v1/search?size=12&page=2 {\"filters\":{\"rooms\":[2,3]},\"q\":\"flat\"} (api-key; application/json)",
+    "POST /api/v1/search?size=12&page=3 {\"filters\":{\"rooms\":[2,3]},\"q\":\"flat\"} (api-key; application/json)"
+  ],
+  "rows": [
+    {
+      "id": 5000,
+      "modified_at": "2026-02-01T00:00:00.000Z",
+      "rooms": 2,
+      "title": "flat 0"
+    },
+    {
+      "id": 5001,
+      "rooms": 3,
+      "title": "flat 1"
+    },
+    {
+      "id": 5002,
+      "modified_at": "2026-02-02T09:20:00.000Z",
+      "rooms": 4,
+      "title": "flat 2"
+    },
+    {
+      "id": 5003,
+      "rooms": 2,
+      "title": "flat 3"
+    },
+    {
+      "id": 5004,
+      "modified_at": "2026-02-03T18:40:00.000Z",
+      "rooms": 3,
+      "title": "flat 4"
+    },
+    {
+      "id": 5005,
+      "rooms": 4,
+      "title": "flat 5"
+    },
+    {
+      "id": 5006,
+      "modified_at": "2026-02-05T04:00:00.000Z",
+      "rooms": 2,
+      "title": "flat 6"
+    },
+    {
+      "id": 5007,
+      "rooms": 3,
+      "title": "flat 7"
+    },
+    {
+      "id": 5008,
+      "modified_at": "2026-02-06T13:20:00.000Z",
+      "rooms": 4,
+      "title": "flat 8"
+    },
+    {
+      "id": 5009,
+      "rooms": 2,
+      "title": "flat 9"
+    },
+    {
+      "id": 5010,
+      "modified_at": "2026-02-07T22:40:00.000Z",
+      "rooms": 3,
+      "title": "flat 10"
+    },
+    {
+      "id": 5011,
+      "rooms": 4,
+      "title": "flat 11"
+    },
+    {
+      "id": 5012,
+      "modified_at": "2026-02-09T08:00:00.000Z",
+      "rooms": 2,
+      "title": "flat 12"
+    },
+    {
+      "id": 5013,
+      "rooms": 3,
+      "title": "flat 13"
+    },
+    {
+      "id": 5014,
+      "modified_at": "2026-02-10T17:20:00.000Z",
+      "rooms": 4,
+      "title": "flat 14"
+    },
+    {
+      "id": 5015,
+      "rooms": 2,
+      "title": "flat 15"
+    },
+    {
+      "id": 5016,
+      "modified_at": "2026-02-12T02:40:00.000Z",
+      "rooms": 3,
+      "title": "flat 16"
+    },
+    {
+      "id": 5017,
+      "rooms": 4,
+      "title": "flat 17"
+    },
+    {
+      "id": 5018,
+      "modified_at": "2026-02-13T12:00:00.000Z",
+      "rooms": 2,
+      "title": "flat 18"
+    },
+    {
+      "id": 5019,
+      "rooms": 3,
+      "title": "flat 19"
+    },
+    {
+      "id": 5020,
+      "modified_at": "2026-02-14T21:20:00.000Z",
+      "rooms": 4,
+      "title": "flat 20"
+    },
+    {
+      "id": 5021,
+      "rooms": 2,
+      "title": "flat 21"
+    },
+    {
+      "id": 5022,
+      "modified_at": "2026-02-16T06:40:00.000Z",
+      "rooms": 3,
+      "title": "flat 22"
+    },
+    {
+      "id": 5023,
+      "rooms": 4,
+      "title": "flat 23"
+    },
+    {
+      "id": 5024,
+      "modified_at": "2026-02-17T16:00:00.000Z",
+      "rooms": 2,
+      "title": "flat 24"
+    },
+    {
+      "id": 5025,
+      "rooms": 3,
+      "title": "flat 25"
+    },
+    {
+      "id": 5026,
+      "modified_at": "2026-02-19T01:20:00.000Z",
+      "rooms": 4,
+      "title": "flat 26"
+    },
+    {
+      "id": 5027,
+      "rooms": 2,
+      "title": "flat 27"
+    },
+    {
+      "id": 5028,
+      "modified_at": "2026-02-20T10:40:00.000Z",
+      "rooms": 3,
+      "title": "flat 28"
+    },
+    {
+      "id": 5029,
+      "rooms": 4,
+      "title": "flat 29"
+    }
+  ]
+}

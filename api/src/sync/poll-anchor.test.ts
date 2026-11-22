@@ -63,7 +63,7 @@ vi.mock("./database-data-source-manager", () => ({
     getSourceConnection: vi.fn(async () => ({
       id: "ds1",
       name: "close",
-      type: "rest",
+      type: "ws:close",
       active: true,
     })),
   },
@@ -73,6 +73,7 @@ vi.mock("./connector-registry", () => ({
   syncConnectorRegistry: {
     getConnectorFor: vi.fn(async () => ({
       resolveSchema: async () => null,
+      declaresUntypedSchema: async () => true,
       supportsResumableFetching: () => true,
       fetchEntityChunk,
     })),

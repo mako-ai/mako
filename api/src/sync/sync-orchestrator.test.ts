@@ -31,9 +31,10 @@ vi.mock("../database/workspace-schema", () => ({
   },
 }));
 
-// A built-in source whose connector declares no schema (the BaseConnector
-// default): the merge runs with default key columns.
-const BUILTIN_SOURCE = { id: "ds1", name: "rest", type: "rest", active: true };
+// A workspace source whose catalog declares the stream untyped (a REST
+// folder's entity): the merge runs with default key columns. No built-in
+// source connector is left.
+const SOURCE = { id: "ds1", name: "rest", type: "ws:rest", active: true };
 vi.mock("./database-data-source-manager", () => ({
   sourceConnectionManager: {
     getSourceConnection: vi.fn(),
@@ -42,7 +43,10 @@ vi.mock("./database-data-source-manager", () => ({
 
 vi.mock("./connector-registry", () => ({
   syncConnectorRegistry: {
-    getConnectorFor: vi.fn(async () => ({ resolveSchema: async () => null })),
+    getConnectorFor: vi.fn(async () => ({
+      resolveSchema: async () => null,
+      declaresUntypedSchema: async () => true,
+    })),
   },
 }));
 
@@ -89,7 +93,7 @@ import { syncConnectorRegistry } from "./connector-registry";
 
 beforeEach(() => {
   vi.mocked(sourceConnectionManager.getSourceConnection).mockResolvedValue(
-    BUILTIN_SOURCE as any,
+    SOURCE as any,
   );
 });
 
@@ -312,7 +316,7 @@ describe("a flow's queries reach the connector the merge resolves its schema fro
   beforeEach(() => {
     build.mockClear();
     vi.mocked(sourceConnectionManager.getSourceConnection).mockResolvedValue({
-      ...BUILTIN_SOURCE,
+      ...SOURCE,
       type: "ws:graphql",
       connection: { endpoint: "https://x.test/graphql" },
     } as any);

@@ -8,9 +8,7 @@
  *
  * Enforced by connector-family-boundary.test.ts (run by test:tsx).
  */
-export const ALLOWED_FAMILIES_IMPORTED_FROM_OUTSIDE: readonly string[] = [
-  "rest",
-];
+export const ALLOWED_FAMILIES_IMPORTED_FROM_OUTSIDE: readonly string[] = [];
 
 /**
  * Shared modules and folders directly under api/src/connectors that are not

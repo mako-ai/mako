@@ -1,26 +1,24 @@
 /**
- * Parity between this in-process REST connector and its port to a connector
- * folder (`connectors/rest/`, RFC connector-runtime).
+ * The REST connector folder (`connectors/rest/`), run as production runs
+ * it: through `SandboxedConnector`, with only the box replaced by a local
+ * process (`BoxlessRest`), and again through a read session.
  *
- * Both run against the same recorded HTTP responses, served locally. Each of
- * 7 entities (page numbers with a total, offsets with a has-more flag, an
- * opaque cursor, a POST search with a body, a bare array, a wrapped array
- * with no data path, a static `updatedAfter`) is read in 6 scenarios: one
- * request per chunk, two-row pages, the default chunk, incremental `since`,
- * an `X-API-Key` header, and the connection's `sync_batch_size`. Each run
- * compares row count, keys, order, columns, a checksum per row, the chunk
- * positions, the exact requests sent (query string, body, credential header
- * and content type) and each row's source timestamp. The entity list, the
- * config form with its encrypted fields, incremental capabilities, `check`
- * and a failing read are compared too.
- *
- * The folder runs through `SandboxedConnector`, with only the box replaced
- * by a local process (`BoxlessRest`), and again through a read session.
+ * The in-process connector this folder was ported from is deleted. The
+ * rows, chunk positions and requests it produced are the golden files in
+ * `connectors/rest/fixtures/golden/` (compared byte for byte by
+ * `workspace/rest-folder-golden.test.ts`). These tests read every entity in
+ * 6 scenarios through the adapter and the session and compare each read
+ * with the golden file. They also cover what the golden rows cannot: the
+ * entity list, the config form with its encrypted fields, incremental
+ * capabilities, `check`, a failing read, source timestamps, query string
+ * serialisation and the address policy (a redirect, a rebound DNS name,
+ * every spelling of a private address).
  *
  * The harness lives with the folder: connectors/rest/fixtures/harness.mjs.
- * Re-record or print the table with connectors/rest/fixtures/parity.mjs.
+ * Sits at the top of api/src/connectors, not in a rest/ folder, which the
+ * connector family boundary guard would treat as a family.
  *
- * Run: node --import tsx src/connectors/rest/folder-parity.test.ts
+ * Run: node --import tsx --test src/connectors/rest-folder.test.ts
  */
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
@@ -28,54 +26,45 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import axios from "axios";
-import { RestConnector } from "./connector";
-import { SandboxedConnector } from "../workspace/SandboxedConnector";
-import type { LoadedConnector } from "../workspace/resolver";
-import type { ConnectorCommand, RunResult } from "../workspace/sync-box";
-import { parseConnectorFile } from "../workspace/connector-file";
-import { specToForm } from "../workspace/spec-translation";
-import { LocalSessionTransport } from "../workspace/test-support/local-session";
-import { resolveEntitySchema } from "../../sync/sync-orchestrator";
+import { SandboxedConnector } from "./workspace/SandboxedConnector";
+import type { LoadedConnector } from "./workspace/resolver";
+import type { ConnectorCommand, RunResult } from "./workspace/sync-box";
+import { parseConnectorFile } from "./workspace/connector-file";
+import { specToForm } from "./workspace/spec-translation";
+import { LocalSessionTransport } from "./workspace/test-support/local-session";
+import { resolveEntitySchema } from "../sync/sync-orchestrator";
 import {
   CASSETTE_DIR,
   CONNECTION_ID,
   ENTITIES,
   FOLDER,
   RUNNER,
+  SCENARIOS,
   WORKSPACE_ID,
-  checkParity,
-  compareForm,
-  compareRuns,
   ensureFolderInstalled,
-  errorParity,
-  formatReport,
-  liftSsrfGuard,
+  readBoxed,
   readFolder,
-  readInProcess,
   runFolderCommand,
-  runParity,
+  sourceTimestamps,
   startReplayServer,
   testConfig,
-  type Comparison,
+  tokenFor,
   type ReplayServer,
   type RestTestConfig,
   type Scenario,
-} from "../../../../connectors/rest/fixtures/harness.mjs";
+} from "../../../connectors/rest/fixtures/harness.mjs";
+
+const GOLDEN_DIR = path.join(FOLDER, "fixtures/golden");
+const goldenFile = (scenario: string, entity: string) =>
+  path.join(GOLDEN_DIR, scenario, `${entity}.json`);
+const golden = (scenario: string, entity: string) =>
+  JSON.parse(fs.readFileSync(goldenFile(scenario, entity), "utf8"));
+
+/** Compare as JSON: the golden files are JSON, a row may carry `undefined`. */
+const asJson = (value: unknown) => JSON.parse(JSON.stringify(value));
 
 const settingsFor = (scenario?: Scenario) =>
   scenario?.settingsBatch ? { sync_batch_size: scenario.settingsBatch } : {};
-
-const makeInProcess = (config: Record<string, unknown>, scenario?: Scenario) =>
-  liftSsrfGuard(
-    new RestConnector({
-      _id: CONNECTION_ID,
-      name: "REST parity",
-      type: "rest",
-      workspaceId: WORKSPACE_ID,
-      config,
-      settings: settingsFor(scenario),
-    } as any),
-  );
 
 /** The folder as a workspace connector; only the box is a local process. */
 class BoxlessRest extends SandboxedConnector {
@@ -86,8 +75,8 @@ class BoxlessRest extends SandboxedConnector {
       slug: "rest",
       runtime: "node",
       entry: "connector.ts",
-      sha: "parity",
-      sourceSha: "parity",
+      sha: "fixture",
+      sourceSha: "fixture",
       spec: BoxlessRest.spec,
       entities: Object.keys(BoxlessRest.spec?.mako?.entities ?? {}),
       status: "indexed",
@@ -117,7 +106,7 @@ const boxed = <T extends BoxlessRest>(
 ) => {
   const connector = new Kind({
     _id: CONNECTION_ID,
-    name: "REST parity",
+    name: "REST fixture",
     type: "ws:rest",
     workspaceId: WORKSPACE_ID,
     config,
@@ -190,28 +179,15 @@ void test("connector.yaml is a node folder with its entry", () => {
   assert.equal(parsed.value.entry, "connector.ts");
 });
 
-void test("one entity per configured entity, in the connection's order, labelled as in-process", async () => {
-  const inProcess = makeInProcess(CONFIG);
+void test("one entity per configured entity, in the connection's order", async () => {
   const box = makeBoxed(CONFIG as unknown as RestTestConfig);
   await box.loadDefinition();
-  assert.deepEqual(
-    box.getAvailableEntities(),
-    inProcess.getAvailableEntities(),
-  );
   assert.deepEqual(box.getAvailableEntities(), NAMES);
-  const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
-  assert.deepEqual(
-    plain(box.getEntityMetadata()),
-    plain(inProcess.getEntityMetadata()),
-  );
-  // A connection with no entity offers none, on both sides.
+  assert.equal(NAMES.length, 7);
+  // A connection with no entity offers none.
   const bare = boxed(BoxlessRest, { api_base_url: BASE });
   await bare.loadDefinition();
   assert.deepEqual(bare.getAvailableEntities(), []);
-  assert.deepEqual(
-    makeInProcess({ api_base_url: BASE }).getAvailableEntities(),
-    [],
-  );
   // The spec declares no fixed entity: the list lives in `config.entities`.
   assert.deepEqual(spec?.mako?.entities, {});
   assert.equal(spec?.mako?.queryEntities?.source, "connection");
@@ -229,51 +205,56 @@ function encryptedPaths(
   ]);
 }
 
-void test("same config schema: names, types, required flags and the encrypted set", () => {
-  const inProcess = RestConnector.getConfigSchema();
+void test("the config form: names, types, required flags and the encrypted set", () => {
   const folder = specToForm(spec);
-  const form = compareForm(inProcess.fields, folder.fields);
-  assert.ok(form.ok, JSON.stringify(form, null, 2));
-  // The three fields, in order, and the item fields of an entity.
   assert.deepEqual(
     folder.fields.map(f => [f.name, f.type, Boolean(f.required)]),
-    inProcess.fields.map(f => [f.name, f.type, Boolean(f.required)]),
+    [
+      ["api_base_url", "string", false],
+      ["headers", "textarea", false],
+      ["entities", "object_array", false],
+    ],
   );
   assert.deepEqual(
     folder.fields
       .find(f => f.name === "entities")
       ?.itemFields?.map(f => [f.name, f.type, Boolean(f.required)]),
-    inProcess.fields
-      .find(f => f.name === "entities")
-      ?.itemFields?.map(f => [f.name, f.type, Boolean(f.required)]),
+    [
+      ["name", "string", true],
+      ["path", "string", true],
+      ["method", "select", false],
+      ["params", "textarea", false],
+      ["body", "textarea", false],
+      ["data_path", "string", false],
+      ["total_count_path", "string", false],
+      ["page_param", "string", false],
+      ["limit_param", "string", false],
+      ["offset_param", "string", false],
+      ["cursor_param", "string", false],
+      ["next_cursor_path", "string", false],
+      ["has_more_path", "string", false],
+      ["batch_size", "number", false],
+    ],
   );
-  // Secrets: the same set. Stored connections keep their headers encrypted.
+  // Secrets: stored connections keep their headers encrypted.
   assert.deepEqual(encryptedPaths(folder.fields), ["headers"]);
-  assert.deepEqual(
-    encryptedPaths(folder.fields),
-    encryptedPaths(inProcess.fields),
-  );
   const headers = folder.fields.find(f => f.name === "headers");
   assert.equal(headers?.type, "textarea");
   assert.equal(headers?.encrypted, true);
-  // The body field shows for POST only, as in-process.
+  // The body field shows for POST only.
   const body = folder.fields
     .find(f => f.name === "entities")
     ?.itemFields?.find(f => f.name === "body");
   assert.deepEqual(body?.showIf, { field: "method", equals: ["POST"] });
   // Entities are the connection's, not a flow's.
   assert.equal(folder.transferQueries, undefined);
-  assert.equal("transferQueries" in inProcess, false);
 });
 
-void test("same incremental capability: a client filter, before any entity exists", async () => {
+void test("incremental capability: a client filter, before any entity exists", async () => {
   const bare = boxed(BoxlessRest, { api_base_url: BASE });
   await bare.loadDefinition();
-  const inCaps = makeInProcess({
-    api_base_url: BASE,
-  }).getIncrementalCapabilities();
-  assert.equal(bare.getIncrementalCapabilities().supported, inCaps.supported);
-  assert.equal(bare.getIncrementalCapabilities().mode, inCaps.mode);
+  assert.equal(bare.getIncrementalCapabilities().supported, true);
+  assert.equal(bare.getIncrementalCapabilities().mode, "client-filter");
   const box = makeBoxed(CONFIG as unknown as RestTestConfig);
   await box.loadDefinition();
   for (const entity of NAMES) {
@@ -284,11 +265,10 @@ void test("same incremental capability: a client filter, before any entity exist
   }
 });
 
-void test("no schema on either side: rows land as they come, typed by the destination", async () => {
+void test("no schema: rows land as they come, typed by the destination", async () => {
   const box = makeBoxed(CONFIG as unknown as RestTestConfig);
   await box.loadDefinition();
   for (const entity of NAMES) {
-    assert.equal(await makeInProcess(CONFIG).resolveSchema(entity), null);
     assert.equal(await box.resolveSchema(entity), null, entity);
     assert.equal(await box.declaresUntypedSchema(entity), true, entity);
     assert.equal(
@@ -297,36 +277,59 @@ void test("no schema on either side: rows land as they come, typed by the destin
         workspaceId: WORKSPACE_ID,
         connector: box,
         sourceConnection: { type: "ws:rest" },
-        context: "parity",
+        context: "fixture",
       }),
       null,
     );
   }
 });
 
-void test("check agrees on a valid API, a 401, a 404, a redirect, bad headers, no entity and no base URL", async () => {
-  const outcomes = await checkParity({ makeInProcess, server });
+void test("check on a valid API, a 401, a 404, a redirect, bad headers, no entity and no base URL", async () => {
+  const outcome = async (variant: string) => {
+    const suffix = ["revoked", "notfound", "redirect_ok"].includes(variant)
+      ? `_${variant}`
+      : "";
+    const token = `rest_test_folder_check_${variant}${suffix}`;
+    const connection: Record<string, unknown> = {
+      ...testConfig(token, server),
+    };
+    if (variant === "bad-headers") connection.headers = "{not json";
+    if (variant === "no-entities") connection.entities = [];
+    if (variant === "no-base-url") connection.api_base_url = undefined;
+    const run = await runFolderCommand("check", { config: connection });
+    const status = run.messages.find(
+      m => m.type === "CONNECTION_STATUS",
+    )?.connectionStatus;
+    return {
+      row: [variant, status?.status, server.requests(token).length],
+      message: String(status?.message ?? ""),
+    };
+  };
+  const variants = [
+    "valid",
+    "revoked",
+    "notfound",
+    "redirect_ok",
+    "bad-headers",
+    "no-entities",
+    "no-base-url",
+  ];
+  const outcomes = new Map<string, { row: unknown[]; message: string }>();
+  for (const variant of variants) outcomes.set(variant, await outcome(variant));
   assert.deepEqual(
-    outcomes.map(o => [
-      o.variant,
-      o.inProcess,
-      o.folder,
-      o.requests,
-      o.requestsEqual,
-    ]),
+    variants.map(v => outcomes.get(v)?.row),
     [
-      ["valid", true, true, 1, true],
-      ["revoked", false, false, 1, true],
-      ["notfound", false, false, 1, true],
-      ["redirect_ok", true, true, 2, true],
-      ["bad-headers", false, false, 0, true],
-      ["no-entities", false, false, 0, true],
-      ["no-base-url", false, false, 0, true],
+      ["valid", "SUCCEEDED", 1],
+      ["revoked", "FAILED", 1],
+      ["notfound", "FAILED", 1],
+      ["redirect_ok", "SUCCEEDED", 2],
+      ["bad-headers", "FAILED", 0],
+      ["no-entities", "FAILED", 0],
+      ["no-base-url", "FAILED", 0],
     ],
   );
-  // The folder says why, in the words in-process uses.
-  const message = (variant: string) =>
-    outcomes.find(o => o.variant === variant)?.folderMessage ?? "";
+  // The folder says why, in the words the in-process connector used.
+  const message = (variant: string) => outcomes.get(variant)?.message ?? "";
   assert.match(message("revoked"), /Request failed with status code 401/);
   assert.match(message("notfound"), /Request failed with status code 404/);
   assert.match(message("bad-headers"), /Headers must be valid JSON/);
@@ -337,77 +340,61 @@ void test("check agrees on a valid API, a 401, a 404, a redirect, bad headers, n
   assert.match(message("no-base-url"), /API base URL is required/);
 });
 
-function assertTimestamps(results: Comparison[]) {
-  const checked = results.reduce((n, r) => n + r.timestampsChecked, 0);
-  const rowsRead = results.reduce((n, r) => n + r.rows[0], 0);
-  assert.equal(checked, rowsRead);
-  assert.ok(checked > 0);
-  for (const r of results) {
-    assert.deepEqual(r.timestampMismatches, [], `${r.scenario}/${r.entity}`);
+/**
+ * Every entity in every scenario through `make`, against the golden rows,
+ * chunk positions and requests. Each row's source timestamp is its
+ * `updated_at` or `updatedAt`, else its `created_at`, else "now": a
+ * `modified_at` (search) or `modifiedAt` (plain) is not one.
+ */
+async function readsMatchGolden(
+  make: (config: RestTestConfig, scenario: Scenario) => BoxlessRest,
+  own: ReplayServer,
+) {
+  let stamped = 0;
+  for (const scenario of SCENARIOS) {
+    for (const entity of NAMES) {
+      const key = `${scenario.name}/${entity}`;
+      const token = tokenFor("adapter", scenario, entity);
+      const box = make(testConfig(token, own, scenario), scenario);
+      const run = await readBoxed(box, {
+        entity,
+        since: scenario.since,
+        maxIterations: scenario.maxIterations,
+        pageSize: scenario.pageSize,
+      });
+      const expected = golden(scenario.name, entity);
+      assert.deepEqual(asJson(run.rows), expected.rows, key);
+      assert.deepEqual(asJson(run.chunks), expected.chunks, key);
+      assert.deepEqual(own.requests(token), expected.requests, key);
+      const { byId } = sourceTimestamps(box, entity, run.rows);
+      for (const row of run.rows) {
+        const ts = row.updated_at ?? row.updatedAt ?? row.created_at;
+        const want = ts ? new Date(String(ts)).toISOString() : "now";
+        if (want !== "now") stamped++;
+        assert.equal(byId.get(String(row.id)), want, `${key} ${row.id}`);
+      }
+    }
   }
+  assert.ok(stamped > 0);
+  assert.deepEqual(own.misses, []);
 }
 
-void test("every entity reads the same rows, chunks, requests and timestamps", async () => {
-  const results = await runParity({
-    entities: NAMES,
-    makeInProcess,
-    makeBoxed,
-    server,
-  });
-  const report = formatReport(results);
-  assert.equal(results.length, NAMES.length * 6);
-  assert.deepEqual(
-    results.filter(r => !r.ok).map(r => `${r.scenario}/${r.entity}`),
-    [],
-    report,
-  );
-  assert.deepEqual(server.misses, []);
-  assertTimestamps(results);
-  const run = (scenario: string, entity: string): Comparison => {
-    const found = results.find(
-      r => r.scenario === scenario && r.entity === entity,
-    );
-    assert.ok(found, `${scenario}/${entity}`);
-    return found;
-  };
-  // Page, offset and cursor pagination cross chunk boundaries.
-  assert.equal(run("default", "listings").rows[0], 70);
-  assert.equal(run("chunked", "listings").chunks[0], 3);
-  assert.equal(run("chunked", "events").chunks[0], 4);
-  assert.equal(run("chunked", "orders").chunks[0], 4);
-  assert.equal(run("small-pages", "events").chunks[0], 12);
-  // `since` narrows on updated_at; rows without it are dropped, as in-process.
-  assert.equal(run("since", "orders").rows[0], 20);
-  assert.equal(run("since", "listings").rows[0], 25);
-  assert.equal(run("since", "search").rows[0], 15);
-  // The connection's batch size applies to an entity with none of its own.
-  assert.equal(run("settings-batch", "plain").requests[0], 4);
-  assert.equal(run("default", "plain").requests[0], 1);
-  // A 2-row page is not what this server answers: both stop after one page.
-  assert.equal(run("small-pages", "wrapped").rows[0], 6);
+void test("every entity reads the golden rows, chunks, requests and timestamps through the adapter", async () => {
+  await readsMatchGolden(makeBoxed, server);
 });
 
-void test("a read session reads the same rows, chunks, requests and timestamps", async () => {
+void test("a read session reads the golden rows, chunks, requests and timestamps", async () => {
   const own = await startReplayServer();
   try {
-    const results = await runParity({
-      entities: NAMES,
-      makeInProcess,
-      makeBoxed: (config, scenario) =>
+    await readsMatchGolden(
+      (config, scenario) =>
         boxed(
           SessionRest,
           config as unknown as Record<string, unknown>,
           scenario,
         ),
-      server: own,
-    });
-    assert.deepEqual(
-      results.filter(r => !r.ok).map(r => `${r.scenario}/${r.entity}`),
-      [],
-      formatReport(results),
+      own,
     );
-    assert.deepEqual(own.misses, []);
-    assertTimestamps(results);
     assert.equal(SessionRest.chunkReads, 0);
     const calls = SessionRest.transports.flatMap(t => t.calls);
     assert.equal(calls.filter(c => c === "start").length, NAMES.length * 6);
@@ -417,50 +404,18 @@ void test("a read session reads the same rows, chunks, requests and timestamps",
   }
 });
 
-void test("a failing API fails the read the same way, after the same requests", async () => {
-  const failed = await errorParity({
-    makeInProcess,
-    server,
-    entity: "listings",
-  });
-  assert.equal(failed.inProcessMessage, "Request failed with status code 500");
-  assert.match(failed.folderMessage, /Request failed with status code 500/);
-  // The count preview fails and is ignored, then the first page fails.
-  assert.equal(failed.requests, 2);
-  assert.ok(failed.requestsEqual);
-});
-
-void test("the comparison catches a changed field, a lost row and another request", () => {
-  const base = {
-    rows: [
-      { id: 1, n: 1 },
-      { id: 2, n: 2 },
-    ],
-    chunks: [
-      {
-        page: 1,
-        offset: 0,
-        cursor: null,
-        totalProcessed: 2,
-        totalCount: null,
-        hasMore: false,
-      },
-    ],
-    requests: ["GET /api/v1/x?limit=2 (bearer; application/json)"],
-  };
-  assert.ok(compareRuns(base, structuredClone(base)).ok);
-  const changed = structuredClone(base);
-  changed.rows[1].n = 3;
-  assert.deepEqual(compareRuns(base, changed).checksumMismatches, ["2"]);
-  assert.equal(
-    compareRuns(base, { ...base, rows: [base.rows[0]] }).keys,
-    false,
+void test("a failing API fails the read after the count preview and the first page", async () => {
+  const token = "rest_test_folder_error500_listings";
+  await assert.rejects(
+    readFolder({
+      entity: "listings",
+      maxIterations: 10,
+      config: { ...testConfig(token, server), __rate_limit_delay_ms: 1 },
+    }),
+    /Request failed with status code 500/,
   );
-  const other = {
-    ...structuredClone(base),
-    requests: ["GET /api/v1/x?limit=2 (api-key; application/json)"],
-  };
-  assert.equal(compareRuns(base, other).requestsEqual, false);
+  // The count preview fails and is ignored, then the first page fails.
+  assert.equal(server.requests(token).length, 2);
 });
 
 void test("the cassettes hold no credential", () => {
@@ -545,8 +500,8 @@ void test("the address check refuses metadata names and private IPs in any spell
 });
 
 void test("an unknown entity fails the read, even with no entity at all", async () => {
-  // In-process throws "Entity configuration '<entity>' not found"; the box
-  // must not answer 0 rows instead.
+  // The in-process connector threw "Entity configuration '<entity>' not
+  // found"; the box must not answer 0 rows instead.
   for (const config of [
     { api_base_url: BASE },
     { ...CONFIG, entities: ENTITIES.slice(0, 1) },
@@ -747,31 +702,23 @@ void test("a header value the runtime rejects is named, never quoted", async () 
 });
 
 void test("the count preview runs for a GET entity only: a POST would run twice", async () => {
-  // `search` with a total_count_path, which in-process previews with a
-  // second POST. The folder sends the 3 pages and no preview.
+  // `search` with a total_count_path, which the in-process connector
+  // previewed with a second POST. The folder sends the 3 pages and no
+  // preview.
   const counted = ENTITIES.map(e =>
     e.name === "search" ? { ...e, total_count_path: "total" } : e,
   );
-  const token = "rest_test_inprocess_preview_search";
-  const folderToken = "rest_test_folder_preview_search";
-  const config = (t: string) => ({
-    ...testConfig(t, server),
-    entities: counted,
-  });
-  const read = (t: string) =>
-    readInProcess(() => makeInProcess(config(t)), {
-      entity: "search",
-      maxIterations: 10,
-    });
-  const inRun = await read(token);
-  assert.equal(inRun.rows.length, 30);
+  const token = "rest_test_folder_preview_search";
   const folderRun = await readFolder({
     entity: "search",
     maxIterations: 10,
-    config: { ...config(folderToken), __rate_limit_delay_ms: 1 },
+    config: {
+      ...testConfig(token, server),
+      entities: counted,
+      __rate_limit_delay_ms: 1,
+    },
   });
   assert.equal(folderRun.rows.length, 30);
-  assert.equal(server.requests(token).length, 4);
-  assert.equal(server.requests(folderToken).length, 3);
+  assert.equal(server.requests(token).length, 3);
   assert.deepEqual(server.misses, []);
 });
