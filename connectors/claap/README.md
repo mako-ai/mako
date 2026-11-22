@@ -1,8 +1,7 @@
 # Claap connector folder
 
-The in-process Claap connector (`api/src/connectors/claap/`), ported to
-`@makoai/connector-sdk` so it can run in a box. No flow uses it yet.
-Production runs the in-process connector on 1 flow.
+The Claap connector on `@makoai/connector-sdk`, run in a box. It was ported
+from the in-process connector, which is deleted.
 
 ## Entities
 
@@ -12,18 +11,18 @@ Production runs the in-process connector on 1 flow.
 | `recording_transcripts` | list pages of 50, then every language's transcript                  | `createdAfter` = `since` minus 2 days                             |
 | `workspace`             | `GET /v1/workspaces/mine`, one row                                  | none                                                              |
 
-- Columns, types and keys are the in-process schema's (`schema.ts`).
+- Columns, types and keys come from `schema.ts`.
 - Detail reads wait at least 350 ms each (3 requests a second).
 - The daily quota: below 500 calls left, `recordings` checkpoints mid-page
   (`cursor` plus `pageOffset`) and ends the chunk with `hasMore: true`;
   `recording_transcripts` ends the chunk after the pages it read. A chunk
-  that could read nothing fails, as in-process.
+  that could read nothing fails.
 - A detail that answers 404, or a Ready recording without `aiFields`, is
   skipped. Any other detail failure fails the chunk.
 - Transcripts come from the signed link first (https only, no private
   address, at most 3 redirects, 50 MB), else from
   `/v1/recordings/{id}/transcript`. A failed download is a `failed` row.
-- Retries: 5, on 429, 5xx and network errors, as in-process.
+- Retries: 5, on 429, 5xx and network errors.
 
 ## Webhooks
 
@@ -36,18 +35,19 @@ Production runs the in-process connector on 1 flow.
   keys. `crmInfo` and `deal` do not trigger a read: no Claap read returns
   them.
 - When the flow syncs `recording_transcripts`, the handler downloads the
-  transcripts now, as in-process, since the links expire after 24 hours.
+  transcripts now, since the links expire after 24 hours.
 - 404: the record is dropped. Ready without `aiFields`: `extract_failed`.
   Past 40 s of reads in a batch: `deferred`.
 
-## Parity
+## Golden files
 
 `fixtures/` replays a synthetic workspace (23 recordings, 29 transcripts)
-against both connectors, signed links included.
+through the folder, signed links included. `fixtures/golden/` holds the
+output, and an API test compares it byte for byte.
 
 ```sh
-pnpm --filter api exec tsx ../connectors/claap/fixtures/parity.mjs           # table
-pnpm --filter api exec tsx ../connectors/claap/fixtures/parity.mjs --record  # re-record
-node connectors/claap/fixtures/conformance.mjs                               # mako connector test
-(cd api && node --import tsx --test src/connectors/claap/folder-parity.test.ts)  # the API test
+node connectors/claap/fixtures/golden.mjs --write   # rewrite golden/ after an intended change
+node connectors/claap/fixtures/golden.mjs --record  # rebuild cassettes/ from the emulator
+node connectors/claap/fixtures/conformance.mjs      # mako connector test
+(cd api && node --import tsx --test src/connectors/claap-folder.test.ts)  # the API test
 ```

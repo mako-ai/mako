@@ -1,0 +1,950 @@
+[
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0001:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-08-04T09:00:00.000Z",
+    "recordingId": "rec_0001",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0001 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0001 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0002:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-08-07T10:00:00.000Z",
+    "recordingId": "rec_0002",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0002 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0002 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0003:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-08-10T11:00:00.000Z",
+    "recordingId": "rec_0003",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0003 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0003 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0004:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-08-13T12:00:00.000Z",
+    "recordingId": "rec_0004",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0004 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0004 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0004:en",
+    "isActive": false,
+    "isTranscript": false,
+    "langIso2": "en",
+    "recordingCreatedAt": "2026-08-13T12:00:00.000Z",
+    "recordingId": "rec_0004",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0004 (en)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "en",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0004 (en).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0005:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-08-16T13:00:00.000Z",
+    "recordingId": "rec_0005",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0005 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0005 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_gone:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-08-19T08:00:00.000Z",
+    "recordingId": "rec_gone",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_gone (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_gone (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0007:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-08-22T09:00:00.000Z",
+    "recordingId": "rec_0007",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0007 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0007 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0008:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-08-25T10:00:00.000Z",
+    "recordingId": "rec_0008",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0008 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0008 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0008:en",
+    "isActive": false,
+    "isTranscript": false,
+    "langIso2": "en",
+    "recordingCreatedAt": "2026-08-25T10:00:00.000Z",
+    "recordingId": "rec_0008",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0008 (en)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "en",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0008 (en).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": null,
+    "fetchError": "HTTP 404: No transcript in de",
+    "fetchStatus": "failed",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0008:de",
+    "isActive": false,
+    "isTranscript": false,
+    "langIso2": "de",
+    "recordingCreatedAt": "2026-08-25T10:00:00.000Z",
+    "recordingId": "rec_0008",
+    "segmentCount": null,
+    "segments": null,
+    "transcriptText": null
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0009:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-08-28T11:00:00.000Z",
+    "recordingId": "rec_0009",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0009 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0009 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 0,
+    "fetchError": null,
+    "fetchStatus": "empty",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0010:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-08-31T12:00:00.000Z",
+    "recordingId": "rec_0010",
+    "segmentCount": 0,
+    "segments": [],
+    "transcriptText": ""
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_noai:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-09-03T13:00:00.000Z",
+    "recordingId": "rec_noai",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_noai (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_noai (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0012:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-09-06T08:00:00.000Z",
+    "recordingId": "rec_0012",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0012 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0012 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0012:en",
+    "isActive": false,
+    "isTranscript": false,
+    "langIso2": "en",
+    "recordingCreatedAt": "2026-09-06T08:00:00.000Z",
+    "recordingId": "rec_0012",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0012 (en)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "en",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0012 (en).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0013:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-09-09T09:00:00.000Z",
+    "recordingId": "rec_0013",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0013 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0013 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0014:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-09-12T10:00:00.000Z",
+    "recordingId": "rec_0014",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0014 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0014 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0015:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-09-15T11:00:00.000Z",
+    "recordingId": "rec_0015",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0015 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0015 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0016:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-09-18T12:00:00.000Z",
+    "recordingId": "rec_0016",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0016 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0016 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0016:en",
+    "isActive": false,
+    "isTranscript": false,
+    "langIso2": "en",
+    "recordingCreatedAt": "2026-09-18T12:00:00.000Z",
+    "recordingId": "rec_0016",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0016 (en)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "en",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0016 (en).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0017:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-09-21T13:00:00.000Z",
+    "recordingId": "rec_0017",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0017 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0017 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0018:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-09-24T08:00:00.000Z",
+    "recordingId": "rec_0018",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0018 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0018 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0019:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-09-27T09:00:00.000Z",
+    "recordingId": "rec_0019",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0019 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0019 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0020:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-09-30T10:00:00.000Z",
+    "recordingId": "rec_0020",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0020 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0020 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0020:en",
+    "isActive": false,
+    "isTranscript": false,
+    "langIso2": "en",
+    "recordingCreatedAt": "2026-09-30T10:00:00.000Z",
+    "recordingId": "rec_0020",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0020 (en)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "en",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0020 (en).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0021:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-10-03T11:00:00.000Z",
+    "recordingId": "rec_0021",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0021 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0021 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0022:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-10-06T12:00:00.000Z",
+    "recordingId": "rec_0022",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0022 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0022 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  },
+  {
+    "charCount": 104,
+    "fetchError": null,
+    "fetchStatus": "ok",
+    "fetchedAt": "<fetchedAt>",
+    "id": "rec_0023:fr",
+    "isActive": true,
+    "isTranscript": true,
+    "langIso2": "fr",
+    "recordingCreatedAt": "2026-10-09T13:00:00.000Z",
+    "recordingId": "rec_0023",
+    "segmentCount": 3,
+    "segments": [
+      {
+        "endedAt": 4.8,
+        "speaker": "speaker_1",
+        "startedAt": 1.2,
+        "text": "Bonjour, ici rec_0023 (fr)."
+      },
+      {
+        "endedAt": 70.5,
+        "languageCode": "fr",
+        "speaker": "speaker_2",
+        "startedAt": 65,
+        "text": "Merci pour votre temps."
+      },
+      {
+        "endedAt": 3702,
+        "startedAt": 3700,
+        "text": "Au revoir."
+      }
+    ],
+    "transcriptText": "00:01 speaker_1: Bonjour, ici rec_0023 (fr).\n01:05 speaker_2: Merci pour votre temps.\n1:01:40 Au revoir."
+  }
+]
