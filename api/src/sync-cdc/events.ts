@@ -9,6 +9,7 @@ const normalizedCdcEventSchema = z.object({
   operation: cdcOperationSchema,
   payload: z.record(z.string(), z.unknown()).optional(),
   sourceTs: z.date(),
+  sourceTsKind: z.literal("provider_event").optional(),
   source: cdcSourceSchema,
   changeId: z.string().optional(),
   runId: z.string().optional(),
@@ -17,10 +18,7 @@ const normalizedCdcEventSchema = z.object({
 export type CdcEventSource = z.infer<typeof cdcSourceSchema>;
 export type CdcEventOperation = z.infer<typeof cdcOperationSchema>;
 export type CdcMaterializationStatus =
-  | "pending"
-  | "applied"
-  | "failed"
-  | "dropped";
+  "pending" | "applied" | "failed" | "dropped";
 export type NormalizedCdcEvent = z.infer<typeof normalizedCdcEventSchema>;
 
 export interface CdcEventInput {
@@ -29,6 +27,7 @@ export interface CdcEventInput {
   operation: CdcEventOperation;
   payload?: Record<string, unknown>;
   sourceTs?: Date;
+  sourceTsKind?: NormalizedCdcEvent["sourceTsKind"];
   source: CdcEventSource;
   idempotencyKey?: string;
   runId?: string;
@@ -45,6 +44,7 @@ export interface CdcStoredEvent {
   recordId: string;
   operation: CdcEventOperation;
   sourceTs: Date;
+  sourceTsKind?: NormalizedCdcEvent["sourceTsKind"];
   ingestTs: Date;
   ingestSeq: number;
   idempotencyKey: string;

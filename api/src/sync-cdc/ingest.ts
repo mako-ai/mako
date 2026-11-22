@@ -31,6 +31,7 @@ class CdcIngestService {
         operation: event.operation,
         payload: event.payload,
         sourceTs: event.sourceTs,
+        sourceTsKind: event.sourceTsKind,
         source: event.source,
         idempotencyKey: event.changeId,
         runId: event.runId,
