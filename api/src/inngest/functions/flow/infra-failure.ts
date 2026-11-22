@@ -58,14 +58,22 @@ export function infraResumeBackoffMs(infraFailures: number): number {
 const META_OBJECT_THROTTLE =
   /^(?:read failed for "(ads|ad_creatives)": )?meta-ads (ads|ad_creatives) read failed: HTTP 400: code 80004: subcode 2446079\s*$/;
 
+// Meta Ads 1.5.2 emits this suffix only after validating the raw Graph error.
+const META_AD_SET_THROTTLE =
+  /^(?:read failed for "ad_sets": )?meta-ads ad_sets read failed: HTTP 400: code 17: subcode 2446079: provider rate limit\s*$/;
+
 type ProviderThrottle = { kind: "provider-throttle"; retryAfterMs?: number };
 
 /** Compatibility boundary: boxed reads currently forward only error text. */
 export function readProviderThrottle(
   message: string | undefined,
 ): ProviderThrottle | undefined {
-  const match = message?.match(META_OBJECT_THROTTLE);
-  if (match && (!match[1] || match[1] === match[2])) {
+  if (!message) return undefined;
+  const match = message.match(META_OBJECT_THROTTLE);
+  if (
+    (match && (!match[1] || match[1] === match[2])) ||
+    META_AD_SET_THROTTLE.test(message)
+  ) {
     return { kind: "provider-throttle" };
   }
 }
