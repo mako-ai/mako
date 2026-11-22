@@ -14,6 +14,7 @@ export interface ICdcChangeEvent extends Document {
   recordId: string;
   op: "upsert" | "delete";
   sourceTs: Date;
+  sourceTsKind?: "provider_event";
   ingestTs: Date;
   ingestSeq: number;
   idempotencyKey: string;
@@ -56,6 +57,7 @@ const CdcChangeEventSchema = new Schema<ICdcChangeEvent>(
     recordId: { type: String, required: true },
     op: { type: String, enum: ["upsert", "delete"], required: true },
     sourceTs: { type: Date, required: true },
+    sourceTsKind: { type: String, enum: ["provider_event"] },
     ingestTs: { type: Date, required: true, default: Date.now },
     ingestSeq: { type: Number, required: true },
     idempotencyKey: { type: String, required: true },
