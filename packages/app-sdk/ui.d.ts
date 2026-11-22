@@ -98,6 +98,8 @@ export interface FilterItemsProps<V extends string = string> {
   onChange: (next: V[]) => void;
   allLabel?: string;
   emptyMeansAll?: boolean;
+  /** 2.31: empty = All with every option row unticked; a click adds that option. Default false. */
+  clickAdds?: boolean;
   showOnly?: boolean;
   /** The "nothing ticked" draft, when the parent shows it; else FilterItems keeps it. */
   none?: boolean;
@@ -157,6 +159,13 @@ export interface MultiSelectProps<V extends string = string> {
    * Both spellings display as All either way.
    */
   emptyMeansAll?: boolean;
+  /**
+   * 2.31, default false. The pre-2.20 click, for filters whose empty value
+   * means All: under All the option rows show unticked, a click adds that
+   * option, and removing the last one returns to []. A group click adds its
+   * leaves. "Only", keys and the URL values are unchanged.
+   */
+  clickAdds?: boolean;
   /** An "Only" button on each row that selects just that value. */
   showOnly?: boolean;
   /** Trigger text for several values. Default `${n} selected`. */
@@ -197,17 +206,18 @@ export function filterFind<V extends string>(options: ReadonlyArray<MultiSelectO
 /** A selection in menu order; [] when it holds every leaf. */
 export function filterNormalize<V extends string>(options: ReadonlyArray<MultiSelectOption<V>>, picked: Iterable<V>): V[];
 /** A node's tick; `none` = the nothing-ticked draft. */
-export function filterTick<V extends string>(node: MultiSelectOption<V>, selected: readonly V[], none?: boolean): FilterTick;
+export function filterTick<V extends string>(node: MultiSelectOption<V>, selected: readonly V[], none?: boolean, adds?: boolean): FilterTick;
 /** The All row's tick. */
 export function filterAllTick(selected: readonly string[], none?: boolean): FilterTick;
 /** A click on All: full → the draft; partial or draft → every row. */
-export function filterToggleAll<V extends string>(selected: readonly V[], none?: boolean): { none: boolean; selected: V[] };
+export function filterToggleAll<V extends string>(selected: readonly V[], none?: boolean, adds?: boolean): { none: boolean; selected: V[] };
 /** A click on a node; leaving nothing ticked returns the draft with the selection unchanged. */
 export function filterToggle<V extends string>(
   options: ReadonlyArray<MultiSelectOption<V>>,
   selected: readonly V[],
   node: MultiSelectOption<V>,
   none?: boolean,
+  adds?: boolean,
 ): { none: boolean; selected: V[] };
 /** The one node whose leaves are exactly the pick. */
 export function filterPickedNode<V extends string>(options: ReadonlyArray<MultiSelectOption<V>>, selected: readonly V[]): MultiSelectOption<V> | undefined;

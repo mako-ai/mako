@@ -530,12 +530,15 @@ export function filterNormalize(options, picked) {
   return [...out, ...unknown];
 }
 
-/** A node's tick: "on" when every leaf under it is picked, "mixed" when some are, "off" when none (or in the draft). */
-export function filterTick(node, selected, none = false) {
+/**
+ * A node's tick: "on" when every leaf under it is picked, "mixed" when some are, "off" when none (or in the draft).
+ * `adds` (2.31, clickAdds): an empty selection ticks no row, so every node is "off".
+ */
+export function filterTick(node, selected, none = false, adds = false) {
   const ls = filterLeavesOf(node);
   // A group with no children yet (still loading) picks nothing: never "on".
   if (none || !ls.length) return "off";
-  if (!selected.length) return "on";
+  if (!selected.length) return adds ? "off" : "on";
   const on = ls.filter(v => selected.includes(v)).length;
   return on === ls.length ? "on" : on ? "mixed" : "off";
 }
@@ -548,8 +551,10 @@ export function filterAllTick(selected, none = false) {
 /**
  * A click on All. Full All goes to the draft ({ none: true }); a partial All
  * or the draft ticks every row ({ selected: [] }).
+ * `adds` (2.31, clickAdds): a click on All always returns to All ({ selected: [] }).
  */
-export function filterToggleAll(selected, none = false) {
+export function filterToggleAll(selected, none = false, adds = false) {
+  if (adds) return { none: false, selected: [] };
   return filterAllTick(selected, none) === "on" ? { none: true, selected } : { none: false, selected: [] };
 }
 
@@ -557,9 +562,17 @@ export function filterToggleAll(selected, none = false) {
  * A click on a node: off when all its leaves are ticked, else on. From the
  * draft a tick picks that node alone. When the click leaves nothing ticked
  * the result is the draft ({ none: true }) and the selection is unchanged.
+ * `adds` (2.31, clickAdds): [] is All with nothing ticked. A click on an
+ * unticked node adds its leaves, a click on a ticked one removes them, and
+ * removing the last pick returns to [] (never the draft).
  */
-export function filterToggle(options, selected, node, none = false) {
+export function filterToggle(options, selected, node, none = false, adds = false) {
   const ls = filterLeavesOf(node);
+  if (adds) {
+    const on = selected.length > 0 && filterTick(node, selected) === "on";
+    const next = on ? selected.filter(v => !ls.includes(v)) : [...selected, ...ls];
+    return { none: false, selected: filterNormalize(options, next) };
+  }
   if (none) return { none: false, selected: filterNormalize(options, ls) };
   const current = selected.length ? selected : filterLeaves(options);
   const next = filterTick(node, selected) === "on" ? current.filter(v => !ls.includes(v)) : [...current, ...ls];

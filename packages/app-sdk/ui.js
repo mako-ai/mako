@@ -1283,6 +1283,7 @@ export function FilterItems({
   onChange,
   allLabel: allLabelProp,
   emptyMeansAll = true,
+  clickAdds = false,
   showOnly = false,
   none: noneProp,
   onNoneChange,
@@ -1313,7 +1314,8 @@ export function FilterItems({
     if (r.none) setNone(true);
     else emit(r.selected);
   };
-  const flip = node => apply(filterToggle(tree, selected, node, none));
+  const flip = node => apply(filterToggle(tree, selected, node, none, clickAdds));
+  const toggleAll = () => apply(filterToggleAll(selected, none, clickAdds));
   const only = node => e => {
     e.stopPropagation();
     emit(filterNormalize(tree, filterLeavesOf(node)));
@@ -1332,7 +1334,7 @@ export function FilterItems({
   if (searchable) {
     if (!shown) {
       keys.push(ALL_KEY);
-      runs.set(ALL_KEY, () => apply(filterToggleAll(selected, none)));
+      runs.set(ALL_KEY, toggleAll);
     }
     const walk = node => {
       if (shown && !shown.has(node.value)) return;
@@ -1386,7 +1388,7 @@ export function FilterItems({
 
   const row = (node, depth) => {
     if (shown && !shown.has(node.value)) return [];
-    const tick = filterTick(node, selected, none);
+    const tick = filterTick(node, selected, none, clickAdds);
     const group = Boolean(node.children);
     const el = h(
       "div",
@@ -1436,12 +1438,12 @@ export function FilterItems({
         tabIndex: 0,
         className: cx("mk-ms-opt", "mk-ms-all", allTick !== "off" && "active"),
         ...searchProps(ALL_KEY),
-        onClick: () => apply(filterToggleAll(selected, none)),
+        onClick: toggleAll,
         onKeyDown: e => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
             e.stopPropagation();
-            apply(filterToggleAll(selected, none));
+            toggleAll();
           }
         },
       },
@@ -1508,6 +1510,13 @@ export function FilterItems({
  *
  * `disabled` (2.30) disables the trigger as shadcn's Button does: half
  * opacity, no pointer, out of the tab order. An open menu closes.
+ *
+ * `clickAdds` (2.31, default false) is the pre-2.20 click for filters whose
+ * empty selection means All: under All the option rows show unticked (All
+ * itself stays ticked), a click adds that option, further clicks add or
+ * remove, and removing the last one returns to []. A click on All returns
+ * to []. "Only", search and keys are unchanged, and the URL helpers write
+ * the same values. Off, nothing changes.
  */
 export function MultiSelect({
   options,
@@ -1517,6 +1526,7 @@ export function MultiSelect({
   allLabel: allLabelProp,
   noneLabel: noneLabelProp,
   emptyMeansAll = true,
+  clickAdds = false,
   showOnly = false,
   formatMany,
   summary,
@@ -1598,6 +1608,7 @@ export function MultiSelect({
           onChange,
           allLabel,
           emptyMeansAll,
+          clickAdds,
           showOnly,
           none,
           onNoneChange: setNone,

@@ -439,6 +439,24 @@ updating the SDK.
 Before 2.20, All showed ticked over unticked rows and a click under All
 selected only that option.
 
+**`clickAdds` (2.31, default `false`).** The pre-2.20 click, for filters
+where an empty value means All and a first click should add that option.
+`MultiSelect`, `FilterItems`, `FilterMenu` and `FilterMenuItems` take it.
+With `clickAdds`, All is ticked and every option row is unticked while the
+value is `[]`. A click on an option gives `[that option]`. Later clicks add
+or remove options. Removing the last one gives `[]` again, and so does a
+click on All. A group row adds all its leaves. Ticking every leaf also
+reads as `[]`, as before. "Only", search, keys and hover submenus are
+unchanged. The URL helpers need no change: `[]` writes `""` (or `"all"`
+when the default is narrower), exactly as without the prop.
+
+```tsx
+<MultiSelect options={countries} value={value} onChange={setValue} clickAdds />
+```
+
+Without the prop nothing changes. `emptyMeansAll` is a different prop: it
+only sets what All emits.
+
 **Groups (2.20).** An option with `children` is a group: its row ticks every
 leaf under it and shows a dash when some are picked; its children follow it,
 indented. A tree that needs hover submenus (Traffic → Bots → GPTBot) is a

@@ -129,6 +129,7 @@ async function renderItems(env, props) {
           },
           allLabel: props.allLabel ?? "All",
           emptyMeansAll: props.emptyMeansAll,
+          clickAdds: props.clickAdds,
         }),
       ),
     );
@@ -169,6 +170,33 @@ test("FilterMenuItems: the 2.20 All rule on a flat list (Barometer case)", async
     assert.deepEqual(ui.state.value, ["Search"], "from the draft, the first tick picks that row alone");
     await env.React.act(() => ui.root.unmount());
   }
+});
+
+test("FilterMenuItems clickAdds (2.31): rows start unticked, a click adds, the last untick returns to All", async t => {
+  const env = await setup(t);
+  if (!env) return;
+  const ui = await renderItems(env, { options: TRAFFIC, allLabel: "All traffic", clickAdds: true });
+  const st = text => ui.row(text).getAttribute("aria-checked");
+  assert.equal(st("All traffic"), "true", "All is ticked under an empty value");
+  assert.equal(st("Humans"), "false", "every option row starts unticked");
+  assert.equal(ui.state.emits, 0);
+
+  await ui.click(ui.row("Humans"));
+  assert.deepEqual(ui.state.value, ["humans"], "the first click adds that option");
+  assert.equal(st("Humans"), "true");
+  assert.equal(st("All traffic"), "mixed");
+
+  await ui.click(ui.row("Humans"));
+  assert.deepEqual(ui.state.value, [], "unticking the last pick returns to All");
+  assert.equal(st("All traffic"), "true");
+
+  // A group's box adds all its children.
+  const box = ui.row("Bots").querySelector('[role="checkbox"]');
+  await ui.click(box);
+  assert.deepEqual(ui.state.value, ["gptbot", "bing"], "a group click adds every child");
+  await ui.click(ui.row("All traffic"));
+  assert.deepEqual(ui.state.value, [], "a click on All returns to All");
+  await env.React.act(() => ui.root.unmount());
 });
 
 test("FilterMenuItems: a group is a hover submenu that starts with All <group>", async t => {

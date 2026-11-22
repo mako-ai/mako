@@ -14,6 +14,7 @@
 // 2.29: `locale` and `labels` translate All, None, Only, "All <group>" and
 // "N selected" from the SDK's strings table (../locale.js).
 // 2.30: `disabled` on FilterMenu passes to the Radix trigger.
+// 2.31: `clickAdds`: under All the rows show unticked and a click adds.
 import * as React from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
@@ -76,6 +77,12 @@ export interface FilterMenuItemsProps {
   labels?: Partial<FilterLabels>;
   /** What All emits: [] (default) or every leaf value (false). */
   emptyMeansAll?: boolean;
+  /**
+   * Mako thin prop (2.31, default false): an empty selection means All and its
+   * rows show unticked, a click adds that option (a group adds its leaves),
+   * and removing the last one returns to All. Off, rows start ticked.
+   */
+  clickAdds?: boolean;
   /** The "nothing ticked" draft, when the owner shows it (FilterMenu's trigger). Uncontrolled otherwise. */
   none?: boolean;
   onNoneChange?: (none: boolean) => void;
@@ -94,7 +101,7 @@ export interface FilterMenuItemsProps {
  * they fill one filter's submenu.
  */
 export function FilterMenuItems(props: FilterMenuItemsProps) {
-  const { options, drill, emptyMeansAll = true } = props;
+  const { options, drill, emptyMeansAll = true, clickAdds = false } = props;
   const L = localeStrings("filter", props.locale, props.labels);
   const allLabel = props.allLabel ?? L.all;
   // English keeps 2.28's two text nodes ("All ", label); a locale writes one string.
@@ -110,8 +117,8 @@ export function FilterMenuItems(props: FilterMenuItemsProps) {
     props.onChange(next.length ? next : emptyMeansAll ? [] : filterLeaves(options));
   };
   const apply = (r: { none: boolean; selected: string[] }) => (r.none ? setNone(true) : emit(r.selected));
-  const flip = (node: FilterMenuOption) => apply(filterToggle(options, selected, node, none));
-  const tick = (node: FilterMenuOption) => filterTick(node, selected, none);
+  const flip = (node: FilterMenuOption) => apply(filterToggle(options, selected, node, none, clickAdds));
+  const tick = (node: FilterMenuOption) => filterTick(node, selected, none, clickAdds);
 
   const only = (node: FilterMenuOption) => (e: React.MouseEvent) => {
     e.preventDefault();
@@ -245,7 +252,7 @@ export function FilterMenuItems(props: FilterMenuItemsProps) {
         checked={asChecked(allSt)}
         onSelect={e => {
           e.preventDefault();
-          apply(filterToggleAll(selected, none));
+          apply(filterToggleAll(selected, none, clickAdds));
         }}
       >
         <Tick state={allSt} />
@@ -324,6 +331,7 @@ export function FilterMenu(props: FilterMenuProps) {
           locale={props.locale}
           labels={props.labels}
           emptyMeansAll={props.emptyMeansAll}
+          clickAdds={props.clickAdds}
           none={none}
           onNoneChange={setNone}
         />
