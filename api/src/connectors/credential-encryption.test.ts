@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { syncConnectorRegistry } from "../sync/connector-registry";
+import { profileConnectorClasses } from "../connections/callable-profiles/profile-connector";
 import { isSecretField } from "../agent-lib/tools/connector-tools";
 
 /**
@@ -40,12 +41,18 @@ const CREDENTIAL_NAME =
 /** Known non-secrets whose NAME trips the pattern. Each needs a reason. */
 const NOT_A_SECRET: Record<string, string> = {};
 
+/**
+ * Every connector directory, plus every call profile created from the form
+ * without one (custom_api, profile-connector.ts): its schema encrypts too.
+ */
 function connectorTypes(): string[] {
-  return readdirSync(CONNECTORS_DIR, { withFileTypes: true })
-    .filter(entry => entry.isDirectory() && entry.name !== "base")
-    .map(entry => entry.name)
-    .filter(name => existsSync(join(CONNECTORS_DIR, name, "connector.ts")))
-    .sort();
+  return [
+    ...readdirSync(CONNECTORS_DIR, { withFileTypes: true })
+      .filter(entry => entry.isDirectory() && entry.name !== "base")
+      .map(entry => entry.name)
+      .filter(name => existsSync(join(CONNECTORS_DIR, name, "connector.ts"))),
+    ...profileConnectorClasses().map(entry => entry.type),
+  ].sort();
 }
 
 async function main() {
@@ -56,9 +63,9 @@ async function main() {
   // reported that every field was protected.
   // The floor guards against an empty enumeration, not a fixed count: built-in
   // families are being removed one PR at a time (connector-family-allowlist.ts).
-  // stripe and rest stay while external workspaces use them.
+  // rest stays, and custom_api is counted from its call profile.
   assert.ok(
-    types.length >= 3,
+    types.length >= 1,
     `expected to find the connector directories, found ${types.length} — enumeration is broken, and a census of nothing proves nothing`,
   );
 

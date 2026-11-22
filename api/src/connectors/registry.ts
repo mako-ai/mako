@@ -11,6 +11,7 @@ import {
   isWorkspaceConnectorType,
   SandboxedConnector,
 } from "./workspace/SandboxedConnector";
+import { profileConnectorClasses } from "../connections/callable-profiles/profile-connector";
 
 const logger = loggers.connector();
 
@@ -97,6 +98,24 @@ class ConnectorRegistry {
         } catch (error) {
           logger.warn("Failed to load connector", { dirName, error });
         }
+      }
+
+      // A type kept as a call profile with `connection` (custom_api) has no
+      // directory but is still created and tested from the form.
+      for (const { type, connectorClass } of profileConnectorClasses()) {
+        const connector = new connectorClass({
+          type,
+          config: {},
+        } as unknown as ISourceConnection);
+        this.register({
+          type,
+          connector: connectorClass,
+          metadata: {
+            ...connector.getMetadata(),
+            webhook: connector.getWebhookCapabilities(),
+            incremental: connector.getIncrementalCapabilities(),
+          },
+        });
       }
 
       this.initialized = true;

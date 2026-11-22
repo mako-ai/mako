@@ -1,8 +1,14 @@
 /**
  * The Custom API connection, as a call_connection profile: data only, no
  * connector folder. The request side moved here unchanged from callable.ts
- * (the header and Google helpers it uses stay there, tested from there); the
- * schema is the connector's getConfigSchema().
+ * (the header and Google helpers it uses stay there, tested from there). The
+ * schema and Test (custom-api-test.ts) came from the deleted
+ * `connectors/custom_api/`: `connection` makes the type creatable and
+ * testable from the form without it (profile-connector.ts).
+ *
+ * Called, never synced. Workflows (`connection(id)` in lib/mako) and agents
+ * call it through the connection proxy; it has no entities, and a flow never
+ * offers it (connections/kinds.ts).
  */
 import {
   customApiCredentialType,
@@ -18,6 +24,7 @@ import {
   type CallableConnection,
 } from "../callable";
 import { CUSTOM_API_TYPE } from "../kinds";
+import { testCustomApiConnection } from "./custom-api-test";
 import type { CallableProfile } from ".";
 
 /**
@@ -94,6 +101,12 @@ export const customApiProfile: CallableProfile = {
   type: CUSTOM_API_TYPE,
   callable: customApiCallable,
   operations: () => [],
+  connection: {
+    name: "Custom API",
+    description:
+      "Any HTTP or GraphQL API with a stored key, for workflows and agents to call. Never synced.",
+    test: connection => testCustomApiConnection(connection, customApiCallable),
+  },
   configSchema: {
     fields: [
       {

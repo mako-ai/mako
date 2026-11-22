@@ -1,1 +1,0 @@
-export { CustomApiConnector } from "./connector";

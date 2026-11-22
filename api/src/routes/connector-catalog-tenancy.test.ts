@@ -204,3 +204,24 @@ describe("GET /api/connectors/{type}/icon.svg", () => {
     expect(await response.text()).not.toBe(ctx.workspaceIcon);
   });
 });
+
+describe("the Custom API type, kept as a call profile with no connector folder", () => {
+  it("is listed, with its form and its icon", async () => {
+    ctx.signedIn = false;
+    const types = await bodyOf(await get("/types", WS_THEIRS));
+    expect(
+      types.data.find((entry: { type: string }) => entry.type === "custom_api"),
+    ).toMatchObject({ name: "Custom API", supportedEntities: [] });
+
+    const schema = await get("/custom_api/schema", WS_THEIRS);
+    expect(schema.status).toBe(200);
+    expect(
+      (await bodyOf(schema)).data.fields.map((f: { name: string }) => f.name),
+    ).toEqual(expect.arrayContaining(["base_url", "test_path", "test_expect"]));
+
+    const icon = await app.request("/api/connectors/custom_api/icon.svg");
+    expect(icon.status).toBe(200);
+    expect(icon.headers.get("content-type")).toBe("image/svg+xml");
+    expect(await icon.text()).toContain("<svg");
+  });
+});

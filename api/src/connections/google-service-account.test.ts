@@ -18,7 +18,7 @@ import {
   type GoogleTokenRequest,
   type ServiceAccountKey,
 } from "./google-service-account";
-import { CustomApiConnector } from "../connectors/custom_api/connector";
+import { customApiProfile } from "./callable-profiles/custom-api";
 import { isSecretField } from "../connectors/source-connection-create.service";
 import type { ISourceConnection } from "../database/workspace-schema";
 
@@ -326,9 +326,9 @@ describe("what may be saved", () => {
   });
 
   it("stores the key encrypted, and only the app changes who the token is for", () => {
-    const field = CustomApiConnector.getConfigSchema().fields.find(
+    const field = customApiProfile.configSchema.fields.find(
       f => f.name === "service_account_json",
-    );
+    ) as { encrypted?: boolean; type?: string } | undefined;
     expect(field && isSecretField(field)).toBe(true);
     expect(customApi.appOnlyFields).toEqual(
       expect.arrayContaining(["auth_type", "scopes", "subject", "audience"]),
