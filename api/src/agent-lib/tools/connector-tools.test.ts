@@ -208,11 +208,10 @@ describe("vocabulary: connectors are code, connections are credentials", () => {
     const result = (await tools().list_connectors.execute({})) as {
       connectors: Array<Record<string, unknown>>;
     };
-    const claap = result.connectors.find(c => c.connector === "claap");
-    expect(claap).toBeTruthy();
-    expect(claap?.source).toBe("builtin");
-    expect(claap?.entities).toContain("recordings");
-    expect(claap?.connections).toEqual([]);
+    const rest = result.connectors.find(c => c.connector === "rest");
+    expect(rest).toBeTruthy();
+    expect(rest?.source).toBe("builtin");
+    expect(rest?.connections).toEqual([]);
     // The in-process Stripe connector is deleted: fr_stripe is an orphan,
     // and the catalog has no built-in stripe to link it to.
     expect(
@@ -227,15 +226,14 @@ describe("vocabulary: connectors are code, connections are credentials", () => {
 
   it("inspect_connector describes a type; inspect_connection describes a credential", async () => {
     const type = await tools().inspect_connector.execute({
-      connector: "claap",
+      connector: "rest",
     });
-    expect(type.connector).toBe("claap");
-    expect(type.entities).toContain("recordings");
+    expect(type.connector).toBe("rest");
     const fields = type.configFields as Array<{
       name: string;
       secret: boolean;
     }>;
-    expect(fields.some(f => f.name === "api_key" && f.secret)).toBe(true);
+    expect(fields.some(f => f.name === "headers" && f.secret)).toBe(true);
 
     const source = await tools().inspect_connection.execute({
       connectionId: STRIPE.toString(),

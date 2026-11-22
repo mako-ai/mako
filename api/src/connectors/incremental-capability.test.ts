@@ -81,8 +81,6 @@ function testEveryConnectorReturnsWellFormedCapabilities() {
   }
 }
 
-function testCreatedAnchorConnectorsWarnAboutMissedUpdates() {}
-
 function testRestDeclaresClientFilterWithWarning() {
   const rest = capabilitiesFor("rest");
   assert.equal(rest.mode, "client-filter");
@@ -91,7 +89,6 @@ function testRestDeclaresClientFilterWithWarning() {
 
 async function main() {
   testEveryConnectorReturnsWellFormedCapabilities();
-  testCreatedAnchorConnectorsWarnAboutMissedUpdates();
   testRestDeclaresClientFilterWithWarning();
 }
 
