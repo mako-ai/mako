@@ -11,7 +11,7 @@ export async function webhookReceiptIdsReadyToApply(
   const incomplete = await CdcChangeEvent.distinct("webhookEventId", {
     ...scope,
     webhookEventId: { $type: "string", $in: receiptIds.map(String) },
-    materializationStatus: { $in: ["pending", "failed"] },
+    materializationStatus: { $in: ["pending", "failed", "dropped"] },
   });
   const blocked = new Set(incomplete);
   return receiptIds.filter(id => !blocked.has(String(id)));

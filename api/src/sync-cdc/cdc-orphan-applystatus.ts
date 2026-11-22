@@ -10,16 +10,15 @@ const BATCH = 1000;
 const MAX_ITERATIONS = 10_000;
 
 /**
- * Resolves WebhookEvents stuck at applyStatus:"pending" whose CDC events have
- * all reached a terminal state (applied/dropped) or were never created (e.g.
- * deduped at ingest). Such rows can never be flipped by the materializer — no
- * pending CdcChangeEvent references them — so the consumer's syncWebhookApplyStatus
- * never runs and the flow's "pending" count grows forever.
+ * Resolves WebhookEvents stuck at applyStatus:"pending" whose CDC events were
+ * applied or were never created (e.g. deduped at ingest). No pending CDC event
+ * references those receipts, so the consumer never updates them and the
+ * flow's "pending" count grows forever.
  *
  * Cursor-paginates by _id so EVERY stuck row is inspected exactly once (the old
  * single-shot .limit(1000) only ever cleared 1000 per call, which is why the
  * "Reprocess pending events" button appeared to do nothing against a 50k+
- * backlog). A pending or failed CDC sibling keeps the receipt unresolved.
+ * backlog). A pending, failed or dropped CDC sibling blocks an applied outcome.
  */
 export async function resolveOrphanedWebhookApplyStatusForFlow(params: {
   flowId: string;

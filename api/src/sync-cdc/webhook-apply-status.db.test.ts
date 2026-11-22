@@ -151,3 +151,54 @@ it("keeps ordinary orphan reconciliation for a deduplicated inbox", async () => 
     WebhookEvent.findById(receipt._id).lean(),
   ).resolves.toMatchObject({ applyStatus: "applied" });
 });
+
+it("preserves a dropped receipt when only the transcript reaches the destination", async () => {
+  const { scope, applyEvents, materialize, createReceipt } = await setup();
+  const receipt = await createReceipt("recording-disabled-after-intake");
+  const webhookEventId = String(receipt._id);
+  const sourceTs = new Date();
+  await getCdcEventStore().appendEvents({
+    ...scope,
+    events: ["recordings", "recording_transcripts"].map(entity => ({
+      entity,
+      operation: "upsert",
+      recordId: "synthetic-record",
+      payload: { id: "synthetic-record" },
+      source: "webhook",
+      sourceTs,
+      webhookEventId,
+    })),
+  });
+  await Flow.collection.updateOne(
+    { _id: new Types.ObjectId(scope.flowId) },
+    { $set: { entityFilter: ["recording_transcripts"] } },
+  );
+
+  await expect(materialize("recordings")).resolves.toMatchObject({
+    applied: 0,
+    dropped: 1,
+  });
+  expect(applyEvents).not.toHaveBeenCalled();
+  const receiptStatus = async () =>
+    (await WebhookEvent.findById(receipt._id).lean())?.applyStatus;
+  expect(await receiptStatus()).toBe("dropped");
+
+  await expect(materialize("recording_transcripts")).resolves.toMatchObject({
+    applied: 1,
+  });
+  expect(applyEvents).toHaveBeenCalledTimes(1);
+  expect(await receiptStatus()).toBe("dropped");
+  await expect(
+    reconcileWebhookApplyStatus(scope.workspaceId, scope.flowId),
+  ).resolves.toBe(0);
+  expect(await receiptStatus()).toBe("dropped");
+
+  await WebhookEvent.updateOne(
+    { _id: receipt._id },
+    { $set: { applyStatus: "pending" } },
+  );
+  await expect(resolveOrphanedWebhookApplyStatusForFlow(scope)).resolves.toBe(
+    0,
+  );
+  expect(await receiptStatus()).toBe("pending");
+});
