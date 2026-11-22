@@ -96,6 +96,8 @@ vi.mock("./workspace/reconcile.service", () => ({
 
 import { SourceConnection } from "../database/workspace-schema";
 import { requestContextStorage } from "../logging/context";
+import { syncConnectorRegistry } from "../sync/connector-registry";
+import { sourceConnectionManager } from "../sync/database-data-source-manager";
 import {
   PROBE_MAX_LIMIT,
   ProbeError,
@@ -257,8 +259,16 @@ describe("stored Custom API Test identity", () => {
         }),
     );
 
-  it("passes the authenticated actor and stored tenant to the connector", async () => {
+  const storeCustomApi = async (id = mine) => {
     state.dataSourceType = "custom_api";
+    await SourceConnection.updateOne(
+      { _id: id },
+      { $set: { type: "custom_api" } },
+    );
+  };
+
+  it("passes the authenticated actor and stored tenant to the connector", async () => {
+    await storeCustomApi();
     const check = vi.spyOn(fake, "testConnection");
     const response = await request(mine.toString(), "u1");
     expect(response.status).toBe(200);
@@ -266,18 +276,81 @@ describe("stored Custom API Test identity", () => {
       actor: "user:u1",
       workspaceId: WS.toString(),
       connectionId: mine.toString(),
+      configRevision: 0,
     });
   });
 
+  it("rejects an intervening saved config edit before running Test", async () => {
+    await storeCustomApi();
+    const connection = { _id: mine, workspaceId: WS };
+    const check = vi.spyOn(fake, "testConnection");
+    vi.mocked(syncConnectorRegistry.getConnectorFor).mockImplementationOnce(
+      async () => {
+        await SourceConnection.updateOne(connection, {
+          $set: { "config.test_path": "/new-status" },
+          $inc: { configRevision: 1 },
+        });
+        return fake;
+      },
+    );
+
+    const stale = await request(mine.toString(), "u1");
+    expect(stale.status).toBe(409);
+    expect(check).not.toHaveBeenCalled();
+
+    expect((await request(mine.toString(), "u1")).status).toBe(200);
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(check).toHaveBeenCalledWith({
+      actor: "user:u1",
+      workspaceId: WS.toString(),
+      connectionId: mine.toString(),
+      configRevision: 1,
+    });
+  });
+
+  it("refuses to load a newer saved configuration under the older Test revision", async () => {
+    await storeCustomApi();
+    const check = vi.spyOn(fake, "testConnection");
+    const { SourceConnectionManager } = await vi.importActual<
+      typeof import("../sync/database-data-source-manager")
+    >("../sync/database-data-source-manager");
+    const manager = new SourceConnectionManager();
+    Object.defineProperty(manager, "getDb", {
+      value: async () => mongoose.connection.db,
+    });
+    vi.mocked(
+      sourceConnectionManager.getSourceConnection,
+    ).mockImplementationOnce(async (id, workspaceId, expected) => {
+      await SourceConnection.updateOne(
+        { _id: mine, workspaceId: WS },
+        {
+          $set: { "config.test_path": "/new-status" },
+          $inc: { configRevision: 1 },
+        },
+      );
+      expect(expected).toEqual({ type: "custom_api", configRevision: 0 });
+      return manager.getSourceConnection(id, workspaceId, expected);
+    });
+    const stale = await request(mine.toString(), "u1");
+    expect(stale.status).toBe(409);
+    expect(check).not.toHaveBeenCalled();
+    await expect(
+      manager.getSourceConnection(mine.toString(), WS.toString(), {
+        type: "custom_api",
+        configRevision: 1,
+      }),
+    ).resolves.toMatchObject({ connection: { test_path: "/new-status" } });
+  });
+
   it("refuses a Custom API Test without an actor", async () => {
-    state.dataSourceType = "custom_api";
+    await storeCustomApi();
     const check = vi.spyOn(fake, "testConnection");
     expect((await request(mine.toString())).status).toBe(401);
     expect(check).not.toHaveBeenCalled();
   });
 
   it("refuses another tenant's connection before checking", async () => {
-    state.dataSourceType = "custom_api";
+    await storeCustomApi(theirs);
     const check = vi.spyOn(fake, "testConnection");
     expect((await request(theirs.toString(), "u1")).status).toBe(404);
     expect(check).not.toHaveBeenCalled();
@@ -309,6 +382,7 @@ describe("stored Custom API Test identity", () => {
           actor: "user:u1",
           workspaceId: WS_THEIRS.toString(),
           connectionId: mine.toString(),
+          configRevision: 0,
         },
       }),
     ).rejects.toThrow(/identity/);
@@ -321,6 +395,7 @@ describe("stored Custom API Test identity", () => {
           actor: "",
           workspaceId: WS.toString(),
           connectionId: mine.toString(),
+          configRevision: 0,
         },
       }),
     ).rejects.toThrow(/identity/);
@@ -333,6 +408,7 @@ describe("stored Custom API Test identity", () => {
           actor: "user:u1",
           workspaceId: WS.toString(),
           connectionId: theirs.toString(),
+          configRevision: 0,
         },
       }),
     ).rejects.toThrow(/identity/);

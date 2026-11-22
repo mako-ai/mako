@@ -5,6 +5,7 @@ import { syncConnectorRegistry } from "./connector-registry";
 import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { loggers } from "../logging";
+import { sourceConfigRevisionMatch } from "../database/models/source-connections";
 
 dotenv.config({ quiet: true });
 
@@ -45,6 +46,11 @@ export interface SourceConnectionConfig {
     max_retries?: number;
     timeout_ms?: number;
   };
+}
+
+interface SourceConnectionRevision {
+  type: string;
+  configRevision: number;
 }
 
 class SourceConnectionManager {
@@ -181,11 +187,13 @@ class SourceConnectionManager {
   async getSourceConnection(
     id: string,
     workspaceId?: string,
+    expected?: SourceConnectionRevision,
   ): Promise<SourceConnectionConfig | null> {
     if (!ObjectId.isValid(id)) return null;
     if (workspaceId !== undefined && !ObjectId.isValid(workspaceId)) {
       return null;
     }
+    if (expected && workspaceId === undefined) return null;
     const source = await (
       await this.connectors()
     ).findOne({
@@ -193,6 +201,10 @@ class SourceConnectionManager {
       ...(workspaceId !== undefined
         ? { workspaceId: new ObjectId(workspaceId) }
         : {}),
+      ...(expected && {
+        type: expected.type,
+        configRevision: sourceConfigRevisionMatch(expected.configRevision),
+      }),
     });
     return source ? this.toConfig(source) : null;
   }
@@ -384,8 +396,16 @@ function proxyManager() {
         workspaceId,
       );
     },
-    async getSourceConnection(id: string, workspaceId?: string) {
-      return getSourceConnectionManager().getSourceConnection(id, workspaceId);
+    async getSourceConnection(
+      id: string,
+      workspaceId?: string,
+      expected?: SourceConnectionRevision,
+    ) {
+      return getSourceConnectionManager().getSourceConnection(
+        id,
+        workspaceId,
+        expected,
+      );
     },
     async getSourceConnectionsByType(type: string) {
       return getSourceConnectionManager().getSourceConnectionsByType(type);

@@ -52,7 +52,11 @@ import {
   slugFromType,
 } from "./workspace/SandboxedConnector";
 import { recordConnectionCheck } from "./workspace/reconcile.service";
-import { SourceConnection } from "../database/workspace-schema";
+import {
+  SourceConnection,
+  sourceConfigRevisionMatch,
+} from "../database/workspace-schema";
+import { CUSTOM_API_TYPE } from "../connections/kinds";
 import { actingPrincipal } from "../access/connection-writes";
 import {
   mayChangeSourceConnection,
@@ -84,6 +88,7 @@ export const PROBE_TIMEOUT_MS = 90_000;
 export type ProbeErrorCode =
   | "invalid_input"
   | "not_found"
+  | "connection_changed"
   | "connector_unavailable"
   | "unknown_entity"
   | "forbidden"
@@ -101,7 +106,7 @@ export class ProbeError extends Error {
   }
 
   /** HTTP status the REST route answers with. */
-  get status(): 400 | 403 | 404 | 500 | 503 | 504 {
+  get status(): 400 | 403 | 404 | 409 | 500 | 503 | 504 {
     switch (this.code) {
       case "invalid_input":
       case "unknown_entity":
@@ -110,6 +115,8 @@ export class ProbeError extends Error {
         return 403;
       case "not_found":
         return 404;
+      case "connection_changed":
+        return 409;
       case "timeout":
         return 504;
       case "box_busy":
@@ -196,7 +203,10 @@ export async function runConnectionCheck(input: {
     (!testContext.actor ||
       testContext.workspaceId !== workspaceId ||
       sourceConnection.workspaceId !== workspaceId ||
-      testContext.connectionId !== sourceConnection.id)
+      testContext.connectionId !== sourceConnection.id ||
+      sourceConnection.type !== CUSTOM_API_TYPE ||
+      !Number.isSafeInteger(testContext.configRevision) ||
+      testContext.configRevision < 0)
   ) {
     throw new Error(
       "Connection Test identity does not match the stored connection",
@@ -210,6 +220,20 @@ export async function runConnectionCheck(input: {
       ? await connector.sourceShaForConnectionCheck()
       : undefined;
 
+  if (
+    testContext &&
+    !(await SourceConnection.exists({
+      _id: testContext.connectionId,
+      workspaceId: testContext.workspaceId,
+      type: CUSTOM_API_TYPE,
+      configRevision: sourceConfigRevisionMatch(testContext.configRevision),
+    }))
+  ) {
+    throw new ProbeError(
+      "connection_changed",
+      "Connection changed. Refresh and try again.",
+    );
+  }
   const result = testContext
     ? await connector.testConnection(testContext)
     : await connector.testConnection();

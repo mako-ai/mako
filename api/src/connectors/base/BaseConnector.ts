@@ -20,6 +20,7 @@ export interface ConnectionTestContext {
   actor: string;
   workspaceId: string;
   connectionId: string;
+  configRevision: number;
 }
 
 // Callback types for streaming data

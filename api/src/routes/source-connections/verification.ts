@@ -53,32 +53,38 @@ sourceConnectionVerificationRoutes.openapi(
       // now that the outcome is recorded, write to another's index row.
       const ownershipCheck = await SourceConnection.findOne(
         { _id: id, workspaceId },
-        { _id: 1 },
+        { _id: 1, type: 1, configRevision: 1 },
       ).lean();
       if (!ownershipCheck) {
         return fail(c, 404, "Source connection not found in this workspace");
       }
 
-      // Use manager to load decrypted configuration before testing
-      const ds = await sourceConnectionManager.getSourceConnection(
-        id,
-        workspaceId,
-      );
-
-      if (!ds) {
-        return fail(c, 404, "Source connection not found");
-      }
-
-      // The stored Custom API Test carries the authenticated actor into the
-      // check. Background probes and other connector types keep their existing
-      // execution path.
-      const actor = ds.type === CUSTOM_API_TYPE ? actingPrincipal() : undefined;
-      if (ds.type === CUSTOM_API_TYPE && !actor) {
+      const savedCustomApi = ownershipCheck.type === CUSTOM_API_TYPE;
+      const actor = savedCustomApi ? actingPrincipal() : undefined;
+      if (savedCustomApi && !actor) {
         return fail(
           c,
           401,
           "An authenticated actor is required to test this connection",
         );
+      }
+      const configRevision = ownershipCheck.configRevision ?? 0;
+      // Bind the decrypted config to the same stored revision as the actor's
+      // Test. A change while setting up the connector is checked again below.
+      const ds = savedCustomApi
+        ? await sourceConnectionManager.getSourceConnection(id, workspaceId, {
+            type: CUSTOM_API_TYPE,
+            configRevision,
+          })
+        : await sourceConnectionManager.getSourceConnection(id, workspaceId);
+
+      if (savedCustomApi !== (ds?.type === CUSTOM_API_TYPE)) {
+        return fail(c, 409, "Connection changed. Refresh and try again.", {
+          code: "connection_changed",
+        });
+      }
+      if (!ds) {
+        return fail(c, 404, "Source connection not found");
       }
 
       // Get connector and test connection
@@ -104,6 +110,7 @@ sourceConnectionVerificationRoutes.openapi(
                 actor,
                 workspaceId: checkWorkspaceId,
                 connectionId: ds.id,
+                configRevision,
               },
             }
           : {}),
@@ -114,6 +121,9 @@ sourceConnectionVerificationRoutes.openapi(
         data: result,
       });
     } catch (error) {
+      if (error instanceof ProbeError && error.code === "connection_changed") {
+        return fail(c, error.status, error.message, { code: error.code });
+      }
       // The connector box is full: nothing ran, so this is no failed check.
       const busy = boxBusyProbeError(error);
       if (busy) return fail(c, busy.status, busy.message, { code: busy.code });
