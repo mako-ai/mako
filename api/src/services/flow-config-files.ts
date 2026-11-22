@@ -29,6 +29,7 @@
  * it is not yet a trust boundary — block 3 hardens validation before
  * flipping direction.
  */
+import { isDeepStrictEqual } from "node:util";
 import * as yaml from "js-yaml";
 import { loadYaml } from "../utils/yaml";
 
@@ -247,12 +248,66 @@ export function flowDefinitionMeanings(
   a: FlowFile,
   b: FlowFile,
 ): [Record<string, unknown>, Record<string, unknown>] {
+  if (a.source.type === "connector" && b.source.type === "connector") {
+    return [connectorDriftMeaning(a), connectorDriftMeaning(b)];
+  }
   const inScope = (f: FlowFile) =>
     f.source.type === "database" &&
     f.sync.mode === "full" &&
     f.sync.writeMode === "overwrite";
   if (!inScope(a) || !inScope(b)) return [flowMeaning(a), flowMeaning(b)];
   return [driftMeaning(a), driftMeaning(b)];
+}
+
+function connectorDriftMeaning(f: FlowFile): Record<string, unknown> {
+  const original = f.destination.table;
+  const table = original && { ...original };
+  if (
+    table &&
+    isDeepStrictEqual(table.clustering, { enabled: false, fields: [] })
+  ) {
+    delete table.clustering;
+  }
+  if (
+    table &&
+    isDeepStrictEqual(table.partitioning, {
+      enabled: false,
+      requirePartitionFilter: false,
+    })
+  ) {
+    delete table.partitioning;
+  }
+  const queries = f.queries?.map(query => {
+    if (!query || typeof query !== "object" || Array.isArray(query)) {
+      return query;
+    }
+    const normalized = { ...query };
+    // FlowSchema gives each query an ObjectId and casts both batch-size aliases to Number.
+    if (
+      typeof normalized._id === "string" &&
+      /^[a-f0-9]{24}$/i.test(normalized._id)
+    ) {
+      delete normalized._id;
+    }
+    for (const key of ["batch_size", "batchSize"]) {
+      const value = normalized[key];
+      if (
+        typeof value === "string" &&
+        /^[1-9]\d*$/.test(value) &&
+        Number.isSafeInteger(Number(value))
+      ) {
+        normalized[key] = Number(value);
+      }
+    }
+    return normalized;
+  });
+  return flowMeaning({
+    ...f,
+    // flowToFile omits webhookEnabled on rows with inbound delivery off.
+    webhookEnabled: f.webhookEnabled === false ? undefined : f.webhookEnabled,
+    destination: { ...f.destination, table },
+    queries,
+  });
 }
 
 /** Drift-only normalization. Keep the write-through comparator conservative. */

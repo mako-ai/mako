@@ -695,3 +695,74 @@ type_coercions:
   };
   assert.ok(!sameFlowMeaning(fromFile, changed), "a layout change is drift");
 }
+
+// Connector status compares the file to the stored row, including the defaults
+// and query subdocument IDs Mongoose adds. Only the status comparison relaxes them.
+{
+  const file = parseFlowFile(
+    [
+      "name: boxed reader",
+      "source: {type: connector, connection_id: c1}",
+      "destination: {connection_id: d1, table: {schema: reporting}}",
+      "live: {webhook: 'off'}",
+      "queries:",
+      "  - {name: homes, query: homes, batch_size: '1000'}",
+      "  - {name: sales, query: sales, batchSize: '20'}",
+    ].join("\n"),
+  )!;
+  const row = {
+    ...file,
+    queries: file.queries!.map((q, i) => ({
+      ...q,
+      _id: new Types.ObjectId().toHexString(),
+      [i === 0 ? "batch_size" : "batchSize"]: i === 0 ? 1000 : 20,
+    })),
+    webhookEnabled: undefined,
+    destination: {
+      ...file.destination,
+      table: {
+        ...file.destination.table,
+        partitioning: { enabled: false, requirePartitionFilter: false },
+        clustering: { enabled: false, fields: [] },
+      },
+    },
+  };
+  const equal = (a: typeof file, b: typeof file) => {
+    const [left, right] = flowDefinitionMeanings(a, b);
+    return JSON.stringify(left) === JSON.stringify(right);
+  };
+  const snapshot = JSON.stringify(row);
+  assert.ok(equal(file, row));
+  assert.equal(JSON.stringify(row), snapshot);
+  assert.ok(!sameFlowMeaning(file, row));
+  for (const next of [
+    { ...row, webhookEnabled: true },
+    { ...row, webhookProviderId: "another-provider" },
+    { ...row, queries: [...row.queries].reverse() },
+    ...[
+      { batch_size: 999 },
+      { query: "other query" },
+      { variables: { first: 2 } },
+      { batch_size: "1e3" },
+      { _id: "invalid" },
+    ].map(change => ({
+      ...row,
+      queries: [{ ...row.queries[0], ...change }, row.queries[1]],
+    })),
+    ...[
+      { partitioning: { enabled: true } },
+      { partitioning: { enabled: false, requirePartitionFilter: true } },
+      { partitioning: { enabled: false, field: "day" } },
+      { clustering: { enabled: true, fields: [] } },
+      { clustering: { enabled: false, fields: ["id"] } },
+    ].map(change => ({
+      ...row,
+      destination: {
+        ...row.destination,
+        table: { ...row.destination.table, ...change },
+      },
+    })),
+  ]) {
+    assert.ok(!equal(file, next));
+  }
+}
