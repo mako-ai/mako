@@ -19,6 +19,7 @@ import {
 } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import { createServerConsoleTools } from "../agent-lib/tools/server-console-tools";
 import {
   ConsoleFolder,
   EntityVersion,
@@ -42,7 +43,7 @@ import {
   repoDirFor,
   resolveCommit,
 } from "./repository.service";
-import { runGit } from "./git";
+import * as git from "./git";
 import {
   adoptWorkspaceConsoles,
   commitConsoleState,
@@ -58,19 +59,28 @@ import {
 import { ConsoleManager, type ConsoleFile } from "../utils/console-manager";
 import { seedTestConnections } from "./seed-test-connections";
 import { getConsoleWithMetadata } from "../services/consoles/tree";
+import { consoleContent } from "../services/consoles/views";
 import {
   bindTestWorkspaceRepo,
   unbindTestWorkspaceRepo,
 } from "./bind-test-workspace-repo";
 
+const { runGit } = git;
+
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
+let mirror: string;
 
 beforeAll(async () => {
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "apps-consoles-test-"));
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_SANDBOX_PROVIDER = "local";
+  const mirrors = path.join(tmpRoot, "mirrors");
+  vi.stubEnv("APPS_GITHUB_REMOTE_BASE", `file://${mirrors}`);
+  mirror = path.join(mirrors, "test-owner", "test-repo.git");
+  await fs.mkdir(path.dirname(mirror), { recursive: true });
+  await fs.symlink(repoDirFor(WS), mirror);
   delete process.env.OPENAI_API_KEY;
   delete process.env.AI_GATEWAY_API_KEY;
   mongo = await MongoMemoryServer.create();
@@ -78,6 +88,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  vi.unstubAllEnvs();
   await mongoose.disconnect();
   await mongo.stop();
   await fs.rm(tmpRoot, {
@@ -939,6 +950,121 @@ function flattenConsoles(nodes: ConsoleFile[]): ConsoleFile[] {
 }
 
 describe("GET/list from git", () => {
+  it("serves the indexed file on two clones and refuses an unverified mirror read", async () => {
+    const primaryRoot = path.join(tmpRoot, "repos");
+    const primary = repoDirFor(WS);
+    const saved = await manager.saveConsole(
+      "Finance/versioned",
+      "SELECT 1",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const read = () =>
+      createServerConsoleTools({
+        workspaceId: WS,
+        surface: "mcp",
+      }).read_console.execute?.({ consoleId: saved._id.toString() }, {
+        toolCallId: "read",
+        messages: [],
+      } as never);
+    const readEditor = () =>
+      consoleContent({
+        workspaceId: WS,
+        consoleId: saved._id.toString(),
+        userId: USER,
+        memberRole: "owner",
+      });
+    const oldIndex = await SavedConsole.findById(saved._id).orFail();
+    const replicaRoot = await fs.mkdtemp(path.join(tmpRoot, "replica-"));
+    await fs.unlink(mirror);
+    try {
+      await runGit(["clone", "--mirror", primary, mirror]);
+      process.env.APPS_GIT_ROOT = replicaRoot;
+      const replica = repoDirFor(WS);
+      await runGit(["clone", "--mirror", mirror, replica]);
+      const originalCommit = await resolveCommit(replica, MAIN);
+      expect(await read()).toMatchObject({
+        success: true,
+        content: expect.stringContaining("SELECT 1"),
+      });
+
+      process.env.APPS_GIT_ROOT = primaryRoot;
+      const edited = "SELECT 2 -- newer version";
+      const file = "consoles/Finance/versioned.sql";
+      await externalCommit({ [file]: edited + "\n" });
+      await runGit(["-C", primary, "push", mirror, MAIN]);
+      await syncConsolesIndexFromRepo(WS, USER);
+      const indexed = await SavedConsole.findById(saved._id).orFail();
+      expect(indexed.sourceBlobSha).toBe(blobOid(edited + "\n"));
+
+      process.env.APPS_GIT_ROOT = replicaRoot;
+      // The mirror can advertise main even if fetching that commit fails.
+      const realRunGit = git.runGit;
+      const fetch = vi
+        .spyOn(git, "runGit")
+        .mockImplementation((args, options) =>
+          args.includes("--no-write-fetch-head")
+            ? Promise.reject(new Error("simulated commit fetch failure"))
+            : realRunGit(args, options),
+        );
+      try {
+        expect(await read()).toMatchObject({ success: false });
+        await expect(readEditor()).resolves.toBeNull();
+      } finally {
+        fetch.mockRestore();
+      }
+
+      const current = {
+        success: true,
+        draftRevision: indexed.draftRevision,
+        content: expect.stringContaining(edited),
+      };
+      expect(await read()).toMatchObject(current);
+      expect(await readEditor()).toMatchObject({
+        draftRevision: indexed.draftRevision,
+        content: edited,
+      });
+      expect(await resolveCommit(replica, MAIN)).toBe(originalCommit);
+
+      // The reader must use the same index snapshot for its code and stamp.
+      const oldRead = vi
+        .spyOn(SavedConsole, "findOne")
+        .mockResolvedValueOnce(oldIndex);
+      try {
+        expect(await read()).toMatchObject({ success: false });
+      } finally {
+        oldRead.mockRestore();
+      }
+
+      const offline = mirror + ".offline";
+      await fs.rename(mirror, offline);
+      try {
+        expect(await read()).toMatchObject({ success: false });
+        // Even an instance with matching local content and index cannot claim
+        // that content is current without a successful mirror read.
+        process.env.APPS_GIT_ROOT = primaryRoot;
+        expect(await read()).toMatchObject({ success: false });
+      } finally {
+        await fs.rename(offline, mirror);
+      }
+      expect(await read()).toMatchObject(current);
+
+      // The mirror has another edit while the index still names this revision.
+      await externalCommit({ [file]: "SELECT 3\n" });
+      await runGit(["-C", primary, "push", mirror, MAIN]);
+      expect(await read()).toMatchObject({ success: false });
+      await expect(readEditor()).resolves.toBeNull();
+    } finally {
+      process.env.APPS_GIT_ROOT = primaryRoot;
+      await fs.rm(mirror, { recursive: true, force: true });
+      await fs.symlink(primary, mirror);
+    }
+  });
+
   it("serves the file at main when the Mongo row has no body", async () => {
     const saved = await manager.saveConsole(
       "body-from-git",

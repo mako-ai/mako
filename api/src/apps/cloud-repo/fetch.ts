@@ -86,6 +86,40 @@ async function fetchCommitFromCloud(
   ]);
 }
 
+const currentReadInFlight = new Map<string, Promise<string>>();
+
+/** Pin a current read to the mirror's main. A cache miss fetches only the
+ * observed commit, without moving local main or touching FETCH_HEAD. */
+export function readMirrorMainForCurrentRead(
+  workspaceId: string,
+): Promise<string> {
+  const pending = currentReadInFlight.get(workspaceId);
+  if (pending) return pending;
+  const run = (async () => {
+    const target = await resolveReadableMirrorTarget(workspaceId);
+    if (!target) throw new Error("Workspace repository is unavailable");
+    const token = await tokenFor(target);
+    const { stdout } = await runGit([
+      ...authArgs(token),
+      "ls-remote",
+      remoteUrl(target.owner, target.repo),
+      `refs/heads/${DEFAULT_BRANCH}`,
+    ]);
+    const sha = stdout.trim().split(/\s+/)[0] ?? "";
+    if (!FULL_SHA.test(sha)) throw new Error("Workspace main is unavailable");
+    const repoDir = repoDirFor(workspaceId);
+    if (!(await commitPresent(repoDir, sha))) {
+      await fetchCommitFromCloud(workspaceId, sha);
+      if (!(await commitPresent(repoDir, sha))) {
+        throw new Error("Workspace main commit is unavailable");
+      }
+    }
+    return sha;
+  })().finally(() => currentReadInFlight.delete(workspaceId));
+  currentReadInFlight.set(workspaceId, run);
+  return run;
+}
+
 export async function ensureCommitLocally(
   workspaceId: string,
   sha: string,

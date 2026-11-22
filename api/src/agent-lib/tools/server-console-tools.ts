@@ -189,7 +189,7 @@ export function createServerConsoleTools({
     }
     // Git is the definition: the agent edits and runs the file at main, not
     // the row's last pushed copy.
-    const liveCode = await liveConsoleCode(workspaceId, consoleId);
+    const liveCode = await liveConsoleCode(doc);
     if (liveCode) doc.code = liveCode.code;
     return { doc };
   };

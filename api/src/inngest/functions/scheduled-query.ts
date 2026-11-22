@@ -48,7 +48,7 @@ export async function loadScheduledConsole(
   }) as ISavedConsole;
   // Git is the definition: run the file at main, not the row's last
   // pushed copy.
-  const liveCode = await liveConsoleCode(workspaceId, consoleId);
+  const liveCode = await liveConsoleCode(savedConsoleDoc);
   if (liveCode) savedConsole.code = liveCode.code;
 
   if (!savedConsole.connectionId) {

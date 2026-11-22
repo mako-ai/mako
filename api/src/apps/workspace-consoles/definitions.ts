@@ -14,6 +14,7 @@ import {
 import type { OwnerDirectory } from "../user-handles";
 import { loadOwnerDirectory } from "../user-handles.service";
 import { boundRepoDirIfExists } from "../workspace-repo-required";
+import { readMirrorMainForCurrentRead } from "../cloud-repo/fetch";
 import {
   chartSidecarPath,
   parseChartSpec,
@@ -57,6 +58,13 @@ export interface LiveConsole extends ConsoleDefinitionAtMain {
   id: Types.ObjectId;
 }
 
+class ConsoleSourceUnavailableError extends Error {
+  constructor() {
+    super("The current saved console is unavailable. Please try again.");
+    this.name = "ConsoleSourceUnavailableError";
+  }
+}
+
 /** Fill in each private definition's owner from the handle mapping. */
 function resolveDefinitionOwners(
   defs: ConsoleDefinitionAtMain[],
@@ -98,6 +106,14 @@ export async function listConsoleDefinitionsAtMain(
   if (repoDir == null) return [];
   const sha = await resolveCommit(repoDir, MAIN);
   if (!sha) return [];
+  return listConsoleDefinitionsAtCommit(workspaceId, repoDir, sha);
+}
+
+async function listConsoleDefinitionsAtCommit(
+  workspaceId: string,
+  repoDir: string,
+  sha: string,
+): Promise<ConsoleDefinitionAtMain[]> {
   const directory = await loadOwnerDirectory(workspaceId);
   const cached = consoleDefCache.get(workspaceId);
   if (cached && cached.sha === sha) {
@@ -236,11 +252,19 @@ export async function loadLiveConsoles(
  * stale until the webhook landed.
  */
 export async function liveConsoleCode(
-  workspaceId: string,
-  consoleId: string,
+  row: ISavedConsole,
 ): Promise<{ code: string; language: ConsoleLanguage; path: string } | null> {
-  const hit = await loadLiveConsoleById(workspaceId, consoleId);
-  if (!hit || !("live" in hit)) return null;
+  const hit = await loadConsoleForRow(
+    String(row.workspaceId),
+    String(row._id),
+    row,
+  );
+  if (!hit || !("live" in hit)) {
+    if (row.isSaved !== false && row.path && row.sourceBlobSha) {
+      throw new ConsoleSourceUnavailableError();
+    }
+    return null;
+  }
   return {
     code: hit.live.parsed.code,
     language: hit.live.location.language,
@@ -255,18 +279,53 @@ export async function liveConsoleCode(
 export async function loadLiveConsoleById(
   workspaceId: string,
   consoleId: string,
-): Promise<{ draft: ISavedConsole } | { live: LiveConsole } | null> {
+): Promise<ConsoleLookup> {
   if (!Types.ObjectId.isValid(consoleId)) return null;
   const row = await SavedConsole.findOne({
     _id: new Types.ObjectId(consoleId),
     workspaceId: new Types.ObjectId(workspaceId),
   });
+  return loadConsoleForRow(workspaceId, consoleId, row);
+}
+
+type ConsoleLookup = { draft: ISavedConsole } | { live: LiveConsole } | null;
+
+async function loadConsoleForRow(
+  workspaceId: string,
+  consoleId: string,
+  row: ISavedConsole | null,
+): Promise<ConsoleLookup> {
   if (row && row.isSaved === false) return { draft: row };
 
-  const repoDir = await boundRepoDirIfExists(workspaceId);
+  const repoDir = await boundRepoDirIfExists(workspaceId).catch(error => {
+    if (row?.path && row.sourceBlobSha) {
+      throw new ConsoleSourceUnavailableError();
+    }
+    throw error;
+  });
   if (repoDir == null) return null;
 
   if (row?.path) {
+    if (row.sourceBlobSha) {
+      // The index supplies ACL, connection and revision metadata. Pair it
+      // only with the exact blob verified at the mirror's current commit.
+      try {
+        const sha = await readMirrorMainForCurrentRead(workspaceId);
+        const defs = await listConsoleDefinitionsAtCommit(
+          workspaceId,
+          repoDir,
+          sha,
+        );
+        const def = defs.find(item => item.path === row.path);
+        if (def?.oid === row.sourceBlobSha) {
+          return { live: { ...def, row, id: row._id } };
+        }
+      } catch {
+        // Git errors can include authenticated arguments. Report the
+        // unavailable read without returning the underlying command.
+      }
+      throw new ConsoleSourceUnavailableError();
+    }
     const def = await readConsoleDefinitionAtMain(workspaceId, row.path);
     if (!def) return null;
     return { live: { ...def, row, id: row._id } };

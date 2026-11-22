@@ -119,10 +119,7 @@ export async function executeConsoleRequest(input: {
 
     // Git is the definition: run the file at main, not the row's last
     // pushed copy (a query edited in git ran stale until the webhook).
-    const liveCode = await liveConsoleCode(
-      workspaceId,
-      consoleIdParsed.toString(),
-    );
+    const liveCode = await liveConsoleCode(savedConsole);
     if (liveCode) savedConsole.code = liveCode.code;
 
     // If console has a connection ID, verify it exists and belongs to workspace
