@@ -10,7 +10,8 @@
  *
  * Mapping is the in-process connector's (`webhooks.ts` here, parity-tested):
  * the record is `event.data.object`, its id the object's id, its change id
- * the event id, its time the object's `created`.
+ * the event id. Payment methods use the event's `created` when valid.
+ * Other records and the fallback use the object's timestamp.
  *
  * A record is never answered partial, because a missing column is written
  * as NULL:
@@ -21,9 +22,9 @@
  *   object (`related_object`), gets one GET of that object. The fetched
  *   object is the row, over the event's keys. It is at least as new as the
  *   event, so a fill that runs late (deferred, retried) never writes stale
- *   values over a newer event's row. A Stripe row's time is its `created`,
- *   which never moves, so the last write wins. A column the object omits
- *   too is NULL, as a backfill stores it.
+ *   values over a newer event's row. Payment methods keep their event time
+ *   through the fill. Rows with an unchanged object clock use last-write
+ *   ordering. A column the object omits too is NULL, as a backfill stores it.
  * - 404 (deleted since): the record is dropped and the event `skipped`.
  *   Its delete event follows.
  * - Fill budget spent, 429, 5xx or no answer: the event is `deferred`.
@@ -51,6 +52,7 @@ import {
   type EmbeddedChildEntity,
 } from "./lists.ts";
 import {
+  stripeEventCreatedAt,
   stripeRecordTimestamp,
   stripeSupportedWebhookEvents,
   stripeWebhookEventMapping,
@@ -196,12 +198,16 @@ export function stripeChangeRecord(
   const related = isObject(raw.related_object) ? raw.related_object : null;
   const changeId =
     typeof raw.id === "string" && raw.id ? raw.id : event.eventId;
+  const eventSourceTs =
+    mapping.entity === "payment_methods"
+      ? stripeEventCreatedAt(raw.created)?.toISOString()
+      : undefined;
 
   if (object) {
     if (object.id === undefined || object.id === null || object.id === "") {
       return null;
     }
-    const sourceTs = stripeRecordTimestamp(object);
+    const sourceTs = eventSourceTs ?? stripeRecordTimestamp(object);
     return {
       thin: false,
       record: {
@@ -222,6 +228,7 @@ export function stripeChangeRecord(
         recordId: related.id,
         operation: mapping.operation,
         payload: { id: related.id },
+        ...(eventSourceTs ? { sourceTs: eventSourceTs } : {}),
         changeId,
       },
     };

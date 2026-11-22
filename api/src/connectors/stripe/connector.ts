@@ -29,6 +29,7 @@ import {
 import {
   createStripeWebhookEndpoint,
   resolveStripeProvisionEvents,
+  stripeEventCreatedAt,
   stripeSupportedWebhookEvents,
   stripeWebhookEventMapping,
   stripeWebhookEventsForEntities,
@@ -437,6 +438,22 @@ export class StripeConnector extends BaseConnector {
 
   getSupportedWebhookEvents(): string[] {
     return stripeSupportedWebhookEvents();
+  }
+
+  extractWebhookCdcRecords(
+    event: unknown,
+    eventType?: string,
+  ): NormalizedCdcRecord[] {
+    const records = super.extractWebhookCdcRecords(event, eventType);
+    if (records[0]?.entity !== "payment_methods") return records;
+
+    // Attachments and detaches can change a method long after its creation.
+    const sourceTs = stripeEventCreatedAt(
+      (event as { created?: unknown } | null)?.created,
+    );
+    return sourceTs
+      ? records.map(record => ({ ...record, sourceTs }))
+      : records;
   }
 
   /**

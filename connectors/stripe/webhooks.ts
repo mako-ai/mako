@@ -160,6 +160,33 @@ export function stripeSupportedWebhookEvents(): string[] {
   return EVENTS.map(([event]) => event);
 }
 
+/** Stripe sends Unix seconds in snapshot events and ISO timestamps in thin events. */
+export function stripeEventCreatedAt(created: unknown): Date | null {
+  let date: Date;
+  if (typeof created === "number" && Number.isInteger(created)) {
+    date = new Date(created * 1000);
+  } else if (
+    typeof created === "string" &&
+    /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(
+      created,
+    )
+  ) {
+    const day = created.slice(0, 10);
+    const midnight = new Date(`${day}T00:00:00Z`);
+    if (
+      Number.isNaN(midnight.getTime()) ||
+      midnight.toISOString().slice(0, 10) !== day
+    ) {
+      return null;
+    }
+    date = new Date(created);
+  } else {
+    return null;
+  }
+  // Limit the clock to positive timestamps BigQuery can store.
+  return date.getTime() > 0 && date.getUTCFullYear() <= 9999 ? date : null;
+}
+
 /**
  * A row's change time, as the in-process `resolveRecordTimestamp`: the first
  * Unix-seconds epoch of `created`, `start_date`, `updated` (milliseconds are

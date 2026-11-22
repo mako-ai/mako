@@ -35,6 +35,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { DuckDBInstance } from "@duckdb/node-api";
 import Stripe from "stripe";
 import { SandboxedConnector } from "../workspace/SandboxedConnector";
 import type { LoadedConnector } from "../workspace/resolver";
@@ -53,6 +54,7 @@ import {
   buildWebhookCdcRecords,
   shapeWebhookCdcRecords,
 } from "../../inngest/functions/webhook-flow";
+import { buildMergeStatement } from "../../sync-cdc/adapters/bigquery-sql";
 import {
   FOLDER,
   RUNNER,
@@ -508,6 +510,13 @@ void test("every event type applies the same rows on both paths, with no request
       event.eventType,
     );
     assert.equal(rows[i]![0].entity, entity);
+    if (entity === "payment_methods") {
+      assert.equal(
+        rows[i]![0].sourceTs.toISOString(),
+        new Date(event.rawPayload.created * 1000).toISOString(),
+        event.eventType,
+      );
+    }
     children += expected - 1;
     compared++;
   }
@@ -550,6 +559,10 @@ void test("a voided invoice lands as void and a detached payment method with no 
   assert.equal(voided.recordId, invoice.id);
   assert.equal(voided.operation, "upsert");
   assert.equal(voided.payload.status, "void");
+  assert.equal(
+    voided.sourceTs.toISOString(),
+    new Date(invoice.created * 1000).toISOString(),
+  );
   const [detached] = rows[1]!;
   assert.equal(detached.entity, "payment_methods");
   assert.equal(detached.recordId, card.id);
@@ -559,6 +572,170 @@ void test("a voided invoice lands as void and a detached payment method with no 
   assert.ok(detached.payload.card, "the card details stay on the row");
   // A detached method keeps every list column: no fill request.
   assert.deepEqual(requests, []);
+});
+
+void test("payment-method changes use event time for the strict live MERGE", async () => {
+  const card = wholeRows().payment_methods.find(row => row.type === "card");
+  assert.ok(card);
+  const storedAt = SENT_AT - 60;
+  const attachedAt = SENT_AT - 120;
+  assert.ok(card.created < attachedAt);
+  const events = buildWebhookEvents(
+    ["payment_method.detached", "payment_method.attached"],
+    { payment_methods: [{ ...card, customer: null }, card] },
+  );
+  events[1].rawPayload.created = attachedAt;
+  const endpoint = `/v1/payment_methods/${card.id}`;
+  objects.set(endpoint, { ...card, customer: null });
+  const thin = {
+    ...events[0],
+    eventId: "evt_thin_detach",
+    rawPayload: {
+      id: "evt_thin_detach",
+      object: "v2.core.event",
+      type: events[0].eventType,
+      created: new Date(SENT_AT * 1000).toISOString(),
+      related_object: { id: card.id },
+    },
+  };
+  requests.length = 0;
+  const { rows } = await folderRows([...events, thin]);
+  assert.deepEqual(requests, [`GET ${endpoint}`]);
+  const connector = builtIn();
+  const native = await Promise.all(
+    events.map(webhookEvent =>
+      buildWebhookCdcRecords({
+        connector,
+        sourceConnection: SOURCE,
+        flow: {} as never,
+        webhookEvent,
+      }),
+    ),
+  );
+  assert.deepEqual(
+    rows.slice(0, 2).map(records => records?.map(comparable)),
+    native.map(result => result.records.map(comparable)),
+  );
+  const [detached, attached, thinDetached] = rows.map(records => records![0]);
+  assert.equal(
+    detached.sourceTs.toISOString(),
+    new Date(SENT_AT * 1000).toISOString(),
+  );
+  assert.equal(
+    attached.sourceTs.toISOString(),
+    new Date(attachedAt * 1000).toISOString(),
+  );
+  assert.equal(
+    thinDetached.sourceTs.toISOString(),
+    detached.sourceTs.toISOString(),
+  );
+  assert.equal(thinDetached.payload.customer, null);
+
+  const columns = ["id", "customer", "_mako_source_ts"];
+  const merge = buildMergeStatement({
+    fullLive: "live_methods",
+    fullStaging: "staged_methods",
+    columns,
+    keyColumns: ["id"],
+    stagingCols: new Set(columns),
+    liveTypes: new Map([
+      ["id", "STRING"],
+      ["customer", "STRING"],
+      ["_mako_source_ts", "TIMESTAMP"],
+    ]),
+  })
+    .replaceAll("`", '"')
+    .replaceAll("SAFE_CAST(", "TRY_CAST(")
+    .replaceAll("TIMESTAMP('", "bq_timestamp('");
+  const instance = await DuckDBInstance.create(":memory:");
+  const db = await instance.connect();
+  try {
+    await db.run("CREATE MACRO bq_timestamp(s) AS CAST(s AS TIMESTAMP)");
+    await db.run(
+      "CREATE TABLE live_methods (id STRING, customer STRING, _mako_source_ts TIMESTAMP)",
+    );
+    await db.run("CREATE TABLE staged_methods AS SELECT * FROM live_methods");
+    const read = async () =>
+      (
+        await db.runAndReadAll(
+          "SELECT customer, epoch(_mako_source_ts) AS clock FROM live_methods",
+        )
+      ).getRowObjects();
+    const apply = async (record: typeof detached) => {
+      const customer = record.payload.customer;
+      assert.ok(typeof customer === "string" || customer === null);
+      await db.run("DELETE FROM staged_methods");
+      await db.run(
+        "INSERT INTO staged_methods VALUES ($1,$2,CAST($3 AS TIMESTAMP))",
+        [record.recordId, customer, record.sourceTs.toISOString()],
+      );
+      await db.run(merge);
+    };
+    for (const change of [detached, thinDetached, native[0].records[0]]) {
+      await db.run("DELETE FROM live_methods");
+      await db.run(
+        "INSERT INTO live_methods VALUES ($1,$2,CAST($3 AS TIMESTAMP))",
+        [card.id, card.customer, new Date(storedAt * 1000).toISOString()],
+      );
+      await apply(attached);
+      assert.deepEqual(await read(), [
+        { customer: card.customer, clock: storedAt },
+      ]);
+      await apply(change);
+      assert.deepEqual(await read(), [{ customer: null, clock: SENT_AT }]);
+      await apply(attached);
+      assert.deepEqual(await read(), [{ customer: null, clock: SENT_AT }]);
+    }
+  } finally {
+    db.closeSync();
+    instance.closeSync();
+  }
+});
+
+void test("payment-method events with no valid created keep the object clock", async () => {
+  const card = wholeRows().payment_methods.find(row => row.type === "card");
+  assert.ok(card);
+  const [snapshot] = buildWebhookEvents(["payment_method.updated"], {
+    payment_methods: [card],
+  });
+  const invalid = [
+    undefined,
+    "not a date",
+    "2026-02-30T00:00:00Z",
+    0,
+    1.5,
+    SENT_AT * 1000,
+  ];
+  const events = invalid.map((created, index) => {
+    const eventId = `${snapshot.eventId}_fallback_${index}`;
+    return {
+      ...snapshot,
+      eventId,
+      rawPayload: { ...snapshot.rawPayload, id: eventId, created },
+    };
+  });
+  const endpoint = `/v1/payment_methods/${card.id}`;
+  objects.set(endpoint, card);
+  const thin = {
+    ...snapshot,
+    eventId: "evt_thin_fallback",
+    rawPayload: { id: "evt_thin_fallback", related_object: { id: card.id } },
+  };
+  requests.length = 0;
+  const { rows } = await folderRows([...events, thin]);
+  assert.deepEqual(requests, [`GET ${endpoint}`]);
+  const objectTime = new Date(card.created * 1000).toISOString();
+  assert.deepEqual(
+    rows.map(records => records?.[0].sourceTs.toISOString()),
+    [...events, thin].map(() => objectTime),
+  );
+  for (const event of events) {
+    const [record] = builtIn().extractWebhookCdcRecords(
+      event.rawPayload,
+      event.eventType,
+    );
+    assert.equal(record.sourceTs.toISOString(), objectTime);
+  }
 });
 
 void test("a partial upsert takes its fetched object, which wins over the event; deletes cost none", async () => {
