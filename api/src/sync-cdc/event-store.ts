@@ -240,7 +240,17 @@ class MongoCdcEventStore implements CdcEventStore {
     const byEntity = new Map<string, CdcAppendEntitySummary>();
     for (const event of params.events) {
       const payload = normalizePayloadKeys(event.payload);
-      const sourceTs = resolveSourceTimestamp(payload, event.sourceTs);
+      const suppliedTime = event.sourceTs;
+      // The webhook clock orders deliveries independently of _syncedAt.
+      const sourceTs =
+        event.source === "webhook" &&
+        suppliedTime instanceof Date &&
+        !Number.isNaN(suppliedTime.getTime())
+          ? suppliedTime
+          : resolveSourceTimestamp(
+              payload,
+              event.source === "backfill" ? suppliedTime : undefined,
+            );
       const ingestSeq = nextSeq++;
       docs.push({
         workspaceId: workspaceObjectId,
