@@ -10,27 +10,37 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  * timestamp, both minus the overlap.
  */
 
-const { maxByColumn, probeError, getMaxTrackingValue, fetchEntityChunk } =
-  vi.hoisted(() => {
-    const maxByColumn: Record<string, string | undefined> = {};
-    // When set, every destination probe fails with this error.
-    const probeError: { value?: string } = {};
-    return {
-      maxByColumn,
-      probeError,
-      getMaxTrackingValue: vi.fn(
-        async (_conn: unknown, _table: string, column: string) =>
-          probeError.value
-            ? { success: false, error: probeError.value }
-            : { success: true, maxValue: maxByColumn[column] },
-      ),
-      fetchEntityChunk: vi.fn(async (_opts: { since?: Date }) => ({
-        totalProcessed: 0,
-        iterationsInChunk: 1,
-        hasMore: false,
-      })),
-    };
-  });
+const {
+  maxByColumn,
+  probeError,
+  getMaxTrackingValue,
+  fetchEntityChunk,
+  adapter,
+} = vi.hoisted(() => {
+  const maxByColumn: Record<string, string | undefined> = {};
+  // When set, every destination probe fails with this error.
+  const probeError: { value?: string } = {};
+  return {
+    maxByColumn,
+    probeError,
+    adapter: {
+      applyBatch: vi.fn(async () => ({ written: 1 })),
+      countLiveRows: vi.fn(),
+      softDeleteRowsNotIn: vi.fn(),
+    },
+    getMaxTrackingValue: vi.fn(
+      async (_conn: unknown, _table: string, column: string) =>
+        probeError.value
+          ? { success: false, error: probeError.value }
+          : { success: true, maxValue: maxByColumn[column] },
+    ),
+    fetchEntityChunk: vi.fn(async (_opts: { since?: Date }) => ({
+      totalProcessed: 0,
+      iterationsInChunk: 1,
+      hasMore: false,
+    })),
+  };
+});
 vi.mock("../services/destination-writer.service", async () => ({
   ...(await vi.importActual<object>("../services/destination-writer.service")),
   getMaxTrackingValue,
@@ -75,6 +85,7 @@ vi.mock("./connector-registry", () => ({
       resolveSchema: async () => null,
       declaresUntypedSchema: async () => true,
       supportsResumableFetching: () => true,
+      getIncrementalCapabilities: () => ({ supported: false, mode: "none" }),
       fetchEntityChunk,
     })),
   },
@@ -84,7 +95,7 @@ vi.mock("../sync-cdc/adapters/registry", async () => {
   const actual = await vi.importActual<
     typeof import("../sync-cdc/adapters/registry")
   >("../sync-cdc/adapters/registry");
-  return { ...actual, resolveCdcDestinationAdapter: vi.fn(() => ({})) };
+  return { ...actual, resolveCdcDestinationAdapter: vi.fn(() => adapter) };
 });
 
 import { performSyncChunk } from "./sync-orchestrator";
@@ -123,6 +134,25 @@ describe("incremental poll anchor", () => {
     maxByColumn._syncedAt = "2026-11-17T14:59:30.000Z";
     maxByColumn._mako_source_ts = "2026-11-17T14:58:00.000Z";
     delete probeError.value;
+  });
+
+  it("never infers a complete snapshot from incremental mode none", async () => {
+    adapter.countLiveRows.mockClear();
+    adapter.softDeleteRowsNotIn.mockClear();
+    fetchEntityChunk.mockImplementationOnce(async (opts: { since?: Date }) => {
+      const onBatch = (opts as { onBatch: (rows: unknown[]) => Promise<void> })
+        .onBatch;
+      await onBatch([{ id: "visible" }]);
+      return { totalProcessed: 1, iterationsInChunk: 1, hasMore: false };
+    });
+    await performSyncChunk({
+      ...pollOptions,
+      flowId: "64b000000000000000000001",
+      deleteMode: "soft",
+      logger,
+    });
+    expect(adapter.countLiveRows).not.toHaveBeenCalled();
+    expect(adapter.softDeleteRowsNotIn).not.toHaveBeenCalled();
   });
 
   it("uses the poll cursor; the destination is only checked for rows", async () => {
