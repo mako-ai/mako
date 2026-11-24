@@ -133,6 +133,14 @@ jobs:
           npm ci --prefix connectors/bigquery --no-audit --no-fund --ignore-scripts
           npm ci --prefix connectors/rest --no-audit --no-fund --ignore-scripts
 
+      # The suites start MongoMemoryServer in several processes at once. On a
+      # fresh runner each one would download mongod and race on the
+      # download's lock file ("Cannot unlock file .../mongodb-binaries/
+      # <version>.lock"); one download first leaves nothing to race for.
+      - name: Download the MongoDB test binary
+        working-directory: api
+        run: node -e "require('mongodb-memory-server').MongoBinary.getPath().then(p => console.log(p))"
+
       - name: App SDK version is published to npm
         if: matrix.suite == 'destinations'
         # Scaffolds depend on `@makoai/app-sdk@^<vendored version>` (from
