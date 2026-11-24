@@ -107,6 +107,21 @@ async function folderEntities(server) {
   return entities;
 }
 
+/** Run `jobs` four at a time, keeping their order in the result. */
+async function pool(jobs, concurrency = 4) {
+  const results = new Array(jobs.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, jobs.length) }, async () => {
+      while (next < jobs.length) {
+        const i = next++;
+        results[i] = await jobs[i]();
+      }
+    }),
+  );
+  return results;
+}
+
 /**
  * Read every entity through the folder on the cassettes, in the three
  * scenarios: { "<entity>.json": text, "<entity>.since.json": text, ... }.
@@ -115,34 +130,44 @@ export async function buildGolden() {
   ensureFolderInstalled();
   const server = await startReplayServer();
   try {
-    const out = {};
-    for (const entity of await folderEntities(server)) {
-      let defaultRows;
-      for (const scenario of GOLDEN_SCENARIOS) {
-        const { rows, chunks } = await readFolder({
-          entity,
-          since: scenario.since,
-          maxIterations: scenario.maxIterations,
-          config: readConfig(
-            `phx_test_golden_${scenario.name}_${entity}`,
-            server,
-            scenario,
-          ),
-        });
-        if (scenario.name === "default") defaultRows = rows;
-        if (
-          scenario.chunks &&
-          canonicalJson(rows) !== canonicalJson(defaultRows)
-        ) {
-          throw new Error(
-            `${entity}: ${scenario.name} rows differ from the default`,
-          );
+    // Each read has its own API key, so the server logs its requests apart.
+    // An entity's scenarios stay in order: the chunked ones compare with the
+    // default rows.
+    const perEntity = await pool(
+      (await folderEntities(server)).map(entity => async () => {
+        const out = [];
+        let defaultRows;
+        for (const scenario of GOLDEN_SCENARIOS) {
+          const { rows, chunks } = await readFolder({
+            entity,
+            since: scenario.since,
+            maxIterations: scenario.maxIterations,
+            config: readConfig(
+              `phx_test_golden_${scenario.name}_${entity}`,
+              server,
+              scenario,
+            ),
+          });
+          if (scenario.name === "default") defaultRows = rows;
+          if (
+            scenario.chunks &&
+            canonicalJson(rows) !== canonicalJson(defaultRows)
+          ) {
+            throw new Error(
+              `${entity}: ${scenario.name} rows differ from the default`,
+            );
+          }
+          out.push([
+            goldenFile(entity, scenario),
+            scenario.chunks
+              ? goldenText({ chunks, rows: rows.length })
+              : goldenText(rows),
+          ]);
         }
-        out[goldenFile(entity, scenario)] = scenario.chunks
-          ? goldenText({ chunks, rows: rows.length })
-          : goldenText(rows);
-      }
-    }
+        return out;
+      }),
+    );
+    const out = Object.fromEntries(perEntity.flat());
     if (server.misses.length > 0) {
       throw new Error(`cassette misses: ${server.misses.join(", ")}`);
     }

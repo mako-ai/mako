@@ -67,6 +67,21 @@ export const goldenText = rows =>
 
 const sha256 = text => crypto.createHash("sha256").update(text).digest("hex");
 
+/** Run `jobs` four at a time, keeping their order in the result. */
+async function pool(jobs, concurrency = 4) {
+  const results = new Array(jobs.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, jobs.length) }, async () => {
+      while (next < jobs.length) {
+        const i = next++;
+        results[i] = await jobs[i]();
+      }
+    }),
+  );
+  return results;
+}
+
 /**
  * Read everything through the folder on the cassettes:
  * { "<relative path>": text }. Throws on a cassette miss.
@@ -91,24 +106,34 @@ export async function buildGolden() {
         },
         ...options,
       });
-    const out = {};
-    for (const entity of entities) {
-      const { rows } = await read("default", entity, { maxIterations: 10 });
-      out[goldenFile(entity)] = goldenText(rows);
-      const chunked = await read("chunked", entity, { maxIterations: 1 });
-      out[`chunked/${goldenFile(entity)}`] = goldenText({
-        rowCount: chunked.rows.length,
-        rowsSha256: sha256(canonicalJson(chunked.rows)),
-        chunks: chunked.chunks,
-      });
-    }
-    for (const entity of SINCE_ENTITIES) {
-      const { rows } = await read("since", entity, {
-        maxIterations: 10,
-        since: SINCE,
-      });
-      out[`since/${goldenFile(entity)}`] = goldenText(rows);
-    }
+    // Each read has its own API key, so the server logs its requests apart.
+    const entityFiles = await pool(
+      entities.map(entity => async () => {
+        const { rows } = await read("default", entity, { maxIterations: 10 });
+        const chunked = await read("chunked", entity, { maxIterations: 1 });
+        return [
+          [goldenFile(entity), goldenText(rows)],
+          [
+            `chunked/${goldenFile(entity)}`,
+            goldenText({
+              rowCount: chunked.rows.length,
+              rowsSha256: sha256(canonicalJson(chunked.rows)),
+              chunks: chunked.chunks,
+            }),
+          ],
+        ];
+      }),
+    );
+    const sinceFiles = await pool(
+      SINCE_ENTITIES.map(entity => async () => {
+        const { rows } = await read("since", entity, {
+          maxIterations: 10,
+          since: SINCE,
+        });
+        return [[`since/${goldenFile(entity)}`, goldenText(rows)]];
+      }),
+    );
+    const out = Object.fromEntries([...entityFiles, ...sinceFiles].flat());
     const subscribed = (await runFolderWebhook({})).events;
     const webhook = await runFolderWebhook({
       events: buildWebhookEvents(subscribed),
