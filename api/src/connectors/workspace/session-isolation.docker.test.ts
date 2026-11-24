@@ -590,8 +590,12 @@ env MAKO_KEY="$key" sleep 600`,
         }
       }
     })();
+    // Batch 2 never comes, so each wait runs to its end: 2 s, not the
+    // 20 s default, keeps the scan inside the waits at a tenth of the time.
     for (let i = 0; i < 5; i++) {
-      expect(await wait(s, 2, 1)).toBe("waiting");
+      expect(marker(await hidden(waitScript(s.id, 2, 1, 2_000)))).toBe(
+        "waiting",
+      );
       await hidden(ackScript(s.id, 1));
     }
     await scan;
