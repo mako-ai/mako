@@ -86,16 +86,19 @@ jobs:
       # Every suite reports, as it did when they ran one after another.
       fail-fast: false
       matrix:
-        # The two longest suites run in shards: tsx by file duration
-        # (api/scripts/tsx-test-durations.json), apps by vitest's --shard.
+        # The three longest suites run in shards: tsx by file duration
+        # (api/scripts/tsx-test-durations.json), apps and dbt by vitest's
+        # --shard.
         include:
           - { suite: tsx, shard: 1/4 }
           - { suite: tsx, shard: 2/4 }
           - { suite: tsx, shard: 3/4 }
           - { suite: tsx, shard: 4/4 }
-          - { suite: apps, shard: 1/2 }
-          - { suite: apps, shard: 2/2 }
-          - { suite: dbt }
+          - { suite: apps, shard: 1/3 }
+          - { suite: apps, shard: 2/3 }
+          - { suite: apps, shard: 3/3 }
+          - { suite: dbt, shard: 1/2 }
+          - { suite: dbt, shard: 2/2 }
           - { suite: destinations }
           - { suite: docker }
     steps:
@@ -186,7 +189,7 @@ jobs:
         # route integration spec, the dbt-* agent tools, and anything else
         # that happens to live under src/dbt. The real-dbt engine contract
         # self-skips without RUN_DBT_ENGINE_CONTRACT.
-        run: pnpm --filter api run test:dbt
+        run: pnpm --filter api run test:dbt --shard=${{ matrix.shard }}
 
       - name: API destination tests
         if: matrix.suite == 'destinations'
@@ -208,11 +211,11 @@ jobs:
         run: pnpm --filter api exec vitest run --config vitest.destinations.config.ts src/connectors/workspace/run-isolation.docker.test.ts src/connectors/workspace/session-isolation.docker.test.ts src/connectors/workspace/webhook-batch.docker.test.ts
 
       - name: Agent tools tests
-        if: matrix.suite == 'dbt'
+        if: matrix.suite == 'dbt' && matrix.shard == '1/2'
         run: pnpm --filter @mako/agent-tools run test
 
       - name: Cloudflare app-router tests
-        if: matrix.suite == 'dbt'
+        if: matrix.suite == 'dbt' && matrix.shard == '1/2'
         # Maintenance-mode edge worker: raw webhook body forwarding, operator
         # bypass, redirect rewriting, response streaming.
         run: pnpm run cf:app:test
