@@ -8,7 +8,9 @@ name: API Contract
 #  - "API tests (tsx + vitest)": every API suite — the tsx runner, the three
 #    vitest configs, agent-tools, destinations, the edge worker. This used to
 #    hide inside the contract job, so a unit-test failure read as "OpenAPI
-#    drift" and got triaged as such twice (PRs #976, #979).
+#    drift" and got triaged as such twice (PRs #976, #979). The suites run
+#    as parallel "API tests / <suite>" jobs; the "API tests (tsx + vitest)"
+#    job, which the master ruleset requires, passes only when all of them do.
 
 on:
   push:
@@ -77,9 +79,14 @@ jobs:
             exit 1
           fi
 
-  api-tests:
-    name: API tests (tsx + vitest)
+  api-tests-suite:
+    name: API tests / ${{ matrix.suite }}
     runs-on: ubuntu-latest
+    strategy:
+      # Every suite reports, as it did when they ran one after another.
+      fail-fast: false
+      matrix:
+        suite: [tsx, apps, dbt, destinations, docker]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -126,7 +133,16 @@ jobs:
           npm ci --prefix connectors/bigquery --no-audit --no-fund --ignore-scripts
           npm ci --prefix connectors/rest --no-audit --no-fund --ignore-scripts
 
+      # The suites start MongoMemoryServer in several processes at once. On a
+      # fresh runner each one would download mongod and race on the
+      # download's lock file ("Cannot unlock file .../mongodb-binaries/
+      # <version>.lock"); one download first leaves nothing to race for.
+      - name: Download the MongoDB test binary
+        working-directory: api
+        run: node -e "require('mongodb-memory-server').MongoBinary.getPath().then(p => console.log(p))"
+
       - name: App SDK version is published to npm
+        if: matrix.suite == 'destinations'
         # Scaffolds depend on `@makoai/app-sdk@^<vendored version>` (from
         # packages/app-sdk/package.json). An unpublished bump makes every
         # new app's `npm install` fail, so the version must be on the
@@ -141,13 +157,20 @@ jobs:
           fi
           echo "@makoai/app-sdk@$version is published"
 
-      - name: API tsx suites + apps vitest config
-        # api/package.json "test": the hand-rolled tsx + node:assert chain,
-        # then `vitest run --config vitest.apps.config.ts` (apps, consoles,
-        # skills, flows, notebooks).
-        run: pnpm --filter api run test
+      - name: API tsx suites
+        if: matrix.suite == 'tsx'
+        # The hand-rolled tsx + node:assert chain (first half of
+        # api/package.json "test").
+        run: pnpm --filter api run test:tsx
+
+      - name: API apps vitest config
+        if: matrix.suite == 'apps'
+        # vitest.apps.config.ts (second half of api/package.json "test"):
+        # apps, consoles, skills, flows, notebooks.
+        run: pnpm --filter api run test:apps
 
       - name: API dbt vitest config
+        if: matrix.suite == 'dbt'
         # vitest.config.ts — src/dbt/**, src/integrations/github/**, the dbt
         # route integration spec, the dbt-* agent tools, and anything else
         # that happens to live under src/dbt. The real-dbt engine contract
@@ -155,12 +178,14 @@ jobs:
         run: pnpm --filter api run test:dbt
 
       - name: API destination tests
+        if: matrix.suite == 'destinations'
         # Offline destination connector suite (driver dialect/write SQL, CDC
         # MERGE builder, DestinationWriter orchestration). Real-DB integration
         # specs self-skip without RUN_DB_INTEGRATION (see destination-integration.yml).
         run: pnpm --filter api run test:destinations
 
       - name: Connector run isolation (Docker)
+        if: matrix.suite == 'docker'
         # The per-run Unix user scripts the API sends to E2B, run as-is in
         # E2B's own e2bdev/base image: concurrent runs, symlink attacks,
         # pthread_exit and non-dumpable survivors, a failed kill, the next
@@ -172,9 +197,22 @@ jobs:
         run: pnpm --filter api exec vitest run --config vitest.destinations.config.ts src/connectors/workspace/run-isolation.docker.test.ts src/connectors/workspace/session-isolation.docker.test.ts src/connectors/workspace/webhook-batch.docker.test.ts
 
       - name: Agent tools tests
+        if: matrix.suite == 'dbt'
         run: pnpm --filter @mako/agent-tools run test
 
       - name: Cloudflare app-router tests
+        if: matrix.suite == 'dbt'
         # Maintenance-mode edge worker: raw webhook body forwarding, operator
         # bypass, redirect rewriting, response streaming.
         run: pnpm run cf:app:test
+
+  api-tests:
+    # The master ruleset requires this check name. It passes only when every
+    # suite above passed (a failed, cancelled or skipped suite fails it).
+    name: API tests (tsx + vitest)
+    needs: api-tests-suite
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every API test suite passed
+        run: test "${{ needs.api-tests-suite.result }}" = success
