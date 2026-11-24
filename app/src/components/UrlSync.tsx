@@ -120,6 +120,7 @@ export function UrlSync() {
     const dbtRunsMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-runs"]);
     const dbtConsoleMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-console"]);
     const notebookMatch = path.match(TAB_DEEP_LINK_PATTERNS.notebook);
+    const workflowMatch = path.match(TAB_DEEP_LINK_PATTERNS.workflow);
     const planMatch = path.match(TAB_DEEP_LINK_PATTERNS.plan);
     const settingsSectionMatch = path.match(TAB_DEEP_LINK_PATTERNS.settings);
     const settingsMatch = path.match(/^\/settings\/?$/);
@@ -328,6 +329,42 @@ export function UrlSync() {
       const notebookId = notebookMatch[1];
       setLeftPane("notebooks");
       focusNotebookTab(notebookId, "Untitled notebook");
+    } else if (workflowMatch) {
+      // /workflows/:id, /workflows/:id/runs/:runId, /workflow-files/:path
+      setLeftPane("workflows");
+      const filePath = workflowMatch[3]
+        ? decodePathSegments(workflowMatch[3])
+        : undefined;
+      if (filePath) {
+        const metadata = { path: filePath };
+        focusOrOpenTab({ kind: "workflow", metadata }, () => ({
+          title: filePath.split("/").pop() || filePath,
+          content: "",
+          kind: "workflow",
+          metadata,
+        }));
+      } else {
+        const workflowId = decodeUrlSegment(workflowMatch[1]);
+        const runId = workflowMatch[2]
+          ? decodeUrlSegment(workflowMatch[2])
+          : undefined;
+        const tabId = focusOrOpenTab(
+          { kind: "workflow", metadata: { workflowId } },
+          () => ({
+            title: workflowId,
+            content: "",
+            kind: "workflow",
+            metadata: { workflowId },
+          }),
+        );
+        // The link decides what the tab shows: its run, or the runs list
+        // when it names none (an open tab may be on another run).
+        if (tabId) {
+          useConsoleStore
+            .getState()
+            .updateMetadata(tabId, { workflowId, ...(runId && { runId }) });
+        }
+      }
     } else if (planMatch) {
       // /p/:chatId — plans only exist within a chat session, so we can only
       // focus a plan tab that is already present in this browser's state.

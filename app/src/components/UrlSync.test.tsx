@@ -19,6 +19,7 @@ const h = vi.hoisted(() => {
     openTab: vi.fn(),
     setActiveTab: vi.fn(),
     focusOrOpenTab: vi.fn(),
+    updateMetadata: vi.fn(),
     activeTabId: null as string | null,
     tabs: {} as Record<string, unknown>,
   };
@@ -259,6 +260,53 @@ describe("UrlSync hydration", () => {
       ),
     );
     expect(h.setLeftPane).toHaveBeenCalledWith("notebooks");
+  });
+
+  it("opens a workflow's run when deep-linking /workflows/:id/runs/:runId", async () => {
+    window.history.replaceState(null, "", "/workflows/crm-link-repair/runs/r1");
+    h.consoleState.focusOrOpenTab.mockReturnValue("tab-1");
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.consoleState.focusOrOpenTab).toHaveBeenCalledTimes(1),
+    );
+    const [match, create] = h.consoleState.focusOrOpenTab.mock.calls[0];
+    expect(match).toEqual({
+      kind: "workflow",
+      metadata: { workflowId: "crm-link-repair" },
+    });
+    expect(create()).toMatchObject({
+      kind: "workflow",
+      title: "crm-link-repair",
+    });
+    expect(h.setLeftPane).toHaveBeenCalledWith("workflows");
+    // The run rides on the tab, also when that tab was already open.
+    expect(h.consoleState.updateMetadata).toHaveBeenCalledWith("tab-1", {
+      workflowId: "crm-link-repair",
+      runId: "r1",
+    });
+  });
+
+  it("opens a workflow file when deep-linking /workflow-files/:path", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/workflow-files/crm-link-repair/workflow.ts",
+    );
+
+    render(<UrlSync />);
+
+    await waitFor(() =>
+      expect(h.consoleState.focusOrOpenTab).toHaveBeenCalledTimes(1),
+    );
+    const [match, create] = h.consoleState.focusOrOpenTab.mock.calls[0];
+    expect(match).toEqual({
+      kind: "workflow",
+      metadata: { path: "crm-link-repair/workflow.ts" },
+    });
+    expect(create()).toMatchObject({ title: "workflow.ts" });
+    expect(h.consoleState.updateMetadata).not.toHaveBeenCalled();
   });
 
   it("opens a source-connection tab when /cx/:id still exists", async () => {
