@@ -18,6 +18,11 @@
 //                            else min(4, available CPUs))
 //   --timeout S              per-file timeout in seconds (default 600)
 //   --list                   print the files that would run, and exit
+//   --shard I/N              run only shard I of N (1-based). Files are split
+//                            longest first onto the least-loaded shard, by
+//                            the seconds in tsx-test-durations.json (1 s for
+//                            a file not listed there), so the N shards
+//                            together run every file exactly once
 //   filter...                only files whose path contains one of these
 import { spawn } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
@@ -57,6 +62,7 @@ const opts = {
     Math.min(4, os.availableParallelism?.() ?? os.cpus().length),
   timeoutMs: 600_000,
   list: false,
+  shard: null,
   filters: [],
 };
 for (let i = 0; i < argv.length; i++) {
@@ -64,7 +70,14 @@ for (let i = 0; i < argv.length; i++) {
   if (a === "--concurrency" || a === "-j") opts.concurrency = Number(argv[++i]);
   else if (a === "--timeout") opts.timeoutMs = Number(argv[++i]) * 1000;
   else if (a === "--list") opts.list = true;
-  else if (a.startsWith("-")) {
+  else if (a === "--shard") {
+    const [index, count] = (argv[++i] ?? "").split("/").map(Number);
+    if (!(count >= 1 && index >= 1 && index <= count)) {
+      console.error(`run-tsx-tests: --shard wants I/N, got ${argv[i]}`);
+      process.exit(2);
+    }
+    opts.shard = { index, count };
+  } else if (a.startsWith("-")) {
     console.error(`run-tsx-tests: unknown option ${a}`);
     process.exit(2);
   } else opts.filters.push(a);
@@ -158,6 +171,27 @@ const orphanedVitest = notVitestOwned.filter(
 let files = notVitestOwned.filter(f => !(f in SKIP) && !importsVitest(f));
 if (opts.filters.length) {
   files = files.filter(f => opts.filters.some(x => f.includes(x)));
+}
+
+if (opts.shard) {
+  const seconds = JSON.parse(
+    readFileSync(
+      path.join(API_ROOT, "scripts/tsx-test-durations.json"),
+      "utf8",
+    ),
+  );
+  const cost = f => seconds[f] ?? 1;
+  const loads = new Array(opts.shard.count).fill(0);
+  const mine = [];
+  // Longest first, so this shard also starts its slowest files first.
+  for (const f of [...files].sort(
+    (a, b) => cost(b) - cost(a) || a.localeCompare(b),
+  )) {
+    const s = loads.indexOf(Math.min(...loads));
+    loads[s] += cost(f);
+    if (s === opts.shard.index - 1) mine.push(f);
+  }
+  files = mine;
 }
 
 if (opts.list) {

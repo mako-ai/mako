@@ -80,13 +80,24 @@ jobs:
           fi
 
   api-tests-suite:
-    name: API tests / ${{ matrix.suite }}
+    name: API tests / ${{ matrix.suite }} ${{ matrix.shard }}
     runs-on: ubuntu-latest
     strategy:
       # Every suite reports, as it did when they ran one after another.
       fail-fast: false
       matrix:
-        suite: [tsx, apps, dbt, destinations, docker]
+        # The two longest suites run in shards: tsx by file duration
+        # (api/scripts/tsx-test-durations.json), apps by vitest's --shard.
+        include:
+          - { suite: tsx, shard: 1/4 }
+          - { suite: tsx, shard: 2/4 }
+          - { suite: tsx, shard: 3/4 }
+          - { suite: tsx, shard: 4/4 }
+          - { suite: apps, shard: 1/2 }
+          - { suite: apps, shard: 2/2 }
+          - { suite: dbt }
+          - { suite: destinations }
+          - { suite: docker }
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -161,13 +172,13 @@ jobs:
         if: matrix.suite == 'tsx'
         # The hand-rolled tsx + node:assert chain (first half of
         # api/package.json "test").
-        run: pnpm --filter api run test:tsx
+        run: pnpm --filter api run test:tsx --shard ${{ matrix.shard }}
 
       - name: API apps vitest config
         if: matrix.suite == 'apps'
         # vitest.apps.config.ts (second half of api/package.json "test"):
         # apps, consoles, skills, flows, notebooks.
-        run: pnpm --filter api run test:apps
+        run: pnpm --filter api run test:apps --shard=${{ matrix.shard }}
 
       - name: API dbt vitest config
         if: matrix.suite == 'dbt'
