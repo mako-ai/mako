@@ -62,6 +62,8 @@ export interface IEntityLayout {
   partitionField: string;
   partitionGranularity: "day" | "hour" | "month" | "year";
   clusterFields: string[];
+  /** Rows per BigQuery staging load for this entity. Absent: the global default. */
+  flushBatchRows?: number;
   enabled?: boolean;
 }
 
@@ -603,6 +605,7 @@ const FlowSchema = new Schema<IFlow>(
           default: "day",
         },
         clusterFields: [String],
+        flushBatchRows: { type: Number, min: 1, validate: Number.isInteger },
         enabled: { type: Boolean, default: true },
       },
     ],

@@ -382,6 +382,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           bulkEntityLayout as any,
           (tableDestination as any)?.clustering,
         ),
+        flushBatchRows: bulkEntityLayout?.flushBatchRows,
         logger: bulkLogger,
       };
 
