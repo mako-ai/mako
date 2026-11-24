@@ -89,9 +89,17 @@ export async function buildGolden() {
   const entities = await folderEntities();
   const server = await startReplayServer();
   try {
-    const out = {};
-    for (const scenario of SCENARIOS) {
-      for (const entity of entities) {
+    // Every read has its own API key, so the server logs its requests apart:
+    // four reads at a time give the same files as one at a time.
+    const jobs = SCENARIOS.flatMap(scenario =>
+      entities.map(entity => ({ scenario, entity })),
+    );
+    const texts = new Array(jobs.length);
+    let next = 0;
+    const work = async () => {
+      while (next < jobs.length) {
+        const i = next++;
+        const { scenario, entity } = jobs[i];
         const apiKey = `sk_test_golden_${scenario.name}_${entity}`;
         const { rows, chunks } = await readScenario(
           server,
@@ -100,7 +108,7 @@ export async function buildGolden() {
           apiKey,
         );
         const requests = server.requests(apiKey);
-        out[goldenFile(scenario.name, entity)] = goldenText(
+        texts[i] = goldenText(
           CHECKSUM_SCENARIOS.includes(scenario.name)
             ? {
                 chunks,
@@ -111,7 +119,12 @@ export async function buildGolden() {
             : { requests, rows },
         );
       }
-    }
+    };
+    await Promise.all(Array.from({ length: 4 }, work));
+    const out = {};
+    jobs.forEach(({ scenario, entity }, i) => {
+      out[goldenFile(scenario.name, entity)] = texts[i];
+    });
     const spec = (await runFolderCommand("spec")).messages.find(
       m => m.type === "SPEC",
     )?.spec;
