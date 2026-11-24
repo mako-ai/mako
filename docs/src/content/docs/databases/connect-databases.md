@@ -150,6 +150,8 @@ Note the query parameter (`?appName=`) becomes a path segment (`/MyCluster`).
 
 Requires a Google Cloud service account with BigQuery access. Upload the service account JSON key file when adding the connection.
 
+Two optional advanced settings cap what an AI agent or MCP client can spend on this connection: **Agent query timeout** (`agent_job_timeout_ms`, default 300000 ms) and **Agent query byte cap** (`agent_max_bytes_billed_gb`, default 500 GiB). `0` turns a cap off. They do not apply to consoles you run yourself, apps, flows or dbt. See [AI Agent](/ai-agent/).
+
 ### ClickHouse
 
 Connects over HTTP. Default port is `8123` (HTTP) or `9000` (native). Cloud-hosted ClickHouse (e.g. ClickHouse Cloud) is supported.

@@ -108,6 +108,10 @@ Set these in Cloud Run's environment configuration (`deploy.sh` generates the se
 | `APPS_BOX_IDLE_MINUTES`        | Optional    | Minutes without real use before an app sandbox is paused (default `10`). `APPS_BOX_IDLE_SWEEP=off` turns the pause sweep off |
 | `APPS_BOX_REAPER`              | Optional    | Deletes a person's sandbox session whose boxes are all paused and unused for `APPS_BOX_PAUSED_RETENTION_DAYS` (default `14`): `off` (default), `dryrun` (logs the plan), or `on`. Unsaved work goes to a `mako-presave/...` branch first |
 | `WORKFLOWS_AUTOSCALE`          | Optional    | `on` lets Mako set each workspace's workflow worker pod count (0–5) on GKE. Off by default. See [Workflows](/workflows/#settings) |
+| `E2B_DOMAIN`                   | Optional    | E2B region of `E2B_API_KEY`, as a bare hostname. Default `e2b.app` (US); the EU project answers on `e2b-juliett.dev` |
+| `CONNECTOR_SESSION_READS`      | Optional    | `true` runs a workspace connector's entity read as one sandbox process (a read session) instead of one per chunk. Off unless exactly `true`. Needs `CONNECTOR_BOX_LEASES` off |
+| `CONNECTOR_WEBHOOK_BATCHES`    | Optional    | `true` makes workspace (`ws:`) connectors accept webhooks: the API verifies each delivery against the scheme the connector declares, and events are processed in sandbox batches. Off unless exactly `true` |
+| `AGENT_BIGQUERY_MAX_BYTES_BILLED` / `AGENT_BIGQUERY_JOB_TIMEOUT_MS` | Optional | Default byte cap (500 GiB) and job timeout (5 min) on BigQuery jobs started by agents and MCP. `0` removes one. A connection's `agent_max_bytes_billed_gb` / `agent_job_timeout_ms` override them. See [AI Agent](/ai-agent/) |
 
 ### API Protection
 
