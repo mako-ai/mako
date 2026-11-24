@@ -2772,6 +2772,12 @@ reanchoring self-healing) was deleted from the plan rather than built.
 `dbt/` is a folder of the ONE workspace repo. The working tree IS the
 caller's session branch (branch-policy.ts, `commitBranchFor("dbt")`):
 
+Exception (2026-11-19): a caller on MCP or an API key in a workspace with
+`settings.protectDefaultBranch` on (the default) writes dbt to
+`mcp/<person>/dbt`, not the session branch. `default-branch-guard.ts` binds
+that per MCP call; `dbt_merge_to_main` opens the merge request
+(`merge-request.service.ts`: dbt parse, then a GitHub pull request).
+
 - **Reads** (explorer tree, file reads, agent tools, `.makorules`, runner
   materialization) come from the local bare repo at the session branch —
   `listTree`/`readBlob`, plus a new `readBlobsBatch` (`cat-file --batch`,

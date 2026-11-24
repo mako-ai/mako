@@ -35,6 +35,7 @@ import {
   type GitAuthor,
 } from "../apps/repository.service";
 import { runGit } from "../apps/git";
+import { commitOnGuardBranch } from "../apps/guard-commit";
 import { Flow, type IFlow } from "../database/workspace-schema";
 import {
   flowFilePath,
@@ -131,7 +132,16 @@ export async function commitFlowFile(
   flow: IFlow,
   actorUserId?: string,
   messageOverride?: string,
-  options: { expectBlobAtMain?: string | null } = {},
+  options: {
+    expectBlobAtMain?: string | null;
+    /**
+     * Write to this branch instead of main (a guarded MCP/API-key caller,
+     * default-branch-guard.ts). The conflict check still reads main, which
+     * is what the row follows; nothing lands on main and the result's
+     * `commitSha` is the commit on the branch.
+     */
+    branch?: string;
+  } = {},
 ): Promise<FlowFileWriteResult> {
   if (!flow.slug || !flow.name?.trim()) {
     return { ok: true, changed: false };
@@ -150,43 +160,57 @@ export async function commitFlowFile(
       ? options.expectBlobAtMain
       : flow.sourceBlobSha || undefined;
   let blobAtMain = sha;
+  const mutation = async ({
+    repoDir,
+    head,
+  }: {
+    repoDir: string;
+    head: string;
+  }) => {
+    const current = await blobIdAt(repoDir, head, filePath);
+    if (current === sha) return null;
+    // The file on main may say the same thing in the older words
+    // (format 1: `type`, `schedule`, `webhook`, `backfill_schedule`),
+    // or with other comments. Then only the format differs: leave it,
+    // so a save never rewrites a file for its format alone. It moves to
+    // format 2 the first time its meaning changes.
+    if (current) {
+      if (current === blobOid(serializeFlowFileV1(file))) {
+        blobAtMain = current;
+        return null;
+      }
+      const atMain = await readBlob(repoDir, head, filePath).catch(() => null);
+      const parsed =
+        atMain && !atMain.isBinary ? parseFlowFile(atMain.contents) : null;
+      if (parsed && sameFlowMeaning(parsed, file)) {
+        blobAtMain = current;
+        return null;
+      }
+    }
+    if (expectBlobAtMain !== undefined && current !== expectBlobAtMain) {
+      throw new FlowFileConflictError(
+        `${filePath} changed on main (${head.slice(0, 9)}) since this flow was read: expected blob ${expectBlobAtMain?.slice(0, 9) ?? "none"}, found ${current?.slice(0, 9) ?? "none"}`,
+      );
+    }
+    blobAtMain = sha;
+    return { writes: { [filePath]: contents } };
+  };
   try {
-    const committed = await commitConfigToMain(
-      flow.workspaceId.toString(),
-      async ({ repoDir, head }) => {
-        const current = await blobIdAt(repoDir, head, filePath);
-        if (current === sha) return null;
-        // The file on main may say the same thing in the older words
-        // (format 1: `type`, `schedule`, `webhook`, `backfill_schedule`),
-        // or with other comments. Then only the format differs: leave it,
-        // so a save never rewrites a file for its format alone. It moves to
-        // format 2 the first time its meaning changes.
-        if (current) {
-          if (current === blobOid(serializeFlowFileV1(file))) {
-            blobAtMain = current;
-            return null;
-          }
-          const atMain = await readBlob(repoDir, head, filePath).catch(
-            () => null,
-          );
-          const parsed =
-            atMain && !atMain.isBinary ? parseFlowFile(atMain.contents) : null;
-          if (parsed && sameFlowMeaning(parsed, file)) {
-            blobAtMain = current;
-            return null;
-          }
-        }
-        if (expectBlobAtMain !== undefined && current !== expectBlobAtMain) {
-          throw new FlowFileConflictError(
-            `${filePath} changed on main (${head.slice(0, 9)}) since this flow was read: expected blob ${expectBlobAtMain?.slice(0, 9) ?? "none"}, found ${current?.slice(0, 9) ?? "none"}`,
-          );
-        }
-        blobAtMain = sha;
-        return { writes: { [filePath]: contents } };
-      },
-      messageOverride ?? `flow: "${flow.name ?? slug}" (${slug})`,
-      actorUserId ? await authorForUser(actorUserId) : undefined,
-    );
+    const message = messageOverride ?? `flow: "${flow.name ?? slug}" (${slug})`;
+    const author = actorUserId ? await authorForUser(actorUserId) : undefined;
+    const committed = options.branch
+      ? await commitOnGuardBranch(
+          flow.workspaceId.toString(),
+          options.branch,
+          mutation,
+          { message, author },
+        )
+      : await commitConfigToMain(
+          flow.workspaceId.toString(),
+          mutation,
+          message,
+          author,
+        );
     return {
       ok: true,
       changed: committed.changed,

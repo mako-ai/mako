@@ -60,6 +60,7 @@ import {
 import {
   commitDbtFiles,
   deleteWorkingFile,
+  existingGuardBranch,
   getCheckoutBranch,
   listWorkingFiles,
   readWorkingFile,
@@ -81,6 +82,14 @@ import {
 } from "../../dbt/adapter-map";
 import { buildStarterScaffold } from "../../dbt/scaffold";
 import { dbtWorkingTreeUserFor } from "../../dbt/rbac";
+import {
+  activeDefaultBranchGuard,
+  MERGE_TOOL_FOR_KIND,
+  refusalForUnbranchableWrite,
+} from "../../apps/default-branch-guard";
+import { guardBranchFor, sessionBranchFor } from "../../apps/branch-policy";
+import { openMergeRequest } from "../../apps/merge-request.service";
+import { DEFAULT_BRANCH } from "../../apps/repository.service";
 import { validateScheduledConsoleSchedule } from "../../services/scheduled-query-schedule.service";
 import type { DbtLogLine } from "../../dbt/runner.service";
 import { describeQueuedRun } from "../../dbt/dbt-run-queue";
@@ -331,6 +340,40 @@ export const createDbtServerTools = (
     return rolePromise;
   };
 
+  /**
+   * Set when this call comes from a guarded MCP/API-key caller of a workspace
+   * that protects its default branch: dbt writes go to `branch`, and
+   * `mergeTool` opens the merge request.
+   */
+  const guardInfo = async () => {
+    if (!(await activeDefaultBranchGuard(workspaceId))) return null;
+    return {
+      branch: await guardBranchFor(workspaceId, actingUserId, "dbt"),
+      mergeTool: MERGE_TOOL_FOR_KIND.dbt,
+    };
+  };
+  /** Result fields telling a guarded caller where its write went. */
+  const guardNote = async () => {
+    const guard = await guardInfo();
+    return guard
+      ? {
+          branch: guard.branch,
+          next: `Written to branch ${guard.branch}, not the default branch. Verify with dbt_parse, then open a merge with ${guard.mergeTool}.`,
+        }
+      : {};
+  };
+  /**
+   * Tools whose result is a row derived from the default branch (a project,
+   * a job) have no branch to wait on: a guarded caller gets a refusal.
+   */
+  const refuseWhenGuarded = async (toolName: string) =>
+    (await activeDefaultBranchGuard(workspaceId))
+      ? {
+          success: false as const,
+          error: refusalForUnbranchableWrite(toolName),
+        }
+      : null;
+
   const queueAgentRun = async (
     project: Awaited<ReturnType<typeof assertProject>>,
     environment: string,
@@ -340,10 +383,12 @@ export const createDbtServerTools = (
     // Owners/admins build their working tree (checkout + drafts). Members
     // validate the committed tracked branch only — never drafts or another
     // ref (dbt/rbac.ts dbtWorkingTreeUserFor).
-    const workingTreeUserId = dbtWorkingTreeUserFor(
-      await actingRole(),
-      actingUserId,
-    );
+    // A guarded caller's edits live on its own branch: build that branch
+    // (members included), not the tracked branch.
+    const guardBranch = await existingGuardBranch(project, actingUserId);
+    const workingTreeUserId = guardBranch
+      ? undefined
+      : dbtWorkingTreeUserFor(await actingRole(), actingUserId);
     const run = await triggerDbtRun({
       workspaceId,
       projectId: project._id.toString(),
@@ -353,6 +398,7 @@ export const createDbtServerTools = (
       triggeredBy: "agent",
       actor: runActor,
       workingTreeUserId,
+      ...(guardBranch ? { gitBranch: guardBranch } : {}),
       deferToProduction,
     });
     publishRunUpdated(project._id.toString(), {
@@ -364,7 +410,8 @@ export const createDbtServerTools = (
       status: run.status,
       environment: run.environment,
       commands: run.commands,
-      ...(workingTreeUserId
+      ...(guardBranch ? { sourceBranch: guardBranch } : {}),
+      ...(workingTreeUserId || guardBranch
         ? {}
         : {
             source:
@@ -565,7 +612,7 @@ export const createDbtServerTools = (
             { $currentDate: { updatedAt: true } },
           );
           publishFileUpdated(projectId, path);
-          return { success: true, path };
+          return { success: true, path, ...(await guardNote()) };
         } catch (error) {
           return toolError(error, "Failed to create dbt file");
         }
@@ -595,7 +642,7 @@ export const createDbtServerTools = (
             { $currentDate: { updatedAt: true } },
           );
           publishFileUpdated(projectId, path);
-          return { success: true, path };
+          return { success: true, path, ...(await guardNote()) };
         } catch (error) {
           return toolError(error, "Failed to save dbt file");
         }
@@ -664,6 +711,7 @@ export const createDbtServerTools = (
             path,
             replacements: result.replacements,
             diff,
+            ...(await guardNote()),
           };
         } catch (error) {
           return toolError(error, "Failed to edit dbt file");
@@ -682,9 +730,45 @@ export const createDbtServerTools = (
             return { success: false, error: `File not found: ${path}` };
           }
           publishFileUpdated(projectId, path, { deleted: true });
-          return { success: true, path };
+          return { success: true, path, ...(await guardNote()) };
         } catch (error) {
           return toolError(error, "Failed to delete dbt file");
+        }
+      },
+    }),
+
+    dbt_merge_to_main: tool({
+      description:
+        "Open a merge request for your dbt branch (the one your dbt writes went to: the result of create_dbt_file / edit_dbt_file names it). " +
+        "Runs dbt parse on the branch first and stops on any failure. When the workspace repo is mirrored to GitHub it opens a pull request and returns its URL: a person merges it. " +
+        "With no GitHub repo it merges into the default branch itself once the parse passed. " +
+        "When dbt parse is still running the result says `checks_pending`: call again in a minute. Needs the admin role.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        try {
+          const guard = await guardInfo();
+          const branch =
+            guard?.branch ??
+            (await sessionBranchFor(workspaceId, actingUserId));
+          if (branch === DEFAULT_BRANCH) {
+            return {
+              success: false,
+              error:
+                "Your dbt work is already on the default branch: there is nothing to merge.",
+            };
+          }
+          const outcome = await openMergeRequest({
+            workspaceId,
+            branch,
+            userId,
+          });
+          return {
+            success:
+              outcome.status === "pull_request" || outcome.status === "merged",
+            ...outcome,
+          };
+        } catch (error) {
+          return toolError(error, "Failed to open the merge request");
         }
       },
     }),
@@ -733,6 +817,8 @@ export const createDbtServerTools = (
         dbtVersion,
       }) => {
         try {
+          const refused = await refuseWhenGuarded("dbt_create_project");
+          if (refused) return refused;
           if (!Types.ObjectId.isValid(connectionId)) {
             return { success: false, error: "Invalid connection id" };
           }
@@ -1041,7 +1127,9 @@ export const createDbtServerTools = (
           // The source tree this run builds: the acting user's session
           // branch — surfaced in the result so the agent never has to guess
           // which git state was verified.
-          const sourceBranch = await getCheckoutBranch(project, actingUserId);
+          const guardBranch = await existingGuardBranch(project, actingUserId);
+          const sourceBranch =
+            guardBranch ?? (await getCheckoutBranch(project, actingUserId));
           // Dispatch to the async runner instead of blocking the chat turn for
           // the full build. The build executes in the Inngest worker
           // (decoupled from this SSE connection), so it survives proxy idle
@@ -1058,8 +1146,11 @@ export const createDbtServerTools = (
             triggeredBy: "agent",
             actor: runActor,
             // Build the acting user's working tree (checkout + drafts) so
-            // the run verifies exactly the uncommitted edits just made.
-            workingTreeUserId: actingUserId,
+            // the run verifies exactly the uncommitted edits just made. A
+            // guarded caller's edits are commits on its own branch.
+            ...(guardBranch
+              ? { gitBranch: guardBranch }
+              : { workingTreeUserId: actingUserId }),
             deferToProduction: wantsDefer,
           });
           publishRunUpdated(projectId, { runId: run._id.toString() });
@@ -1461,6 +1552,8 @@ export const createDbtServerTools = (
         deferToProduction,
       }) => {
         try {
+          const refused = await refuseWhenGuarded("dbt_create_job");
+          if (refused) return refused;
           const project = await assertProject(projectId);
           const env = environment ?? project.defaultEnvironment;
           const validationError = validateJob(project, {
@@ -1523,6 +1616,8 @@ export const createDbtServerTools = (
       }),
       execute: async ({ projectId, jobId, ...updates }) => {
         try {
+          const refused = await refuseWhenGuarded("dbt_update_job");
+          if (refused) return refused;
           const project = await assertProject(projectId);
           if (!Types.ObjectId.isValid(jobId)) {
             return { success: false, error: "Invalid job id" };
@@ -1583,6 +1678,8 @@ export const createDbtServerTools = (
       }),
       execute: async ({ projectId, jobId }) => {
         try {
+          const refused = await refuseWhenGuarded("dbt_delete_job");
+          if (refused) return refused;
           const project = await assertProject(projectId);
           if (!Types.ObjectId.isValid(jobId)) {
             return { success: false, error: "Invalid job id" };

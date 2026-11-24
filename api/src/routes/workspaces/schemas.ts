@@ -53,6 +53,9 @@ export const AutoJoinBody = jsonBody(
   }),
 );
 export const LinkPreviewsBody = jsonBody(z.object({ enabled: z.boolean() }));
+export const ProtectDefaultBranchBody = jsonBody(
+  z.object({ enabled: z.boolean() }),
+);
 export const CreateInviteBody = jsonBody(
   z.object({ email: z.string(), role: MemberRole }),
 );

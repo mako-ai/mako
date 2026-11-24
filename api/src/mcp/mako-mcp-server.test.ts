@@ -39,6 +39,7 @@ import { parseMcpOAuthScopes } from "../auth/mcp-oauth.service";
 import { mcpOAuthWellKnownRoutes } from "../routes/mcp-oauth.routes";
 import { effectiveSqlQueryAccess } from "../agent-lib/tools/sql-tools";
 import { requestContextStorage } from "../logging/context";
+import { inDefaultBranchGuardScope } from "../apps/default-branch-guard";
 import { sqlReadOnlyAccessError } from "../services/read-only-query.service";
 import {
   assertBridgePolicyCovers,
@@ -1291,6 +1292,63 @@ async function main() {
       desktopTools.some(tool => tool.name === "list_open_consoles"),
       false,
       "Desktop ACP must get list_open_consoles from mako-desktop, not the Mako bridge",
+    );
+  }
+
+  // 3f-guard. Every MCP tool call runs inside the default-branch guard scope
+  //           (writes go to mcp/<person>/<kind> branches); a Desktop ACP
+  //           client, a person at their own editor, does not.
+  {
+    const probe: Record<string, BridgeableTool> = {
+      app_commit: {
+        description: "stub: reports whether the call is guarded",
+        inputSchema: z.object({}),
+        execute: async () => ({
+          guarded: inDefaultBranchGuardScope(WORKSPACE_ID),
+        }),
+      },
+    };
+    const guardedOver = async (acpDesktop: boolean) => {
+      const server = buildMakoMcpServer(
+        {
+          workspaceId: WORKSPACE_ID,
+          workspaceName: WORKSPACE_NAME,
+          memberRole: "admin",
+          scopes: ["mcp", "query:read"],
+          acpDesktop,
+        },
+        probe,
+      );
+      const transport = new StatelessMcpTransport();
+      await server.connect(transport);
+      const responses = (await transport.handle(
+        [
+          {
+            jsonrpc: "2.0",
+            id: "g",
+            method: "tools/call",
+            params: { name: "app_commit", arguments: {} },
+          },
+        ] as unknown as JSONRPCMessage[],
+        5_000,
+      )) as unknown as Array<{ result: { content: { text: string }[] } }>;
+      await server.close().catch(() => undefined);
+      return JSON.parse(responses[0].result.content[0].text).guarded;
+    };
+    assert.equal(
+      await guardedOver(false),
+      true,
+      "MCP/API-key tool calls run under the default-branch guard",
+    );
+    assert.equal(
+      await guardedOver(true),
+      false,
+      "Desktop ACP keeps direct writes",
+    );
+    assert.equal(
+      inDefaultBranchGuardScope(WORKSPACE_ID),
+      false,
+      "the scope ends with the call",
     );
   }
 

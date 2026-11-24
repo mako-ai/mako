@@ -20,6 +20,14 @@ import { parseAppRepoPath } from "../../../apps/app-paths";
 import { loadOwnerDirectory } from "../../../apps/user-handles.service";
 import { authorizeAppMove } from "../../../apps/app-authorization";
 import { materializeAppBinding } from "../../../apps/bindings.service";
+import {
+  activeDefaultBranchGuard,
+  defaultBranchWriteRefusal,
+  MERGE_TOOL_FOR_KIND,
+  refusalForUnbranchableWrite,
+} from "../../../apps/default-branch-guard";
+import { guardBranchFor } from "../../../apps/branch-policy";
+import { openMergeRequest } from "../../../apps/merge-request.service";
 import { type AppsToolContext, logger } from "./context";
 
 export function appRepoTools(ctx: AppsToolContext): ToolSet {
@@ -57,6 +65,13 @@ export function appRepoTools(ctx: AppsToolContext): ToolSet {
       execute: async ({ appId, folder, name }) => {
         const loaded = await loadProject(appId, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
+        // A move is one commit on main with no branch to wait on.
+        if (await activeDefaultBranchGuard(workspaceId)) {
+          return {
+            success: false,
+            error: refusalForUnbranchableWrite("app_move_app"),
+          };
+        }
         try {
           const target = folderTargetFromPath(folder);
           const source = parseAppRepoPath(appRootFor(loaded.project));
@@ -106,7 +121,7 @@ export function appRepoTools(ctx: AppsToolContext): ToolSet {
 
     app_merge_to_main: tool({
       description:
-        "Merge a branch of an Apps project into main (fast-forward when possible, real merge commit otherwise; refuses on conflicts). Use when the user is happy with the changes and wants them on main. Omit `branch` to merge the branch you are working on.",
+        "Merge a branch of an Apps project into main (fast-forward when possible, real merge commit otherwise; refuses on conflicts). Use when the user is happy with the changes and wants them on main. Omit `branch` to merge the branch you are working on. Over MCP and API keys (workspaces that protect their default branch) this opens a merge request instead: it builds the app, and with a GitHub repo connected opens a pull request for a person to merge.",
       inputSchema: z.object({
         ...targetInput,
         branch: z
@@ -119,9 +134,59 @@ export function appRepoTools(ctx: AppsToolContext): ToolSet {
         if ("error" in loaded) return { success: false, error: loaded.error };
         const main = loaded.project.defaultBranch || "main";
         let target = branch ?? (await currentActorBranch(loaded.project));
-        // From main, a workflow's own branch is its preview branch.
-        if (workflowId && target === main && !branch) {
-          target = await previewBranchFor(workflowId);
+        // A guarded MCP/API-key caller never lands on main directly: it opens
+        // a merge request (checks, then a pull request or a merge).
+        const guarded = await activeDefaultBranchGuard(workspaceId);
+        // From main, a workflow's own branch is its preview branch; a guarded
+        // app's is its guard branch.
+        if (target === main && !branch) {
+          if (workflowId) target = await previewBranchFor(workflowId);
+          else if (guarded) {
+            target = await guardBranchFor(
+              workspaceId,
+              actorId,
+              "app",
+              loaded.project.slug,
+            );
+          }
+        }
+        if (guarded && target === main) {
+          return {
+            success: false,
+            error: defaultBranchWriteRefusal(
+              await guardBranchFor(
+                workspaceId,
+                actorId,
+                "app",
+                loaded.project.slug,
+              ),
+              workflowId ? "workflow_merge_to_main" : MERGE_TOOL_FOR_KIND.app,
+            ),
+          };
+        }
+        if (guarded) {
+          try {
+            const outcome = await openMergeRequest({
+              workspaceId,
+              branch: target,
+              userId,
+            });
+            if (outcome.status === "merged" && workflowId) {
+              await catchUpLiveBox(loaded.project, actorId);
+            }
+            return {
+              success:
+                outcome.status === "pull_request" ||
+                outcome.status === "merged",
+              ...outcome,
+            };
+          } catch (error) {
+            logger.error("app_merge_to_main merge request failed", {
+              error,
+              appId,
+            });
+            return { success: false, error: errorMessage(error) };
+          }
         }
         if (target === main) {
           return {
@@ -205,8 +270,20 @@ export function appRepoTools(ctx: AppsToolContext): ToolSet {
           // the deploy, and that is the person's to review and merge. The
           // checkout stays on main: it is shared by the UI and every chat.
           const main = loaded.project.defaultBranch || "main";
-          if (workflowId && handle.doc.branch === main) {
-            const branch = await previewBranchFor(workflowId);
+          // A guarded MCP/API-key caller's app commit never lands on main
+          // either: it goes to the caller's own app branch, as a workflow's
+          // does.
+          const guarded =
+            !workflowId && (await activeDefaultBranchGuard(workspaceId));
+          if ((workflowId || guarded) && handle.doc.branch === main) {
+            const branch = workflowId
+              ? await previewBranchFor(workflowId)
+              : await guardBranchFor(
+                  workspaceId,
+                  actorId,
+                  "app",
+                  loaded.project.slug,
+                );
             const result = await commitPathToBranch(
               handle,
               handle.appRoot,
@@ -220,7 +297,9 @@ export function appRepoTools(ctx: AppsToolContext): ToolSet {
               ...(result.committed
                 ? {
                     deployed: false,
-                    next: `Not deployed: ${branch} is ${main} plus this workflow as it is in your checkout; your checkout stays on ${main}. Show the user what changed, and only on their go-ahead deploy it with workflow_merge_to_main (an admin's call). A later workflow_commit replaces the branch.`,
+                    next: workflowId
+                      ? `Not deployed: ${branch} is ${main} plus this workflow as it is in your checkout; your checkout stays on ${main}. Show the user what changed, and only on their go-ahead deploy it with workflow_merge_to_main (an admin's call). A later workflow_commit replaces the branch.`
+                      : `Writes go to branch ${branch}, not ${main}. Open a merge with ${MERGE_TOOL_FOR_KIND.app}.`,
                   }
                 : {}),
             };

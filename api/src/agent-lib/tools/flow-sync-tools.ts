@@ -32,6 +32,12 @@ import {
 } from "../../apps/cloud-repo.service";
 import { requireWorkspaceRepo } from "../../apps/workspace-repo-required";
 import {
+  activeDefaultBranchGuard,
+  MERGE_TOOL_FOR_KIND,
+} from "../../apps/default-branch-guard";
+import { guardBranchFor } from "../../apps/branch-policy";
+import { openMergeRequest } from "../../apps/merge-request.service";
+import {
   CdcEntityState,
   Flow,
   FlowExecution,
@@ -270,6 +276,18 @@ function applyTriggerChange(
     };
   }
   return null;
+}
+
+/**
+ * The branch a guarded MCP/API-key caller's flow writes go to, or undefined
+ * when the caller writes to main (the in-app agent, or protection off).
+ */
+async function flowGuardBranch(
+  workspaceId: string,
+  userId: string | undefined,
+): Promise<string | undefined> {
+  if (!(await activeDefaultBranchGuard(workspaceId))) return undefined;
+  return guardBranchFor(workspaceId, userId ?? "api-key", "flows");
 }
 
 export function createFlowSyncTools({
@@ -526,6 +544,7 @@ export function createFlowSyncTools({
             return failure("Owner/admin role required");
           }
           await assertFlowRepo(workspaceId);
+          const guardBranch = await flowGuardBranch(workspaceId, userId);
           const found = await findFlow(workspaceId, ref);
           if (!hasWebhookTrigger(found)) {
             return failure(
@@ -602,13 +621,20 @@ export function createFlowSyncTools({
           // persistProvisionedWebhook released the claim in the database.
           // Leave the in-memory path untouched, or flow.save() below would
           // write null over a claim another request took since.
-          const committed = await commitFlowFile(flow, userId);
+          const committed = await commitFlowFile(
+            flow,
+            userId,
+            undefined,
+            guardBranch ? { branch: guardBranch } : {},
+          );
           if (!committed.ok) {
             return failure(
               `The subscription ${created.providerWebhookId} is saved on the sync, but flows/<slug>.yml could not be committed: ${committed.error ?? "unknown error"}. Saving the flow again commits it.`,
             );
           }
-          if (committed.sourceBlobSha) {
+          // On a branch the file is not at main yet: the row keeps pointing
+          // at the blob main holds until the merge.
+          if (committed.sourceBlobSha && !guardBranch) {
             flow.sourceBlobSha = committed.sourceBlobSha;
           }
           await flow.save();
@@ -624,6 +650,46 @@ export function createFlowSyncTools({
             vendor: connectorType,
             endpoint,
             providerWebhookId: created.providerWebhookId,
+            ...(guardBranch
+              ? {
+                  branch: guardBranch,
+                  next: `flows/<slug>.yml was written to branch ${guardBranch}, not the default branch. Open a merge with ${MERGE_TOOL_FOR_KIND.flows}.`,
+                }
+              : {}),
+          };
+        } catch (error) {
+          return failure(error);
+        }
+      },
+    }),
+
+    flow_merge_to_main: tool({
+      description:
+        "Open a merge request for your flow changes (the branch flow_update and flow_webhook_provision named). " +
+        "Runs check_flow_files on the changed flows/<slug>.yml files and stops on any problem. " +
+        "With a GitHub repo connected it opens a pull request and returns its URL: a person merges it, and the sync changes when the merge lands. " +
+        "Without one it merges into the default branch itself once the check passed. Owner or admin.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        try {
+          if (!(await mayChange())) {
+            return failure("Owner/admin role required");
+          }
+          const branch = await flowGuardBranch(workspaceId, userId);
+          if (!branch) {
+            return failure(
+              "Flow changes are written to the default branch directly in this workspace: there is nothing to merge.",
+            );
+          }
+          const outcome = await openMergeRequest({
+            workspaceId,
+            branch,
+            userId,
+          });
+          return {
+            success:
+              outcome.status === "pull_request" || outcome.status === "merged",
+            ...outcome,
           };
         } catch (error) {
           return failure(error);
@@ -633,7 +699,7 @@ export function createFlowSyncTools({
 
     flow_update: tool({
       description:
-        'Change what starts a sync — only the three trigger controls: `poll` (a cron, or "off"), `webhook` ("on" / "off"; on gives the sync its webhook URL and installs or adopts the provider subscription where the connector can; polling keeps running), `resync` (a cron for the periodic full re-read, or "off"). Commits flows/<slug>.yml to main and pushes it to the workspace repo before saving: a write that does not land saves nothing and returns the cause. The result carries `commit`, the sha at main holding the definition. Owner or admin.',
+        'Change what starts a sync — only the three trigger controls: `poll` (a cron, or "off"), `webhook` ("on" / "off"; on gives the sync its webhook URL and installs or adopts the provider subscription where the connector can; polling keeps running), `resync` (a cron for the periodic full re-read, or "off"). Commits flows/<slug>.yml to main and pushes it to the workspace repo before saving: a write that does not land saves nothing and returns the cause. The result carries `commit`, the sha at main holding the definition. Over MCP and API keys (workspaces that protect their default branch) the file goes to a branch instead, the sync is not changed yet (`pending: true`), and flow_merge_to_main opens the merge request. Owner or admin.',
       inputSchema: z.object({
         flow: flowRef,
         poll: z.string().optional().describe('Cron for polling, or "off"'),
@@ -672,6 +738,7 @@ export function createFlowSyncTools({
             }
           }
           await assertFlowRepo(workspaceId);
+          const guardBranch = await flowGuardBranch(workspaceId, userId);
           const tz = timezone?.trim() || undefined;
           // One flow write per workspace at a time on this instance; across
           // instances the conditional commit below is the arbiter.
@@ -711,6 +778,7 @@ export function createFlowSyncTools({
               if (applied) return { refused: applied } as const;
               const committed = await commitFlowFile(flow, userId, undefined, {
                 expectBlobAtMain: base,
+                ...(guardBranch ? { branch: guardBranch } : {}),
               });
               if (!committed.ok) {
                 if (committed.conflict && attempt < FLOW_WRITE_ATTEMPTS) {
@@ -718,6 +786,16 @@ export function createFlowSyncTools({
                 }
                 return {
                   refused: `The flow definition could not be written to the workspace repo, so nothing was saved: ${committed.error ?? "unknown error"}`,
+                } as const;
+              }
+              // On a branch the definition is a proposal: the row, the
+              // provider subscription and the live triggers stay as they are
+              // until the merge puts the file on main.
+              if (guardBranch) {
+                return {
+                  proposed: flow,
+                  committed,
+                  branch: guardBranch,
                 } as const;
               }
               if (committed.sourceBlobSha) {
@@ -746,6 +824,21 @@ export function createFlowSyncTools({
             }
           });
           if ("refused" in outcome) return failure(outcome.refused);
+          if (outcome.proposed) {
+            return {
+              success: true,
+              pending: true,
+              id: outcome.proposed._id.toString(),
+              // What the triggers become once the merge lands.
+              proposedTriggers: triggersOf(outcome.proposed),
+              branch: outcome.branch,
+              commit: outcome.committed.commitSha ?? null,
+              fileChanged: outcome.committed.changed,
+              next: outcome.committed.changed
+                ? `Nothing is live yet. flows/<slug>.yml was written to branch ${outcome.branch}, not the default branch. Open a merge with ${MERGE_TOOL_FOR_KIND.flows}.`
+                : `Nothing new to write. If it is not on the default branch yet, open a merge with ${MERGE_TOOL_FOR_KIND.flows}.`,
+            };
+          }
           const { flow, committed, webhookOnBefore } = outcome;
 
           // As PUT: webhooks newly on need a provider subscription (adopted by
