@@ -13,6 +13,17 @@ fi
 # silently operate on THIS repo instead and five dbt specs fail with
 # "expected null not to be null". Unset before anything runs.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_QUARANTINE_PATH
-echo "pre-push: api vitest configs (dbt + apps) — SKIP_PREPUSH_TESTS=1 to bypass"
-pnpm --filter api run test:dbt --reporter=dot || exit 1
-pnpm --filter api run test:apps --reporter=dot || exit 1
+# Only the tests the branch can affect: vitest --changed follows the import
+# graph from every file changed since master to the tests that load it. A
+# change to what every test loads (lockfile, api/package.json, a vitest
+# config, src/test-support) runs both configs in full. CI runs everything.
+base=$(git merge-base HEAD origin/master 2>/dev/null || echo origin/master)
+if git diff --name-only "$base" | grep -qE '^(pnpm-lock\.yaml|api/package\.json|api/vitest\..*config\.ts|api/src/test-support/)'; then
+  echo "pre-push: api vitest configs (dbt + apps), in full — SKIP_PREPUSH_TESTS=1 to bypass"
+  only=""
+else
+  echo "pre-push: api vitest configs (dbt + apps), tests affected since $(git rev-parse --short "$base") — SKIP_PREPUSH_TESTS=1 to bypass"
+  only="--changed $base --passWithNoTests"
+fi
+pnpm --filter api run test:dbt --reporter=dot $only || exit 1
+pnpm --filter api run test:apps --reporter=dot $only || exit 1
