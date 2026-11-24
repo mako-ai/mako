@@ -27,6 +27,13 @@ on:
       - "connectors/**"
       - ".github/workflows/api-contract.yml"
 
+env:
+  # The API suites start thousands of short node processes (the connector
+  # folder tests spawn one runner per chunk). Node's on-disk compile cache
+  # lets each one reuse the bytecode the first one compiled: same code,
+  # about half the CPU per process.
+  NODE_COMPILE_CACHE: /tmp/node-compile-cache
+
 jobs:
   contract:
     name: OpenAPI contract + drift check
