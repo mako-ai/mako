@@ -250,6 +250,12 @@ export interface SyncChunkOptions {
    */
   fullRead?: boolean;
   /**
+   * Rows per staging load for this entity (the layout's `flushBatchRows`).
+   * Absent: the SYNC_BULK_FLUSH_BATCH_SIZE default. The byte cap and the
+   * memory-error halving still apply.
+   */
+  flushBatchRows?: number;
+  /**
    * Explicit fetch scope for a CDC backfill chunk, decided once per entity
    * and run by sync-cdc/backfill-fetch-mode.ts. When present it replaces the
    * `_syncedAt` incremental anchor below:
@@ -1027,6 +1033,7 @@ async function flushBulkBuffer(
   schemaFields?: FieldMeta[],
   onBatchFlushed?: () => Promise<void>,
   stagingSuffix: string = bulkStagingSuffix(),
+  flushBatchRows?: number,
 ): Promise<{ flushed: number }> {
   const initialCount = await tempCollection.countDocuments(NOT_STAGED);
   if (initialCount === 0) return { flushed: 0 };
@@ -1035,7 +1042,8 @@ async function flushBulkBuffer(
     cdcAdapter.loadStagingFromParquet?.bind(cdcAdapter);
   if (!loadStagingFromParquet) return { flushed: 0 };
 
-  let currentBatchSize = FLUSH_BATCH_SIZE;
+  const startBatchSize = flushBatchRows ?? FLUSH_BATCH_SIZE;
+  let currentBatchSize = startBatchSize;
   // Bytes per batch (BSON size of the buffered rows):
   // SYNC_BULK_FLUSH_BATCH_BYTES, else a quarter of the DuckDB memory limit.
   const batchBytes =
@@ -1071,7 +1079,7 @@ async function flushBulkBuffer(
   const DELETE_CHUNK = 2000;
   const CONSECUTIVE_OK_TO_GROW = 5;
   let consecutiveSuccesses = 0;
-  let oomCeiling = FLUSH_BATCH_SIZE;
+  let oomCeiling = startBatchSize;
 
   let remaining = await tempCollection.countDocuments(NOT_STAGED);
   while (remaining > 0) {
@@ -1408,6 +1416,7 @@ export async function performBulkFlush(
     schemaFields,
     onBatchFlushed,
     bulkStagingSuffix(options.fullRead),
+    options.flushBatchRows,
   );
 }
 

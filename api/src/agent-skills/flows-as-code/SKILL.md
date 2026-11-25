@@ -126,6 +126,7 @@ entities:
       partitionField: _syncedAt     # REQUIRED per layout
       partitionGranularity: day     # day | hour | month | year
       clusterFields: [id, status_id]
+      flushBatchRows: 20000         # optional: rows per staging load (default 2000); fewer loads for a very large entity
       enabled: true
     - entity: activities:Call       # Close activities are sub-typed "activities:<Type>"
       partitionField: _syncedAt

@@ -49,6 +49,7 @@ async function main(): Promise<void> {
           partitionField: "created_at",
           partitionGranularity: "day",
           clusterFields: ["customer_id"],
+          flushBatchRows: 20000,
           enabled: true,
         },
       ],
@@ -77,6 +78,13 @@ async function main(): Promise<void> {
     assert.equal(
       (parsed.entityLayouts?.[0] as { entity?: string })?.entity,
       "charges",
+    );
+    // The per-entity flush size survives the schema, the file and the read.
+    assert.equal(doc.entityLayouts?.[0]?.flushBatchRows, 20000);
+    assert.equal(
+      (parsed.entityLayouts?.[0] as { flushBatchRows?: number })
+        ?.flushBatchRows,
+      20000,
     );
     assert.equal(parsed.typeCoercions?.length, 1);
     assert.equal(parsed.queries?.length, 1);

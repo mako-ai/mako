@@ -532,6 +532,63 @@ describe("bulk flush batch bytes", () => {
   }, 60_000);
 });
 
+describe("per-entity flushBatchRows", () => {
+  // The suite default is 50 rows per load (SYNC_BULK_FLUSH_BATCH_SIZE above).
+  async function bufferAndFlush(rows: number, flushBatchRows?: number) {
+    collections.clear();
+    staging = [];
+    live = [];
+    loadSizes = [];
+    failingLoadCalls = new Set();
+    sourceRows = Array.from({ length: rows }, (_, i) => ({
+      id: `lead_${String(i).padStart(5, "0")}`,
+      date_created: SAME_DAY,
+      date_updated: SAME_DAY,
+    }));
+    const options = runOptions("append_dedup");
+    await performSyncChunk({ ...options, maxIterations: 1_000 });
+    await performBulkFlush({ ...options, flushBatchRows });
+  }
+
+  it("absent: loads of the default size, ceil(rows / default)", async () => {
+    await bufferAndFlush(250);
+    expect(loadSizes).toEqual([50, 50, 50, 50, 50]);
+  }, 60_000);
+
+  it("250 rows with flushBatchRows 200: 2 loads, 200 then 50", async () => {
+    await bufferAndFlush(250, 200);
+    expect(loadSizes).toEqual([200, 50]);
+    expect(staging).toHaveLength(250);
+  }, 60_000);
+
+  it("the byte budget still splits a batch below flushBatchRows", async () => {
+    process.env.SYNC_BULK_FLUSH_BATCH_BYTES = "10000";
+    try {
+      collections.clear();
+      staging = [];
+      loadSizes = [];
+      sourceRows = Array.from({ length: 60 }, (_, i) => ({
+        id: `lead_${String(i).padStart(5, "0")}`,
+        date_created: SAME_DAY,
+        date_updated: SAME_DAY,
+        attendees: Array.from({ length: 20 }, (_, k) => ({
+          email: `person${k}@agence.fr`,
+          name: `Person ${k} of meeting ${i}`,
+          status: "yes",
+        })),
+      }));
+      const options = runOptions("append_dedup");
+      await performSyncChunk({ ...options, maxIterations: 1_000 });
+      await performBulkFlush({ ...options, flushBatchRows: 1_000 });
+    } finally {
+      delete process.env.SYNC_BULK_FLUSH_BATCH_BYTES;
+    }
+    expect(staging).toHaveLength(60);
+    expect(loadSizes.length).toBeGreaterThanOrEqual(60 / 6);
+    expect(Math.max(...loadSizes)).toBeLessThanOrEqual(6);
+  }, 60_000);
+});
+
 describe("flush batch size after a DuckDB memory error", () => {
   const next = (batchSize: number, rowsRead: number) =>
     flushBatchSizeAfterMemoryError({ batchSize, rowsRead, minBatchSize: 100 });
