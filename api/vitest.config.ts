@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { DurationSequencer } from "./scripts/vitest-duration-sequencer";
 
 /**
  * Vitest config scoped to the dbt / Transforms test suite.
@@ -12,6 +13,8 @@ import { defineConfig } from "vitest/config";
  */
 export default defineConfig({
   test: {
+    // `--shard` by file duration (CI runs this config in shards).
+    sequence: { sequencer: DurationSequencer },
     // MongoMemoryServer.create() retries a port clash or a slow start (src/test-support/mongo-memory.ts).
     setupFiles: ["./src/test-support/mongo-memory.ts"],
     environment: "node",
