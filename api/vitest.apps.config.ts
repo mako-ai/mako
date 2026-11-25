@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { DurationSequencer } from "./scripts/vitest-duration-sequencer";
 
 /**
  * Apps's worktree and adversarial suites, in their OWN vitest run.
@@ -13,6 +14,8 @@ import { defineConfig } from "vitest/config";
  */
 export default defineConfig({
   test: {
+    // `--shard` by file duration (CI runs this config in shards).
+    sequence: { sequencer: DurationSequencer },
     // MongoMemoryServer.create() retries a port clash or a slow start (src/test-support/mongo-memory.ts).
     setupFiles: ["./src/test-support/mongo-memory.ts"],
     environment: "node",
