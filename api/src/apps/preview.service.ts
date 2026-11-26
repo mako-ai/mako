@@ -80,6 +80,15 @@ export interface ViewerIdentity {
 }
 
 const PREVIEW_TTL_MS = 30 * 60 * 1000;
+/**
+ * A published token that names who it was minted for (a member or a share)
+ * is re-authorized on every use (published-grant-access.ts), so its expiry
+ * is not what revokes access and can outlive any open tab. Nothing renews
+ * the token of an open frame, and apps fetch data lazily: with 30 min, a
+ * dashboard left open past the next :30 got 404 on its next data read
+ * (INTL Sales Dashboard, 2026-11-06).
+ */
+const PUBLISHED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const grants = new Map<string, PreviewGrant>();
 
 function sweep(): void {
@@ -175,8 +184,8 @@ export function mintPublishedGrant(input: {
    * Make the token a pure function of a fixed time window (app-origin.ts):
    * every mint for the same viewer, app and commit inside one window is the
    * SAME string, so the asset URLs under it are the same URLs and the
-   * browser cache can answer them. Expiry = window end + the usual TTL, so a
-   * token is never minted with less than PREVIEW_TTL_MS left.
+   * browser cache can answer them. Expiry = window end + the TTL, so a
+   * token is never minted with less than its TTL left.
    */
   stableWindowMs?: number;
   /** Minted by a public share link: its `shareFingerprint`. */
@@ -188,9 +197,10 @@ export function mintPublishedGrant(input: {
   notAfter?: number;
 }): PreviewGrant {
   const now = Date.now();
+  const ttl = input.viewer || input.share ? PUBLISHED_TTL_MS : PREVIEW_TTL_MS;
   const windowed = input.stableWindowMs
-    ? stableWindow(now, input.stableWindowMs).end + PREVIEW_TTL_MS
-    : now + PREVIEW_TTL_MS;
+    ? stableWindow(now, input.stableWindowMs).end + ttl
+    : now + ttl;
   const exp =
     input.notAfter !== undefined
       ? Math.min(windowed, input.notAfter)
@@ -219,13 +229,22 @@ export function mintPublishedGrant(input: {
 /**
  * What a share-minted token stores instead of the share token itself: an
  * HMAC of it. The token's payload is readable, and the share token is a
- * lasting credential while the pub token lasts at most a window + 30 min,
- * so the pub token must not reveal it. The HMAC still lets the serving
+ * lasting credential while the pub token can outlive it (a viewer or share
+ * token lasts PUBLISHED_TTL_MS), so the pub token must not reveal it. The HMAC still lets the serving
  * route check that the share it came from is the app's CURRENT share.
  */
-export function shareFingerprint(shareToken: string): string {
+export function shareFingerprint(
+  shareToken: string,
+  passwordHash?: string | null,
+): string {
+  // The password is part of what a share IS: setting, changing or removing it
+  // invalidates every token minted before. No password hashes as before.
   return createHmac("sha256", resolveSecret())
-    .update(`app-share:${shareToken}`)
+    .update(
+      passwordHash
+        ? `app-share:${shareToken}:pw:${passwordHash}`
+        : `app-share:${shareToken}`,
+    )
     .digest("base64url")
     .slice(0, 22);
 }
