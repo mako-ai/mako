@@ -11,6 +11,7 @@
     "dist",
     "src/**/*.test.ts",
     "src/**/*.spec.ts",
+    "src/database/pg/drizzle.config.ts",
     "src/databases/test-support/**"
   ]
 }

@@ -34,6 +34,29 @@ services:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
+  # Local platform Postgres (pgvector + PG 17) for offline development and
+  # testing the MongoDB -> Neon Postgres migration. Exposed on port 5433 to
+  # avoid clashing with any local Postgres on 5432 or Hatchet's internal DB.
+  # Connect with:
+  #   POSTGRES_URL=postgresql://mako:mako@localhost:5433/mako
+  postgres-platform:
+    image: pgvector/pgvector:pg17
+    container_name: mako-postgres-platform
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: mako
+      POSTGRES_PASSWORD: mako
+      POSTGRES_DB: mako
+    volumes:
+      - postgres-platform:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mako -d mako"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   hatchet-postgres:
     profiles: ["workflows"]
     image: postgres:16-alpine
@@ -96,3 +119,4 @@ services:
 
 volumes:
   hatchet-postgres:
+  postgres-platform:

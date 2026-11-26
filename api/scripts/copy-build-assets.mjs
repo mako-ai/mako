@@ -35,14 +35,17 @@ const copy = (from, to) => {
   copied++;
 };
 
-// 1. Assets that live next to the source: icons, skill markdown, Python.
+// 1. Assets that live next to the source: icons, skill markdown, Python, PG SQL migrations.
 //    src/<path> -> dist/<path>
 const src = path.join(apiDir, "src");
+const pgMigrationsPrefix = `database${path.sep}pg${path.sep}migrations${path.sep}`;
 for (const rel of walk(src)) {
   const isAsset =
     rel.endsWith(".svg") ||
     rel.endsWith(".py") ||
-    (rel.startsWith(`agent-skills${path.sep}`) && rel.endsWith(".md"));
+    (rel.startsWith(`agent-skills${path.sep}`) && rel.endsWith(".md")) ||
+    (rel.startsWith(pgMigrationsPrefix) &&
+      (rel.endsWith(".sql") || rel.endsWith(".json")));
   if (isAsset) copy(path.join(src, rel), path.join(dist, rel));
 }
 

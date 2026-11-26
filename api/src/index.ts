@@ -12,6 +12,7 @@ import fs from "fs";
 import path from "path";
 import type { Context } from "hono";
 import { connectDatabase } from "./database/schema";
+import { closePgConnections } from "./database/pg/client";
 import { ensureFlowExecutionTtlIndex } from "./database/flow-execution-retention";
 import {
   injectOgTags,
@@ -601,6 +602,9 @@ async function gracefulShutdown(
       await mongoose.connection.close();
       logger.info("Mongoose connection closed");
     }
+
+    // Close platform Postgres connections if opened
+    await closePgConnections();
   } catch (error) {
     logger.error("Error during graceful shutdown", { error });
     exitCode = 1;
