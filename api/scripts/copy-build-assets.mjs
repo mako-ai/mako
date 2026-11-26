@@ -39,13 +39,15 @@ const copy = (from, to) => {
 //    src/<path> -> dist/<path>
 const src = path.join(apiDir, "src");
 const pgMigrationsPrefix = `database${path.sep}pg${path.sep}migrations${path.sep}`;
+const pgPostBackfillPrefix = `database${path.sep}pg${path.sep}post-backfill${path.sep}`;
 for (const rel of walk(src)) {
   const isAsset =
     rel.endsWith(".svg") ||
     rel.endsWith(".py") ||
     (rel.startsWith(`agent-skills${path.sep}`) && rel.endsWith(".md")) ||
     (rel.startsWith(pgMigrationsPrefix) &&
-      (rel.endsWith(".sql") || rel.endsWith(".json")));
+      (rel.endsWith(".sql") || rel.endsWith(".json"))) ||
+    (rel.startsWith(pgPostBackfillPrefix) && rel.endsWith(".sql"));
   if (isAsset) copy(path.join(src, rel), path.join(dist, rel));
 }
 
