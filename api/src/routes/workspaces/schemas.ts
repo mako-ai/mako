@@ -53,6 +53,12 @@ export const AutoJoinBody = jsonBody(
   }),
 );
 export const LinkPreviewsBody = jsonBody(z.object({ enabled: z.boolean() }));
+export const BigQueryByteCapBody = jsonBody(
+  z.object({
+    // GiB; null clears the setting (the 20 GiB default); 0 turns the cap off.
+    gb: z.number().min(0).max(1_000_000).nullable(),
+  }),
+);
 export const CreateInviteBody = jsonBody(
   z.object({ email: z.string(), role: MemberRole }),
 );

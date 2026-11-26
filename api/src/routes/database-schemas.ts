@@ -629,12 +629,12 @@ const DATABASE_SCHEMAS: Record<string, DatabaseSchemaResponse> = {
       },
       {
         name: "agent_max_bytes_billed_gb",
-        label: "Agent query byte cap (GiB, optional)",
+        label: "Interactive query byte cap (GiB, optional)",
         type: "number",
         required: false,
         placeholder: "500",
         helperText:
-          "BigQuery refuses an agent or MCP read that would bill more, before it runs. Empty: 500 GiB. 0: no cap.",
+          "BigQuery refuses an agent, MCP, console, notebook or binding-preview query that would bill more, before it runs. Empty: the workspace setting, else 500 GiB for agent and MCP queries only. 0: no cap.",
         advanced: true,
       },
     ],

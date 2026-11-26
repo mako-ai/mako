@@ -17,9 +17,11 @@ import {
 } from "../databases/drivers/bigquery/errors";
 import {
   isAgentJob,
+  isInteractiveJob,
   resolveAgentJobCaps,
 } from "../databases/drivers/bigquery/agent-caps";
 import { withQueryLabels } from "./bigquery-labels";
+import { primeWorkspaceByteCapCache } from "./workspace-byte-cap";
 import {
   AGENT_BIGQUERY_JOB_TIMEOUT_MS,
   AGENT_BIGQUERY_MAX_BYTES_BILLED,
@@ -108,12 +110,12 @@ async function testRequestBody(): Promise<void> {
     assert.match(readable, /would bill 200 GiB on BigQuery/);
     assert.match(
       readable,
-      /over the 100 GiB maximumBytesBilled cap on agent and MCP queries/,
+      /over the 100 GiB maximumBytesBilled cap on interactive queries/,
     );
     assert.match(readable, /agent_max_bytes_billed_gb/);
     assert.match(readable, /did not run and cost nothing/);
     assert.match(readable, /partition column/);
-    assert.match(readable, /AGENT_BIGQUERY_MAX_BYTES_BILLED/);
+    assert.match(readable, /workspace byte cap/);
 
     // An agent or MCP job gets both caps by default; the engine rewords
     // BigQuery's refusal itself.
@@ -181,9 +183,106 @@ async function testRequestBody(): Promise<void> {
       { mako_source: "app_binding", mako_trigger: "scheduler" },
       () => service.executeQuery(database, "SELECT 1", {}),
     );
+    // A workspace without its own cap keeps today's behaviour: a console,
+    // CDC and the scheduler get neither cap.
     for (const post of posts.slice(4)) {
       assert.equal("jobTimeoutMs" in post.body, false);
       assert.equal("maximumBytesBilled" in post.body, false);
+    }
+
+    // An MCP call gets the platform default (500 GiB); its own maximumBytesBilled wins.
+    posts.length = 0;
+    await withQueryLabels(
+      {
+        mako_source: "agent",
+        mako_trigger: "mcp",
+        mako_tool: "sql_execute_query",
+      },
+      () => service.executeQuery(database, "SELECT 1", {}),
+    );
+    assert.equal(
+      posts[0].body.maximumBytesBilled,
+      String(AGENT_BIGQUERY_MAX_BYTES_BILLED),
+    );
+    await withQueryLabels(
+      {
+        mako_source: "agent",
+        mako_trigger: "mcp",
+        mako_tool: "sql_execute_query",
+      },
+      () =>
+        service.executeQuery(database, "SELECT 1", {
+          maximumBytesBilled: 200 * 1024 ** 3,
+        }),
+    );
+    assert.equal(posts[1].body.maximumBytesBilled, String(200 * 1024 ** 3));
+
+    // Without a workspace cap, a notebook and a binding preview are not capped.
+    for (const labels of [
+      { mako_source: "notebook", mako_trigger: "kernel" },
+      { mako_source: "app_binding", mako_trigger: "preview" },
+      { mako_source: "console", mako_trigger: "console_ui" },
+    ]) {
+      posts.length = 0;
+      await withQueryLabels(labels, () =>
+        service.executeQuery(database, "SELECT 1", {}),
+      );
+      assert.equal("maximumBytesBilled" in posts[0].body, false);
+    }
+
+    // With the workspace set to 20 GiB, a notebook, a console and a binding
+    // preview are capped; a published app refresh and a dbt defer build are
+    // not, and neither are sync paths.
+    primeWorkspaceByteCapCache("ws1", 20);
+    for (const labels of [
+      { mako_source: "notebook", mako_trigger: "kernel" },
+      { mako_source: "app_binding", mako_trigger: "preview" },
+      { mako_source: "console", mako_trigger: "console_ui" },
+      { mako_source: "agent", mako_trigger: "mcp" },
+    ]) {
+      posts.length = 0;
+      await withQueryLabels(labels, () =>
+        service.executeQuery(database, "SELECT 1", {}),
+      );
+      assert.equal(posts[0].body.maximumBytesBilled, String(20 * 1024 ** 3));
+    }
+    for (const labels of [
+      { mako_source: "app_binding", mako_trigger: "viewer" },
+      { mako_source: "dbt_defer" },
+      { mako_source: "flow" },
+      { mako_source: "cdc" },
+      { mako_source: "app_binding", mako_trigger: "scheduler" },
+      { mako_source: "console", mako_trigger: "api" },
+    ]) {
+      posts.length = 0;
+      await withQueryLabels(labels, () =>
+        service.executeQuery(database, "SELECT 1", {}),
+      );
+      assert.equal("maximumBytesBilled" in posts[0].body, false);
+    }
+
+    // Every job body carries the caller labels, label-safe, no email.
+    posts.length = 0;
+    await withQueryLabels(
+      {
+        mako_source: "agent",
+        mako_trigger: "mcp",
+        mako_tool: "sql_execute_query",
+        mako_user: "Joan.R@RealAdvisor.com",
+      },
+      () => service.executeQuery(database, "SELECT 1", {}),
+    );
+    const labels = posts[0].body.labels as Record<string, string>;
+    assert.equal(labels.mako_caller_kind, "agent");
+    assert.equal(labels.mako_surface, "mcp");
+    assert.match(labels.mako_caller, /^h_[0-9a-f]{12}$/);
+    for (const [key, value] of Object.entries(labels)) {
+      assert.match(key, /^[a-z][a-z0-9_-]{0,62}$/);
+      assert.match(value, /^[a-z0-9_-]{1,63}$/);
+      // mako_user is the caller id the entry point set (never an email).
+      if (key !== "mako_user") {
+        assert.equal(value.includes("realadvisor"), false);
+      }
     }
 
     // A timeout BigQuery enforced comes back naming the cap.
@@ -209,6 +308,8 @@ function testAgentCaps(): void {
   assert.equal(isAgentJob({ mako_trigger: "mcp" }), true);
   assert.equal(isAgentJob({ mako_tool: "run_console" }), true);
   assert.equal(isAgentJob({ mako_source: "console" }), false);
+  assert.equal(isInteractiveJob({ mako_source: "console" }), true);
+  assert.equal(isInteractiveJob({ mako_source: "cdc" }), false);
   assert.equal(isAgentJob({ mako_tool: "x", mako_source: "flow" }), false);
   assert.equal(isAgentJob({ mako_tool: "x", mako_trigger: "publish" }), false);
   assert.deepEqual(
@@ -229,6 +330,41 @@ function testAgentCaps(): void {
       explicitBytes: 5,
     }),
     { maximumBytesBilled: 5 },
+  );
+  // The workspace setting sits between the connection and the default.
+  const GIB = 1024 ** 3;
+  const agent = { mako_source: "agent" };
+  assert.equal(
+    resolveAgentJobCaps({ connection: {}, labels: agent, workspaceGb: 50 })
+      .maximumBytesBilled,
+    50 * GIB,
+  );
+  assert.equal(
+    resolveAgentJobCaps({
+      connection: { agent_max_bytes_billed_gb: 5 },
+      labels: agent,
+      workspaceGb: 50,
+    }).maximumBytesBilled,
+    5 * GIB,
+  );
+  assert.equal(
+    resolveAgentJobCaps({ connection: {}, labels: agent, workspaceGb: 0 })
+      .maximumBytesBilled,
+    undefined,
+  );
+  // With no connection or workspace setting a console is not capped.
+  assert.deepEqual(
+    resolveAgentJobCaps({ connection: {}, labels: { mako_source: "console" } }),
+    {},
+  );
+  // Sync paths ignore the workspace setting.
+  assert.deepEqual(
+    resolveAgentJobCaps({
+      connection: {},
+      labels: { mako_source: "flow" },
+      workspaceGb: 1,
+    }),
+    {},
   );
   // Invalid settings fall back to the defaults.
   assert.equal(
@@ -279,6 +415,14 @@ function testOtherErrors(): void {
     ) ?? "",
     /would bill more on BigQuery, over the 1 TiB maximumBytesBilled cap/,
   );
+  // The message gives the estimate, the cap and the override to pass.
+  const refusal = describeBytesBilledCap(
+    "Query exceeded limit for bytes billed: 21474836480. 118979999744 or higher required.",
+    20 * 1024 ** 3,
+  );
+  assert.match(refusal ?? "", /would bill 110\.8 GiB/);
+  assert.match(refusal ?? "", /over the 20 GiB maximumBytesBilled cap/);
+  assert.match(refusal ?? "", /maxBytesBilled: 119185342464/);
 }
 
 async function main(): Promise<void> {

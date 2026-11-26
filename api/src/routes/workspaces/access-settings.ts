@@ -17,7 +17,14 @@ import {
   OPEN_RESPONSES,
   createRouter,
 } from "../../openapi/core";
-import { AutoJoinBody, LinkPreviewsBody, IdParam } from "./schemas";
+import {
+  AutoJoinBody,
+  BigQueryByteCapBody,
+  LinkPreviewsBody,
+  IdParam,
+} from "./schemas";
+import { clearWorkspaceByteCapCache } from "../../services/workspace-byte-cap";
+import { AGENT_BIGQUERY_MAX_BYTES_BILLED } from "../../config/long-running-queries";
 import { fail, failFromThrown } from "../lib/respond";
 
 const logger = loggers.workspace();
@@ -113,6 +120,78 @@ workspaceAccessSettingsRoutes.openapi(
       logger.error("Error updating auto-join", { error });
       return failFromThrown(c, error, "Failed to update auto-join");
     }
+  },
+);
+
+// BigQuery byte cap — read
+workspaceAccessSettingsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/bigquery-byte-cap",
+    tags: ["Workspaces"],
+    summary: "Byte cap on interactive BigQuery queries",
+    description:
+      "The most GiB one interactive BigQuery query (agent, MCP, console, notebook, binding preview) may bill. `gb` is null when unset: agent and MCP queries then carry the platform default (`defaultGb`) and consoles, notebooks and previews are uncapped; 0 means no cap. Sync, flows, dbt and published apps are never capped.",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: { params: IdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const workspace = c.get("workspace");
+    if (c.req.param("id") !== workspace._id.toString()) {
+      return fail(c, 400, "Workspace ID mismatch");
+    }
+    const fresh = await Workspace.findById(workspace._id)
+      .select("settings.bigqueryMaxBytesBilledGb")
+      .lean();
+    return c.json({
+      success: true,
+      data: {
+        gb: fresh?.settings?.bigqueryMaxBytesBilledGb ?? null,
+        defaultGb: AGENT_BIGQUERY_MAX_BYTES_BILLED / 1024 ** 3,
+      },
+    });
+  },
+);
+
+// BigQuery byte cap — write (owners and admins)
+workspaceAccessSettingsRoutes.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}/bigquery-byte-cap",
+    tags: ["Workspaces"],
+    summary: "Set the byte cap on interactive BigQuery queries",
+    description:
+      "gb in GiB. null clears it (the default applies). 0 turns the cap off. A connection's own agent_max_bytes_billed_gb wins over this.",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin"]),
+    ] as const,
+    request: { params: IdParam, body: BigQueryByteCapBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const workspace = c.get("workspace");
+    if (c.req.param("id") !== workspace._id.toString()) {
+      return fail(c, 400, "Workspace ID mismatch");
+    }
+    const { gb } = c.req.valid("json");
+    await Workspace.updateOne(
+      { _id: workspace._id },
+      gb === null
+        ? { $unset: { "settings.bigqueryMaxBytesBilledGb": "" } }
+        : { $set: { "settings.bigqueryMaxBytesBilledGb": gb } },
+    );
+    clearWorkspaceByteCapCache(workspace._id.toString());
+    logger.info("Workspace BigQuery byte cap updated", {
+      workspaceId: workspace._id.toString(),
+      by: c.get("user")?.id,
+      gb,
+    });
+    return c.json({ success: true, data: { gb } });
   },
 );
 

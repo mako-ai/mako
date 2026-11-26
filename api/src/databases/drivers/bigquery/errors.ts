@@ -97,11 +97,13 @@ export function describeBytesBilledCap(
     return null;
   }
   const required = Number(error.match(/(\d+) or higher required/)?.[1]);
-  const scan =
-    Number.isFinite(required) && required > 0
-      ? `would bill ${formatBytes(required)}`
-      : "would bill more";
-  return `This query ${scan} on BigQuery, over the ${formatBytes(capBytes)} maximumBytesBilled cap on agent and MCP queries, so it did not run and cost nothing. Read fewer bytes: filter on the table's partition column, select only the columns you need, or narrow the date range. To raise the cap, set "agent_max_bytes_billed_gb" on this BigQuery connection (0 turns it off); the default for every connection is AGENT_BIGQUERY_MAX_BYTES_BILLED.`;
+  const known = Number.isFinite(required) && required > 0;
+  const scan = known
+    ? `would bill ${formatBytes(required)}`
+    : "would bill more";
+  // Round the suggested override up to a whole GiB so it clears the estimate.
+  const suggest = known ? Math.ceil(required / GIB) * GIB : capBytes * 10;
+  return `This query ${scan} on BigQuery, over the ${formatBytes(capBytes)} maximumBytesBilled cap on interactive queries, so it did not run and cost nothing. Read fewer bytes: filter on the table's partition column, select only the columns you need, or narrow the date range. To run it anyway, pass maxBytesBilled: ${suggest} (bytes) to sql_execute_query on purpose. To raise the cap for everyone, set "agent_max_bytes_billed_gb" on this BigQuery connection, or the workspace byte cap in workspace settings (0 turns it off).`;
 }
 
 function formatDuration(ms: number): string {
