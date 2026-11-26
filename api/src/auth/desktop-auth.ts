@@ -19,7 +19,7 @@
  *   which never leaves the legitimate desktop app.
  */
 import { createHash, randomBytes, timingSafeEqual } from "crypto";
-import { DesktopAuthCode } from "../database/schema";
+import { authRepo } from "../repositories/auth";
 import { loggers } from "../logging";
 
 const logger = loggers.auth();
@@ -56,8 +56,8 @@ export async function createDesktopAuthCode(
 
   const code = randomBytes(32).toString("base64url");
 
-  await DesktopAuthCode.create({
-    _id: sha256Base64url(code),
+  await authRepo.createDesktopAuthCode({
+    id: sha256Base64url(code),
     userId,
     challenge,
     expiresAt: new Date(Date.now() + DESKTOP_AUTH_CODE_TTL_MS),
@@ -87,9 +87,9 @@ export async function redeemDesktopAuthCode(
   }
 
   // Atomic single-use: whoever deletes the doc first wins; replays find nothing.
-  const doc = await DesktopAuthCode.findOneAndDelete({
-    _id: sha256Base64url(code),
-  }).lean();
+  const doc = await authRepo.redeemAndDeleteDesktopAuthCode(
+    sha256Base64url(code),
+  );
 
   if (!doc) {
     logger.warn("Desktop auth redemption rejected: unknown or reused code");

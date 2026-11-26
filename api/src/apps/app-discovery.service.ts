@@ -12,7 +12,7 @@
  */
 import mongoose, { Types } from "mongoose";
 import { AppProject, type IAppProject } from "../database/workspace-schema";
-import { User } from "../database/schema";
+import { authRepo } from "../repositories/auth";
 import { canSeeIndexedApp } from "./app-authorization";
 import {
   loadAppsIndex,
@@ -229,10 +229,8 @@ export async function loadDiscoveryBase(
 
 async function ownerEmails(ids: string[]): Promise<Map<string, string>> {
   if (ids.length === 0) return new Map();
-  const users = await User.find({ _id: { $in: ids } })
-    .select("_id email")
-    .lean();
-  return new Map(users.map(u => [String(u._id), u.email]));
+  const users = await authRepo.findUsersByIds(ids);
+  return new Map(users.map(u => [u.id, u.email]));
 }
 
 /**

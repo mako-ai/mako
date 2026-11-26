@@ -9,7 +9,7 @@ import {
   DatabaseConnection,
   SavedConsole,
 } from "../../database/workspace-schema";
-import { User } from "../../database/schema";
+import { authRepo } from "../../repositories/auth";
 import { FolderChainCache } from "../../utils/folder-chain";
 import { queryExecutionService } from "../query-execution.service";
 import { queryExecutionSourceLabel } from "../query-execution-source";
@@ -27,7 +27,7 @@ const REVISION_SYNC_MAX = 100;
 
 async function ownerEmail(ownerId: string | undefined) {
   if (!ownerId) return undefined;
-  const ownerUser = await User.findById(ownerId).select("email").lean();
+  const ownerUser = await authRepo.findUserById(ownerId);
   return ownerUser?.email;
 }
 

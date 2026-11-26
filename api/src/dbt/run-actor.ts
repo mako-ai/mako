@@ -179,8 +179,8 @@ export const ACTOR_NAME_LOOKUP_TIMEOUT_MS = 1000;
 async function lookUpNames(actor: DbtRunActor): Promise<DbtRunActor> {
   const next: DbtRunActor = { ...actor };
   if (next.userId && !next.userName && next.userId !== "agent") {
-    const { User } = await import("../database/schema");
-    const user = await User.findById(next.userId).select("email").lean();
+    const { authRepo } = await import("../repositories/auth");
+    const user = await authRepo.findUserById(next.userId);
     if (user?.email) next.userName = handleFromEmail(user.email);
   }
   if (next.oauthClientId && !next.oauthClientName) {

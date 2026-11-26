@@ -1,0 +1,733 @@
+/**
+ * 5-stage dual-run `AuthRepository` powered by `MigrationRouter` (`domain = "auth"`).
+ *
+ * Decision #3 semantics:
+ *   - New users created during dual-write mint ONE RFC 9562 UUIDv7 written to BOTH
+ *     Postgres (`id = uuid`, `legacy_id = uuid`) and Mongo (`_id = uuid`).
+ *   - Legacy users resolve seamlessly via `users.legacy_id` <-> `users.id` (UUIDv7),
+ *     including Stage 4 reverse-sync back to their original Mongo `_id`.
+ *   - `sessions` start EMPTY in Postgres (one-time logout on cutover):
+ *       * Stages 1–3 (`mongo_only`, `dual_write_mongo_read`, `dual_write_shadow_compare`):
+ *         session CRUD runs against Mongo ONLY (zero PG writes, zero raw tokens in Inngest).
+ *       * Stages 4–5 (`dual_write_pg_read`, `pg_only`):
+ *         session CRUD runs against Postgres hashed-token sessions ONLY (`token_hash = sha256(token)`).
+ *   - Records delete tombstones in `migration_tombstones` during Stages 2 & 3 for
+ *     migrated collections (`email_verifications`, `desktop_auth_codes`) so in-flight
+ *     backfills cannot resurrect deleted rows.
+ */
+import { randomUUID } from "node:crypto";
+import { getPgDb, type MakoPgDb } from "../../database/pg/client";
+import {
+  generateUuidv7,
+  isUuidv7,
+  newDualId,
+} from "../../database/pg/id-codec";
+import {
+  migrationRouter,
+  recordMigrationTombstone,
+  type MigrationRouter,
+} from "../../migration/router";
+import type { ShadowCompareOptions } from "../../migration/types";
+import {
+  canonicalizeUserForCompare,
+  canonicalizeUsersForCompare,
+  deriveUserUuidv7,
+  normalizeEmailKey,
+  sortRecordsById,
+} from "./mapper";
+import { MongoAuthRepository } from "./mongo.repo";
+import { PgAuthRepository } from "./pg.repo";
+import type {
+  AuthRepository,
+  CreateDesktopAuthCodeInput,
+  CreateEmailVerificationInput,
+  CreateOAuthAccountInput,
+  CreateSessionInput,
+  CreateUserInput,
+  DesktopAuthCodeRecord,
+  EmailVerificationRecord,
+  EmailVerificationType,
+  OAuthAccountRecord,
+  OAuthProviderName,
+  SessionRecord,
+  UpdateUserInput,
+  UpsertAttributionOnceInput,
+  UserAttributionRecord,
+  UserRecord,
+} from "./types";
+
+const AUTH_DOMAIN = "auth" as const;
+
+export const AUTH_SHADOW_OPTIONS: ShadowCompareOptions = {
+  redactKeys: ["code", "challenge", "hashedPassword", "email"],
+};
+
+export interface DualAuthRepositoryDeps {
+  mongo?: MongoAuthRepository;
+  pg?: PgAuthRepository;
+  router?: MigrationRouter;
+  getDb?: () => MakoPgDb;
+}
+
+export class DualAuthRepository implements AuthRepository {
+  readonly mongo: MongoAuthRepository;
+  readonly pg: PgAuthRepository;
+  private readonly router: MigrationRouter;
+  private readonly getDb: () => MakoPgDb;
+
+  constructor(deps: DualAuthRepositoryDeps = {}) {
+    this.mongo = deps.mongo ?? new MongoAuthRepository();
+    this.pg = deps.pg ?? new PgAuthRepository({ getDb: deps.getDb });
+    this.router = deps.router ?? migrationRouter;
+    this.getDb = deps.getDb ?? getPgDb;
+  }
+
+  private async getMode() {
+    return (await this.router.getState(AUTH_DOMAIN)).mode;
+  }
+
+  private async isMongoPrimaryDualWrite(): Promise<boolean> {
+    const mode = await this.getMode();
+    return (
+      mode === "dual_write_mongo_read" || mode === "dual_write_shadow_compare"
+    );
+  }
+
+  private async isPgSessionMode(): Promise<boolean> {
+    const mode = await this.getMode();
+    return mode === "dual_write_pg_read" || mode === "pg_only";
+  }
+
+  private async recordTombstones(
+    tableName: string,
+    ids: Iterable<string>,
+  ): Promise<void> {
+    const db = this.getDb();
+    for (const id of ids) {
+      if (id) {
+        await recordMigrationTombstone(tableName, id, db);
+      }
+    }
+  }
+
+  /**
+   * For Stage 4 PG->Mongo secondary writes & shadow reads on child records, map a PG user UUID back
+   * to the user's Mongo `_id` (`legacyId` for legacy users, or identical UUIDv7 for new users).
+   */
+  private async resolveMongoUserIdForReverseSync(
+    userId: string,
+  ): Promise<string> {
+    const pgUser = await this.pg.findUserById(userId);
+    return pgUser?.legacyId ?? userId;
+  }
+
+  private async resolveMongoUserIdsForReverseSync(
+    userIds: readonly string[],
+  ): Promise<string[]> {
+    if (userIds.length === 0) return [];
+    const pgUsers = await this.pg.findUsersByIds(userIds);
+    const byId = new Map<string, string>();
+    for (const u of pgUsers) {
+      const target = u.legacyId ?? u.id;
+      byId.set(u.id, target);
+      if (u.legacyId) {
+        byId.set(u.legacyId, target);
+      }
+    }
+    return userIds.map(id => byId.get(id.toLowerCase()) ?? byId.get(id) ?? id);
+  }
+
+  // ── User ID resolution helpers ──────────────────────────────────────────
+
+  async resolveUserUuid(idOrLegacyId: string): Promise<string | null> {
+    if (!idOrLegacyId) return null;
+    const mode = await this.getMode();
+    if (mode === "mongo_only") {
+      return this.mongo.resolveUserUuid(idOrLegacyId);
+    }
+    const fromPg = await this.pg.resolveUserUuid(idOrLegacyId);
+    if (fromPg) return fromPg;
+    if (mode === "pg_only") return null;
+    return this.mongo.resolveUserUuid(idOrLegacyId);
+  }
+
+  async getUserLegacyIdMap(): Promise<Map<string, string>> {
+    const mode = await this.getMode();
+    if (mode === "mongo_only") {
+      return this.mongo.getUserLegacyIdMap();
+    }
+    return this.pg.getUserLegacyIdMap();
+  }
+
+  // ── Users ───────────────────────────────────────────────────────────────
+
+  async findUserById(idOrLegacyId: string): Promise<UserRecord | null> {
+    const mode = await this.getMode();
+    const mongoLookupId =
+      mode === "dual_write_pg_read"
+        ? await this.resolveMongoUserIdForReverseSync(idOrLegacyId)
+        : idOrLegacyId;
+
+    return this.router.executeRead(
+      {
+        domain: AUTH_DOMAIN,
+        operation: "findUserById",
+        entityId: idOrLegacyId,
+      },
+      {
+        mongo: () => this.mongo.findUserById(mongoLookupId),
+        pg: () => this.pg.findUserById(idOrLegacyId),
+        canonicalize: canonicalizeUserForCompare,
+        shadowOptions: AUTH_SHADOW_OPTIONS,
+      },
+    );
+  }
+
+  async findUsersByIds(ids: readonly string[]): Promise<UserRecord[]> {
+    const mode = await this.getMode();
+    const mongoLookupIds =
+      mode === "dual_write_pg_read"
+        ? await this.resolveMongoUserIdsForReverseSync(ids)
+        : ids;
+
+    return this.router.executeRead(
+      { domain: AUTH_DOMAIN, operation: "findUsersByIds" },
+      {
+        mongo: () => this.mongo.findUsersByIds(mongoLookupIds),
+        pg: () => this.pg.findUsersByIds(ids),
+        canonicalize: canonicalizeUsersForCompare,
+        shadowOptions: AUTH_SHADOW_OPTIONS,
+      },
+    );
+  }
+
+  findUserByEmail(email: string): Promise<UserRecord | null> {
+    return this.router.executeRead(
+      { domain: AUTH_DOMAIN, operation: "findUserByEmail" },
+      {
+        mongo: () => this.mongo.findUserByEmail(email),
+        pg: () => this.pg.findUserByEmail(email),
+        canonicalize: canonicalizeUserForCompare,
+        shadowOptions: AUTH_SHADOW_OPTIONS,
+      },
+    );
+  }
+
+  findUsersByEmails(emails: readonly string[]): Promise<UserRecord[]> {
+    return this.router.executeRead(
+      { domain: AUTH_DOMAIN, operation: "findUsersByEmails" },
+      {
+        mongo: () => this.mongo.findUsersByEmails(emails),
+        pg: () => this.pg.findUsersByEmails(emails),
+        canonicalize: canonicalizeUsersForCompare,
+        shadowOptions: AUTH_SHADOW_OPTIONS,
+      },
+    );
+  }
+
+  createUser(input: CreateUserInput): Promise<UserRecord> {
+    const now = input.createdAt ?? new Date();
+    const id =
+      input.id ??
+      (input.createdAt
+        ? generateUuidv7(input.createdAt.getTime())
+        : generateUuidv7());
+    const pgId = deriveUserUuidv7(id, now);
+    const prepared: CreateUserInput = {
+      ...input,
+      id,
+      legacyId: input.legacyId ?? id,
+      email: normalizeEmailKey(input.email),
+      createdAt: now,
+      updatedAt: input.updatedAt ?? now,
+    };
+
+    return this.router.executeWrite(
+      {
+        domain: AUTH_DOMAIN,
+        operation: "createUser",
+        entityId: pgId,
+        retryPayload: { table: "users", userId: id, pgUserId: pgId },
+      },
+      {
+        mongo: () => this.mongo.createUser(prepared),
+        pg: () => this.pg.createUser(prepared),
+      },
+    );
+  }
+
+  async updateUser(
+    idOrLegacyId: string,
+    patch: UpdateUserInput,
+  ): Promise<UserRecord | null> {
+    const prepared: UpdateUserInput = {
+      ...patch,
+      updatedAt: patch.updatedAt ?? new Date(),
+    };
+    let resolvedLegacyId: string | undefined;
+
+    return this.router.executeWrite(
+      {
+        domain: AUTH_DOMAIN,
+        operation: "updateUser",
+        entityId: idOrLegacyId,
+        retryPayload: { table: "users", userId: idOrLegacyId },
+      },
+      {
+        mongo: () =>
+          this.mongo.updateUser(resolvedLegacyId ?? idOrLegacyId, prepared),
+        pg: async () => {
+          const updated = await this.pg.updateUser(idOrLegacyId, prepared);
+          if (updated?.legacyId) {
+            resolvedLegacyId = updated.legacyId;
+          }
+          return updated;
+        },
+      },
+    );
+  }
+
+  // ── User attributions ───────────────────────────────────────────────────
+
+  async upsertAttributionOnce(input: UpsertAttributionOnceInput): Promise<void> {
+    const prepared: UpsertAttributionOnceInput = {
+      ...input,
+      capturedAt: input.capturedAt ?? new Date(),
+    };
+    const mode = await this.getMode();
+    let mongoUserId = prepared.userId;
+    if (mode === "dual_write_pg_read") {
+      mongoUserId = await this.resolveMongoUserIdForReverseSync(prepared.userId);
+    }
+
+    return this.router.executeWrite(
+      {
+        domain: AUTH_DOMAIN,
+        operation: "upsertAttributionOnce",
+        entityId: prepared.userId,
+        retryPayload: {
+          table: "user_attributions",
+          userId: prepared.userId,
+        },
+      },
+      {
+        mongo: () =>
+          this.mongo.upsertAttributionOnce({ ...prepared, userId: mongoUserId }),
+        pg: () => this.pg.upsertAttributionOnce(prepared),
+      },
+    );
+  }
+
+  async findAttributionByUserId(
+    userId: string,
+  ): Promise<UserAttributionRecord | null> {
+    const mode = await this.getMode();
+    const mongoLookupUserId =
+      mode === "dual_write_pg_read"
+        ? await this.resolveMongoUserIdForReverseSync(userId)
+        : userId;
+
+    return this.router.executeRead(
+      {
+        domain: AUTH_DOMAIN,
+        operation: "findAttributionByUserId",
+        entityId: userId,
+      },
+      {
+        mongo: () => this.mongo.findAttributionByUserId(mongoLookupUserId),
+        pg: () => this.pg.findAttributionByUserId(userId),
+        canonicalize: rec =>
+          rec ? { ...rec, userId: "<matched-user>" } : null,
+        shadowOptions: AUTH_SHADOW_OPTIONS,
+      },
+    );
+  }
+
+  // ── OAuth accounts ──────────────────────────────────────────────────────
+
+  async findOAuthAccountByProvider(
+    provider: OAuthProviderName,
+    providerUserId: string,
+  ): Promise<OAuthAccountRecord | null> {
+    const mode = await this.getMode();
+    const shadowMode =
+      mode === "dual_write_shadow_compare" || mode === "dual_write_pg_read";
+    const userUuidMap = new Map<string, string>();
+
+    return this.router.executeRead(
+      {
+        domain: AUTH_DOMAIN,
+        operation: "findOAuthAccountByProvider",
+        entityId: `${provider}:${providerUserId}`,
+      },
+      {
+        mongo: async () => {
+          const rec = await this.mongo.findOAuthAccountByProvider(
+            provider,
+            providerUserId,
+          );
+          if (shadowMode && rec && !isUuidv7(rec.userId)) {
+            const mapped = await this.pg
+              .resolveUserUuid(rec.userId)
+              .catch(() => null);
+            if (mapped) {
+              userUuidMap.set(rec.userId, mapped);
+            }
+          }
+          return rec;
+        },
+        pg: () => this.pg.findOAuthAccountByProvider(provider, providerUserId),
+        canonicalize: rec =>
+          rec
+            ? {
+                ...rec,
+                userId:
+                  userUuidMap.get(rec.userId) ?? rec.userId.toLowerCase(),
+              }
+            : null,
+        shadowOptions: AUTH_SHADOW_OPTIONS,
+      },
+    );
+  }
+
+  async findOAuthAccountsByUserId(
+    userId: string,
+  ): Promise<OAuthAccountRecord[]> {
+    const mode = await this.getMode();
+    const mongoLookupUserId =
+      mode === "dual_write_pg_read"
+        ? await this.resolveMongoUserIdForReverseSync(userId)
+        : userId;
+
+    return this.router.executeRead(
+      {
+        domain: AUTH_DOMAIN,
+        operation: "findOAuthAccountsByUserId",
+        entityId: userId,
+      },
+      {
+        mongo: () => this.mongo.findOAuthAccountsByUserId(mongoLookupUserId),
+        pg: () => this.pg.findOAuthAccountsByUserId(userId),
+        canonicalize: records =>
+          sortRecordsById(records).map(r => ({
+            ...r,
+            userId: "<matched-user>",
+          })),
+        shadowOptions: AUTH_SHADOW_OPTIONS,
+      },
+    );
+  }
+
+  async findOAuthAccountsByUserIds(
+    userIds: readonly string[],
+  ): Promise<OAuthAccountRecord[]> {
+    const mode = await this.getMode();
+    const shadowMode =
+      mode === "dual_write_shadow_compare" || mode === "dual_write_pg_read";
+    const mongoLookupUserIds =
+      mode === "dual_write_pg_read"
+        ? await this.resolveMongoUserIdsForReverseSync(userIds)
+        : userIds;
+    const userUuidMap = new Map<string, string>();
+
+    return this.router.executeRead(
+      { domain: AUTH_DOMAIN, operation: "findOAuthAccountsByUserIds" },
+      {
+        mongo: async () => {
+          const recs =
+            await this.mongo.findOAuthAccountsByUserIds(mongoLookupUserIds);
+          if (shadowMode && recs.length > 0) {
+            const legacyIds = [
+              ...new Set(
+                recs.map(r => r.userId).filter(id => !isUuidv7(id)),
+              ),
+            ];
+            if (legacyIds.length > 0) {
+              const matchedUsers = await this.pg
+                .findUsersByIds(legacyIds)
+                .catch(() => []);
+              for (const u of matchedUsers) {
+                if (u.legacyId) {
+                  userUuidMap.set(u.legacyId, u.id);
+                }
+              }
+            }
+          }
+          return recs;
+        },
+        pg: () => this.pg.findOAuthAccountsByUserIds(userIds),
+        canonicalize: records =>
+          sortRecordsById(records).map(r => ({
+            ...r,
+            userId: userUuidMap.get(r.userId) ?? r.userId.toLowerCase(),
+          })),
+        shadowOptions: AUTH_SHADOW_OPTIONS,
+      },
+    );
+  }
+
+  async createOAuthAccount(
+    input: CreateOAuthAccountInput,
+  ): Promise<OAuthAccountRecord> {
+    const createdAt = input.createdAt ?? new Date();
+    const id = input.id ?? newDualId(createdAt.getTime()).oid;
+    const prepared: CreateOAuthAccountInput = {
+      ...input,
+      id,
+      createdAt,
+    };
+    const mode = await this.getMode();
+    let mongoUserId = prepared.userId;
+    if (mode === "dual_write_pg_read") {
+      mongoUserId = await this.resolveMongoUserIdForReverseSync(prepared.userId);
+    }
+
+    return this.router.executeWrite(
+      {
+        domain: AUTH_DOMAIN,
+        operation: "createOAuthAccount",
+        entityId: id,
+        retryPayload: {
+          table: "oauth_accounts",
+          oauthAccountId: id,
+          provider: prepared.provider,
+          providerUserId: prepared.providerUserId,
+        },
+      },
+      {
+        mongo: () =>
+          this.mongo.createOAuthAccount({ ...prepared, userId: mongoUserId }),
+        pg: () => this.pg.createOAuthAccount(prepared),
+      },
+    );
+  }
+
+  // ── Sessions (Decision #3: NEVER backfilled or dual-written!) ───────────
+  // Stages 1–3 use Mongo exclusively; Stages 4–5 use PG hashed-token sessions exclusively.
+
+  async createSession(input: CreateSessionInput): Promise<SessionRecord> {
+    return (await this.isPgSessionMode())
+      ? this.pg.createSession(input)
+      : this.mongo.createSession(input);
+  }
+
+  async findSessionById(sessionId: string): Promise<SessionRecord | null> {
+    return (await this.isPgSessionMode())
+      ? this.pg.findSessionById(sessionId)
+      : this.mongo.findSessionById(sessionId);
+  }
+
+  async updateSessionExpiry(
+    sessionId: string,
+    expiresAt: Date,
+  ): Promise<void> {
+    return (await this.isPgSessionMode())
+      ? this.pg.updateSessionExpiry(sessionId, expiresAt)
+      : this.mongo.updateSessionExpiry(sessionId, expiresAt);
+  }
+
+  async updateSessionActiveWorkspace(
+    sessionId: string,
+    activeWorkspaceId: string | null,
+  ): Promise<void> {
+    return (await this.isPgSessionMode())
+      ? this.pg.updateSessionActiveWorkspace(sessionId, activeWorkspaceId)
+      : this.mongo.updateSessionActiveWorkspace(sessionId, activeWorkspaceId);
+  }
+
+  async setActiveWorkspaceForUser(
+    userId: string,
+    activeWorkspaceId: string | null,
+  ): Promise<void> {
+    return (await this.isPgSessionMode())
+      ? this.pg.setActiveWorkspaceForUser(userId, activeWorkspaceId)
+      : this.mongo.setActiveWorkspaceForUser(userId, activeWorkspaceId);
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    return (await this.isPgSessionMode())
+      ? this.pg.deleteSession(sessionId)
+      : this.mongo.deleteSession(sessionId);
+  }
+
+  async deleteUserSessions(userId: string): Promise<void> {
+    return (await this.isPgSessionMode())
+      ? this.pg.deleteUserSessions(userId)
+      : this.mongo.deleteUserSessions(userId);
+  }
+
+  async deleteExpiredSessions(now: Date = new Date()): Promise<number> {
+    return (await this.isPgSessionMode())
+      ? this.pg.deleteExpiredSessions(now)
+      : this.mongo.deleteExpiredSessions(now);
+  }
+
+  // ── Email verifications ─────────────────────────────────────────────────
+
+  createEmailVerification(
+    input: CreateEmailVerificationInput,
+  ): Promise<EmailVerificationRecord> {
+    const id = input.id ?? randomUUID();
+    const createdAt = input.createdAt ?? new Date();
+    const prepared: CreateEmailVerificationInput = {
+      ...input,
+      id,
+      email: normalizeEmailKey(input.email),
+      createdAt,
+    };
+
+    return this.router.executeWrite(
+      {
+        domain: AUTH_DOMAIN,
+        operation: "createEmailVerification",
+        entityId: id,
+        retryPayload: { table: "email_verifications", verificationId: id },
+      },
+      {
+        mongo: () => this.mongo.createEmailVerification(prepared),
+        pg: () => this.pg.createEmailVerification(prepared),
+      },
+    );
+  }
+
+  findValidEmailVerification(
+    email: string,
+    code: string,
+    type: EmailVerificationType,
+    now: Date = new Date(),
+  ): Promise<EmailVerificationRecord | null> {
+    return this.router.executeRead(
+      { domain: AUTH_DOMAIN, operation: "findValidEmailVerification" },
+      {
+        mongo: () =>
+          this.mongo.findValidEmailVerification(email, code, type, now),
+        pg: () => this.pg.findValidEmailVerification(email, code, type, now),
+        shadowOptions: AUTH_SHADOW_OPTIONS,
+      },
+    );
+  }
+
+  async deleteEmailVerificationById(id: string): Promise<void> {
+    const tombstone = await this.isMongoPrimaryDualWrite();
+    return this.router.executeWrite(
+      {
+        domain: AUTH_DOMAIN,
+        operation: "deleteEmailVerificationById",
+        entityId: id,
+        retryPayload: { table: "email_verifications", verificationId: id },
+      },
+      {
+        mongo: () => this.mongo.deleteEmailVerificationById(id),
+        pg: async () => {
+          await this.pg.deleteEmailVerificationById(id);
+          if (tombstone) {
+            await this.recordTombstones("email_verifications", [id]);
+          }
+        },
+      },
+    );
+  }
+
+  async deleteEmailVerificationsByEmailAndType(
+    email: string,
+    type: EmailVerificationType,
+  ): Promise<void> {
+    const normalizedEmail = normalizeEmailKey(email);
+    const tombstone = await this.isMongoPrimaryDualWrite();
+
+    return this.router.executeWrite(
+      {
+        domain: AUTH_DOMAIN,
+        operation: "deleteEmailVerificationsByEmailAndType",
+        retryPayload: {
+          table: "email_verifications",
+          email: normalizedEmail,
+          type,
+        },
+      },
+      {
+        mongo: () =>
+          this.mongo.deleteEmailVerificationsByEmailAndType(
+            normalizedEmail,
+            type,
+          ),
+        pg: async () => {
+          const pgIds = await this.pg.deleteEmailVerificationsReturningIds(
+            normalizedEmail,
+            type,
+          );
+          if (tombstone) {
+            await this.recordTombstones("email_verifications", pgIds);
+          }
+        },
+      },
+    );
+  }
+
+  // ── Desktop auth codes ──────────────────────────────────────────────────
+
+  async createDesktopAuthCode(
+    input: CreateDesktopAuthCodeInput,
+  ): Promise<DesktopAuthCodeRecord> {
+    const createdAt = input.createdAt ?? new Date();
+    const prepared: CreateDesktopAuthCodeInput = {
+      ...input,
+      createdAt,
+    };
+    const mode = await this.getMode();
+    let mongoUserId = prepared.userId;
+    if (mode === "dual_write_pg_read") {
+      mongoUserId = await this.resolveMongoUserIdForReverseSync(prepared.userId);
+    }
+
+    return this.router.executeWrite(
+      {
+        domain: AUTH_DOMAIN,
+        operation: "createDesktopAuthCode",
+        entityId: prepared.id,
+        retryPayload: {
+          table: "desktop_auth_codes",
+          codeHash: prepared.id,
+        },
+      },
+      {
+        mongo: () =>
+          this.mongo.createDesktopAuthCode({
+            ...prepared,
+            userId: mongoUserId,
+          }),
+        pg: () => this.pg.createDesktopAuthCode(prepared),
+      },
+    );
+  }
+
+  async redeemAndDeleteDesktopAuthCode(
+    codeHash: string,
+  ): Promise<DesktopAuthCodeRecord | null> {
+    const tombstone = await this.isMongoPrimaryDualWrite();
+    let primaryMatched = false;
+
+    return this.router.executeWrite(
+      {
+        domain: AUTH_DOMAIN,
+        operation: "redeemAndDeleteDesktopAuthCode",
+        entityId: codeHash,
+        retryPayload: { table: "desktop_auth_codes", codeHash },
+      },
+      {
+        mongo: async () => {
+          const doc = await this.mongo.redeemAndDeleteDesktopAuthCode(codeHash);
+          if (doc) primaryMatched = true;
+          return doc;
+        },
+        pg: async () => {
+          const row = await this.pg.redeemAndDeleteDesktopAuthCode(codeHash);
+          if (tombstone && (primaryMatched || row)) {
+            await this.recordTombstones("desktop_auth_codes", [codeHash]);
+          }
+          return row;
+        },
+      },
+    );
+  }
+}

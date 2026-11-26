@@ -4,7 +4,7 @@ import {
   type IEntityVersion,
   type VersionableEntityType,
 } from "../database/workspace-schema";
-import { User } from "../database/schema";
+import { authRepo } from "../repositories/auth";
 import { loggers } from "../logging";
 
 const logger = loggers.api("entity-versions");
@@ -154,6 +154,6 @@ export async function getVersion(
 }
 
 export async function getUserDisplayName(userId: string): Promise<string> {
-  const u = await User.findById(userId, { email: 1 }).lean();
+  const u = await authRepo.findUserById(userId);
   return u?.email || userId;
 }

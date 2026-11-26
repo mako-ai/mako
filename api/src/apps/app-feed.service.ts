@@ -14,7 +14,7 @@
  */
 import { Types } from "mongoose";
 import { AppFeedSnapshot } from "../database/workspace-schema";
-import { User } from "../database/schema";
+import { authRepo } from "../repositories/auth";
 import { loggers } from "../logging";
 import { timed } from "../middleware/server-timing";
 import type { DiscoveryApp } from "./app-discovery.service";
@@ -169,8 +169,8 @@ async function memoizedFeedSignals(
 export const defaultFeedDeps: FeedDeps = {
   listApps: listHomeDiscoveryApps,
   loadViewer: async userId => {
-    if (!userId || !Types.ObjectId.isValid(userId)) return { id: userId };
-    const user = await User.findById(userId).select("email").lean();
+    if (!userId) return { id: userId };
+    const user = await authRepo.findUserById(userId);
     return { id: userId, email: user?.email ?? undefined };
   },
   loadSignals: memoizedFeedSignals,

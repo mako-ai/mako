@@ -41,7 +41,7 @@ import {
   type AppUsageReferrerKind,
   type AppUsageUaClass,
 } from "../database/workspace-schema";
-import { User } from "../database/schema";
+import { authRepo } from "../repositories/auth";
 import { loggers } from "../logging";
 import { loadAppsIndex } from "./app-index.service";
 import { canSeeIndexedApp } from "./app-authorization";
@@ -491,14 +491,8 @@ async function readCommitAuthors(
     const emailsByApp = parseCommitAuthors(stdout, apps);
     currentTimings()?.add("authors.parse", performance.now() - parsing);
     const emails = [...new Set([...emailsByApp.values()].flatMap(s => [...s]))];
-    const users = emails.length
-      ? await User.find({ email: { $in: emails } })
-          .select("_id email")
-          .lean()
-      : [];
-    const idByEmail = new Map(
-      users.map(u => [u.email.toLowerCase(), String(u._id)]),
-    );
+    const users = emails.length ? await authRepo.findUsersByEmails(emails) : [];
+    const idByEmail = new Map(users.map(u => [u.email.toLowerCase(), u.id]));
     const byApp = new Map<string, Set<string>>();
     for (const [appId, set] of emailsByApp) {
       const ids = new Set(

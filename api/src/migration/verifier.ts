@@ -17,8 +17,12 @@ const logger = loggers.migration();
 
 export interface VerifierMongoRecord {
   cursor: string;
-  /** Canonical Postgres entity ID (lowercase UUID string or text PK). */
+  /** Canonical key used to correlate Mongo and Postgres records (lowercase UUID, text PK, or `table:id` for composite domains). */
   entityId: string;
+  /** Optional per-record target table override for tombstone lookup in composite domain handlers. */
+  targetTable?: string;
+  /** Optional raw entity ID stored in `migration_tombstones.entity_id` (defaults to `entityId`). */
+  tombstoneId?: string;
   /** Canonicalizable representation of the Mongo document. */
   record: unknown;
 }
@@ -144,33 +148,53 @@ export async function runParityVerification(
     if (batch.length === 0) break;
 
     const entityIds = batch.map(item => normalizeEntityId(item.entityId));
-    const [tombstoned, pgMap] = await Promise.all([
-      findTombstonedEntityIds(db, handler.targetTable, entityIds),
+    const tombstoneIdsByTable = new Map<string, string[]>();
+    for (const item of batch) {
+      const tbl = item.targetTable ?? handler.targetTable;
+      const tid = normalizeEntityId(item.tombstoneId ?? item.entityId);
+      const list = tombstoneIdsByTable.get(tbl);
+      if (list) {
+        list.push(tid);
+      } else {
+        tombstoneIdsByTable.set(tbl, [tid]);
+      }
+    }
+
+    const [tombstonedEntries, pgMap] = await Promise.all([
+      Promise.all(
+        [...tombstoneIdsByTable.entries()].map(
+          async ([tbl, ids]) =>
+            [tbl, await findTombstonedEntityIds(db, tbl, ids)] as const,
+        ),
+      ),
       handler.fetchPgByIds(entityIds, db),
     ]);
+    const tombstonedByTable = new Map(tombstonedEntries);
 
     const toRepair: string[] = [];
 
     for (const item of batch) {
-      const normalizedId = normalizeEntityId(item.entityId);
-      seenEntityIds.add(normalizedId);
+      const entityKey = normalizeEntityId(item.entityId);
+      const tbl = item.targetTable ?? handler.targetTable;
+      const tombstoneKey = normalizeEntityId(item.tombstoneId ?? item.entityId);
+      seenEntityIds.add(entityKey);
 
-      if (tombstoned.has(normalizedId)) {
+      if (tombstonedByTable.get(tbl)?.has(tombstoneKey)) {
         skippedTombstone += 1;
         continue;
       }
 
       checked += 1;
-      if (!pgMap.has(normalizedId)) {
+      if (!pgMap.has(entityKey)) {
         missingInPg += 1;
-        toRepair.push(normalizedId);
+        toRepair.push(entityKey);
         if (samples.length < maxSamples) {
-          samples.push({ entityId: normalizedId, kind: "missing_in_pg" });
+          samples.push({ entityId: entityKey, kind: "missing_in_pg" });
         }
         continue;
       }
 
-      const pgRecord = pgMap.get(normalizedId);
+      const pgRecord = pgMap.get(entityKey);
       const diff = computeDiffPaths(
         item.record,
         pgRecord,
@@ -180,10 +204,10 @@ export async function runParityVerification(
         matched += 1;
       } else {
         mismatched += 1;
-        toRepair.push(normalizedId);
+        toRepair.push(entityKey);
         if (samples.length < maxSamples) {
           samples.push({
-            entityId: normalizedId,
+            entityId: entityKey,
             kind: "mismatch",
             diffs: diff.diffs,
           });

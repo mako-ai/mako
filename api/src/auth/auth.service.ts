@@ -1,12 +1,8 @@
 import bcrypt from "bcrypt";
-import { randomInt, randomUUID } from "crypto";
+import { randomInt } from "crypto";
+import { generateUuidv7 } from "../database/pg/id-codec";
 import { sessionManager, ValidatedSession, ValidatedUser } from "./session";
-import {
-  User,
-  OAuthAccount,
-  EmailVerification,
-  Session,
-} from "../database/schema";
+import { authRepo } from "../repositories/auth";
 import type { OAuthProvider } from "./oauth-providers";
 import { workspaceService } from "../services/workspace.service";
 import { emailService } from "../services/email.service";
@@ -61,11 +57,10 @@ const EMAIL_SEND_FAILED =
   "We couldn't send the email right now. Please try again in a few minutes.";
 
 /**
- * Generate a random ID (replacement for Lucia's generateId)
+ * Generate a canonical RFC 9562 UUIDv7 identifier for newly created users.
  */
-function generateId(length: number = 15): string {
-  const id = randomUUID().replace(/-/g, "");
-  return id.substring(0, length);
+function generateId(): string {
+  return generateUuidv7();
 }
 
 /**
@@ -96,14 +91,14 @@ export class AuthService {
     const normalizedEmail = requireValidEmail(email);
 
     // Check if user already exists
-    const existingUser = await User.findOne({ email: normalizedEmail });
+    const existingUser = await authRepo.findUserByEmail(normalizedEmail);
     if (existingUser) {
       // Check if this is an OAuth-only user (no password set)
       if (!existingUser.hashedPassword) {
         // Check if user has OAuth accounts linked
-        const oauthAccounts = await OAuthAccount.find({
-          userId: existingUser._id,
-        });
+        const oauthAccounts = await authRepo.findOAuthAccountsByUserId(
+          existingUser.id,
+        );
         if (oauthAccounts.length > 0) {
           const providers = oauthAccounts.map(a => a.provider).join(", ");
           throw new AuthError(
@@ -118,14 +113,14 @@ export class AuthService {
       // where an attacker could overwrite a legitimate user's password before verification
       if (!existingUser.emailVerified && existingUser.hashedPassword) {
         // Delete old verification codes and send new one
-        await EmailVerification.deleteMany({
-          email: normalizedEmail,
-          type: "registration",
-        });
+        await authRepo.deleteEmailVerificationsByEmailAndType(
+          normalizedEmail,
+          "registration",
+        );
 
         // Generate and send new verification code (password stays unchanged)
         const code = generateVerificationCode();
-        await EmailVerification.create({
+        await authRepo.createEmailVerification({
           email: normalizedEmail,
           code,
           type: "registration",
@@ -151,9 +146,9 @@ export class AuthService {
     const hashedPassword = await bcrypt.hash(password, rounds);
 
     // Create unverified user
-    const userId = generateId(15);
-    const user = await User.create({
-      _id: userId,
+    const userId = generateId();
+    const user = await authRepo.createUser({
+      id: userId,
       email: normalizedEmail,
       hashedPassword,
       emailVerified: false,
@@ -168,7 +163,7 @@ export class AuthService {
 
     // Generate verification code
     const code = generateVerificationCode();
-    await EmailVerification.create({
+    await authRepo.createEmailVerification({
       email: normalizedEmail,
       code,
       type: "registration",
@@ -193,32 +188,35 @@ export class AuthService {
     const normalizedEmail = normalizeEmail(email);
 
     // Find verification record
-    const verification = await EmailVerification.findOne({
-      email: normalizedEmail,
+    const verification = await authRepo.findValidEmailVerification(
+      normalizedEmail,
       code,
-      type: "registration",
-      expiresAt: { $gt: new Date() },
-    });
+      "registration",
+    );
 
     if (!verification) {
       throw new AuthError("Invalid or expired verification code");
     }
 
     // Find user
-    const user = await User.findOne({ email: normalizedEmail });
-    if (!user) {
+    const existingUser = await authRepo.findUserByEmail(normalizedEmail);
+    if (!existingUser) {
       throw new AuthError("Invalid or expired verification code");
     }
 
     // Mark user as verified
-    user.emailVerified = true;
-    await user.save();
+    const user = (await authRepo.updateUser(existingUser.id, {
+      emailVerified: true,
+    })) ?? {
+      ...existingUser,
+      emailVerified: true,
+    };
 
     // Delete verification record
-    await EmailVerification.deleteOne({ _id: verification._id });
+    await authRepo.deleteEmailVerificationById(verification.id);
 
     // Check for existing workspaces - don't auto-create, let frontend handle onboarding
-    const workspaces = await workspaceService.getWorkspacesForUser(user._id);
+    const workspaces = await workspaceService.getWorkspacesForUser(user.id);
 
     // Only set activeWorkspaceId if user has exactly one workspace (auto-select)
     // For 0 or 2+ workspaces, let frontend handle selection/creation
@@ -228,7 +226,7 @@ export class AuthService {
         : undefined;
 
     // Create session (may be without activeWorkspaceId for onboarding/selection)
-    const session = await sessionManager.createSession(user._id, {
+    const session = await sessionManager.createSession(user.id, {
       activeWorkspaceId,
     });
 
@@ -242,7 +240,7 @@ export class AuthService {
     const normalizedEmail = normalizeEmail(email);
 
     // Find user
-    const user = await User.findOne({ email: normalizedEmail });
+    const user = await authRepo.findUserByEmail(normalizedEmail);
     if (!user) {
       throw new AuthError("User not found", 404);
     }
@@ -252,14 +250,14 @@ export class AuthService {
     }
 
     // Delete old verification codes
-    await EmailVerification.deleteMany({
-      email: normalizedEmail,
-      type: "registration",
-    });
+    await authRepo.deleteEmailVerificationsByEmailAndType(
+      normalizedEmail,
+      "registration",
+    );
 
     // Generate new verification code
     const code = generateVerificationCode();
-    await EmailVerification.create({
+    await authRepo.createEmailVerification({
       email: normalizedEmail,
       code,
       type: "registration",
@@ -284,7 +282,7 @@ export class AuthService {
 
     // Find user
     const normalizedEmail = requireValidEmail(email);
-    const user = await User.findOne({ email: normalizedEmail });
+    const user = await authRepo.findUserByEmail(normalizedEmail);
     if (!user) {
       throw new AuthError("Invalid email or password", 401);
     }
@@ -324,14 +322,14 @@ export class AuthService {
     // Get user's workspaces
     // Only set activeWorkspaceId if user has exactly one workspace (auto-select)
     // For 0 or 2+ workspaces, let frontend handle selection/creation
-    const workspaces = await workspaceService.getWorkspacesForUser(user._id);
+    const workspaces = await workspaceService.getWorkspacesForUser(user.id);
     const activeWorkspaceId =
       workspaces.length === 1
         ? workspaces[0].workspace._id.toString()
         : undefined;
 
     // Create session
-    const session = await sessionManager.createSession(user._id, {
+    const session = await sessionManager.createSession(user.id, {
       activeWorkspaceId,
     });
 
@@ -351,19 +349,19 @@ export class AuthService {
    */
   async devLogin(email: string) {
     const normalizedEmail = requireValidEmail(email);
-    const user = await User.findOne({ email: normalizedEmail });
+    const user = await authRepo.findUserByEmail(normalizedEmail);
     if (!user) {
       // Same opaque message as the real login path.
       throw new AuthError("Invalid email or password", 401);
     }
 
-    const workspaces = await workspaceService.getWorkspacesForUser(user._id);
+    const workspaces = await workspaceService.getWorkspacesForUser(user.id);
     const activeWorkspaceId =
       workspaces.length === 1
         ? workspaces[0].workspace._id.toString()
         : undefined;
 
-    const session = await sessionManager.createSession(user._id, {
+    const session = await sessionManager.createSession(user.id, {
       activeWorkspaceId,
     });
 
@@ -380,20 +378,20 @@ export class AuthService {
    * where identity was established by redeeming a one-time desktop auth code.
    */
   async createSessionForUser(userId: string) {
-    const user = await User.findById(userId);
+    const user = await authRepo.findUserById(userId);
     if (!user) {
       throw new Error("User account not found");
     }
 
     // Only set activeWorkspaceId if user has exactly one workspace (auto-select)
     // For 0 or 2+ workspaces, let frontend handle selection/creation
-    const workspaces = await workspaceService.getWorkspacesForUser(user._id);
+    const workspaces = await workspaceService.getWorkspacesForUser(user.id);
     const activeWorkspaceId =
       workspaces.length === 1
         ? workspaces[0].workspace._id.toString()
         : undefined;
 
-    const session = await sessionManager.createSession(user._id, {
+    const session = await sessionManager.createSession(user.id, {
       activeWorkspaceId,
     });
 
@@ -424,14 +422,14 @@ export class AuthService {
     const fallbackEmail = `${provider}_${providerUserId}@oauth.local`;
 
     // Check if OAuth account exists
-    const existingAccount = await OAuthAccount.findOne({
+    const existingAccount = await authRepo.findOAuthAccountByProvider(
       provider,
       providerUserId,
-    });
+    );
 
     if (existingAccount) {
       // User exists, create session
-      const user = await User.findById(existingAccount.userId);
+      const user = await authRepo.findUserById(existingAccount.userId);
       if (!user) {
         throw new Error("User account not found");
       }
@@ -439,13 +437,13 @@ export class AuthService {
       // Get user's workspaces
       // Only set activeWorkspaceId if user has exactly one workspace (auto-select)
       // For 0 or 2+ workspaces, let frontend handle selection/creation
-      const workspaces = await workspaceService.getWorkspacesForUser(user._id);
+      const workspaces = await workspaceService.getWorkspacesForUser(user.id);
       const activeWorkspaceId =
         workspaces.length === 1
           ? workspaces[0].workspace._id.toString()
           : undefined;
 
-      const session = await sessionManager.createSession(user._id, {
+      const session = await sessionManager.createSession(user.id, {
         activeWorkspaceId,
       });
       return { user, session, isNewUser: false };
@@ -458,24 +456,24 @@ export class AuthService {
     if (email) {
       // Check if user with this email exists
       const normalizedOAuthEmail = normalizeEmail(email);
-      user = await User.findOne({ email: normalizedOAuthEmail });
+      user = await authRepo.findUserByEmail(normalizedOAuthEmail);
 
       if (user) {
         isNewUser = false;
       } else {
         // Create new user - OAuth users are verified by default
-        const userId = generateId(15);
-        user = await User.create({
-          _id: userId,
+        const userId = generateId();
+        user = await authRepo.createUser({
+          id: userId,
           email: normalizedOAuthEmail,
           emailVerified: true, // OAuth users are verified
         });
       }
     } else {
       // Create user with placeholder e-mail when none was supplied.
-      const userId = generateId(15);
-      user = await User.create({
-        _id: userId,
+      const userId = generateId();
+      user = await authRepo.createUser({
+        id: userId,
         email: fallbackEmail,
         emailVerified: true, // OAuth users are verified
       });
@@ -487,20 +485,25 @@ export class AuthService {
     // When victim later signs up via OAuth, without clearing the password, the attacker
     // could still log in using the email/password they set.
     if (!user.emailVerified) {
-      user.emailVerified = true;
-      user.hashedPassword = undefined;
-      await user.save();
+      user = (await authRepo.updateUser(user.id, {
+        emailVerified: true,
+        hashedPassword: null,
+      })) ?? {
+        ...user,
+        emailVerified: true,
+        hashedPassword: undefined,
+      };
 
       // Clean up any pending verification records since OAuth supersedes email verification
-      await EmailVerification.deleteMany({
-        email: user.email,
-        type: "registration",
-      });
+      await authRepo.deleteEmailVerificationsByEmailAndType(
+        user.email,
+        "registration",
+      );
     }
 
     // Create OAuth account link
-    await OAuthAccount.create({
-      userId: user._id,
+    await authRepo.createOAuthAccount({
+      userId: user.id,
       provider,
       providerUserId,
       email: email ?? fallbackEmail,
@@ -510,14 +513,14 @@ export class AuthService {
     // (best-effort, never throws).
     if (isNewUser) {
       await captureSignupAttribution({
-        userId: user._id,
+        userId: user.id,
         signupMethod: provider,
         ...signup,
       });
     }
 
     // Check for existing workspaces - don't auto-create, let frontend handle onboarding
-    const workspaces = await workspaceService.getWorkspacesForUser(user._id);
+    const workspaces = await workspaceService.getWorkspacesForUser(user.id);
 
     // Only set activeWorkspaceId if user has exactly one workspace (auto-select)
     // For 0 or 2+ workspaces, let frontend handle selection/creation
@@ -527,7 +530,7 @@ export class AuthService {
         : undefined;
 
     // Create session (may be without activeWorkspaceId for onboarding/selection)
-    const session = await sessionManager.createSession(user._id, {
+    const session = await sessionManager.createSession(user.id, {
       activeWorkspaceId,
     });
 
@@ -548,7 +551,7 @@ export class AuthService {
     }
 
     // Get full user data
-    const user = await User.findById(result.user.id);
+    const user = await authRepo.findUserById(result.user.id);
     if (!user) {
       return { session: null, user: null };
     }
@@ -556,7 +559,7 @@ export class AuthService {
     return {
       session: result.session,
       user: {
-        id: user._id,
+        id: user.id,
         email: user.email,
       },
     };
@@ -573,7 +576,7 @@ export class AuthService {
    * Get OAuth accounts linked to a user
    */
   async getLinkedAccounts(userId: string) {
-    const accounts = await OAuthAccount.find({ userId });
+    const accounts = await authRepo.findOAuthAccountsByUserId(userId);
     return accounts.map(account => ({
       provider: account.provider,
       email: account.email,
@@ -592,24 +595,23 @@ export class AuthService {
     const normalizedEmail = normalizeEmail(email);
 
     // Verify the code
-    const verification = await EmailVerification.findOne({
-      email: normalizedEmail,
-      code: verificationCode,
-      type: "link_password",
-      expiresAt: { $gt: new Date() },
-    });
+    const verification = await authRepo.findValidEmailVerification(
+      normalizedEmail,
+      verificationCode,
+      "link_password",
+    );
 
     if (!verification) {
       throw new AuthError("Invalid or expired verification code");
     }
 
     // Find user
-    const user = await User.findOne({ email: normalizedEmail });
-    if (!user) {
+    const existingUser = await authRepo.findUserByEmail(normalizedEmail);
+    if (!existingUser) {
       throw new AuthError("User not found", 404);
     }
 
-    if (user.hashedPassword) {
+    if (existingUser.hashedPassword) {
       throw new AuthError("Password is already set for this account", 409);
     }
 
@@ -621,11 +623,15 @@ export class AuthService {
     // Hash and save password
     const rounds = parseInt(process.env.BCRYPT_ROUNDS || "10");
     const hashedPassword = await bcrypt.hash(password, rounds);
-    user.hashedPassword = hashedPassword;
-    await user.save();
+    const user = (await authRepo.updateUser(existingUser.id, {
+      hashedPassword,
+    })) ?? {
+      ...existingUser,
+      hashedPassword,
+    };
 
     // Delete verification record
-    await EmailVerification.deleteOne({ _id: verification._id });
+    await authRepo.deleteEmailVerificationById(verification.id);
 
     return { user };
   }
@@ -637,7 +643,7 @@ export class AuthService {
     const normalizedEmail = normalizeEmail(email);
 
     // Find user
-    const user = await User.findOne({ email: normalizedEmail });
+    const user = await authRepo.findUserByEmail(normalizedEmail);
     if (!user) {
       throw new AuthError("User not found", 404);
     }
@@ -647,14 +653,14 @@ export class AuthService {
     }
 
     // Delete old verification codes
-    await EmailVerification.deleteMany({
-      email: normalizedEmail,
-      type: "link_password",
-    });
+    await authRepo.deleteEmailVerificationsByEmailAndType(
+      normalizedEmail,
+      "link_password",
+    );
 
     // Generate new verification code
     const code = generateVerificationCode();
-    await EmailVerification.create({
+    await authRepo.createEmailVerification({
       email: normalizedEmail,
       code,
       type: "link_password",
@@ -676,7 +682,7 @@ export class AuthService {
     const normalizedEmail = normalizeEmail(email);
 
     // Find user - but don't reveal if they exist or not
-    const user = await User.findOne({ email: normalizedEmail });
+    const user = await authRepo.findUserByEmail(normalizedEmail);
 
     if (!user) {
       // Return silently for security - don't reveal if email exists
@@ -696,14 +702,14 @@ export class AuthService {
     }
 
     // Delete old password reset codes for this email
-    await EmailVerification.deleteMany({
-      email: normalizedEmail,
-      type: "password_reset",
-    });
+    await authRepo.deleteEmailVerificationsByEmailAndType(
+      normalizedEmail,
+      "password_reset",
+    );
 
     // Generate new reset code
     const code = generateVerificationCode();
-    await EmailVerification.create({
+    await authRepo.createEmailVerification({
       email: normalizedEmail,
       code,
       type: "password_reset",
@@ -731,19 +737,18 @@ export class AuthService {
     }
 
     // Find verification record
-    const verification = await EmailVerification.findOne({
-      email: normalizedEmail,
+    const verification = await authRepo.findValidEmailVerification(
+      normalizedEmail,
       code,
-      type: "password_reset",
-      expiresAt: { $gt: new Date() },
-    });
+      "password_reset",
+    );
 
     if (!verification) {
       throw new AuthError("Invalid or expired reset code");
     }
 
     // Find user
-    const user = await User.findOne({ email: normalizedEmail });
+    const user = await authRepo.findUserByEmail(normalizedEmail);
     if (!user) {
       throw new AuthError("Invalid or expired reset code");
     }
@@ -751,14 +756,13 @@ export class AuthService {
     // Hash and save new password
     const rounds = parseInt(process.env.BCRYPT_ROUNDS || "10");
     const hashedPassword = await bcrypt.hash(newPassword, rounds);
-    user.hashedPassword = hashedPassword;
-    await user.save();
+    await authRepo.updateUser(user.id, { hashedPassword });
 
     // Delete verification record
-    await EmailVerification.deleteOne({ _id: verification._id });
+    await authRepo.deleteEmailVerificationById(verification.id);
 
     // Invalidate all existing sessions for this user (security measure)
-    await Session.deleteMany({ userId: user._id });
+    await authRepo.deleteUserSessions(user.id);
 
     return { success: true };
   }
@@ -775,19 +779,21 @@ export class AuthService {
       dataWarehouse?: string;
     },
   ) {
-    const user = await User.findById(userId);
-    if (!user) {
+    const existingUser = await authRepo.findUserById(userId);
+    if (!existingUser) {
       throw new AuthError("User not found", 404);
     }
 
     // Update onboarding data
-    user.onboarding = {
-      ...user.onboarding,
-      ...data,
-      completedAt: new Date(),
-    };
+    const user =
+      (await authRepo.updateUser(userId, {
+        onboarding: {
+          ...existingUser.onboarding,
+          ...data,
+          completedAt: new Date(),
+        },
+      })) ?? existingUser;
 
-    await user.save();
     return { user };
   }
 }

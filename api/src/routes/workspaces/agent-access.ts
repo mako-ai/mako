@@ -17,7 +17,7 @@ import {
   revokeAcpPlanGrant,
 } from "../../services/acp-plan-grant.service";
 import { requireWorkspace } from "../../middleware/workspace.middleware";
-import { User } from "../../database/schema";
+import { authRepo } from "../../repositories/auth";
 import { loggers } from "../../logging";
 import {
   AUTH_SECURITY,
@@ -187,14 +187,10 @@ workspaceAgentAccessRoutes.openapi(
         ? all
         : all.filter(conn => conn.userId === user.id);
 
-      // User _ids are UUID strings, not ObjectIds.
+      // User ids are string identifiers (15-char Lucia IDs or UUIDs), not ObjectIds.
       const userIds = [...new Set(visible.map(conn => conn.userId))];
-      const users = await User.find({ _id: { $in: userIds } })
-        .select("email")
-        .lean();
-      const emailByUserId = new Map(
-        users.map(u => [String(u._id), u.email] as const),
-      );
+      const users = await authRepo.findUsersByIds(userIds);
+      const emailByUserId = new Map(users.map(u => [u.id, u.email] as const));
 
       return c.json({
         success: true,

@@ -15,6 +15,13 @@
       "when": 1764180001000,
       "tag": "0001_migration_control_plane",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1764180002000,
+      "tag": "0002_phase1_auth",
+      "breakpoints": true
     }
   ]
 }

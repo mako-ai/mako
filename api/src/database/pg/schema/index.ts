@@ -5,3 +5,4 @@
  * Phases 1–3 add domain schema modules here (auth, workspaces, apps, consoles, usage, chat).
  */
 export * from "./control-plane";
+export * from "./auth";

@@ -12,6 +12,7 @@
 import { NonRetriableError } from "inngest";
 import { inngest } from "../../client";
 import { loggers } from "../../../logging";
+import { registerMigrationDomains } from "../../../migration/domains";
 import type { SyncRetryEventData } from "../../../migration/types";
 
 const logger = loggers.inngest("migration-sync-retry");
@@ -85,6 +86,7 @@ export async function dispatchSyncRetry(
   entityId: string;
   idempotencyKey?: string;
 }> {
+  registerMigrationDomains();
   const handler = getSyncRetryHandler(target, data.domain);
   if (!handler) {
     const message =

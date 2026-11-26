@@ -1,7 +1,8 @@
 import { randomUUID } from "crypto";
 import { setCookie } from "hono/cookie";
 import type { Context } from "hono";
-import { Session, User, ISession, IUser } from "../database/schema";
+import type { ISession, IUser } from "../database/schema";
+import { authRepo } from "../repositories/auth";
 
 /**
  * Session configuration
@@ -122,8 +123,8 @@ class SessionManager {
     const sessionId = generateSessionId();
     const expiresAt = new Date(Date.now() + SESSION_DURATION_MS);
 
-    await Session.create({
-      _id: sessionId,
+    await authRepo.createSession({
+      id: sessionId,
       userId,
       expiresAt,
       activeWorkspaceId: attributes.activeWorkspaceId,
@@ -149,7 +150,7 @@ class SessionManager {
       return { session: null, user: null };
     }
 
-    const sessionDoc = await Session.findById(sessionId).lean<ISession>();
+    const sessionDoc = await authRepo.findSessionById(sessionId);
     if (!sessionDoc) {
       return { session: null, user: null };
     }
@@ -157,15 +158,15 @@ class SessionManager {
     // Check if session is expired
     if (sessionDoc.expiresAt < new Date()) {
       // Delete expired session
-      await Session.deleteOne({ _id: sessionId });
+      await authRepo.deleteSession(sessionId, sessionDoc.userId);
       return { session: null, user: null };
     }
 
     // Get user
-    const userDoc = await User.findById(sessionDoc.userId).lean<IUser>();
+    const userDoc = await authRepo.findUserById(sessionDoc.userId);
     if (!userDoc) {
       // User no longer exists, delete orphaned session
-      await Session.deleteOne({ _id: sessionId });
+      await authRepo.deleteSession(sessionId, sessionDoc.userId);
       return { session: null, user: null };
     }
 
@@ -176,21 +177,25 @@ class SessionManager {
     if (timeRemaining < SESSION_REFRESH_THRESHOLD_MS) {
       // Refresh session
       const newExpiresAt = new Date(Date.now() + SESSION_DURATION_MS);
-      await Session.updateOne({ _id: sessionId }, { expiresAt: newExpiresAt });
+      await authRepo.updateSessionExpiry(
+        sessionId,
+        newExpiresAt,
+        sessionDoc.userId,
+      );
       sessionDoc.expiresAt = newExpiresAt;
       fresh = true;
     }
 
     return {
       session: {
-        id: sessionDoc._id,
+        id: sessionDoc.id,
         userId: sessionDoc.userId,
         expiresAt: sessionDoc.expiresAt,
         activeWorkspaceId: sessionDoc.activeWorkspaceId,
         fresh,
       },
       user: {
-        id: userDoc._id,
+        id: userDoc.id,
         email: userDoc.email,
       },
     };
@@ -200,14 +205,14 @@ class SessionManager {
    * Invalidate (delete) a session
    */
   async invalidateSession(sessionId: string): Promise<void> {
-    await Session.deleteOne({ _id: sessionId });
+    await authRepo.deleteSession(sessionId);
   }
 
   /**
    * Invalidate all sessions for a user
    */
   async invalidateUserSessions(userId: string): Promise<void> {
-    await Session.deleteMany({ userId });
+    await authRepo.deleteUserSessions(userId);
   }
 
   /**
@@ -217,14 +222,11 @@ class SessionManager {
     sessionId: string,
     attributes: Partial<SessionAttributes>,
   ): Promise<void> {
-    const updateFields: Record<string, any> = {};
-
     if (attributes.activeWorkspaceId !== undefined) {
-      updateFields.activeWorkspaceId = attributes.activeWorkspaceId;
-    }
-
-    if (Object.keys(updateFields).length > 0) {
-      await Session.updateOne({ _id: sessionId }, updateFields);
+      await authRepo.updateSessionActiveWorkspace(
+        sessionId,
+        attributes.activeWorkspaceId ?? null,
+      );
     }
   }
 
@@ -278,10 +280,7 @@ class SessionManager {
    * Delete expired sessions (for cleanup)
    */
   async deleteExpiredSessions(): Promise<number> {
-    const result = await Session.deleteMany({
-      expiresAt: { $lte: new Date() },
-    });
-    return result.deletedCount;
+    return authRepo.deleteExpiredSessions(new Date());
   }
 }
 
