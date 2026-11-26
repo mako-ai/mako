@@ -19,6 +19,7 @@ import { runPgliteMigrations } from "../database/pg/migrate";
 import * as pgSchema from "../database/pg/schema";
 import { createTestPglite } from "../database/pg/test-pglite";
 import {
+  MONGO_USER_ID_REWRITE_SPECS,
   loadUserLegacyIdMap,
   rewriteGitUserIds,
   rewriteMongoUserIds,
@@ -236,12 +237,65 @@ describe("User-ID reference rewrite tool (Decision #3)", () => {
       { workspaceId: wsId, appId: "a1", userId: null, day: "2026-11-25" },
     ]);
 
+    // Fixed Mongoose pluralized collection names + added user-ID collections (#41)
+    await mongoDb.collection("mcpoauthcodes").insertOne({
+      _id: new Types.ObjectId(),
+      userId: luciaId,
+    });
+    await mongoDb.collection("mcpoauthtokens").insertOne({
+      _id: new Types.ObjectId(),
+      userId: legacyUuidv4,
+    });
+    await mongoDb.collection("mcp_connection_configs").insertOne({
+      _id: new Types.ObjectId(),
+      userId: luciaId,
+    });
+    await mongoDb.collection("mcp_oauth_flows").insertOne({
+      _id: new Types.ObjectId(),
+      configUserId: luciaId,
+      startedByUserId: legacyUuidv4,
+    });
+    await mongoDb.collection("acpplangrants").insertOne({
+      _id: new Types.ObjectId(),
+      userId: luciaId,
+    });
+    await mongoDb.collection("workflow_recorded_writes").insertOne({
+      _id: new Types.ObjectId(),
+      userId: legacyUuidv4,
+    });
+    await mongoDb.collection("notebookfolders").insertOne({
+      _id: new Types.ObjectId(),
+      ownerId: luciaId,
+    });
+    await mongoDb.collection("notebookindexes").insertOne({
+      _id: new Types.ObjectId(),
+      ownerId: luciaId,
+      sharedWith: [{ userId: legacyUuidv4, addedBy: luciaId }],
+    });
+    await mongoDb.collection("llmusages").insertOne({
+      _id: new Types.ObjectId(),
+      userId: luciaId,
+    });
+    await mongoDb.collection("chatattachments").insertOne({
+      _id: new Types.ObjectId(),
+      createdBy: legacyUuidv4,
+    });
+    await mongoDb.collection("app_binding_jobs").insertOne({
+      _id: new Types.ObjectId(),
+      actorId: luciaId,
+      userId: legacyUuidv4,
+    });
+    await mongoDb.collection("realtime_presence").insertOne({
+      _id: new Types.ObjectId(),
+      userId: luciaId,
+    });
+
     // 1. Dry-run (default) scans and counts WITHOUT mutating MongoDB
     const dryReport = await rewriteMongoUserIds({ mongoDb, userIdMap });
     expect(dryReport.dryRun).toBe(true);
-    expect(dryReport.totalMatchedDocs).toBe(8);
+    expect(dryReport.totalMatchedDocs).toBe(20);
     expect(dryReport.totalModifiedDocs).toBe(0);
-    expect(dryReport.totalFieldsRewritten).toBeGreaterThanOrEqual(20);
+    expect(dryReport.totalFieldsRewritten).toBeGreaterThanOrEqual(35);
     expect((await mongoDb.collection("flows").findOne({}))?.createdBy).toBe(
       luciaId,
     );
@@ -253,7 +307,48 @@ describe("User-ID reference rewrite tool (Decision #3)", () => {
       dryRun: false,
     });
     expect(applyReport.dryRun).toBe(false);
-    expect(applyReport.totalModifiedDocs).toBe(8);
+    expect(applyReport.totalModifiedDocs).toBe(20);
+
+    // Verify fixed & newly added collections were rewritten cleanly
+    expect(
+      (await mongoDb.collection("mcpoauthcodes").findOne({}))?.userId,
+    ).toBe(luciaMapped);
+    expect(
+      (await mongoDb.collection("mcpoauthtokens").findOne({}))?.userId,
+    ).toBe(v4Mapped);
+    expect(
+      (await mongoDb.collection("mcp_connection_configs").findOne({}))?.userId,
+    ).toBe(luciaMapped);
+    const oauthFlow = await mongoDb.collection("mcp_oauth_flows").findOne({});
+    expect(oauthFlow?.configUserId).toBe(luciaMapped);
+    expect(oauthFlow?.startedByUserId).toBe(v4Mapped);
+    expect(
+      (await mongoDb.collection("acpplangrants").findOne({}))?.userId,
+    ).toBe(luciaMapped);
+    expect(
+      (await mongoDb.collection("workflow_recorded_writes").findOne({}))
+        ?.userId,
+    ).toBe(v4Mapped);
+    expect(
+      (await mongoDb.collection("notebookfolders").findOne({}))?.ownerId,
+    ).toBe(luciaMapped);
+    const nbIndex = await mongoDb.collection("notebookindexes").findOne({});
+    expect(nbIndex?.ownerId).toBe(luciaMapped);
+    expect(nbIndex?.sharedWith).toEqual([
+      { userId: v4Mapped, addedBy: luciaMapped },
+    ]);
+    expect((await mongoDb.collection("llmusages").findOne({}))?.userId).toBe(
+      luciaMapped,
+    );
+    expect(
+      (await mongoDb.collection("chatattachments").findOne({}))?.createdBy,
+    ).toBe(v4Mapped);
+    const bindingJob = await mongoDb.collection("app_binding_jobs").findOne({});
+    expect(bindingJob?.actorId).toBe(luciaMapped);
+    expect(bindingJob?.userId).toBe(v4Mapped);
+    expect(
+      (await mongoDb.collection("realtime_presence").findOne({}))?.userId,
+    ).toBe(luciaMapped);
 
     const dbConn = await mongoDb.collection("databaseconnections").findOne({});
     expect(dbConn?.createdBy).toBe(luciaMapped);
@@ -452,8 +547,63 @@ describe("User-ID reference rewrite tool (Decision #3)", () => {
         content: `principal: user:${luciaId}extra`,
         replacements: 0,
       });
+
+      // YAML list-item mapping keys (`- userId: ...`) must also be rewritten cleanly (#41)
+      const yamlListInput = [
+        "sharedWith:",
+        `  - userId: ${luciaId}`,
+        `    addedBy: ${legacyUuidv4}`,
+        `  - userId: "${legacyUuidv4}"`,
+      ].join("\n");
+      const yamlListResult = rewriteTextFileUserIds(yamlListInput, userIdMap);
+      expect(yamlListResult.replacements).toBe(3);
+      expect(yamlListResult.content).toBe(
+        [
+          "sharedWith:",
+          `  - userId: ${luciaMapped}`,
+          `    addedBy: ${v4Mapped}`,
+          `  - userId: "${v4Mapped}"`,
+        ].join("\n"),
+      );
+      expect(rewriteTextFileUserIds(yamlListResult.content, userIdMap)).toEqual(
+        {
+          content: yamlListResult.content,
+          replacements: 0,
+        },
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it("matches every MONGO_USER_ID_REWRITE_SPECS collection against a real registered Mongoose model", async () => {
+    await Promise.all([
+      import("../database/schema"),
+      import("../database/workspace-schema"),
+      import("../database/acp-plan-grant-schema"),
+      import("../database/mcp-oauth-schema"),
+      import("../access/connection-access-event"),
+      import("../access/connection-write-event"),
+      import("../apps/binding-jobs"),
+      import("../workflows/recorded-writes"),
+    ]);
+
+    const registeredCollections = new Set(
+      mongoose
+        .modelNames()
+        .map(name => mongoose.model(name).collection.collectionName),
+    );
+    const seenSpecs = new Set<string>();
+    const missingCollections: string[] = [];
+
+    for (const spec of MONGO_USER_ID_REWRITE_SPECS) {
+      expect(seenSpecs.has(spec.collection)).toBe(false);
+      seenSpecs.add(spec.collection);
+      if (!registeredCollections.has(spec.collection)) {
+        missingCollections.push(spec.collection);
+      }
+    }
+
+    expect(missingCollections).toEqual([]);
   });
 });

@@ -232,7 +232,9 @@ async function fetchStageBackfillItems(
 ): Promise<Array<BackfillItem<AuthBackfillDoc>>> {
   if (limit <= 0) return [];
   const makeCursor = (mongoId: string) =>
-    composite ? encodeCompositeCursor(meta.stage, meta.table, mongoId) : mongoId;
+    composite
+      ? encodeCompositeCursor(meta.stage, meta.table, mongoId)
+      : mongoId;
 
   switch (meta.table) {
     case "users": {
@@ -750,14 +752,16 @@ function buildVerifierRecord(
       break;
 
     case "user_attributions": {
-      const resolvedUserUuid = userMap.get(doc.record.userId) ?? doc.record.userId;
+      const resolvedUserUuid =
+        userMap.get(doc.record.userId) ?? doc.record.userId;
       pgEntityId = resolvedUserUuid;
       record = { ...doc.record, userId: resolvedUserUuid };
       break;
     }
 
     case "oauth_accounts": {
-      const resolvedUserUuid = userMap.get(doc.record.userId) ?? doc.record.userId;
+      const resolvedUserUuid =
+        userMap.get(doc.record.userId) ?? doc.record.userId;
       record = { ...doc.record, userId: resolvedUserUuid };
       break;
     }
@@ -767,7 +771,8 @@ function buildVerifierRecord(
       break;
 
     case "desktop_auth_codes": {
-      const resolvedUserUuid = userMap.get(doc.record.userId) ?? doc.record.userId;
+      const resolvedUserUuid =
+        userMap.get(doc.record.userId) ?? doc.record.userId;
       record = { ...doc.record, userId: resolvedUserUuid };
       break;
     }
@@ -925,7 +930,7 @@ export function createAuthVerifierHandler(): VerifierDomainHandler {
     domain: "auth",
     targetTable: "users",
     compareOptions: AUTH_SHADOW_OPTIONS,
-    async fetchMongoBatch({ afterCursor, limit }) {
+    async fetchMongoBatch({ afterCursor, limit, db }) {
       const parsed = decodeCompositeCursor(afterCursor);
       const startStage = parsed ? parsed.stage : 1;
       const items: Array<BackfillItem<AuthBackfillDoc>> = [];
@@ -946,7 +951,6 @@ export function createAuthVerifierHandler(): VerifierDomainHandler {
         items.push(...batch);
       }
 
-      const db = getPgDb();
       const userMap = await resolveVerifierUserMap(items, db);
       return items.map(item => buildVerifierRecord(item, userMap, true));
     },
@@ -997,7 +1001,12 @@ export function createAuthVerifierHandler(): VerifierDomainHandler {
       let repaired = 0;
       for (const entry of parsed) {
         if (
-          await repairSingleAuthRecord(entry.table, entry.pgEntityId, db, pgRepo)
+          await repairSingleAuthRecord(
+            entry.table,
+            entry.pgEntityId,
+            db,
+            pgRepo,
+          )
         ) {
           repaired += 1;
         }
@@ -1016,14 +1025,14 @@ export function createAuthTableVerifierHandler(
     domain: `auth:${meta.table}`,
     targetTable: meta.table,
     compareOptions: AUTH_SHADOW_OPTIONS,
-    async fetchMongoBatch({ afterCursor, limit }) {
+    async fetchMongoBatch({ afterCursor, limit, db }) {
       const items = await fetchStageBackfillItems(
         meta,
         afterCursor,
         limit,
         false,
       );
-      const userMap = await resolveVerifierUserMap(items, getPgDb());
+      const userMap = await resolveVerifierUserMap(items, db);
       return items.map(item => buildVerifierRecord(item, userMap, false));
     },
     fetchPgByIds(entityIds, db) {
@@ -1175,7 +1184,9 @@ export async function replayAuthWriteToMongo(
   switch (data.operation) {
     case "createUser":
     case "updateUser": {
-      const userId = String(payload.pgUserId ?? payload.userId ?? data.entityId);
+      const userId = String(
+        payload.pgUserId ?? payload.userId ?? data.entityId,
+      );
       const record = await pgRepo.findUserById(userId, db);
       if (record) {
         await mongoRepo.upsertUserFromRecord(record);

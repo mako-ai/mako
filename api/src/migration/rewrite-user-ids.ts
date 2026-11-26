@@ -237,15 +237,34 @@ export const MONGO_USER_ID_REWRITE_SPECS: readonly CollectionRewriteSpec[] = [
     scalars: [{ path: "userId", kind: "userId" }],
   },
   {
-    collection: "mcp_oauth_codes",
+    collection: "mcpoauthcodes",
     scalars: [{ path: "userId", kind: "userId" }],
   },
   {
-    collection: "mcp_oauth_tokens",
+    collection: "mcpoauthtokens",
     scalars: [{ path: "userId", kind: "userId" }],
   },
   {
-    collection: "acp_plan_grants",
+    collection: "mcp_connection_configs",
+    scalars: [{ path: "userId", kind: "userId" }],
+  },
+  {
+    collection: "mcp_oauth_flows",
+    scalars: [
+      { path: "configUserId", kind: "userId" },
+      { path: "startedByUserId", kind: "userId" },
+    ],
+  },
+  {
+    collection: "acpplangrants",
+    scalars: [{ path: "userId", kind: "userId" }],
+  },
+  {
+    collection: "workflow_recorded_writes",
+    scalars: [{ path: "userId", kind: "userId" }],
+  },
+  {
+    collection: "realtime_presence",
     scalars: [{ path: "userId", kind: "userId" }],
   },
 
@@ -276,11 +295,11 @@ export const MONGO_USER_ID_REWRITE_SPECS: readonly CollectionRewriteSpec[] = [
     scalars: [{ path: "savedBy", kind: "userId" }],
   },
   {
-    collection: "notebook_folders",
+    collection: "notebookfolders",
     scalars: [{ path: "ownerId", kind: "userId" }],
   },
   {
-    collection: "notebook_indexes",
+    collection: "notebookindexes",
     scalars: [{ path: "ownerId", kind: "userId" }],
     arrayObjects: [
       {
@@ -316,6 +335,13 @@ export const MONGO_USER_ID_REWRITE_SPECS: readonly CollectionRewriteSpec[] = [
     ],
   },
   {
+    collection: "app_binding_jobs",
+    scalars: [
+      { path: "actorId", kind: "userId" },
+      { path: "userId", kind: "userId" },
+    ],
+  },
+  {
     collection: "app_index",
     scalars: [{ path: "ownerId", kind: "userId" }],
   },
@@ -343,10 +369,6 @@ export const MONGO_USER_ID_REWRITE_SPECS: readonly CollectionRewriteSpec[] = [
     scalars: [{ path: "userId", kind: "userId" }],
   },
   {
-    collection: "skill_usage_daily",
-    scalars: [{ path: "userId", kind: "userId" }],
-  },
-  {
     collection: "query_executions",
     scalars: [{ path: "userId", kind: "userId" }],
   },
@@ -355,7 +377,7 @@ export const MONGO_USER_ID_REWRITE_SPECS: readonly CollectionRewriteSpec[] = [
     scalars: [{ path: "triggeredBy", kind: "userId" }],
   },
   {
-    collection: "llm_usage",
+    collection: "llmusages",
     scalars: [{ path: "userId", kind: "userId" }],
   },
 
@@ -365,7 +387,7 @@ export const MONGO_USER_ID_REWRITE_SPECS: readonly CollectionRewriteSpec[] = [
     scalars: [{ path: "createdBy", kind: "userId" }],
   },
   {
-    collection: "chat_attachments",
+    collection: "chatattachments",
     scalars: [{ path: "createdBy", kind: "userId" }],
   },
   {
@@ -638,6 +660,10 @@ const METADATA_USER_KEYS = [
   "verified_by",
   "restoredBy",
   "restored_by",
+  "actorId",
+  "actor_id",
+  "configUserId",
+  "startedByUserId",
 ].join("|");
 
 const PRINCIPAL_RE = /\buser:([A-Za-z0-9_-]{8,64})(?![A-Za-z0-9_-])/g;
@@ -646,7 +672,7 @@ const JSON_METADATA_RE = new RegExp(
   "g",
 );
 const YAML_METADATA_RE = new RegExp(
-  `((?:^|[\\r\\n])[ \\t]*(?:${METADATA_USER_KEYS})\\s*:\\s*["']?)([A-Za-z0-9_-]{8,64})(["']?(?=[ \\t]*(?:#[^\\r\\n]*)?(?:\\r?\\n|$)))`,
+  `((?:^|[\\r\\n])[ \\t]*(?:-[ \\t]+)?(?:${METADATA_USER_KEYS})\\s*:\\s*["']?)([A-Za-z0-9_-]{8,64})(["']?(?=[ \\t]*(?:#[^\\r\\n]*)?(?:\\r?\\n|$)))`,
   "g",
 );
 
@@ -798,7 +824,10 @@ export async function rewriteGitUserIds(
       filesMatched += 1;
       totalReplacements += replacements;
       files.push({
-        relativePath: path.relative(repoDir, fullPath).split(path.sep).join("/"),
+        relativePath: path
+          .relative(repoDir, fullPath)
+          .split(path.sep)
+          .join("/"),
         replacements,
       });
 

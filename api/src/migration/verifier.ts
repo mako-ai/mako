@@ -34,6 +34,7 @@ export interface VerifierDomainHandler {
     afterCursor: string | null;
     limit: number;
     workspaceId: string | null;
+    db: MakoPgDb;
   }): Promise<VerifierMongoRecord[]>;
   /** Fetch corresponding Postgres records keyed by canonical lowercase `entityId`. */
   fetchPgByIds(
@@ -144,6 +145,7 @@ export async function runParityVerification(
       afterCursor,
       limit: batchSize,
       workspaceId,
+      db,
     });
     if (batch.length === 0) break;
 

@@ -1487,4 +1487,230 @@ describe("Phase 1A AuthRepository contract & migration lifecycle (Decision #3)",
       await pgRepo.findOAuthAccountByProvider("github", "valid-oid-uid"),
     ).toMatchObject({ id: validOid, userId: expectedUserUuid });
   });
+
+  // ── 7. Verifier #41 regression tests (critical-path read overhead & injected DB) ─
+
+  it("issues ZERO extra PG queries on critical read paths in Stage 3 and Stage 4 when unsampled", async () => {
+    const shadowEvents: ShadowCompareEvent[] = [];
+    const shadowRunner = new ShadowCompareRunner({
+      maxInflight: 8,
+      onEvent: e => shadowEvents.push(e),
+    });
+    const router = new MigrationRouter({
+      enablePubSub: false,
+      shadowRunner,
+      rng: () => 0.0,
+    });
+    const mongoRepo = new MongoAuthRepository();
+    const pgRepo = new PgAuthRepository({ getDb: () => db });
+
+    // Wrap PG read methods with call counters to verify zero extra critical-path queries
+    const counts = {
+      findUserById: 0,
+      findUsersByIds: 0,
+      findAttributionByUserId: 0,
+      findOAuthAccountByProvider: 0,
+      findOAuthAccountsByUserId: 0,
+      findOAuthAccountsByUserIds: 0,
+      resolveUserUuid: 0,
+    };
+    const countedPg = Object.create(pgRepo) as PgAuthRepository;
+    countedPg.findUserById = (...args) => {
+      counts.findUserById += 1;
+      return pgRepo.findUserById(...args);
+    };
+    countedPg.findUsersByIds = (...args) => {
+      counts.findUsersByIds += 1;
+      return pgRepo.findUsersByIds(...args);
+    };
+    countedPg.findAttributionByUserId = (...args) => {
+      counts.findAttributionByUserId += 1;
+      return pgRepo.findAttributionByUserId(...args);
+    };
+    countedPg.findOAuthAccountByProvider = (...args) => {
+      counts.findOAuthAccountByProvider += 1;
+      return pgRepo.findOAuthAccountByProvider(...args);
+    };
+    countedPg.findOAuthAccountsByUserId = (...args) => {
+      counts.findOAuthAccountsByUserId += 1;
+      return pgRepo.findOAuthAccountsByUserId(...args);
+    };
+    countedPg.findOAuthAccountsByUserIds = (...args) => {
+      counts.findOAuthAccountsByUserIds += 1;
+      return pgRepo.findOAuthAccountsByUserIds(...args);
+    };
+    countedPg.resolveUserUuid = (...args) => {
+      counts.resolveUserUuid += 1;
+      return pgRepo.resolveUserUuid(...args);
+    };
+
+    const dual = new DualAuthRepository({
+      mongo: mongoRepo,
+      pg: countedPg,
+      router,
+      getDb: () => db,
+    });
+
+    await router.setDomainState({
+      domain: "auth",
+      mode: "dual_write_mongo_read",
+    });
+    const legacyId = "perf_legacy_u01";
+    await dual.createUser({
+      id: legacyId,
+      email: "perf@example.com",
+      emailVerified: true,
+    });
+    await dual.upsertAttributionOnce({
+      userId: legacyId,
+      signupMethod: "google",
+      firstTouch: {},
+      lastTouch: {},
+    });
+    await dual.createOAuthAccount({
+      userId: legacyId,
+      provider: "google",
+      providerUserId: "g-perf-1",
+      email: "perf@example.com",
+    });
+
+    const pgUser = await pgRepo.findUserById(legacyId);
+    if (!pgUser) throw new Error("Expected pgUser to exist");
+
+    // Stage 3 with shadowSampleRate = 0 -> ZERO PG calls across every read method!
+    await router.setDomainState({
+      domain: "auth",
+      mode: "dual_write_shadow_compare",
+      shadowSampleRate: 0,
+    });
+    for (const k of Object.keys(counts) as Array<keyof typeof counts>) {
+      counts[k] = 0;
+    }
+
+    expect((await dual.findUserById(legacyId))?.id).toBe(legacyId);
+    expect(await dual.findUsersByIds([legacyId])).toHaveLength(1);
+    expect(await dual.findAttributionByUserId(legacyId)).not.toBeNull();
+    expect(
+      await dual.findOAuthAccountByProvider("google", "g-perf-1"),
+    ).not.toBeNull();
+    expect(await dual.findOAuthAccountsByUserId(legacyId)).toHaveLength(1);
+    expect(await dual.findOAuthAccountsByUserIds([legacyId])).toHaveLength(1);
+    await shadowRunner.flush();
+
+    expect(counts).toEqual({
+      findUserById: 0,
+      findUsersByIds: 0,
+      findAttributionByUserId: 0,
+      findOAuthAccountByProvider: 0,
+      findOAuthAccountsByUserId: 0,
+      findOAuthAccountsByUserIds: 0,
+      resolveUserUuid: 0,
+    });
+
+    // Stage 4 with shadowSampleRate = 0 -> EXACTLY 1 PG primary call per read, ZERO extra PG lookups!
+    await router.setDomainState({
+      domain: "auth",
+      mode: "dual_write_pg_read",
+      shadowSampleRate: 0,
+    });
+
+    expect((await dual.findUserById(pgUser.id))?.id).toBe(pgUser.id);
+    expect(counts.findUserById).toBe(1);
+
+    expect(await dual.findUsersByIds([pgUser.id])).toHaveLength(1);
+    expect(counts.findUsersByIds).toBe(1);
+
+    expect(await dual.findAttributionByUserId(pgUser.id)).not.toBeNull();
+    expect(counts.findAttributionByUserId).toBe(1);
+    expect(counts.findUserById).toBe(1); // unchanged — no eager pre-resolution!
+
+    expect(
+      await dual.findOAuthAccountByProvider("google", "g-perf-1"),
+    ).not.toBeNull();
+    expect(counts.findOAuthAccountByProvider).toBe(1);
+    expect(counts.resolveUserUuid).toBe(0);
+
+    expect(await dual.findOAuthAccountsByUserId(pgUser.id)).toHaveLength(1);
+    expect(counts.findOAuthAccountsByUserId).toBe(1);
+    expect(counts.findUserById).toBe(1); // unchanged
+
+    expect(await dual.findOAuthAccountsByUserIds([pgUser.id])).toHaveLength(1);
+    expect(counts.findOAuthAccountsByUserIds).toBe(1);
+    expect(counts.findUsersByIds).toBe(1); // unchanged
+
+    // Stage 3 & Stage 4 with shadowSampleRate = 1 -> shadow compare matches cleanly for legacy user!
+    await router.setDomainState({
+      domain: "auth",
+      mode: "dual_write_shadow_compare",
+      shadowSampleRate: 1,
+    });
+    await dual.findOAuthAccountByProvider("google", "g-perf-1");
+    await dual.findOAuthAccountsByUserIds([legacyId]);
+    await shadowRunner.flush();
+    expect(shadowEvents.slice(-2).every(e => e.result === "match")).toBe(true);
+
+    await router.setDomainState({
+      domain: "auth",
+      mode: "dual_write_pg_read",
+      shadowSampleRate: 1,
+    });
+    const prevFindUserCount = counts.findUserById;
+    await dual.findUserById(pgUser.id);
+    await dual.findOAuthAccountByProvider("google", "g-perf-1");
+    await dual.findOAuthAccountsByUserIds([pgUser.id]);
+    await shadowRunner.flush();
+    // findUserById Stage 4 shadow reuses pgResult.legacyId -> still only +1 PG user lookup total!
+    expect(counts.findUserById).toBe(prevFindUserCount + 1);
+    expect(shadowEvents.slice(-3).every(e => e.result === "match")).toBe(true);
+  });
+
+  it("runs auth parity verification using only the injected db without calling getPgDb()", async () => {
+    clearBackfillRegistryForTests();
+    clearVerifierRegistryForTests();
+    registerMigrationDomains({ force: true });
+
+    const now = new Date("2026-11-26T09:00:00.000Z");
+    await User.create({
+      _id: "direct_db_user1",
+      email: "directdb@example.com",
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await OAuthAccount.create({
+      _id: new mongoose.Types.ObjectId(newDualId(now.getTime()).oid),
+      userId: "direct_db_user1",
+      provider: "github",
+      providerUserId: "gh-direct-db",
+      email: "directdb@example.com",
+      createdAt: now,
+    });
+
+    const backfill = await runBackfill({ domain: "auth", batchSize: 10, db });
+    expect(backfill.status).toBe("completed");
+
+    // Reset global test DB and clear POSTGRES_URL so any accidental getPgDb() call throws!
+    resetPgTestDb();
+    const prevPgUrl = process.env.POSTGRES_URL;
+    delete process.env.POSTGRES_URL;
+    try {
+      const compositeReport = await runParityVerification({
+        domain: "auth",
+        batchSize: 10,
+        db,
+      });
+      expect(compositeReport.ok).toBe(true);
+
+      const tableReport = await runParityVerification({
+        domain: "auth:oauth_accounts",
+        batchSize: 10,
+        db,
+      });
+      expect(tableReport.ok).toBe(true);
+    } finally {
+      if (prevPgUrl !== undefined) {
+        process.env.POSTGRES_URL = prevPgUrl;
+      }
+    }
+  });
 });

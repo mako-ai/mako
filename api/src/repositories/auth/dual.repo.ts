@@ -161,12 +161,8 @@ export class DualAuthRepository implements AuthRepository {
 
   // ── Users ───────────────────────────────────────────────────────────────
 
-  async findUserById(idOrLegacyId: string): Promise<UserRecord | null> {
-    const mode = await this.getMode();
-    const mongoLookupId =
-      mode === "dual_write_pg_read"
-        ? await this.resolveMongoUserIdForReverseSync(idOrLegacyId)
-        : idOrLegacyId;
+  findUserById(idOrLegacyId: string): Promise<UserRecord | null> {
+    let pgResult: UserRecord | null | undefined;
 
     return this.router.executeRead(
       {
@@ -175,26 +171,51 @@ export class DualAuthRepository implements AuthRepository {
         entityId: idOrLegacyId,
       },
       {
-        mongo: () => this.mongo.findUserById(mongoLookupId),
-        pg: () => this.pg.findUserById(idOrLegacyId),
+        mongo: () => {
+          // In Stage 4 reverse shadow (off critical path), reuse the already-fetched
+          // PG row's `legacyId` so zero extra PG queries are ever issued.
+          const mongoLookupId = pgResult?.legacyId ?? idOrLegacyId;
+          return this.mongo.findUserById(mongoLookupId);
+        },
+        pg: async () => {
+          const row = await this.pg.findUserById(idOrLegacyId);
+          pgResult = row;
+          return row;
+        },
         canonicalize: canonicalizeUserForCompare,
         shadowOptions: AUTH_SHADOW_OPTIONS,
       },
     );
   }
 
-  async findUsersByIds(ids: readonly string[]): Promise<UserRecord[]> {
-    const mode = await this.getMode();
-    const mongoLookupIds =
-      mode === "dual_write_pg_read"
-        ? await this.resolveMongoUserIdsForReverseSync(ids)
-        : ids;
+  findUsersByIds(ids: readonly string[]): Promise<UserRecord[]> {
+    let pgResults: UserRecord[] | undefined;
 
     return this.router.executeRead(
       { domain: AUTH_DOMAIN, operation: "findUsersByIds" },
       {
-        mongo: () => this.mongo.findUsersByIds(mongoLookupIds),
-        pg: () => this.pg.findUsersByIds(ids),
+        mongo: () => {
+          let mongoLookupIds: readonly string[] = ids;
+          if (pgResults !== undefined && pgResults.length > 0) {
+            const byId = new Map<string, string>();
+            for (const u of pgResults) {
+              const target = u.legacyId ?? u.id;
+              byId.set(u.id, target);
+              if (u.legacyId) {
+                byId.set(u.legacyId, target);
+              }
+            }
+            mongoLookupIds = ids.map(
+              id => byId.get(id.toLowerCase()) ?? byId.get(id) ?? id,
+            );
+          }
+          return this.mongo.findUsersByIds(mongoLookupIds);
+        },
+        pg: async () => {
+          const rows = await this.pg.findUsersByIds(ids);
+          pgResults = rows;
+          return rows;
+        },
         canonicalize: canonicalizeUsersForCompare,
         shadowOptions: AUTH_SHADOW_OPTIONS,
       },
@@ -289,7 +310,9 @@ export class DualAuthRepository implements AuthRepository {
 
   // ── User attributions ───────────────────────────────────────────────────
 
-  async upsertAttributionOnce(input: UpsertAttributionOnceInput): Promise<void> {
+  async upsertAttributionOnce(
+    input: UpsertAttributionOnceInput,
+  ): Promise<void> {
     const prepared: UpsertAttributionOnceInput = {
       ...input,
       capturedAt: input.capturedAt ?? new Date(),
@@ -297,7 +320,9 @@ export class DualAuthRepository implements AuthRepository {
     const mode = await this.getMode();
     let mongoUserId = prepared.userId;
     if (mode === "dual_write_pg_read") {
-      mongoUserId = await this.resolveMongoUserIdForReverseSync(prepared.userId);
+      mongoUserId = await this.resolveMongoUserIdForReverseSync(
+        prepared.userId,
+      );
     }
 
     return this.router.executeWrite(
@@ -312,20 +337,19 @@ export class DualAuthRepository implements AuthRepository {
       },
       {
         mongo: () =>
-          this.mongo.upsertAttributionOnce({ ...prepared, userId: mongoUserId }),
+          this.mongo.upsertAttributionOnce({
+            ...prepared,
+            userId: mongoUserId,
+          }),
         pg: () => this.pg.upsertAttributionOnce(prepared),
       },
     );
   }
 
-  async findAttributionByUserId(
+  findAttributionByUserId(
     userId: string,
   ): Promise<UserAttributionRecord | null> {
-    const mode = await this.getMode();
-    const mongoLookupUserId =
-      mode === "dual_write_pg_read"
-        ? await this.resolveMongoUserIdForReverseSync(userId)
-        : userId;
+    let pgRan = false;
 
     return this.router.executeRead(
       {
@@ -334,8 +358,16 @@ export class DualAuthRepository implements AuthRepository {
         entityId: userId,
       },
       {
-        mongo: () => this.mongo.findAttributionByUserId(mongoLookupUserId),
-        pg: () => this.pg.findAttributionByUserId(userId),
+        mongo: async () => {
+          const mongoLookupUserId = pgRan
+            ? await this.resolveMongoUserIdForReverseSync(userId)
+            : userId;
+          return this.mongo.findAttributionByUserId(mongoLookupUserId);
+        },
+        pg: () => {
+          pgRan = true;
+          return this.pg.findAttributionByUserId(userId);
+        },
         canonicalize: rec =>
           rec ? { ...rec, userId: "<matched-user>" } : null,
         shadowOptions: AUTH_SHADOW_OPTIONS,
@@ -345,14 +377,13 @@ export class DualAuthRepository implements AuthRepository {
 
   // ── OAuth accounts ──────────────────────────────────────────────────────
 
-  async findOAuthAccountByProvider(
+  findOAuthAccountByProvider(
     provider: OAuthProviderName,
     providerUserId: string,
   ): Promise<OAuthAccountRecord | null> {
-    const mode = await this.getMode();
-    const shadowMode =
-      mode === "dual_write_shadow_compare" || mode === "dual_write_pg_read";
     const userUuidMap = new Map<string, string>();
+    let mongoRecord: OAuthAccountRecord | null | undefined;
+    let pgRan = false;
 
     return this.router.executeRead(
       {
@@ -366,7 +397,9 @@ export class DualAuthRepository implements AuthRepository {
             provider,
             providerUserId,
           );
-          if (shadowMode && rec && !isUuidv7(rec.userId)) {
+          mongoRecord = rec;
+          // Stage 4 reverse shadow (off critical path, only when sampled):
+          if (pgRan && rec && !isUuidv7(rec.userId)) {
             const mapped = await this.pg
               .resolveUserUuid(rec.userId)
               .catch(() => null);
@@ -376,13 +409,28 @@ export class DualAuthRepository implements AuthRepository {
           }
           return rec;
         },
-        pg: () => this.pg.findOAuthAccountByProvider(provider, providerUserId),
+        pg: async () => {
+          pgRan = true;
+          const rec = await this.pg.findOAuthAccountByProvider(
+            provider,
+            providerUserId,
+          );
+          // Stage 3 forward shadow (off critical path, only when sampled):
+          if (mongoRecord && !isUuidv7(mongoRecord.userId)) {
+            const mapped = await this.pg
+              .resolveUserUuid(mongoRecord.userId)
+              .catch(() => null);
+            if (mapped) {
+              userUuidMap.set(mongoRecord.userId, mapped);
+            }
+          }
+          return rec;
+        },
         canonicalize: rec =>
           rec
             ? {
                 ...rec,
-                userId:
-                  userUuidMap.get(rec.userId) ?? rec.userId.toLowerCase(),
+                userId: userUuidMap.get(rec.userId) ?? rec.userId.toLowerCase(),
               }
             : null,
         shadowOptions: AUTH_SHADOW_OPTIONS,
@@ -390,14 +438,8 @@ export class DualAuthRepository implements AuthRepository {
     );
   }
 
-  async findOAuthAccountsByUserId(
-    userId: string,
-  ): Promise<OAuthAccountRecord[]> {
-    const mode = await this.getMode();
-    const mongoLookupUserId =
-      mode === "dual_write_pg_read"
-        ? await this.resolveMongoUserIdForReverseSync(userId)
-        : userId;
+  findOAuthAccountsByUserId(userId: string): Promise<OAuthAccountRecord[]> {
+    let pgRan = false;
 
     return this.router.executeRead(
       {
@@ -406,8 +448,16 @@ export class DualAuthRepository implements AuthRepository {
         entityId: userId,
       },
       {
-        mongo: () => this.mongo.findOAuthAccountsByUserId(mongoLookupUserId),
-        pg: () => this.pg.findOAuthAccountsByUserId(userId),
+        mongo: async () => {
+          const mongoLookupUserId = pgRan
+            ? await this.resolveMongoUserIdForReverseSync(userId)
+            : userId;
+          return this.mongo.findOAuthAccountsByUserId(mongoLookupUserId);
+        },
+        pg: () => {
+          pgRan = true;
+          return this.pg.findOAuthAccountsByUserId(userId);
+        },
         canonicalize: records =>
           sortRecordsById(records).map(r => ({
             ...r,
@@ -418,28 +468,49 @@ export class DualAuthRepository implements AuthRepository {
     );
   }
 
-  async findOAuthAccountsByUserIds(
+  findOAuthAccountsByUserIds(
     userIds: readonly string[],
   ): Promise<OAuthAccountRecord[]> {
-    const mode = await this.getMode();
-    const shadowMode =
-      mode === "dual_write_shadow_compare" || mode === "dual_write_pg_read";
-    const mongoLookupUserIds =
-      mode === "dual_write_pg_read"
-        ? await this.resolveMongoUserIdsForReverseSync(userIds)
-        : userIds;
     const userUuidMap = new Map<string, string>();
+    let mongoRecords: OAuthAccountRecord[] | undefined;
+    let pgRan = false;
 
     return this.router.executeRead(
       { domain: AUTH_DOMAIN, operation: "findOAuthAccountsByUserIds" },
       {
         mongo: async () => {
+          const mongoLookupUserIds = pgRan
+            ? await this.resolveMongoUserIdsForReverseSync(userIds)
+            : userIds;
           const recs =
             await this.mongo.findOAuthAccountsByUserIds(mongoLookupUserIds);
-          if (shadowMode && recs.length > 0) {
+          mongoRecords = recs;
+          // Stage 4 reverse shadow (off critical path, only when sampled):
+          if (pgRan && recs.length > 0) {
+            const legacyIds = [
+              ...new Set(recs.map(r => r.userId).filter(id => !isUuidv7(id))),
+            ];
+            if (legacyIds.length > 0) {
+              const matchedUsers = await this.pg
+                .findUsersByIds(legacyIds)
+                .catch(() => []);
+              for (const u of matchedUsers) {
+                if (u.legacyId) {
+                  userUuidMap.set(u.legacyId, u.id);
+                }
+              }
+            }
+          }
+          return recs;
+        },
+        pg: async () => {
+          pgRan = true;
+          const recs = await this.pg.findOAuthAccountsByUserIds(userIds);
+          // Stage 3 forward shadow (off critical path, only when sampled):
+          if (mongoRecords && mongoRecords.length > 0) {
             const legacyIds = [
               ...new Set(
-                recs.map(r => r.userId).filter(id => !isUuidv7(id)),
+                mongoRecords.map(r => r.userId).filter(id => !isUuidv7(id)),
               ),
             ];
             if (legacyIds.length > 0) {
@@ -455,7 +526,6 @@ export class DualAuthRepository implements AuthRepository {
           }
           return recs;
         },
-        pg: () => this.pg.findOAuthAccountsByUserIds(userIds),
         canonicalize: records =>
           sortRecordsById(records).map(r => ({
             ...r,
@@ -479,7 +549,9 @@ export class DualAuthRepository implements AuthRepository {
     const mode = await this.getMode();
     let mongoUserId = prepared.userId;
     if (mode === "dual_write_pg_read") {
-      mongoUserId = await this.resolveMongoUserIdForReverseSync(prepared.userId);
+      mongoUserId = await this.resolveMongoUserIdForReverseSync(
+        prepared.userId,
+      );
     }
 
     return this.router.executeWrite(
@@ -517,10 +589,7 @@ export class DualAuthRepository implements AuthRepository {
       : this.mongo.findSessionById(sessionId);
   }
 
-  async updateSessionExpiry(
-    sessionId: string,
-    expiresAt: Date,
-  ): Promise<void> {
+  async updateSessionExpiry(sessionId: string, expiresAt: Date): Promise<void> {
     return (await this.isPgSessionMode())
       ? this.pg.updateSessionExpiry(sessionId, expiresAt)
       : this.mongo.updateSessionExpiry(sessionId, expiresAt);
@@ -677,7 +746,9 @@ export class DualAuthRepository implements AuthRepository {
     const mode = await this.getMode();
     let mongoUserId = prepared.userId;
     if (mode === "dual_write_pg_read") {
-      mongoUserId = await this.resolveMongoUserIdForReverseSync(prepared.userId);
+      mongoUserId = await this.resolveMongoUserIdForReverseSync(
+        prepared.userId,
+      );
     }
 
     return this.router.executeWrite(
