@@ -7,9 +7,9 @@ import {
   requireWorkspaceRole,
 } from "../../middleware/workspace.middleware";
 import {
-  Workspace,
-  type IWorkspaceAutoJoin,
-} from "../../database/workspace-schema";
+  workspaceRepo,
+  type WorkspaceAutoJoin,
+} from "../../repositories/workspaces";
 import { normalizeAutoJoin } from "../../services/auto-join.service";
 import { loggers } from "../../logging";
 import {
@@ -24,7 +24,7 @@ const logger = loggers.workspace();
 
 export const workspaceAccessSettingsRoutes = createRouter();
 
-function serializeAutoJoin(autoJoin: IWorkspaceAutoJoin | null | undefined) {
+function serializeAutoJoin(autoJoin: WorkspaceAutoJoin | null | undefined) {
   if (!autoJoin || autoJoin.domains.length === 0) return null;
   return { domains: autoJoin.domains, role: autoJoin.role };
 }
@@ -135,9 +135,7 @@ workspaceAccessSettingsRoutes.openapi(
     if (c.req.param("id") !== workspace._id.toString()) {
       return fail(c, 400, "Workspace ID mismatch");
     }
-    const fresh = await Workspace.findById(workspace._id)
-      .select("settings.linkPreviews")
-      .lean();
+    const fresh = await workspaceRepo.findById(workspace._id.toString());
     return c.json({
       success: true,
       data: { enabled: fresh?.settings?.linkPreviews !== false },
@@ -167,10 +165,7 @@ workspaceAccessSettingsRoutes.openapi(
       return fail(c, 400, "Workspace ID mismatch");
     }
     const { enabled } = c.req.valid("json");
-    await Workspace.updateOne(
-      { _id: workspace._id },
-      { $set: { "settings.linkPreviews": enabled } },
-    );
+    await workspaceRepo.setLinkPreviews(workspace._id.toString(), enabled);
     logger.info("Workspace link previews updated", {
       workspaceId: workspace._id.toString(),
       by: c.get("user")?.id,

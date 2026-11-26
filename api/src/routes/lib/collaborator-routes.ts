@@ -208,10 +208,7 @@ export function registerCollaboratorRoutes(
         const workspaceId = c.req.param("workspaceId") as string;
         const members = await workspaceService.getMembers(workspaceId);
         const emailByUserId = new Map<string, string>(
-          members.map((m: any) => [
-            (m.userId?._id || m.userId)?.toString(),
-            m.userId?.email || "",
-          ]),
+          members.map(m => [m.userId, m.user?.email || ""]),
         );
 
         const collaborators = (doc.sharedWith || []).map(s => ({
@@ -279,9 +276,7 @@ export function registerCollaboratorRoutes(
 
         const workspaceId = c.req.param("workspaceId") as string;
         const members = await workspaceService.getMembers(workspaceId);
-        const isMember = members.some(
-          (m: any) => (m.userId?._id || m.userId)?.toString() === targetUserId,
-        );
+        const isMember = members.some(m => m.userId === targetUserId);
         if (!isMember) {
           return c.json(
             { success: false, error: "User is not a member of this workspace" },

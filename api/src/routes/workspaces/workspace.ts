@@ -8,7 +8,10 @@ import {
   requireWorkspaceRole,
 } from "../../middleware/workspace.middleware";
 import { Types } from "mongoose";
-import { Workspace, type IWorkspace } from "../../database/workspace-schema";
+import {
+  workspaceRepo,
+  type UpdateWorkspacePatch,
+} from "../../repositories/workspaces";
 import { loggers } from "../../logging";
 import {
   AUTH_SECURITY,
@@ -138,7 +141,7 @@ workspaceByIdRoutes.openapi(
         return fail(c, 400, "Workspace ID mismatch");
       }
 
-      const updates: Partial<IWorkspace> = {};
+      const updates: UpdateWorkspacePatch = {};
       if (body.name) updates.name = body.name;
       if (body.settings) {
         updates.settings = { ...workspace.settings, ...body.settings };
@@ -216,9 +219,7 @@ workspaceByIdRoutes.openapi(
       // Deduplicate
       const deduped = Array.from(new Set(disabledModelIds as string[]));
 
-      await Workspace.findByIdAndUpdate(workspaceId, {
-        $set: { "settings.disabledModelIds": deduped },
-      });
+      await workspaceRepo.setDisabledModelIds(workspaceId, deduped);
 
       logger.info("Updated workspace model blocklist", {
         workspaceId,

@@ -4,8 +4,7 @@
  */
 import { createRoute, z } from "@hono/zod-openapi";
 import { linkWorkspaceRepo } from "../../apps/repo-link.service";
-import { Types } from "mongoose";
-import { GitHubInstallation } from "../../database/workspace-schema";
+import { workspaceRepo } from "../../repositories/workspaces";
 import { workspaceService } from "../../services/workspace.service";
 import {
   getGitHubAppClientId,
@@ -88,11 +87,15 @@ appsGithubRoutes.openapi(
   }),
   async c => {
     const { workspaceId } = c.req.valid("param");
-    const installations = await GitHubInstallation.find({
-      workspaceId: new Types.ObjectId(workspaceId),
-    })
-      .select("installationId accountLogin accountType repositorySelection")
-      .lean();
+    const rawInstallations =
+      await workspaceRepo.listGitHubInstallations(workspaceId);
+    const installations = rawInstallations.map(i => ({
+      _id: i._id,
+      installationId: i.installationId,
+      accountLogin: i.accountLogin,
+      accountType: i.accountType,
+      repositorySelection: i.repositorySelection,
+    }));
     const repos = await storedBindings(workspaceId);
     return c.json(
       {
@@ -169,10 +172,10 @@ appsGithubRoutes.openapi(
     try {
       const { workspaceId } = c.req.valid("param");
       const { installationId } = c.req.valid("query");
-      const installation = await GitHubInstallation.findOne({
-        workspaceId: new Types.ObjectId(workspaceId),
+      const installation = await workspaceRepo.findGitHubInstallation(
+        workspaceId,
         installationId,
-      });
+      );
       if (!installation) {
         return fail(c, 404, "Installation not found");
       }
@@ -216,10 +219,7 @@ appsGithubRoutes.openapi(
         "Disconnecting GitHub requires the admin or owner role",
       );
     }
-    await GitHubInstallation.deleteOne({
-      workspaceId: new Types.ObjectId(workspaceId),
-      installationId,
-    });
+    await workspaceRepo.deleteGitHubInstallation(workspaceId, installationId);
     return c.json({ success: true as const }, 200);
   },
 );

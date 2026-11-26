@@ -31,12 +31,9 @@
  * time, so a second run changes nothing.
  */
 import { Types } from "mongoose";
-import {
-  AppIndexEntry,
-  AppProject,
-  WorkspaceMember,
-} from "../database/workspace-schema";
-import { User } from "../database/schema";
+import { AppIndexEntry, AppProject } from "../database/workspace-schema";
+import { authRepo } from "../repositories/auth";
+import { workspaceRepo } from "../repositories/workspaces";
 import {
   APPS_DIR,
   APP_MANIFEST,
@@ -410,12 +407,10 @@ export async function workspaceOwnerSources(
 ): Promise<WorkspaceOwnerSources> {
   const [{ existing }, members] = await Promise.all([
     planWorkspaceHandles(workspaceId),
-    WorkspaceMember.find({ workspaceId: new Types.ObjectId(workspaceId) })
-      .select("userId")
-      .lean(),
+    workspaceRepo.listMembers(workspaceId),
   ]);
   const directory = new OwnerDirectory(existing);
-  const memberIds = new Set(members.map(m => String(m.userId)));
+  const memberIds = new Set(members.map(m => m.userId));
   return {
     ownerOfHandle: handle => directory.ownerOf(handle),
     folderCreator: async appPath =>
@@ -427,10 +422,8 @@ export async function workspaceOwnerSources(
         ? scaffoldEvidenceFromGit(repoDir, appPath)
         : { missing: "workspace has no bound repo" },
     userIdForEmail: async email => {
-      const user = await User.findOne({ email: email.toLowerCase() })
-        .select("_id")
-        .lean();
-      return user ? String(user._id) : undefined;
+      const user = await authRepo.findUserByEmail(email.toLowerCase());
+      return user ? user.id : undefined;
     },
     isMember: userId => memberIds.has(userId),
   };

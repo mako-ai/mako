@@ -1031,7 +1031,11 @@ describe("Phase 1A AuthRepository contract & migration lifecycle (Decision #3)",
     registerMigrationDomains({ force: true });
 
     // Confirm `sessions` is intentionally absent from backfill & verifier domains
-    expect(listBackfillDomains().sort()).toEqual([
+    expect(
+      listBackfillDomains()
+        .filter(d => d === "auth" || d.startsWith("auth:"))
+        .sort(),
+    ).toEqual([
       "auth",
       "auth:desktop_auth_codes",
       "auth:email_verifications",
@@ -1039,7 +1043,11 @@ describe("Phase 1A AuthRepository contract & migration lifecycle (Decision #3)",
       "auth:user_attributions",
       "auth:users",
     ]);
-    expect(listVerifierDomains().sort()).toEqual([
+    expect(
+      listVerifierDomains()
+        .filter(d => d === "auth" || d.startsWith("auth:"))
+        .sort(),
+    ).toEqual([
       "auth",
       "auth:desktop_auth_codes",
       "auth:email_verifications",
@@ -1357,11 +1365,13 @@ describe("Phase 1A AuthRepository contract & migration lifecycle (Decision #3)",
     const ruleTables = listTtlRules()
       .map(r => r.tableName)
       .sort();
-    expect(ruleTables).toEqual([
-      "desktop_auth_codes",
-      "email_verifications",
-      "sessions",
-    ]);
+    expect(ruleTables).toEqual(
+      expect.arrayContaining([
+        "desktop_auth_codes",
+        "email_verifications",
+        "sessions",
+      ]),
+    );
 
     // Insert 1 active + 1 expired PG hashed-token session directly (simulating post-cutover sessions)
     const activePgSessionToken = makeSessionId();

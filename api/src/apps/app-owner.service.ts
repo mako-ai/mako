@@ -6,10 +6,9 @@
  * linked to their accounts, and memoizes it briefly so the Apps home and
  * its search resolve every app's owner from one read.
  */
-import { Types } from "mongoose";
-import { OAuthAccount, User } from "../database/schema";
-import { Workspace, WorkspaceMember } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { authRepo } from "../repositories/auth";
+import { workspaceRepo } from "../repositories/workspaces";
 import {
   PeopleDirectory,
   workspaceEmailDomains,
@@ -40,23 +39,23 @@ export async function loadPeopleDirectory(
   if (hit && hit.handles === handles && Date.now() - hit.at < TTL_MS) {
     return hit.people;
   }
-  const ws = new Types.ObjectId(workspaceId);
   const [members, workspace] = await Promise.all([
-    WorkspaceMember.find({ workspaceId: ws }).select("userId").lean(),
-    Workspace.findById(ws).select("settings.autoJoin").lean(),
+    workspaceRepo.listMembers(workspaceId),
+    workspaceRepo.findById(workspaceId),
   ]);
-  const handleOf = new Map(handles.rows().map(r => [r.userId, r.handle]));
+  const handleOf = new Map(
+    handles
+      .rows()
+      .filter(r => Boolean(r.userId))
+      .map(r => [r.userId, r.handle]),
+  );
   const ids = [
     ...new Set([...members.map(m => m.userId), ...handleOf.keys()]),
   ].filter(Boolean);
   const [users, accounts] = ids.length
     ? await Promise.all([
-        User.find({ _id: { $in: ids } })
-          .select("_id email")
-          .lean(),
-        OAuthAccount.find({ userId: { $in: ids } })
-          .select("userId provider providerUserId email")
-          .lean(),
+        authRepo.findUsersByIds(ids),
+        authRepo.findOAuthAccountsByUserIds(ids),
       ])
     : [[], []];
   const linked = new Map<string, { githubIds: string[]; aliases: string[] }>();
@@ -72,12 +71,13 @@ export async function loadPeopleDirectory(
     linked.set(a.userId, entry);
   }
   const people: WorkspacePerson[] = users.map(u => {
-    const id = String(u._id);
+    const id = u.id;
     return {
       userId: id,
       email: u.email,
-      handle: handleOf.get(id),
-      ...linked.get(id),
+      handle:
+        handleOf.get(id) ?? (u.legacyId ? handleOf.get(u.legacyId) : undefined),
+      ...(linked.get(id) ?? (u.legacyId ? linked.get(u.legacyId) : undefined)),
     };
   });
   const memberIds = new Set(members.map(m => m.userId));

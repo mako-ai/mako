@@ -121,11 +121,11 @@ workspaceInviteRoutes.openapi(
 
       return c.json({
         success: true,
-        data: invites.map((invite: any) => ({
+        data: invites.map(invite => ({
           id: invite._id,
           email: invite.email,
           role: invite.role,
-          invitedBy: invite.invitedBy?.email || "",
+          invitedBy: invite.inviter?.email || "",
           expiresAt: invite.expiresAt,
         })),
       });

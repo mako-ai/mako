@@ -23,8 +23,8 @@
  */
 import { Types } from "mongoose";
 
-import { Workspace } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { workspaceRepo } from "../repositories/workspaces";
 import { demandOf, readQueue, type WorkerDemand } from "./demand";
 import { tenantOfToken } from "./hatchet";
 import {
@@ -81,10 +81,7 @@ export function decide(
 }
 
 async function markNeeded(workspaceId: string, at = new Date()) {
-  await Workspace.updateOne(
-    { _id: new Types.ObjectId(workspaceId) },
-    { $set: { "workflows.lastNeededAt": at } },
-  );
+  await workspaceRepo.touchWorkflowLastNeededAt(workspaceId, at);
 }
 
 /**
@@ -124,10 +121,8 @@ export async function reconcileWorkers(
   const ids = workers
     .map(worker => worker.workspaceId)
     .filter(id => Types.ObjectId.isValid(id));
-  const workspaces = await Workspace.find({ _id: { $in: ids } })
-    .select("workflows.live workflows.hatchetToken workflows.lastNeededAt")
-    .lean();
-  const byId = new Map(workspaces.map(w => [w._id.toString(), w.workflows]));
+  const workspaces = await workspaceRepo.findByIds(ids);
+  const byId = new Map(workspaces.map(w => [w.id, w.workflows]));
 
   for (const { workspaceId, replicas } of workers) {
     const state = byId.get(workspaceId);

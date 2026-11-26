@@ -6,6 +6,7 @@
  * functions (`sync-retry`, `ttl-reaper`).
  */
 import { registerAuthMigrationDomain } from "./auth.backfill";
+import { registerWorkspacesMigrationDomain } from "./workspaces.backfill";
 
 let registered = false;
 
@@ -18,7 +19,8 @@ export function registerMigrationDomains(
 ): void {
   if (registered && !options.force) return;
   registerAuthMigrationDomain();
+  registerWorkspacesMigrationDomain();
   registered = true;
 }
 
-export { registerAuthMigrationDomain };
+export { registerAuthMigrationDomain, registerWorkspacesMigrationDomain };

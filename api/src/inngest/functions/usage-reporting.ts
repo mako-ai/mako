@@ -12,7 +12,7 @@
 import Stripe from "stripe";
 import { ObjectId } from "mongodb";
 import { inngest } from "../client";
-import { Workspace } from "../../database/workspace-schema";
+import { workspaceRepo } from "../../repositories/workspaces";
 import { LlmUsage } from "../../database/schema";
 import {
   isBillingEnabled,
@@ -57,12 +57,7 @@ export const usageReportingFunction = inngest.createFunction(
     }
 
     const workspaces = await step.run("fetch-pro-workspaces", async () => {
-      const docs = await Workspace.find({
-        "billing.plan": { $in: ["pro", "enterprise"] },
-        "billing.stripeCustomerId": { $ne: null },
-        "billing.stripeSubscriptionId": { $ne: null },
-        "billing.subscriptionStatus": "active",
-      }).select("_id billing");
+      const docs = await workspaceRepo.listPaidActiveBilling();
 
       return docs
         .map((ws): ReportableWorkspaceBilling | null => {
@@ -73,7 +68,7 @@ export const usageReportingFunction = inngest.createFunction(
           }
 
           return {
-            id: ws._id.toString(),
+            id: ws.id,
             stripeCustomerId,
             stripeSubscriptionId,
             currentPeriodStart:
@@ -149,25 +144,14 @@ export const usageReportingFunction = inngest.createFunction(
           targetOverageCents,
         ].join(":");
 
-        const claimResult = await Workspace.updateOne(
-          {
-            _id: new ObjectId(ws.id),
-            "billing.lastReportedOverageCents": ws.lastReportedOverageCents,
-            $or: [
-              { "billing.pendingReportedOverageCents": null },
-              { "billing.pendingReportedOverageCents": { $exists: false } },
-            ],
-          },
-          {
-            $set: {
-              "billing.pendingReportedOverageCents": targetOverageCents,
-              "billing.pendingMeterEventIdempotencyKey":
-                meterEventIdempotencyKey,
-            },
-          },
+        const claimed = await workspaceRepo.claimPendingOverage(
+          ws.id,
+          ws.lastReportedOverageCents,
+          targetOverageCents,
+          meterEventIdempotencyKey,
         );
 
-        if (claimResult.modifiedCount !== 1) {
+        if (!claimed) {
           logger.warn("Skipped usage report because overage cursor changed", {
             workspaceId: ws.id,
           });
@@ -199,19 +183,10 @@ export const usageReportingFunction = inngest.createFunction(
           },
         );
 
-        await Workspace.updateOne(
-          {
-            _id: new ObjectId(ws.id),
-            "billing.pendingReportedOverageCents": targetOverageCents,
-            "billing.pendingMeterEventIdempotencyKey": meterEventIdempotencyKey,
-          },
-          {
-            $set: { "billing.lastReportedOverageCents": targetOverageCents },
-            $unset: {
-              "billing.pendingReportedOverageCents": "",
-              "billing.pendingMeterEventIdempotencyKey": "",
-            },
-          },
+        await workspaceRepo.commitPendingOverage(
+          ws.id,
+          targetOverageCents,
+          meterEventIdempotencyKey,
         );
 
         logger.info("Reported usage overage to Stripe meter", {

@@ -7,13 +7,9 @@
  * get the same answer without a separate registration step. Rows are never
  * deleted (a departed member's handle stays theirs).
  */
-import { Types } from "mongoose";
-import { User } from "../database/schema";
-import {
-  WorkspaceMember,
-  WorkspaceUserHandle,
-} from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { authRepo } from "../repositories/auth";
+import { workspaceRepo } from "../repositories/workspaces";
 import {
   OwnerDirectory,
   assignHandles,
@@ -30,11 +26,7 @@ const cache = new Map<string, { at: number; directory: OwnerDirectory }>();
 const loads = new Map<string, Promise<OwnerDirectory>>();
 
 async function handleRows(workspaceId: string): Promise<HandleRow[]> {
-  const rows = await WorkspaceUserHandle.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-  })
-    .select("userId handle")
-    .lean();
+  const rows = await workspaceRepo.listHandles(workspaceId);
   return rows.map(r => ({ userId: r.userId, handle: r.handle }));
 }
 
@@ -49,12 +41,11 @@ export async function planWorkspaceHandles(
   workspaceId: string,
   alsoUserIds: string[] = [],
 ): Promise<{ existing: HandleRow[]; assigned: HandleRow[] }> {
-  const ws = new Types.ObjectId(workspaceId);
   const [existing, members] = await Promise.all([
     handleRows(workspaceId),
-    WorkspaceMember.find({ workspaceId: ws }).select("userId joinedAt").lean(),
+    workspaceRepo.listMembers(workspaceId),
   ]);
-  const known = new Set(existing.map(r => r.userId));
+  const known = new Set(existing.map(r => r.userId).filter(Boolean));
   const memberIds = new Set(members.map(m => m.userId));
   const missing: Array<{ userId: string; joinedAt?: Date }> = [
     ...members.filter(m => !known.has(m.userId)),
@@ -65,10 +56,14 @@ export async function planWorkspaceHandles(
       .map(userId => ({ userId, joinedAt: undefined })),
   ];
   if (missing.length === 0) return { existing, assigned: [] };
-  const users = await User.find({ _id: { $in: missing.map(m => m.userId) } })
-    .select("_id email")
-    .lean();
-  const emailOf = new Map(users.map(u => [String(u._id), u.email]));
+  const users = await authRepo.findUsersByIds(missing.map(m => m.userId));
+  const emailOf = new Map<string, string>();
+  for (const u of users) {
+    emailOf.set(u.id, u.email);
+    if (u.legacyId) {
+      emailOf.set(u.legacyId, u.email);
+    }
+  }
   const candidates: HandleCandidate[] = missing.flatMap(m => {
     const email = emailOf.get(m.userId);
     return email ? [{ userId: m.userId, email, joinedAt: m.joinedAt }] : [];
@@ -88,30 +83,25 @@ export async function ensureWorkspaceHandles(
   workspaceId: string,
   alsoUserIds: string[] = [],
 ): Promise<HandleRow[]> {
-  const ws = new Types.ObjectId(workspaceId);
   for (let attempt = 0; attempt < 3; attempt++) {
     const { existing, assigned } = await planWorkspaceHandles(
       workspaceId,
       alsoUserIds,
     );
     if (assigned.length === 0) return existing;
-    try {
-      await WorkspaceUserHandle.insertMany(
-        assigned.map(a => ({ workspaceId: ws, ...a })),
-        { ordered: false },
-      );
+    const { hadConflict } = await workspaceRepo.insertHandlesBestEffort(
+      workspaceId,
+      assigned,
+    );
+    if (!hadConflict) {
       logger.info("Assigned personal folder handles", {
         workspaceId,
         handles: assigned.length,
       });
       return [...existing, ...assigned];
-    } catch (error) {
-      // A concurrent assignment won some of them: re-read and go again.
-      logger.warn("Handle assignment raced; retrying", {
-        workspaceId,
-        error: error instanceof Error ? error.message : String(error),
-      });
     }
+    // A concurrent assignment won some of them: re-read and go again.
+    logger.warn("Handle assignment raced; retrying", { workspaceId });
   }
   return handleRows(workspaceId);
 }

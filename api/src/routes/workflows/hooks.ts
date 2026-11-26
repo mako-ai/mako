@@ -1,8 +1,8 @@
 /** A webhook per workflow (public; the URL is the credential). */
 import { bodyLimit } from "hono/body-limit";
 import { Types } from "mongoose";
-import { Workspace } from "../../database/workspace-schema";
 import { createRouter } from "../../openapi/core";
+import { workspaceRepo } from "../../repositories/workspaces";
 import { workspaceService } from "../../services/workspace.service";
 import { readWorkspaceTenant, startRun } from "../../workflows/hatchet";
 import { startSandboxRun } from "../../workflows/sandbox";
@@ -22,9 +22,7 @@ workflowHookRoutes.post(
   async c => {
     const { workspaceId, name, secret } = c.req.param();
     const workspace = Types.ObjectId.isValid(workspaceId)
-      ? await Workspace.findById(workspaceId)
-          .select("workflows.webhooks workflows.active")
-          .lean()
+      ? await workspaceRepo.findById(workspaceId)
       : null;
     const { webhooks, active } = workspace?.workflows ?? {};
     // One answer for every wrong URL: it does not say which part was wrong.

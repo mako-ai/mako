@@ -9,7 +9,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { ObjectId } from "mongodb";
 import { sanitizeToolFailureMessage } from "../agent-lib/tool-failure";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import { Workspace } from "../database/workspace-schema";
+import { workspaceRepo } from "../repositories/workspaces";
 import {
   getAvailableModels,
   getDefaultModelId,
@@ -82,13 +82,7 @@ agentRoutes.openapi(
       let effectivePlan: ReturnType<typeof getEffectiveBillingPlan> = "free";
 
       if (workspaceId) {
-        const ws = await Workspace.findById(workspaceId)
-          .select({
-            "settings.disabledModelIds": 1,
-            "billing.plan": 1,
-            "billing.subscriptionStatus": 1,
-          })
-          .lean();
+        const ws = await workspaceRepo.findById(workspaceId);
 
         effectivePlan = getEffectiveBillingPlan(ws?.billing);
         models = await getAvailableModels(ws?.settings?.disabledModelIds);

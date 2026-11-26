@@ -30,11 +30,10 @@ import {
   AppIndexEntry,
   AppLifecycleState,
   AppProject,
-  Workspace,
-  WorkspaceMember,
   type IAppLifecycleState,
 } from "../database/workspace-schema";
-import { User } from "../database/schema";
+import { authRepo } from "../repositories/auth";
+import { workspaceRepo } from "../repositories/workspaces";
 import { loadAppsIndex, type AppIndexRow } from "./app-index.service";
 import { SWEEP_COMMIT_APP_LIMIT, getAppUsageStats } from "./app-usage.service";
 import { invalidateAppsHomeBase } from "./app-home-base.service";
@@ -460,15 +459,11 @@ export async function getAppLifecyclePlan(
 
 /** Emails of a workspace's owners and admins: who hears about ownerless apps. */
 async function adminEmails(workspaceId: string): Promise<string[]> {
-  const members = await WorkspaceMember.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-    role: { $in: ["owner", "admin"] },
-  })
-    .select("userId")
-    .lean();
-  const users = await User.find({ _id: { $in: members.map(m => m.userId) } })
-    .select("email")
-    .lean();
+  const members = await workspaceRepo.listMembers(workspaceId, [
+    "owner",
+    "admin",
+  ]);
+  const users = await authRepo.findUsersByIds(members.map(m => m.userId));
   return users.map(u => u.email).filter(Boolean);
 }
 
@@ -598,7 +593,7 @@ async function notifyStale(
   byId: Map<string, { ownerId?: string }>,
   now: Date,
 ): Promise<void> {
-  const workspace = await Workspace.findById(workspaceId).select("name").lean();
+  const workspace = await workspaceRepo.findById(workspaceId);
   const ownerIds = [
     ...new Set(
       entries
@@ -606,10 +601,14 @@ async function notifyStale(
         .filter((id): id is string => !!id),
     ),
   ];
-  const owners = await User.find({ _id: { $in: ownerIds } })
-    .select("email")
-    .lean();
-  const emailOf = new Map(owners.map(u => [u._id, u.email]));
+  const owners = await authRepo.findUsersByIds(ownerIds);
+  const emailOf = new Map<string, string>();
+  for (const u of owners) {
+    emailOf.set(u.id, u.email);
+    if (u.legacyId) {
+      emailOf.set(u.legacyId, u.email);
+    }
+  }
   let admins: string[] | null = null;
 
   const digests = new Map<string, LifecyclePlanEntry[]>();

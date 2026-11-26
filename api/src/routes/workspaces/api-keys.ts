@@ -13,7 +13,7 @@ import {
   requireWorkspace,
   requireWorkspaceRole,
 } from "../../middleware/workspace.middleware";
-import { Workspace } from "../../database/workspace-schema";
+import { workspaceRepo } from "../../repositories/workspaces";
 import { loggers } from "../../logging";
 import {
   AUTH_SECURITY,
@@ -56,16 +56,16 @@ workspaceApiKeyRoutes.openapi(
       }
 
       // Return API keys without the hash
-      const apiKeys =
-        workspace.apiKeys?.map((key: any) => ({
-          id: key._id,
-          name: key.name,
-          prefix: key.prefix,
-          createdAt: key.createdAt,
-          lastUsedAt: key.lastUsedAt,
-          createdBy: key.createdBy,
-          scopes: resolveWorkspaceApiKeyScopes(key.scopes),
-        })) || [];
+      const storedKeys = await workspaceRepo.listApiKeys(workspaceId);
+      const apiKeys = storedKeys.map(key => ({
+        id: key.id,
+        name: key.name,
+        prefix: key.prefix,
+        createdAt: key.createdAt,
+        lastUsedAt: key.lastUsedAt,
+        createdBy: key.createdBy,
+        scopes: resolveWorkspaceApiKeyScopes(key.scopes),
+      }));
 
       return c.json({
         success: true,
@@ -134,35 +134,24 @@ workspaceApiKeyRoutes.openapi(
       // Generate new API key
       const { key, hash, prefix } = generateApiKey();
 
-      // Add API key to workspace
-      const newApiKey = {
+      const createdKey = await workspaceRepo.createApiKey({
+        workspaceId,
         name: name.trim(),
         keyHash: hash,
         prefix,
         scopes,
         createdAt: new Date(),
         createdBy: user.id,
-      };
-
-      const updatedWorkspace = await Workspace.findByIdAndUpdate(
-        workspace._id,
-        {
-          $push: { apiKeys: newApiKey },
-        },
-        { returnDocument: "after" },
-      );
-
-      // Find the newly created API key
-      const createdKey = updatedWorkspace?.apiKeys?.slice(-1)[0];
+      });
 
       return c.json({
         success: true,
         apiKey: {
-          id: createdKey?._id,
-          name: createdKey?.name,
-          prefix: createdKey?.prefix,
-          createdAt: createdKey?.createdAt,
-          scopes: resolveWorkspaceApiKeyScopes(createdKey?.scopes),
+          id: createdKey.id,
+          name: createdKey.name,
+          prefix: createdKey.prefix,
+          createdAt: createdKey.createdAt,
+          scopes: resolveWorkspaceApiKeyScopes(createdKey.scopes),
         },
         key, // Only return the full key once, during creation
         message:
@@ -205,17 +194,11 @@ workspaceApiKeyRoutes.openapi(
       }
 
       // Remove API key from workspace
-      const updatedWorkspace = await Workspace.findByIdAndUpdate(
-        workspace._id,
-        {
-          $pull: { apiKeys: { _id: keyId } },
-        },
-        { returnDocument: "after" },
-      );
-
-      if (!updatedWorkspace) {
+      const existingWorkspace = await workspaceRepo.findById(workspaceId);
+      if (!existingWorkspace) {
         return fail(c, 404, "Workspace not found");
       }
+      await workspaceRepo.deleteApiKey(workspaceId, keyId);
 
       return c.json({
         success: true,

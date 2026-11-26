@@ -7,8 +7,6 @@
  * it builds. Before the first deploy this also gives the workspace its
  * Hatchet token and its worker.
  */
-import { Types } from "mongoose";
-
 import { WORKFLOWS_DIR } from "../apps/app-paths";
 import { ensureLocalRepo, freshenForServe } from "../apps/cloud-repo.service";
 import { isAncestorCommit, runGit } from "../apps/git";
@@ -19,8 +17,8 @@ import {
   resolveCommit,
 } from "../apps/repository.service";
 import { generateApiKey, hashApiKey } from "../auth/api-key.middleware";
-import { Workspace } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { workspaceRepo } from "../repositories/workspaces";
 import { ensureWorkspaceTenant, hasInstanceHatchet } from "./hatchet";
 import {
   ensureWorkerDeployment,
@@ -103,36 +101,25 @@ export async function setKey(
     recordWrites = false,
   }: { agentRun?: boolean; recordWrites?: boolean } = {},
 ): Promise<void> {
-  const _id = new Types.ObjectId(workspaceId);
   const keyHash = hashApiKey(key);
-  const holder = await Workspace.findOne({ "apiKeys.keyHash": keyHash })
-    .select("_id")
-    .lean();
+  const holder = await workspaceRepo.findApiKeyByHash(keyHash);
   if (holder) {
-    if (holder._id.equals(_id)) return;
+    if (holder.workspace.id === workspaceId.toLowerCase()) return;
     throw new Error(
       "WORKFLOWS_WORKER_KEY already belongs to another workspace. A static worker serves one workspace.",
     );
   }
-  await Workspace.updateOne({ _id }, { $pull: { apiKeys: { name } } });
-  await Workspace.updateOne(
-    { _id },
-    {
-      $push: {
-        apiKeys: {
-          _id: new Types.ObjectId(),
-          name,
-          keyHash,
-          prefix: key.substring(0, 14),
-          scopes: WORKER_KEY_SCOPES,
-          createdAt: new Date(),
-          createdBy: userId,
-          ...(agentRun ? { agentRun: true } : {}),
-          ...(recordWrites ? { recordWrites: true } : {}),
-        },
-      },
-    },
-  );
+  await workspaceRepo.replaceApiKeyByName({
+    workspaceId,
+    name,
+    keyHash,
+    prefix: key.substring(0, 14),
+    scopes: WORKER_KEY_SCOPES,
+    createdAt: new Date(),
+    createdBy: userId,
+    ...(agentRun ? { agentRun: true } : {}),
+    ...(recordWrites ? { recordWrites: true } : {}),
+  });
 }
 
 /** Remove the runtime key `name` from the workspace, if it is there. */
@@ -140,10 +127,7 @@ export async function removeKey(
   workspaceId: string,
   name: string,
 ): Promise<void> {
-  await Workspace.updateOne(
-    { _id: new Types.ObjectId(workspaceId) },
-    { $pull: { apiKeys: { name } } },
-  );
+  await workspaceRepo.deleteApiKeysByName(workspaceId, name);
 }
 
 /**
@@ -155,16 +139,15 @@ async function ensureWorker(
   workspaceId: string,
   userId: string,
 ): Promise<void> {
-  const workspace = await Workspace.findById(workspaceId)
-    .select("apiKeys.name")
-    .lean();
-  const hasKey = workspace?.apiKeys?.some(k => k.name === workerKeyName());
+  const keys = await workspaceRepo.listApiKeys(workspaceId);
+  const hasKey = keys.some(k => k.name === workerKeyName());
   // A key made before a scope existed keeps working; it just gains the
   // scopes (idempotent, every deploy, either provider).
   if (hasKey) {
-    await Workspace.updateOne(
-      { _id: new Types.ObjectId(workspaceId), "apiKeys.name": workerKeyName() },
-      { $set: { "apiKeys.$.scopes": WORKER_KEY_SCOPES } },
+    await workspaceRepo.updateApiKeyScopesByName(
+      workspaceId,
+      workerKeyName(),
+      WORKER_KEY_SCOPES,
     );
   }
   if (!isGkeWorkerConfigured()) {
@@ -231,11 +214,8 @@ export async function hasWorkflowsToDeploy(
     `refs/heads/${DEFAULT_BRANCH}`,
   );
   if (onMain) return true;
-  const deployed = await Workspace.exists({
-    _id: workspaceId,
-    "workflows.live": { $exists: true },
-  });
-  return Boolean(deployed);
+  const workspace = await workspaceRepo.findById(workspaceId);
+  return Boolean(workspace?.workflows?.live);
 }
 
 const deploys = new Map<string, Promise<void>>();
@@ -262,9 +242,7 @@ async function deployWorkflowsNow(
   workspaceId: string,
   userId?: string,
 ): Promise<void> {
-  const workspace = await Workspace.findById(workspaceId)
-    .select("workflows createdBy")
-    .lean();
+  const workspace = await workspaceRepo.findById(workspaceId);
   // Nothing to deploy to without a Hatchet: Mako runs without workflows.
   const state = workspace?.workflows ?? {};
   if (!workspace || !(state.hatchetToken || hasInstanceHatchet())) return;
@@ -287,22 +265,14 @@ async function deployWorkflowsNow(
   // worker reported for the old one stays until it reports again, so the
   // screen shows old-live, new-wanted.
   if (main && state.live?.tree !== main.tree) {
-    await Workspace.updateOne(
-      { _id: workspace._id },
-      {
-        $set: {
-          "workflows.live.sha": main.sha,
-          "workflows.live.tree": main.tree,
-          "workflows.live.names": main.names,
-        },
-      },
-    );
+    await workspaceRepo.setWorkflowLiveTarget(workspace.id, {
+      sha: main.sha,
+      tree: main.tree,
+      names: main.names,
+    });
     logger.info("Set workflows target", { workspaceId, sha: main.sha });
   } else if (!main && state.live) {
-    await Workspace.updateOne(
-      { _id: workspace._id },
-      { $unset: { "workflows.live": "" } },
-    );
+    await workspaceRepo.setWorkflowLiveTarget(workspace.id, null);
     logger.info("Unset workflows target", { workspaceId });
   }
 }

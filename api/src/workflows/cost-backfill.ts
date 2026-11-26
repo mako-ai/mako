@@ -11,7 +11,7 @@
  */
 import { Types } from "mongoose";
 import { LlmUsage } from "../database/schema";
-import { Workspace } from "../database/workspace-schema";
+import { workspaceRepo } from "../repositories/workspaces";
 import { tenantJson, tenantOfToken, type WorkspaceTenant } from "./hatchet";
 
 /** One step of one run, as Hatchet ran it. */
@@ -174,17 +174,12 @@ export async function backfillWorkflowCosts(options: {
   dryRun: boolean;
 }): Promise<BackfillReport[]> {
   const since = new Date(Date.now() - options.days * 864e5);
-  const workspaces = await Workspace.find({
-    "workflows.hatchetToken": { $exists: true },
-    ...(options.workspaceId
-      ? { _id: new Types.ObjectId(options.workspaceId) }
-      : {}),
-  })
-    .select("name workflows.hatchetToken")
-    .lean();
+  const workspaces = await workspaceRepo.listWithHatchetToken(
+    options.workspaceId,
+  );
   const reports: BackfillReport[] = [];
   for (const workspace of workspaces) {
-    const workspaceId = String(workspace._id);
+    const workspaceId = workspace.id;
     const calls = await readUnattributedCalls(workspaceId, since);
     const tenant = tenantOfToken(workspace.workflows?.hatchetToken);
     if (calls.length === 0 || !tenant) continue;

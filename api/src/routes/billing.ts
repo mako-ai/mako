@@ -11,8 +11,8 @@ import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
-import { Workspace } from "../database/workspace-schema";
-import { User } from "../database/schema";
+import { authRepo } from "../repositories/auth";
+import { workspaceRepo } from "../repositories/workspaces";
 import { isBillingEnabled } from "../billing/config";
 import {
   createCheckoutSession,
@@ -189,7 +189,7 @@ billingRoutes.openapi(
     }
 
     try {
-      const workspace = await Workspace.findById(workspaceId);
+      const workspace = await workspaceRepo.findById(workspaceId);
       if (!workspace) {
         return fail(c, 404, "Workspace not found");
       }
@@ -202,7 +202,7 @@ billingRoutes.openapi(
         return fail(c, 400, "Workspace already has an active Pro plan");
       }
 
-      const userDoc = await User.findById(user.id);
+      const userDoc = await authRepo.findUserById(user.id);
       const email = userDoc?.email || "";
 
       const url = await createCheckoutSession(
@@ -273,7 +273,7 @@ billingRoutes.openapi(
     }
 
     try {
-      const workspace = await Workspace.findById(workspaceId);
+      const workspace = await workspaceRepo.findById(workspaceId);
       if (!workspace) {
         return fail(c, 404, "Workspace not found");
       }

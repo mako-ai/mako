@@ -1,6 +1,6 @@
 import { Context, Next } from "hono";
 import * as crypto from "crypto";
-import { Workspace } from "../database/workspace-schema";
+import { workspaceRepo } from "../repositories/workspaces";
 import { loggers } from "../logging";
 
 const logger = loggers.auth();
@@ -55,33 +55,20 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     const keyHash = hashApiKey(apiKey);
 
     // Find workspace with this API key
-    const workspace = await Workspace.findOne({
-      "apiKeys.keyHash": keyHash,
-    });
+    const found = await workspaceRepo.findApiKeyByHash(keyHash);
 
-    if (!workspace) {
+    if (!found) {
       return c.json({ error: "Invalid API key" }, 401);
     }
 
-    // Update last used timestamp
-    await Workspace.updateOne(
-      {
-        _id: workspace._id,
-        "apiKeys.keyHash": keyHash,
-      },
-      {
-        $set: {
-          "apiKeys.$.lastUsedAt": new Date(),
-        },
-      },
-    );
+    const { workspace, apiKey: workspaceApiKey } = found;
+
+    // Update last used timestamp (throttled to at most once per minute)
+    await workspaceRepo.touchApiKeyLastUsed(workspace.id, workspaceApiKey.id);
 
     // Store workspace in context for route handlers
     c.set("workspace", workspace);
-    c.set(
-      "apiKey",
-      workspace.apiKeys?.find(k => k.keyHash === keyHash),
-    );
+    c.set("apiKey", workspaceApiKey);
 
     await next();
   } catch (error) {

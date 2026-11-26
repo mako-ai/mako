@@ -10,8 +10,8 @@ import type { ValidatedSession, ValidatedUser } from "../auth/session";
 export interface AuthVariables {
   user?: ValidatedUser;
   session?: ValidatedSession;
-  // `workspace`, `apiKey` are Mongoose documents; kept loose (matches the
-  // existing AuthenticatedContext, which types these as `any`).
+  // `workspace` (`WorkspaceRecord`) and `apiKey` (`WorkspaceApiKeyRecord`)
+  // are kept loose to match AuthenticatedContext across existing routes.
 
   workspace?: any;
 

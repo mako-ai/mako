@@ -12,14 +12,9 @@
  * never from anything the browser can edit. An anonymous share resolves to
  * `null`: there is nobody to describe.
  */
-import { Types } from "mongoose";
-import {
-  AppProject,
-  Workspace,
-  WorkspaceMember,
-  type IAppProject,
-} from "../database/workspace-schema";
-import { User } from "../database/schema";
+import { AppProject, type IAppProject } from "../database/workspace-schema";
+import { authRepo } from "../repositories/auth";
+import { workspaceRepo } from "../repositories/workspaces";
 import { normalizeEmail } from "../utils/email.utils";
 import {
   getResourceOwnerId,
@@ -61,13 +56,8 @@ export async function resolveAppViewer(
   if (!identity) return null;
   const workspaceId = project.workspaceId.toString();
   const [workspace, member] = await Promise.all([
-    Workspace.findById(workspaceId).select("name").lean<{ name?: string }>(),
-    WorkspaceMember.findOne({
-      workspaceId: new Types.ObjectId(workspaceId),
-      userId: identity.id,
-    })
-      .select("role")
-      .lean<{ role?: WorkspaceMemberRole }>(),
+    workspaceRepo.findById(workspaceId),
+    workspaceRepo.findMember(workspaceId, identity.id),
   ]);
   const memberRole = member?.role ?? null;
   // The ACL's workspace-scope fallback assumes the caller already passed the
@@ -105,12 +95,10 @@ export async function resolveAppViewerByEmail(
   project: Parameters<typeof resolveAppViewer>[0],
   email: string,
 ): Promise<AppViewer | null> {
-  const user = await User.findOne({ email: normalizeEmail(email) })
-    .select("_id email")
-    .lean<{ _id: string; email: string }>();
+  const user = await authRepo.findUserByEmail(normalizeEmail(email));
   if (!user) return null;
   return resolveAppViewer(project, {
-    id: user._id.toString(),
+    id: user.id,
     email: user.email,
   });
 }

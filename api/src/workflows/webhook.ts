@@ -8,9 +8,8 @@
  * it off forgets the secret, so turning it on again makes a new URL.
  */
 import { randomBytes, timingSafeEqual } from "crypto";
-import { Types } from "mongoose";
 
-import { Workspace } from "../database/workspace-schema";
+import { workspaceRepo } from "../repositories/workspaces";
 import { decryptString, encryptString } from "../services/crypto.service";
 import { HatchetError } from "./hatchet";
 import { wakeWorker } from "./scale";
@@ -45,16 +44,18 @@ export async function setTriggers(
   change: { active?: boolean; webhook?: boolean },
 ): Promise<{ webhookUrl?: string | null }> {
   checkName(name);
-  const path = `workflows.webhooks.${name}`;
   const secret = randomBytes(24).toString("hex");
-  const update = {
-    ...(change.active === true && { $addToSet: { "workflows.active": name } }),
-    ...(change.active === false && { $pull: { "workflows.active": name } }),
-    ...(change.webhook === true && { $set: { [path]: encryptString(secret) } }),
-    ...(change.webhook === false && { $unset: { [path]: "" } }),
-  };
-  if (Object.keys(update).length > 0) {
-    await Workspace.updateOne({ _id: new Types.ObjectId(workspaceId) }, update);
+  const encryptedWebhookSecret =
+    change.webhook === true
+      ? encryptString(secret)
+      : change.webhook === false
+        ? null
+        : undefined;
+  if (change.active !== undefined || encryptedWebhookSecret !== undefined) {
+    await workspaceRepo.setWorkflowTrigger(workspaceId, name, {
+      active: change.active,
+      encryptedWebhookSecret,
+    });
   }
   // The worker registers a workflow's schedule again when it is switched:
   // a sleeping one must wake to do it.

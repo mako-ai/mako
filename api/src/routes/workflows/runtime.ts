@@ -6,7 +6,6 @@
 import { connectionRequest } from "../../connections/proxy.service";
 import { ConnectionRequestError } from "../../connections/forward";
 import type { Context } from "hono";
-import { Types } from "mongoose";
 import { WORKFLOWS_DIR } from "../../apps/app-paths";
 import { ensureCommitLocally } from "../../apps/cloud-repo.service";
 import { isOid, runGitBuffer } from "../../apps/git";
@@ -19,7 +18,7 @@ import {
 import { unifiedAuthMiddleware } from "../../auth/unified-auth.middleware";
 import { checkBillingLimits } from "../../billing/usage-limit.middleware";
 import { type IWorkflowRunRef } from "../../database/schema";
-import { Workspace } from "../../database/workspace-schema";
+import { workspaceRepo } from "../../repositories/workspaces";
 import { getRequestContext } from "../../logging/context";
 import { AuthenticatedContext } from "../../middleware/workspace.middleware";
 import { createRouter } from "../../openapi/core";
@@ -187,9 +186,7 @@ workflowRuntimeRoutes.get(
   "/head",
   asSupervisor(async (c, { workspaceId }) => {
     const [workspace, tenant] = await Promise.all([
-      Workspace.findById(workspaceId)
-        .select("workflows.live workflows.active")
-        .lean(),
+      workspaceRepo.findById(workspaceId),
       readWorkspaceTenant(workspaceId),
     ]);
     const wanted = workspace?.workflows?.live;
@@ -215,21 +212,12 @@ workflowRuntimeRoutes.post(
     if (typeof body?.sha !== "string" || !isOid(body.sha)) {
       return fail(c, 400, "Invalid report");
     }
-    await Workspace.updateOne(
-      { _id: new Types.ObjectId(workspaceId), "workflows.live.sha": body.sha },
+    await workspaceRepo.reportWorkflowLiveStatus(
+      workspaceId,
+      body.sha,
       typeof body.error === "string"
-        ? {
-            $set: {
-              "workflows.live.failed": {
-                sha: body.sha,
-                error: body.error.slice(-MAX_BUILD_ERROR_CHARS),
-              },
-            },
-          }
-        : {
-            $set: { "workflows.live.running": { sha: body.sha } },
-            $unset: { "workflows.live.failed": "" },
-          },
+        ? body.error.slice(-MAX_BUILD_ERROR_CHARS)
+        : undefined,
     );
     return c.json({ ok: true });
   }),
@@ -263,9 +251,7 @@ workflowRuntimeRoutes.post(
     if (!workflow || !isHatchetId(runId)) {
       return fail(c, 400, "A workflow and a run id are required");
     }
-    const workspace = await Workspace.findById(workspaceId)
-      .select("workflows.live.names")
-      .lean();
+    const workspace = await workspaceRepo.findById(workspaceId);
     if (!workspace?.workflows?.live?.names?.includes(workflow)) {
       return fail(c, 403, `${workflow} is not deployed`);
     }
@@ -632,9 +618,7 @@ workflowRuntimeRoutes.get(
     if (!isOid(sha)) return fail(c, 400, "Invalid commit");
     // A fresh API instance has an empty disk: restore the repository and this
     // commit from the mirror first.
-    const workspace = await Workspace.findById(workspaceId)
-      .select("workflows.live")
-      .lean();
+    const workspace = await workspaceRepo.findById(workspaceId);
     // Only what the worker was told to run: no browsing the repository.
     if (sha !== workspace?.workflows?.live?.sha) {
       return fail(c, 404, "Not a deployed commit");

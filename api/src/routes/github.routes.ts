@@ -16,7 +16,7 @@ import { createHmac, timingSafeEqual } from "crypto";
 import { getRequestOrigin, isAllowedOrigin } from "../auth/oauth-proxy";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
-import { GitHubInstallation } from "../database/workspace-schema";
+import { workspaceRepo } from "../repositories/workspaces";
 import { Types } from "mongoose";
 import {
   exchangeInstallUserToken,
@@ -214,9 +214,9 @@ githubRoutes.post("/webhook", async (c: Context) => {
       } else if (event === "installation") {
         const p = payload as InstallationPayload;
         if (p.action === "deleted" && p.installation?.id) {
-          await GitHubInstallation.deleteMany({
-            installationId: p.installation.id,
-          });
+          await workspaceRepo.deleteGitHubInstallationsByInstallationId(
+            p.installation.id,
+          );
           logger.info("Removed GitHub installation (uninstalled)", {
             installationId: p.installation.id,
           });
@@ -280,21 +280,14 @@ githubRoutes.get("/setup", async (c: AuthenticatedContext) => {
       const userToken = await exchangeInstallUserToken(syncCode);
       const controlled = await listUserInstallations(userToken);
       for (const inst of controlled) {
-        await GitHubInstallation.findOneAndUpdate(
-          {
-            workspaceId: new Types.ObjectId(workspaceId),
-            installationId: inst.id,
-          },
-          {
-            $set: {
-              accountLogin: inst.accountLogin,
-              accountType: inst.accountType,
-              repositorySelection: inst.repositorySelection,
-            },
-            $setOnInsert: { createdBy: user.id },
-          },
-          { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
-        );
+        await workspaceRepo.upsertGitHubInstallation({
+          workspaceId,
+          installationId: inst.id,
+          accountLogin: inst.accountLogin,
+          accountType: inst.accountType,
+          repositorySelection: inst.repositorySelection,
+          createdBy: user.id,
+        });
       }
       logger.info("GitHub installations synced from user authorization", {
         workspaceId,
@@ -361,18 +354,14 @@ githubRoutes.get("/setup", async (c: AuthenticatedContext) => {
 
   try {
     const meta = await getInstallationMeta(installationId);
-    await GitHubInstallation.findOneAndUpdate(
-      { workspaceId: new Types.ObjectId(workspaceId), installationId },
-      {
-        $set: {
-          accountLogin: meta.accountLogin,
-          accountType: meta.accountType,
-          repositorySelection: meta.repositorySelection,
-        },
-        $setOnInsert: { createdBy: user.id },
-      },
-      { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
-    );
+    await workspaceRepo.upsertGitHubInstallation({
+      workspaceId,
+      installationId,
+      accountLogin: meta.accountLogin,
+      accountType: meta.accountType,
+      repositorySelection: meta.repositorySelection,
+      createdBy: user.id,
+    });
     // GitHub allows at most one live installation of this App per account, so
     // any other record for the same workspace + account is provably stale —
     // left behind by an uninstall/reinstall cycle whose webhook never reached
@@ -380,11 +369,11 @@ githubRoutes.get("/setup", async (c: AuthenticatedContext) => {
     // not every dev/staging/preview deployment). Prune them here so
     // reinstalling through the UI is a real fix, not just a second, visually
     // identical entry in the account picker.
-    const { deletedCount } = await GitHubInstallation.deleteMany({
-      workspaceId: new Types.ObjectId(workspaceId),
-      accountLogin: meta.accountLogin,
-      installationId: { $ne: installationId },
-    });
+    const deletedCount = await workspaceRepo.pruneStaleGitHubInstallations(
+      workspaceId,
+      meta.accountLogin,
+      installationId,
+    );
     logger.info("GitHub App installation recorded", {
       workspaceId,
       installationId,

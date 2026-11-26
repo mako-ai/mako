@@ -16,7 +16,8 @@ import { Types } from "mongoose";
 
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { requireWorkspace } from "../middleware/workspace.middleware";
-import { DatabaseConnection, Workspace } from "../database/workspace-schema";
+import { DatabaseConnection } from "../database/workspace-schema";
+import { workspaceRepo } from "../repositories/workspaces";
 import { databaseConnectionService } from "../services/database-connection.service";
 import {
   applySqlRowLimit,
@@ -70,7 +71,7 @@ async function kernelOrUnifiedAuth(c: Context, next: Next) {
       if (!Types.ObjectId.isValid(payload.wsId)) {
         return fail(c, 401, "Invalid workspace in kernel token");
       }
-      const workspace = await Workspace.findById(payload.wsId);
+      const workspace = await workspaceRepo.findById(payload.wsId);
       if (!workspace) {
         return fail(c, 401, "Workspace not found for kernel token");
       }

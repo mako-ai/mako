@@ -13,7 +13,7 @@ import { withContextOverflowSelfHeal } from "../../agent-lib/context-overflow-se
 import { withThinkingSelfHeal } from "../../agent-lib/thinking-self-heal";
 import { getEffectiveBillingPlan } from "../../billing/config";
 import { checkBillingLimits } from "../../billing/usage-limit.middleware";
-import { Workspace } from "../../database/workspace-schema";
+import { workspaceRepo } from "../../repositories/workspaces";
 
 export type ChatModelSelection =
   | { ok: true; resolvedModelId: string }
@@ -32,9 +32,7 @@ export async function selectChatModel(
   workspaceId: string,
   requestedModelId: string | undefined,
 ): Promise<ChatModelSelection> {
-  const ws = await Workspace.findById(workspaceId).select(
-    "billing.plan billing.subscriptionStatus settings.disabledModelIds",
-  );
+  const ws = await workspaceRepo.findById(workspaceId);
   const effectivePlan = getEffectiveBillingPlan(ws?.billing);
   const available = await getAvailableModels(
     ws?.settings?.disabledModelIds ?? [],

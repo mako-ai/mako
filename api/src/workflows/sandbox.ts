@@ -14,7 +14,6 @@
  * and a run started with an API key (CI, a script) has them refused.
  */
 import { randomUUID } from "node:crypto";
-import { Types } from "mongoose";
 import type { RunWrites } from "./runs";
 
 import { appsGitOriginBase } from "../apps/config";
@@ -25,8 +24,8 @@ import {
   execInWorktree,
 } from "../apps/worktree.service";
 import { generateApiKey } from "../auth/api-key.middleware";
-import { Workspace } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { workspaceRepo } from "../repositories/workspaces";
 import { HatchetError } from "./hatchet";
 import { removeKey, setKey } from "./on-push";
 import { RUNTIME_IN_BOX, installRuntimeCommand } from "./runtime-files";
@@ -70,16 +69,10 @@ const runsDir = (scratch: string) => `${scratch}/mako-workflow-runs`;
 /** The person's run keys older than a run can live: none is in use. */
 async function pruneRunKeys(workspaceId: string, userId: string) {
   const prefix = `${sandboxKeyName(userId)} sandbox-`;
-  await Workspace.updateOne(
-    { _id: new Types.ObjectId(workspaceId) },
-    {
-      $pull: {
-        apiKeys: {
-          name: { $regex: `^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}` },
-          createdAt: { $lt: new Date(Date.now() - RUN_LIFETIME_MS) },
-        },
-      },
-    },
+  await workspaceRepo.pruneExpiredApiKeysByNamePrefix(
+    workspaceId,
+    prefix,
+    new Date(Date.now() - RUN_LIFETIME_MS),
   );
 }
 

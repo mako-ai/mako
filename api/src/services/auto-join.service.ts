@@ -13,11 +13,10 @@
  */
 import { Types } from "mongoose";
 import {
-  Workspace,
-  WorkspaceMember,
-  type IWorkspaceAutoJoin,
-  type IWorkspaceMember,
-} from "../database/workspace-schema";
+  workspaceRepo,
+  type WorkspaceAutoJoin,
+  type WorkspaceMemberRecord,
+} from "../repositories/workspaces";
 import { loggers } from "../logging";
 
 const logger = loggers.workspace();
@@ -32,7 +31,7 @@ const DOMAIN_RE =
  */
 export function normalizeAutoJoin(
   input: { domains?: unknown; role?: unknown } | null,
-): IWorkspaceAutoJoin | null {
+): WorkspaceAutoJoin | null {
   if (!input || typeof input !== "object") return null;
   const raw = Array.isArray(input.domains) ? input.domains : [];
   const domains: string[] = [];
@@ -66,42 +65,38 @@ export function emailDomain(email: string): string | null {
 export async function ensureAutoJoin(
   workspaceId: string,
   user: { id: string; email?: string | null },
-): Promise<IWorkspaceMember | null> {
-  if (!Types.ObjectId.isValid(workspaceId)) return null;
-  const wsId = new Types.ObjectId(workspaceId);
-  const existing = await WorkspaceMember.findOne({
-    workspaceId: wsId,
-    userId: user.id,
-  });
-  if (existing) return existing;
+): Promise<WorkspaceMemberRecord | null> {
+  if (!Types.ObjectId.isValid(workspaceId)) {
+    return null;
+  }
+  const existing = await workspaceRepo.findMember(workspaceId, user.id);
+  if (existing) {
+    return existing;
+  }
 
   const domain = user.email ? emailDomain(user.email) : null;
-  if (!domain) return null;
-  const workspace = await Workspace.findById(wsId)
-    .select("settings.autoJoin")
-    .lean<{ settings?: { autoJoin?: IWorkspaceAutoJoin } }>();
+  if (!domain) {
+    return null;
+  }
+  const workspace = await workspaceRepo.findById(workspaceId);
   const autoJoin = workspace?.settings?.autoJoin;
-  if (!autoJoin || !autoJoin.domains?.includes(domain)) return null;
+  if (!autoJoin || !autoJoin.domains?.includes(domain)) {
+    return null;
+  }
 
-  try {
-    const member = await WorkspaceMember.create({
-      workspaceId: wsId,
-      userId: user.id,
-      role: autoJoin.role === "member" ? "member" : "viewer",
-      joinedAt: new Date(),
-    });
+  const { member, inserted } = await workspaceRepo.addMemberIfNotExists({
+    workspaceId,
+    userId: user.id,
+    role: autoJoin.role === "member" ? "member" : "viewer",
+    joinedAt: new Date(),
+  });
+  if (inserted) {
     logger.info("Auto-joined a member by email domain", {
       workspaceId,
       userId: user.id,
       domain,
       role: member.role,
     });
-    return member;
-  } catch (error) {
-    // Lost a race with another first request: the row now exists.
-    if ((error as { code?: number }).code === 11000) {
-      return WorkspaceMember.findOne({ workspaceId: wsId, userId: user.id });
-    }
-    throw error;
   }
+  return member;
 }

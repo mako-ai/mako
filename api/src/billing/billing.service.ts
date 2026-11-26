@@ -7,12 +7,14 @@
 
 import Stripe from "stripe";
 import { ObjectId } from "mongodb";
-import {
-  Workspace,
-  IWorkspace,
-  IWorkspaceBilling,
-} from "../database/workspace-schema";
 import { LlmUsage } from "../database/schema";
+import {
+  workspaceRepo,
+  type SubscriptionStatus,
+  type UpdateBillingPatch,
+  type WorkspaceBilling,
+  type WorkspaceRecord,
+} from "../repositories/workspaces";
 import {
   STRIPE_BILLING_API_VERSION,
   getStripeSecretKey,
@@ -53,8 +55,14 @@ function getStripe(): Stripe {
  * Only `createCheckoutSession` should call this. The portal path must never
  * create a customer.
  */
+type BillingWorkspaceLike = {
+  _id: { toString(): string } | string;
+  name: string;
+  billing?: Partial<WorkspaceBilling>;
+};
+
 export async function getOrCreateStripeCustomer(
-  workspace: IWorkspace,
+  workspace: BillingWorkspaceLike | WorkspaceRecord,
   userEmail: string,
 ): Promise<string> {
   if (workspace.billing?.stripeCustomerId) {
@@ -89,22 +97,13 @@ export async function getOrCreateStripeCustomer(
     logger.info("Created Stripe customer", { workspaceId, customerId });
   }
 
-  const updated = await Workspace.findOneAndUpdate(
-    {
-      _id: workspace._id,
-      $or: [
-        { "billing.stripeCustomerId": null },
-        { "billing.stripeCustomerId": { $exists: false } },
-      ],
-    },
-    { $set: { "billing.stripeCustomerId": customerId } },
-    { returnDocument: "after" },
+  const claimed = await workspaceRepo.claimStripeCustomerIdIfUnset(
+    workspaceId,
+    customerId,
   );
 
-  if (!updated) {
-    const current = await Workspace.findById(workspace._id).select(
-      "billing.stripeCustomerId",
-    );
+  if (!claimed) {
+    const current = await workspaceRepo.findById(workspaceId);
     const winnerId = current?.billing?.stripeCustomerId;
     if (winnerId && winnerId !== customerId) {
       logger.warn("Concurrent getOrCreateStripeCustomer race lost", {
@@ -124,7 +123,7 @@ export async function getOrCreateStripeCustomer(
  * Returns the checkout URL for redirect.
  */
 export async function createCheckoutSession(
-  workspace: IWorkspace,
+  workspace: BillingWorkspaceLike | WorkspaceRecord,
   userEmail: string,
   successUrl: string,
   cancelUrl: string,
@@ -182,7 +181,7 @@ export class PortalUnavailableError extends Error {
  * the workspace — throws `PortalUnavailableError` otherwise.
  */
 export async function createPortalSession(
-  workspace: IWorkspace,
+  workspace: BillingWorkspaceLike | WorkspaceRecord,
   returnUrl: string,
 ): Promise<string> {
   const customerId = workspace.billing?.stripeCustomerId;
@@ -247,7 +246,7 @@ export async function getCurrentPeriodUsage(
  * Check whether a workspace can use a specific model based on its plan.
  */
 export async function canUseModel(
-  billing: IWorkspaceBilling,
+  billing: Pick<WorkspaceBilling, "plan">,
   modelId: string,
 ): Promise<{ allowed: boolean; reason?: string }> {
   const plan = billing.plan || "free";
@@ -268,7 +267,10 @@ export async function canUseModel(
  */
 export async function checkUsageLimit(
   workspaceId: string,
-  billing: IWorkspaceBilling,
+  billing: Pick<
+    WorkspaceBilling,
+    "plan" | "usageQuotaUsd" | "hardLimitUsd" | "currentPeriodStart"
+  >,
 ): Promise<{
   allowed: boolean;
   currentUsageUsd: number;
@@ -329,7 +331,7 @@ export async function getBillingStatus(workspaceId: string): Promise<{
   hasStripeCustomer: boolean;
   hasSubscription: boolean;
 }> {
-  const workspace = await Workspace.findById(workspaceId).select("billing");
+  const workspace = await workspaceRepo.findById(workspaceId);
   if (!workspace) {
     throw new Error("Workspace not found");
   }
@@ -400,31 +402,29 @@ export async function syncSubscriptionToWorkspace(
     : new Date();
   const newPeriodEnd = periodEndTs ? new Date(periodEndTs * 1000) : null;
 
-  const update: Record<string, unknown> = {
-    "billing.stripeSubscriptionId": subscription.id,
-    "billing.subscriptionStatus": status,
-    "billing.currentPeriodStart": newPeriodStart,
-    ...(newPeriodEnd && { "billing.currentPeriodEnd": newPeriodEnd }),
-    "billing.plan": plan,
-    "billing.usageQuotaUsd": planDef.usageQuotaUsd,
-    "billing.hardLimitUsd": planDef.hardLimitUsd,
-    "settings.billingTier": plan,
+  const patch: UpdateBillingPatch = {
+    stripeSubscriptionId: subscription.id,
+    subscriptionStatus: status as SubscriptionStatus,
+    currentPeriodStart: newPeriodStart,
+    ...(newPeriodEnd && { currentPeriodEnd: newPeriodEnd }),
+    plan,
+    usageQuotaUsd: planDef.usageQuotaUsd,
+    hardLimitUsd: planDef.hardLimitUsd,
+    settingsBillingTier: plan,
   };
 
   // Only reset the overage tracker when the billing period actually changes
   // (i.e. subscription renewal), not on every subscription.updated event
   // (which also fires for card updates, metadata edits, etc.)
-  const ws = await Workspace.findById(wsId).select(
-    "billing.currentPeriodStart",
-  );
+  const ws = await workspaceRepo.findById(wsId);
   const existingPeriodStart = ws?.billing?.currentPeriodStart;
   const periodChanged =
     !existingPeriodStart ||
     existingPeriodStart.getTime() !== newPeriodStart.getTime();
   if (periodChanged) {
-    update["billing.lastReportedOverageCents"] = 0;
-    update["billing.pendingReportedOverageCents"] = null;
-    update["billing.pendingMeterEventIdempotencyKey"] = null;
+    patch.lastReportedOverageCents = 0;
+    patch.pendingReportedOverageCents = null;
+    patch.pendingMeterEventIdempotencyKey = null;
   }
 
   // Also store customer ID if present
@@ -433,10 +433,10 @@ export async function syncSubscriptionToWorkspace(
       ? subscription.customer
       : subscription.customer.id;
   if (customerId) {
-    update["billing.stripeCustomerId"] = customerId;
+    patch.stripeCustomerId = customerId;
   }
 
-  await Workspace.updateOne({ _id: new ObjectId(wsId) }, { $set: update });
+  await workspaceRepo.updateBilling(wsId, patch);
 
   logger.info("Synced subscription to workspace", {
     workspaceId: wsId,
@@ -458,24 +458,19 @@ export async function handleSubscriptionDeleted(
 
   const freeDef = PLAN_DEFINITIONS.free;
 
-  await Workspace.updateOne(
-    { _id: new ObjectId(wsId) },
-    {
-      $set: {
-        "billing.stripeSubscriptionId": null,
-        "billing.subscriptionStatus": "canceled",
-        "billing.currentPeriodStart": null,
-        "billing.currentPeriodEnd": null,
-        "billing.plan": "free",
-        "billing.usageQuotaUsd": freeDef.usageQuotaUsd,
-        "billing.hardLimitUsd": freeDef.hardLimitUsd,
-        "billing.lastReportedOverageCents": 0,
-        "billing.pendingReportedOverageCents": null,
-        "billing.pendingMeterEventIdempotencyKey": null,
-        "settings.billingTier": "free",
-      },
-    },
-  );
+  await workspaceRepo.updateBilling(wsId, {
+    stripeSubscriptionId: null,
+    subscriptionStatus: "canceled",
+    currentPeriodStart: null,
+    currentPeriodEnd: null,
+    plan: "free",
+    usageQuotaUsd: freeDef.usageQuotaUsd,
+    hardLimitUsd: freeDef.hardLimitUsd,
+    lastReportedOverageCents: 0,
+    pendingReportedOverageCents: null,
+    pendingMeterEventIdempotencyKey: null,
+    settingsBillingTier: "free",
+  });
 
   logger.info("Subscription deleted, workspace reverted to free plan", {
     workspaceId: wsId,

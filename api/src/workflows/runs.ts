@@ -6,10 +6,10 @@
  * agent-lib/tools/workflow-tools.ts, so both show the same thing.
  */
 import {
-  type IWorkflowSlot,
-  type IWorkspaceWorkflows,
-  Workspace,
-} from "../database/workspace-schema";
+  workspaceRepo,
+  type WorkflowSlot,
+  type WorkspaceWorkflows,
+} from "../repositories/workspaces";
 import { getWorkspaceRepo } from "../services/workspace-repos.service";
 import {
   HatchetError,
@@ -100,7 +100,7 @@ const knownWorkflows = (tenant: WorkspaceTenant) =>
   });
 
 /** What a screen shows of one slot. */
-function deployment(slot?: IWorkflowSlot) {
+function deployment(slot?: WorkflowSlot) {
   return {
     /** The commit the worker reports running. Null before the first good deploy. */
     liveSha: slot?.running?.sha ?? null,
@@ -108,7 +108,9 @@ function deployment(slot?: IWorkflowSlot) {
     targetSha: slot?.sha ?? null,
     /** The build output when the wanted commit could not be started. */
     buildError:
-      slot && slot.failed?.sha === slot.sha ? slot.failed.error : null,
+      slot?.sha && slot.failed?.sha === slot.sha
+        ? (slot.failed.error ?? null)
+        : null,
   };
 }
 
@@ -130,7 +132,7 @@ export async function readDeployment(workspaceId: string) {
   return { deployment: deployment(state?.live), tree: state?.live?.tree };
 }
 
-function statusOf(state: IWorkspaceWorkflows | undefined, repoLinked: boolean) {
+function statusOf(state: WorkspaceWorkflows | undefined, repoLinked: boolean) {
   return {
     // Workflows are files in the workspace's repository; without one linked
     // there is nowhere to write them, and the screen says so.
@@ -145,7 +147,7 @@ function statusOf(state: IWorkspaceWorkflows | undefined, repoLinked: boolean) {
 
 async function loadState(workspaceId: string) {
   const [workspace, repo] = await Promise.all([
-    Workspace.findById(workspaceId).select("workflows").lean(),
+    workspaceRepo.findById(workspaceId),
     getWorkspaceRepo(workspaceId),
   ]);
   return { state: workspace?.workflows, repoLinked: Boolean(repo) };
