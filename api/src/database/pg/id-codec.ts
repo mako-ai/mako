@@ -280,9 +280,13 @@ export function uuidv7Timestamp(uuid: string): Date | null {
   return new Date(tsMs);
 }
 
-// Monotonic state for generateUuidv7() within the same millisecond (RFC 9562 §6.2).
-let lastUuidv7TsMs = -1;
-let lastUuidv7RandA = 0;
+// Separate monotonic states for default wall-clock calls vs explicit `nowMs`
+// calls so passing a future or epoch-0 timestamp never poisons or resets
+// wall-clock monotonicity (RFC 9562 §6.2).
+let lastClockTsMs = -1;
+let lastClockRandA = 0;
+let lastExplicitTsMs = -1;
+let lastExplicitRandA = 0;
 
 /**
  * Generate an RFC 9562 UUIDv7 (48-bit Unix ms + version `7` + 12-bit monotonic
@@ -291,11 +295,14 @@ let lastUuidv7RandA = 0;
  * - Default (omitted `nowMs`): uses `Date.now()` and guards against wall-clock
  *   regressions so generated IDs are strictly monotonic in-process.
  * - Explicit `nowMs`: honors the requested millisecond timestamp while staying
- *   strictly monotonic across repeated calls at the same `nowMs`.
+ *   strictly monotonic across repeated calls at the same `nowMs`, without
+ *   mutating the wall-clock monotonic state.
  */
 export function generateUuidv7(nowMs?: number): string {
   const explicit = nowMs !== undefined;
   let tsMs: number;
+  let randA: number;
+
   if (explicit) {
     if (!Number.isFinite(nowMs) || nowMs < 0 || nowMs > MAX_UUIDV7_TS_MS) {
       throw new RangeError(
@@ -303,27 +310,35 @@ export function generateUuidv7(nowMs?: number): string {
       );
     }
     tsMs = Math.floor(nowMs);
-  } else {
-    tsMs = Math.max(0, Math.min(MAX_UUIDV7_TS_MS, Math.floor(Date.now())));
-    if (tsMs < lastUuidv7TsMs) {
-      tsMs = lastUuidv7TsMs;
-    }
-  }
-
-  let randA: number;
-  if (tsMs === lastUuidv7TsMs) {
-    randA = lastUuidv7RandA + 1;
-    if (randA > 0xfff) {
-      tsMs = Math.min(MAX_UUIDV7_TS_MS, tsMs + 1);
+    if (tsMs === lastExplicitTsMs) {
+      randA = lastExplicitRandA + 1;
+      if (randA > 0xfff) {
+        tsMs = Math.min(MAX_UUIDV7_TS_MS, tsMs + 1);
+        randA = randomBytes(2).readUInt16BE(0) & 0x07ff;
+      }
+    } else {
+      // Clear the top bit of the 12-bit seed so same-ms increments have >= 2048 steps before rollover.
       randA = randomBytes(2).readUInt16BE(0) & 0x07ff;
     }
+    lastExplicitTsMs = tsMs;
+    lastExplicitRandA = randA;
   } else {
-    // Clear the top bit of the 12-bit seed so same-ms increments have >= 2048 steps before rollover.
-    randA = randomBytes(2).readUInt16BE(0) & 0x07ff;
+    tsMs = Math.max(0, Math.min(MAX_UUIDV7_TS_MS, Math.floor(Date.now())));
+    if (tsMs < lastClockTsMs) {
+      tsMs = lastClockTsMs;
+    }
+    if (tsMs === lastClockTsMs) {
+      randA = lastClockRandA + 1;
+      if (randA > 0xfff) {
+        tsMs = Math.min(MAX_UUIDV7_TS_MS, tsMs + 1);
+        randA = randomBytes(2).readUInt16BE(0) & 0x07ff;
+      }
+    } else {
+      randA = randomBytes(2).readUInt16BE(0) & 0x07ff;
+    }
+    lastClockTsMs = tsMs;
+    lastClockRandA = randA;
   }
-
-  lastUuidv7TsMs = tsMs;
-  lastUuidv7RandA = randA;
 
   const buf = Buffer.allocUnsafe(16);
   buf.writeUIntBE(tsMs, 0, 6);

@@ -395,18 +395,30 @@ describe("id-codec (RFC 9562 UUIDv8 bijection)", () => {
       prev = id;
     }
 
-    // Explicit epoch-0 timestamp is honored even after larger timestamps
+    // Explicit future/epoch-0 timestamps must NOT poison or reset default wall-clock calls
+    const futureMs = Date.UTC(2035, 0, 1);
+    const futureId = generateUuidv7(futureMs);
+    expect(uuidv7Timestamp(futureId)?.getTime()).toBe(futureMs);
+
+    const beforeClock = Date.now();
+    const now1 = generateUuidv7();
+    const now2 = generateUuidv7();
+    const afterClock = Date.now();
+    expect(isUuidv7(now1)).toBe(true);
+    expect(isUuidv7(now2)).toBe(true);
+    expect(now2 > now1).toBe(true);
+    const now1Ms = uuidv7Timestamp(now1)?.getTime() ?? -1;
+    expect(now1Ms).toBeGreaterThanOrEqual(beforeClock);
+    expect(now1Ms).toBeLessThanOrEqual(afterClock + 1);
+
+    // Explicit epoch-0 call between wall-clock calls must not break wall-clock monotonicity
     const epochId = generateUuidv7(0);
     expect(isUuidv7(epochId)).toBe(true);
     expect(epochId.startsWith("00000000-0000-7")).toBe(true);
     expect(uuidv7Timestamp(epochId)?.getTime()).toBe(0);
+    const now3 = generateUuidv7();
+    expect(now3 > now2).toBe(true);
 
-    // Default Date.now() calls produce valid, strictly increasing UUIDv7s accepted by Postgres uuid
-    const now1 = generateUuidv7();
-    const now2 = generateUuidv7();
-    expect(isUuidv7(now1)).toBe(true);
-    expect(isUuidv7(now2)).toBe(true);
-    expect(now2 > now1).toBe(true);
     const pgCheck = await pg.query<{ u: string; is_oid: boolean }>(
       `SELECT $1::uuid::text AS u, is_objectid_uuid($1::uuid) AS is_oid`,
       [now1],
