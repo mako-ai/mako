@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { PGlite } from "@electric-sql/pglite";
+import type { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate as drizzlePgliteMigrate } from "drizzle-orm/pglite/migrator";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -13,8 +13,12 @@ import {
 } from "./client";
 import {
   generateObjectIdHex,
+  generateUuidv7,
   isObjectIdHex,
   isObjectIdUuid,
+  isUuidv7,
+  legacyUserIdToUuidv7,
+  MAX_UUIDV7_TS_MS,
   newDualId,
   normalizeEntityId,
   objectIdToUuid,
@@ -24,12 +28,14 @@ import {
   parseEntityId,
   toWireId,
   uuidToObjectId,
+  uuidv7Timestamp,
 } from "./id-codec";
 import {
   checkMigrationsFolder,
   resolveMigrationsFolder,
   runPgliteMigrations,
 } from "./migrate";
+import { createTestPglite } from "./test-pglite";
 
 const TEST_VECTORS = [
   {
@@ -69,7 +75,7 @@ describe("id-codec (RFC 9562 UUIDv8 bijection)", () => {
   let pg: PGlite;
 
   beforeAll(async () => {
-    pg = new PGlite();
+    pg = createTestPglite();
     await runPgliteMigrations(pg);
   });
 
@@ -343,7 +349,7 @@ describe("id-codec (RFC 9562 UUIDv8 bijection)", () => {
     expect(info.tags).toContain("0001_migration_control_plane");
 
     // Verify real Drizzle migrator applies _journal.json cleanly and idempotently
-    const freshPg = new PGlite();
+    const freshPg = createTestPglite();
     try {
       const freshDb = drizzle(freshPg);
       const migrationsFolder = resolveMigrationsFolder();
@@ -355,8 +361,133 @@ describe("id-codec (RFC 9562 UUIDv8 bijection)", () => {
         `SELECT uuid_to_objectid(objectid_to_uuid('6745f6f4a1b2c3d4e5f60718')) = '6745f6f4a1b2c3d4e5f60718' AS ok`,
       );
       expect(check.rows[0].ok).toBe(true);
+
+      // Verify createTestPglite() preloads pgvector and pg_trgm extensions
+      await freshPg.exec(`
+        CREATE EXTENSION IF NOT EXISTS vector;
+        CREATE EXTENSION IF NOT EXISTS pg_trgm;
+      `);
+      const extCheck = await freshPg.query<{ sim: number; vec: string }>(
+        `SELECT similarity('mako', 'mako') AS sim, '[1,2,3]'::vector::text AS vec`,
+      );
+      expect(extCheck.rows[0].sim).toBe(1);
+      expect(extCheck.rows[0].vec).toBe("[1,2,3]");
     } finally {
       await freshPg.close();
     }
+  });
+
+  it("generates monotonic RFC 9562 UUIDv7s disjoint from ObjectId UUIDv8s", async () => {
+    const fixedMs = Date.UTC(2026, 10, 26, 22, 15, 30, 456);
+    const seen = new Set<string>();
+    let prev = "";
+    for (let i = 0; i < 200; i++) {
+      const id = generateUuidv7(fixedMs);
+      expect(isUuidv7(id)).toBe(true);
+      expect(isObjectIdUuid(id)).toBe(false);
+      expect(z.uuid().safeParse(id).success).toBe(true);
+      expect(uuidv7Timestamp(id)?.getTime()).toBe(fixedMs);
+      expect(seen.has(id)).toBe(false);
+      seen.add(id);
+      if (prev) {
+        expect(id > prev).toBe(true);
+      }
+      prev = id;
+    }
+
+    // Explicit epoch-0 timestamp is honored even after larger timestamps
+    const epochId = generateUuidv7(0);
+    expect(isUuidv7(epochId)).toBe(true);
+    expect(epochId.startsWith("00000000-0000-7")).toBe(true);
+    expect(uuidv7Timestamp(epochId)?.getTime()).toBe(0);
+
+    // Default Date.now() calls produce valid, strictly increasing UUIDv7s accepted by Postgres uuid
+    const now1 = generateUuidv7();
+    const now2 = generateUuidv7();
+    expect(isUuidv7(now1)).toBe(true);
+    expect(isUuidv7(now2)).toBe(true);
+    expect(now2 > now1).toBe(true);
+    const pgCheck = await pg.query<{ u: string; is_oid: boolean }>(
+      `SELECT $1::uuid::text AS u, is_objectid_uuid($1::uuid) AS is_oid`,
+      [now1],
+    );
+    expect(pgCheck.rows[0]).toEqual({ u: now1, is_oid: false });
+
+    // Rejects invalid timestamps and non-v7 UUIDs
+    expect(() => generateUuidv7(-1)).toThrow(RangeError);
+    expect(() => generateUuidv7(Number.NaN)).toThrow(RangeError);
+    expect(() => generateUuidv7(MAX_UUIDV7_TS_MS + 1)).toThrow(RangeError);
+
+    expect(isUuidv7("550e8400-e29b-41d4-a716-446655440000")).toBe(false); // v4
+    expect(isUuidv7("0193694c-a920-86da-a1b2-c3d4e5f60718")).toBe(false); // ObjectId v8
+    expect(isUuidv7("0193694c-a920-76da-01b2-c3d4e5f60718")).toBe(false); // bad variant nibble 0
+    expect(isUuidv7("not-a-uuid")).toBe(false);
+    expect(isUuidv7(null)).toBe(false);
+    expect(uuidv7Timestamp("550e8400-e29b-41d4-a716-446655440000")).toBeNull();
+  });
+
+  it("deterministically maps legacy user IDs (Lucia 15-char & UUIDv4) to RFC 9562 UUIDv7", async () => {
+    const createdAt = new Date("2025-03-14T09:26:53.589Z");
+    const luciaId = "a1b2c3d4e5f6g7h";
+    const legacyV4 = "550e8400-e29b-41d4-a716-446655440000";
+
+    const uLucia1 = legacyUserIdToUuidv7(luciaId, createdAt);
+    const uLucia2 = legacyUserIdToUuidv7(luciaId, createdAt.getTime());
+    expect(uLucia1).toBe(uLucia2);
+    expect(isUuidv7(uLucia1)).toBe(true);
+    expect(isObjectIdUuid(uLucia1)).toBe(false);
+    expect(z.uuid().safeParse(uLucia1).success).toBe(true);
+    expect(uuidv7Timestamp(uLucia1)?.toISOString()).toBe(
+      createdAt.toISOString(),
+    );
+
+    // Exact bit-level verification against SHA-256(legacyId)
+    const digest = createHash("sha256").update(luciaId, "utf8").digest();
+    const expectedHex = Buffer.allocUnsafe(16);
+    expectedHex.writeUIntBE(createdAt.getTime(), 0, 6);
+    expectedHex[6] = 0x70 | (digest[0] & 0x0f);
+    expectedHex[7] = digest[1];
+    expectedHex[8] = 0x80 | (digest[2] & 0x3f);
+    digest.copy(expectedHex, 9, 3, 10);
+    const h = expectedHex.toString("hex");
+    expect(uLucia1).toBe(
+      `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`,
+    );
+
+    // Missing or invalid createdAt falls back to epoch 0 deterministically
+    const noDate = legacyUserIdToUuidv7(luciaId);
+    expect(isUuidv7(noDate)).toBe(true);
+    expect(noDate.startsWith("00000000-0000-7")).toBe(true);
+    expect(legacyUserIdToUuidv7(luciaId, null)).toBe(noDate);
+    expect(legacyUserIdToUuidv7(luciaId, new Date("invalid"))).toBe(noDate);
+    expect(legacyUserIdToUuidv7(luciaId, -5000)).toBe(noDate);
+
+    // Case-sensitive legacy IDs stay distinct
+    expect(legacyUserIdToUuidv7("AbCdEfGhIjKlMnO", createdAt)).not.toBe(
+      legacyUserIdToUuidv7("abcdefghijklmno", createdAt),
+    );
+
+    // Legacy UUIDv4 gets a valid UUIDv7 distinct from itself and from ObjectId UUIDv8
+    const uV4 = legacyUserIdToUuidv7(legacyV4, createdAt);
+    expect(isUuidv7(uV4)).toBe(true);
+    expect(uV4).not.toBe(legacyV4);
+
+    // Earlier createdAt sorts strictly before later createdAt in Postgres B-tree order
+    const uEarlier = legacyUserIdToUuidv7(
+      "user-earlier",
+      new Date("2024-01-01T00:00:00.000Z"),
+    );
+    const uLater = legacyUserIdToUuidv7(
+      "user-later",
+      new Date("2025-01-01T00:00:00.000Z"),
+    );
+    const pgOrd = await pg.query<{ lt: boolean; is_oid: boolean }>(
+      `SELECT ($1::uuid < $2::uuid) AS lt, is_objectid_uuid($1::uuid) AS is_oid`,
+      [uEarlier, uLater],
+    );
+    expect(pgOrd.rows[0]).toEqual({ lt: true, is_oid: false });
+
+    // Reject empty string
+    expect(() => legacyUserIdToUuidv7("")).toThrow();
   });
 });

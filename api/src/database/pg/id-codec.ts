@@ -27,11 +27,16 @@
  *      for B-tree append locality.
  *   5. Valid RFC 9562 UUID accepted by Postgres `uuid`, Zod v4 `z.uuid()`, and drivers.
  */
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 const OBJECT_ID_HEX_RE = /^[0-9a-fA-F]{24}$/;
 const CANONICAL_UUID_RE =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const UUIDV7_RE =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
+
+/** Maximum unsigned 48-bit millisecond timestamp supported by RFC 9562 UUIDv7. */
+export const MAX_UUIDV7_TS_MS = 0xffffffffffff; // 281_474_976_710_655 (year 10889)
 
 /** Maximum valid 48-bit timestamp in ms produced by `uint32(0xffffffff) * 1000`. */
 export const MAX_OBJECTID_TS_MS = 0xffffffffn * 1000n; // 4_294_967_295_000n (0x03e7fffffc18n)
@@ -239,4 +244,141 @@ export function generateObjectIdHex(nowMs: number = Date.now()): string {
 export function newDualId(nowMs: number = Date.now()): DualId {
   const oid = generateObjectIdHex(nowMs);
   return { oid, uuid: objectIdToUuid(oid) };
+}
+
+// ── RFC 9562 UUIDv7 helpers (users.id & legacy user deterministic mapping) ───
+
+function formatUuidBytes(buf: Buffer): string {
+  const hex = buf.toString("hex");
+  return (
+    `${hex.slice(0, 8)}-` +
+    `${hex.slice(8, 12)}-` +
+    `${hex.slice(12, 16)}-` +
+    `${hex.slice(16, 20)}-` +
+    `${hex.slice(20, 32)}`
+  );
+}
+
+/**
+ * Strict RFC 9562 UUIDv7 validator (version nibble = `7`, variant bits = `10`).
+ * Disjoint from ObjectId UUIDv8 (`version = 8`) and UUIDv4 (`version = 4`).
+ */
+export function isUuidv7(value: unknown): value is string {
+  return typeof value === "string" && UUIDV7_RE.test(value);
+}
+
+/**
+ * Extract the embedded 48-bit Unix millisecond timestamp from an RFC 9562 UUIDv7,
+ * or null if the input is not a valid UUIDv7.
+ */
+export function uuidv7Timestamp(uuid: string): Date | null {
+  if (!isUuidv7(uuid)) {
+    return null;
+  }
+  const u = uuid.toLowerCase();
+  const tsMs = Number(BigInt("0x" + u.slice(0, 8) + u.slice(9, 13)));
+  return new Date(tsMs);
+}
+
+// Monotonic state for generateUuidv7() within the same millisecond (RFC 9562 §6.2).
+let lastUuidv7TsMs = -1;
+let lastUuidv7RandA = 0;
+
+/**
+ * Generate an RFC 9562 UUIDv7 (48-bit Unix ms + version `7` + 12-bit monotonic
+ * `rand_a` + variant `10` + 62-bit CSPRNG `rand_b`).
+ *
+ * - Default (omitted `nowMs`): uses `Date.now()` and guards against wall-clock
+ *   regressions so generated IDs are strictly monotonic in-process.
+ * - Explicit `nowMs`: honors the requested millisecond timestamp while staying
+ *   strictly monotonic across repeated calls at the same `nowMs`.
+ */
+export function generateUuidv7(nowMs?: number): string {
+  const explicit = nowMs !== undefined;
+  let tsMs: number;
+  if (explicit) {
+    if (!Number.isFinite(nowMs) || nowMs < 0 || nowMs > MAX_UUIDV7_TS_MS) {
+      throw new RangeError(
+        `Invalid UUIDv7 timestamp (expected 0..${MAX_UUIDV7_TS_MS}): ${String(nowMs)}`,
+      );
+    }
+    tsMs = Math.floor(nowMs);
+  } else {
+    tsMs = Math.max(0, Math.min(MAX_UUIDV7_TS_MS, Math.floor(Date.now())));
+    if (tsMs < lastUuidv7TsMs) {
+      tsMs = lastUuidv7TsMs;
+    }
+  }
+
+  let randA: number;
+  if (tsMs === lastUuidv7TsMs) {
+    randA = lastUuidv7RandA + 1;
+    if (randA > 0xfff) {
+      tsMs = Math.min(MAX_UUIDV7_TS_MS, tsMs + 1);
+      randA = randomBytes(2).readUInt16BE(0) & 0x07ff;
+    }
+  } else {
+    // Clear the top bit of the 12-bit seed so same-ms increments have >= 2048 steps before rollover.
+    randA = randomBytes(2).readUInt16BE(0) & 0x07ff;
+  }
+
+  lastUuidv7TsMs = tsMs;
+  lastUuidv7RandA = randA;
+
+  const buf = Buffer.allocUnsafe(16);
+  buf.writeUIntBE(tsMs, 0, 6);
+  buf[6] = 0x70 | ((randA >> 8) & 0x0f);
+  buf[7] = randA & 0xff;
+  randomBytes(8).copy(buf, 8);
+  buf[8] = (buf[8] & 0x3f) | 0x80; // RFC 9562 variant 10
+  return formatUuidBytes(buf);
+}
+
+/**
+ * Deterministically map any legacy MongoDB `users._id` (e.g. 15-char Lucia ID
+ * or legacy UUIDv4 string) to a valid RFC 9562 UUIDv7.
+ *
+ * Bit layout (128 bits):
+ *   bits   0..47 (48 bits): `createdAt` Unix ms (clamped to [0, 2^48-1]; epoch 0 if absent/invalid)
+ *   bits  48..51 ( 4 bits): version = `0x7` (RFC 9562 UUIDv7)
+ *   bits  52..63 (12 bits): SHA-256(legacyId) bits from bytes 0..1
+ *   bits  64..65 ( 2 bits): variant = `0b10` (RFC 9562)
+ *   bits  66..127 (62 bits): SHA-256(legacyId) bits from bytes 2..9
+ *
+ * Properties:
+ *   - 100% deterministic & idempotent across backfill, retries, and live dual-write.
+ *   - Mathematically disjoint from ObjectId UUIDv8 (`version = 7 !== 8`).
+ *   - Exact case of `legacyId` is preserved in the SHA-256 input so case-sensitive
+ *     legacy IDs never collide.
+ *   - Note: For newly created users whose Mongo `_id` is already a minted UUIDv7,
+ *     callers should check `isUuidv7(id) ? id.toLowerCase() : legacyUserIdToUuidv7(id, createdAt)`.
+ */
+export function legacyUserIdToUuidv7(
+  legacyId: string,
+  createdAt?: Date | number | null,
+): string {
+  if (typeof legacyId !== "string" || legacyId.length === 0) {
+    throw new Error(
+      `Invalid legacy user ID (expected non-empty string): ${JSON.stringify(legacyId)}`,
+    );
+  }
+
+  let tsMs = 0;
+  if (createdAt instanceof Date) {
+    const ms = createdAt.getTime();
+    if (Number.isFinite(ms)) {
+      tsMs = Math.max(0, Math.min(MAX_UUIDV7_TS_MS, Math.floor(ms)));
+    }
+  } else if (typeof createdAt === "number" && Number.isFinite(createdAt)) {
+    tsMs = Math.max(0, Math.min(MAX_UUIDV7_TS_MS, Math.floor(createdAt)));
+  }
+
+  const digest = createHash("sha256").update(legacyId, "utf8").digest();
+  const buf = Buffer.allocUnsafe(16);
+  buf.writeUIntBE(tsMs, 0, 6);
+  buf[6] = 0x70 | (digest[0] & 0x0f); // version 7 + 4 bits of SHA-256
+  buf[7] = digest[1]; // 8 bits of SHA-256 (12-bit rand_a total)
+  buf[8] = 0x80 | (digest[2] & 0x3f); // variant 10 + 6 bits of SHA-256
+  digest.copy(buf, 9, 3, 10); // 56 bits of SHA-256 (62-bit rand_b total)
+  return formatUuidBytes(buf);
 }

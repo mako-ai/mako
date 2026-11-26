@@ -1,4 +1,4 @@
-import { PGlite } from "@electric-sql/pglite";
+import type { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import {
   afterAll,
@@ -18,6 +18,7 @@ import {
 import { newDualId, objectIdToUuid } from "../database/pg/id-codec";
 import { runPgliteMigrations } from "../database/pg/migrate";
 import * as schema from "../database/pg/schema";
+import { createTestPglite } from "../database/pg/test-pglite";
 import {
   MigrationRouter,
   purgeMigrationTombstones,
@@ -31,7 +32,7 @@ describe("MigrationRouter (5-stage dual-run state machine)", () => {
   let db: MakoPgDb;
 
   beforeAll(async () => {
-    pg = new PGlite();
+    pg = createTestPglite();
     await runPgliteMigrations(pg);
     db = drizzle(pg, { schema }) as unknown as MakoPgDb;
   });

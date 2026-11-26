@@ -1,10 +1,11 @@
-import { PGlite } from "@electric-sql/pglite";
+import type { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { MakoPgDb } from "../database/pg/client";
 import { newDualId } from "../database/pg/id-codec";
 import { runPgliteMigrations } from "../database/pg/migrate";
 import * as schema from "../database/pg/schema";
+import { createTestPglite } from "../database/pg/test-pglite";
 import { recordMigrationTombstone } from "./router";
 import {
   clearVerifierRegistryForTests,
@@ -17,7 +18,7 @@ describe("parity verifier", () => {
   let db: MakoPgDb;
 
   beforeAll(async () => {
-    pg = new PGlite();
+    pg = createTestPglite();
     await runPgliteMigrations(pg);
     db = drizzle(pg, { schema }) as unknown as MakoPgDb;
   });

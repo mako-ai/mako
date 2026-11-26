@@ -14,14 +14,18 @@ export {
   type MigrationMode,
 } from "../database/pg/schema/control-plane";
 
-/** Canonical migration domain identifiers across Phases 1–3. */
+/** Canonical migration domain identifiers across Phases 1–4. */
 export const KNOWN_MIGRATION_DOMAINS = [
   "auth",
   "workspaces_core",
+  "connections",
   "consoles_charts",
   "apps_metadata",
   "usage_stats",
+  "mcp",
   "chat",
+  "dbt",
+  "notifications",
 ] as const;
 
 export type KnownMigrationDomain = (typeof KNOWN_MIGRATION_DOMAINS)[number];

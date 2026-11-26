@@ -12,6 +12,7 @@
     "src/**/*.test.ts",
     "src/**/*.spec.ts",
     "src/database/pg/drizzle.config.ts",
+    "src/database/pg/test-pglite.ts",
     "src/databases/test-support/**"
   ]
 }

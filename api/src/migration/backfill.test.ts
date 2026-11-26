@@ -1,4 +1,4 @@
-import { PGlite } from "@electric-sql/pglite";
+import type { PGlite } from "@electric-sql/pglite";
 import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -6,6 +6,7 @@ import { extractRows, type MakoPgDb } from "../database/pg/client";
 import { newDualId } from "../database/pg/id-codec";
 import { runPgliteMigrations } from "../database/pg/migrate";
 import * as schema from "../database/pg/schema";
+import { createTestPglite } from "../database/pg/test-pglite";
 import {
   clearBackfillRegistryForTests,
   currentUtcDay,
@@ -29,7 +30,7 @@ describe("backfill engine", () => {
   let db: MakoPgDb;
 
   beforeAll(async () => {
-    pg = new PGlite();
+    pg = createTestPglite();
     await runPgliteMigrations(pg);
     await pg.exec(`
       CREATE TABLE test_backfill_items (
