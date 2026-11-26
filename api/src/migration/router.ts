@@ -22,7 +22,7 @@ import {
   hasPostgresConfig,
   type MakoPgDb,
 } from "../database/pg/client";
-import { parseEntityId } from "../database/pg/id-codec";
+import { normalizeEntityId, parseEntityId } from "../database/pg/id-codec";
 import {
   GLOBAL_SCOPE_KEY,
   migrationDomainState,
@@ -353,9 +353,23 @@ export class MigrationRouter {
       });
       return resolved;
     } catch (error) {
-      // Fail safe to mongo_only if control-plane lookup errors while PG is degraded
+      // Preserve last known state on transient PG blips (avoid split-brain back into
+      // frozen Mongo once a domain has advanced to dual_write_pg_read / pg_only).
+      // Only fall back to mongo_only on a cold cache miss.
+      if (cached) {
+        logger.error(
+          "Failed to refresh migration_domain_state; serving stale cached state",
+          {
+            domain,
+            scopeKey,
+            staleMode: cached.state.mode,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+        return cached.state;
+      }
       logger.error(
-        "Failed to read migration_domain_state; failing safe to mongo_only",
+        "Failed to read migration_domain_state (cold cache); failing safe to mongo_only",
         {
           domain,
           scopeKey,
@@ -588,15 +602,26 @@ export class MigrationRouter {
         workspaceId: ctx.workspaceId ?? undefined,
         error: error instanceof Error ? error.message : String(error),
       });
-      await onFailure({
-        target,
-        domain: ctx.domain,
-        operation: ctx.operation,
-        entityId: ctx.entityId,
-        workspaceId: ctx.workspaceId ?? undefined,
-        payload: ctx.retryPayload,
-        error,
-      });
+      try {
+        await onFailure({
+          target,
+          domain: ctx.domain,
+          operation: ctx.operation,
+          entityId: ctx.entityId,
+          workspaceId: ctx.workspaceId ?? undefined,
+          payload: ctx.retryPayload,
+          error,
+        });
+      } catch (hookError) {
+        logger.error("Secondary failure hook threw (primary still succeeded)", {
+          target,
+          domain: ctx.domain,
+          operation: ctx.operation,
+          entityId: ctx.entityId,
+          hookError:
+            hookError instanceof Error ? hookError.message : String(hookError),
+        });
+      }
     }
   }
 }
@@ -615,7 +640,7 @@ export async function recordMigrationTombstone(
     .insert(migrationTombstones)
     .values({
       tableName,
-      entityId: entityId.toLowerCase(),
+      entityId: normalizeEntityId(entityId),
       deletedAt: now,
     })
     .onConflictDoUpdate({

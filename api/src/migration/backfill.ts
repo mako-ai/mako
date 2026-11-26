@@ -15,7 +15,7 @@
  */
 import { and, eq, inArray } from "drizzle-orm";
 import { getPgDirectDb, type MakoPgDb } from "../database/pg/client";
-import { parseEntityId } from "../database/pg/id-codec";
+import { normalizeEntityId, parseEntityId } from "../database/pg/id-codec";
 import {
   GLOBAL_SCOPE_KEY,
   migrationBackfillJobs,
@@ -113,7 +113,7 @@ export async function findTombstonedEntityIds(
   entityIds: string[],
 ): Promise<Set<string>> {
   if (entityIds.length === 0) return new Set();
-  const normalized = entityIds.map(id => id.toLowerCase());
+  const normalized = entityIds.map(normalizeEntityId);
   const rows = await db
     .select({ entityId: migrationTombstones.entityId })
     .from(migrationTombstones)
@@ -123,7 +123,7 @@ export async function findTombstonedEntityIds(
         inArray(migrationTombstones.entityId, normalized),
       ),
     );
-  return new Set(rows.map(r => r.entityId.toLowerCase()));
+  return new Set(rows.map(r => normalizeEntityId(r.entityId)));
 }
 
 export interface QuarantineEntry {
@@ -288,7 +288,7 @@ export async function runBackfill(
 
       const eligible: Array<BackfillItem<any>> = [];
       for (const item of batch) {
-        if (tombstoned.has(item.entityId.toLowerCase())) {
+        if (tombstoned.has(normalizeEntityId(item.entityId))) {
           rowsSkippedTombstone += 1;
           continue;
         }

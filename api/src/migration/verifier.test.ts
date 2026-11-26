@@ -124,4 +124,66 @@ describe("parity verifier", () => {
     expect(report2.mismatched).toBe(0);
     expect(report2.extraInPg).toBe(0);
   });
+
+  it("preserves case-sensitive base64url text PKs (e.g. desktop_auth_codes) during verify and repair", async () => {
+    const code1 = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AaBbC";
+    const code2 = "ZyXwVuTsRqPoNmLkJiHgFeDcBa9876543210_-XxYyZ";
+
+    const mongoStore = new Map<string, { id: string; userId: string }>([
+      [code1, { id: code1, userId: "u_1" }],
+      [code2, { id: code2, userId: "u_2" }],
+    ]);
+    const pgStore = new Map<string, { id: string; userId: string }>([
+      [code1, { id: code1, userId: "u_1" }],
+    ]);
+
+    const repairedIds: string[] = [];
+
+    const handler: VerifierDomainHandler = {
+      domain: "auth",
+      targetTable: "desktop_auth_codes",
+      async fetchMongoBatch({ afterCursor }) {
+        if (afterCursor) return [];
+        return [...mongoStore.entries()].map(([id, rec]) => ({
+          cursor: id,
+          entityId: id,
+          record: rec,
+        }));
+      },
+      async fetchPgByIds(ids) {
+        const out = new Map<string, unknown>();
+        for (const id of ids) {
+          if (pgStore.has(id)) out.set(id, pgStore.get(id));
+        }
+        return out;
+      },
+      async repair({ entityIds }) {
+        repairedIds.push(...entityIds);
+        for (const id of entityIds) {
+          const src = mongoStore.get(id);
+          if (src) pgStore.set(id, { ...src });
+        }
+        return entityIds.length;
+      },
+    };
+
+    const report1 = await runParityVerification({
+      domain: "auth",
+      repair: true,
+      db,
+      handler,
+    });
+    expect(report1.checked).toBe(2);
+    expect(report1.matched).toBe(1);
+    expect(report1.missingInPg).toBe(1);
+    expect(repairedIds).toEqual([code2]);
+
+    const report2 = await runParityVerification({
+      domain: "auth",
+      db,
+      handler,
+    });
+    expect(report2.ok).toBe(true);
+    expect(report2.matched).toBe(2);
+  });
 });

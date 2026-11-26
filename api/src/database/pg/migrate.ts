@@ -113,6 +113,7 @@ export async function runPgMigrations(
   const sql = postgres(connectionString, {
     max: 1,
     connect_timeout: 15,
+    prepare: !connectionString.includes("-pooler"),
     ssl: local ? false : "require",
   });
 

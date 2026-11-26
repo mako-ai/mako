@@ -150,4 +150,81 @@ describe("shadow-compare", () => {
     expect(events[0].result).toBe("error");
     expect(events[0].errorMessage).toContain("PG timeout");
   });
+
+  it("collapses redacted subtrees without leaking nested map keys or exhausting maxDiffs", () => {
+    const diff = computeDiffPaths(
+      {
+        headers: {
+          "X-Secret-Header": "val1",
+          Authorization: "Bearer tok1",
+        },
+        webhooks: {
+          stripe_prod: "enc_a",
+          close_crm: "enc_b",
+        },
+        messages: Array.from({ length: 40 }, (_, i) => ({
+          text: `msg-a-${i}`,
+        })),
+        code: "123456",
+        challenge: "pkce-challenge-a",
+        title: "Expected",
+      },
+      {
+        headers: {
+          "X-Secret-Header": "val2",
+          Authorization: "Bearer tok2",
+        },
+        webhooks: {
+          stripe_prod: "enc_c",
+          close_crm: "enc_d",
+        },
+        messages: Array.from({ length: 40 }, (_, i) => ({
+          text: `msg-b-${i}`,
+        })),
+        code: "654321",
+        challenge: "pkce-challenge-b",
+        title: "Drifted",
+      },
+      { maxDiffs: 10 },
+    );
+
+    expect(diff.equal).toBe(false);
+    // All 5 redacted containers/fields collapse to 1 entry each, leaving plenty of budget for `title`
+    expect(diff.diffs.map(d => d.path)).toEqual([
+      "challenge",
+      "code",
+      "headers",
+      "messages",
+      "title",
+      "webhooks",
+    ]);
+
+    const serialized = JSON.stringify(diff);
+    expect(serialized).not.toContain("X-Secret-Header");
+    expect(serialized).not.toContain("Authorization");
+    expect(serialized).not.toContain("stripe_prod");
+    expect(serialized).not.toContain("123456");
+    expect(serialized).not.toContain("pkce-challenge");
+  });
+
+  it("swallows errors thrown by onEvent callbacks without unhandled rejections", async () => {
+    const runner = new ShadowCompareRunner({
+      onEvent: () => {
+        throw new Error("observer failure");
+      },
+    });
+
+    runner.schedule({
+      domain: "chat",
+      operation: "get",
+      primaryStore: "mongo",
+      primaryResult: { id: "1" },
+      readShadow: async () => {
+        throw new Error("pg down");
+      },
+    });
+
+    await expect(runner.flush()).resolves.toBeUndefined();
+    expect(runner.inflightCount).toBe(0);
+  });
 });

@@ -9,6 +9,9 @@
 import { Command } from "commander";
 import { closePgConnections } from "../../database/pg/client";
 import { listBackfillDomains, runBackfill } from "../backfill";
+import { loadMigrationCliEnv } from "./env";
+
+loadMigrationCliEnv();
 
 const program = new Command()
   .name("pg:backfill")

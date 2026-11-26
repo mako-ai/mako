@@ -7,6 +7,7 @@
  * across every record in MongoDB vs Postgres.
  */
 import { getPgDirectDb, type MakoPgDb } from "../database/pg/client";
+import { normalizeEntityId } from "../database/pg/id-codec";
 import { loggers } from "../logging";
 import { findTombstonedEntityIds } from "./backfill";
 import { computeDiffPaths, type ShadowFieldDiff } from "./shadow-compare";
@@ -137,7 +138,7 @@ export async function runParityVerification(
     });
     if (batch.length === 0) break;
 
-    const entityIds = batch.map(item => item.entityId.toLowerCase());
+    const entityIds = batch.map(item => normalizeEntityId(item.entityId));
     const [tombstoned, pgMap] = await Promise.all([
       findTombstonedEntityIds(db, handler.targetTable, entityIds),
       handler.fetchPgByIds(entityIds, db),
@@ -146,7 +147,7 @@ export async function runParityVerification(
     const toRepair: string[] = [];
 
     for (const item of batch) {
-      const normalizedId = item.entityId.toLowerCase();
+      const normalizedId = normalizeEntityId(item.entityId);
       seenEntityIds.add(normalizedId);
 
       if (tombstoned.has(normalizedId)) {

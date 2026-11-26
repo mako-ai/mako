@@ -41,8 +41,11 @@ const LOCAL_HOSTNAMES = new Set([
 export function isLocalPostgres(url: string | undefined): boolean {
   if (!url) return false;
   try {
-    const { hostname } = new URL(url);
-    return LOCAL_HOSTNAMES.has(hostname.toLowerCase());
+    // Strip IPv6 brackets (`[::1]` -> `::1`) returned by WHATWG URL.hostname
+    const normalizedHost = new URL(url).hostname
+      .replace(/^\[|\]$/g, "")
+      .toLowerCase();
+    return LOCAL_HOSTNAMES.has(normalizedHost);
   } catch {
     return false;
   }
@@ -79,14 +82,21 @@ let directDb: MakoPgDb | null = null;
 let testDbOverride: MakoPgDb | null = null;
 
 /**
- * True when Postgres is configured via env (`POSTGRES_URL` / `POSTGRES_DIRECT_URL`)
- * or a test PGlite database has been injected via `setPgTestDb()`.
+ * True when the runtime Postgres client (`getPgDb()`) is usable — i.e., either
+ * `POSTGRES_URL` is configured or a test PGlite database is injected via `setPgTestDb()`.
+ * Intentionally does NOT treat `POSTGRES_DIRECT_URL` alone as runtime-configured
+ * so callers like `MigrationRouter` and `migrationPgTtlReaperFunction` never crash in `getPgDb()`.
  */
 export function hasPostgresConfig(): boolean {
+  return Boolean(testDbOverride || process.env.POSTGRES_URL?.trim());
+}
+
+/** True when `getPgDirectDb()` is usable (`POSTGRES_DIRECT_URL` or `POSTGRES_URL` or test override). */
+export function hasDirectPostgresConfig(): boolean {
   return Boolean(
     testDbOverride ||
-    process.env.POSTGRES_URL?.trim() ||
-    process.env.POSTGRES_DIRECT_URL?.trim(),
+    process.env.POSTGRES_DIRECT_URL?.trim() ||
+    process.env.POSTGRES_URL?.trim(),
   );
 }
 

@@ -1,13 +1,22 @@
 import { createHash, randomBytes } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
+import { drizzle } from "drizzle-orm/pglite";
+import { migrate as drizzlePgliteMigrate } from "drizzle-orm/pglite/migrator";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { isLocalPostgres, resolvePgDriver } from "./client";
+import {
+  hasDirectPostgresConfig,
+  hasPostgresConfig,
+  isLocalPostgres,
+  resetPgTestDb,
+  resolvePgDriver,
+} from "./client";
 import {
   generateObjectIdHex,
   isObjectIdHex,
   isObjectIdUuid,
   newDualId,
+  normalizeEntityId,
   objectIdToUuid,
   objectIdUuidTimestamp,
   optionalObjectIdToUuid,
@@ -16,7 +25,11 @@ import {
   toWireId,
   uuidToObjectId,
 } from "./id-codec";
-import { checkMigrationsFolder, runPgliteMigrations } from "./migrate";
+import {
+  checkMigrationsFolder,
+  resolveMigrationsFolder,
+  runPgliteMigrations,
+} from "./migrate";
 
 const TEST_VECTORS = [
   {
@@ -265,15 +278,21 @@ describe("id-codec (RFC 9562 UUIDv8 bijection)", () => {
     ).rejects.toThrow(/UUID is not in ObjectId subspace/);
   });
 
-  it("validates driver resolution and migration folder guard", () => {
+  it("validates driver resolution, IPv6 localhost, config guards, normalizeEntityId, and real Drizzle migrator idempotency", async () => {
     expect(isLocalPostgres("postgresql://mako:mako@localhost:5433/mako")).toBe(
+      true,
+    );
+    expect(isLocalPostgres("postgresql://mako:mako@[::1]:5433/mako")).toBe(
+      true,
+    );
+    expect(isLocalPostgres("postgresql://mako:mako@127.0.0.1:5433/mako")).toBe(
       true,
     );
     expect(
       isLocalPostgres("postgresql://u:p@ep-cool-pooler.neon.tech/db"),
     ).toBe(false);
     expect(
-      resolvePgDriver("postgresql://mako:mako@localhost:5433/mako", "neon-ws"),
+      resolvePgDriver("postgresql://mako:mako@[::1]:5433/mako", "neon-ws"),
     ).toBe("postgres");
     expect(
       resolvePgDriver(
@@ -288,9 +307,56 @@ describe("id-codec (RFC 9562 UUIDv8 bijection)", () => {
       ),
     ).toBe("postgres");
 
+    // normalizeEntityId lowercases UUID/ObjectId hex but preserves case-sensitive base64url text PKs
+    expect(normalizeEntityId("6745F6F4A1B2C3D4E5F60718")).toBe(
+      "6745f6f4a1b2c3d4e5f60718",
+    );
+    expect(normalizeEntityId("0193694C-A920-86DA-A1B2-C3D4E5F60718")).toBe(
+      "0193694c-a920-86da-a1b2-c3d4e5f60718",
+    );
+    const b64url = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AaBbC";
+    expect(normalizeEntityId(b64url)).toBe(b64url);
+
+    // hasPostgresConfig() must NOT return true when only POSTGRES_DIRECT_URL is set
+    const prevUrl = process.env.POSTGRES_URL;
+    const prevDirect = process.env.POSTGRES_DIRECT_URL;
+    resetPgTestDb();
+    try {
+      delete process.env.POSTGRES_URL;
+      process.env.POSTGRES_DIRECT_URL =
+        "postgresql://mako:mako@localhost:5433/mako";
+      expect(hasPostgresConfig()).toBe(false);
+      expect(hasDirectPostgresConfig()).toBe(true);
+
+      process.env.POSTGRES_URL = "postgresql://mako:mako@localhost:5433/mako";
+      expect(hasPostgresConfig()).toBe(true);
+    } finally {
+      if (prevUrl === undefined) delete process.env.POSTGRES_URL;
+      else process.env.POSTGRES_URL = prevUrl;
+      if (prevDirect === undefined) delete process.env.POSTGRES_DIRECT_URL;
+      else process.env.POSTGRES_DIRECT_URL = prevDirect;
+    }
+
     const info = checkMigrationsFolder();
     expect(info.count).toBeGreaterThanOrEqual(2);
     expect(info.tags).toContain("0000_objectid_uuid_codec");
     expect(info.tags).toContain("0001_migration_control_plane");
+
+    // Verify real Drizzle migrator applies _journal.json cleanly and idempotently
+    const freshPg = new PGlite();
+    try {
+      const freshDb = drizzle(freshPg);
+      const migrationsFolder = resolveMigrationsFolder();
+      await drizzlePgliteMigrate(freshDb, { migrationsFolder });
+      // Second run must be a clean idempotent no-op
+      await drizzlePgliteMigrate(freshDb, { migrationsFolder });
+
+      const check = await freshPg.query<{ ok: boolean }>(
+        `SELECT uuid_to_objectid(objectid_to_uuid('6745f6f4a1b2c3d4e5f60718')) = '6745f6f4a1b2c3d4e5f60718' AS ok`,
+      );
+      expect(check.rows[0].ok).toBe(true);
+    } finally {
+      await freshPg.close();
+    }
   });
 });

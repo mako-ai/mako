@@ -46,26 +46,44 @@ export const DEFAULT_REDACTED_KEYS: ReadonlySet<string> = new Set([
   "password_encrypted",
   "keyHash",
   "key_hash",
+  "tokenHash",
+  "token_hash",
+  "accessToken",
+  "access_token",
   "accessTokenHash",
   "access_token_hash",
+  "refreshToken",
+  "refresh_token",
   "refreshTokenHash",
   "refresh_token_hash",
+  "code",
   "codeHash",
   "code_hash",
+  "challenge",
   "codeChallenge",
   "code_challenge",
   "codeVerifier",
   "code_verifier",
   "hatchetToken",
   "hatchet_token",
+  "privateKey",
+  "private_key",
   "valueEncrypted",
   "value_encrypted",
+  "urlEncrypted",
+  "url_encrypted",
+  "signingSecretEncrypted",
+  "signing_secret_encrypted",
+  "webhookUrlEncrypted",
+  "webhook_url_encrypted",
   "secret",
   "token",
   "webhooks",
   "messages",
   "parts",
   "content",
+  "turnCheckpoint",
+  "turn_checkpoint",
   "systemPrompt",
   "system_prompt",
   "workspacePrompt",
@@ -234,6 +252,34 @@ export function computeDiffPaths(
   const right = canonicalizeForDiff(shadowValue, options);
   const diffs: ShadowFieldDiff[] = [];
 
+  function valuesEqual(a: unknown, b: unknown): boolean {
+    if (a === b) return true;
+    if (
+      typeof a === "number" &&
+      typeof b === "number" &&
+      numbersEqualWithinEpsilon(a, b, floatEpsilon)
+    ) {
+      return true;
+    }
+    if (Array.isArray(a) && Array.isArray(b)) {
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) {
+        if (!valuesEqual(a[i], b[i])) return false;
+      }
+      return true;
+    }
+    if (isPlainObject(a) && isPlainObject(b)) {
+      const aKeys = Object.keys(a);
+      const bKeys = Object.keys(b);
+      if (aKeys.length !== bKeys.length) return false;
+      for (const key of aKeys) {
+        if (!(key in b) || !valuesEqual(a[key], b[key])) return false;
+      }
+      return true;
+    }
+    return false;
+  }
+
   function walk(a: unknown, b: unknown, currentPath: string): void {
     if (diffs.length >= maxDiffs) return;
 
@@ -243,6 +289,21 @@ export function computeDiffPaths(
       typeof b === "number" &&
       numbersEqualWithinEpsilon(a, b, floatEpsilon)
     ) {
+      return;
+    }
+
+    // Collapse redacted subtrees at the first redacted path segment so nested
+    // map key names (e.g. headers.*, webhooks.*) never leak into diffs[].path
+    // and multi-element redacted payloads cannot exhaust maxDiffs.
+    if (currentPath && isPathRedacted(currentPath, redactedKeys)) {
+      if (!valuesEqual(a, b)) {
+        diffs.push({
+          path: currentPath,
+          primaryHash: hashCanonicalAlready(a),
+          shadowHash: hashCanonicalAlready(b),
+          redacted: true,
+        });
+      }
       return;
     }
 
@@ -325,6 +386,22 @@ export class ShadowCompareRunner {
     return this.inflight;
   }
 
+  private emitEvent(event: ShadowCompareEvent): void {
+    if (!this.onEvent) return;
+    try {
+      this.onEvent(event);
+    } catch (callbackError) {
+      diffLogger.warn("Shadow-compare onEvent callback threw", {
+        domain: event.domain,
+        operation: event.operation,
+        error:
+          callbackError instanceof Error
+            ? callbackError.message
+            : String(callbackError),
+      });
+    }
+  }
+
   /**
    * Schedule a background shadow comparison. Returns `false` if dropped due to
    * concurrency saturation, `true` if accepted.
@@ -340,7 +417,7 @@ export class ShadowCompareRunner {
         operation: input.operation,
         result: "dropped",
       });
-      this.onEvent?.({
+      this.emitEvent({
         domain: input.domain,
         operation: input.operation,
         entityId: input.entityId,
@@ -396,7 +473,7 @@ export class ShadowCompareRunner {
           });
         }
 
-        this.onEvent?.({
+        this.emitEvent({
           domain: input.domain,
           operation: input.operation,
           entityId: input.entityId,
@@ -424,7 +501,7 @@ export class ShadowCompareRunner {
           errorMessage,
           shadowDurationMs,
         });
-        this.onEvent?.({
+        this.emitEvent({
           domain: input.domain,
           operation: input.operation,
           entityId: input.entityId,
@@ -441,9 +518,11 @@ export class ShadowCompareRunner {
     })();
 
     this.activeTasks.add(task);
-    void task.finally(() => {
-      this.activeTasks.delete(task);
-    });
+    void task
+      .catch(() => undefined)
+      .finally(() => {
+        this.activeTasks.delete(task);
+      });
     return true;
   }
 

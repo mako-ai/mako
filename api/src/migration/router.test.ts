@@ -335,4 +335,65 @@ describe("MigrationRouter (5-stage dual-run state machine)", () => {
     await purgeMigrationTombstones("chats", new Date(Date.now() + 60_000), db);
     expect(await db.select().from(schema.migrationTombstones)).toHaveLength(0);
   });
+
+  it("preserves case-sensitive text PKs in tombstones (e.g. base64url desktop_auth_codes)", async () => {
+    const codeA = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AaBbC";
+    const codeB = "abcdefghIjKlMnOpQrStUvWxYz0123456789_-AaBbC";
+    await recordMigrationTombstone("desktop_auth_codes", codeA, db);
+    await recordMigrationTombstone("desktop_auth_codes", codeB, db);
+
+    const rows = await db.select().from(schema.migrationTombstones);
+    expect(rows.map(r => r.entityId).sort()).toEqual([codeA, codeB].sort());
+  });
+
+  it("serves stale cached state on transient PG refresh failure instead of split-braining to mongo_only", async () => {
+    let shouldFail = false;
+    const router = new MigrationRouter({
+      enablePubSub: false,
+      cacheTtlMs: 1,
+      getDb: () => {
+        if (shouldFail) throw new Error("transient neon blip");
+        return db;
+      },
+    });
+
+    await router.setDomainState({
+      domain: "auth",
+      mode: "pg_only",
+    });
+
+    // Warm cache with pg_only
+    expect((await router.getState("auth")).mode).toBe("pg_only");
+
+    // Expire cache and simulate transient PG failure
+    await new Promise(resolve => setTimeout(resolve, 10));
+    shouldFail = true;
+
+    expect((await router.getState("auth")).mode).toBe("pg_only");
+  });
+
+  it("isolates throwing custom onSecondaryFailure hooks without failing the primary write", async () => {
+    const router = new MigrationRouter({
+      enablePubSub: false,
+      onSecondaryFailure: async () => {
+        throw new Error("custom dead-letter hook exploded");
+      },
+    });
+
+    await router.setDomainState({
+      domain: "auth",
+      mode: "dual_write_mongo_read",
+    });
+
+    const result = await router.executeWrite(
+      { domain: "auth", operation: "update", entityId: "u_99" },
+      {
+        mongo: async () => "primary-ok",
+        pg: async () => {
+          throw new Error("pg unavailable");
+        },
+      },
+    );
+    expect(result).toBe("primary-ok");
+  });
 });

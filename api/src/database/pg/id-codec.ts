@@ -70,6 +70,19 @@ export function isUuidString(value: unknown): value is string {
 }
 
 /**
+ * Normalize an entity ID for migration control-plane storage/lookups:
+ * lowercases case-insensitive hex formats (UUIDs and 24-hex ObjectIds) while
+ * preserving exact case for case-sensitive text PKs (e.g., base64url SHA-256
+ * `desktop_auth_codes.id` or Lucia user IDs).
+ */
+export function normalizeEntityId(id: string): string {
+  if (CANONICAL_UUID_RE.test(id) || OBJECT_ID_HEX_RE.test(id)) {
+    return id.toLowerCase();
+  }
+  return id;
+}
+
+/**
  * Deterministically convert a 24-hex MongoDB ObjectId to its RFC 9562 UUIDv8.
  * Case-insensitive on input; always outputs canonical lowercase UUID.
  */

@@ -9,6 +9,9 @@
 import { Command } from "commander";
 import { closePgConnections } from "../../database/pg/client";
 import { listVerifierDomains, runParityVerification } from "../verifier";
+import { loadMigrationCliEnv } from "./env";
+
+loadMigrationCliEnv();
 
 const program = new Command()
   .name("pg:verify")

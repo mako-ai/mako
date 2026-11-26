@@ -10,6 +10,9 @@ import {
   checkMigrationsFolder,
   runPgMigrations,
 } from "../../database/pg/migrate";
+import { loadMigrationCliEnv } from "./env";
+
+loadMigrationCliEnv();
 
 const program = new Command()
   .name("pg:migrate")
