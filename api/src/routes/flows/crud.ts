@@ -133,11 +133,15 @@ export function registerCrudRoutes(flowRoutes: FlowRouter): void {
           if (failed) return failed;
         }
         await flow.save();
-        await finishFlowCreate({ flow, flowData, sourceType });
+        const populatedFlow = await finishFlowCreate({
+          flow,
+          flowData,
+          sourceType,
+        });
 
         return c.json({
           success: true,
-          data: flow,
+          data: populatedFlow,
           ...(syncConfigWarnings.length > 0
             ? { warnings: syncConfigWarnings }
             : {}),
@@ -234,7 +238,7 @@ export function registerCrudRoutes(flowRoutes: FlowRouter): void {
           if (failed) return failed;
         }
         await flow.save();
-        await finishFlowUpdate({
+        const populatedFlow = await finishFlowUpdate({
           flow,
           before,
           syncConfigWarnings,
@@ -243,7 +247,7 @@ export function registerCrudRoutes(flowRoutes: FlowRouter): void {
 
         return c.json({
           success: true,
-          data: flow,
+          data: populatedFlow,
           ...(syncConfigWarnings.length > 0
             ? { warnings: syncConfigWarnings }
             : {}),

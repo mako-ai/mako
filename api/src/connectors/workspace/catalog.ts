@@ -12,7 +12,7 @@ import {
   retryingMessage,
 } from "./resolver";
 import { specToForm, type FormSchema } from "./spec-translation";
-import { ConnectorDefinition } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import {
   WORKSPACE_TYPE_PREFIX,
   slugFromType,
@@ -78,9 +78,7 @@ const INCREMENTAL_MODES = new Set([
 export async function listWorkspaceConnectors(
   workspaceId: string,
 ): Promise<WorkspaceConnectorSummary[]> {
-  const rows = await ConnectorDefinition.find({ workspaceId })
-    .sort({ slug: 1 })
-    .lean();
+  const rows = await connectionsRepo.listConnectorDefinitions(workspaceId);
   return rows.map(row => {
     const mako = (row.spec as any)?.mako ?? {};
     return {
@@ -174,7 +172,7 @@ export async function connectorTypeExists(
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   if (!isWorkspaceConnectorType(type)) return { ok: true };
   const slug = slugFromType(type);
-  const row = await ConnectorDefinition.findOne({ workspaceId, slug }).lean();
+  const row = await connectionsRepo.findConnectorDefinition(workspaceId, slug);
   if (!row) {
     return {
       ok: false,

@@ -11,10 +11,10 @@ import {
   requireWorkspaceRole,
 } from "../../middleware/workspace.middleware";
 import {
-  DatabaseConnection,
-  IDatabaseConnection,
+  type IDatabaseConnection,
   Flow,
 } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { recordConnectionVerification } from "../../services/connection-verification.service";
 import { Types } from "mongoose";
@@ -54,12 +54,12 @@ connectionRoutes.openapi(
     try {
       const workspace = c.get("workspace");
 
-      const databases = await DatabaseConnection.find({
-        workspaceId: workspace._id,
-      }).sort({ createdAt: -1 });
+      const databases = await connectionsRepo.listDatabaseConnections(
+        String(workspace._id),
+      );
 
       // Transform to API response format without connection details for security
-      const transformedDatabases = databases.map((db: IDatabaseConnection) => {
+      const transformedDatabases = databases.map(db => {
         // Create a credential-free hostKey for grouping per database type.
         // This response goes to EVERY member of the workspace, so the key is
         // derived host-only (see connectionStringGroupKey) rather than masked:
@@ -157,10 +157,10 @@ connectionRoutes.openapi(
         return c.json({ success: false, error: "Invalid database ID" }, 400);
       }
 
-      const database = await DatabaseConnection.findOne({
-        _id: new Types.ObjectId(databaseId),
-        workspaceId: workspace._id,
-      });
+      const database = await connectionsRepo.findDatabaseConnectionById(
+        databaseId,
+        String(workspace._id),
+      );
 
       if (!database) {
         return c.json({ success: false, error: "Database not found" }, 404);
@@ -176,7 +176,7 @@ connectionRoutes.openapi(
           connectionId: database._id.toString(),
           name: database.name,
           type: database.type,
-          // Decrypted by the getter, then stripped of every credential: the
+          // Decrypted by the repository, then stripped of every credential: the
           // edit dialog needs the shape, never the secrets.
           connection: redactConnectionSecrets(conn),
           databaseName: conn.database,
@@ -254,13 +254,12 @@ connectionRoutes.openapi(
       // password and always fail.
       let connection = body.connection as Record<string, unknown>;
       if (body.connectionId && Types.ObjectId.isValid(body.connectionId)) {
-        const saved = await DatabaseConnection.findOne({
-          _id: new Types.ObjectId(body.connectionId),
-          workspaceId: c.get("workspace")._id,
-        });
+        const saved = await connectionsRepo.findDatabaseConnectionById(
+          body.connectionId,
+          String(c.get("workspace")._id),
+        );
         if (saved) {
-          const previous =
-            (saved.toObject({ getters: true }) as any).connection || {};
+          const previous = saved.connection || {};
           connection = restoreKeptSecrets(connection, previous);
         }
       }
@@ -350,9 +349,9 @@ connectionRoutes.openapi(
       }
 
       // Check workspace database limit
-      const databaseCount = await DatabaseConnection.countDocuments({
-        workspaceId: workspace._id,
-      });
+      const databaseCount = await connectionsRepo.countDatabaseConnections(
+        String(workspace._id),
+      );
       if (databaseCount >= workspace.settings.maxDatabases) {
         return c.json(
           {
@@ -405,22 +404,18 @@ connectionRoutes.openapi(
       }
 
       // Create database connection
-      const database = new DatabaseConnection({
-        workspaceId: workspace._id,
+      const now = new Date();
+      const database = await connectionsRepo.createDatabaseConnection({
+        workspaceId: String(workspace._id),
         name: body.name,
         type: body.type,
         connection: body.connection || {},
         createdBy: user.id,
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        createdAt: now,
+        updatedAt: now,
+        // A successful pre-save test is the authoritative "reachable" signal.
+        ...(verifyBeforeSave ? { lastConnectedAt: now } : {}),
       });
-
-      // A successful pre-save test is the authoritative "reachable" signal.
-      if (verifyBeforeSave) {
-        database.lastConnectedAt = new Date();
-      }
-
-      await database.save();
 
       return c.json(
         {
@@ -491,10 +486,10 @@ connectionRoutes.openapi(
         return c.json({ success: false, error: "Invalid database ID" }, 400);
       }
 
-      const database = await DatabaseConnection.findOne({
-        _id: new Types.ObjectId(databaseId),
-        workspaceId: workspace._id,
-      });
+      const database = await connectionsRepo.findDatabaseConnectionById(
+        databaseId,
+        String(workspace._id),
+      );
 
       if (!database) {
         return c.json({ success: false, error: "Database not found" }, 404);
@@ -504,9 +499,16 @@ connectionRoutes.openapi(
 
       // As it was, for the record of an access change.
       const agentWritesBefore = database.allowAgentWrites === true;
+      const patch: {
+        name?: string;
+        allowAgentWrites?: boolean;
+        connection?: Record<string, unknown>;
+        lastConnectedAt?: Date;
+        updatedAt: Date;
+      } = { updatedAt: new Date() };
 
       // Update fields
-      if (body.name) database.name = body.name;
+      if (body.name) patch.name = body.name;
       if (typeof body.allowAgentWrites === "boolean") {
         // Security-sensitive opt-in (scoped agent credentials may write to
         // this connection) — owners/admins only, unlike general edits.
@@ -521,12 +523,11 @@ connectionRoutes.openapi(
             403,
           );
         }
-        database.allowAgentWrites = body.allowAgentWrites;
+        patch.allowAgentWrites = body.allowAgentWrites;
       }
       if (body.connection) {
         // Build candidate connection using decrypted previous + incoming patch
-        const previous =
-          (database.toObject({ getters: true }) as any).connection || {};
+        const previous = database.connection || {};
         // The client never received the real secrets, so put them back
         // wherever it echoed the sentinel or a masked connection string.
         const candidate = {
@@ -551,8 +552,8 @@ connectionRoutes.openapi(
             await databaseConnectionService.testConnection(tempDatabase);
           recordConnectionVerification({
             userId: c.get("user")?.id,
-            workspaceId: database.workspaceId,
-            connectionId: database._id,
+            workspaceId: new Types.ObjectId(database.workspaceId),
+            connectionId: new Types.ObjectId(database.id),
             databaseType: database.type,
             trigger: "update_verify",
             success: test.success,
@@ -568,22 +569,28 @@ connectionRoutes.openapi(
           }
         }
 
-        database.connection = candidate as any;
+        patch.connection = candidate;
       }
 
-      database.updatedAt = new Date();
       if (verifyBeforeSave) {
-        database.lastConnectedAt = new Date();
+        patch.lastConnectedAt = new Date();
       }
-      await database.save();
-      if ((database.allowAgentWrites === true) !== agentWritesBefore) {
+      const updated = await connectionsRepo.updateDatabaseConnection(
+        databaseId,
+        String(workspace._id),
+        patch,
+      );
+      if (!updated) {
+        return c.json({ success: false, error: "Database not found" }, 404);
+      }
+      if ((updated.allowAgentWrites === true) !== agentWritesBefore) {
         await recordAccessChange({
           workspaceId: workspace._id,
-          connectionId: database._id,
+          connectionId: updated.id,
           kind: "database",
           actor: String(c.get("user")?.id ?? "unknown"),
           via: c.get("authType") === "session" ? "app" : "api",
-          changes: { agentWrites: database.allowAgentWrites === true },
+          changes: { agentWrites: updated.allowAgentWrites === true },
         });
       }
 
@@ -598,10 +605,10 @@ connectionRoutes.openapi(
         success: true,
         verified: verifyBeforeSave,
         data: {
-          id: database._id,
-          name: database.name,
-          type: database.type,
-          updatedAt: database.updatedAt,
+          id: updated._id,
+          name: updated.name,
+          type: updated.type,
+          updatedAt: updated.updatedAt,
         },
         message: "Database updated successfully",
       });
@@ -670,12 +677,12 @@ connectionRoutes.openapi(
         );
       }
 
-      const result = await DatabaseConnection.deleteOne({
-        _id: new Types.ObjectId(databaseId),
-        workspaceId: workspace._id,
-      });
+      const deleted = await connectionsRepo.deleteDatabaseConnection(
+        databaseId,
+        String(workspace._id),
+      );
 
-      if (result.deletedCount === 0) {
+      if (!deleted) {
         return c.json({ success: false, error: "Database not found" }, 404);
       }
 
@@ -736,21 +743,23 @@ connectionRoutes.openapi(
         return c.json({ success: false, error: "Invalid database ID" }, 400);
       }
 
-      const database = await DatabaseConnection.findOne({
-        _id: new Types.ObjectId(databaseId),
-        workspaceId: workspace._id,
-      });
+      const database = await connectionsRepo.findDatabaseConnectionById(
+        databaseId,
+        String(workspace._id),
+      );
 
       if (!database) {
         return c.json({ success: false, error: "Database not found" }, 404);
       }
 
       const startedAt = Date.now();
-      const result = await databaseConnectionService.testConnection(database);
+      const result = await databaseConnectionService.testConnection(
+        database as unknown as IDatabaseConnection,
+      );
       recordConnectionVerification({
         userId: c.get("user")?.id,
-        workspaceId: database.workspaceId,
-        connectionId: database._id,
+        workspaceId: new Types.ObjectId(database.workspaceId),
+        connectionId: new Types.ObjectId(database.id),
         databaseType: database.type,
         trigger: "saved_test",
         success: result.success,
@@ -760,8 +769,10 @@ connectionRoutes.openapi(
 
       if (result.success) {
         // Update last connected timestamp
-        database.lastConnectedAt = new Date();
-        await database.save();
+        await connectionsRepo.touchDatabaseConnectionLastConnected(
+          database.id,
+          database.workspaceId,
+        );
       }
 
       return c.json(result);

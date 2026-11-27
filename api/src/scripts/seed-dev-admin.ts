@@ -82,7 +82,7 @@ async function main(): Promise<void> {
   // Import models/services lazily so a connection failure above short-circuits
   // before any model side effects run.
   const { authRepo } = await import("../repositories/auth");
-  const { DatabaseConnection } = await import("../database/workspace-schema");
+  const { connectionsRepo } = await import("../repositories/connections");
   const { workspaceService } = await import("../services/workspace.service");
 
   const rounds = parseInt(process.env.BCRYPT_ROUNDS || "10", 10);
@@ -124,13 +124,12 @@ async function main(): Promise<void> {
   // Attach the Chinook demo Postgres DB so there is real queryable data.
   const demoUrl = process.env.DEMO_DATABASE_URL;
   if (demoUrl) {
-    const existingDemo = await DatabaseConnection.findOne({
-      workspaceId: workspace._id,
-      isDemo: true,
-    });
+    const workspaceId = String(workspace._id);
+    const existingDemo =
+      await connectionsRepo.findDemoDatabaseConnection(workspaceId);
     if (!existingDemo) {
-      await DatabaseConnection.create({
-        workspaceId: workspace._id,
+      await connectionsRepo.createDatabaseConnection({
+        workspaceId,
         name: "Chinook Music Store",
         type: "postgresql",
         connection: { connectionString: demoUrl },

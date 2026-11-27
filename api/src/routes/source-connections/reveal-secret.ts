@@ -1,11 +1,10 @@
 /** Revealing one stored secret to a person allowed to change the connection. */
 import { createRoute, z } from "@hono/zod-openapi";
 import { decryptEncrypted } from "../../services/crypto.service";
-import { SourceConnection } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
 import { type ConnectorFieldSchema } from "../../connectors/source-connection-create.service";
 import { loggers } from "../../logging";
-import { Types } from "mongoose";
 import {
   VIEWER_REFUSAL,
   changeRefusal,
@@ -95,10 +94,10 @@ sourceConnectionRevealSecretRoutes.openapi(
 
       // The ciphertext comes from OUR record for THIS workspace — never from
       // the caller. This is what makes the oracle impossible.
-      const sourceConnection = await SourceConnection.findOne({
-        _id: new Types.ObjectId(id),
+      const sourceConnection = await connectionsRepo.findSourceConnectionById(
+        id,
         workspaceId,
-      }).lean();
+      );
       if (!sourceConnection) {
         return fail(c, 404, "Source connection not found");
       }

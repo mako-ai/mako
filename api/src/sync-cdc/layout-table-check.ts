@@ -11,9 +11,8 @@
  * A table that does not exist yet passes: the layout creates it. A metadata
  * read that fails passes too: a save must not depend on a flaky read.
  */
-import { DatabaseConnection } from "../database/workspace-schema";
 import { loggers } from "../logging";
-import { inWorkspace } from "../utils/workspace-scope";
+import { connectionsRepo } from "../repositories/connections";
 import {
   resolveCdcDestinationAdapter,
   resolveEntityClustering,
@@ -341,11 +340,10 @@ export async function findLayoutTableMismatches(
   if (layouts.length === 0 || !td?.connectionId) return [];
 
   const workspaceId = String(flow.workspaceId);
-  const destination = await DatabaseConnection.findOne(
-    inWorkspace(td.connectionId as string, workspaceId),
-  )
-    .select({ type: 1 })
-    .lean();
+  const destination = await connectionsRepo.findDatabaseConnectionSummary(
+    String(td.connectionId),
+    workspaceId,
+  );
   if (destination?.type?.toLowerCase() !== "bigquery") return [];
 
   const schema = td.schema || "public";

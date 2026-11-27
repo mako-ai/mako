@@ -1,10 +1,13 @@
-import { Db, ObjectId, type Document, type WithId } from "mongodb";
+import { ObjectId } from "mongodb";
 import { decryptEncrypted } from "../services/crypto.service";
 import * as dotenv from "dotenv";
 import { syncConnectorRegistry } from "./connector-registry";
 import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
-import { databaseConnectionService } from "../services/database-connection.service";
 import { loggers } from "../logging";
+import {
+  connectionsRepo,
+  type SourceConnectionRecord,
+} from "../repositories/connections";
 
 dotenv.config({ quiet: true });
 
@@ -49,47 +52,6 @@ export interface SourceConnectionConfig {
 
 class SourceConnectionManager {
   private schemaCache: Map<string, ConnectorSchema> = new Map();
-  private databaseName: string = "";
-  private initialized = false;
-
-  private initialize() {
-    if (this.initialized) return;
-
-    if (!process.env.DATABASE_URL) {
-      throw new Error("DATABASE_URL environment variable is not set");
-    }
-    const connectionString = process.env.DATABASE_URL;
-
-    // Extract database name from the connection string or use environment variable
-    this.databaseName =
-      process.env.DATABASE_NAME ||
-      this.extractDatabaseName(connectionString) ||
-      "mako";
-
-    this.initialized = true;
-  }
-
-  private extractDatabaseName(connectionString: string): string | null {
-    try {
-      const url = new URL(connectionString);
-      const pathname = url.pathname;
-      if (pathname && pathname.length > 1) {
-        return pathname.substring(1); // Remove leading slash
-      }
-    } catch {
-      // Invalid URL, return null
-    }
-    return null;
-  }
-
-  private async getDb(): Promise<Db> {
-    this.initialize();
-
-    // Use the unified pool to get the main database connection
-    const connection = await databaseConnectionService.getMainConnection();
-
-    return connection.db;
-  }
 
   /**
    * Get connector schema
@@ -129,15 +91,13 @@ class SourceConnectionManager {
     return null;
   }
 
-  /** One stored `connectors` row as a decrypted source-connection config. */
+  /** One stored source connection row as a decrypted source-connection config. */
   private async toConfig(
-    source: WithId<Document>,
+    source: SourceConnectionRecord,
   ): Promise<SourceConnectionConfig> {
-    const workspaceId = source.workspaceId
-      ? String(source.workspaceId)
-      : undefined;
+    const workspaceId = source.workspaceId || undefined;
     return {
-      id: source._id.toString(),
+      id: source.id,
       name: source.name,
       description: source.description,
       type: source.type,
@@ -158,18 +118,13 @@ class SourceConnectionManager {
     };
   }
 
-  private async connectors() {
-    const db = await this.getDb();
-    return db.collection("connectors");
-  }
-
   /** All active source connections, optionally in one workspace. */
   async getActiveSourceConnections(
     workspaceId?: string,
   ): Promise<SourceConnectionConfig[]> {
-    const query: Record<string, unknown> = { isActive: true };
-    if (workspaceId) query.workspaceId = new ObjectId(workspaceId);
-    const sources = await (await this.connectors()).find(query).toArray();
+    const sources = await connectionsRepo.listActiveSourceConnections(
+      workspaceId ? { workspaceId } : {},
+    );
     return Promise.all(sources.map(source => this.toConfig(source)));
   }
 
@@ -186,14 +141,10 @@ class SourceConnectionManager {
     if (workspaceId !== undefined && !ObjectId.isValid(workspaceId)) {
       return null;
     }
-    const source = await (
-      await this.connectors()
-    ).findOne({
-      _id: new ObjectId(id),
-      ...(workspaceId !== undefined
-        ? { workspaceId: new ObjectId(workspaceId) }
-        : {}),
-    });
+    const source = await connectionsRepo.findSourceConnectionById(
+      id,
+      workspaceId,
+    );
     return source ? this.toConfig(source) : null;
   }
 
@@ -201,32 +152,22 @@ class SourceConnectionManager {
   async getSourceConnectionsByType(
     type: string,
   ): Promise<SourceConnectionConfig[]> {
-    const sources = await (
-      await this.connectors()
-    )
-      .find({ type, isActive: true })
-      .toArray();
+    const sources = await connectionsRepo.listActiveSourceConnections({ type });
     return Promise.all(sources.map(source => this.toConfig(source)));
   }
 
   /** Every source connection, as "name (id)". */
   async listSourceConnectionIds(): Promise<string[]> {
-    const sources = await (
-      await this.connectors()
-    )
-      .find({}, { projection: { _id: 1, name: 1 } })
-      .toArray();
-    return sources.map(s => `${s.name} (${s._id})`);
+    const sources = await connectionsRepo.listSourceConnectionIdNames();
+    return sources.map(s => `${s.name} (${s.id})`);
   }
 
   /** Active source connections, as "name (id)". */
   async listActiveSourceConnectionIds(): Promise<string[]> {
-    const sources = await (
-      await this.connectors()
-    )
-      .find({ isActive: true }, { projection: { _id: 1, name: 1 } })
-      .toArray();
-    return sources.map(s => `${s.name} (${s._id})`);
+    const sources = await connectionsRepo.listSourceConnectionIdNames({
+      isActive: true,
+    });
+    return sources.map(s => `${s.name} (${s.id})`);
   }
 
   /**

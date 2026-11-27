@@ -51,7 +51,7 @@ import {
   slugFromType,
 } from "./workspace/SandboxedConnector";
 import { recordConnectionCheck } from "./workspace/reconcile.service";
-import { SourceConnection } from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import { actingPrincipal } from "../access/connection-writes";
 import {
   mayChangeSourceConnection,
@@ -367,19 +367,10 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
   // The id is the caller's; the workspace is the one the caller was
   // authorized for. A probe by id alone would let a member of one workspace
   // exercise another workspace's credential against a live platform.
-  const owned = await SourceConnection.findOne(
-    { _id: new Types.ObjectId(connectionId), workspaceId },
-    {
-      _id: 1,
-      name: 1,
-      type: 1,
-      liveReads: 1,
-      liveReaders: 1,
-      writers: 1,
-      managers: 1,
-      createdBy: 1,
-    },
-  ).lean();
+  const owned = await connectionsRepo.findSourceConnectionById(
+    connectionId,
+    workspaceId,
+  );
   if (!owned) {
     throw new ProbeError(
       "not_found",
@@ -391,8 +382,10 @@ export async function probeConnection(input: ProbeInput): Promise<ProbeResult> {
   }
   if (input.entity) await assertMayProbeEntity(workspaceId, owned);
 
-  const sourceConnection =
-    await sourceConnectionManager.getSourceConnection(connectionId);
+  const sourceConnection = await sourceConnectionManager.getSourceConnection(
+    connectionId,
+    workspaceId,
+  );
   if (!sourceConnection) {
     throw new ProbeError("not_found", "Connection not found");
   }

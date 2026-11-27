@@ -1,6 +1,6 @@
 /** The entities (streams/objects) a source connection's connector offers. */
 import { createRoute } from "@hono/zod-openapi";
-import { SourceConnection } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
 import { sourceConnectionManager } from "../../sync/database-data-source-manager";
 import {
@@ -32,17 +32,17 @@ sourceConnectionEntityRoutes.openapi(
       }
 
       // First, verify the source connection belongs to the workspace
-      const ownershipCheck = await SourceConnection.findOne(
-        { _id: id, workspaceId: workspaceId },
-        { _id: 1 },
-      ).lean();
+      const ownershipCheck = await connectionsRepo.findSourceConnectionById(
+        id,
+        workspaceId,
+      );
       if (!ownershipCheck) {
         return fail(c, 404, "Source connection not found in this workspace");
       }
 
       // Now get the full config using the manager
       const sourceConnection =
-        await sourceConnectionManager.getSourceConnection(id);
+        await sourceConnectionManager.getSourceConnection(id, workspaceId);
 
       if (!sourceConnection) {
         return fail(c, 404, "Source connection not found");

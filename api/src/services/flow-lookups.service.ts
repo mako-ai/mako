@@ -4,10 +4,7 @@
  * an aggregation on `_id` used to do.
  */
 import { Types } from "mongoose";
-import {
-  DatabaseConnection,
-  SourceConnection,
-} from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import { deriveFlowType } from "./flow-triggers.service";
 
 export function asObjectIdString(value: unknown): string | null {
@@ -23,15 +20,19 @@ export function asObjectIdString(value: unknown): string | null {
   return Types.ObjectId.isValid(text) ? text : null;
 }
 
+function wireId(id: string): Types.ObjectId | string {
+  return Types.ObjectId.isValid(id) ? new Types.ObjectId(id) : id;
+}
+
 function connectionSummary(
   doc: {
-    _id: Types.ObjectId;
+    id: string;
     name?: string;
     type?: string;
   } | null,
 ): Record<string, unknown> | null {
   if (!doc) return null;
-  return { _id: doc._id, name: doc.name, type: doc.type };
+  return { _id: wireId(doc.id), name: doc.name, type: doc.type };
 }
 
 /**
@@ -43,20 +44,16 @@ export async function attachFlowLookups(
   flows: Record<string, unknown>[],
   options: { includeSourceConfig?: boolean } = {},
 ): Promise<void> {
-  const sourceIds: Types.ObjectId[] = [];
-  const destIds: Types.ObjectId[] = [];
+  const sourceIds: string[] = [];
+  const destIds: string[] = [];
   const seenSource = new Set<string>();
   const seenDest = new Set<string>();
 
-  const pushId = (
-    raw: unknown,
-    into: Types.ObjectId[],
-    seen: Set<string>,
-  ): void => {
+  const pushId = (raw: unknown, into: string[], seen: Set<string>): void => {
     const id = asObjectIdString(raw);
     if (!id || seen.has(id)) return;
     seen.add(id);
-    into.push(new Types.ObjectId(id));
+    into.push(id);
   };
 
   for (const flow of flows) {
@@ -75,23 +72,19 @@ export async function attachFlowLookups(
     pushId(tableDestination?.connectionId, destIds, seenDest);
   }
 
-  const ws = new Types.ObjectId(workspaceId);
   const [sources, dests] = await Promise.all([
     sourceIds.length === 0
       ? []
-      : SourceConnection.find({ _id: { $in: sourceIds }, workspaceId: ws })
-          .select(
-            options.includeSourceConfig ? "name type config" : "name type",
-          )
-          .lean(),
+      : connectionsRepo.findSourceConnectionsByIds(sourceIds, workspaceId),
     destIds.length === 0
       ? []
-      : DatabaseConnection.find({ _id: { $in: destIds }, workspaceId: ws })
-          .select("name type")
-          .lean(),
+      : connectionsRepo.findDatabaseConnectionSummariesByIds(
+          destIds,
+          workspaceId,
+        ),
   ]);
-  const sourceById = new Map(sources.map(doc => [doc._id.toString(), doc]));
-  const destById = new Map(dests.map(doc => [doc._id.toString(), doc]));
+  const sourceById = new Map(sources.map(doc => [doc.id, doc]));
+  const destById = new Map(dests.map(doc => [doc.id, doc]));
 
   for (const flow of flows) {
     const sourceType =
@@ -110,7 +103,7 @@ export async function attachFlowLookups(
       if (source) {
         flow.dataSourceId = options.includeSourceConfig
           ? {
-              _id: source._id,
+              _id: wireId(source.id),
               name: source.name,
               type: source.type,
               config: source.config,

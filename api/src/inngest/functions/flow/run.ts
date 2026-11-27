@@ -7,13 +7,9 @@
  *
  * Step ids are persisted by Inngest per run; they must not change.
  */
-import { inWorkspace } from "../../../utils/workspace-scope";
 import { inngest } from "../../client";
-import {
-  DatabaseConnection,
-  Flow,
-  type IFlow,
-} from "../../../database/workspace-schema";
+import { Flow, type IFlow } from "../../../database/workspace-schema";
+import { connectionsRepo } from "../../../repositories/connections";
 import { hasCdcDestinationAdapter } from "../../../sync-cdc/adapters/registry";
 import { resolveConfiguredEntities } from "../../../sync-cdc/entity-selection";
 import { flowDisplayName as resolveFlowDisplayName } from "../../../services/flow-identity.service";
@@ -115,11 +111,11 @@ export const flowFunction = inngest.createFunction(
         `detect-destination-type${fetchStepSuffix}`,
         async () => {
           if (!flow.tableDestination?.connectionId) return undefined;
-          const destination = await DatabaseConnection.findOne(
-            inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
-          )
-            .select({ type: 1 })
-            .lean();
+          const destination =
+            await connectionsRepo.findDatabaseConnectionSummary(
+              flow.tableDestination.connectionId.toString(),
+              flow.workspaceId.toString(),
+            );
           return destination?.type || undefined;
         },
       )) as string | undefined;

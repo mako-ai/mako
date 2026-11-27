@@ -7,3 +7,4 @@
 export * from "./control-plane";
 export * from "./auth";
 export * from "./workspaces";
+export * from "./connections";

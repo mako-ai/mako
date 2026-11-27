@@ -44,7 +44,7 @@ import type {
   NotebookCellOutput,
   NotebookDoc,
 } from "../../notebooks/types";
-import { DatabaseConnection } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import {
   KernelUnavailableError,
@@ -586,10 +586,10 @@ export function createNotebookServerTools({
             error: "Set a valid data source (connectionId) on the cell first.",
           };
         }
-        const database = await DatabaseConnection.findOne({
-          _id: new Types.ObjectId(cell.connectionId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        });
+        const database = await connectionsRepo.findDatabaseConnectionById(
+          cell.connectionId,
+          workspaceId,
+        );
         if (!database) {
           return {
             success: false,
@@ -599,7 +599,7 @@ export function createNotebookServerTools({
 
         const started = Date.now();
         const result = await databaseConnectionService.executeQuery(
-          database as Parameters<
+          database as unknown as Parameters<
             typeof databaseConnectionService.executeQuery
           >[0],
           cell.source,

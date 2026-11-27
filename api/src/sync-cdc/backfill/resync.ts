@@ -6,16 +6,16 @@ import {
   bulkBufferName,
   bulkStagingSuffix,
 } from "../../sync/sync-orchestrator";
-import { inWorkspace } from "../../utils/workspace-scope";
 import { Types } from "mongoose";
 import {
   CdcEntityState,
   CdcStateTransition,
-  DatabaseConnection,
   Flow,
+  type IDatabaseConnection,
   IFlow,
   WebhookEvent,
 } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { databaseRegistry } from "../../databases/registry";
 import { inngest } from "../../inngest/client";
 import { loggers } from "../../logging";
@@ -176,12 +176,14 @@ export async function deleteDestinationTables(
     return;
   }
 
-  const destination = await DatabaseConnection.findOne(
-    inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
+  const destination = await connectionsRepo.findDatabaseConnectionById(
+    flow.tableDestination.connectionId.toString(),
+    flow.workspaceId.toString(),
   );
   if (!destination) {
     return;
   }
+  const destinationConn = destination as unknown as IDatabaseConnection;
 
   const driver = databaseRegistry.getDriver(destination.type);
   if (!driver?.dropTable) {
@@ -219,15 +221,15 @@ export async function deleteDestinationTables(
       fullRead => `${liveTable}__${flowToken}__${bulkStagingSuffix(fullRead)}`,
     );
 
-    await driver.dropTable(destination, liveTable, { schema });
+    await driver.dropTable(destinationConn, liveTable, { schema });
     for (const stageTable of oldStageTables) {
-      await driver.dropTable(destination, stageTable, {
+      await driver.dropTable(destinationConn, stageTable, {
         schema: stageSchema,
       });
     }
-    await driver.dropTable(destination, bulkStagingTable, { schema });
+    await driver.dropTable(destinationConn, bulkStagingTable, { schema });
     for (const table of laneStagingTables) {
-      await driver.dropTable(destination, table, { schema });
+      await driver.dropTable(destinationConn, table, { schema });
     }
   }
 

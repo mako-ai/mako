@@ -8,8 +8,8 @@ import {
   DbtJob,
   DbtProject,
   DbtRun,
-  DatabaseConnection,
 } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import {
   commitDbtFiles,
   readWorkingFile,
@@ -128,10 +128,10 @@ async function validateEnvironments(
   for (const env of environments) {
     if (names.has(env.name)) return `Duplicate environment name "${env.name}"`;
     names.add(env.name);
-    const connection = await DatabaseConnection.findOne({
-      _id: new Types.ObjectId(env.connectionId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    }).select("type");
+    const connection = await connectionsRepo.findDatabaseConnectionSummary(
+      env.connectionId,
+      workspaceId,
+    );
     if (!connection) {
       return `Connection not found for environment "${env.name}"`;
     }
@@ -142,10 +142,10 @@ async function validateEnvironments(
       );
     }
     if (env.readConnectionId) {
-      const read = await DatabaseConnection.findOne({
-        _id: new Types.ObjectId(env.readConnectionId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      }).select("type");
+      const read = await connectionsRepo.findDatabaseConnectionSummary(
+        env.readConnectionId,
+        workspaceId,
+      );
       if (!read) {
         return `Read connection not found for environment "${env.name}"`;
       }

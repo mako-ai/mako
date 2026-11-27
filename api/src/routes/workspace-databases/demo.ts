@@ -7,7 +7,7 @@ import {
   requireWorkspace,
   requireWorkspaceRole,
 } from "../../middleware/workspace.middleware";
-import { DatabaseConnection } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import {
   AUTH_SECURITY,
   OPEN_RESPONSES,
@@ -55,10 +55,9 @@ demoDatabaseRoutes.openapi(
       const workspace = c.get("workspace");
 
       // Check if workspace already has a demo database
-      const existingDemo = await DatabaseConnection.findOne({
-        workspaceId: workspace._id,
-        isDemo: true,
-      });
+      const existingDemo = await connectionsRepo.findDemoDatabaseConnection(
+        String(workspace._id),
+      );
 
       if (existingDemo) {
         return c.json({
@@ -75,18 +74,14 @@ demoDatabaseRoutes.openapi(
 
       // Create demo database connection
       const demoConfig = getDemoDatabaseConfig();
-      const database = new DatabaseConnection({
-        workspaceId: workspace._id,
+      const database = await connectionsRepo.createDatabaseConnection({
+        workspaceId: String(workspace._id),
         name: demoConfig.name,
         type: demoConfig.type,
         connection: demoConfig.connection,
         isDemo: true,
         createdBy: user.id,
-        createdAt: new Date(),
-        updatedAt: new Date(),
       });
-
-      await database.save();
 
       return c.json(
         {

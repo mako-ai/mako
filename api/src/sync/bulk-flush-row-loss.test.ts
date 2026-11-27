@@ -117,15 +117,14 @@ function collection(name: string): FakeCollection {
 }
 
 vi.mock("../database/workspace-schema", () => ({
-  DatabaseConnection: {
-    // Scoped by workspace (utils/workspace-scope.ts): findOne, not findById.
-    findOne: vi.fn(() => ({
-      select: () => ({
-        lean: () => Promise.resolve({ type: "bigquery" }),
-      }),
-    })),
-  },
   Flow: { db: { collection: (name: string) => collection(name) } },
+}));
+
+vi.mock("../repositories/connections", () => ({
+  connectionsRepo: {
+    findDatabaseConnectionSummary: vi.fn(async () => ({ type: "bigquery" })),
+    findDatabaseConnectionById: vi.fn(async () => ({ type: "bigquery" })),
+  },
 }));
 
 // ── Fake source: every row shares one cursor value ────────────────────────

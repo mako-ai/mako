@@ -1,12 +1,11 @@
 import { z } from "@hono/zod-openapi";
-import { inWorkspace } from "../../utils/workspace-scope";
 import { Types } from "mongoose";
 import {
   CdcEntityState,
-  DatabaseConnection,
   Flow,
-  SourceConnection,
+  type IDatabaseConnection,
 } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import {
   getFlowCdcStatus,
   getFlowSchemaHealth,
@@ -85,10 +84,10 @@ export function registerCdcStatusRoutes(flowRoutes: FlowRouter): void {
           return c.json({ success: true, data: {} });
         }
 
-        const destinationDoc = await DatabaseConnection.findOne(
-          inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
+        const destination = await connectionsRepo.findDatabaseConnectionById(
+          flow.tableDestination.connectionId.toString(),
+          flow.workspaceId.toString(),
         );
-        const destination = destinationDoc?.toObject();
         if (!destination) {
           return c.json({ success: true, data: {} });
         }
@@ -116,7 +115,7 @@ export function registerCdcStatusRoutes(flowRoutes: FlowRouter): void {
           flowId,
           entities: uniqueEntities,
           destinationType: destination.type,
-          destination,
+          destination: destination as unknown as IDatabaseConnection,
           schema: flow.tableDestination?.schema || "",
           baseTablePrefix: flow.tableDestination?.tableName,
         });
@@ -177,16 +176,16 @@ export function registerCdcStatusRoutes(flowRoutes: FlowRouter): void {
           return fail(c, 400, "Flow has no connector data source");
         }
 
-        const sourceConnection = await SourceConnection.findOne({
-          _id: flow.dataSourceId,
-          workspaceId: flow.workspaceId,
-        }).lean();
+        const sourceConnection = await connectionsRepo.findSourceConnectionById(
+          flow.dataSourceId.toString(),
+          flow.workspaceId.toString(),
+        );
         if (!sourceConnection) {
           return fail(c, 404, "Data source not found");
         }
 
         const decrypted = await sourceConnectionManager.getSourceConnection(
-          String(sourceConnection._id),
+          sourceConnection.id,
           String(flow.workspaceId),
         );
         if (!decrypted) {

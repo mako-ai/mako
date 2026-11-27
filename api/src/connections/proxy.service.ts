@@ -39,12 +39,14 @@ import {
   ORPHAN_TYPE_MESSAGE,
 } from "../connectors/source-connection-create.service";
 import { Types } from "mongoose";
-import {
-  SourceConnection,
-  type IConnectionWriter,
-  type ISourceConnection,
+import type {
+  IConnectionWriter,
+  ISourceConnection,
 } from "../database/workspace-schema";
-import { ConnectionWriteEvent } from "../access/connection-write-event";
+import {
+  connectionsRepo,
+  type SourceConnectionRecord,
+} from "../repositories/connections";
 import {
   actingPrincipal,
   principalMatches,
@@ -181,7 +183,7 @@ export function agentCallsPerMinute(): number {
  */
 async function chargeAgentCall(
   workspaceId: string,
-  connection: Pick<ISourceConnection, "_id" | "name">,
+  connection: Pick<SourceConnectionRecord, "_id" | "name">,
   principal: string | undefined,
 ): Promise<void> {
   const window = Math.floor(Date.now() / AGENT_BUDGET_WINDOW_MS);
@@ -213,27 +215,19 @@ async function chargeAgentCall(
 async function findConnection(
   workspaceId: string,
   idOrName: string,
-): Promise<ISourceConnection | null> {
+): Promise<SourceConnectionRecord | null> {
   if (!Types.ObjectId.isValid(workspaceId)) return null;
-  const workspace = new Types.ObjectId(workspaceId);
-  if (Types.ObjectId.isValid(idOrName)) {
-    const byId = await SourceConnection.findOne({
-      _id: new Types.ObjectId(idOrName),
-      workspaceId: workspace,
-    });
-    if (byId) return byId;
-  }
-  const byName = await SourceConnection.find({
-    workspaceId: workspace,
-    name: idOrName,
-  }).limit(2);
-  if (byName.length > 1) {
+  const result = await connectionsRepo.findSourceConnectionByIdOrName(
+    workspaceId,
+    idOrName,
+  );
+  if (result.ambiguous) {
     throw new ConnectionRequestError(
       `Several connections are called ${idOrName}; use its id.`,
       409,
     );
   }
-  return byName[0] ?? null;
+  return result.connection;
 }
 
 /**
@@ -241,20 +235,20 @@ async function findConnection(
  * it could not be recorded.
  */
 async function recordProxyWrite(
-  connection: Pick<ISourceConnection, "_id" | "workspaceId">,
+  connection: Pick<SourceConnectionRecord, "id" | "workspaceId">,
   principal: string,
   target: string,
   allowed: boolean,
-): Promise<Types.ObjectId | null> {
+): Promise<string | null> {
   try {
-    const row = await ConnectionWriteEvent.create({
-      workspaceId: new Types.ObjectId(String(connection.workspaceId)),
-      connectionId: new Types.ObjectId(String(connection._id)),
+    const row = await connectionsRepo.recordConnectionWriteEvent({
+      workspaceId: connection.workspaceId,
+      connectionId: connection.id,
       principal,
       target,
       allowed,
     });
-    return row._id;
+    return row.id;
   } catch (error) {
     logger.warn("Could not record a connection write", { error });
     return null;
@@ -263,13 +257,15 @@ async function recordProxyWrite(
 
 /** What became of a recorded write: the service's status, or why none. */
 async function recordOutcome(
-  id: Types.ObjectId,
+  id: string,
+  workspaceId: string,
   outcome: { status: number } | { error: string },
 ): Promise<void> {
-  await ConnectionWriteEvent.updateOne({ _id: id }, { $set: outcome }).catch(
-    error =>
+  await connectionsRepo
+    .recordConnectionWriteOutcome(id, workspaceId, outcome)
+    .catch(error =>
       logger.warn("Could not record a connection write's outcome", { error }),
-  );
+    );
 }
 
 /**
@@ -280,8 +276,8 @@ async function recordOutcome(
  * list, so a dry run that passes does not hide a real run's refusal.
  */
 async function recordInstead(
-  row: ISourceConnection,
-  config: ISourceConnection["config"],
+  row: SourceConnectionRecord,
+  config: SourceConnectionRecord["config"],
   callable: CallableConnection,
   request: ResolvedRequest,
   workspaceId: string,
@@ -298,7 +294,7 @@ async function recordInstead(
   const kept = await keepRecordedWrite(
     workspaceId,
     run,
-    row,
+    { _id: new Types.ObjectId(row.id), name: row.name },
     describeRequest({ config }, callable, request),
     { wouldSend },
   );
@@ -365,7 +361,8 @@ export async function connectionRequest(
   }
   // The stored credential, decrypted by the connector's own schema.
   const loaded = await sourceConnectionManager.getSourceConnection(
-    String(row._id),
+    row.id,
+    params.workspaceId,
   );
   if (!loaded) {
     throw new ConnectionRequestError(
@@ -397,7 +394,7 @@ export async function connectionRequest(
   const principal = actingPrincipal(params.actor);
   const target = `${request.method} ${path}`;
   /** The write log's row for an allowed write, to add its outcome to. */
-  let logId: Types.ObjectId | null = null;
+  let logId: string | null = null;
   const where = {
     workspaceId: params.workspaceId,
     connectionId: String(row._id),
@@ -550,7 +547,7 @@ export async function connectionRequest(
   try {
     answer = await send(
       {
-        _id: row._id,
+        _id: new Types.ObjectId(row.id),
         type: row.type,
         config,
         settings: loaded.settings as ISourceConnection["settings"],
@@ -568,7 +565,7 @@ export async function connectionRequest(
       });
     }
     if (logId) {
-      await recordOutcome(logId, {
+      await recordOutcome(logId, params.workspaceId, {
         error: (error instanceof Error ? error.message : String(error)).slice(
           0,
           500,
@@ -577,6 +574,8 @@ export async function connectionRequest(
     }
     throw error;
   }
-  if (logId) await recordOutcome(logId, { status: answer.status });
+  if (logId) {
+    await recordOutcome(logId, params.workspaceId, { status: answer.status });
+  }
   return { ...answer, read };
 }

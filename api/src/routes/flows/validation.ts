@@ -1,5 +1,5 @@
-import { Types } from "mongoose";
-import { DatabaseConnection } from "../../database/workspace-schema";
+import type { IDatabaseConnection } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import {
   checkQuerySafety,
   dryRunDbSync,
@@ -40,17 +40,21 @@ export function registerValidationRoutes(flowRoutes: FlowRouter): void {
         }
 
         // Validate connection exists and belongs to workspace
-        const connection = await DatabaseConnection.findOne({
-          _id: new Types.ObjectId(connectionId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        });
+        const connection = await connectionsRepo.findDatabaseConnectionById(
+          String(connectionId),
+          workspaceId,
+        );
 
         if (!connection) {
           return fail(c, 404, "Database connection not found");
         }
 
         // Validate the query
-        const result = await validateQuery(connection, query, database);
+        const result = await validateQuery(
+          connection as unknown as IDatabaseConnection,
+          query,
+          database,
+        );
 
         if (!result.success) {
           return fail(c, 400, result.error || "Query validation failed", {
@@ -102,10 +106,10 @@ export function registerValidationRoutes(flowRoutes: FlowRouter): void {
         }
 
         // Validate connection exists and belongs to workspace
-        const connection = await DatabaseConnection.findOne({
-          _id: new Types.ObjectId(connectionId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        });
+        const connection = await connectionsRepo.findDatabaseConnectionById(
+          String(connectionId),
+          workspaceId,
+        );
 
         if (!connection) {
           return fail(c, 404, "Database connection not found");
@@ -113,7 +117,7 @@ export function registerValidationRoutes(flowRoutes: FlowRouter): void {
 
         // Run dry run
         const result = await dryRunDbSync({
-          sourceConnection: connection,
+          sourceConnection: connection as unknown as IDatabaseConnection,
           sourceQuery: query,
           sourceDatabase: database,
           paginationConfig,

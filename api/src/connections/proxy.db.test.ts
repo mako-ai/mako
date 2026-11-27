@@ -33,6 +33,7 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose, { Types } from "mongoose";
 
 import { ConnectionWriteEvent } from "../access/connection-write-event";
+import { connectionsRepo } from "../repositories/connections";
 import { hashApiKey } from "../auth/api-key.middleware";
 import { User } from "../database/schema";
 import {
@@ -512,11 +513,13 @@ async function main() {
     );
 
     // A write the log cannot take is not sent; a refusal is still answered.
-    const realCreate = ConnectionWriteEvent.create.bind(ConnectionWriteEvent);
-    (ConnectionWriteEvent as unknown as { create: unknown }).create =
-      async () => {
-        throw new Error("log down");
-      };
+    const realCreate =
+      connectionsRepo.recordConnectionWriteEvent.bind(connectionsRepo);
+    (
+      connectionsRepo as unknown as { recordConnectionWriteEvent: unknown }
+    ).recordConnectionWriteEvent = async () => {
+      throw new Error("log down");
+    };
     const sentBeforeLogDown = sent.length;
     try {
       const down = await running
@@ -545,8 +548,9 @@ async function main() {
         /^worker:workflows is not allowed/,
       );
     } finally {
-      (ConnectionWriteEvent as unknown as { create: unknown }).create =
-        realCreate;
+      (
+        connectionsRepo as unknown as { recordConnectionWriteEvent: unknown }
+      ).recordConnectionWriteEvent = realCreate;
     }
     assert.equal(sent.length, sentBeforeLogDown);
 
@@ -1406,7 +1410,7 @@ async function main() {
       type: "custom_api",
       config: { base_url: "https://x.example.com", token: "t0ken_value" },
     });
-    assert.equal(custom.liveReads, undefined);
+    assert.equal(custom.liveReads, false);
     // The in-process REST connector, the last built-in source, is deleted:
     // a new `rest` connection is refused.
     await assert.rejects(

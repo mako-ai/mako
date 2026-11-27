@@ -7,10 +7,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import {
-  ConnectorDefinition,
-  type IConnectorDefinition,
-} from "../../database/workspace-schema";
+import type { IConnectorDefinition } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import {
   DEFAULT_BRANCH,
   readBlobsBatch,
@@ -92,7 +90,7 @@ export async function loadConnectorDefinition(
   workspaceId: string,
   slug: string,
 ): Promise<LoadedConnector> {
-  const row = await ConnectorDefinition.findOne({ workspaceId, slug }).lean();
+  const row = await connectionsRepo.findConnectorDefinition(workspaceId, slug);
   if (!row) {
     throw new Error(
       `No connector "${slug}" in this workspace. Push a folder at ${CONNECTORS_DIR}/${slug}/ to main.`,
@@ -112,7 +110,7 @@ export async function loadConnectorDefinition(
     entry: row.entry || DEFAULT_ENTRY,
     sha: row.sha,
     sourceSha: row.sourceSha,
-    spec: row.spec as Record<string, unknown> | undefined,
+    spec: row.spec,
     entities: row.entities ?? [],
     status: row.status,
     ...(row.registry ? { registry: registryOf(row) } : {}),
@@ -123,16 +121,14 @@ export async function loadConnectorDefinition(
 export async function listConnectorDefinitions(
   workspaceId: string,
 ): Promise<LoadedConnector[]> {
-  const rows = await ConnectorDefinition.find({ workspaceId })
-    .sort({ slug: 1 })
-    .lean();
+  const rows = await connectionsRepo.listConnectorDefinitions(workspaceId);
   return rows.map(row => ({
     slug: row.slug,
     runtime: row.runtime,
     entry: row.entry || DEFAULT_ENTRY,
     sha: row.sha,
     sourceSha: row.sourceSha,
-    spec: row.spec as Record<string, unknown> | undefined,
+    spec: row.spec,
     entities: row.entities ?? [],
     status: row.status,
     ...(row.registry ? { registry: registryOf(row) } : {}),

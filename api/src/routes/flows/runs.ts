@@ -33,9 +33,7 @@ export function registerRunsRoutes(flowRoutes: FlowRouter): void {
         if (!resolved.ok) {
           return fail(c, resolved.status, resolved.error);
         }
-        const flow = await Flow.findById(resolved.row._id)
-          .populate("dataSourceId")
-          .populate("destinationDatabaseId");
+        const flow = await Flow.findById(resolved.row._id);
 
         if (!flow) {
           return fail(c, 404, "Flow not found");

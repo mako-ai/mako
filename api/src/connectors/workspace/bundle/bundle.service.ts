@@ -9,7 +9,7 @@
  * path (a run that finds no bundle for its hash builds it first). Concurrent
  * callers for one hash in this process share one build.
  */
-import { ConnectorDefinition } from "../../../database/workspace-schema";
+import { connectionsRepo } from "../../../repositories/connections";
 import type { SandboxExecContext } from "../../../apps/sandbox/provider";
 import { loggers } from "../../../logging";
 import { installConnectorBundle } from "../sync-box";
@@ -184,13 +184,11 @@ export async function recordRunBuild(input: {
   build: BundleBuildStatus;
 }): Promise<void> {
   try {
-    await ConnectorDefinition.updateOne(
-      {
-        workspaceId: input.workspaceId,
-        slug: input.slug,
-        sourceSha: input.sourceSha,
-      },
-      { $set: { build: input.build } },
+    await connectionsRepo.recordConnectorDefinitionBuild(
+      input.workspaceId,
+      input.slug,
+      input.build,
+      { expectedSourceSha: input.sourceSha },
     );
   } catch (error) {
     logger.warn("Could not record a connector build status", {

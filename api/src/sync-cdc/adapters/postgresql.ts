@@ -1,9 +1,9 @@
 import { Types } from "mongoose";
-import { inWorkspace } from "../../utils/workspace-scope";
-import {
-  DatabaseConnection,
-  type IFlow,
+import type {
+  IDatabaseConnection,
+  IFlow,
 } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { createDestinationWriter } from "../../services/destination-writer.service";
 import { databaseRegistry } from "../../databases/registry";
 import { loggers } from "../../logging";
@@ -82,18 +82,16 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
 
   /** Full Refresh | Overwrite: clear the live table (no-op when absent). */
   async truncateLiveTable(layout: CdcEntityLayout): Promise<void> {
-    const destination = await DatabaseConnection.findOne(
-      inWorkspace(
-        this.config.tableDestination.connectionId,
-        this.config.workspaceId,
-      ),
+    const destination = await connectionsRepo.findDatabaseConnectionById(
+      this.config.tableDestination.connectionId,
+      this.config.workspaceId,
     );
     if (!destination) return;
     const driver = databaseRegistry.getDriver(destination.type);
     if (!driver) return;
     const schema = this.config.tableDestination.schema || "public";
     const result = await driver.executeQuery(
-      destination,
+      destination as unknown as IDatabaseConnection,
       `DELETE FROM ${pgIdent(schema)}.${pgIdent(layout.tableName)}`,
       { databaseName: this.config.destinationDatabaseName },
     );
@@ -119,19 +117,21 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
     if (this.layoutIndexesEnsured.has(cacheKey)) return;
 
     try {
-      const destination = await DatabaseConnection.findOne(
-        inWorkspace(
-          this.config.tableDestination.connectionId,
-          this.config.workspaceId,
-        ),
+      const destination = await connectionsRepo.findDatabaseConnectionById(
+        this.config.tableDestination.connectionId,
+        this.config.workspaceId,
       );
       if (!destination) return;
       const driver = databaseRegistry.getDriver(destination.type);
       if (!driver) return;
       for (const statement of statements) {
-        const result = await driver.executeQuery(destination, statement, {
-          databaseName: this.config.destinationDatabaseName,
-        });
+        const result = await driver.executeQuery(
+          destination as unknown as IDatabaseConnection,
+          statement,
+          {
+            databaseName: this.config.destinationDatabaseName,
+          },
+        );
         if (!result.success) {
           log.warn("Failed to ensure layout index", {
             table: layout.tableName,

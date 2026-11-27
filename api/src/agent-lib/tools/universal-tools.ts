@@ -9,12 +9,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { Types } from "mongoose";
-import {
-  SourceConnection,
-  DatabaseConnection,
-  type IDatabaseConnection,
-  type ISourceConnectionKeyRequest,
-} from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import type { AgentToolExecutionContext } from "../../agents/types";
 import { keyRequestStatus } from "../../connectors/connection-key-request.service";
 import type { QueryAccess } from "../../auth/api-key-scopes";
@@ -141,48 +136,28 @@ export async function listAllConnectionsImpl(
   if (!Types.ObjectId.isValid(workspaceId)) {
     throw new Error("Invalid workspace ID");
   }
-  const wsId = new Types.ObjectId(workspaceId);
 
   const databases =
     kind === "source"
       ? []
-      : (
-          await DatabaseConnection.find({
-            workspaceId: wsId,
-            type: {
-              $in: Array.from(
-                ALL_SUPPORTED_TYPES,
-              ) as IDatabaseConnection["type"][],
-            },
-          }).sort({ name: 1 })
-        ).map(db => ({
-          ...summarizeConnectionForListing(
-            db as unknown as Parameters<
-              typeof summarizeConnectionForListing
-            >[0],
-          ),
-          kind: "database" as const,
-          connector: (db as { type: string }).type,
-          queryable: true,
-        }));
+      : (await connectionsRepo.listDatabaseConnections(workspaceId))
+          .filter(db => ALL_SUPPORTED_TYPES.has(db.type))
+          .map(db => ({
+            ...summarizeConnectionForListing(
+              db as unknown as Parameters<
+                typeof summarizeConnectionForListing
+              >[0],
+            ),
+            kind: "database" as const,
+            connector: db.type,
+            queryable: true,
+          }));
 
   const sources =
     kind === "database"
       ? []
-      : (
-          (await SourceConnection.find({ workspaceId: wsId })
-            .select("_id name type description isActive keyRequest")
-            .sort({ name: 1 })
-            .lean()) as Array<{
-            _id: { toString(): string };
-            name?: string;
-            type?: string;
-            description?: string;
-            isActive?: boolean;
-            keyRequest?: ISourceConnectionKeyRequest;
-          }>
-        ).map(row => ({
-          id: row._id.toString(),
+      : (await connectionsRepo.listSourceConnections(workspaceId)).map(row => ({
+          id: row.id,
           name: row.name ?? "",
           type: row.type ?? "",
           kind: "source" as const,

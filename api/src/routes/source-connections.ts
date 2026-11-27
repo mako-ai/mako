@@ -15,7 +15,10 @@
 import { serviceAccountConfigRefusal } from "../connections/google-service-account";
 import { createRoute } from "@hono/zod-openapi";
 import { isEncryptedValue } from "../services/crypto.service";
-import { SourceConnection } from "../database/workspace-schema";
+import {
+  connectionsRepo,
+  type UpdateSourceConnectionInput,
+} from "../repositories/connections";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import {
   type ConnectorFieldSchema,
@@ -199,11 +202,8 @@ sourceConnectionRoutes.openapi(
         return fail(c, 400, "Workspace ID is required");
       }
 
-      const sourceConnections = await SourceConnection.find({
-        workspaceId: _workspaceId,
-      })
-        .sort({ createdAt: -1 })
-        .lean();
+      const sourceConnections =
+        await connectionsRepo.listSourceConnections(_workspaceId);
 
       const caller = await callerOf(c, _workspaceId);
       const data = await Promise.all(
@@ -235,10 +235,10 @@ sourceConnectionRoutes.openapi(
         return fail(c, 400, "Invalid source connection ID format");
       }
 
-      const sourceConnection = await SourceConnection.findOne({
-        _id: id,
-        workspaceId: _workspaceId,
-      }).lean();
+      const sourceConnection = await connectionsRepo.findSourceConnectionById(
+        id,
+        _workspaceId,
+      );
 
       if (!sourceConnection) {
         return fail(c, 404, "Source connection not found");
@@ -308,7 +308,7 @@ sourceConnectionRoutes.openapi(
         {
           success: true,
           data: await publicSourceConnection(
-            sourceConnection.toObject(),
+            sourceConnection,
             workspaceId,
             caller,
           ),
@@ -365,10 +365,10 @@ sourceConnectionRoutes.openapi(
       const body = await c.req.json();
 
       // Find existing source connection
-      const sourceConnection = await SourceConnection.findOne({
-        _id: id,
+      const sourceConnection = await connectionsRepo.findSourceConnectionById(
+        id,
         workspaceId,
-      });
+      );
 
       if (!sourceConnection) {
         return fail(c, 404, "Source connection not found");
@@ -378,8 +378,7 @@ sourceConnectionRoutes.openapi(
         return fail(c, 403, changeRefusal(caller.role));
       }
 
-      // Get the current values (decrypted) for comparison
-      const currentValues = sourceConnection.toObject();
+      const currentValues = sourceConnection;
 
       // A type whose connector was removed: only name, description and
       // switching off still work. Nothing else is written.
@@ -411,17 +410,20 @@ sourceConnectionRoutes.openapi(
 
       // Track if any changes were made
       let hasChanges = false;
+      const patch: UpdateSourceConnectionInput = {};
+      let effectiveType = sourceConnection.type;
+      let effectiveKeyRequest = sourceConnection.keyRequest;
 
       // Update only fields that have changed
       if (body.name !== undefined && body.name !== currentValues.name) {
-        sourceConnection.name = body.name;
+        patch.name = body.name;
         hasChanges = true;
       }
       if (
         body.description !== undefined &&
         body.description !== currentValues.description
       ) {
-        sourceConnection.description = body.description;
+        patch.description = body.description;
         hasChanges = true;
       }
       if (body.type !== undefined && body.type !== currentValues.type) {
@@ -431,7 +433,8 @@ sourceConnectionRoutes.openapi(
         ) {
           return orphanRefusal();
         }
-        sourceConnection.type = body.type;
+        patch.type = body.type;
+        effectiveType = body.type;
         hasChanges = true;
       }
       if (
@@ -439,7 +442,7 @@ sourceConnectionRoutes.openapi(
         body.isActive !== currentValues.isActive
       ) {
         if (orphan && body.isActive) return orphanRefusal();
-        sourceConnection.isActive = body.isActive;
+        patch.isActive = body.isActive;
         hasChanges = true;
       }
 
@@ -472,7 +475,7 @@ sourceConnectionRoutes.openapi(
         if (configChanged) {
           if (noSchema) return orphanRefusal();
           const schema = await syncConnectorRegistry.getConfigSchemaForType(
-            sourceConnection.type,
+            effectiveType,
             workspaceId,
           );
           // Only what this call changes: a stored value stays as it is.
@@ -484,7 +487,7 @@ sourceConnectionRoutes.openapi(
           try {
             assertCredentialCharacters(changed, schema);
             const refusal =
-              callableFor(sourceConnection.type)?.configRefusal?.(newConfig) ??
+              callableFor(effectiveType)?.configRefusal?.(newConfig) ??
               serviceAccountConfigRefusal(newConfig);
             if (refusal) throw new SourceConnectionInputError(refusal);
           } catch (error) {
@@ -493,14 +496,14 @@ sourceConnectionRoutes.openapi(
             }
             throw error;
           }
-          sourceConnection.config = applySchemaEncryption(newConfig, schema);
+          patch.config = applySchemaEncryption(newConfig, schema);
           hasChanges = true;
           // A new credential: the connection's leased boxes and templates
           // were made under the old one.
-          forgetConnectionBoxes(String(sourceConnection._id));
+          forgetConnectionBoxes(sourceConnection.id);
           // The key a link waited for, set in the form instead (an expired
           // link's way out): the connection stops waiting and turns on.
-          const awaited = sourceConnection.keyRequest?.fields ?? [];
+          const awaited = effectiveKeyRequest?.fields ?? [];
           if (
             awaited.length > 0 &&
             awaited.every(field => {
@@ -508,15 +511,19 @@ sourceConnectionRoutes.openapi(
               return value !== undefined && value !== "" && value !== null;
             })
           ) {
-            sourceConnection.keyRequest = undefined;
-            sourceConnection.isActive = true;
+            patch.keyRequest = null;
+            effectiveKeyRequest = undefined;
+            patch.isActive = true;
           }
         }
       }
 
       // Handle settings updates - deep comparison
       if (body.settings !== undefined) {
-        const currentSettings = currentValues.settings || {};
+        const currentSettings = currentValues.settings || {
+          sync_batch_size: 100,
+          rate_limit_delay_ms: 200,
+        };
         let settingsChanged = false;
 
         const newSettings = { ...currentSettings };
@@ -530,7 +537,7 @@ sourceConnectionRoutes.openapi(
 
         if (settingsChanged) {
           if (noSchema) return orphanRefusal();
-          sourceConnection.settings = newSettings;
+          patch.settings = newSettings;
           hasChanges = true;
         }
       }
@@ -551,7 +558,7 @@ sourceConnectionRoutes.openapi(
 
         if (!arraysEqual) {
           if (orphan) return orphanRefusal();
-          sourceConnection.targetDatabases = body.targetDatabases;
+          patch.targetDatabases = newTargets;
           hasChanges = true;
         }
       }
@@ -559,7 +566,7 @@ sourceConnectionRoutes.openapi(
       // Still waiting for its key after this update: it cannot be switched
       // on (the same answer as PATCH /enable). Setting the key above ends
       // the wait and turns it on.
-      if (body.isActive === true && sourceConnection.keyRequest) {
+      if (body.isActive === true && effectiveKeyRequest) {
         return fail(
           c,
           409,
@@ -568,14 +575,23 @@ sourceConnectionRoutes.openapi(
       }
 
       // Only save if there were actual changes
+      let finalConnection = sourceConnection;
       if (hasChanges) {
-        await sourceConnection.save();
+        const updated = await connectionsRepo.updateSourceConnection(
+          id,
+          workspaceId,
+          patch,
+        );
+        if (!updated) {
+          return fail(c, 404, "Source connection not found");
+        }
+        finalConnection = updated;
       }
 
       return c.json({
         success: true,
         data: await publicSourceConnection(
-          sourceConnection.toObject(),
+          finalConnection,
           workspaceId,
           caller,
         ),
@@ -606,10 +622,10 @@ sourceConnectionRoutes.openapi(
         return fail(c, 400, "Invalid source connection ID format");
       }
 
-      const existing = await SourceConnection.findOne(
-        { _id: id, workspaceId },
-        { createdBy: 1, managers: 1 },
-      ).lean();
+      const existing = await connectionsRepo.findSourceConnectionById(
+        id,
+        workspaceId,
+      );
       if (!existing) {
         return fail(c, 404, "Source connection not found");
       }
@@ -618,12 +634,12 @@ sourceConnectionRoutes.openapi(
         return fail(c, 403, changeRefusal(caller.role));
       }
 
-      const result = await SourceConnection.deleteOne({
-        _id: id,
+      const deleted = await connectionsRepo.deleteSourceConnection(
+        id,
         workspaceId,
-      });
+      );
 
-      if (result.deletedCount === 0) {
+      if (!deleted) {
         return fail(c, 404, "Source connection not found");
       }
       forgetConnectionBoxes(id);
@@ -663,10 +679,10 @@ sourceConnectionRoutes.openapi(
         return fail(c, 400, "Enabled field must be a boolean");
       }
 
-      const existing = await SourceConnection.findOne(
-        { _id: id, workspaceId },
-        { createdBy: 1, managers: 1, keyRequest: 1, type: 1 },
-      ).lean();
+      const existing = await connectionsRepo.findSourceConnectionById(
+        id,
+        workspaceId,
+      );
       if (!existing) {
         return fail(c, 404, "Source connection not found");
       }
@@ -690,17 +706,10 @@ sourceConnectionRoutes.openapi(
         );
       }
 
-      const sourceConnection = await SourceConnection.findOneAndUpdate(
-        {
-          _id: id,
-          workspaceId,
-        },
-        {
-          isActive: body.enabled,
-        },
-        {
-          returnDocument: "after",
-        },
+      const sourceConnection = await connectionsRepo.updateSourceConnection(
+        id,
+        workspaceId,
+        { isActive: body.enabled },
       );
 
       if (!sourceConnection) {
@@ -710,7 +719,7 @@ sourceConnectionRoutes.openapi(
       return c.json({
         success: true,
         data: await publicSourceConnection(
-          sourceConnection.toObject(),
+          sourceConnection,
           workspaceId,
           caller,
         ),

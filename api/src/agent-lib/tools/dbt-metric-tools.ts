@@ -23,7 +23,6 @@
  * dbt tool.
  */
 import { tool } from "ai";
-import { Types } from "mongoose";
 import {
   compileMetricSchema,
   listMetricsSchema,
@@ -32,7 +31,7 @@ import {
 } from "@mako/agent-tools";
 import type { QueryAccess } from "../../auth/api-key-scopes";
 import type { AgentToolExecutionContext } from "../../agents/types";
-import { DatabaseConnection } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { capList, truncateText } from "../../dbt/ontology/manifest-index";
 import {
   METRICFLOW_CONNECTION_TYPES,
@@ -435,12 +434,7 @@ export const createDbtMetricTools = (
       );
     }
     const findConnection = (id: string) =>
-      DatabaseConnection.findOne({
-        _id: new Types.ObjectId(id),
-        workspaceId: new Types.ObjectId(workspaceId),
-      })
-        .select("name type")
-        .lean();
+      connectionsRepo.findDatabaseConnectionSummary(id, workspaceId);
     const buildConnection = await findConnection(project.connectionId);
     if (!buildConnection) {
       throw new Error(

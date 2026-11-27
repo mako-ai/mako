@@ -7,6 +7,7 @@
  */
 import { registerAuthMigrationDomain } from "./auth.backfill";
 import { registerWorkspacesMigrationDomain } from "./workspaces.backfill";
+import { registerConnectionsMigrationDomain } from "./connections.backfill";
 
 let registered = false;
 
@@ -20,7 +21,12 @@ export function registerMigrationDomains(
   if (registered && !options.force) return;
   registerAuthMigrationDomain();
   registerWorkspacesMigrationDomain();
+  registerConnectionsMigrationDomain();
   registered = true;
 }
 
-export { registerAuthMigrationDomain, registerWorkspacesMigrationDomain };
+export {
+  registerAuthMigrationDomain,
+  registerWorkspacesMigrationDomain,
+  registerConnectionsMigrationDomain,
+};

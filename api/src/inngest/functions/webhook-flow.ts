@@ -1,12 +1,10 @@
 import { inngest } from "../client";
-import { inWorkspace } from "../../utils/workspace-scope";
 import {
   WebhookEvent,
   Flow,
-  SourceConnection,
-  DatabaseConnection,
   CdcEntityState,
 } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { connectorRegistry } from "../../connectors/registry";
 import { sourceConnectionManager } from "../../sync/database-data-source-manager";
 import type { ISourceConnection } from "../../database/models/source-connections";
@@ -623,16 +621,22 @@ export async function loadWebhookConnector(
   deps: {
     getSourceConnection: (
       id: string,
+      workspaceId?: string,
     ) => Promise<{ connection: unknown } | null>;
     getConnectorFor: (connection: ISourceConnection) => BaseConnector | null;
   } = {
-    getSourceConnection: id => sourceConnectionManager.getSourceConnection(id),
+    getSourceConnection: (id, workspaceId) =>
+      sourceConnectionManager.getSourceConnection(id, workspaceId),
     getConnectorFor: connection =>
       connectorRegistry.getConnectorFor(connection),
   },
 ): Promise<BaseConnector | null> {
+  const workspaceId = sourceConnection.workspaceId
+    ? String(sourceConnection.workspaceId)
+    : undefined;
   const decrypted = await deps.getSourceConnection(
     String(sourceConnection._id),
+    workspaceId,
   );
   if (!decrypted) return null;
   // A Mongoose document in the ingest; a plain row in tests.
@@ -746,12 +750,18 @@ export async function ingestPendingWebhookEvents(logger: {
       continue;
     }
 
-    const sourceConnection = await SourceConnection.findOne(
-      inWorkspace(flow.dataSourceId, flow.workspaceId),
-    );
-    const database = await DatabaseConnection.findOne(
-      inWorkspace(flow.destinationDatabaseId, flow.workspaceId),
-    );
+    const sourceConnection = flow.dataSourceId
+      ? await connectionsRepo.findSourceConnectionById(
+          String(flow.dataSourceId),
+          String(flow.workspaceId),
+        )
+      : null;
+    const database = flow.destinationDatabaseId
+      ? await connectionsRepo.findDatabaseConnectionSummary(
+          String(flow.destinationDatabaseId),
+          String(flow.workspaceId),
+        )
+      : null;
 
     if (!sourceConnection || !database) {
       await WebhookEvent.updateMany(
@@ -777,7 +787,9 @@ export async function ingestPendingWebhookEvents(logger: {
     // flow's events only; every other flow in the batch still ingests.
     let connector: BaseConnector | null;
     try {
-      connector = await loadWebhookConnector(sourceConnection);
+      connector = await loadWebhookConnector(
+        sourceConnection as unknown as ISourceConnection,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn("Could not load the connector for a webhook flow", {

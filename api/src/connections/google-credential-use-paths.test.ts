@@ -44,7 +44,7 @@ import { BigQueryClients } from "../databases/drivers/bigquery/client";
 import { BigQueryDestinationAdapter } from "../sync-cdc/adapters/bigquery";
 import { cancelBigQueryJobs } from "../dbt/bigquery-cancel.service";
 import { renderDbtProfile } from "../dbt/adapter-map";
-import { DatabaseConnection } from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import { CloudSQLPostgresDatabaseDriver } from "../databases/drivers/cloudsql-postgres/driver";
 
 // The boxed folder is its own package (no @makoai/connector-sdk here and
@@ -276,7 +276,7 @@ describe("use time: a stored external_account config fails closed", () => {
   });
 
   it("CDC BigQuery destination adapter (resolveBqClient)", async () => {
-    vi.spyOn(DatabaseConnection, "findOne").mockResolvedValue({
+    vi.spyOn(connectionsRepo, "findDatabaseConnectionById").mockResolvedValue({
       connection: { service_account_json: EXTERNAL_JSON, project_id: "p" },
     } as never);
     const adapter = new BigQueryDestinationAdapter({

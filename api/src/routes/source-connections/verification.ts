@@ -1,6 +1,6 @@
 /** Checking a connection's credentials: the stored test and the live probe. */
 import { createRoute, z } from "@hono/zod-openapi";
-import { SourceConnection } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
 import {
   PROBE_DEFAULT_LIMIT,
@@ -49,16 +49,19 @@ sourceConnectionVerificationRoutes.openapi(
       // one the middleware authorized. Testing a source connection by id alone would
       // let a member of one workspace exercise another's credential — and,
       // now that the outcome is recorded, write to another's index row.
-      const ownershipCheck = await SourceConnection.findOne(
-        { _id: id, workspaceId },
-        { _id: 1 },
-      ).lean();
+      const ownershipCheck = await connectionsRepo.findSourceConnectionById(
+        id,
+        workspaceId,
+      );
       if (!ownershipCheck) {
         return fail(c, 404, "Source connection not found in this workspace");
       }
 
       // Use manager to load decrypted configuration before testing
-      const ds = await sourceConnectionManager.getSourceConnection(id);
+      const ds = await sourceConnectionManager.getSourceConnection(
+        id,
+        workspaceId,
+      );
 
       if (!ds) {
         return fail(c, 404, "Source connection not found");

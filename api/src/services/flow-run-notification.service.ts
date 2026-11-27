@@ -1,8 +1,5 @@
 import { Types } from "mongoose";
-import { inWorkspace } from "../utils/workspace-scope";
 import {
-  SourceConnection,
-  DatabaseConnection,
   Flow,
   SavedConsole,
   NotificationRule,
@@ -16,6 +13,7 @@ import {
   type NotificationResourceType,
   type NotificationTrigger,
 } from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import { RunNotificationTemplate } from "../emails/RunNotificationEmail";
 import { renderEmail } from "../emails/render";
 import { loggers } from "../logging";
@@ -57,15 +55,18 @@ export async function resolveResourceDisplayName(params: {
     let sourceName: string;
     let destName: string;
 
+    const workspaceId = flow.workspaceId.toString();
     if (flow.sourceType === "database" && flow.databaseSource?.connectionId) {
-      const sourceDb = await DatabaseConnection.findOne(
-        inWorkspace(flow.databaseSource.connectionId, flow.workspaceId),
+      const sourceDb = await connectionsRepo.findDatabaseConnectionSummary(
+        flow.databaseSource.connectionId.toString(),
+        workspaceId,
       );
       sourceName =
         sourceDb?.name || flow.databaseSource.connectionId.toString();
     } else if (flow.dataSourceId) {
-      const sourceConnection = await SourceConnection.findOne(
-        inWorkspace(flow.dataSourceId, flow.workspaceId),
+      const sourceConnection = await connectionsRepo.findSourceConnectionById(
+        flow.dataSourceId.toString(),
+        workspaceId,
       );
       sourceName = sourceConnection?.name || flow.dataSourceId.toString();
     } else {
@@ -73,15 +74,17 @@ export async function resolveResourceDisplayName(params: {
     }
 
     if (flow.tableDestination?.connectionId) {
-      const destDb = await DatabaseConnection.findOne(
-        inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
+      const destDb = await connectionsRepo.findDatabaseConnectionSummary(
+        flow.tableDestination.connectionId.toString(),
+        workspaceId,
       );
       destName = flow.tableDestination.tableName
         ? `${destDb?.name || "DB"}.${flow.tableDestination.tableName}`
         : destDb?.name || flow.tableDestination.connectionId.toString();
     } else {
-      const database = await DatabaseConnection.findOne(
-        inWorkspace(flow.destinationDatabaseId, flow.workspaceId),
+      const database = await connectionsRepo.findDatabaseConnectionSummary(
+        flow.destinationDatabaseId.toString(),
+        workspaceId,
       );
       destName = database?.name || flow.destinationDatabaseId.toString();
     }

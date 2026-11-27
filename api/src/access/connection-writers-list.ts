@@ -5,9 +5,8 @@
  * writes anywhere, a stored `where` is ignored). Who wrote lately comes from
  * the shared write log.
  */
-import { Types } from "mongoose";
 import type { IConnectionWriter } from "../database/workspace-schema";
-import { ConnectionWriteEvent } from "./connection-write-event";
+import { connectionsRepo } from "../repositories/connections";
 import {
   ALL_WORKFLOWS,
   principalsOutsideWorkspace,
@@ -43,37 +42,20 @@ interface RecentWriter {
 export async function recentWriters(
   connectionId: string,
   covered: (principal: string, target: string) => boolean,
+  workspaceId?: string,
 ): Promise<RecentWriter[]> {
   const since = new Date(Date.now() - RECENT_WRITES_DAYS * 86_400_000);
-  const recent = await ConnectionWriteEvent.aggregate<{
-    _id: string;
-    count: number;
-    lastAt: Date;
-    targets: (string | null)[];
-  }>([
-    {
-      $match: {
-        connectionId: new Types.ObjectId(connectionId),
-        at: { $gte: since },
-      },
-    },
-    {
-      $group: {
-        _id: "$principal",
-        count: { $sum: 1 },
-        lastAt: { $max: "$at" },
-        targets: { $addToSet: "$target" },
-      },
-    },
-    { $sort: { count: -1 } },
-    { $limit: 50 },
-  ]);
+  const recent = await connectionsRepo.listRecentWriters(
+    connectionId,
+    since,
+    workspaceId,
+  );
   const merged = new Map<
     string,
     { count: number; lastAt: Date; targets: string[]; uncovered: string[] }
   >();
-  for (const r of recent.filter(r => LISTABLE_PRINCIPAL.test(r._id))) {
-    const principal = r._id;
+  for (const r of recent.filter(r => LISTABLE_PRINCIPAL.test(r.principal))) {
+    const principal = r.principal;
     const targets = r.targets.filter((t): t is string => !!t);
     const into = merged.get(principal) ?? {
       count: 0,

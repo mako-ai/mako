@@ -58,12 +58,11 @@ import {
   parseVersion,
   sortVersionsDescending,
 } from "../../connectors/workspace/registry/semver";
-import {
-  SourceConnection,
-  DatabaseConnection,
-  type IConnectionWriter,
-  type ISourceConnectionKeyRequest,
+import type {
+  IConnectionWriter,
+  ISourceConnectionKeyRequest,
 } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { loggers } from "../../logging";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
 import { isEncryptedValue } from "../../services/crypto.service";
@@ -227,7 +226,7 @@ export function sourceConnectionAccess(row: {
 }
 
 interface SourceRow {
-  _id: Types.ObjectId;
+  _id: Types.ObjectId | string;
   name?: string;
   type?: string;
   description?: string;
@@ -240,21 +239,17 @@ interface SourceRow {
 }
 
 /**
- * A source connection, lean: `config` stays as stored, so a secret field is
- * ciphertext and only {@link nonSecretConfig} reads it.
+ * A source connection, with `config` ciphertext intact so only
+ * {@link nonSecretConfig} reads it.
  */
 async function findSourceConnection(
   workspaceId: string,
   connectionId: string,
 ): Promise<SourceRow | null> {
-  return (await SourceConnection.findOne({
-    _id: new Types.ObjectId(connectionId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  })
-    .select(
-      "_id name type description isActive config liveReads liveReaders writers keyRequest",
-    )
-    .lean()) as SourceRow | null;
+  return await connectionsRepo.findSourceConnectionById(
+    connectionId,
+    workspaceId,
+  );
 }
 
 /**
@@ -389,15 +384,11 @@ function describeRegistryEntry(
 /** The catalog: every connector this workspace can configure a connection with. */
 async function listConnectorCatalog(workspaceId: string) {
   await connectorRegistry.ready();
-  const wsId = new Types.ObjectId(workspaceId);
 
   // Which connections exist per connector, identity only. This is the link
   // an agent is usually after: "is Stripe configured here, and under which
   // name?" — never the credential.
-  const rows = (await SourceConnection.find({ workspaceId: wsId })
-    .select("_id name type isActive")
-    .sort({ name: 1 })
-    .lean()) as SourceRow[];
+  const rows = await connectionsRepo.listSourceConnections(workspaceId);
   const connectionsByType = new Map<
     string,
     Array<{ id: string; name: string; active: boolean }>
@@ -708,16 +699,15 @@ export function createConnectorTools(workspaceId: string) {
             return await describeSourceConnection(workspaceId, source);
           }
 
-          // Not `.lean()`: the model decrypts `connection` through a getter,
-          // and the summary needs the plaintext host / project (never a
-          // password — `summarizeConnectionForListing` reads identity only).
-          const database = await DatabaseConnection.findOne({
-            _id: new Types.ObjectId(connectionId),
-            workspaceId: new Types.ObjectId(workspaceId),
-          }).select("_id name type connection allowAgentWrites writers");
+          // Repository decrypts `connection`; `summarizeConnectionForListing`
+          // reads identity only (host / project), never passwords.
+          const database = await connectionsRepo.findDatabaseConnectionById(
+            connectionId,
+            workspaceId,
+          );
           if (!database) return { error: CONNECTION_NOT_FOUND };
           const db = database as unknown as {
-            _id: Types.ObjectId;
+            _id: string;
             name: string;
             type: string;
             connection?: Record<string, unknown>;

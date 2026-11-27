@@ -15,15 +15,10 @@
  * "source → destination" derivation the scheduler logged, extracted here so
  * runtime, routes and the migration share one copy.
  */
-import { inWorkspace } from "../utils/workspace-scope";
 import { Types } from "mongoose";
 
-import {
-  SourceConnection,
-  DatabaseConnection,
-  Flow,
-  type IFlow,
-} from "../database/workspace-schema";
+import { Flow, type IFlow } from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import { reserveSlug, slugifyName } from "../utils/slugify";
 
 /** The `source → destination` label flows have always shown. */
@@ -42,15 +37,18 @@ export async function deriveFlowDisplayName(
     let sourceName: string;
     let destName: string;
 
+    const workspaceId = flow.workspaceId.toString();
     if (flow.sourceType === "database" && flow.databaseSource?.connectionId) {
-      const sourceDb = await DatabaseConnection.findOne(
-        inWorkspace(flow.databaseSource.connectionId, flow.workspaceId),
+      const sourceDb = await connectionsRepo.findDatabaseConnectionSummary(
+        flow.databaseSource.connectionId.toString(),
+        workspaceId,
       );
       sourceName =
         sourceDb?.name || flow.databaseSource.connectionId.toString();
     } else if (flow.dataSourceId) {
-      const sourceConnection = await SourceConnection.findOne(
-        inWorkspace(flow.dataSourceId, flow.workspaceId),
+      const sourceConnection = await connectionsRepo.findSourceConnectionById(
+        flow.dataSourceId.toString(),
+        workspaceId,
       );
       sourceName = sourceConnection?.name || flow.dataSourceId.toString();
     } else {
@@ -58,15 +56,17 @@ export async function deriveFlowDisplayName(
     }
 
     if (flow.tableDestination?.connectionId) {
-      const destDb = await DatabaseConnection.findOne(
-        inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
+      const destDb = await connectionsRepo.findDatabaseConnectionSummary(
+        flow.tableDestination.connectionId.toString(),
+        workspaceId,
       );
       destName = flow.tableDestination.tableName
         ? `${destDb?.name || "DB"}.${flow.tableDestination.tableName}`
         : destDb?.name || flow.tableDestination.connectionId.toString();
     } else {
-      const database = await DatabaseConnection.findOne(
-        inWorkspace(flow.destinationDatabaseId, flow.workspaceId),
+      const database = await connectionsRepo.findDatabaseConnectionSummary(
+        flow.destinationDatabaseId.toString(),
+        workspaceId,
       );
       destName = database?.name || flow.destinationDatabaseId.toString();
     }

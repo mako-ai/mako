@@ -13,10 +13,8 @@ import {
 import { tool } from "ai";
 import { z } from "zod";
 import { Types } from "mongoose";
-import {
-  DatabaseConnection,
-  type IDatabaseConnection,
-} from "../../database/workspace-schema";
+import type { IDatabaseConnection } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { queryExecutionService } from "../../services/query-execution.service";
 import { sqlReadOnlyAccessError } from "../../services/read-only-query.service";
@@ -113,13 +111,13 @@ export const appendLimitIfMissing = (sql: string, dialect?: string): string => {
 
 // Fetch and validate database connection
 const fetchSqlDatabase = async (connectionId: string, workspaceId: string) => {
-  const connectionObjectId = ensureValidObjectId(connectionId, "connectionId");
-  const workspaceObjectId = ensureValidObjectId(workspaceId, "workspaceId");
+  ensureValidObjectId(connectionId, "connectionId");
+  ensureValidObjectId(workspaceId, "workspaceId");
 
-  const database = await DatabaseConnection.findOne({
-    _id: connectionObjectId,
-    workspaceId: workspaceObjectId,
-  });
+  const database = await connectionsRepo.findDatabaseConnectionById(
+    connectionId,
+    workspaceId,
+  );
 
   if (!database) {
     throw new Error("Database connection not found or access denied");
@@ -131,7 +129,7 @@ const fetchSqlDatabase = async (connectionId: string, workspaceId: string) => {
     );
   }
 
-  return database;
+  return database as unknown as IDatabaseConnection;
 };
 
 // Zod schemas
@@ -185,14 +183,11 @@ const executeQuerySchema = z.object({
 // sql_list_connections
 // ============================================================================
 async function listSqlConnectionsImpl(workspaceId: string) {
-  const workspaceObjectId = ensureValidObjectId(workspaceId, "workspaceId");
+  ensureValidObjectId(workspaceId, "workspaceId");
 
-  const databases = await DatabaseConnection.find({
-    workspaceId: workspaceObjectId,
-    type: {
-      $in: Array.from(ALL_SQL_TYPES) as IDatabaseConnection["type"][],
-    },
-  }).sort({ name: 1 });
+  const databases = (
+    await connectionsRepo.listDatabaseConnections(workspaceId)
+  ).filter(db => ALL_SQL_TYPES.has(db.type));
 
   return databases.map(db => {
     const connection: Record<string, unknown> =
@@ -1162,7 +1157,7 @@ export function trackSqlExecution(input: {
   queryExecutionService.track({
     userId: input.userId,
     workspaceId: new Types.ObjectId(input.workspaceId),
-    connectionId: target.database._id,
+    connectionId: new Types.ObjectId(target.database._id.toString()),
     databaseName: target.databaseName,
     source: input.source,
     databaseType: target.database.type,
@@ -1297,7 +1292,7 @@ export async function executeQueryImpl(
         queryExecutionService.track({
           userId,
           workspaceId: new Types.ObjectId(workspaceId),
-          connectionId: database._id,
+          connectionId: new Types.ObjectId(database._id.toString()),
           databaseName,
           source: "agent",
           databaseType: database.type,

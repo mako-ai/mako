@@ -6,16 +6,16 @@
  * Refusals are {@link FlowRequestError}s; the routes answer them as-is.
  */
 import { bulkBufferName } from "../sync/sync-orchestrator";
-import { inWorkspace } from "../utils/workspace-scope";
 import { Types } from "mongoose";
 import { asSystem } from "../access/connection-writes";
 import {
   CdcChangeEvent,
   CdcEntityState,
-  DatabaseConnection,
   Flow,
+  type IDatabaseConnection,
   type IFlow,
 } from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import { databaseRegistry } from "../databases/registry";
 import { cdcBackfillService } from "../sync-cdc/backfill";
 import { openFlowDataDiff } from "../sync-cdc/data-diff";
@@ -69,10 +69,12 @@ export async function resetFlowEntity(params: {
   });
 
   if (flow.tableDestination?.connectionId && flow.tableDestination?.schema) {
-    const destination = await DatabaseConnection.findOne(
-      inWorkspace(flow.tableDestination.connectionId, workspaceId),
+    const destination = await connectionsRepo.findDatabaseConnectionById(
+      flow.tableDestination.connectionId.toString(),
+      workspaceId,
     );
     if (destination) {
+      const destinationConn = destination as unknown as IDatabaseConnection;
       const driver = databaseRegistry.getDriver(destination.type);
       if (driver?.dropTable) {
         const schema = flow.tableDestination.schema;
@@ -93,14 +95,14 @@ export async function resetFlowEntity(params: {
         // The flow's own tables: dropped as Mako, like its syncs.
         const dropTable = driver.dropTable.bind(driver);
         await asSystem(async () => {
-          await dropTable(destination, liveTable, { schema });
-          await dropTable(destination, oldStageTable, {
+          await dropTable(destinationConn, liveTable, { schema });
+          await dropTable(destinationConn, oldStageTable, {
             schema: stageSchema,
           });
-          await dropTable(destination, `${liveTable}__stage_changes`, {
+          await dropTable(destinationConn, `${liveTable}__stage_changes`, {
             schema: stageSchema,
           });
-          await dropTable(destination, bulkStagingTable, { schema });
+          await dropTable(destinationConn, bulkStagingTable, { schema });
         });
       }
     }
@@ -165,13 +167,13 @@ export async function resetFlowColumn(params: {
 
   if (startBackfill) await assertCanStartBackfill(workspaceId, flowId);
 
-  const destinationRaw = await DatabaseConnection.findOne(
-    inWorkspace(flow.tableDestination.connectionId, workspaceId),
+  const destinationDoc = await connectionsRepo.findDatabaseConnectionById(
+    flow.tableDestination.connectionId.toString(),
+    workspaceId,
   );
-  if (!destinationRaw) {
+  if (!destinationDoc) {
     throw new FlowRequestError(404, "Destination connection not found");
   }
-  const destinationDoc = destinationRaw.toObject();
 
   const destinationType = String(destinationDoc.type || "").toLowerCase();
   const projectId = (
@@ -207,7 +209,10 @@ export async function resetFlowColumn(params: {
 
   // The flow's own table: reset as Mako, like its syncs.
   const resetResult = await asSystem(() =>
-    driver.executeQuery(destinationDoc, resetQuery),
+    driver.executeQuery(
+      destinationDoc as unknown as IDatabaseConnection,
+      resetQuery,
+    ),
   );
   if (!resetResult.success) {
     throw new FlowRequestError(

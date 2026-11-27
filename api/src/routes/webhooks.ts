@@ -1,12 +1,12 @@
 import { createRoute, z } from "@hono/zod-openapi";
-import { inWorkspace } from "../utils/workspace-scope";
 import type { Context } from "hono";
 import { Types } from "mongoose";
 import {
   Flow,
   WebhookEvent,
-  SourceConnection,
+  type ISourceConnection,
 } from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import { randomUUID } from "crypto";
 import { connectorRegistry } from "../connectors/registry";
 import { isWebhookFlow } from "../services/flow-triggers.service";
@@ -97,14 +97,19 @@ router.openapi(
         return fail(c, 403, "Webhook endpoint disabled");
       }
 
-      const sourceConnection = await SourceConnection.findOne(
-        inWorkspace(flow.dataSourceId, flow.workspaceId),
-      );
+      const sourceConnection = flow.dataSourceId
+        ? await connectionsRepo.findSourceConnectionById(
+            flow.dataSourceId.toString(),
+            flow.workspaceId.toString(),
+          )
+        : null;
       if (!sourceConnection) {
         return fail(c, 404, "Data source not found");
       }
 
-      const connector = connectorRegistry.getConnectorFor(sourceConnection);
+      const connector = connectorRegistry.getConnectorFor(
+        sourceConnection as unknown as ISourceConnection,
+      );
       if (!connector) {
         return fail(
           c,
@@ -199,7 +204,12 @@ router.openapi(
       const webhookEvent = new WebhookEvent({
         flowId,
         workspaceId,
-        ...(boxLane ? { lane: "box", dataSourceId: sourceConnection._id } : {}),
+        ...(boxLane
+          ? {
+              lane: "box",
+              dataSourceId: new Types.ObjectId(sourceConnection.id),
+            }
+          : {}),
         // Close (and some other vendors) nest the unique event id at
         // `event.event.id`; the top-level `event.id` is the OBJECT id, which is
         // stable across updates. Falling back to it would defeat the

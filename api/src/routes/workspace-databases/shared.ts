@@ -6,10 +6,8 @@
 import { checkConnectionWrite } from "../../access/connection-writes";
 import type { Db } from "mongodb";
 import { AuthenticatedContext } from "../../middleware/workspace.middleware";
-import {
-  DatabaseConnection,
-  IDatabaseConnection,
-} from "../../database/workspace-schema";
+import type { IDatabaseConnection } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import {
   databaseConnectionService,
   type QueryExecuteOptions,
@@ -57,10 +55,10 @@ export async function getWorkspaceDatabase(
     };
   }
 
-  const database = await DatabaseConnection.findOne({
-    _id: new Types.ObjectId(databaseId),
-    workspaceId,
-  });
+  const database = await connectionsRepo.findDatabaseConnectionById(
+    databaseId,
+    String(workspaceId),
+  );
 
   if (!database) {
     return {
@@ -79,7 +77,7 @@ export async function getWorkspaceDatabase(
     };
   }
 
-  return { database };
+  return { database: database as unknown as IDatabaseConnection };
 }
 
 /**

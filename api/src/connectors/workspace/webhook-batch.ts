@@ -28,12 +28,8 @@
  */
 import { randomBytes } from "node:crypto";
 import { Types } from "mongoose";
-import {
-  DatabaseConnection,
-  Flow,
-  SourceConnection,
-  WebhookEvent,
-} from "../../database/workspace-schema";
+import { Flow, WebhookEvent } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { loggers } from "../../logging";
 import { boxLowMemoryRefusal } from "../../apps/sandbox/box-memory";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
@@ -581,16 +577,20 @@ export async function processBoxWebhookBatch(input: {
     );
     return emptyResult("stop", "flow webhook paused");
   }
-  const [connection, database]: any[] = await Promise.all([
+  const [connection, database] = await Promise.all([
     // Scoped to the flow's workspace (flow-connection-scope.ts).
-    SourceConnection.findOne({
-      _id: flow.dataSourceId,
-      workspaceId: flow.workspaceId,
-    }).lean(),
-    DatabaseConnection.findOne({
-      _id: flow.destinationDatabaseId,
-      workspaceId: flow.workspaceId,
-    }).lean(),
+    flow.dataSourceId
+      ? connectionsRepo.findSourceConnectionById(
+          String(flow.dataSourceId),
+          String(flow.workspaceId),
+        )
+      : null,
+    flow.destinationDatabaseId
+      ? connectionsRepo.findDatabaseConnectionSummary(
+          String(flow.destinationDatabaseId),
+          String(flow.workspaceId),
+        )
+      : null,
   ]);
   if (!connection || !database) {
     await endPending(
@@ -618,9 +618,11 @@ export async function processBoxWebhookBatch(input: {
     return emptyResult("stop", "not a workspace connector");
   }
 
+  const connectionObjectId = new Types.ObjectId(connection.id);
+
   // Events verified for another connection never reach this one's box.
   await endPending(
-    { flowId, dataSourceId: { $ne: connection._id } },
+    { flowId, dataSourceId: { $ne: connectionObjectId } },
     "completed",
     "dropped",
     BOX_CODES.connectionChanged,
@@ -653,7 +655,7 @@ export async function processBoxWebhookBatch(input: {
   const candidates = (await WebhookEvent.find({
     flowId,
     workspaceId: flow.workspaceId,
-    dataSourceId: connection._id,
+    dataSourceId: connectionObjectId,
     lane: "box",
     status: "pending",
   })
