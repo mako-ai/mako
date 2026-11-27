@@ -3,7 +3,12 @@ import { drizzle } from "drizzle-orm/pglite";
 import { migrate as drizzlePgliteMigrate } from "drizzle-orm/pglite/migrator";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { MakoPgDb } from "./client";
-import { generateUuidv7, objectIdToUuid } from "./id-codec";
+import {
+  generateUuidv7,
+  isUuidv7,
+  objectIdToUuid,
+  uuidv7Timestamp,
+} from "./id-codec";
 import { resolveMigrationsFolder } from "./migrate";
 import {
   POST_BACKFILL_STEPS,
@@ -360,5 +365,63 @@ describe("Full Postgres migration schema (0000–0008 + 4 post-backfill FKs)", (
       [usageValidId],
     );
     expect(postDeleteLlmUsage.rows).toEqual([{ id: usageValidId }]);
+  });
+
+  it("sets DEFAULT uuidv7() on all 51 UUID-PK tables and generates valid RFC 9562 UUIDv7 rows", async () => {
+    const defaultsRes = await pg.query<{
+      table_name: string;
+      column_default: string | null;
+    }>(
+      `SELECT table_name, column_default
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND column_name = 'id'
+          AND data_type = 'uuid'
+        ORDER BY table_name`,
+    );
+    expect(defaultsRes.rows).toHaveLength(51);
+    for (const row of defaultsRes.rows) {
+      expect(row.column_default, `${row.table_name}.id default`).toMatch(
+        /uuidv7\(\)/i,
+      );
+    }
+
+    const beforeMs = Date.now() - 5000;
+    const userRow = await pg.query<{ id: string }>(
+      `INSERT INTO users (email) VALUES ('uuidv7-default@example.com') RETURNING id::text`,
+    );
+    const wsRow = await pg.query<{ id: string }>(
+      `INSERT INTO workspaces (name, slug, created_by)
+       VALUES ('UUIDv7 Default WS', 'uuidv7-default-ws', $1)
+       RETURNING id::text`,
+      [userRow.rows[0].id],
+    );
+    const memberRow = await pg.query<{ id: string }>(
+      `INSERT INTO workspace_members (workspace_id, user_id, role)
+       VALUES ($1, $2, 'owner')
+       RETURNING id::text`,
+      [wsRow.rows[0].id, userRow.rows[0].id],
+    );
+    const quarantineRow = await pg.query<{ id: string }>(
+      `INSERT INTO migration_quarantine (domain, collection_name, mongo_id, reason)
+       VALUES ('auth', 'users', 'legacy-1', 'test')
+       RETURNING id::text`,
+    );
+    const afterMs = Date.now() + 5000;
+
+    for (const generatedId of [
+      userRow.rows[0].id,
+      wsRow.rows[0].id,
+      memberRow.rows[0].id,
+      quarantineRow.rows[0].id,
+    ]) {
+      expect(isUuidv7(generatedId)).toBe(true);
+      const ts = uuidv7Timestamp(generatedId);
+      expect(ts).not.toBeNull();
+      if (ts) {
+        expect(ts.getTime()).toBeGreaterThanOrEqual(beforeMs);
+        expect(ts.getTime()).toBeLessThanOrEqual(afterMs);
+      }
+    }
   });
 });

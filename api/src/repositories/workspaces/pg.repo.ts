@@ -388,9 +388,7 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
     const wsUuid = input.workspaceId
       ? toPgUuid(input.workspaceId)
       : newDualId().uuid;
-    const memberUuid = input.memberId
-      ? toPgUuid(input.memberId)
-      : newDualId().uuid;
+    const memberUuid = input.memberId ? toPgUuid(input.memberId) : undefined;
     const slug = input.slug.trim().toLowerCase();
     const now = new Date();
 
@@ -421,7 +419,7 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
         const [memberRow] = await tx
           .insert(workspaceMembers)
           .values({
-            id: memberUuid,
+            ...(memberUuid ? { id: memberUuid } : {}),
             workspaceId: wsUuid,
             userId: pgUserUuid,
             role: "owner",
@@ -1002,7 +1000,6 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
 
   async createApiKey(input: CreateApiKeyInput): Promise<WorkspaceApiKeyRecord> {
     const db = this.getDb();
-    const id = input.id ? toPgUuid(input.id) : newDualId().uuid;
     const createdByUuid = await this.resolveApiKeyCreatorWriteUserUuid(
       input.createdBy,
       db,
@@ -1010,7 +1007,7 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
     const [row] = await db
       .insert(workspaceApiKeys)
       .values({
-        id,
+        ...(input.id ? { id: toPgUuid(input.id) } : {}),
         workspaceId: toPgUuid(input.workspaceId),
         name: input.name.trim(),
         keyHash: input.keyHash,
@@ -1031,7 +1028,7 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
   ): Promise<{ apiKey: WorkspaceApiKeyRecord; replacedIds: string[] }> {
     const db = this.getDb();
     const wsUuid = toPgUuid(input.workspaceId);
-    const id = input.id ? toPgUuid(input.id) : newDualId().uuid;
+    const idField = input.id ? { id: toPgUuid(input.id) } : {};
     const trimmedName = input.name.trim();
     return db.transaction(async tx => {
       const removed = await tx
@@ -1050,7 +1047,7 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
       const [row] = await tx
         .insert(workspaceApiKeys)
         .values({
-          id,
+          ...idField,
           workspaceId: wsUuid,
           name: trimmedName,
           keyHash: input.keyHash,
@@ -1446,11 +1443,10 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
       db,
     );
     const now = input.joinedAt ?? new Date();
-    const id = input.id ? toPgUuid(input.id) : newDualId().uuid;
     const [row] = await db
       .insert(workspaceMembers)
       .values({
-        id,
+        ...(input.id ? { id: toPgUuid(input.id) } : {}),
         workspaceId: toPgUuid(input.workspaceId),
         userId: pgUserUuid,
         role: input.role,
@@ -1480,11 +1476,10 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
     );
     const wsUuid = toPgUuid(input.workspaceId);
     const now = input.joinedAt ?? new Date();
-    const id = input.id ? toPgUuid(input.id) : newDualId().uuid;
     const insertedRows = await db
       .insert(workspaceMembers)
       .values({
-        id,
+        ...(input.id ? { id: toPgUuid(input.id) } : {}),
         workspaceId: wsUuid,
         userId: pgUserUuid,
         role: input.role,
@@ -1606,12 +1601,10 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
   async createInvite(input: CreateInviteInput): Promise<WorkspaceInviteRecord> {
     const db = this.getDb();
     const now = new Date();
-    const id = input.id ? toPgUuid(input.id) : newDualId(now.getTime()).uuid;
-    // Match Mongo ObjectId second-precision timestamp so Stage 4 reverse-shadow
-    // compare and offline parity verification agree to the exact millisecond.
-    const createdAt =
-      objectIdUuidTimestamp(id) ??
-      new Date(Math.floor(now.getTime() / 1000) * 1000);
+    const explicitId = input.id ? toPgUuid(input.id) : undefined;
+    const createdAt = explicitId
+      ? (objectIdUuidTimestamp(explicitId) ?? now)
+      : now;
     const inviterUuid = await this.resolveNullableWriteUserUuid(
       input.invitedBy,
       db,
@@ -1619,7 +1612,7 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
     const [row] = await db
       .insert(workspaceInvites)
       .values({
-        id,
+        ...(explicitId ? { id: explicitId } : {}),
         workspaceId: toPgUuid(input.workspaceId),
         email: normalizeEmail(input.email),
         token: input.token,
@@ -1830,7 +1823,6 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
         const [insertedMember] = await tx
           .insert(workspaceMembers)
           .values({
-            id: newDualId(now.getTime()).uuid,
             workspaceId: claimed.workspaceId,
             userId: pgUserUuid,
             role: claimed.role,
@@ -1906,7 +1898,6 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
       const res = await db
         .insert(workspaceUserHandles)
         .values({
-          id: newDualId(now.getTime()).uuid,
           workspaceId: wsUuid,
           userId: userUuid,
           handle: r.handle,
@@ -1942,11 +1933,10 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
   async createMcpClient(
     input: CreateMcpClientInput,
   ): Promise<McpOAuthClientRecord> {
-    const id = input.id ? toPgUuid(input.id) : newDualId().uuid;
     const [row] = await this.getDb()
       .insert(mcpOAuthClients)
       .values({
-        id,
+        ...(input.id ? { id: toPgUuid(input.id) } : {}),
         clientId: input.clientId,
         clientName: input.clientName ?? null,
         redirectUris: input.redirectUris,
@@ -1959,11 +1949,10 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
   async ensureMcpClient(
     input: CreateMcpClientInput,
   ): Promise<McpOAuthClientRecord> {
-    const id = input.id ? toPgUuid(input.id) : newDualId().uuid;
     const inserted = await this.getDb()
       .insert(mcpOAuthClients)
       .values({
-        id,
+        ...(input.id ? { id: toPgUuid(input.id) } : {}),
         clientId: input.clientId,
         clientName: input.clientName ?? null,
         redirectUris: input.redirectUris,
@@ -1991,11 +1980,10 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
       input.userId,
       db,
     );
-    const id = input.id ? toPgUuid(input.id) : newDualId().uuid;
     const [row] = await db
       .insert(mcpOAuthCodes)
       .values({
-        id,
+        ...(input.id ? { id: toPgUuid(input.id) } : {}),
         codeHash: input.codeHash,
         clientId: input.clientId,
         userId: pgUserUuid,
@@ -2039,11 +2027,10 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
       db,
     );
     const now = input.createdAt ?? new Date();
-    const id = input.id ? toPgUuid(input.id) : newDualId(now.getTime()).uuid;
     const [row] = await db
       .insert(mcpOAuthTokens)
       .values({
-        id,
+        ...(input.id ? { id: toPgUuid(input.id) } : {}),
         accessTokenHash: input.accessTokenHash,
         refreshTokenHash: input.refreshTokenHash,
         clientId: input.clientId,
@@ -2323,12 +2310,11 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
       db,
     );
     const now = new Date();
-    const id = input.id ? toPgUuid(input.id) : newDualId(now.getTime()).uuid;
     const wsUuid = toPgUuid(input.workspaceId);
     const [row] = await db
       .insert(acpPlanGrants)
       .values({
-        id,
+        ...(input.id ? { id: toPgUuid(input.id) } : {}),
         workspaceId: wsUuid,
         userId: pgUserUuid,
         agentSessionId: input.agentSessionId,
@@ -2471,11 +2457,10 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
       db,
     );
     const now = new Date();
-    const id = input.id ? toPgUuid(input.id) : newDualId(now.getTime()).uuid;
     const [row] = await db
       .insert(githubInstallations)
       .values({
-        id,
+        ...(input.id ? { id: toPgUuid(input.id) } : {}),
         workspaceId: toPgUuid(input.workspaceId),
         installationId: input.installationId,
         accountLogin: input.accountLogin.trim(),

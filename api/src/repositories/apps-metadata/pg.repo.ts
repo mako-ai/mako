@@ -1303,7 +1303,7 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
     const now = new Date();
     const preparedRows: Array<typeof appIndex.$inferInsert> = [];
     for (const row of entries) {
-      const idUuid = row.id ? entityIdToPgUuid(row.id) : newDualId().uuid;
+      const idUuid = row.id ? entityIdToPgUuid(row.id) : undefined;
       const appUuid = entityIdToPgUuid(row.appId);
       const trimmedOwner = row.ownerId?.trim();
       let ownerUuid: string | null = null;
@@ -1320,7 +1320,7 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
       }
       const dupUuid = optionalEntityIdToPgUuid(row.duplicateOf);
       preparedRows.push({
-        id: idUuid,
+        ...(idUuid ? { id: idUuid } : {}),
         workspaceId: wsUuid,
         appId: appUuid,
         path: row.path,
@@ -1453,13 +1453,12 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
     },
     db: MakoPgDb = this.getDb(),
   ): Promise<void> {
-    const idUuid = input.id ? entityIdToPgUuid(input.id) : newDualId().uuid;
     const wsUuid = entityIdToPgUuid(workspaceId);
     const now = input.updatedAt ?? new Date();
     await db
       .insert(appIndexHeads)
       .values({
-        id: idUuid,
+        ...(input.id ? { id: entityIdToPgUuid(input.id) } : {}),
         workspaceId: wsUuid,
         sha: input.sha,
         schemaVersion: input.schemaVersion ?? null,
@@ -1556,12 +1555,11 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
     const wsUuid = entityIdToPgUuid(workspaceId);
     const now = new Date();
     for (const r of fullUpserts) {
-      const idUuid = r.id ? entityIdToPgUuid(r.id) : newDualId().uuid;
       const appUuid = entityIdToPgUuid(r.appId);
       await db
         .insert(appEmbeddings)
         .values({
-          id: idUuid,
+          ...(r.id ? { id: entityIdToPgUuid(r.id) } : {}),
           workspaceId: wsUuid,
           appId: appUuid,
           path: r.path,
@@ -1698,7 +1696,6 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
     id?: string,
     db: MakoPgDb = this.getDb(),
   ): Promise<void> {
-    const idUuid = id ? entityIdToPgUuid(id) : newDualId().uuid;
     const wsUuid = entityIdToPgUuid(workspaceId);
     const appUuid = entityIdToPgUuid(appId);
     const restoredByUuid = await this.resolveNullableUserUuid(restoredBy, db);
@@ -1706,7 +1703,7 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
     await db
       .insert(appLifecycle)
       .values({
-        id: idUuid,
+        ...(id ? { id: entityIdToPgUuid(id) } : {}),
         workspaceId: wsUuid,
         appId: appUuid,
         restoredAt,
@@ -1790,12 +1787,11 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
       }
     }
     if (patch.set && Object.keys(patch.set).length > 0) {
-      const idUuid = id ? entityIdToPgUuid(id) : newDualId().uuid;
       const now = new Date();
       await db
         .insert(appLifecycle)
         .values({
-          id: idUuid,
+          ...(id ? { id: entityIdToPgUuid(id) } : {}),
           workspaceId: wsUuid,
           appId: appUuid,
           ...set,
@@ -1878,12 +1874,11 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
     id?: string,
     db: MakoPgDb = this.getDb(),
   ): Promise<void> {
-    const idUuid = id ? entityIdToPgUuid(id) : newDualId().uuid;
     const now = new Date();
     await db
       .insert(appDeployCommitStatuses)
       .values({
-        id: idUuid,
+        ...(id ? { id: entityIdToPgUuid(id) } : {}),
         workspaceId: entityIdToPgUuid(workspaceId),
         appId: entityIdToPgUuid(appId),
         sha,
@@ -1931,14 +1926,13 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
     db: MakoPgDb = this.getDb(),
   ): Promise<AppWorktreeRecord> {
     const wsUuid = entityIdToPgUuid(workspaceId);
-    const idUuid = id ? entityIdToPgUuid(id) : newDualId().uuid;
     const resolved = await this.resolveWorktreeActor(actorId, db);
     const now = new Date();
 
     const rows = await db
       .insert(appWorktrees)
       .values({
-        id: idUuid,
+        ...(id ? { id: entityIdToPgUuid(id) } : {}),
         workspaceId: wsUuid,
         actorId: resolved.actorId,
         userId: resolved.userId,
@@ -2204,7 +2198,7 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
     id?: string,
     db: MakoPgDb = this.getDb(),
   ): Promise<void> {
-    const idUuid = id ? entityIdToPgUuid(id) : newDualId().uuid;
+    const idUuid = id ? entityIdToPgUuid(id) : null;
     const projUuid = entityIdToPgUuid(projectId);
     const runJson = JSON.stringify(serializeBindingRun(run));
     const isReady = run.status === "ready";
@@ -2219,7 +2213,7 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
         "created_at", "updated_at"
       )
       VALUES (
-        ${idUuid}::uuid, ${projUuid}::uuid, ${name},
+        COALESCE(${idUuid}::uuid, uuidv7()), ${projUuid}::uuid, ${name},
         ${lastMatIso}::timestamptz, ${lastRowCount}::bigint,
         jsonb_build_array(${runJson}::jsonb),
         ${nowIso}::timestamptz, ${nowIso}::timestamptz
@@ -2253,7 +2247,7 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
     id?: string,
     db: MakoPgDb = this.getDb(),
   ): Promise<ClaimPublicBindingRefreshResult> {
-    const idUuid = id ? entityIdToPgUuid(id) : newDualId().uuid;
+    const idUuid = id ? entityIdToPgUuid(id) : null;
     const projUuid = entityIdToPgUuid(projectId);
     const nowIso = now.toISOString();
     const cutoffIso = new Date(now.getTime() - cooldownMs).toISOString();
@@ -2263,7 +2257,7 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
         "id", "project_id", "name", "public_refresh_at", "created_at", "updated_at"
       )
       VALUES (
-        ${idUuid}::uuid, ${projUuid}::uuid, ${name},
+        COALESCE(${idUuid}::uuid, uuidv7()), ${projUuid}::uuid, ${name},
         ${nowIso}::timestamptz, ${nowIso}::timestamptz, ${nowIso}::timestamptz
       )
       ON CONFLICT ("project_id", "name") DO UPDATE SET
@@ -2345,12 +2339,11 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
     _workspaceId?: string,
     db: MakoPgDb = this.getDb(),
   ): Promise<AppBindingDraftRecord> {
-    const idUuid = input.id ? entityIdToPgUuid(input.id) : newDualId().uuid;
     const now = new Date();
     const rows = await db
       .insert(appBindingDrafts)
       .values({
-        id: idUuid,
+        ...(input.id ? { id: entityIdToPgUuid(input.id) } : {}),
         projectId: entityIdToPgUuid(input.projectId),
         hash: input.hash,
         kind: "build",
@@ -2428,7 +2421,7 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
       .returning({ id: appBindingDrafts.id });
     if (updated.length > 0) return;
     await db.insert(appBindingDrafts).values({
-      id: input.id ? entityIdToPgUuid(input.id) : newDualId().uuid,
+      ...(input.id ? { id: entityIdToPgUuid(input.id) } : {}),
       projectId: projUuid,
       hash: input.hash,
       kind: "failure",

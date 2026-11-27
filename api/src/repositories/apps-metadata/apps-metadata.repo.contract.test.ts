@@ -27,8 +27,8 @@ import {
 } from "../../database/pg/client";
 import {
   generateUuidv7,
+  isUuidv7,
   newDualId,
-  objectIdToUuid,
 } from "../../database/pg/id-codec";
 import { runPgliteMigrations } from "../../database/pg/migrate";
 import * as pgSchema from "../../database/pg/schema";
@@ -854,11 +854,12 @@ describe("Phase 2B AppsMetadataRepository contract & migration lifecycle", () =>
   it("refreshes updated_at on ensureWorktreeRow conflict so warm-boot sees active sandboxes (PR #1557 #4717231215)", async () => {
     const pgRepo = new PgAppsMetadataRepository({ getDb: () => db });
     const initial = await pgRepo.ensureWorktreeRow(wsId, user1Uuid, "main");
+    expect(isUuidv7(initial.id)).toBe(true);
     const staleAt = new Date(Date.now() - 48 * 60 * 60 * 1000);
     await db
       .update(pgSchema.appWorktrees)
       .set({ updatedAt: staleAt })
-      .where(eq(pgSchema.appWorktrees.id, objectIdToUuid(initial.id)));
+      .where(eq(pgSchema.appWorktrees.id, initial.id));
 
     const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
     expect(await pgRepo.listHotWorktreeWorkspacesSince(cutoff)).toEqual([]);

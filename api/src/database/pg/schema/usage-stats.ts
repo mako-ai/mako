@@ -143,7 +143,9 @@ export interface LlmUsageStepJson {
 export const appUsageDaily = pgTable(
   "app_usage_daily",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -194,7 +196,9 @@ export const appUsageDaily = pgTable(
 export const appUsageEvents = pgTable(
   "app_usage_events",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -254,7 +258,9 @@ export const appUsageEvents = pgTable(
 export const appFeedSnapshots = pgTable(
   "app_feed_snapshots",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -285,7 +291,9 @@ export const appFeedSnapshots = pgTable(
 export const skillUsageDaily = pgTable(
   "skill_usage_daily",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -324,7 +332,9 @@ export const skillUsageDaily = pgTable(
 export const llmUsage = pgTable(
   "llm_usage",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     /** Soft UUID ref (NO FK): permanent billing ledger survives workspace deletion, matching Mongo. */
     workspaceId: uuid("workspace_id").notNull(),
     /** Nullable UUIDv7 FK (`ON DELETE SET NULL`): billing ledger survives user delete & system calls. */
@@ -393,7 +403,9 @@ export const llmUsage = pgTable(
 export const queryExecutions = pgTable(
   "query_executions",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     executedAt: timestamp("executed_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -456,7 +468,9 @@ export const queryExecutions = pgTable(
 export const connectionVerifications = pgTable(
   "connection_verifications",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     verifiedAt: timestamp("verified_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

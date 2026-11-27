@@ -185,7 +185,7 @@ export class PgUsageStatsRepository implements UsageStatsRepository {
     db: MakoPgDb = this.getDb(),
     options: { overwrite?: boolean } = {},
   ): Promise<AppUsageEventRecord> {
-    const idUuid = input.id ? entityIdToPgUuid(input.id) : newDualId().uuid;
+    const idUuid = input.id ? entityIdToPgUuid(input.id) : undefined;
     const wsUuid = entityIdToPgUuid(input.workspaceId);
     const appUuid = entityIdToPgUuid(input.appId);
     const resolvedUserUuid = await this.resolveNullableUserUuid(
@@ -199,7 +199,7 @@ export class PgUsageStatsRepository implements UsageStatsRepository {
         : (input.anonId ?? null);
 
     const values: typeof appUsageEvents.$inferInsert = {
-      id: idUuid,
+      ...(idUuid ? { id: idUuid } : {}),
       workspaceId: wsUuid,
       appId: appUuid,
       at: input.at,
@@ -244,6 +244,9 @@ export class PgUsageStatsRepository implements UsageStatsRepository {
     if (rows[0]) {
       return pgAppUsageEventToRecord(rows[0]);
     }
+    if (!idUuid) {
+      throw new Error("Failed to insert app_usage_events row");
+    }
     const existing = await db
       .select()
       .from(appUsageEvents)
@@ -259,7 +262,7 @@ export class PgUsageStatsRepository implements UsageStatsRepository {
     input: BumpAppUsageDailyInput,
     db: MakoPgDb = this.getDb(),
   ): Promise<void> {
-    const idUuid = input.id ? entityIdToPgUuid(input.id) : newDualId().uuid;
+    const idUuid = input.id ? entityIdToPgUuid(input.id) : undefined;
     const wsUuid = entityIdToPgUuid(input.workspaceId);
     const appUuid = entityIdToPgUuid(input.appId);
     const resolvedUserUuid = await this.resolveNullableUserUuid(
@@ -284,7 +287,7 @@ export class PgUsageStatsRepository implements UsageStatsRepository {
     await db
       .insert(appUsageDaily)
       .values({
-        id: idUuid,
+        ...(idUuid ? { id: idUuid } : {}),
         workspaceId: wsUuid,
         appId: appUuid,
         userId: viewer.userId,
@@ -598,11 +601,11 @@ export class PgUsageStatsRepository implements UsageStatsRepository {
 
     for (let i = 0; i < targets.length; i++) {
       const target = targets[i];
-      const idUuid = ids?.[i] ? entityIdToPgUuid(ids[i]) : newDualId().uuid;
+      const idUuid = ids?.[i] ? entityIdToPgUuid(ids[i]) : undefined;
       await db
         .insert(skillUsageDaily)
         .values({
-          id: idUuid,
+          ...(idUuid ? { id: idUuid } : {}),
           workspaceId: wsUuid,
           scope: target.scope,
           skill: target.skill,
@@ -738,13 +741,13 @@ export class PgUsageStatsRepository implements UsageStatsRepository {
     db: MakoPgDb = this.getDb(),
     options: { overwrite?: boolean } = {},
   ): Promise<LlmUsageRecord> {
-    const idUuid = input.id ? entityIdToPgUuid(input.id) : newDualId().uuid;
+    const idUuid = input.id ? entityIdToPgUuid(input.id) : undefined;
     const wsUuid = entityIdToPgUuid(input.workspaceId);
     const userUuid = await this.resolveNullableUserUuid(input.userId, db);
     const chatUuid = optionalEntityIdToPgUuid(input.chatId);
 
     const values: typeof llmUsage.$inferInsert = {
-      id: idUuid,
+      ...(idUuid ? { id: idUuid } : {}),
       workspaceId: wsUuid,
       userId: userUuid,
       chatId: chatUuid,
@@ -1126,7 +1129,7 @@ export class PgUsageStatsRepository implements UsageStatsRepository {
     db: MakoPgDb = this.getDb(),
     options: { overwrite?: boolean } = {},
   ): Promise<QueryExecutionRecord> {
-    const idUuid = input.id ? entityIdToPgUuid(input.id) : newDualId().uuid;
+    const idUuid = input.id ? entityIdToPgUuid(input.id) : undefined;
     const wsUuid = entityIdToPgUuid(input.workspaceId);
     const connUuid = entityIdToPgUuid(input.connectionId);
     const consoleUuid = optionalEntityIdToPgUuid(input.consoleId);
@@ -1136,7 +1139,7 @@ export class PgUsageStatsRepository implements UsageStatsRepository {
     ]);
 
     const values: typeof queryExecutions.$inferInsert = {
-      id: idUuid,
+      ...(idUuid ? { id: idUuid } : {}),
       executedAt: input.executedAt ?? new Date(),
       userId: userUuid,
       apiKeyId: apiKeyUuid,
@@ -1184,6 +1187,9 @@ export class PgUsageStatsRepository implements UsageStatsRepository {
 
     if (rows[0]) {
       return pgQueryExecutionToRecord(rows[0]);
+    }
+    if (!idUuid) {
+      throw new Error("Failed to insert query_executions row");
     }
     const existing = await db
       .select()
@@ -1364,7 +1370,7 @@ export class PgUsageStatsRepository implements UsageStatsRepository {
     db: MakoPgDb = this.getDb(),
     options: { overwrite?: boolean } = {},
   ): Promise<ConnectionVerificationRecord> {
-    const idUuid = input.id ? entityIdToPgUuid(input.id) : newDualId().uuid;
+    const idUuid = input.id ? entityIdToPgUuid(input.id) : undefined;
     const wsUuid = optionalEntityIdToPgUuid(input.workspaceId);
     const [connUuid, userUuid] = await Promise.all([
       this.resolveExistingConnectionUuid(input.connectionId, db),
@@ -1372,7 +1378,7 @@ export class PgUsageStatsRepository implements UsageStatsRepository {
     ]);
 
     const values: typeof connectionVerifications.$inferInsert = {
-      id: idUuid,
+      ...(idUuid ? { id: idUuid } : {}),
       verifiedAt: input.verifiedAt ?? new Date(),
       userId: userUuid,
       workspaceId: wsUuid,
@@ -1410,6 +1416,9 @@ export class PgUsageStatsRepository implements UsageStatsRepository {
 
     if (rows[0]) {
       return pgConnectionVerificationToRecord(rows[0]);
+    }
+    if (!idUuid) {
+      throw new Error("Failed to insert connection_verifications row");
     }
     const existing = await db
       .select()

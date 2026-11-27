@@ -1874,13 +1874,13 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
       input.savedBy,
       this.resolveUserUuidFn,
     );
-    const idUuid = input.id ? toPgUuid(input.id) : newDualId().uuid;
+    const idField = input.id ? { id: toPgUuid(input.id) } : {};
 
     if (input.version !== undefined) {
       const inserted = await this.getDb()
         .insert(entityVersions)
         .values({
-          id: idUuid,
+          ...idField,
           workspaceId: toPgUuid(input.workspaceId),
           entityType: input.entityType,
           entityId: toPgUuid(input.entityId),
@@ -1916,7 +1916,7 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
         const [row] = await this.getDb()
           .insert(entityVersions)
           .values({
-            id: idUuid,
+            ...idField,
             workspaceId: toPgUuid(input.workspaceId),
             entityType: input.entityType,
             entityId: toPgUuid(input.entityId),
@@ -2969,7 +2969,6 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
   async createScheduledQueryRun(
     input: CreateScheduledQueryRunInput,
   ): Promise<ScheduledQueryRunRecord> {
-    const id = input.id ? toPgUuid(input.id) : newDualId().uuid;
     const triggeredByUuid = await resolveOptionalUserUuid(
       input.triggeredBy,
       this.resolveUserUuidFn,
@@ -2977,7 +2976,7 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
     const [row] = await this.getDb()
       .insert(scheduledQueryRuns)
       .values({
-        id,
+        ...(input.id ? { id: toPgUuid(input.id) } : {}),
         workspaceId: toPgUuid(input.workspaceId),
         consoleId: toPgUuid(input.consoleId),
         triggeredAt: input.triggeredAt ?? new Date(),

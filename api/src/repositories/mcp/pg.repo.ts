@@ -459,15 +459,15 @@ export class PgMcpRepository implements McpRepository {
         ? null
         : await this.resolveRequiredUserUuid(normalizedUser, db);
     const now = input.now ?? new Date();
-    const idUuid = input.id ? parseUuidOrNull(input.id) : newDualId().uuid;
-    if (!idUuid) {
+    const idUuid = input.id ? parseUuidOrNull(input.id) : undefined;
+    if (input.id && !idUuid) {
       throw new Error(`Invalid id: ${JSON.stringify(input.id)}`);
     }
 
     const [row] = await db
       .insert(mcpConnectionConfigs)
       .values({
-        id: idUuid,
+        ...(idUuid ? { id: idUuid } : {}),
         workspaceId: wsUuid,
         serverId: serverUuid,
         userId: userUuid,
@@ -502,8 +502,8 @@ export class PgMcpRepository implements McpRepository {
         ? null
         : await this.resolveRequiredUserUuid(normalizedUser, db);
     const now = input.now ?? new Date();
-    const idUuid = input.id ? parseUuidOrNull(input.id) : newDualId().uuid;
-    if (!idUuid) {
+    const idUuid = input.id ? parseUuidOrNull(input.id) : undefined;
+    if (input.id && !idUuid) {
       throw new Error(`Invalid id: ${JSON.stringify(input.id)}`);
     }
     const expiresAt =
@@ -512,7 +512,7 @@ export class PgMcpRepository implements McpRepository {
     const [row] = await db
       .insert(mcpConnectionConfigs)
       .values({
-        id: idUuid,
+        ...(idUuid ? { id: idUuid } : {}),
         workspaceId: wsUuid,
         serverId: serverUuid,
         userId: userUuid,
@@ -613,8 +613,8 @@ export class PgMcpRepository implements McpRepository {
       input.startedByUserId,
       db,
     );
-    const idUuid = input.id ? parseUuidOrNull(input.id) : newDualId().uuid;
-    if (!idUuid) {
+    const idUuid = input.id ? parseUuidOrNull(input.id) : undefined;
+    if (input.id && !idUuid) {
       throw new Error(`Invalid oauth flow id: ${JSON.stringify(input.id)}`);
     }
     const createdAt = input.createdAt ?? new Date();
@@ -631,17 +631,18 @@ export class PgMcpRepository implements McpRepository {
         createdAt,
       },
       {
-        idUuid,
+        idUuid: idUuid ?? "00000000-0000-7000-8000-000000000000",
         workspaceUuid: wsUuid,
         serverUuid,
         configUserUuid,
         startedByUserUuid,
       },
     );
+    const { id: _omitFlowId, ...flowWithoutId } = rowData;
 
     const [row] = await db
       .insert(mcpOauthFlows)
-      .values(rowData)
+      .values(idUuid ? rowData : flowWithoutId)
       .onConflictDoUpdate({
         target: mcpOauthFlows.state,
         set: {
@@ -818,15 +819,15 @@ export class PgMcpRepository implements McpRepository {
     }
     const userUuid = await this.resolveRequiredUserUuid(input.userId, db);
     const now = input.now ?? new Date();
-    const idUuid = input.id ? parseUuidOrNull(input.id) : newDualId().uuid;
-    if (!idUuid) {
+    const idUuid = input.id ? parseUuidOrNull(input.id) : undefined;
+    if (input.id && !idUuid) {
       throw new Error(`Invalid id: ${JSON.stringify(input.id)}`);
     }
 
     const [row] = await db
       .insert(mcpToolGrants)
       .values({
-        id: idUuid,
+        ...(idUuid ? { id: idUuid } : {}),
         workspaceId: wsUuid,
         serverId: serverUuid,
         userId: userUuid,

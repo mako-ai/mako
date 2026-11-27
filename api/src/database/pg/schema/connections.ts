@@ -120,7 +120,9 @@ export interface ConnectorDefinitionRegistryJson {
 export const databaseConnections = pgTable(
   "database_connections",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -163,7 +165,9 @@ export const databaseConnections = pgTable(
 export const sourceConnections = pgTable(
   "source_connections",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -234,7 +238,9 @@ export const sourceConnections = pgTable(
 export const connectionAccessEvents = pgTable(
   "connection_access_events",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -269,7 +275,9 @@ export const connectionAccessEvents = pgTable(
 export const connectionWriteEvents = pgTable(
   "connection_write_events",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -302,7 +310,9 @@ export const connectionWriteEvents = pgTable(
 export const connectorDefinitions = pgTable(
   "connector_definitions",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
