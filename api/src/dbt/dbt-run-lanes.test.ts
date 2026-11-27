@@ -16,6 +16,11 @@ import {
 } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 
 vi.mock("../inngest/client", () => ({
   inngest: { send: vi.fn(async () => ({ ids: [] })) },
@@ -50,24 +55,29 @@ const MIN = 60_000;
 const WS = new Types.ObjectId();
 
 let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 
 beforeAll(async () => {
+  pg = await setupPgTestDb();
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 });
 
 afterAll(async () => {
+  await pg?.close();
   await mongoose.disconnect();
-  await mongo.stop();
+  await mongo?.stop();
 });
 
 beforeEach(async () => {
   vi.clearAllMocks();
   await Promise.all([
+    pg.reset(),
     DbtProject.deleteMany({}),
     DbtRun.deleteMany({}),
     DbtJob.deleteMany({}),
   ]);
+  await ensureTestWorkspace(pg.db, { id: String(WS) });
 });
 
 async function seedProject() {

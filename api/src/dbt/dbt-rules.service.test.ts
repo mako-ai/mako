@@ -11,6 +11,11 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  ensureTestUser,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 
 import {
   DBT_RULES_MAX_CHARS,
@@ -18,14 +23,12 @@ import {
   renderDbtRulesBlock,
   resolveDbtRules,
 } from "./dbt-rules.service";
-import {
-  AppWorktree,
-  DbtProject,
-  type IDbtProject,
-} from "../database/workspace-schema";
+import { DbtProject, type IDbtProject } from "../database/workspace-schema";
 import { seedDbtGitTree } from "./test-support/git-tree";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
 import { bindTestWorkspaceRepo } from "../apps/bind-test-workspace-repo";
 
+let pg: PgTestDb;
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
 const WS = new Types.ObjectId();
@@ -37,13 +40,15 @@ beforeAll(async () => {
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_SANDBOX_PROVIDER = "local";
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
+  pg = await setupPgTestDb();
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 }, 120_000);
 
 afterAll(async () => {
+  await pg?.close();
   await mongoose.disconnect();
-  await mongo.stop();
+  await mongo?.stop();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -53,7 +58,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await Promise.all([DbtProject.deleteMany({}), AppWorktree.deleteMany({})]);
+  await Promise.all([pg.reset(), DbtProject.deleteMany({})]);
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,
     force: true,
@@ -137,11 +142,12 @@ describe("resolveDbtRules", () => {
   it("reads the rules from the user's SESSION branch, not main", async () => {
     const project = await seedProject();
     await seedBase(project, ".makorules.md", "main rules");
-    await AppWorktree.create({
-      workspaceId: project.workspaceId,
-      userId: USER,
-      branch: "feature/rules",
-    });
+    await ensureTestUser(pg.db, { id: USER });
+    await appsMetadataRepo.ensureWorktreeRow(
+      String(project.workspaceId),
+      USER,
+      "feature/rules",
+    );
     await seedDbtGitTree(
       project.workspaceId,
       { ".makorules.md": "branch rules" },

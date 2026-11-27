@@ -19,14 +19,20 @@ import {
 } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 
 vi.mock("../inngest/client", () => ({
   inngest: { send: vi.fn(async () => ({ ids: [] })) },
 }));
 
 import { DbtJob, DbtProject, DbtRun } from "../database/workspace-schema";
-import { McpOAuthClient } from "../database/mcp-oauth-schema";
-import { User } from "../database/schema";
+import { mcpOAuthClients } from "../database/pg/schema";
+import { authRepo } from "../repositories/auth";
 import {
   recordCompletedAdhocDbtRun,
   triggerDbtJobRun,
@@ -46,16 +52,19 @@ import { runActorOf } from "../routes/dbt/context";
 import type { AuthenticatedContext } from "../middleware/workspace.middleware";
 
 const WS = new Types.ObjectId();
+let pg: PgTestDb;
 let mongo: MongoMemoryServer;
 
 beforeAll(async () => {
+  pg = await setupPgTestDb();
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 });
 
 afterAll(async () => {
+  await pg?.close();
   await mongoose.disconnect();
-  await mongo.stop();
+  await mongo?.stop();
 });
 
 beforeEach(async () => {
@@ -64,9 +73,9 @@ beforeEach(async () => {
     DbtProject.deleteMany({}),
     DbtRun.deleteMany({}),
     DbtJob.deleteMany({}),
-    User.deleteMany({}),
-    McpOAuthClient.deleteMany({}),
+    pg.reset(),
   ]);
+  await ensureTestWorkspace(pg.db, { id: String(WS) });
 });
 
 async function seedProject() {
@@ -223,11 +232,8 @@ describe("redactRunActor", () => {
 
 describe("withActorNames", () => {
   it("fills the user's handle (never the email) and the OAuth client's name", async () => {
-    await User.collection.insertOne({
-      _id: "u1" as never,
-      email: "joan@example.com",
-    });
-    await McpOAuthClient.create({
+    await ensureTestUser(pg.db, { id: "u1", email: "joan@example.com" });
+    await pg.db.insert(mcpOAuthClients).values({
       clientId: "client-1",
       clientName: "Claude Code",
       redirectUris: ["http://localhost:1/cb"],
@@ -246,15 +252,15 @@ describe("withActorNames", () => {
 
   it("gives up after the timeout and keeps the ids", async () => {
     const lookup = vi
-      .spyOn(User, "findById")
-      .mockImplementation(() => new Promise(() => undefined) as never);
+      .spyOn(authRepo, "findUserById")
+      .mockImplementation(() => new Promise(() => undefined));
     const actor = await withActorNames({ kind: "user", userId: "u1" }, 20);
     lookup.mockRestore();
     expect(actor).toEqual({ kind: "user", userId: "u1" });
   });
 
   it("runs no query for an actor with nothing to look up", async () => {
-    const lookup = vi.spyOn(User, "findById");
+    const lookup = vi.spyOn(authRepo, "findUserById");
     await withActorNames({ kind: "schedule", jobScheduleId: "j1" });
     expect(lookup).not.toHaveBeenCalled();
     lookup.mockRestore();
@@ -263,10 +269,7 @@ describe("withActorNames", () => {
 
 describe("every run creation path stores an actor", () => {
   it("triggerDbtRun stores the actor it is given, with the handle filled", async () => {
-    await User.collection.insertOne({
-      _id: "u1" as never,
-      email: "joan@example.com",
-    });
+    await ensureTestUser(pg.db, { id: "u1", email: "joan@example.com" });
     const project = await seedProject();
     const run = await triggerDbtRun({
       workspaceId: WS.toString(),

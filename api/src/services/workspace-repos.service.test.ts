@@ -1,7 +1,8 @@
 /**
- * Workspace repos — unit tests (Mongo only; no GitHub network).
+ * Workspace repo bindings and disconnect cleanup without GitHub network access.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import {
@@ -14,13 +15,24 @@ import {
   WorkspaceRepoNotBoundError,
 } from "./workspace-repos.service";
 import {
-  ConsoleFolder,
-  DbtProject,
-  Flow,
-  GitHubInstallation,
-  SavedConsole,
-  Workspace,
-} from "../database/workspace-schema";
+  consoleFolders,
+  githubInstallations,
+  savedConsoles,
+  workspaces,
+} from "../database/pg/schema";
+import { DbtProject, Flow } from "../database/workspace-schema";
+import {
+  mongoWorkspaceToRecord,
+  workspaceRecordToPgRow,
+} from "../repositories/workspaces/mapper";
+import { workspaceRepo } from "../repositories/workspaces";
+import {
+  ensureTestWorkspace,
+  ensureTestUser,
+  setupPgTestDb,
+  type PgTestDb,
+  type TestWorkspace,
+} from "../test-support/pg-test";
 
 /** The workspace's repo binding as a list: [] when unbound (§10: at most one). */
 async function boundRepos(workspaceId: string) {
@@ -28,30 +40,31 @@ async function boundRepos(workspaceId: string) {
   return repo ? [repo] : [];
 }
 
+let pg: PgTestDb;
 let mongo: MongoMemoryServer;
+let workspace: TestWorkspace;
 let workspaceId: string;
 
 beforeAll(async () => {
+  pg = await setupPgTestDb();
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 });
 
 afterAll(async () => {
+  await pg?.close();
   await mongoose.disconnect();
-  await mongo.stop();
+  await mongo?.stop();
 });
 
 beforeEach(async () => {
-  await mongoose.connection.collection("workspaces").deleteMany({});
-  await mongoose.connection.collection("github_installations").deleteMany({});
-  const ws = await Workspace.create({
-    name: "Test",
-    slug: `test-${Date.now()}`,
-    createdBy: "u1",
-    settings: {},
-    billing: {},
-  });
-  workspaceId = ws._id.toString();
+  await Promise.all([
+    pg.reset(),
+    Flow.deleteMany({}),
+    DbtProject.deleteMany({}),
+  ]);
+  workspace = await ensureTestWorkspace(pg.db, { ownerUserId: "u1" });
+  workspaceId = workspace.id;
 });
 
 describe("isValidRepoSegment", () => {
@@ -145,16 +158,16 @@ describe("connect / list / disconnect", () => {
 
   it("lists every binding a pre-§10 workspace still holds", async () => {
     const binding = (repo: string) => ({
-      provider: "github",
+      provider: "github" as const,
       owner: "acme",
       repo,
       defaultBranch: "main",
       subdirectory: "",
     });
-    await Workspace.updateOne(
-      { _id: new Types.ObjectId(workspaceId) },
-      { $set: { workspaceRepos: [binding("a"), binding("b")] } },
-    );
+    await pg.db
+      .update(workspaces)
+      .set({ workspaceRepos: [binding("a"), binding("b")] })
+      .where(eq(workspaces.id, workspace.uuid));
     // Both are shown (connect refuses while either exists), while the
     // singular read still answers with the first.
     const all = await storedBindings(workspaceId);
@@ -162,21 +175,25 @@ describe("connect / list / disconnect", () => {
     expect((await getWorkspaceRepo(workspaceId))?.repo).toBe("a");
   });
 
-  it("falls back to the legacy appsRepo binding until migrated", async () => {
-    await Workspace.updateOne(
-      { _id: new Types.ObjectId(workspaceId) },
-      {
-        $set: {
-          appsRepo: {
-            provider: "github",
-            owner: "legacy",
-            repo: "old",
-            defaultBranch: "main",
-            subdirectory: "",
-          },
-        },
+  it("uses a migrated legacy appsRepo binding until it is disconnected", async () => {
+    const legacyWorkspace = mongoWorkspaceToRecord({
+      _id: new Types.ObjectId(workspaceId),
+      name: "Legacy",
+      slug: workspace.slug,
+      createdBy: "u1",
+      appsRepo: {
+        provider: "github",
+        owner: "legacy",
+        repo: "old",
+        defaultBranch: "main",
+        subdirectory: "",
       },
-    );
+    });
+    const migrated = workspaceRecordToPgRow(legacyWorkspace, () => null);
+    await pg.db
+      .update(workspaces)
+      .set({ workspaceRepos: migrated.workspaceRepos })
+      .where(eq(workspaces.id, workspace.uuid));
     const repos = await boundRepos(workspaceId);
     expect(repos).toHaveLength(1);
     expect(repos[0].owner).toBe("legacy");
@@ -199,10 +216,10 @@ describe("connect / list / disconnect", () => {
       defaultBranch: "main",
       linkedBy: "u1",
     });
-    const ws = await Workspace.findById(workspaceId).lean();
-    expect(ws?.appsRepo).toBeUndefined();
-    expect(ws?.workspaceRepos).toHaveLength(1);
-    expect(ws?.workspaceRepos?.[0].repo).toBe("new");
+    const row = await workspaceRepo.findById(workspaceId);
+    expect(row).not.toHaveProperty("appsRepo");
+    expect(row?.workspaceRepos).toHaveLength(1);
+    expect(row?.workspaceRepos?.[0].repo).toBe("new");
   });
 
   it("rejects invalid owner/repo names", async () => {
@@ -229,13 +246,14 @@ describe("connect / list / disconnect", () => {
       }),
     ).rejects.toThrow(/installation not found/i);
 
-    await GitHubInstallation.create({
-      workspaceId: new Types.ObjectId(workspaceId),
+    const installer = await ensureTestUser(pg.db, { id: "u1" });
+    await pg.db.insert(githubInstallations).values({
+      workspaceId: workspace.uuid,
       installationId: 999,
       accountLogin: "realadvisor",
       accountType: "Organization",
       repositorySelection: "selected",
-      createdBy: "u1",
+      createdBy: installer.id,
     });
     const binding = await connectWorkspaceRepo({
       workspaceId,
@@ -251,13 +269,7 @@ describe("connect / list / disconnect", () => {
 
 describe("git is the only store (issue #956)", () => {
   it("fans out webhook routing to every workspace bound to the same repo", async () => {
-    const other = await Workspace.create({
-      name: "Other",
-      slug: `other-${Date.now()}`,
-      createdBy: "u1",
-      settings: {},
-      billing: {},
-    });
+    const other = await ensureTestWorkspace(pg.db, { ownerUserId: "u1" });
     await connectWorkspaceRepo({
       workspaceId,
       owner: "mako-ai",
@@ -266,7 +278,7 @@ describe("git is the only store (issue #956)", () => {
       linkedBy: "u1",
     });
     await connectWorkspaceRepo({
-      workspaceId: other._id.toString(),
+      workspaceId: other.id,
       owner: "mako-ai",
       repo: "test-workspace",
       defaultBranch: "main",
@@ -276,7 +288,7 @@ describe("git is the only store (issue #956)", () => {
       "mako-ai",
       "test-workspace",
     );
-    expect(ids.sort()).toEqual([workspaceId, other._id.toString()].sort());
+    expect(ids.sort()).toEqual([workspaceId, other.id].sort());
   });
 
   it("a mismatched unlink does not purge derived content or drop the binding", async () => {
@@ -351,38 +363,50 @@ describe("git is the only store (issue #956)", () => {
       defaultBranch: "main",
       linkedBy: "u1",
     });
-    const ws = new Types.ObjectId(workspaceId);
-    await ConsoleFolder.create({
-      workspaceId: ws,
+    const user = await ensureTestUser(pg.db, { id: "u1" });
+    await pg.db.insert(consoleFolders).values({
+      workspaceId: workspace.uuid,
       name: "scratch",
       isPrivate: false,
       access: "workspace",
     });
-    await SavedConsole.create({
-      workspaceId: ws,
-      name: "draft.sql",
-      code: "select 1",
-      language: "sql",
-      isSaved: false,
-      createdBy: "u1",
-      owner_id: "u1",
-      access: "private",
-      isPrivate: true,
-    });
-    await SavedConsole.create({
-      workspaceId: ws,
-      name: "saved.sql",
-      code: "select 2",
-      language: "sql",
-      isSaved: true,
-      createdBy: "u1",
-      owner_id: "u1",
-      access: "workspace",
-      isPrivate: false,
-    });
+    await pg.db.insert(savedConsoles).values([
+      {
+        workspaceId: workspace.uuid,
+        name: "draft.sql",
+        code: "select 1",
+        language: "sql",
+        isSaved: false,
+        createdBy: user.id,
+        ownerId: user.id,
+        access: "private",
+        isPrivate: true,
+      },
+      {
+        workspaceId: workspace.uuid,
+        name: "saved.sql",
+        code: "select 2",
+        language: "sql",
+        isSaved: true,
+        createdBy: user.id,
+        ownerId: user.id,
+        access: "workspace",
+        isPrivate: false,
+      },
+    ]);
     await disconnectWorkspaceRepo(workspaceId, "mako-ai", "test-workspace");
-    expect(await SavedConsole.countDocuments({ workspaceId: ws })).toBe(0);
-    expect(await ConsoleFolder.countDocuments({ workspaceId: ws })).toBe(0);
+    expect(
+      await pg.db
+        .select()
+        .from(savedConsoles)
+        .where(eq(savedConsoles.workspaceId, workspace.uuid)),
+    ).toHaveLength(0);
+    expect(
+      await pg.db
+        .select()
+        .from(consoleFolders)
+        .where(eq(consoleFolders.workspaceId, workspace.uuid)),
+    ).toHaveLength(0);
   });
 
   it("disconnect deletes dbt project rows, not just their environments", async () => {

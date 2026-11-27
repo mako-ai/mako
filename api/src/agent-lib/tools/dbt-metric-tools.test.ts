@@ -1,7 +1,7 @@
 /**
  * The semantic-layer tools end to end: list_metrics, compile_metric and
- * query_metric against in-memory Mongo (the dbt project, its runs, its
- * warehouse connection) and an in-memory artifact store holding the semantic
+ * query_metric with dbt projects and runs in MongoDB, warehouse connection
+ * metadata in PGlite, and an in-memory artifact store holding the semantic
  * manifest a real dbt-core 1.12.7 parse wrote. MetricFlow itself (the Python
  * engine) and the warehouse are stand-ins here; the engine is pinned by
  * dbt/metricflow-engine.contract.test.ts.
@@ -35,6 +35,11 @@ import {
 } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  ensureTestDatabaseConnection,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../../test-support/pg-test";
 
 const stored = vi.hoisted(() => new Map<string, Buffer>());
 const engine = vi.hoisted(() => ({
@@ -75,11 +80,10 @@ import {
   createDbtMetricTools,
   normalizeMetricRows,
 } from "./dbt-metric-tools";
-import {
-  DatabaseConnection,
-  DbtProject,
-  DbtRun,
-} from "../../database/workspace-schema";
+import { eq } from "drizzle-orm";
+import { objectIdToUuid } from "../../database/pg/id-codec";
+import { databaseConnections } from "../../database/pg/schema";
+import { DbtProject, DbtRun } from "../../database/workspace-schema";
 import { MetricflowQueryError } from "../../dbt/semantic/metricflow.service";
 import { clearSemanticCatalogCache } from "../../dbt/semantic/semantic-manifest.service";
 
@@ -94,6 +98,7 @@ const SEMANTIC_MANIFEST = readFileSync(
   ),
 );
 
+let pg: PgTestDb;
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId().toString();
 const PROD_CONN = new Types.ObjectId();
@@ -106,10 +111,14 @@ const run = <O = Record<string, unknown>>(
   input: Record<string, unknown>,
 ): Promise<O> => (tool.execute as Exec<Record<string, unknown>, O>)(input);
 
-async function seedConnection(_id: Types.ObjectId, name: string, type: string) {
-  await DatabaseConnection.collection.insertOne({
-    _id,
-    workspaceId: new Types.ObjectId(WS),
+async function seedConnection(
+  id: Types.ObjectId,
+  name: string,
+  type: (typeof databaseConnections.$inferInsert)["type"],
+) {
+  await ensureTestDatabaseConnection(pg.db, {
+    id: String(id),
+    workspaceId: WS,
     name,
     type,
   });
@@ -192,20 +201,22 @@ async function seedProject(
 }
 
 beforeAll(async () => {
+  pg = await setupPgTestDb();
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 }, 120_000);
 
 afterAll(async () => {
+  await pg?.close();
   await mongoose.disconnect();
-  await mongo.stop();
+  await mongo?.stop();
 });
 
 beforeEach(async () => {
   await Promise.all([
     DbtProject.deleteMany({}),
     DbtRun.deleteMany({}),
-    DatabaseConnection.deleteMany({}),
+    pg.reset(),
   ]);
   stored.clear();
   clearSemanticCatalogCache();
@@ -543,10 +554,10 @@ describe("compile_metric", () => {
   });
 
   it("uses BigQuery's dialect on a BigQuery warehouse", async () => {
-    await DatabaseConnection.collection.updateOne(
-      { _id: PROD_CONN },
-      { $set: { type: "bigquery" } },
-    );
+    await pg.db
+      .update(databaseConnections)
+      .set({ type: "bigquery" })
+      .where(eq(databaseConnections.id, objectIdToUuid(String(PROD_CONN))));
     await seedProject();
     await run(tools.compile_metric, { metrics: ["revenue"] });
     expect(engine.compile.mock.calls[0][1]).toBe("bigquery");
@@ -565,10 +576,10 @@ describe("compile_metric", () => {
   });
 
   it("refuses a warehouse MetricFlow cannot render for", async () => {
-    await DatabaseConnection.collection.updateOne(
-      { _id: PROD_CONN },
-      { $set: { type: "clickhouse" } },
-    );
+    await pg.db
+      .update(databaseConnections)
+      .set({ type: "clickhouse" })
+      .where(eq(databaseConnections.id, objectIdToUuid(String(PROD_CONN))));
     await seedProject();
     const result = await run<{ success: boolean; error: string }>(
       tools.compile_metric,
@@ -727,7 +738,9 @@ describe("compile_metric", () => {
 describe("an environment's read connection", () => {
   const READ_CONN = new Types.ObjectId();
 
-  async function seedWithReadConnection(type = "postgresql") {
+  async function seedWithReadConnection(
+    type: (typeof databaseConnections.$inferInsert)["type"] = "postgresql",
+  ) {
     await seedConnection(READ_CONN, "Warehouse (read-only)", type);
     const project = await seedProject();
     await DbtProject.updateOne(
@@ -762,7 +775,9 @@ describe("an environment's read connection", () => {
 
   it("falls back to the build connection when the read one is gone or another warehouse", async () => {
     await seedWithReadConnection();
-    await DatabaseConnection.deleteOne({ _id: READ_CONN });
+    await pg.db
+      .delete(databaseConnections)
+      .where(eq(databaseConnections.id, objectIdToUuid(String(READ_CONN))));
     expect(
       await run(tools.compile_metric, { metrics: ["revenue"] }),
     ).toMatchObject({

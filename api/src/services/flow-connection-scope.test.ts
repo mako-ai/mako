@@ -1,31 +1,19 @@
 /**
- * A flow names only its own workspace's connections. Real Mongoose models on
- * a memory Mongo: the refusal the push reactor uses, the API update's own
- * check, and the source connection lookup every flow path goes through.
+ * A flow names only its own workspace's connections. Exercise the push
+ * reactor, update and source lookup with Postgres connections, and read
+ * persisted flows from MongoDB.
  */
-import {
-  afterAll,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
-
-vi.mock("./database-connection.service", () => ({
-  databaseConnectionService: {
-    getMainConnection: async () => ({ db: mongoose.connection.db }),
-  },
-}));
-
 import {
-  DatabaseConnection,
-  Flow,
-  SourceConnection,
-} from "../database/workspace-schema";
+  ensureTestDatabaseConnection,
+  ensureTestSourceConnection,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
+
+import { Flow } from "../database/workspace-schema";
 import { getSourceConnectionManager } from "../sync/database-data-source-manager";
 import {
   flowFileConnectionRefusal,
@@ -38,6 +26,7 @@ import { createFlowSyncTools } from "../agent-lib/tools/flow-sync-tools";
 import { inWorkspace } from "../utils/workspace-scope";
 import type { FlowFile } from "./flow-config-files";
 
+let pg: PgTestDb;
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId();
 const OTHER_WS = new Types.ObjectId();
@@ -47,39 +36,43 @@ const FOREIGN_SOURCE = new Types.ObjectId();
 const FOREIGN_DEST = new Types.ObjectId();
 
 beforeAll(async () => {
+  pg = await setupPgTestDb();
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
-  // The manager only reads the name from it; the connection is mocked above.
-  process.env.DATABASE_URL ??= mongo.getUri();
 }, 120_000);
 
 afterAll(async () => {
+  await pg?.close();
   await mongoose.disconnect();
-  await mongo.stop();
+  await mongo?.stop();
 });
 
 beforeEach(async () => {
-  await SourceConnection.collection.deleteMany({});
-  await DatabaseConnection.collection.deleteMany({});
-  await SourceConnection.collection.insertMany([
-    { _id: SOURCE, workspaceId: WS, name: "Close", type: "close", config: {} },
-    {
-      _id: FOREIGN_SOURCE,
-      workspaceId: OTHER_WS,
-      name: "Their Close",
-      type: "close",
-      config: {},
-    },
-  ] as any[]);
-  await DatabaseConnection.collection.insertMany([
-    { _id: DEST, workspaceId: WS, name: "bq", type: "bigquery" },
-    {
-      _id: FOREIGN_DEST,
-      workspaceId: OTHER_WS,
-      name: "their bq",
-      type: "bigquery",
-    },
-  ] as any[]);
+  await Promise.all([pg.reset(), Flow.deleteMany({})]);
+  await ensureTestSourceConnection(pg.db, {
+    id: String(SOURCE),
+    workspaceId: String(WS),
+    name: "Close",
+    type: "close",
+  });
+  await ensureTestSourceConnection(pg.db, {
+    id: String(FOREIGN_SOURCE),
+    workspaceId: String(OTHER_WS),
+    name: "Their Close",
+    type: "close",
+  });
+  await ensureTestDatabaseConnection(pg.db, {
+    id: String(DEST),
+    workspaceId: String(WS),
+    name: "bq",
+    type: "bigquery",
+  });
+  await ensureTestDatabaseConnection(pg.db, {
+    id: String(FOREIGN_DEST),
+    workspaceId: String(OTHER_WS),
+    name: "their bq",
+    type: "bigquery",
+  });
 });
 
 function file(
@@ -250,22 +243,26 @@ describe("runtime lookups read another workspace's connection as missing", () =>
   });
 
   it("a missing or malformed id finds nothing and never throws", async () => {
-    expect(
-      await DatabaseConnection.findOne(inWorkspace(undefined, WS)),
-    ).toBeNull();
-    expect(
-      await DatabaseConnection.findOne(inWorkspace("close", WS)),
-    ).toBeNull();
-    expect(
-      await DatabaseConnection.findOne(inWorkspace(DEST, "not-an-id")),
-    ).toBeNull();
-    expect(
-      (await DatabaseConnection.findOne(inWorkspace(DEST, WS)))?.name,
-    ).toBe("bq");
+    const flow = await Flow.create({
+      workspaceId: WS,
+      slug: "scoped",
+      name: "Scoped flow",
+      type: "scheduled",
+      sourceType: "connector",
+      dataSourceId: SOURCE,
+      destinationDatabaseId: DEST,
+      schedule: { enabled: false },
+      createdBy: "u",
+    });
+    expect(await Flow.findOne(inWorkspace(undefined, WS))).toBeNull();
+    expect(await Flow.findOne(inWorkspace("close", WS))).toBeNull();
+    expect(await Flow.findOne(inWorkspace(flow._id, "not-an-id"))).toBeNull();
+    expect((await Flow.findOne(inWorkspace(flow._id, WS)))?.name).toBe(
+      "Scoped flow",
+    );
   });
 
   it("flow_list names only this workspace's connections", async () => {
-    await Flow.collection.deleteMany({});
     await Flow.collection.insertOne({
       _id: new Types.ObjectId(),
       workspaceId: WS,

@@ -21,6 +21,11 @@ import {
 } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 
 const state = vi.hoisted(() => ({
   binding: null as null | { owner: string; repo: string },
@@ -55,6 +60,7 @@ import {
 import { listJobDefinitionsAtMain } from "./dbt-config.service";
 
 let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 let tmpRoot: string;
 let remotesRoot: string;
 let WS: Types.ObjectId;
@@ -68,13 +74,15 @@ beforeAll(async () => {
   process.env.APPS_GITHUB_REMOTE_BASE = `file://${remotesRoot}`;
   process.env.APPS_SANDBOX_PROVIDER = "local";
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
+  pg = await setupPgTestDb();
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 }, 120_000);
 
 afterAll(async () => {
+  await pg?.close();
   await mongoose.disconnect();
-  await mongo.stop();
+  await mongo?.stop();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -85,7 +93,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   WS = new Types.ObjectId();
-  await DbtProject.deleteMany({});
+  await Promise.all([pg.reset(), DbtProject.deleteMany({})]);
+  await ensureTestWorkspace(pg.db, { id: String(WS) });
   process.env.APPS_CONNECTED_REPO_PUSH = "allow";
   const repo = `ws-${WS.toString()}`;
   remoteDir = path.join(remotesRoot, "acme", `${repo}.git`);

@@ -1,6 +1,6 @@
 /**
- * The data-diff check end to end, against an in-memory Mongo and a fake SQL
- * destination that answers the column-list and COUNT queries from rows held
+ * The data-diff check end to end, with MongoDB ingestion rows, Postgres
+ * connection metadata, and a fake SQL destination that answers queries from rows held
  * in memory: a backfill that NULLs a column is flagged, a table that shrinks
  * is not, a connector-code or destination change opens a check, a reset's
  * baseline survives the drop, a backfill that rewrites some rows of a large
@@ -16,13 +16,14 @@ process.env.ENCRYPTION_KEY =
   process.env.ENCRYPTION_KEY ??
   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+import { connectorDefinitions } from "../database/pg/schema";
+import { Flow, FlowDataDiff } from "../database/workspace-schema";
 import {
-  ConnectorDefinition,
-  DatabaseConnection,
-  Flow,
-  FlowDataDiff,
-  SourceConnection,
-} from "../database/workspace-schema";
+  ensureTestDatabaseConnection,
+  ensureTestSourceConnection,
+  ensureTestWorkspace,
+  setupPgTestDb,
+} from "../test-support/pg-test";
 import type { DatabaseDriver } from "../databases/driver";
 import { databaseRegistry } from "../databases/registry";
 import { createFlowSyncTools } from "../agent-lib/tools/flow-sync-tools";
@@ -46,7 +47,7 @@ const queries: string[] = [];
 
 const fakeDriver = {
   getMetadata: () => ({
-    type: "fakesql",
+    type: "postgresql",
     displayName: "Fake SQL",
     consoleLanguage: "sql",
   }),
@@ -234,36 +235,40 @@ const people = (n: number, emailEvery = 1): Row[] =>
 }
 
 async function main() {
-  const mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  const pg = await setupPgTestDb();
+  let mongo: MongoMemoryServer | undefined;
   try {
+    mongo = await MongoMemoryServer.create();
+    await mongoose.connect(mongo.getUri());
     const workspaceId = new Types.ObjectId();
     const connectionId = new Types.ObjectId();
     const otherConnectionId = new Types.ObjectId();
-    for (const _id of [connectionId, otherConnectionId]) {
-      await DatabaseConnection.collection.insertOne({
-        _id,
-        workspaceId,
+    const workspace = await ensureTestWorkspace(pg.db, {
+      id: String(workspaceId),
+    });
+    for (const connection of [connectionId, otherConnectionId]) {
+      await ensureTestDatabaseConnection(pg.db, {
+        id: String(connection),
+        workspaceId: workspace.id,
         name: "warehouse",
-        type: "fakesql",
-        connection: {},
+        type: "postgresql",
       });
     }
     // A workspace connector: no built-in source connector is left. Its
     // code fingerprint is the index row's runtime and source commit.
-    await ConnectorDefinition.collection.insertOne({
-      workspaceId,
+    await pg.db.insert(connectorDefinitions).values({
+      workspaceId: workspace.uuid,
       slug: "close",
       runtime: "node",
+      sha: "c0ffee",
       sourceSha: "c0ffee",
     });
     const sourceId = new Types.ObjectId();
-    await SourceConnection.collection.insertOne({
-      _id: sourceId,
-      workspaceId,
+    await ensureTestSourceConnection(pg.db, {
+      id: String(sourceId),
+      workspaceId: workspace.id,
       name: "fr_close",
       type: "ws:close",
-      config: {},
     });
     const flowId = new Types.ObjectId();
     await Flow.collection.insertOne({
@@ -500,8 +505,9 @@ async function main() {
 
     console.info("data-diff.db.test: ok");
   } finally {
+    await pg.close();
     await mongoose.disconnect();
-    await mongo.stop();
+    await mongo?.stop();
   }
 }
 
