@@ -237,6 +237,17 @@ export interface McpRepository {
     workspaceId: string,
     serverIds: readonly string[],
   ): Promise<McpConnectionConfigRecord[]>;
+  /**
+   * List workspace-shared (`userId === null`) configs AND the given user's
+   * per-user configs (`userId !== null`) across `serverIds`, resolving legacy
+   * session user IDs against Postgres `users(id, legacy_id)` during mixed-mode
+   * rollout.
+   */
+  listConnectionConfigsForUser(
+    workspaceId: string,
+    serverIds: readonly string[],
+    userId: string | null,
+  ): Promise<McpConnectionConfigRecord[]>;
   findConnectionConfig(
     workspaceId: string,
     serverId: string,
@@ -266,6 +277,15 @@ export interface McpRepository {
     now?: Date,
   ): Promise<McpOAuthFlowRecord | null>;
   deleteOAuthFlowById(flowId: string, workspaceId?: string): Promise<boolean>;
+
+  /**
+   * Compare two user identifiers across legacy Mongo IDs and PG UUIDv7s so
+   * OAuth callback ownership checks work seamlessly during mixed-mode rollout.
+   */
+  isSameUser(
+    userIdA: string | null | undefined,
+    userIdB: string | null | undefined,
+  ): Promise<boolean>;
 
   // ── Per-user tool grants ─────────────────────────────────────────────────
   listToolGrantsForUser(

@@ -371,6 +371,45 @@ export class PgMcpRepository implements McpRepository {
     return rows.map(pgMcpConnectionConfigToRecord);
   }
 
+  async listConnectionConfigsForUser(
+    workspaceId: string,
+    serverIds: readonly string[],
+    userId: string | null,
+    db: MakoPgDb = this.getDb(),
+  ): Promise<McpConnectionConfigRecord[]> {
+    const wsUuid = parseUuidOrNull(workspaceId);
+    if (!wsUuid || serverIds.length === 0) return [];
+    const serverUuids = serverIds
+      .map(parseUuidOrNull)
+      .filter((u): u is string => u !== null);
+    if (serverUuids.length === 0) return [];
+
+    const normalizedUser = normalizeConfigUserId(userId);
+    const userUuid =
+      normalizedUser === null
+        ? null
+        : await this.resolveUserUuid(normalizedUser, db);
+    const userCondition = userUuid
+      ? or(
+          isNull(mcpConnectionConfigs.userId),
+          eq(mcpConnectionConfigs.userId, userUuid),
+        )
+      : isNull(mcpConnectionConfigs.userId);
+
+    const rows = await db
+      .select()
+      .from(mcpConnectionConfigs)
+      .where(
+        and(
+          eq(mcpConnectionConfigs.workspaceId, wsUuid),
+          inArray(mcpConnectionConfigs.serverId, serverUuids),
+          userCondition,
+        ),
+      )
+      .orderBy(asc(mcpConnectionConfigs.id));
+    return rows.map(pgMcpConnectionConfigToRecord);
+  }
+
   async findConnectionConfig(
     workspaceId: string,
     serverId: string,
@@ -679,6 +718,29 @@ export class PgMcpRepository implements McpRepository {
       .where(and(...conditions))
       .returning({ id: mcpOauthFlows.id });
     return rows.length > 0;
+  }
+
+  async isSameUser(
+    userIdA: string | null | undefined,
+    userIdB: string | null | undefined,
+    db: MakoPgDb = this.getDb(),
+  ): Promise<boolean> {
+    const a = normalizeConfigUserId(userIdA);
+    const b = normalizeConfigUserId(userIdB);
+    if (!a || !b) return false;
+    if (a === b) return true;
+    if (
+      isUuidString(a) &&
+      isUuidString(b) &&
+      a.toLowerCase() === b.toLowerCase()
+    ) {
+      return true;
+    }
+    const [uuidA, uuidB] = await Promise.all([
+      this.resolveUserUuid(a, db),
+      this.resolveUserUuid(b, db),
+    ]);
+    return Boolean(uuidA && uuidB && uuidA === uuidB);
   }
 
   // ── Tool grants ──────────────────────────────────────────────────────────

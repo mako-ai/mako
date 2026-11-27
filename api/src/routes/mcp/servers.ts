@@ -48,10 +48,12 @@ mcpServerRoutes.openapi(
         return fail(c, 400, "Valid workspace ID is required");
       }
       const user = (c as AuthenticatedContext).get("user");
+      const currentUserId = user?.id ?? null;
       const servers = await mcpRepo.listServersByWorkspace(workspaceId);
-      const configs = await mcpRepo.listConnectionConfigsByServerIds(
+      const configs = await mcpRepo.listConnectionConfigsForUser(
         workspaceId,
         servers.map(s => s.id),
+        currentUserId,
       );
 
       // For OAuth servers a credential only counts once tokens exist.
@@ -62,8 +64,6 @@ mcpServerRoutes.openapi(
         server.authType === "oauth"
           ? !!cfg.oauthTokensEncrypted
           : Object.keys(cfg.headersEncrypted ?? {}).length > 0;
-
-      const currentUserId = user?.id ?? null;
 
       return c.json({
         success: true,
@@ -80,7 +80,7 @@ mcpServerRoutes.openapi(
               configs.some(
                 cfg =>
                   cfg.serverId === server.id &&
-                  cfg.userId === currentUserId &&
+                  cfg.userId !== null &&
                   hasUsableCredential(server, cfg),
               ),
           }),

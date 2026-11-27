@@ -38,6 +38,10 @@ import {
   type ChatMessageRow,
   type ChatRow,
 } from "../../database/pg/schema/chat";
+import {
+  sanitizePgJsonValue,
+  sanitizePgString,
+} from "../../utils/message-sanitizer";
 import { encodeChatListCursor } from "./cursor";
 import {
   computeMessageFingerprint,
@@ -52,10 +56,12 @@ import type {
   ChatAttachmentRecord,
   ChatListEntry,
   ChatLocalAcp,
+  ChatOwnershipMeta,
   ChatRecord,
   ChatRepository,
   CreateChatAttachmentInput,
   CreateChatInput,
+  EnsureChatExistsInput,
   SaveChatMessagesInput,
   StoredChatMessage,
   UpdateChatThreadPatch,
@@ -66,11 +72,15 @@ function parseUuidOrNull(raw: string | null | undefined): string | null {
   return parseEntityId(raw)?.uuid ?? null;
 }
 
+function sanitizeNullableString(raw: string | null | undefined): string | null {
+  return raw == null ? null : sanitizePgString(raw);
+}
+
 /** Encode a nullable jsonb parameter preserving explicit JSON `null` (`'null'::jsonb`) vs SQL `NULL`. */
 function toPgJsonbValue(hasValue: boolean, value: unknown) {
   if (!hasValue) return null;
   if (value === null) return sql`'null'::jsonb`;
-  return value;
+  return sanitizePgJsonValue(value);
 }
 
 type PgTx = Parameters<Parameters<MakoPgDb["transaction"]>[0]>[0];
@@ -187,6 +197,7 @@ export class PgChatRepository implements ChatRepository {
     incomingMessages: readonly StoredChatMessage[],
     now: Date,
   ): Promise<void> {
+    const cleanIncoming = incomingMessages.map(msg => sanitizePgJsonValue(msg));
     const existingRows = await tx
       .select()
       .from(chatMessages)
@@ -233,15 +244,12 @@ export class PgChatRepository implements ChatRepository {
         usageEntries: [],
       }).messages;
 
-      const commonLen = Math.min(
-        existingHydrated.length,
-        incomingMessages.length,
-      );
+      const commonLen = Math.min(existingHydrated.length, cleanIncoming.length);
       while (changedFrom < commonLen) {
         if (
           existingRows[changedFrom].ordinal !== changedFrom ||
           computeMessageFingerprint(existingHydrated[changedFrom]) !==
-            computeMessageFingerprint(incomingMessages[changedFrom])
+            computeMessageFingerprint(cleanIncoming[changedFrom])
         ) {
           break;
         }
@@ -261,11 +269,11 @@ export class PgChatRepository implements ChatRepository {
       }
     }
 
-    if (changedFrom >= incomingMessages.length) {
+    if (changedFrom >= cleanIncoming.length) {
       return;
     }
 
-    const tailMessages = incomingMessages.slice(changedFrom);
+    const tailMessages = cleanIncoming.slice(changedFrom);
     const insertedMsgs = await tx
       .insert(chatMessages)
       .values(
@@ -453,15 +461,15 @@ export class PgChatRepository implements ChatRepository {
           id: chatUuid,
           workspaceId: wsUuid,
           createdBy: createdByUuid,
-          title: input.title ?? "New Chat",
+          title: sanitizePgString(input.title ?? "New Chat"),
           titleGenerated: input.titleGenerated ?? false,
           source,
           appId: appUuid,
-          threadId: input.threadId ?? null,
+          threadId: sanitizeNullableString(input.threadId),
           activeAgent: input.activeAgent ?? null,
           pinnedConsoleId: pinnedConsoleUuid,
-          systemPrompt: input.systemPrompt ?? null,
-          workspacePrompt: input.workspacePrompt ?? null,
+          systemPrompt: sanitizeNullableString(input.systemPrompt),
+          workspacePrompt: sanitizeNullableString(input.workspacePrompt),
           createdAt: now,
           updatedAt,
         })
@@ -472,6 +480,36 @@ export class PgChatRepository implements ChatRepository {
       }
       return this.hydrateChat(row, tx);
     });
+  }
+
+  async ensureExists(
+    input: EnsureChatExistsInput,
+    db: MakoPgDb = this.getDb(),
+  ): Promise<void> {
+    const chatUuid = parseUuidOrNull(input.id);
+    const wsUuid = parseUuidOrNull(input.workspaceId);
+    if (!chatUuid || !wsUuid) return;
+    const createdByUuid = await this.resolveUserUuid(input.createdBy, db);
+    const now = input.now ?? new Date();
+    const cleanLocalAcp = input.localAcp
+      ? sanitizePgJsonValue(input.localAcp)
+      : null;
+
+    await db
+      .insert(chats)
+      .values({
+        id: chatUuid,
+        workspaceId: wsUuid,
+        createdBy: createdByUuid,
+        title: "New Chat",
+        titleGenerated: false,
+        source: "chat",
+        threadId: sanitizePgString(input.threadId ?? randomUUID()),
+        localAcp: cleanLocalAcp,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoNothing({ target: chats.id });
   }
 
   async findById(
@@ -523,8 +561,9 @@ export class PgChatRepository implements ChatRepository {
   async findOwnershipMeta(
     workspaceId: string,
     chatId: string,
+    actorUserId?: string,
     db: MakoPgDb = this.getDb(),
-  ): Promise<{ createdBy: string | null; titleGenerated: boolean } | null> {
+  ): Promise<ChatOwnershipMeta | null> {
     const wsUuid = parseUuidOrNull(workspaceId);
     const chatUuid = parseUuidOrNull(chatId);
     if (!wsUuid || !chatUuid) return null;
@@ -537,9 +576,22 @@ export class PgChatRepository implements ChatRepository {
       .where(and(eq(chats.id, chatUuid), eq(chats.workspaceId, wsUuid)))
       .limit(1);
     if (!rows[0]) return null;
+    const createdBy = rows[0].createdBy
+      ? rows[0].createdBy.toLowerCase()
+      : null;
+    if (actorUserId === undefined) {
+      return {
+        createdBy,
+        titleGenerated: rows[0].titleGenerated,
+      };
+    }
+    const actorUuid = await this.resolveUserUuid(actorUserId, db);
     return {
-      createdBy: rows[0].createdBy ? rows[0].createdBy.toLowerCase() : null,
+      createdBy,
       titleGenerated: rows[0].titleGenerated,
+      isOwnedByActor: Boolean(
+        createdBy && actorUuid && createdBy === actorUuid,
+      ),
     };
   }
 
@@ -679,7 +731,9 @@ export class PgChatRepository implements ChatRepository {
     const createdByUuid = await this.resolveUserUuid(input.userId, db);
     const usage =
       input.usage && input.usage.totalTokens > 0 ? input.usage : null;
-    const nextLocalAcp = input.localAcp ?? null;
+    const nextLocalAcp = input.localAcp
+      ? sanitizePgJsonValue(input.localAcp)
+      : null;
 
     return db.transaction(async tx => {
       // 1. Upsert chat header, clearing turn_checkpoint & updating local_acp / usage rollups.
@@ -692,7 +746,7 @@ export class PgChatRepository implements ChatRepository {
           title: "New Chat",
           titleGenerated: false,
           source: "chat",
-          threadId: input.threadIdOnInsert ?? randomUUID(),
+          threadId: sanitizePgString(input.threadIdOnInsert ?? randomUUID()),
           turnCheckpoint: null,
           localAcp: nextLocalAcp,
           usagePromptTokens: usage ? usage.promptTokens : 0,
@@ -749,7 +803,7 @@ export class PgChatRepository implements ChatRepository {
           chatId: chatUuid,
           entryIndex,
           assistantMessageIndex: usage.assistantMessageIndex,
-          model: usage.model ?? null,
+          model: sanitizeNullableString(usage.model),
           promptTokens: usage.promptTokens,
           completionTokens: usage.completionTokens,
           totalTokens: usage.totalTokens,
@@ -787,11 +841,19 @@ export class PgChatRepository implements ChatRepository {
     const pinnedConsoleUuid = parseUuidOrNull(record.pinnedConsoleId);
     const checkpointJson = record.turnCheckpoint
       ? {
-          message: record.turnCheckpoint.message,
+          message: sanitizePgJsonValue(record.turnCheckpoint.message),
           at: record.turnCheckpoint.at.toISOString(),
-          streamId: record.turnCheckpoint.streamId,
+          streamId: sanitizePgString(record.turnCheckpoint.streamId),
         }
       : null;
+    const cleanTitle = sanitizePgString(record.title);
+    const cleanThreadId = sanitizeNullableString(record.threadId);
+    const cleanActiveStreamId = sanitizeNullableString(record.activeStreamId);
+    const cleanLocalAcp = record.localAcp
+      ? sanitizePgJsonValue(record.localAcp)
+      : null;
+    const cleanSystemPrompt = sanitizeNullableString(record.systemPrompt);
+    const cleanWorkspacePrompt = sanitizeNullableString(record.workspacePrompt);
 
     return db.transaction(async tx => {
       const inserted = await tx
@@ -800,19 +862,19 @@ export class PgChatRepository implements ChatRepository {
           id: chatUuid,
           workspaceId: wsUuid,
           createdBy: createdByUuid,
-          title: record.title,
+          title: cleanTitle,
           titleGenerated: record.titleGenerated,
           source: record.source,
           appId: appUuid,
-          threadId: record.threadId,
+          threadId: cleanThreadId,
           activeAgent: record.activeAgent,
           pinnedConsoleId: pinnedConsoleUuid,
-          activeStreamId: record.activeStreamId,
+          activeStreamId: cleanActiveStreamId,
           activeStreamAliveAt: record.activeStreamAliveAt,
           turnCheckpoint: checkpointJson,
-          localAcp: record.localAcp,
-          systemPrompt: record.systemPrompt,
-          workspacePrompt: record.workspacePrompt,
+          localAcp: cleanLocalAcp,
+          systemPrompt: cleanSystemPrompt,
+          workspacePrompt: cleanWorkspacePrompt,
           usagePromptTokens: record.usage.promptTokens,
           usageCompletionTokens: record.usage.completionTokens,
           usageTotalTokens: record.usage.totalTokens,
@@ -827,19 +889,19 @@ export class PgChatRepository implements ChatRepository {
           target: chats.id,
           set: {
             createdBy: createdByUuid,
-            title: record.title,
+            title: cleanTitle,
             titleGenerated: record.titleGenerated,
             source: record.source,
             appId: appUuid,
-            threadId: record.threadId,
+            threadId: cleanThreadId,
             activeAgent: record.activeAgent,
             pinnedConsoleId: pinnedConsoleUuid,
-            activeStreamId: record.activeStreamId,
+            activeStreamId: cleanActiveStreamId,
             activeStreamAliveAt: record.activeStreamAliveAt,
             turnCheckpoint: checkpointJson,
-            localAcp: record.localAcp,
-            systemPrompt: record.systemPrompt,
-            workspacePrompt: record.workspacePrompt,
+            localAcp: cleanLocalAcp,
+            systemPrompt: cleanSystemPrompt,
+            workspacePrompt: cleanWorkspacePrompt,
             usagePromptTokens: record.usage.promptTokens,
             usageCompletionTokens: record.usage.completionTokens,
             usageTotalTokens: record.usage.totalTokens,
@@ -873,7 +935,7 @@ export class PgChatRepository implements ChatRepository {
               chatId: chatUuid,
               entryIndex: h.entryIndex ?? idx,
               assistantMessageIndex: h.messageIndex,
-              model: h.model ?? null,
+              model: sanitizeNullableString(h.model),
               promptTokens: h.promptTokens,
               completionTokens: h.completionTokens,
               totalTokens: h.totalTokens,
@@ -922,7 +984,9 @@ export class PgChatRepository implements ChatRepository {
 
     const now = patch.updatedAt ?? new Date();
     const setValues: Record<string, unknown> = { updatedAt: now };
-    if (patch.threadId !== undefined) setValues.threadId = patch.threadId;
+    if (patch.threadId !== undefined) {
+      setValues.threadId = sanitizePgString(patch.threadId);
+    }
     if (patch.activeAgent !== undefined) {
       setValues.activeAgent = patch.activeAgent;
     }
@@ -930,10 +994,10 @@ export class PgChatRepository implements ChatRepository {
       setValues.pinnedConsoleId = parseUuidOrNull(patch.pinnedConsoleId);
     }
     if (patch.systemPrompt !== undefined) {
-      setValues.systemPrompt = patch.systemPrompt;
+      setValues.systemPrompt = sanitizeNullableString(patch.systemPrompt);
     }
     if (patch.workspacePrompt !== undefined) {
-      setValues.workspacePrompt = patch.workspacePrompt;
+      setValues.workspacePrompt = sanitizeNullableString(patch.workspacePrompt);
     }
 
     return db.transaction(async tx => {
@@ -963,9 +1027,10 @@ export class PgChatRepository implements ChatRepository {
     if (!wsUuid || !chatUuid) return false;
     const userUuid = await this.resolveUserUuid(userId, db);
     if (!userUuid) return false;
+    const cleanLocalAcp = localAcp ? sanitizePgJsonValue(localAcp) : null;
     const rows = await db
       .update(chats)
-      .set({ localAcp })
+      .set({ localAcp: cleanLocalAcp })
       .where(
         and(
           eq(chats.id, chatUuid),
@@ -992,7 +1057,7 @@ export class PgChatRepository implements ChatRepository {
     if (!userUuid) return false;
     const rows = await db
       .update(chats)
-      .set({ title, updatedAt: now })
+      .set({ title: sanitizePgString(title), updatedAt: now })
       .where(
         and(
           eq(chats.id, chatUuid),
@@ -1015,7 +1080,7 @@ export class PgChatRepository implements ChatRepository {
     if (!wsUuid || !chatUuid) return false;
     const rows = await db
       .update(chats)
-      .set({ title, titleGenerated: true })
+      .set({ title: sanitizePgString(title), titleGenerated: true })
       .where(
         and(
           eq(chats.id, chatUuid),
@@ -1203,9 +1268,9 @@ export class PgChatRepository implements ChatRepository {
       .set({
         activeStreamAliveAt: now,
         turnCheckpoint: {
-          message,
+          message: sanitizePgJsonValue(message),
           at: now.toISOString(),
-          streamId,
+          streamId: sanitizePgString(streamId),
         },
       })
       .where(and(...conditions));
@@ -1259,11 +1324,11 @@ export class PgChatRepository implements ChatRepository {
         workspaceId: wsUuid,
         chatId: chatUuid,
         createdBy: createdByUuid,
-        storageKey: input.storageKey,
-        mediaType: input.mediaType,
-        filename: input.filename ?? null,
+        storageKey: sanitizePgString(input.storageKey),
+        mediaType: sanitizePgString(input.mediaType),
+        filename: sanitizeNullableString(input.filename),
         size: input.size,
-        sha256: input.sha256,
+        sha256: sanitizePgString(input.sha256),
         createdAt: now,
         updatedAt: input.updatedAt ?? now,
       })
@@ -1313,11 +1378,11 @@ export class PgChatRepository implements ChatRepository {
         workspaceId: wsUuid,
         chatId: chatUuid,
         createdBy: createdByUuid,
-        storageKey: record.storageKey,
-        mediaType: record.mediaType,
-        filename: record.filename,
+        storageKey: sanitizePgString(record.storageKey),
+        mediaType: sanitizePgString(record.mediaType),
+        filename: sanitizeNullableString(record.filename),
         size: record.size,
-        sha256: record.sha256,
+        sha256: sanitizePgString(record.sha256),
         createdAt: record.createdAt,
         updatedAt: record.updatedAt,
       })

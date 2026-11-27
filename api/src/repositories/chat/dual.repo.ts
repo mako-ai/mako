@@ -38,10 +38,12 @@ import type {
   ChatAttachmentRecord,
   ChatListEntry,
   ChatLocalAcp,
+  ChatOwnershipMeta,
   ChatRecord,
   ChatRepository,
   CreateChatAttachmentInput,
   CreateChatInput,
+  EnsureChatExistsInput,
   SaveChatMessagesInput,
   StoredChatMessage,
   UpdateChatThreadPatch,
@@ -235,6 +237,43 @@ export class DualChatRepository implements ChatRepository {
     );
   }
 
+  async ensureExists(input: EnsureChatExistsInput): Promise<void> {
+    const now = input.now ?? new Date();
+    const threadId = input.threadId ?? randomUUID();
+    const pgPrimary = await this.isPgPrimaryMode(input.workspaceId);
+    const normalized: EnsureChatExistsInput = {
+      ...input,
+      threadId,
+      now,
+    };
+
+    await this.router.executeWrite(
+      {
+        domain: CHAT_DOMAIN,
+        operation: "ensureExists",
+        workspaceId: input.workspaceId,
+        entityId: input.id,
+        retryPayload: {
+          entity: "chats",
+          workspaceId: input.workspaceId,
+          chatId: input.id,
+        },
+      },
+      {
+        mongo: async () => {
+          const mongoCreator = pgPrimary
+            ? await this.resolveMongoUserIdForReverseSync(normalized.createdBy)
+            : normalized.createdBy;
+          await this.mongo.ensureExists({
+            ...normalized,
+            createdBy: mongoCreator,
+          });
+        },
+        pg: () => this.pg.ensureExists(normalized),
+      },
+    );
+  }
+
   async findById(
     chatId: string,
     workspaceId?: string,
@@ -364,9 +403,11 @@ export class DualChatRepository implements ChatRepository {
   async findOwnershipMeta(
     workspaceId: string,
     chatId: string,
-  ): Promise<{ createdBy: string | null; titleGenerated: boolean } | null> {
+    actorUserId?: string,
+  ): Promise<ChatOwnershipMeta | null> {
     const shadowUserMap = new Map<string, string>();
     const collectedUserIds = new Set<string>();
+    if (actorUserId) collectedUserIds.add(actorUserId);
     let mongoRan = false;
     let pgRan = false;
     const resolveShadowUser = (id: string | null): string | null =>
@@ -383,16 +424,39 @@ export class DualChatRepository implements ChatRepository {
       },
       {
         mongo: async () => {
-          const res = await this.mongo.findOwnershipMeta(workspaceId, chatId);
+          const res = await this.mongo.findOwnershipMeta(
+            workspaceId,
+            chatId,
+            actorUserId,
+          );
           if (res?.createdBy) collectedUserIds.add(res.createdBy);
+          let resolved = res;
+          if (
+            res &&
+            actorUserId !== undefined &&
+            !res.isOwnedByActor &&
+            isUuidString(actorUserId) &&
+            this.hasPg() &&
+            !this.isForceMongoOnly()
+          ) {
+            const mongoActor =
+              await this.resolveMongoUserIdForReverseSync(actorUserId);
+            if (mongoActor && res.createdBy === mongoActor) {
+              resolved = { ...res, isOwnedByActor: true };
+            }
+          }
           mongoRan = true;
           if (pgRan) {
             await this.populateShadowUserMap(shadowUserMap, collectedUserIds);
           }
-          return res;
+          return resolved;
         },
         pg: async () => {
-          const res = await this.pg.findOwnershipMeta(workspaceId, chatId);
+          const res = await this.pg.findOwnershipMeta(
+            workspaceId,
+            chatId,
+            actorUserId,
+          );
           if (res?.createdBy) collectedUserIds.add(res.createdBy);
           pgRan = true;
           if (mongoRan) {

@@ -61,6 +61,8 @@ import {
   clearVerifierRegistryForTests,
   runParityVerification,
 } from "../../migration/verifier";
+import { buildMcpToolsForChat } from "../../services/mcp-client.service";
+import { completeMcpOAuthFlow } from "../../services/mcp-oauth.service";
 import {
   DualMcpRepository,
   isDuplicateServerNameError,
@@ -70,6 +72,8 @@ import {
   McpDuplicateServerNameError,
   MongoMcpRepository,
   PgMcpRepository,
+  resetMcpRepoForTests,
+  setMcpRepoForTests,
 } from "./index";
 
 describe("Phase 3 MCP repository & migration contract suite", () => {
@@ -945,5 +949,256 @@ describe("Phase 3 MCP repository & migration contract suite", () => {
     expect(
       await mongoRepo.listToolGrantsForUser(wsId, server.id, legacyUserId),
     ).toEqual([]);
+  });
+
+  it("matches legacy session user IDs against PG UUIDv7 in OAuth callbacks and per-user MCP configs (PR #1558 [4717349100], [4717349735])", async () => {
+    const legacyOwnerId = "lucia_mcp_own01";
+    const legacyOwnerUuid = generateUuidv7();
+    const legacyOtherId = "lucia_mcp_oth02";
+    const legacyOtherUuid = generateUuidv7();
+
+    await pg.query(
+      `INSERT INTO users (id, legacy_id, email) VALUES
+        ($1::uuid, $2, 'mcp-mixed-owner@example.com'),
+        ($3::uuid, $4, 'mcp-mixed-other@example.com')`,
+      [legacyOwnerUuid, legacyOwnerId, legacyOtherUuid, legacyOtherId],
+    );
+
+    const router = new MigrationRouter({
+      getDb: () => db,
+      hasPg: () => true,
+      enablePubSub: false,
+    });
+    const dualRepo = new DualMcpRepository({
+      mongo: mongoRepo,
+      pg: pgRepo,
+      router,
+      getDb: () => db,
+      hasPg: () => true,
+      isForceMongoOnly: () => false,
+    });
+
+    await router.setDomainState({
+      domain: MCP_DOMAIN,
+      workspaceId: wsId,
+      mode: "pg_only",
+    });
+
+    // ── [4717349100] OAuth callback user check in PG-read mode with legacy sessionUserId ──
+    const oauthServer = await dualRepo.createServer({
+      workspaceId: wsId,
+      name: "Mixed Mode OAuth Server",
+      connectorType: "slack",
+      transport: { type: "http", url: "https://mcp.slack.com/mcp" },
+      authType: "oauth",
+      authPerformer: "user",
+      writeScope: "read",
+      status: "awaiting_auth",
+      createdBy: legacyOwnerId,
+    });
+
+    const flow = await dualRepo.upsertOAuthFlow({
+      state: "mixed-mode-oauth-state",
+      workspaceId: wsId,
+      serverId: oauthServer.id,
+      configUserId: legacyOwnerId,
+      startedByUserId: legacyOwnerId,
+      codeVerifierEncrypted: "iv_pkce:cipher_mixed",
+    });
+    // PG returns UUIDv7 while auth (still on Mongo) supplies the 15-char Lucia ID.
+    expect(flow.startedByUserId).toBe(legacyOwnerUuid);
+    expect(await dualRepo.isSameUser(flow.startedByUserId, legacyOwnerId)).toBe(
+      true,
+    );
+    expect(
+      await dualRepo.isSameUser(flow.startedByUserId, legacyOwnerUuid),
+    ).toBe(true);
+    expect(await dualRepo.isSameUser(flow.startedByUserId, legacyOtherId)).toBe(
+      false,
+    );
+
+    // Exercise real `completeMcpOAuthFlow`: remove server so owner check passes and hits
+    // "MCP server no longer exists" (line 349), while a different user fails with
+    // "This OAuth flow was started by a different user" (line 345).
+    const orphanServer = await dualRepo.createServer({
+      workspaceId: wsId,
+      name: "Temp OAuth Server",
+      connectorType: "slack",
+      transport: { type: "http", url: "https://mcp.slack.com/mcp" },
+      authType: "oauth",
+      authPerformer: "user",
+      writeScope: "read",
+      status: "awaiting_auth",
+      createdBy: legacyOwnerId,
+    });
+    await dualRepo.upsertOAuthFlow({
+      state: "mixed-mode-callback-check",
+      workspaceId: wsId,
+      serverId: orphanServer.id,
+      configUserId: legacyOwnerId,
+      startedByUserId: legacyOwnerId,
+      codeVerifierEncrypted: "iv_pkce:cipher_cb",
+    });
+    // Mock findServerById returning null after flow lookup so we test exact owner-check branch
+    // without touching the network.
+    const origFindServerById = dualRepo.findServerById.bind(dualRepo);
+    setMcpRepoForTests({
+      ...dualRepo,
+      listServersByWorkspace: id => dualRepo.listServersByWorkspace(id),
+      listActiveConnectedServers: id => dualRepo.listActiveConnectedServers(id),
+      findServerById: (sid, wsid) =>
+        sid === orphanServer.id
+          ? Promise.resolve(null)
+          : origFindServerById(sid, wsid),
+      createServer: inp => dualRepo.createServer(inp),
+      updateServer: (w, s, p) => dualRepo.updateServer(w, s, p),
+      deleteServerCascade: (w, s) => dualRepo.deleteServerCascade(w, s),
+      listConnectionConfigsByServerIds: (w, ids) =>
+        dualRepo.listConnectionConfigsByServerIds(w, ids),
+      listConnectionConfigsForUser: (w, ids, u) =>
+        dualRepo.listConnectionConfigsForUser(w, ids, u),
+      findConnectionConfig: (w, s, u) => dualRepo.findConnectionConfig(w, s, u),
+      upsertConnectionCredentials: inp =>
+        dualRepo.upsertConnectionCredentials(inp),
+      upsertConnectionOAuthTokens: inp =>
+        dualRepo.upsertConnectionOAuthTokens(inp),
+      clearServerOAuthTokens: (w, s, n) =>
+        dualRepo.clearServerOAuthTokens(w, s, n),
+      upsertOAuthFlow: inp => dualRepo.upsertOAuthFlow(inp),
+      findOAuthFlowByState: (st, n) => dualRepo.findOAuthFlowByState(st, n),
+      findOAuthFlowById: (fid, w, n) => dualRepo.findOAuthFlowById(fid, w, n),
+      deleteOAuthFlowById: (fid, w) => dualRepo.deleteOAuthFlowById(fid, w),
+      isSameUser: (a, b) => dualRepo.isSameUser(a, b),
+      listToolGrantsForUser: (w, s, u) =>
+        dualRepo.listToolGrantsForUser(w, s, u),
+      findToolGrantsForResolution: p => dualRepo.findToolGrantsForResolution(p),
+      upsertToolGrant: inp => dualRepo.upsertToolGrant(inp),
+      touchToolGrantLastUsed: p => dualRepo.touchToolGrantLastUsed(p),
+      deleteToolGrantById: (w, s, g, u) =>
+        dualRepo.deleteToolGrantById(w, s, g, u),
+    });
+
+    try {
+      await expect(
+        completeMcpOAuthFlow({
+          state: "mixed-mode-callback-check",
+          code: "dummy-code",
+          sessionUserId: legacyOwnerId,
+        }),
+      ).rejects.toThrow("MCP server no longer exists");
+
+      await expect(
+        completeMcpOAuthFlow({
+          state: "mixed-mode-callback-check",
+          code: "dummy-code",
+          sessionUserId: legacyOtherId,
+        }),
+      ).rejects.toThrow("This OAuth flow was started by a different user");
+
+      // ── [4717349735] Per-user MCP tools & connection status with legacy session userId ──
+      const perUserServer = await dualRepo.createServer({
+        workspaceId: wsId,
+        name: "Personal CRM",
+        connectorType: "close",
+        transport: { type: "http", url: "https://mcp.close.com/mcp" },
+        authType: "api_key",
+        authPerformer: "user",
+        writeScope: "read",
+        status: "connected",
+        createdBy: legacyOwnerId,
+        cachedTools: [
+          {
+            name: "lead_search",
+            description: "Search leads",
+            annotations: { readOnlyHint: true },
+            inputSchema: { type: "object", properties: {} },
+          },
+        ],
+      });
+      const sharedServer = await dualRepo.createServer({
+        workspaceId: wsId,
+        name: "Shared Docs",
+        connectorType: "custom",
+        transport: { type: "http", url: "https://mcp.example.com/mcp" },
+        authType: "api_key",
+        authPerformer: "workspace",
+        writeScope: "read",
+        status: "connected",
+        createdBy: legacyOwnerId,
+        cachedTools: [
+          {
+            name: "doc_search",
+            description: "Search docs",
+            annotations: { readOnlyHint: true },
+            inputSchema: { type: "object", properties: {} },
+          },
+        ],
+      });
+
+      await dualRepo.upsertConnectionCredentials({
+        workspaceId: wsId,
+        serverId: perUserServer.id,
+        userId: legacyOwnerId,
+        headersEncrypted: { Authorization: "iv_owner:cipher_owner" },
+      });
+      await dualRepo.upsertConnectionCredentials({
+        workspaceId: wsId,
+        serverId: sharedServer.id,
+        userId: null,
+        headersEncrypted: { Authorization: "iv_ws:cipher_ws" },
+      });
+
+      // listConnectionConfigsForUser returns workspace-shared + owner's config (NOT other user's).
+      const ownerConfigs = await dualRepo.listConnectionConfigsForUser(
+        wsId,
+        [perUserServer.id, sharedServer.id],
+        legacyOwnerId,
+      );
+      expect(
+        ownerConfigs.some(
+          c => c.serverId === perUserServer.id && c.userId !== null,
+        ),
+      ).toBe(true);
+      expect(
+        ownerConfigs.some(
+          c => c.serverId === sharedServer.id && c.userId === null,
+        ),
+      ).toBe(true);
+
+      const otherConfigs = await dualRepo.listConnectionConfigsForUser(
+        wsId,
+        [perUserServer.id, sharedServer.id],
+        legacyOtherId,
+      );
+      expect(
+        otherConfigs.some(
+          c => c.serverId === perUserServer.id && c.userId !== null,
+        ),
+      ).toBe(false);
+      expect(
+        otherConfigs.some(
+          c => c.serverId === sharedServer.id && c.userId === null,
+        ),
+      ).toBe(true);
+
+      // buildMcpToolsForChat exposes personal CRM tools for legacyOwnerId, not legacyOtherId.
+      const ownerTools = await buildMcpToolsForChat({
+        workspaceId: wsId,
+        userId: legacyOwnerId,
+      });
+      expect(ownerTools.allToolNames).toContain("mcp_personal_crm_lead_search");
+      expect(ownerTools.allToolNames).toContain("mcp_shared_docs_doc_search");
+
+      const otherTools = await buildMcpToolsForChat({
+        workspaceId: wsId,
+        userId: legacyOtherId,
+      });
+      expect(otherTools.allToolNames).not.toContain(
+        "mcp_personal_crm_lead_search",
+      );
+      expect(otherTools.allToolNames).toContain("mcp_shared_docs_doc_search");
+    } finally {
+      resetMcpRepoForTests();
+    }
   });
 });

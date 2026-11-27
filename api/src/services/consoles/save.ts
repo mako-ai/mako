@@ -93,15 +93,19 @@ function pathConflict(existing: SavedConsoleRecord, path: string) {
  * connectionId is optional - consoles can be saved without being associated
  * with a specific database. Without one, the workspace's first connection
  * (if any) is used.
+ *
+ * `listDatabaseConnectionMetadata` sorts newest-first (`createdAt` desc) in
+ * both Mongo and Postgres, so the last element restores the original
+ * oldest/first-created connection order.
  */
-async function connectionOrFirst(
+export async function connectionOrFirst(
   workspaceId: string,
   connectionId: string | undefined,
 ): Promise<string | undefined> {
   if (connectionId) return connectionId;
   const databases =
     await connectionsRepo.listDatabaseConnectionMetadata(workspaceId);
-  return databases.length > 0 ? databases[0].id : undefined;
+  return databases.length > 0 ? databases[databases.length - 1].id : undefined;
 }
 
 /** A connectionId from another workspace (or no such connection): 404. */

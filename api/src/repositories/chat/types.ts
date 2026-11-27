@@ -238,9 +238,26 @@ export interface CreateChatAttachmentInput {
   updatedAt?: Date;
 }
 
+export interface EnsureChatExistsInput {
+  id: string;
+  workspaceId: string;
+  createdBy: string | null;
+  localAcp?: ChatLocalAcp | null;
+  threadId?: string;
+  now?: Date;
+}
+
+export interface ChatOwnershipMeta {
+  createdBy: string | null;
+  titleGenerated: boolean;
+  /** Present when `actorUserId` was supplied to `findOwnershipMeta`. */
+  isOwnedByActor?: boolean;
+}
+
 export interface ChatRepository {
   // ── Chat lifecycle & reads ───────────────────────────────────────────────
   create(input: CreateChatInput): Promise<ChatRecord>;
+  ensureExists(input: EnsureChatExistsInput): Promise<void>;
   findById(chatId: string, workspaceId?: string): Promise<ChatRecord | null>;
   findOwnedById(
     workspaceId: string,
@@ -250,7 +267,8 @@ export interface ChatRepository {
   findOwnershipMeta(
     workspaceId: string,
     chatId: string,
-  ): Promise<{ createdBy: string | null; titleGenerated: boolean } | null>;
+    actorUserId?: string,
+  ): Promise<ChatOwnershipMeta | null>;
   listUserChats(input: {
     workspaceId: string;
     userId: string;

@@ -3157,4 +3157,126 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
   async purgeWorkspaceContentIndex(workspaceId: string): Promise<void> {
     await this.purgeWorkspaceContentIndexReturningIds(workspaceId);
   }
+
+  /**
+   * Delete ONLY the specified captured IDs per table within `workspaceId`.
+   * Used by delayed Stage 2/3 `replaySyncToPg` purge retries so content
+   * re-created after a workspace repo reconnect is never wiped.
+   */
+  async deleteWorkspaceContentIndexByIds(
+    workspaceId: string,
+    idsByTable: {
+      saved_consoles?: readonly string[];
+      console_folders?: readonly string[];
+      entity_versions?: readonly string[];
+      notebook_indexes?: readonly string[];
+      notebook_folders?: readonly string[];
+    },
+  ): Promise<{
+    saved_consoles: string[];
+    console_folders: string[];
+    entity_versions: string[];
+    notebook_indexes: string[];
+    notebook_folders: string[];
+  }> {
+    const empty = {
+      saved_consoles: [] as string[],
+      console_folders: [] as string[],
+      entity_versions: [] as string[],
+      notebook_indexes: [] as string[],
+      notebook_folders: [] as string[],
+    };
+    const wsUuid = safePgUuid(workspaceId);
+    if (!wsUuid) return empty;
+    const toUuids = (ids: readonly string[] | undefined): string[] =>
+      (ids ?? []).map(safePgUuid).filter((u): u is string => u !== null);
+
+    const consoleUuids = toUuids(idsByTable.saved_consoles);
+    const folderUuids = toUuids(idsByTable.console_folders);
+    const versionUuids = toUuids(idsByTable.entity_versions);
+    const notebookUuids = toUuids(idsByTable.notebook_indexes);
+    const nbFolderUuids = toUuids(idsByTable.notebook_folders);
+
+    if (
+      consoleUuids.length === 0 &&
+      folderUuids.length === 0 &&
+      versionUuids.length === 0 &&
+      notebookUuids.length === 0 &&
+      nbFolderUuids.length === 0
+    ) {
+      return empty;
+    }
+
+    const db = this.getDb();
+    return db.transaction(async tx => {
+      const deletedConsoles =
+        consoleUuids.length > 0
+          ? await tx
+              .delete(savedConsoles)
+              .where(
+                and(
+                  eq(savedConsoles.workspaceId, wsUuid),
+                  inArray(savedConsoles.id, consoleUuids),
+                ),
+              )
+              .returning({ id: savedConsoles.id })
+          : [];
+      const deletedFolders =
+        folderUuids.length > 0
+          ? await tx
+              .delete(consoleFolders)
+              .where(
+                and(
+                  eq(consoleFolders.workspaceId, wsUuid),
+                  inArray(consoleFolders.id, folderUuids),
+                ),
+              )
+              .returning({ id: consoleFolders.id })
+          : [];
+      const deletedVersions =
+        versionUuids.length > 0
+          ? await tx
+              .delete(entityVersions)
+              .where(
+                and(
+                  eq(entityVersions.workspaceId, wsUuid),
+                  eq(entityVersions.entityType, "console"),
+                  inArray(entityVersions.id, versionUuids),
+                ),
+              )
+              .returning({ id: entityVersions.id })
+          : [];
+      const deletedNotebooks =
+        notebookUuids.length > 0
+          ? await tx
+              .delete(notebookIndexes)
+              .where(
+                and(
+                  eq(notebookIndexes.workspaceId, wsUuid),
+                  inArray(notebookIndexes.id, notebookUuids),
+                ),
+              )
+              .returning({ id: notebookIndexes.id })
+          : [];
+      const deletedNbFolders =
+        nbFolderUuids.length > 0
+          ? await tx
+              .delete(notebookFolders)
+              .where(
+                and(
+                  eq(notebookFolders.workspaceId, wsUuid),
+                  inArray(notebookFolders.id, nbFolderUuids),
+                ),
+              )
+              .returning({ id: notebookFolders.id })
+          : [];
+      return {
+        saved_consoles: deletedConsoles.map(r => toWireId(r.id)),
+        console_folders: deletedFolders.map(r => toWireId(r.id)),
+        entity_versions: deletedVersions.map(r => toWireId(r.id)),
+        notebook_indexes: deletedNotebooks.map(r => toWireId(r.id)),
+        notebook_folders: deletedNbFolders.map(r => toWireId(r.id)),
+      };
+    });
+  }
 }

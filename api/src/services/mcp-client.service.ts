@@ -364,9 +364,10 @@ async function resolveActiveServers(
   const servers = await mcpRepo.listActiveConnectedServers(workspaceId);
   if (servers.length === 0) return [];
 
-  const configs = await mcpRepo.listConnectionConfigsByServerIds(
+  const configs = await mcpRepo.listConnectionConfigsForUser(
     workspaceId,
     servers.map(s => s.id),
+    userId ?? null,
   );
 
   const resolved: ResolvedMcpServer[] = [];
@@ -375,7 +376,11 @@ async function resolveActiveServers(
       server.authPerformer === "user" ? (userId ?? null) : null;
     if (server.authPerformer === "user" && !userId) continue;
     const config = configs.find(
-      c => c.serverId === server.id && c.userId === wantUserId,
+      c =>
+        c.serverId === server.id &&
+        (server.authPerformer === "user"
+          ? c.userId !== null
+          : c.userId === null),
     );
     if (!config && server.authType !== "none") continue;
     // OAuth connections are only usable once tokens exist.

@@ -48,6 +48,8 @@ export const mcpRepo: McpRepository = {
 
   listConnectionConfigsByServerIds: (workspaceId, serverIds) =>
     activeMcpRepo.listConnectionConfigsByServerIds(workspaceId, serverIds),
+  listConnectionConfigsForUser: (workspaceId, serverIds, userId) =>
+    activeMcpRepo.listConnectionConfigsForUser(workspaceId, serverIds, userId),
   findConnectionConfig: (workspaceId, serverId, userId) =>
     activeMcpRepo.findConnectionConfig(workspaceId, serverId, userId),
   upsertConnectionCredentials: input =>
@@ -64,6 +66,7 @@ export const mcpRepo: McpRepository = {
     activeMcpRepo.findOAuthFlowById(flowId, workspaceId, now),
   deleteOAuthFlowById: (flowId, workspaceId) =>
     activeMcpRepo.deleteOAuthFlowById(flowId, workspaceId),
+  isSameUser: (userIdA, userIdB) => activeMcpRepo.isSameUser(userIdA, userIdB),
 
   listToolGrantsForUser: (workspaceId, serverId, userId) =>
     activeMcpRepo.listToolGrantsForUser(workspaceId, serverId, userId),

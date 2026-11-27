@@ -613,6 +613,24 @@ export interface ChatUsageData {
   model?: string;
 }
 
+function hasInlineDataUrlAttachment(messages: readonly UIMessage[]): boolean {
+  for (const msg of messages) {
+    if (!Array.isArray(msg.parts)) continue;
+    for (const part of msg.parts) {
+      if (!part || typeof part !== "object") continue;
+      const p = part as Record<string, unknown>;
+      if (
+        p.type === "file" &&
+        typeof p.url === "string" &&
+        p.url.startsWith("data:")
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * Save chat using AI SDK best practice: single atomic save at the end.
  * Delegates through `chatRepo.saveMessages` (workspace-scoped dual-run).
@@ -629,17 +647,30 @@ export const saveChat = async (
   const now = new Date();
 
   let messagesToPersist = sanitizeMessagesForPersistence(messages);
-  try {
-    messagesToPersist = await externalizeChatAttachments(messagesToPersist, {
-      workspaceId,
-      chatId,
-      userId,
-    });
-  } catch (error) {
-    logger.error("Failed to externalize chat attachments; saving inline", {
-      error,
-      chatId,
-    });
+  if (hasInlineDataUrlAttachment(messagesToPersist)) {
+    try {
+      // Ensure the parent `chats` row exists before `externalizeChatAttachments`
+      // inserts into `chat_attachments` (FK `chat_attachments.chat_id -> chats(id)`).
+      if (parseEntityId(chatId) && parseEntityId(workspaceId)) {
+        await chatRepo.ensureExists({
+          id: chatId,
+          workspaceId,
+          createdBy: userId,
+          localAcp: options?.localAcp ?? null,
+          now,
+        });
+      }
+      messagesToPersist = await externalizeChatAttachments(messagesToPersist, {
+        workspaceId,
+        chatId,
+        userId,
+      });
+    } catch (error) {
+      logger.error("Failed to externalize chat attachments; saving inline", {
+        error,
+        chatId,
+      });
+    }
   }
 
   const persistableMessages = messagesToPersist.filter(

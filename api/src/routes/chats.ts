@@ -393,8 +393,12 @@ chatsRoutes.openapi(
         return fail(c, 400, "'messages' must be an array");
       }
 
-      const existing = await chatRepo.findOwnershipMeta(workspaceId, id);
-      if (existing && existing.createdBy !== userId.toString()) {
+      const existing = await chatRepo.findOwnershipMeta(
+        workspaceId,
+        id,
+        userId.toString(),
+      );
+      if (existing && !existing.isOwnedByActor) {
         return fail(c, 404, "Chat not found");
       }
 

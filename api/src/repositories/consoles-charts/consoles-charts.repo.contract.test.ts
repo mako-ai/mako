@@ -39,6 +39,7 @@ import { createTestPglite } from "../../database/pg/test-pglite";
 import { User } from "../../database/schema";
 import {
   ConsoleFolder,
+  DatabaseConnection,
   EntityVersion,
   Favourite,
   NotebookFolder,
@@ -84,6 +85,12 @@ import {
   runParityVerification,
 } from "../../migration/verifier";
 import { PgAuthRepository } from "../auth/pg.repo";
+import {
+  connectionsRepo,
+  MongoConnectionsRepository,
+  PgConnectionsRepository,
+} from "../connections";
+import { connectionOrFirst } from "../../services/consoles/save";
 import {
   CONSOLES_CHARTS_DOMAIN,
   DualConsolesChartsRepository,
@@ -4683,7 +4690,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
 
       // Simulate transient PG failure during Stage 2 purge -> dead-letter replay tombstones all 5 tables
       const pgPurgeSpy = vi
-        .spyOn(pgRepo, "purgeWorkspaceContentIndex")
+        .spyOn(pgRepo, "purgeWorkspaceContentIndexReturningIds")
         .mockRejectedValueOnce(new Error("pg down"));
       await dual.purgeWorkspaceContentIndex(wsId);
       pgPurgeSpy.mockRestore();
@@ -4762,6 +4769,506 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         db,
       );
       expect(await mongoRepo.findConsoleById(wsId, c2.id)).toBeNull();
+    });
+
+    it("selects the oldest/first-created connection when saving a console without connectionId (PR #1558 [4717287669])", async () => {
+      const wsOid = new Types.ObjectId(wsId);
+      const oldestId = new Types.ObjectId();
+      const middleId = new Types.ObjectId();
+      const newestId = new Types.ObjectId();
+
+      // Seed 3 connections in Mongo with distinct createdAt timestamps
+      await DatabaseConnection.collection.insertMany([
+        {
+          _id: oldestId,
+          workspaceId: wsOid,
+          name: "First DB",
+          type: "postgresql",
+          connection: {},
+          createdBy: userLuciaId,
+          createdAt: new Date("2026-01-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+        },
+        {
+          _id: middleId,
+          workspaceId: wsOid,
+          name: "Second DB",
+          type: "postgresql",
+          connection: {},
+          createdBy: userLuciaId,
+          createdAt: new Date("2026-02-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-02-01T00:00:00.000Z"),
+        },
+        {
+          _id: newestId,
+          workspaceId: wsOid,
+          name: "Newest DB",
+          type: "postgresql",
+          connection: {},
+          createdBy: userLuciaId,
+          createdAt: new Date("2026-03-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-03-01T00:00:00.000Z"),
+        },
+      ]);
+
+      // Seed matching rows in Postgres
+      await pg.query(
+        `INSERT INTO database_connections (id, workspace_id, name, type, connection_encrypted, created_by, created_at, updated_at)
+         VALUES
+           ($1::uuid, $4::uuid, 'First DB', 'postgresql', '{}'::jsonb, $5::uuid, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+           ($2::uuid, $4::uuid, 'Second DB', 'postgresql', '{}'::jsonb, $5::uuid, '2026-02-01T00:00:00.000Z', '2026-02-01T00:00:00.000Z'),
+           ($3::uuid, $4::uuid, 'Newest DB', 'postgresql', '{}'::jsonb, $5::uuid, '2026-03-01T00:00:00.000Z', '2026-03-01T00:00:00.000Z')`,
+        [
+          objectIdToUuid(oldestId.toHexString()),
+          objectIdToUuid(middleId.toHexString()),
+          objectIdToUuid(newestId.toHexString()),
+          wsUuid,
+          userV7Id,
+        ],
+      );
+
+      const mongoConnRepo = new MongoConnectionsRepository();
+      const pgConnRepo = new PgConnectionsRepository({ getDb: () => db });
+
+      // 1. Mongo repo (`mongo_only` default): must pick oldestId, NOT newestId!
+      const mongoSpy = vi
+        .spyOn(connectionsRepo, "listDatabaseConnectionMetadata")
+        .mockImplementation(id =>
+          mongoConnRepo.listDatabaseConnectionMetadata(id),
+        );
+      try {
+        expect(await connectionOrFirst(wsId, undefined)).toBe(
+          oldestId.toHexString(),
+        );
+        expect(await connectionOrFirst(wsId, middleId.toHexString())).toBe(
+          middleId.toHexString(),
+        );
+        expect(
+          await connectionOrFirst(
+            new Types.ObjectId().toHexString(),
+            undefined,
+          ),
+        ).toBeUndefined();
+      } finally {
+        mongoSpy.mockRestore();
+      }
+
+      // 2. PG repo (`pg_only`): must also pick oldestId, NOT newestId!
+      const pgSpy = vi
+        .spyOn(connectionsRepo, "listDatabaseConnectionMetadata")
+        .mockImplementation(id =>
+          pgConnRepo.listDatabaseConnectionMetadata(id),
+        );
+      try {
+        expect(await connectionOrFirst(wsId, undefined)).toBe(
+          oldestId.toHexString(),
+        );
+      } finally {
+        pgSpy.mockRestore();
+      }
+
+      await DatabaseConnection.deleteMany({ workspaceId: wsOid });
+      await pg.query(
+        `DELETE FROM database_connections WHERE workspace_id = $1`,
+        [wsUuid],
+      );
+    });
+
+    it("preserves post-reconnect content on delayed purge retry, clears tombstones on re-create, and preserves scheduled_query_runs history (PR #1558 [4717351160], [4717351683], [4717352107])", async () => {
+      const failures: SecondaryWriteFailureContext[] = [];
+      const mongoRepo = new MongoConsolesChartsRepository();
+      const pgRepo = new PgConsolesChartsRepository({
+        getDb: () => db,
+        resolveUserUuid,
+      });
+      const router = new MigrationRouter({
+        getDb: () => db,
+        hasPg: () => true,
+        enablePubSub: false,
+        onSecondaryFailure: async ctx => {
+          failures.push(ctx);
+        },
+      });
+      await router.setDomainState({
+        domain: CONSOLES_CHARTS_DOMAIN,
+        workspaceId: wsId,
+        mode: "dual_write_mongo_read",
+      });
+      const dual = new DualConsolesChartsRepository({
+        mongo: mongoRepo,
+        pg: pgRepo,
+        router,
+        getDb: () => db,
+        resolveUserUuid,
+      });
+
+      // Deterministic IDs (simulating sha1("consoles:<ws>:<path>") across disconnect/reconnect)
+      const deterministicConsoleId = new Types.ObjectId().toHexString();
+      const removedConsoleId = new Types.ObjectId().toHexString();
+      const deterministicFolderId = new Types.ObjectId().toHexString();
+      const deterministicVersionId = new Types.ObjectId().toHexString();
+      const deterministicNbFolderId = new Types.ObjectId().toHexString();
+      const deterministicNbId = new Types.ObjectId().toHexString();
+
+      await dual.createConsoleFolder({
+        id: deterministicFolderId,
+        workspaceId: wsId,
+        name: "Analytics",
+        ownerId: userV7Id,
+      });
+      await dual.createConsole({
+        id: deterministicConsoleId,
+        workspaceId: wsId,
+        name: "Daily Revenue",
+        code: "SELECT 1",
+        language: "sql",
+        folderId: deterministicFolderId,
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+      await dual.createConsole({
+        id: removedConsoleId,
+        workspaceId: wsId,
+        name: "Removed On Disconnect",
+        code: "SELECT 0",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+      await dual.createEntityVersion({
+        id: deterministicVersionId,
+        workspaceId: wsId,
+        entityType: "console",
+        entityId: deterministicConsoleId,
+        version: 1,
+        snapshot: { name: "Daily Revenue", code: "SELECT 1" },
+        savedBy: userV7Id,
+        savedByName: "Tester",
+      });
+      await dual.createNotebookFolder({
+        id: deterministicNbFolderId,
+        workspaceId: wsId,
+        name: "NB Folder",
+        ownerId: userV7Id,
+      });
+      await dual.createNotebookIndex({
+        id: deterministicNbId,
+        workspaceId: wsId,
+        notebookId: "nb-det-1",
+        name: "NB Det",
+        folderId: deterministicNbFolderId,
+        ownerId: userV7Id,
+      });
+
+      // [4717352107] Seed scheduled_query_runs for the deterministic console
+      const run = await dual.createScheduledQueryRun({
+        workspaceId: wsId,
+        consoleId: deterministicConsoleId,
+        status: "success",
+        triggerType: "schedule",
+        triggeredBy: userV7Id,
+        triggeredAt: new Date("2026-11-10T10:00:00.000Z"),
+        completedAt: new Date("2026-11-10T10:00:03.000Z"),
+        durationMs: 3000,
+        rowCount: 42,
+      });
+
+      // ── Part A ([4717352107] + [4717351683]): clean disconnect purge preserves scheduled_query_runs
+      // and re-creating deterministic IDs clears tombstones so backfill/verifier never skip them!
+      await dual.purgeWorkspaceContentIndex(wsId);
+
+      // Consoles purged in BOTH stores, but scheduled_query_runs history PRESERVED in BOTH!
+      expect(
+        await mongoRepo.findConsoleById(wsId, deterministicConsoleId),
+      ).toBeNull();
+      expect(
+        await pgRepo.findConsoleById(wsId, deterministicConsoleId),
+      ).toBeNull();
+      expect(
+        await mongoRepo.listScheduledQueryRuns(
+          wsId,
+          deterministicConsoleId,
+          10,
+        ),
+      ).toHaveLength(1);
+      expect(
+        await pgRepo.listScheduledQueryRuns(wsId, deterministicConsoleId, 10),
+      ).toHaveLength(1);
+      expect(
+        (
+          await pgRepo.listScheduledQueryRuns(wsId, deterministicConsoleId, 10)
+        )[0]?.id,
+      ).toBe(run.id);
+
+      // Prior tombstones exist right after purge...
+      const tombsBeforeReconnect = await db
+        .select()
+        .from(pgSchema.migrationTombstones);
+      expect(tombsBeforeReconnect.length).toBeGreaterThanOrEqual(5);
+
+      // Reconnect re-creates deterministic IDs -> tombstones MUST be cleared!
+      await dual.createConsoleFolder({
+        id: deterministicFolderId,
+        workspaceId: wsId,
+        name: "Analytics",
+        ownerId: userV7Id,
+      });
+      await dual.createConsole({
+        id: deterministicConsoleId,
+        workspaceId: wsId,
+        name: "Daily Revenue",
+        code: "SELECT 2",
+        language: "sql",
+        folderId: deterministicFolderId,
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+      await dual.createEntityVersion({
+        id: deterministicVersionId,
+        workspaceId: wsId,
+        entityType: "console",
+        entityId: deterministicConsoleId,
+        version: 1,
+        snapshot: { name: "Daily Revenue", code: "SELECT 2" },
+        savedBy: userV7Id,
+        savedByName: "Tester",
+      });
+      await dual.createNotebookFolder({
+        id: deterministicNbFolderId,
+        workspaceId: wsId,
+        name: "NB Folder",
+        ownerId: userV7Id,
+      });
+      await dual.createNotebookIndex({
+        id: deterministicNbId,
+        workspaceId: wsId,
+        notebookId: "nb-det-1",
+        name: "NB Det",
+        folderId: deterministicNbFolderId,
+        ownerId: userV7Id,
+      });
+
+      const tombsAfterReconnect = await db
+        .select()
+        .from(pgSchema.migrationTombstones);
+      const remainingTombKeys = new Set(
+        tombsAfterReconnect.map(t => `${t.tableName}:${t.entityId}`),
+      );
+      expect(
+        remainingTombKeys.has(
+          `saved_consoles:${objectIdToUuid(deterministicConsoleId)}`,
+        ),
+      ).toBe(false);
+      expect(
+        remainingTombKeys.has(
+          `console_folders:${objectIdToUuid(deterministicFolderId)}`,
+        ),
+      ).toBe(false);
+      expect(
+        remainingTombKeys.has(
+          `entity_versions:${objectIdToUuid(deterministicVersionId)}`,
+        ),
+      ).toBe(false);
+      expect(
+        remainingTombKeys.has(
+          `notebook_indexes:${objectIdToUuid(deterministicNbId)}`,
+        ),
+      ).toBe(false);
+      expect(
+        remainingTombKeys.has(
+          `notebook_folders:${objectIdToUuid(deterministicNbFolderId)}`,
+        ),
+      ).toBe(false);
+      // Un-recreated console's tombstone remains intact!
+      expect(
+        remainingTombKeys.has(
+          `saved_consoles:${objectIdToUuid(removedConsoleId)}`,
+        ),
+      ).toBe(true);
+
+      // Simulate PG row missing for re-created console -> backfill MUST restore it (not skipped!)
+      await pg.query(`DELETE FROM saved_consoles WHERE id = $1::uuid`, [
+        objectIdToUuid(deterministicConsoleId),
+      ]);
+      const bfAfterReconnect = await runBackfill({
+        domain: CONSOLES_CHARTS_DOMAIN,
+        workspaceId: wsId,
+        db,
+      });
+      expect(bfAfterReconnect.status).toBe("completed");
+      expect(
+        (await pgRepo.findConsoleById(wsId, deterministicConsoleId))?.code,
+      ).toBe("SELECT 2");
+      const verifyAfterReconnect = await runParityVerification({
+        domain: CONSOLES_CHARTS_DOMAIN,
+        workspaceId: wsId,
+        db,
+      });
+      expect(verifyAfterReconnect.ok).toBe(true);
+      expect(verifyAfterReconnect.missingInPg).toBe(0);
+
+      // Scheduled query run history is immediately linked and visible in BOTH Mongo and PG!
+      expect(
+        await pgRepo.listScheduledQueryRuns(wsId, deterministicConsoleId, 10),
+      ).toHaveLength(1);
+
+      // ── Part B ([4717351160]): delayed Stage 2 purge retry after reconnect NEVER wipes
+      // re-created deterministic IDs or newly created content!
+      failures.length = 0;
+      const purgedOnlyConsoleId = new Types.ObjectId().toHexString();
+      await dual.createConsole({
+        id: purgedOnlyConsoleId,
+        workspaceId: wsId,
+        name: "Gone Forever",
+        code: "SELECT 99",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+
+      const pgFailSpy = vi
+        .spyOn(pgRepo, "purgeWorkspaceContentIndexReturningIds")
+        .mockRejectedValueOnce(new Error("transient pg outage"));
+      await dual.purgeWorkspaceContentIndex(wsId);
+      pgFailSpy.mockRestore();
+      expect(failures).toHaveLength(1);
+
+      // Reconnect happens BEFORE the delayed retry fires:
+      // 1) Re-create the SAME deterministicConsoleId (via guardedSaveConsole upsert)
+      await dual.guardedSaveConsole({
+        workspaceId: wsId,
+        consoleId: deterministicConsoleId,
+        upsert: true,
+        set: {
+          name: "Daily Revenue Reconnected",
+          code: "SELECT 3",
+          isSaved: true,
+        },
+        setOnInsert: {
+          createdBy: userV7Id,
+          language: "sql",
+          executionCount: 0,
+        },
+      });
+      // 2) Create a brand-new console not in the original purge
+      const brandNewAfterReconnect = await dual.createConsole({
+        workspaceId: wsId,
+        name: "Brand New Post-Reconnect",
+        code: "SELECT 4",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+
+      await db.delete(pgSchema.migrationTombstones);
+      // Delayed retry fires NOW!
+      await replaySyncToPg(
+        {
+          domain: CONSOLES_CHARTS_DOMAIN,
+          target: "pg",
+          workspaceId: wsId,
+          operation: failures[0].operation,
+          entityId: failures[0].entityId ?? wsId,
+          payload: failures[0].payload,
+          errorMessage: "transient pg outage",
+          failedAt: new Date().toISOString(),
+        },
+        db,
+      );
+
+      // Truly-deleted console IS deleted from PG and tombstoned:
+      expect(
+        await pgRepo.findConsoleById(wsId, purgedOnlyConsoleId),
+      ).toBeNull();
+      const postRetryTombs = await db
+        .select()
+        .from(pgSchema.migrationTombstones);
+      const postRetryTombSet = new Set(
+        postRetryTombs.map(t => `${t.tableName}:${t.entityId}`),
+      );
+      expect(
+        postRetryTombSet.has(
+          `saved_consoles:${objectIdToUuid(purgedOnlyConsoleId)}`,
+        ),
+      ).toBe(true);
+
+      // Re-created deterministic console AND brand-new console SURVIVE in PG and are NOT tombstoned!
+      expect(
+        (await pgRepo.findConsoleById(wsId, deterministicConsoleId))?.code,
+      ).toBe("SELECT 3");
+      expect(
+        postRetryTombSet.has(
+          `saved_consoles:${objectIdToUuid(deterministicConsoleId)}`,
+        ),
+      ).toBe(false);
+      expect(
+        (await pgRepo.findConsoleById(wsId, brandNewAfterReconnect.id))?.code,
+      ).toBe("SELECT 4");
+      expect(
+        postRetryTombSet.has(
+          `saved_consoles:${objectIdToUuid(brandNewAfterReconnect.id)}`,
+        ),
+      ).toBe(false);
+
+      // ── Part C ([4717351160]): delayed Stage 4 `replaySyncToMongo` purge retry after reconnect
+      // NEVER wipes re-created or newly created content in Mongo!
+      failures.length = 0;
+      await router.setDomainState({
+        domain: CONSOLES_CHARTS_DOMAIN,
+        workspaceId: wsId,
+        mode: "dual_write_pg_read",
+      });
+      const mongoFailSpy = vi
+        .spyOn(mongoRepo, "purgeWorkspaceContentIndexReturningIds")
+        .mockRejectedValueOnce(new Error("transient mongo outage"));
+      await dual.purgeWorkspaceContentIndex(wsId);
+      mongoFailSpy.mockRestore();
+      expect(failures).toHaveLength(1);
+
+      // Reconnect in Stage 4 before Mongo retry fires:
+      await dual.createConsole({
+        id: deterministicConsoleId,
+        workspaceId: wsId,
+        name: "Daily Revenue Stage4 Reconnected",
+        code: "SELECT 5",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+      const stage4BrandNew = await dual.createConsole({
+        workspaceId: wsId,
+        name: "Stage4 Brand New",
+        code: "SELECT 6",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+
+      await replaySyncToMongo(
+        {
+          domain: CONSOLES_CHARTS_DOMAIN,
+          target: "mongo",
+          workspaceId: wsId,
+          operation: failures[0].operation,
+          entityId: failures[0].entityId ?? wsId,
+          payload: failures[0].payload,
+          errorMessage: "transient mongo outage",
+          failedAt: new Date().toISOString(),
+        },
+        db,
+      );
+
+      // Purged-and-not-recreated console (`brandNewAfterReconnect`) IS deleted from Mongo,
+      // while re-created `deterministicConsoleId` and `stage4BrandNew` SURVIVE!
+      expect(
+        await mongoRepo.findConsoleById(wsId, brandNewAfterReconnect.id),
+      ).toBeNull();
+      expect(
+        (await mongoRepo.findConsoleById(wsId, deterministicConsoleId))?.code,
+      ).toBe("SELECT 5");
+      expect(
+        (await mongoRepo.findConsoleById(wsId, stage4BrandNew.id))?.code,
+      ).toBe("SELECT 6");
     });
   });
 

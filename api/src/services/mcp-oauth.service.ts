@@ -341,7 +341,7 @@ export async function completeMcpOAuthFlow(params: {
   if (!flow) {
     throw new Error("OAuth flow not found or expired — try connecting again");
   }
-  if (flow.startedByUserId !== sessionUserId) {
+  if (!(await mcpRepo.isSameUser(flow.startedByUserId, sessionUserId))) {
     throw new Error("This OAuth flow was started by a different user");
   }
   const server = await mcpRepo.findServerById(flow.serverId, flow.workspaceId);

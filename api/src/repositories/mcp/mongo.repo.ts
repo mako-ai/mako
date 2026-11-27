@@ -9,7 +9,7 @@ import {
   McpServer,
   McpToolGrant,
 } from "../../database/models/mcp";
-import { parseEntityId } from "../../database/pg/id-codec";
+import { isUuidString, parseEntityId } from "../../database/pg/id-codec";
 import {
   mongoMcpConnectionConfigToRecord,
   mongoMcpOAuthFlowToRecord,
@@ -315,6 +315,49 @@ export class MongoMcpRepository implements McpRepository {
     return docs.map(mongoMcpConnectionConfigToRecord);
   }
 
+  async listConnectionConfigsForUserIds(
+    workspaceId: string,
+    serverIds: readonly string[],
+    userIds: readonly string[],
+  ): Promise<McpConnectionConfigRecord[]> {
+    const wsOid = toObjectId(workspaceId);
+    if (!wsOid || serverIds.length === 0) return [];
+    const serverOids = serverIds
+      .map(toObjectId)
+      .filter((o): o is Types.ObjectId => o !== null);
+    if (serverOids.length === 0) return [];
+    const normalized = [
+      ...new Set(
+        userIds
+          .map(u => normalizeConfigUserId(u))
+          .filter((u): u is string => u !== null),
+      ),
+    ];
+    const userFilter =
+      normalized.length === 0 ? "" : { $in: ["", ...normalized] };
+    const docs = await McpConnectionConfig.find({
+      workspaceId: wsOid,
+      serverId: { $in: serverOids },
+      userId: userFilter,
+    })
+      .sort({ _id: 1 })
+      .lean<MongoMcpConnectionConfigLike[]>();
+    return docs.map(mongoMcpConnectionConfigToRecord);
+  }
+
+  async listConnectionConfigsForUser(
+    workspaceId: string,
+    serverIds: readonly string[],
+    userId: string | null,
+  ): Promise<McpConnectionConfigRecord[]> {
+    const normalized = normalizeConfigUserId(userId);
+    return this.listConnectionConfigsForUserIds(
+      workspaceId,
+      serverIds,
+      normalized ? [normalized] : [],
+    );
+  }
+
   async findConnectionConfig(
     workspaceId: string,
     serverId: string,
@@ -544,6 +587,19 @@ export class MongoMcpRepository implements McpRepository {
     }
     const res = await McpOAuthFlow.deleteOne(filter);
     return res.deletedCount > 0;
+  }
+
+  async isSameUser(
+    userIdA: string | null | undefined,
+    userIdB: string | null | undefined,
+  ): Promise<boolean> {
+    const a = normalizeConfigUserId(userIdA);
+    const b = normalizeConfigUserId(userIdB);
+    if (!a || !b) return false;
+    if (a === b) return true;
+    return (
+      isUuidString(a) && isUuidString(b) && a.toLowerCase() === b.toLowerCase()
+    );
   }
 
   // ── Tool grants ──────────────────────────────────────────────────────────

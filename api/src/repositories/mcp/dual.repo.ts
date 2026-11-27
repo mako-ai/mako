@@ -34,6 +34,7 @@ import {
   canonicalizeMcpConfigForCompare,
   canonicalizeMcpGrantForCompare,
   canonicalizeMcpServerForCompare,
+  normalizeConfigUserId,
 } from "./mapper";
 import { MongoMcpRepository } from "./mongo.repo";
 import { PgMcpRepository } from "./pg.repo";
@@ -605,6 +606,83 @@ export class DualMcpRepository implements McpRepository {
     );
   }
 
+  async listConnectionConfigsForUser(
+    workspaceId: string,
+    serverIds: readonly string[],
+    userId: string | null,
+  ): Promise<McpConnectionConfigRecord[]> {
+    const pgPrimary = await this.isPgPrimaryMode(workspaceId);
+    const normalizedUser = normalizeConfigUserId(userId);
+    const shadowUserMap = new Map<string, string>();
+    const collectedUserIds = new Set<string>();
+    if (normalizedUser) collectedUserIds.add(normalizedUser);
+    let mongoRan = false;
+    let pgRan = false;
+    const resolveShadowUser = (id: string | null): string | null =>
+      id
+        ? (shadowUserMap.get(id) ?? shadowUserMap.get(id.toLowerCase()) ?? id)
+        : null;
+
+    return this.router.executeRead(
+      {
+        domain: MCP_DOMAIN,
+        operation: "listConnectionConfigsForUser",
+        workspaceId,
+      },
+      {
+        mongo: async () => {
+          const mongoUserIds: string[] = [];
+          if (normalizedUser !== null) {
+            mongoUserIds.push(normalizedUser);
+            if (
+              pgPrimary ||
+              (isUuidString(normalizedUser) &&
+                this.hasPg() &&
+                !this.isForceMongoOnly())
+            ) {
+              const legacy =
+                await this.resolveMongoUserIdForReverseSync(normalizedUser);
+              if (legacy && legacy !== normalizedUser) {
+                mongoUserIds.push(legacy);
+              }
+            }
+          }
+          const rows = await this.mongo.listConnectionConfigsForUserIds(
+            workspaceId,
+            serverIds,
+            mongoUserIds,
+          );
+          for (const r of rows) {
+            if (r.userId) collectedUserIds.add(r.userId);
+          }
+          mongoRan = true;
+          if (pgRan) {
+            await this.populateShadowUserMap(shadowUserMap, collectedUserIds);
+          }
+          return rows;
+        },
+        pg: async () => {
+          const rows = await this.pg.listConnectionConfigsForUser(
+            workspaceId,
+            serverIds,
+            normalizedUser,
+          );
+          for (const r of rows) {
+            if (r.userId) collectedUserIds.add(r.userId);
+          }
+          pgRan = true;
+          if (mongoRan) {
+            await this.populateShadowUserMap(shadowUserMap, collectedUserIds);
+          }
+          return rows;
+        },
+        canonicalize: list =>
+          list.map(r => canonicalizeMcpConfigForCompare(r, resolveShadowUser)),
+        shadowOptions: MCP_SHADOW_OPTIONS,
+      },
+    );
+  }
+
   async findConnectionConfig(
     workspaceId: string,
     serverId: string,
@@ -950,6 +1028,27 @@ export class DualMcpRepository implements McpRepository {
         pg: () => this.pg.deleteOAuthFlowById(flowId, workspaceId),
       },
     );
+  }
+
+  async isSameUser(
+    userIdA: string | null | undefined,
+    userIdB: string | null | undefined,
+  ): Promise<boolean> {
+    const a = normalizeConfigUserId(userIdA);
+    const b = normalizeConfigUserId(userIdB);
+    if (!a || !b) return false;
+    if (a === b) return true;
+    if (
+      isUuidString(a) &&
+      isUuidString(b) &&
+      a.toLowerCase() === b.toLowerCase()
+    ) {
+      return true;
+    }
+    if (!this.hasPg() || this.isForceMongoOnly()) {
+      return false;
+    }
+    return this.pg.isSameUser(a, b);
   }
 
   // ── Tool grants ──────────────────────────────────────────────────────────

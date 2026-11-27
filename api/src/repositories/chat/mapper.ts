@@ -31,6 +31,7 @@ import {
   type ChatUsageEntryRow,
 } from "../../database/pg/schema/chat";
 import { jsonbOrdered } from "../../services/agent-chat/exact-history";
+import { sanitizePgJsonValue } from "../../utils/message-sanitizer";
 import type {
   ChatAttachmentRecord,
   ChatLocalAcp,
@@ -1106,7 +1107,7 @@ export function canonicalizeChatForCompare(
   resolveUser?: (id: string | null) => string | null,
 ): unknown {
   if (!record) return null;
-  return {
+  return sanitizePgJsonValue({
     id: record.id,
     workspaceId: record.workspaceId,
     createdBy: resolveUser ? resolveUser(record.createdBy) : record.createdBy,
@@ -1152,5 +1153,5 @@ export function canonicalizeChatForCompare(
     },
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
-  };
+  });
 }

@@ -38,6 +38,7 @@ import {
   type MongoChatAttachmentLike,
   type MongoChatLike,
 } from "../../repositories/chat";
+import { sanitizePgJsonValue } from "../../utils/message-sanitizer";
 import {
   registerBackfillDomain,
   type BackfillDomainHandler,
@@ -481,7 +482,10 @@ function buildVerifierRecord(
   const record =
     doc.table === "chats"
       ? canonicalizeChatForCompare(doc.record, resolveUser)
-      : { ...doc.record, createdBy: resolveUser(doc.record.createdBy) };
+      : sanitizePgJsonValue({
+          ...doc.record,
+          createdBy: resolveUser(doc.record.createdBy),
+        });
 
   return {
     cursor: item.cursor,

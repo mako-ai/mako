@@ -27,10 +27,12 @@ import type {
   ChatAttachmentRecord,
   ChatListEntry,
   ChatLocalAcp,
+  ChatOwnershipMeta,
   ChatRecord,
   ChatRepository,
   CreateChatAttachmentInput,
   CreateChatInput,
+  EnsureChatExistsInput,
   SaveChatMessagesInput,
   StoredChatMessage,
   UpdateChatThreadPatch,
@@ -89,6 +91,35 @@ export class MongoChatRepository implements ChatRepository {
     return mongoChatToRecord(created.toObject() as unknown as MongoChatLike);
   }
 
+  async ensureExists(input: EnsureChatExistsInput): Promise<void> {
+    const idOid = toObjectId(input.id);
+    const wsOid = toObjectId(input.workspaceId);
+    if (!idOid || !wsOid) return;
+    const now = input.now ?? new Date();
+    const setOnInsert: Record<string, unknown> = {
+      workspaceId: wsOid,
+      createdBy: input.createdBy ?? "system",
+      title: "New Chat",
+      titleGenerated: false,
+      threadId: input.threadId ?? randomUUID(),
+      messages: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    if (input.localAcp) {
+      setOnInsert.localAcp = {
+        providerId: input.localAcp.providerId,
+        sessionId: input.localAcp.sessionId,
+        modelId: input.localAcp.modelId,
+      };
+    }
+    await Chat.updateOne(
+      { _id: idOid },
+      { $setOnInsert: setOnInsert },
+      { upsert: true, timestamps: false },
+    );
+  }
+
   async findById(
     chatId: string,
     workspaceId?: string,
@@ -124,7 +155,8 @@ export class MongoChatRepository implements ChatRepository {
   async findOwnershipMeta(
     workspaceId: string,
     chatId: string,
-  ): Promise<{ createdBy: string | null; titleGenerated: boolean } | null> {
+    actorUserId?: string,
+  ): Promise<ChatOwnershipMeta | null> {
     const wsOid = toObjectId(workspaceId);
     const idOid = toObjectId(chatId);
     if (!wsOid || !idOid) return null;
@@ -133,9 +165,16 @@ export class MongoChatRepository implements ChatRepository {
       .lean<{ createdBy?: string; titleGenerated?: boolean } | null>();
     if (!doc) return null;
     const raw = doc.createdBy?.trim() ?? null;
+    const createdBy = !raw || raw === "system" ? null : raw;
     return {
-      createdBy: !raw || raw === "system" ? null : raw,
+      createdBy,
       titleGenerated: Boolean(doc.titleGenerated),
+      ...(actorUserId !== undefined
+        ? {
+            isOwnedByActor:
+              createdBy !== null && createdBy === actorUserId.trim(),
+          }
+        : {}),
     };
   }
 

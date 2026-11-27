@@ -21,12 +21,24 @@
  *   - Backfill of `chats` (incl. legacy pre-`parts` synthesis) -> `chat_attachments`
  *     with orphan `ChatAttachment` quarantine + part `attachment_id` back-linking + verifier `--repair`.
  */
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { PGlite } from "@electric-sql/pglite";
+import type { UIMessage } from "ai";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate as drizzlePgliteMigrate } from "drizzle-orm/pglite/migrator";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose, { Types } from "mongoose";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { Chat, ChatAttachment } from "../../database/models/chats";
 import {
   resetPgTestDb,
@@ -66,12 +78,16 @@ import {
 } from "../../migration/verifier";
 import { extractModifiedConsoleIds } from "../../routes/chats";
 import { loadOrCreateChat } from "../../services/agent-chat/chat-record";
+import { saveChat } from "../../services/agent-thread.service";
+import * as artifactStoreMod from "../../services/artifact-store.service";
 import {
   CHAT_DOMAIN,
   decodeChatListCursor,
   DualChatRepository,
   MongoChatRepository,
   PgChatRepository,
+  resetChatRepoForTests,
+  setChatRepoForTests,
   type StoredChatMessage,
 } from "./index";
 
@@ -1385,5 +1401,354 @@ describe("Phase 3 normalized Chat repository & migration contract suite", () => 
       errorMessage: "simulated_mongo_timeout",
     });
     expect(await mongoRepo.findById(chat.id, wsId)).toBeNull();
+  });
+
+  it("handles mixed-mode legacy user ownership checks in loadOrCreateChat & findOwnershipMeta (PR #1558 [4717348592])", async () => {
+    const legacyOwnerId = "lucia_chat_ow01";
+    const legacyOwnerUuid = generateUuidv7();
+    const legacyOtherId = "lucia_chat_ot02";
+    const legacyOtherUuid = generateUuidv7();
+    await pg.query(
+      `INSERT INTO users (id, legacy_id, email) VALUES
+        ($1::uuid, $2, 'chat-mix-own@example.com'),
+        ($3::uuid, $4, 'chat-mix-oth@example.com')`,
+      [legacyOwnerUuid, legacyOwnerId, legacyOtherUuid, legacyOtherId],
+    );
+
+    const router = new MigrationRouter({
+      getDb: () => db,
+      hasPg: () => true,
+      enablePubSub: false,
+    });
+    const dualRepo = new DualChatRepository({
+      mongo: mongoRepo,
+      pg: pgRepo,
+      router,
+      getDb: () => db,
+      hasPg: () => true,
+      isForceMongoOnly: () => false,
+    });
+
+    await router.setDomainState({
+      domain: CHAT_DOMAIN,
+      workspaceId: wsId,
+      mode: "pg_only",
+    });
+
+    const appId = newDualId().oid;
+    const appChat = await dualRepo.create({
+      workspaceId: wsId,
+      createdBy: legacyOwnerId,
+      source: "app",
+      appId,
+      title: "App Chat",
+      titleGenerated: true,
+    });
+    // PG returns UUIDv7 while auth (still reading Mongo) gives the 15-char Lucia ID.
+    expect(appChat.createdBy).toBe(legacyOwnerUuid);
+
+    setChatRepoForTests(dualRepo);
+    try {
+      const appChatCtx = {
+        project: { _id: new Types.ObjectId(appId) },
+      } as unknown as Parameters<typeof loadOrCreateChat>[0]["appChat"];
+
+      // Owner continuing own app chat with legacy session ID MUST NOT get 403!
+      const ownerResult = await loadOrCreateChat({
+        chatId: appChat.id,
+        workspaceId: wsId,
+        actorId: legacyOwnerId,
+        actorEmail: "chat-mix-own@example.com",
+        appChat: appChatCtx,
+        messages: [],
+      });
+      expect(ownerResult).toBeNull();
+
+      // Different user MUST still get 403!
+      const otherResult = await loadOrCreateChat({
+        chatId: appChat.id,
+        workspaceId: wsId,
+        actorId: legacyOtherId,
+        actorEmail: "chat-mix-oth@example.com",
+        appChat: appChatCtx,
+        messages: [],
+      });
+      expect(otherResult).not.toBeNull();
+      expect(otherResult?.status).toBe(403);
+
+      // ACP PUT /chats/:id/messages owner check via findOwnershipMeta(ws, id, actorUserId)
+      const ownerMeta = await dualRepo.findOwnershipMeta(
+        wsId,
+        appChat.id,
+        legacyOwnerId,
+      );
+      expect(ownerMeta?.isOwnedByActor).toBe(true);
+      expect(ownerMeta?.titleGenerated).toBe(true);
+
+      const uuidOwnerMeta = await dualRepo.findOwnershipMeta(
+        wsId,
+        appChat.id,
+        legacyOwnerUuid,
+      );
+      expect(uuidOwnerMeta?.isOwnedByActor).toBe(true);
+
+      const otherMeta = await dualRepo.findOwnershipMeta(
+        wsId,
+        appChat.id,
+        legacyOtherId,
+      );
+      expect(otherMeta?.isOwnedByActor).toBe(false);
+    } finally {
+      resetChatRepoForTests();
+    }
+  });
+
+  it("strips NUL bytes and unpaired surrogates on PG writes, checkpoints, and backfill without 22P05 errors (PR #1558 [4717350514])", async () => {
+    const chatId = newDualId().oid;
+    const msgWithNul: StoredChatMessage = {
+      id: "m-nul\u0000-1",
+      role: "assistant",
+      metadata: { "key\u0000name": "val\u0000\uD83D" },
+      parts: [
+        { type: "text", text: "Hello\u0000 world 🚀 \uDE00" },
+        {
+          type: "tool-run_sql",
+          toolCallId: "tc-nul\u0000",
+          toolName: "run_sql",
+          state: "output-available",
+          input: { sql: "SELECT '\u0000'\uD83D" },
+          output: { rows: [{ "col\u0000": "bin\u0000data 🚀 \uD83D" }] },
+          errorText: "warn\u0000",
+        },
+      ],
+    };
+
+    const saved = await pgRepo.saveMessages({
+      chatId,
+      workspaceId: wsId,
+      userId: user1Uuid,
+      messages: [msgWithNul],
+    });
+    expect(saved).not.toBeNull();
+    expect(saved?.messages[0]?.parts[0]?.text).toBe("Hello world 🚀 \uFFFD");
+    expect(saved?.messages[0]?.parts[1]?.output).toEqual({
+      rows: [{ col: "bindata 🚀 \uFFFD" }],
+    });
+    expect(saved?.messages[0]?.metadata).toEqual({ keyname: "val\uFFFD" });
+
+    // Prefix preservation still matches sanitized message when client resends raw NUL message.
+    const beforeIds = await pgRepo.getMessageAndPartIds(chatId);
+    await pgRepo.saveMessages({
+      chatId,
+      workspaceId: wsId,
+      userId: user1Uuid,
+      messages: [
+        msgWithNul,
+        { id: "m-2", role: "user", parts: [{ type: "text", text: "next" }] },
+      ],
+    });
+    const afterIds = await pgRepo.getMessageAndPartIds(chatId);
+    expect(afterIds.messages[0]?.id).toBe(beforeIds.messages[0]?.id);
+    expect(afterIds.parts.slice(0, beforeIds.parts.length)).toEqual(
+      beforeIds.parts,
+    );
+
+    // Checkpoint & title with NUL + lone surrogate succeed in PG.
+    await pgRepo.setActiveStream(wsId, chatId, "stream-nul");
+    await pgRepo.saveTurnCheckpoint(wsId, chatId, "stream-nul", msgWithNul);
+    expect(
+      await pgRepo.updateTitle(wsId, chatId, user1Uuid, "Title\u0000\uD83D 🚀"),
+    ).toBe(true);
+    const reloaded = await pgRepo.findById(chatId, wsId);
+    expect(reloaded?.title).toBe("Title\uFFFD 🚀");
+    expect(reloaded?.turnCheckpoint).not.toBeNull();
+
+    // Historical Mongo doc containing raw NUL + unpaired surrogate backfills & verifies cleanly.
+    const mongoNulChatId = newDualId().oid;
+    await Chat.create({
+      _id: new Types.ObjectId(mongoNulChatId),
+      workspaceId: new Types.ObjectId(wsId),
+      createdBy: user1Uuid,
+      title: "Legacy\u0000Chat",
+      titleGenerated: true,
+      messages: [
+        {
+          id: "hist-1",
+          role: "assistant",
+          content: "hi\u0000",
+          parts: [
+            { type: "text", text: "hi\u0000 🚀 \uD83D" },
+            {
+              type: "tool-query",
+              toolCallId: "tc-hist",
+              toolName: "query",
+              state: "output-available",
+              input: { q: "x\u0000" },
+              output: { val: "y\u0000\uDE00" },
+            },
+          ],
+        },
+      ],
+    });
+
+    clearBackfillRegistryForTests();
+    clearVerifierRegistryForTests();
+    registerChatMigrationDomain();
+    const bf = await runBackfill({
+      domain: CHAT_DOMAIN,
+      workspaceId: wsId,
+      db,
+    });
+    expect(bf.status).toBe("completed");
+    const backfilled = await pgRepo.findById(mongoNulChatId, wsId);
+    expect(backfilled?.title).toBe("LegacyChat");
+    expect(backfilled?.messages[0]?.parts[0]?.text).toBe("hi 🚀 \uFFFD");
+
+    // Remove the PG-only test chat before parity verification of Mongo->PG.
+    await pgRepo.deleteOwned(wsId, chatId, user1Uuid);
+    const verify = await runParityVerification({
+      domain: CHAT_DOMAIN,
+      workspaceId: wsId,
+      db,
+    });
+    expect(verify.ok).toBe(true);
+    expect(verify.mismatched).toBe(0);
+  });
+
+  it("ensures chat row exists before externalizing attachments on brand-new ACP saveChat (PR #1558 [4717352625])", async () => {
+    const tmpDir = mkdtempSync(path.join(os.tmpdir(), "mako-chat-att-"));
+    const storedBlobs = new Map<string, Buffer>();
+    const fakeStore = {
+      type: "filesystem" as const,
+      exists: async (key: string) => storedBlobs.has(key),
+      put: async () => undefined,
+      putBuffer: async (buf: Buffer | Uint8Array, key: string) => {
+        storedBlobs.set(key, Buffer.from(buf));
+      },
+      getSignedUrl: async () => null,
+      openReadStream: async () => null,
+      getSize: async (key: string) => storedBlobs.get(key)?.byteLength ?? null,
+      getLastModified: async () => null,
+      delete: async (key: string) => {
+        storedBlobs.delete(key);
+      },
+    };
+    const storeSpy = vi
+      .spyOn(artifactStoreMod, "getArtifactStore")
+      .mockReturnValue(fakeStore);
+
+    const secondaryFailures: Array<{ operation: string; error: unknown }> = [];
+    const router = new MigrationRouter({
+      getDb: () => db,
+      hasPg: () => true,
+      enablePubSub: false,
+      onSecondaryFailure: async ctx => {
+        secondaryFailures.push({
+          operation: ctx.operation,
+          error: ctx.error,
+        });
+      },
+    });
+    const dualRepo = new DualChatRepository({
+      mongo: mongoRepo,
+      pg: pgRepo,
+      router,
+      getDb: () => db,
+      hasPg: () => true,
+      isForceMongoOnly: () => false,
+    });
+    setChatRepoForTests(dualRepo);
+
+    // 1x1 transparent PNG
+    const pngBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+    const imageMessage = {
+      id: "acp-u1",
+      role: "user",
+      parts: [
+        { type: "text", text: "See screenshot" },
+        {
+          type: "file",
+          mediaType: "image/png",
+          filename: "shot.png",
+          url: `data:image/png;base64,${pngBase64}`,
+        },
+      ],
+    } as unknown as UIMessage;
+
+    try {
+      // 1. PG-primary (`pg_only`): brand-new chat ID saved directly via saveChat (ACP PUT path)
+      await router.setDomainState({
+        domain: CHAT_DOMAIN,
+        workspaceId: wsId,
+        mode: "pg_only",
+      });
+      const newPgChatId = newDualId().oid;
+      const savedPg = await saveChat(
+        newPgChatId,
+        wsId,
+        user1Uuid,
+        [imageMessage],
+        undefined,
+        {
+          localAcp: {
+            providerId: "claude-code",
+            sessionId: "sess-1",
+            modelId: "claude-sonnet",
+          },
+        },
+      );
+      expect(savedPg).not.toBeNull();
+      const pgFilePart = savedPg?.messages[0]?.parts.find(
+        p => p.type === "file",
+      );
+      expect(pgFilePart?.url).toMatch(
+        new RegExp(`^/api/workspaces/${wsId}/chat-images/[0-9a-f]{24}$`),
+      );
+      expect(pgFilePart?.url).not.toContain("data:image/png");
+
+      const pgPartRows = await pg.query<{ attachment_id: string | null }>(
+        `SELECT attachment_id FROM chat_message_parts WHERE chat_id = $1 AND part_type = 'file'`,
+        [objectIdToUuid(newPgChatId)],
+      );
+      expect(pgPartRows.rows[0]?.attachment_id).not.toBeNull();
+
+      // 2. Mongo-primary dual-write (`dual_write_mongo_read`): ZERO PG secondary FK 23503 failures!
+      await router.setDomainState({
+        domain: CHAT_DOMAIN,
+        workspaceId: wsId,
+        mode: "dual_write_mongo_read",
+      });
+      const newDualChatId = newDualId().oid;
+      const savedDual = await saveChat(newDualChatId, wsId, user1Uuid, [
+        imageMessage,
+      ]);
+      expect(savedDual).not.toBeNull();
+      expect(secondaryFailures).toEqual([]);
+      const pgDualAtts = await pg.query<{ id: string }>(
+        `SELECT id FROM chat_attachments WHERE chat_id = $1`,
+        [objectIdToUuid(newDualChatId)],
+      );
+      expect(pgDualAtts.rows).toHaveLength(1);
+
+      // 3. Existing chat header (custom title / source) is preserved when ensureExists runs again.
+      const existingChat = await dualRepo.create({
+        workspaceId: wsId,
+        createdBy: user1Uuid,
+        source: "app",
+        appId: newDualId().oid,
+        title: "Keep My Title",
+        titleGenerated: true,
+      });
+      await saveChat(existingChat.id, wsId, user1Uuid, [imageMessage]);
+      const afterExisting = await pgRepo.findById(existingChat.id, wsId);
+      expect(afterExisting?.title).toBe("Keep My Title");
+      expect(afterExisting?.source).toBe("app");
+      expect(afterExisting?.titleGenerated).toBe(true);
+    } finally {
+      storeSpy.mockRestore();
+      resetChatRepoForTests();
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

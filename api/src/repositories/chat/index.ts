@@ -36,12 +36,13 @@ export function resetChatRepoForTests(): void {
 
 export const chatRepo: ChatRepository = {
   create: input => activeChatRepo.create(input),
+  ensureExists: input => activeChatRepo.ensureExists(input),
   findById: (chatId, workspaceId) =>
     activeChatRepo.findById(chatId, workspaceId),
   findOwnedById: (workspaceId, chatId, userId) =>
     activeChatRepo.findOwnedById(workspaceId, chatId, userId),
-  findOwnershipMeta: (workspaceId, chatId) =>
-    activeChatRepo.findOwnershipMeta(workspaceId, chatId),
+  findOwnershipMeta: (workspaceId, chatId, actorUserId) =>
+    activeChatRepo.findOwnershipMeta(workspaceId, chatId, actorUserId),
   listUserChats: input => activeChatRepo.listUserChats(input),
   listAppChats: (workspaceId, appId, userId, limit) =>
     activeChatRepo.listAppChats(workspaceId, appId, userId, limit),

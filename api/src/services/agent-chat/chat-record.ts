@@ -38,10 +38,17 @@ export async function loadOrCreateChat(input: {
     }
     const boundAppId = existingChat.appId ?? null;
     if (appChat) {
-      if (
-        existingChat.createdBy !== actorId ||
-        boundAppId !== appChat.project._id.toString()
-      ) {
+      if (boundAppId !== appChat.project._id.toString()) {
+        return stepFailure(403, "Cannot access chat");
+      }
+      const ownerMatches =
+        existingChat.createdBy !== null && existingChat.createdBy === actorId
+          ? true
+          : Boolean(
+              (await chatRepo.findOwnershipMeta(workspaceId, chatId, actorId))
+                ?.isOwnedByActor,
+            );
+      if (!ownerMatches) {
         return stepFailure(403, "Cannot access chat");
       }
     } else if (boundAppId) {
