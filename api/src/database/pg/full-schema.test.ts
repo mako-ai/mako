@@ -180,13 +180,15 @@ describe("Full Postgres migration schema (0000–0008 + 4 post-backfill FKs)", (
     const usageValidId = objectIdToUuid("6745f6f4a1b2c3d4e5f61008");
     const usageDanglingId = objectIdToUuid("6745f6f4a1b2c3d4e5f61009");
 
+    const runValidId = objectIdToUuid("6745f6f4a1b2c3d4e5f6100a");
+
     await pg.query(
       `INSERT INTO users (id, email) VALUES ($1, 'full-schema@example.com')`,
       [userId],
     );
     await pg.query(
-      `INSERT INTO workspaces (id, name, slug, created_by)
-       VALUES ($1, 'Full Schema WS', 'full-schema-ws', $2)`,
+      `INSERT INTO workspaces (id, name, slug, created_by, billing_subscription_status)
+       VALUES ($1, 'Full Schema WS', 'full-schema-ws', $2, 'paused')`,
       [wsId, userId],
     );
     await pg.query(
@@ -207,6 +209,11 @@ describe("Full Postgres migration schema (0000–0008 + 4 post-backfill FKs)", (
       [consoleValidId, wsId, connId, userId, consoleDanglingId, danglingConnId],
     );
     await pg.query(
+      `INSERT INTO scheduled_query_runs (id, workspace_id, console_id, status, trigger_type)
+       VALUES ($1, $2, $3, 'success', 'schedule')`,
+      [runValidId, wsId, consoleValidId],
+    );
+    await pg.query(
       `INSERT INTO connection_verifications (id, workspace_id, connection_id, database_type, trigger, success, duration_ms)
        VALUES ($1, $2, $3, 'postgresql', 'saved_test', true, 12),
               ($4, $2, $5, 'postgresql', 'saved_test', false, 20)`,
@@ -223,6 +230,24 @@ describe("Full Postgres migration schema (0000–0008 + 4 post-backfill FKs)", (
               ($5, $2, $3, $6, 'chat', 'claude-sonnet', 10, 20, 30, 0.001)`,
       [usageValidId, wsId, userId, chatId, usageDanglingId, danglingChatId],
     );
+
+    // Precondition guard refuses sessions-active-workspace-fk before workspaces_core backfill completes.
+    await expect(
+      runPostBackfillStep(db, "sessions-active-workspace-fk"),
+    ).rejects.toThrow(/workspaces_core backfill status/);
+
+    // Mark workspaces_core global backfill completed (also exercises 0001 lease_token + quarantine unique index).
+    await pg.query(
+      `INSERT INTO migration_backfill_jobs (domain, scope_key, status, lease_token)
+       VALUES ('workspaces_core', 'global', 'completed', NULL)`,
+    );
+    const quarantineIdx = await pg.query<{ indexname: string }>(
+      `SELECT indexname
+         FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname = 'uq_migration_quarantine_unresolved'`,
+    );
+    expect(quarantineIdx.rows).toHaveLength(1);
 
     // Run every deferred post-backfill step twice to confirm idempotency.
     for (const { step } of EXPECTED_POST_BACKFILL) {
@@ -311,6 +336,16 @@ describe("Full Postgres migration schema (0000–0008 + 4 post-backfill FKs)", (
     );
     expect(postDeleteUsage.rows[0].chat_id).toBeNull();
 
+    // 0005 soft ref: deleting saved_consoles preserves scheduled_query_runs history.
+    await pg.query(`DELETE FROM saved_consoles WHERE id = $1`, [
+      consoleValidId,
+    ]);
+    const postDeleteRun = await pg.query<{ console_id: string }>(
+      `SELECT console_id::text FROM scheduled_query_runs WHERE id = $1`,
+      [runValidId],
+    );
+    expect(postDeleteRun.rows).toEqual([{ console_id: consoleValidId }]);
+
     await pg.query(`DELETE FROM workspaces WHERE id = $1`, [wsId]);
     const postDeleteSession = await pg.query<{
       active_workspace_id: string | null;
@@ -318,5 +353,12 @@ describe("Full Postgres migration schema (0000–0008 + 4 post-backfill FKs)", (
       `SELECT active_workspace_id FROM sessions WHERE token_hash = 'tok_valid'`,
     );
     expect(postDeleteSession.rows[0].active_workspace_id).toBeNull();
+
+    // 0006 soft ref: deleting workspaces preserves llm_usage billing audit rows.
+    const postDeleteLlmUsage = await pg.query<{ id: string }>(
+      `SELECT id::text FROM llm_usage WHERE id = $1`,
+      [usageValidId],
+    );
+    expect(postDeleteLlmUsage.rows).toEqual([{ id: usageValidId }]);
   });
 });

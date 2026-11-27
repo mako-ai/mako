@@ -1517,6 +1517,13 @@ export class PgChatRepository implements ChatRepository {
           asc(chatMessageParts.orderIndex),
         ),
     ]);
+    const ordinalByMessageId = new Map(messages.map(m => [m.id, m.ordinal]));
+    parts.sort((a, b) => {
+      const ordDiff =
+        (ordinalByMessageId.get(a.messageId) ?? Number.MAX_SAFE_INTEGER) -
+        (ordinalByMessageId.get(b.messageId) ?? Number.MAX_SAFE_INTEGER);
+      return ordDiff !== 0 ? ordDiff : a.orderIndex - b.orderIndex;
+    });
     return { messages, parts };
   }
 }
