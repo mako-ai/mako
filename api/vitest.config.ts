@@ -61,11 +61,8 @@ export default defineConfig({
       "src/routes/database-writers-session.test.ts",
       // Who started a run: an agent's runs only read through connections.
       "src/routes/workflows-run-starter.test.ts",
-      // Postgres / Neon migration foundation (Phase 0+): bijective ID codec,
-      // dual-run router, shadow-compare, backfill, parity verifier, TTL reaper,
-      // and domain repository contract suites.
+      // Platform Postgres (Neon): bijective ID codec, TTL reaper, schema & repo contracts.
       "src/database/pg/**/*.test.ts",
-      "src/migration/**/*.test.ts",
       "src/repositories/**/*.test.ts",
       "src/services/agent-chat/exact-history.test.ts",
     ],

@@ -1,24 +1,21 @@
 /**
- * Auth domain repository entry point.
- *
- * Exports the singleton `authRepo` (backed by `DualAuthRepository`, defaulting to
- * `mongo_only` until `migration_domain_state` advances `auth`) plus test override
- * hooks and concrete repository classes.
+ * Auth domain repository entry point (Neon Postgres `pg_only`).
  */
-import { DualAuthRepository } from "./dual.repo";
+import { createPgFirstRepoProxy } from "../resolve-repo";
+import { MongoAuthRepository } from "./mongo.repo";
+import { PgAuthRepository } from "./pg.repo";
 import type { AuthRepository } from "./types";
 
 export * from "./types";
 export * from "./mapper";
 export { MongoAuthRepository } from "./mongo.repo";
 export { PgAuthRepository } from "./pg.repo";
-export {
-  AUTH_SHADOW_OPTIONS,
-  DualAuthRepository,
-  type DualAuthRepositoryDeps,
-} from "./dual.repo";
 
-const defaultAuthRepo: AuthRepository = new DualAuthRepository();
+const defaultAuthRepo: AuthRepository = createPgFirstRepoProxy<AuthRepository>(
+  "auth",
+  new PgAuthRepository(),
+  new MongoAuthRepository(),
+);
 let activeAuthRepo: AuthRepository = defaultAuthRepo;
 
 export function getAuthRepo(): AuthRepository {

@@ -1,25 +1,22 @@
 /**
- * Phase 1B (`workspaces_core` + `github_installations`) repository entry point.
- *
- * Exports the singleton `workspaceRepo` (backed by `DualWorkspaceRepository`,
- * defaulting to `mongo_only` until `migration_domain_state` advances
- * `workspaces_core`) plus test override hooks and concrete repository classes.
+ * Workspaces core & GitHub installations repository entry point (Neon Postgres `pg_only`).
  */
-import { DualWorkspaceRepository } from "./dual.repo";
+import { createPgFirstRepoProxy } from "../resolve-repo";
+import { MongoWorkspaceRepository } from "./mongo.repo";
+import { PgWorkspaceRepository } from "./pg.repo";
 import type { WorkspaceRepository } from "./types";
 
 export * from "./types";
 export * from "./mapper";
-export * from "./sync";
-export * from "./dual-write";
 export { MongoWorkspaceRepository } from "./mongo.repo";
 export { PgWorkspaceRepository } from "./pg.repo";
-export {
-  DualWorkspaceRepository,
-  type DualWorkspaceRepositoryDeps,
-} from "./dual.repo";
 
-const defaultWorkspaceRepo: WorkspaceRepository = new DualWorkspaceRepository();
+const defaultWorkspaceRepo: WorkspaceRepository =
+  createPgFirstRepoProxy<WorkspaceRepository>(
+    "workspaces_core",
+    new PgWorkspaceRepository(),
+    new MongoWorkspaceRepository(),
+  );
 let activeWorkspaceRepo: WorkspaceRepository = defaultWorkspaceRepo;
 
 export function getWorkspaceRepoInstance(): WorkspaceRepository {

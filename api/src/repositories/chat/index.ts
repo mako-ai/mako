@@ -1,10 +1,9 @@
 /**
- * Normalized Chat domain repository entry point (`domain = "chat"`).
- *
- * Defaults to `mongo_only` until `migration_domain_state` advances `chat`
- * (globally or per workspace).
+ * Normalized Chat domain repository entry point (Neon Postgres `pg_only`).
  */
-import { DualChatRepository } from "./dual.repo";
+import { createPgFirstRepoProxy } from "../resolve-repo";
+import { MongoChatRepository } from "./mongo.repo";
+import { PgChatRepository } from "./pg.repo";
 import type { ChatRepository } from "./types";
 
 export * from "./types";
@@ -12,14 +11,12 @@ export * from "./cursor";
 export * from "./mapper";
 export { MongoChatRepository } from "./mongo.repo";
 export { PgChatRepository } from "./pg.repo";
-export {
-  CHAT_DOMAIN,
-  CHAT_SHADOW_OPTIONS,
-  DualChatRepository,
-  type DualChatRepositoryDeps,
-} from "./dual.repo";
 
-const defaultChatRepo: ChatRepository = new DualChatRepository();
+const defaultChatRepo: ChatRepository = createPgFirstRepoProxy<ChatRepository>(
+  "chat",
+  new PgChatRepository(),
+  new MongoChatRepository(),
+);
 let activeChatRepo: ChatRepository = defaultChatRepo;
 
 export function getChatRepo(): ChatRepository {

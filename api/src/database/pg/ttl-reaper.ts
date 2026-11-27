@@ -1,5 +1,5 @@
 /**
- * Batched `ctid` TTL reaper for Postgres tables replacing MongoDB's 16 non-CDC TTL indexes.
+ * Batched `ctid` TTL reaper for platform Postgres tables.
  *
  * Deletes expired rows in bounded batches using `WHERE ctid IN (SELECT ctid ... LIMIT $batch)`
  * so large expirations (e.g. 90-day `query_executions` or 400-day `app_usage_events`) never
@@ -7,15 +7,24 @@
  *
  * Security-sensitive tables (sessions, email verifications, desktop auth codes, invites,
  * MCP OAuth codes/tokens, ACP grants) must ALSO enforce `expires_at > now()` on read queries.
+ *
+ * Invariants:
+ *   - NEVER register `app_binding_drafts` or `app_binding_jobs` here: they own GCS/artifact
+ *     parquet blobs and are pruned exclusively by `pruneExpiredDrafts()` / `pruneExpiredJobs()`.
+ *   - NEVER register `llm_usage` (permanent billing ledger), `app_usage_daily`, or
+ *     `connection_access_events` (audit log).
  */
 import { sql } from "drizzle-orm";
-import { extractRows, getPgDb, type MakoPgDb } from "../database/pg/client";
-import { loggers } from "../logging";
+import { loggers } from "../../logging";
+import { MCP_OAUTH_FLOW_TTL_MS } from "../../repositories/mcp/types";
+import { extractRows, getPgDb, type MakoPgDb } from "./client";
 
-const logger = loggers.migration();
+const logger = loggers.db("postgres");
 
 /** Strict PostgreSQL unquoted identifier pattern preventing SQL injection via dynamic table/column names. */
 const SAFE_SQL_IDENT_RE = /^[a-z_][a-z0-9_]*$/;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const DEFAULT_TTL_BATCH_SIZE = 5_000;
 export const DEFAULT_TTL_MAX_BATCHES = 20;
@@ -43,6 +52,63 @@ export interface TtlReapTableResult {
   cutoffIso: string;
 }
 
+/** Authoritative list of platform Postgres TTL rules across all domains. */
+export const DEFAULT_PG_TTL_RULES: readonly TtlTableRule[] = [
+  // Auth
+  { tableName: "sessions", timestampColumn: "expires_at" },
+  { tableName: "email_verifications", timestampColumn: "expires_at" },
+  { tableName: "desktop_auth_codes", timestampColumn: "expires_at" },
+  // Workspaces & OAuth/ACP grants
+  { tableName: "workspace_invites", timestampColumn: "expires_at" },
+  { tableName: "mcp_oauth_codes", timestampColumn: "expires_at" },
+  { tableName: "mcp_oauth_tokens", timestampColumn: "refresh_expires_at" },
+  { tableName: "acp_plan_grants", timestampColumn: "expires_at" },
+  // Connections
+  {
+    tableName: "connection_write_events",
+    timestampColumn: "at",
+    olderThanMs: 90 * DAY_MS,
+  },
+  // Consoles & Charts
+  {
+    tableName: "scheduled_query_runs",
+    timestampColumn: "completed_at",
+    olderThanMs: 90 * DAY_MS,
+  },
+  // MCP
+  {
+    tableName: "mcp_oauth_flows",
+    timestampColumn: "created_at",
+    olderThanMs: MCP_OAUTH_FLOW_TTL_MS,
+  },
+  // Usage & telemetry
+  {
+    tableName: "app_feed_snapshots",
+    timestampColumn: "created_at",
+    olderThanMs: 1 * DAY_MS,
+  },
+  {
+    tableName: "query_executions",
+    timestampColumn: "executed_at",
+    olderThanMs: 90 * DAY_MS,
+  },
+  {
+    tableName: "connection_verifications",
+    timestampColumn: "verified_at",
+    olderThanMs: 90 * DAY_MS,
+  },
+  {
+    tableName: "app_usage_events",
+    timestampColumn: "at",
+    olderThanMs: 400 * DAY_MS,
+  },
+  {
+    tableName: "skill_usage_daily",
+    timestampColumn: "last_at",
+    olderThanMs: 400 * DAY_MS,
+  },
+];
+
 const ttlRules = new Map<string, TtlTableRule>();
 
 export function assertSafeSqlIdentifier(ident: string, label: string): void {
@@ -57,6 +123,12 @@ export function registerTtlRule(rule: TtlTableRule): void {
   assertSafeSqlIdentifier(rule.tableName, "tableName");
   assertSafeSqlIdentifier(rule.timestampColumn, "timestampColumn");
   ttlRules.set(rule.tableName, { ...rule });
+}
+
+export function registerDefaultPgTtlRules(): void {
+  for (const rule of DEFAULT_PG_TTL_RULES) {
+    registerTtlRule(rule);
+  }
 }
 
 export function listTtlRules(): TtlTableRule[] {
@@ -166,8 +238,6 @@ export async function reapAllRegisteredTables(
 
 /**
  * Reap all registered tables and throw an aggregated error if any table failed.
- * Remaining tables still reap before throwing so one broken table never blocks
- * healthy tables, while Inngest retries and alerts on the failure.
  */
 export async function reapAllRegisteredTablesOrThrow(
   options: { db?: MakoPgDb; now?: Date } = {},
