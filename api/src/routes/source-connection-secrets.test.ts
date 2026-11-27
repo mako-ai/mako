@@ -7,7 +7,7 @@
  * loaded it into the password field. Database connections already substitute
  * {@link SECRET_KEPT} and restore it on write. These specs pin the same bar.
  *
- * Real routes + real Mongo (mongodb-memory-server); auth, workspace access,
+ * Real routes and PGlite; auth, workspace access,
  * and the connector schema are mocked.
  */
 import {
@@ -20,15 +20,22 @@ import {
   vi,
 } from "vitest";
 import { Hono } from "hono";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { legacyUserIdToUuidv7 } from "../database/pg/id-codec";
+import { connectionsRepo } from "../repositories/connections";
+import {
+  type PgTestDb,
+  setupPgTestDb,
+  ensureTestWorkspace,
+  ensureTestUser,
+} from "../test-support/pg-test";
 
 vi.mock("../auth/unified-auth.middleware", () => ({
   unifiedAuthMiddleware: async (
     c: { set: (k: string, v: unknown) => void },
     next: () => Promise<void>,
   ) => {
-    c.set("user", { id: "u1" });
+    c.set("user", { id: USER_ID });
     await next();
   },
 }));
@@ -60,7 +67,6 @@ vi.mock("../connectors/registry", () => ({
 }));
 
 import { sourceConnectionRoutes } from "./source-connections";
-import { SourceConnection } from "../database/workspace-schema";
 import { encryptString } from "../services/crypto.service";
 import { SECRET_KEPT } from "../utils/connection-secrets";
 import { syncConnectorRegistry } from "../sync/connector-registry";
@@ -72,7 +78,8 @@ const defaultSchema = {
   ],
 };
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
+const USER_ID = legacyUserIdToUuidv7("u1");
 const WS = new Types.ObjectId().toString();
 const SECRET = "sk_live_do_not_leak_this_key";
 
@@ -100,17 +107,17 @@ beforeAll(async () => {
   process.env.ENCRYPTION_KEY =
     process.env.ENCRYPTION_KEY ??
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
 });
 
 beforeEach(async () => {
-  await SourceConnection.deleteMany({});
+  await pg.reset();
+  await ensureTestWorkspace(pg.db, { id: WS });
+  await ensureTestUser(pg.db, { id: USER_ID });
   vi.mocked(syncConnectorRegistry.getConfigSchemaForType).mockResolvedValue(
     defaultSchema,
   );
@@ -118,13 +125,13 @@ beforeEach(async () => {
 
 async function seed() {
   const ciphertext = encryptString(SECRET);
-  const row = await SourceConnection.create({
-    workspaceId: new Types.ObjectId(WS),
+  const row = await connectionsRepo.createSourceConnection({
+    workspaceId: String(WS),
     name: "Stripe",
     type: "stripe",
     config: { api_key: ciphertext, account: "acct_123" },
     isActive: true,
-    createdBy: "u1",
+    createdBy: USER_ID,
     settings: {
       sync_batch_size: 100,
       rate_limit_delay_ms: 200,
@@ -189,7 +196,7 @@ describe("source-connection reads never return a credential", () => {
     expect(body.data.config.api_key).toBe(SECRET_KEPT);
     expect(JSON.stringify(body)).not.toContain(ciphertext);
 
-    const stored = await SourceConnection.findById(id).lean();
+    const stored = await connectionsRepo.findSourceConnectionById(id, WS);
     expect(
       (stored as unknown as { config: { api_key: string; account: string } })
         .config.api_key,
@@ -215,8 +222,10 @@ describe("source-connection reads never return a credential", () => {
     expect(body.data.config.api_key).toBe(SECRET_KEPT);
     expect(JSON.stringify(body)).not.toContain(SECRET);
 
-    const stored = await SourceConnection.findById(body.data._id).lean();
-    expect((stored as { createdBy: string }).createdBy).toBe("u1");
+    const stored = await connectionsRepo.findSourceConnectionById(
+      String(body.data._id),
+    );
+    expect((stored as { createdBy: string }).createdBy).toBe(USER_ID);
     expect((stored as { createdBy: string }).createdBy).not.toBe("system");
   });
 
@@ -230,8 +239,8 @@ describe("source-connection reads never return a credential", () => {
       null,
     );
     const ciphertext = encryptString(SECRET);
-    const row = await SourceConnection.create({
-      workspaceId: new Types.ObjectId(WS),
+    const row = await connectionsRepo.createSourceConnection({
+      workspaceId: String(WS),
       name: "Hasura",
       type: "graphql",
       config: {
@@ -239,7 +248,7 @@ describe("source-connection reads never return a credential", () => {
         endpoint: "https://api.example.com",
       } as Record<string, unknown>,
       isActive: true,
-      createdBy: "u1",
+      createdBy: USER_ID,
       settings: {
         sync_batch_size: 100,
         rate_limit_delay_ms: 200,

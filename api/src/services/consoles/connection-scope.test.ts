@@ -24,8 +24,13 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import {
+  type PgTestDb,
+  setupPgTestDb,
+  ensureTestUser,
+  ensureTestDatabaseConnection,
+} from "../../test-support/pg-test";
 
 vi.mock("../../integrations/github/app-auth", () => ({
   resolveRepoToken: async () => undefined,
@@ -37,10 +42,11 @@ vi.mock("../../inngest/client", () => ({
   },
 }));
 
-import { SavedConsole } from "../../database/workspace-schema";
+import { consolesChartsRepo } from "../../repositories/consoles-charts";
+import { generateUuidv7 } from "../../database/pg/id-codec";
+import { savedConsoles } from "../../database/pg/schema";
 import { initRepo, repoDirFor } from "../../apps/repository.service";
 import { bindTestWorkspaceRepo } from "../../apps/bind-test-workspace-repo";
-import { seedTestConnections } from "../../apps/seed-test-connections";
 import {
   createConsoleAtPath,
   saveConsoleById,
@@ -55,25 +61,23 @@ import { loadScheduledConsole } from "../../inngest/functions/scheduled-query";
 import { enrichWithConnectionNames } from "../../agent-lib/tools/console-search-tools";
 import { createServerConsoleTools } from "../../agent-lib/tools/server-console-tools";
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 let tmpRoot: string;
 let WS: string;
 let OTHER_WS: string;
 let OWN: string;
 let FOREIGN: string;
-const USER = { id: new Types.ObjectId().toString(), email: "a@example.com" };
+const USER = { id: generateUuidv7(), email: "a@example.com" };
 
 beforeAll(async () => {
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "console-scope-"));
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
 }, 120_000);
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -87,21 +91,30 @@ beforeEach(async () => {
   OTHER_WS = new Types.ObjectId().toString();
   OWN = new Types.ObjectId().toString();
   FOREIGN = new Types.ObjectId().toString();
-  await SavedConsole.deleteMany({});
+  await pg.reset();
+  await ensureTestUser(pg.db, USER);
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
   await bindTestWorkspaceRepo(WS);
-  await seedTestConnections(WS, { database: [OWN] });
-  await seedTestConnections(OTHER_WS, { database: [FOREIGN] });
+  await ensureTestDatabaseConnection(pg.db, {
+    workspaceId: WS,
+    id: OWN,
+    name: `db-${OWN}`,
+  });
+  await ensureTestDatabaseConnection(pg.db, {
+    workspaceId: OTHER_WS,
+    id: FOREIGN,
+    name: `db-${FOREIGN}`,
+  });
 });
 
 /** A console row in WS pointing at `connectionId`, as an old write left it. */
 async function consoleRow(connectionId: string) {
-  return SavedConsole.create({
-    workspaceId: new Types.ObjectId(WS),
+  return consolesChartsRepo.createConsole({
+    workspaceId: WS,
     name: "nightly",
     code: "DELETE FROM customers",
     language: "sql",
-    connectionId: new Types.ObjectId(connectionId),
+    connectionId,
     createdBy: USER.id,
     owner_id: USER.id,
     isSaved: true,
@@ -143,7 +156,7 @@ describe("POST /consoles and PUT /consoles/:pathOrId", () => {
       status: 404,
       error: FOREIGN_CONNECTION_ERROR,
     });
-    expect(await SavedConsole.countDocuments({})).toBe(0);
+    expect(await pg.db.$count(savedConsoles)).toBe(0);
   });
 
   it("POST with an own connectionId saves it", async () => {
@@ -155,7 +168,11 @@ describe("POST /consoles and PUT /consoles/:pathOrId", () => {
       connectionId: OWN,
     });
     expect(result.ok).toBe(true);
-    const row = await SavedConsole.findOne({ workspaceId: WS, name: "mine" });
+    const row = await consolesChartsRepo.findConsoleByNameAndFolder(
+      WS,
+      "mine",
+      null,
+    );
     expect(row?.connectionId?.toString()).toBe(OWN);
   });
 
@@ -167,7 +184,7 @@ describe("POST /consoles and PUT /consoles/:pathOrId", () => {
       body: { content: "SELECT 1", connectionId: FOREIGN },
     });
     expect(result).toMatchObject({ ok: false, status: 404 });
-    expect(await SavedConsole.countDocuments({})).toBe(0);
+    expect(await pg.db.$count(savedConsoles)).toBe(0);
   });
 
   it("PUT by id (draft autosave and explicit save) with a foreign connectionId is a 404", async () => {
@@ -191,7 +208,8 @@ describe("POST /consoles and PUT /consoles/:pathOrId", () => {
       body: { content: "SELECT 3", connectionId: FOREIGN },
     });
     expect(fresh).toMatchObject({ ok: false, status: 404 });
-    const rows = await SavedConsole.find({});
+    expect(await pg.db.$count(savedConsoles)).toBe(1);
+    const rows = await consolesChartsRepo.listConsolesByWorkspace(WS);
     expect(rows).toHaveLength(1);
     expect(rows[0].connectionId?.toString()).toBe(OWN);
   });
@@ -223,7 +241,7 @@ describe("agent and MCP console tools", () => {
     )) as { success: boolean; error?: string };
     expect(result.success).toBe(false);
     expect(result.error).toContain("not found in this workspace");
-    expect(await SavedConsole.countDocuments({})).toBe(0);
+    expect(await pg.db.$count(savedConsoles)).toBe(0);
   });
 
   it("set_console_connection refuses a foreign connectionId", async () => {
@@ -235,7 +253,7 @@ describe("agent and MCP console tools", () => {
     )) as { success: boolean; error?: string };
     expect(result.success).toBe(false);
     expect(result.error).toContain("not found in this workspace");
-    const after = await SavedConsole.findById(own._id);
+    const after = await consolesChartsRepo.findConsoleById(WS, own.id);
     expect(after?.connectionId?.toString()).toBe(OWN);
   });
 });

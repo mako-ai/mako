@@ -4,7 +4,7 @@
  * in source-connection-roles.test.ts), and the write log shows who tried,
  * with what the list does not cover.
  *
- * Real routes + real Mongo (mongodb-memory-server); auth and workspace roles
+ * Real routes and PGlite; auth and workspace roles
  * are mocked.
  */
 import {
@@ -17,13 +17,20 @@ import {
   vi,
 } from "vitest";
 import { Hono } from "hono";
-import { ConnectionAccessEvent } from "../access/connection-access-event";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { legacyUserIdToUuidv7 } from "../database/pg/id-codec";
+import { connectionsRepo } from "../repositories/connections";
+import {
+  type PgTestDb,
+  setupPgTestDb,
+  ensureTestWorkspace,
+  ensureTestUser,
+  ensureTestMember,
+} from "../test-support/pg-test";
 
 const who = vi.hoisted(() => ({
   authType: "session" as string,
-  userId: "manager1",
+  userId: "",
   role: "member" as string,
 }));
 
@@ -45,7 +52,7 @@ vi.mock("../services/workspace.service", () => ({
     getMember: vi.fn(async (_ws: string, userId: string) =>
       userId === who.userId
         ? { role: who.role }
-        : userId === "manager1"
+        : userId === MANAGER
           ? { role: "member" }
           : null,
     ),
@@ -60,15 +67,13 @@ vi.mock("../access/connection-writes", async importOriginal => ({
 }));
 
 import { sourceConnectionRoutes } from "./source-connections";
-import {
-  SourceConnection,
-  WorkspaceMember,
-} from "../database/workspace-schema";
 import { writersOutsideRefusal } from "../access/connection-writers-list";
-import { ConnectionWriteEvent } from "../access/connection-write-event";
 
-let mongo: MongoMemoryServer;
-const WS = new Types.ObjectId();
+const MANAGER = legacyUserIdToUuidv7("manager1");
+const VERA = legacyUserIdToUuidv7("vera");
+
+let pg: PgTestDb;
+const WS = new Types.ObjectId().toString();
 
 const app = new Hono();
 app.route(
@@ -98,32 +103,28 @@ function req(
 }
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
 });
 
 let id: string;
 beforeEach(async () => {
   who.authType = "session";
-  who.userId = "manager1";
+  who.userId = MANAGER;
   who.role = "member";
-  await SourceConnection.deleteMany({});
-  await ConnectionWriteEvent.deleteMany({});
-  await ConnectionAccessEvent.deleteMany({});
-  // Tests that add a viewer each create her.
-  await WorkspaceMember.deleteMany({ userId: "vera" });
-  const row = await SourceConnection.create({
+  await pg.reset();
+  await ensureTestWorkspace(pg.db, { id: WS });
+  await ensureTestUser(pg.db, { id: MANAGER });
+  const row = await connectionsRepo.createSourceConnection({
     workspaceId: WS,
     name: "ch_close",
     type: "stripe",
     config: { api_key: "x" },
     settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
-    createdBy: "manager1",
+    createdBy: MANAGER,
   });
   id = String(row._id);
 });
@@ -161,10 +162,10 @@ describe("source connection writers", () => {
       liveReads: false,
     });
     expect(put.status).toBe(200);
-    const stored = await SourceConnection.findById(id).lean();
+    const stored = await connectionsRepo.findSourceConnectionById(id, WS);
     expect(stored?.writers).toMatchObject([
-      { principal: "workflow:fr-offer-to-cash", addedBy: "manager1" },
-      { principal: "workflow:other-flow", addedBy: "manager1" },
+      { principal: "workflow:fr-offer-to-cash", addedBy: MANAGER },
+      { principal: "workflow:other-flow", addedBy: MANAGER },
     ]);
     expect(stored?.writers).toHaveLength(2);
     expect(stored?.writers?.[0].where).toBeUndefined();
@@ -178,13 +179,13 @@ describe("source connection writers", () => {
     ).toBe(200);
     expect(stored?.liveReads).toBe(false);
     // Each change is recorded: the switch, what was added, what was removed.
-    const events = await ConnectionAccessEvent.find({ connectionId: id })
-      .sort({ at: 1 })
-      .lean();
+    const events = (
+      await connectionsRepo.listConnectionAccessEvents(WS, id)
+    ).reverse();
     expect(events.map(e => [e.actor, e.via, e.changes])).toEqual([
-      ["manager1", "app", { liveReads: true }],
+      [MANAGER, "app", { liveReads: true }],
       [
-        "manager1",
+        MANAGER,
         "app",
         {
           liveReads: false,
@@ -195,7 +196,7 @@ describe("source connection writers", () => {
         },
       ],
       [
-        "manager1",
+        MANAGER,
         "app",
         {
           writers: {
@@ -211,17 +212,16 @@ describe("source connection writers", () => {
     expect(
       (await (await req("GET", `/${id}/writers`)).json()).data.liveReaders,
     ).toBeNull();
-    await WorkspaceMember.create({
+    await ensureTestMember(pg.db, {
       workspaceId: WS,
-      userId: "vera",
+      userId: VERA,
       role: "viewer",
-      joinedAt: new Date(),
     });
     const put = await req("PUT", `/${id}/writers`, {
       writers: [],
       liveReads: true,
       liveReaders: [
-        { principal: "user:vera" },
+        { principal: `user:${VERA}` },
         { principal: "workflow:fr-offer-to-cash" },
         { principal: "workflow:other-flow" },
       ],
@@ -229,7 +229,7 @@ describe("source connection writers", () => {
     expect(put.status).toBe(200);
     const { data } = await (await req("GET", `/${id}/writers`)).json();
     expect(data.liveReaders).toMatchObject([
-      { principal: "user:vera", addedBy: "manager1" },
+      { principal: `user:${VERA}`, addedBy: MANAGER },
       { principal: "workflow:fr-offer-to-cash", where: null },
       { principal: "workflow:other-flow", where: null },
     ]);
@@ -238,28 +238,26 @@ describe("source connection writers", () => {
       writers: [{ principal: "workflow:*" }],
     });
     expect(
-      (await SourceConnection.findById(id).lean())?.liveReaders,
+      (await connectionsRepo.findSourceConnectionById(id, WS))?.liveReaders,
     ).toHaveLength(3);
     // An empty list: only the writers.
     await req("PUT", `/${id}/writers`, { writers: [], liveReaders: [] });
-    expect((await SourceConnection.findById(id).lean())?.liveReaders).toEqual(
-      [],
-    );
+    expect(
+      (await connectionsRepo.findSourceConnectionById(id, WS))?.liveReaders,
+    ).toEqual([]);
     // Null: everyone again.
     await req("PUT", `/${id}/writers`, { writers: [], liveReaders: null });
     expect(
-      (await SourceConnection.findById(id).lean())?.liveReaders,
+      (await connectionsRepo.findSourceConnectionById(id, WS))?.liveReaders,
     ).toBeUndefined();
     // Limiting, emptying and reopening live reads are each recorded.
-    const readers = (
-      await ConnectionAccessEvent.find({ connectionId: id })
-        .sort({ at: 1 })
-        .lean()
-    ).flatMap(e => (e.changes.liveReaders ? [e.changes.liveReaders] : []));
+    const readers = (await connectionsRepo.listConnectionAccessEvents(WS, id))
+      .reverse()
+      .flatMap(e => (e.changes.liveReaders ? [e.changes.liveReaders] : []));
     expect(readers).toEqual([
       {
         added: [
-          "user:vera",
+          `user:${VERA}`,
           "workflow:fr-offer-to-cash",
           "workflow:other-flow",
         ],
@@ -269,7 +267,7 @@ describe("source connection writers", () => {
       {
         added: [],
         removed: [
-          "user:vera",
+          `user:${VERA}`,
           "workflow:fr-offer-to-cash",
           "workflow:other-flow",
         ],
@@ -278,11 +276,8 @@ describe("source connection writers", () => {
     ]);
     // An empty list where everyone read before adds no one and removes no
     // one, and still shuts live reads to all but the writers: recorded.
-    await ConnectionAccessEvent.deleteMany({});
     await req("PUT", `/${id}/writers`, { writers: [], liveReaders: [] });
-    const [shut] = await ConnectionAccessEvent.find({
-      connectionId: id,
-    }).lean();
+    const [shut] = await connectionsRepo.listConnectionAccessEvents(WS, id, 1);
     expect(shut.changes).toEqual({
       liveReaders: { added: [], removed: [], limited: true },
     });
@@ -301,7 +296,7 @@ describe("source connection writers", () => {
       (
         await req("PUT", `/${id}/writers`, {
           writers: [],
-          liveReaders: [{ principal: "agent:user:manager1" }],
+          liveReaders: [{ principal: `agent:user:${MANAGER}` }],
         })
       ).status,
     ).toBe(400);
@@ -310,12 +305,12 @@ describe("source connection writers", () => {
       (
         await req("PUT", `/${id}/writers`, {
           writers: [],
-          liveReaders: [{ principal: "user:manager1" }],
+          liveReaders: [{ principal: `user:${MANAGER}` }],
         })
       ).status,
     ).toBe(403);
     expect(
-      (await SourceConnection.findById(id).lean())?.liveReaders,
+      (await connectionsRepo.findSourceConnectionById(id, WS))?.liveReaders,
     ).toBeUndefined();
   });
 
@@ -344,19 +339,18 @@ describe("source connection writers", () => {
       ).status,
     ).toBe(400);
     expect(
-      (await SourceConnection.findById(id).lean())?.writers,
+      (await connectionsRepo.findSourceConnectionById(id, WS))?.writers,
     ).toBeUndefined();
   });
 
   it("refuses a viewer, or an agent's attempt, as a writer", async () => {
-    await WorkspaceMember.create({
+    await ensureTestMember(pg.db, {
       workspaceId: WS,
-      userId: "vera",
+      userId: VERA,
       role: "viewer",
-      joinedAt: new Date(),
     });
     const viewer = await req("PUT", `/${id}/writers`, {
-      writers: [{ principal: "user:vera" }],
+      writers: [{ principal: `user:${VERA}` }],
     });
     expect(viewer.status).toBe(400);
     expect(((await viewer.json()) as { error: string }).error).toMatch(
@@ -365,47 +359,40 @@ describe("source connection writers", () => {
     expect(
       (
         await req("PUT", `/${id}/writers`, {
-          writers: [{ principal: "agent:user:manager1" }],
+          writers: [{ principal: `agent:user:${MANAGER}` }],
         })
       ).status,
     ).toBe(400);
     expect(
-      await writersOutsideRefusal(String(WS), [
-        { principal: "agent:user:manager1" },
-      ]),
+      await writersOutsideRefusal(WS, [{ principal: `agent:user:${MANAGER}` }]),
     ).toMatch(/cannot be on a writers list/);
     expect(
-      (await SourceConnection.findById(id).lean())?.writers,
+      (await connectionsRepo.findSourceConnectionById(id, WS))?.writers,
     ).toBeUndefined();
   });
 
   it("shows who tried to write, and what the list does not cover", async () => {
     // A `where` stored on a source writer (from before writers were
     // connection-wide) is ignored: the writer writes anywhere.
-    await SourceConnection.updateOne(
-      { _id: id },
-      {
-        $set: {
-          writers: [
-            { principal: "workflow:fr-offer-to-cash", where: "/legacy/" },
-          ],
-        },
-      },
-    );
+    await connectionsRepo.updateSourceConnection(id, WS, {
+      writers: [{ principal: "workflow:fr-offer-to-cash", where: "/legacy/" }],
+    });
     const event = (principal: string, target: string, allowed: boolean) => ({
       workspaceId: WS,
-      connectionId: new Types.ObjectId(id),
+      connectionId: id,
       principal,
       target,
       allowed,
     });
-    await ConnectionWriteEvent.create([
+    for (const entry of [
       event("workflow:other-flow", "POST /task/", false),
       event("workflow:fr-offer-to-cash", "POST /task/", true),
       event("workflow:fr-offer-to-cash", "PUT /lead/lead_1/", false),
       event("worker:workflows", "POST /task/", false),
-      event("agent:user:manager1", "POST /task/", false),
-    ]);
+      event(`agent:user:${MANAGER}`, "POST /task/", false),
+    ]) {
+      await connectionsRepo.recordConnectionWriteEvent(entry);
+    }
     const { data } = await (await req("GET", `/${id}/writers`)).json();
     // Shown by its name, without the ignored `where`.
     expect(data.writers).toMatchObject([
@@ -424,21 +411,23 @@ describe("source connection writers", () => {
     // The worker naming no workflow cannot be listed, so it is not offered.
     expect(byPrincipal["worker:workflows"]).toBeUndefined();
     // Nor an agent's refused attempt: agents never write.
-    expect(byPrincipal["agent:user:manager1"]).toBeUndefined();
+    expect(byPrincipal[`agent:user:${MANAGER}`]).toBeUndefined();
   });
 
   it("offers each refused workflow by its name", async () => {
     const event = (principal: string, target: string) => ({
       workspaceId: WS,
-      connectionId: new Types.ObjectId(id),
+      connectionId: id,
       principal,
       target,
       allowed: false,
     });
-    await ConnectionWriteEvent.create([
+    for (const entry of [
       event("workflow:a-flow", "POST /task/"),
       event("workflow:b-flow", "PUT /lead/1/"),
-    ]);
+    ]) {
+      await connectionsRepo.recordConnectionWriteEvent(entry);
+    }
     const { data } = await (await req("GET", `/${id}/writers`)).json();
     expect(
       data.recent
@@ -464,43 +453,47 @@ describe("source connection writers", () => {
   });
 
   it("checks only writers new to the list: a stored viewer blocks no other change", async () => {
-    await WorkspaceMember.create({
+    await ensureTestMember(pg.db, {
       workspaceId: WS,
-      userId: "vera",
+      userId: VERA,
       role: "viewer",
-      joinedAt: new Date(),
     });
     // Listed before vera became a viewer.
-    await SourceConnection.updateOne(
-      { _id: id },
-      { $set: { writers: [{ principal: "user:vera" }] } },
-    );
+    await connectionsRepo.updateSourceConnection(id, WS, {
+      writers: [{ principal: `user:${VERA}` }],
+    });
     const toggle = await req("PUT", `/${id}/writers`, {
-      writers: [{ principal: "user:vera" }],
+      writers: [{ principal: `user:${VERA}` }],
       liveReads: true,
     });
     expect(toggle.status).toBe(200);
-    expect((await SourceConnection.findById(id).lean())?.liveReads).toBe(true);
+    expect(
+      (await connectionsRepo.findSourceConnectionById(id, WS))?.liveReads,
+    ).toBe(true);
     // A newcomer is still checked.
     expect(
       (
         await req("PUT", `/${id}/writers`, {
-          writers: [{ principal: "user:vera" }, { principal: "user:stranger" }],
+          writers: [
+            { principal: `user:${VERA}` },
+            { principal: "user:stranger" },
+          ],
         })
       ).status,
     ).toBe(400);
     expect(
       await writersOutsideRefusal(
-        String(WS),
-        [{ principal: "user:vera" }],
-        [{ principal: "user:vera" }],
+        WS,
+        [{ principal: `user:${VERA}` }],
+        [{ principal: `user:${VERA}` }],
       ),
     ).toBeNull();
   });
 
   it("is scoped to the workspace", async () => {
-    const other = await SourceConnection.create({
-      workspaceId: new Types.ObjectId(),
+    const otherWorkspace = await ensureTestWorkspace(pg.db);
+    const other = await connectionsRepo.createSourceConnection({
+      workspaceId: otherWorkspace.id,
       name: "theirs",
       type: "stripe",
       config: {},

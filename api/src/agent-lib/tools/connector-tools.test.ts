@@ -22,7 +22,7 @@
  * called. The service is mocked here; its own promises are pinned in
  * `connectors/probe.service.test.ts`.
  *
- * Real Mongo (mongodb-memory-server) for the listing and inspection tools;
+ * PGlite for the listing and inspection tools;
  * no credential is ever seeded in plaintext, and the assertion that none
  * comes back is made against the serialized results.
  */
@@ -35,8 +35,14 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { connectionsRepo } from "../../repositories/connections";
+import {
+  type PgTestDb,
+  setupPgTestDb,
+  ensureTestWorkspace,
+  ensureTestUser,
+} from "../../test-support/pg-test";
 
 const state = vi.hoisted(() => ({
   calls: [] as unknown[],
@@ -75,10 +81,6 @@ vi.mock("../../connections/proxy.service", () => ({
 }));
 
 import { ProbeError } from "../../connectors/probe.service";
-import {
-  SourceConnection,
-  DatabaseConnection,
-} from "../../database/workspace-schema";
 import { encryptString } from "../../services/crypto.service";
 import { createConnectorTools } from "./connector-tools";
 import { createUniversalTools } from "./universal-tools";
@@ -98,8 +100,9 @@ import { READ_ONLY_TOOL_NAMES } from "@mako/agent-tools";
 import type { AgentContext } from "../../agents/types";
 
 const SECRET = "sk_live_do_not_leak_0123456789";
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 let WS: string;
+const OTHER_WS = new Types.ObjectId().toString();
 let STRIPE: Types.ObjectId;
 let WAREHOUSE: Types.ObjectId;
 
@@ -121,26 +124,25 @@ beforeAll(async () => {
   process.env.ENCRYPTION_KEY =
     process.env.ENCRYPTION_KEY ??
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
 }, 120_000);
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
 });
 
 beforeEach(async () => {
-  await Promise.all([
-    SourceConnection.deleteMany({}),
-    DatabaseConnection.deleteMany({}),
-  ]);
+  await pg.reset();
   WS = new Types.ObjectId().toString();
+  await ensureTestWorkspace(pg.db, { id: WS });
+  await ensureTestWorkspace(pg.db, { id: OTHER_WS });
+  await ensureTestUser(pg.db, { id: "u1" });
+  await ensureTestUser(pg.db, { id: "u2" });
   STRIPE = new Types.ObjectId();
   WAREHOUSE = new Types.ObjectId();
-  await SourceConnection.create({
-    _id: STRIPE,
-    workspaceId: new Types.ObjectId(WS),
+  await connectionsRepo.createSourceConnection({
+    id: String(STRIPE),
+    workspaceId: WS,
     name: "fr_stripe",
     type: "stripe",
     config: { api_key: encryptString(SECRET) },
@@ -148,17 +150,17 @@ beforeEach(async () => {
     settings: { rate_limit_delay_ms: 100, sync_batch_size: 100 },
     createdBy: "u1",
   });
-  await DatabaseConnection.create({
-    _id: WAREHOUSE,
-    workspaceId: new Types.ObjectId(WS),
+  await connectionsRepo.createDatabaseConnection({
+    id: String(WAREHOUSE),
+    workspaceId: WS,
     name: "bigquery",
     type: "bigquery",
     connection: { project_id: "realadvisor-prod", keyFilename: "k" },
     createdBy: "u1",
   });
   // A stranger's connection: must never show up in this workspace's answers.
-  await SourceConnection.create({
-    workspaceId: new Types.ObjectId(),
+  await connectionsRepo.createSourceConnection({
+    workspaceId: OTHER_WS,
     name: "theirs",
     type: "custom_api",
     config: { api_key: encryptString("theirs_" + SECRET) },
@@ -273,8 +275,8 @@ describe("vocabulary: connectors are code, connections are credentials", () => {
   });
 
   it("another workspace's connection is not found, by any tool", async () => {
-    const theirs = await SourceConnection.findOne({ name: "theirs" }).lean();
-    const id = String(theirs?._id);
+    const [theirs] = await connectionsRepo.listSourceConnections(OTHER_WS);
+    const id = theirs.id;
     expect(
       String(
         (await tools().inspect_connection.execute({ connectionId: id })).error,

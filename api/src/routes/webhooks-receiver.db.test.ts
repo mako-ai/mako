@@ -16,13 +16,18 @@
 import assert from "node:assert/strict";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose, { Types } from "mongoose";
+import {
+  ensureTestSourceConnection,
+  setupPgTestDb,
+} from "../test-support/pg-test";
 
 async function main(): Promise<void> {
-  const mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  const pg = await setupPgTestDb();
+  let mongo: MongoMemoryServer | undefined;
   try {
-    const { Flow, WebhookEvent, SourceConnection } =
-      await import("../database/workspace-schema");
+    mongo = await MongoMemoryServer.create();
+    await mongoose.connect(mongo.getUri());
+    const { Flow, WebhookEvent } = await import("../database/workspace-schema");
     const { connectorRegistry } = await import("../connectors/registry");
     const { webhookRoutes } = await import("./webhooks");
 
@@ -32,19 +37,21 @@ async function main(): Promise<void> {
     });
 
     const workspaceId = new Types.ObjectId();
-    const source = await SourceConnection.collection.insertOne({
-      workspaceId,
+    const source = await ensureTestSourceConnection(pg.db, {
+      workspaceId: String(workspaceId),
       name: "test source",
       type: "test",
       config: {},
     });
+
+    const dataSourceId = new Types.ObjectId(source.id);
 
     async function flow(fields: Record<string, unknown>) {
       const doc = await Flow.collection.insertOne({
         workspaceId,
         name: "f",
         sourceType: "connector",
-        dataSourceId: source.insertedId,
+        dataSourceId,
         destinationDatabaseId: new Types.ObjectId(),
         createdBy: "u1",
         syncEngine: "cdc",
@@ -94,7 +101,7 @@ async function main(): Promise<void> {
       name: "hybrid",
       type: "scheduled",
       sourceType: "connector",
-      dataSourceId: source.insertedId,
+      dataSourceId,
       destinationDatabaseId: new Types.ObjectId(),
       createdBy: "u1",
       syncEngine: "cdc",
@@ -130,7 +137,7 @@ async function main(): Promise<void> {
       name: "off",
       type: "webhook",
       sourceType: "connector",
-      dataSourceId: source.insertedId,
+      dataSourceId,
       destinationDatabaseId: new Types.ObjectId(),
       createdBy: "u1",
       webhookConfig: {
@@ -196,7 +203,7 @@ async function main(): Promise<void> {
       name: "nosecret",
       type: "webhook",
       sourceType: "connector",
-      dataSourceId: source.insertedId,
+      dataSourceId,
       destinationDatabaseId: new Types.ObjectId(),
       createdBy: "u1",
       webhookConfig: {
@@ -215,8 +222,10 @@ async function main(): Promise<void> {
 
     console.log("webhooks receiver tests passed");
   } finally {
-    await mongoose.disconnect();
-    await mongo.stop();
+    await Promise.all([
+      mongoose.disconnect().finally(() => mongo?.stop()),
+      pg.close(),
+    ]);
   }
 }
 

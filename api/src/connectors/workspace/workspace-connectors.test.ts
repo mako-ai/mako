@@ -1,7 +1,7 @@
 /**
  * A workspace ships its own connector: the whole path, end to end.
  *
- * Real bare git repos under a temp APPS_GIT_ROOT, mongodb-memory-server for
+ * Real bare git repos under a temp APPS_GIT_ROOT, PGlite for
  * the index, and the LOCAL sandbox provider so a connector really is executed
  * as a separate process — the same rig the skills and consoles suites use.
  * Nothing here is mocked: the assertions are about what a pushed folder
@@ -20,8 +20,13 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { connectionsRepo } from "../../repositories/connections";
+import {
+  type PgTestDb,
+  setupPgTestDb,
+  ensureTestWorkspace,
+} from "../../test-support/pg-test";
 
 // Real code, observed: the index retry must read the mirror's main first.
 const cloudRepo = vi.hoisted(() => ({ calls: [] as string[] }));
@@ -40,10 +45,7 @@ vi.mock("../../apps/cloud-repo.service", async importOriginal => {
     }),
   };
 });
-import {
-  ConnectorDefinition,
-  type ISourceConnection,
-} from "../../database/workspace-schema";
+import type { ISourceConnection } from "../../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -68,7 +70,7 @@ import { SandboxedConnector } from "./SandboxedConnector";
 import { getSandboxProvider } from "../../apps/sandbox/provider";
 import { syncBoxContext } from "./sync-box";
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 let tmpRoot: string;
 
 beforeAll(async () => {
@@ -79,13 +81,11 @@ beforeAll(async () => {
   process.env.APPS_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_SANDBOX_PROVIDER = "local";
   process.env.NODE_ENV = "development";
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
 }, 120_000);
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -97,8 +97,9 @@ afterAll(async () => {
 const WS = new Types.ObjectId().toString();
 
 beforeEach(async () => {
-  await ConnectorDefinition.deleteMany({});
-  // The repo goes too. Clearing only Mongo leaves the previous test's folders
+  await pg.reset();
+  await ensureTestWorkspace(pg.db, { id: WS });
+  // The repo goes too. Clearing only Postgres leaves the previous test's folders
   // on `main`, so a later case reconciles connectors it never pushed — which
   // is how "one bad connector does not stop the others" appeared to fail
   // while actually counting an earlier test's leftovers.
@@ -200,10 +201,7 @@ describe("a connector pushed to the workspace repo", () => {
     expect(result.created).toBe(1);
     expect(result.blocked).toBe(0);
 
-    const row = await ConnectorDefinition.findOne({
-      workspaceId: WS,
-      slug: "acme",
-    }).lean();
+    const row = await connectionsRepo.findConnectorDefinition(WS, "acme");
     expect(row?.status).toBe("indexed");
     expect(row?.runtime).toBe("node");
     expect(row?.entities).toEqual(["widgets"]);
@@ -258,11 +256,12 @@ describe("a connector pushed to the workspace repo", () => {
   it("offers a query connector's incremental mode before any query exists", async () => {
     // A GraphQL folder's queries live on the flow: the flow form asks the
     // catalog for the mode before the connector has a single entity.
-    await ConnectorDefinition.create({
-      workspaceId: new Types.ObjectId(WS),
+    await connectionsRepo.upsertConnectorDefinition({
+      workspaceId: WS,
       slug: "graphql",
       sha: "s",
       sourceSha: "s",
+      status: "indexed",
       entities: [],
       spec: {
         mako: {
@@ -273,11 +272,12 @@ describe("a connector pushed to the workspace repo", () => {
         },
       },
     });
-    await ConnectorDefinition.create({
-      workspaceId: new Types.ObjectId(WS),
+    await connectionsRepo.upsertConnectorDefinition({
+      workspaceId: WS,
       slug: "plain",
       sha: "s",
       sourceSha: "s",
+      status: "indexed",
       entities: ["rows"],
       spec: {
         mako: { name: "plain", version: "1.0.0", entities: { rows: {} } },
@@ -457,10 +457,7 @@ describe("a connector whose entry file is not connector.ts", () => {
 
     const result = await syncConnectorsFromRepo(WS);
     expect(result.created).toBe(1);
-    const row = await ConnectorDefinition.findOne({
-      workspaceId: WS,
-      slug: "acme",
-    }).lean();
+    const row = await connectionsRepo.findConnectorDefinition(WS, "acme");
     expect(row?.status).toBe("indexed");
     expect(row?.entry).toBe("src/index.ts");
 
@@ -555,10 +552,7 @@ describe("a connector whose index hits a platform error", () => {
     }
     expect(result).toMatchObject({ retrying: 1, blocked: 0 });
 
-    const row = await ConnectorDefinition.findOne({
-      workspaceId: WS,
-      slug: "acme",
-    }).lean();
+    const row = await connectionsRepo.findConnectorDefinition(WS, "acme");
     expect(row?.status).toBe("retrying");
     expect(row?.blockedReason).toContain("envd");
     expect(row?.indexRetryAttempts).toBe(1);
@@ -592,10 +586,7 @@ describe("a connector whose index hits a platform error", () => {
       retryDueConnectorIndexing(new Date(next + 1)),
     ).resolves.toEqual({ workspaces: 1, failed: 0, skipped: 0 });
     expect(cloudRepo.calls).toEqual([`ensure:${WS}`, `freshen:${WS}:0`]);
-    const indexed = await ConnectorDefinition.findOne({
-      workspaceId: WS,
-      slug: "acme",
-    }).lean();
+    const indexed = await connectionsRepo.findConnectorDefinition(WS, "acme");
     expect(indexed?.status).toBe("indexed");
     expect(indexed?.blockedReason).toBeUndefined();
     expect(indexed?.indexRetryAttempts).toBeUndefined();
@@ -615,10 +606,7 @@ describe("a connector whose index hits a platform error", () => {
     } finally {
       spy.mockRestore();
     }
-    const row = await ConnectorDefinition.findOne({
-      workspaceId: WS,
-      slug: "acme",
-    }).lean();
+    const row = await connectionsRepo.findConnectorDefinition(WS, "acme");
     expect(row?.status).toBe("retrying");
     expect(row?.indexRetryAttempts).toBe(2);
     const wait = (row?.nextIndexRetryAt?.getTime() ?? 0) - Date.now();
@@ -646,10 +634,7 @@ describe("a connector whose index hits a platform error", () => {
     await expect(
       retryDueConnectorIndexing(new Date(Date.now() + 61_000)),
     ).resolves.toEqual({ workspaces: 1, failed: 0, skipped: 1 });
-    const row = await ConnectorDefinition.findOne({
-      workspaceId: WS,
-      slug: "acme",
-    }).lean();
+    const row = await connectionsRepo.findConnectorDefinition(WS, "acme");
     expect(row?.status).toBe("retrying");
     expect(row?.indexRetryAttempts).toBe(1);
   }, 120_000);
@@ -666,10 +651,7 @@ describe("a connector that cannot run", () => {
     const result = await syncConnectorsFromRepo(WS);
     expect(result.blocked).toBe(1);
 
-    const row = await ConnectorDefinition.findOne({
-      workspaceId: WS,
-      slug: "broken",
-    }).lean();
+    const row = await connectionsRepo.findConnectorDefinition(WS, "broken");
     expect(row?.status).toBe("blocked");
     expect(row?.blockedReason).toContain("defineConnector");
 
@@ -685,10 +667,7 @@ describe("a connector that cannot run", () => {
     });
 
     await syncConnectorsFromRepo(WS);
-    const row = await ConnectorDefinition.findOne({
-      workspaceId: WS,
-      slug: "imported",
-    }).lean();
+    const row = await connectionsRepo.findConnectorDefinition(WS, "imported");
     expect(row?.status).toBe("blocked");
     expect(row?.blockedReason).toContain("not available yet");
   }, 120_000);
@@ -704,10 +683,7 @@ describe("a connector that cannot run", () => {
     const result = await syncConnectorsFromRepo(WS);
     expect(result.created).toBe(1);
     expect(result.blocked).toBe(1);
-    const acme = await ConnectorDefinition.findOne({
-      workspaceId: WS,
-      slug: "acme",
-    }).lean();
+    const acme = await connectionsRepo.findConnectorDefinition(WS, "acme");
     expect(acme?.status).toBe("indexed");
   }, 120_000);
 });
@@ -721,8 +697,7 @@ describe("recording a real connection test", () => {
     await syncConnectorsFromRepo(WS);
   });
 
-  const rowNow = () =>
-    ConnectorDefinition.findOne({ workspaceId: WS, slug: "acme" }).lean();
+  const rowNow = () => connectionsRepo.findConnectorDefinition(WS, "acme");
 
   const sourceShaNow = async (): Promise<string> => {
     const row = await rowNow();
@@ -769,10 +744,13 @@ describe("recording a real connection test", () => {
   }, 120_000);
 
   it("cannot talk a blocked connector back up", async () => {
-    await ConnectorDefinition.updateOne(
-      { workspaceId: WS, slug: "acme" },
-      { $set: { status: "blocked", blockedReason: "spec failed" } },
-    );
+    const rowBefore = await rowNow();
+    if (!rowBefore) throw new Error("Expected an indexed connector");
+    await connectionsRepo.upsertConnectorDefinition({
+      ...rowBefore,
+      status: "blocked",
+      blockedReason: "spec failed",
+    });
 
     await recordConnectionCheck({
       workspaceId: WS,
@@ -786,10 +764,13 @@ describe("recording a real connection test", () => {
 
   it("does not apply a check result to code pushed during the check", async () => {
     const testedSourceSha = await sourceShaNow();
-    await ConnectorDefinition.updateOne(
-      { workspaceId: WS, slug: "acme" },
-      { $set: { sourceSha: "1".repeat(40), status: "indexed" } },
-    );
+    const rowBefore = await rowNow();
+    if (!rowBefore) throw new Error("Expected an indexed connector");
+    await connectionsRepo.upsertConnectorDefinition({
+      ...rowBefore,
+      sourceSha: "1".repeat(40),
+      status: "indexed",
+    });
 
     const recorded = await recordConnectionCheck({
       workspaceId: WS,
@@ -818,10 +799,7 @@ describe("a connector folder too large to be code", () => {
     const result = await syncConnectorsFromRepo(WS);
     expect(result.blocked).toBe(1);
 
-    const row = await ConnectorDefinition.findOne({
-      workspaceId: WS,
-      slug: "hoarder",
-    }).lean();
+    const row = await connectionsRepo.findConnectorDefinition(WS, "hoarder");
     expect(row?.status).toBe("blocked");
     expect(row?.blockedReason).toContain("byte limit");
 
@@ -862,10 +840,7 @@ describe("reconciling repeatedly", () => {
     const result = await syncConnectorsFromRepo(WS);
     expect(result.updated).toBe(1);
 
-    const row = await ConnectorDefinition.findOne({
-      workspaceId: WS,
-      slug: "acme",
-    }).lean();
+    const row = await connectionsRepo.findConnectorDefinition(WS, "acme");
     expect((row?.spec as any)?.mako?.version).toBe("1.3.0");
   }, 120_000);
 
@@ -911,10 +886,7 @@ await new Promise(resolve => setTimeout(resolve, 1000));`,
     const second = syncConnectorsFromRepo(WS);
     await Promise.all([first, second]);
 
-    const row = await ConnectorDefinition.findOne({
-      workspaceId: WS,
-      slug: "acme",
-    }).lean();
+    const row = await connectionsRepo.findConnectorDefinition(WS, "acme");
     expect((row?.spec as any)?.mako?.version).toBe("2.0.0");
   }, 120_000);
 
@@ -944,7 +916,7 @@ await new Promise(resolve => setTimeout(resolve, 1000));`,
     const result = await syncConnectorsFromRepo(WS);
     expect(result.removed).toBe(1);
     expect(
-      await ConnectorDefinition.findOne({ workspaceId: WS, slug: "acme" }),
+      await connectionsRepo.findConnectorDefinition(WS, "acme"),
     ).toBeNull();
   }, 120_000);
 
@@ -956,8 +928,9 @@ await new Promise(resolve => setTimeout(resolve, 1000));`,
     await syncConnectorsFromRepo(WS);
 
     const empty = new Types.ObjectId().toString();
-    await ConnectorDefinition.create({
-      workspaceId: new Types.ObjectId(empty),
+    await ensureTestWorkspace(pg.db, { id: empty });
+    await connectionsRepo.upsertConnectorDefinition({
+      workspaceId: empty,
       slug: "ghost",
       runtime: "node",
       sha: "0".repeat(40),
@@ -967,7 +940,7 @@ await new Promise(resolve => setTimeout(resolve, 1000));`,
     });
     await syncConnectorsFromRepo(empty);
     expect(
-      await ConnectorDefinition.findOne({ workspaceId: empty, slug: "ghost" }),
+      await connectionsRepo.findConnectorDefinition(empty, "ghost"),
     ).not.toBeNull();
   }, 120_000);
 });

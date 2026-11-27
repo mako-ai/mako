@@ -23,7 +23,7 @@
  *     only because the route did not exist, which proves nothing about the
  *     old behaviour. They exist to keep the NEW gates from regressing.
  *
- * Real routes + real Mongo (mongodb-memory-server); only auth, the
+ * Real routes and PGlite; only auth, the
  * workspace service, and the connector registry are mocked.
  */
 import {
@@ -36,8 +36,15 @@ import {
   vi,
 } from "vitest";
 import { Hono } from "hono";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { legacyUserIdToUuidv7 } from "../database/pg/id-codec";
+import { connectionsRepo } from "../repositories/connections";
+import {
+  type PgTestDb,
+  setupPgTestDb,
+  ensureTestWorkspace,
+  ensureTestUser,
+} from "../test-support/pg-test";
 
 const ctx = vi.hoisted(() => ({ role: "owner" as string | null }));
 
@@ -46,7 +53,7 @@ vi.mock("../auth/unified-auth.middleware", () => ({
     c: { set: (k: string, v: unknown) => void },
     next: () => Promise<void>,
   ) => {
-    c.set("user", { id: "u1" });
+    c.set("user", { id: USER_ID });
     // Keys are revealed in the app only: a signed-in session.
     c.set("authType", "session");
     await next();
@@ -74,10 +81,10 @@ vi.mock("../sync/connector-registry", () => ({
 }));
 
 import { sourceConnectionRoutes } from "./source-connections";
-import { SourceConnection } from "../database/workspace-schema";
 import { encryptString } from "../services/crypto.service";
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
+const USER_ID = legacyUserIdToUuidv7("u1");
 const WS_MINE = new Types.ObjectId().toString();
 const WS_THEIRS = new Types.ObjectId().toString();
 const SECRET = "sk_live_theirs_do_not_leak";
@@ -109,28 +116,28 @@ beforeAll(async () => {
   process.env.ENCRYPTION_KEY =
     process.env.ENCRYPTION_KEY ??
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
 });
 
 beforeEach(async () => {
   ctx.role = "owner";
-  await SourceConnection.deleteMany({});
+  await pg.reset();
+  await ensureTestUser(pg.db, { id: USER_ID });
 });
 
 async function seedConnector(workspaceId: string) {
-  return SourceConnection.create({
-    workspaceId: new Types.ObjectId(workspaceId),
+  await ensureTestWorkspace(pg.db, { id: workspaceId });
+  return connectionsRepo.createSourceConnection({
+    workspaceId: workspaceId,
     name: "Stripe",
     type: "stripe",
     config: { api_key: encryptString(SECRET), account: "acct_123" },
     isActive: true,
-    createdBy: "u1",
+    createdBy: USER_ID,
     settings: {
       sync_batch_size: 100,
       rate_limit_delay_ms: 200,
