@@ -625,9 +625,8 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           if [ -z "${NEON_API_KEY}" ] || [ -z "${NEON_PROJECT_ID}" ]; then
-            echo "NEON_API_KEY/NEON_PROJECT_ID unset; falling back to Secret Manager test branch"
-            echo "using_ephemeral_pg=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "::error::NEON_API_KEY and NEON_PROJECT_ID must be configured to branch Postgres for a PR with migrations"
+            exit 1
           fi
           python3 - <<'PY'
           import json, os, subprocess, time, urllib.error, urllib.request
@@ -1334,6 +1333,41 @@ jobs:
             POSTGRES_DIRECT_URL="${POSTGRES_DIRECT_URL}" pnpm --filter api run pg:migrate
           else
             echo "Skipping pg:migrate (not present on this commit)"
+          fi
+
+      - name: Keep Neon test branch schema in sync with production
+        continue-on-error: true
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+        run: |
+          if [ -z "${NEON_API_KEY}" ] || [ -z "${NEON_PROJECT_ID}" ]; then
+            echo "NEON_API_KEY/NEON_PROJECT_ID unset; skipping test branch migration sync"
+            exit 0
+          fi
+          if ! node -e 'process.exit(require("./api/package.json").scripts?.["pg:migrate"] ? 0 : 1)'; then
+            exit 0
+          fi
+          TEST_DIRECT_URL=$(python3 - <<'PY'
+          import json, os, urllib.request
+          api_key = os.environ["NEON_API_KEY"]
+          proj_id = os.environ["NEON_PROJECT_ID"]
+          headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+          req = urllib.request.Request(f"https://console.neon.tech/api/v2/projects/{proj_id}/branches", headers=headers)
+          with urllib.request.urlopen(req, timeout=20) as r:
+              branches = json.loads(r.read().decode()).get("branches", [])
+          tb = next((b for b in branches if b.get("name") == "test" and not b.get("default") and not b.get("protected")), None)
+          if not tb:
+              raise SystemExit(0)
+          q = f"branch_id={tb['id']}&database_name=neondb&role_name=neondb_owner&pooled=false"
+          uri_req = urllib.request.Request(f"https://console.neon.tech/api/v2/projects/{proj_id}/connection_uri?{q}", headers=headers)
+          with urllib.request.urlopen(uri_req, timeout=20) as r:
+              print(json.loads(r.read().decode())["uri"])
+          PY
+          )
+          if [ -n "${TEST_DIRECT_URL}" ]; then
+            echo "::add-mask::${TEST_DIRECT_URL}"
+            POSTGRES_DIRECT_URL="${TEST_DIRECT_URL}" pnpm --filter api run pg:migrate
           fi
 
       - name: Deploy to Cloud Run
