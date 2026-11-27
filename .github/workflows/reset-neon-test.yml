@@ -2,13 +2,26 @@ name: Reset Neon Test Branch
 
 on:
   schedule:
-    # Nightly at 03:00 UTC — instantly reset the shared Neon `test` branch
-    # to the latest `production` state (copy-on-write restore, ~1s).
+    # Nightly at 03:00 UTC — reap stale/orphaned ephemeral Neon branches
+    # (7-day hard cap + closed PR safety net) and instantly reset the shared
+    # Neon `test` branch to the latest `production` state (copy-on-write, ~1s).
     - cron: "0 3 * * *"
   workflow_dispatch:
+    inputs:
+      max_branch_age_days:
+        description: "Maximum lifetime (days) for any non-protected ephemeral Neon branch"
+        required: false
+        default: "7"
+        type: string
+      dry_run:
+        description: "Log branches that would be reaped/reset without mutating Neon"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: reset-neon-test
@@ -16,23 +29,40 @@ concurrency:
 
 jobs:
   reset-test-branch:
-    name: Reset Neon test branch from production
+    name: Reap expired Neon branches & reset test from production
     runs-on: ubuntu-latest
     env:
       NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
       NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      MAX_BRANCH_AGE_DAYS: ${{ inputs.max_branch_age_days || '7' }}
+      DRY_RUN: ${{ inputs.dry_run || false }}
     steps:
-      - name: Reset Neon test branch in place from production
+      - name: Reap expired ephemeral branches (7d max) & reset Neon test branch
         run: |
           if [ -z "${NEON_API_KEY}" ] || [ -z "${NEON_PROJECT_ID}" ]; then
             echo "::error::NEON_API_KEY and NEON_PROJECT_ID secrets must be configured"
             exit 1
           fi
           python3 - <<'PY'
-          import datetime, json, os, time, urllib.error, urllib.request
+          import datetime, json, os, re, time, urllib.error, urllib.request
 
           api_key = os.environ["NEON_API_KEY"]
           proj_id = os.environ["NEON_PROJECT_ID"]
+          gh_token = os.environ.get("GITHUB_TOKEN", "")
+          gh_repo = os.environ.get("GITHUB_REPOSITORY", "")
+          dry_run = str(os.environ.get("DRY_RUN", "false")).strip().lower() == "true"
+
+          raw_max_days = str(os.environ.get("MAX_BRANCH_AGE_DAYS", "7")).strip() or "7"
+          try:
+              max_age_days = int(raw_max_days)
+              if max_age_days < 1:
+                  raise ValueError("must be >= 1")
+          except ValueError as exc:
+              raise RuntimeError(f"Invalid max_branch_age_days={raw_max_days!r}: {exc}")
+
+          PROTECTED_NAMES = {"production", "main", "master", "staging", "test"}
 
           def neon(method, path, body=None):
               data = json.dumps(body).encode() if body is not None else None
@@ -50,6 +80,36 @@ jobs:
                   raw = r.read().decode()
                   return json.loads(raw) if raw else {}
 
+          def is_pr_closed(pr_number):
+              if not gh_token or not gh_repo:
+                  return False
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{gh_repo}/pulls/{pr_number}",
+                  headers={
+                      "Authorization": f"Bearer {gh_token}",
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=15) as r:
+                      pr = json.loads(r.read().decode())
+                      return pr.get("state") == "closed"
+              except urllib.error.HTTPError as exc:
+                  if exc.code == 404:
+                      return True
+                  print(f"::warning::Could not check PR #{pr_number} state (HTTP {exc.code}); falling back to age TTL")
+                  return False
+              except Exception as exc:
+                  print(f"::warning::Could not check PR #{pr_number} state ({exc}); falling back to age TTL")
+                  return False
+
+          def parse_iso(ts):
+              if not ts:
+                  return None
+              return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+          now = datetime.datetime.now(datetime.timezone.utc)
           branches = neon("GET", f"/projects/{proj_id}/branches").get("branches", [])
           prod = next((b for b in branches if b.get("default") or b.get("name") == "production"), None)
           test_branch = next((b for b in branches if b.get("name") == "test"), None)
@@ -59,17 +119,82 @@ jobs:
           if not test_branch:
               raise RuntimeError(f"Test branch 'test' not found in Neon project {proj_id}")
 
-          # Explicit safety guards: never reset or mutate production.
+          # Explicit safety guards: never reset or mutate production or protected branches.
           if test_branch["id"] == prod["id"] or test_branch.get("default") or test_branch.get("protected"):
               raise RuntimeError(
                   f"SAFETY ERROR: refusing to reset protected/default branch {test_branch['name']} ({test_branch['id']})"
               )
 
+          protected_ids = {prod["id"], test_branch["id"]}
+
+          # ── Phase 1: Leaf-first reaper for closed PRs, >7d ephemeral branches, and childless snapshots ──
+          # Running BEFORE the `test` restore lets `test` reset in place without creating a
+          # `test-pre-reset-*` snapshot whenever expired children were the only descendants.
+          reaped = []
+          pr_state_cache = {}
+          max_passes = 1 if dry_run else 6
+          for _pass in range(max_passes):
+              current = neon("GET", f"/projects/{proj_id}/branches").get("branches", [])
+              parent_ids = {b.get("parent_id") for b in current if b.get("parent_id")}
+              deleted_this_pass = 0
+
+              for b in current:
+                  bid = b["id"]
+                  name = b.get("name", "")
+                  if (
+                      bid in protected_ids
+                      or name in PROTECTED_NAMES
+                      or b.get("default")
+                      or b.get("protected")
+                  ):
+                      continue
+                  # Only delete leaf branches; parents are re-checked on the next pass.
+                  if bid in parent_ids:
+                      continue
+
+                  created_at = parse_iso(b.get("created_at"))
+                  age_days = (now - created_at).total_seconds() / 86400.0 if created_at else 0.0
+
+                  reason = None
+                  if name.startswith("test-pre-reset-"):
+                      reason = "childless_snapshot"
+                  else:
+                      m = re.fullmatch(r"pr-(\d+)", name)
+                      if m:
+                          pr_num = int(m.group(1))
+                          if pr_num not in pr_state_cache:
+                              pr_state_cache[pr_num] = is_pr_closed(pr_num)
+                          if pr_state_cache[pr_num]:
+                              reason = f"pr_#{pr_num}_closed"
+                      if reason is None and created_at is not None and age_days >= max_age_days:
+                          reason = f"age_exceeded_{max_age_days}d"
+
+                  if not reason:
+                      continue
+
+                  if dry_run:
+                      print(f"[dry-run] Would reap branch {name} ({bid}, age={age_days:.1f}d, reason={reason})")
+                      reaped.append((name, f"{age_days:.1f}d", reason))
+                      continue
+
+                  try:
+                      neon("DELETE", f"/projects/{proj_id}/branches/{bid}")
+                      reaped.append((name, f"{age_days:.1f}d", reason))
+                      deleted_this_pass += 1
+                      print(f"Reaped Neon branch {name} ({bid}, age={age_days:.1f}d, reason={reason})")
+                  except Exception as exc:
+                      print(f"::warning::Failed to reap Neon branch {name} ({bid}): {exc}")
+
+              if deleted_this_pass == 0:
+                  break
+
+          # ── Phase 2: Reset shared `test` branch to `production` HEAD ──
+          branches = neon("GET", f"/projects/{proj_id}/branches").get("branches", [])
           active_children = [b for b in branches if b.get("parent_id") == test_branch["id"]]
           payload = {"source_branch_id": prod["id"]}
           preserved_name = None
           if active_children:
-              ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
+              ts = now.strftime("%Y%m%d-%H%M%S")
               preserved_name = f"test-pre-reset-{ts}"
               payload["preserve_under_name"] = preserved_name
               print(
@@ -80,38 +205,68 @@ jobs:
           else:
               print(f"Resetting Neon branch 'test' ({test_branch['id']}) in place from 'production' ({prod['id']})")
 
-          neon("POST", f"/projects/{proj_id}/branches/{test_branch['id']}/restore", payload)
-
-          for _ in range(30):
-              info = neon("GET", f"/projects/{proj_id}/branches/{test_branch['id']}")["branch"]
-              if info.get("current_state") == "ready":
-                  break
-              time.sleep(2)
-
-          # Sweep any old `test-pre-reset-*` snapshot branches that no longer have child branches.
-          refreshed = neon("GET", f"/projects/{proj_id}/branches").get("branches", [])
-          parent_ids = {b.get("parent_id") for b in refreshed if b.get("parent_id")}
           swept = []
-          for b in refreshed:
-              name = b.get("name", "")
-              if not name.startswith("test-pre-reset-") or b.get("default") or b.get("protected"):
-                  continue
-              if b["id"] in parent_ids:
-                  continue
-              try:
-                  neon("DELETE", f"/projects/{proj_id}/branches/{b['id']}")
-                  swept.append(name)
-                  print(f"Swept childless snapshot branch {name} ({b['id']})")
-              except Exception as exc:
-                  print(f"::warning::Failed to delete snapshot branch {name}: {exc}")
+          if dry_run:
+              print(f"[dry-run] Would POST /projects/{proj_id}/branches/{test_branch['id']}/restore with {payload}")
+          else:
+              neon("POST", f"/projects/{proj_id}/branches/{test_branch['id']}/restore", payload)
+
+              for _ in range(30):
+                  info = neon("GET", f"/projects/{proj_id}/branches/{test_branch['id']}")["branch"]
+                  if info.get("current_state") == "ready":
+                      break
+                  time.sleep(2)
+
+              # Phase 3: Sweep any remaining childless `test-pre-reset-*` snapshots.
+              refreshed = neon("GET", f"/projects/{proj_id}/branches").get("branches", [])
+              parent_ids = {b.get("parent_id") for b in refreshed if b.get("parent_id")}
+              for b in refreshed:
+                  name = b.get("name", "")
+                  if not name.startswith("test-pre-reset-") or b.get("default") or b.get("protected"):
+                      continue
+                  if b["id"] in parent_ids:
+                      continue
+                  try:
+                      neon("DELETE", f"/projects/{proj_id}/branches/{b['id']}")
+                      swept.append(name)
+                      print(f"Swept childless snapshot branch {name} ({b['id']})")
+                  except Exception as exc:
+                      print(f"::warning::Failed to delete snapshot branch {name}: {exc}")
+
+          remaining = neon("GET", f"/projects/{proj_id}/branches").get("branches", [])
+          ephemeral_kept = [
+              (
+                  b.get("name", ""),
+                  f"{(now - parse_iso(b.get('created_at'))).total_seconds() / 86400.0:.1f}d"
+                  if parse_iso(b.get("created_at"))
+                  else "?",
+              )
+              for b in remaining
+              if b["id"] not in protected_ids
+              and b.get("name", "") not in PROTECTED_NAMES
+              and not b.get("default")
+              and not b.get("protected")
+          ]
 
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
           if summary_path:
               with open(summary_path, "a") as f:
-                  f.write("## 🧪 Neon `test` Branch Reset Complete\n\n")
+                  title = "## 🧪 Neon `test` Branch Reset & 7d Reaper (Dry Run)\n\n" if dry_run else "## 🧪 Neon `test` Branch Reset & 7d Reaper Complete\n\n"
+                  f.write(title)
                   f.write("| | |\n|---|---|\n")
                   f.write(f"| **Branch** | `test` (`{test_branch['id']}`) |\n")
                   f.write(f"| **Source** | `production` (`{prod['id']}`) |\n")
+                  f.write(f"| **Max ephemeral branch age** | {max_age_days} days |\n")
+                  f.write(f"| **Expired/orphan branches reaped** | {len(reaped)} |\n")
                   f.write(f"| **Active PR children preserved** | {len(active_children)}{f' (`{preserved_name}`)' if preserved_name else ''} |\n")
                   f.write(f"| **Stale snapshots swept** | {len(swept)} |\n")
+                  f.write(f"| **Ephemeral branches remaining** | {len(ephemeral_kept)} |\n")
+                  if reaped:
+                      f.write("\n### Reaped Branches\n| Branch | Age | Reason |\n|---|---|---|\n")
+                      for bname, bage, breason in reaped:
+                          f.write(f"| `{bname}` | {bage} | `{breason}` |\n")
+                  if ephemeral_kept:
+                      f.write("\n### Active Ephemeral Branches\n| Branch | Age |\n|---|---|\n")
+                      for bname, bage in ephemeral_kept:
+                          f.write(f"| `{bname}` | {bage} |\n")
           PY
