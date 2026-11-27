@@ -10,11 +10,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { and, eq, gt, inArray, isNotNull, lte, ne, or, sql } from "drizzle-orm";
-import {
-  extractRows,
-  getPgDb,
-  type MakoPgDb,
-} from "../../database/pg/client";
+import { extractRows, getPgDb, type MakoPgDb } from "../../database/pg/client";
 import {
   generateUuidv7,
   isUuidString,
@@ -173,9 +169,7 @@ export class PgAuthRepository implements AuthRepository {
   }
 
   async findUsersByEmails(emails: readonly string[]): Promise<UserRecord[]> {
-    const unique = [
-      ...new Set(emails.map(normalizeEmailKey).filter(Boolean)),
-    ];
+    const unique = [...new Set(emails.map(normalizeEmailKey).filter(Boolean))];
     if (unique.length === 0) return [];
     const rows = await this.getDb()
       .select()
@@ -220,9 +214,17 @@ export class PgAuthRepository implements AuthRepository {
   async updateUser(
     idOrLegacyId: string,
     patch: UpdateUserInput,
+    options?: { requireExisting?: boolean },
   ): Promise<UserRecord | null> {
     const pgUuid = await this.resolveUserUuid(idOrLegacyId);
-    if (!pgUuid) return null;
+    if (!pgUuid) {
+      if (options?.requireExisting) {
+        throw new Error(
+          `Postgres user row not found for updateUser(${JSON.stringify(idOrLegacyId)})`,
+        );
+      }
+      return null;
+    }
 
     const values: Partial<typeof users.$inferInsert> = {
       updatedAt: patch.updatedAt ?? new Date(),
@@ -261,7 +263,15 @@ export class PgAuthRepository implements AuthRepository {
       .where(eq(users.id, pgUuid))
       .returning();
 
-    return rows[0] ? pgUserToRecord(rows[0]) : null;
+    if (!rows[0]) {
+      if (options?.requireExisting) {
+        throw new Error(
+          `Postgres user row vanished during updateUser(${JSON.stringify(idOrLegacyId)})`,
+        );
+      }
+      return null;
+    }
+    return pgUserToRecord(rows[0]);
   }
 
   /**
@@ -537,10 +547,7 @@ export class PgAuthRepository implements AuthRepository {
     return rows[0] ? pgSessionToRecord(rows[0], rawToken) : null;
   }
 
-  async updateSessionExpiry(
-    rawToken: string,
-    expiresAt: Date,
-  ): Promise<void> {
+  async updateSessionExpiry(rawToken: string, expiresAt: Date): Promise<void> {
     if (!rawToken) return;
     await this.getDb()
       .update(sessions)
@@ -587,9 +594,7 @@ export class PgAuthRepository implements AuthRepository {
   async deleteUserSessions(userId: string): Promise<void> {
     const pgUserUuid = await this.resolveUserUuid(userId);
     if (!pgUserUuid) return;
-    await this.getDb()
-      .delete(sessions)
-      .where(eq(sessions.userId, pgUserUuid));
+    await this.getDb().delete(sessions).where(eq(sessions.userId, pgUserUuid));
   }
 
   async deleteExpiredSessions(now: Date = new Date()): Promise<number> {
@@ -658,6 +663,14 @@ export class PgAuthRepository implements AuthRepository {
     await this.getDb()
       .delete(emailVerifications)
       .where(eq(emailVerifications.id, id));
+  }
+
+  async deleteEmailVerificationsByIds(ids: readonly string[]): Promise<void> {
+    const unique = [...new Set(ids.filter(Boolean))];
+    if (unique.length === 0) return;
+    await this.getDb()
+      .delete(emailVerifications)
+      .where(inArray(emailVerifications.id, unique));
   }
 
   async deleteEmailVerificationsByEmailAndType(

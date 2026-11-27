@@ -20,7 +20,7 @@
  *   4. `email_verifications` (independent)
  *   5. `desktop_auth_codes`  (FK -> users.id)
  */
-import { eq, inArray, or } from "drizzle-orm";
+import { eq, gt, inArray, or } from "drizzle-orm";
 import { Types } from "mongoose";
 import {
   DesktopAuthCode,
@@ -65,7 +65,6 @@ import {
   pgUserToRecord,
   type DesktopAuthCodeRecord,
   type EmailVerificationRecord,
-  type EmailVerificationType,
   type MongoAttributionLike,
   type MongoDesktopAuthCodeLike,
   type MongoEmailVerificationLike,
@@ -229,6 +228,7 @@ async function fetchStageBackfillItems(
   afterId: string | null,
   limit: number,
   composite: boolean,
+  options?: { excludeExpiredAfter?: Date },
 ): Promise<Array<BackfillItem<AuthBackfillDoc>>> {
   if (limit <= 0) return [];
   const makeCursor = (mongoId: string) =>
@@ -308,7 +308,12 @@ async function fetchStageBackfillItems(
     }
 
     case "email_verifications": {
-      const filter = afterId ? { _id: { $gt: afterId } } : {};
+      const filter: Record<string, unknown> = afterId
+        ? { _id: { $gt: afterId } }
+        : {};
+      if (options?.excludeExpiredAfter) {
+        filter.expiresAt = { $gt: options.excludeExpiredAfter };
+      }
       const docs = await EmailVerification.find(filter)
         .sort({ _id: 1 })
         .limit(limit)
@@ -326,7 +331,12 @@ async function fetchStageBackfillItems(
     }
 
     case "desktop_auth_codes": {
-      const filter = afterId ? { _id: { $gt: afterId } } : {};
+      const filter: Record<string, unknown> = afterId
+        ? { _id: { $gt: afterId } }
+        : {};
+      if (options?.excludeExpiredAfter) {
+        filter.expiresAt = { $gt: options.excludeExpiredAfter };
+      }
       const docs = await DesktopAuthCode.find(filter)
         .sort({ _id: 1 })
         .limit(limit)
@@ -666,6 +676,7 @@ async function fetchPgRecordsForTable(
 async function listAllPgIdsForTable(
   table: AuthMigratedTableName,
   db: MakoPgDb,
+  now: Date = new Date(),
 ): Promise<string[]> {
   switch (table) {
     case "users":
@@ -681,12 +692,21 @@ async function listAllPgIdsForTable(
         await db.select({ id: oauthAccounts.id }).from(oauthAccounts)
       ).map(r => r.id.toLowerCase());
     case "email_verifications":
+      // Exclude already-expired rows: Mongo's TTL index (~60s) reaps faster than
+      // the hourly Postgres TTL reaper, so expired rows awaiting reaping must not
+      // trigger false `extra_in_pg` parity failures.
       return (
-        await db.select({ id: emailVerifications.id }).from(emailVerifications)
+        await db
+          .select({ id: emailVerifications.id })
+          .from(emailVerifications)
+          .where(gt(emailVerifications.expiresAt, now))
       ).map(r => r.id);
     case "desktop_auth_codes":
       return (
-        await db.select({ id: desktopAuthCodes.id }).from(desktopAuthCodes)
+        await db
+          .select({ id: desktopAuthCodes.id })
+          .from(desktopAuthCodes)
+          .where(gt(desktopAuthCodes.expiresAt, now))
       ).map(r => r.id);
   }
 }
@@ -947,6 +967,7 @@ export function createAuthVerifierHandler(): VerifierDomainHandler {
           stageAfter,
           remaining,
           true,
+          { excludeExpiredAfter: new Date() },
         );
         items.push(...batch);
       }
@@ -976,9 +997,10 @@ export function createAuthVerifierHandler(): VerifierDomainHandler {
       return out;
     },
     async findExtraPgIds({ seenEntityIds, db }) {
+      const now = new Date();
       const extras: string[] = [];
       for (const meta of AUTH_STAGES) {
-        const ids = await listAllPgIdsForTable(meta.table, db);
+        const ids = await listAllPgIdsForTable(meta.table, db, now);
         for (const id of ids) {
           const key = encodeVerifierKey(meta.table, id);
           if (!seenEntityIds.has(key)) {
@@ -1031,6 +1053,7 @@ export function createAuthTableVerifierHandler(
         afterCursor,
         limit,
         false,
+        { excludeExpiredAfter: new Date() },
       );
       const userMap = await resolveVerifierUserMap(items, db);
       return items.map(item => buildVerifierRecord(item, userMap, false));
@@ -1039,7 +1062,7 @@ export function createAuthTableVerifierHandler(
       return fetchPgRecordsForTable(meta.table, entityIds, db);
     },
     async findExtraPgIds({ seenEntityIds, db }) {
-      const ids = await listAllPgIdsForTable(meta.table, db);
+      const ids = await listAllPgIdsForTable(meta.table, db, new Date());
       return ids.filter(id => !seenEntityIds.has(id));
     },
     async repair({ entityIds, db }) {
@@ -1083,13 +1106,16 @@ export async function replayAuthWriteToPg(
       ).lean<MongoAttributionLike | null>();
       if (!doc) return;
       const pgUserUuid = await resolvePgUserUuid(db, userId);
-      if (pgUserUuid) {
-        await pgRepo.upsertAttributionIgnoreConflict(
-          mongoAttributionToRecord(doc),
-          pgUserUuid,
-          db,
+      if (!pgUserUuid) {
+        throw new Error(
+          `Parent user ${userId} is not yet in Postgres for user_attributions sync-retry`,
         );
       }
+      await pgRepo.upsertAttributionIgnoreConflict(
+        mongoAttributionToRecord(doc),
+        pgUserUuid,
+        db,
+      );
       return;
     }
 
@@ -1103,9 +1129,12 @@ export async function replayAuthWriteToPg(
       if (!doc) return;
       const record = mongoOAuthAccountToRecord(doc);
       const pgUserUuid = await resolvePgUserUuid(db, record.userId);
-      if (pgUserUuid) {
-        await pgRepo.upsertOAuthAccountIdempotent(record, pgUserUuid, db);
+      if (!pgUserUuid) {
+        throw new Error(
+          `Parent user ${record.userId} is not yet in Postgres for oauth_accounts sync-retry (${oauthId})`,
+        );
       }
+      await pgRepo.upsertOAuthAccountIdempotent(record, pgUserUuid, db);
       return;
     }
 
@@ -1131,14 +1160,14 @@ export async function replayAuthWriteToPg(
     }
 
     case "deleteEmailVerificationsByEmailAndType": {
-      const email = String(payload.email ?? "");
-      const type = String(payload.type ?? "") as EmailVerificationType;
-      if (!email || !VALID_VERIFICATION_TYPES.has(type)) return;
-      const pgIds = await pgRepo.deleteEmailVerificationsReturningIds(
-        email,
-        type,
-      );
-      for (const id of pgIds) {
+      const verificationIds = Array.isArray(payload.verificationIds)
+        ? payload.verificationIds.filter(
+            (id): id is string => typeof id === "string" && id.length > 0,
+          )
+        : [];
+      if (verificationIds.length === 0) return;
+      await pgRepo.deleteEmailVerificationsByIds(verificationIds);
+      for (const id of verificationIds) {
         await recordMigrationTombstone("email_verifications", id, db);
       }
       return;
@@ -1152,9 +1181,12 @@ export async function replayAuthWriteToPg(
       if (!doc) return;
       const record = mongoDesktopAuthCodeToRecord(doc);
       const pgUserUuid = await resolvePgUserUuid(db, record.userId);
-      if (pgUserUuid) {
-        await pgRepo.upsertDesktopAuthCodeIdempotent(record, pgUserUuid, db);
+      if (!pgUserUuid) {
+        throw new Error(
+          `Parent user ${record.userId} is not yet in Postgres for desktop_auth_codes sync-retry`,
+        );
       }
+      await pgRepo.upsertDesktopAuthCodeIdempotent(record, pgUserUuid, db);
       return;
     }
 
@@ -1239,11 +1271,13 @@ export async function replayAuthWriteToMongo(
     }
 
     case "deleteEmailVerificationsByEmailAndType": {
-      const email = String(payload.email ?? "");
-      const type = String(payload.type ?? "") as EmailVerificationType;
-      if (email && VALID_VERIFICATION_TYPES.has(type)) {
-        await mongoRepo.deleteEmailVerificationsByEmailAndType(email, type);
-      }
+      const verificationIds = Array.isArray(payload.verificationIds)
+        ? payload.verificationIds.filter(
+            (id): id is string => typeof id === "string" && id.length > 0,
+          )
+        : [];
+      if (verificationIds.length === 0) return;
+      await mongoRepo.deleteEmailVerificationsByIds(verificationIds);
       return;
     }
 

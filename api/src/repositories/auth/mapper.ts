@@ -43,7 +43,8 @@ const VALID_COMPANY_SIZES = new Set<OnboardingCompanySize>([
   "enterprise",
 ]);
 
-export function normalizeEmailKey(email: string): string {
+export function normalizeEmailKey(email: string | null | undefined): string {
+  if (typeof email !== "string") return "";
   return email.trim().toLowerCase();
 }
 
@@ -126,7 +127,7 @@ export function normalizeOnboarding(
     | null
     | undefined,
 ): UserOnboarding | undefined {
-  if (!raw) return undefined;
+  if (!raw || typeof raw !== "object") return undefined;
 
   const out: UserOnboarding = {};
   if (raw.completedAt != null) {
@@ -156,7 +157,7 @@ export function normalizeOnboarding(
 
 export interface MongoUserLike {
   _id: string;
-  email: string;
+  email?: string | null;
   name?: string | null;
   hashedPassword?: string | null;
   emailVerified?: boolean;
@@ -180,7 +181,7 @@ export function mongoUserToRecord(doc: MongoUserLike): UserRecord {
     id,
     _id: id,
     legacyId: id,
-    email: normalizeEmailKey(doc.email),
+    email: normalizeEmailKey(typeof doc.email === "string" ? doc.email : ""),
     emailVerified: Boolean(doc.emailVerified),
     createdAt,
     updatedAt,
@@ -188,7 +189,7 @@ export function mongoUserToRecord(doc: MongoUserLike): UserRecord {
   if (typeof doc.name === "string" && doc.name.length > 0) {
     record.name = doc.name;
   }
-  if (doc.hashedPassword != null && doc.hashedPassword !== "") {
+  if (typeof doc.hashedPassword === "string" && doc.hashedPassword !== "") {
     record.hashedPassword = doc.hashedPassword;
   }
   if (onboarding) {
@@ -471,8 +472,8 @@ export function pgSessionToRecord(
 
 export interface MongoEmailVerificationLike {
   _id: string;
-  email: string;
-  code: string;
+  email?: string | null;
+  code?: string | null;
   type: "registration" | "link_password" | "password_reset";
   expiresAt: Date | string;
   createdAt?: Date | string;
@@ -483,8 +484,8 @@ export function mongoEmailVerificationToRecord(
 ): EmailVerificationRecord {
   return {
     id: String(doc._id),
-    email: normalizeEmailKey(doc.email),
-    code: doc.code,
+    email: normalizeEmailKey(typeof doc.email === "string" ? doc.email : ""),
+    code: typeof doc.code === "string" ? doc.code : "",
     type: doc.type,
     expiresAt: coerceDate(doc.expiresAt),
     createdAt: coerceDate(doc.createdAt),

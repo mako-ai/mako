@@ -17,11 +17,43 @@
 import fs from "node:fs";
 import path from "node:path";
 import { and, isNotNull, ne, sql } from "drizzle-orm";
-import type { Db } from "mongodb";
+import type { Collection, Db } from "mongodb";
 import { getPgDirectDb, type MakoPgDb } from "../database/pg/client";
 import { users } from "../database/pg/schema/auth";
+import { migrationRouter, type MigrationRouter } from "./router";
+import type { MigrationMode, ResolvedDomainState } from "./types";
 
 export type UserIdMap = ReadonlyMap<string, string>;
+
+export const ALLOWED_APPLY_AUTH_MODES: ReadonlySet<MigrationMode> = new Set([
+  "dual_write_pg_read",
+  "pg_only",
+]);
+
+/**
+ * Safety gate before applying user-ID rewrites (`--apply-mongo` / `--apply-git`).
+ * Rewriting user IDs while `auth` is still in Stages 1–3 (`mongo_only`,
+ * `dual_write_mongo_read`, `dual_write_shadow_compare`) cuts users off from
+ * their workspaces and connections because live sessions still carry legacy IDs,
+ * and the rewrite has no reverse mode.
+ */
+export async function assertAuthStageAllowsRewriteApply(
+  options: {
+    router?: Pick<MigrationRouter, "getState">;
+    force?: boolean;
+  } = {},
+): Promise<ResolvedDomainState> {
+  const router = options.router ?? migrationRouter;
+  const state = await router.getState("auth");
+  if (!ALLOWED_APPLY_AUTH_MODES.has(state.mode) && !options.force) {
+    throw new Error(
+      `Refusing to apply user-ID rewrites while "auth" domain is in stage "${state.mode}". ` +
+        `Advance "auth" to "dual_write_pg_read" (Stage 4) or "pg_only" (Stage 5) first, ` +
+        `or pass --force only if you intentionally want to override this safety gate.`,
+    );
+  }
+  return state;
+}
 
 /**
  * Load `legacy_id -> uuid` mapping from Postgres `users` for every user whose
@@ -216,11 +248,18 @@ export const MONGO_USER_ID_REWRITE_SPECS: readonly CollectionRewriteSpec[] = [
   // Workspaces, memberships, invites, handles, OAuth/ACP
   {
     collection: "workspaces",
-    scalars: [{ path: "createdBy", kind: "userId" }],
+    scalars: [
+      { path: "createdBy", kind: "userId" },
+      { path: "appsRepo.linkedBy", kind: "userId" },
+    ],
     arrayObjects: [
       {
         arrayPath: "apiKeys",
         fields: [{ key: "createdBy", kind: "userId" }],
+      },
+      {
+        arrayPath: "workspaceRepos",
+        fields: [{ key: "linkedBy", kind: "userId" }],
       },
     ],
   },
@@ -275,6 +314,7 @@ export const MONGO_USER_ID_REWRITE_SPECS: readonly CollectionRewriteSpec[] = [
       { path: "createdBy", kind: "userId" },
       { path: "owner_id", kind: "userId" },
       { path: "publicShare.createdBy", kind: "userId" },
+      { path: "lastRun.runBy", kind: "userId" },
     ],
     arrayObjects: [
       {
@@ -420,16 +460,25 @@ function rewriteByKind(
   return rewriteWriterLabelValue(value, map);
 }
 
+export interface DocumentUserIdPatch {
+  $set: Record<string, unknown>;
+  /** Exact original values for every modified path, used for optimistic concurrency guards. */
+  filter: Record<string, unknown>;
+  fieldsRewritten: number;
+}
+
 /**
- * Compute the MongoDB `$set` patch for one document against a `CollectionRewriteSpec`.
+ * Compute the MongoDB `$set` patch and optimistic-concurrency filter for one
+ * document against a `CollectionRewriteSpec`.
  * Returns `null` when nothing in the document requires rewriting (strictly idempotent).
  */
 export function computeDocumentUserIdPatch(
   doc: Record<string, unknown>,
   spec: CollectionRewriteSpec,
   map: UserIdMap,
-): { $set: Record<string, unknown>; fieldsRewritten: number } | null {
+): DocumentUserIdPatch | null {
   const $set: Record<string, unknown> = {};
+  const filter: Record<string, unknown> = {};
   let fieldsRewritten = 0;
 
   for (const rule of spec.scalars ?? []) {
@@ -437,6 +486,7 @@ export function computeDocumentUserIdPatch(
     const rewritten = rewriteByKind(raw, rule.kind, map);
     if (rewritten !== null) {
       $set[rule.path] = rewritten;
+      filter[rule.path] = raw;
       fieldsRewritten += 1;
     }
   }
@@ -456,6 +506,7 @@ export function computeDocumentUserIdPatch(
     });
     if (arrayChanged) {
       $set[rule.path] = next;
+      filter[rule.path] = raw;
     }
   }
 
@@ -481,10 +532,23 @@ export function computeDocumentUserIdPatch(
     });
     if (arrayChanged) {
       $set[rule.arrayPath] = next;
+      filter[rule.arrayPath] = raw;
     }
   }
 
-  return fieldsRewritten > 0 ? { $set, fieldsRewritten } : null;
+  return fieldsRewritten > 0 ? { $set, filter, fieldsRewritten } : null;
+}
+
+export interface RewriteConflictEntry {
+  collection: string;
+  docId: string;
+  kind: "duplicate_key" | "concurrent_modification";
+  resolution:
+    | "merged_and_deleted"
+    | "deleted_duplicate"
+    | "resolved_in_place"
+    | "skipped";
+  message: string;
 }
 
 export interface CollectionRewriteReport {
@@ -493,6 +557,9 @@ export interface CollectionRewriteReport {
   matchedDocs: number;
   modifiedDocs: number;
   fieldsRewritten: number;
+  conflictsResolved: number;
+  conflictsSkipped: number;
+  conflicts: RewriteConflictEntry[];
 }
 
 export interface MongoRewriteReport {
@@ -503,32 +570,279 @@ export interface MongoRewriteReport {
   totalMatchedDocs: number;
   totalModifiedDocs: number;
   totalFieldsRewritten: number;
+  totalConflictsResolved: number;
+  totalConflictsSkipped: number;
+  conflicts: RewriteConflictEntry[];
 }
 
 export interface RewriteMongoUserIdsOptions {
   mongoDb: Db;
   userIdMap: UserIdMap;
   dryRun?: boolean;
-  /** Optional subset of collection names to process. */
+  /** Optional subset of collection names to process. Unknown names throw an error. */
   collections?: readonly string[];
+  /** Maximum guarded retry attempts per document on concurrent modification (default: 5). */
+  maxRetriesPerDoc?: number;
+  /** Optional hook invoked right before each guarded write (useful for deterministic concurrency tests). */
+  beforeDocUpdate?: (info: {
+    collection: string;
+    docId: unknown;
+    attempt: number;
+  }) => Promise<void> | void;
+}
+
+const DEFAULT_MAX_RETRIES_PER_DOC = 5;
+
+const WORKSPACE_MEMBER_ROLE_RANK: Record<string, number> = {
+  viewer: 1,
+  member: 2,
+  admin: 3,
+  owner: 4,
+};
+
+function isDuplicateKeyError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const err = error as { code?: unknown; codeName?: unknown };
+  return err.code === 11000 || err.codeName === "DuplicateKey";
+}
+
+function unwrapFindOneAndDeleteDoc(
+  result: unknown,
+): Record<string, unknown> | null {
+  if (!result || typeof result !== "object") return null;
+  if ("value" in result && !("_id" in result)) {
+    const v = (result as { value: unknown }).value;
+    return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
+  }
+  return result as Record<string, unknown>;
+}
+
+async function resolveDuplicateKeyConflict(
+  col: Collection,
+  collectionName: string,
+  currentDoc: Record<string, unknown>,
+  patch: DocumentUserIdPatch,
+  guardedFilter: Record<string, unknown>,
+  error: unknown,
+): Promise<RewriteConflictEntry | "retry"> {
+  const errMsg = error instanceof Error ? error.message : String(error);
+  const mappedUserId =
+    typeof patch.$set.userId === "string" ? patch.$set.userId : null;
+
+  if (collectionName === "app_usage_daily" && mappedUserId) {
+    // Atomically claim the legacy rollup row so counters are never double-counted,
+    // then merge its counters & timestamps into the existing UUIDv7 rollup row.
+    const claimedRaw = await col.findOneAndDelete(guardedFilter);
+    const claimed = unwrapFindOneAndDeleteDoc(claimedRaw);
+    if (!claimed) return "retry";
+
+    const $inc: Record<string, number> = {};
+    if (typeof claimed.opens === "number" && claimed.opens !== 0) {
+      $inc.opens = claimed.opens;
+    }
+    if (
+      typeof claimed.activeSeconds === "number" &&
+      claimed.activeSeconds !== 0
+    ) {
+      $inc.activeSeconds = claimed.activeSeconds;
+    }
+    const sources = claimed.sources as Record<string, unknown> | undefined;
+    if (sources && typeof sources === "object") {
+      for (const sourceKey of ["app", "share", "embed"] as const) {
+        const val = sources[sourceKey];
+        if (typeof val === "number" && val !== 0) {
+          $inc[`sources.${sourceKey}`] = val;
+        }
+      }
+    }
+
+    const mergeUpdate: Record<string, unknown> = {
+      $setOnInsert: {
+        workspaceId: claimed.workspaceId,
+        appId: claimed.appId,
+        userId: mappedUserId,
+        day: claimed.day,
+      },
+    };
+    if (Object.keys($inc).length > 0) {
+      mergeUpdate.$inc = $inc;
+    }
+    if (claimed.firstAt instanceof Date) {
+      mergeUpdate.$min = { firstAt: claimed.firstAt };
+    }
+    if (claimed.lastAt instanceof Date) {
+      mergeUpdate.$max = { lastAt: claimed.lastAt };
+    }
+
+    await col.updateOne(
+      {
+        workspaceId: claimed.workspaceId,
+        appId: claimed.appId,
+        userId: mappedUserId,
+        day: claimed.day,
+      },
+      mergeUpdate,
+      { upsert: true },
+    );
+
+    return {
+      collection: collectionName,
+      docId: String(currentDoc._id),
+      kind: "duplicate_key",
+      resolution: "merged_and_deleted",
+      message: `Merged duplicate app_usage_daily counters into UUIDv7 row (${mappedUserId}) and removed legacy duplicate (${errMsg})`,
+    };
+  }
+
+  if (collectionName === "workspacemembers" && mappedUserId) {
+    const existingSameWs = (await col.findOne({
+      workspaceId: currentDoc.workspaceId,
+      userId: mappedUserId,
+    })) as Record<string, unknown> | null;
+
+    if (existingSameWs) {
+      const claimedRaw = await col.findOneAndDelete(guardedFilter);
+      const claimed = unwrapFindOneAndDeleteDoc(claimedRaw);
+      if (!claimed) return "retry";
+
+      const mergeOps: Record<string, unknown> = {};
+      const $set: Record<string, unknown> = {};
+      const legacyRank =
+        typeof claimed.role === "string"
+          ? (WORKSPACE_MEMBER_ROLE_RANK[claimed.role] ?? 0)
+          : 0;
+      const existingRank =
+        typeof existingSameWs.role === "string"
+          ? (WORKSPACE_MEMBER_ROLE_RANK[existingSameWs.role] ?? 0)
+          : 0;
+      if (legacyRank > existingRank && typeof claimed.role === "string") {
+        $set.role = claimed.role;
+      }
+      if (
+        claimed.isDefaultMembership === true &&
+        existingSameWs.isDefaultMembership !== true
+      ) {
+        const anotherDefault = await col.findOne({
+          userId: mappedUserId,
+          isDefaultMembership: true,
+        });
+        if (!anotherDefault) {
+          $set.isDefaultMembership = true;
+        }
+      }
+      if (Object.keys($set).length > 0) {
+        mergeOps.$set = $set;
+      }
+      if (claimed.joinedAt instanceof Date) {
+        mergeOps.$min = { joinedAt: claimed.joinedAt };
+      }
+      if (Object.keys(mergeOps).length > 0) {
+        await col.updateOne({ _id: existingSameWs._id as never }, mergeOps);
+      }
+
+      return {
+        collection: collectionName,
+        docId: String(currentDoc._id),
+        kind: "duplicate_key",
+        resolution: "merged_and_deleted",
+        message: `Merged duplicate workspacemembers row into existing UUIDv7 membership (${mappedUserId}) and removed legacy duplicate (${errMsg})`,
+      };
+    }
+
+    if (currentDoc.isDefaultMembership === true) {
+      // Collision was on the partial unique index `{ userId, isDefaultMembership: true }`
+      // across a different workspace. Preserve membership in this workspace by unsetting
+      // `isDefaultMembership` while rewriting `userId`.
+      try {
+        const res = await col.updateOne(guardedFilter, {
+          $set: patch.$set,
+          $unset: { isDefaultMembership: "" },
+        });
+        if (res.matchedCount === 0) return "retry";
+        return {
+          collection: collectionName,
+          docId: String(currentDoc._id),
+          kind: "duplicate_key",
+          resolution: "resolved_in_place",
+          message: `Resolved partial unique default-membership collision by unsetting isDefaultMembership while rewriting userId to ${mappedUserId}`,
+        };
+      } catch (innerErr) {
+        if (isDuplicateKeyError(innerErr)) {
+          return "retry";
+        }
+        throw innerErr;
+      }
+    }
+  }
+
+  // Default conflict resolution for live unique-indexed collections (e.g.
+  // `app_worktrees`, `workspace_user_handles`, `dbt_env_preferences`,
+  // `mcp_connection_configs`, `favourites`): a live UUIDv7 row already exists,
+  // so remove the stale legacy duplicate guarded by the snapshot filter.
+  const del = await col.deleteOne(guardedFilter);
+  if (del.deletedCount === 0) return "retry";
+
+  return {
+    collection: collectionName,
+    docId: String(currentDoc._id),
+    kind: "duplicate_key",
+    resolution: "deleted_duplicate",
+    message: `Deleted stale legacy duplicate in ${collectionName} after E11000 conflict with existing UUIDv7 row (${errMsg})`,
+  };
+}
+
+const KNOWN_REWRITE_COLLECTIONS = new Set(
+  MONGO_USER_ID_REWRITE_SPECS.map(spec => spec.collection),
+);
+
+/**
+ * Validate a caller-supplied `--collections` filter against `MONGO_USER_ID_REWRITE_SPECS`.
+ * Throws an explicit error if any collection name is unknown so typos never
+ * silently report 0 matches and exit 0.
+ */
+export function validateRewriteCollections(
+  collections: readonly string[],
+): Set<string> {
+  const unknown = [
+    ...new Set(
+      collections.filter(name => !KNOWN_REWRITE_COLLECTIONS.has(name)),
+    ),
+  ];
+  if (unknown.length > 0) {
+    throw new Error(
+      `Unknown --collections name(s): ${unknown.join(", ")}. ` +
+        `Supported collections (${MONGO_USER_ID_REWRITE_SPECS.length}): ` +
+        MONGO_USER_ID_REWRITE_SPECS.map(s => s.collection).join(", "),
+    );
+  }
+  return new Set(collections);
 }
 
 /**
  * Scan and optionally rewrite legacy user IDs across all MongoDB collections.
- * Safe by default (`dryRun: true`) and idempotent across repeat executions.
+ * Safe by default (`dryRun: true`), concurrency-guarded against live writes,
+ * resilient to per-doc E11000 duplicate-key collisions, and idempotent across
+ * repeat executions.
  */
 export async function rewriteMongoUserIds(
   options: RewriteMongoUserIdsOptions,
 ): Promise<MongoRewriteReport> {
   const dryRun = options.dryRun ?? true;
+  const maxRetries = Math.max(
+    1,
+    options.maxRetriesPerDoc ?? DEFAULT_MAX_RETRIES_PER_DOC,
+  );
   const { mongoDb, userIdMap } = options;
+
+  const filterSet = options.collections
+    ? validateRewriteCollections(options.collections)
+    : null;
 
   const existingCols = new Set(
     (await mongoDb.listCollections({}, { nameOnly: true }).toArray()).map(
       c => c.name,
     ),
   );
-  const filterSet = options.collections ? new Set(options.collections) : null;
 
   const specs = MONGO_USER_ID_REWRITE_SPECS.filter(
     spec =>
@@ -537,10 +851,13 @@ export async function rewriteMongoUserIds(
   );
 
   const reports: CollectionRewriteReport[] = [];
+  const allConflicts: RewriteConflictEntry[] = [];
   let totalScannedDocs = 0;
   let totalMatchedDocs = 0;
   let totalModifiedDocs = 0;
   let totalFieldsRewritten = 0;
+  let totalConflictsResolved = 0;
+  let totalConflictsSkipped = 0;
 
   if (userIdMap.size === 0) {
     return {
@@ -551,6 +868,9 @@ export async function rewriteMongoUserIds(
       totalMatchedDocs: 0,
       totalModifiedDocs: 0,
       totalFieldsRewritten: 0,
+      totalConflictsResolved: 0,
+      totalConflictsSkipped: 0,
+      conflicts: [],
     };
   }
 
@@ -561,22 +881,102 @@ export async function rewriteMongoUserIds(
     let matchedDocs = 0;
     let modifiedDocs = 0;
     let fieldsRewritten = 0;
+    let conflictsResolved = 0;
+    let conflictsSkipped = 0;
+    const colConflicts: RewriteConflictEntry[] = [];
 
     for await (const rawDoc of cursor) {
       scannedDocs += 1;
       const doc = rawDoc as Record<string, unknown>;
-      const patch = computeDocumentUserIdPatch(doc, spec, userIdMap);
-      if (!patch) continue;
+      const initialPatch = computeDocumentUserIdPatch(doc, spec, userIdMap);
+      if (!initialPatch) continue;
 
       matchedDocs += 1;
-      fieldsRewritten += patch.fieldsRewritten;
 
-      if (!dryRun) {
-        const res = await col.updateOne(
-          { _id: doc._id as never },
-          { $set: patch.$set },
-        );
-        modifiedDocs += res.modifiedCount;
+      if (dryRun) {
+        fieldsRewritten += initialPatch.fieldsRewritten;
+        continue;
+      }
+
+      let currentDoc = doc;
+      let currentPatch: DocumentUserIdPatch | null = initialPatch;
+      let resolved = false;
+
+      for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+        if (options.beforeDocUpdate) {
+          await options.beforeDocUpdate({
+            collection: spec.collection,
+            docId: currentDoc._id,
+            attempt,
+          });
+        }
+
+        const guardedFilter: Record<string, unknown> = {
+          _id: currentDoc._id,
+          ...currentPatch.filter,
+        };
+
+        try {
+          const res = await col.updateOne(guardedFilter, {
+            $set: currentPatch.$set,
+          });
+          if (res.matchedCount > 0) {
+            modifiedDocs += res.modifiedCount;
+            fieldsRewritten += currentPatch.fieldsRewritten;
+            resolved = true;
+            break;
+          }
+        } catch (error) {
+          if (!isDuplicateKeyError(error)) {
+            throw error;
+          }
+          const conflictOutcome = await resolveDuplicateKeyConflict(
+            col,
+            spec.collection,
+            currentDoc,
+            currentPatch,
+            guardedFilter,
+            error,
+          );
+          if (conflictOutcome !== "retry") {
+            conflictsResolved += 1;
+            modifiedDocs += 1;
+            fieldsRewritten += currentPatch.fieldsRewritten;
+            colConflicts.push(conflictOutcome);
+            allConflicts.push(conflictOutcome);
+            resolved = true;
+            break;
+          }
+        }
+
+        // Guarded update did not match (concurrent edit): re-read the live
+        // document and recompute the patch so concurrent changes are preserved.
+        const latest = (await col.findOne({
+          _id: currentDoc._id as never,
+        })) as Record<string, unknown> | null;
+        if (!latest) {
+          resolved = true;
+          break;
+        }
+        currentDoc = latest;
+        currentPatch = computeDocumentUserIdPatch(latest, spec, userIdMap);
+        if (!currentPatch) {
+          resolved = true;
+          break;
+        }
+      }
+
+      if (!resolved) {
+        const skippedEntry: RewriteConflictEntry = {
+          collection: spec.collection,
+          docId: String(currentDoc._id),
+          kind: "concurrent_modification",
+          resolution: "skipped",
+          message: `Skipped ${spec.collection} doc ${String(currentDoc._id)} after ${maxRetries} concurrent-modification retries; re-run to complete`,
+        };
+        conflictsSkipped += 1;
+        colConflicts.push(skippedEntry);
+        allConflicts.push(skippedEntry);
       }
     }
 
@@ -587,12 +987,17 @@ export async function rewriteMongoUserIds(
         matchedDocs,
         modifiedDocs,
         fieldsRewritten,
+        conflictsResolved,
+        conflictsSkipped,
+        conflicts: colConflicts,
       });
     }
     totalScannedDocs += scannedDocs;
     totalMatchedDocs += matchedDocs;
     totalModifiedDocs += modifiedDocs;
     totalFieldsRewritten += fieldsRewritten;
+    totalConflictsResolved += conflictsResolved;
+    totalConflictsSkipped += conflictsSkipped;
   }
 
   return {
@@ -603,6 +1008,9 @@ export async function rewriteMongoUserIds(
     totalMatchedDocs,
     totalModifiedDocs,
     totalFieldsRewritten,
+    totalConflictsResolved,
+    totalConflictsSkipped,
+    conflicts: allConflicts,
   };
 }
 
@@ -664,6 +1072,10 @@ const METADATA_USER_KEYS = [
   "actor_id",
   "configUserId",
   "startedByUserId",
+  "runBy",
+  "run_by",
+  "linkedBy",
+  "linked_by",
 ].join("|");
 
 const PRINCIPAL_RE = /\buser:([A-Za-z0-9_-]{8,64})(?![A-Za-z0-9_-])/g;

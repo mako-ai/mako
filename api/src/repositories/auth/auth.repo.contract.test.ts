@@ -1713,4 +1713,805 @@ describe("Phase 1A AuthRepository contract & migration lifecycle (Decision #3)",
       }
     }
   });
+
+  // ── 8. PR #1553 review regression tests ──────────────────────────────────
+
+  it("queues sync-retry when Stage 2/3 PG secondary updateUser misses a row so stale backfill cannot restore an old password (#4717224061)", async () => {
+    const captured: SecondaryWriteFailureContext[] = [];
+    const router = new MigrationRouter({
+      enablePubSub: false,
+      onSecondaryFailure: async ctx => {
+        captured.push(ctx);
+      },
+    });
+    const mongoRepo = new MongoAuthRepository();
+    const pgRepo = new PgAuthRepository({ getDb: () => db });
+    const dual = new DualAuthRepository({
+      mongo: mongoRepo,
+      pg: pgRepo,
+      router,
+      getDb: () => db,
+    });
+
+    await router.setDomainState({
+      domain: "auth",
+      mode: "dual_write_mongo_read",
+    });
+
+    const t0 = new Date("2026-11-26T10:00:00.000Z");
+    const t1 = new Date("2026-11-26T10:05:00.000Z");
+
+    // 1. User exists in Mongo ONLY (not yet backfilled into PG) with attacker-set old hash
+    const staleMongoSnapshot = await mongoRepo.createUser({
+      id: "pw_race_user_01",
+      email: "race@example.com",
+      hashedPassword: "$2b$10$old-attacker-password",
+      emailVerified: false,
+      createdAt: t0,
+      updatedAt: t0,
+    });
+    expect(await pgRepo.findUserById("pw_race_user_01")).toBeNull();
+
+    // 2. User completes OAuth takeover guard / password reset -> updates Mongo; PG row is missing
+    const updated = await dual.updateUser("pw_race_user_01", {
+      emailVerified: true,
+      hashedPassword: null,
+      updatedAt: t1,
+    });
+    expect(updated?.emailVerified).toBe(true);
+    expect(updated?.hashedPassword).toBeUndefined();
+
+    // 3. PG secondary threw on missing row so sync-retry was queued!
+    expect(captured).toHaveLength(1);
+    expect(captured[0].target).toBe("pg");
+    expect(captured[0].operation).toBe("updateUser");
+
+    // 4. Stale in-flight backfill batch lands old snapshot into PG
+    await pgRepo.upsertUserWithGuard(staleMongoSnapshot, db);
+    expect((await pgRepo.findUserById("pw_race_user_01"))?.hashedPassword).toBe(
+      "$2b$10$old-attacker-password",
+    );
+
+    // 5. Sync-retry replays from Mongo and overwrites the stale PG snapshot via updated_at guard
+    await replayAuthWriteToPg(
+      {
+        target: "pg",
+        domain: captured[0].domain,
+        operation: captured[0].operation,
+        entityId: captured[0].entityId ?? "unknown",
+        payload: captured[0].payload,
+        failedAt: new Date().toISOString(),
+        errorMessage: "PG user missing",
+      },
+      db,
+    );
+    const healedPg = await pgRepo.findUserById("pw_race_user_01");
+    expect(healedPg?.emailVerified).toBe(true);
+    expect(healedPg?.hashedPassword).toBeUndefined();
+
+    // Updating a genuinely nonexistent user returns null without queueing a spurious retry
+    expect(
+      await dual.updateUser("does-not-exist-anywhere", { emailVerified: true }),
+    ).toBeNull();
+    expect(captured).toHaveLength(1);
+
+    // Stage 4 reverse check: PG primary succeeds while Mongo row is missing -> queues Mongo retry
+    await router.setDomainState({
+      domain: "auth",
+      mode: "dual_write_pg_read",
+    });
+    const pgOnlyUser = await pgRepo.createUser({
+      email: "pg-only-stage4@example.com",
+      hashedPassword: "v1",
+      emailVerified: true,
+    });
+    await dual.updateUser(pgOnlyUser.id, { hashedPassword: "v2" });
+    expect(captured).toHaveLength(2);
+    expect(captured[1].target).toBe("mongo");
+    await replayAuthWriteToMongo(
+      {
+        target: "mongo",
+        domain: captured[1].domain,
+        operation: captured[1].operation,
+        entityId: captured[1].entityId ?? "unknown",
+        payload: captured[1].payload,
+        failedAt: new Date().toISOString(),
+        errorMessage: "Mongo user missing",
+      },
+      db,
+    );
+    expect((await mongoRepo.findUserById(pgOnlyUser.id))?.hashedPassword).toBe(
+      "v2",
+    );
+  });
+
+  it("tombstones Mongo-only codes deleted by email+type so backfill cannot resurrect them (#4717224459)", async () => {
+    clearBackfillRegistryForTests();
+    registerMigrationDomains({ force: true });
+
+    const router = new MigrationRouter({ enablePubSub: false });
+    const mongoRepo = new MongoAuthRepository();
+    const pgRepo = new PgAuthRepository({ getDb: () => db });
+    const dual = new DualAuthRepository({
+      mongo: mongoRepo,
+      pg: pgRepo,
+      router,
+      getDb: () => db,
+    });
+
+    await router.setDomainState({
+      domain: "auth",
+      mode: "dual_write_mongo_read",
+    });
+
+    const future = new Date(Date.now() + 10 * 60_000);
+    // Code V1 exists ONLY in Mongo (not yet backfilled to PG)
+    const vMongoOnly = await mongoRepo.createEmailVerification({
+      email: "tombstone-union@example.com",
+      code: "111111",
+      type: "password_reset",
+      expiresAt: future,
+    });
+    // Code V2 exists ONLY in PG
+    const vPgOnly = await pgRepo.createEmailVerification({
+      email: "tombstone-union@example.com",
+      code: "222222",
+      type: "password_reset",
+      expiresAt: future,
+    });
+
+    await dual.deleteEmailVerificationsByEmailAndType(
+      "tombstone-union@example.com",
+      "password_reset",
+    );
+
+    expect(
+      await mongoRepo.findValidEmailVerification(
+        "tombstone-union@example.com",
+        "111111",
+        "password_reset",
+      ),
+    ).toBeNull();
+    expect(await pgRepo.findEmailVerificationById(vPgOnly.id, db)).toBeNull();
+
+    // BOTH Mongo-only and PG-only deleted IDs must be tombstoned!
+    const tombstones = (
+      await db.select().from(pgSchema.migrationTombstones)
+    ).filter(t => t.tableName === "email_verifications");
+    expect(tombstones.map(t => t.entityId).sort()).toEqual(
+      [vMongoOnly.id.toLowerCase(), vPgOnly.id.toLowerCase()].sort(),
+    );
+
+    // Re-insert V1 in Mongo to simulate an in-flight backfill snapshot that had already read V1
+    await mongoRepo.createEmailVerification({
+      id: vMongoOnly.id,
+      email: "tombstone-union@example.com",
+      code: "111111",
+      type: "password_reset",
+      expiresAt: future,
+    });
+    const backfill = await runBackfill({
+      domain: "auth:email_verifications",
+      batchSize: 10,
+      db,
+    });
+    expect(backfill.rowsSkippedTombstone).toBe(1);
+    expect(
+      await pgRepo.findEmailVerificationById(vMongoOnly.id, db),
+    ).toBeNull();
+  });
+
+  it("omits user email PII from deleteEmailVerificationsByEmailAndType retry payload and replays by captured IDs without deleting newer codes (#4717224866, #4717227780)", async () => {
+    const captured: SecondaryWriteFailureContext[] = [];
+    const router = new MigrationRouter({
+      enablePubSub: false,
+      onSecondaryFailure: async ctx => {
+        captured.push(ctx);
+      },
+    });
+    const mongoRepo = new MongoAuthRepository();
+    const pgRepo = new PgAuthRepository({ getDb: () => db });
+    const brokenPg = Object.create(pgRepo) as PgAuthRepository;
+    brokenPg.deleteEmailVerificationsReturningIds = async () => {
+      throw new Error("Simulated PG outage on delete");
+    };
+
+    const dualHealthy = new DualAuthRepository({
+      mongo: mongoRepo,
+      pg: pgRepo,
+      router,
+      getDb: () => db,
+    });
+    const dualBrokenPg = new DualAuthRepository({
+      mongo: mongoRepo,
+      pg: brokenPg,
+      router,
+      getDb: () => db,
+    });
+
+    await router.setDomainState({
+      domain: "auth",
+      mode: "dual_write_mongo_read",
+    });
+
+    const piiEmail = "private-user-pii@example.com";
+    const future = new Date(Date.now() + 15 * 60_000);
+
+    // Seed old verification code in BOTH Mongo and PG
+    const oldCode = await dualHealthy.createEmailVerification({
+      email: piiEmail,
+      code: "100001",
+      type: "password_reset",
+      expiresAt: future,
+    });
+
+    // t0: Delete succeeds in Mongo, fails in PG -> retry queued
+    await dualBrokenPg.deleteEmailVerificationsByEmailAndType(
+      piiEmail,
+      "password_reset",
+    );
+    expect(captured).toHaveLength(1);
+    expect(captured[0].target).toBe("pg");
+    expect(captured[0].payload).toEqual({
+      table: "email_verifications",
+      verificationIds: [oldCode.id],
+    });
+    // Zero email PII in retry payload or serialized failure context!
+    expect(JSON.stringify(captured[0])).not.toContain(piiEmail);
+
+    // t1: User requests a NEW code Y -> written to both Mongo and PG
+    const newCode = await dualHealthy.createEmailVerification({
+      email: piiEmail,
+      code: "200002",
+      type: "password_reset",
+      expiresAt: future,
+    });
+
+    // t2: Delayed sync-retry replays t0 delete -> MUST delete oldCode ONLY, NOT newCode!
+    await replayAuthWriteToPg(
+      {
+        target: "pg",
+        domain: captured[0].domain,
+        operation: captured[0].operation,
+        entityId: captured[0].entityId ?? "unknown",
+        payload: captured[0].payload,
+        failedAt: new Date().toISOString(),
+        errorMessage: "Simulated PG outage on delete",
+      },
+      db,
+    );
+
+    expect(await pgRepo.findEmailVerificationById(oldCode.id, db)).toBeNull();
+    expect(
+      await pgRepo.findValidEmailVerification(
+        piiEmail,
+        "200002",
+        "password_reset",
+      ),
+    ).toMatchObject({ id: newCode.id, code: "200002" });
+
+    // Only oldCode is tombstoned — newCode MUST NOT be tombstoned!
+    const tombstones = (
+      await db.select().from(pgSchema.migrationTombstones)
+    ).filter(t => t.tableName === "email_verifications");
+    expect(tombstones.map(t => t.entityId)).toEqual([oldCode.id.toLowerCase()]);
+
+    // Stage 4 reverse direction: Mongo secondary fails -> payload has ONLY IDs, replay keeps newer Mongo code
+    await router.setDomainState({
+      domain: "auth",
+      mode: "dual_write_pg_read",
+    });
+    const brokenMongo = Object.create(mongoRepo) as MongoAuthRepository;
+    brokenMongo.deleteEmailVerificationsByIds = async () => {
+      throw new Error("Simulated Mongo outage on delete");
+    };
+    const dualBrokenMongo = new DualAuthRepository({
+      mongo: brokenMongo,
+      pg: pgRepo,
+      router,
+      getDb: () => db,
+    });
+    await dualBrokenMongo.deleteEmailVerificationsByEmailAndType(
+      piiEmail,
+      "password_reset",
+    );
+    expect(captured).toHaveLength(2);
+    expect(captured[1].target).toBe("mongo");
+    expect(captured[1].payload).toEqual({
+      table: "email_verifications",
+      verificationIds: [newCode.id],
+    });
+    expect(JSON.stringify(captured[1])).not.toContain(piiEmail);
+
+    const newerStage4Code = await dualHealthy.createEmailVerification({
+      email: piiEmail,
+      code: "300003",
+      type: "password_reset",
+      expiresAt: future,
+    });
+    await replayAuthWriteToMongo(
+      {
+        target: "mongo",
+        domain: captured[1].domain,
+        operation: captured[1].operation,
+        entityId: captured[1].entityId ?? "unknown",
+        payload: captured[1].payload,
+        failedAt: new Date().toISOString(),
+        errorMessage: "Simulated Mongo outage on delete",
+      },
+      db,
+    );
+    expect(
+      await mongoRepo.findValidEmailVerification(
+        piiEmail,
+        "200002",
+        "password_reset",
+      ),
+    ).toBeNull();
+    expect(
+      await mongoRepo.findValidEmailVerification(
+        piiEmail,
+        "300003",
+        "password_reset",
+      ),
+    ).toMatchObject({ id: newerStage4Code.id, code: "300003" });
+  });
+
+  it("revokes matching Mongo sessions best-effort during Stage 4 deleteSession and deleteUserSessions so rollback never resurrects them (#4717226541)", async () => {
+    const router = new MigrationRouter({ enablePubSub: false });
+    const mongoRepo = new MongoAuthRepository();
+    const pgRepo = new PgAuthRepository({ getDb: () => db });
+    const dual = new DualAuthRepository({
+      mongo: mongoRepo,
+      pg: pgRepo,
+      router,
+      getDb: () => db,
+    });
+
+    // Stage 3: create both a legacy Lucia user and a UUIDv7 user + Mongo sessions
+    await router.setDomainState({
+      domain: "auth",
+      mode: "dual_write_shadow_compare",
+      shadowSampleRate: 0,
+    });
+    const legacyUser = await dual.createUser({
+      id: "sess_rollback_u1",
+      email: "rollback-legacy@example.com",
+      emailVerified: true,
+    });
+    const newUser = await dual.createUser({
+      email: "rollback-v7@example.com",
+      emailVerified: true,
+    });
+    const legacyPgUser = await pgRepo.findUserById(legacyUser.id);
+    if (!legacyPgUser) throw new Error("Expected legacyPgUser");
+
+    const future = new Date(Date.now() + 600_000);
+    const stolenLegacyMongoSession = makeSessionId();
+    const loggedOutMongoSession = makeSessionId();
+    await dual.createSession({
+      id: stolenLegacyMongoSession,
+      userId: legacyUser.id, // stored under legacy Mongo `_id`
+      expiresAt: future,
+    });
+    await dual.createSession({
+      id: loggedOutMongoSession,
+      userId: newUser.id,
+      expiresAt: future,
+    });
+
+    // Promote to Stage 4: create PG sessions and then revoke via logout & password reset
+    await router.setDomainState({
+      domain: "auth",
+      mode: "dual_write_pg_read",
+    });
+    const stage4PgSession = makeSessionId();
+    await dual.createSession({
+      id: stage4PgSession,
+      userId: legacyPgUser.id,
+      expiresAt: future,
+    });
+
+    // Logout on specific session token + password-reset deleteUserSessions with PG UUID
+    await dual.deleteSession(loggedOutMongoSession);
+    await dual.deleteUserSessions(legacyPgUser.id);
+
+    expect(await pgRepo.findSessionById(stage4PgSession)).toBeNull();
+
+    // Roll back Stage 4 -> Stage 3: revoked sessions MUST NOT come back!
+    await router.setDomainState({
+      domain: "auth",
+      mode: "dual_write_shadow_compare",
+    });
+    expect(await dual.findSessionById(stolenLegacyMongoSession)).toBeNull();
+    expect(await dual.findSessionById(loggedOutMongoSession)).toBeNull();
+
+    // Best-effort resilience: Mongo failure during Stage 4 delete does NOT fail PG revocation
+    await router.setDomainState({
+      domain: "auth",
+      mode: "dual_write_pg_read",
+    });
+    const brokenMongo = Object.create(mongoRepo) as MongoAuthRepository;
+    brokenMongo.deleteSession = async () => {
+      throw new Error("Simulated Mongo outage");
+    };
+    brokenMongo.deleteUserSessions = async () => {
+      throw new Error("Simulated Mongo outage");
+    };
+    const dualBrokenMongo = new DualAuthRepository({
+      mongo: brokenMongo,
+      pg: pgRepo,
+      router,
+      getDb: () => db,
+    });
+    const sResilient1 = makeSessionId();
+    const sResilient2 = makeSessionId();
+    await pgRepo.createSession({
+      id: sResilient1,
+      userId: legacyPgUser.id,
+      expiresAt: future,
+    });
+    await pgRepo.createSession({
+      id: sResilient2,
+      userId: legacyPgUser.id,
+      expiresAt: future,
+    });
+    await expect(
+      dualBrokenMongo.deleteSession(sResilient1),
+    ).resolves.toBeUndefined();
+    await expect(
+      dualBrokenMongo.deleteUserSessions(legacyPgUser.id),
+    ).resolves.toBeUndefined();
+    expect(await pgRepo.findSessionById(sResilient1)).toBeNull();
+    expect(await pgRepo.findSessionById(sResilient2)).toBeNull();
+
+    // Stage 5 (`pg_only`) never calls Mongo on session deletes
+    await router.setDomainState({ domain: "auth", mode: "pg_only" });
+    let mongoCalled = false;
+    const spyMongo = Object.create(mongoRepo) as MongoAuthRepository;
+    spyMongo.deleteSession = async () => {
+      mongoCalled = true;
+    };
+    spyMongo.deleteUserSessions = async () => {
+      mongoCalled = true;
+    };
+    const dualPgOnly = new DualAuthRepository({
+      mongo: spyMongo,
+      pg: pgRepo,
+      router,
+      getDb: () => db,
+    });
+    await dualPgOnly.deleteSession(makeSessionId());
+    await dualPgOnly.deleteUserSessions(legacyPgUser.id);
+    expect(mongoCalled).toBe(false);
+  });
+
+  it("excludes expired email_verifications and desktop_auth_codes from parity verification while still flagging unexpired extra PG rows (#4717226840)", async () => {
+    clearBackfillRegistryForTests();
+    clearVerifierRegistryForTests();
+    registerMigrationDomains({ force: true });
+
+    const now = new Date();
+    const future = new Date(now.getTime() + 10 * 60_000);
+    const expired = new Date(now.getTime() - 10 * 60_000);
+
+    const mongoRepo = new MongoAuthRepository();
+    const pgRepo = new PgAuthRepository({ getDb: () => db });
+
+    await mongoRepo.createUser({
+      id: "ttl_verify_u001",
+      email: "ttlverify@example.com",
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const pgUser = await pgRepo.createUser({
+      id: "ttl_verify_u001",
+      email: "ttlverify@example.com",
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // Active code in BOTH Mongo and PG
+    const evActiveId = randomUUID();
+    await mongoRepo.createEmailVerification({
+      id: evActiveId,
+      email: "ttlverify@example.com",
+      code: "123456",
+      type: "registration",
+      expiresAt: future,
+      createdAt: now,
+    });
+    await pgRepo.createEmailVerification({
+      id: evActiveId,
+      email: "ttlverify@example.com",
+      code: "123456",
+      type: "registration",
+      expiresAt: future,
+      createdAt: now,
+    });
+
+    const dacActiveId = sha256Base64url("active-desktop-code");
+    await mongoRepo.createDesktopAuthCode({
+      id: dacActiveId,
+      userId: "ttl_verify_u001",
+      challenge: sha256Base64url("active-challenge"),
+      expiresAt: future,
+      createdAt: now,
+    });
+    await pgRepo.createDesktopAuthCode({
+      id: dacActiveId,
+      userId: pgUser.id,
+      challenge: sha256Base64url("active-challenge"),
+      expiresAt: future,
+      createdAt: now,
+    });
+
+    // Expired rows ONLY in PG (Mongo's 60s TTL already deleted them while PG hourly reaper hasn't run yet)
+    await pgRepo.createEmailVerification({
+      id: randomUUID(),
+      email: "ttlverify@example.com",
+      code: "000001",
+      type: "password_reset",
+      expiresAt: expired,
+      createdAt: expired,
+    });
+    await pgRepo.createDesktopAuthCode({
+      id: sha256Base64url("expired-pg-only-code"),
+      userId: pgUser.id,
+      challenge: sha256Base64url("expired-challenge"),
+      expiresAt: expired,
+      createdAt: expired,
+    });
+
+    // Expired row ONLY in Mongo (not in PG)
+    await mongoRepo.createEmailVerification({
+      id: randomUUID(),
+      email: "ttlverify@example.com",
+      code: "000002",
+      type: "registration",
+      expiresAt: expired,
+      createdAt: expired,
+    });
+
+    // Composite and per-table verifiers MUST all pass cleanly!
+    for (const domain of [
+      "auth",
+      "auth:email_verifications",
+      "auth:desktop_auth_codes",
+    ] as const) {
+      const report = await runParityVerification({
+        domain,
+        batchSize: 10,
+        db,
+      });
+      expect(report.ok).toBe(true);
+      expect(report.extraInPg).toBe(0);
+      expect(report.missingInPg).toBe(0);
+      expect(report.mismatched).toBe(0);
+    }
+
+    // An UNEXPIRED extra PG row MUST still be detected as extra_in_pg
+    await pgRepo.createEmailVerification({
+      id: randomUUID(),
+      email: "ttlverify@example.com",
+      code: "999999",
+      type: "registration",
+      expiresAt: future,
+      createdAt: now,
+    });
+    const extraReport = await runParityVerification({
+      domain: "auth:email_verifications",
+      batchSize: 10,
+      db,
+    });
+    expect(extraReport.ok).toBe(false);
+    expect(extraReport.extraInPg).toBe(1);
+  });
+
+  it("throws from child sync-retry replays when parent user is not in PG yet so Inngest retries with backoff (#4717227221)", async () => {
+    const mongoRepo = new MongoAuthRepository();
+    const pgRepo = new PgAuthRepository({ getDb: () => db });
+
+    const now = new Date("2026-11-26T12:00:00.000Z");
+    const userId = "delayed_parent1";
+    await mongoRepo.createUser({
+      id: userId,
+      email: "delayed-parent@example.com",
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await mongoRepo.upsertAttributionOnce({
+      userId,
+      signupMethod: "google",
+      gclid: "G-DELAYED",
+      firstTouch: {},
+      lastTouch: {},
+      capturedAt: now,
+    });
+    const oauth = await mongoRepo.createOAuthAccount({
+      userId,
+      provider: "google",
+      providerUserId: "g-delayed-parent",
+      email: "delayed-parent@example.com",
+      createdAt: now,
+    });
+    const dacId = sha256Base64url("delayed-dac");
+    await mongoRepo.createDesktopAuthCode({
+      id: dacId,
+      userId,
+      challenge: sha256Base64url("delayed-challenge"),
+      expiresAt: new Date(Date.now() + 60_000),
+      createdAt: now,
+    });
+
+    const mkEvent = (
+      operation: string,
+      entityId: string,
+      payload: Record<string, unknown>,
+    ): SyncRetryEventData => ({
+      target: "pg",
+      domain: "auth",
+      operation,
+      entityId,
+      payload,
+      failedAt: now.toISOString(),
+      errorMessage: "FK violation before user landed",
+    });
+
+    // Before parent user lands in PG, ALL THREE child replays MUST throw!
+    await expect(
+      replayAuthWriteToPg(
+        mkEvent("upsertAttributionOnce", userId, {
+          table: "user_attributions",
+          userId,
+        }),
+        db,
+      ),
+    ).rejects.toThrow(/not yet in Postgres/i);
+    await expect(
+      replayAuthWriteToPg(
+        mkEvent("createOAuthAccount", oauth.id, {
+          table: "oauth_accounts",
+          oauthAccountId: oauth.id,
+        }),
+        db,
+      ),
+    ).rejects.toThrow(/not yet in Postgres/i);
+    await expect(
+      replayAuthWriteToPg(
+        mkEvent("createDesktopAuthCode", dacId, {
+          table: "desktop_auth_codes",
+          codeHash: dacId,
+        }),
+        db,
+      ),
+    ).rejects.toThrow(/not yet in Postgres/i);
+
+    // Once parent user replay lands in PG, all three child replays succeed cleanly!
+    await replayAuthWriteToPg(
+      mkEvent("createUser", userId, { table: "users", userId }),
+      db,
+    );
+    await replayAuthWriteToPg(
+      mkEvent("upsertAttributionOnce", userId, {
+        table: "user_attributions",
+        userId,
+      }),
+      db,
+    );
+    await replayAuthWriteToPg(
+      mkEvent("createOAuthAccount", oauth.id, {
+        table: "oauth_accounts",
+        oauthAccountId: oauth.id,
+      }),
+      db,
+    );
+    await replayAuthWriteToPg(
+      mkEvent("createDesktopAuthCode", dacId, {
+        table: "desktop_auth_codes",
+        codeHash: dacId,
+      }),
+      db,
+    );
+
+    expect((await pgRepo.findAttributionByUserId(userId))?.gclid).toBe(
+      "G-DELAYED",
+    );
+    expect(
+      await pgRepo.findOAuthAccountByProvider("google", "g-delayed-parent"),
+    ).not.toBeNull();
+    expect(await pgRepo.findDesktopAuthCodeById(dacId, db)).not.toBeNull();
+  });
+
+  it("quarantines malformed legacy users and email_verifications with missing or non-string email instead of crashing backfill (#4717227508)", async () => {
+    clearBackfillRegistryForTests();
+    registerMigrationDomains({ force: true });
+
+    const now = new Date("2026-11-26T12:00:00.000Z");
+    const future = new Date(Date.now() + 300_000);
+
+    // Insert malformed legacy docs directly via raw driver (bypassing Mongoose validation)
+    await User.collection.insertMany([
+      {
+        _id: "u_bad_01_missing" as unknown as mongoose.Types.ObjectId,
+        emailVerified: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        _id: "u_bad_02_nonstring" as unknown as mongoose.Types.ObjectId,
+        email: 12345 as unknown as string,
+        emailVerified: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        _id: "u_good_03_valid" as unknown as mongoose.Types.ObjectId,
+        email: "valid-after-bad@example.com",
+        emailVerified: true,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+
+    const goodEvId = randomUUID();
+    await EmailVerification.collection.insertMany([
+      {
+        _id: "ev_bad_01_missing" as unknown as mongoose.Types.ObjectId,
+        code: "111111",
+        type: "registration",
+        expiresAt: future,
+        createdAt: now,
+      },
+      {
+        _id: "ev_bad_02_nonstring" as unknown as mongoose.Types.ObjectId,
+        email: { broken: true } as unknown as string,
+        code: "222222",
+        type: "registration",
+        expiresAt: future,
+        createdAt: now,
+      },
+      {
+        _id: goodEvId as unknown as mongoose.Types.ObjectId,
+        email: "valid-after-bad@example.com",
+        code: "333333",
+        type: "registration",
+        expiresAt: future,
+        createdAt: now,
+      },
+    ]);
+
+    const summary = await runBackfill({
+      domain: "auth",
+      batchSize: 2,
+      db,
+    });
+    expect(summary.status).toBe("completed");
+    expect(summary.rowsQuarantined).toBe(4);
+
+    const quarantined = await db.select().from(pgSchema.migrationQuarantine);
+    expect(quarantined).toHaveLength(4);
+    expect(
+      quarantined
+        .filter(q => q.reason === "invalid_user_missing_email")
+        .map(q => q.collectionName),
+    ).toEqual(["users", "users"]);
+    expect(
+      quarantined
+        .filter(q => q.reason === "invalid_email_verification")
+        .map(q => q.collectionName),
+    ).toEqual(["emailverifications", "emailverifications"]);
+
+    // Valid records right after the malformed ones were still backfilled cleanly
+    const pgRepo = new PgAuthRepository({ getDb: () => db });
+    expect(await pgRepo.findUserById("u_good_03_valid")).toMatchObject({
+      email: "valid-after-bad@example.com",
+    });
+    expect(await pgRepo.findEmailVerificationById(goodEvId, db)).toMatchObject({
+      code: "333333",
+    });
+  });
 });

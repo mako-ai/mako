@@ -84,9 +84,7 @@ export class MongoAuthRepository implements AuthRepository {
   }
 
   async findUsersByEmails(emails: readonly string[]): Promise<UserRecord[]> {
-    const unique = [
-      ...new Set(emails.map(normalizeEmailKey).filter(Boolean)),
-    ];
+    const unique = [...new Set(emails.map(normalizeEmailKey).filter(Boolean))];
     if (unique.length === 0) return [];
     const docs = await User.find({ email: { $in: unique } }).lean<
       MongoUserLike[]
@@ -201,7 +199,10 @@ export class MongoAuthRepository implements AuthRepository {
     for (const doc of docs) {
       const legacyId = String(doc._id);
       if (!isUuidv7(legacyId)) {
-        map.set(legacyId, legacyUserIdToUuidv7(legacyId, coerceDate(doc.createdAt)));
+        map.set(
+          legacyId,
+          legacyUserIdToUuidv7(legacyId, coerceDate(doc.createdAt)),
+        );
       }
     }
     return map;
@@ -249,7 +250,9 @@ export class MongoAuthRepository implements AuthRepository {
 
   // ── User attributions ───────────────────────────────────────────────────
 
-  async upsertAttributionOnce(input: UpsertAttributionOnceInput): Promise<void> {
+  async upsertAttributionOnce(
+    input: UpsertAttributionOnceInput,
+  ): Promise<void> {
     const $setOnInsert: Record<string, unknown> = {
       _id: input.userId,
       signupMethod: input.signupMethod,
@@ -375,7 +378,9 @@ export class MongoAuthRepository implements AuthRepository {
 
   async findSessionById(sessionId: string): Promise<SessionRecord | null> {
     if (!sessionId) return null;
-    const doc = await Session.findById(sessionId).lean<MongoSessionLike | null>();
+    const doc = await Session.findById(
+      sessionId,
+    ).lean<MongoSessionLike | null>();
     return doc ? mongoSessionToRecord(doc) : null;
   }
 
@@ -471,6 +476,12 @@ export class MongoAuthRepository implements AuthRepository {
     await EmailVerification.deleteOne({ _id: id });
   }
 
+  async deleteEmailVerificationsByIds(ids: readonly string[]): Promise<void> {
+    const unique = [...new Set(ids.filter(Boolean))];
+    if (unique.length === 0) return;
+    await EmailVerification.deleteMany({ _id: { $in: unique } });
+  }
+
   async deleteEmailVerificationsByEmailAndType(
     email: string,
     type: EmailVerificationType,
@@ -479,6 +490,24 @@ export class MongoAuthRepository implements AuthRepository {
       email: normalizeEmailKey(email),
       type,
     });
+  }
+
+  async deleteEmailVerificationsReturningIds(
+    email: string,
+    type: EmailVerificationType,
+  ): Promise<string[]> {
+    const normalized = normalizeEmailKey(email);
+    const docs = await EmailVerification.find({
+      email: normalized,
+      type,
+    })
+      .select("_id")
+      .lean<Array<{ _id: string }>>();
+    const ids = docs.map(d => String(d._id));
+    if (ids.length > 0) {
+      await EmailVerification.deleteMany({ _id: { $in: ids } });
+    }
+    return ids;
   }
 
   /** Idempotent upsert used by Stage 4 reverse sync-retry replay. */

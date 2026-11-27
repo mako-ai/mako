@@ -20,6 +20,7 @@ import * as pgSchema from "../database/pg/schema";
 import { createTestPglite } from "../database/pg/test-pglite";
 import {
   MONGO_USER_ID_REWRITE_SPECS,
+  assertAuthStageAllowsRewriteApply,
   loadUserLegacyIdMap,
   rewriteGitUserIds,
   rewriteMongoUserIds,
@@ -28,6 +29,7 @@ import {
   rewriteUserIdValue,
   rewriteWriterLabelValue,
 } from "./rewrite-user-ids";
+import { MigrationRouter } from "./router";
 
 describe("User-ID reference rewrite tool (Decision #3)", () => {
   let mongo: MongoMemoryServer;
@@ -57,14 +59,17 @@ describe("User-ID reference rewrite tool (Decision #3)", () => {
   });
 
   beforeEach(async () => {
-    await pg.exec("DELETE FROM users;");
+    await pg.exec("DELETE FROM users; DELETE FROM migration_domain_state;");
     const mongoDb = mongoose.connection.db;
     if (!mongoDb) throw new Error("MongoDB test connection not initialized");
     const cols = await mongoDb
       .listCollections({}, { nameOnly: true })
       .toArray();
     for (const c of cols) {
-      await mongoDb.collection(c.name).deleteMany({});
+      await mongoDb
+        .collection(c.name)
+        .drop()
+        .catch(() => undefined);
     }
   });
 
@@ -605,5 +610,477 @@ describe("User-ID reference rewrite tool (Decision #3)", () => {
     }
 
     expect(missingCollections).toEqual([]);
+  });
+
+  // ── PR #1553 review regression tests ────────────────────────────────────
+
+  it("rewrites savedconsoles.lastRun.runBy, workspaces.appsRepo.linkedBy, and workspaces.workspaceRepos[].linkedBy (#4717225841)", async () => {
+    const userIdMap = new Map<string, string>([
+      [luciaId, luciaMapped],
+      [legacyUuidv4, v4Mapped],
+    ]);
+    const mongoDb = mongoose.connection.db;
+    if (!mongoDb) throw new Error("MongoDB test connection not initialized");
+    const wsId = new Types.ObjectId();
+
+    await mongoDb.collection("savedconsoles").insertOne({
+      _id: new Types.ObjectId(),
+      workspaceId: wsId,
+      createdBy: luciaMapped,
+      owner_id: luciaMapped,
+      lastRun: {
+        at: new Date("2026-11-26T10:00:00.000Z"),
+        status: "success",
+        durationMs: 42,
+        runBy: luciaId,
+        source: "editor",
+      },
+    });
+
+    await mongoDb.collection("workspaces").insertOne({
+      _id: wsId,
+      name: "Acme",
+      createdBy: luciaId,
+      appsRepo: {
+        provider: "github",
+        owner: "acme",
+        repo: "apps",
+        defaultBranch: "main",
+        subdirectory: "",
+        linkedBy: luciaId,
+      },
+      workspaceRepos: [
+        {
+          provider: "github",
+          owner: "acme",
+          repo: "repo-1",
+          defaultBranch: "main",
+          subdirectory: "",
+          linkedBy: luciaId,
+        },
+        {
+          provider: "github",
+          owner: "acme",
+          repo: "repo-2",
+          defaultBranch: "main",
+          subdirectory: "analytics",
+          linkedBy: legacyUuidv4,
+        },
+      ],
+      apiKeys: [{ name: "ci", keyHash: "h", prefix: "mk", createdBy: luciaId }],
+    });
+
+    const dry = await rewriteMongoUserIds({ mongoDb, userIdMap, dryRun: true });
+    expect(dry.totalMatchedDocs).toBe(2);
+    expect(dry.totalFieldsRewritten).toBe(6);
+
+    const applied = await rewriteMongoUserIds({
+      mongoDb,
+      userIdMap,
+      dryRun: false,
+    });
+    expect(applied.totalModifiedDocs).toBe(2);
+    expect(applied.totalFieldsRewritten).toBe(6);
+
+    const consoleDoc = await mongoDb.collection("savedconsoles").findOne({});
+    expect(consoleDoc?.lastRun?.runBy).toBe(luciaMapped);
+
+    const wsDoc = await mongoDb.collection("workspaces").findOne({ _id: wsId });
+    expect(wsDoc?.createdBy).toBe(luciaMapped);
+    expect(wsDoc?.appsRepo?.linkedBy).toBe(luciaMapped);
+    expect(wsDoc?.workspaceRepos).toMatchObject([
+      { repo: "repo-1", linkedBy: luciaMapped },
+      { repo: "repo-2", linkedBy: v4Mapped },
+    ]);
+    expect(wsDoc?.apiKeys?.[0]?.createdBy).toBe(luciaMapped);
+
+    // Strictly idempotent on re-run
+    const rerun = await rewriteMongoUserIds({
+      mongoDb,
+      userIdMap,
+      dryRun: false,
+    });
+    expect(rerun.totalMatchedDocs).toBe(0);
+    expect(rerun.totalModifiedDocs).toBe(0);
+  });
+
+  it("handles E11000 duplicate-key collisions per doc without aborting and merges app_usage_daily + workspacemembers cleanly (#4717225455)", async () => {
+    const userIdMap = new Map<string, string>([
+      [luciaId, luciaMapped],
+      [legacyUuidv4, v4Mapped],
+    ]);
+    const mongoDb = mongoose.connection.db;
+    if (!mongoDb) throw new Error("MongoDB test connection not initialized");
+
+    const ws1 = new Types.ObjectId();
+    const ws2 = new Types.ObjectId();
+    const tEarly = new Date("2026-11-26T08:00:00.000Z");
+    const tLate = new Date("2026-11-26T16:00:00.000Z");
+
+    // Create the real unique indexes that trigger E11000 after flipping to Stage 4
+    await mongoDb
+      .collection("app_usage_daily")
+      .createIndex(
+        { workspaceId: 1, appId: 1, userId: 1, day: 1 },
+        { unique: true },
+      );
+    await mongoDb
+      .collection("workspacemembers")
+      .createIndex({ workspaceId: 1, userId: 1 }, { unique: true });
+    await mongoDb.collection("workspacemembers").createIndex(
+      { userId: 1, isDefaultMembership: 1 },
+      {
+        unique: true,
+        partialFilterExpression: { isDefaultMembership: true },
+      },
+    );
+    await mongoDb
+      .collection("app_worktrees")
+      .createIndex({ workspaceId: 1, userId: 1 }, { unique: true });
+    await mongoDb
+      .collection("workspace_user_handles")
+      .createIndex({ workspaceId: 1, userId: 1 }, { unique: true });
+
+    // 1. app_usage_daily duplicate: live UUIDv7 row + stale legacy row on same day
+    await mongoDb.collection("app_usage_daily").insertMany([
+      {
+        _id: new Types.ObjectId(),
+        workspaceId: ws1,
+        appId: "rev-app",
+        userId: luciaId,
+        day: "2026-11-26",
+        opens: 3,
+        activeSeconds: 120,
+        sources: { app: 2, share: 1 },
+        firstAt: tEarly,
+        lastAt: new Date("2026-11-26T10:00:00.000Z"),
+      },
+      {
+        _id: new Types.ObjectId(),
+        workspaceId: ws1,
+        appId: "rev-app",
+        userId: luciaMapped,
+        day: "2026-11-26",
+        opens: 5,
+        activeSeconds: 300,
+        sources: { app: 4, embed: 1 },
+        firstAt: new Date("2026-11-26T12:00:00.000Z"),
+        lastAt: tLate,
+      },
+    ]);
+
+    // 2. workspacemembers same-workspace duplicate (legacy has higher role "owner" vs live "member")
+    //    + cross-workspace partial unique default-membership collision
+    await mongoDb.collection("workspacemembers").insertMany([
+      {
+        _id: new Types.ObjectId(),
+        workspaceId: ws1,
+        userId: luciaId,
+        role: "owner",
+        joinedAt: tEarly,
+      },
+      {
+        _id: new Types.ObjectId(),
+        workspaceId: ws1,
+        userId: luciaMapped,
+        role: "member",
+        joinedAt: tLate,
+      },
+      {
+        _id: new Types.ObjectId(),
+        workspaceId: ws1,
+        userId: legacyUuidv4,
+        role: "owner",
+        joinedAt: tEarly,
+        isDefaultMembership: true,
+      },
+      {
+        _id: new Types.ObjectId(),
+        workspaceId: ws2,
+        userId: v4Mapped,
+        role: "owner",
+        joinedAt: tLate,
+        isDefaultMembership: true,
+      },
+    ]);
+
+    // 3. app_worktrees & workspace_user_handles duplicates
+    await mongoDb.collection("app_worktrees").insertMany([
+      { _id: new Types.ObjectId(), workspaceId: ws1, userId: luciaId },
+      { _id: new Types.ObjectId(), workspaceId: ws1, userId: luciaMapped },
+    ]);
+    await mongoDb.collection("workspace_user_handles").insertMany([
+      {
+        _id: new Types.ObjectId(),
+        workspaceId: ws1,
+        userId: luciaId,
+        handle: "lucia-old",
+      },
+      {
+        _id: new Types.ObjectId(),
+        workspaceId: ws1,
+        userId: luciaMapped,
+        handle: "lucia",
+      },
+    ]);
+
+    // 4. Subsequent collection (flows) must STILL be processed after collisions!
+    await mongoDb.collection("flows").insertOne({
+      _id: new Types.ObjectId(),
+      workspaceId: ws1,
+      createdBy: luciaId,
+    });
+
+    const report = await rewriteMongoUserIds({
+      mongoDb,
+      userIdMap,
+      dryRun: false,
+    });
+
+    expect(report.totalConflictsResolved).toBe(5);
+    expect(report.totalConflictsSkipped).toBe(0);
+    expect(report.conflicts).toHaveLength(5);
+    expect(report.conflicts.every(c => c.kind === "duplicate_key")).toBe(true);
+
+    // app_usage_daily counters merged losslessly into the UUIDv7 row
+    const usageRows = await mongoDb
+      .collection("app_usage_daily")
+      .find({})
+      .toArray();
+    expect(usageRows).toHaveLength(1);
+    expect(usageRows[0]).toMatchObject({
+      userId: luciaMapped,
+      opens: 8,
+      activeSeconds: 420,
+      sources: { app: 6, share: 1, embed: 1 },
+      firstAt: tEarly,
+      lastAt: tLate,
+    });
+
+    // workspacemembers preserved higher role ("owner") & earlier joinedAt AND kept cross-workspace membership!
+    const luciaMemberships = await mongoDb
+      .collection("workspacemembers")
+      .find({ workspaceId: ws1, userId: luciaMapped })
+      .toArray();
+    expect(luciaMemberships).toHaveLength(1);
+    expect(luciaMemberships[0].role).toBe("owner");
+    expect(luciaMemberships[0].joinedAt).toEqual(tEarly);
+
+    const v4Memberships = await mongoDb
+      .collection("workspacemembers")
+      .find({ userId: v4Mapped })
+      .toArray();
+    expect(v4Memberships).toHaveLength(2);
+    const v4Ws1 = v4Memberships.find(
+      m => String(m.workspaceId) === String(ws1),
+    );
+    expect(v4Ws1?.isDefaultMembership).toBeUndefined();
+
+    // app_worktrees & workspace_user_handles have only the live UUIDv7 row left
+    expect(
+      await mongoDb.collection("app_worktrees").find({}).toArray(),
+    ).toHaveLength(1);
+    expect(
+      await mongoDb.collection("workspace_user_handles").find({}).toArray(),
+    ).toHaveLength(1);
+
+    // Later collections were NOT aborted
+    expect((await mongoDb.collection("flows").findOne({}))?.createdBy).toBe(
+      luciaMapped,
+    );
+
+    // Re-running is strictly idempotent with 0 conflicts
+    const rerun = await rewriteMongoUserIds({
+      mongoDb,
+      userIdMap,
+      dryRun: false,
+    });
+    expect(rerun.totalMatchedDocs).toBe(0);
+    expect(rerun.totalConflictsResolved).toBe(0);
+    expect(rerun.conflicts).toEqual([]);
+  });
+
+  it("guards updates against concurrent live edits so revoked shares/managers are never overwritten (#4717225455)", async () => {
+    const userIdMap = new Map<string, string>([
+      [luciaId, luciaMapped],
+      [legacyUuidv4, v4Mapped],
+    ]);
+    const mongoDb = mongoose.connection.db;
+    if (!mongoDb) throw new Error("MongoDB test connection not initialized");
+    const wsId = new Types.ObjectId();
+
+    const consoleId = new Types.ObjectId();
+    await mongoDb.collection("savedconsoles").insertOne({
+      _id: consoleId,
+      workspaceId: wsId,
+      createdBy: luciaMapped,
+      owner_id: luciaMapped,
+      sharedWith: [
+        { userId: luciaId, access: "editor", addedBy: luciaId },
+        { userId: "revoked-user-id", access: "editor", addedBy: luciaId },
+      ],
+    });
+
+    const connectorId = new Types.ObjectId();
+    await mongoDb.collection("connectors").insertOne({
+      _id: connectorId,
+      workspaceId: wsId,
+      createdBy: luciaMapped,
+      managers: [luciaId, "revoked-manager-id"],
+      writers: [
+        { principal: `user:${luciaId}`, addedBy: luciaId },
+        { principal: "user:revoked-writer-id", addedBy: luciaId },
+      ],
+    });
+
+    let consoleAttempts = 0;
+    let connectorAttempts = 0;
+
+    const report = await rewriteMongoUserIds({
+      mongoDb,
+      userIdMap,
+      dryRun: false,
+      beforeDocUpdate: async ({ collection, docId, attempt }) => {
+        if (collection === "savedconsoles" && attempt === 0) {
+          consoleAttempts += 1;
+          // Concurrent admin revokes `revoked-user-id` and adds `fresh-share-id`
+          await mongoDb.collection("savedconsoles").updateOne(
+            { _id: docId as never },
+            {
+              $set: {
+                sharedWith: [
+                  { userId: luciaId, access: "editor", addedBy: luciaId },
+                  {
+                    userId: "fresh-share-id",
+                    access: "viewer",
+                    addedBy: luciaMapped,
+                  },
+                ],
+              },
+            },
+          );
+        }
+        if (collection === "connectors" && attempt === 0) {
+          connectorAttempts += 1;
+          // Concurrent admin revokes `revoked-manager-id` and `revoked-writer-id`
+          await mongoDb.collection("connectors").updateOne(
+            { _id: docId as never },
+            {
+              $set: {
+                managers: [luciaId],
+                writers: [{ principal: `user:${luciaId}`, addedBy: luciaId }],
+              },
+            },
+          );
+        }
+      },
+    });
+
+    expect(consoleAttempts).toBe(1);
+    expect(connectorAttempts).toBe(1);
+    expect(report.totalModifiedDocs).toBe(2);
+    expect(report.totalConflictsSkipped).toBe(0);
+
+    // Revoked entries stay revoked, newly added share is preserved, and legacy IDs are rewritten!
+    const updatedConsole = await mongoDb
+      .collection("savedconsoles")
+      .findOne({ _id: consoleId });
+    expect(updatedConsole?.sharedWith).toEqual([
+      { userId: luciaMapped, access: "editor", addedBy: luciaMapped },
+      { userId: "fresh-share-id", access: "viewer", addedBy: luciaMapped },
+    ]);
+
+    const updatedConnector = await mongoDb
+      .collection("connectors")
+      .findOne({ _id: connectorId });
+    expect(updatedConnector?.managers).toEqual([luciaMapped]);
+    expect(updatedConnector?.writers).toEqual([
+      { principal: `user:${luciaMapped}`, addedBy: luciaMapped },
+    ]);
+
+    // Exhausting retries reports a skipped concurrent_modification conflict cleanly without aborting
+    const busyId = new Types.ObjectId();
+    await mongoDb.collection("connectors").insertOne({
+      _id: busyId,
+      workspaceId: wsId,
+      createdBy: luciaMapped,
+      managers: [luciaId, "v0"],
+    });
+    const busyReport = await rewriteMongoUserIds({
+      mongoDb,
+      userIdMap,
+      dryRun: false,
+      collections: ["connectors"],
+      maxRetriesPerDoc: 2,
+      beforeDocUpdate: async ({ docId, attempt }) => {
+        await mongoDb
+          .collection("connectors")
+          .updateOne(
+            { _id: docId as never },
+            { $set: { managers: [luciaId, `concurrent-${attempt}`] } },
+          );
+      },
+    });
+    expect(busyReport.totalConflictsSkipped).toBe(1);
+    expect(busyReport.conflicts[0]).toMatchObject({
+      collection: "connectors",
+      kind: "concurrent_modification",
+      resolution: "skipped",
+    });
+  });
+
+  it("blocks applying rewrites unless auth domain is in Stage 4/5 unless --force is set (#4717226153)", async () => {
+    const router = new MigrationRouter({
+      enablePubSub: false,
+      getDb: () => db,
+      hasPg: () => true,
+      isForceMongoOnly: () => false,
+    });
+
+    // Stages 1–3 MUST refuse without --force and allow only with --force
+    for (const blockedMode of [
+      "mongo_only",
+      "dual_write_mongo_read",
+      "dual_write_shadow_compare",
+    ] as const) {
+      await router.setDomainState({ domain: "auth", mode: blockedMode });
+      await expect(
+        assertAuthStageAllowsRewriteApply({ router }),
+      ).rejects.toThrow(new RegExp(blockedMode));
+      await expect(
+        assertAuthStageAllowsRewriteApply({ router, force: true }),
+      ).resolves.toMatchObject({ mode: blockedMode });
+    }
+
+    // Stages 4–5 MUST allow without --force
+    for (const allowedMode of ["dual_write_pg_read", "pg_only"] as const) {
+      await router.setDomainState({ domain: "auth", mode: allowedMode });
+      await expect(
+        assertAuthStageAllowsRewriteApply({ router }),
+      ).resolves.toMatchObject({ mode: allowedMode });
+    }
+  });
+
+  it("throws an explicit error on unknown --collections names instead of silently reporting 0 matches (#4717228124)", async () => {
+    const mongoDb = mongoose.connection.db;
+    if (!mongoDb) throw new Error("MongoDB test connection not initialized");
+    const userIdMap = new Map<string, string>([[luciaId, luciaMapped]]);
+
+    await expect(
+      rewriteMongoUserIds({
+        mongoDb,
+        userIdMap,
+        collections: ["workspace_members"],
+      }),
+    ).rejects.toThrow(/Unknown --collections name\(s\): workspace_members/);
+
+    // Must ALSO reject unknown collection names even when userIdMap is empty
+    await expect(
+      rewriteMongoUserIds({
+        mongoDb,
+        userIdMap: new Map(),
+        collections: ["workspacemembers", "not_a_real_collection"],
+      }),
+    ).rejects.toThrow(/Unknown --collections name\(s\): not_a_real_collection/);
   });
 });

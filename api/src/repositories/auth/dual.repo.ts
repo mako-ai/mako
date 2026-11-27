@@ -22,6 +22,7 @@ import {
   isUuidv7,
   newDualId,
 } from "../../database/pg/id-codec";
+import { loggers } from "../../logging";
 import {
   migrationRouter,
   recordMigrationTombstone,
@@ -57,6 +58,7 @@ import type {
 } from "./types";
 
 const AUTH_DOMAIN = "auth" as const;
+const logger = loggers.migration();
 
 export const AUTH_SHADOW_OPTIONS: ShadowCompareOptions = {
   redactKeys: ["code", "challenge", "hashedPassword", "email"],
@@ -286,19 +288,47 @@ export class DualAuthRepository implements AuthRepository {
       updatedAt: patch.updatedAt ?? new Date(),
     };
     let resolvedLegacyId: string | undefined;
+    let mongoResult: UserRecord | null | undefined;
+    let pgResult: UserRecord | null | undefined;
+    const retryPayload: Record<string, unknown> = {
+      table: "users",
+      userId: idOrLegacyId,
+    };
 
     return this.router.executeWrite(
       {
         domain: AUTH_DOMAIN,
         operation: "updateUser",
         entityId: idOrLegacyId,
-        retryPayload: { table: "users", userId: idOrLegacyId },
+        retryPayload,
       },
       {
-        mongo: () =>
-          this.mongo.updateUser(resolvedLegacyId ?? idOrLegacyId, prepared),
+        mongo: async () => {
+          const updated = await this.mongo.updateUser(
+            resolvedLegacyId ?? idOrLegacyId,
+            prepared,
+          );
+          mongoResult = updated;
+          if (updated) {
+            retryPayload.userId = updated.id;
+          } else if (pgResult) {
+            // Stage 4 secondary Mongo write missed a row that succeeded in PG:
+            // throw so `onSecondaryFailure` queues a reverse sync-retry upsert.
+            throw new Error(
+              `Mongo secondary updateUser missed row for user ${resolvedLegacyId ?? idOrLegacyId}`,
+            );
+          }
+          return updated;
+        },
         pg: async () => {
-          const updated = await this.pg.updateUser(idOrLegacyId, prepared);
+          const updated = await this.pg.updateUser(idOrLegacyId, prepared, {
+            // Stage 2/3 secondary PG write: if Mongo primary updated an existing
+            // user that is not in PG yet, throw so `onSecondaryFailure` queues a
+            // sync-retry (which re-reads Mongo and upserts with `updated_at` guard),
+            // preventing an in-flight backfill from restoring stale credentials.
+            requireExisting: Boolean(mongoResult),
+          });
+          pgResult = updated;
           if (updated?.legacyId) {
             resolvedLegacyId = updated.legacyId;
           }
@@ -614,15 +644,59 @@ export class DualAuthRepository implements AuthRepository {
   }
 
   async deleteSession(sessionId: string): Promise<void> {
-    return (await this.isPgSessionMode())
-      ? this.pg.deleteSession(sessionId)
-      : this.mongo.deleteSession(sessionId);
+    const mode = await this.getMode();
+    if (mode === "pg_only") {
+      return this.pg.deleteSession(sessionId);
+    }
+    if (mode === "dual_write_pg_read") {
+      await this.pg.deleteSession(sessionId);
+      // Best-effort revoke matching Mongo session so a Stage 4 -> Stage 3/2
+      // rollback never resurrects a logged-out or revoked session cookie.
+      // Raw session tokens are never logged or enqueued to Inngest.
+      try {
+        await this.mongo.deleteSession(sessionId);
+      } catch (error) {
+        logger.warn("Best-effort Mongo session delete failed in Stage 4", {
+          operation: "deleteSession",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
+    return this.mongo.deleteSession(sessionId);
   }
 
   async deleteUserSessions(userId: string): Promise<void> {
-    return (await this.isPgSessionMode())
-      ? this.pg.deleteUserSessions(userId)
-      : this.mongo.deleteUserSessions(userId);
+    const mode = await this.getMode();
+    if (mode === "pg_only") {
+      return this.pg.deleteUserSessions(userId);
+    }
+    if (mode === "dual_write_pg_read") {
+      // Resolve both the PG UUID and legacy Mongo `_id` so pre-cutover Stage 3
+      // Mongo sessions keyed by `legacyId` are also revoked (e.g. password reset)
+      // and cannot be resurrected on Stage 4 -> Stage 3/2 rollback.
+      const pgUser = await this.pg.findUserById(userId).catch(() => null);
+      await this.pg.deleteUserSessions(userId);
+      const mongoUserIds = new Set<string>([userId]);
+      if (pgUser?.id) mongoUserIds.add(pgUser.id);
+      if (pgUser?.legacyId) mongoUserIds.add(pgUser.legacyId);
+      try {
+        for (const candidateUserId of mongoUserIds) {
+          await this.mongo.deleteUserSessions(candidateUserId);
+        }
+      } catch (error) {
+        logger.warn(
+          "Best-effort Mongo user sessions delete failed in Stage 4",
+          {
+            operation: "deleteUserSessions",
+            userId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+      }
+      return;
+    }
+    return this.mongo.deleteUserSessions(userId);
   }
 
   async deleteExpiredSessions(now: Date = new Date()): Promise<number> {
@@ -703,30 +777,62 @@ export class DualAuthRepository implements AuthRepository {
   ): Promise<void> {
     const normalizedEmail = normalizeEmailKey(email);
     const tombstone = await this.isMongoPrimaryDualWrite();
+    let mongoRan = false;
+    let pgRan = false;
+    const mongoDeletedIds = new Set<string>();
+    const pgDeletedIds = new Set<string>();
+    // Mutated with ONLY the exact verification IDs deleted by the primary store
+    // (never user email PII) so delayed secondary replays delete only those IDs
+    // and never wipe verification codes created after the original delete.
+    const retryPayload: Record<string, unknown> = {
+      table: "email_verifications",
+      verificationIds: [] as string[],
+    };
 
     return this.router.executeWrite(
       {
         domain: AUTH_DOMAIN,
         operation: "deleteEmailVerificationsByEmailAndType",
-        retryPayload: {
-          table: "email_verifications",
-          email: normalizedEmail,
-          type,
-        },
+        retryPayload,
       },
       {
-        mongo: () =>
-          this.mongo.deleteEmailVerificationsByEmailAndType(
-            normalizedEmail,
-            type,
-          ),
+        mongo: async () => {
+          mongoRan = true;
+          if (pgRan) {
+            await this.mongo.deleteEmailVerificationsByIds([...pgDeletedIds]);
+            return;
+          }
+          const mongoIds =
+            await this.mongo.deleteEmailVerificationsReturningIds(
+              normalizedEmail,
+              type,
+            );
+          for (const id of mongoIds) {
+            mongoDeletedIds.add(id);
+          }
+          retryPayload.verificationIds = [...mongoDeletedIds];
+        },
         pg: async () => {
+          pgRan = true;
           const pgIds = await this.pg.deleteEmailVerificationsReturningIds(
             normalizedEmail,
             type,
           );
+          for (const id of pgIds) {
+            pgDeletedIds.add(id);
+          }
+          if (!mongoRan) {
+            retryPayload.verificationIds = [...pgDeletedIds];
+          }
           if (tombstone) {
-            await this.recordTombstones("email_verifications", pgIds);
+            // Tombstone the union of Mongo-deleted and PG-deleted IDs so an
+            // in-flight backfill cannot resurrect codes that existed only in
+            // Mongo at the moment of deletion.
+            const allDeletedIds = new Set<string>([
+              ...mongoDeletedIds,
+              ...pgDeletedIds,
+            ]);
+            await this.recordTombstones("email_verifications", allDeletedIds);
           }
         },
       },

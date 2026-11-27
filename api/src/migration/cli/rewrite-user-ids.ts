@@ -13,12 +13,20 @@
  */
 import { Command } from "commander";
 import mongoose from "mongoose";
-import { closePgConnections } from "../../database/pg/client";
 import {
+  closePgConnections,
+  getPgDirectDb,
+  hasDirectPostgresConfig,
+} from "../../database/pg/client";
+import { MigrationRouter } from "../router";
+import {
+  ALLOWED_APPLY_AUTH_MODES,
+  assertAuthStageAllowsRewriteApply,
   loadUserLegacyIdMap,
   MONGO_USER_ID_REWRITE_SPECS,
   rewriteGitUserIds,
   rewriteMongoUserIds,
+  validateRewriteCollections,
 } from "../rewrite-user-ids";
 import { loadMigrationCliEnv } from "./env";
 
@@ -41,7 +49,7 @@ const program = new Command()
   )
   .option(
     "--apply-mongo",
-    "Apply legacy user-ID rewrites to MongoDB collections",
+    "Apply legacy user-ID rewrites to MongoDB collections (requires auth stage 4/5 unless --force)",
     false,
   )
   .option(
@@ -50,11 +58,16 @@ const program = new Command()
   )
   .option(
     "--apply-git <repoDir>",
-    "Apply legacy user-ID rewrites inside a workspace git working directory",
+    "Apply legacy user-ID rewrites inside a workspace git working directory (requires auth stage 4/5 unless --force)",
   )
   .option(
     "--collections <names>",
     "Comma-separated subset of MongoDB collection names to process",
+  )
+  .option(
+    "--force",
+    "Override the Stage 4/5 auth rollout safety gate when applying rewrites",
+    false,
   );
 
 async function main(): Promise<void> {
@@ -71,6 +84,7 @@ async function main(): Promise<void> {
     git?: string;
     applyGit?: string;
     collections?: string;
+    force: boolean;
   }>();
 
   if (opts.list) {
@@ -84,17 +98,46 @@ async function main(): Promise<void> {
   const runMongo = opts.mongo || opts.applyMongo;
   const gitDir = opts.applyGit ?? opts.git;
   const forceDryRun = Boolean(opts.dryRun);
+  const applyingMongo = Boolean(opts.applyMongo) && !forceDryRun;
+  const applyingGit = Boolean(opts.applyGit) && !forceDryRun;
+
+  let collections: string[] | undefined;
+  if (opts.collections !== undefined) {
+    collections = opts.collections
+      .split(",")
+      .map(s => s.trim())
+      .filter(Boolean);
+    if (collections.length === 0) {
+      throw new Error(
+        "--collections must specify at least one collection name.",
+      );
+    }
+    validateRewriteCollections(collections);
+  }
 
   try {
-    const userIdMap = await loadUserLegacyIdMap();
     const summary: Record<string, unknown> = {
-      mappedLegacyUsers: userIdMap.size,
-      mode: forceDryRun
-        ? "dry-run"
-        : opts.applyMongo || opts.applyGit
-          ? "apply"
-          : "dry-run",
+      mode: applyingMongo || applyingGit ? "apply" : "dry-run",
     };
+
+    if (applyingMongo || applyingGit) {
+      const cliRouter = new MigrationRouter({
+        enablePubSub: false,
+        getDb: getPgDirectDb,
+        hasPg: hasDirectPostgresConfig,
+      });
+      const authState = await assertAuthStageAllowsRewriteApply({
+        router: cliRouter,
+        force: opts.force,
+      });
+      summary.authStage = authState.mode;
+      if (opts.force && !ALLOWED_APPLY_AUTH_MODES.has(authState.mode)) {
+        summary.forceOverride = true;
+      }
+    }
+
+    const userIdMap = await loadUserLegacyIdMap();
+    summary.mappedLegacyUsers = userIdMap.size;
 
     if (!runMongo && !gitDir) {
       // Safe default: print map count and instructions without mutating anything.
@@ -116,16 +159,10 @@ async function main(): Promise<void> {
       if (!mongoDb) {
         throw new Error("MongoDB connection did not expose a Db handle.");
       }
-      const collections = opts.collections
-        ? opts.collections
-            .split(",")
-            .map(s => s.trim())
-            .filter(Boolean)
-        : undefined;
       summary.mongo = await rewriteMongoUserIds({
         mongoDb,
         userIdMap,
-        dryRun: forceDryRun || !opts.applyMongo,
+        dryRun: !applyingMongo,
         collections,
       });
     }
@@ -134,7 +171,7 @@ async function main(): Promise<void> {
       summary.git = await rewriteGitUserIds({
         repoDir: gitDir,
         userIdMap,
-        dryRun: forceDryRun || !opts.applyGit,
+        dryRun: !applyingGit,
       });
     }
 
