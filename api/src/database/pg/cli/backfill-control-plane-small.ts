@@ -6,9 +6,8 @@
  *   workflow_recorded_runs, workflow_recorded_writes,
  *   modelcatalogsnapshots -> model_catalog_snapshots, apps_box_policy
  *
- * Dry run prints aggregate counts. --apply copies eligible rows in bounded batches.
- * With source writers frozen, --reconcile-deleted-rules finds previously imported
- * rules that have since disappeared. Adding --apply removes those target rules.
+ * Use --apply before cutover and --replay for read-only content parity.
+ * Deletion reconciliation only reports missing imported rules.
  *
  * Usage:
  *   pnpm --filter api exec tsx src/database/pg/cli/backfill-control-plane-small.ts
@@ -19,7 +18,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { Command } from "commander";
 import dotenv from "dotenv";
-import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, gt, gte, inArray, or, sql } from "drizzle-orm";
 import mongoose, { Types } from "mongoose";
 import { PgModelCatalogSnapshotsRepository } from "../../../repositories/control-plane-app/pg.repo";
 import { sanitizePgJsonValue } from "../../../utils/message-sanitizer";
@@ -57,17 +56,82 @@ function loadCliEnv(): void {
 
 type MongoDoc = Record<string, unknown> & { _id: unknown };
 
+type Mode = "dry-run" | "apply" | "replay";
+
+interface Parity {
+  matched: number;
+  different: number;
+  missingInPg: number;
+  pgOnly: number;
+  differentFields: Record<string, number>;
+}
+
 interface TableReport {
   source: number;
   candidates: number;
   written: number;
   skipped: Record<string, number>;
   missingInMongo?: number;
-  deleted?: number;
+  parity?: Parity;
 }
 
-function newReport(): TableReport {
-  return { source: 0, candidates: 0, written: 0, skipped: {} };
+function newReport(mode: Mode): TableReport {
+  return {
+    source: 0,
+    candidates: 0,
+    written: 0,
+    skipped: {},
+    ...(mode === "replay"
+      ? {
+          parity: {
+            matched: 0,
+            different: 0,
+            missingInPg: 0,
+            pgOnly: 0,
+            differentFields: {},
+          },
+        }
+      : {}),
+  };
+}
+
+// Compare the JSON representation persisted by the drivers, including UTC
+// timestamps and nested JSON values. Only column names and counts leave memory.
+function compareRows<Row extends object>(
+  report: TableReport,
+  expected: Row[],
+  actual: Row[],
+  key: (row: Row) => string,
+) {
+  const parity = report.parity;
+  if (!parity) throw new Error("Comparison requires replay mode");
+  const target = new Map(actual.map(row => [key(row), row]));
+  for (const row of expected) {
+    const found = target.get(key(row));
+    if (!found) {
+      parity.missingInPg++;
+      continue;
+    }
+    const sourceValues = JSON.parse(JSON.stringify(row)) as Record<
+      string,
+      unknown
+    >;
+    const targetValues = JSON.parse(JSON.stringify(found)) as Record<
+      string,
+      unknown
+    >;
+    const changed = Object.keys(sourceValues).filter(
+      field => !isDeepStrictEqual(sourceValues[field], targetValues[field]),
+    );
+    if (!changed.length) {
+      parity.matched++;
+      continue;
+    }
+    parity.different++;
+    for (const field of changed) {
+      parity.differentFields[field] = (parity.differentFields[field] ?? 0) + 1;
+    }
+  }
 }
 
 function skip(report: TableReport, reason: string): void {
@@ -181,13 +245,8 @@ async function sourceRuleWorkspaces(
   return found;
 }
 
-async function reconcileDeletedRules(
-  db: MakoPgDb,
-  apply: boolean,
-  report: TableReport,
-) {
+async function auditDeletedRules(db: MakoPgDb, report: TableReport) {
   report.missingInMongo = 0;
-  report.deleted = 0;
   let after: string | undefined;
   for (;;) {
     const imported: { id: string }[] = await db
@@ -206,34 +265,22 @@ async function reconcileDeletedRules(
     const found = await sourceRuleWorkspaces(ids);
     const missing = ids.filter(id => !found.has(id));
     report.missingInMongo += missing.length;
-    if (apply && missing.length) {
-      const deleted = await db
-        .delete(notificationRules)
-        .where(
-          and(
-            eq(notificationRules.importedFromMongo, true),
-            inArray(notificationRules.id, missing),
-          ),
-        )
-        .returning({ id: notificationRules.id });
-      report.deleted += deleted.length;
-    }
     after = ids[ids.length - 1];
   }
 }
 
 async function backfillNotifications(
   db: MakoPgDb,
-  apply: boolean,
+  mode: Mode,
   now: Date,
 ): Promise<{ rules: TableReport; deliveries: TableReport }> {
-  const rules = newReport();
-  const deliveries = newReport();
+  const rules = newReport(mode);
+  const deliveries = newReport(mode);
   const users = new PgUsageStatsRepository({ getDb: () => db });
 
   for await (const docs of readBatches("notification_rules", rules)) {
     const wsIds = await existingWorkspaceIds(db, docs);
-    const rows: (typeof notificationRules.$inferInsert)[] = [];
+    const rows: (typeof notificationRules.$inferSelect)[] = [];
     for (const doc of docs) {
       const id = toPgUuid(doc._id);
       const ws = toPgUuid(doc.workspaceId);
@@ -267,7 +314,7 @@ async function backfillNotifications(
         continue;
       }
       rules.candidates++;
-      if (!apply) continue;
+      if (mode === "dry-run") continue;
 
       const createdBy = idString(doc.createdBy) ?? "unknown";
       rows.push({
@@ -286,7 +333,18 @@ async function backfillNotifications(
         updatedAt,
       });
     }
-    if (rows.length) {
+    if (mode === "replay" && rows.length) {
+      const actual = await db
+        .select()
+        .from(notificationRules)
+        .where(
+          inArray(
+            notificationRules.id,
+            rows.map(r => r.id),
+          ),
+        );
+      compareRows(rules, rows, actual, r => r.id);
+    } else if (rows.length) {
       const changed = await db
         .insert(notificationRules)
         .values(rows)
@@ -323,7 +381,7 @@ async function backfillNotifications(
     const ruleWorkspaces = await sourceRuleWorkspaces(
       docs.map(d => toPgUuid(d.ruleId)).filter(id => id !== null),
     );
-    const rows: (typeof notificationDeliveries.$inferInsert)[] = [];
+    const rows: (typeof notificationDeliveries.$inferSelect)[] = [];
     for (const doc of docs) {
       const id = toPgUuid(doc._id);
       const ws = toPgUuid(doc.workspaceId);
@@ -381,7 +439,7 @@ async function backfillNotifications(
         continue;
       }
       deliveries.candidates++;
-      if (!apply) continue;
+      if (mode === "dry-run") continue;
 
       rows.push({
         id,
@@ -402,7 +460,21 @@ async function backfillNotifications(
         createdAt,
       });
     }
-    if (rows.length) {
+    if (mode === "replay" && rows.length) {
+      const actual = await db
+        .select()
+        .from(notificationDeliveries)
+        .where(
+          and(
+            inArray(
+              notificationDeliveries.idempotencyKey,
+              rows.map(r => r.idempotencyKey),
+            ),
+            gte(notificationDeliveries.createdAt, retention.cutoff),
+          ),
+        );
+      compareRows(deliveries, rows, actual, r => r.idempotencyKey);
+    } else if (rows.length) {
       const changed = await db
         .insert(notificationDeliveries)
         .values(rows)
@@ -434,11 +506,11 @@ async function backfillNotifications(
 
 async function backfillRecordedWrites(
   db: MakoPgDb,
-  apply: boolean,
+  mode: Mode,
   now: Date,
 ): Promise<{ runs: TableReport; writes: TableReport }> {
-  const runs = newReport();
-  const writes = newReport();
+  const runs = newReport(mode);
+  const writes = newReport(mode);
   const retention = {
     field: "at",
     cutoff: new Date(now.getTime() - RECORDED_TTL_MS),
@@ -450,7 +522,7 @@ async function backfillRecordedWrites(
     retention,
   )) {
     const wsIds = await existingWorkspaceIds(db, docs);
-    const rows: (typeof workflowRecordedRuns.$inferInsert)[] = [];
+    const rows: (typeof workflowRecordedRuns.$inferSelect)[] = [];
     for (const doc of docs) {
       const id = toPgUuid(doc._id);
       const ws = toPgUuid(doc.workspaceId);
@@ -472,11 +544,33 @@ async function backfillRecordedWrites(
         continue;
       }
       runs.candidates++;
-      if (!apply) continue;
+      if (mode === "dry-run") continue;
       const count = typeof doc.count === "number" ? doc.count : 0;
       rows.push({ id, workspaceId: ws, runId: doc.runId, count, at });
     }
     if (!rows.length) continue;
+    if (mode === "replay") {
+      const actual = await db
+        .select()
+        .from(workflowRecordedRuns)
+        .where(
+          and(
+            gte(workflowRecordedRuns.at, retention.cutoff),
+            or(
+              ...rows.map(r =>
+                and(
+                  eq(workflowRecordedRuns.workspaceId, r.workspaceId),
+                  eq(workflowRecordedRuns.runId, r.runId),
+                ),
+              ),
+            ),
+          ),
+        );
+      compareRows(runs, rows, actual, r =>
+        JSON.stringify([r.workspaceId, r.runId]),
+      );
+      continue;
+    }
     const result = await db
       .insert(workflowRecordedRuns)
       .values(rows)
@@ -497,7 +591,7 @@ async function backfillRecordedWrites(
     retention,
   )) {
     const wsIds = await existingWorkspaceIds(db, docs);
-    const rows: (typeof workflowRecordedWrites.$inferInsert)[] = [];
+    const rows: (typeof workflowRecordedWrites.$inferSelect)[] = [];
     for (const doc of docs) {
       const id = toPgUuid(doc._id);
       const ws = toPgUuid(doc.workspaceId);
@@ -527,7 +621,7 @@ async function backfillRecordedWrites(
         continue;
       }
       writes.candidates++;
-      if (!apply) continue;
+      if (mode === "dry-run") continue;
       rows.push({
         id,
         workspaceId: ws,
@@ -544,6 +638,29 @@ async function backfillRecordedWrites(
       });
     }
     if (!rows.length) continue;
+    if (mode === "replay") {
+      const actual = await db
+        .select()
+        .from(workflowRecordedWrites)
+        .where(
+          and(
+            gte(workflowRecordedWrites.at, retention.cutoff),
+            or(
+              ...rows.map(r =>
+                and(
+                  eq(workflowRecordedWrites.workspaceId, r.workspaceId),
+                  eq(workflowRecordedWrites.runId, r.runId),
+                  eq(workflowRecordedWrites.seq, r.seq),
+                ),
+              ),
+            ),
+          ),
+        );
+      compareRows(writes, rows, actual, r =>
+        JSON.stringify([r.workspaceId, r.runId, r.seq]),
+      );
+      continue;
+    }
     const inserted = await db
       .insert(workflowRecordedWrites)
       .values(rows)
@@ -563,10 +680,10 @@ function asObject(value: unknown): Record<string, unknown> {
 
 async function backfillGlobalConfig(
   db: MakoPgDb,
-  apply: boolean,
+  mode: Mode,
 ): Promise<{ snapshots: TableReport; boxPolicy: TableReport }> {
-  const snapshots = newReport();
-  const boxPolicy = newReport();
+  const snapshots = newReport(mode);
+  const boxPolicy = newReport(mode);
   const repo = new PgModelCatalogSnapshotsRepository({ getDb: () => db });
   const knownIds = new Set<string>(MODEL_CATALOG_SNAPSHOT_IDS);
   for await (const docs of readBatches("modelcatalogsnapshots", snapshots)) {
@@ -582,9 +699,23 @@ async function backfillGlobalConfig(
         continue;
       }
       snapshots.candidates++;
-      if (!apply) continue;
+      if (mode === "dry-run") continue;
       const data = doc.data === undefined ? [] : doc.data;
       const itemCount = typeof doc.itemCount === "number" ? doc.itemCount : 0;
+      if (mode === "replay") {
+        const expected = {
+          id: id as ModelCatalogSnapshotIdPg,
+          data,
+          fetchedAt,
+          itemCount,
+        };
+        const actual = await db
+          .select()
+          .from(modelCatalogSnapshots)
+          .where(eq(modelCatalogSnapshots.id, expected.id));
+        compareRows(snapshots, [expected], actual, r => r.id);
+        continue;
+      }
       if (id === "capabilities") {
         // Use the same transaction lock as the runtime thinking-mode probe.
         const written = await repo.mutateSnapshot(id, current => {
@@ -648,7 +779,7 @@ async function backfillGlobalConfig(
   }
 
   for await (const docs of readBatches("apps_box_policy", boxPolicy)) {
-    const rows: (typeof appsBoxPolicy.$inferInsert)[] = [];
+    const rows: (typeof appsBoxPolicy.$inferSelect)[] = [];
     for (const doc of docs) {
       const id = idString(doc._id);
       const since = toDate(doc.since);
@@ -657,10 +788,23 @@ async function backfillGlobalConfig(
         continue;
       }
       boxPolicy.candidates++;
-      if (!apply) continue;
+      if (mode === "dry-run") continue;
       rows.push({ id, since });
     }
     if (!rows.length) continue;
+    if (mode === "replay") {
+      const actual = await db
+        .select()
+        .from(appsBoxPolicy)
+        .where(
+          inArray(
+            appsBoxPolicy.id,
+            rows.map(r => r.id),
+          ),
+        );
+      compareRows(boxPolicy, rows, actual, r => r.id);
+      continue;
+    }
     const inserted = await db
       .insert(appsBoxPolicy)
       .values(rows)
@@ -676,30 +820,51 @@ async function backfillGlobalConfig(
   return { snapshots, boxPolicy };
 }
 
-export async function backfillControlPlaneSmall(options: {
-  db: MakoPgDb;
-  apply: boolean;
-  now?: Date;
-  reconcileDeletedRules?: boolean;
-}): Promise<Record<string, TableReport>> {
-  const now = options.now ?? new Date();
-  const { rules, deliveries } = await backfillNotifications(
-    options.db,
-    options.apply,
-    now,
-  );
-  if (options.reconcileDeletedRules) {
-    await reconcileDeletedRules(options.db, options.apply, rules);
+async function runBackfill(
+  db: MakoPgDb,
+  mode: Mode,
+  now: Date,
+  checkDeleted: boolean,
+): Promise<Record<string, TableReport>> {
+  const { rules, deliveries } = await backfillNotifications(db, mode, now);
+  if (checkDeleted || mode === "replay") await auditDeletedRules(db, rules);
+  const { runs, writes } = await backfillRecordedWrites(db, mode, now);
+  const { snapshots, boxPolicy } = await backfillGlobalConfig(db, mode);
+
+  if (mode === "replay") {
+    const deliveryCutoff = new Date(now.getTime() - DELIVERY_TTL_MS);
+    const recordedCutoff = new Date(now.getTime() - RECORDED_TTL_MS);
+    const counts = [
+      [rules, await db.$count(notificationRules)],
+      [
+        deliveries,
+        await db.$count(
+          notificationDeliveries,
+          gte(notificationDeliveries.createdAt, deliveryCutoff),
+        ),
+      ],
+      [
+        runs,
+        await db.$count(
+          workflowRecordedRuns,
+          gte(workflowRecordedRuns.at, recordedCutoff),
+        ),
+      ],
+      [
+        writes,
+        await db.$count(
+          workflowRecordedWrites,
+          gte(workflowRecordedWrites.at, recordedCutoff),
+        ),
+      ],
+      [snapshots, await db.$count(modelCatalogSnapshots)],
+      [boxPolicy, await db.$count(appsBoxPolicy)],
+    ] as const;
+    for (const [report, total] of counts) {
+      const parity = report.parity;
+      if (parity) parity.pgOnly = total - parity.matched - parity.different;
+    }
   }
-  const { runs, writes } = await backfillRecordedWrites(
-    options.db,
-    options.apply,
-    now,
-  );
-  const { snapshots, boxPolicy } = await backfillGlobalConfig(
-    options.db,
-    options.apply,
-  );
   return {
     notification_rules: rules,
     notification_deliveries: deliveries,
@@ -708,6 +873,33 @@ export async function backfillControlPlaneSmall(options: {
     model_catalog_snapshots: snapshots,
     apps_box_policy: boxPolicy,
   };
+}
+
+export async function backfillControlPlaneSmall(options: {
+  db: MakoPgDb;
+  apply: boolean;
+  replay?: boolean;
+  now?: Date;
+  reconcileDeletedRules?: boolean;
+}): Promise<Record<string, TableReport>> {
+  const now = options.now ?? new Date();
+  if (options.replay) {
+    if (options.apply) {
+      throw new Error("--replay and --apply are mutually exclusive");
+    }
+    // One consistent target snapshot even while the new revision accepts writes.
+    // The database itself rejects any accidental write on this path.
+    return options.db.transaction(
+      tx => runBackfill(tx as unknown as MakoPgDb, "replay", now, true),
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
+  }
+  return runBackfill(
+    options.db,
+    options.apply ? "apply" : "dry-run",
+    now,
+    Boolean(options.reconcileDeletedRules),
+  );
 }
 
 async function main(): Promise<void> {
@@ -723,24 +915,38 @@ async function main(): Promise<void> {
     )
     .option(
       "--reconcile-deleted-rules",
-      "Compare imported rules to frozen Mongo source; --apply removes missing rules",
+      "Audit imported rules missing from Mongo (always read-only for deletions)",
     )
     .option(
       "--as-of <timestamp>",
       "Fixed ISO timestamp for retention cutoffs during replay and parity checks",
     )
-    .option("--apply", "Write to Postgres (default is a dry run)");
+    .option(
+      "--replay",
+      "Read-only content comparison against Postgres; exit 2 on differences",
+    )
+    .option(
+      "--apply",
+      "Copy eligible rows before switching traffic (default is a dry run)",
+    );
   program.parse(argv);
   const {
     apply = false,
+    replay = false,
     reconcileDeletedRules = false,
     asOf,
   } = program.opts<{
     asOf?: string;
     apply?: boolean;
+    replay?: boolean;
     reconcileDeletedRules?: boolean;
   }>();
 
+  if (apply && replay) {
+    process.stderr.write("--replay and --apply are mutually exclusive.\n");
+    process.exitCode = 1;
+    return;
+  }
   const now = asOf === undefined ? new Date() : toDate(asOf);
   if (!now) {
     process.stderr.write("Invalid --as-of timestamp.\n");
@@ -764,10 +970,11 @@ async function main(): Promise<void> {
       db: getPgDirectDb(),
       now,
       apply,
+      replay,
       reconcileDeletedRules,
     });
     process.stdout.write(
-      `${apply ? "APPLY" : "DRY RUN (pass --apply to write)"} as_of=${now.toISOString()}\n`,
+      `${replay ? "READ-ONLY REPLAY" : apply ? "PRE-CUTOVER APPLY" : "DRY RUN (pass --apply to write)"} as_of=${now.toISOString()}\n`,
     );
     for (const [table, r] of Object.entries(reports)) {
       const skipped = Object.entries(r.skipped)
@@ -776,9 +983,23 @@ async function main(): Promise<void> {
       process.stdout.write(
         `${table}: source=${r.source} candidates=${r.candidates}` +
           `${apply ? ` written=${r.written}` : ""}` +
-          `${r.missingInMongo === undefined ? "" : ` missingInMongo=${r.missingInMongo} deleted=${r.deleted}`}` +
+          `${r.missingInMongo === undefined ? "" : ` missingInMongo=${r.missingInMongo}`}` +
+          `${r.parity ? ` parity=${JSON.stringify(r.parity)}` : ""}` +
           `${skipped ? ` skipped[${skipped}]` : ""}\n`,
       );
+      if (
+        r.parity &&
+        (r.parity.different ||
+          r.parity.missingInPg ||
+          r.parity.pgOnly ||
+          r.missingInMongo ||
+          Object.keys(r.skipped).some(
+            reason =>
+              reason !== "older than 7d TTL" && reason !== "older than 90d TTL",
+          ))
+      ) {
+        process.exitCode = 2;
+      }
     }
   } finally {
     await mongoose.disconnect();

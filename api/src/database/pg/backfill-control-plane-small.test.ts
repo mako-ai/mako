@@ -1,7 +1,7 @@
 /**
  * One-shot control-plane backfill (cli/backfill-control-plane-small.ts):
  * a dry run writes nothing, `--apply` copies every valid row, a re-run
- * writes nothing new. Orphaned delivery history survives the final replay.
+ * writes nothing new. Orphaned delivery history survives the copy and read-only replay.
  */
 import type { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
@@ -285,6 +285,32 @@ describe("backfill-control-plane-small", () => {
     );
     expect(write.rows).toEqual([{ user_id: "vera" }]);
 
+    const compared = await backfillControlPlaneSmall({
+      db,
+      apply: false,
+      replay: true,
+      now,
+    });
+    expect(compared.notification_rules.parity).toMatchObject({
+      matched: 1,
+      different: 0,
+      missingInPg: 0,
+      pgOnly: 0,
+    });
+    expect(compared.notification_deliveries.parity).toMatchObject({
+      matched: 2,
+      different: 0,
+    });
+    expect(compared.workflow_recorded_runs.parity?.matched).toBe(1);
+    expect(compared.workflow_recorded_writes.parity?.matched).toBe(1);
+    expect(compared.apps_box_policy.parity?.matched).toBe(1);
+    // Recovered capabilities and curation deliberately retain newer PG data.
+    expect(compared.model_catalog_snapshots.parity).toMatchObject({
+      matched: 2,
+      different: 2,
+      differentFields: { data: 2 },
+    });
+
     const second = await backfillControlPlaneSmall({ db, apply: true, now });
     for (const r of Object.values(second)) {
       expect(r.written).toBe(0);
@@ -316,9 +342,9 @@ describe("backfill-control-plane-small", () => {
         },
       },
     );
-    const replay = await backfillControlPlaneSmall({ db, apply: true, now });
-    expect(replay.notification_rules.written).toBe(1);
-    expect(replay.notification_deliveries.written).toBe(1);
+    const catchup = await backfillControlPlaneSmall({ db, apply: true, now });
+    expect(catchup.notification_rules.written).toBe(1);
+    expect(catchup.notification_deliveries.written).toBe(1);
     const [edited] = await db.select().from(pgSchema.notificationRules);
     expect(edited).toMatchObject({
       enabled: false,
@@ -338,7 +364,6 @@ describe("backfill-control-plane-small", () => {
     });
     expect(dry.notification_rules).toMatchObject({
       missingInMongo: 1,
-      deleted: 0,
     });
     const final = await backfillControlPlaneSmall({
       db,
@@ -348,10 +373,12 @@ describe("backfill-control-plane-small", () => {
     });
     expect(final.notification_rules).toMatchObject({
       missingInMongo: 1,
-      deleted: 1,
     });
     const remainingRules = await db.select().from(pgSchema.notificationRules);
-    expect(remainingRules.map(r => r.importedFromMongo)).toEqual([false]);
+    expect(remainingRules.map(r => r.importedFromMongo).sort()).toEqual([
+      false,
+      true,
+    ]);
     const history = await db.select().from(pgSchema.notificationDeliveries);
     expect(history).toHaveLength(2);
     expect(history.find(d => d.idempotencyKey === "fresh")).toMatchObject({
@@ -370,7 +397,7 @@ describe("backfill-control-plane-small", () => {
       now,
     });
     expect(Object.values(repeat).every(r => r.written === 0)).toBe(true);
-    expect(repeat.notification_rules.deleted).toBe(0);
+    expect(repeat.notification_rules.missingInMongo).toBe(1);
   });
 
   it("copies multiple batches of large writes, including the exact TTL boundary", async () => {
@@ -407,5 +434,91 @@ describe("backfill-control-plane-small", () => {
     );
     const repeated = await backfillControlPlaneSmall({ db, apply: true, now });
     expect(repeated.workflow_recorded_writes.written).toBe(0);
+    const report = await backfillControlPlaneSmall({
+      db,
+      apply: false,
+      replay: true,
+      now,
+    });
+    expect(report.workflow_recorded_writes.parity).toMatchObject({
+      matched: 123,
+      different: 0,
+      pgOnly: 0,
+      missingInPg: 0,
+    });
+  });
+
+  it("audits post-switch PG edits, deletions and target-only rows without changing them", async () => {
+    const rules = mongoose.connection.collection("notification_rules");
+    const original = {
+      workspaceId: wsOid,
+      resourceType: "flow",
+      resourceId: flowOid,
+      enabled: true,
+      triggers: ["failure"],
+      channel: { type: "email", recipients: ["source@example.com"] },
+      createdBy: userId,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const sourceDeletedInPg = new Types.ObjectId();
+    await rules.insertMany([
+      { ...original, _id: ruleOid },
+      { ...original, _id: sourceDeletedInPg },
+    ]);
+    await backfillControlPlaneSmall({ db, apply: true, now });
+    const editedId = objectIdToUuid(ruleOid.toHexString());
+    const deletedId = objectIdToUuid(sourceDeletedInPg.toHexString());
+    // Equal timestamps are enough to expose an accidental replay upsert.
+    await pg.query(
+      "UPDATE notification_rules SET enabled=false, updated_at=$2 WHERE id=$1",
+      [editedId, now.toISOString()],
+    );
+    await pg.query("DELETE FROM notification_rules WHERE id=$1", [deletedId]);
+    await pg.exec(`
+      UPDATE notification_deliveries SET attempts=42 WHERE idempotency_key='fresh';
+      UPDATE workflow_recorded_runs SET count=99 WHERE run_id='r1';
+      UPDATE workflow_recorded_writes SET request='{}' WHERE run_id='r1';
+      UPDATE model_catalog_snapshots SET data='[]' WHERE id='gateway';
+      UPDATE apps_box_policy SET since=since + interval '1 day';
+    `);
+    await expect(
+      backfillControlPlaneSmall({ db, apply: true, replay: true, now }),
+    ).rejects.toThrow(/mutually exclusive/);
+    const first = await backfillControlPlaneSmall({
+      db,
+      apply: false,
+      replay: true,
+      now,
+    });
+    expect(first.notification_rules.parity).toMatchObject({
+      missingInPg: 1,
+      pgOnly: 1,
+      different: 1,
+      differentFields: { enabled: 1 },
+    });
+    expect(first.notification_deliveries.parity?.differentFields.attempts).toBe(
+      1,
+    );
+    expect(first.workflow_recorded_runs.parity?.differentFields.count).toBe(1);
+    expect(first.workflow_recorded_writes.parity?.differentFields.request).toBe(
+      1,
+    );
+    expect(
+      first.model_catalog_snapshots.parity?.differentFields.data,
+    ).toBeGreaterThan(0);
+    expect(first.apps_box_policy.parity?.differentFields.since).toBe(1);
+    expect(Object.values(first).every(report => report.written === 0)).toBe(
+      true,
+    );
+    expect(
+      await backfillControlPlaneSmall({ db, apply: false, replay: true, now }),
+    ).toEqual(first);
+    const saved = await pg.query<{ id: string; enabled: boolean }>(
+      "SELECT id,enabled FROM notification_rules WHERE id IN ($1,$2)",
+      [editedId, deletedId],
+    );
+    expect(saved.rows).toEqual([{ id: editedId, enabled: false }]);
+    expect(JSON.stringify(first)).not.toContain("source@example.com");
   });
 });
