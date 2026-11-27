@@ -276,8 +276,21 @@ describe("source connection writers", () => {
     ]);
     // An empty list where everyone read before adds no one and removes no
     // one, and still shuts live reads to all but the writers: recorded.
-    await req("PUT", `/${id}/writers`, { writers: [], liveReaders: [] });
-    const [shut] = await connectionsRepo.listConnectionAccessEvents(WS, id, 1);
+    const existingEventIds = new Set(
+      (await connectionsRepo.listConnectionAccessEvents(WS, id)).map(
+        event => event.id,
+      ),
+    );
+    const response = await req("PUT", `/${id}/writers`, {
+      writers: [],
+      liveReaders: [],
+    });
+    expect(response.status).toBe(200);
+    const events = await connectionsRepo.listConnectionAccessEvents(WS, id);
+    expect(events).toHaveLength(existingEventIds.size + 1);
+    const addedEvents = events.filter(event => !existingEventIds.has(event.id));
+    expect(addedEvents).toHaveLength(1);
+    const [shut] = addedEvents;
     expect(shut.changes).toEqual({
       liveReaders: { added: [], removed: [], limited: true },
     });
