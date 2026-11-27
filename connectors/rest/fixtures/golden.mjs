@@ -55,28 +55,45 @@ export const goldenText = value =>
 export const goldenFile = (scenario, entity) =>
   path.join(GOLDEN_DIR, scenario, `${entity}.json`);
 
+/** Run `jobs` four at a time, keeping their order in the result. */
+async function pool(jobs, concurrency = 4) {
+  const results = new Array(jobs.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, jobs.length) }, async () => {
+      while (next < jobs.length) {
+        const i = next++;
+        results[i] = await jobs[i]();
+      }
+    }),
+  );
+  return results;
+}
+
 /** Read every scenario and entity on the cassettes: { "scenario/entity": text }. */
 export async function buildGolden() {
   ensureFolderInstalled();
   const server = await startReplayServer();
   try {
-    const out = {};
-    for (const scenario of SCENARIOS) {
-      for (const entity of ENTITY_NAMES) {
-        const token = tokenFor("golden", scenario, entity);
-        const { rows, chunks } = await readFolder({
-          entity,
-          since: scenario.since,
-          maxIterations: scenario.maxIterations,
-          config: scenarioConfig(token, server, scenario),
-        });
-        out[`${scenario.name}/${entity}`] = goldenText({
-          chunks,
-          requests: server.requests(token),
-          rows,
-        });
-      }
-    }
+    // Each read has its own token, so the server logs its requests apart.
+    const files = await pool(
+      SCENARIOS.flatMap(scenario =>
+        ENTITY_NAMES.map(entity => async () => {
+          const token = tokenFor("golden", scenario, entity);
+          const { rows, chunks } = await readFolder({
+            entity,
+            since: scenario.since,
+            maxIterations: scenario.maxIterations,
+            config: scenarioConfig(token, server, scenario),
+          });
+          return [
+            `${scenario.name}/${entity}`,
+            goldenText({ chunks, requests: server.requests(token), rows }),
+          ];
+        }),
+      ),
+    );
+    const out = Object.fromEntries(files);
     if (server.misses.length > 0) {
       throw new Error(`cassette misses: ${server.misses.join(", ")}`);
     }
