@@ -160,6 +160,19 @@ jobs:
 
       - name: Deploy quiesced canary
         run: |
+          # Pin POSTGRES_URL (pooled) and POSTGRES_DIRECT_URL (unpooled) to the
+          # newest enabled Secret Manager versions at deploy time so credentials
+          # never appear in `gcloud run services describe` or shift mid-revision.
+          POSTGRES_URL_VERSION=$(gcloud secrets versions list POSTGRES_URL \
+            --project "${GCP_PROJECT_ID}" --filter=state:enabled \
+            --sort-by=~createTime --limit=1 --format='value(name.basename())')
+          test -n "${POSTGRES_URL_VERSION}"
+          echo "POSTGRES_URL: Secret Manager version ${POSTGRES_URL_VERSION}"
+          POSTGRES_DIRECT_URL_VERSION=$(gcloud secrets versions list POSTGRES_DIRECT_URL \
+            --project "${GCP_PROJECT_ID}" --filter=state:enabled \
+            --sort-by=~createTime --limit=1 --format='value(name.basename())')
+          test -n "${POSTGRES_DIRECT_URL_VERSION}"
+          echo "POSTGRES_DIRECT_URL: Secret Manager version ${POSTGRES_DIRECT_URL_VERSION}"
           gcloud run deploy "${SERVICE_NAME}" \
             --project="${GCP_PROJECT_ID}" \
             --image="${{ steps.image.outputs.sha_tag }}" \
@@ -234,6 +247,7 @@ jobs:
             --set-env-vars "^|^GITHUB_APP_CLIENT_SECRET=${MAKO_GITHUB_APP_CLIENT_SECRET}" \
             --set-env-vars "^|^GITHUB_APP_PRIVATE_KEY=${MAKO_GITHUB_APP_PRIVATE_KEY}" \
             --set-env-vars "^|^SUPER_ADMIN_EMAILS=${SUPER_ADMIN_EMAILS}" \
+            --set-secrets POSTGRES_URL=POSTGRES_URL:${POSTGRES_URL_VERSION},POSTGRES_DIRECT_URL=POSTGRES_DIRECT_URL:${POSTGRES_DIRECT_URL_VERSION} \
             --quiet
 
       - name: Report direct canary URL
