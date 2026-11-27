@@ -258,7 +258,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS "idx_favourites_item_unique"
 CREATE TABLE IF NOT EXISTS "scheduled_query_runs" (
   "id" uuid PRIMARY KEY,
   "workspace_id" uuid NOT NULL REFERENCES "workspaces"("id") ON DELETE CASCADE,
-  "console_id" uuid NOT NULL REFERENCES "saved_consoles"("id") ON DELETE CASCADE,
+  -- Soft ref (no FK cascade): preserves run history across workspace repo disconnect/reconnect
+  -- when saved_consoles rows are purged and later re-created with deterministic derived IDs.
+  "console_id" uuid NOT NULL,
   "triggered_at" timestamptz NOT NULL DEFAULT now(),
   "started_at" timestamptz,
   "completed_at" timestamptz,

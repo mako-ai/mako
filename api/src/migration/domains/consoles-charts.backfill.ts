@@ -16,7 +16,7 @@
  *   7. `notebook_indexes`         (FK -> workspaces, notebook_folders; rewrites user UUIDs + JSONB)
  *   8. `favourites`               (Pass 1: skips/quarantines legacy `kind = 'dashboard'` + orphan userId; `parent_id = NULL`)
  *   9. `favourites_parents`       (Pass 2: wire `parent_id`)
- *  10. `scheduled_query_runs`     (FK -> workspaces, saved_consoles; quarantines orphan `console_id`)
+ *  10. `scheduled_query_runs`     (FK -> workspaces; soft ref on `console_id` to preserve run history across repo disconnect/reconnect)
  */
 import { and, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { Types } from "mongoose";
@@ -779,17 +779,6 @@ async function validateCompositeItem(
       if (!consoleUuid) {
         return { ok: false, reason: "invalid_console_id" };
       }
-      if (batchCtx.savedConsoleIds.has(consoleUuid.toLowerCase())) {
-        return { ok: true };
-      }
-      const exists = await db
-        .select({ id: savedConsoles.id })
-        .from(savedConsoles)
-        .where(eq(savedConsoles.id, consoleUuid))
-        .limit(1);
-      if (exists.length === 0) {
-        return { ok: false, reason: "orphan_console_id" };
-      }
       return { ok: true };
     }
 
@@ -1474,17 +1463,11 @@ async function fetchMongoTableVerifierBatch(
     const resolver = makeBatchResolver(userMap);
 
     // Pre-fetch PG FK targets so dangling folderId/parentId/connectionId normalize
-    // identically to backfill & --repair, and orphan scheduled_query_runs.consoleId are skipped.
-    let validConsoleUuids: Set<string> | null = null;
+    // identically to backfill & --repair. (`scheduled_query_runs.console_id` is a
+    // soft ref so run history survives workspace repo disconnect/reconnect.)
     let validParentOrFolderUuids: Set<string> | null = null;
     let validConnectionUuids: Set<string> | null = null;
-    if (table === "scheduled_query_runs") {
-      validConsoleUuids = await fetchExistingPgIds(
-        db,
-        savedConsoles,
-        wsScoped.map(r => (r.record as ScheduledQueryRunRecord).consoleId),
-      );
-    } else if (table === "console_folders") {
+    if (table === "console_folders") {
       validParentOrFolderUuids = await fetchExistingPgIds(
         db,
         consoleFolders,
@@ -1584,11 +1567,10 @@ async function fetchMongoTableVerifierBatch(
             record = { ...rec, parentId: null };
           }
         }
-      } else if (table === "scheduled_query_runs" && validConsoleUuids) {
-        const cUuid = optionalPgUuid(
-          (record as ScheduledQueryRunRecord).consoleId,
-        );
-        if (!cUuid || !validConsoleUuids.has(cUuid)) continue;
+      } else if (table === "scheduled_query_runs") {
+        if (!optionalPgUuid((record as ScheduledQueryRunRecord).consoleId)) {
+          continue;
+        }
       }
 
       const pgUuid = toPgUuid(r.id);
@@ -2103,31 +2085,11 @@ async function repairTableEntities(
         db,
         records.map(r => r.workspaceId),
       );
-      const cUuids = [
-        ...new Set(
-          records
-            .map(r => optionalPgUuid(r.consoleId))
-            .filter((u): u is string => u !== null),
-        ),
-      ];
-      const existingConsoles = new Set<string>();
-      if (cUuids.length > 0) {
-        const rows = await db
-          .select({ id: savedConsoles.id })
-          .from(savedConsoles)
-          .where(inArray(savedConsoles.id, cUuids));
-        for (const r of rows) existingConsoles.add(r.id.toLowerCase());
-      }
       const items: Array<BackfillItem<CompositeBackfillDoc>> = records
         .filter(rec => {
           const wsUuid = optionalPgUuid(rec.workspaceId);
           const cUuid = optionalPgUuid(rec.consoleId);
-          return (
-            wsUuid !== null &&
-            validWs.has(wsUuid) &&
-            cUuid !== null &&
-            existingConsoles.has(cUuid)
-          );
+          return wsUuid !== null && validWs.has(wsUuid) && cUuid !== null;
         })
         .map(record => ({
           cursor: record.id,

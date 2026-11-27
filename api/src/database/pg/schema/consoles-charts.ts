@@ -579,9 +579,9 @@ export const scheduledQueryRuns = pgTable(
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
-    consoleId: uuid("console_id")
-      .notNull()
-      .references(() => savedConsoles.id, { onDelete: "cascade" }),
+    // Soft ref (no FK cascade): preserves run history across workspace repo
+    // disconnect/reconnect when saved_consoles rows are purged and re-created.
+    consoleId: uuid("console_id").notNull(),
     triggeredAt: timestamp("triggered_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

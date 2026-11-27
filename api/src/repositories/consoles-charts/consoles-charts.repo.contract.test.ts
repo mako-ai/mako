@@ -1118,6 +1118,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
       opts?: {
         hasPg?: () => boolean;
         shadowSampleRate?: number;
+        rng?: () => number;
         workspaceModes?: Record<string, MigrationMode>;
         onShadowEvent?: (e: ShadowCompareEvent) => void;
         onSecondaryFailure?: (ctx: SecondaryWriteFailureContext) => void;
@@ -1136,6 +1137,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         hasPg: opts?.hasPg ?? (() => true),
         enablePubSub: false,
         shadowRunner,
+        rng: opts?.rng,
         onSecondaryFailure: async ctx => {
           opts?.onSecondaryFailure?.(ctx);
         },
@@ -1221,10 +1223,11 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
       }
     });
 
-    it("Stage 3 (dual_write_shadow_compare) runs zero PG queries when shadowSampleRate=0, and compares search top-K ID overlap when sampled", async () => {
+    it("Stage 3 (dual_write_shadow_compare) runs zero PG queries when unsampled, and compares search top-K ID overlap when sampled", async () => {
       const events: ShadowCompareEvent[] = [];
       const harness = await makeDualHarness("dual_write_shadow_compare", {
-        shadowSampleRate: 0,
+        shadowSampleRate: 0.5,
+        rng: () => 0.99,
         onShadowEvent: e => events.push(e),
       });
 
@@ -2020,7 +2023,8 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         updatedAt: new Date("2026-10-01T00:00:00.000Z"),
       });
 
-      // Scheduled query runs: 1 valid + 1 orphan consoleId
+      // Scheduled query runs: 1 valid + 1 run referencing a disconnected/missing console
+      // (soft ref on `console_id` preserves historical runs across repo disconnect/reconnect).
       await ScheduledQueryRun.create({
         workspaceId: wsOid,
         consoleId: consoleDoc._id,
@@ -2032,13 +2036,13 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         durationMs: 5000,
         rowCount: 10,
       });
-      const orphanRun = await ScheduledQueryRun.create({
+      const disconnectedConsoleRun = await ScheduledQueryRun.create({
         workspaceId: wsOid,
         consoleId: new Types.ObjectId(),
         triggeredAt: new Date("2026-11-01T15:00:00.000Z"),
         status: "error",
         triggerType: "schedule",
-        error: { message: "console deleted" },
+        error: { message: "console disconnected" },
       });
 
       // Run 10-stage backfill (with POSTGRES_URL unset to prove injected `db` works)
@@ -2051,18 +2055,18 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
           db,
         });
         expect(bf.status).toBe("completed");
-        // 3 quarantined rows: legacy entity_versions dashboard, legacy favourites dashboard, orphan scheduled_query_run
-        expect(bf.rowsQuarantined).toBe(3);
+        // 2 quarantined rows: legacy entity_versions dashboard, legacy favourites dashboard
+        // (`scheduled_query_runs.console_id` is a soft ref so runs for disconnected consoles survive).
+        expect(bf.rowsQuarantined).toBe(2);
 
         const quarantineRows = await db
           .select()
           .from(pgSchema.migrationQuarantine);
-        expect(quarantineRows).toHaveLength(3);
+        expect(quarantineRows).toHaveLength(2);
         const reasons = quarantineRows.map(r => r.reason).sort();
         expect(reasons).toEqual([
           "legacy_dashboard_entity_version",
           "legacy_dashboard_favourite",
-          "orphan_console_id",
         ]);
 
         // Verify all 3 self-FK children got their parent_id wired in Pass 2!
@@ -2092,13 +2096,13 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         expect(
           await pgRepo.findConsoleById(wsId, tombstonedConsole._id.toString()),
         ).toBeNull();
-        // Orphan run was NOT inserted
+        // Run for disconnected console WAS backfilled (soft ref parity with Mongo)
         expect(
           await pgRepo.findScheduledQueryRunById(
-            orphanRun._id.toString(),
+            disconnectedConsoleRun._id.toString(),
             wsId,
           ),
-        ).toBeNull();
+        ).not.toBeNull();
 
         // Verify full parity across all 7 tables with POSTGRES_URL unset
         const verify1 = await runParityVerification({
