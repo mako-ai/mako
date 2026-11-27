@@ -95,6 +95,10 @@ let directDb: MakoPgDb | null = null;
 
 let testDbOverride: MakoPgDb | null = null;
 
+export function hasInjectedPgTestDb(): boolean {
+  return testDbOverride !== null;
+}
+
 /**
  * True when the runtime Postgres client (`getPgDb()`) is usable — i.e., either
  * `POSTGRES_URL` is configured or a test PGlite database is injected via `setPgTestDb()`.

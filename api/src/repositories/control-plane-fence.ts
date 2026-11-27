@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import mongoose, { type ClientSession } from "mongoose";
-import { hasPostgresConfig } from "../database/pg/client";
+import { hasInjectedPgTestDb, hasPostgresConfig } from "../database/pg/client";
 
 const sessions = new AsyncLocalStorage<ClientSession>();
 export const controlPlaneSession = () => sessions.getStore();
@@ -98,8 +98,10 @@ export function createControlPlaneRepo<T extends object>(
       const testFallback = process.env.MAKO_TEST_MONGO_FALLBACK;
       if (
         !process.env.K_SERVICE &&
+        process.env.NODE_ENV !== "production" &&
         process.env.MAKO_CONTROL_PLANE_FENCE_V1 !== "1" &&
-        (process.env.NODE_ENV === "test" ||
+        (hasInjectedPgTestDb() ||
+          process.env.NODE_ENV === "test" ||
           process.env.VITEST ||
           testFallback === "1" ||
           testFallback === "0")
