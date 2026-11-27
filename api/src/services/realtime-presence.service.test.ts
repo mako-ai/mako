@@ -2,13 +2,25 @@
  * Realtime presence: the in-memory store (no REDIS_URL) and the Redis sorted
  * set (ioredis mocked), including the fail-open read on a Redis error.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import mongoose, { Types } from "mongoose";
+import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 type Call = [string, ...unknown[]];
 
 const redisMock = vi.hoisted(() => {
   const state = {
     calls: [] as Call[],
+    ready: () => {},
     execResults: [] as Array<Array<[Error | null, unknown]> | null>,
     zremError: null as Error | null,
     execError: null as Error | null,
@@ -16,7 +28,8 @@ const redisMock = vi.hoisted(() => {
   class FakeRedis {
     status = "ready";
     disconnect() {}
-    on() {
+    on(event: string, callback: () => void) {
+      if (event === "ready") state.ready = callback;
       return this;
     }
     once() {
@@ -200,7 +213,14 @@ describe("realtime presence (Redis sorted set)", () => {
     ]);
   });
 
-  it("hasAttachedClients is false when the count is 0", async () => {
+  it("trusts an empty set only after heartbeats can repopulate a restarted Redis", async () => {
+    expect(await hasAttachedClients(WS)).toBe(true);
+    vi.setSystemTime(T0 + 30_001);
+    expect(await hasAttachedClients(WS)).toBe(false);
+    redisMock.state.ready();
+    vi.setSystemTime(T0 + 45_000);
+    expect(await hasAttachedClients(WS)).toBe(true);
+    vi.setSystemTime(T0 + 61_000);
     redisMock.state.execResults = [
       [
         [null, 0],
@@ -232,5 +252,68 @@ describe("realtime presence (Redis sorted set)", () => {
       touchRealtimePresence(WS, "tab-1", "user-1"),
     ).resolves.toBeUndefined();
     await expect(clearRealtimePresence(WS, "tab-1")).resolves.toBeUndefined();
+  });
+});
+
+describe("mixed-revision realtime presence", () => {
+  let mongo: MongoMemoryServer;
+  const workspaceId = new Types.ObjectId();
+  const id = workspaceId.toHexString();
+
+  beforeAll(async () => {
+    mongo = await MongoMemoryServer.create();
+    await mongoose.connect(mongo.getUri());
+  });
+  afterAll(async () => {
+    await mongoose.disconnect();
+    await mongo.stop();
+  });
+  beforeEach(() => {
+    vi.stubEnv("DATABASE_URL", mongo.getUri());
+    vi.stubEnv("REDIS_URL", "redis://presence.test:6379");
+    vi.stubEnv("REALTIME_PRESENCE_MONGO_COMPAT", undefined);
+    resetRealtimePresenceForTests();
+    redisMock.state.execError = null;
+    redisMock.state.execResults = [];
+    redisMock.state.zremError = null;
+    vi.useFakeTimers({ toFake: ["Date"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+    resetRealtimePresenceForTests();
+  });
+  it("finds old-revision heartbeats on Redis misses after the recovery window", async () => {
+    const start = Date.now();
+    await hasAttachedClients(id);
+    vi.setSystemTime(start + 31_000);
+    const legacy = mongoose.connection.collection("realtime_presence");
+    await legacy.insertOne({
+      workspaceId,
+      clientId: "old",
+      userId: "user",
+      lastSeenAt: new Date(),
+    });
+    expect(await hasAttachedClients(id)).toBe(true);
+    expect(await hasAttachedClients(new Types.ObjectId().toHexString())).toBe(
+      false,
+    );
+    vi.stubEnv("REALTIME_PRESENCE_MONGO_COMPAT", "false");
+    expect(await hasAttachedClients(id)).toBe(false);
+    vi.stubEnv("REALTIME_PRESENCE_MONGO_COMPAT", undefined);
+    vi.setSystemTime(start + 92_000);
+    expect(await hasAttachedClients(id)).toBe(false);
+  });
+  it("lets old readers see new-revision heartbeats and disconnects even if Redis is unavailable", async () => {
+    redisMock.state.execError = new Error("Redis unavailable");
+    const legacy = mongoose.connection.collection("realtime_presence");
+    await touchRealtimePresence(id, "new", "user");
+    await expect(
+      legacy.findOne({ workspaceId, clientId: "new" }),
+    ).resolves.toMatchObject({ userId: "user" });
+    await clearRealtimePresence(id, "new");
+    await expect(
+      legacy.findOne({ workspaceId, clientId: "new" }),
+    ).resolves.toBeNull();
   });
 });

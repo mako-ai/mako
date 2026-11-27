@@ -25,7 +25,8 @@
  *      refused unless `--force`. A failed check always blocks the drop.
  *   5. Nothing drops without BOTH `--apply` and `--confirm-pg-only`.
  *   6. With `--archive-dir`, each collection is written there as gzipped
- *      Extended JSON first; a failed archive skips that drop.
+ *      Extended JSON first. Archive errors, write-check failures, and writes
+ *      detected since the archive started block the drop even with --force.
  *
  * Run after all writers have cut over. Document timestamps can detect recent
  * writes but cannot lock out a writer or date an update that leaves no marker.
@@ -337,47 +338,51 @@ const ACTIVITY_FIELDS: Readonly<Record<string, readonly string[]>> = {
   es_stripe_subscriptions: ["created", "updated"],
 };
 
-/** Any document created or updated since `now - 24h`? */
-export async function hasRecentWrite(
+/** Look for dated activity at or after an inclusive cutoff on the primary. */
+export async function hasWriteSince(
   db: Db,
   name: string,
-  now: Date = new Date(),
+  cutoff: Date,
 ): Promise<boolean | "unknown"> {
-  const cutoff = new Date(now.getTime() - RECENT_WRITE_WINDOW_MS);
+  const millis = cutoff.getTime();
+  const seconds = Math.floor(millis / 1000);
+  // An ISO timestamp with a timezone offset can have the preceding calendar
+  // date. Bound the index scan, then compare instants for string values only.
+  const earliestIsoDate = new Date(millis - 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+  const fields = [...TIMESTAMP_FIELDS, ...(ACTIVITY_FIELDS[name] ?? [])];
   try {
     const hit = await db.collection(name).findOne(
       {
         $or: [
-          { _id: { $gte: ObjectId.createFromTime(cutoff.getTime() / 1000) } },
-          ...[...TIMESTAMP_FIELDS, ...(ACTIVITY_FIELDS[name] ?? [])].map(
-            field => {
-              // Imports can contain ISO strings or Unix seconds/milliseconds.
-              const value = `$${field}`;
-              const millis = {
-                $cond: [
+          { _id: { $gte: ObjectId.createFromTime(seconds) } },
+          ...fields.flatMap(field => [
+            { [field]: { $gte: cutoff } },
+            { [field]: { $gte: seconds, $lt: 100_000_000_000 } },
+            { [field]: { $gte: millis } },
+            {
+              [field]: { $gte: earliestIsoDate, $lt: ":" },
+              $expr: {
+                $gte: [
                   {
-                    $and: [
-                      { $isNumber: value },
-                      { $lt: [value, 100_000_000_000] },
-                    ],
+                    $convert: {
+                      input: `$${field}`,
+                      to: "date",
+                      onNull: null,
+                      onError: null,
+                    },
                   },
-                  { $multiply: [value, 1000] },
-                  value,
+                  cutoff,
                 ],
-              };
-              return {
-                $expr: {
-                  $gte: [
-                    { $convert: { input: millis, to: "date", onNull: null } },
-                    cutoff,
-                  ],
-                },
-              };
+              },
             },
-          ),
+          ]),
         ],
       },
-      { projection: { _id: 1 }, maxTimeMS: 60_000 },
+      // Some legacy fields have no index. Let the scan finish; an actual
+      // driver/server error is still an unknown result and blocks a drop.
+      { projection: { _id: 1 } },
     );
     return hit !== null;
   } catch {
@@ -442,7 +447,7 @@ export function summarizeDomainState(
   return out;
 }
 
-async function archiveCollection(
+export async function archiveCollection(
   db: Db,
   name: string,
   dir: string,
@@ -497,6 +502,7 @@ export async function runDrop(
   io: DropIO,
   readDomainState: DomainStateReader = pgDomainStateReader,
   now: Date = new Date(),
+  archive = archiveCollection,
 ): Promise<{ rows: DropRow[]; skipped: Plan["skipped"] }> {
   const existing = (
     await db.listCollections({}, { nameOnly: true }).toArray()
@@ -519,9 +525,10 @@ export async function runDrop(
     }
   }
 
+  const cutoff = new Date(now.getTime() - RECENT_WRITE_WINDOW_MS);
   const rows: DropRow[] = [];
   for (const c of plan.candidates) {
-    const recentWrite = await hasRecentWrite(db, c.name, now);
+    const recentWrite = await hasWriteSince(db, c.name, cutoff);
     const facts: CollectionFacts = {
       recentWrite,
       domainPgOnly:
@@ -549,24 +556,23 @@ export async function runDrop(
     if (!verdict.drop || !opts.apply) continue;
     const row = rows[rows.length - 1];
     if (opts.archiveDir) {
+      const archiveStart = new Date();
       try {
-        const file = await archiveCollection(db, c.name, opts.archiveDir);
+        const file = await archive(db, c.name, opts.archiveDir);
         io.err(`archived ${c.name} -> ${file}`);
       } catch (error) {
         row.decision = `archive failed: ${error instanceof Error ? error.name : "Error"}`;
         continue;
       }
-    }
-    // Archiving may take hours. Catch writes made while the cursor was open.
-    if (opts.archiveDir) {
-      row.recentWrite = await hasRecentWrite(db, c.name, now);
-      const final = decideDrop(
-        c,
-        { ...facts, recentWrite: row.recentWrite },
-        opts,
-      );
-      if (!final.drop) {
-        row.decision = final.reason;
+      // --force only waives the preflight 24h window. The archive must
+      // still represent the collection at the time we decide to drop it.
+      const duringArchive = await hasWriteSince(db, c.name, archiveStart);
+      if (duringArchive !== false) {
+        row.recentWrite = duringArchive;
+        row.decision =
+          duringArchive === true
+            ? "written during archive"
+            : "post-archive write check failed";
         continue;
       }
     }

@@ -21,7 +21,9 @@ import {
   cli,
   decideDrop,
   isDenied,
-  hasRecentWrite,
+  archiveCollection,
+  hasWriteSince,
+  RECENT_WRITE_WINDOW_MS,
   parseDropArgs,
   planCandidates,
   runDrop,
@@ -222,13 +224,16 @@ async function main() {
   assert.ok(usage.join("\n").includes("Usage:"));
 
   // ── End to end against in-memory Mongo ──
-  const mongod = await MongoMemoryServer.create();
+  const mongod = await MongoMemoryServer.create({
+    instance: { args: ["--setParameter", "enableTestCommands=1"] },
+  });
   const client = new MongoClient(mongod.getUri());
   await client.connect();
   try {
     const db = client.db("drop_test");
-    const now = new Date("2026-11-27T12:00:00Z");
-    const old = new Date("2026-10-01T00:00:00Z");
+    const now = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    const cutoff = new Date(now.getTime() - RECENT_WRITE_WINDOW_MS);
+    const old = new Date(cutoff.getTime() - RECENT_WRITE_WINDOW_MS);
     const oldId = () => ObjectId.createFromTime(old.getTime() / 1000);
     await db.collection("users").insertOne({ _id: oldId(), updatedAt: old });
     await db
@@ -247,9 +252,44 @@ async function main() {
       ["skill_usage_daily", { lastAt: now.getTime() }],
     ] as const) {
       await db.collection(name).insertOne({ _id: oldId(), ...activity });
-      assert.equal(await hasRecentWrite(db, name, now), true, name);
+      assert.equal(await hasWriteSince(db, name, cutoff), true, name);
       await db.collection(name).drop();
     }
+
+    // A malformed import cannot hide another document's valid timestamp.
+    const leads = db.collection("es_close_leads");
+    await leads.insertOne({
+      _id: ObjectId.createFromTime(1),
+      date_created: "9999-not-a-date",
+      updatedAt: true,
+    });
+    assert.equal(await hasWriteSince(db, leads.collectionName, cutoff), false);
+    await leads.updateOne(
+      {},
+      {
+        $set: {
+          updatedAt: { invalid: true },
+          date_updated: "2025-01-01T23:55:00-02:00",
+        },
+      },
+    );
+    assert.equal(
+      await hasWriteSince(
+        db,
+        leads.collectionName,
+        new Date("2025-01-02T01:54:00Z"),
+      ),
+      true,
+    );
+    assert.equal(
+      await hasWriteSince(
+        db,
+        leads.collectionName,
+        new Date("2025-01-02T01:56:00Z"),
+      ),
+      false,
+    );
+    await leads.drop();
 
     const reader: DomainStateReader = async domains =>
       new Map(domains.map(d => [d, d !== "mcp"]));
@@ -309,6 +349,84 @@ async function main() {
       await names(),
       before.filter(n => n !== "users"),
     );
+
+    // Force permits a preexisting recent write. A later edit after the
+    // cursor has passed must preserve the collection, including on retries.
+    const raceDir = await mkdtemp(
+      path.join(os.tmpdir(), "mongo-archive-race-"),
+    );
+    try {
+      const options = parseDropArgs([
+        "--apply",
+        "--confirm-pg-only",
+        "--force",
+        "--only",
+        "chats",
+        "--archive-dir",
+        raceDir,
+      ]);
+      const raced = await runDrop(
+        db,
+        options,
+        quiet,
+        reader,
+        now,
+        async (target, name, dir) => {
+          const file = await archiveCollection(target, name, dir);
+          await target
+            .collection(name)
+            .updateOne({}, { $set: { updatedAt: new Date(), late: true } });
+          return file;
+        },
+      );
+      assert.equal(raced.rows[0].decision, "written during archive");
+      assert.equal(
+        await db.collection("chats").countDocuments({ late: true }),
+        1,
+      );
+      const partial = gunzipSync(
+        await readFile(path.join(raceDir, "drop_test.chats.ejson.gz")),
+      ).toString();
+      assert.equal(JSON.parse(partial).late, undefined);
+      await db.collection("chats").updateOne({}, { $set: { updatedAt: now } });
+    } finally {
+      await rm(raceDir, { recursive: true, force: true });
+    }
+
+    const failureDir = await mkdtemp(
+      path.join(os.tmpdir(), "mongo-archive-check-"),
+    );
+    try {
+      const options = parseDropArgs([
+        "--apply",
+        "--confirm-pg-only",
+        "--force",
+        "--only",
+        "chats",
+        "--archive-dir",
+        failureDir,
+      ]);
+      const failed = await runDrop(
+        db,
+        options,
+        quiet,
+        reader,
+        now,
+        async (target, name, dir) => {
+          const file = await archiveCollection(target, name, dir);
+          await target.admin().command({
+            configureFailPoint: "failCommand",
+            mode: { times: 1 },
+            data: { failCommands: ["find"], errorCode: 13 },
+          });
+          return file;
+        },
+      );
+      assert.equal(failed.rows[0].decision, "post-archive write check failed");
+      assert.equal(await db.collection("chats").countDocuments(), 1);
+    } finally {
+      await rm(failureDir, { recursive: true, force: true });
+    }
 
     // Apply with --force + --include-dead: chats and dashboards go too,
     // each archived first.

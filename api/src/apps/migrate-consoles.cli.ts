@@ -23,7 +23,11 @@ import {
 } from "./workspace-consoles.service";
 import { resolveMirrorTarget } from "./cloud-repo.service";
 import { repoDirFor, repoExists } from "./repository.service";
-import { closePgConnections, getPgDb } from "../database/pg/client";
+import {
+  closePgConnections,
+  getPgDb,
+  hasPostgresConfig,
+} from "../database/pg/client";
 import { toWireId } from "../database/pg/id-codec";
 import { savedConsoles } from "../database/pg/schema/consoles-charts";
 
@@ -51,6 +55,7 @@ async function main(): Promise<void> {
   const all = process.argv.includes("--all");
   const execute = process.argv.includes("--execute");
   const reconcile = process.argv.includes("--reconcile-descriptions");
+  if (!hasPostgresConfig()) throw new Error("POSTGRES_URL is not set");
   try {
     if (reconcile) {
       const n = await reconcileConsoleDescriptions(workspaceId);
