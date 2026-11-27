@@ -3832,19 +3832,13 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         resolveUserUuid,
       });
 
-      // Simulate Phase 2A-1 `database_connections` table existing before operator runs post-backfill
-      await pg.exec(`
-        CREATE TABLE IF NOT EXISTS "database_connections" (
-          "id" uuid PRIMARY KEY NOT NULL
-        );
-      `);
-
       const validConnId = new Types.ObjectId().toString();
       const validConnUuid = objectIdToUuid(validConnId);
       const danglingConnId = new Types.ObjectId().toString();
 
       await db.execute(
-        sql`INSERT INTO "database_connections" ("id") VALUES (${validConnUuid}::uuid)`,
+        sql`INSERT INTO "database_connections" ("id", "workspace_id", "name", "type", "connection_encrypted", "created_by")
+            VALUES (${validConnUuid}::uuid, ${objectIdToUuid(wsId)}::uuid, 'PostBackfill DB', 'postgresql', '{}'::jsonb, ${userV7Id}::uuid)`,
       );
 
       const cValid = await pgRepo.createConsole({
@@ -3905,7 +3899,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
       } finally {
         await pg.exec(`
           ALTER TABLE "saved_consoles" DROP CONSTRAINT IF EXISTS "saved_consoles_connection_id_fk";
-          DROP TABLE IF EXISTS "database_connections";
+          DELETE FROM "database_connections" WHERE "id" = '${validConnUuid}'::uuid;
         `);
       }
     });
