@@ -9,12 +9,12 @@
 
 import { Types } from "mongoose";
 import {
-  DatabaseConnection,
   DbtProject,
   type IDatabaseConnection,
   type IDbtEnvironment,
   type IDbtProject,
 } from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import {
   getCheckoutBranch,
   classifySkippedFiles,
@@ -103,18 +103,16 @@ export async function loadDbtProjectSnapshot(params: {
     );
   }
 
-  const connectionDoc = await DatabaseConnection.findOne({
-    _id: environment.connectionId,
-    workspaceId: project.workspaceId,
-  });
+  const connectionDoc = await connectionsRepo.findDatabaseConnectionById(
+    environment.connectionId.toString(),
+    project.workspaceId.toString(),
+  );
   if (!connectionDoc) {
     throw new Error(
       `Connection for environment "${envName}" not found or access denied`,
     );
   }
-  const connection = connectionDoc.toObject({
-    getters: true,
-  }) as IDatabaseConnection;
+  const connection = connectionDoc as unknown as IDatabaseConnection;
 
   const profile = renderDbtProfile(connection, environment);
 

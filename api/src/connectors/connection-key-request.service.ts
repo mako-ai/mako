@@ -27,14 +27,14 @@
  * never logged or returned.
  */
 import { createHash, randomBytes } from "node:crypto";
-import { Types } from "mongoose";
 
 import { callableFor } from "../connections/callable";
-import {
-  SourceConnection,
-  type ISourceConnectionKeyRequest,
-} from "../database/workspace-schema";
+import type { ISourceConnectionKeyRequest } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import {
+  connectionsRepo,
+  type SourceConnectionRecord,
+} from "../repositories/connections";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import { boxBusyProbeError, probeConnection } from "./probe.service";
 import {
@@ -150,15 +150,7 @@ export interface KeyFieldDescriptor {
   placeholder?: string;
 }
 
-interface PendingRow {
-  _id: Types.ObjectId;
-  name: string;
-  type: string;
-  config?: Record<string, unknown>;
-  createdBy?: string;
-  managers?: string[];
-  keyRequest?: ISourceConnectionKeyRequest;
-}
+type PendingRow = SourceConnectionRecord;
 
 /**
  * Who may use a link: answers a refusal to show, or null. The route passes
@@ -176,12 +168,10 @@ async function findPending(
   authorize?: KeyLinkAuthorizer,
 ): Promise<PendingRow> {
   if (!token) throw new KeyRequestError("not_found", KEY_LINK_NOT_FOUND);
-  const row = (await SourceConnection.findOne({
-    workspaceId: new Types.ObjectId(workspaceId),
-    "keyRequest.tokenHash": hashKeyToken(token),
-  })
-    .select("_id name type config createdBy managers keyRequest")
-    .lean()) as PendingRow | null;
+  const row = await connectionsRepo.findSourceConnectionByKeyTokenHash(
+    workspaceId,
+    hashKeyToken(token),
+  );
   if (!row?.keyRequest) {
     throw new KeyRequestError("not_found", KEY_LINK_NOT_FOUND);
   }
@@ -403,25 +393,19 @@ export async function submitKey(input: {
     string,
     string
   >;
-  const sets = Object.fromEntries(
-    Object.entries(encrypted).map(([key, value]) => [`config.${key}`, value]),
-  );
 
-  // The claim: stores the key and consumes the link in one update, filtered
-  // on the token and its expiry. A second submission finds nothing.
-  const claimed = await SourceConnection.updateOne(
-    {
-      _id: row._id,
-      workspaceId: new Types.ObjectId(workspaceId),
-      "keyRequest.tokenHash": request.tokenHash,
-      "keyRequest.expiresAt": { $gt: new Date() },
-    },
-    { $set: { ...sets, isActive: true }, $unset: { keyRequest: "" } },
-  );
-  if (claimed.modifiedCount !== 1) {
+  // The claim: stores the key and consumes the link in one atomic update,
+  // filtered on the token and its expiry. A second submission finds nothing.
+  const claimed = await connectionsRepo.claimSourceConnectionKeyRequest({
+    id: row.id,
+    workspaceId,
+    tokenHash: request.tokenHash,
+    encryptedFields: encrypted,
+  });
+  if (!claimed) {
     throw new KeyRequestError("not_found", KEY_LINK_NOT_FOUND);
   }
-  const connectionId = String(row._id);
+  const connectionId = row.id;
   logger.info("Source connection key set from a key link", {
     workspaceId,
     connectionId,
@@ -463,18 +447,12 @@ export async function submitKey(input: {
   // A wrong key: take it back out and put the request back, so the same link
   // works for the corrected one. Only if the row still holds exactly what
   // this call wrote: a key a manager saved in the form meanwhile is theirs.
-  await SourceConnection.updateOne(
-    {
-      _id: row._id,
-      workspaceId: new Types.ObjectId(workspaceId),
-      keyRequest: { $exists: false },
-      ...sets,
-    },
-    {
-      $unset: Object.fromEntries(Object.keys(sets).map(key => [key, ""])),
-      $set: { keyRequest: request, isActive: false },
-    },
-  );
+  await connectionsRepo.rollbackSourceConnectionKeyRequest({
+    id: row.id,
+    workspaceId,
+    encryptedFields: encrypted,
+    keyRequest: request,
+  });
   logger.info("Key from a key link failed its check and was removed", {
     workspaceId,
     connectionId,

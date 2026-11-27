@@ -29,12 +29,8 @@ import {
   applyStrReplace,
   buildStrReplaceDiff,
 } from "@mako/agent-tools";
-import {
-  DatabaseConnection,
-  DbtJob,
-  DbtProject,
-  DbtRun,
-} from "../../database/workspace-schema";
+import { DbtJob, DbtProject, DbtRun } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { publishRealtimeEvent } from "../../services/realtime.service";
 import { workspaceService } from "../../services/workspace.service";
 import { RepoRequiredError } from "../../apps/config";
@@ -736,10 +732,11 @@ export const createDbtServerTools = (
           if (!Types.ObjectId.isValid(connectionId)) {
             return { success: false, error: "Invalid connection id" };
           }
-          const connection = await DatabaseConnection.findOne({
-            _id: new Types.ObjectId(connectionId),
-            workspaceId: new Types.ObjectId(workspaceId),
-          }).select("type");
+          const connection =
+            await connectionsRepo.findDatabaseConnectionSummary(
+              connectionId,
+              workspaceId,
+            );
           if (!connection) {
             return {
               success: false,
@@ -762,7 +759,7 @@ export const createDbtServerTools = (
             environments: [
               {
                 name: environmentName,
-                connectionId: connection._id,
+                connectionId: new Types.ObjectId(connection.id),
                 targetSchema,
                 threads: 4,
               },

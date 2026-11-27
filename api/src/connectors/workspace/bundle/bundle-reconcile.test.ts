@@ -20,6 +20,7 @@ import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
 const repo = vi.hoisted(() => ({
+  commit: "c".repeat(40),
   files: new Map<string, Map<string, Uint8Array>>(),
   nodeModules: new Map<string, string>(),
 }));
@@ -28,7 +29,7 @@ vi.mock("../resolver", async importOriginal => {
   return {
     ...actual,
     listConnectorFoldersAtMain: vi.fn(async () => ({
-      commit: "c".repeat(40),
+      commit: repo.commit,
       slugs: [
         ...new Set([...repo.files.keys(), ...repo.nodeModules.keys()]),
       ].sort(),
@@ -47,6 +48,13 @@ vi.mock("../resolver", async importOriginal => {
 const box = vi.hoisted(() => ({
   bundles: new Set<string>(),
   runs: [] as Array<{ command: string; dir: string; entry?: string }>,
+  onCommand: null as
+    | ((input: {
+        command: string;
+        connectorDir: string;
+        entry?: string;
+      }) => Promise<void> | void)
+    | null,
 }));
 vi.mock("../sync-box", async importOriginal => {
   const actual = await importOriginal<typeof import("../sync-box")>();
@@ -88,6 +96,7 @@ vi.mock("../sync-box", async importOriginal => {
           dir: input.connectorDir,
           entry: input.entry,
         });
+        await box.onCommand?.(input);
         const messages =
           input.command === "spec"
             ? [spec]
@@ -142,7 +151,10 @@ import {
   ConnectorDefinition,
   type ISourceConnection,
 } from "../../../database/workspace-schema";
-import { syncConnectorsFromRepo } from "../reconcile.service";
+import {
+  recordConnectionCheck,
+  syncConnectorsFromRepo,
+} from "../reconcile.service";
 import { listWorkspaceConnectors } from "../catalog";
 import { SandboxedConnector } from "../SandboxedConnector";
 import { createConnectorTools } from "../../../agent-lib/tools/connector-tools";
@@ -198,10 +210,12 @@ const row = (slug = "acme") =>
 
 beforeEach(async () => {
   await ConnectorDefinition.deleteMany({});
+  repo.commit = "c".repeat(40);
   repo.files.clear();
   repo.nodeModules.clear();
   box.bundles.clear();
   box.runs.length = 0;
+  box.onCommand = null;
   stored.clear();
   build.calls = 0;
   build.fail = null;
@@ -497,6 +511,60 @@ describe("the push reconciler with bundles off", () => {
     const result = await syncConnectorsFromRepo(WS);
     expect(result.created).toBe(1);
     expect((await row())?.status).toBe("indexed");
+  });
+
+  it("preserves a concurrent connection-check status change on an unchanged connector during reconcile", async () => {
+    repo.commit = "1".repeat(40);
+    repo.files.set("alpha", folder({ "connector.ts": "export default 1;\n" }));
+    repo.files.set("beta", folder({ "connector.ts": "export default 2;\n" }));
+    expect((await syncConnectorsFromRepo(WS)).created).toBe(2);
+    const betaBefore = await row("beta");
+    expect(betaBefore?.status).toBe("indexed");
+    if (!betaBefore) throw new Error("expected beta row");
+
+    // Push changes alpha (runs spec) and leaves beta unchanged (only commit sha changes).
+    // While alpha's spec runs, a live connection check verifies beta.
+    repo.commit = "2".repeat(40);
+    repo.files.set("alpha", folder({ "connector.ts": "export default 3;\n" }));
+    box.onCommand = async input => {
+      if (input.command === "spec" && input.connectorDir.includes("alpha")) {
+        const updated = await recordConnectionCheck({
+          workspaceId: WS,
+          slug: "beta",
+          sourceSha: betaBefore.sourceSha,
+          success: true,
+        });
+        expect(updated).toBe(true);
+      }
+    };
+
+    const second = await syncConnectorsFromRepo(WS);
+    expect(second.updated).toBe(1);
+    expect(second.unchanged).toBe(1);
+    const betaAfterVerify = await row("beta");
+    expect(betaAfterVerify?.sha).toBe("2".repeat(40));
+    expect(betaAfterVerify?.status).toBe("verified");
+
+    // Reverse race: beta starts verified; while alpha runs spec, a failed check demotes beta.
+    repo.commit = "3".repeat(40);
+    repo.files.set("alpha", folder({ "connector.ts": "export default 4;\n" }));
+    box.onCommand = async input => {
+      if (input.command === "spec" && input.connectorDir.includes("alpha")) {
+        await recordConnectionCheck({
+          workspaceId: WS,
+          slug: "beta",
+          sourceSha: betaBefore.sourceSha,
+          success: false,
+          message: "401 expired token",
+        });
+      }
+    };
+
+    await syncConnectorsFromRepo(WS);
+    const betaAfterDemote = await row("beta");
+    expect(betaAfterDemote?.sha).toBe("3".repeat(40));
+    expect(betaAfterDemote?.status).toBe("indexed");
+    expect(betaAfterDemote?.lastCheckError).toBe("401 expired token");
   });
 });
 

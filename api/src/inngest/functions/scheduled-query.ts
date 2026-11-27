@@ -55,11 +55,11 @@ export async function loadScheduledConsole(
     throw new Error("Scheduled console has no database connection");
   }
 
-  const connectionMongooseDoc = await findWorkspaceConnection(
+  const connectionRecord = await findWorkspaceConnection(
     savedConsoleDoc.workspaceId,
     savedConsole.connectionId,
   );
-  if (!connectionMongooseDoc) {
+  if (!connectionRecord) {
     logger.warn(
       "Scheduled console points at a connection outside its workspace",
       {
@@ -73,9 +73,7 @@ export async function loadScheduledConsole(
     );
   }
 
-  const connection = connectionMongooseDoc.toObject({
-    getters: true,
-  }) as IDatabaseConnection;
+  const connection = connectionRecord as unknown as IDatabaseConnection;
 
   return { savedConsole, connection };
 }

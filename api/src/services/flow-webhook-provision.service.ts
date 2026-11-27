@@ -10,11 +10,8 @@
  */
 import { Types } from "mongoose";
 import type { ProvisionWebhookResult } from "../connectors/base/BaseConnector";
-import {
-  Flow,
-  SourceConnection,
-  type IFlow,
-} from "../database/workspace-schema";
+import { Flow, type IFlow } from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import { resolveConfiguredEntities } from "../sync-cdc/entity-selection";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import { sourceConnectionManager } from "../sync/database-data-source-manager";
@@ -38,17 +35,18 @@ export async function provisionFlowWebhook(params: {
     );
   }
 
-  const connectorSource = await SourceConnection.findOne({
-    _id: new Types.ObjectId(String(flow.dataSourceId)),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+  const connectorSource = await connectionsRepo.findSourceConnectionById(
+    String(flow.dataSourceId),
+    workspaceId,
+  );
   if (!connectorSource) {
     throw new FlowRequestError(404, "Connector not found");
   }
 
   const decryptedConnectorSource =
     await sourceConnectionManager.getSourceConnection(
-      connectorSource._id.toString(),
+      connectorSource.id,
+      workspaceId,
     );
   if (!decryptedConnectorSource) {
     throw new FlowRequestError(

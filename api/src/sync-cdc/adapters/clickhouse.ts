@@ -1,11 +1,10 @@
 import { promises as fs, createReadStream } from "fs";
-import { inWorkspace } from "../../utils/workspace-scope";
 import { createClient } from "@clickhouse/client";
-import {
-  DatabaseConnection,
-  type IFlow,
-  type IDatabaseConnection,
+import type {
+  IFlow,
+  IDatabaseConnection,
 } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { loggers } from "../../logging";
 import { buildParquetFromBatches } from "../../utils/streaming-parquet-builder";
@@ -138,16 +137,17 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
 
   private async resolveDestination(): Promise<IDatabaseConnection> {
     if (this._resolvedDestination) return this._resolvedDestination;
-    const doc = await DatabaseConnection.findOne(
-      inWorkspace(this.config.destinationDatabaseId, this.config.workspaceId),
+    const doc = await connectionsRepo.findDatabaseConnectionById(
+      this.config.destinationDatabaseId,
+      this.config.workspaceId,
     );
     if (!doc) {
       throw new Error(
         `Destination connection ${this.config.destinationDatabaseId} not found`,
       );
     }
-    this._resolvedDestination = doc;
-    return doc;
+    this._resolvedDestination = doc as unknown as IDatabaseConnection;
+    return this._resolvedDestination;
   }
 
   private getDatabase(): string {

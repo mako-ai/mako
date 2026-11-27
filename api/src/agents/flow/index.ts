@@ -20,7 +20,8 @@ import type {
   AgentConfig,
 } from "../types";
 import { FLOW_PROMPT } from "./prompt";
-import { DatabaseConnection } from "../../database/workspace-schema";
+import type { IDatabaseConnection } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import {
   validateQuery as validateQueryService,
   checkQuerySafety,
@@ -270,10 +271,10 @@ export function createFlowTools(
             };
           }
 
-          const connection = await DatabaseConnection.findOne({
-            _id: new Types.ObjectId(connectionId),
-            workspaceId: new Types.ObjectId(workspaceId),
-          });
+          const connection = await connectionsRepo.findDatabaseConnectionById(
+            connectionId,
+            workspaceId,
+          );
 
           if (!connection) {
             return { success: false, error: "Connection not found" };
@@ -288,10 +289,15 @@ export function createFlowTools(
             const result = await withAgentTimeout(
               executionId,
               registeredExecutionId =>
-                validateQueryService(connection, query, database, {
-                  executionId: registeredExecutionId,
-                  signal,
-                }),
+                validateQueryService(
+                  connection as unknown as IDatabaseConnection,
+                  query,
+                  database,
+                  {
+                    executionId: registeredExecutionId,
+                    signal,
+                  },
+                ),
               { signal },
             );
 
@@ -333,10 +339,10 @@ export function createFlowTools(
             return { success: false, error: "Invalid connection ID" };
           }
 
-          const connection = await DatabaseConnection.findOne({
-            _id: new Types.ObjectId(connectionId),
-            workspaceId: new Types.ObjectId(workspaceId),
-          });
+          const connection = await connectionsRepo.findDatabaseConnectionById(
+            connectionId,
+            workspaceId,
+          );
 
           if (!connection) {
             return { success: false, error: "Connection not found" };
@@ -361,7 +367,7 @@ export function createFlowTools(
               executionId,
               registeredExecutionId =>
                 databaseConnectionService.executeQuery(
-                  connection.toObject(),
+                  connection as unknown as IDatabaseConnection,
                   safeQuery,
                   {
                     databaseName: database,

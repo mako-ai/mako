@@ -78,7 +78,11 @@ import {
   ORPHAN_TYPE_MESSAGE,
   type ConnectorFieldSchema,
 } from "../../connectors/source-connection-create.service";
-import { Flow, SourceConnection } from "../../database/workspace-schema";
+import { Flow } from "../../database/workspace-schema";
+import {
+  connectionsRepo,
+  type UpdateSourceConnectionInput,
+} from "../../repositories/connections";
 import { loggers } from "../../logging";
 import { workspaceService } from "../../services/workspace.service";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
@@ -294,8 +298,6 @@ async function callerFor(
   };
 }
 
-const OBJECT_ID = /^[0-9a-f]{24}$/i;
-
 /**
  * A source connection of this workspace by id or name, with what access
  * needs. Only a 24-hex string is an id (`Types.ObjectId.isValid` accepts any
@@ -303,32 +305,16 @@ const OBJECT_ID = /^[0-9a-f]{24}$/i;
  * unique: when several connections share one, nothing is picked.
  */
 async function findOwnSourceConnection(workspaceId: string, ref: string) {
-  const workspace = new Types.ObjectId(workspaceId);
-  const fields =
-    "_id name type description isActive createdBy managers config keyRequest";
-  if (OBJECT_ID.test(ref)) {
-    const row = await SourceConnection.findOne({
-      workspaceId: workspace,
-      _id: new Types.ObjectId(ref),
-    })
-      .select(fields)
-      .lean();
-    return row ? { row } : { error: NOT_FOUND };
-  }
-  const rows = await SourceConnection.find({
-    workspaceId: workspace,
-    name: ref,
-  })
-    .select(fields)
-    .limit(2)
-    .lean();
-  if (rows.length === 0) return { error: NOT_FOUND };
-  if (rows.length > 1) {
+  const result = await connectionsRepo.findSourceConnectionByIdOrName(
+    workspaceId,
+    ref,
+  );
+  if (result.ambiguous) {
     return {
       error: `Several source connections are named "${ref}". Pass the id from list_connections({ kind: "source" }) instead; nothing was changed.`,
     };
   }
-  return { row: rows[0] };
+  return result.connection ? { row: result.connection } : { error: NOT_FOUND };
 }
 
 const NOT_FOUND =
@@ -396,10 +382,9 @@ export function createConnectionWriteTools(
         try {
           await assertConnectorTypeUsable(connector, workspaceId);
 
-          const taken = await SourceConnection.exists({
-            workspaceId: new Types.ObjectId(workspaceId),
-            name,
-          });
+          const existing =
+            await connectionsRepo.listSourceConnections(workspaceId);
+          const taken = existing.some(c => c.name === name);
           if (taken) {
             return {
               error: `A source connection named "${name}" already exists in this workspace. Pick another name; this tool never changes an existing connection.`,
@@ -488,10 +473,10 @@ export function createConnectionWriteTools(
           }
 
           if (!result.success) {
-            await SourceConnection.deleteOne({
-              _id: created._id,
-              workspaceId: new Types.ObjectId(workspaceId),
-            });
+            await connectionsRepo.deleteSourceConnection(
+              String(created._id),
+              workspaceId,
+            );
             logger.info(
               "MCP-created source connection removed after a failed check",
               {
@@ -590,27 +575,30 @@ export function createConnectionWriteTools(
             return { error: changeRefusal(caller.role) };
           }
 
-          const set: Record<string, unknown> = {};
+          const patch: UpdateSourceConnectionInput = {};
+          const changed: string[] = [];
           const oldName = row.name;
           if (name !== undefined && name !== oldName) {
-            const taken = await SourceConnection.exists({
-              workspaceId: new Types.ObjectId(workspaceId),
-              name,
-              _id: { $ne: row._id },
-            });
+            const existing =
+              await connectionsRepo.listSourceConnections(workspaceId);
+            const taken = existing.some(
+              c => c.name === name && c.id !== row.id,
+            );
             if (taken) {
               return {
                 error: `A source connection named "${name}" already exists in this workspace. Pick another name.`,
               };
             }
-            set.name = name;
+            patch.name = name;
+            changed.push("name");
           }
           if (description !== undefined && description !== row.description) {
-            set.description = description;
+            patch.description = description;
+            changed.push("description");
           }
           if (active !== undefined && active !== (row.isActive !== false)) {
             // A connection still waiting for its key has nothing to run with.
-            if (active && (row as { keyRequest?: unknown }).keyRequest) {
+            if (active && row.keyRequest) {
               return {
                 error:
                   "This connection is waiting for its key, so it cannot be switched on. The user sets the key through its keyLink (or in its settings in Mako); it then turns on by itself.",
@@ -622,7 +610,8 @@ export function createConnectionWriteTools(
             ) {
               return { error: ORPHAN_TYPE_MESSAGE };
             }
-            set.isActive = active;
+            patch.isActive = active;
+            changed.push("active");
           }
           if (config && Object.keys(config).length > 0) {
             const schema = await syncConnectorRegistry.getConfigSchemaForType(
@@ -633,45 +622,40 @@ export function createConnectionWriteTools(
               config,
               schema,
               row.type,
-              (row.config ?? {}) as Record<string, unknown>,
+              row.config ?? {},
             );
             if (problem) return { error: problem };
             assertCredentialCharacters(config, schema);
-            // One path per plain field: a secret stored next to them is
-            // neither read nor written again.
-            for (const [key, value] of Object.entries(config)) {
-              set[`config.${key}`] = value;
+            // Patch only the changed plain fields so stored secrets — including
+            // a key claimed concurrently via a one-time key link — stay untouched.
+            patch.configPatch = { ...config };
+            for (const key of Object.keys(config)) {
+              changed.push(`config.${key}`);
             }
           }
 
-          const changed = Object.keys(set).map(key =>
-            key.startsWith("config.")
-              ? key
-              : key === "isActive"
-                ? "active"
-                : key,
-          );
           if (changed.length > 0) {
-            await SourceConnection.updateOne(
-              { _id: row._id, workspaceId: new Types.ObjectId(workspaceId) },
-              { $set: set },
+            await connectionsRepo.updateSourceConnection(
+              row.id,
+              workspaceId,
+              patch,
             );
             logger.info("Source connection updated over MCP", {
               workspaceId,
               userId,
-              connectionId: String(row._id),
+              connectionId: row.id,
               changed,
             });
           }
 
-          const id = String(row._id);
+          const id = row.id;
           return {
             connectionId: id,
-            name: (set.name as string | undefined) ?? oldName,
+            name: patch.name ?? oldName,
             changed,
-            ...(set.name
+            ...(patch.name
               ? {
-                  renamed: { from: oldName, to: set.name },
+                  renamed: { from: oldName, to: patch.name },
                   warning: `Anything that refers to this connection by the name "${oldName}" no longer finds it: workflow code calling connection("${oldName}"), call_connection, scripts. Search the workspace repo for "${oldName}" (workflow_grep, app_grep) and switch those references to the id "${id}" or the new name. Flows reference the id and are not affected.`,
                 }
               : {}),
@@ -735,7 +719,7 @@ export function createConnectionWriteTools(
           }
           const flows = await Flow.find({
             workspaceId: new Types.ObjectId(workspaceId),
-            dataSourceId: row._id,
+            dataSourceId: new Types.ObjectId(row.id),
           })
             .select("_id name")
             .lean();
@@ -748,11 +732,11 @@ export function createConnectionWriteTools(
                 )}. Delete or repoint them first, or delete the connection in the app.`,
             };
           }
-          const result = await SourceConnection.deleteOne({
-            _id: row._id,
-            workspaceId: new Types.ObjectId(workspaceId),
-          });
-          if (result.deletedCount === 0) return { error: NOT_FOUND };
+          const deleted = await connectionsRepo.deleteSourceConnection(
+            row.id,
+            workspaceId,
+          );
+          if (!deleted) return { error: NOT_FOUND };
           logger.info("Source connection deleted over MCP", {
             workspaceId,
             userId,

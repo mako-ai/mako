@@ -1,9 +1,10 @@
 /** Who may write through a source connection's proxy. */
 import { createRoute, z } from "@hono/zod-openapi";
+import type { IConnectionWriter } from "../../database/workspace-schema";
 import {
-  SourceConnection,
-  type IConnectionWriter,
-} from "../../database/workspace-schema";
+  connectionsRepo,
+  type UpdateSourceConnectionInput,
+} from "../../repositories/connections";
 import { loggers } from "../../logging";
 import {
   changeRefusal,
@@ -85,9 +86,7 @@ sourceConnectionWriterRoutes.openapi(
     if (!workspaceId || !isSourceConnectionId(id)) {
       return fail(c, 400, "Invalid source connection ID format");
     }
-    const row = await SourceConnection.findOne({ _id: id, workspaceId })
-      .select("writers liveReads liveReaders type managers createdBy")
-      .lean();
+    const row = await connectionsRepo.findSourceConnectionById(id, workspaceId);
     if (!row) {
       return fail(c, 404, "Source connection not found");
     }
@@ -108,8 +107,10 @@ sourceConnectionWriterRoutes.openapi(
           : null,
         // Whether the proxy can call this connection at all yet.
         callable: callableFor(row.type) !== null,
-        recent: await recentWriters(id, principal =>
-          mayWrite(row.writers, principal),
+        recent: await recentWriters(
+          id,
+          principal => mayWrite(row.writers, principal),
+          workspaceId,
         ),
       },
     });
@@ -156,7 +157,7 @@ sourceConnectionWriterRoutes.openapi(
     if (!workspaceId || !isSourceConnectionId(id)) {
       return fail(c, 400, "Invalid source connection ID format");
     }
-    const row = await SourceConnection.findOne({ _id: id, workspaceId });
+    const row = await connectionsRepo.findSourceConnectionById(id, workspaceId);
     if (!row) {
       return fail(c, 404, "Source connection not found");
     }
@@ -187,10 +188,19 @@ sourceConnectionWriterRoutes.openapi(
         ? sourceWriters(row.liveReaders).map(w => w.principal)
         : null,
     };
-    row.writers = nextWriters(stored, writers, userId);
-    if (liveReads !== undefined) row.liveReads = liveReads;
+    const nextWritersList = nextWriters(stored, writers, userId);
+    const patch: UpdateSourceConnectionInput = {
+      writers: nextWritersList,
+    };
+    let nextLiveReads = row.liveReads === true;
+    if (liveReads !== undefined) {
+      patch.liveReads = liveReads;
+      nextLiveReads = liveReads;
+    }
+    let nextLiveReaders = row.liveReaders;
     if (liveReaders === null) {
-      row.liveReaders = undefined;
+      patch.liveReaders = null;
+      nextLiveReaders = undefined;
     } else if (liveReaders !== undefined) {
       const readers = sourceWriters(liveReaders);
       const storedReaders = sourceWriters(
@@ -207,11 +217,12 @@ sourceConnectionWriterRoutes.openapi(
         { readers: true },
       );
       if (strangers) return fail(c, 400, strangers);
-      row.liveReaders = nextWriters(storedReaders, readers, userId);
+      nextLiveReaders = nextWriters(storedReaders, readers, userId);
+      patch.liveReaders = nextLiveReaders;
     }
-    await row.save();
-    const readersNow = row.liveReaders
-      ? sourceWriters(row.liveReaders).map(w => w.principal)
+    await connectionsRepo.updateSourceConnection(id, workspaceId, patch);
+    const readersNow = nextLiveReaders
+      ? sourceWriters(nextLiveReaders).map(w => w.principal)
       : null;
     await recordAccessChange({
       workspaceId,
@@ -222,10 +233,10 @@ sourceConnectionWriterRoutes.openapi(
       changes: {
         writers: listChange(
           before.writers,
-          row.writers.map(w => w.principal),
+          nextWritersList.map(w => w.principal),
         ),
-        ...((row.liveReads === true) !== before.liveReads
-          ? { liveReads: row.liveReads === true }
+        ...(nextLiveReads !== before.liveReads
+          ? { liveReads: nextLiveReads }
           : {}),
         liveReaders: {
           ...listChange(before.liveReaders ?? [], readersNow ?? []),
@@ -244,9 +255,9 @@ sourceConnectionWriterRoutes.openapi(
       workspaceId,
       connectionId: id,
       userId,
-      writers: row.writers.length,
-      liveReads: row.liveReads === true,
-      liveReaders: row.liveReaders ? row.liveReaders.length : "everyone",
+      writers: nextWritersList.length,
+      liveReads: nextLiveReads,
+      liveReaders: nextLiveReaders ? nextLiveReaders.length : "everyone",
     });
     return c.json({ success: true });
   },

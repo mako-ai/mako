@@ -109,14 +109,14 @@ function collection(name: string): FakeCollection {
 }
 
 vi.mock("../database/workspace-schema", () => ({
-  DatabaseConnection: {
-    findOne: vi.fn(() => ({
-      select: () => ({
-        lean: () => Promise.resolve({ type: "bigquery" }),
-      }),
-    })),
-  },
   Flow: { db: { collection: (name: string) => collection(name) } },
+}));
+
+vi.mock("../repositories/connections", () => ({
+  connectionsRepo: {
+    findDatabaseConnectionSummary: vi.fn(async () => ({ type: "bigquery" })),
+    findDatabaseConnectionById: vi.fn(async () => ({ type: "bigquery" })),
+  },
 }));
 
 // ── Fake source with a typed schema that can fail on demand ───────────────

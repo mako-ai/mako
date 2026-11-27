@@ -6,10 +6,7 @@
  */
 
 import { z } from "zod";
-import {
-  DatabaseConnection,
-  type IDatabaseConnection,
-} from "../../../database/workspace-schema";
+import { connectionsRepo } from "../../../repositories/connections";
 import type { AgentToolExecutionContext } from "../../../agents/types";
 import { databaseConnectionService } from "../../../services/database-connection.service";
 import { MYSQL_SYSTEM_DATABASES_SET } from "../../../databases/drivers/mysql/driver";
@@ -72,13 +69,13 @@ async function fetchDatabase(
   workspaceId: string,
   options: FetchDatabaseOptions = {},
 ) {
-  const connectionObjectId = ensureValidObjectId(connectionId, "connectionId");
-  const workspaceObjectId = ensureValidObjectId(workspaceId, "workspaceId");
+  ensureValidObjectId(connectionId, "connectionId");
+  ensureValidObjectId(workspaceId, "workspaceId");
 
-  const database = await DatabaseConnection.findOne({
-    _id: connectionObjectId,
-    workspaceId: workspaceObjectId,
-  });
+  const database = await connectionsRepo.findDatabaseConnectionById(
+    connectionId,
+    workspaceId,
+  );
 
   if (!database) {
     throw new Error("Database connection not found or access denied");
@@ -120,7 +117,7 @@ export async function listConnectionsImpl(
   workspaceId: string,
   options: { sqlOnly?: boolean; includeNoSQL?: boolean } = {},
 ): Promise<ConnectionInfo[]> {
-  const workspaceObjectId = ensureValidObjectId(workspaceId, "workspaceId");
+  ensureValidObjectId(workspaceId, "workspaceId");
 
   const allowedTypes = options.includeNoSQL
     ? ALL_SUPPORTED_TYPES
@@ -128,10 +125,9 @@ export async function listConnectionsImpl(
       ? ALL_SQL_TYPES
       : ALL_SUPPORTED_TYPES;
 
-  const databases = await DatabaseConnection.find({
-    workspaceId: workspaceObjectId,
-    type: { $in: Array.from(allowedTypes) as IDatabaseConnection["type"][] },
-  }).sort({ name: 1 });
+  const databases = (
+    await connectionsRepo.listDatabaseConnections(workspaceId)
+  ).filter(db => allowedTypes.has(db.type));
 
   return databases.map(db => {
     const connection: Record<string, unknown> =
@@ -200,7 +196,7 @@ export async function listDatabasesImpl(
 
     if (dialect === "postgresql") {
       const result = await databaseConnectionService.executeQuery(
-        database as Parameters<
+        database as unknown as Parameters<
           typeof databaseConnectionService.executeQuery
         >[0],
         `SELECT datname FROM pg_database WHERE datistemplate = false AND datallowconn = true ORDER BY datname;`,
@@ -219,7 +215,7 @@ export async function listDatabasesImpl(
 
     if (dialect === "mysql") {
       const result = await databaseConnectionService.executeQuery(
-        database as Parameters<
+        database as unknown as Parameters<
           typeof databaseConnectionService.executeQuery
         >[0],
         "SHOW DATABASES",
@@ -247,7 +243,7 @@ export async function listDatabasesImpl(
 
     if (dialect === "bigquery") {
       const datasets = await databaseConnectionService.listBigQueryDatasets(
-        database as Parameters<
+        database as unknown as Parameters<
           typeof databaseConnectionService.listBigQueryDatasets
         >[0],
       );
@@ -260,7 +256,7 @@ export async function listDatabasesImpl(
 
     if (dialect === "clickhouse") {
       const result = await databaseConnectionService.executeQuery(
-        database as Parameters<
+        database as unknown as Parameters<
           typeof databaseConnectionService.executeQuery
         >[0],
         "SHOW DATABASES",
@@ -301,7 +297,7 @@ export async function listDatabasesImpl(
       // Cluster mode: fetch all D1 databases from Cloudflare API
       try {
         const d1Databases = await databaseConnectionService.listD1Databases(
-          database as Parameters<
+          database as unknown as Parameters<
             typeof databaseConnectionService.listD1Databases
           >[0],
         );
@@ -368,7 +364,7 @@ export async function listTablesImpl(
 
     if (dialect === "postgresql") {
       const result = await databaseConnectionService.executeQuery(
-        database as Parameters<
+        database as unknown as Parameters<
           typeof databaseConnectionService.executeQuery
         >[0],
         `SELECT table_schema, table_name, table_type
@@ -403,7 +399,7 @@ export async function listTablesImpl(
     if (dialect === "mysql") {
       const safeDb = databaseName.replace(/'/g, "''");
       const result = await databaseConnectionService.executeQuery(
-        database as Parameters<
+        database as unknown as Parameters<
           typeof databaseConnectionService.executeQuery
         >[0],
         `SELECT table_name, table_type FROM information_schema.tables 
@@ -433,7 +429,7 @@ export async function listTablesImpl(
 
     if (dialect === "bigquery") {
       const tables = await databaseConnectionService.listBigQueryTables(
-        database as Parameters<
+        database as unknown as Parameters<
           typeof databaseConnectionService.listBigQueryTables
         >[0],
         databaseName,
@@ -449,7 +445,7 @@ export async function listTablesImpl(
     if (dialect === "sqlite") {
       // D1/SQLite: use databaseId for cluster mode
       const result = await databaseConnectionService.executeQuery(
-        database as Parameters<
+        database as unknown as Parameters<
           typeof databaseConnectionService.executeQuery
         >[0],
         `SELECT name, type FROM sqlite_master 
@@ -474,7 +470,7 @@ export async function listTablesImpl(
     if (dialect === "clickhouse") {
       const safeDb = databaseName.replace(/'/g, "''");
       const result = await databaseConnectionService.executeQuery(
-        database as Parameters<
+        database as unknown as Parameters<
           typeof databaseConnectionService.executeQuery
         >[0],
         `SELECT name, engine FROM system.tables WHERE database = '${safeDb}' ORDER BY name`,
@@ -570,7 +566,7 @@ export async function inspectTableImpl(
           const safeTable = tblName.replace(/'/g, "''");
 
           const colResult = await databaseConnectionService.executeQuery(
-            database as Parameters<
+            database as unknown as Parameters<
               typeof databaseConnectionService.executeQuery
             >[0],
             `SELECT column_name, data_type, is_nullable
@@ -601,7 +597,7 @@ export async function inspectTableImpl(
           const quotedSchema = escapePostgresIdentifier(schemaName);
           const quotedTable = escapePostgresIdentifier(tblName);
           const sampleResult = await databaseConnectionService.executeQuery(
-            database as Parameters<
+            database as unknown as Parameters<
               typeof databaseConnectionService.executeQuery
             >[0],
             `SELECT * FROM ${quotedSchema}.${quotedTable} LIMIT ${MAX_SAMPLE_ROWS};`,
@@ -620,7 +616,7 @@ export async function inspectTableImpl(
           const safeTable = tableName.replace(/'/g, "''");
 
           const colResult = await databaseConnectionService.executeQuery(
-            database as Parameters<
+            database as unknown as Parameters<
               typeof databaseConnectionService.executeQuery
             >[0],
             `SELECT column_name, data_type, is_nullable
@@ -653,7 +649,7 @@ export async function inspectTableImpl(
 
           const quotedTable = escapeMySqlIdentifier(tableName);
           const sampleResult = await databaseConnectionService.executeQuery(
-            database as Parameters<
+            database as unknown as Parameters<
               typeof databaseConnectionService.executeQuery
             >[0],
             `SELECT * FROM ${quotedTable} LIMIT ${MAX_SAMPLE_ROWS};`,
@@ -672,7 +668,7 @@ export async function inspectTableImpl(
           const safeTable = tableName.replace(/'/g, "''");
 
           const colResult = await databaseConnectionService.executeQuery(
-            database as Parameters<
+            database as unknown as Parameters<
               typeof databaseConnectionService.executeQuery
             >[0],
             `SELECT column_name, data_type, is_nullable
@@ -699,7 +695,7 @@ export async function inspectTableImpl(
           const quotedDataset = escapeBigQueryIdentifier(databaseName);
           const quotedTable = escapeBigQueryIdentifier(tableName);
           const sampleResult = await databaseConnectionService.executeQuery(
-            database as Parameters<
+            database as unknown as Parameters<
               typeof databaseConnectionService.executeQuery
             >[0],
             `SELECT * FROM ${quotedDataset}.${quotedTable} LIMIT ${MAX_SAMPLE_ROWS};`,
@@ -713,7 +709,7 @@ export async function inspectTableImpl(
           const safeTable = tableName.replace(/"/g, '""');
 
           const colResult = await databaseConnectionService.executeQuery(
-            database as Parameters<
+            database as unknown as Parameters<
               typeof databaseConnectionService.executeQuery
             >[0],
             `PRAGMA table_info("${safeTable}");`,
@@ -737,7 +733,7 @@ export async function inspectTableImpl(
 
           const quotedTable = escapeSqliteIdentifier(tableName);
           const sampleResult = await databaseConnectionService.executeQuery(
-            database as Parameters<
+            database as unknown as Parameters<
               typeof databaseConnectionService.executeQuery
             >[0],
             `SELECT * FROM ${quotedTable} LIMIT ${MAX_SAMPLE_ROWS};`,
@@ -757,7 +753,7 @@ export async function inspectTableImpl(
           const safeTable = tableName.replace(/'/g, "''");
 
           const colResult = await databaseConnectionService.executeQuery(
-            database as Parameters<
+            database as unknown as Parameters<
               typeof databaseConnectionService.executeQuery
             >[0],
             `SELECT name, type FROM system.columns WHERE database = '${safeDb}' AND table = '${safeTable}' ORDER BY position`,
@@ -776,7 +772,7 @@ export async function inspectTableImpl(
           const escapedDbName = databaseName.replace(/"/g, '""');
           const escapedTblName = tableName.replace(/"/g, '""');
           const sampleResult = await databaseConnectionService.executeQuery(
-            database as Parameters<
+            database as unknown as Parameters<
               typeof databaseConnectionService.executeQuery
             >[0],
             `SELECT * FROM "${escapedDbName}"."${escapedTblName}" LIMIT ${MAX_SAMPLE_ROWS}`,

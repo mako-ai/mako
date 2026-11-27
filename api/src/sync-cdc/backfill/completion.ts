@@ -3,9 +3,12 @@
  * backfill, and force-drain the flow's pending CDC events.
  */
 import { syncWritePriority } from "../../services/bigquery-job-priority";
-import { inWorkspace } from "../../utils/workspace-scope";
 import { Types } from "mongoose";
-import { DatabaseConnection, Flow } from "../../database/workspace-schema";
+import {
+  Flow,
+  type IDatabaseConnection,
+} from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { databaseRegistry } from "../../databases/registry";
 import { inngest } from "../../inngest/client";
 import { loggers } from "../../logging";
@@ -70,8 +73,9 @@ export async function purgeSoftDeletesAfterBackfill(params: {
     return;
   }
 
-  const destination = await DatabaseConnection.findOne(
-    inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
+  const destination = await connectionsRepo.findDatabaseConnectionById(
+    flow.tableDestination.connectionId.toString(),
+    flow.workspaceId.toString(),
   );
   if (!destination) return;
 
@@ -89,9 +93,13 @@ export async function purgeSoftDeletesAfterBackfill(params: {
       : `"${schema}"."${tableName}"`;
     const query = `DELETE FROM ${fullTable} WHERE is_deleted = true`;
     try {
-      await driver.executeQuery(destination, query, {
-        priority: syncWritePriority(),
-      });
+      await driver.executeQuery(
+        destination as unknown as IDatabaseConnection,
+        query,
+        {
+          priority: syncWritePriority(),
+        },
+      );
       log.info("Purged soft-deleted rows after backfill", {
         flowId: params.flowId,
         entity,

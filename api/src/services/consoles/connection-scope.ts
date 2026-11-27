@@ -6,7 +6,10 @@
  * runner loads the connection with the workspace in the filter.
  */
 import { Types } from "mongoose";
-import { DatabaseConnection } from "../../database/workspace-schema";
+import {
+  connectionsRepo,
+  type DatabaseConnectionRecord,
+} from "../../repositories/connections";
 
 export const FOREIGN_CONNECTION_ERROR =
   "Database connection not found in this workspace";
@@ -35,7 +38,10 @@ export async function workspaceOwnsConnection(
   const id = asObjectId(connectionId);
   const ws = asObjectId(workspaceId);
   if (!id || !ws) return false;
-  const found = await DatabaseConnection.exists({ _id: id, workspaceId: ws });
+  const found = await connectionsRepo.findDatabaseConnectionSummary(
+    id.toHexString(),
+    ws.toHexString(),
+  );
   return found !== null;
 }
 
@@ -54,16 +60,22 @@ export async function connectionIdAllowed(
   if (await workspaceOwnsConnection(workspaceId, connectionId)) return true;
   const id = asObjectId(connectionId);
   if (!id) return false;
-  return (await DatabaseConnection.exists({ _id: id })) === null;
+  return (
+    (await connectionsRepo.findDatabaseConnectionSummary(id.toHexString())) ===
+    null
+  );
 }
 
 /** The database connection of `workspaceId` with this id, or null. */
 export function findWorkspaceConnection(
   workspaceId: string | Types.ObjectId,
   connectionId: unknown,
-) {
+): Promise<DatabaseConnectionRecord | null> {
   const id = asObjectId(connectionId);
   const ws = asObjectId(workspaceId);
   if (!id || !ws) return Promise.resolve(null);
-  return DatabaseConnection.findOne({ _id: id, workspaceId: ws });
+  return connectionsRepo.findDatabaseConnectionById(
+    id.toHexString(),
+    ws.toHexString(),
+  );
 }

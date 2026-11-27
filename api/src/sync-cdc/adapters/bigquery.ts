@@ -8,17 +8,16 @@
  * - bigquery-target.ts resolved client type, quota retry, logger
  */
 import { googleClientCredentials } from "../../connections/google-service-account";
-import { inWorkspace } from "../../utils/workspace-scope";
 import { BigQuery } from "@google-cloud/bigquery";
 import {
   isLocalBigQueryEmulator,
   bigQueryEmulatorEndpoint,
 } from "../../utils/bigquery-emulator";
-import {
-  DatabaseConnection,
-  type IFlow,
-  type IDatabaseConnection,
+import type {
+  IFlow,
+  IDatabaseConnection,
 } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { enableLoadJobLabels } from "./bigquery-load-labels";
 import {
   normalizePayloadKeys,
@@ -975,15 +974,16 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   }
 
   private async resolveDestination(): Promise<IDatabaseConnection> {
-    const doc = await DatabaseConnection.findOne(
-      inWorkspace(this.config.destinationDatabaseId, this.config.workspaceId),
+    const doc = await connectionsRepo.findDatabaseConnectionById(
+      this.config.destinationDatabaseId,
+      this.config.workspaceId,
     );
     if (!doc) {
       throw new Error(
         `Destination connection ${this.config.destinationDatabaseId} not found`,
       );
     }
-    return doc;
+    return doc as unknown as IDatabaseConnection;
   }
 
   private _datasetLocation: string | undefined;

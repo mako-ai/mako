@@ -15,10 +15,7 @@
  * such rows in 46 flows.
  */
 import { Types } from "mongoose";
-import {
-  DatabaseConnection,
-  SourceConnection,
-} from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import type { FlowFile } from "./flow-config-files";
 
 export interface FlowConnectionRef {
@@ -66,14 +63,19 @@ export async function foreignConnectionRefusal(
   workspaceId: string,
   refs: FlowConnectionRef[],
 ): Promise<string | null> {
-  const ws = new Types.ObjectId(workspaceId);
   for (const ref of refs) {
     if (!Types.ObjectId.isValid(ref.id)) continue;
-    const filter = { _id: new Types.ObjectId(ref.id), workspaceId: ws };
     const exists =
       ref.kind === "source"
-        ? await SourceConnection.exists(filter)
-        : await DatabaseConnection.exists(filter);
+        ? Boolean(
+            await connectionsRepo.findSourceConnectionById(ref.id, workspaceId),
+          )
+        : Boolean(
+            await connectionsRepo.findDatabaseConnectionSummary(
+              ref.id,
+              workspaceId,
+            ),
+          );
     if (!exists) {
       const what =
         ref.kind === "source" ? "source connection" : "database connection";
@@ -92,7 +94,6 @@ export async function flowFilesConnectionRefusals(
   workspaceId: string,
   files: Array<FlowFile | null>,
 ): Promise<Array<string | null>> {
-  const ws = new Types.ObjectId(workspaceId);
   const refsPerFile = files.map(f => (f ? flowFileConnectionRefs(f) : []));
   const ids = (kind: FlowConnectionRef["kind"]) => [
     ...new Set(
@@ -102,24 +103,22 @@ export async function flowFilesConnectionRefusals(
         .map(r => r.id),
     ),
   ];
+  const sourceIds = ids("source");
+  const databaseIds = ids("database");
   const [sources, databases] = await Promise.all([
-    ids("source").length
-      ? SourceConnection.find({ _id: { $in: ids("source") }, workspaceId: ws })
-          .select({ _id: 1 })
-          .lean()
+    sourceIds.length
+      ? connectionsRepo.findSourceConnectionsByIds(sourceIds, workspaceId)
       : [],
-    ids("database").length
-      ? DatabaseConnection.find({
-          _id: { $in: ids("database") },
-          workspaceId: ws,
-        })
-          .select({ _id: 1 })
-          .lean()
+    databaseIds.length
+      ? connectionsRepo.findDatabaseConnectionSummariesByIds(
+          databaseIds,
+          workspaceId,
+        )
       : [],
   ]);
   const owned = {
-    source: new Set(sources.map(d => String(d._id))),
-    database: new Set(databases.map(d => String(d._id))),
+    source: new Set(sources.map(d => d.id)),
+    database: new Set(databases.map(d => d.id)),
   };
   return refsPerFile.map(refs => {
     const foreign = refs.find(

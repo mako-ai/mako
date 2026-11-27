@@ -59,7 +59,6 @@
  * able to widen who uses a credential.
  */
 import { tool } from "ai";
-import { Types } from "mongoose";
 import { z } from "zod";
 
 import {
@@ -84,10 +83,10 @@ import {
 } from "../../access/source-connection-access";
 import { authRepo } from "../../repositories/auth";
 import {
-  DatabaseConnection,
-  SourceConnection,
-  type IConnectionWriter,
-} from "../../database/workspace-schema";
+  connectionsRepo,
+  type UpdateSourceConnectionInput,
+} from "../../repositories/connections";
+import type { IConnectionWriter } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
 
 const logger = loggers.api("connection-access-tools");
@@ -110,7 +109,7 @@ interface WriterInput {
 }
 
 interface DatabaseRow {
-  _id: Types.ObjectId;
+  _id: string;
   name: string;
   writers?: IConnectionWriter[];
 }
@@ -137,23 +136,26 @@ async function findConnection(
   ref: string,
   kind: Kind | undefined,
 ): Promise<Found> {
-  const workspace = new Types.ObjectId(workspaceId);
-  const by = OBJECT_ID.test(ref)
-    ? { _id: new Types.ObjectId(ref) }
-    : { name: ref };
+  const isId = OBJECT_ID.test(ref);
   const [sources, databases] = await Promise.all([
     kind === "database"
       ? []
-      : SourceConnection.find({ workspaceId: workspace, ...by })
-          .select("_id name writers liveReads liveReaders managers createdBy")
-          .limit(2)
-          .lean<SourceRow[]>(),
+      : isId
+        ? connectionsRepo
+            .findSourceConnectionById(ref, workspaceId)
+            .then(row => (row ? [row] : []))
+        : connectionsRepo
+            .listSourceConnections(workspaceId)
+            .then(rows => rows.filter(r => r.name === ref).slice(0, 2)),
     kind === "source"
       ? []
-      : DatabaseConnection.find({ workspaceId: workspace, ...by })
-          .select("_id name writers")
-          .limit(2)
-          .lean<DatabaseRow[]>(),
+      : isId
+        ? connectionsRepo
+            .findDatabaseConnectionSummary(ref, workspaceId)
+            .then(row => (row ? [row] : []))
+        : connectionsRepo
+            .listDatabaseConnectionMetadata(workspaceId)
+            .then(rows => rows.filter(r => r.name === ref).slice(0, 2)),
   ]);
   if (sources.length + databases.length === 0) return { error: NOT_FOUND };
   if (sources.length + databases.length > 1) {
@@ -582,10 +584,9 @@ async function setDatabaseAccess(
     ? nextWriters(stored, wanted, caller.userId as string)
     : stored;
   if (changed) {
-    await DatabaseConnection.updateOne(
-      { _id: row._id, workspaceId: new Types.ObjectId(workspaceId) },
-      { $set: { writers } },
-    );
+    await connectionsRepo.updateDatabaseConnection(row._id, workspaceId, {
+      writers,
+    });
     logger.info("Connection writers changed", {
       workspaceId,
       databaseId: String(row._id),
@@ -641,8 +642,7 @@ async function setSourceAccess(
     };
   }
 
-  const set: Record<string, unknown> = {};
-  const unset: Record<string, 1> = {};
+  const patch: UpdateSourceConnectionInput = {};
   const changed: string[] = [];
   const editor = caller.userId as string;
 
@@ -678,7 +678,7 @@ async function setSourceAccess(
     if (outside) return { error: asGiven(outside, resolved.given) };
     if (!sameEntries(storedWriters, wanted)) {
       writers = nextWriters(storedWriters, wanted, editor);
-      set.writers = writers;
+      patch.writers = writers;
       changed.push("writers");
     }
   }
@@ -687,7 +687,7 @@ async function setSourceAccess(
   let liveReads = row.liveReads === true;
   if (input.liveReads !== undefined && input.liveReads !== liveReads) {
     liveReads = input.liveReads;
-    set.liveReads = liveReads;
+    patch.liveReads = liveReads;
     changed.push("liveReads");
   }
 
@@ -708,7 +708,7 @@ async function setSourceAccess(
     }
     if (liveReaders !== null) {
       liveReaders = null;
-      unset.liveReaders = 1;
+      patch.liveReaders = null;
       changed.push("liveReaders");
     }
   } else if (input.addLiveReaders?.length || input.removeLiveReaders?.length) {
@@ -745,7 +745,7 @@ async function setSourceAccess(
     const creates = liveReaders === null && resolved.add.length > 0;
     if (creates || (liveReaders && !sameEntries(storedReaders, wanted))) {
       liveReaders = nextWriters(storedReaders, wanted, editor);
-      set.liveReaders = liveReaders;
+      patch.liveReaders = liveReaders;
       changed.push("liveReaders");
     }
   }
@@ -817,19 +817,13 @@ async function setSourceAccess(
       next.some(id => !before.includes(id))
     ) {
       managers = next;
-      set.managers = next;
+      patch.managers = next;
       changed.push("managers");
     }
   }
 
   if (changed.length > 0) {
-    await SourceConnection.updateOne(
-      { _id: row._id, workspaceId: new Types.ObjectId(workspaceId) },
-      {
-        ...(Object.keys(set).length > 0 ? { $set: set } : {}),
-        ...(Object.keys(unset).length > 0 ? { $unset: unset } : {}),
-      },
-    );
+    await connectionsRepo.updateSourceConnection(row._id, workspaceId, patch);
     logger.info("Source connection access changed", {
       workspaceId,
       connectionId: String(row._id),

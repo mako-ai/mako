@@ -1,9 +1,9 @@
 import { Types } from "mongoose";
-import { inWorkspace } from "../../utils/workspace-scope";
-import {
-  DatabaseConnection,
-  type IFlow,
+import type {
+  IDatabaseConnection,
+  IFlow,
 } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { createDestinationWriter } from "../../services/destination-writer.service";
 import { databaseRegistry } from "../../databases/registry";
 import { MySQLDatabaseDriver } from "../../databases/drivers/mysql/driver";
@@ -55,11 +55,9 @@ export class MySqlDestinationAdapter implements CdcDestinationAdapter {
 
   /** Full Refresh | Overwrite: clear the live table (no-op when absent). */
   async truncateLiveTable(layout: CdcEntityLayout): Promise<void> {
-    const destination = await DatabaseConnection.findOne(
-      inWorkspace(
-        this.config.tableDestination.connectionId,
-        this.config.workspaceId,
-      ),
+    const destination = await connectionsRepo.findDatabaseConnectionById(
+      this.config.tableDestination.connectionId,
+      this.config.workspaceId,
     );
     if (!destination) return;
     const driver = databaseRegistry.getDriver(destination.type) as
@@ -67,7 +65,7 @@ export class MySqlDestinationAdapter implements CdcDestinationAdapter {
     if (!driver) return;
     const schema = this.config.tableDestination.schema;
     const result = await driver.executeQuery(
-      destination,
+      destination as unknown as IDatabaseConnection,
       `DELETE FROM ${driver.formatTableRef(schema, layout.tableName)}`,
     );
     if (
@@ -254,24 +252,23 @@ export class MySqlDestinationAdapter implements CdcDestinationAdapter {
     if (this.layoutIndexesEnsured.has(cacheKey)) return;
 
     try {
-      const destination = await DatabaseConnection.findOne(
-        inWorkspace(
-          this.config.tableDestination.connectionId,
-          this.config.workspaceId,
-        ),
+      const destination = await connectionsRepo.findDatabaseConnectionById(
+        this.config.tableDestination.connectionId,
+        this.config.workspaceId,
       );
       if (!destination) return;
+      const destinationConn = destination as unknown as IDatabaseConnection;
       const driver = databaseRegistry.getDriver(destination.type) as
         MySQLDatabaseDriver | undefined;
       if (!driver) return;
 
       const columnTypes = await driver.fetchColumnTypes(
-        destination,
+        destinationConn,
         schema,
         layout.tableName,
       );
       const existing = await driver.executeQuery(
-        destination,
+        destinationConn,
         `SELECT DISTINCT index_name AS index_name FROM information_schema.statistics WHERE table_schema = '${schema.replace(/'/g, "''")}' AND table_name = '${layout.tableName.replace(/'/g, "''")}'`,
       );
       const existingNames = new Set(
@@ -286,7 +283,7 @@ export class MySqlDestinationAdapter implements CdcDestinationAdapter {
         columnTypes,
       )) {
         if (existingNames.has(indexName.toLowerCase())) continue;
-        const result = await driver.executeQuery(destination, sql);
+        const result = await driver.executeQuery(destinationConn, sql);
         if (
           !result.success &&
           !/duplicate key name/i.test(result.error || "")

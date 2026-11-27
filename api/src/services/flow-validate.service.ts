@@ -22,11 +22,8 @@
  */
 import { Types } from "mongoose";
 
-import {
-  DatabaseConnection,
-  SourceConnection,
-  Flow,
-} from "../database/workspace-schema";
+import { Flow } from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import { parseFlowFileResult, slugFromFlowFilePath } from "./flow-config-files";
 
 export interface FlowFileProblem {
@@ -97,7 +94,9 @@ export async function validateFlowFile(input: {
       );
     } else if (!isObjectId(id)) {
       add(`\`source.connection_id: ${id}\` is not a valid id`);
-    } else if (!(await SourceConnection.exists({ _id: id, workspaceId }))) {
+    } else if (
+      !(await connectionsRepo.findSourceConnectionById(id, workspaceId))
+    ) {
       add(
         `\`source.connection_id: ${id}\` does not name a source connection in this workspace — configure the connection first (Sources → Add), then reference the id list_connections returns`,
       );
@@ -108,7 +107,7 @@ export async function validateFlowFile(input: {
       add(`\`source.connection_id: ${id}\` is not a valid id`);
     } else if (
       id &&
-      !(await DatabaseConnection.exists({ _id: id, workspaceId }))
+      !(await connectionsRepo.findDatabaseConnectionSummary(id, workspaceId))
     ) {
       add(
         `\`source.connection_id: ${id}\` does not name a database connection in this workspace`,
@@ -123,7 +122,9 @@ export async function validateFlowFile(input: {
     );
   } else if (!isObjectId(destId)) {
     add(`\`destination.connection_id: ${destId}\` is not a valid id`);
-  } else if (!(await DatabaseConnection.exists({ _id: destId, workspaceId }))) {
+  } else if (
+    !(await connectionsRepo.findDatabaseConnectionSummary(destId, workspaceId))
+  ) {
     add(
       `\`destination.connection_id: ${destId}\` does not name a database connection in this workspace`,
     );

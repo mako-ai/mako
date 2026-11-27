@@ -9,10 +9,10 @@ import { unifiedAuthMiddleware } from "../../auth/unified-auth.middleware";
 import { restQueryAccessFromStoredScopes } from "../../auth/api-key-scopes";
 import { requireWorkspace } from "../../middleware/workspace.middleware";
 import {
-  DatabaseConnection,
   IDatabaseConnection,
   SavedConsole,
 } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import {
   executeQueryWithRowCap,
@@ -93,10 +93,10 @@ connectionExecuteRoutes.openapi(
         return c.json({ success: false, error: "Invalid database ID" }, 400);
       }
 
-      const database = await DatabaseConnection.findOne({
-        _id: new Types.ObjectId(databaseId),
-        workspaceId: workspace._id,
-      });
+      const database = await connectionsRepo.findDatabaseConnectionById(
+        databaseId,
+        workspace._id.toString(),
+      );
 
       if (!database) {
         return c.json({ success: false, error: "Database not found" }, 404);
@@ -118,7 +118,7 @@ connectionExecuteRoutes.openapi(
 
       const result = await executeQueryWithRowCap(
         databaseConnectionService,
-        database,
+        database as unknown as IDatabaseConnection,
         body.query,
         {
           ...requestExecutionOptions(body.options),
@@ -237,10 +237,10 @@ workspaceExecuteRoutes.openapi(
       }
 
       // Find the database connection
-      database = await DatabaseConnection.findOne({
-        _id: new Types.ObjectId(effectiveConnectionId),
-        workspaceId: workspace._id,
-      });
+      database = (await connectionsRepo.findDatabaseConnectionById(
+        String(effectiveConnectionId),
+        workspace._id.toString(),
+      )) as unknown as IDatabaseConnection | null;
 
       if (!database) {
         return c.json(
@@ -441,7 +441,7 @@ workspaceExecuteRoutes.openapi(
           userId,
           apiKeyId: apiKey?._id,
           workspaceId: workspace._id,
-          connectionId: database._id,
+          connectionId: new Types.ObjectId(database._id.toString()),
           databaseName: databaseName || database.connection.database,
           consoleId: validConsoleId,
           source: executionSource,
@@ -516,7 +516,7 @@ workspaceExecuteRoutes.openapi(
           userId,
           apiKeyId: apiKey?._id,
           workspaceId: workspace._id,
-          connectionId: database._id,
+          connectionId: new Types.ObjectId(database._id.toString()),
           databaseName: database.connection.database,
           source: apiKey ? "api" : "console_ui",
           databaseType: database.type,
@@ -618,10 +618,10 @@ workspaceExecuteRoutes.openapi(
         );
       }
 
-      const database = await DatabaseConnection.findOne({
-        _id: new Types.ObjectId(String(effectiveConnectionId)),
-        workspaceId: workspace._id,
-      });
+      const database = (await connectionsRepo.findDatabaseConnectionById(
+        String(effectiveConnectionId),
+        workspace._id.toString(),
+      )) as unknown as IDatabaseConnection | null;
 
       if (!database) {
         return c.json(

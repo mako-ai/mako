@@ -7,7 +7,8 @@ import {
   requireWorkspace,
   requireWorkspaceRole,
 } from "../../middleware/workspace.middleware";
-import { DatabaseConnection } from "../../database/workspace-schema";
+import type { IDatabaseConnection } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { Types } from "mongoose";
 import {
@@ -52,18 +53,19 @@ mongoCollectionRoutes.openapi(
         return c.json({ success: false, error: "Invalid database ID" }, 400);
       }
 
-      const database = await DatabaseConnection.findOne({
-        _id: new Types.ObjectId(databaseId),
-        workspaceId: workspace._id,
-      });
+      const database = await connectionsRepo.findDatabaseConnectionById(
+        databaseId,
+        workspace._id.toString(),
+      );
 
       if (!database) {
         return c.json({ success: false, error: "Database not found" }, 404);
       }
 
       if (database.type === "mongodb") {
-        const connection =
-          await databaseConnectionService.getConnection(database);
+        const connection = await databaseConnectionService.getConnection(
+          database as unknown as IDatabaseConnection,
+        );
         const db = connection.db(database.connection.database);
         const collections = await db
           .listCollections({ type: "collection" })
@@ -81,8 +83,9 @@ mongoCollectionRoutes.openapi(
 
       if (database.type === "bigquery") {
         try {
-          const datasets =
-            await databaseConnectionService.listBigQueryDatasets(database);
+          const datasets = await databaseConnectionService.listBigQueryDatasets(
+            database as unknown as IDatabaseConnection,
+          );
           // Return dataset root nodes to match tree driver expectations
           const data = datasets.map(ds => ({
             name: `${ds}.__root__`,
@@ -247,10 +250,10 @@ mongoCollectionRoutes.openapi(
         return c.json({ success: false, error: "Invalid database ID" }, 400);
       }
 
-      const database = await DatabaseConnection.findOne({
-        _id: new Types.ObjectId(databaseId),
-        workspaceId: workspace._id,
-      });
+      const database = await connectionsRepo.findDatabaseConnectionById(
+        databaseId,
+        workspace._id.toString(),
+      );
 
       if (!database) {
         return c.json({ success: false, error: "Database not found" }, 404);
@@ -266,8 +269,9 @@ mongoCollectionRoutes.openapi(
         );
       }
 
-      const connection =
-        await databaseConnectionService.getConnection(database);
+      const connection = await databaseConnectionService.getConnection(
+        database as unknown as IDatabaseConnection,
+      );
       const db = connection.db(database.connection.database);
 
       // Check if collection exists
@@ -503,18 +507,19 @@ mongoCollectionRoutes.openapi(
         return c.json({ success: false, error: "Invalid database ID" }, 400);
       }
 
-      const database = await DatabaseConnection.findOne({
-        _id: new Types.ObjectId(databaseId),
-        workspaceId: workspace._id,
-      });
+      const database = await connectionsRepo.findDatabaseConnectionById(
+        databaseId,
+        workspace._id.toString(),
+      );
 
       if (!database) {
         return c.json({ success: false, error: "Database not found" }, 404);
       }
 
       if (database.type === "mongodb") {
-        const connection =
-          await databaseConnectionService.getConnection(database);
+        const connection = await databaseConnectionService.getConnection(
+          database as unknown as IDatabaseConnection,
+        );
         const db = connection.db(database.connection.database);
         const views = await db.listCollections({ type: "view" }).toArray();
 

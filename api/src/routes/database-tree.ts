@@ -1,7 +1,7 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { requireWorkspace } from "../middleware/workspace.middleware";
-import { DatabaseConnection } from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import { Types } from "mongoose";
 import { databaseRegistry } from "../databases/registry";
 import { databaseConnectionService } from "../services/database-connection.service";
@@ -45,10 +45,10 @@ databaseTreeRoutes.openapi(
     if (!Types.ObjectId.isValid(databaseId)) {
       return c.json({ success: false, error: "Invalid database ID" }, 400);
     }
-    const database = await DatabaseConnection.findOne({
-      _id: new Types.ObjectId(databaseId),
-      workspaceId: workspace._id,
-    });
+    const database = await connectionsRepo.findDatabaseConnectionById(
+      databaseId,
+      workspace._id.toString(),
+    );
     if (!database) {
       return c.json({ success: false, error: "Database not found" }, 404);
     }
@@ -98,10 +98,10 @@ databaseTreeRoutes.openapi(
     if (!Types.ObjectId.isValid(databaseId)) {
       return c.json({ success: false, error: "Invalid database ID" }, 400);
     }
-    const database = await DatabaseConnection.findOne({
-      _id: new Types.ObjectId(databaseId),
-      workspaceId: workspace._id,
-    });
+    const database = await connectionsRepo.findDatabaseConnectionById(
+      databaseId,
+      workspace._id.toString(),
+    );
     if (!database) {
       return c.json({ success: false, error: "Database not found" }, 404);
     }
@@ -245,10 +245,10 @@ databaseTreeRoutes.openapi(
       return c.json({ success: false, error: "Invalid database ID" }, 400);
     }
 
-    const database = await DatabaseConnection.findOne({
-      _id: new Types.ObjectId(databaseId),
-      workspaceId: workspace._id,
-    });
+    const database = await connectionsRepo.findDatabaseConnectionById(
+      databaseId,
+      workspace._id.toString(),
+    );
     if (!database) {
       return c.json({ success: false, error: "Database not found" }, 404);
     }
@@ -309,10 +309,10 @@ databaseTreeRoutes.openapi(
     const schema = String(c.req.query("schema") || "public");
     const databaseName = c.req.query("database");
 
-    const database = await DatabaseConnection.findOne({
-      _id: new Types.ObjectId(databaseId),
-      workspaceId: workspace._id,
-    });
+    const database = await connectionsRepo.findDatabaseConnectionById(
+      databaseId,
+      workspace._id.toString(),
+    );
     if (!database) {
       return c.json({ success: false, error: "Database not found" }, 404);
     }
@@ -406,10 +406,10 @@ databaseTreeRoutes.openapi(
       return c.json({ success: false, error: "tableName is required" }, 400);
     }
 
-    const dbConnection = await DatabaseConnection.findOne({
-      _id: new Types.ObjectId(databaseId),
-      workspaceId: workspace._id,
-    });
+    const dbConnection = await connectionsRepo.findDatabaseConnectionById(
+      databaseId,
+      workspace._id.toString(),
+    );
 
     if (!dbConnection) {
       return c.json({ success: false, error: "Database not found" }, 404);

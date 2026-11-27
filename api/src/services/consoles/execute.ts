@@ -7,12 +7,15 @@
  */
 import { Types } from "mongoose";
 import {
-  DatabaseConnection,
   SavedConsole,
   type IDatabaseConnection,
   type ISavedConsole,
   type IWorkspaceApiKey,
 } from "../../database/workspace-schema";
+import {
+  connectionsRepo,
+  type DatabaseConnectionRecord,
+} from "../../repositories/connections";
 import { restQueryAccessFromStoredScopes } from "../../auth/api-key-scopes";
 import { viewerWriteRefusal } from "../../access/viewer-writes";
 import { liveConsoleCode } from "../../apps/workspace-consoles.service";
@@ -89,7 +92,7 @@ export async function executeConsoleRequest(input: {
 }): Promise<ConsoleRunOutcome> {
   const startTime = Date.now();
   const { workspaceId, consoleId, userId, apiKey, memberRole } = input;
-  let database: IDatabaseConnection | null = null;
+  let database: DatabaseConnectionRecord | null = null;
   let consoleIdParsed: Types.ObjectId | undefined;
 
   try {
@@ -127,10 +130,10 @@ export async function executeConsoleRequest(input: {
 
     // If console has a connection ID, verify it exists and belongs to workspace
     if (savedConsole.connectionId) {
-      database = await DatabaseConnection.findOne({
-        _id: savedConsole.connectionId,
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+      database = await connectionsRepo.findDatabaseConnectionById(
+        savedConsole.connectionId.toString(),
+        workspaceId,
+      );
       if (!database) {
         return refuse(404, "Associated database not found or access denied");
       }
@@ -172,14 +175,18 @@ export async function executeConsoleRequest(input: {
       ? { ...savedConsole.mongoOptions, ...executionOptions }
       : executionOptions;
     const result = isPreviewMode
-      ? await databaseConnectionService.executePreviewQuery(database, query, {
-          ...options,
-          pageSize: input.pageSize ? parseInt(input.pageSize, 10) : undefined,
-          cursor: input.cursor || null,
-        })
+      ? await databaseConnectionService.executePreviewQuery(
+          database as unknown as IDatabaseConnection,
+          query,
+          {
+            ...options,
+            pageSize: input.pageSize ? parseInt(input.pageSize, 10) : undefined,
+            cursor: input.cursor || null,
+          },
+        )
       : await executeQueryWithRowCap(
           databaseConnectionService,
-          database,
+          database as unknown as IDatabaseConnection,
           query,
           options,
           maxRows,
@@ -351,10 +358,10 @@ export async function exportConsoleResults(input: {
     };
   }
 
-  const database = await DatabaseConnection.findOne({
-    _id: savedConsole.connectionId,
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+  const database = await connectionsRepo.findDatabaseConnectionById(
+    savedConsole.connectionId.toString(),
+    workspaceId,
+  );
   if (!database) {
     return { ok: false, status: 404, error: "Database connection not found" };
   }
@@ -402,7 +409,7 @@ export async function exportConsoleResults(input: {
         filename: `${safeFileBase}.${format === "csv" ? "csv" : "ndjson"}`,
         streamRows: emitRows =>
           databaseConnectionService.executeStreamingQuery(
-            database,
+            database as unknown as IDatabaseConnection,
             streamQuery,
             {
               databaseId: savedConsole.databaseId,
@@ -418,12 +425,16 @@ export async function exportConsoleResults(input: {
     };
   }
 
-  const result = await databaseConnectionService.executeQuery(database, query, {
-    databaseId: savedConsole.databaseId,
-    databaseName: savedConsole.databaseName,
-    readOnly: true,
-    labels,
-  });
+  const result = await databaseConnectionService.executeQuery(
+    database as unknown as IDatabaseConnection,
+    query,
+    {
+      databaseId: savedConsole.databaseId,
+      databaseName: savedConsole.databaseName,
+      readOnly: true,
+      labels,
+    },
+  );
   if (!result.success || !result.data) {
     return {
       ok: false,

@@ -12,10 +12,8 @@ import { callableFor } from "../connections/callable";
 import { connectorRegistry } from "./registry";
 import { connectorTypeExists } from "./workspace/catalog";
 import { isWorkspaceConnectorType } from "./workspace/SandboxedConnector";
-import {
-  SourceConnection,
-  type ISourceConnectionKeyRequest,
-} from "../database/workspace-schema";
+import type { ISourceConnectionKeyRequest } from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import { encryptString } from "../services/crypto.service";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 
@@ -269,7 +267,7 @@ export async function createSourceConnection(
   if (refusal) throw new SourceConnectionInputError(refusal);
   const settings = (input.settings ?? {}) as Record<string, any>;
 
-  const sourceConnection = new SourceConnection({
+  const sourceConnection = await connectionsRepo.createSourceConnection({
     workspaceId,
     name,
     type,
@@ -282,7 +280,7 @@ export async function createSourceConnection(
       timeout_ms: settings.timeout_ms || 30000,
       timezone: settings.timezone || "UTC",
     },
-    targetDatabases: input.targetDatabases || [],
+    targetDatabases: (input.targetDatabases || []).map(String),
     createdBy: input.userId,
     managers: [input.userId],
     isActive: input.isActive !== false,
@@ -291,6 +289,5 @@ export async function createSourceConnection(
     // them on in the Access tab (they open the key to the whole workspace).
   });
 
-  await sourceConnection.save();
   return sourceConnection;
 }

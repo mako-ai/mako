@@ -31,9 +31,9 @@ import {
 } from "@mako/agent-tools";
 import {
   SavedConsole,
-  DatabaseConnection,
   type ISavedConsole,
 } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { ConsoleManager } from "../../utils/console-manager";
 import { liveConsoleCode } from "../../apps/workspace-consoles.service";
 import { workspaceService } from "../../services/workspace.service";
@@ -434,10 +434,11 @@ export function createServerConsoleTools({
                 error: `Invalid connectionId: ${connectionId}`,
               };
             }
-            const connection = await DatabaseConnection.findOne({
-              _id: new Types.ObjectId(connectionId),
-              workspaceId: new Types.ObjectId(workspaceId),
-            }).select("type");
+            const connection =
+              await connectionsRepo.findDatabaseConnectionSummary(
+                connectionId,
+                workspaceId,
+              );
             if (!connection) {
               return {
                 success: false,
@@ -522,10 +523,11 @@ export function createServerConsoleTools({
               error: `Invalid connectionId: ${connectionId}`,
             };
           }
-          const connection = await DatabaseConnection.findOne({
-            _id: new Types.ObjectId(connectionId),
-            workspaceId: new Types.ObjectId(workspaceId),
-          }).select("type name");
+          const connection =
+            await connectionsRepo.findDatabaseConnectionSummary(
+              connectionId,
+              workspaceId,
+            );
           if (!connection) {
             return {
               success: false,
@@ -639,10 +641,11 @@ export function createServerConsoleTools({
           };
         }
         if (queryAccess === "read") {
-          const connection = await DatabaseConnection.findOne({
-            _id: doc.connectionId,
-            workspaceId: new Types.ObjectId(workspaceId),
-          }).select("type");
+          const connection =
+            await connectionsRepo.findDatabaseConnectionSummary(
+              doc.connectionId.toString(),
+              workspaceId,
+            );
           if (!connection) {
             return {
               success: false,

@@ -24,7 +24,7 @@ import {
   requireWorkspace,
   requireWorkspaceRole,
 } from "../../middleware/workspace.middleware";
-import { DatabaseConnection } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { Types } from "mongoose";
 import {
   AUTH_SECURITY,
@@ -74,12 +74,10 @@ connectionWriterRoutes.openapi(
     if (!Types.ObjectId.isValid(databaseId)) {
       return c.json({ success: false, error: "Invalid database ID" }, 400);
     }
-    const database = await DatabaseConnection.findOne({
-      _id: new Types.ObjectId(databaseId),
-      workspaceId: workspace._id,
-    })
-      .select("writers")
-      .lean();
+    const database = await connectionsRepo.findDatabaseConnectionSummary(
+      databaseId,
+      String(workspace._id),
+    );
     if (!database) {
       return c.json({ success: false, error: "Database not found" }, 404);
     }
@@ -89,8 +87,10 @@ connectionWriterRoutes.openapi(
       data: {
         writers: publicWriters(database.writers),
         canEdit: memberRole === "owner" || memberRole === "admin",
-        recent: await recentWriters(databaseId, (principal, target) =>
-          covers(database.writers, principal, target),
+        recent: await recentWriters(
+          databaseId,
+          (principal, target) => covers(database.writers, principal, target),
+          String(workspace._id),
         ),
       },
     });
@@ -131,10 +131,10 @@ connectionWriterRoutes.openapi(
     if (!Types.ObjectId.isValid(databaseId)) {
       return c.json({ success: false, error: "Invalid database ID" }, 400);
     }
-    const database = await DatabaseConnection.findOne({
-      _id: new Types.ObjectId(databaseId),
-      workspaceId: workspace._id,
-    });
+    const database = await connectionsRepo.findDatabaseConnectionSummary(
+      databaseId,
+      String(workspace._id),
+    );
     if (!database) {
       return c.json({ success: false, error: "Database not found" }, 404);
     }
@@ -156,8 +156,12 @@ connectionWriterRoutes.openapi(
       );
     }
     const before = (database.writers ?? []).map(writerLabel);
-    database.writers = nextWriters(database.writers, writers, userId);
-    await database.save();
+    const updatedWriters = nextWriters(database.writers, writers, userId);
+    await connectionsRepo.updateDatabaseConnection(
+      databaseId,
+      String(workspace._id),
+      { writers: updatedWriters },
+    );
     await recordAccessChange({
       workspaceId: workspace._id,
       connectionId: databaseId,
@@ -165,14 +169,14 @@ connectionWriterRoutes.openapi(
       actor: userId,
       via: "app",
       changes: {
-        writers: listChange(before, database.writers.map(writerLabel)),
+        writers: listChange(before, updatedWriters.map(writerLabel)),
       },
     });
     logger.info("Connection writers changed", {
       workspaceId: String(workspace._id),
       databaseId,
       userId,
-      writers: database.writers.length,
+      writers: updatedWriters.length,
     });
     return c.json({ success: true });
   },

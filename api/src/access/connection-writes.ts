@@ -13,11 +13,11 @@
  * the engine has one, and the database refuses what the text missed (on
  * Postgres sent with the query in one round trip).
  */
-import { Types } from "mongoose";
 import {
   type IConnectionWriter,
   type IDatabaseConnection,
 } from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import { workspaceRepo } from "../repositories/workspaces";
 import { getRequestContext, requestContextStorage } from "../logging/context";
 import { loggers } from "../logging";
@@ -27,7 +27,6 @@ import {
 } from "../services/query-pagination.service";
 import { countTopLevelSemicolons } from "../services/sql-query-utils";
 import { findMongoShellWrite } from "../services/mongo-shell-interpreter";
-import { ConnectionWriteEvent } from "./connection-write-event";
 
 const logger = loggers.db();
 
@@ -420,17 +419,19 @@ export function recordWrite(
   // Where it wrote, for whoever reviews the log: worked out for writes only.
   const target =
     known ?? (typeof query === "string" ? writeTarget(query) : null);
-  void ConnectionWriteEvent.create({
-    workspaceId: new Types.ObjectId(String(database.workspaceId)),
-    connectionId: new Types.ObjectId(String(database._id)),
-    principal,
-    target: target
-      ? [target.schema, target.table].filter(Boolean).join(".")
-      : undefined,
-    allowed,
-  }).catch(error =>
-    logger.warn("Could not record a connection write", { error }),
-  );
+  void connectionsRepo
+    .recordConnectionWriteEvent({
+      workspaceId: String(database.workspaceId),
+      connectionId: String(database._id),
+      principal,
+      target: target
+        ? [target.schema, target.table].filter(Boolean).join(".")
+        : undefined,
+      allowed,
+    })
+    .catch(error =>
+      logger.warn("Could not record a connection write", { error }),
+    );
 }
 
 /**

@@ -31,12 +31,10 @@ import path from "node:path";
 import { Types } from "mongoose";
 
 import {
-  ConnectorDefinition,
-  DatabaseConnection,
   Flow,
   FlowDataDiff,
-  SourceConnection,
   type FlowDataDiffReason,
+  type IDatabaseConnection,
   type IFlow,
   type IFlowDataDiffCounts,
   type IFlowDataDiffFlag,
@@ -45,8 +43,8 @@ import {
 import { databaseRegistry } from "../databases/registry";
 import { escapeSqlLiteral } from "../databases/sql-utils";
 import { loggers } from "../logging";
+import { connectionsRepo } from "../repositories/connections";
 import { withQueryLabels } from "../services/bigquery-labels";
-import { inWorkspace } from "../utils/workspace-scope";
 import { cdcLiveTableName } from "./normalization";
 
 const log = loggers.api("flow-data-diff");
@@ -229,8 +227,9 @@ export async function countEntityTables(params: {
   const failAll = (error: string): CountedTable[] =>
     tables.map(t => ({ ...t, error }));
 
-  const connection = await DatabaseConnection.findOne(
-    inWorkspace(destination.connectionId, workspaceId),
+  const connection = await connectionsRepo.findDatabaseConnectionById(
+    destination.connectionId,
+    workspaceId,
   );
   if (!connection) return failAll("destination connection not found");
   const driver = databaseRegistry.getDriver(connection.type);
@@ -249,7 +248,8 @@ export async function countEntityTables(params: {
   const run = (sql: string) =>
     withQueryLabels(
       { mako_source: "flow", mako_flow: flowId, mako_purpose: "data_diff" },
-      () => driver.executeQuery(connection, sql),
+      () =>
+        driver.executeQuery(connection as unknown as IDatabaseConnection, sql),
     );
 
   const names = tables.map(t => t.table);
@@ -337,12 +337,10 @@ async function connectorCodeHash(
   type: string,
 ): Promise<string> {
   if (!type.startsWith("ws:")) return `${type}@${await builtInCodeHash(type)}`;
-  const row = await ConnectorDefinition.findOne({
-    workspaceId: new Types.ObjectId(workspaceId),
-    slug: type.slice(3),
-  })
-    .select("runtime sourceSha build.hash registry.hash")
-    .lean();
+  const row = await connectionsRepo.findConnectorDefinition(
+    workspaceId,
+    type.slice(3),
+  );
   if (!row) return type;
   const code = row.registry?.hash ?? row.build?.hash ?? row.sourceSha;
   return `${type}@${row.runtime}:${code}`;
@@ -356,12 +354,10 @@ export async function flowFingerprint(flow: IFlow): Promise<{
   const workspaceId = String(flow.workspaceId);
   let type = "";
   if (flow.dataSourceId) {
-    const source = await SourceConnection.findOne({
-      _id: flow.dataSourceId,
-      workspaceId: flow.workspaceId,
-    })
-      .select("type")
-      .lean();
+    const source = await connectionsRepo.findSourceConnectionById(
+      String(flow.dataSourceId),
+      workspaceId,
+    );
     type = source?.type ?? "";
   }
   const destination = destinationOf(flow);

@@ -3,13 +3,13 @@
  * execution (one Inngest step per chunk), the full-sync staging swap, and the
  * incremental tracking value.
  */
-import { inWorkspace } from "../../../utils/workspace-scope";
 import { Types } from "mongoose";
 import {
-  DatabaseConnection,
   Flow,
+  type IDatabaseConnection,
   type IFlow,
 } from "../../../database/workspace-schema";
+import { connectionsRepo } from "../../../repositories/connections";
 import {
   createDestinationWriter,
   executeDbSyncChunk,
@@ -80,9 +80,11 @@ export async function runDatabaseSourceFlow(
   });
 
   await step.run("validate-db-source", async () => {
-    const sourceConnection = await DatabaseConnection.findOne(
-      inWorkspace(dbSource.connectionId, flow.workspaceId),
-    );
+    const sourceConnection =
+      await connectionsRepo.findDatabaseConnectionSummary(
+        dbSource.connectionId.toString(),
+        flow.workspaceId.toString(),
+      );
     if (!sourceConnection) {
       throw new Error(
         `Source database connection not found: ${dbSource.connectionId}`,
@@ -90,16 +92,18 @@ export async function runDatabaseSourceFlow(
     }
 
     return {
-      sourceConnectionId: sourceConnection._id.toString(),
+      sourceConnectionId: sourceConnection.id,
       sourceName: sourceConnection.name,
     };
   });
 
   // Initialize destination writer once
   await step.run("init-destination-writer", async () => {
-    const sourceConnection = await DatabaseConnection.findOne(
-      inWorkspace(dbSource.connectionId, flow.workspaceId),
-    );
+    const sourceConnection =
+      await connectionsRepo.findDatabaseConnectionSummary(
+        dbSource.connectionId.toString(),
+        flow.workspaceId.toString(),
+      );
 
     const destinationWriter = await createDbSourceWriter(
       flow,
@@ -137,9 +141,11 @@ export async function runDatabaseSourceFlow(
           });
 
           // Re-create destination writer for this chunk
-          const sourceConnection = await DatabaseConnection.findOne(
-            inWorkspace(dbSource.connectionId, flow.workspaceId),
-          );
+          const sourceConnection =
+            await connectionsRepo.findDatabaseConnectionById(
+              dbSource.connectionId.toString(),
+              flow.workspaceId.toString(),
+            );
           if (!sourceConnection) {
             throw new Error("Source connection not found");
           }
@@ -152,7 +158,8 @@ export async function runDatabaseSourceFlow(
 
           // Execute chunk with pagination and type coercions
           const result = await executeDbSyncChunk({
-            sourceConnection,
+            sourceConnection:
+              sourceConnection as unknown as IDatabaseConnection,
             sourceQuery: dbSource.query,
             sourceDatabase: dbSource.database,
             destinationWriter,
@@ -260,9 +267,11 @@ export async function runDatabaseSourceFlow(
           flowId,
         });
 
-        const sourceConnection = await DatabaseConnection.findOne(
-          inWorkspace(dbSource.connectionId, flow.workspaceId),
-        );
+        const sourceConnection =
+          await connectionsRepo.findDatabaseConnectionSummary(
+            dbSource.connectionId.toString(),
+            flow.workspaceId.toString(),
+          );
 
         const destinationWriter = await createDbSourceWriter(
           flow,
@@ -293,13 +302,15 @@ export async function runDatabaseSourceFlow(
 
         if (flow.tableDestination?.connectionId) {
           // SQL table destination: query the destination table for max tracking value
-          const destConnection = await DatabaseConnection.findOne(
-            inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
-          );
+          const destConnection =
+            await connectionsRepo.findDatabaseConnectionById(
+              flow.tableDestination.connectionId.toString(),
+              flow.workspaceId.toString(),
+            );
 
           if (destConnection) {
             const maxValueResult = await getMaxTrackingValue(
-              destConnection,
+              destConnection as unknown as IDatabaseConnection,
               flow.tableDestination.tableName,
               trackingColumn,
               flow.tableDestination.schema,

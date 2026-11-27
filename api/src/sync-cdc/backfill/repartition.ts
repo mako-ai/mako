@@ -3,14 +3,9 @@
  * table under its new layout, re-materialize, resume — plus the recovery of
  * repartitions a crash left half-done.
  */
-import { inWorkspace } from "../../utils/workspace-scope";
 import { Types } from "mongoose";
-import {
-  CdcEntityState,
-  DatabaseConnection,
-  Flow,
-  IFlow,
-} from "../../database/workspace-schema";
+import { CdcEntityState, Flow, IFlow } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { inngest } from "../../inngest/client";
 import { loggers } from "../../logging";
 import { syncConnectorRegistry } from "../../sync/connector-registry";
@@ -153,9 +148,10 @@ export async function repartitionEntity(params: {
   if (!flow.tableDestination?.connectionId) {
     return { outcome: "missing" };
   }
-  const destination = await DatabaseConnection.findOne(
-    inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
-  ).lean();
+  const destination = await connectionsRepo.findDatabaseConnectionSummary(
+    flow.tableDestination.connectionId.toString(),
+    flow.workspaceId.toString(),
+  );
   const adapter = destination
     ? resolveRepartitionAdapter(flow, destination.type)
     : null;

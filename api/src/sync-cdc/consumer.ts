@@ -1,13 +1,12 @@
 import { Types } from "mongoose";
-import { inWorkspace } from "../utils/workspace-scope";
 import {
   CdcChangeEvent,
   CdcEntityState,
-  DatabaseConnection,
   Flow,
   IEntityLayout,
   WebhookEvent,
 } from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import { loggers } from "../logging";
 import { getCdcEventStore } from "./event-store";
 import {
@@ -147,9 +146,10 @@ export class CdcConsumerService {
       }
     }
 
-    const destination = await DatabaseConnection.findOne(
-      inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
-    ).lean();
+    const destination = await connectionsRepo.findDatabaseConnectionSummary(
+      flow.tableDestination.connectionId.toString(),
+      flow.workspaceId ? flow.workspaceId.toString() : params.workspaceId,
+    );
     if (!destination) {
       throw new Error("Destination connection not found");
     }

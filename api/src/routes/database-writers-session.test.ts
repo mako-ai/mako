@@ -139,4 +139,26 @@ describe("PUT /databases/{id}/writers in the app", () => {
       ["owner", "app", { agentWrites: false }],
     ]);
   });
+
+  it("rejects POST /databases with an unknown database type before inserting", async () => {
+    const beforeCount = await DatabaseConnection.countDocuments({
+      workspaceId: WS,
+    });
+    const res = await app.request(`/api/workspaces/${WS}/databases`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "Oracle DB",
+        type: "oracle",
+        connection: { host: "oracle.internal" },
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { success: boolean; error?: string };
+    expect(body.success).toBe(false);
+    expect(body.error).toContain("Unsupported database type");
+    expect(await DatabaseConnection.countDocuments({ workspaceId: WS })).toBe(
+      beforeCount,
+    );
+  });
 });

@@ -2,10 +2,8 @@ import { tool } from "ai";
 import { z } from "zod";
 import { Types } from "mongoose";
 import type { AgentToolExecutionContext } from "../../agents/types";
-import {
-  SavedConsole,
-  DatabaseConnection,
-} from "../../database/workspace-schema";
+import { SavedConsole } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import {
   embedText,
   isEmbeddingAvailable,
@@ -193,14 +191,13 @@ export async function enrichWithConnectionNames(
   if (validConnectionIds.length === 0) return;
 
   // Only this workspace's connections: a console row can carry any id.
-  const connections = await DatabaseConnection.find({
-    _id: { $in: validConnectionIds.map(id => new Types.ObjectId(id)) },
-    workspaceId: new Types.ObjectId(workspaceId),
-  })
-    .select("name")
-    .lean();
+  const connections =
+    await connectionsRepo.findDatabaseConnectionSummariesByIds(
+      validConnectionIds,
+      workspaceId,
+    );
 
-  const nameMap = new Map(connections.map(c => [c._id.toString(), c.name]));
+  const nameMap = new Map(connections.map(c => [c.id, c.name]));
 
   for (const r of results as any[]) {
     if (r.connectionId) {

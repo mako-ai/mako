@@ -1,6 +1,6 @@
 /** Who configures a source connection: its managers. */
 import { createRoute, z } from "@hono/zod-openapi";
-import { SourceConnection } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { loggers } from "../../logging";
 import {
   listChange,
@@ -69,7 +69,7 @@ sourceConnectionManagerRoutes.openapi(
     if (!workspaceId || !isSourceConnectionId(id)) {
       return fail(c, 400, "Invalid source connection ID format");
     }
-    const row = await SourceConnection.findOne({ _id: id, workspaceId });
+    const row = await connectionsRepo.findSourceConnectionById(id, workspaceId);
     if (!row) {
       return fail(c, 404, "Source connection not found");
     }
@@ -91,8 +91,9 @@ sourceConnectionManagerRoutes.openapi(
       );
     }
     const before = managersOf(row);
-    row.set("managers", next);
-    await row.save();
+    await connectionsRepo.updateSourceConnection(id, workspaceId, {
+      managers: next,
+    });
     await recordAccessChange({
       workspaceId,
       connectionId: id,

@@ -25,12 +25,14 @@ vi.mock("../../../database/workspace-schema", async importOriginal => {
     Flow: {
       findOne: () => ({ lean: async () => purgeMocks.flow }),
     },
-    DatabaseConnection: {
-      ...actual.DatabaseConnection,
-      findOne: async () => purgeMocks.destination,
-    },
   };
 });
+
+vi.mock("../../../repositories/connections", () => ({
+  connectionsRepo: {
+    findDatabaseConnectionById: async () => purgeMocks.destination,
+  },
+}));
 
 import { bigQueryEngine, batchJobInsertBody } from "./engine";
 import { BigQueryDatabaseDriver } from "./driver";

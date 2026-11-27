@@ -7,7 +7,6 @@
  * runs without it.
  */
 import { Types } from "mongoose";
-import { ObjectId } from "mongodb";
 
 import type { AgentContext } from "../../agents";
 import type { ConsoleDataV2 } from "../../agent-lib/types";
@@ -16,10 +15,8 @@ import {
   readWorkspacePromptFile,
   readWorkspaceSelfDirectiveFile,
 } from "../../apps/workspace-prompt";
-import {
-  AppWorktree,
-  DatabaseConnection,
-} from "../../database/workspace-schema";
+import { AppWorktree } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { isDbtShapedTurn } from "../../dbt/dbt-turn-shape";
 import { loggers } from "../../logging";
 import { prepareAgentTurnGuidance } from "../agent-turn-preparation.service";
@@ -54,14 +51,12 @@ export async function loadWorkspaceTurnContext(
     logger.warn("Failed to load workspace custom prompt", { error: err });
   }
 
-  // Include sqlDialect for prompt enrichment.
-  const workspaceDatabases = await DatabaseConnection.find({
-    workspaceId: new ObjectId(workspaceId),
-  }).select({ type: 1, name: 1, sqlDialect: 1 });
+  const workspaceDatabases =
+    await connectionsRepo.listDatabaseConnectionMetadata(workspaceId);
 
   const databaseTypeMap = new Map<string, string>();
   workspaceDatabases.forEach(db => {
-    databaseTypeMap.set(db._id.toString(), db.type);
+    databaseTypeMap.set(db.id, db.type);
   });
 
   // Open consoles in the tools' ConsoleDataV2 shape, with the connection
@@ -82,11 +77,10 @@ export async function loadWorkspaceTurnContext(
     workspaceCustomPrompt,
     selfDirective,
     databases: workspaceDatabases.map(db => ({
-      id: db._id.toString(),
+      id: db.id,
       name: db.name,
       type: db.type,
-      sqlDialect:
-        (db as unknown as { sqlDialect?: string }).sqlDialect || undefined,
+      sqlDialect: undefined,
     })),
     consoles,
   };

@@ -6,7 +6,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { Types } from "mongoose";
-import { DatabaseConnection } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { queryExecutionService } from "../../services/query-execution.service";
 import type { AgentToolExecutionContext } from "../../agents/types";
@@ -74,9 +74,7 @@ async function listMongoConnectionsImpl(workspaceId: string) {
   if (!Types.ObjectId.isValid(workspaceId)) {
     throw new Error("Invalid workspace ID");
   }
-  const databases = await DatabaseConnection.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-  }).sort({ name: 1 });
+  const databases = await connectionsRepo.listDatabaseConnections(workspaceId);
 
   return databases
     .filter(db => db.type === "mongodb")
@@ -113,10 +111,10 @@ export async function listMongoDatabasesImpl(
 
   try {
     throwIfAborted(signal);
-    const database = await DatabaseConnection.findOne({
-      _id: new Types.ObjectId(connectionId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    const database = await connectionsRepo.findDatabaseConnectionById(
+      connectionId,
+      workspaceId,
+    );
     if (!database) throw new Error("Connection not found or access denied");
     if (database.type !== "mongodb") {
       throw new Error(
@@ -125,7 +123,9 @@ export async function listMongoDatabasesImpl(
     }
 
     const connection = await databaseConnectionService.getConnection(
-      database as Parameters<typeof databaseConnectionService.getConnection>[0],
+      database as unknown as Parameters<
+        typeof databaseConnectionService.getConnection
+      >[0],
     );
     const adminDb = connection.db("admin");
     const result = await adminDb.admin().listDatabases();
@@ -165,10 +165,10 @@ export async function listMongoCollectionsImpl(
 
   try {
     throwIfAborted(signal);
-    const database = await DatabaseConnection.findOne({
-      _id: new Types.ObjectId(connectionId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    const database = await connectionsRepo.findDatabaseConnectionById(
+      connectionId,
+      workspaceId,
+    );
     if (!database) throw new Error("Connection not found or access denied");
     if (database.type !== "mongodb") {
       throw new Error(
@@ -176,7 +176,9 @@ export async function listMongoCollectionsImpl(
       );
     }
     const connection = await databaseConnectionService.getConnection(
-      database as Parameters<typeof databaseConnectionService.getConnection>[0],
+      database as unknown as Parameters<
+        typeof databaseConnectionService.getConnection
+      >[0],
     );
     const db = connection.db(databaseName);
     const collections = await db
@@ -211,10 +213,10 @@ export async function inspectMongoCollectionImpl(
   if (!databaseName) {
     throw new Error("'databaseName' is required");
   }
-  const database = await DatabaseConnection.findOne({
-    _id: new Types.ObjectId(connectionId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+  const database = await connectionsRepo.findDatabaseConnectionById(
+    connectionId,
+    workspaceId,
+  );
   if (!database) throw new Error("Connection not found or access denied");
   if (database.type !== "mongodb") {
     throw new Error(
@@ -234,7 +236,7 @@ export async function inspectMongoCollectionImpl(
         const SAMPLE_SIZE = 100;
         const inspectionQuery = `db.collection(${JSON.stringify(collectionName)}).aggregate([{ $sample: { size: ${SAMPLE_SIZE} } }]).toArray()`;
         const result = await databaseConnectionService.executeQuery(
-          database as Parameters<
+          database as unknown as Parameters<
             typeof databaseConnectionService.executeQuery
           >[0],
           inspectionQuery,
@@ -316,10 +318,10 @@ async function executeQueryImpl(
   if (!databaseName) {
     throw new Error("'databaseName' is required");
   }
-  const database = await DatabaseConnection.findOne({
-    _id: new Types.ObjectId(connectionId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+  const database = await connectionsRepo.findDatabaseConnectionById(
+    connectionId,
+    workspaceId,
+  );
   if (!database) throw new Error("Connection not found or access denied");
   if (database.type !== "mongodb") {
     throw new Error(
@@ -342,7 +344,14 @@ async function executeQueryImpl(
     // The key may write, the connection's writers list decides who: say
     // who Mako saw, and record the refusal so the Access tab offers Allow.
     const principal = actingPrincipal();
-    if (principal) recordWrite(database, principal, query, false);
+    if (principal) {
+      recordWrite(
+        database as unknown as Parameters<typeof recordWrite>[0],
+        principal,
+        query,
+        false,
+      );
+    }
     throw new Error(notAWriterRefusal(principal, database.name));
   }
   if (readOnly) {
@@ -368,7 +377,7 @@ async function executeQueryImpl(
       executionId,
       registeredExecutionId =>
         databaseConnectionService.executeQuery(
-          database as Parameters<
+          database as unknown as Parameters<
             typeof databaseConnectionService.executeQuery
           >[0],
           query,
@@ -395,7 +404,7 @@ async function executeQueryImpl(
         queryExecutionService.track({
           userId,
           workspaceId: new Types.ObjectId(workspaceId),
-          connectionId: database._id,
+          connectionId: new Types.ObjectId(database.id),
           databaseName,
           source: "agent",
           databaseType: database.type,
@@ -460,7 +469,7 @@ async function executeQueryImpl(
     queryExecutionService.track({
       userId,
       workspaceId: new Types.ObjectId(workspaceId),
-      connectionId: database._id,
+      connectionId: new Types.ObjectId(database.id),
       databaseName,
       source: "agent",
       databaseType: database.type,

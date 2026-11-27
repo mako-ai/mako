@@ -7,16 +7,11 @@
  * (`commitFlowFileOrFail`), then `flow.save()` — so the repo gate and the
  * write-through stay visible at every mutating route.
  */
-import { inWorkspace } from "../utils/workspace-scope";
 import type { IncrementalCapabilities } from "@mako/schemas";
 import { Types } from "mongoose";
 import { asSystem } from "../access/connection-writes";
-import {
-  DatabaseConnection,
-  Flow,
-  SourceConnection,
-  type IFlow,
-} from "../database/workspace-schema";
+import { Flow, type IFlow } from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import { databaseRegistry } from "../databases/registry";
 import { loggers } from "../logging";
 import { hasCdcDestinationAdapter } from "../sync-cdc/adapters/registry";
@@ -130,10 +125,10 @@ export async function buildNewFlow(params: {
     }
 
     // Validate source database connection exists and belongs to workspace
-    const sourceDb = await DatabaseConnection.findOne({
-      _id: new Types.ObjectId(body.databaseSource.connectionId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    const sourceDb = await connectionsRepo.findDatabaseConnectionSummary(
+      String(body.databaseSource.connectionId),
+      workspaceId,
+    );
 
     if (!sourceDb) {
       throw new FlowRequestError(404, "Source database connection not found");
@@ -145,10 +140,10 @@ export async function buildNewFlow(params: {
     }
 
     // Validate data source exists and belongs to workspace
-    const sourceConnection = await SourceConnection.findOne({
-      _id: new Types.ObjectId(body.dataSourceId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    const sourceConnection = await connectionsRepo.findSourceConnectionById(
+      String(body.dataSourceId),
+      workspaceId,
+    );
 
     if (!sourceConnection) {
       throw new FlowRequestError(404, "Data source not found");
@@ -161,10 +156,10 @@ export async function buildNewFlow(params: {
 
   if (body.tableDestination?.connectionId) {
     // Table destination validation
-    const destDb = await DatabaseConnection.findOne({
-      _id: new Types.ObjectId(body.tableDestination.connectionId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    const destDb = await connectionsRepo.findDatabaseConnectionSummary(
+      String(body.tableDestination.connectionId),
+      workspaceId,
+    );
 
     if (!destDb) {
       throw new FlowRequestError(
@@ -180,10 +175,10 @@ export async function buildNewFlow(params: {
     destinationType = destDb.type;
   } else if (body.destinationDatabaseId) {
     // MongoDB destination validation
-    const database = await DatabaseConnection.findOne({
-      _id: new Types.ObjectId(body.destinationDatabaseId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    const database = await connectionsRepo.findDatabaseConnectionSummary(
+      String(body.destinationDatabaseId),
+      workspaceId,
+    );
 
     if (!database) {
       throw new FlowRequestError(404, "Destination database not found");
@@ -363,11 +358,10 @@ export async function buildNewFlow(params: {
 
   let createIncremental: IncrementalCapabilities | undefined;
   if (sourceType !== "database" && body.dataSourceId) {
-    const ds = await SourceConnection.findOne(
-      inWorkspace(body.dataSourceId, workspaceId),
-    )
-      .select({ type: 1, config: 1 })
-      .lean();
+    const ds = await connectionsRepo.findSourceConnectionById(
+      String(body.dataSourceId),
+      workspaceId,
+    );
     createIncremental = resolveConnectorIncrementalCapabilities(ds as any);
   }
   const createValidation = validateWriteMode({
@@ -420,6 +414,43 @@ export async function buildNewFlow(params: {
   return { flow, flowData, sourceType, warnings: syncConfigWarnings };
 }
 
+async function attachPopulatedFlowRefs(
+  flow: FlowDocument,
+  includeDataSource: boolean,
+): Promise<Record<string, unknown>> {
+  const plain = flow.toObject() as unknown as Record<string, unknown>;
+  const workspaceId = flow.workspaceId.toString();
+  const [source, dest] = await Promise.all([
+    includeDataSource && flow.dataSourceId
+      ? connectionsRepo.findSourceConnectionById(
+          flow.dataSourceId.toString(),
+          workspaceId,
+        )
+      : null,
+    flow.destinationDatabaseId
+      ? connectionsRepo.findDatabaseConnectionSummary(
+          flow.destinationDatabaseId.toString(),
+          workspaceId,
+        )
+      : null,
+  ]);
+  if (includeDataSource && flow.dataSourceId && source) {
+    plain.dataSourceId = {
+      _id: source.id,
+      name: source.name,
+      type: source.type,
+    };
+  }
+  if (dest) {
+    plain.destinationDatabaseId = {
+      _id: dest.id,
+      name: dest.name,
+      type: dest.type,
+    };
+  }
+  return plain;
+}
+
 /**
  * After a create is persisted: make sure the destination dataset exists for
  * connector flows, and populate the references the response shows.
@@ -428,7 +459,7 @@ export async function finishFlowCreate(params: {
   flow: FlowDocument;
   flowData: Record<string, any>;
   sourceType: string;
-}): Promise<void> {
+}): Promise<Record<string, unknown>> {
   const { flow, flowData, sourceType } = params;
   // Pre-create BigQuery dataset for connector flows (tables created on first write with full schema)
   if (
@@ -462,11 +493,7 @@ export async function finishFlowCreate(params: {
     }
   }
 
-  // Populate references for response based on source type
-  if (sourceType === "connector" && flow.dataSourceId) {
-    await flow.populate("dataSourceId", "name type");
-  }
-  await flow.populate("destinationDatabaseId", "name type");
+  return attachPopulatedFlowRefs(flow, sourceType === "connector");
 }
 
 /** What the post-save webhook reconcile compares against. */
@@ -531,22 +558,20 @@ export async function applyFlowUpdate(params: {
 
   let syncConfigWarnings: string[] = [];
   if (syncConfigTouched) {
-    const destForWriteMode = await DatabaseConnection.findOne(
-      inWorkspace(
-        flow.tableDestination?.connectionId || flow.destinationDatabaseId,
-        flow.workspaceId,
-      ),
-    )
-      .select({ type: 1 })
-      .lean();
+    const destForWriteMode =
+      await connectionsRepo.findDatabaseConnectionSummary(
+        String(
+          flow.tableDestination?.connectionId || flow.destinationDatabaseId,
+        ),
+        flow.workspaceId.toString(),
+      );
 
     let updateIncremental: IncrementalCapabilities | undefined;
     if (flow.sourceType !== "database" && flow.dataSourceId) {
-      const ds = await SourceConnection.findOne(
-        inWorkspace(flow.dataSourceId, flow.workspaceId),
-      )
-        .select({ type: 1, config: 1 })
-        .lean();
+      const ds = await connectionsRepo.findSourceConnectionById(
+        String(flow.dataSourceId),
+        flow.workspaceId.toString(),
+      );
       updateIncremental = resolveConnectorIncrementalCapabilities(ds as any);
     }
 
@@ -626,10 +651,10 @@ export async function applyFlowUpdate(params: {
       }
       if (
         body.databaseSource.connectionId &&
-        !(await DatabaseConnection.exists({
-          _id: newConnectionId,
-          workspaceId: new Types.ObjectId(workspaceId),
-        }))
+        !(await connectionsRepo.findDatabaseConnectionSummary(
+          newConnectionId.toString(),
+          workspaceId,
+        ))
       ) {
         throw new FlowRequestError(404, "Source database connection not found");
       }
@@ -682,10 +707,10 @@ export async function applyFlowUpdate(params: {
     }
     if (
       body.tableDestination.connectionId &&
-      !(await DatabaseConnection.exists({
-        _id: newConnectionId,
-        workspaceId: new Types.ObjectId(workspaceId),
-      }))
+      !(await connectionsRepo.findDatabaseConnectionSummary(
+        newConnectionId.toString(),
+        workspaceId,
+      ))
     ) {
       throw new FlowRequestError(
         404,
@@ -733,11 +758,10 @@ export async function applyFlowUpdate(params: {
   if (flow.syncEngine === "cdc") {
     const effectiveDestConnectionId =
       flow.tableDestination?.connectionId || flow.destinationDatabaseId;
-    const destination = await DatabaseConnection.findOne(
-      inWorkspace(effectiveDestConnectionId, flow.workspaceId),
-    )
-      .select({ type: 1 })
-      .lean();
+    const destination = await connectionsRepo.findDatabaseConnectionSummary(
+      String(effectiveDestConnectionId),
+      flow.workspaceId.toString(),
+    );
     const destinationDriver = databaseRegistry.getDriver(
       destination?.type ?? "",
     );
@@ -833,7 +857,7 @@ export async function finishFlowUpdate(params: {
   syncConfigWarnings: string[];
   /** The actor is owner/admin: the save may create a subscription. */
   mayProvision: boolean;
-}): Promise<void> {
+}): Promise<Record<string, unknown>> {
   const { flow, syncConfigWarnings } = params;
   const entitySignatureBefore = params.before.entitySignature;
   const webhookOnBefore = params.before.webhookOn;
@@ -871,11 +895,7 @@ export async function finishFlowUpdate(params: {
     }
   }
 
-  // Populate references for response based on source type
-  if (flow.sourceType !== "database" && flow.dataSourceId) {
-    await flow.populate("dataSourceId", "name type");
-  }
-  await flow.populate("destinationDatabaseId", "name type");
+  return attachPopulatedFlowRefs(flow, flow.sourceType !== "database");
 }
 
 export const SECRET_NEEDS_ADMIN =

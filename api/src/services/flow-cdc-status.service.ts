@@ -3,16 +3,16 @@
  * (backlog, lag, failures, transitions per entity) and schema health (live
  * destination column types against the connector schema).
  */
-import { inWorkspace } from "../utils/workspace-scope";
 import { Types } from "mongoose";
 import {
   CdcChangeEvent,
   CdcEntityState,
   CdcStateTransition,
-  DatabaseConnection,
   Flow,
   WebhookEvent,
+  type IDatabaseConnection,
 } from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import { mapLogicalTypeToBigQuery } from "../sync-cdc/adapters/bigquery";
 import {
   computeEntityPendingBacklog,
@@ -345,8 +345,9 @@ export async function getFlowSchemaHealth(
     );
   }
 
-  const destination = await DatabaseConnection.findOne(
-    inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
+  const destination = await connectionsRepo.findDatabaseConnectionById(
+    flow.tableDestination.connectionId.toString(),
+    flow.workspaceId.toString(),
   );
   if (!destination) {
     throw new FlowRequestError(404, "Destination connection not found");
@@ -431,7 +432,7 @@ export async function getFlowSchemaHealth(
     const infoQuery = `SELECT column_name, data_type FROM \`${schema}\`.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${liveTable.replace(/'/g, "''")}'`;
 
     const infoResult = await databaseConnectionService.executeQuery(
-      destination,
+      destination as unknown as IDatabaseConnection,
       infoQuery,
       { location: connLocation },
     );

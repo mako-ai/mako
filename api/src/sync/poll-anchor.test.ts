@@ -36,27 +36,24 @@ vi.mock("../services/destination-writer.service", async () => ({
   getMaxTrackingValue,
 }));
 
-vi.mock("../database/workspace-schema", () => {
-  // findOne(...).select().lean() for the destination type, and a bare
-  // awaited findOne(...) for the anchor's destination connection.
-  const doc = { type: "bigquery" };
-  const query = {
-    select: () => ({ lean: () => Promise.resolve(doc) }),
-    then: (resolve: (v: unknown) => unknown) => resolve(doc),
-  };
-  return {
-    DatabaseConnection: { findOne: vi.fn(() => query) },
-    Flow: {
-      db: {
-        collection: vi.fn(() => ({
-          updateMany: async () => ({ modifiedCount: 0 }),
-          deleteMany: async () => ({ deletedCount: 0 }),
-          countDocuments: async () => 0,
-        })),
-      },
+vi.mock("../database/workspace-schema", () => ({
+  Flow: {
+    db: {
+      collection: vi.fn(() => ({
+        updateMany: async () => ({ modifiedCount: 0 }),
+        deleteMany: async () => ({ deletedCount: 0 }),
+        countDocuments: async () => 0,
+      })),
     },
-  };
-});
+  },
+}));
+
+vi.mock("../repositories/connections", () => ({
+  connectionsRepo: {
+    findDatabaseConnectionSummary: vi.fn(async () => ({ type: "bigquery" })),
+    findDatabaseConnectionById: vi.fn(async () => ({ type: "bigquery" })),
+  },
+}));
 
 vi.mock("./database-data-source-manager", () => ({
   sourceConnectionManager: {

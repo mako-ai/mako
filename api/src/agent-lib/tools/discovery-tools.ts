@@ -12,7 +12,7 @@
 
 import { tool } from "ai";
 import { z } from "zod";
-import { DatabaseConnection } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import type { AgentToolExecutionContext } from "../../agents/types";
 import {
   AGENT_QUERY_TIMEOUT_MS,
@@ -54,12 +54,11 @@ async function isMongoConnection(
   connectionId: string,
   workspaceId: string,
 ): Promise<boolean> {
-  const connection = await DatabaseConnection.findOne(
-    {
-      _id: ensureValidObjectId(connectionId, "connectionId"),
-      workspaceId: ensureValidObjectId(workspaceId, "workspaceId"),
-    },
-    { type: 1 },
+  ensureValidObjectId(connectionId, "connectionId");
+  ensureValidObjectId(workspaceId, "workspaceId");
+  const connection = await connectionsRepo.findDatabaseConnectionSummary(
+    connectionId,
+    workspaceId,
   );
   if (!connection) {
     throw new Error("Database connection not found or access denied");

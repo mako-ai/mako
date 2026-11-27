@@ -7,13 +7,12 @@
  * driver-backed half of this class (it shares the writer's inferred schema,
  * table cache and staging state).
  */
-import { inWorkspace } from "../../utils/workspace-scope";
 import { Types } from "mongoose";
 import {
-  DatabaseConnection,
   IDatabaseConnection,
   ITableDestination,
 } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import {
   BatchWriteResult,
   ColumnDefinition,
@@ -169,18 +168,16 @@ export class DestinationWriter {
   async initialize(): Promise<void> {
     if (this.config.tableDestination) {
       // Load the database connection for SQL destination
-      const conn = await DatabaseConnection.findOne(
-        inWorkspace(
-          this.config.tableDestination.connectionId,
-          this.config.workspaceId,
-        ),
+      const conn = await connectionsRepo.findDatabaseConnectionById(
+        this.config.tableDestination.connectionId.toString(),
+        this.config.workspaceId,
       );
       if (!conn) {
         throw new Error(
           `Database connection not found: ${this.config.tableDestination.connectionId}`,
         );
       }
-      this.connection = conn;
+      this.connection = conn as unknown as IDatabaseConnection;
 
       // Get the appropriate driver
       this.driver = databaseRegistry.getDriver(conn.type);
@@ -687,8 +684,9 @@ export async function createDestinationWriter(
       connectionIdentifier,
       async (id: string) => {
         const realDestinationId = id.includes(":") ? id.split(":")[0] : id;
-        const destConn = await DatabaseConnection.findOne(
-          inWorkspace(realDestinationId, flow.workspaceId),
+        const destConn = await connectionsRepo.findDatabaseConnectionById(
+          realDestinationId,
+          String(flow.workspaceId),
         );
         if (!destConn) return null;
 

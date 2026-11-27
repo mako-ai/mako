@@ -22,14 +22,16 @@ const flowDoc: Record<string, unknown> = {
   writeMode: "append",
 };
 
+vi.mock("../repositories/connections", () => ({
+  connectionsRepo: {
+    findDatabaseConnectionSummary: vi.fn(() =>
+      Promise.resolve({ type: "postgresql" }),
+    ),
+  },
+}));
+
 vi.mock("../database/workspace-schema", () => ({
   Flow: { findById: vi.fn(() => ({ lean: () => Promise.resolve(flowDoc) })) },
-  DatabaseConnection: {
-    // Scoped by workspace (utils/workspace-scope.ts): findOne, not findById.
-    findOne: vi.fn(() => ({
-      lean: () => Promise.resolve({ type: "postgresql" }),
-    })),
-  },
   CdcEntityState: {
     findOne: vi.fn(() => ({ lean: () => Promise.resolve(null) })),
   },

@@ -9,6 +9,7 @@
  */
 import mongoose, { Schema, Types } from "mongoose";
 import { loggers } from "../logging";
+import { connectionsRepo } from "../repositories/connections";
 
 const logger = loggers.api("connection-access-event");
 
@@ -130,9 +131,9 @@ export async function recordAccessChange(event: {
   const changes = withoutEmpty(event.changes);
   if (Object.keys(changes).length === 0) return;
   try {
-    await ConnectionAccessEvent.create({
-      workspaceId: new Types.ObjectId(String(event.workspaceId)),
-      connectionId: new Types.ObjectId(String(event.connectionId)),
+    await connectionsRepo.recordConnectionAccessEvent({
+      workspaceId: String(event.workspaceId),
+      connectionId: String(event.connectionId),
       kind: event.kind,
       actor: event.actor,
       via: event.via,

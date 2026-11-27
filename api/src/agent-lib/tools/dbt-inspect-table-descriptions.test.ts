@@ -50,7 +50,7 @@ vi.mock("../../dbt/ontology/manifest-index.service", () => ({
 }));
 
 import { inspectSqlTableImpl } from "./sql-tools";
-import { DatabaseConnection } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { buildManifestIndex } from "../../dbt/ontology/manifest-index";
 import { ONTOLOGY_MANIFEST } from "../../dbt/test-support/ontology-fixtures";
 
@@ -80,7 +80,7 @@ beforeEach(() => {
       index: buildManifestIndex(ONTOLOGY_MANIFEST),
     },
   ];
-  vi.spyOn(DatabaseConnection, "findOne").mockResolvedValue({
+  vi.spyOn(connectionsRepo, "findDatabaseConnectionById").mockResolvedValue({
     type: "bigquery",
     connection: { project_id: "acme-prod" },
   } as never);

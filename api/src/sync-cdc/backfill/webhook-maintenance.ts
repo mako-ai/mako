@@ -3,14 +3,14 @@
  * failed events, reconcile apply status, drop orphaned staging tables, and
  * drain pending events into the CDC store.
  */
-import { inWorkspace } from "../../utils/workspace-scope";
 import { Types } from "mongoose";
 import {
   CdcChangeEvent,
-  DatabaseConnection,
+  type IDatabaseConnection,
   IFlow,
   WebhookEvent,
 } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import { databaseRegistry } from "../../databases/registry";
 import { loggers } from "../../logging";
 import { hasCdcDestinationAdapter } from "../adapters/registry";
@@ -138,10 +138,12 @@ export async function cleanupOrphanStagingTables(
     ) {
       return 0;
     }
-    const destination = await DatabaseConnection.findOne(
-      inWorkspace(flow.tableDestination.connectionId, flow.workspaceId),
+    const destination = await connectionsRepo.findDatabaseConnectionById(
+      flow.tableDestination.connectionId.toString(),
+      flow.workspaceId.toString(),
     );
     if (!destination || !hasCdcDestinationAdapter(destination.type)) return 0;
+    const destinationConn = destination as unknown as IDatabaseConnection;
 
     const driver = databaseRegistry.getDriver(destination.type);
     if (!driver?.dropTable) return 0;
@@ -168,14 +170,18 @@ export async function cleanupOrphanStagingTables(
         `${liveTable}__stage_changes`,
       ];
       try {
-        await driver.dropTable(destination, backfillBulkStaging, { schema });
+        await driver.dropTable(destinationConn, backfillBulkStaging, {
+          schema,
+        });
         dropped++;
       } catch {
         /* may not exist */
       }
       for (const table of legacyStagingTables) {
         try {
-          await driver.dropTable(destination, table, { schema: stageSchema });
+          await driver.dropTable(destinationConn, table, {
+            schema: stageSchema,
+          });
           dropped++;
         } catch {
           /* may not exist */

@@ -9,11 +9,11 @@
  */
 import { Types } from "mongoose";
 import {
-  DatabaseConnection,
   SavedConsole,
   type ConsoleAccessLevel,
   type ISavedConsole,
 } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import {
   commitConsoleState,
   loadLiveConsoleById,
@@ -98,8 +98,9 @@ async function connectionOrFirst(
   connectionId: string | undefined,
 ): Promise<string | undefined> {
   if (connectionId) return connectionId;
-  const databases = await DatabaseConnection.find({ workspaceId }).limit(1);
-  return databases.length > 0 ? databases[0]._id.toString() : undefined;
+  const databases =
+    await connectionsRepo.listDatabaseConnectionMetadata(workspaceId);
+  return databases.length > 0 ? databases[0].id : undefined;
 }
 
 /** A connectionId from another workspace (or no such connection): 404. */

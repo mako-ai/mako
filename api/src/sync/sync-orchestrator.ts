@@ -1,5 +1,4 @@
 import { promises as fs } from "fs";
-import { inWorkspace } from "../utils/workspace-scope";
 import { syncConnectorRegistry } from "./connector-registry";
 import { sourceConnectionManager } from "./database-data-source-manager";
 import {
@@ -8,10 +7,11 @@ import {
   type ConnectorEntitySchema,
 } from "../connectors/base/BaseConnector";
 import {
-  DatabaseConnection,
   Flow,
+  type IDatabaseConnection,
   ITableDestination,
 } from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import {
   markAbsentColumns,
   stripUndefined,
@@ -494,11 +494,10 @@ async function performSyncChunkSql(
     entity,
   );
 
-  const destinationConn = await DatabaseConnection.findOne(
-    inWorkspace(tableDestination.connectionId, options.workspaceId),
-  )
-    .select({ type: 1 })
-    .lean();
+  const destinationConn = await connectionsRepo.findDatabaseConnectionSummary(
+    String(tableDestination.connectionId),
+    options.workspaceId,
+  );
   // CDC is the only engine: a connector flow writes through its
   // destination's CDC adapter (the legacy DestinationWriter path is gone).
   const isCdcEnabled =
@@ -573,17 +572,16 @@ async function performSyncChunkSql(
     try {
       const { getMaxTrackingValue } =
         await import("../services/destination-writer.service");
-      const { DatabaseConnection } =
-        await import("../database/workspace-schema");
-      const destConn = await DatabaseConnection.findOne(
-        inWorkspace(tableDestination.connectionId, options.workspaceId),
+      const destConn = await connectionsRepo.findDatabaseConnectionById(
+        String(tableDestination.connectionId),
+        options.workspaceId,
       );
       if (!destConn) {
         destination = { kind: "unknown", reason: "destination not found" };
       } else {
         const probe = (column: string) =>
           getMaxTrackingValue(
-            destConn,
+            destConn as unknown as IDatabaseConnection,
             entityTableName,
             column,
             tableDestination.schema,
@@ -1345,11 +1343,10 @@ async function resolveAdapterContext(options: SyncChunkOptions) {
     tableDestination.tableName,
     entity,
   );
-  const destinationConn = await DatabaseConnection.findOne(
-    inWorkspace(tableDestination.connectionId, options.workspaceId),
-  )
-    .select({ type: 1 })
-    .lean();
+  const destinationConn = await connectionsRepo.findDatabaseConnectionSummary(
+    String(tableDestination.connectionId),
+    options.workspaceId,
+  );
 
   const cdcAdapter = resolveCdcDestinationAdapter({
     destinationType: destinationConn?.type || "",

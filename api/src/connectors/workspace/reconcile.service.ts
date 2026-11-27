@@ -15,9 +15,9 @@
  */
 import { isTransientIndexFailure, nextIndexRetry } from "./transient-failure";
 import {
-  ConnectorDefinition,
-  type IConnectorDefinition,
-} from "../../database/workspace-schema";
+  connectionsRepo,
+  type ConnectorDefinitionRecord,
+} from "../../repositories/connections";
 import { blobOid, repoDirFor, repoExists } from "../../apps/repository.service";
 import {
   ensureLocalRepo,
@@ -176,7 +176,7 @@ async function reconcile(
   let catalog: Promise<RegistryCatalog> | null = null;
   const loadCatalog = () => (catalog ??= getRegistryCatalog({ fresh: true }));
 
-  const rows = await ConnectorDefinition.find({ workspaceId });
+  const rows = await connectionsRepo.listConnectorDefinitions(workspaceId);
   const rowBySlug = new Map(rows.map(row => [row.slug, row]));
 
   const result: ConnectorSyncResult = { ...EMPTY, skipped: [] };
@@ -320,9 +320,15 @@ async function reconcile(
       // defaults to connector.ts, and a connector whose yaml names another
       // file would otherwise keep running the wrong one forever.
       if (row.sha !== commit || row.entry !== parsed.value.entry) {
-        row.sha = commit;
-        row.entry = parsed.value.entry;
-        await row.save();
+        await connectionsRepo.updateConnectorDefinitionMetadata(
+          workspaceId,
+          slug,
+          {
+            sha: commit,
+            entry: parsed.value.entry,
+            expectedSourceSha: row.sourceSha,
+          },
+        );
       }
       result.unchanged++;
       continue;
@@ -353,29 +359,30 @@ async function reconcile(
       const entities = Object.keys((spec.spec?.mako as any)?.entities ?? {});
       // With bundles on, the row says how this code was built; a folder that
       // dropped its package.json loses a stale build record. Off, untouched.
-      const buildFields = bundling ? { build: spec.build } : {};
+      const buildPatch = bundling ? { build: spec.build ?? null } : {};
       if (row) {
-        row.set({
-          ...buildFields,
+        await connectionsRepo.upsertConnectorDefinition({
+          workspaceId,
+          slug,
+          ...buildPatch,
           // An ejected folder is code again: it no longer follows a release.
-          ...(row.registry ? { registry: undefined } : {}),
+          ...(row.registry ? { registry: null } : {}),
           runtime: parsed.value.runtime,
           entry: parsed.value.entry,
           sha: commit,
           sourceSha,
           spec: spec.spec,
           status: "indexed",
-          blockedReason: undefined,
+          blockedReason: null,
           ...CLEAR_RETRY,
           // New code, so the last check proved nothing about what runs now.
-          lastCheckError: undefined,
+          lastCheckError: null,
           entities,
           hasIcon: files.has("icon.svg"),
         });
-        await row.save();
         result.updated++;
       } else {
-        await ConnectorDefinition.create({
+        await connectionsRepo.upsertConnectorDefinition({
           workspaceId,
           slug,
           runtime: parsed.value.runtime,
@@ -420,10 +427,9 @@ async function reconcile(
 
   const stale = rows.filter(row => !seen.has(row.slug));
   if (stale.length > 0) {
-    await ConnectorDefinition.deleteMany({
-      workspaceId,
-      _id: { $in: stale.map(row => row._id) },
-    });
+    await connectionsRepo.deleteConnectorDefinitionsNotInSlugs(workspaceId, [
+      ...seen,
+    ]);
     result.removed = stale.length;
   }
 
@@ -565,7 +571,8 @@ function specFrom(
   );
   const validation = validateSpec(message?.spec);
   if (!validation.ok) return { ok: false, reason: validation.reason };
-  return { ok: true, spec: message!.spec! };
+  if (!message?.spec) return { ok: false, reason: "Missing connector spec" };
+  return { ok: true, spec: message.spec };
 }
 
 /**
@@ -586,13 +593,23 @@ async function indexReference(input: {
   commit: string;
   files: Map<string, Uint8Array>;
   file: ConnectorFile;
-  row: IConnectorDefinition | undefined;
+  row: ConnectorDefinitionRecord | undefined;
   loadCatalog: () => Promise<RegistryCatalog>;
   pass: ReconcilePass;
 }): Promise<"created" | "updated" | "unchanged" | "blocked" | "retrying"> {
   const { workspaceId, slug, commit, files, file, row, pass } = input;
-  const reference = file.source!;
   const folderSha = sourceShaOf(files);
+  const reference = file.source;
+  if (!reference) {
+    return failIndex(
+      workspaceId,
+      slug,
+      commit,
+      folderSha,
+      "Connector reference missing source",
+      row,
+    );
+  }
 
   let catalog: RegistryCatalog;
   try {
@@ -646,14 +663,18 @@ async function indexReference(input: {
       previous?.upgradeAvailable !== resolution.upgradeAvailable ||
       previous?.ref !== resolution.ref
     ) {
-      row.set({
-        sha: commit,
-        registry: {
-          ...resolution,
-          resolvedAt: previous?.resolvedAt ?? resolution.resolvedAt,
+      await connectionsRepo.updateConnectorDefinitionMetadata(
+        workspaceId,
+        slug,
+        {
+          sha: commit,
+          expectedSourceSha: row.sourceSha,
+          registry: {
+            ...resolution,
+            resolvedAt: previous?.resolvedAt ?? resolution.resolvedAt,
+          },
         },
-      });
-      await row.save();
+      );
     }
     return "unchanged";
   }
@@ -676,18 +697,23 @@ async function indexReference(input: {
       registry: resolution,
     };
     if (row) {
-      row.set({
+      await connectionsRepo.upsertConnectorDefinition({
+        workspaceId,
+        slug,
         ...fields,
-        blockedReason: undefined,
+        blockedReason: null,
         ...CLEAR_RETRY,
-        lastCheckError: undefined,
+        lastCheckError: null,
         // The code is the registry's bundle, not a build of this folder.
-        build: undefined,
+        build: null,
       });
-      await row.save();
       return "updated";
     }
-    await ConnectorDefinition.create({ workspaceId, slug, ...fields });
+    await connectionsRepo.upsertConnectorDefinition({
+      workspaceId,
+      slug,
+      ...fields,
+    });
     return "created";
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
@@ -759,8 +785,8 @@ async function runSpecInWorkspaceBox(
 
 /** Unset on a row that indexed or blocked: it no longer retries. */
 const CLEAR_RETRY = {
-  indexRetryAttempts: undefined,
-  nextIndexRetryAt: undefined,
+  indexRetryAttempts: null,
+  nextIndexRetryAt: null,
 } as const;
 
 /**
@@ -770,7 +796,10 @@ const CLEAR_RETRY = {
  * platform fix. On a retry pass only a `retrying` row that is due does; a
  * `blocked` row waits for a push, and a retry not yet due waits its turn.
  */
-function isSettled(row: IConnectorDefinition, pass: ReconcilePass): boolean {
+function isSettled(
+  row: ConnectorDefinitionRecord,
+  pass: ReconcilePass,
+): boolean {
   if (row.status === "blocked") return pass.kind === "retry";
   if (row.status === "retrying") {
     if (pass.kind === "push") return false;
@@ -790,7 +819,7 @@ async function failIndex(
   sha: string,
   sourceSha: string,
   reason: string,
-  row: IConnectorDefinition | undefined,
+  row: ConnectorDefinitionRecord | undefined,
   build?: BundleBuildStatus,
 ): Promise<"blocked" | "retrying"> {
   if (!isTransientIndexFailure(reason)) {
@@ -810,26 +839,14 @@ async function failIndex(
     nextIndexRetryAt: retry.nextIndexRetryAt.toISOString(),
     reason: reason.slice(0, 500),
   });
-  if (row) {
-    row.set({
-      sha,
-      sourceSha,
-      status: "retrying",
-      blockedReason: reason,
-      ...retry,
-    });
-    await row.save();
-    return "retrying";
-  }
-  await ConnectorDefinition.create({
+  await connectionsRepo.upsertConnectorDefinition({
     workspaceId,
     slug,
-    runtime: "node",
+    ...(row ? {} : { runtime: "node", entities: [] }),
     sha,
     sourceSha,
     status: "retrying",
     blockedReason: reason,
-    entities: [],
     ...retry,
   });
   return "retrying";
@@ -842,10 +859,8 @@ async function failIndex(
 export async function retryDueConnectorIndexing(
   now: Date = new Date(),
 ): Promise<{ workspaces: number; failed: number; skipped: number }> {
-  const workspaceIds: unknown[] = await ConnectorDefinition.distinct(
-    "workspaceId",
-    { status: "retrying", nextIndexRetryAt: { $lte: now } },
-  );
+  const workspaceIds =
+    await connectionsRepo.listWorkspaceIdsWithDueRetries(now);
   let failed = 0;
   let skipped = 0;
   for (const id of workspaceIds) {
@@ -885,30 +900,18 @@ async function block(
   sha: string,
   sourceSha: string,
   reason: string,
-  row: IConnectorDefinition | undefined,
+  row: ConnectorDefinitionRecord | undefined,
   build?: BundleBuildStatus,
 ): Promise<void> {
-  if (row) {
-    row.set({
-      sha,
-      sourceSha,
-      status: "blocked",
-      blockedReason: reason,
-      ...CLEAR_RETRY,
-      ...(build ? { build } : {}),
-    });
-    await row.save();
-    return;
-  }
-  await ConnectorDefinition.create({
+  await connectionsRepo.upsertConnectorDefinition({
     workspaceId,
     slug,
-    runtime: "node",
+    ...(row ? {} : { runtime: "node", entities: [] }),
     sha,
     sourceSha,
     status: "blocked",
     blockedReason: reason,
-    entities: [],
+    ...CLEAR_RETRY,
     ...(build ? { build } : {}),
   });
 }
@@ -928,26 +931,14 @@ export async function recordConnectionCheck(input: {
   message?: string;
 }): Promise<boolean> {
   const { workspaceId, slug, sourceSha, success, message } = input;
-  const result = await ConnectorDefinition.updateOne(
-    // A blocked connector is blocked by its code, which a credential cannot
-    // fix; it must not be talked back up to `verified` by a check that could
-    // not have run against it in the first place.
-    { workspaceId, slug, sourceSha, status: { $nin: ["blocked", "retrying"] } },
-    success
-      ? {
-          $set: { status: "verified", lastCheckedAt: new Date() },
-          $unset: { lastCheckError: "" },
-        }
-      : {
-          // Demoted, not blocked: the connector still runs, this credential
-          // does not. It stays offerable so the key can be corrected, and it
-          // stops claiming a verification that no longer holds.
-          $set: {
-            status: "indexed",
-            lastCheckedAt: new Date(),
-            lastCheckError: message ?? "Connection test failed",
-          },
-        },
+  return connectionsRepo.recordConnectorDefinitionCheckResult(
+    workspaceId,
+    slug,
+    {
+      ok: success,
+      checkedAt: new Date(),
+      expectedSourceSha: sourceSha,
+      error: message,
+    },
   );
-  return result.matchedCount === 1;
 }

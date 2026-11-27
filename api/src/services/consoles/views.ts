@@ -5,11 +5,9 @@
  * readable" (the routes answer 404 either way, never leaking existence).
  */
 import { Types } from "mongoose";
-import {
-  DatabaseConnection,
-  SavedConsole,
-} from "../../database/workspace-schema";
+import { SavedConsole } from "../../database/workspace-schema";
 import { authRepo } from "../../repositories/auth";
+import { connectionsRepo } from "../../repositories/connections";
 import { FolderChainCache } from "../../utils/folder-chain";
 import { queryExecutionService } from "../query-execution.service";
 import { queryExecutionSourceLabel } from "../query-execution-source";
@@ -52,12 +50,10 @@ async function connectionSummary(
   if (populated?.name) {
     return { id: populated._id, name: populated.name, type: populated.type };
   }
-  const doc = await DatabaseConnection.findOne({
-    _id: new Types.ObjectId(String(id)),
-    workspaceId: new Types.ObjectId(workspaceId),
-  })
-    .select("name type")
-    .lean();
+  const doc = await connectionsRepo.findDatabaseConnectionSummary(
+    String(id),
+    workspaceId,
+  );
   if (!doc) return null;
   return { id: doc._id, name: doc.name, type: doc.type };
 }
@@ -222,15 +218,11 @@ export async function listConsoleSummaries(
   const connections =
     connectionIds.length === 0
       ? []
-      : await DatabaseConnection.find({
-          _id: { $in: connectionIds.map(id => new Types.ObjectId(id)) },
-          workspaceId: new Types.ObjectId(workspaceId),
-        })
-          .select("name type")
-          .lean();
-  const connectionById = new Map(
-    connections.map(doc => [doc._id.toString(), doc]),
-  );
+      : await connectionsRepo.findDatabaseConnectionSummariesByIds(
+          connectionIds,
+          workspaceId,
+        );
+  const connectionById = new Map(connections.map(doc => [doc.id, doc]));
 
   return consoles.map(console => {
     const connId = console.connectionId?.toString();
