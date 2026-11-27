@@ -762,6 +762,14 @@ jobs:
           PG_ENV_FLAGS=()
           if [ "${USING_EPHEMERAL_PG}" = "true" ]; then
             echo "Postgres: using isolated ephemeral Neon branch pr-${PR_NUMBER}"
+            # If this preview was previously deployed with secret-mounted POSTGRES_*
+            # env vars, remove those secret mounts first so gcloud run deploy does
+            # not fail switching them to literal per-PR branch URLs.
+            EXISTING_SECRETS=$(gcloud run services describe "${SERVICE_NAME}"               --project "${GCP_PROJECT_ID}" --region "${GCP_REGION}"               --format='value(spec.template.spec.containers[0].env[].valueFrom.secretKeyRef.name)' 2>/dev/null || true)
+            if echo "${EXISTING_SECRETS}" | grep -qE '(^|;)POSTGRES_(DIRECT_)?URL(;|$)'; then
+              echo "Clearing previous Secret Manager POSTGRES_* mounts before switching to ephemeral Neon branch"
+              gcloud run services update "${SERVICE_NAME}"                 --project "${GCP_PROJECT_ID}" --region "${GCP_REGION}"                 --remove-secrets=POSTGRES_URL,POSTGRES_DIRECT_URL --quiet
+            fi
             PG_ENV_FLAGS+=(--set-env-vars "POSTGRES_URL=${EPHEMERAL_PG_URL}")
             PG_ENV_FLAGS+=(--set-env-vars "POSTGRES_DIRECT_URL=${EPHEMERAL_PG_DIRECT_URL}")
           elif [ "${USING_EPHEMERAL_PG}" = "unset" ]; then
