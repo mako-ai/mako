@@ -16,7 +16,8 @@ import { Types } from "mongoose";
 
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { requireWorkspace } from "../middleware/workspace.middleware";
-import { DatabaseConnection } from "../database/workspace-schema";
+import type { IDatabaseConnection } from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import { workspaceRepo } from "../repositories/workspaces";
 import { databaseConnectionService } from "../services/database-connection.service";
 import {
@@ -121,15 +122,13 @@ notebookDataRoutes.openapi(
   }),
   async c => {
     const workspace = c.get("workspace") as { _id: unknown };
-    const rows = await DatabaseConnection.find({
-      workspaceId: new Types.ObjectId(String(workspace._id)),
-    })
-      .select("_id name type")
-      .lean();
+    const rows = await connectionsRepo.listDatabaseConnectionMetadata(
+      String(workspace._id),
+    );
     const data = rows.map(r => ({
-      id: String(r._id),
-      name: (r as { name?: string }).name ?? "",
-      type: (r as { type?: string }).type ?? "",
+      id: r.id,
+      name: r.name,
+      type: r.type,
     }));
     return c.json({ success: true, data });
   },
@@ -181,10 +180,10 @@ notebookDataRoutes.openapi(
         );
       }
 
-      const database = await DatabaseConnection.findOne({
-        _id: new Types.ObjectId(connectionId),
-        workspaceId: workspace._id,
-      });
+      const database = await connectionsRepo.findDatabaseConnectionById(
+        connectionId,
+        String(workspace._id),
+      );
       if (!database) {
         return fail(c, 404, "Database connection not found");
       }
@@ -230,9 +229,10 @@ notebookDataRoutes.openapi(
         labels: { mako_source: "notebook", mako_trigger: "kernel" },
       };
 
+      const databaseDoc = database as unknown as IDatabaseConnection;
       const fieldsResult =
         await databaseConnectionService.getStreamingQueryFields(
-          database,
+          databaseDoc,
           executableQuery,
           streamingOptions,
         );
@@ -249,7 +249,7 @@ notebookDataRoutes.openapi(
         filename: "notebook-read",
         streamRows: emitRows =>
           databaseConnectionService.executeStreamingQuery(
-            database,
+            databaseDoc,
             executableQuery,
             { ...streamingOptions, onBatch: emitRows },
           ),
