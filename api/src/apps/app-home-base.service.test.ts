@@ -3,23 +3,28 @@
  * shared by concurrent requests, rebuilt when main moves or an admin mark
  * changes — and never trusted for who may see what.
  *
- * Real bare repo under a temp APPS_GIT_ROOT and in-memory Mongo, like the
- * index suite.
+ * Real bare repo under a temp APPS_GIT_ROOT and PGlite.
  */
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
 import {
-  AppIndexEntry,
-  AppIndexHead,
-  AppLifecycleState,
-  AppProject,
-  AppUsageDaily,
-  WorkspaceUserHandle,
-} from "../database/workspace-schema";
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { Types } from "mongoose";
+import {
+  setupPgTestDb,
+  type PgTestDb,
+  ensureTestUser,
+} from "../test-support/pg-test";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
+import { generateUuidv7 } from "../database/pg/id-codec";
 import { invalidateOwnerDirectory } from "./user-handles.service";
 import {
   DEFAULT_BRANCH,
@@ -27,10 +32,7 @@ import {
   initRepo,
   repoDirFor,
 } from "./repository.service";
-import {
-  bindTestWorkspaceRepo,
-  unbindTestWorkspaceRepo,
-} from "./bind-test-workspace-repo";
+import { bindTestWorkspaceRepo } from "./bind-test-workspace-repo";
 import { invalidateAppsIndexCache, loadAppsIndex } from "./app-index.service";
 import {
   FRESH_MS,
@@ -52,12 +54,12 @@ import { setAppVerified } from "./app-lifecycle.service";
 import { appKeyOf, derivedAppId } from "./app-paths";
 import { RequestTimings, runWithTimings } from "../middleware/server-timing";
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 let tmpRoot: string;
 
 const WS = new Types.ObjectId().toString();
-const USER = new Types.ObjectId().toString();
-const OTHER = new Types.ObjectId().toString();
+const USER = generateUuidv7();
+const OTHER = generateUuidv7();
 
 const manifest = (title: string) =>
   JSON.stringify({ schemaVersion: 1, title }, null, 2) + "\n";
@@ -68,14 +70,11 @@ beforeAll(async () => {
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_SANDBOX_PROVIDER = "local";
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
-  await AppUsageDaily.syncIndexes();
+  pg = await setupPgTestDb();
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -85,19 +84,11 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await Promise.all([
-    AppIndexEntry.deleteMany({}),
-    AppIndexHead.deleteMany({}),
-    AppProject.deleteMany({}),
-    AppUsageDaily.deleteMany({}),
-    AppLifecycleState.deleteMany({}),
-    WorkspaceUserHandle.deleteMany({}),
-  ]);
+  await pg.reset();
   invalidateOwnerDirectory();
   invalidateAppsIndexCache();
   invalidateAppsHomeBase();
   invalidateCommitAuthors();
-  await unbindTestWorkspaceRepo(WS);
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,
     force: true,
@@ -110,6 +101,8 @@ beforeEach(async () => {
     "apps/b/mako.json": manifest("B"),
   });
   await bindTestWorkspaceRepo(WS);
+  await ensureTestUser(pg.db, { id: USER });
+  await ensureTestUser(pg.db, { id: OTHER });
 });
 
 async function commit(writes: Record<string, string>, email = "dev@x.test") {
@@ -121,53 +114,38 @@ async function commit(writes: Record<string, string>, email = "dev@x.test") {
   );
 }
 
-/** Index and collection maintenance, which is not a query the code under test sent. */
-const NOT_A_QUERY = new Set([
-  "createIndex",
-  "createIndexes",
-  "dropIndex",
-  "listIndexes",
-  "ensureIndex",
-]);
-
-/**
- * Count the queries a block sends to one collection. `methods` names them,
- * so a failing count says which call was the extra one.
- */
-async function countQueries<T>(
-  collection: string,
+/** Count the actual Postgres statements against the usage table. */
+async function countUsageQueries<T>(
   fn: () => Promise<T>,
-): Promise<{ result: T; queries: number; methods: string[] }> {
-  const methods: string[] = [];
-  mongoose.set("debug", (name: string, method: string) => {
-    if (name === collection && !NOT_A_QUERY.has(method)) methods.push(method);
-  });
+): Promise<{ result: T; queries: string[] }> {
+  const query = vi.spyOn(pg.pg, "query");
   try {
     const result = await fn();
-    return { result, queries: methods.length, methods };
+    const queries = query.mock.calls
+      .map(([statement]) => statement)
+      .filter(statement => statement.includes('"app_usage_daily"'));
+    return { result, queries };
   } finally {
-    mongoose.set("debug", false);
+    query.mockRestore();
   }
 }
 
 describe("single-flight", () => {
   it("concurrent requests share one build", async () => {
-    const { result, queries, methods } = await countQueries(
-      "app_usage_daily",
-      () =>
-        Promise.all([
-          loadHomeBase(WS),
-          loadHomeBase(WS),
-          listHomeDiscoveryApps(WS, USER, "member"),
-          visibleHomeAppIds(WS, USER, "member"),
-        ]),
+    const { result, queries } = await countUsageQueries(() =>
+      Promise.all([
+        loadHomeBase(WS),
+        loadHomeBase(WS),
+        listHomeDiscoveryApps(WS, USER, "member"),
+        visibleHomeAppIds(WS, USER, "member"),
+      ]),
     );
-    expect(queries, `queries sent: ${methods.join(", ")}`).toBe(1);
+    expect(queries).toHaveLength(1);
     expect(result[0]).toBe(result[1]);
     expect(result[2].map(a => a.path).sort()).toEqual(["apps/a", "apps/b"]);
     // And a second wave is served from the memo, no query at all.
-    const again = await countQueries("app_usage_daily", () => loadHomeBase(WS));
-    expect(again.queries).toBe(0);
+    const again = await countUsageQueries(() => loadHomeBase(WS));
+    expect(again.queries).toHaveLength(0);
     expect(again.result).toBe(result[0]);
   });
 });
@@ -219,9 +197,9 @@ describe("visibility is never memoized", () => {
     const a = idOf("apps/a");
     expect(await visibleHomeAppIds(WS, USER, "member")).toContain(a);
     const base = await loadHomeBase(WS);
-    await AppProject.create({
-      _id: new Types.ObjectId(a),
-      workspaceId: new Types.ObjectId(WS),
+    await appsMetadataRepo.createProject({
+      id: a,
+      workspaceId: WS,
       title: "A",
       slug: "a",
       path: "apps/a",

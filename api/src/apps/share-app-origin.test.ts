@@ -4,7 +4,7 @@
  * `<appId>.<apps domain>` under a published token the SHARE minted.
  *
  * Pinned here, against the real share, token and host-gate code and real
- * Mongo:
+ * PGlite:
  * - flag off, /content is byte-for-byte what it was (no `appUrl`);
  * - the token names the share's app and published commit, no viewer, and
  *   is one string for a whole window (cache hits across visits);
@@ -16,8 +16,13 @@
  */
 import bcrypt from "bcrypt";
 import { Hono } from "hono";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { objectIdToUuid } from "../database/pg/id-codec";
+import {
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 import {
   afterAll,
   afterEach,
@@ -59,7 +64,14 @@ vi.mock("./binding-refresh", async importOriginal => ({
 import { appsHostGate } from "../middleware/apps-host-gate";
 import { appsPreviewRoutes } from "../routes/apps-preview";
 import { publicShareRoutes } from "../routes/public-share";
-import { AppProject, type IAppProject } from "../database/workspace-schema";
+import type { IAppProject } from "../database/workspace-schema";
+import {
+  appsMetadataRepo,
+  toAppProjectCompat,
+  type CreateAppProjectInput,
+} from "../repositories/apps-metadata";
+import { appProjects } from "../database/pg/schema";
+import { eq } from "drizzle-orm";
 import {
   mintPublishedGrant,
   resolvePreviewGrant,
@@ -80,15 +92,14 @@ function server() {
   return app;
 }
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 let open: IAppProject;
 let locked: IAppProject;
 let other: IAppProject;
 
 beforeAll(async () => {
   vi.stubEnv("SESSION_SECRET", "share-app-origin-test-secret");
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
 });
 
 beforeEach(async () => {
@@ -96,31 +107,35 @@ beforeEach(async () => {
   vi.stubEnv("APPS_ORIGIN_BASE", "https://makoapps.dev");
   served.calls.length = 0;
   served.refreshes.length = 0;
-  await AppProject.deleteMany({});
+  await pg.reset();
+  const workspace = await ensureTestWorkspace(pg.db);
+  await ensureTestUser(pg.db, { id: "owner" });
   const passwordHash = await bcrypt.hash("pw", 4);
   const base = {
-    workspaceId: new Types.ObjectId(),
+    workspaceId: workspace.id,
     access: "workspace" as const,
     owner_id: "owner",
     createdBy: "owner",
     publishedSha: SHA,
   };
-  [open, locked, other] = await AppProject.create([
-    {
-      ...base,
-      title: "Open",
-      slug: "open",
-      publicShare: { enabled: true, token: OPEN },
-    },
-    {
-      ...base,
-      title: "Locked",
-      slug: "locked",
-      publicShare: { enabled: true, token: LOCKED, passwordHash },
-    },
-    { ...base, title: "Other", slug: "other" },
-  ]);
-  await AppProject.create({
+  [open, locked, other] = await Promise.all(
+    [
+      {
+        ...base,
+        title: "Open",
+        slug: "open",
+        publicShare: { enabled: true, token: OPEN },
+      },
+      {
+        ...base,
+        title: "Locked",
+        slug: "locked",
+        publicShare: { enabled: true, token: LOCKED, passwordHash },
+      },
+      { ...base, title: "Other", slug: "other" },
+    ].map(createProject),
+  );
+  await createProject({
     ...base,
     publishedSha: undefined,
     title: "Draft",
@@ -135,10 +150,24 @@ afterEach(() => {
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo?.stop();
+  await pg?.close();
   vi.unstubAllEnvs();
 });
+
+async function createProject(
+  input: CreateAppProjectInput,
+): Promise<IAppProject> {
+  return toAppProjectCompat(await appsMetadataRepo.createProject(input));
+}
+
+async function updateOpenShare(
+  patch: Partial<typeof appProjects.$inferInsert>,
+) {
+  await pg.db
+    .update(appProjects)
+    .set(patch)
+    .where(eq(appProjects.id, objectIdToUuid(open._id.toString())));
+}
 
 async function content(token: string, cookie?: string) {
   const res = await server().request(`/api/share/${token}/content`, {
@@ -233,15 +262,12 @@ describe("the token a share mints", () => {
   });
 
   it("is refused for a disabled, rotated or unpublished share", async () => {
-    await AppProject.updateOne(
-      { _id: open._id },
-      { $set: { "publicShare.enabled": false } },
-    );
+    await updateOpenShare({ publicShareEnabled: false });
     expect((await content(OPEN)).res.status).toBe(404);
-    await AppProject.updateOne(
-      { _id: open._id },
-      { $set: { "publicShare.enabled": true, "publicShare.token": "rotated" } },
-    );
+    await updateOpenShare({
+      publicShareEnabled: true,
+      publicShareToken: "rotated",
+    });
     expect((await content(OPEN)).res.status).toBe(404);
     const draft = await content(DRAFT);
     expect(draft.res.status).toBe(200);
@@ -347,10 +373,7 @@ describe("refresh under a share token", () => {
   });
 
   it("runs throttled, as nobody, at the token's commit, once allowed", async () => {
-    await AppProject.updateOne(
-      { _id: open._id },
-      { $set: { "publicShare.allowLiveQueries": true } },
-    );
+    await updateOpenShare({ publicShareAllowLiveQueries: true });
     const res = await refresh(await openToken());
     expect(res.status).toBe(200);
     expect(served.refreshes[0]).toMatchObject({
@@ -362,20 +385,14 @@ describe("refresh under a share token", () => {
   });
 
   it("stops at once when the share is disabled or rotated", async () => {
-    await AppProject.updateOne(
-      { _id: open._id },
-      { $set: { "publicShare.allowLiveQueries": true } },
-    );
+    await updateOpenShare({ publicShareAllowLiveQueries: true });
     const token = await openToken();
-    await AppProject.updateOne(
-      { _id: open._id },
-      { $set: { "publicShare.enabled": false } },
-    );
+    await updateOpenShare({ publicShareEnabled: false });
     expect((await refresh(token)).status).toBe(404);
-    await AppProject.updateOne(
-      { _id: open._id },
-      { $set: { "publicShare.enabled": true, "publicShare.token": "rotated" } },
-    );
+    await updateOpenShare({
+      publicShareEnabled: true,
+      publicShareToken: "rotated",
+    });
     expect((await refresh(token)).status).toBe(404);
     expect(served.refreshes).toHaveLength(0);
   });

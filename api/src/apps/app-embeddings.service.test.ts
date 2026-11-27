@@ -1,14 +1,18 @@
 /**
  * App embeddings, end to end without a network: the refresh after the
- * index moves (real git, real Mongo, a fake embedding model) re-embeds only
+ * index moves (real git, PGlite, a fake embedding model) re-embeds only
  * what changed, and a search falls back to words when the model is slow.
  */
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import {
+  setupPgTestDb,
+  type PgTestDb,
+  ensureTestWorkspace,
+} from "../test-support/pg-test";
 import {
   afterAll,
   beforeAll,
@@ -25,13 +29,14 @@ const fake = vi.hoisted(() => ({
   queryDelayMs: 0,
 }));
 
-/** A deterministic 3-d "embedding": which of three words the text says. */
+/** Three word signals padded to the pgvector column width. */
 function vectorOf(text: string): number[] {
   const t = text.toLowerCase();
   return [
     t.includes("acquisition") ? 1 : 0.05,
     t.includes("renewal") ? 1 : 0.05,
     t.includes("hiring") ? 1 : 0.05,
+    ...new Array<number>(1533).fill(0),
   ];
 }
 
@@ -56,7 +61,9 @@ vi.mock("./app-index.service", () => ({
   loadAppsIndex: vi.fn(),
 }));
 
-import { AppEmbedding } from "../database/workspace-schema";
+import { appEmbeddings } from "../database/pg/schema";
+import { eq } from "drizzle-orm";
+import { objectIdToUuid } from "../database/pg/id-codec";
 import {
   appEmbeddingsSettled,
   resetAppEmbeddingsState,
@@ -66,7 +73,7 @@ import type { AppIndexRow, AppsIndexSnapshot } from "./app-index.service";
 import { relatedSignals } from "./app-search.service";
 
 const ws = new Types.ObjectId().toHexString();
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 const dir = mkdtempSync(path.join(tmpdir(), "app-embeddings-"));
 const git = (...args: string[]) =>
   execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" }).trim();
@@ -125,20 +132,26 @@ async function refresh(snapshot: AppsIndexSnapshot) {
 }
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
+  await ensureTestWorkspace(pg.db, { id: ws });
   fake.repoDir = dir;
   git("init", "-q");
 });
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
   rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 beforeEach(() => {
   fake.embedded = [];
   fake.queryDelayMs = 0;
 });
+
+function workspaceEmbeddings() {
+  return pg.db
+    .select()
+    .from(appEmbeddings)
+    .where(eq(appEmbeddings.workspaceId, objectIdToUuid(ws)));
+}
 
 describe("app embeddings refresh", () => {
   it("embeds every app once, then only what changed", async () => {
@@ -147,8 +160,9 @@ describe("app embeddings refresh", () => {
     let snap = commit();
     await refresh(snap);
     expect(fake.embedded).toHaveLength(2);
-    expect(await AppEmbedding.countDocuments({ workspaceId: ws })).toBe(2);
-    const sales = await AppEmbedding.findOne({ path: "apps/sales" }).lean();
+    const rows = await workspaceEmbeddings();
+    expect(rows).toHaveLength(2);
+    const sales = rows.find(row => row.path === "apps/sales");
     expect(sales?.terms).toContain("acquisition");
 
     // Same tree: nothing read, nothing embedded.
@@ -164,8 +178,11 @@ describe("app embeddings refresh", () => {
     snap = commit();
     await refresh(snap);
     expect(fake.embedded).toHaveLength(2);
-    const rows = await AppEmbedding.find({ workspaceId: ws }).lean();
-    expect(rows.map(r => r.path).sort()).toEqual(["apps/people", "apps/sales"]);
+    const updated = await workspaceEmbeddings();
+    expect(updated.map(r => r.path).sort()).toEqual([
+      "apps/people",
+      "apps/sales",
+    ]);
   });
 
   it("serves related signals, and nothing when the model is slow", async () => {

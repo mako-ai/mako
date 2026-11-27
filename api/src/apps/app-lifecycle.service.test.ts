@@ -3,7 +3,7 @@
  * "Share with workspace", and the dry-run default.
  *
  * The planner is pure; everything else runs on a real bare repo under a
- * temp APPS_GIT_ROOT and in-memory Mongo (the app-index suite's harness).
+ * temp APPS_GIT_ROOT and PGlite (the app-index suite's harness).
  * The claims under test:
  *
  *  - nothing is judged "unused" before usage has been recorded for the
@@ -30,8 +30,16 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { generateUuidv7 } from "../database/pg/id-codec";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
+import {
+  ensureTestMember,
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 import type { Context, Next } from "hono";
 
 // The routes run for real (membership, roles, the repo); only the signed-in
@@ -46,15 +54,7 @@ vi.mock("../auth/unified-auth.middleware", () => ({
 
 import { createRouter } from "../openapi/core";
 import { appsRoutes } from "../routes/apps";
-import {
-  AppIndexEntry,
-  AppIndexHead,
-  AppLifecycleState,
-  AppProject,
-  WorkspaceMember,
-  WorkspaceUserHandle,
-} from "../database/workspace-schema";
-import { User } from "../database/schema";
+import { workspaceRepo } from "../repositories/workspaces";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -63,10 +63,7 @@ import {
   repoDirFor,
   resolveCommit,
 } from "./repository.service";
-import {
-  bindTestWorkspaceRepo,
-  unbindTestWorkspaceRepo,
-} from "./bind-test-workspace-repo";
+import { bindTestWorkspaceRepo } from "./bind-test-workspace-repo";
 import { invalidateAppsIndexCache, loadAppsIndex } from "./app-index.service";
 import {
   archiveProject,
@@ -256,7 +253,7 @@ describe("withManifestDescription", () => {
 // Real repo
 // ---------------------------------------------------------------------------
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 let tmpRoot: string;
 
 beforeAll(async () => {
@@ -264,13 +261,11 @@ beforeAll(async () => {
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_SANDBOX_PROVIDER = "local";
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -280,7 +275,7 @@ afterAll(async () => {
 });
 
 const WS = new Types.ObjectId().toString();
-const OWNER = new Types.ObjectId().toString();
+const OWNER = generateUuidv7();
 // Personal trees are named by handle, resolved to the owner by the mapping.
 const HANDLE = "owner";
 const OLD_ID = new Types.ObjectId().toHexString();
@@ -299,21 +294,21 @@ async function fileAt(rel: string): Promise<string | null> {
   }
 }
 
+async function lifecycleState() {
+  return (await appsMetadataRepo.listLifecycleByWorkspace(WS)).find(
+    row => row.appId === OLD_ID,
+  );
+}
+
 beforeEach(async () => {
   vi.unstubAllEnvs();
-  await AppIndexEntry.deleteMany({});
-  await AppIndexHead.deleteMany({});
-  await AppProject.deleteMany({});
-  await AppLifecycleState.deleteMany({});
-  await WorkspaceUserHandle.deleteMany({});
-  await WorkspaceUserHandle.create({
-    workspaceId: new Types.ObjectId(WS),
-    userId: OWNER,
-    handle: HANDLE,
-  });
+  await pg.reset();
+  await ensureTestWorkspace(pg.db, { id: WS });
+  await ensureTestUser(pg.db, { id: OWNER, email: "owner@example.com" });
+  await workspaceRepo.insertHandlesBestEffort(WS, [
+    { userId: OWNER, handle: HANDLE },
+  ]);
   invalidateOwnerDirectory();
-  await mongoose.connection.db!.collection("app_usage_daily").deleteMany({});
-  await unbindTestWorkspaceRepo(WS);
   invalidateAppsIndexCache();
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,
@@ -395,9 +390,9 @@ describe("lastCommitByAppPath", () => {
 
 describe("archiveProject", () => {
   it("moves the folder to archive/<path>; the index stops listing it; a second archive keeps both", async () => {
-    await AppProject.create({
-      _id: new Types.ObjectId(OLD_ID),
-      workspaceId: new Types.ObjectId(WS),
+    await appsMetadataRepo.createProject({
+      id: OLD_ID,
+      workspaceId: WS,
       title: "Old",
       slug: "old",
       path: "apps/old",
@@ -412,7 +407,7 @@ describe("archiveProject", () => {
     expect(snapshot.apps.map(a => a.path)).not.toContain("apps/old");
     expect(snapshot.apps.some(a => a.path.startsWith("archive/"))).toBe(false);
     // The row keeps its state but gives up its address.
-    const row = await AppProject.findById(OLD_ID).lean();
+    const row = await appsMetadataRepo.findProjectById(OLD_ID);
     expect(row?.path).toBeUndefined();
 
     // A new app at the same address, archived too: both copies are kept.
@@ -458,20 +453,18 @@ describe("share with workspace", () => {
 
 describe("runAppLifecycle", () => {
   async function seedUsageHistory() {
-    await mongoose.connection.db!.collection("app_usage_daily").insertOne({
-      workspaceId: new Types.ObjectId(WS),
+    const at = new Date(REAL_NOW - 90 * DAY);
+    await recordAppUsage({
+      workspaceId: WS,
       appId: FRESH_ID,
       userId: OWNER,
-      day: new Date(REAL_NOW - 90 * DAY).toISOString().slice(0, 10),
-      opens: 1,
-      activeSeconds: 0,
+      kind: "open",
+      source: "app",
+      at,
     });
-    await User.create({ _id: OWNER, email: "owner@example.com" }).catch(
-      () => undefined,
-    );
-    await AppProject.create({
-      _id: new Types.ObjectId(OLD_ID),
-      workspaceId: new Types.ObjectId(WS),
+    await appsMetadataRepo.createProject({
+      id: OLD_ID,
+      workspaceId: WS,
       title: "Old",
       slug: "old",
       path: "apps/old",
@@ -490,7 +483,7 @@ describe("runAppLifecycle", () => {
     const plan = await runAppLifecycle(WS, later);
     expect(plan.mode).toBe("dry-run");
     expect(plan.counts["notify-stale"]).toBe(3);
-    expect(await AppLifecycleState.countDocuments({})).toBe(0);
+    expect(await appsMetadataRepo.listLifecycleByWorkspace(WS)).toHaveLength(0);
     expect(send).not.toHaveBeenCalled();
     expect(await resolveCommit(repoDirFor(WS), MAIN)).toBe(head);
     // The admin report is the same plan.
@@ -512,7 +505,7 @@ describe("runAppLifecycle", () => {
     expect(first.counts["notify-stale"]).toBe(2);
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0][0]).toBe("owner@example.com");
-    const state = await AppLifecycleState.findOne({ appId: OLD_ID }).lean();
+    const state = await lifecycleState();
     expect(state?.staleSince?.getTime()).toBe(day20.getTime());
 
     // A week later: still counting down, nothing moves.
@@ -532,7 +525,7 @@ describe("runAppLifecycle", () => {
       g.runGit(["-C", repoDirFor(WS), "log", "-1", "--format=%an <%ae>"]),
     );
     expect(stdout.trim()).toBe("Mako <bot@mako.ai>");
-    const receipt = await AppLifecycleState.findOne({ appId: OLD_ID }).lean();
+    const receipt = await lifecycleState();
     expect(receipt).toMatchObject({
       archivedFrom: "apps/old",
       archivedTo: "archive/apps/old",
@@ -544,10 +537,10 @@ describe("runAppLifecycle", () => {
 
 describe("hooks", () => {
   it("paused schedules are listed for the scheduler until the next open", async () => {
-    await AppLifecycleState.create({
-      workspaceId: new Types.ObjectId(WS),
-      appId: OLD_ID,
-      schedulesPausedAt: new Date(),
+    await appsMetadataRepo.upsertLifecyclePatch(WS, OLD_ID, {
+      set: {
+        schedulesPausedAt: new Date(),
+      },
     });
     expect([...(await pausedScheduleAppIds())]).toEqual([OLD_ID]);
     await onAppOpened(WS, OLD_ID);
@@ -555,11 +548,11 @@ describe("hooks", () => {
   });
 
   it("a recorded open resumes paused schedules; a heartbeat does not", async () => {
-    await AppLifecycleState.create({
-      workspaceId: new Types.ObjectId(WS),
-      appId: OLD_ID,
-      schedulesPausedAt: new Date(),
-      staleSince: new Date(),
+    await appsMetadataRepo.upsertLifecyclePatch(WS, OLD_ID, {
+      set: {
+        schedulesPausedAt: new Date(),
+        staleSince: new Date(),
+      },
     });
     const usage = {
       workspaceId: WS,
@@ -576,13 +569,13 @@ describe("hooks", () => {
       await new Promise(r => setTimeout(r, 20));
     }
     expect((await pausedScheduleAppIds()).size).toBe(0);
-    const row = await AppLifecycleState.findOne({ appId: OLD_ID }).lean();
+    const row = await lifecycleState();
     expect(row?.staleSince).toBeUndefined();
   });
 
   it("verified marks record who and are listed per workspace", async () => {
     await setAppVerified(WS, OLD_ID, true, OWNER);
-    const row = await AppLifecycleState.findOne({ appId: OLD_ID }).lean();
+    const row = await lifecycleState();
     expect(row?.verifiedBy).toBe(OWNER);
     expect([...(await verifiedAppIds(WS))]).toEqual([OLD_ID]);
     await setAppVerified(WS, OLD_ID, false, OWNER);
@@ -593,8 +586,8 @@ describe("hooks", () => {
 describe("routes", () => {
   const router = createRouter();
   router.route("/api/workspaces/:workspaceId/apps", appsRoutes);
-  const ADMIN = new Types.ObjectId().toString();
-  const MEMBER = new Types.ObjectId().toString();
+  const ADMIN = generateUuidv7();
+  const MEMBER = generateUuidv7();
   const call = (method: string, url: string, body?: unknown) =>
     router.request(`/api/workspaces/${WS}/apps${url}`, {
       method,
@@ -603,12 +596,13 @@ describe("routes", () => {
     });
 
   beforeEach(async () => {
-    await WorkspaceMember.deleteMany({});
-    await WorkspaceMember.create([
-      { workspaceId: new Types.ObjectId(WS), userId: ADMIN, role: "admin" },
-      { workspaceId: new Types.ObjectId(WS), userId: MEMBER, role: "member" },
-      { workspaceId: new Types.ObjectId(WS), userId: OWNER, role: "member" },
-    ]);
+    await ensureTestMember(pg.db, {
+      workspaceId: WS,
+      userId: ADMIN,
+      role: "admin",
+    });
+    await ensureTestMember(pg.db, { workspaceId: WS, userId: MEMBER });
+    await ensureTestMember(pg.db, { workspaceId: WS, userId: OWNER });
   });
 
   it("the plan is for admins only, and says it is a dry run", async () => {

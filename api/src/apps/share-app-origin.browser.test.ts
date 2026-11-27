@@ -24,9 +24,12 @@ import { Readable } from "node:stream";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { secureHeaders } from "hono/secure-headers";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
-import { describe, expect, it, vi } from "vitest";
+import {
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+} from "../test-support/pg-test";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 const objects = vi.hoisted(() => new Map<string, Buffer>());
 const bucket = vi.hoisted(() => ({ origin: "" }));
@@ -75,7 +78,7 @@ vi.mock("../services/artifact-store.service", async importOriginal => {
 import { appsHostGate } from "../middleware/apps-host-gate";
 import { appsPreviewRoutes } from "../routes/apps-preview";
 import { publicShareRoutes } from "../routes/public-share";
-import { AppProject } from "../database/workspace-schema";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
 import { DEPLOYMENT_BINDING_INDEX, deploymentKey } from "./deployment.service";
 
 const playwrightDir = process.env.SHARE_ORIGIN_PLAYWRIGHT;
@@ -139,8 +142,10 @@ describe.skipIf(!playwrightDir || !chromiumPath)(
   "share links in Chromium (headless)",
   () => {
     it("a second visit re-downloads everything today and nothing on the app's own origin", async () => {
-      const mongo = await MongoMemoryServer.create();
-      await mongoose.connect(mongo.getUri());
+      const pg = await setupPgTestDb();
+      onTestFinished(() => pg.close());
+      const workspace = await ensureTestWorkspace(pg.db);
+      await ensureTestUser(pg.db, { id: "owner" });
       const stats = {
         bytes: 0,
         requests: 0,
@@ -223,8 +228,8 @@ describe.skipIf(!playwrightDir || !chromiumPath)(
       vi.stubEnv("SESSION_SECRET", "share-origin-bench-secret");
       vi.stubEnv("CLIENT_URL", mako);
 
-      const project = await AppProject.create({
-        workspaceId: new Types.ObjectId(),
+      const project = await appsMetadataRepo.createProject({
+        workspaceId: workspace.id,
         access: "workspace",
         owner_id: "owner",
         createdBy: "owner",
@@ -233,7 +238,7 @@ describe.skipIf(!playwrightDir || !chromiumPath)(
         publishedSha: SHA,
         publicShare: { enabled: true, token: SHARE },
       });
-      const id = project._id.toString();
+      const id = project.id;
       const html = `<!doctype html><html><head><script type="module" crossorigin src="./assets/app.js"></script></head><body></body></html>`;
       objects.set(deploymentKey(id, SHA, "index.html"), Buffer.from(html));
       objects.set(
@@ -313,8 +318,6 @@ describe.skipIf(!playwrightDir || !chromiumPath)(
       } finally {
         await browser.close();
         listener.close();
-        await mongoose.disconnect();
-        await mongo.stop();
       }
       console.info(JSON.stringify(runs, null, 2));
 

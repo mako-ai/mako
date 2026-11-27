@@ -5,89 +5,97 @@
  * is simply in, without an invitation.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
-import { Workspace, WorkspaceMember } from "../database/workspace-schema";
+import { eq, sql } from "drizzle-orm";
+import { generateObjectIdHex } from "../database/pg/id-codec";
+import { workspaces } from "../database/pg/schema";
+import { workspaceRepo } from "../repositories/workspaces";
+import {
+  ensureTestMember,
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 import { ensureAutoJoin, normalizeAutoJoin } from "./auto-join.service";
 
-let mongo: MongoMemoryServer;
-const WS = new Types.ObjectId();
+let pg: PgTestDb;
+const WS = generateObjectIdHex();
+let workspaceUuid: string;
+let samId: string;
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
 });
-afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
-});
+afterAll(() => pg?.close());
 beforeEach(async () => {
-  await Workspace.deleteMany({});
-  await WorkspaceMember.deleteMany({});
-  await Workspace.create({
-    _id: WS,
+  await pg.reset();
+  const workspace = await ensureTestWorkspace(pg.db, {
+    id: WS,
     name: "Acme",
     slug: "acme",
-    createdBy: "u-owner",
-    settings: { autoJoin: { domains: ["acme.com"], role: "viewer" } },
-    billing: {},
+  });
+  workspaceUuid = workspace.uuid;
+  samId = (await ensureTestUser(pg.db, { id: "u-sam", email: "sam@acme.com" }))
+    .id;
+  await workspaceRepo.setAutoJoin(WS, {
+    domains: ["acme.com"],
+    role: "viewer",
   });
 });
 
 describe("ensureAutoJoin", () => {
   it("makes a matching-domain stranger a member with the workspace's access role", async () => {
-    const member = await ensureAutoJoin(WS.toString(), {
-      id: "u-sam",
+    const member = await ensureAutoJoin(WS, {
+      id: samId,
       email: "Sam@Acme.com",
     });
-    expect(member).toMatchObject({ userId: "u-sam", role: "viewer" });
-    expect(await WorkspaceMember.countDocuments({ workspaceId: WS })).toBe(1);
+    expect(member).toMatchObject({ userId: samId, role: "viewer" });
+    expect((await workspaceRepo.listMembers(WS)).length).toBe(1);
   });
 
   it("is idempotent and never touches an existing membership", async () => {
-    await WorkspaceMember.create({
+    await ensureTestMember(pg.db, {
       workspaceId: WS,
       userId: "u-lead",
       role: "admin",
     });
-    const member = await ensureAutoJoin(WS.toString(), {
+    const member = await ensureAutoJoin(WS, {
       id: "u-lead",
       email: "lead@acme.com",
     });
     expect(member?.role).toBe("admin");
-    await ensureAutoJoin(WS.toString(), { id: "u-sam", email: "sam@acme.com" });
-    await ensureAutoJoin(WS.toString(), { id: "u-sam", email: "sam@acme.com" });
-    expect(await WorkspaceMember.countDocuments({ workspaceId: WS })).toBe(2);
+    await ensureAutoJoin(WS, { id: samId, email: "sam@acme.com" });
+    await ensureAutoJoin(WS, { id: samId, email: "sam@acme.com" });
+    expect((await workspaceRepo.listMembers(WS)).length).toBe(2);
   });
 
   it("refuses other domains, sub-domains, and a workspace with no auto-join", async () => {
     expect(
-      await ensureAutoJoin(WS.toString(), { id: "u-x", email: "x@gmail.com" }),
+      await ensureAutoJoin(WS, { id: "u-x", email: "x@gmail.com" }),
     ).toBeNull();
     expect(
-      await ensureAutoJoin(WS.toString(), {
+      await ensureAutoJoin(WS, {
         id: "u-y",
         email: "y@evil.acme.com",
       }),
     ).toBeNull();
-    await Workspace.updateOne(
-      { _id: WS },
-      { $unset: { "settings.autoJoin": 1 } },
-    );
+    await workspaceRepo.setAutoJoin(WS, null);
     expect(
-      await ensureAutoJoin(WS.toString(), { id: "u-z", email: "z@acme.com" }),
+      await ensureAutoJoin(WS, { id: "u-z", email: "z@acme.com" }),
     ).toBeNull();
-    expect(await WorkspaceMember.countDocuments({ workspaceId: WS })).toBe(0);
+    expect((await workspaceRepo.listMembers(WS)).length).toBe(0);
   });
 
   it("never grants more than member, whatever the stored role says", async () => {
-    await Workspace.updateOne(
-      { _id: WS },
-      { $set: { "settings.autoJoin.role": "admin" } },
-      { strict: false },
-    );
-    const member = await ensureAutoJoin(WS.toString(), {
-      id: "u-sam",
+    // Seed the out-of-contract stored value without normalizing the role.
+    await pg.db
+      .update(workspaces)
+      .set({
+        settingsAutoJoin: sql`'{"domains":["acme.com"],"role":"admin"}'::jsonb`,
+      })
+      .where(eq(workspaces.id, workspaceUuid));
+    const member = await ensureAutoJoin(WS, {
+      id: samId,
       email: "sam@acme.com",
     });
     expect(member?.role).toBe("viewer");

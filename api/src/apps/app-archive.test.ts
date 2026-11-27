@@ -3,7 +3,7 @@
  * restoring with the move rules, 409 on a taken address, and a fresh
  * lifecycle grace period after a restore.
  *
- * Real bare repo under a temp APPS_GIT_ROOT + in-memory Mongo (the
+ * Real bare repo under a temp APPS_GIT_ROOT + PGlite (the
  * lifecycle suite's harness); routes run for real with a stubbed identity.
  */
 import fs from "node:fs/promises";
@@ -18,8 +18,15 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { generateUuidv7 } from "../database/pg/id-codec";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
+import {
+  ensureTestMember,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 import type { Context, Next } from "hono";
 
 const identity = vi.hoisted(() => ({ userId: "" }));
@@ -32,14 +39,7 @@ vi.mock("../auth/unified-auth.middleware", () => ({
 
 import { createRouter } from "../openapi/core";
 import { appsRoutes } from "../routes/apps";
-import {
-  AppIndexEntry,
-  AppIndexHead,
-  AppLifecycleState,
-  AppProject,
-  WorkspaceMember,
-  WorkspaceUserHandle,
-} from "../database/workspace-schema";
+import { workspaceRepo } from "../repositories/workspaces";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -47,10 +47,7 @@ import {
   readBlob,
   repoDirFor,
 } from "./repository.service";
-import {
-  bindTestWorkspaceRepo,
-  unbindTestWorkspaceRepo,
-} from "./bind-test-workspace-repo";
+import { bindTestWorkspaceRepo } from "./bind-test-workspace-repo";
 import { invalidateAppsIndexCache, loadAppsIndex } from "./app-index.service";
 import { archiveProject } from "./worktree.service";
 import { invalidateOwnerDirectory } from "./user-handles.service";
@@ -138,7 +135,7 @@ describe("pure parts", () => {
   });
 });
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 let tmpRoot: string;
 
 beforeAll(async () => {
@@ -146,13 +143,11 @@ beforeAll(async () => {
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_SANDBOX_PROVIDER = "local";
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -162,9 +157,9 @@ afterAll(async () => {
 });
 
 const WS = new Types.ObjectId().toString();
-const OWNER = new Types.ObjectId().toString();
-const MEMBER = new Types.ObjectId().toString();
-const VIEWER = new Types.ObjectId().toString();
+const OWNER = generateUuidv7();
+const MEMBER = generateUuidv7();
+const VIEWER = generateUuidv7();
 const HANDLE = "owner";
 const OLD_ID = new Types.ObjectId().toHexString();
 const MINE_ID = new Types.ObjectId().toHexString();
@@ -212,28 +207,27 @@ const restoreAs = (userId: string, archived: string) => {
   return call("POST", "/archived/restore", { path: archived });
 };
 
+async function lifecycleState() {
+  return (await appsMetadataRepo.listLifecycleByWorkspace(WS)).find(
+    row => row.appId === OLD_ID,
+  );
+}
+
 beforeEach(async () => {
-  await Promise.all([
-    AppIndexEntry.deleteMany({}),
-    AppIndexHead.deleteMany({}),
-    AppProject.deleteMany({}),
-    AppLifecycleState.deleteMany({}),
-    WorkspaceUserHandle.deleteMany({}),
-    WorkspaceMember.deleteMany({}),
-  ]);
-  await WorkspaceUserHandle.create({
-    workspaceId: new Types.ObjectId(WS),
-    userId: OWNER,
-    handle: HANDLE,
+  await pg.reset();
+  await ensureTestWorkspace(pg.db, { id: WS });
+  await ensureTestMember(pg.db, { workspaceId: WS, userId: OWNER });
+  await ensureTestMember(pg.db, { workspaceId: WS, userId: MEMBER });
+  await ensureTestMember(pg.db, {
+    workspaceId: WS,
+    userId: VIEWER,
+    role: "viewer",
   });
-  await WorkspaceMember.create([
-    { workspaceId: new Types.ObjectId(WS), userId: OWNER, role: "member" },
-    { workspaceId: new Types.ObjectId(WS), userId: MEMBER, role: "member" },
-    { workspaceId: new Types.ObjectId(WS), userId: VIEWER, role: "viewer" },
+  await workspaceRepo.insertHandlesBestEffort(WS, [
+    { userId: OWNER, handle: HANDLE },
   ]);
   invalidateOwnerDirectory();
   invalidateArchiveCache();
-  await unbindTestWorkspaceRepo(WS);
   invalidateAppsIndexCache();
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,
@@ -254,14 +248,14 @@ beforeEach(async () => {
     author: { name: "Mako", email: "bot@mako.ai" },
   });
   await archiveProject(WS, `users/${HANDLE}/apps/mine`);
-  await AppLifecycleState.create({
-    workspaceId: new Types.ObjectId(WS),
-    appId: OLD_ID,
-    staleSince: new Date("2026-09-01"),
-    staleNotifiedTo: ["owner@example.com"],
-    archivedAt: new Date(),
-    archivedFrom: "apps/old",
-    archivedTo: "archive/apps/old",
+  await appsMetadataRepo.upsertLifecyclePatch(WS, OLD_ID, {
+    set: {
+      staleSince: new Date("2026-09-01"),
+      staleNotifiedTo: ["owner@example.com"],
+      archivedAt: new Date(),
+      archivedFrom: "apps/old",
+      archivedTo: "archive/apps/old",
+    },
   });
 });
 
@@ -332,7 +326,7 @@ describe("POST /apps/archived/restore", () => {
     expect(snapshot.apps.find(a => a.appId === OLD_ID)?.path).toBe("apps/old");
     expect((await listAs(MEMBER)).map(a => a.path)).toEqual([]);
 
-    const state = await AppLifecycleState.findOne({ appId: OLD_ID }).lean();
+    const state = await lifecycleState();
     expect(state?.restoredAt).toBeInstanceOf(Date);
     expect(state?.restoredBy).toBe(MEMBER);
     expect(state?.staleSince).toBeUndefined();
@@ -359,7 +353,7 @@ describe("POST /apps/archived/restore", () => {
     const res = await restoreAs(MEMBER, "archive/apps/old");
     expect(res.status).toBe(409);
     expect(await fileAt("archive/apps/old/mako.json")).not.toBeNull();
-    const state = await AppLifecycleState.findOne({ appId: OLD_ID }).lean();
+    const state = await lifecycleState();
     expect(state?.restoredAt).toBeUndefined();
   });
 });

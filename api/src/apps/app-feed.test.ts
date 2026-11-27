@@ -3,14 +3,20 @@
  * paging that never repeats, skips or leaks an app.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { desc } from "drizzle-orm";
 import {
-  AppFeedSnapshot,
-  AppProject,
-  AppUsageDaily,
-  AppUsageEvent,
-} from "../database/workspace-schema";
+  generateObjectIdHex,
+  legacyUserIdToUuidv7,
+} from "../database/pg/id-codec";
+import { appUsageEvents } from "../database/pg/schema";
+import {
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
+
 import type { DiscoveryApp } from "./app-discovery.service";
 import {
   buildFeedOrder,
@@ -549,27 +555,27 @@ describe("getFeedPage", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The real stores: snapshots and usage signals in Mongo
+// The real stores: snapshots and usage signals in Postgres
 // ---------------------------------------------------------------------------
 
-describe("Mongo-backed feed state", () => {
-  let mongo: MongoMemoryServer;
+describe("Postgres-backed feed state", () => {
+  let pg: PgTestDb;
+  const me = legacyUserIdToUuidv7("me");
+  const peer = legacyUserIdToUuidv7("peer");
+  const a = generateObjectIdHex();
+  const c = generateObjectIdHex();
+  const old = generateObjectIdHex();
   beforeAll(async () => {
-    mongo = await MongoMemoryServer.create();
-    await mongoose.connect(mongo.getUri());
-    await AppUsageDaily.syncIndexes();
+    pg = await setupPgTestDb();
   });
   afterAll(async () => {
-    await mongoose.disconnect();
-    await mongo.stop();
+    await pg?.close();
   });
   beforeEach(async () => {
-    await Promise.all([
-      AppUsageDaily.deleteMany({}),
-      AppUsageEvent.deleteMany({}),
-      AppProject.deleteMany({}),
-      AppFeedSnapshot.deleteMany({}),
-    ]);
+    await pg.reset();
+    await ensureTestWorkspace(pg.db, { id: WS });
+    await ensureTestUser(pg.db, { id: me });
+    await ensureTestUser(pg.db, { id: peer });
     resetUsageThrottle();
   });
 
@@ -577,22 +583,22 @@ describe("Mongo-backed feed state", () => {
     const id = await defaultFeedDeps.saveSnapshot(
       {
         workspaceId: WS,
-        userId: "me",
+        userId: me,
         popular: ["a"],
         fresh: ["b"],
         recommended: ["c", "d"],
       },
-      NOW,
+      new Date(),
     );
-    expect(await defaultFeedDeps.loadSnapshot(id)).toEqual({
+    expect(await defaultFeedDeps.loadSnapshot(id, WS)).toEqual({
       workspaceId: WS,
-      userId: "me",
+      userId: me,
       popular: ["a"],
       fresh: ["b"],
       recommended: ["c", "d"],
     });
     expect(
-      await defaultFeedDeps.loadSnapshot(new Types.ObjectId().toString()),
+      await defaultFeedDeps.loadSnapshot(new Types.ObjectId().toString(), WS),
     ).toBeNull();
   });
 
@@ -606,29 +612,29 @@ describe("Mongo-backed feed state", () => {
         source: "app",
         at: new Date(iso),
       });
-    await open("me", "a", "2026-10-10T08:00:00Z");
-    await open("me", "a", "2026-10-20T08:00:00Z");
-    await open("me", "old", "2026-08-01T08:00:00Z"); // 80 days: affinity only
-    await open("peer", "a", "2026-10-19T08:00:00Z");
-    await open("peer", "c", "2026-10-19T09:00:00Z");
-    const sig = await loadFeedSignals(WS, { id: "me" }, NOW);
-    expect(sig.mine.get("a")).toEqual({
+    await open(me, a, "2026-10-10T08:00:00Z");
+    await open(me, a, "2026-10-20T08:00:00Z");
+    await open(me, old, "2026-08-01T08:00:00Z"); // 80 days: affinity only
+    await open(peer, a, "2026-10-19T08:00:00Z");
+    await open(peer, c, "2026-10-19T09:00:00Z");
+    const sig = await loadFeedSignals(WS, { id: me }, NOW);
+    expect(sig.mine.get(a)).toEqual({
       days: 2,
       lastAt: "2026-10-20T08:00:00.000Z",
     });
-    expect(sig.mine.get("old")?.days).toBe(1);
+    expect(sig.mine.get(old)?.days).toBe(1);
     // Outside the 28-day popularity window.
-    expect(sig.popularity.get("old") ?? 0).toBe(0);
-    expect(sig.popularity.get("a") ?? 0).toBeGreaterThan(0);
-    expect(sig.coUsage.get("c") ?? 0).toBeGreaterThan(0);
-    expect(sig.coUsage.has("a")).toBe(false);
+    expect(sig.popularity.get(old) ?? 0).toBe(0);
+    expect(sig.popularity.get(a) ?? 0).toBeGreaterThan(0);
+    expect(sig.coUsage.get(c) ?? 0).toBeGreaterThan(0);
+    expect(sig.coUsage.has(a)).toBe(false);
   });
 
   it("records where on the home an app was opened from", async () => {
     await recordAppUsage({
       workspaceId: WS,
-      appId: "a",
-      userId: "me",
+      appId: a,
+      userId: me,
       kind: "open",
       source: "app",
       at: NOW,
@@ -636,17 +642,20 @@ describe("Mongo-backed feed state", () => {
     });
     await recordAppUsage({
       workspaceId: WS,
-      appId: "a",
-      userId: "me",
+      appId: a,
+      userId: me,
       kind: "heartbeat",
       source: "app",
       at: NOW,
       placement: { surface: "home", shelf: "recommended", position: 31 },
     });
-    const events = await AppUsageEvent.find({}).sort({ kind: -1 }).lean();
+    const events = await pg.db
+      .select()
+      .from(appUsageEvents)
+      .orderBy(desc(appUsageEvents.kind));
     expect(events.map(e => [e.kind, e.placement])).toEqual([
       ["open", { surface: "home", shelf: "recommended", position: 31 }],
-      ["heartbeat", undefined],
+      ["heartbeat", null],
     ]);
   });
 });
