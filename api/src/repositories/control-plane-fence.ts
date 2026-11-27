@@ -7,12 +7,28 @@ export const controlPlaneSession = () => sessions.getStore();
 const id = "control-plane-small-v1";
 type Owner = "mongo" | "pg";
 
+function isStandaloneServer(): boolean {
+  const client = mongoose.connection.getClient() as unknown as {
+    topology?: {
+      description?: { type: string; servers: Map<string, { type: string }> };
+    };
+  };
+  const topology = client.topology?.description;
+  // A direct connection to a replica set also has "Single" topology.
+  return (
+    topology?.type === "Single" &&
+    topology.servers.size === 1 &&
+    [...topology.servers.values()][0]?.type === "Standalone"
+  );
+}
+
 function fences() {
   return mongoose.connection.collection<{
     _id: string;
     owner: Owner;
     serial: number;
     cutoverAt?: Date;
+    standaloneOnly?: boolean;
   }>("migration_writer_fences");
 }
 
@@ -42,7 +58,11 @@ async function readOwner(): Promise<Owner> {
 // Both the mutation and this lock live in the SAME Mongo transaction. An
 // expired session or a dead instance cannot commit a late Mongo write.
 async function withFence<T>(
-  work: (owner: Owner, session: ClientSession) => Promise<T>,
+  work: (
+    owner: Owner,
+    session: ClientSession,
+    standaloneOnly: boolean,
+  ) => Promise<T>,
 ): Promise<T> {
   return mongoose.connection.getClient().withSession(session =>
     session.withTransaction(
@@ -52,7 +72,9 @@ async function withFence<T>(
           { $inc: { serial: 1 } },
           { returnDocument: "after", session },
         );
-        return sessions.run(session, () => work(ownerOf(row), session));
+        return sessions.run(session, () =>
+          work(ownerOf(row), session, row?.standaloneOnly === true),
+        );
       },
       {
         readPreference: "primary",
@@ -67,7 +89,15 @@ export async function activateControlPlane(
   copyAndVerify: (cutoverAt: Date) => Promise<void>,
 ): Promise<"activated" | "already active"> {
   if ((await readOwner()) === "pg") return "already active";
-  return withFence(async (owner, session) => {
+  if (isStandaloneServer()) {
+    throw new Error("Cutover requires a Mongo replica set or mongos");
+  }
+  return withFence(async (owner, session, standaloneOnly) => {
+    if (standaloneOnly) {
+      throw new Error(
+        "This database served unfenced standalone writes; cutover requires a separately verified drain",
+      );
+    }
     if (owner === "pg") return "already active";
     const cutoverAt = new Date();
     await copyAndVerify(cutoverAt);
@@ -121,6 +151,27 @@ export function createControlPlaneRepo<T extends object>(
       return async (...args: unknown[]) => {
         if ((await readOwner()) === "mongo") {
           if (readMethods.has(prop)) return Reflect.apply(method, mongo, args);
+          if (isStandaloneServer()) {
+            if (
+              process.env.K_SERVICE ||
+              process.env.MAKO_CONTROL_PLANE_FENCE_V1 === "1"
+            ) {
+              throw new Error(
+                "A prepared control-plane writer requires a Mongo replica set or mongos",
+              );
+            }
+            // Pin this source before a nontransactional write. Even after conversion
+            // to a replica set, activation cannot race a delayed standalone writer.
+            const pin = await fences().updateOne(
+              { _id: id, owner: "mongo" },
+              { $set: { standaloneOnly: true } },
+              { writeConcern: { w: "majority" } },
+            );
+            if (pin.matchedCount !== 1) {
+              throw new Error("Standalone writer lost Mongo ownership");
+            }
+            return Reflect.apply(method, mongo, args);
+          }
           const result = await withFence(async owner =>
             owner === "pg" ? usePg : Reflect.apply(method, mongo, args),
           );

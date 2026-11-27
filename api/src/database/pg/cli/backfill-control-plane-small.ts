@@ -6,12 +6,12 @@
  *   workflow_recorded_runs, workflow_recorded_writes,
  *   modelcatalogsnapshots -> model_catalog_snapshots, apps_box_policy
  *
- * Use --apply before cutover and --replay for read-only content parity.
+ * Preparation exposes read-only inventory and replay. Only activation may copy under the writer fence.
  * Deletion reconciliation only reports missing imported rules.
  *
  * Usage:
  *   pnpm --filter api exec tsx src/database/pg/cli/backfill-control-plane-small.ts
- *   pnpm --filter api exec tsx src/database/pg/cli/backfill-control-plane-small.ts --apply
+ *   pnpm --filter api exec tsx src/database/pg/cli/backfill-control-plane-small.ts --replay
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -22,9 +22,16 @@ import { and, asc, eq, gt, gte, inArray, or, sql } from "drizzle-orm";
 import mongoose, { Types } from "mongoose";
 import { controlPlaneSession } from "../../../repositories/control-plane-fence";
 import { PgModelCatalogSnapshotsRepository } from "../../../repositories/control-plane-app/pg.repo";
+import { encodeDeliveryError } from "../../../repositories/notifications/delivery-error";
 import { sanitizePgJsonValue } from "../../../utils/message-sanitizer";
 import { PgUsageStatsRepository } from "../../../repositories/usage-stats/pg.repo";
-import { closePgConnections, getPgDirectDb, type MakoPgDb } from "../client";
+import {
+  closePgConnections,
+  getPgDb,
+  getPgDirectDb,
+  hasInjectedPgTestDb,
+  type MakoPgDb,
+} from "../client";
 import { parseEntityId, toWireId } from "../id-codec";
 import {
   MODEL_CATALOG_SNAPSHOT_IDS,
@@ -36,6 +43,7 @@ import {
   workflowRecordedWrites,
   type ModelCatalogSnapshotIdPg,
 } from "../schema/control-plane-app";
+import { migrationQuarantine } from "../schema/control-plane";
 import { workspaces } from "../schema/workspaces";
 
 const BATCH_SIZE = 50;
@@ -73,6 +81,7 @@ interface TableReport {
   written: number;
   skipped: Record<string, number>;
   missingInMongo?: number;
+  retainedOrphans?: number;
   parity?: Parity;
 }
 
@@ -225,17 +234,80 @@ async function existingWorkspaceIds(
   return new Set(rows.map(r => r.id.toLowerCase()));
 }
 
-// Mongo stores notification rule IDs as ObjectIds. Accept wire strings from
-// legacy imports as well when checking a bounded set of known IDs.
-async function sourceRuleWorkspaces(
-  ids: string[],
-): Promise<Map<string, string | null>> {
+function mongoIdForms(ids: string[]) {
   const keys: (Types.ObjectId | string)[] = [];
   for (const uuid of new Set(ids)) {
     const wire = toWireId(uuid);
     keys.push(uuid);
     if (Types.ObjectId.isValid(wire)) keys.push(wire, new Types.ObjectId(wire));
   }
+  return keys;
+}
+
+// An orphan can be kept outside the live FK tables only with independently
+// approved, byte-for-byte retained history. This verifier never creates receipts.
+async function accountForMissingWorkspace(
+  db: MakoPgDb,
+  report: TableReport,
+  collection: string,
+  doc: MongoDoc,
+  workspaceId: string,
+) {
+  const parent = await mongoose.connection
+    .collection<{ _id: Types.ObjectId | string }>("workspaces")
+    .findOne(
+      { _id: { $in: mongoIdForms([workspaceId]) } },
+      { projection: { _id: 1 }, session: controlPlaneSession() },
+    );
+  if (parent) {
+    skip(report, "source workspace missing in Postgres");
+    return;
+  }
+  const receipts = await db
+    .select()
+    .from(migrationQuarantine)
+    .where(
+      and(
+        eq(migrationQuarantine.domain, "control-plane-small-v1"),
+        eq(migrationQuarantine.collectionName, collection),
+        eq(migrationQuarantine.mongoId, String(doc._id)),
+      ),
+    )
+    .limit(2);
+  const receipt = receipts[0];
+  if (
+    receipts.length !== 1 ||
+    !receipt?.resolvedAt ||
+    receipt.workspaceId !== workspaceId ||
+    receipt.reason !== "approved-orphan-workspace" ||
+    typeof receipt.payload?.bsonBase64 !== "string"
+  ) {
+    skip(report, "orphan workspace lacks a unique approved archive");
+    return;
+  }
+  if (!(doc._id instanceof Types.ObjectId) && typeof doc._id !== "string") {
+    skip(report, "unsupported orphan document id");
+    return;
+  }
+  const raw = await mongoose.connection
+    .collection<{ _id: Types.ObjectId | string }>(collection)
+    .findOne({ _id: doc._id }, { raw: true, session: controlPlaneSession() });
+  if (
+    !Buffer.isBuffer(raw) ||
+    raw.toString("base64") !== receipt.payload.bsonBase64
+  ) {
+    skip(report, "orphan workspace archive differs");
+    return;
+  }
+  report.retainedOrphans = (report.retainedOrphans ?? 0) + 1;
+}
+
+// Mongo stores notification rule IDs as ObjectIds. Accept wire strings from
+// legacy imports as well when checking a bounded set of known IDs.
+async function sourceRuleWorkspaces(
+  ids: string[],
+): Promise<Map<string, string | null>> {
+  const keys = mongoIdForms(ids);
   const found = new Map<string, string | null>();
   const rules = mongoose.connection.collection<{
     _id: Types.ObjectId | string;
@@ -302,7 +374,13 @@ async function backfillNotifications(
         continue;
       }
       if (!wsIds.has(ws)) {
-        skip(rules, "workspace missing in Postgres");
+        await accountForMissingWorkspace(
+          db,
+          rules,
+          "notification_rules",
+          doc,
+          ws,
+        );
         continue;
       }
       if (resourceType !== "scheduled_query" && resourceType !== "flow") {
@@ -408,7 +486,13 @@ async function backfillNotifications(
         continue;
       }
       if (!wsIds.has(ws)) {
-        skip(deliveries, "workspace missing in Postgres");
+        await accountForMissingWorkspace(
+          db,
+          deliveries,
+          "notification_deliveries",
+          doc,
+          ws,
+        );
         continue;
       }
       if (ruleWorkspaces.has(ruleId) && ruleWorkspaces.get(ruleId) !== ws) {
@@ -459,7 +543,10 @@ async function backfillNotifications(
         idempotencyKey: doc.idempotencyKey,
         status,
         attempts: typeof doc.attempts === "number" ? doc.attempts : 0,
-        lastError: typeof doc.lastError === "string" ? doc.lastError : null,
+        lastError:
+          typeof doc.lastError === "string"
+            ? encodeDeliveryError(doc.lastError)
+            : null,
         httpStatus: typeof doc.httpStatus === "number" ? doc.httpStatus : null,
         sentAt: toDate(doc.sentAt),
         completedAt: toDate(doc.completedAt),
@@ -546,7 +633,13 @@ async function backfillRecordedWrites(
         continue;
       }
       if (!wsIds.has(ws)) {
-        skip(runs, "workspace missing in Postgres");
+        await accountForMissingWorkspace(
+          db,
+          runs,
+          "workflow_recorded_runs",
+          doc,
+          ws,
+        );
         continue;
       }
       runs.candidates++;
@@ -623,7 +716,13 @@ async function backfillRecordedWrites(
         continue;
       }
       if (!wsIds.has(ws)) {
-        skip(writes, "workspace missing in Postgres");
+        await accountForMissingWorkspace(
+          db,
+          writes,
+          "workflow_recorded_writes",
+          doc,
+          ws,
+        );
         continue;
       }
       writes.candidates++;
@@ -900,6 +999,9 @@ export async function backfillControlPlaneSmall(options: {
       { isolationLevel: "repeatable read", accessMode: "read only" },
     );
   }
+  if (options.apply && (!hasInjectedPgTestDb() || options.db !== getPgDb())) {
+    throw new Error("Unfenced copy requires the injected fixture database");
+  }
   return runBackfill(
     options.db,
     options.apply ? "apply" : "dry-run",
@@ -947,7 +1049,7 @@ async function main(): Promise<void> {
     )
     .option(
       "--apply",
-      "Copy eligible rows before switching traffic (default is a dry run)",
+      "Removed: the only writable copy is the fenced activation",
     );
   program.parse(argv);
   const {
@@ -962,8 +1064,10 @@ async function main(): Promise<void> {
     reconcileDeletedRules?: boolean;
   }>();
 
-  if (apply && replay) {
-    process.stderr.write("--replay and --apply are mutually exclusive.\n");
+  if (apply) {
+    process.stderr.write(
+      "Unfenced --apply is disabled. Use the standard fenced activation release.\n",
+    );
     process.exitCode = 1;
     return;
   }
@@ -989,12 +1093,12 @@ async function main(): Promise<void> {
     const reports = await backfillControlPlaneSmall({
       db: getPgDirectDb(),
       now,
-      apply,
+      apply: false,
       replay,
       reconcileDeletedRules,
     });
     process.stdout.write(
-      `${replay ? "READ-ONLY REPLAY" : apply ? "PRE-CUTOVER APPLY" : "DRY RUN (pass --apply to write)"} as_of=${now.toISOString()}\n`,
+      `${replay ? "READ-ONLY REPLAY" : "READ-ONLY INVENTORY"} as_of=${now.toISOString()}\n`,
     );
     for (const [table, r] of Object.entries(reports)) {
       const skipped = Object.entries(r.skipped)
@@ -1002,7 +1106,7 @@ async function main(): Promise<void> {
         .join(", ");
       process.stdout.write(
         `${table}: source=${r.source} candidates=${r.candidates}` +
-          `${apply ? ` written=${r.written}` : ""}` +
+          `${r.retainedOrphans ? ` retainedOrphans=${r.retainedOrphans}` : ""}` +
           `${r.missingInMongo === undefined ? "" : ` missingInMongo=${r.missingInMongo}`}` +
           `${r.parity ? ` parity=${JSON.stringify(r.parity)}` : ""}` +
           `${skipped ? ` skipped[${skipped}]` : ""}\n`,

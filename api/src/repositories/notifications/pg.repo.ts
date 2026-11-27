@@ -13,6 +13,7 @@ import {
   notificationDeliveries,
   notificationRules,
 } from "../../database/pg/schema/control-plane-app";
+import { encodeDeliveryError, decodeDeliveryError } from "./delivery-error";
 import { PgUsageStatsRepository } from "../usage-stats/pg.repo";
 import type {
   CompleteNotificationDeliveryInput,
@@ -72,7 +73,9 @@ function pgDeliveryToRecord(row: DeliveryRow): NotificationDeliveryRecord {
     idempotencyKey: row.idempotencyKey,
     status: row.status,
     attempts: row.attempts,
-    ...(row.lastError != null ? { lastError: row.lastError } : {}),
+    ...(row.lastError != null
+      ? { lastError: decodeDeliveryError(row.lastError) }
+      : {}),
     ...(row.httpStatus != null ? { httpStatus: row.httpStatus } : {}),
     ...(row.sentAt ? { sentAt: row.sentAt } : {}),
     ...(row.completedAt ? { completedAt: row.completedAt } : {}),
@@ -286,7 +289,7 @@ export class PgNotificationsRepository implements NotificationsRepository {
         status: input.status,
         completedAt: input.completedAt,
         ...(input.lastError !== undefined
-          ? { lastError: input.lastError }
+          ? { lastError: encodeDeliveryError(input.lastError) }
           : {}),
         ...(input.sentAt !== undefined ? { sentAt: input.sentAt } : {}),
         ...(input.countAttempt

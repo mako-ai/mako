@@ -1,4 +1,4 @@
-import { MongoMemoryReplSet } from "mongodb-memory-server";
+import { MongoMemoryReplSet, MongoMemoryServer } from "mongodb-memory-server";
 import mongoose, { Types } from "mongoose";
 import { expect, it, vi } from "vitest";
 import {
@@ -10,7 +10,11 @@ import {
   workflowRecordedWrites,
 } from "../database/pg/schema";
 import { setupPgTestDb } from "../test-support/pg-test";
-import { workflowRecordedWritesRepo } from "./control-plane-app";
+import { activateControlPlane } from "./control-plane-fence";
+import {
+  appsBoxPolicyRepo,
+  workflowRecordedWritesRepo,
+} from "./control-plane-app";
 
 it("commits the Mongo fence, run counter and write together on a prepared service with PG available", async () => {
   const mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
@@ -66,10 +70,59 @@ it("commits the Mongo fence, run counter and write together on a prepared servic
     ).toEqual([0, 1]);
     expect(await pg.db.select().from(workflowRecordedRuns)).toEqual([]);
     expect(await pg.db.select().from(workflowRecordedWrites)).toEqual([]);
+    // A converted standalone source cannot activate just because it now supports transactions.
+    await mongoose.connection
+      .collection<{ _id: string }>("migration_writer_fences")
+      .updateOne(
+        { _id: "control-plane-small-v1" },
+        { $set: { standaloneOnly: true } },
+      );
+    const copy = vi.fn(async () => {});
+    await expect(activateControlPlane(copy)).rejects.toThrow(
+      /unfenced standalone/,
+    );
+    expect(copy).not.toHaveBeenCalled();
   } finally {
     vi.unstubAllEnvs();
     await mongoose.disconnect();
     await mongo.stop();
     await pg.close();
+  }
+});
+
+it("serves unmarked self-hosted standalone Mongo while refusing prepared writers and activation", async () => {
+  const mongo = await MongoMemoryServer.create();
+  vi.stubEnv("NODE_ENV", "production");
+  vi.stubEnv("K_SERVICE", undefined);
+  vi.stubEnv("MAKO_CONTROL_PLANE_FENCE_V1", undefined);
+  vi.stubEnv("MAKO_CONTROL_PLANE_PG_ACTIVE", undefined);
+  try {
+    await mongoose.connect(mongo.getUri());
+    const now = new Date();
+    expect(
+      await appsBoxPolicyRepo.ensureSince("activity-tracking", now),
+    ).toEqual(now);
+    expect(await appsBoxPolicyRepo.readSince("activity-tracking")).toEqual(now);
+    const row = await mongoose.connection
+      .collection<{ _id: string }>("migration_writer_fences")
+      .findOne({ _id: "control-plane-small-v1" });
+    expect(row).toMatchObject({ owner: "mongo", standaloneOnly: true });
+    const copy = vi.fn(async () => {});
+    await expect(activateControlPlane(copy)).rejects.toThrow(/replica set/);
+    expect(copy).not.toHaveBeenCalled();
+    vi.stubEnv("MAKO_CONTROL_PLANE_FENCE_V1", "1");
+    await expect(appsBoxPolicyRepo.ensureSince("marked", now)).rejects.toThrow(
+      /replica set/,
+    );
+    vi.stubEnv("MAKO_CONTROL_PLANE_FENCE_V1", undefined);
+    vi.stubEnv("K_SERVICE", "mako-canary");
+    await expect(appsBoxPolicyRepo.ensureSince("cloud", now)).rejects.toThrow(
+      /replica set/,
+    );
+    expect(await appsBoxPolicyRepo.readSince("cloud")).toBeNull();
+  } finally {
+    vi.unstubAllEnvs();
+    await mongoose.disconnect();
+    await mongo.stop();
   }
 });

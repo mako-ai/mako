@@ -408,6 +408,31 @@ describe("PgNotificationsRepository contract", () => {
     ).toBe(false);
   });
 
+  it("preserves unrepresentable webhook errors and literal encoding prefixes in delivery history", async () => {
+    const rule = await repo.createRule(ruleInput());
+    const input = deliveryInput(rule.id);
+    await repo.ensurePendingDelivery(input);
+    for (const lastError of [
+      "HTTP 500: a\0b😀",
+      "surrogate \ud800",
+      '\u001emako:delivery-error:"literal"',
+    ]) {
+      await repo.completeDelivery(input.idempotencyKey, {
+        status: "failed",
+        lastError,
+        completedAt: new Date(),
+        countAttempt: true,
+      });
+      const [row] = await repo.listDeliveriesForResource(
+        wsId,
+        "flow",
+        flowId,
+        10,
+      );
+      expect(row.lastError).toBe(lastError);
+    }
+  });
+
   it("orders deliveries by completed DESC NULLS LAST, then created DESC, and honors limit", async () => {
     const rule = await repo.createRule(ruleInput());
     for (const key of ["a", "b", "c", "d"]) {

@@ -8,6 +8,16 @@ Rule mutations, delivery reservation/completion, recorded counter reservation pl
 
 After both preparation rollouts, the lead records the revision, callback and job evidence in the [writer drain procedure](postgres-control-plane-writer-drain.md). Keep activation on hold while any writer is unaccounted for. Existing reviewed migration checks include the non-null delivery rule ID without a rule FK, imported rule provenance, and the resource history ordering index.
 
+### Standalone development and self-hosting
+
+An unmarked self-hosted process may serve a confirmed standalone Mongo server. Its first mutation durably pins the source to standalone operation before writing. A direct connection to a replica-set member still uses transactions. Cloud Run and marked preparation writers require transactions for every mutation. Activation rejects standalone Mongo; after conversion to a replica set, the standalone pin continues to block publication until a separately reviewed drain and migration of that source.
+
+### Pre-cutover inventory and retained history
+
+Run the preparation CLI without flags for a read-only inventory or with `--replay` to compare. Both releases reject `--apply` before opening database connections. The activation workflow owns the first live copy. If an earlier process already staged an imported PG rule that Mongo later deleted, the extra row holds activation for review. Reconciliation stays audit-only.
+
+A valid source row whose workspace is missing in PG holds the gate. For an intentionally retired workspace, the lead can separately authorize retention of the original document in the existing `migration_quarantine` table under the applicable data-retention policy. The verifier requires absence of the workspace in both stores and exactly one reviewed receipt for that document. The receipt must have domain `control-plane-small-v1`, the source collection name, source ID as a string, the converted workspace UUID, reason `approved-orphan-workspace`, a non-null `resolved_at`, and `payload.bsonBase64` equal to the base64 of the **original raw BSON document**. Preserve its BSON types, fields and bytes. Payloads may contain sensitive data and belong only in approved storage. The CLI only reads these receipts. The report counts exact matches as `retainedOrphans` apart from live rows. A missing, changed or ambiguous receipt, or a still-present Mongo workspace, holds activation. Copy and replay retain the original webhook error text, including NULs, through a reversible PG text encoding.
+
 ## Release 2 · activate in CI before the ordinary deploy
 
 1. Require prepared revisions on all main and canary routes, including tags, and confirmed retirement for each unprepared revision on both services. The second release owns the executable pre-deploy check. Keep the ordinary CI traffic rollout.

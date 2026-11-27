@@ -1,15 +1,19 @@
 /**
  * One-shot control-plane backfill (cli/backfill-control-plane-small.ts):
- * a dry run writes nothing, `--apply` copies every valid row, a re-run
+ * a dry run writes nothing, the fixture copy imports every valid row, a re-run
  * writes nothing new. Orphaned delivery history survives the copy and read-only replay.
  */
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { BSON } from "mongodb";
+import { PgNotificationsRepository } from "../../repositories/notifications/pg.repo";
 import type { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { backfillControlPlaneSmall } from "./cli/backfill-control-plane-small";
-import type { MakoPgDb } from "./client";
+import { setPgTestDb, resetPgTestDb, type MakoPgDb } from "./client";
 import { generateUuidv7, objectIdToUuid, toWireId } from "./id-codec";
 import { runPgliteMigrations } from "./migrate";
 import * as pgSchema from "./schema";
@@ -37,6 +41,7 @@ describe("backfill-control-plane-small", () => {
     pg = createTestPglite();
     await runPgliteMigrations(pg);
     db = drizzle(pg, { schema: pgSchema }) as unknown as MakoPgDb;
+    setPgTestDb(db);
 
     await pg.query(
       `INSERT INTO users (id, email) VALUES ($1, 'bf@example.com')`,
@@ -105,6 +110,7 @@ describe("backfill-control-plane-small", () => {
     await col("notification_deliveries").insertMany([
       delivery({
         idempotencyKey: "fresh",
+        lastError: "HTTP 500: before\0after",
         status: "pending",
         attempts: 0,
         sentAt: null,
@@ -164,7 +170,32 @@ describe("backfill-control-plane-small", () => {
   afterAll(async () => {
     await mongoose.disconnect();
     await mongo.stop();
+    resetPgTestDb();
     await pg.close();
+  });
+
+  it("rejects an operator pre-apply before opening either database", async () => {
+    await expect(
+      promisify(execFile)(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "src/database/pg/cli/backfill-control-plane-small.ts",
+          "--apply",
+        ],
+        {
+          env: {
+            ...process.env,
+            DATABASE_URL: "mongodb://127.0.0.1:1/fixture",
+            POSTGRES_DIRECT_URL: "postgres://127.0.0.1:1/fixture",
+          },
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("Unfenced --apply is disabled"),
+    });
   });
 
   it("dry run counts candidates and writes nothing", async () => {
@@ -173,7 +204,7 @@ describe("backfill-control-plane-small", () => {
       source: 2,
       candidates: 1,
       written: 0,
-      skipped: { "workspace missing in Postgres": 1 },
+      skipped: { "orphan workspace lacks a unique approved archive": 1 },
     });
     expect(report.notification_deliveries).toMatchObject({
       source: 5,
@@ -246,6 +277,17 @@ describe("backfill-control-plane-small", () => {
     ]);
     const first = await backfillControlPlaneSmall({ db, apply: true, now });
     expect(first.notification_rules.written).toBe(1);
+    const historyWithErrors = await new PgNotificationsRepository({
+      getDb: () => db,
+    }).listDeliveriesForResource(
+      wsOid.toHexString(),
+      "flow",
+      flowOid.toHexString(),
+      100,
+    );
+    expect(
+      historyWithErrors.find(row => row.idempotencyKey === "fresh")?.lastError,
+    ).toBe("HTTP 500: before\0after");
     expect(first.notification_deliveries.written).toBe(2);
     expect(first.workflow_recorded_runs.written).toBe(1);
     expect(first.workflow_recorded_writes.written).toBe(1);
@@ -520,5 +562,82 @@ describe("backfill-control-plane-small", () => {
     );
     expect(saved.rows).toEqual([{ id: editedId, enabled: false }]);
     expect(JSON.stringify(first)).not.toContain("source@example.com");
+  });
+  it("requires an exact approved BSON archive for each missing-workspace row", async () => {
+    const parent = new Types.ObjectId();
+    const workspaceId = objectIdToUuid(parent.toHexString());
+    const cases = [
+      ["notification_rules", { resourceId: flowOid }],
+      [
+        "notification_deliveries",
+        { resourceId: flowOid, ruleId: ruleOid, createdAt: now },
+      ],
+      ["workflow_recorded_runs", { runId: "orphan", count: 1, at: now }],
+      [
+        "workflow_recorded_writes",
+        {
+          runId: "orphan",
+          connectionId: flowOid,
+          seq: 0,
+          request: { method: "GET" },
+          at: now,
+        },
+      ],
+    ] as const;
+    const reports = () =>
+      backfillControlPlaneSmall({ db, apply: false, replay: true, now });
+    for (const [name, fields] of cases) {
+      const doc = {
+        _id: new Types.ObjectId(),
+        workspaceId: parent,
+        ...fields,
+        extra: "private\0history",
+      };
+      await mongoose.connection.collection(name).insertOne(doc);
+      await db.insert(pgSchema.migrationQuarantine).values({
+        domain: "control-plane-small-v1",
+        collectionName: name,
+        mongoId: doc._id.toHexString(),
+        workspaceId,
+        reason: "approved-orphan-workspace",
+        payload: {
+          bsonBase64: Buffer.from(BSON.serialize(doc)).toString("base64"),
+        },
+        resolvedAt: now,
+      });
+    }
+    const ok = await reports();
+    for (const [name] of cases) expect(ok[name].retainedOrphans).toBe(1);
+
+    await mongoose.connection
+      .collection("workspaces")
+      .insertOne({ _id: parent });
+    const live = await reports();
+    for (const [name] of cases) {
+      expect(live[name].skipped["source workspace missing in Postgres"]).toBe(
+        1,
+      );
+    }
+    await mongoose.connection
+      .collection("workspaces")
+      .deleteOne({ _id: parent });
+
+    await mongoose.connection
+      .collection("workflow_recorded_writes")
+      .updateOne({ workspaceId: parent }, { $set: { extra: "changed" } });
+    await pg.query(
+      "UPDATE migration_quarantine SET resolved_at = NULL WHERE collection_name = 'workflow_recorded_runs' AND workspace_id = $1",
+      [workspaceId],
+    );
+    const bad = await reports();
+    expect(
+      bad.workflow_recorded_writes.skipped["orphan workspace archive differs"],
+    ).toBe(1);
+    expect(
+      bad.workflow_recorded_runs.skipped[
+        "orphan workspace lacks a unique approved archive"
+      ],
+    ).toBe(1);
+    expect(bad.workflow_recorded_writes.retainedOrphans).toBeUndefined();
   });
 });
