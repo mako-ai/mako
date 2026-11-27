@@ -107,6 +107,22 @@ export const DEFAULT_PG_TTL_RULES: readonly TtlTableRule[] = [
     timestampColumn: "last_at",
     olderThanMs: 400 * DAY_MS,
   },
+  // App control plane (notifications, workflow dry-run recorded writes)
+  {
+    tableName: "notification_deliveries",
+    timestampColumn: "created_at",
+    olderThanMs: 90 * DAY_MS,
+  },
+  {
+    tableName: "workflow_recorded_writes",
+    timestampColumn: "at",
+    olderThanMs: 7 * DAY_MS,
+  },
+  {
+    tableName: "workflow_recorded_runs",
+    timestampColumn: "at",
+    olderThanMs: 7 * DAY_MS,
+  },
 ];
 
 const ttlRules = new Map<string, TtlTableRule>();

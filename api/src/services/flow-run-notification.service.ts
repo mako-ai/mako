@@ -1,12 +1,8 @@
-import { Types } from "mongoose";
 import {
   Flow,
-  NotificationRule,
-  NotificationDelivery,
   decrypt,
   encrypt,
   type IFlow,
-  type INotificationRule,
   type INotificationRuleChannel,
   type NotificationChannelType,
   type NotificationResourceType,
@@ -14,6 +10,10 @@ import {
 } from "../database/workspace-schema";
 import { connectionsRepo } from "../repositories/connections";
 import { consolesChartsRepo } from "../repositories/consoles-charts";
+import {
+  notificationsRepo,
+  type NotificationRuleRecord,
+} from "../repositories/notifications";
 import { RunNotificationTemplate } from "../emails/RunNotificationEmail";
 import { renderEmail } from "../emails/render";
 import { loggers } from "../logging";
@@ -136,13 +136,12 @@ export async function fanOutTerminalRunNotifications(
     return { deliveriesQueued: 0 };
   }
 
-  const rules = await NotificationRule.find({
-    workspaceId: new Types.ObjectId(event.workspaceId),
-    resourceType: event.resourceType,
-    resourceId: new Types.ObjectId(event.resourceId),
-    enabled: true,
-    triggers: trigger,
-  }).lean();
+  const rules = await notificationsRepo.listEnabledRulesForTrigger(
+    event.workspaceId,
+    event.resourceType,
+    event.resourceId,
+    trigger,
+  );
 
   if (rules.length === 0) {
     return { deliveriesQueued: 0 };
@@ -157,7 +156,7 @@ export async function fanOutTerminalRunNotifications(
   const { inngest } = await import("../inngest/client");
   let count = 0;
   for (const rule of rules) {
-    const ruleId = rule._id.toString();
+    const ruleId = rule.id;
     const channelType = rule.channel.type as NotificationChannelType;
     const idempotencyKey = buildIdempotencyKey({
       resourceType: event.resourceType,
@@ -168,25 +167,21 @@ export async function fanOutTerminalRunNotifications(
       ruleId,
     });
 
-    const existing = await NotificationDelivery.findOne({
-      idempotencyKey,
-    }).lean();
-    if (existing) {
-      continue;
-    }
-
-    await NotificationDelivery.create({
-      workspaceId: new Types.ObjectId(event.workspaceId),
-      ruleId: new Types.ObjectId(ruleId),
+    // One atomic insert: a parallel fan-out of the same run loses the race
+    // on the unique idempotency key and queues nothing.
+    const created = await notificationsRepo.createDeliveryIfAbsent({
+      workspaceId: event.workspaceId,
+      ruleId,
       resourceType: event.resourceType,
-      resourceId: new Types.ObjectId(event.resourceId),
+      resourceId: event.resourceId,
       runId: event.runId,
       trigger,
       channelType,
       idempotencyKey,
-      status: "pending",
-      attempts: 0,
     });
+    if (!created) {
+      continue;
+    }
 
     await inngest.send({
       name: "notification/deliver",
@@ -235,39 +230,34 @@ export async function deliverNotificationJob(
   job: NotificationDeliverJobData,
 ): Promise<void> {
   const isTestDelivery = job.idempotencyKey.startsWith("test:");
-  const rule = await NotificationRule.findById(job.ruleId).lean();
+  const rule = await notificationsRepo.findRuleInWorkspace(
+    job.workspaceId,
+    job.ruleId,
+  );
   if (!rule || !rule.enabled) {
     if (!isTestDelivery) {
-      await NotificationDelivery.updateOne(
-        { idempotencyKey: job.idempotencyKey },
-        {
-          $set: {
-            status: "skipped",
-            completedAt: new Date(),
-            lastError: "Rule disabled or deleted",
-          },
-        },
-      );
+      await notificationsRepo.completeDelivery(job.idempotencyKey, {
+        status: "skipped",
+        completedAt: new Date(),
+        lastError: "Rule disabled or deleted",
+        countAttempt: false,
+      });
     }
     return;
   }
 
-  const channel = rule.channel as INotificationRuleChannel;
+  const channel = rule.channel;
   try {
     await deliverToChannel(channel, job.payload);
 
     if (!isTestDelivery) {
-      await NotificationDelivery.updateOne(
-        { idempotencyKey: job.idempotencyKey },
-        {
-          $set: {
-            status: "sent",
-            sentAt: new Date(),
-            completedAt: new Date(),
-          },
-          $inc: { attempts: 1 },
-        },
-      );
+      const now = new Date();
+      await notificationsRepo.completeDelivery(job.idempotencyKey, {
+        status: "sent",
+        sentAt: now,
+        completedAt: now,
+        countAttempt: true,
+      });
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -277,17 +267,12 @@ export async function deliverNotificationJob(
       error: message,
     });
     if (!isTestDelivery) {
-      await NotificationDelivery.updateOne(
-        { idempotencyKey: job.idempotencyKey },
-        {
-          $set: {
-            status: "failed",
-            lastError: message,
-            completedAt: new Date(),
-          },
-          $inc: { attempts: 1 },
-        },
-      );
+      await notificationsRepo.completeDelivery(job.idempotencyKey, {
+        status: "failed",
+        lastError: message,
+        completedAt: new Date(),
+        countAttempt: true,
+      });
     }
     throw err;
   }
@@ -413,13 +398,13 @@ export function encryptNotificationChannel(
 
 /** Strip secrets for API responses */
 export function sanitizeRuleForClient(
-  rule: INotificationRule,
+  rule: NotificationRuleRecord,
 ): Record<string, unknown> {
   const base = {
-    id: rule._id.toString(),
-    workspaceId: rule.workspaceId.toString(),
+    id: rule.id,
+    workspaceId: rule.workspaceId,
     resourceType: rule.resourceType,
-    resourceId: rule.resourceId.toString(),
+    resourceId: rule.resourceId,
     enabled: rule.enabled,
     triggers: rule.triggers,
     createdBy: rule.createdBy,

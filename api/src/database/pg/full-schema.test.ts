@@ -87,6 +87,13 @@ const EXPECTED_TABLES = [
   "chat_messages",
   "chat_usage_entries",
   "chats",
+  // App control plane: notifications, workflow recorded writes, global config (6)
+  "apps_box_policy",
+  "model_catalog_snapshots",
+  "notification_deliveries",
+  "notification_rules",
+  "workflow_recorded_runs",
+  "workflow_recorded_writes",
 ].sort();
 
 const EXPECTED_POST_BACKFILL = [
@@ -113,7 +120,7 @@ const EXPECTED_POST_BACKFILL = [
  * and ALL 4 deferred post-backfill FK steps (`0003a`, `0005a`, `0006a`, `0008a`)
  * on a single fresh PGlite instance.
  */
-describe("Full Postgres migration schema (0000–0008 + 4 post-backfill FKs)", () => {
+describe("Full Postgres migration schema with post-backfill FKs", () => {
   let pg: PGlite;
   let db: MakoPgDb;
 
@@ -130,7 +137,7 @@ describe("Full Postgres migration schema (0000–0008 + 4 post-backfill FKs)", (
     await pg.close();
   });
 
-  it("creates all 59 tables with zero stream-event tables and no chat_messages.parts jsonb column", async () => {
+  it("creates all 65 tables with zero stream-event tables and no chat_messages.parts jsonb column", async () => {
     const res = await pg.query<{ table_name: string }>(
       `SELECT table_name
          FROM information_schema.tables
@@ -139,7 +146,7 @@ describe("Full Postgres migration schema (0000–0008 + 4 post-backfill FKs)", (
     );
     const actual = res.rows.map(r => r.table_name).sort();
     expect(actual).toEqual(EXPECTED_TABLES);
-    expect(actual).toHaveLength(59);
+    expect(actual).toHaveLength(65);
     expect(actual).not.toContain("stream_events");
     expect(actual).not.toContain("chat_stream_events");
 
@@ -367,7 +374,7 @@ describe("Full Postgres migration schema (0000–0008 + 4 post-backfill FKs)", (
     expect(postDeleteLlmUsage.rows).toEqual([{ id: usageValidId }]);
   });
 
-  it("sets DEFAULT uuidv7() on all 51 UUID-PK tables and generates valid RFC 9562 UUIDv7 rows", async () => {
+  it("sets DEFAULT uuidv7() on all 55 UUID-PK tables and generates valid RFC 9562 UUIDv7 rows", async () => {
     const defaultsRes = await pg.query<{
       table_name: string;
       column_default: string | null;
@@ -379,7 +386,7 @@ describe("Full Postgres migration schema (0000–0008 + 4 post-backfill FKs)", (
           AND data_type = 'uuid'
         ORDER BY table_name`,
     );
-    expect(defaultsRes.rows).toHaveLength(51);
+    expect(defaultsRes.rows).toHaveLength(55);
     for (const row of defaultsRes.rows) {
       expect(row.column_default, `${row.table_name}.id default`).toMatch(
         /uuidv7\(\)/i,

@@ -7,8 +7,6 @@ import { Types } from "mongoose";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import {
   Flow,
-  NotificationDelivery,
-  NotificationRule,
   decrypt,
   type INotificationRuleChannel,
   type NotificationChannelType,
@@ -16,6 +14,10 @@ import {
   type NotificationTrigger,
 } from "../database/workspace-schema";
 import { consolesChartsRepo } from "../repositories/consoles-charts";
+import {
+  notificationsRepo,
+  type UpdateNotificationRuleInput,
+} from "../repositories/notifications";
 import { loggers } from "../logging";
 import { requireWorkspaceAdmin } from "../middleware/workspace-admin.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
@@ -34,7 +36,7 @@ import {
 } from "../services/flow-run-notification.helpers";
 import { inngest } from "../inngest";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
-import { fail, failFromThrown } from "./lib/respond";
+import { fail } from "./lib/respond";
 
 const logger = loggers.api("notification-rules");
 
@@ -207,19 +209,21 @@ notificationRulesRoutes.openapi(
         return fail(c, 404, "Resource not found");
       }
 
-      const rules = await NotificationRule.find({
-        workspaceId: new Types.ObjectId(workspaceId),
+      const rules = await notificationsRepo.listRulesForResource(
+        workspaceId,
         resourceType,
-        resourceId: new Types.ObjectId(resourceId),
-      }).sort({ createdAt: 1 });
+        resourceId,
+      );
 
       return c.json({
         success: true,
         rules: rules.map(r => sanitizeRuleForClient(r)),
       });
     } catch (error) {
-      logger.error("List notification rules failed", { error });
-      return failFromThrown(c, error, "Failed to list notification rules");
+      logger.error("List notification rules failed", {
+        errorName: error instanceof Error ? error.name : "unknown",
+      });
+      return fail(c, 500, "Failed to list notification rules");
     }
   },
 );
@@ -272,20 +276,18 @@ notificationRulesRoutes.openapi(
         return fail(c, 404, "Resource not found");
       }
 
-      const deliveries = await NotificationDelivery.find({
-        workspaceId: new Types.ObjectId(workspaceId),
+      const deliveries = await notificationsRepo.listDeliveriesForResource(
+        workspaceId,
         resourceType,
-        resourceId: new Types.ObjectId(resourceId),
-      })
-        .sort({ completedAt: -1, createdAt: -1 })
-        .limit(limit)
-        .lean();
+        resourceId,
+        limit,
+      );
 
       return c.json({
         success: true,
         deliveries: deliveries.map(d => ({
-          id: d._id.toString(),
-          ruleId: d.ruleId.toString(),
+          id: d.id,
+          ruleId: d.ruleId,
           runId: d.runId,
           trigger: d.trigger,
           channelType: d.channelType,
@@ -299,8 +301,10 @@ notificationRulesRoutes.openapi(
         })),
       });
     } catch (error) {
-      logger.error("List notification deliveries failed", { error });
-      return failFromThrown(c, error, "Failed to list deliveries");
+      logger.error("List notification deliveries failed", {
+        errorName: error instanceof Error ? error.name : "unknown",
+      });
+      return fail(c, 500, "Failed to list deliveries");
     }
   },
 );
@@ -354,10 +358,10 @@ notificationRulesRoutes.openapi(
 
       const channel = encryptNotificationChannel(parsed.channel);
 
-      const doc = await NotificationRule.create({
-        workspaceId: new Types.ObjectId(workspaceId),
+      const doc = await notificationsRepo.createRule({
+        workspaceId,
         resourceType,
-        resourceId: new Types.ObjectId(resourceId),
+        resourceId,
         enabled,
         triggers,
         channel,
@@ -377,8 +381,10 @@ notificationRulesRoutes.openapi(
 
       return c.json(response);
     } catch (error) {
-      logger.error("Create notification rule failed", { error });
-      return failFromThrown(c, error, "Failed to create notification rule");
+      logger.error("Create notification rule failed", {
+        errorName: error instanceof Error ? error.name : "unknown",
+      });
+      return fail(c, 500, "Failed to create notification rule");
     }
   },
 );
@@ -401,16 +407,16 @@ notificationRulesRoutes.openapi(
         return fail(c, 400, "Invalid rule id");
       }
 
-      const existing = await NotificationRule.findOne({
-        _id: new Types.ObjectId(ruleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+      const existing = await notificationsRepo.findRuleInWorkspace(
+        workspaceId,
+        ruleId,
+      );
       if (!existing) {
         return fail(c, 404, "Rule not found");
       }
 
       const body = (await c.req.json()) as Record<string, unknown>;
-      const update: Record<string, unknown> = {};
+      const update: UpdateNotificationRuleInput = {};
       let signingSecretOnceOut: string | undefined;
 
       if (typeof body.enabled === "boolean") {
@@ -507,19 +513,27 @@ notificationRulesRoutes.openapi(
         return c.json({ success: true, rule: sanitizeRuleForClient(existing) });
       }
 
-      Object.assign(existing, update);
-      await existing.save();
+      const updated = await notificationsRepo.updateRule(
+        workspaceId,
+        ruleId,
+        update,
+      );
+      if (!updated) {
+        return fail(c, 404, "Rule not found");
+      }
 
       return c.json({
         success: true,
-        rule: sanitizeRuleForClient(existing),
+        rule: sanitizeRuleForClient(updated),
         ...(signingSecretOnceOut
           ? { signingSecretOnce: signingSecretOnceOut }
           : {}),
       });
     } catch (error) {
-      logger.error("Update notification rule failed", { error });
-      return failFromThrown(c, error, "Failed to update notification rule");
+      logger.error("Update notification rule failed", {
+        errorName: error instanceof Error ? error.name : "unknown",
+      });
+      return fail(c, 500, "Failed to update notification rule");
     }
   },
 );
@@ -542,19 +556,18 @@ notificationRulesRoutes.openapi(
         return fail(c, 400, "Invalid rule id");
       }
 
-      const result = await NotificationRule.deleteOne({
-        _id: new Types.ObjectId(ruleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+      const deleted = await notificationsRepo.deleteRule(workspaceId, ruleId);
 
-      if (result.deletedCount === 0) {
+      if (!deleted) {
         return fail(c, 404, "Rule not found");
       }
 
       return c.json({ success: true });
     } catch (error) {
-      logger.error("Delete notification rule failed", { error });
-      return failFromThrown(c, error, "Failed to delete notification rule");
+      logger.error("Delete notification rule failed", {
+        errorName: error instanceof Error ? error.name : "unknown",
+      });
+      return fail(c, 500, "Failed to delete notification rule");
     }
   },
 );
@@ -600,14 +613,14 @@ notificationRulesRoutes.openapi(
       let channel: INotificationRuleChannel;
 
       if (ruleId && Types.ObjectId.isValid(ruleId)) {
-        const rule = await NotificationRule.findOne({
-          _id: new Types.ObjectId(ruleId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        });
+        const rule = await notificationsRepo.findRuleInWorkspace(
+          workspaceId,
+          ruleId,
+        );
         if (!rule) {
           return fail(c, 404, "Rule not found");
         }
-        channel = rule.channel as INotificationRuleChannel;
+        channel = rule.channel;
       } else {
         const parsed = parseChannelFromBody(body);
         if (!parsed) {
@@ -676,8 +689,10 @@ notificationRulesRoutes.openapi(
 
       return c.json({ success: true, message: "Test notification sent" });
     } catch (error) {
-      logger.error("Test notification failed", { error });
-      return failFromThrown(c, error, "Failed to queue test notification");
+      logger.error("Test notification failed", {
+        errorName: error instanceof Error ? error.name : "unknown",
+      });
+      return fail(c, 500, "Failed to queue test notification");
     }
   },
 );

@@ -7,10 +7,15 @@
  * sending it, with whether a real run would be allowed to send it. Kept 7
  * days, by workspace and run; a sandbox run's only for its person.
  */
-import mongoose, { Schema, Types } from "mongoose";
-
 import type { RecordedRequest } from "../connections/forward";
 import { loggers } from "../logging";
+import { workflowRecordedWritesRepo } from "../repositories/control-plane-app";
+
+export {
+  WorkflowRecordedRun,
+  WorkflowRecordedWrite,
+  type IWorkflowRecordedWrite,
+} from "../database/models/workflow-recorded-writes";
 
 const logger = loggers.api("workflows-recorded-writes");
 
@@ -24,128 +29,6 @@ const SUMMARY_BODY_CHARS = 4000;
 export const RECORDED_PAGE_SIZE = 20;
 /** ...and stops before this many characters (always at least one write). */
 const RECORDED_PAGE_CHARS = 100_000;
-
-export interface IWorkflowRecordedWrite {
-  workspaceId: Types.ObjectId;
-  runId: string;
-  /** A sandbox run's person: only they read it. */
-  userId?: string;
-  connectionId: Types.ObjectId;
-  connection: string;
-  step?: string;
-  request: RecordedRequest;
-  /** Its place in the run, from 0: the order an answer pages them in. */
-  seq: number;
-  /** The body was longer than kept. */
-  bodyCut?: boolean;
-  /** A real run's writer is on the connection's writers list. */
-  wouldSend?: boolean;
-  at: Date;
-}
-
-const WorkflowRecordedWriteSchema = new Schema<IWorkflowRecordedWrite>(
-  {
-    workspaceId: { type: Schema.Types.ObjectId, required: true },
-    runId: { type: String, required: true },
-    userId: { type: String },
-    connectionId: { type: Schema.Types.ObjectId, required: true },
-    connection: { type: String, required: true },
-    step: { type: String },
-    request: { type: Schema.Types.Mixed, required: true },
-    seq: { type: Number, required: true },
-    bodyCut: { type: Boolean },
-    wouldSend: { type: Boolean },
-    at: { type: Date, default: () => new Date() },
-  },
-  { collection: "workflow_recorded_writes", versionKey: false },
-);
-
-WorkflowRecordedWriteSchema.index(
-  { workspaceId: 1, runId: 1, seq: 1 },
-  { unique: true },
-);
-WorkflowRecordedWriteSchema.index(
-  { at: 1 },
-  { expireAfterSeconds: 7 * 24 * 60 * 60 },
-);
-
-export const WorkflowRecordedWrite =
-  (mongoose.models
-    .WorkflowRecordedWrite as mongoose.Model<IWorkflowRecordedWrite>) ??
-  mongoose.model<IWorkflowRecordedWrite>(
-    "WorkflowRecordedWrite",
-    WorkflowRecordedWriteSchema,
-  );
-
-/**
- * One run's count of recorded writes: taking a place is one atomic update,
- * so parallel steps cannot record past MAX_RECORDED_PER_RUN.
- */
-interface IWorkflowRecordedRun {
-  workspaceId: Types.ObjectId;
-  runId: string;
-  count: number;
-  at: Date;
-}
-
-const WorkflowRecordedRunSchema = new Schema<IWorkflowRecordedRun>(
-  {
-    workspaceId: { type: Schema.Types.ObjectId, required: true },
-    runId: { type: String, required: true },
-    count: { type: Number, required: true, default: 0 },
-    at: { type: Date, default: () => new Date() },
-  },
-  { collection: "workflow_recorded_runs", versionKey: false },
-);
-
-WorkflowRecordedRunSchema.index({ workspaceId: 1, runId: 1 }, { unique: true });
-WorkflowRecordedRunSchema.index(
-  { at: 1 },
-  { expireAfterSeconds: 7 * 24 * 60 * 60 },
-);
-
-export const WorkflowRecordedRun =
-  (mongoose.models
-    .WorkflowRecordedRun as mongoose.Model<IWorkflowRecordedRun>) ??
-  mongoose.model<IWorkflowRecordedRun>(
-    "WorkflowRecordedRun",
-    WorkflowRecordedRunSchema,
-  );
-
-const isDuplicateKey = (error: unknown) =>
-  (error as { code?: number } | null)?.code === 11000;
-
-/**
- * The next place in `runId`'s recorded writes, or null when it holds
- * MAX_RECORDED_PER_RUN. Two first writes may race on the upsert: the one
- * that loses tries again once, finding the run's row.
- */
-async function takePlace(
-  workspaceId: Types.ObjectId,
-  runId: string,
-): Promise<number | null> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const row = await WorkflowRecordedRun.findOneAndUpdate(
-        { workspaceId, runId, count: { $lt: MAX_RECORDED_PER_RUN } },
-        { $inc: { count: 1 }, $setOnInsert: { at: new Date() } },
-        { upsert: true, new: true },
-      ).lean();
-      return row ? row.count - 1 : null;
-    } catch (error) {
-      // The run's row exists: at the cap (no row matched, the upsert
-      // collided), or a parallel first write made it. Ask again.
-      if (!isDuplicateKey(error)) throw error;
-      const full = await WorkflowRecordedRun.exists({
-        workspaceId,
-        runId,
-        count: { $gte: MAX_RECORDED_PER_RUN },
-      });
-      if (full) return null;
-    }
-  }
-  return null;
-}
 
 /** The run a recorded write belongs to. */
 export interface RecordRun {
@@ -170,28 +53,31 @@ export async function keepRecordedWrite(
   { wouldSend }: { wouldSend?: boolean } = {},
 ): Promise<"kept" | "full" | "failed"> {
   try {
-    const workspace = new Types.ObjectId(workspaceId);
-    const seq = await takePlace(workspace, run.runId);
-    if (seq === null) return "full";
     const body = request.body === undefined ? "" : textOf(request.body);
     const cut = body.length > MAX_BODY_CHARS;
-    await WorkflowRecordedWrite.create({
-      workspaceId: workspace,
-      runId: run.runId,
-      ...(run.userId ? { userId: run.userId } : {}),
-      connectionId: new Types.ObjectId(String(connection._id)),
-      connection: connection.name,
-      ...(run.step ? { step: run.step } : {}),
-      request: cut
-        ? { ...request, body: `${body.slice(0, MAX_BODY_CHARS)}…` }
-        : request,
-      seq,
-      ...(cut ? { bodyCut: true } : {}),
-      ...(wouldSend !== undefined ? { wouldSend } : {}),
-    });
-    return "kept";
+    const seq = await workflowRecordedWritesRepo.appendWrite(
+      {
+        workspaceId,
+        runId: run.runId,
+        ...(run.userId ? { userId: run.userId } : {}),
+        connectionId: String(connection._id),
+        connection: connection.name,
+        ...(run.step ? { step: run.step } : {}),
+        request: cut
+          ? { ...request, body: `${body.slice(0, MAX_BODY_CHARS)}…` }
+          : request,
+        ...(cut ? { bodyCut: true } : {}),
+        ...(wouldSend !== undefined ? { wouldSend } : {}),
+      },
+      MAX_RECORDED_PER_RUN,
+    );
+    return seq === null ? "full" : "kept";
   } catch (error) {
-    logger.warn("Could not keep a recorded write", { error });
+    logger.warn("Could not keep a recorded write", {
+      workspaceId,
+      runId: run.runId,
+      errorName: error instanceof Error ? error.name : "unknown",
+    });
     return "failed";
   }
 }
@@ -233,20 +119,18 @@ export async function recordedWritesOf(
     from = 0,
   }: { userId?: string; full?: boolean; from?: number } = {},
 ): Promise<RecordedWritesPage> {
-  if (!Types.ObjectId.isValid(workspaceId)) return { total: 0, writes: [] };
   const filter = {
-    workspaceId: new Types.ObjectId(workspaceId),
+    workspaceId,
     runId,
     ...(userId !== undefined ? { userId } : {}),
   };
   const start = Number.isInteger(from) && from > 0 ? from : 0;
   const [total, rows] = await Promise.all([
-    WorkflowRecordedWrite.countDocuments(filter),
-    WorkflowRecordedWrite.find(filter)
-      .sort({ seq: 1 })
-      .skip(start)
-      .limit(RECORDED_PAGE_SIZE)
-      .lean(),
+    workflowRecordedWritesRepo.countWrites(filter),
+    workflowRecordedWritesRepo.listWrites(filter, {
+      offset: start,
+      limit: RECORDED_PAGE_SIZE,
+    }),
   ]);
   const writes: RecordedWrite[] = [];
   let chars = 0;

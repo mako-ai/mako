@@ -30,9 +30,9 @@
  * box alive (the resume-and-pause loop). Sessions with no record count from
  * the day activity tracking started (`trackingSince`).
  */
-import mongoose from "mongoose";
 import { loggers } from "../logging";
 import { appsMetadataRepo } from "../repositories/apps-metadata";
+import { appsBoxPolicyRepo } from "../repositories/control-plane-app";
 import {
   getBoxActivity,
   lastBoxResume,
@@ -700,28 +700,15 @@ async function announceAsleep(sessionKey: string): Promise<void> {
   if (parts) await markBoxOffline(parts.workspaceId, parts.userId);
 }
 
-const POLICY_COLLECTION = "apps_box_policy";
 const TRACKING_DOC = "activity-tracking";
 
 /** First call records "now" as the start of tracking; later calls read it. */
 async function ensureTrackingSince(): Promise<Date> {
-  const col = mongoose.connection.collection<{ _id: string; since: Date }>(
-    POLICY_COLLECTION,
-  );
-  await col.updateOne(
-    { _id: TRACKING_DOC },
-    { $setOnInsert: { since: new Date() } },
-    { upsert: true },
-  );
-  const doc = await col.findOne({ _id: TRACKING_DOC });
-  return doc?.since ?? new Date();
+  return appsBoxPolicyRepo.ensureSince(TRACKING_DOC, new Date());
 }
 
 async function readTrackingSince(): Promise<Date | null> {
-  const doc = await mongoose.connection
-    .collection<{ _id: string; since: Date }>(POLICY_COLLECTION)
-    .findOne({ _id: TRACKING_DOC });
-  return doc?.since ?? null;
+  return appsBoxPolicyRepo.readSince(TRACKING_DOC);
 }
 
 /**
