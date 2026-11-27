@@ -480,7 +480,10 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
       .from(consoleFolders)
       .where(eq(consoleFolders.workspaceId, wsUuid));
     const rows = opts?.sortByName
-      ? await base.orderBy(asc(consoleFolders.name))
+      ? await base.orderBy(
+          sql`${consoleFolders.name} COLLATE "C" ASC`,
+          asc(consoleFolders.id),
+        )
       : await base;
     return rows.map(pgConsoleFolderToRecord);
   }
@@ -2090,7 +2093,10 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
       .from(notebookFolders)
       .where(eq(notebookFolders.workspaceId, wsUuid));
     const rows = opts?.sortByName
-      ? await base.orderBy(asc(notebookFolders.name))
+      ? await base.orderBy(
+          sql`${notebookFolders.name} COLLATE "C" ASC`,
+          asc(notebookFolders.id),
+        )
       : await base;
     return rows.map(pgNotebookFolderToRecord);
   }
@@ -2363,7 +2369,10 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
       .from(notebookIndexes)
       .where(and(...conds));
     const rows = opts?.sortByName
-      ? await base.orderBy(asc(notebookIndexes.name))
+      ? await base.orderBy(
+          sql`${notebookIndexes.name} COLLATE "C" ASC`,
+          asc(notebookIndexes.id),
+        )
       : await base;
     return rows.map(pgNotebookIndexToRecord);
   }

@@ -621,7 +621,16 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
       {
         mongo: () => this.mongo.listConsoleFolders(workspaceId, opts),
         pg: () => this.pg.listConsoleFolders(workspaceId, opts),
-        canonicalize: rows => (opts?.sortByName ? rows : sortRecordsById(rows)),
+        canonicalize: rows =>
+          opts?.sortByName
+            ? [...rows].sort((a, b) =>
+                a.name < b.name
+                  ? -1
+                  : a.name > b.name
+                    ? 1
+                    : a.id.localeCompare(b.id),
+              )
+            : sortRecordsById(rows),
         shadowOptions: CONSOLES_CHARTS_SHADOW_OPTIONS,
       },
     );
@@ -2140,7 +2149,16 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
       {
         mongo: () => this.mongo.listNotebookFolders(workspaceId, opts),
         pg: () => this.pg.listNotebookFolders(workspaceId, opts),
-        canonicalize: rows => (opts?.sortByName ? rows : sortRecordsById(rows)),
+        canonicalize: rows =>
+          opts?.sortByName
+            ? [...rows].sort((a, b) =>
+                a.name < b.name
+                  ? -1
+                  : a.name > b.name
+                    ? 1
+                    : a.id.localeCompare(b.id),
+              )
+            : sortRecordsById(rows),
         shadowOptions: CONSOLES_CHARTS_SHADOW_OPTIONS,
       },
     );
@@ -2389,7 +2407,16 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
           });
         },
         pg: () => this.pg.listNotebookIndexes(workspaceId, opts),
-        canonicalize: rows => (opts?.sortByName ? rows : sortRecordsById(rows)),
+        canonicalize: rows =>
+          opts?.sortByName
+            ? [...rows].sort((a, b) =>
+                a.name < b.name
+                  ? -1
+                  : a.name > b.name
+                    ? 1
+                    : a.id.localeCompare(b.id),
+              )
+            : sortRecordsById(rows),
         shadowOptions: CONSOLES_CHARTS_SHADOW_OPTIONS,
       },
     );
