@@ -5,8 +5,6 @@
  * responses are trimmed to what a model needs.
  */
 import assert from "node:assert/strict";
-import { MongoMemoryReplSet } from "mongodb-memory-server";
-import mongoose from "mongoose";
 import { eq } from "drizzle-orm";
 
 import { workspaces, type WorkflowSlotJson } from "../../database/pg/schema";
@@ -116,10 +114,6 @@ globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
 
 async function main() {
   const h = await setupPgTestDb();
-  // Run detail still reads the recorded-workflow-write collection.
-  process.env.MAKO_CONTROL_PLANE_FENCE_V1 = "1";
-  const mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
-  await mongoose.connect(mongo.getUri());
   process.env.HATCHET_CLIENT_TOKEN = TOKEN;
   process.env.ENCRYPTION_KEY ??= "0".repeat(64);
   try {
@@ -348,8 +342,6 @@ async function main() {
     console.log("workflow tools tests passed");
   } finally {
     delete process.env.HATCHET_CLIENT_TOKEN;
-    await mongoose.disconnect();
-    await mongo.stop();
     await h.close();
   }
 }

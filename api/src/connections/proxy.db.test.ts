@@ -2,8 +2,8 @@
  * The connection proxy end to end: the runtime's own `lib/mako.ts`
  * `connection()` (deploy/workflows/runtime/defaults), run inside the
  * AsyncLocalStorage worker.mjs sets, calls Mako's runtime route over real
- * HTTP with the worker's key or a person's own key. PGlite stores platform
- * rows and Mongo stores recorded dry runs. The vendor transport is stubbed.
+ * HTTP with the worker's key or a person's own key. PGlite also stores
+ * recorded dry runs. The vendor transport is stubbed.
  *
  * Pins: live reads are off on a connection that never had the field; once
  * on, a read passes for an unlisted workflow; an unlisted write is refused
@@ -29,9 +29,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
-import { MongoMemoryReplSet } from "mongodb-memory-server";
-import mongoose from "mongoose";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 
 import {
   connectionsRepo,
@@ -45,7 +43,12 @@ import {
   legacyUserIdToUuidv7,
   objectIdToUuid,
 } from "../database/pg/id-codec";
-import { connectionWriteEvents, workspaces } from "../database/pg/schema";
+import {
+  connectionWriteEvents,
+  workflowRecordedRuns,
+  workflowRecordedWrites,
+  workspaces,
+} from "../database/pg/schema";
 import {
   ensureTestMember,
   ensureTestWorkspace,
@@ -64,8 +67,6 @@ import { connectionRequest } from "./proxy.service";
 import { setKey } from "../workflows/on-push";
 import {
   MAX_RECORDED_PER_RUN,
-  WorkflowRecordedRun,
-  WorkflowRecordedWrite,
   recordedWritesOf,
 } from "../workflows/recorded-writes";
 import {
@@ -247,10 +248,6 @@ const attempt = (run: () => Promise<unknown>): Promise<string> =>
 
 async function main() {
   const h = await setupPgTestDb();
-  // Recorded dry runs still use their Mongo control-plane collections.
-  process.env.MAKO_CONTROL_PLANE_FENCE_V1 = "1";
-  const mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
-  await mongoose.connect(mongo.getUri());
   process.env.ENCRYPTION_KEY ??= "0".repeat(64);
 
   const sent: Sent[] = [];
@@ -1071,10 +1068,17 @@ async function main() {
     ).writes;
     assert.deepEqual(whole.body, { text: long });
     // Past the cap: neither sent nor recorded.
-    await WorkflowRecordedRun.updateOne(
-      { workspaceId: ws, runId: SANDBOX_RUN },
-      { $set: { count: MAX_RECORDED_PER_RUN } },
-    );
+    const [capped] = await h.db
+      .update(workflowRecordedRuns)
+      .set({ count: MAX_RECORDED_PER_RUN })
+      .where(
+        and(
+          eq(workflowRecordedRuns.workspaceId, workspace.uuid),
+          eq(workflowRecordedRuns.runId, SANDBOX_RUN),
+        ),
+      )
+      .returning({ id: workflowRecordedRuns.id });
+    assert.ok(capped, "the sandbox run already has a counter");
     const full = await agentSandbox
       .connection("ch_close")
       .request("POST", "/task/", {})
@@ -1085,9 +1089,14 @@ async function main() {
     assert.equal(full.status, 409);
     assert.match(full.message, /recorded 200 writes already/);
     assert.equal(sent.length, sentBeforeSandbox);
-    // An agent's key whose name is no sandbox run's: refused, as before.
     assert.equal(
-      await WorkflowRecordedWrite.countDocuments({ runId: SANDBOX_RUN }),
+      await h.db.$count(
+        workflowRecordedWrites,
+        and(
+          eq(workflowRecordedWrites.workspaceId, workspace.uuid),
+          eq(workflowRecordedWrites.runId, SANDBOX_RUN),
+        ),
+      ),
       2,
     );
     // A sandbox run started with a key (CI): its writes refused.
@@ -1436,8 +1445,6 @@ async function main() {
     server.close();
     await new Promise(resolve => setTimeout(resolve, 300));
     await databaseConnectionService.closeAllConnections();
-    await mongoose.disconnect();
-    await mongo.stop();
     await h.close();
   }
 }

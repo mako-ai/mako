@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import mongoose, { type ClientSession } from "mongoose";
-import { createPgFirstRepoProxy } from "./resolve-repo";
+import { hasPostgresConfig } from "../database/pg/client";
 
 const sessions = new AsyncLocalStorage<ClientSession>();
 export const controlPlaneSession = () => sessions.getStore();
@@ -88,7 +88,6 @@ export function createControlPlaneRepo<T extends object>(
   mongo: T,
   reads: readonly (keyof T)[],
 ): T {
-  const legacyTests = createPgFirstRepoProxy(domain, pg, mongo);
   const readMethods = new Set<PropertyKey>(reads);
   // Classify only reads. A newly added method automatically takes the write fence.
   return new Proxy({} as T, {
@@ -96,14 +95,24 @@ export function createControlPlaneRepo<T extends object>(
       if (Object.hasOwn(target, prop)) {
         return Reflect.get(target, prop, receiver);
       }
+      const testFallback = process.env.MAKO_TEST_MONGO_FALLBACK;
       if (
         !process.env.K_SERVICE &&
         process.env.MAKO_CONTROL_PLANE_FENCE_V1 !== "1" &&
         (process.env.NODE_ENV === "test" ||
           process.env.VITEST ||
-          process.env.MAKO_TEST_MONGO_FALLBACK === "1")
+          testFallback === "1" ||
+          testFallback === "0")
       ) {
-        return Reflect.get(legacyTests, prop);
+        const hasPg = hasPostgresConfig();
+        if (!hasPg && testFallback === "0") {
+          throw new Error(
+            `[${domain}] Strict control-plane tests require a Postgres database`,
+          );
+        }
+        const fixture = hasPg ? pg : mongo;
+        const method = Reflect.get(fixture, prop);
+        return typeof method === "function" ? method.bind(fixture) : method;
       }
       const method = Reflect.get(mongo, prop);
       if (typeof method !== "function") return method;

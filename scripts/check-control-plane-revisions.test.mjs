@@ -130,3 +130,22 @@ test("a missing canary target or unreadable revision page stops verification", a
     /mako-canary: 403/,
   );
 });
+
+test("dbt and the six-collection handoff require their own marker on both services", async () => {
+  const { main, canary, get } = fixture();
+  const preparedEnv = service => service.revisions[1].containers[0].env;
+  preparedEnv(main).push({ name: "MAKO_DBT_FENCE_V1", value: "1" });
+  await assert.rejects(
+    verifyControlPlaneWriters(env, get, { dbt: true }),
+    /mako-canary.*lacks confirmed retirement/,
+  );
+  preparedEnv(canary)[0].name = "MAKO_DBT_FENCE_V1";
+  assert.equal(
+    (await verifyControlPlaneWriters(env, get, { dbt: true })).marker,
+    "MAKO_DBT_FENCE_V1",
+  );
+  await assert.rejects(
+    verifyControlPlaneWriters(env, get),
+    /mako-canary.*lacks confirmed retirement/,
+  );
+});

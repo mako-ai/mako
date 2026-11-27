@@ -1,10 +1,18 @@
 // Read-only release verification. Keep full revision environments out of release logs.
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import { parseArgs } from "node:util";
 
 const shortName = value => value?.split("/").pop();
 
-export function checkControlPlaneRevisions(service, revisions) {
+const controlPlaneMarker = "MAKO_CONTROL_PLANE_FENCE_V1";
+const dbtMarker = "MAKO_DBT_FENCE_V1";
+
+export function checkControlPlaneRevisions(
+  service,
+  revisions,
+  marker = controlPlaneMarker,
+) {
   if (
     !service.generation ||
     service.generation !== service.observedGeneration ||
@@ -20,7 +28,7 @@ export function checkControlPlaneRevisions(service, revisions) {
     if (!name) throw new Error("Missing Cloud Run revision name");
     if (
       revision.containers?.[0]?.env?.some(
-        v => v.name === "MAKO_CONTROL_PLANE_FENCE_V1" && v.value === "1",
+        v => v.name === marker && v.value === "1",
       )
     ) {
       prepared.add(name);
@@ -59,7 +67,7 @@ export function checkControlPlaneRevisions(service, revisions) {
   };
 }
 
-async function readRevisions(url, get) {
+async function readRevisions(url, get, marker) {
   const revisions = [];
   let pageToken = "";
   do {
@@ -73,9 +81,7 @@ async function readRevisions(url, get) {
         conditions: r.conditions,
         containers: [
           {
-            env: r.containers?.[0]?.env?.filter(
-              v => v.name === "MAKO_CONTROL_PLANE_FENCE_V1",
-            ),
+            env: r.containers?.[0]?.env?.filter(v => v.name === marker),
           },
         ],
       });
@@ -85,7 +91,12 @@ async function readRevisions(url, get) {
   return revisions;
 }
 
-export async function verifyControlPlaneWriters(env, get) {
+export async function verifyControlPlaneWriters(
+  env,
+  get,
+  { dbt = false } = {},
+) {
+  const marker = dbt ? dbtMarker : controlPlaneMarker;
   const { GCP_PROJECT_ID, GCP_MIGRATION_PROJECT_ID, GCP_REGION } = env;
   if (
     ![GCP_PROJECT_ID, GCP_MIGRATION_PROJECT_ID, GCP_REGION].every(
@@ -114,9 +125,9 @@ export async function verifyControlPlaneWriters(env, get) {
   const evidence = [];
   for (const { resource, url, service } of snapshots) {
     try {
-      const revisions = await readRevisions(url, get);
+      const revisions = await readRevisions(url, get, marker);
       evidence.push({
-        ...checkControlPlaneRevisions(service, revisions),
+        ...checkControlPlaneRevisions(service, revisions, marker),
         resource,
       });
     } catch (error) {
@@ -130,10 +141,11 @@ export async function verifyControlPlaneWriters(env, get) {
       throw new Error(resource + " changed during writer verification");
     }
   }
-  return { checkedAt: new Date().toISOString(), services: evidence };
+  return { checkedAt: new Date().toISOString(), marker, services: evidence };
 }
 
 async function main() {
+  const { values } = parseArgs({ options: { dbt: { type: "boolean" } } });
   const token = execFileSync("gcloud", ["auth", "print-access-token"], {
     encoding: "utf8",
   }).trim();
@@ -148,7 +160,7 @@ async function main() {
     return response.json();
   };
   console.info(
-    JSON.stringify(await verifyControlPlaneWriters(process.env, get)),
+    JSON.stringify(await verifyControlPlaneWriters(process.env, get, values)),
   );
 }
 

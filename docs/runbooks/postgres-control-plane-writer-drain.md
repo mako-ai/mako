@@ -13,6 +13,8 @@ GCP_PROJECT_ID="$PROD_PROJECT" GCP_MIGRATION_PROJECT_ID="$CANARY_PROJECT" GCP_RE
   node scripts/check-control-plane-revisions.mjs
 ```
 
+The default invocation requires `MAKO_CONTROL_PLANE_FENCE_V1=1`. For the separate dbt handoff, `--dbt` requires `MAKO_DBT_FENCE_V1=1` on the same two services. The evidence names the marker it verified.
+
 The verifier reads every page of revisions, checks each service generation is fully reconciled, then rechecks both etags. Missing metadata or access to either target stops verification. The record includes the latest ready revision, traffic percentages and tags, every prepared revision and each retired unprepared revision. Check each routable prepared revision’s image digest against its approved build in the corresponding project. Confirm that its pinned pooled and direct PG secret versions resolve to the same production database and branch used by the activation job. Record secret version identifiers and the verified database/branch, without logging credentials. Zero traffic can coexist with an in-flight request. Require Cloud Run's `RETIRED` condition for each unprepared revision so old request handlers and startup/background work have lost their instances. A nonzero exit, a changed generation or an unknown revision holds activation. Activation CI repeats this read before acquiring the writer fence. [Cloud Run revision status](https://docs.cloud.google.com/run/docs/managing/revisions)
 
 ```sh
