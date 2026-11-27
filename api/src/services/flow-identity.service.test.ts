@@ -7,8 +7,8 @@
  * existing flow), so it is exercised with real documents including the
  * duplicate source→destination pairs that prod actually has.
  *
- * Flows (and the legacy collections the migration reads) stay in in-memory
- * Mongo. The connection names the display name derives from live in PGlite.
+ * Modern flows and the raw pre-backfill documents use separate databases
+ * on one in-memory Mongo server. Modern connection names live in PGlite.
  *
  * Run: npx tsx src/services/flow-identity.service.test.ts
  */
@@ -57,6 +57,7 @@ async function main(): Promise<void> {
   const pgh = await setupPgTestDb();
   try {
     const { Flow } = await import("../database/workspace-schema");
+    await Flow.init();
     const { reserveFlowSlug, flowDisplayName, deriveFlowDisplayName } =
       await import("./flow-identity.service");
 
@@ -77,23 +78,25 @@ async function main(): Promise<void> {
       name: "Stripe",
     });
 
-    const makeFlow = (workspaceId: Types.ObjectId, extra: object = {}) =>
+    const makeFlow = (
+      workspaceId: Types.ObjectId,
+      slug: string,
+      name?: string,
+    ) =>
       Flow.create({
         workspaceId,
+        slug,
+        name,
         type: "scheduled",
         sourceType: "connector",
         dataSourceId: sourceId,
         destinationDatabaseId: destId,
         createdBy: "u1",
         schedule: { enabled: false },
-        ...extra,
       });
 
     // ── slug reservation is per workspace ──
-    await makeFlow(wsA, {
-      slug: "stripe-warehouse",
-      name: "Stripe → Warehouse",
-    });
+    await makeFlow(wsA, "stripe-warehouse", "Stripe → Warehouse");
     assert.equal(
       await reserveFlowSlug(wsA, "Stripe → Warehouse"),
       "stripe-warehouse-2",
@@ -104,34 +107,44 @@ async function main(): Promise<void> {
       "stripe-warehouse",
       "another workspace is free to use the same slug",
     );
+    await assert.rejects(() => makeFlow(wsA, "stripe-warehouse"), {
+      code: 11000,
+      keyPattern: { workspaceId: 1, slug: 1 },
+    });
+    await makeFlow(wsB, "stripe-warehouse");
 
     // ── display name prefers the stored value ──
-    const named = await makeFlow(wsA, { name: "Nightly revenue sync" });
+    const named = await makeFlow(
+      wsA,
+      "nightly-revenue-sync",
+      "Nightly revenue sync",
+    );
     assert.equal(await flowDisplayName(named), "Nightly revenue sync");
-    const unnamed = await makeFlow(wsA);
+    const unnamed = await makeFlow(wsA, "unnamed-flow");
     const derived = await flowDisplayName(unnamed);
     assert.match(derived, /→/, "falls back to the source → destination label");
     assert.equal(derived, "Stripe → Warehouse", "names come from Postgres");
     assert.equal(derived, await deriveFlowDisplayName(unnamed));
     // A blank name is not a name.
-    const blank = await makeFlow(wsA, { name: "   " });
+    const blank = await makeFlow(wsA, "blank-name-flow", "   ");
     assert.match(await flowDisplayName(blank), /→/);
 
     // ── the backfill migration ──
-    await Flow.deleteMany({});
-    const db = mongoose.connection.db!;
+    // The modern compound index treats missing slugs in a workspace as
+    // duplicates. Seed the pre-backfill data in its own raw database.
+    const historicalDb = mongoose.connection.getClient().db("historical_flows");
     const connId = new Types.ObjectId();
     const connectorId = new Types.ObjectId();
-    await db
+    await historicalDb
       .collection("databaseconnections")
-      .insertOne({ _id: connId, name: "RevOps" } as never);
-    await db
+      .insertOne({ _id: connId, name: "RevOps" });
+    await historicalDb
       .collection("connectors")
-      .insertOne({ _id: connectorId, name: "ch_close" } as never);
+      .insertOne({ _id: connectorId, name: "ch_close" });
 
     // Two flows sharing one source→destination pair: prod has exactly this,
     // and it is what forces the -2 suffix.
-    const raw = db.collection("flows");
+    const raw = historicalDb.collection("flows");
     const ids = [
       new Types.ObjectId(),
       new Types.ObjectId(),
@@ -169,11 +182,11 @@ async function main(): Promise<void> {
         tableDestination: { connectionId: connId, tableName: "ch_close" },
         createdBy: "u1",
       },
-    ] as never);
+    ]);
 
     const migration =
       await import("../migrations/2026-09-01-190000_flow_names_and_slugs");
-    await migration.up(db as never);
+    await migration.up(historicalDb);
 
     const after = await raw.find({}).sort({ _id: 1 }).toArray();
     const byId = (id: Types.ObjectId) =>
@@ -206,7 +219,7 @@ async function main(): Promise<void> {
     const before = JSON.stringify(
       after.map(f => [f._id.toString(), f.name, f.slug]),
     );
-    await migration.up(db as never);
+    await migration.up(historicalDb);
     const again = await raw.find({}).sort({ _id: 1 }).toArray();
     assert.equal(
       JSON.stringify(again.map(f => [f._id.toString(), f.name, f.slug])),
@@ -224,8 +237,8 @@ async function main(): Promise<void> {
       destinationDatabaseId: connId,
       name: "Hand-written name",
       createdBy: "u1",
-    } as never);
-    await migration.up(db as never);
+    });
+    await migration.up(historicalDb);
     const hand = (await raw.findOne({ name: "Hand-written name" })) as {
       slug?: string;
     };
