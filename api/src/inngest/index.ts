@@ -67,6 +67,11 @@ import {
   flowWebhookUnsubscribeFunction,
 } from "./functions/flow-webhook-subscription";
 import { connectorIndexRetryFunction } from "./functions/connector-index-retry";
+import {
+  migrationMongoSyncRetryFunction,
+  migrationPgSyncRetryFunction,
+} from "./functions/migration/sync-retry";
+import { migrationPgTtlReaperFunction } from "./functions/migration/ttl-reaper";
 import { loggers } from "../logging";
 
 const baseFunctions = [
@@ -94,6 +99,8 @@ const baseFunctions = [
   appsThumbnailWarmFunction,
   flowWebhookResubscribeFunction,
   flowWebhookUnsubscribeFunction,
+  migrationPgSyncRetryFunction,
+  migrationMongoSyncRetryFunction,
 ];
 
 const allWebhookFunctions = [
@@ -140,6 +147,7 @@ export function getFunctions() {
         connectorBoxReaperFunction,
         scheduledQuerySchedulerFunction,
         dbtSchedulerFunction,
+        migrationPgTtlReaperFunction,
       ];
 
   return _functions;
@@ -202,4 +210,7 @@ export {
   dbtSchedulerFunction,
   dbtRunSweeperFunction,
   connectorBoxReaperFunction,
+  migrationPgSyncRetryFunction,
+  migrationMongoSyncRetryFunction,
+  migrationPgTtlReaperFunction,
 };

@@ -12,6 +12,8 @@ import fs from "fs";
 import path from "path";
 import type { Context } from "hono";
 import { connectDatabase } from "./database/schema";
+import { closePgConnections, hasPostgresConfig } from "./database/pg/client";
+import { migrationRouter } from "./migration/router";
 import { ensureFlowExecutionTtlIndex } from "./database/flow-execution-retention";
 import {
   injectOgTags,
@@ -460,6 +462,12 @@ async function main(): Promise<void> {
   // new instance's first apps request is not a 12 s clone (2026-11-16).
   if (repoWarmEnabled()) void startRepoWarmOnBoot();
 
+  // Eagerly subscribe to cross-instance migration rollout invalidations before
+  // serving requests so cached states are invalidated in <1s on rollback.
+  if (hasPostgresConfig()) {
+    void migrationRouter.startInvalidationListener();
+  }
+
   // Log Inngest configuration status (after logging is initialized)
   logInngestStatus();
 
@@ -601,6 +609,10 @@ async function gracefulShutdown(
       await mongoose.connection.close();
       logger.info("Mongoose connection closed");
     }
+
+    // Stop migration state pub/sub listener and close platform Postgres connections if opened
+    await migrationRouter.stopInvalidationListener();
+    await closePgConnections();
   } catch (error) {
     logger.error("Error during graceful shutdown", { error });
     exitCode = 1;
