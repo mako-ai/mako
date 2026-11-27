@@ -42,7 +42,11 @@ import {
   AppProject,
   AppWorktree,
 } from "../../database/workspace-schema";
-import { buildProjectSharingPatch, toAppProjectCompat } from "./mapper";
+import {
+  buildProjectSharingPatch,
+  toAppProjectCompat,
+  toAppWorktreeCompat,
+} from "./mapper";
 import {
   MongoAppsMetadataRepository,
   getMongoAppBindingDraftModel,
@@ -855,6 +859,9 @@ describe("Phase 2B AppsMetadataRepository contract & migration lifecycle", () =>
     const pgRepo = new PgAppsMetadataRepository({ getDb: () => db });
     const initial = await pgRepo.ensureWorktreeRow(wsId, user1Uuid, "main");
     expect(isUuidv7(initial.id)).toBe(true);
+    const compat = toAppWorktreeCompat(initial);
+    expect(String(compat._id)).toBe(initial.id);
+    expect(String(compat.workspaceId)).toBe(wsId);
     const staleAt = new Date(Date.now() - 48 * 60 * 60 * 1000);
     await db
       .update(pgSchema.appWorktrees)
