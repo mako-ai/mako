@@ -38,8 +38,8 @@ import { loggers } from "../logging";
 import {
   createPubSubPublisher,
   createPubSubSubscriber,
-  type Publisher,
-  type Subscriber,
+  type PubSubPublisher,
+  type PubSubSubscriber,
 } from "../services/pubsub.service";
 import {
   ShadowCompareRunner,
@@ -212,8 +212,8 @@ export class MigrationRouter {
     ctx: SecondaryWriteFailureContext,
   ) => Promise<void>;
 
-  private publisher: Publisher | null = null;
-  private subscriber: Subscriber | null = null;
+  private publisher: PubSubPublisher | null = null;
+  private subscriber: PubSubSubscriber | null = null;
   private pubSubReady = false;
   private pubSubInitPromise: Promise<void> | null = null;
   private lastPubSubAttemptAt = 0;
@@ -262,8 +262,9 @@ export class MigrationRouter {
 
     this.lastPubSubAttemptAt = Date.now();
     this.pubSubInitPromise = (async () => {
+      let sub: PubSubSubscriber | null = null;
       try {
-        const sub = createPubSubSubscriber();
+        sub = createPubSubSubscriber();
         await sub.connect();
         await sub.subscribe(MIGRATION_STATE_CHANNEL, raw => {
           try {
@@ -279,6 +280,7 @@ export class MigrationRouter {
         });
         if (this.stopped) {
           await sub.unsubscribe(MIGRATION_STATE_CHANNEL).catch(() => undefined);
+          await sub.quit?.().catch(() => undefined);
           return;
         }
         this.subscriber = sub;
@@ -287,6 +289,7 @@ export class MigrationRouter {
         // became active so a missed broadcast during startup cannot linger.
         this.invalidateCache();
       } catch (error) {
+        await sub?.quit?.().catch(() => undefined);
         logger.warn(
           "Migration state pub/sub listener unavailable; using TTL cache only",
           {
@@ -307,14 +310,28 @@ export class MigrationRouter {
       await this.pubSubInitPromise.catch(() => undefined);
     }
     if (this.subscriber) {
+      const sub = this.subscriber;
+      this.subscriber = null;
       try {
-        await this.subscriber.unsubscribe(MIGRATION_STATE_CHANNEL);
+        await sub.unsubscribe(MIGRATION_STATE_CHANNEL);
       } catch {
         // Ignore teardown errors
       }
-      this.subscriber = null;
+      try {
+        await sub.quit?.();
+      } catch {
+        // Ignore teardown errors
+      }
     }
-    this.publisher = null;
+    if (this.publisher) {
+      const pub = this.publisher;
+      this.publisher = null;
+      try {
+        await pub.quit?.();
+      } catch {
+        // Ignore teardown errors
+      }
+    }
     this.pubSubReady = false;
   }
 
