@@ -1,8 +1,4 @@
-/**
- * MongoDB test fallbacks for the small app control-plane repositories.
- * Legacy MongoMemoryServer suites run without `POSTGRES_URL`; production
- * always uses the Postgres implementations.
- */
+import { controlPlaneSession } from "../control-plane-fence";
 import mongoose, { Types } from "mongoose";
 import {
   WorkflowRecordedRun,
@@ -35,16 +31,26 @@ export class MongoWorkflowRecordedWritesRepository implements WorkflowRecordedWr
     max: number,
   ): Promise<number | null> {
     const ws = new Types.ObjectId(workspaceId);
+    const session = controlPlaneSession();
+    if (session) {
+      const current = await WorkflowRecordedRun.findOne({
+        workspaceId: ws,
+        runId,
+      })
+        .session(session)
+        .lean();
+      if (current && current.count >= max) return null;
+    }
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const row = await WorkflowRecordedRun.findOneAndUpdate(
           { workspaceId: ws, runId, count: { $lt: max } },
           { $inc: { count: 1 }, $setOnInsert: { at: new Date() } },
-          { upsert: true, returnDocument: "after" },
+          { upsert: true, returnDocument: "after", session },
         ).lean();
         return row ? row.count - 1 : null;
       } catch (error) {
-        if (!isDuplicateKey(error)) throw error;
+        if (session || !isDuplicateKey(error)) throw error;
         const full = await WorkflowRecordedRun.exists({
           workspaceId: ws,
           runId,
@@ -62,7 +68,7 @@ export class MongoWorkflowRecordedWritesRepository implements WorkflowRecordedWr
   ): Promise<number | null> {
     const seq = await this.takePlace(input.workspaceId, input.runId, max);
     if (seq === null) return null;
-    await WorkflowRecordedWrite.create({
+    await new WorkflowRecordedWrite({
       workspaceId: new Types.ObjectId(input.workspaceId),
       runId: input.runId,
       ...(input.userId ? { userId: input.userId } : {}),
@@ -73,7 +79,7 @@ export class MongoWorkflowRecordedWritesRepository implements WorkflowRecordedWr
       seq,
       ...(input.bodyCut ? { bodyCut: true } : {}),
       ...(input.wouldSend !== undefined ? { wouldSend: input.wouldSend } : {}),
-    });
+    }).save({ session: controlPlaneSession() });
     return seq;
   }
 
@@ -136,7 +142,9 @@ export class MongoModelCatalogSnapshotsRepository implements ModelCatalogSnapsho
   ): Promise<ModelCatalogSnapshotRecord | null> {
     const doc = await ModelCatalogSnapshot.findOne({
       _id: id,
-    }).lean<LeanSnapshot>();
+    })
+      .session(controlPlaneSession() ?? null)
+      .lean<LeanSnapshot>();
     return doc ? mongoSnapshotToRecord(doc) : null;
   }
 
@@ -160,7 +168,7 @@ export class MongoModelCatalogSnapshotsRepository implements ModelCatalogSnapsho
         fetchedAt: write.fetchedAt,
         itemCount: write.itemCount,
       },
-      { upsert: true },
+      { upsert: true, session: controlPlaneSession() },
     );
   }
 
@@ -191,9 +199,12 @@ export class MongoAppsBoxPolicyRepository implements AppsBoxPolicyRepository {
     await col.updateOne(
       { _id: id },
       { $setOnInsert: { since: now } },
-      { upsert: true },
+      { upsert: true, session: controlPlaneSession() },
     );
-    const doc = await col.findOne({ _id: id });
+    const doc = await col.findOne(
+      { _id: id },
+      { session: controlPlaneSession() },
+    );
     return doc?.since ?? now;
   }
 

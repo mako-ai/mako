@@ -20,6 +20,7 @@ import { Command } from "commander";
 import dotenv from "dotenv";
 import { and, asc, eq, gt, gte, inArray, or, sql } from "drizzle-orm";
 import mongoose, { Types } from "mongoose";
+import { controlPlaneSession } from "../../../repositories/control-plane-fence";
 import { PgModelCatalogSnapshotsRepository } from "../../../repositories/control-plane-app/pg.repo";
 import { sanitizePgJsonValue } from "../../../utils/message-sanitizer";
 import { PgUsageStatsRepository } from "../../../repositories/usage-stats/pg.repo";
@@ -179,13 +180,18 @@ async function* readBatches(
       }
     : {};
   if (retention) {
-    const expired = await collection.countDocuments({
-      [retention.field]: { $lt: retention.cutoff },
-    });
+    const expired = await collection.countDocuments(
+      {
+        [retention.field]: { $lt: retention.cutoff },
+      },
+      { session: controlPlaneSession() },
+    );
     report.source += expired;
     if (expired) report.skipped[retention.reason] = expired;
   }
-  const cursor = collection.find(filter).batchSize(BATCH_SIZE);
+  const cursor = collection
+    .find(filter, { session: controlPlaneSession() })
+    .batchSize(BATCH_SIZE);
   try {
     let batch: MongoDoc[] = [];
     for await (const doc of cursor) {
@@ -237,7 +243,7 @@ async function sourceRuleWorkspaces(
   }>("notification_rules");
   for await (const rule of rules.find(
     { _id: { $in: keys } },
-    { projection: { workspaceId: 1 } },
+    { projection: { workspaceId: 1 }, session: controlPlaneSession() },
   )) {
     const id = toPgUuid(rule._id);
     if (id) found.set(id, toPgUuid(rule.workspaceId));
@@ -902,6 +908,20 @@ export async function backfillControlPlaneSmall(options: {
   );
 }
 
+export function hasParityIssues(r: TableReport): boolean {
+  return Boolean(
+    r.parity &&
+    (r.parity.different ||
+      r.parity.missingInPg ||
+      r.parity.pgOnly ||
+      r.missingInMongo ||
+      Object.keys(r.skipped).some(
+        reason =>
+          reason !== "older than 7d TTL" && reason !== "older than 90d TTL",
+      )),
+  );
+}
+
 async function main(): Promise<void> {
   loadCliEnv();
   const argv =
@@ -987,19 +1007,7 @@ async function main(): Promise<void> {
           `${r.parity ? ` parity=${JSON.stringify(r.parity)}` : ""}` +
           `${skipped ? ` skipped[${skipped}]` : ""}\n`,
       );
-      if (
-        r.parity &&
-        (r.parity.different ||
-          r.parity.missingInPg ||
-          r.parity.pgOnly ||
-          r.missingInMongo ||
-          Object.keys(r.skipped).some(
-            reason =>
-              reason !== "older than 7d TTL" && reason !== "older than 90d TTL",
-          ))
-      ) {
-        process.exitCode = 2;
-      }
+      if (hasParityIssues(r)) process.exitCode = 2;
     }
   } finally {
     await mongoose.disconnect();

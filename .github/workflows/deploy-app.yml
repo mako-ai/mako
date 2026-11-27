@@ -1422,6 +1422,7 @@ jobs:
             --subnet=mako-subnet \
             --vpc-egress=all-traffic \
             --set-env-vars BASE_URL=${BASE_URL} \
+            --set-env-vars MAKO_CONTROL_PLANE_FENCE_V1=1 \
             --set-env-vars API_RATE_LIMIT_MODE=enforce \
             --set-env-vars "APPS_LIFECYCLE_ENFORCE=${APPS_LIFECYCLE_ENFORCE}" \
             --set-env-vars BCRYPT_ROUNDS=${BCRYPT_ROUNDS} \

@@ -1,7 +1,4 @@
-/**
- * MongoDB test fallback for `NotificationsRepository`. Legacy MongoMemoryServer
- * suites run without `POSTGRES_URL`; production always uses `PgNotificationsRepository`.
- */
+import { controlPlaneSession } from "../control-plane-fence";
 import { Types } from "mongoose";
 import {
   NotificationDelivery,
@@ -139,7 +136,7 @@ export class MongoNotificationsRepository implements NotificationsRepository {
   async createRule(
     input: CreateNotificationRuleInput,
   ): Promise<NotificationRuleRecord> {
-    const doc = await NotificationRule.create({
+    const doc = await new NotificationRule({
       ...(input.id ? { _id: new Types.ObjectId(input.id) } : {}),
       workspaceId: new Types.ObjectId(input.workspaceId),
       resourceType: input.resourceType,
@@ -148,7 +145,7 @@ export class MongoNotificationsRepository implements NotificationsRepository {
       triggers: input.triggers,
       channel: input.channel,
       createdBy: input.createdBy,
-    });
+    }).save({ session: controlPlaneSession() });
     return mongoRuleToRecord(doc.toObject() as LeanRule);
   }
 
@@ -167,7 +164,7 @@ export class MongoNotificationsRepository implements NotificationsRepository {
     const doc = await NotificationRule.findOneAndUpdate(
       { _id: id, workspaceId: ws },
       { $set: set },
-      { returnDocument: "after" },
+      { returnDocument: "after", session: controlPlaneSession() },
     ).lean<LeanRule>();
     return doc ? mongoRuleToRecord(doc) : null;
   }
@@ -176,18 +173,35 @@ export class MongoNotificationsRepository implements NotificationsRepository {
     const ws = oid(workspaceId);
     const id = oid(ruleId);
     if (!ws || !id) return false;
-    const result = await NotificationRule.deleteOne({
-      _id: id,
-      workspaceId: ws,
-    });
+    const result = await NotificationRule.deleteOne(
+      {
+        _id: id,
+        workspaceId: ws,
+      },
+      { session: controlPlaneSession() },
+    );
     return result.deletedCount > 0;
   }
 
   async ensurePendingDelivery(
     input: CreateNotificationDeliveryInput,
   ): Promise<NotificationDeliveryRecord | null> {
+    const session = controlPlaneSession();
+    if (session) {
+      const existing = await NotificationDelivery.findOne({
+        idempotencyKey: input.idempotencyKey,
+      })
+        .session(session)
+        .lean<INotificationDelivery>();
+      if (existing) {
+        return existing.status === "pending" &&
+          existing.workspaceId.toString() === input.workspaceId
+          ? mongoDeliveryToRecord(existing)
+          : null;
+      }
+    }
     try {
-      const doc = await NotificationDelivery.create({
+      const doc = await new NotificationDelivery({
         workspaceId: new Types.ObjectId(input.workspaceId),
         ruleId: new Types.ObjectId(input.ruleId),
         resourceType: input.resourceType,
@@ -198,10 +212,15 @@ export class MongoNotificationsRepository implements NotificationsRepository {
         idempotencyKey: input.idempotencyKey,
         status: "pending",
         attempts: 0,
-      });
+      }).save({ session });
       return mongoDeliveryToRecord(doc.toObject() as INotificationDelivery);
     } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === 11000) {
+      if (
+        !session &&
+        error instanceof Error &&
+        "code" in error &&
+        error.code === 11000
+      ) {
         const pending = await NotificationDelivery.findOne({
           idempotencyKey: input.idempotencyKey,
           workspaceId: input.workspaceId,
@@ -229,6 +248,7 @@ export class MongoNotificationsRepository implements NotificationsRepository {
         $set: set,
         ...(input.countAttempt ? { $inc: { attempts: 1 } } : {}),
       },
+      { session: controlPlaneSession() },
     );
     return result.modifiedCount > 0;
   }

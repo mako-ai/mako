@@ -1,50 +1,23 @@
-# Control-plane backfill and Cloud Run cutover
+# Control-plane cutover
 
-Migration `0012` covers notification rules and deliveries, recorded workflow runs and writes, model catalog snapshots, and the box tracking marker. The release lead owns production execution and traffic. At most one revision may accept writes to these domains at a time.
+## Release 1 · prepare the Mongo writer
 
-## Before the new revision starts
+Use the standard CI rollout. Apply the reviewed additive migration `0012` and deploy the preparation image. It serves notification rules and deliveries, recorded workflow writes and counters, model catalog snapshots and box tracking from Mongo while the durable writer-fence owner is `mongo`. Preparation does not activate Postgres. The production template marks prepared revisions with `MAKO_CONTROL_PLANE_FENCE_V1=1`, including revisions created by the workflow's environment update.
 
-1. **Pin the old revision.** Record the project, region, old revision name and image digest. Hold the master release before the new container starts. The production job runs `pg:migrate`, deploys `mako`, then updates its environment, which can create a second revision. It has no control-plane copy or parity gate. Pin 100% of traffic to the old **named** revision and verify the allocation. Keep this pin through both revision-producing steps. [Deployment workflow](../../.github/workflows/deploy-app.yml) · [Cloud Run revision traffic](https://docs.cloud.google.com/run/docs/rollouts-rollbacks-traffic-migration)
+Rule mutations, delivery reservation/completion, recorded counter reservation plus request insertion, catalog refresh/probes/curation, and box marker initialization take a write lock on the same Mongo document. Each repository executes its Mongo mutation and lock update in one replica-set transaction. This includes work already running in an HTTP request, late Inngest completions and startup's `warmCatalog()`. An operation still computing when ownership changes resolves its store at the write. An operation already inside the transaction completes or aborts before activation can get the lock. Unrelated domains keep serving. [Mongo transaction locking](https://www.mongodb.com/docs/manual/core/transactions-production-consideration/)
 
-   ```sh
-   run_service() { gcloud run services "$@" --project="$GCP_PROJECT_ID" --region="$GCP_REGION"; }
-   run_service describe mako --format='yaml(status.traffic,status.latestReadyRevisionName)'
-   run_service update-traffic mako --to-revisions="$OLD_REV=100"
-   run_service describe mako --format='yaml(status.traffic)'
-   ```
+Let the release complete and pre-preparation instances retire. A zero-percent route alone can still have an in-flight request. Before the second release the lead confirms that all six writers run in the prepared service, including job callbacks. A separately deployed writer using the old models must be upgraded and drained too. Keep activation on hold until the release inventory accounts for every writer. Existing reviewed migration checks include the non-null delivery rule ID without a rule FK, imported rule provenance, and the resource history ordering index.
 
-2. **Apply the schema.** Use the reviewed release checkout and the production job's direct Postgres connection. Verify the pending migration against the target journal, run `pnpm --filter api run pg:migrate`, and check all six tables. The reviewed `0012` has `notification_rules.imported_from_mongo`, non-null delivery `rule_id` without a rule FK, and a resource index ending in `completed_at DESC NULLS LAST, created_at DESC NULLS LAST`. A preview that applied an earlier `0012` needs a fresh database for rehearsal. An unexpected production journal or DDL stops the release.
-3. **Freeze Mongo writers and drain in-flight work.** Keep the old revision serving unrelated traffic. Hold HTTP mutations, workflow recorded-write producers, notification fan-out and delivery workers, catalog refreshes/probes/curation and box tracking. Include scheduled jobs, tagged revision URLs and other direct callers. Let current transactions and outbound delivery attempts settle. Record the owner and event ID for each remaining pending delivery. Confirm the affected collections have stopped changing. Take a consistent Mongo snapshot and record the UTC freeze timestamp in `CUTOVER_UTC`. Bind the CLI's `DATABASE_URL` to that snapshot with read-only credentials. Keep the snapshot fixed through post-switch replay, including its TTL data. `--as-of` fixes the retention floor and does not freeze a live Mongo database.
-4. **Copy and prove parity before boot.** Use the production Postgres direct connection and the same source and timestamp for all four commands below. Compare the dry run with the initial inventory, accounting for intervening writes and TTL expiry. Review skips. Run the copy, repeat it and require zero rows written on the repeat. Then run the read-only content comparison. Hold the switch for unexplained differences, non-TTL skips, or imported rules missing from Mongo. Investigate stale rules with the lead. Any production deletion requires separate authorization.
+## Release 2 · activate in CI before the ordinary deploy
 
-   ```sh
-   control_plane() { pnpm --filter api exec tsx src/database/pg/cli/backfill-control-plane-small.ts --as-of "$CUTOVER_UTC" "$@"; }
-   control_plane --reconcile-deleted-rules
-   control_plane --apply
-   control_plane --apply
-   control_plane --replay
-   ```
+1. Require a ready prepared revision serving all traffic, including tagged routes, and retirement of the unprepared revisions. The second release owns the executable pre-deploy check. Keep the ordinary CI traffic rollout.
+2. After the schema step and before deploying, activation takes the same Mongo fence as the prepared writers. Once it holds the lock it copies eligible rows to PG and compares the six tables using the same source snapshot and UTC cutoff. The inventory from the earlier dry run is a baseline. Compare values and IDs, not only counts. Delivery history uses a 90-day window and recorded runs and writes use seven days.
+3. An unexplained field difference, missing row, PG-only row, imported rule absent from Mongo, or non-TTL skip fails the gate. The PG staging transaction rolls back. Mongo retains ownership, waiting mutations can commit there, and CI stops before creating a serving revision. A timeout also stops the handoff. Keep the reports and investigate before repeating CI. Deletion reconciliation is audit-only.
+4. On clean parity, PG commits before the Mongo transaction publishes PG ownership. Prepared instances recheck ownership at every mutation, including in-flight work and startup. They can use PG immediately, even if the subsequent deployment fails. CI then runs the standard serving deploy and environment update. Activation retries after a successful handoff recognize the durable PG owner and skip the copy. Only a prepared image or its successor is suitable for a code rollback after activation.
+5. For a post-switch audit, use a read-only Mongo snapshot from the recorded cutover point (preserve TTL data), a SELECT-only PG connection, and the emitted UTC cutoff. The CLI uses a repeatable-read, read-only PG transaction. Exit 0 means parity, 2 reports drift or non-TTL skips, and 1 reports execution failure. Attribute source-only rows, PG-only rows and field mismatches to post-switch activity. PG edits and deletions survive replay. Production data reconciliation requires separate authorization.
 
-## Switch and replay
+```sh
+pnpm --filter api exec tsx src/database/pg/cli/backfill-control-plane-small.ts --as-of "$CUTOVER_UTC" --replay
+```
 
-5. **Stage the exact release at zero traffic.** Keep old writers paused and new event consumers held. Run the deploy with the old traffic pin in place, using `--no-traffic` for a manually staged deploy. Finish the environment update. Verify 100% still routes to `$OLD_REV` and select the final ready `$NEW_REV` by its reviewed image digest and configuration. Check readiness and startup logs. Startup calls `warmCatalog()`, which can write a snapshot if the catalog cannot load. Run `control_plane --replay` again after startup, before moving traffic. Review any boot-time PG differences explicitly.
-6. **Hand over writes once.** Route 100% to the verified new revision. Confirm the allocation, that no old requests or jobs can still write, and that direct and asynchronous callers use the new revision. Release the held writers and pending delivery events there using their original event IDs. Record the switch time and both revision names.
-
-   ```sh
-   run_service update-traffic mako --to-revisions="$NEW_REV=100"
-   run_service describe mako --format='yaml(status.traffic,status.latestReadyRevisionName)'
-   ```
-
-7. **Replay read-only against live PG.** Keep the same frozen Mongo source and `CUTOVER_UTC`, bind the CLI's PG connection to a SELECT-only role, and run `control_plane --replay`. The CLI uses a repeatable-read, read-only PG transaction. It reports matched rows, content mismatches and affected field names, source rows missing in PG, PG-only rows and imported rules missing from Mongo. A PG deletion stays deleted and a PG edit stays intact. Exit 0 means parity, 2 means drift or a non-TTL skip, and 1 means a command or connection failure. Save the aggregate reports, classify each difference against the pre-switch report and post-switch activity, and escalate unexplained differences. Deletion reconciliation is audit-only in every CLI mode. Once PG accepts writes, keep PG authoritative. A return to Mongo requires another writer freeze and a lead-approved plan for the PG changes.
-
-## Parity criteria
-
-| Data                     | What to compare                                                                                                                                                                                               |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Rules                    | Rule IDs, workspace and resource, enabled state, triggers, creator, timestamps and encrypted channel fields. Account for PG-created rules and investigate imported rules absent from the snapshot.            |
-| Deliveries               | Every idempotency key in the 90-day window, including orphaned rule history. Verify original rule/resource/run IDs, status, attempts, last error, HTTP status and timestamps. Account for each pending event. |
-| Recorded runs and writes | Counters by workspace and run in the seven-day window. Check every sequence, connection, user, flags, timestamp and sanitized request. A reserved counter can exceed the number of persisted writes.          |
-| Model catalog            | Every snapshot key present in either store, including its data, item count and timestamp. Inspect intentional merges of capabilities or curation when PG already held newer data.                             |
-| Box policy               | Each marker ID and its earliest tracking date.                                                                                                                                                                |
-
-Replay uses the same ID, timestamp and request normalization as the copy and compares nested JSON values. Reports contain field names and aggregate counts only. Keep channel settings, request bodies and catalog values out of release logs.
+The comparator checks rule configuration and encrypted channels, delivery status/attempts and historical rule IDs, run counters, each recorded sequence and sanitized request, snapshot data/count/timestamp and the earliest box marker. Release logs contain aggregate counts and field names.

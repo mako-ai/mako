@@ -1,8 +1,5 @@
-/**
- * Small app control-plane repositories (Neon Postgres `pg_only`): workflow
- * recorded writes, model catalog snapshots, apps box policy.
- */
-import { createPgFirstRepoProxy } from "../resolve-repo";
+/** Workflow recorded writes, model catalog snapshots and the box policy. The cutover fence selects the authoritative store. */
+import { createControlPlaneRepo } from "../control-plane-fence";
 import {
   MongoAppsBoxPolicyRepository,
   MongoModelCatalogSnapshotsRepository,
@@ -32,22 +29,25 @@ export {
 } from "./pg.repo";
 
 export const workflowRecordedWritesRepo: WorkflowRecordedWritesRepository =
-  createPgFirstRepoProxy<WorkflowRecordedWritesRepository>(
+  createControlPlaneRepo<WorkflowRecordedWritesRepository>(
     "workflow_recorded_writes",
     new PgWorkflowRecordedWritesRepository(),
     new MongoWorkflowRecordedWritesRepository(),
+    ["countWrites", "listWrites"],
   );
 
 export const modelCatalogSnapshotsRepo: ModelCatalogSnapshotsRepository =
-  createPgFirstRepoProxy<ModelCatalogSnapshotsRepository>(
+  createControlPlaneRepo<ModelCatalogSnapshotsRepository>(
     "model_catalog_snapshots",
     new PgModelCatalogSnapshotsRepository(),
     new MongoModelCatalogSnapshotsRepository(),
+    ["findSnapshot", "findSnapshots"],
   );
 
 export const appsBoxPolicyRepo: AppsBoxPolicyRepository =
-  createPgFirstRepoProxy<AppsBoxPolicyRepository>(
+  createControlPlaneRepo<AppsBoxPolicyRepository>(
     "apps_box_policy",
     new PgAppsBoxPolicyRepository(),
     new MongoAppsBoxPolicyRepository(),
+    ["readSince"],
   );

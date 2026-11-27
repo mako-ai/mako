@@ -1,9 +1,4 @@
-/**
- * Legacy MongoDB models for a dry run's recorded writes. Postgres
- * (`workflow_recorded_writes`, `workflow_recorded_runs`) is the store of record;
- * these models back the MongoMemoryServer test fallback and the one-shot
- * backfill only.
- */
+/** Mongo models used by the preparation release and by the cutover copy. */
 import mongoose, { Schema, Types } from "mongoose";
 
 import type { RecordedRequest } from "../../connections/forward";
