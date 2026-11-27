@@ -1,7 +1,6 @@
-import { ObjectId } from "mongodb";
 import { randomUUID } from "crypto";
 import type { UIMessage } from "ai";
-import { SavedConsole } from "../database/workspace-schema";
+import { parseEntityId } from "../database/pg/id-codec";
 import {
   chatRepo,
   type ChatLocalAcp,
@@ -9,6 +8,7 @@ import {
   type StoredChatMessage,
   type StoredChatPart,
 } from "../repositories/chat";
+import { consolesChartsRepo } from "../repositories/consoles-charts";
 import type { AgentKind } from "../agent-lib";
 import { loggers } from "../logging";
 import {
@@ -709,10 +709,10 @@ export const saveChat = async (
 /**
  * Get consoles by their IDs.
  * Used to restore consoles when loading a chat (IDs are extracted from modify_console tool calls).
- * NOTE: `SavedConsole` usage is intentionally left untouched for Phase 2A integration.
  */
 export const getConsolesByIds = async (
   consoleIds: string[],
+  workspaceId?: string,
 ): Promise<
   Array<{
     id: string;
@@ -725,21 +725,22 @@ export const getConsolesByIds = async (
 > => {
   if (!consoleIds.length) return [];
 
-  const validIds = consoleIds
-    .filter(id => ObjectId.isValid(id))
-    .map(id => new ObjectId(id));
-
+  const validIds = consoleIds.filter(id => parseEntityId(id) !== null);
   if (!validIds.length) return [];
 
-  const consoles = await SavedConsole.find({
-    _id: { $in: validIds },
-  });
+  const consoles = workspaceId
+    ? await consolesChartsRepo.findConsolesByIds(workspaceId, validIds)
+    : (
+        await Promise.all(
+          validIds.map(id => consolesChartsRepo.findConsoleByIdGlobal(id)),
+        )
+      ).filter((c): c is NonNullable<typeof c> => c !== null);
 
   return consoles.map(c => ({
-    id: c._id.toString(),
+    id: c.id,
     title: c.name,
     content: c.code,
-    connectionId: c.connectionId?.toString(),
+    connectionId: c.connectionId,
     databaseId: c.databaseId,
     databaseName: c.databaseName,
   }));

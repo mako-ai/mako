@@ -4,10 +4,9 @@
  * runs only while that differs from `sourceBlobSha`, behind a debounced
  * Inngest function.
  */
-import { Types } from "mongoose";
 import { inngest } from "../../inngest/client";
-import { DatabaseConnection } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
+import { connectionsRepo } from "../../repositories/connections";
 import {
   consolesChartsRepo,
   type UpdateConsolePatch,
@@ -83,15 +82,12 @@ export async function deriveConsoleDescription(
   let description: string | null = authored ? (row.description ?? null) : null;
   if (!authored) {
     if (!isDescriptionGenAvailable()) return "unavailable";
-    const connection =
-      row.connectionId && Types.ObjectId.isValid(row.connectionId)
-        ? await DatabaseConnection.findOne({
-            _id: new Types.ObjectId(row.connectionId),
-            workspaceId: new Types.ObjectId(row.workspaceId),
-          })
-            .select("name type")
-            .lean<{ name?: string; type?: string } | null>()
-        : null;
+    const connection = row.connectionId
+      ? await connectionsRepo.findDatabaseConnectionSummary(
+          row.connectionId,
+          row.workspaceId,
+        )
+      : null;
     const generated = await generateDescriptionAndEmbedding(
       {
         code: row.code ?? "",

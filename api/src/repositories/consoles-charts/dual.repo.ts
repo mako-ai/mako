@@ -2917,4 +2917,56 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
       },
     );
   }
+
+  async purgeWorkspaceContentIndex(workspaceId: string): Promise<void> {
+    if (!isValidWorkspaceId(workspaceId)) return;
+    let deletedByTable: {
+      saved_consoles: string[];
+      console_folders: string[];
+      entity_versions: string[];
+      notebook_indexes: string[];
+      notebook_folders: string[];
+    } | null = null;
+    const retryPayload: Record<string, unknown> = {
+      table: "saved_consoles",
+      action: "purge_workspace_index",
+      workspaceId,
+    };
+    await this.router.executeWrite(
+      {
+        domain: CONSOLES_CHARTS_DOMAIN,
+        workspaceId,
+        operation: "purgeWorkspaceContentIndex",
+        entityId: workspaceId,
+        retryPayload,
+      },
+      {
+        mongo: async () => {
+          const ids =
+            await this.mongo.purgeWorkspaceContentIndexReturningIds(
+              workspaceId,
+            );
+          if (!deletedByTable) {
+            deletedByTable = ids;
+            retryPayload.deletedByTable = ids;
+          }
+        },
+        pg: () => this.pg.purgeWorkspaceContentIndex(workspaceId),
+      },
+    );
+    if (deletedByTable) {
+      const byTable = deletedByTable as {
+        saved_consoles: string[];
+        console_folders: string[];
+        entity_versions: string[];
+        notebook_indexes: string[];
+        notebook_folders: string[];
+      };
+      for (const [tableName, ids] of Object.entries(byTable)) {
+        if (ids.length > 0) {
+          await this.recordTombstonesIfDualWrite(workspaceId, tableName, ids);
+        }
+      }
+    }
+  }
 }

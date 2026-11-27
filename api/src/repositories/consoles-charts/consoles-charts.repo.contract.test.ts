@@ -4616,6 +4616,153 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         `);
       }
     });
+
+    it("purges workspace content index atomically across all 5 tables with tombstones and sync-retry parity", async () => {
+      const failures: SecondaryWriteFailureContext[] = [];
+      const mongoRepo = new MongoConsolesChartsRepository();
+      const pgRepo = new PgConsolesChartsRepository({
+        getDb: () => db,
+        resolveUserUuid,
+      });
+      const router = new MigrationRouter({
+        getDb: () => db,
+        hasPg: () => true,
+        enablePubSub: false,
+        onSecondaryFailure: async ctx => {
+          failures.push(ctx);
+        },
+      });
+      await router.setDomainState({
+        domain: CONSOLES_CHARTS_DOMAIN,
+        workspaceId: wsId,
+        mode: "dual_write_mongo_read",
+      });
+      const dual = new DualConsolesChartsRepository({
+        mongo: mongoRepo,
+        pg: pgRepo,
+        router,
+        getDb: () => db,
+        resolveUserUuid,
+      });
+
+      const folder = await dual.createConsoleFolder({
+        workspaceId: wsId,
+        name: "Purge Folder",
+        ownerId: userV7Id,
+      });
+      const cons = await dual.createConsole({
+        workspaceId: wsId,
+        name: "Purge Console",
+        code: "SELECT 1",
+        language: "sql",
+        folderId: folder.id,
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+      const ver = await dual.createEntityVersion({
+        workspaceId: wsId,
+        entityType: "console",
+        entityId: cons.id,
+        version: 1,
+        snapshot: { name: "Purge Console", code: "SELECT 1" },
+        savedBy: userV7Id,
+        savedByName: "Tester",
+      });
+      const nbFolder = await dual.createNotebookFolder({
+        workspaceId: wsId,
+        name: "Purge NB Folder",
+        ownerId: userV7Id,
+      });
+      const nb = await dual.createNotebookIndex({
+        workspaceId: wsId,
+        notebookId: "nb-purge-1",
+        name: "Purge NB",
+        folderId: nbFolder.id,
+        ownerId: userV7Id,
+      });
+
+      // Simulate transient PG failure during Stage 2 purge -> dead-letter replay tombstones all 5 tables
+      const pgPurgeSpy = vi
+        .spyOn(pgRepo, "purgeWorkspaceContentIndex")
+        .mockRejectedValueOnce(new Error("pg down"));
+      await dual.purgeWorkspaceContentIndex(wsId);
+      pgPurgeSpy.mockRestore();
+
+      expect(failures).toHaveLength(1);
+      await db.delete(pgSchema.migrationTombstones);
+      await replaySyncToPg(
+        {
+          domain: CONSOLES_CHARTS_DOMAIN,
+          target: "pg",
+          workspaceId: wsId,
+          operation: failures[0].operation,
+          entityId: failures[0].entityId ?? wsId,
+          payload: failures[0].payload,
+          errorMessage: "pg down",
+          failedAt: new Date().toISOString(),
+        },
+        db,
+      );
+
+      expect(await pgRepo.findConsoleById(wsId, cons.id)).toBeNull();
+      expect(await pgRepo.findConsoleFolderById(wsId, folder.id)).toBeNull();
+      expect(
+        await pgRepo.getEntityVersion(cons.id, "console", 1, wsId),
+      ).toBeNull();
+      expect(await pgRepo.findNotebookIndex(wsId, "nb-purge-1")).toBeNull();
+      expect(await pgRepo.findNotebookFolderById(wsId, nbFolder.id)).toBeNull();
+
+      const tombRows = await db.select().from(pgSchema.migrationTombstones);
+      expect(tombRows.map(t => `${t.tableName}:${t.entityId}`).sort()).toEqual(
+        [
+          `saved_consoles:${objectIdToUuid(cons.id)}`,
+          `console_folders:${objectIdToUuid(folder.id)}`,
+          `entity_versions:${objectIdToUuid(ver.id)}`,
+          `notebook_indexes:${objectIdToUuid(nb.id)}`,
+          `notebook_folders:${objectIdToUuid(nbFolder.id)}`,
+        ].sort(),
+      );
+
+      // Stage 4 PG-primary purge + replaySyncToMongo
+      failures.length = 0;
+      await router.setDomainState({
+        domain: CONSOLES_CHARTS_DOMAIN,
+        workspaceId: wsId,
+        mode: "dual_write_pg_read",
+      });
+      const c2 = await dual.createConsole({
+        workspaceId: wsId,
+        name: "Stage4 Purge",
+        code: "SELECT 2",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+      const mongoPurgeSpy = vi
+        .spyOn(mongoRepo, "purgeWorkspaceContentIndexReturningIds")
+        .mockRejectedValueOnce(new Error("mongo down"));
+      await dual.purgeWorkspaceContentIndex(wsId);
+      mongoPurgeSpy.mockRestore();
+
+      expect(await pgRepo.findConsoleById(wsId, c2.id)).toBeNull();
+      expect(await mongoRepo.findConsoleById(wsId, c2.id)).not.toBeNull();
+      expect(failures).toHaveLength(1);
+
+      await replaySyncToMongo(
+        {
+          domain: CONSOLES_CHARTS_DOMAIN,
+          target: "mongo",
+          workspaceId: wsId,
+          operation: failures[0].operation,
+          entityId: failures[0].entityId ?? wsId,
+          payload: failures[0].payload,
+          errorMessage: "mongo down",
+          failedAt: new Date().toISOString(),
+        },
+        db,
+      );
+      expect(await mongoRepo.findConsoleById(wsId, c2.id)).toBeNull();
+    });
   });
 
   // ── 6. Console Sharing Adapter Partial-Patch & Deletion Safety ───────────

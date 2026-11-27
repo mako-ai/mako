@@ -502,6 +502,7 @@ export class MongoAppsMetadataRepository implements AppsMetadataRepository {
         _id: toMongoObjectId(id),
         workspaceId: toMongoObjectId(workspaceId),
         owner_id: { $in: [null, ""] },
+        createdBy: { $in: [null, ""] },
       },
       { $set: { owner_id: ownerId, createdBy: ownerId } },
     );

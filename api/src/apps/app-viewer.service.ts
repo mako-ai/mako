@@ -12,7 +12,11 @@
  * never from anything the browser can edit. An anonymous share resolves to
  * `null`: there is nobody to describe.
  */
-import { AppProject, type IAppProject } from "../database/workspace-schema";
+import type { IAppProject } from "../database/workspace-schema";
+import {
+  appsMetadataRepo,
+  toAppProjectCompat,
+} from "../repositories/apps-metadata";
 import { authRepo } from "../repositories/auth";
 import { workspaceRepo } from "../repositories/workspaces";
 import { normalizeEmail } from "../utils/email.utils";
@@ -109,6 +113,8 @@ export async function resolveAppViewerById(
   identity: ViewerIdentity | null | undefined,
 ): Promise<AppViewer | null> {
   if (!identity) return null;
-  const project = await AppProject.findById(projectId);
-  return project ? resolveAppViewer(project, identity) : null;
+  const project = await appsMetadataRepo.findProjectById(projectId);
+  return project
+    ? resolveAppViewer(toAppProjectCompat(project), identity)
+    : null;
 }

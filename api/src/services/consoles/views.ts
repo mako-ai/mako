@@ -55,7 +55,7 @@ async function connectionSummary(
     workspaceId,
   );
   if (!doc) return null;
-  return { id: doc._id, name: doc.name, type: doc.type };
+  return { id: doc.id, name: doc.name, type: doc.type };
 }
 
 /** GET /content: what the editor tab opens with. */
@@ -233,7 +233,7 @@ export async function listConsoleSummaries(
       description: console.description,
       language: console.language,
       connection: conn
-        ? { id: conn._id, name: conn.name, type: conn.type }
+        ? { id: conn.id, name: conn.name, type: conn.type }
         : null,
       databaseName: console.databaseName,
       createdAt: console.createdAt,

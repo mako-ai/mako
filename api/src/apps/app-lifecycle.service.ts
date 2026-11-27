@@ -24,15 +24,14 @@
  * The planner is pure (`planAppLifecycle`) and unit-tested; gathering and
  * applying are separate so the plan endpoint and the job share one code path.
  */
-import mongoose, { Types } from "mongoose";
 import { loggers } from "../logging";
+import type { IAppLifecycleState } from "../database/workspace-schema";
 import {
-  AppIndexEntry,
-  AppLifecycleState,
-  AppProject,
-  type IAppLifecycleState,
-} from "../database/workspace-schema";
+  appsMetadataRepo,
+  type AppLifecyclePatch,
+} from "../repositories/apps-metadata";
 import { authRepo } from "../repositories/auth";
+import { usageStatsRepo } from "../repositories/usage-stats";
 import { workspaceRepo } from "../repositories/workspaces";
 import { loadAppsIndex, type AppIndexRow } from "./app-index.service";
 import { SWEEP_COMMIT_APP_LIMIT, getAppUsageStats } from "./app-usage.service";
@@ -63,9 +62,6 @@ export const LIFECYCLE_RULES = {
 
 /** The committer of archive moves. */
 export const LIFECYCLE_BOT_AUTHOR = { name: "Mako", email: "bot@mako.ai" };
-
-/** Collection Lane A's usage service writes (shared contract). */
-const USAGE_COLLECTION = "app_usage_daily";
 
 // ---------------------------------------------------------------------------
 // Mode
@@ -311,23 +307,8 @@ export async function lastCommitByAppPath(
 export async function usageHistorySince(
   workspaceId: string,
 ): Promise<Date | null> {
-  const db = mongoose.connection.db;
-  if (!db) return null;
-  const ids: unknown[] = [workspaceId];
-  if (Types.ObjectId.isValid(workspaceId)) {
-    ids.push(new Types.ObjectId(workspaceId));
-  }
-  const first = await db
-    .collection<{ day?: string; firstAt?: Date }>(USAGE_COLLECTION)
-    .find({ workspaceId: { $in: ids } })
-    .sort({ day: 1 })
-    .limit(1)
-    .project<{ day?: string; firstAt?: Date }>({ day: 1, firstAt: 1 })
-    .toArray();
-  const row = first[0];
-  if (!row) return null;
-  if (row.day) return new Date(`${row.day}T00:00:00.000Z`);
-  return row.firstAt ?? null;
+  const day = await usageStatsRepo.findEarliestAppUsageDay(workspaceId);
+  return day ? new Date(`${day}T00:00:00.000Z`) : null;
 }
 
 interface GatheredWorkspace {
@@ -342,14 +323,11 @@ async function gatherWorkspace(
   workspaceId: string,
   now: Date,
 ): Promise<GatheredWorkspace> {
-  const ws = new Types.ObjectId(workspaceId);
   const snapshot = await loadAppsIndex(workspaceId);
   const [entries, projects, states, usage, usageSince] = await Promise.all([
-    AppIndexEntry.find({ workspaceId: ws }).select("appId createdAt").lean(),
-    AppProject.find({ workspaceId: ws })
-      .select("_id owner_id createdBy createdAt")
-      .lean(),
-    AppLifecycleState.find({ workspaceId: ws }).lean(),
+    appsMetadataRepo.listIndexEntriesByWorkspace(workspaceId),
+    appsMetadataRepo.listProjectsByWorkspace(workspaceId),
+    appsMetadataRepo.listLifecycleByWorkspace(workspaceId),
     getAppUsageStats(workspaceId, { days: LIFECYCLE_RULES.staleDays, now }),
     usageHistorySince(workspaceId),
   ]);
@@ -364,7 +342,7 @@ async function gatherWorkspace(
     );
   }
   const entryCreated = new Map(entries.map(e => [e.appId, e.createdAt]));
-  const projectById = new Map(projects.map(p => [p._id.toString(), p]));
+  const projectById = new Map(projects.map(p => [p.id, p]));
   const stateById = new Map(states.map(s => [s.appId, s]));
 
   const apps = snapshot.apps.map(row => {
@@ -477,13 +455,9 @@ function appUrl(appId: string): string | undefined {
 async function upsertState(
   workspaceId: string,
   appId: string,
-  update: mongoose.UpdateQuery<IAppLifecycleState>,
+  patch: AppLifecyclePatch,
 ): Promise<void> {
-  await AppLifecycleState.updateOne(
-    { workspaceId: new Types.ObjectId(workspaceId), appId },
-    update,
-    { upsert: true },
-  );
+  await appsMetadataRepo.upsertLifecyclePatch(workspaceId, appId, patch);
 }
 
 /**
@@ -523,17 +497,17 @@ export async function runAppLifecycle(
         switch (action) {
           case "resume-schedules":
             await upsertState(workspaceId, e.appId, {
-              $unset: { schedulesPausedAt: 1 },
+              unset: ["schedulesPausedAt"],
             });
             break;
           case "pause-schedules":
             await upsertState(workspaceId, e.appId, {
-              $set: { schedulesPausedAt: now },
+              set: { schedulesPausedAt: now },
             });
             break;
           case "clear-stale":
             await upsertState(workspaceId, e.appId, {
-              $unset: { staleSince: 1, staleNotifiedTo: 1 },
+              unset: ["staleSince", "staleNotifiedTo"],
             });
             break;
           case "notify-stale":
@@ -545,16 +519,12 @@ export async function runAppLifecycle(
               reason: `Archived by the Mako app lifecycle job: ${e.reasons.join("; ")}. Move the folder back under apps/ (or users/<you>/apps/) to restore it.`,
             });
             await upsertState(workspaceId, e.appId, {
-              $set: {
+              set: {
                 archivedAt: now,
                 archivedFrom: moved.from,
                 archivedTo: moved.to,
               },
-              $unset: {
-                staleSince: 1,
-                staleNotifiedTo: 1,
-                schedulesPausedAt: 1,
-              },
+              unset: ["staleSince", "staleNotifiedTo", "schedulesPausedAt"],
             });
             log.info("Apps lifecycle archived app", {
               workspaceId,
@@ -654,7 +624,7 @@ async function notifyStale(
   }
   for (const [appId, to] of notified) {
     await upsertState(workspaceId, appId, {
-      $set: { staleSince: now, staleNotifiedTo: to },
+      set: { staleSince: now, staleNotifiedTo: to },
     });
   }
 }
@@ -672,10 +642,8 @@ export { onAppOpened, verifiedAppIds } from "./app-lifecycle-state";
 
 /** App ids whose binding schedules the scheduler must skip. */
 export async function pausedScheduleAppIds(): Promise<Set<string>> {
-  const ids = await AppLifecycleState.distinct("appId", {
-    schedulesPausedAt: { $exists: true },
-  });
-  return new Set(ids.map(String));
+  const ids = await appsMetadataRepo.listPausedScheduleAppIds();
+  return new Set(ids);
 }
 
 /** Mark (or unmark) an app verified. The caller checks the admin role. */
@@ -689,14 +657,13 @@ export async function setAppVerified(
     if (verified) {
       const at = new Date();
       await upsertState(workspaceId, appId, {
-        $set: { verifiedAt: at, verifiedBy: userId },
+        set: { verifiedAt: at, verifiedBy: userId },
       });
       return { verified: true, verifiedAt: at, verifiedBy: userId };
     }
-    await AppLifecycleState.updateOne(
-      { workspaceId: new Types.ObjectId(workspaceId), appId },
-      { $unset: { verifiedAt: 1, verifiedBy: 1 } },
-    );
+    await upsertState(workspaceId, appId, {
+      unset: ["verifiedAt", "verifiedBy"],
+    });
     return { verified: false };
   } finally {
     // The Apps home memoizes the marks; the admin sees the badge change now.
@@ -706,6 +673,5 @@ export async function setAppVerified(
 
 /** Workspaces the daily job visits: every one with an apps index. */
 export async function lifecycleWorkspaceIds(): Promise<string[]> {
-  const ids = await AppIndexEntry.distinct("workspaceId");
-  return ids.map(id => id.toString());
+  return appsMetadataRepo.listDistinctIndexWorkspaceIds();
 }

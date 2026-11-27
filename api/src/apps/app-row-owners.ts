@@ -30,8 +30,7 @@
  * the owner). Applying sets only rows that are still ownerless at write
  * time, so a second run changes nothing.
  */
-import { Types } from "mongoose";
-import { AppIndexEntry, AppProject } from "../database/workspace-schema";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
 import { authRepo } from "../repositories/auth";
 import { workspaceRepo } from "../repositories/workspaces";
 import {
@@ -367,23 +366,17 @@ export async function folderCreatorFromGit(
 export async function findOwnerlessRows(
   workspaceId?: string,
 ): Promise<OwnerlessRow[]> {
-  const filter: Record<string, unknown> = { ...OWNERLESS_FILTER };
-  if (workspaceId) filter.workspaceId = new Types.ObjectId(workspaceId);
-  const rows = await AppProject.find(filter)
-    .select("_id workspaceId path slug access")
-    .lean();
+  const rows = await appsMetadataRepo.listOwnerlessProjects(workspaceId);
   if (rows.length === 0) return [];
-  const entries = await AppIndexEntry.find({
-    appId: { $in: rows.map(r => r._id.toString()) },
-  })
-    .select("appId workspaceId path")
-    .lean();
+  const entries = await appsMetadataRepo.listIndexEntriesByAppIds(
+    rows.map(r => r.id),
+  );
   const pathOf = new Map(
-    entries.map(e => [`${e.workspaceId.toString()}:${e.appId}`, e.path]),
+    entries.map(e => [`${e.workspaceId}:${e.appId}`, e.path]),
   );
   return rows.map(r => {
-    const appId = r._id.toString();
-    const ws = r.workspaceId.toString();
+    const appId = r.id;
+    const ws = r.workspaceId;
     return {
       appId,
       workspaceId: ws,
@@ -441,15 +434,12 @@ export async function applyOwnerProposals(
     if (!p.ownerId || p.rule === "none" || !isPersonActorId(p.ownerId)) {
       continue;
     }
-    const result = await AppProject.updateOne(
-      {
-        _id: new Types.ObjectId(p.appId),
-        workspaceId: new Types.ObjectId(p.workspaceId),
-        ...OWNERLESS_FILTER,
-      },
-      { $set: { owner_id: p.ownerId, createdBy: p.ownerId } },
+    const claimed = await appsMetadataRepo.claimOwnerlessProjectRow(
+      p.workspaceId,
+      p.appId,
+      p.ownerId,
     );
-    changed += result.modifiedCount;
+    if (claimed) changed += 1;
   }
   return changed;
 }

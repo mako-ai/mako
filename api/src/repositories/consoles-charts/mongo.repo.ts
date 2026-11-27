@@ -2322,4 +2322,58 @@ export class MongoConsolesChartsRepository implements ConsolesChartsRepository {
       .lean<MongoScheduledQueryRunLike[]>();
     return docs.map(mongoScheduledQueryRunToRecord);
   }
+
+  async purgeWorkspaceContentIndexReturningIds(workspaceId: string): Promise<{
+    saved_consoles: string[];
+    console_folders: string[];
+    entity_versions: string[];
+    notebook_indexes: string[];
+    notebook_folders: string[];
+  }> {
+    const empty = {
+      saved_consoles: [] as string[],
+      console_folders: [] as string[],
+      entity_versions: [] as string[],
+      notebook_indexes: [] as string[],
+      notebook_folders: [] as string[],
+    };
+    if (!isValidOid(workspaceId)) return empty;
+    const wsOid = toObjectId(workspaceId);
+    const [consoles, folders, versions, notebooks, nbFolders] =
+      await Promise.all([
+        SavedConsole.find({ workspaceId: wsOid })
+          .select("_id")
+          .lean<Array<{ _id: Types.ObjectId }>>(),
+        ConsoleFolder.find({ workspaceId: wsOid })
+          .select("_id")
+          .lean<Array<{ _id: Types.ObjectId }>>(),
+        EntityVersion.find({ workspaceId: wsOid, entityType: "console" })
+          .select("_id")
+          .lean<Array<{ _id: Types.ObjectId }>>(),
+        NotebookIndex.find({ workspaceId: wsOid })
+          .select("_id")
+          .lean<Array<{ _id: Types.ObjectId }>>(),
+        NotebookFolder.find({ workspaceId: wsOid })
+          .select("_id")
+          .lean<Array<{ _id: Types.ObjectId }>>(),
+      ]);
+    await Promise.all([
+      SavedConsole.deleteMany({ workspaceId: wsOid }),
+      ConsoleFolder.deleteMany({ workspaceId: wsOid }),
+      EntityVersion.deleteMany({ workspaceId: wsOid, entityType: "console" }),
+      NotebookIndex.deleteMany({ workspaceId: wsOid }),
+      NotebookFolder.deleteMany({ workspaceId: wsOid }),
+    ]);
+    return {
+      saved_consoles: consoles.map(d => d._id.toString()),
+      console_folders: folders.map(d => d._id.toString()),
+      entity_versions: versions.map(d => d._id.toString()),
+      notebook_indexes: notebooks.map(d => d._id.toString()),
+      notebook_folders: nbFolders.map(d => d._id.toString()),
+    };
+  }
+
+  async purgeWorkspaceContentIndex(workspaceId: string): Promise<void> {
+    await this.purgeWorkspaceContentIndexReturningIds(workspaceId);
+  }
 }

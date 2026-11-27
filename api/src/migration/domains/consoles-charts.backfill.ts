@@ -2376,6 +2376,54 @@ async function replaySyncToPg(
     );
     return;
   }
+  if (action === "purge_workspace_index" && wsId) {
+    const pgDeleted = await pgRepo.purgeWorkspaceContentIndexReturningIds(wsId);
+    const hinted =
+      payload.deletedByTable && typeof payload.deletedByTable === "object"
+        ? (payload.deletedByTable as Record<string, unknown>)
+        : {};
+    await tombstoneDeletedIds(
+      "saved_consoles",
+      pgDeleted.saved_consoles,
+      extractStringArray(hinted.saved_consoles),
+      async oid =>
+        Boolean(await SavedConsole.exists({ _id: new Types.ObjectId(oid) })),
+      db,
+    );
+    await tombstoneDeletedIds(
+      "console_folders",
+      pgDeleted.console_folders,
+      extractStringArray(hinted.console_folders),
+      async oid =>
+        Boolean(await ConsoleFolder.exists({ _id: new Types.ObjectId(oid) })),
+      db,
+    );
+    await tombstoneDeletedIds(
+      "entity_versions",
+      pgDeleted.entity_versions,
+      extractStringArray(hinted.entity_versions),
+      async oid =>
+        Boolean(await EntityVersion.exists({ _id: new Types.ObjectId(oid) })),
+      db,
+    );
+    await tombstoneDeletedIds(
+      "notebook_indexes",
+      pgDeleted.notebook_indexes,
+      extractStringArray(hinted.notebook_indexes),
+      async oid =>
+        Boolean(await NotebookIndex.exists({ _id: new Types.ObjectId(oid) })),
+      db,
+    );
+    await tombstoneDeletedIds(
+      "notebook_folders",
+      pgDeleted.notebook_folders,
+      extractStringArray(hinted.notebook_folders),
+      async oid =>
+        Boolean(await NotebookFolder.exists({ _id: new Types.ObjectId(oid) })),
+      db,
+    );
+    return;
+  }
   if (
     action === "delete_in_folder" &&
     table === "saved_consoles" &&
@@ -2601,6 +2649,10 @@ async function replaySyncToMongo(
       payload.kind as FavouriteRecord["kind"] & string,
       String(payload.refId),
     );
+    return;
+  }
+  if (action === "purge_workspace_index" && wsId) {
+    await mongoRepo.purgeWorkspaceContentIndex(wsId);
     return;
   }
   if (

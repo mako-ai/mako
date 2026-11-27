@@ -858,4 +858,7 @@ export interface ConsolesChartsRepository {
     consoleId: string,
     limit: number,
   ): Promise<ScheduledQueryRunRecord[]>;
+
+  // ── 8. Workspace repo disconnect purge ────────────────────────────────
+  purgeWorkspaceContentIndex(workspaceId: string): Promise<void>;
 }

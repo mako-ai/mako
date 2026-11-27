@@ -12,8 +12,16 @@ const state = vi.hoisted(() => ({
 
 vi.mock("../../database/workspace-schema", () => ({ AppWorktree: {} }));
 vi.mock("../../logging", () => {
-  const logger = { info: () => {}, warn: () => {}, error: () => {} };
-  return { loggers: new Proxy({}, { get: () => () => logger }) };
+  const logger = {
+    debug: () => {},
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+  };
+  return {
+    loggers: new Proxy({}, { get: () => () => logger }),
+    getLogger: () => logger,
+  };
 });
 vi.mock("../repository.service", () => ({ DEFAULT_BRANCH: "main" }));
 vi.mock("../app-index.service", () => ({ readIndexedAppsAt: vi.fn() }));

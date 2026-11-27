@@ -12,17 +12,13 @@
 import { Types } from "mongoose";
 import fs from "node:fs/promises";
 import {
-  AppProject,
-  ConsoleFolder,
   DbtJob,
   DbtProject,
-  EntityVersion,
   Flow,
-  NotebookFolder,
-  NotebookIndex,
-  SavedConsole,
   type IWorkspaceRepoBinding,
 } from "../database/workspace-schema";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
+import { consolesChartsRepo } from "../repositories/consoles-charts";
 import { workspaceRepo } from "../repositories/workspaces";
 import { loggers } from "../logging";
 import { repoDirFor } from "../apps/repository.service";
@@ -164,12 +160,8 @@ export async function purgeMigratedContentIndex(
   const id = new Types.ObjectId(workspaceId);
   await Promise.all([
     Flow.deleteMany({ workspaceId: id }),
-    SavedConsole.deleteMany({ workspaceId: id }),
-    ConsoleFolder.deleteMany({ workspaceId: id }),
-    EntityVersion.deleteMany({ workspaceId: id, entityType: "console" }),
-    AppProject.deleteMany({ workspaceId: id }),
-    NotebookIndex.deleteMany({ workspaceId: id }),
-    NotebookFolder.deleteMany({ workspaceId: id }),
+    consolesChartsRepo.purgeWorkspaceContentIndex(workspaceId),
+    appsMetadataRepo.deleteProjectsByWorkspace(workspaceId),
     DbtJob.deleteMany({ workspaceId: id }),
     DbtProject.deleteMany({ workspaceId: id }),
   ]);

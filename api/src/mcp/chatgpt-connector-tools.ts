@@ -15,7 +15,6 @@
  * text, url, metadata }).
  */
 import { tool } from "ai";
-import { Types } from "mongoose";
 import { z } from "zod";
 
 import { searchConsoles } from "../agent-lib/tools/console-search-tools";
@@ -24,8 +23,8 @@ import {
   getSystemSkillFullText,
 } from "../agent-lib/skills/system-skills";
 import { parseEntityId } from "../database/pg/id-codec";
-import { SavedConsole } from "../database/workspace-schema";
 import { appsMetadataRepo } from "../repositories/apps-metadata";
+import { consolesChartsRepo } from "../repositories/consoles-charts";
 import {
   DEFAULT_BRANCH,
   listTree,
@@ -77,13 +76,6 @@ function resourceUrl(kind: "console" | "app", id: string): string {
 function truncate(text: string, max = MAX_DOCUMENT_CHARS): string {
   if (text.length <= max) return text;
   return text.slice(0, max) + "\n… [truncated]";
-}
-
-function requireObjectId(kind: string, id: string): Types.ObjectId {
-  if (!Types.ObjectId.isValid(id)) {
-    throw new Error(`Invalid ${kind} id: ${id}`);
-  }
-  return new Types.ObjectId(id);
 }
 
 // ---------------------------------------------------------------------------
@@ -214,13 +206,12 @@ async function fetchConsoleDoc(
   workspaceId: string,
   id: string,
 ): Promise<FetchedDoc | null> {
-  const console_ = await SavedConsole.findOne({
-    _id: requireObjectId("console", id),
-    workspaceId: new Types.ObjectId(workspaceId),
-    $or: [{ is_deleted: { $ne: true } }, { is_deleted: { $exists: false } }],
-  })
-    .select("name description code language databaseName")
-    .lean();
+  if (!parseEntityId(id)) {
+    throw new Error(`Invalid console id: ${id}`);
+  }
+  const console_ = await consolesChartsRepo.findConsoleById(workspaceId, id, {
+    excludeDeleted: true,
+  });
   if (!console_) return null;
   const text = [
     console_.description || "",

@@ -323,7 +323,7 @@ chatsRoutes.openapi(
       }
 
       const modifiedConsoleIds = extractModifiedConsoleIds(messages);
-      const consoles = await getConsolesByIds(modifiedConsoleIds);
+      const consoles = await getConsolesByIds(modifiedConsoleIds, workspaceId);
 
       return c.json({
         ...chatRecordToApiResponse({ ...chat, messages }),

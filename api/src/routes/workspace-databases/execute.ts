@@ -8,11 +8,9 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { unifiedAuthMiddleware } from "../../auth/unified-auth.middleware";
 import { restQueryAccessFromStoredScopes } from "../../auth/api-key-scopes";
 import { requireWorkspace } from "../../middleware/workspace.middleware";
-import {
-  IDatabaseConnection,
-  SavedConsole,
-} from "../../database/workspace-schema";
+import type { IDatabaseConnection } from "../../database/workspace-schema";
 import { connectionsRepo } from "../../repositories/connections";
+import { consolesChartsRepo } from "../../repositories/consoles-charts";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import {
   executeQueryWithRowCap,
@@ -457,21 +455,18 @@ workspaceExecuteRoutes.openapi(
         // current (UI runs historically omitted this). API-key runs also bump
         // the durable external-use signal.
         if (validConsoleId) {
-          void SavedConsole.updateOne(
-            {
-              _id: validConsoleId,
-              workspaceId: workspace._id,
-            },
-            {
-              $set: { lastExecutedAt: new Date() },
-              $inc: { executionCount: 1 },
-            },
-          ).catch(error => {
-            logger.warn("Failed to update console execution stats", {
-              error,
-              consoleId: validConsoleId.toString(),
+          void consolesChartsRepo
+            .recordConsoleExecution(
+              workspace._id.toString(),
+              validConsoleId.toString(),
+              { lastExecutedAt: new Date() },
+            )
+            .catch(error => {
+              logger.warn("Failed to update console execution stats", {
+                error,
+                consoleId: validConsoleId.toString(),
+              });
             });
-          });
 
           if (apiKey) {
             void consoleManager.recordExternalUse(

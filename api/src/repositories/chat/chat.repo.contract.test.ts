@@ -165,43 +165,59 @@ describe("Phase 3 normalized Chat repository & migration contract suite", () => 
     );
     expect(readPostBackfillStatements("llm-usage-chat-fk")).toHaveLength(3);
 
-    // Execute 0008a against a stub `llm_usage` table and verify dangling chat_id null-out + ON DELETE SET NULL.
+    // Execute 0008a against the real `llm_usage` table (0006) and verify dangling chat_id null-out + ON DELETE SET NULL.
     const liveChat = await pgRepo.create({
       workspaceId: wsId,
       createdBy: user1Uuid,
       title: "Linked chat",
     });
     const danglingChatUuid = newDualId().uuid;
-    await pg.exec(`
-      CREATE TABLE IF NOT EXISTS llm_usage (
-        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        chat_id uuid
+    const usageId1 = newDualId().uuid;
+    const usageId2 = newDualId().uuid;
+    await pg.query(
+      `INSERT INTO llm_usage (id, workspace_id, user_id, chat_id, invocation_type, model_id, input_tokens, output_tokens, total_tokens, cost_usd)
+       VALUES ($1, $3, $4, $5, 'chat', 'claude-sonnet', 10, 20, 30, 0.001),
+              ($2, $3, $4, $6, 'chat', 'claude-sonnet', 10, 20, 30, 0.001)`,
+      [
+        usageId1,
+        usageId2,
+        objectIdToUuid(wsId),
+        user1Uuid,
+        objectIdToUuid(liveChat.id),
+        danglingChatUuid,
+      ],
+    );
+
+    try {
+      await runPostBackfillStep(db, "llm-usage-chat-fk");
+      // Re-running is idempotent.
+      await runPostBackfillStep(db, "llm-usage-chat-fk");
+
+      const rowsAfterAttach = await pg.query<{ chat_id: string | null }>(
+        `SELECT chat_id FROM llm_usage WHERE id IN ($1, $2) ORDER BY chat_id NULLS LAST`,
+        [usageId1, usageId2],
       );
-    `);
-    await pg.query(`INSERT INTO llm_usage (chat_id) VALUES ($1), ($2)`, [
-      objectIdToUuid(liveChat.id),
-      danglingChatUuid,
-    ]);
+      expect(rowsAfterAttach.rows.map(r => r.chat_id)).toEqual([
+        objectIdToUuid(liveChat.id),
+        null,
+      ]);
 
-    await runPostBackfillStep(db, "llm-usage-chat-fk");
-    // Re-running is idempotent.
-    await runPostBackfillStep(db, "llm-usage-chat-fk");
-
-    const rowsAfterAttach = await pg.query<{ chat_id: string | null }>(
-      `SELECT chat_id FROM llm_usage ORDER BY chat_id NULLS LAST`,
-    );
-    expect(rowsAfterAttach.rows.map(r => r.chat_id)).toEqual([
-      objectIdToUuid(liveChat.id),
-      null,
-    ]);
-
-    // Deleting the chat sets llm_usage.chat_id = NULL via ON DELETE SET NULL.
-    await pgRepo.deleteOwned(wsId, liveChat.id, user1Uuid);
-    const rowsAfterDelete = await pg.query<{ chat_id: string | null }>(
-      `SELECT chat_id FROM llm_usage`,
-    );
-    expect(rowsAfterDelete.rows.every(r => r.chat_id === null)).toBe(true);
-    await pg.exec(`DROP TABLE llm_usage;`);
+      // Deleting the chat sets llm_usage.chat_id = NULL via ON DELETE SET NULL.
+      await pgRepo.deleteOwned(wsId, liveChat.id, user1Uuid);
+      const rowsAfterDelete = await pg.query<{ chat_id: string | null }>(
+        `SELECT chat_id FROM llm_usage WHERE id IN ($1, $2)`,
+        [usageId1, usageId2],
+      );
+      expect(rowsAfterDelete.rows.every(r => r.chat_id === null)).toBe(true);
+    } finally {
+      await pg.query(`DELETE FROM llm_usage WHERE id IN ($1, $2)`, [
+        usageId1,
+        usageId2,
+      ]);
+      await pg.exec(
+        `ALTER TABLE llm_usage DROP CONSTRAINT IF EXISTS fk_llm_usage_chat;`,
+      );
+    }
   });
 
   it("round-trips EVERY AI SDK v7 & Local ACP part type losslessly (incl. signature, explicit JSON null vs omitted output, attachment FK)", async () => {

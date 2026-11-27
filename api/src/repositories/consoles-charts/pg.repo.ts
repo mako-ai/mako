@@ -3100,4 +3100,61 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
       .limit(limit);
     return rows.map(pgScheduledQueryRunToRecord);
   }
+
+  async purgeWorkspaceContentIndexReturningIds(workspaceId: string): Promise<{
+    saved_consoles: string[];
+    console_folders: string[];
+    entity_versions: string[];
+    notebook_indexes: string[];
+    notebook_folders: string[];
+  }> {
+    const empty = {
+      saved_consoles: [] as string[],
+      console_folders: [] as string[],
+      entity_versions: [] as string[],
+      notebook_indexes: [] as string[],
+      notebook_folders: [] as string[],
+    };
+    const wsUuid = safePgUuid(workspaceId);
+    if (!wsUuid) return empty;
+    const db = this.getDb();
+    return db.transaction(async tx => {
+      const deletedConsoles = await tx
+        .delete(savedConsoles)
+        .where(eq(savedConsoles.workspaceId, wsUuid))
+        .returning({ id: savedConsoles.id });
+      const deletedFolders = await tx
+        .delete(consoleFolders)
+        .where(eq(consoleFolders.workspaceId, wsUuid))
+        .returning({ id: consoleFolders.id });
+      const deletedVersions = await tx
+        .delete(entityVersions)
+        .where(
+          and(
+            eq(entityVersions.workspaceId, wsUuid),
+            eq(entityVersions.entityType, "console"),
+          ),
+        )
+        .returning({ id: entityVersions.id });
+      const deletedNotebooks = await tx
+        .delete(notebookIndexes)
+        .where(eq(notebookIndexes.workspaceId, wsUuid))
+        .returning({ id: notebookIndexes.id });
+      const deletedNbFolders = await tx
+        .delete(notebookFolders)
+        .where(eq(notebookFolders.workspaceId, wsUuid))
+        .returning({ id: notebookFolders.id });
+      return {
+        saved_consoles: deletedConsoles.map(r => toWireId(r.id)),
+        console_folders: deletedFolders.map(r => toWireId(r.id)),
+        entity_versions: deletedVersions.map(r => toWireId(r.id)),
+        notebook_indexes: deletedNotebooks.map(r => toWireId(r.id)),
+        notebook_folders: deletedNbFolders.map(r => toWireId(r.id)),
+      };
+    });
+  }
+
+  async purgeWorkspaceContentIndex(workspaceId: string): Promise<void> {
+    await this.purgeWorkspaceContentIndexReturningIds(workspaceId);
+  }
 }

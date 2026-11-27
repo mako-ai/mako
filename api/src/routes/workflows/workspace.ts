@@ -3,11 +3,11 @@
  * starting/retrying runs, triggers and webhooks.
  */
 import { createRoute, z } from "@hono/zod-openapi";
-import { Types } from "mongoose";
 import { WORKFLOWS_DIR } from "../../apps/app-paths";
 import { listFiles, readFile } from "../../apps/worktree.service";
 import { unifiedAuthMiddleware } from "../../auth/unified-auth.middleware";
-import { AppProject } from "../../database/workspace-schema";
+import { newDualId } from "../../database/pg/id-codec";
+import { toAppProjectCompat } from "../../repositories/apps-metadata";
 import {
   AuthenticatedContext,
   requireWorkspace,
@@ -241,15 +241,21 @@ workflowRoutes.openapi(
  * `workflows/` as an app-shaped project, so the Apps file functions read it:
  * the person's own branch, from their sandbox while it runs.
  */
-const workflowsProject = (workspaceId: string, userId: string) =>
-  new AppProject({
-    workspaceId: new Types.ObjectId(workspaceId),
+const workflowsProject = (workspaceId: string, userId: string) => {
+  const now = new Date();
+  return toAppProjectCompat({
+    id: newDualId().oid,
+    workspaceId,
     title: WORKFLOWS_DIR,
     slug: WORKFLOWS_DIR,
     path: WORKFLOWS_DIR,
     access: "workspace",
     createdBy: userId,
+    defaultBranch: "main",
+    createdAt: now,
+    updatedAt: now,
   });
+};
 
 workflowRoutes.openapi(
   createRoute({
