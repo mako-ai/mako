@@ -80,7 +80,10 @@ import type {
 export const USAGE_STATS_DOMAIN = "usage_stats" as const;
 
 export const USAGE_STATS_SHADOW_OPTIONS: ShadowCompareOptions = {
-  floatEpsilon: 1e-6,
+  // Summing 100k+ numeric(14,8) rows in PG vs IEEE-754 floats in Mongo can
+  // drift by ~1e-6–1e-5 USD; 1e-4 ($0.0001) avoids false-positive rounding
+  // alerts while still catching any meaningful cost discrepancy.
+  floatEpsilon: 1e-4,
 };
 
 const SYSTEM_USER_SENTINELS = new Set(["", "system", "scheduler", "worker"]);

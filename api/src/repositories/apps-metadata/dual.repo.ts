@@ -1566,6 +1566,7 @@ export class DualAppsMetadataRepository implements AppsMetadataRepository {
             staleEntryIds,
             withIds,
           ),
+        secondaryTimeoutMs: 5_000,
       },
     );
     if (deletedIds.length > 0) {

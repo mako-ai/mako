@@ -48,6 +48,12 @@ import {
 } from "../../database/pg/schema/apps-metadata";
 import type { IAppDeployProgress } from "../../database/workspace-schema";
 import {
+  buildExcludedSet,
+  chunkRows,
+  dedupByKey,
+  prefetchPgUserUuidMap,
+} from "../../migration/bulk-helpers";
+import {
   deserializeBindingRun,
   entityIdToPgUuid,
   optionalEntityIdToPgUuid,
@@ -1278,17 +1284,45 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
           ),
         );
     }
+    if (entries.length === 0) return;
+
+    // Batch-resolve all owner user IDs in 1 query while preserving strict
+    // ownership resolution semantics (throw on unresolved non-system user).
+    const rawOwnerIds: string[] = [];
+    for (const row of entries) {
+      const trimmed = row.ownerId?.trim();
+      if (trimmed && !SYSTEM_ACTORS.has(trimmed)) {
+        rawOwnerIds.push(trimmed);
+      }
+    }
+    const ownerMap =
+      rawOwnerIds.length > 0
+        ? await prefetchPgUserUuidMap(db, rawOwnerIds)
+        : new Map<string, string>();
+
     const now = new Date();
+    const preparedRows: Array<typeof appIndex.$inferInsert> = [];
     for (const row of entries) {
       const idUuid = row.id ? entityIdToPgUuid(row.id) : newDualId().uuid;
       const appUuid = entityIdToPgUuid(row.appId);
-      const ownerUuid = await this.resolveStrictOwnerUserUuid(
-        row.ownerId,
-        "app_index.owner_id",
-        db,
-      );
+      const trimmedOwner = row.ownerId?.trim();
+      let ownerUuid: string | null = null;
+      if (trimmedOwner && !SYSTEM_ACTORS.has(trimmedOwner)) {
+        const resolved =
+          ownerMap.get(trimmedOwner) ??
+          ownerMap.get(trimmedOwner.toLowerCase());
+        if (!resolved) {
+          throw new Error(
+            `Unresolved Postgres user for app_index.owner_id: ${JSON.stringify(trimmedOwner)} not found in users table`,
+          );
+        }
+        ownerUuid = resolved;
+      }
       const dupUuid = optionalEntityIdToPgUuid(row.duplicateOf);
-      const setValues = {
+      preparedRows.push({
+        id: idUuid,
+        workspaceId: wsUuid,
+        appId: appUuid,
         path: row.path,
         slug: row.slug,
         scope: row.scope,
@@ -1307,27 +1341,38 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
         thumbnail: row.thumbnail ?? null,
         icon: row.icon ?? null,
         indexedSha: row.indexedSha,
+        createdAt: now,
         updatedAt: now,
-      };
+      });
+    }
+
+    const deduped = dedupByKey(preparedRows, r => r.appId.toLowerCase());
+    const setExcluded = buildExcludedSet(appIndex, [
+      "id",
+      "workspaceId",
+      "appId",
+      "createdAt",
+    ]);
+
+    for (const chunk of chunkRows(deduped, 23, 200)) {
       const upserted = await db
         .insert(appIndex)
-        .values({
-          id: idUuid,
-          workspaceId: wsUuid,
-          appId: appUuid,
-          ...setValues,
-          createdAt: now,
-        })
+        .values(chunk)
         .onConflictDoUpdate({
           target: appIndex.appId,
-          set: setValues,
+          set: setExcluded,
           // Never overwrite another workspace's app_index row on app_id collision.
           setWhere: eq(appIndex.workspaceId, wsUuid),
         })
-        .returning({ id: appIndex.id });
-      if (upserted.length === 0) {
+        .returning({ appId: appIndex.appId });
+
+      if (upserted.length < chunk.length) {
+        const writtenAppIds = new Set(upserted.map(r => r.appId.toLowerCase()));
+        const collided = chunk.find(
+          r => !writtenAppIds.has(r.appId.toLowerCase()),
+        );
         const err = new Error(
-          `duplicate key value violates unique constraint "uq_app_index_app_id" (app_id=${appUuid} belongs to another workspace)`,
+          `duplicate key value violates unique constraint "uq_app_index_app_id" (app_id=${collided?.appId ?? "unknown"} belongs to another workspace)`,
         ) as Error & { code?: string };
         err.code = "23505";
         throw err;
