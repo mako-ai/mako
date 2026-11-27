@@ -1,6 +1,7 @@
 /**
  * Turn-level .makorules resolution: hinted project > sole workspace project >
- * nothing. Runs against an ephemeral Mongo (project lookups) plus a bare
+ * nothing. Runs against an ephemeral Mongo (DbtProject lookups), PGlite (the workspace
+ * repo binding, test-support/pg-test.ts) plus a bare
  * workspace repo (the rules file lives in git — apps.md §20).
  */
 import fs from "node:fs/promises";
@@ -9,6 +10,12 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  ensureTestDatabaseConnection,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 
 import { resolveDbtRulesBlockForTurn } from "./dbt-rules-turn.service";
 import { DbtProject } from "../database/workspace-schema";
@@ -16,6 +23,7 @@ import { seedDbtGitTree } from "./test-support/git-tree";
 import { bindTestWorkspaceRepo } from "../apps/bind-test-workspace-repo";
 
 let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmpRoot: string;
 const WS = new Types.ObjectId();
 const OTHER_WS = new Types.ObjectId();
@@ -29,9 +37,11 @@ beforeAll(async () => {
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
 }, 120_000);
 
 afterAll(async () => {
+  await pgh.close();
   await mongoose.disconnect();
   await mongo.stop();
   await fs.rm(tmpRoot, {
@@ -43,6 +53,12 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  await pgh.reset();
+  await ensureTestDatabaseConnection(pgh.db, {
+    workspaceId: WS.toString(),
+    id: CONN.toString(),
+  });
+  await ensureTestWorkspace(pgh.db, { id: OTHER_WS.toString() });
   await DbtProject.deleteMany({});
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,

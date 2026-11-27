@@ -1,20 +1,23 @@
 /**
  * Who a workflow-runtime request acts as, through the real auth middleware
- * and an in-memory Mongo. Deployed workflows share one pod, so nothing a
+ * and an in-memory Postgres (PGlite). Deployed workflows share one pod, so nothing a
  * request says about itself (X-Mako-Workflow) is believed: a deployed
  * workflow acts as itself only with a workflow pass (workflows/pass.ts),
  * and only while the run it names is an executing run of that workflow.
  */
 import assert from "node:assert/strict";
-import { MongoMemoryServer } from "mongodb-memory-server";
-import mongoose, { Types } from "mongoose";
 import { Hono } from "hono";
 
+import type { WorkspaceApiKeyScope } from "./api-key-scopes";
 import { WORKFLOW_WORKER, actingPrincipal } from "../access/connection-writes";
-import { User } from "../database/schema";
-import { Workspace } from "../database/workspace-schema";
 import { getRequestContext, requestContextStorage } from "../logging/context";
+import { workspaceRepo } from "../repositories/workspaces";
 import { encryptString } from "../services/crypto.service";
+import {
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+} from "../test-support/pg-test";
 import { keyIdOf, mintPass } from "../workflows/pass";
 import { setFirstReadRetryForTests } from "../workflows/runs";
 import {
@@ -89,8 +92,7 @@ const principalOf = async (key: string, workflow?: string) => {
 };
 
 async function main() {
-  const mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  const pgh = await setupPgTestDb();
   setFirstReadRetryForTests([0, 0, 0]);
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (
@@ -118,42 +120,50 @@ async function main() {
     });
   }) as typeof fetch;
   try {
-    await User.create({ _id: "admin", email: "admin@example.com" });
-    await User.create({ _id: "member", email: "member@example.com" });
+    await ensureTestUser(pgh.db, { id: "admin", email: "admin@example.com" });
+    const member = await ensureTestUser(pgh.db, {
+      id: "member",
+      email: "member@example.com",
+    });
+    const { id } = await ensureTestWorkspace(pgh.db, {
+      name: "t",
+      ownerUserId: "admin",
+    });
     const key = (
       name: string,
       value: string,
-      scopes: string[],
+      scopes: WorkspaceApiKeyScope[],
       by: string,
-    ) => ({
-      _id: new Types.ObjectId(),
-      name,
-      keyHash: hashApiKey(value),
-      prefix: value.slice(0, 14),
-      scopes,
-      createdAt: new Date(),
-      createdBy: by,
-    });
-    const id = new Types.ObjectId();
-    await Workspace.collection.insertOne({
-      _id: id,
-      name: "t",
-      slug: `t-${id}`,
-      createdBy: "admin",
-      apiKeys: [
-        key(workerKeyName(), WORKER_KEY, WORKER_KEY_SCOPES, "admin"),
-        // A member's sandbox run: same scopes, readable by their own code.
-        key(sandboxKeyName("member"), SANDBOX_KEY, WORKER_KEY_SCOPES, "member"),
-        key("ordinary", ORDINARY_KEY, ["mcp", "query:write"], "member"),
-      ],
-      workflows: {
-        hatchetToken: encryptString(HATCHET_TOKEN),
-        live: { sha: "a", tree: "t", names: ["billing-sync", "other-flow"] },
-      },
+    ) =>
+      workspaceRepo.createApiKey({
+        workspaceId: id,
+        name,
+        keyHash: hashApiKey(value),
+        prefix: value.slice(0, 14),
+        scopes,
+        createdBy: by,
+      });
+    await key(workerKeyName(), WORKER_KEY, WORKER_KEY_SCOPES, "admin");
+    // A member's sandbox run: same scopes, readable by their own code.
+    await key(
+      sandboxKeyName("member"),
+      SANDBOX_KEY,
+      WORKER_KEY_SCOPES,
+      "member",
+    );
+    await key("ordinary", ORDINARY_KEY, ["mcp", "query:write"], "member");
+    await workspaceRepo.setWorkflowHatchetToken(
+      id,
+      encryptString(HATCHET_TOKEN),
+    );
+    await workspaceRepo.setWorkflowLiveTarget(id, {
+      sha: "a",
+      tree: "t",
+      names: ["billing-sync", "other-flow"],
     });
     const pass = (workflow: string, runId: string, workerKey = WORKER_KEY) =>
       mintPass({
-        workspaceId: id.toString(),
+        workspaceId: id,
         workflow,
         runId,
         step: "step",
@@ -168,12 +178,15 @@ async function main() {
       WORKFLOW_WORKER,
     );
     // A member's sandbox key claiming a workflow stays the member.
-    assert.equal(await principalOf(SANDBOX_KEY, "billing-sync"), "user:member");
-    assert.equal(await principalOf(SANDBOX_KEY), "user:member");
+    assert.equal(
+      await principalOf(SANDBOX_KEY, "billing-sync"),
+      `user:${member.id}`,
+    );
+    assert.equal(await principalOf(SANDBOX_KEY), `user:${member.id}`);
     // Any other key's claim is ignored.
     assert.equal(
       await principalOf(ORDINARY_KEY, "billing-sync"),
-      "user:member",
+      `user:${member.id}`,
     );
 
     // A pass acts as its workflow and run, whatever the request says.
@@ -209,7 +222,7 @@ async function main() {
     assert.equal((await call(`${body}.${"A".repeat(43)}`)).status, 401);
     const expired = mintPass(
       {
-        workspaceId: id.toString(),
+        workspaceId: id,
         workflow: "billing-sync",
         runId: BILLING_RUN,
         keyId: keyIdOf(hashApiKey(WORKER_KEY)),
@@ -229,8 +242,7 @@ async function main() {
     console.log("workflow identity tests passed");
   } finally {
     globalThis.fetch = realFetch;
-    await mongoose.disconnect();
-    await mongo.stop();
+    await pgh.close();
   }
 }
 

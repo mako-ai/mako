@@ -7,12 +7,21 @@
  * existing flow), so it is exercised with real documents including the
  * duplicate source→destination pairs that prod actually has.
  *
+ * Flows (and the legacy collections the migration reads) stay in in-memory
+ * Mongo. The connection names the display name derives from live in PGlite.
+ *
  * Run: npx tsx src/services/flow-identity.service.test.ts
  */
 import assert from "node:assert/strict";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose, { Types } from "mongoose";
 
+import {
+  ensureTestDatabaseConnection,
+  ensureTestSourceConnection,
+  ensureTestWorkspace,
+  setupPgTestDb,
+} from "../test-support/pg-test";
 import { reserveSlug, slugifyName } from "../utils/slugify";
 
 async function main(): Promise<void> {
@@ -45,6 +54,7 @@ async function main(): Promise<void> {
 
   const mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
+  const pgh = await setupPgTestDb();
   try {
     const { Flow } = await import("../database/workspace-schema");
     const { reserveFlowSlug, flowDisplayName, deriveFlowDisplayName } =
@@ -53,13 +63,26 @@ async function main(): Promise<void> {
     const wsA = new Types.ObjectId();
     const wsB = new Types.ObjectId();
     const destId = new Types.ObjectId();
+    const sourceId = new Types.ObjectId();
+    await ensureTestWorkspace(pgh.db, { id: wsA.toString() });
+    await ensureTestWorkspace(pgh.db, { id: wsB.toString() });
+    await ensureTestDatabaseConnection(pgh.db, {
+      workspaceId: wsA.toString(),
+      id: destId.toString(),
+      name: "Warehouse",
+    });
+    await ensureTestSourceConnection(pgh.db, {
+      workspaceId: wsA.toString(),
+      id: sourceId.toString(),
+      name: "Stripe",
+    });
 
     const makeFlow = (workspaceId: Types.ObjectId, extra: object = {}) =>
       Flow.create({
         workspaceId,
         type: "scheduled",
         sourceType: "connector",
-        dataSourceId: new Types.ObjectId(),
+        dataSourceId: sourceId,
         destinationDatabaseId: destId,
         createdBy: "u1",
         schedule: { enabled: false },
@@ -88,6 +111,7 @@ async function main(): Promise<void> {
     const unnamed = await makeFlow(wsA);
     const derived = await flowDisplayName(unnamed);
     assert.match(derived, /→/, "falls back to the source → destination label");
+    assert.equal(derived, "Stripe → Warehouse", "names come from Postgres");
     assert.equal(derived, await deriveFlowDisplayName(unnamed));
     // A blank name is not a name.
     const blank = await makeFlow(wsA, { name: "   " });
@@ -147,9 +171,8 @@ async function main(): Promise<void> {
       },
     ] as never);
 
-    const migration = await import(
-      "../migrations/2026-09-01-190000_flow_names_and_slugs"
-    );
+    const migration =
+      await import("../migrations/2026-09-01-190000_flow_names_and_slugs");
     await migration.up(db as never);
 
     const after = await raw.find({}).sort({ _id: 1 }).toArray();
@@ -210,6 +233,7 @@ async function main(): Promise<void> {
 
     console.log("flow-identity tests passed");
   } finally {
+    await pgh.close();
     await mongoose.disconnect();
     await mongo.stop();
   }

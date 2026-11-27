@@ -1,7 +1,8 @@
 /**
  * The ad-hoc execute routes (POST …/databases/:id/execute and
- * POST …/execute) against an in-memory Mongo, as workspace members with
- * their own API keys:
+ * POST …/execute) as workspace members with their own API keys. Users,
+ * workspace, keys, connections and consoles live in PGlite. A separate
+ * in-memory Mongo only holds the data the MongoDB queries run against:
  *
  * - a viewer only reads, even when on the connection's writers list;
  * - a request body cannot set the write check's own flags;
@@ -13,19 +14,23 @@
  * Run with: pnpm --filter api exec tsx src/routes/workspace-execute-access.db.test.ts
  */
 import assert from "node:assert/strict";
+import { mock } from "node:test";
 import { MongoMemoryServer } from "mongodb-memory-server";
-import mongoose, { Types } from "mongoose";
+import { MongoClient } from "mongodb";
 import { OpenAPIHono } from "@hono/zod-openapi";
 
 import { hashApiKey } from "../auth/api-key.middleware";
-import { User } from "../database/schema";
-import {
-  DatabaseConnection,
-  SavedConsole,
-  Workspace,
-  WorkspaceMember,
-} from "../database/workspace-schema";
 import { loggingMiddleware } from "../logging";
+import { connectionsRepo } from "../repositories/connections";
+import { consolesChartsRepo } from "../repositories/consoles-charts";
+import { workspaceRepo } from "../repositories/workspaces";
+import {
+  ensureTestMember,
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+} from "../test-support/pg-test";
+import { queryExecutionService } from "../services/query-execution.service";
 import { databaseConnectionService } from "../services/database-connection.service";
 import {
   workspaceDatabaseRoutes,
@@ -66,43 +71,38 @@ async function main() {
   process.env.QUERY_EXECUTE_MAX_ROWS = String(CAP);
   process.env.ENCRYPTION_KEY ??= "0".repeat(64);
   const mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri(), { dbName: "mako" });
+  const mongoClient = await MongoClient.connect(mongo.getUri());
+  const pgh = await setupPgTestDb();
+  // Wait for fire-and-forget execution records before closing their database.
+  const tracking = mock.method(queryExecutionService, "trackAsync");
   try {
-    const ws = new Types.ObjectId();
+    const ws = (await ensureTestWorkspace(pgh.db)).id;
     for (const p of PEOPLE) {
-      await User.create({ _id: p, email: `${p}@example.com` });
-      await WorkspaceMember.create({
+      await ensureTestUser(pgh.db, { id: p, email: `${p}@example.com` });
+      await ensureTestMember(pgh.db, {
         workspaceId: ws,
         userId: p,
         role: ROLE[p],
-        joinedAt: new Date(),
       });
-    }
-    await Workspace.collection.insertOne({
-      _id: ws,
-      name: "t",
-      slug: `t-${ws}`,
-      createdBy: "owner",
-      settings: {},
-      apiKeys: PEOPLE.map(p => ({
-        _id: new Types.ObjectId(),
+      await workspaceRepo.createApiKey({
+        workspaceId: ws,
         name: p,
         keyHash: hashApiKey(keyOf(p)),
         prefix: keyOf(p).slice(0, 14),
         createdAt: new Date(),
         createdBy: p,
-      })),
-    });
+      });
+    }
 
     // The data the queries run against: another database, same server.
-    const shop = mongoose.connection.getClient().db("shop");
+    const shop = mongoClient.db("shop");
     await shop
       .collection("big")
       .insertMany(Array.from({ length: 25 }, (_, i) => ({ i })));
     await shop.collection("users").insertOne({ name: "ana" });
 
     // vic (a viewer) and marc are writers; nina is not.
-    const mongoConn = await DatabaseConnection.create({
+    const mongoConn = await connectionsRepo.createDatabaseConnection({
       workspaceId: ws,
       name: "Shop",
       type: "mongodb",
@@ -110,7 +110,7 @@ async function main() {
       createdBy: "owner",
       writers: [{ principal: "user:vic" }, { principal: "user:marc" }],
     });
-    const pgConn = await DatabaseConnection.create({
+    const pgConn = await connectionsRepo.createDatabaseConnection({
       workspaceId: ws,
       name: "Warehouse",
       type: "postgresql",
@@ -172,15 +172,11 @@ async function main() {
         body: (await response.json()) as ExecuteBody,
       };
     };
-    const byId = (p: Person, conn: { _id: unknown }, body: unknown) =>
-      call(
-        p,
-        `/api/workspaces/${ws}/databases/${String(conn._id)}/execute`,
-        body,
-      );
-    const adhoc = (p: Person, conn: { _id: unknown }, body: object) =>
+    const byId = (p: Person, conn: { id: string }, body: unknown) =>
+      call(p, `/api/workspaces/${ws}/databases/${conn.id}/execute`, body);
+    const adhoc = (p: Person, conn: { id: string }, body: object) =>
       call(p, `/api/workspaces/${ws}/execute`, {
-        connectionId: String(conn._id),
+        connectionId: conn.id,
         ...body,
       });
     const users = () => shop.collection("users").countDocuments();
@@ -291,21 +287,17 @@ async function main() {
     // ── A saved console runs with the caller's role, not as an admin ──
     // (the console router gave every API key the admin role).
     const savedConsole = (code: string) =>
-      SavedConsole.create({
+      consolesChartsRepo.createConsole({
         workspaceId: ws,
         name: `c-${code.slice(0, 12)}`,
         code,
         language: "mongodb",
-        connectionId: mongoConn._id,
+        connectionId: mongoConn.id,
         createdBy: "owner",
         access: "workspace",
       });
-    const runConsole = (p: Person, saved: { _id: unknown }) =>
-      call(
-        p,
-        `/api/workspaces/${ws}/consoles/${String(saved._id)}/execute`,
-        {},
-      );
+    const runConsole = (p: Person, saved: { id: string }) =>
+      call(p, `/api/workspaces/${ws}/consoles/${saved.id}/execute`, {});
     const writeConsole = await savedConsole(
       "db.users.insertOne({ name: 'from-console' })",
     );
@@ -329,7 +321,10 @@ async function main() {
     console.info("workspace execute access tests passed");
   } finally {
     await databaseConnectionService.closeAllConnections();
-    await mongoose.disconnect();
+    await Promise.all(tracking.mock.calls.map(call => call.result));
+    tracking.mock.restore();
+    await pgh.close();
+    await mongoClient.close();
     await mongo.stop();
   }
 }

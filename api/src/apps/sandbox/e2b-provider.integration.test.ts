@@ -10,8 +10,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import {
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../../test-support/pg-test";
 import {
   commitWorktree,
   createProject,
@@ -29,7 +34,7 @@ import { bindTestWorkspaceRepo } from "../bind-test-workspace-repo";
 const HAS_KEY = Boolean(process.env.E2B_API_KEY);
 const suite = HAS_KEY ? describe : describe.skip;
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmpRoot: string;
 const WS = new Types.ObjectId().toString();
 const USER = "e2b-user";
@@ -40,16 +45,13 @@ beforeAll(async () => {
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_SANDBOX_PROVIDER = "e2b";
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
   await initRepo(repoDirFor(WS), seededTemplateFiles());
-  await bindTestWorkspaceRepo(WS);
 }, 120_000);
 
 afterAll(async () => {
   if (!HAS_KEY) return;
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -60,8 +62,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!HAS_KEY) return;
-  await mongoose.connection.collection("app_projects").deleteMany({});
-  await mongoose.connection.collection("app_worktrees").deleteMany({});
+  await pgh.reset();
+  await ensureTestWorkspace(pgh.db, { id: WS });
+  await ensureTestUser(pgh.db, { id: USER });
+  await bindTestWorkspaceRepo(WS);
 });
 
 suite("e2b sandbox provider (live)", () => {

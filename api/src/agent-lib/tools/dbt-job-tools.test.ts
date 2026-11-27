@@ -1,7 +1,8 @@
 /**
  * Agent dbt job tools — in-process integration tests.
  *
- * Boots `createDbtServerTools` against an ephemeral mongodb-memory-server and
+ * Boots `createDbtServerTools` against an ephemeral mongodb-memory-server
+ * (Dbt* models), PGlite (workspace and connection rows) and
  * exercises the `dbt_delete_job` tool end-to-end through real Mongoose
  * persistence. Heavy collaborators (runner, run scheduler, GitHub git, realtime
  * bus, entity versioning) are mocked so the test stays deterministic and
@@ -26,6 +27,11 @@ import {
 } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  ensureTestDatabaseConnection,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../../test-support/pg-test";
 
 // Heavy collaborators pulled in transitively by the tools module — stubbed so
 // imports resolve and side-effects are inert.
@@ -82,6 +88,7 @@ import { DBT_ENVIRONMENTS_PATH } from "../../dbt/dbt-config-files";
 import { commitDbtJobFile, reserveJobSlug } from "../../dbt/dbt-config.service";
 
 let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmpRoot: string;
 const WS = new Types.ObjectId().toString();
 const CONN = new Types.ObjectId().toString();
@@ -152,9 +159,11 @@ beforeAll(async () => {
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
 }, 120_000);
 
 afterAll(async () => {
+  await pgh.close();
   await mongoose.disconnect();
   await mongo.stop();
   await fs.rm(tmpRoot, {
@@ -166,6 +175,11 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  await pgh.reset();
+  await ensureTestDatabaseConnection(pgh.db, {
+    workspaceId: WS,
+    id: CONN,
+  });
   vi.clearAllMocks();
   // vi.clearAllMocks wipes mock implementations' return queues but keeps the
   // factory defaults; re-assert the multi-user default explicitly.

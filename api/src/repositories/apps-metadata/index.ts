@@ -8,12 +8,7 @@ import type { AppsMetadataRepository } from "./types";
 
 export * from "./types";
 export * from "./mapper";
-export {
-  MongoAppsMetadataRepository,
-  getMongoAppBindingDraftModel,
-  getMongoAppBindingJobModel,
-  getMongoAppBindingStateModel,
-} from "./mongo.repo";
+export { MongoAppsMetadataRepository };
 export { PgAppsMetadataRepository } from "./pg.repo";
 
 const defaultAppsMetadataRepo: AppsMetadataRepository =

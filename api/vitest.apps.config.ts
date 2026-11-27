@@ -98,7 +98,7 @@ export default defineConfig({
       // PARQUET_ROW_LIMIT / PARQUET_MAX_ROW_LIMIT and `-- row_limit:`.
       "src/utils/parquet-row-limit.test.ts",
       "src/apps/binding-artifact-format.test.ts",
-      // Draft reuse + failure backoff: real Mongo, filesystem artifact store.
+      // Draft reuse and failure backoff with PGlite and the filesystem artifact store.
       "src/apps/binding-draft-cache.test.ts",
       // Real git + mongo: the pre-push flow-file check reads the workspace
       // repo at main and plans against live rows.

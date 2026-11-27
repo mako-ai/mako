@@ -1,6 +1,7 @@
 /**
  * dbt orchestration config as files (apps.md §23): write-through, push-sync
- * reconciliation, adoption. Real bare repo + mongodb-memory-server.
+ * reconciliation, adoption. Real bare repo, mongodb-memory-server for the Dbt*
+ * models, PGlite (test-support/pg-test.ts) for workspace and connection rows.
  */
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -8,6 +9,11 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  ensureTestDatabaseConnection,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 import { DbtJob, DbtProject } from "../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
@@ -44,6 +50,7 @@ import {
 } from "../apps/bind-test-workspace-repo";
 
 let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmpRoot: string;
 const WS = new Types.ObjectId();
 const CONN = new Types.ObjectId();
@@ -56,9 +63,11 @@ beforeAll(async () => {
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
 }, 120_000);
 
 afterAll(async () => {
+  await pgh.close();
   await mongoose.disconnect();
   await mongo.stop();
   await fs.rm(tmpRoot, {
@@ -70,6 +79,11 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  await pgh.reset();
+  await ensureTestDatabaseConnection(pgh.db, {
+    workspaceId: WS.toString(),
+    id: CONN.toString(),
+  });
   await Promise.all([DbtProject.deleteMany({}), DbtJob.deleteMany({})]);
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,
