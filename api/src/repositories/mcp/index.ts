@@ -1,24 +1,21 @@
 /**
- * MCP domain repository entry point (`domain = "mcp"`).
- *
- * Defaults to `mongo_only` until `migration_domain_state` advances `mcp`
- * (globally or per workspace).
+ * MCP domain repository entry point (Neon Postgres `pg_only`).
  */
-import { DualMcpRepository } from "./dual.repo";
+import { createPgFirstRepoProxy } from "../resolve-repo";
+import { MongoMcpRepository } from "./mongo.repo";
+import { PgMcpRepository } from "./pg.repo";
 import type { McpRepository } from "./types";
 
 export * from "./types";
 export * from "./mapper";
 export { MongoMcpRepository } from "./mongo.repo";
 export { PgMcpRepository } from "./pg.repo";
-export {
-  DualMcpRepository,
-  MCP_DOMAIN,
-  MCP_SHADOW_OPTIONS,
-  type DualMcpRepositoryDeps,
-} from "./dual.repo";
 
-const defaultMcpRepo: McpRepository = new DualMcpRepository();
+const defaultMcpRepo: McpRepository = createPgFirstRepoProxy<McpRepository>(
+  "mcp",
+  new PgMcpRepository(),
+  new MongoMcpRepository(),
+);
 let activeMcpRepo: McpRepository = defaultMcpRepo;
 
 export function getMcpRepo(): McpRepository {

@@ -1,11 +1,9 @@
 /**
- * Phase 2B `apps_metadata` domain repository entry point.
- *
- * Exports the singleton `appsMetadataRepo` (backed by `DualAppsMetadataRepository`,
- * defaulting to `mongo_only` until `migration_domain_state` advances `apps_metadata`)
- * plus test override hooks and concrete repository classes.
+ * Apps metadata domain repository entry point (Neon Postgres `pg_only`).
  */
-import { DualAppsMetadataRepository } from "./dual.repo";
+import { createPgFirstRepoProxy } from "../resolve-repo";
+import { MongoAppsMetadataRepository } from "./mongo.repo";
+import { PgAppsMetadataRepository } from "./pg.repo";
 import type { AppsMetadataRepository } from "./types";
 
 export * from "./types";
@@ -17,15 +15,13 @@ export {
   getMongoAppBindingStateModel,
 } from "./mongo.repo";
 export { PgAppsMetadataRepository } from "./pg.repo";
-export {
-  APPS_METADATA_DOMAIN,
-  APPS_METADATA_SHADOW_OPTIONS,
-  DualAppsMetadataRepository,
-  type DualAppsMetadataRepositoryDeps,
-} from "./dual.repo";
 
 const defaultAppsMetadataRepo: AppsMetadataRepository =
-  new DualAppsMetadataRepository();
+  createPgFirstRepoProxy<AppsMetadataRepository>(
+    "apps_metadata",
+    new PgAppsMetadataRepository(),
+    new MongoAppsMetadataRepository(),
+  );
 let activeAppsMetadataRepo: AppsMetadataRepository = defaultAppsMetadataRepo;
 
 export function getAppsMetadataRepo(): AppsMetadataRepository {

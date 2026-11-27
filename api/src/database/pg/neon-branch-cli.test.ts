@@ -2,95 +2,13 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { NonRetriableError } from "inngest";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  clearSyncRetryHandlersForTests,
-  dispatchSyncRetry,
-  isSyncRetryStale,
-  MIGRATION_SYNC_RETRY_CONCURRENCY_KEY,
-  migrationMongoSyncRetryFunction,
-  migrationPgSyncRetryFunction,
-  registerSyncRetryHandler,
-} from "../inngest/functions/migration/sync-retry";
+import { describe, expect, it } from "vitest";
 
-const REPO_ROOT = path.resolve(__dirname, "../../..");
+const REPO_ROOT = path.resolve(__dirname, "../../../..");
 const NEON_BRANCH_SCRIPT = path.join(REPO_ROOT, "scripts/neon-branch.ts");
 const TSX_BIN = path.join(REPO_ROOT, "node_modules/.bin/tsx");
 
-function concurrencyOf(fn: unknown): unknown {
-  return (fn as { opts: { concurrency?: unknown } }).opts.concurrency;
-}
-
-describe("migration Inngest sync-retry & scripts/neon-branch.ts guards", () => {
-  afterEach(() => {
-    clearSyncRetryHandlersForTests();
-  });
-
-  it("configures per-entity concurrency keys on both PG and Mongo sync-retry Inngest functions", () => {
-    for (const fn of [
-      migrationPgSyncRetryFunction,
-      migrationMongoSyncRetryFunction,
-    ]) {
-      const concurrency = concurrencyOf(fn) as Array<{
-        limit: number;
-        key?: string;
-      }>;
-      expect(Array.isArray(concurrency)).toBe(true);
-      expect(concurrency).toContainEqual({
-        limit: 1,
-        key: MIGRATION_SYNC_RETRY_CONCURRENCY_KEY,
-      });
-      expect(MIGRATION_SYNC_RETRY_CONCURRENCY_KEY).toBe(
-        "event.data.domain + ':' + event.data.entityId",
-      );
-    }
-  });
-
-  it("fails loudly with NonRetriableError when no sync-retry handler is registered instead of dropping events", async () => {
-    const eventData = {
-      target: "pg" as const,
-      domain: "unregistered_test_domain",
-      operation: "createUser",
-      entityId: "user_1",
-      idempotencyKey: "0193694c-a920-7000-8000-000000000001",
-      updatedAt: "2026-11-27T08:00:00.000Z",
-      failedAt: "2026-11-27T08:00:01.000Z",
-      errorMessage: "timeout",
-    };
-
-    await expect(dispatchSyncRetry("pg", eventData)).rejects.toThrow(
-      NonRetriableError,
-    );
-    await expect(
-      dispatchSyncRetry("mongo", { ...eventData, target: "mongo" }),
-    ).rejects.toThrow(NonRetriableError);
-
-    // Once registered, replays cleanly and forwards idempotency metadata
-    const handler = vi.fn(async () => undefined);
-    registerSyncRetryHandler("pg", "unregistered_test_domain", handler);
-    const result = await dispatchSyncRetry("pg", eventData);
-    expect(result).toEqual({
-      status: "replayed",
-      domain: "unregistered_test_domain",
-      entityId: "user_1",
-      idempotencyKey: eventData.idempotencyKey,
-    });
-    expect(handler).toHaveBeenCalledWith(eventData);
-
-    // Stale-write helper catches older timestamps and allows equal/newer ones
-    expect(
-      isSyncRetryStale("2026-11-27T08:00:00.000Z", "2026-11-27T08:00:05.000Z"),
-    ).toBe(true);
-    expect(
-      isSyncRetryStale("2026-11-27T08:00:05.000Z", "2026-11-27T08:00:05.000Z"),
-    ).toBe(false);
-    expect(
-      isSyncRetryStale("2026-11-27T08:00:10.000Z", "2026-11-27T08:00:05.000Z"),
-    ).toBe(false);
-    expect(isSyncRetryStale(undefined, "2026-11-27T08:00:05.000Z")).toBe(false);
-  });
-
+describe("scripts/neon-branch.ts guards", () => {
   it("rejects shared/protected branches in neon-branch.ts and masks URLs before writing GITHUB_OUTPUT", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "mako-neon-branch-"));
     const fakeBinDir = path.join(tmpDir, "bin");
@@ -98,7 +16,6 @@ describe("migration Inngest sync-retry & scripts/neon-branch.ts guards", () => {
     const githubOutputFile = path.join(tmpDir, "github-output.txt");
     fs.mkdirSync(fakeBinDir);
 
-    // Create a fake neonctl executable that records every invocation and returns stub JSON/URLs
     const fakeNeonctl = path.join(fakeBinDir, "neonctl");
     fs.writeFileSync(
       fakeNeonctl,
@@ -108,8 +25,8 @@ const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(callLogFile)}, JSON.stringify(args) + "\\n");
 if (args[0] === "branches" && args[1] === "list") {
   console.log(JSON.stringify([
-    { id: "br-main", name: "main", default: true },
-    { id: "br-staging", name: "staging", default: false },
+    { id: "br-main", name: "production", default: true },
+    { id: "br-test", name: "test", default: false },
     { id: "br-dev-alice", name: "dev-alice", default: false }
   ]));
 } else if (args[0] === "branches" && args[1] === "create") {
@@ -156,7 +73,6 @@ if (args[0] === "branches" && args[1] === "list") {
     };
 
     try {
-      // 1. Refuse protected/shared names and non-`dev-` branches in reset-dev & create-dev
       for (const [cmd, branch] of [
         ["reset-dev", "test"],
         ["reset-dev", "staging"],
@@ -177,10 +93,8 @@ if (args[0] === "branches" && args[1] === "list") {
         expect(res.exitCode).not.toBe(0);
         expect(res.stderr).toMatch(/refusing|must start with "dev-"/i);
       }
-      // Protected rejections must NEVER invoke neonctl
       expect(fs.existsSync(callLogFile)).toBe(false);
 
-      // 2. Allowed dev-alice reset-dev succeeds and logs accurate parent message
       const resetOk = runCli(["reset-dev", "dev-alice"]);
       expect(resetOk.exitCode).toBe(0);
       expect(resetOk.stdout).toMatch(
@@ -190,7 +104,6 @@ if (args[0] === "branches" && args[1] === "list") {
         "POSTGRES_URL=postgresql://neondb_owner:super-secret-pass@ep-cool-pooler.neon.tech/neondb?sslmode=require",
       );
 
-      // 3. resolve-preview masks connection URLs via ::add-mask:: BEFORE writing GITHUB_OUTPUT
       const preview = runCli(["resolve-preview", "1552"], {
         GITHUB_OUTPUT: githubOutputFile,
       });

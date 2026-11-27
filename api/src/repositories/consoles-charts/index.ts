@@ -1,11 +1,9 @@
 /**
- * Consoles & Charts domain repository entry point (`consoles_charts` — 7 tables).
- *
- * Exports the singleton `consolesChartsRepo` (backed by `DualConsolesChartsRepository`,
- * defaulting to `mongo_only` until `migration_domain_state` advances a workspace or global
- * scope) plus test override hooks and concrete repository classes.
+ * Consoles & Charts domain repository entry point (Neon Postgres `pg_only`).
  */
-import { DualConsolesChartsRepository } from "./dual.repo";
+import { createPgFirstRepoProxy } from "../resolve-repo";
+import { MongoConsolesChartsRepository } from "./mongo.repo";
+import { PgConsolesChartsRepository } from "./pg.repo";
 import type { ConsolesChartsRepository } from "./types";
 
 export * from "./types";
@@ -15,15 +13,13 @@ export {
   PgConsolesChartsRepository,
   type PgConsolesChartsRepositoryDeps,
 } from "./pg.repo";
-export {
-  CONSOLES_CHARTS_DOMAIN,
-  CONSOLES_CHARTS_SHADOW_OPTIONS,
-  DualConsolesChartsRepository,
-  type DualConsolesChartsRepositoryDeps,
-} from "./dual.repo";
 
 const defaultConsolesChartsRepo: ConsolesChartsRepository =
-  new DualConsolesChartsRepository();
+  createPgFirstRepoProxy<ConsolesChartsRepository>(
+    "consoles_charts",
+    new PgConsolesChartsRepository(),
+    new MongoConsolesChartsRepository(),
+  );
 let activeConsolesChartsRepo: ConsolesChartsRepository =
   defaultConsolesChartsRepo;
 

@@ -59,4 +59,5 @@ export function patchMongoMemoryServer(
   } as typeof MongoMemoryServer.create;
 }
 
+process.env.MAKO_TEST_MONGO_FALLBACK = "1";
 patchMongoMemoryServer();

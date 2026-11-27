@@ -2,11 +2,8 @@ import { propagateAttributes } from "@langfuse/tracing";
 import { embed, embedMany } from "ai";
 import { getEmbeddingModel } from "../agent-lib/ai-gateway";
 import { loggers } from "../logging";
-import { migrationRouter } from "../migration/router";
-import {
-  CONSOLES_CHARTS_DOMAIN,
-  consolesChartsRepo,
-} from "../repositories/consoles-charts";
+import { hasPostgresConfig } from "../database/pg/client";
+import { consolesChartsRepo } from "../repositories/consoles-charts";
 import { databaseConnectionService } from "./database-connection.service";
 
 const logger = loggers.app();
@@ -73,12 +70,9 @@ let _mongoVectorSearchAvailable: boolean | null = null;
 let _pgVectorSearchAvailable: boolean | null = null;
 
 export async function isVectorSearchAvailable(
-  workspaceId?: string,
+  _workspaceId?: string,
 ): Promise<boolean> {
-  const mode = (
-    await migrationRouter.getState(CONSOLES_CHARTS_DOMAIN, workspaceId)
-  ).mode;
-  if (mode === "dual_write_pg_read" || mode === "pg_only") {
+  if (hasPostgresConfig()) {
     if (_pgVectorSearchAvailable !== null) return _pgVectorSearchAvailable;
     _pgVectorSearchAvailable = await consolesChartsRepo.isPgVectorAvailable();
     if (!_pgVectorSearchAvailable) {

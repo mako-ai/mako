@@ -1,16 +1,19 @@
 import type { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { MakoPgDb } from "../database/pg/client";
-import { runPgliteMigrations } from "../database/pg/migrate";
-import * as schema from "../database/pg/schema";
-import { createTestPglite } from "../database/pg/test-pglite";
+import type { MakoPgDb } from "./client";
+import { runPgliteMigrations } from "./migrate";
+import * as schema from "./schema";
+import { createTestPglite } from "./test-pglite";
 import {
   assertSafeSqlIdentifier,
   clearTtlRegistryForTests,
+  DEFAULT_PG_TTL_RULES,
+  listTtlRules,
   reapAllRegisteredTables,
   reapAllRegisteredTablesOrThrow,
   reapExpiredRows,
+  registerDefaultPgTtlRules,
   registerTtlRule,
 } from "./ttl-reaper";
 
@@ -43,10 +46,26 @@ describe("ttl-reaper (batched ctid expiration)", () => {
     await pg.close();
   });
 
+  it("registers all 15 default platform Postgres TTL rules and executes cleanly against migrated schema", async () => {
+    registerDefaultPgTtlRules();
+    const rules = listTtlRules();
+    expect(rules).toHaveLength(DEFAULT_PG_TTL_RULES.length);
+    const names = new Set(rules.map(r => r.tableName));
+    // Blob-owning & permanent ledger tables must NEVER be auto-reaped
+    expect(names.has("app_binding_drafts")).toBe(false);
+    expect(names.has("app_binding_jobs")).toBe(false);
+    expect(names.has("llm_usage")).toBe(false);
+    expect(names.has("app_usage_daily")).toBe(false);
+    expect(names.has("connection_access_events")).toBe(false);
+
+    const outcome = await reapAllRegisteredTablesOrThrow({ db });
+    expect(outcome.errors).toEqual({});
+    expect(outcome.results).toHaveLength(DEFAULT_PG_TTL_RULES.length);
+  });
+
   it("deletes expired rows in bounded ctid batches and leaves active/NULL rows untouched", async () => {
     const now = new Date("2026-11-26T18:00:00.000Z");
 
-    // Insert 8 expired tokens, 2 active tokens, and 1 NULL-expiry token
     for (let i = 0; i < 8; i++) {
       await pg.query(
         `INSERT INTO test_ttl_tokens (expires_at) VALUES ($1::timestamptz)`,
@@ -61,7 +80,6 @@ describe("ttl-reaper (batched ctid expiration)", () => {
       ],
     );
 
-    // Cap at 2 batches of 3 = 6 deleted
     const run1 = await reapExpiredRows(
       {
         tableName: "test_ttl_tokens",
@@ -75,7 +93,6 @@ describe("ttl-reaper (batched ctid expiration)", () => {
     expect(run1.batches).toBe(2);
     expect(run1.hitBatchCap).toBe(true);
 
-    // Next run clears the remaining 2 expired rows and stops cleanly
     const run2 = await reapExpiredRows(
       {
         tableName: "test_ttl_tokens",
@@ -89,7 +106,6 @@ describe("ttl-reaper (batched ctid expiration)", () => {
     expect(run2.batches).toBe(1);
     expect(run2.hitBatchCap).toBe(false);
 
-    // 2 active + 1 NULL remain
     const remaining = await pg.query("SELECT * FROM test_ttl_tokens");
     expect(remaining.rows).toHaveLength(3);
   });
@@ -153,7 +169,6 @@ describe("ttl-reaper (batched ctid expiration)", () => {
       ],
     );
 
-    // Register broken table FIRST to verify healthy tables registered after it STILL reap before throwing
     registerTtlRule({
       tableName: "missing_broken_table",
       timestampColumn: "expires_at",
@@ -167,7 +182,6 @@ describe("ttl-reaper (batched ctid expiration)", () => {
       /missing_broken_table/,
     );
 
-    // Healthy table was still reaped (only active token remains)
     const remaining = await pg.query("SELECT * FROM test_ttl_tokens");
     expect(remaining.rows).toHaveLength(1);
   });

@@ -1,6 +1,6 @@
 /**
  * Shared chunking, deduplication, and batch-prefetch helpers for vectorized
- * MongoDB -> Postgres backfill and parity verification.
+ * Postgres repository writes.
  *
  * Keeps every multi-row `INSERT ... VALUES (...), (...)` well below Postgres's
  * 65,535 bind-parameter protocol limit and prevents Postgres `21000`
@@ -8,9 +8,9 @@
  */
 import { getTableColumns, inArray, or, sql, type SQL } from "drizzle-orm";
 import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
-import type { MakoPgDb } from "../database/pg/client";
-import { isUuidString } from "../database/pg/id-codec";
-import { users } from "../database/pg/schema/auth";
+import type { MakoPgDb } from "./client";
+import { isUuidString } from "./id-codec";
+import { users } from "./schema/auth";
 
 /** Hard ceiling for bind parameters per statement (PG wire limit is 65,535). */
 export const MAX_PG_BIND_PARAMS = 50_000;
@@ -60,32 +60,9 @@ export function chunkValues<T>(
 }
 
 /**
- * Group contiguous items that share the same key while preserving exact
- * relative ordering across stage boundaries (so FK parents inserted earlier
- * in a composite batch are always flushed before child rows).
- */
-export function groupContiguous<T, K>(
-  items: readonly T[],
-  getKey: (item: T) => K,
-): Array<{ key: K; items: T[] }> {
-  const groups: Array<{ key: K; items: T[] }> = [];
-  for (const item of items) {
-    const key = getKey(item);
-    const prev = groups[groups.length - 1];
-    if (prev && prev.key === key) {
-      prev.items.push(item);
-    } else {
-      groups.push({ key, items: [item] });
-    }
-  }
-  return groups;
-}
-
-/**
  * Deduplicate `items` by `getKey`, preserving first-seen order.
  * Defaults to keeping the latest (`incoming`) entry; supply `merge` to keep
- * the first entry (`(existing) => existing`), keep the newest `updatedAt`, or
- * fold counters with `Math.max` / `Math.min`.
+ * the first entry or keep the newest `updatedAt`.
  */
 export function dedupByKey<T>(
   items: readonly T[],
@@ -117,7 +94,7 @@ export function pickNewerByUpdatedAt<
 /**
  * Build a Drizzle `ON CONFLICT DO UPDATE` `set` object mapping every column on
  * `table` (except `omitKeys`) to `EXCLUDED."<sql_column_name>"`, with optional
- * per-column SQL expression overrides (e.g. `COALESCE` / `GREATEST` / `LEAST`).
+ * per-column SQL expression overrides.
  */
 export function buildExcludedSet<TTable extends PgTable>(
   table: TTable,
