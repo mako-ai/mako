@@ -37,6 +37,7 @@ CREATE TABLE "notification_rules" (
 	"workspace_id" uuid NOT NULL,
 	"resource_type" text NOT NULL,
 	"resource_id" uuid NOT NULL,
+	"imported_from_mongo" boolean DEFAULT false NOT NULL,
 	"enabled" boolean DEFAULT true NOT NULL,
 	"triggers" text[] NOT NULL,
 	"channel" jsonb NOT NULL,
@@ -71,12 +72,11 @@ CREATE TABLE "workflow_recorded_writes" (
 );
 --> statement-breakpoint
 ALTER TABLE "notification_deliveries" ADD CONSTRAINT "notification_deliveries_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "notification_deliveries" ADD CONSTRAINT "notification_deliveries_rule_id_notification_rules_id_fk" FOREIGN KEY ("rule_id") REFERENCES "public"."notification_rules"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "notification_rules" ADD CONSTRAINT "notification_rules_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "notification_rules" ADD CONSTRAINT "notification_rules_created_by_user_id_users_id_fk" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workflow_recorded_runs" ADD CONSTRAINT "workflow_recorded_runs_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workflow_recorded_writes" ADD CONSTRAINT "workflow_recorded_writes_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "idx_notification_deliveries_ws_resource_completed" ON "notification_deliveries" USING btree ("workspace_id","resource_type","resource_id","completed_at" DESC);--> statement-breakpoint
+CREATE INDEX "idx_notification_deliveries_ws_resource_completed" ON "notification_deliveries" USING btree ("workspace_id","resource_type","resource_id","completed_at" DESC NULLS LAST,"created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "idx_notification_deliveries_created_at" ON "notification_deliveries" USING btree ("created_at");--> statement-breakpoint
 CREATE INDEX "idx_notification_rules_ws_resource_enabled" ON "notification_rules" USING btree ("workspace_id","resource_type","resource_id","enabled");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_workflow_recorded_runs_ws_run" ON "workflow_recorded_runs" USING btree ("workspace_id","run_id");--> statement-breakpoint

@@ -7,8 +7,20 @@
 import type { PGlite } from "@electric-sql/pglite";
 import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { MakoPgDb } from "../../database/pg/client";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import {
+  resetPgTestDb,
+  setPgTestDb,
+  type MakoPgDb,
+} from "../../database/pg/client";
 import {
   generateObjectIdHex,
   generateUuidv7,
@@ -279,11 +291,12 @@ describe("PgNotificationsRepository contract", () => {
     const rule = await repo.createRule(ruleInput());
     const results = await Promise.all(
       Array.from({ length: 10 }, () =>
-        repo.createDeliveryIfAbsent(deliveryInput(rule.id)),
+        repo.ensurePendingDelivery(deliveryInput(rule.id)),
       ),
     );
     const created = results.filter(r => r !== null);
-    expect(created).toHaveLength(1);
+    expect(created).toHaveLength(10);
+    expect(new Set(created.map(row => row.id)).size).toBe(1);
     expect(created[0]?.status).toBe("pending");
     expect(created[0]?.attempts).toBe(0);
     expect(created[0]?.ruleId).toBe(rule.id);
@@ -295,10 +308,64 @@ describe("PgNotificationsRepository contract", () => {
     expect(count.rows[0].n).toBe(1);
   });
 
+  it("replays an interrupted fan-out with the same Inngest event ID until completion", async () => {
+    const { fanOutTerminalRunNotifications } =
+      await import("../../services/flow-run-notification.service");
+    const { inngest } = await import("../../inngest/client");
+    const { consolesChartsRepo } = await import("../consoles-charts");
+    setPgTestDb(db);
+    try {
+      vi.spyOn(consolesChartsRepo, "findConsoleByIdGlobal").mockResolvedValue(
+        null,
+      );
+      const send = vi
+        .spyOn(inngest, "send")
+        .mockRejectedValueOnce(new Error("queue unavailable"))
+        .mockResolvedValue({ ids: ["queued"] });
+      await repo.createRule(ruleInput({ resourceType: "scheduled_query" }));
+      const event = {
+        workspaceId: wsId,
+        resourceType: "scheduled_query" as const,
+        resourceId: flowId,
+        runId: "r1",
+        status: "failed",
+        success: false,
+        completedAt: new Date().toISOString(),
+      };
+      await expect(fanOutTerminalRunNotifications(event)).rejects.toThrow(
+        "queue unavailable",
+      );
+      expect(await fanOutTerminalRunNotifications(event)).toEqual({
+        deliveriesQueued: 1,
+      });
+      const [pending] = await repo.listDeliveriesForResource(
+        wsId,
+        "scheduled_query",
+        flowId,
+        5,
+      );
+      for (const [message] of send.mock.calls) {
+        expect(message).toMatchObject({ id: pending.idempotencyKey });
+      }
+      await repo.completeDelivery(pending.idempotencyKey, {
+        status: "sent",
+        completedAt: new Date(),
+        countAttempt: true,
+      });
+      expect(await fanOutTerminalRunNotifications(event)).toEqual({
+        deliveriesQueued: 0,
+      });
+      expect(send).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.restoreAllMocks();
+      resetPgTestDb();
+    }
+  });
+
   it("counts attempts atomically and leaves attempts alone on skip", async () => {
     const rule = await repo.createRule(ruleInput());
     const key = "key-attempts";
-    await repo.createDeliveryIfAbsent(
+    await repo.ensurePendingDelivery(
       deliveryInput(rule.id, { idempotencyKey: key }),
     );
 
@@ -344,7 +411,7 @@ describe("PgNotificationsRepository contract", () => {
   it("orders deliveries by completed DESC NULLS LAST, then created DESC, and honors limit", async () => {
     const rule = await repo.createRule(ruleInput());
     for (const key of ["a", "b", "c", "d"]) {
-      await repo.createDeliveryIfAbsent(
+      await repo.ensurePendingDelivery(
         deliveryInput(rule.id, { idempotencyKey: key, runId: key }),
       );
     }
@@ -384,23 +451,41 @@ describe("PgNotificationsRepository contract", () => {
     expect(limited.map(d => d.idempotencyKey)).toEqual(["d", "c"]);
   });
 
-  it("cascades a deleted rule's deliveries", async () => {
+  it("keeps history and finishes in-flight deliveries after rule deletion", async () => {
     const rule = await repo.createRule(ruleInput());
-    await repo.createDeliveryIfAbsent(deliveryInput(rule.id));
+    const input = deliveryInput(rule.id);
+    await repo.ensurePendingDelivery(input);
     expect(await repo.deleteRule(wsId, rule.id)).toBe(true);
-    expect(await repo.findRuleInWorkspace(wsId, rule.id)).toBeNull();
-    const count = await pg.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM notification_deliveries",
+    await repo.completeDelivery(input.idempotencyKey, {
+      status: "skipped",
+      completedAt: new Date(),
+      lastError: "Rule disabled or deleted",
+      countAttempt: false,
+    });
+    expect(await repo.ensurePendingDelivery(input)).toBeNull();
+    const raced = await repo.ensurePendingDelivery({
+      ...input,
+      idempotencyKey: "fanout-racing-delete",
+    });
+    expect(raced?.ruleId).toBe(rule.id);
+    const history = await repo.listDeliveriesForResource(
+      wsId,
+      "flow",
+      flowId,
+      10,
     );
-    expect(count.rows[0].n).toBe(0);
+    expect(history.map(d => [d.ruleId, d.status])).toEqual([
+      [rule.id, "skipped"],
+      [rule.id, "pending"],
+    ]);
   });
 
   it("reaps deliveries older than 90 days and keeps fresh ones", async () => {
     const rule = await repo.createRule(ruleInput());
-    await repo.createDeliveryIfAbsent(
+    await repo.ensurePendingDelivery(
       deliveryInput(rule.id, { idempotencyKey: "old" }),
     );
-    await repo.createDeliveryIfAbsent(
+    await repo.ensurePendingDelivery(
       deliveryInput(rule.id, { idempotencyKey: "fresh" }),
     );
     const now = new Date();

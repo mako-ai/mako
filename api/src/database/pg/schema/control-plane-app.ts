@@ -71,6 +71,8 @@ export const notificationRules = pgTable(
       .notNull(),
     /** Soft UUID ref: `saved_consoles.id` or a MongoDB flow `_id` via `objectIdToUuid()`. */
     resourceId: uuid("resource_id").notNull(),
+    // Only rows copied by the backfill participate in source deletion reconciliation.
+    importedFromMongo: boolean("imported_from_mongo").notNull().default(false),
     enabled: boolean("enabled").notNull().default(true),
     triggers: text("triggers").array().notNull(),
     /** Encrypted channel object, stored verbatim. */
@@ -110,9 +112,8 @@ export const notificationDeliveries = pgTable(
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
-    ruleId: uuid("rule_id")
-      .notNull()
-      .references(() => notificationRules.id, { onDelete: "cascade" }),
+    // Keep the original rule ID throughout the delivery history retention period.
+    ruleId: uuid("rule_id").notNull(),
     resourceType: text("resource_type")
       .$type<NotificationResourceTypePg>()
       .notNull(),
@@ -140,7 +141,8 @@ export const notificationDeliveries = pgTable(
       table.workspaceId,
       table.resourceType,
       table.resourceId,
-      sql`${table.completedAt} DESC`,
+      table.completedAt.desc().nullsLast(),
+      table.createdAt.desc(),
     ),
     index("idx_notification_deliveries_created_at").on(table.createdAt),
   ],

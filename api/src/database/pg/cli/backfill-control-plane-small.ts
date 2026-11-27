@@ -6,14 +6,9 @@
  *   workflow_recorded_runs, workflow_recorded_writes,
  *   modelcatalogsnapshots -> model_catalog_snapshots, apps_box_policy
  *
- * Dry run by default: prints per-table counts only (never a document body,
- * channel, URL or secret). `--apply` writes. Safe to re-run:
- *   - rules, deliveries, recorded writes: `ON CONFLICT DO NOTHING`
- *   - recorded runs: `count = GREATEST(count, excluded.count)`
- *   - box policy: preserve the earliest tracking start
- *   - snapshots: overwritten only when Mongo's `fetchedAt` is newer
- * Rows whose workspace (or rule) is missing in Postgres, or that the TTL
- * would reap anyway, are skipped and counted.
+ * Dry run prints aggregate counts. --apply copies eligible rows in bounded batches.
+ * With source writers frozen, --reconcile-deleted-rules finds previously imported
+ * rules that have since disappeared. Adding --apply removes those target rules.
  *
  * Usage:
  *   pnpm --filter api exec tsx src/database/pg/cli/backfill-control-plane-small.ts
@@ -21,13 +16,16 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { Command } from "commander";
 import dotenv from "dotenv";
-import { inArray, sql } from "drizzle-orm";
-import mongoose from "mongoose";
+import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
+import mongoose, { Types } from "mongoose";
+import { PgModelCatalogSnapshotsRepository } from "../../../repositories/control-plane-app/pg.repo";
+import { sanitizePgJsonValue } from "../../../utils/message-sanitizer";
 import { PgUsageStatsRepository } from "../../../repositories/usage-stats/pg.repo";
 import { closePgConnections, getPgDirectDb, type MakoPgDb } from "../client";
-import { parseEntityId } from "../id-codec";
+import { parseEntityId, toWireId } from "../id-codec";
 import {
   MODEL_CATALOG_SNAPSHOT_IDS,
   appsBoxPolicy,
@@ -40,6 +38,7 @@ import {
 } from "../schema/control-plane-app";
 import { workspaces } from "../schema/workspaces";
 
+const BATCH_SIZE = 50;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DELIVERY_TTL_MS = 90 * DAY_MS;
 const RECORDED_TTL_MS = 7 * DAY_MS;
@@ -63,6 +62,8 @@ interface TableReport {
   candidates: number;
   written: number;
   skipped: Record<string, number>;
+  missingInMongo?: number;
+  deleted?: number;
 }
 
 function newReport(): TableReport {
@@ -95,24 +96,130 @@ function toDate(value: unknown): Date | null {
   return null;
 }
 
-async function readCollection(name: string): Promise<MongoDoc[]> {
-  return mongoose.connection
-    .collection<MongoDoc>(name)
-    .find({})
-    .toArray() as Promise<MongoDoc[]>;
+type Retention = { field: "createdAt" | "at"; cutoff: Date; reason: string };
+
+async function* readBatches(
+  name: string,
+  report: TableReport,
+  retention?: Retention,
+) {
+  const collection = mongoose.connection.collection<MongoDoc>(name);
+  // Compare BSON dates on the server, including the boundary. Read legacy
+  // non-date values separately through the same cursor so they are accounted for.
+  const filter = retention
+    ? {
+        $or: [
+          { [retention.field]: { $gte: retention.cutoff } },
+          { [retention.field]: { $not: { $type: "date" } } },
+        ],
+      }
+    : {};
+  if (retention) {
+    const expired = await collection.countDocuments({
+      [retention.field]: { $lt: retention.cutoff },
+    });
+    report.source += expired;
+    if (expired) report.skipped[retention.reason] = expired;
+  }
+  const cursor = collection.find(filter).batchSize(BATCH_SIZE);
+  try {
+    let batch: MongoDoc[] = [];
+    for await (const doc of cursor) {
+      report.source++;
+      batch.push(doc);
+      if (batch.length === BATCH_SIZE) {
+        yield batch;
+        batch = [];
+      }
+    }
+    if (batch.length) yield batch;
+  } finally {
+    await cursor.close();
+  }
 }
 
 async function existingWorkspaceIds(
   db: MakoPgDb,
-  ids: string[],
+  docs: MongoDoc[],
 ): Promise<Set<string>> {
-  const unique = [...new Set(ids)];
+  const unique = [
+    ...new Set(
+      docs.map(doc => toPgUuid(doc.workspaceId)).filter(id => id !== null),
+    ),
+  ];
   if (unique.length === 0) return new Set();
   const rows = await db
     .select({ id: workspaces.id })
     .from(workspaces)
     .where(inArray(workspaces.id, unique));
   return new Set(rows.map(r => r.id.toLowerCase()));
+}
+
+// Mongo stores notification rule IDs as ObjectIds. Accept wire strings from
+// legacy imports as well when checking a bounded set of known IDs.
+async function sourceRuleWorkspaces(
+  ids: string[],
+): Promise<Map<string, string | null>> {
+  const keys: (Types.ObjectId | string)[] = [];
+  for (const uuid of new Set(ids)) {
+    const wire = toWireId(uuid);
+    keys.push(uuid);
+    if (Types.ObjectId.isValid(wire)) keys.push(wire, new Types.ObjectId(wire));
+  }
+  const found = new Map<string, string | null>();
+  const rules = mongoose.connection.collection<{
+    _id: Types.ObjectId | string;
+    workspaceId: unknown;
+  }>("notification_rules");
+  for await (const rule of rules.find(
+    { _id: { $in: keys } },
+    { projection: { workspaceId: 1 } },
+  )) {
+    const id = toPgUuid(rule._id);
+    if (id) found.set(id, toPgUuid(rule.workspaceId));
+  }
+  return found;
+}
+
+async function reconcileDeletedRules(
+  db: MakoPgDb,
+  apply: boolean,
+  report: TableReport,
+) {
+  report.missingInMongo = 0;
+  report.deleted = 0;
+  let after: string | undefined;
+  for (;;) {
+    const imported: { id: string }[] = await db
+      .select({ id: notificationRules.id })
+      .from(notificationRules)
+      .where(
+        and(
+          eq(notificationRules.importedFromMongo, true),
+          after ? gt(notificationRules.id, after) : undefined,
+        ),
+      )
+      .orderBy(asc(notificationRules.id))
+      .limit(BATCH_SIZE);
+    if (!imported.length) return;
+    const ids = imported.map(r => r.id);
+    const found = await sourceRuleWorkspaces(ids);
+    const missing = ids.filter(id => !found.has(id));
+    report.missingInMongo += missing.length;
+    if (apply && missing.length) {
+      const deleted = await db
+        .delete(notificationRules)
+        .where(
+          and(
+            eq(notificationRules.importedFromMongo, true),
+            inArray(notificationRules.id, missing),
+          ),
+        )
+        .returning({ id: notificationRules.id });
+      report.deleted += deleted.length;
+    }
+    after = ids[ids.length - 1];
+  }
 }
 
 async function backfillNotifications(
@@ -124,54 +231,47 @@ async function backfillNotifications(
   const deliveries = newReport();
   const users = new PgUsageStatsRepository({ getDb: () => db });
 
-  const ruleDocs = await readCollection("notification_rules");
-  const deliveryDocs = await readCollection("notification_deliveries");
-  rules.source = ruleDocs.length;
-  deliveries.source = deliveryDocs.length;
+  for await (const docs of readBatches("notification_rules", rules)) {
+    const wsIds = await existingWorkspaceIds(db, docs);
+    const rows: (typeof notificationRules.$inferInsert)[] = [];
+    for (const doc of docs) {
+      const id = toPgUuid(doc._id);
+      const ws = toPgUuid(doc.workspaceId);
+      const resource = toPgUuid(doc.resourceId);
+      const resourceType = doc.resourceType;
+      const triggers = Array.isArray(doc.triggers)
+        ? doc.triggers.filter(
+            (t): t is string => t === "success" || t === "failure",
+          )
+        : [];
+      if (!id || !ws || !resource) {
+        skip(rules, "invalid id");
+        continue;
+      }
+      if (!wsIds.has(ws)) {
+        skip(rules, "workspace missing in Postgres");
+        continue;
+      }
+      if (resourceType !== "scheduled_query" && resourceType !== "flow") {
+        skip(rules, "invalid resourceType");
+        continue;
+      }
+      if (triggers.length === 0 || !doc.channel) {
+        skip(rules, "invalid triggers or channel");
+        continue;
+      }
+      const createdAt = toDate(doc.createdAt);
+      const updatedAt = toDate(doc.updatedAt) ?? createdAt;
+      if (!createdAt || !updatedAt) {
+        skip(rules, "invalid timestamp");
+        continue;
+      }
+      rules.candidates++;
+      if (!apply) continue;
 
-  const wsIds = await existingWorkspaceIds(
-    db,
-    [...ruleDocs, ...deliveryDocs]
-      .map(d => toPgUuid(d.workspaceId))
-      .filter((v): v is string => v !== null),
-  );
-
-  const ruleWorkspaces = new Map<string, string>();
-  for (const doc of ruleDocs) {
-    const id = toPgUuid(doc._id);
-    const ws = toPgUuid(doc.workspaceId);
-    const resource = toPgUuid(doc.resourceId);
-    const resourceType = doc.resourceType;
-    const triggers = Array.isArray(doc.triggers)
-      ? doc.triggers.filter(
-          (t): t is string => t === "success" || t === "failure",
-        )
-      : [];
-    if (!id || !ws || !resource) {
-      skip(rules, "invalid id");
-      continue;
-    }
-    if (!wsIds.has(ws)) {
-      skip(rules, "workspace missing in Postgres");
-      continue;
-    }
-    if (resourceType !== "scheduled_query" && resourceType !== "flow") {
-      skip(rules, "invalid resourceType");
-      continue;
-    }
-    if (triggers.length === 0 || !doc.channel) {
-      skip(rules, "invalid triggers or channel");
-      continue;
-    }
-    ruleWorkspaces.set(id, ws);
-    rules.candidates++;
-    if (!apply) continue;
-
-    const createdBy = idString(doc.createdBy) ?? "unknown";
-    const createdAt = toDate(doc.createdAt) ?? now;
-    const inserted = await db
-      .insert(notificationRules)
-      .values({
+      const createdBy = idString(doc.createdBy) ?? "unknown";
+      rows.push({
+        importedFromMongo: true,
         id,
         workspaceId: ws,
         resourceType,
@@ -183,85 +283,107 @@ async function backfillNotifications(
         createdByUserId: await users.resolveNullableUserUuid(createdBy, db),
         createdBy,
         createdAt,
-        updatedAt: toDate(doc.updatedAt) ?? createdAt,
-      })
-      .onConflictDoNothing()
-      .returning({ id: notificationRules.id });
-    rules.written += inserted.length;
-  }
-
-  // Rules already in Postgres (a re-run, or created there after cutover).
-  if (deliveryDocs.length > 0) {
-    const wanted = deliveryDocs
-      .map(d => toPgUuid(d.ruleId))
-      .filter((v): v is string => v !== null);
-    if (wanted.length > 0) {
-      const rows = await db
-        .select({
-          id: notificationRules.id,
-          workspaceId: notificationRules.workspaceId,
+        updatedAt,
+      });
+    }
+    if (rows.length) {
+      const changed = await db
+        .insert(notificationRules)
+        .values(rows)
+        .onConflictDoUpdate({
+          target: notificationRules.id,
+          set: {
+            enabled: sql`excluded.enabled`,
+            triggers: sql`excluded.triggers`,
+            channel: sql`excluded.channel`,
+            updatedAt: sql`excluded.updated_at`,
+          },
+          setWhere: sql`notification_rules.imported_from_mongo
+          AND notification_rules.workspace_id = excluded.workspace_id
+          AND notification_rules.updated_at <= excluded.updated_at
+          AND (notification_rules.enabled, notification_rules.triggers, notification_rules.channel, notification_rules.updated_at)
+              IS DISTINCT FROM (excluded.enabled, excluded.triggers, excluded.channel, excluded.updated_at)`,
         })
-        .from(notificationRules)
-        .where(inArray(notificationRules.id, [...new Set(wanted)]));
-      for (const row of rows) ruleWorkspaces.set(row.id, row.workspaceId);
+        .returning({ id: notificationRules.id });
+      rules.written += changed.length;
     }
   }
 
-  for (const doc of deliveryDocs) {
-    const id = toPgUuid(doc._id);
-    const ws = toPgUuid(doc.workspaceId);
-    const ruleId = toPgUuid(doc.ruleId);
-    const resource = toPgUuid(doc.resourceId);
-    const createdAt = toDate(doc.createdAt) ?? now;
-    const status = doc.status;
-    if (!id || !ws || !ruleId || !resource) {
-      skip(deliveries, "invalid id");
-      continue;
-    }
-    if (now.getTime() - createdAt.getTime() > DELIVERY_TTL_MS) {
-      skip(deliveries, "older than 90d TTL");
-      continue;
-    }
-    if (!wsIds.has(ws)) {
-      skip(deliveries, "workspace missing in Postgres");
-      continue;
-    }
-    if (ruleWorkspaces.get(ruleId) !== ws) {
-      skip(deliveries, "rule missing (deleted or skipped)");
-      continue;
-    }
-    if (
-      status !== "pending" &&
-      status !== "sent" &&
-      status !== "failed" &&
-      status !== "skipped"
-    ) {
-      skip(deliveries, "invalid status");
-      continue;
-    }
-    if (doc.resourceType !== "scheduled_query" && doc.resourceType !== "flow") {
-      skip(deliveries, "invalid resourceType");
-      continue;
-    }
-    if (
-      typeof doc.runId !== "string" ||
-      !doc.runId ||
-      typeof doc.idempotencyKey !== "string" ||
-      !doc.idempotencyKey ||
-      (doc.trigger !== "success" && doc.trigger !== "failure") ||
-      (doc.channelType !== "email" &&
-        doc.channelType !== "slack" &&
-        doc.channelType !== "webhook")
-    ) {
-      skip(deliveries, "invalid delivery details");
-      continue;
-    }
-    deliveries.candidates++;
-    if (!apply) continue;
+  const retention = {
+    field: "createdAt",
+    cutoff: new Date(now.getTime() - DELIVERY_TTL_MS),
+    reason: "older than 90d TTL",
+  } as const;
+  for await (const docs of readBatches(
+    "notification_deliveries",
+    deliveries,
+    retention,
+  )) {
+    const wsIds = await existingWorkspaceIds(db, docs);
+    const ruleWorkspaces = await sourceRuleWorkspaces(
+      docs.map(d => toPgUuid(d.ruleId)).filter(id => id !== null),
+    );
+    const rows: (typeof notificationDeliveries.$inferInsert)[] = [];
+    for (const doc of docs) {
+      const id = toPgUuid(doc._id);
+      const ws = toPgUuid(doc.workspaceId);
+      const ruleId = toPgUuid(doc.ruleId);
+      const resource = toPgUuid(doc.resourceId);
+      const createdAt = toDate(doc.createdAt);
+      if (!createdAt) {
+        skip(deliveries, "invalid createdAt");
+        continue;
+      }
+      const status = doc.status;
+      if (!id || !ws || !ruleId || !resource) {
+        skip(deliveries, "invalid id");
+        continue;
+      }
+      if (now.getTime() - createdAt.getTime() > DELIVERY_TTL_MS) {
+        skip(deliveries, "older than 90d TTL");
+        continue;
+      }
+      if (!wsIds.has(ws)) {
+        skip(deliveries, "workspace missing in Postgres");
+        continue;
+      }
+      if (ruleWorkspaces.has(ruleId) && ruleWorkspaces.get(ruleId) !== ws) {
+        skip(deliveries, "rule belongs to another workspace");
+        continue;
+      }
+      if (
+        status !== "pending" &&
+        status !== "sent" &&
+        status !== "failed" &&
+        status !== "skipped"
+      ) {
+        skip(deliveries, "invalid status");
+        continue;
+      }
+      if (
+        doc.resourceType !== "scheduled_query" &&
+        doc.resourceType !== "flow"
+      ) {
+        skip(deliveries, "invalid resourceType");
+        continue;
+      }
+      if (
+        typeof doc.runId !== "string" ||
+        !doc.runId ||
+        typeof doc.idempotencyKey !== "string" ||
+        !doc.idempotencyKey ||
+        (doc.trigger !== "success" && doc.trigger !== "failure") ||
+        (doc.channelType !== "email" &&
+          doc.channelType !== "slack" &&
+          doc.channelType !== "webhook")
+      ) {
+        skip(deliveries, "invalid delivery details");
+        continue;
+      }
+      deliveries.candidates++;
+      if (!apply) continue;
 
-    const inserted = await db
-      .insert(notificationDeliveries)
-      .values({
+      rows.push({
         id,
         workspaceId: ws,
         ruleId,
@@ -278,11 +400,33 @@ async function backfillNotifications(
         sentAt: toDate(doc.sentAt),
         completedAt: toDate(doc.completedAt),
         createdAt,
-      })
-      // Either the id or the idempotency key already present: keep Postgres.
-      .onConflictDoNothing()
-      .returning({ id: notificationDeliveries.id });
-    deliveries.written += inserted.length;
+      });
+    }
+    if (rows.length) {
+      const changed = await db
+        .insert(notificationDeliveries)
+        .values(rows)
+        .onConflictDoUpdate({
+          target: notificationDeliveries.idempotencyKey,
+          set: {
+            status: sql`excluded.status`,
+            attempts: sql`excluded.attempts`,
+            lastError: sql`excluded.last_error`,
+            httpStatus: sql`excluded.http_status`,
+            sentAt: sql`excluded.sent_at`,
+            completedAt: sql`excluded.completed_at`,
+          },
+          setWhere: sql`notification_deliveries.workspace_id = excluded.workspace_id
+          AND (notification_deliveries.status = 'pending' OR (excluded.status <> 'pending'
+            AND (coalesce(excluded.completed_at, '-infinity'), excluded.attempts)
+             >= (coalesce(notification_deliveries.completed_at, '-infinity'), notification_deliveries.attempts)))
+          AND (notification_deliveries.status, notification_deliveries.attempts, notification_deliveries.last_error,
+               notification_deliveries.http_status, notification_deliveries.sent_at, notification_deliveries.completed_at)
+            IS DISTINCT FROM (excluded.status, excluded.attempts, excluded.last_error, excluded.http_status, excluded.sent_at, excluded.completed_at)`,
+        })
+        .returning({ id: notificationDeliveries.id });
+      deliveries.written += changed.length;
+    }
   }
 
   return { rules, deliveries };
@@ -295,40 +439,47 @@ async function backfillRecordedWrites(
 ): Promise<{ runs: TableReport; writes: TableReport }> {
   const runs = newReport();
   const writes = newReport();
-  const runDocs = await readCollection("workflow_recorded_runs");
-  const writeDocs = await readCollection("workflow_recorded_writes");
-  runs.source = runDocs.length;
-  writes.source = writeDocs.length;
-
-  const wsIds = await existingWorkspaceIds(
-    db,
-    [...runDocs, ...writeDocs]
-      .map(d => toPgUuid(d.workspaceId))
-      .filter((v): v is string => v !== null),
-  );
-
-  for (const doc of runDocs) {
-    const id = toPgUuid(doc._id);
-    const ws = toPgUuid(doc.workspaceId);
-    const at = toDate(doc.at) ?? now;
-    if (!id || !ws || typeof doc.runId !== "string") {
-      skip(runs, "invalid id");
-      continue;
+  const retention = {
+    field: "at",
+    cutoff: new Date(now.getTime() - RECORDED_TTL_MS),
+    reason: "older than 7d TTL",
+  } as const;
+  for await (const docs of readBatches(
+    "workflow_recorded_runs",
+    runs,
+    retention,
+  )) {
+    const wsIds = await existingWorkspaceIds(db, docs);
+    const rows: (typeof workflowRecordedRuns.$inferInsert)[] = [];
+    for (const doc of docs) {
+      const id = toPgUuid(doc._id);
+      const ws = toPgUuid(doc.workspaceId);
+      const at = toDate(doc.at);
+      if (!at) {
+        skip(runs, "invalid at");
+        continue;
+      }
+      if (!id || !ws || typeof doc.runId !== "string") {
+        skip(runs, "invalid id");
+        continue;
+      }
+      if (now.getTime() - at.getTime() > RECORDED_TTL_MS) {
+        skip(runs, "older than 7d TTL");
+        continue;
+      }
+      if (!wsIds.has(ws)) {
+        skip(runs, "workspace missing in Postgres");
+        continue;
+      }
+      runs.candidates++;
+      if (!apply) continue;
+      const count = typeof doc.count === "number" ? doc.count : 0;
+      rows.push({ id, workspaceId: ws, runId: doc.runId, count, at });
     }
-    if (now.getTime() - at.getTime() > RECORDED_TTL_MS) {
-      skip(runs, "older than 7d TTL");
-      continue;
-    }
-    if (!wsIds.has(ws)) {
-      skip(runs, "workspace missing in Postgres");
-      continue;
-    }
-    runs.candidates++;
-    if (!apply) continue;
-    const count = typeof doc.count === "number" ? doc.count : 0;
+    if (!rows.length) continue;
     const result = await db
       .insert(workflowRecordedRuns)
-      .values({ id, workspaceId: ws, runId: doc.runId, count, at })
+      .values(rows)
       .onConflictDoUpdate({
         target: [workflowRecordedRuns.workspaceId, workflowRecordedRuns.runId],
         set: {
@@ -340,35 +491,44 @@ async function backfillRecordedWrites(
     runs.written += result.length;
   }
 
-  for (const doc of writeDocs) {
-    const id = toPgUuid(doc._id);
-    const ws = toPgUuid(doc.workspaceId);
-    const connectionId = toPgUuid(doc.connectionId);
-    const at = toDate(doc.at) ?? now;
-    if (
-      !id ||
-      !ws ||
-      !connectionId ||
-      typeof doc.runId !== "string" ||
-      typeof doc.seq !== "number" ||
-      !doc.request
-    ) {
-      skip(writes, "invalid row");
-      continue;
-    }
-    if (now.getTime() - at.getTime() > RECORDED_TTL_MS) {
-      skip(writes, "older than 7d TTL");
-      continue;
-    }
-    if (!wsIds.has(ws)) {
-      skip(writes, "workspace missing in Postgres");
-      continue;
-    }
-    writes.candidates++;
-    if (!apply) continue;
-    const inserted = await db
-      .insert(workflowRecordedWrites)
-      .values({
+  for await (const docs of readBatches(
+    "workflow_recorded_writes",
+    writes,
+    retention,
+  )) {
+    const wsIds = await existingWorkspaceIds(db, docs);
+    const rows: (typeof workflowRecordedWrites.$inferInsert)[] = [];
+    for (const doc of docs) {
+      const id = toPgUuid(doc._id);
+      const ws = toPgUuid(doc.workspaceId);
+      const connectionId = toPgUuid(doc.connectionId);
+      const at = toDate(doc.at);
+      if (!at) {
+        skip(writes, "invalid at");
+        continue;
+      }
+      if (
+        !id ||
+        !ws ||
+        !connectionId ||
+        typeof doc.runId !== "string" ||
+        typeof doc.seq !== "number" ||
+        !doc.request
+      ) {
+        skip(writes, "invalid row");
+        continue;
+      }
+      if (now.getTime() - at.getTime() > RECORDED_TTL_MS) {
+        skip(writes, "older than 7d TTL");
+        continue;
+      }
+      if (!wsIds.has(ws)) {
+        skip(writes, "workspace missing in Postgres");
+        continue;
+      }
+      writes.candidates++;
+      if (!apply) continue;
+      rows.push({
         id,
         workspaceId: ws,
         runId: doc.runId,
@@ -376,18 +536,29 @@ async function backfillRecordedWrites(
         connectionId,
         connection: String(doc.connection ?? ""),
         step: typeof doc.step === "string" ? doc.step : null,
-        request: doc.request as Record<string, unknown>,
+        request: sanitizePgJsonValue(doc.request as Record<string, unknown>),
         seq: doc.seq,
         bodyCut: typeof doc.bodyCut === "boolean" ? doc.bodyCut : null,
         wouldSend: typeof doc.wouldSend === "boolean" ? doc.wouldSend : null,
         at,
-      })
-      .onConflictDoNothing()
+      });
+    }
+    if (!rows.length) continue;
+    const inserted = await db
+      .insert(workflowRecordedWrites)
+      .values(rows)
+      .onConflictDoNothing({ target: workflowRecordedWrites.id })
       .returning({ id: workflowRecordedWrites.id });
     writes.written += inserted.length;
   }
 
   return { runs, writes };
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 async function backfillGlobalConfig(
@@ -396,60 +567,106 @@ async function backfillGlobalConfig(
 ): Promise<{ snapshots: TableReport; boxPolicy: TableReport }> {
   const snapshots = newReport();
   const boxPolicy = newReport();
-  const snapshotDocs = await readCollection("modelcatalogsnapshots");
-  const policyDocs = await readCollection("apps_box_policy");
-  snapshots.source = snapshotDocs.length;
-  boxPolicy.source = policyDocs.length;
-
+  const repo = new PgModelCatalogSnapshotsRepository({ getDb: () => db });
   const knownIds = new Set<string>(MODEL_CATALOG_SNAPSHOT_IDS);
-  for (const doc of snapshotDocs) {
-    const id = idString(doc._id);
-    if (!id || !knownIds.has(id)) {
-      skip(snapshots, "unknown snapshot id");
-      continue;
+  for await (const docs of readBatches("modelcatalogsnapshots", snapshots)) {
+    for (const doc of docs) {
+      const id = idString(doc._id);
+      if (!id || !knownIds.has(id)) {
+        skip(snapshots, "unknown snapshot id");
+        continue;
+      }
+      const fetchedAt = toDate(doc.fetchedAt);
+      if (!fetchedAt) {
+        skip(snapshots, "invalid fetchedAt");
+        continue;
+      }
+      snapshots.candidates++;
+      if (!apply) continue;
+      const data = doc.data === undefined ? [] : doc.data;
+      const itemCount = typeof doc.itemCount === "number" ? doc.itemCount : 0;
+      if (id === "capabilities") {
+        // Use the same transaction lock as the runtime thinking-mode probe.
+        const written = await repo.mutateSnapshot(id, current => {
+          if (!current) return { data, fetchedAt, itemCount };
+          const sourceIsNewer = fetchedAt >= current.fetchedAt;
+          const older = asObject(sourceIsNewer ? current.data : data);
+          const newer = asObject(sourceIsNewer ? data : current.data);
+          const thinkingModes = {
+            ...asObject(older.thinkingModes),
+            ...asObject(newer.thinkingModes),
+          };
+          const merged = { ...older, ...newer, thinkingModes };
+          const count = Object.keys(thinkingModes).length;
+          const latest = sourceIsNewer ? fetchedAt : current.fetchedAt;
+          if (
+            isDeepStrictEqual(merged, current.data) &&
+            count === current.itemCount &&
+            latest.getTime() === current.fetchedAt.getTime()
+          ) {
+            return null;
+          }
+          return { data: merged, itemCount: count, fetchedAt: latest };
+        });
+        if (written) snapshots.written++;
+        continue;
+      }
+
+      // An admin refresh before import can create an empty curation with just
+      // lastRefreshError. Recover its settings and retain the latest error.
+      const target = modelCatalogSnapshots;
+      const restoreCuration = sql`excluded.id = 'curation' AND excluded.fetched_at < ${target.fetchedAt}
+        AND coalesce(${target.data}->'models', '[]'::jsonb) = '[]'::jsonb
+        AND ${target.data}->>'defaultChatModelId' IS NULL
+        AND ${target.data}->>'defaultFreeChatModelId' IS NULL
+        AND ${target.data}->>'utilityModelId' IS NULL`;
+      const mergedData = sql`CASE WHEN ${restoreCuration}
+        THEN excluded.data || jsonb_build_object('lastRefreshError', ${target.data}->'lastRefreshError')
+        ELSE excluded.data END`;
+      const changed = await db
+        .insert(target)
+        .values({
+          id: id as ModelCatalogSnapshotIdPg,
+          data,
+          itemCount,
+          fetchedAt,
+        })
+        .onConflictDoUpdate({
+          target: target.id,
+          set: {
+            data: mergedData,
+            itemCount: sql`excluded.item_count`,
+            fetchedAt: sql`greatest(${target.fetchedAt}, excluded.fetched_at)`,
+          },
+          setWhere: sql`(excluded.fetched_at >= ${target.fetchedAt} OR ${restoreCuration})
+            AND (excluded.fetched_at > ${target.fetchedAt} OR (${target.data}, ${target.itemCount})
+              IS DISTINCT FROM (${mergedData}, excluded.item_count))`,
+        })
+        .returning({ id: target.id });
+      snapshots.written += changed.length;
     }
-    const fetchedAt = toDate(doc.fetchedAt);
-    if (!fetchedAt) {
-      skip(snapshots, "invalid fetchedAt");
-      continue;
-    }
-    snapshots.candidates++;
-    if (!apply) continue;
-    const data = doc.data === undefined ? [] : doc.data;
-    const itemCount = typeof doc.itemCount === "number" ? doc.itemCount : 0;
-    const result = await db
-      .insert(modelCatalogSnapshots)
-      .values({
-        id: id as ModelCatalogSnapshotIdPg,
-        data,
-        fetchedAt,
-        itemCount,
-      })
-      .onConflictDoUpdate({
-        target: modelCatalogSnapshots.id,
-        set: { data, fetchedAt, itemCount },
-        // Never let a stale Mongo copy overwrite a fresher Postgres refresh.
-        setWhere: sql`${modelCatalogSnapshots.fetchedAt} < excluded."fetched_at"`,
-      })
-      .returning({ id: modelCatalogSnapshots.id });
-    snapshots.written += result.length;
   }
 
-  for (const doc of policyDocs) {
-    const id = idString(doc._id);
-    const since = toDate(doc.since);
-    if (!id || !since) {
-      skip(boxPolicy, "invalid row");
-      continue;
+  for await (const docs of readBatches("apps_box_policy", boxPolicy)) {
+    const rows: (typeof appsBoxPolicy.$inferInsert)[] = [];
+    for (const doc of docs) {
+      const id = idString(doc._id);
+      const since = toDate(doc.since);
+      if (!id || !since) {
+        skip(boxPolicy, "invalid row");
+        continue;
+      }
+      boxPolicy.candidates++;
+      if (!apply) continue;
+      rows.push({ id, since });
     }
-    boxPolicy.candidates++;
-    if (!apply) continue;
+    if (!rows.length) continue;
     const inserted = await db
       .insert(appsBoxPolicy)
-      .values({ id, since })
+      .values(rows)
       .onConflictDoUpdate({
         target: appsBoxPolicy.id,
-        set: { since },
+        set: { since: sql`excluded.since` },
         setWhere: sql`${appsBoxPolicy.since} > excluded.since`,
       })
       .returning({ id: appsBoxPolicy.id });
@@ -463,6 +680,7 @@ export async function backfillControlPlaneSmall(options: {
   db: MakoPgDb;
   apply: boolean;
   now?: Date;
+  reconcileDeletedRules?: boolean;
 }): Promise<Record<string, TableReport>> {
   const now = options.now ?? new Date();
   const { rules, deliveries } = await backfillNotifications(
@@ -470,6 +688,9 @@ export async function backfillControlPlaneSmall(options: {
     options.apply,
     now,
   );
+  if (options.reconcileDeletedRules) {
+    await reconcileDeletedRules(options.db, options.apply, rules);
+  }
   const { runs, writes } = await backfillRecordedWrites(
     options.db,
     options.apply,
@@ -500,10 +721,32 @@ async function main(): Promise<void> {
     .description(
       "Copy notifications, workflow recorded writes and global config from MongoDB to Postgres",
     )
+    .option(
+      "--reconcile-deleted-rules",
+      "Compare imported rules to frozen Mongo source; --apply removes missing rules",
+    )
+    .option(
+      "--as-of <timestamp>",
+      "Fixed ISO timestamp for retention cutoffs during replay and parity checks",
+    )
     .option("--apply", "Write to Postgres (default is a dry run)");
   program.parse(argv);
-  const { apply = false } = program.opts<{ apply?: boolean }>();
+  const {
+    apply = false,
+    reconcileDeletedRules = false,
+    asOf,
+  } = program.opts<{
+    asOf?: string;
+    apply?: boolean;
+    reconcileDeletedRules?: boolean;
+  }>();
 
+  const now = asOf === undefined ? new Date() : toDate(asOf);
+  if (!now) {
+    process.stderr.write("Invalid --as-of timestamp.\n");
+    process.exitCode = 1;
+    return;
+  }
   const mongoUri = process.env.DATABASE_URL;
   if (
     !mongoUri ||
@@ -519,10 +762,12 @@ async function main(): Promise<void> {
   try {
     const reports = await backfillControlPlaneSmall({
       db: getPgDirectDb(),
+      now,
       apply,
+      reconcileDeletedRules,
     });
     process.stdout.write(
-      `${apply ? "APPLY" : "DRY RUN (pass --apply to write)"}\n`,
+      `${apply ? "APPLY" : "DRY RUN (pass --apply to write)"} as_of=${now.toISOString()}\n`,
     );
     for (const [table, r] of Object.entries(reports)) {
       const skipped = Object.entries(r.skipped)
@@ -531,6 +776,7 @@ async function main(): Promise<void> {
       process.stdout.write(
         `${table}: source=${r.source} candidates=${r.candidates}` +
           `${apply ? ` written=${r.written}` : ""}` +
+          `${r.missingInMongo === undefined ? "" : ` missingInMongo=${r.missingInMongo} deleted=${r.deleted}`}` +
           `${skipped ? ` skipped[${skipped}]` : ""}\n`,
       );
     }

@@ -3,10 +3,10 @@
  *
  *   - Rules get a `newDualId()` so 24-hex rule IDs keep routing.
  *   - Delivery creation is one `INSERT ... ON CONFLICT (idempotency_key) DO NOTHING`,
- *     so two fan-outs of the same run can never queue the same delivery twice.
+ *     and fan-out reuses a pending row to retry the same event ID.
  *   - Closing a delivery bumps `attempts = attempts + 1` in the same UPDATE.
  */
-import { and, arrayContains, asc, desc, eq, sql } from "drizzle-orm";
+import { and, arrayContains, asc, eq, sql } from "drizzle-orm";
 import { getPgDb, type MakoPgDb } from "../../database/pg/client";
 import { newDualId, parseEntityId, toWireId } from "../../database/pg/id-codec";
 import {
@@ -238,7 +238,7 @@ export class PgNotificationsRepository implements NotificationsRepository {
     return rows.length > 0;
   }
 
-  async createDeliveryIfAbsent(
+  async ensurePendingDelivery(
     input: CreateNotificationDeliveryInput,
   ): Promise<NotificationDeliveryRecord | null> {
     const rows = await this.getDb()
@@ -257,7 +257,23 @@ export class PgNotificationsRepository implements NotificationsRepository {
       })
       .onConflictDoNothing({ target: notificationDeliveries.idempotencyKey })
       .returning();
-    return rows[0] ? pgDeliveryToRecord(rows[0]) : null;
+    if (rows[0]) return pgDeliveryToRecord(rows[0]);
+    // A previous sender may have crashed after committing the pending row.
+    const [pending] = await this.getDb()
+      .select()
+      .from(notificationDeliveries)
+      .where(
+        and(
+          eq(notificationDeliveries.idempotencyKey, input.idempotencyKey),
+          eq(
+            notificationDeliveries.workspaceId,
+            requirePgUuid(input.workspaceId, "workspace id"),
+          ),
+          eq(notificationDeliveries.status, "pending"),
+        ),
+      )
+      .limit(1);
+    return pending ? pgDeliveryToRecord(pending) : null;
   }
 
   async completeDelivery(
@@ -302,7 +318,7 @@ export class PgNotificationsRepository implements NotificationsRepository {
       )
       .orderBy(
         sql`${notificationDeliveries.completedAt} DESC NULLS LAST`,
-        desc(notificationDeliveries.createdAt),
+        sql`${notificationDeliveries.createdAt} DESC NULLS LAST`,
       )
       .limit(limit);
     return rows.map(pgDeliveryToRecord);

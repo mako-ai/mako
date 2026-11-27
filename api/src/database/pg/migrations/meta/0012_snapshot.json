@@ -10895,9 +10895,15 @@
               "nulls": "last"
             },
             {
-              "expression": "\"completed_at\" DESC",
-              "asc": true,
-              "isExpression": true,
+              "expression": "completed_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
               "nulls": "last"
             }
           ],
@@ -10929,19 +10935,6 @@
           "tableTo": "workspaces",
           "columnsFrom": [
             "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "notification_deliveries_rule_id_notification_rules_id_fk": {
-          "name": "notification_deliveries_rule_id_notification_rules_id_fk",
-          "tableFrom": "notification_deliveries",
-          "tableTo": "notification_rules",
-          "columnsFrom": [
-            "rule_id"
           ],
           "columnsTo": [
             "id"
@@ -10997,6 +10990,13 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
+        },
+        "imported_from_mongo": {
+          "name": "imported_from_mongo",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "enabled": {
           "name": "enabled",

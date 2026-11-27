@@ -167,9 +167,7 @@ export async function fanOutTerminalRunNotifications(
       ruleId,
     });
 
-    // One atomic insert: a parallel fan-out of the same run loses the race
-    // on the unique idempotency key and queues nothing.
-    const created = await notificationsRepo.createDeliveryIfAbsent({
+    const pending = await notificationsRepo.ensurePendingDelivery({
       workspaceId: event.workspaceId,
       ruleId,
       resourceType: event.resourceType,
@@ -179,11 +177,12 @@ export async function fanOutTerminalRunNotifications(
       channelType,
       idempotencyKey,
     });
-    if (!created) {
+    if (!pending) {
       continue;
     }
 
     await inngest.send({
+      id: idempotencyKey,
       name: "notification/deliver",
       data: {
         workspaceId: event.workspaceId,

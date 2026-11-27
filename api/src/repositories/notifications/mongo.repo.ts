@@ -183,7 +183,7 @@ export class MongoNotificationsRepository implements NotificationsRepository {
     return result.deletedCount > 0;
   }
 
-  async createDeliveryIfAbsent(
+  async ensurePendingDelivery(
     input: CreateNotificationDeliveryInput,
   ): Promise<NotificationDeliveryRecord | null> {
     try {
@@ -202,7 +202,12 @@ export class MongoNotificationsRepository implements NotificationsRepository {
       return mongoDeliveryToRecord(doc.toObject() as INotificationDelivery);
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === 11000) {
-        return null;
+        const pending = await NotificationDelivery.findOne({
+          idempotencyKey: input.idempotencyKey,
+          workspaceId: input.workspaceId,
+          status: "pending",
+        }).lean<INotificationDelivery>();
+        return pending ? mongoDeliveryToRecord(pending) : null;
       }
       throw error;
     }

@@ -124,9 +124,9 @@ export interface NotificationsRepository {
 
   /**
    * Create a pending delivery unless one with the same idempotency key exists.
-   * Returns the new delivery, or null when the key was already taken.
+   * Returns a new or existing pending delivery, or null once it is closed.
    */
-  createDeliveryIfAbsent(
+  ensurePendingDelivery(
     input: CreateNotificationDeliveryInput,
   ): Promise<NotificationDeliveryRecord | null>;
   /** Close a delivery by idempotency key. Returns whether a row changed. */

@@ -10,6 +10,7 @@
 import { and, asc, count, eq, inArray, sql } from "drizzle-orm";
 import type { RecordedRequest } from "../../connections/forward";
 import { extractRows, getPgDb, type MakoPgDb } from "../../database/pg/client";
+import { sanitizePgJsonValue } from "../../utils/message-sanitizer";
 import { parseEntityId } from "../../database/pg/id-codec";
 import {
   appsBoxPolicy,
@@ -67,7 +68,7 @@ export class PgWorkflowRecordedWritesRepository implements WorkflowRecordedWrite
          request, body_cut, would_send)
       SELECT workspace_id, run_id, seq, ${input.userId ?? null},
              ${connection}::uuid, ${input.connection}, ${input.step ?? null},
-             ${JSON.stringify(input.request)}::jsonb, ${input.bodyCut ?? null},
+             ${JSON.stringify(sanitizePgJsonValue(input.request))}::jsonb, ${input.bodyCut ?? null},
              ${input.wouldSend ?? null}
         FROM place
       RETURNING seq

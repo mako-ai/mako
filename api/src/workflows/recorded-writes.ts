@@ -8,6 +8,7 @@
  * days, by workspace and run; a sandbox run's only for its person.
  */
 import type { RecordedRequest } from "../connections/forward";
+import { sliceSafeUtf16 } from "../utils/message-sanitizer";
 import { loggers } from "../logging";
 import { workflowRecordedWritesRepo } from "../repositories/control-plane-app";
 
@@ -64,7 +65,7 @@ export async function keepRecordedWrite(
         connection: connection.name,
         ...(run.step ? { step: run.step } : {}),
         request: cut
-          ? { ...request, body: `${body.slice(0, MAX_BODY_CHARS)}…` }
+          ? { ...request, body: `${sliceSafeUtf16(body, MAX_BODY_CHARS)}…` }
           : request,
         ...(cut ? { bodyCut: true } : {}),
         ...(wouldSend !== undefined ? { wouldSend } : {}),
@@ -149,7 +150,7 @@ export async function recordedWritesOf(
         ? {}
         : {
             body: shortened
-              ? `${text.slice(0, SUMMARY_BODY_CHARS)}… (${text.length} chars; full: true for all)`
+              ? `${sliceSafeUtf16(text, SUMMARY_BODY_CHARS)}… (${text.length} chars; full: true for all)`
               : body,
           }),
       ...(row.bodyCut ? { bodyCut: true } : {}),

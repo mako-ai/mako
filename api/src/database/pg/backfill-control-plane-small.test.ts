@@ -1,8 +1,7 @@
 /**
  * One-shot control-plane backfill (cli/backfill-control-plane-small.ts):
  * a dry run writes nothing, `--apply` copies every valid row, a re-run
- * writes nothing new, and rows with a missing workspace or rule, or past
- * their TTL, are skipped and counted.
+ * writes nothing new. Orphaned delivery history survives the final replay.
  */
 import type { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
@@ -104,7 +103,13 @@ describe("backfill-control-plane-small", () => {
       ...over,
     });
     await col("notification_deliveries").insertMany([
-      delivery({ idempotencyKey: "fresh" }),
+      delivery({
+        idempotencyKey: "fresh",
+        status: "pending",
+        attempts: 0,
+        sentAt: null,
+        completedAt: null,
+      }),
       delivery({ workspaceId: otherWsOid, idempotencyKey: "wrong-workspace" }),
       delivery({}),
       delivery({ ruleId: orphanRuleOid, idempotencyKey: "orphan" }),
@@ -172,9 +177,9 @@ describe("backfill-control-plane-small", () => {
     });
     expect(report.notification_deliveries).toMatchObject({
       source: 5,
-      candidates: 1,
+      candidates: 2,
       skipped: {
-        "rule missing (deleted or skipped)": 2,
+        "rule belongs to another workspace": 1,
         "invalid delivery details": 1,
         "older than 90d TTL": 1,
       },
@@ -196,12 +201,65 @@ describe("backfill-control-plane-small", () => {
     await db
       .insert(pgSchema.appsBoxPolicy)
       .values({ id: "activity-tracking", since: now });
+    const sourceSnapshots = mongoose.connection.collection<{
+      _id: string;
+      data: unknown;
+      fetchedAt: Date;
+      itemCount: number;
+    }>("modelcatalogsnapshots");
+    const older = new Date(now.getTime() - DAY_MS);
+    const curation = {
+      models: [{ modelId: "m", tier: "free", visible: true }],
+      defaultFreeChatModelId: "m",
+      defaultChatModelId: "m",
+      utilityModelId: null,
+      lastRefreshError: null,
+    };
+    await sourceSnapshots.insertMany([
+      { _id: "curation", data: curation, fetchedAt: older, itemCount: 1 },
+      {
+        _id: "capabilities",
+        data: { thinkingModes: { a: "manual", b: "manual" } },
+        fetchedAt: older,
+        itemCount: 2,
+      },
+    ]);
+    await db.insert(pgSchema.modelCatalogSnapshots).values([
+      {
+        id: "curation",
+        data: {
+          models: [],
+          defaultFreeChatModelId: null,
+          defaultChatModelId: null,
+          utilityModelId: null,
+          lastRefreshError: "recent failure",
+        },
+        fetchedAt: now,
+        itemCount: 0,
+      },
+      {
+        id: "capabilities",
+        data: { thinkingModes: { b: "adaptive", c: "manual" } },
+        fetchedAt: now,
+        itemCount: 2,
+      },
+    ]);
     const first = await backfillControlPlaneSmall({ db, apply: true, now });
     expect(first.notification_rules.written).toBe(1);
-    expect(first.notification_deliveries.written).toBe(1);
+    expect(first.notification_deliveries.written).toBe(2);
     expect(first.workflow_recorded_runs.written).toBe(1);
     expect(first.workflow_recorded_writes.written).toBe(1);
-    expect(first.model_catalog_snapshots.written).toBe(2);
+    expect(first.model_catalog_snapshots.written).toBe(4);
+    const snapshots = await db.select().from(pgSchema.modelCatalogSnapshots);
+    expect(snapshots.find(row => row.id === "capabilities")).toMatchObject({
+      data: { thinkingModes: { a: "manual", b: "adaptive", c: "manual" } },
+      itemCount: 3,
+      fetchedAt: now,
+    });
+    expect(snapshots.find(row => row.id === "curation")).toMatchObject({
+      data: { ...curation, lastRefreshError: "recent failure" },
+      itemCount: 1,
+    });
     expect(first.apps_box_policy.written).toBe(1);
     const [policy] = await db.select().from(pgSchema.appsBoxPolicy);
     expect(policy.since).toEqual(new Date(now.getTime() - 30 * DAY_MS));
@@ -231,5 +289,123 @@ describe("backfill-control-plane-small", () => {
     for (const r of Object.values(second)) {
       expect(r.written).toBe(0);
     }
+
+    const rules = mongoose.connection.collection("notification_rules");
+    const deliveries = mongoose.connection.collection(
+      "notification_deliveries",
+    );
+    const changedAt = new Date(now.getTime() + 1);
+    await rules.updateOne(
+      { _id: ruleOid },
+      {
+        $set: {
+          enabled: false,
+          channel: { type: "email", recipients: ["test@example.com"] },
+          updatedAt: changedAt,
+        },
+      },
+    );
+    await deliveries.updateOne(
+      { idempotencyKey: "fresh" },
+      {
+        $set: {
+          status: "sent",
+          sentAt: changedAt,
+          completedAt: changedAt,
+          attempts: 1,
+        },
+      },
+    );
+    const replay = await backfillControlPlaneSmall({ db, apply: true, now });
+    expect(replay.notification_rules.written).toBe(1);
+    expect(replay.notification_deliveries.written).toBe(1);
+    const [edited] = await db.select().from(pgSchema.notificationRules);
+    expect(edited).toMatchObject({
+      enabled: false,
+      updatedAt: changedAt,
+      channel: { type: "email", recipients: ["test@example.com"] },
+    });
+    await db
+      .insert(pgSchema.notificationRules)
+      .values({ ...edited, id: generateUuidv7(), importedFromMongo: false });
+    await deliveries.deleteOne({ idempotencyKey: "wrong-workspace" });
+    await rules.deleteOne({ _id: ruleOid });
+    const dry = await backfillControlPlaneSmall({
+      db,
+      apply: false,
+      reconcileDeletedRules: true,
+      now,
+    });
+    expect(dry.notification_rules).toMatchObject({
+      missingInMongo: 1,
+      deleted: 0,
+    });
+    const final = await backfillControlPlaneSmall({
+      db,
+      apply: true,
+      reconcileDeletedRules: true,
+      now,
+    });
+    expect(final.notification_rules).toMatchObject({
+      missingInMongo: 1,
+      deleted: 1,
+    });
+    const remainingRules = await db.select().from(pgSchema.notificationRules);
+    expect(remainingRules.map(r => r.importedFromMongo)).toEqual([false]);
+    const history = await db.select().from(pgSchema.notificationDeliveries);
+    expect(history).toHaveLength(2);
+    expect(history.find(d => d.idempotencyKey === "fresh")).toMatchObject({
+      ruleId: edited.id,
+      status: "sent",
+      attempts: 1,
+      completedAt: changedAt,
+    });
+    expect(history.find(d => d.idempotencyKey === "orphan")?.ruleId).toBe(
+      objectIdToUuid(orphanRuleOid.toHexString()),
+    );
+    const repeat = await backfillControlPlaneSmall({
+      db,
+      apply: true,
+      reconcileDeletedRules: true,
+      now,
+    });
+    expect(Object.values(repeat).every(r => r.written === 0)).toBe(true);
+    expect(repeat.notification_rules.deleted).toBe(0);
+  });
+
+  it("copies multiple batches of large writes, including the exact TTL boundary", async () => {
+    const cutoff = new Date(now.getTime() - 7 * DAY_MS);
+    const request = {
+      method: "POST",
+      url: "https://fixture",
+      headers: { "x-example": "a\u0000b" },
+      body: "x".repeat(64_000),
+    };
+    const writes = Array.from({ length: 123 }, (_, seq) => ({
+      _id: new Types.ObjectId(),
+      workspaceId: wsOid,
+      runId: "multi",
+      seq,
+      connectionId: flowOid,
+      connection: "fixture",
+      request,
+      at: seq === 122 ? new Date(cutoff.getTime() - 1) : cutoff,
+    }));
+    await mongoose.connection
+      .collection("workflow_recorded_writes")
+      .insertMany(writes);
+    const copied = await backfillControlPlaneSmall({ db, apply: true, now });
+    expect(copied.workflow_recorded_writes.written).toBe(122);
+    const rows = await pg.query<{ seq: number; header: string; size: number }>(
+      "SELECT seq, request->'headers'->>'x-example' AS header, length(request->>'body') AS size FROM workflow_recorded_writes WHERE run_id = 'multi' ORDER BY seq",
+    );
+    expect(rows.rows.map(r => r.seq)).toEqual(
+      writes.slice(0, 122).map(w => w.seq),
+    );
+    expect(rows.rows.every(r => r.header === "ab" && r.size === 64000)).toBe(
+      true,
+    );
+    const repeated = await backfillControlPlaneSmall({ db, apply: true, now });
+    expect(repeated.workflow_recorded_writes.written).toBe(0);
   });
 });

@@ -189,6 +189,32 @@ describe("small app control-plane repositories (PGlite)", () => {
       );
     });
 
+    it("keeps nested unsafe strings and truncates before a split emoji", async () => {
+      setPgTestDb(db);
+      const stem = "a".repeat(63_999);
+      for (const body of [
+        stem + "😀tail",
+        { nested: ["a\u0000b", "\ud800", "😀"] },
+      ]) {
+        expect(
+          await keepRecordedWrite(wsId, { runId: "unicode" }, slack, {
+            ...post(""),
+            headers: { "x-sample": "a\u0000b" },
+            body,
+          }),
+        ).toBe("kept");
+      }
+      const { writes } = await recordedWritesOf(wsId, "unicode", {
+        full: true,
+      });
+      expect(writes[0]).toMatchObject({
+        headers: { "x-sample": "ab" },
+        body: stem + "…",
+        bodyCut: true,
+      });
+      expect(writes[1].body).toEqual({ nested: ["ab", "�", "😀"] });
+    });
+
     it("pages writes in seq order and says where the next page starts", async () => {
       setPgTestDb(db);
       const total = RECORDED_PAGE_SIZE * 2 + 5;
