@@ -23,6 +23,16 @@ import { encryptString } from "../services/crypto.service";
 import { DatabaseConnection } from "../database/models/database-connections";
 import { SourceConnection } from "../database/models/source-connections";
 import { Workspace } from "../database/models/workspace";
+import { drizzle } from "drizzle-orm/pglite";
+import {
+  setPgTestDb,
+  resetPgTestDb,
+  type MakoPgDb,
+} from "../database/pg/client";
+import { objectIdToUuid } from "../database/pg/id-codec";
+import { runPgliteMigrations } from "../database/pg/migrate";
+import * as pgSchema from "../database/pg/schema";
+import { createTestPglite } from "../database/pg/test-pglite";
 import {
   isCredentialFieldName,
   cli,
@@ -127,6 +137,22 @@ async function main(): Promise<void> {
   assert.throws(() => parseCheckArgs(["--workspace", "a".repeat(24)]));
   assert.throws(() => parseCheckArgs(["--apply"]));
   assert.throws(() => parseCheckArgs(["--workspace", "nope"]));
+  // Postgres is the default source; Mongo is opt-in and needs a 24-hex id.
+  const uuidWs = "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+  assert.deepEqual(parseCheckArgs(["--dry-run", "--workspace", uuidWs]), {
+    dryRun: true,
+    workspace: uuidWs,
+  });
+  assert.deepEqual(parseCheckArgs(["--dry-run", "--source", "mongo"]), {
+    dryRun: true,
+    source: "mongo",
+  });
+  assert.equal(parseCheckArgs(["--dry-run", "--source=mongo"]).source, "mongo");
+  assert.throws(() => parseCheckArgs(["--dry-run", "--workspace"]));
+  assert.throws(() => parseCheckArgs(["--dry-run", "--source", "mysql"]));
+  assert.throws(() =>
+    parseCheckArgs(["--dry-run", "--source", "mongo", "--workspace", uuidWs]),
+  );
 
   // No flags: usage, exit 2, and nothing is decrypted or connected.
   const realDecrypt = deps.decrypt;
@@ -265,7 +291,7 @@ async function main(): Promise<void> {
     let summary;
     try {
       summary = await runCheck(
-        { dryRun: false },
+        { dryRun: false, source: "mongo" },
         { out: l => lines.push(l), err: l => errs.push(l) },
       );
     } finally {
@@ -326,7 +352,7 @@ async function main(): Promise<void> {
     const dry: string[] = [];
     const dryErr: string[] = [];
     await runCheck(
-      { dryRun: true },
+      { dryRun: true, source: "mongo" },
       { out: l => dry.push(l), err: l => dryErr.push(l) },
     );
     process.env.ENCRYPTION_KEY = TEST_KEY;
@@ -433,7 +459,7 @@ async function main(): Promise<void> {
     const cap2 = captureStreams();
     try {
       await runApiBaseUrlReport(
-        { dryRun: false, report: "api-base-url" },
+        { dryRun: false, report: "api-base-url", source: "mongo" },
         { out: l => baseOut.push(l), err: l => baseErr.push(l) },
       );
     } finally {
@@ -468,7 +494,7 @@ async function main(): Promise<void> {
     const bdOut: string[] = [];
     const bdErr: string[] = [];
     await runApiBaseUrlReport(
-      { dryRun: true, report: "api-base-url" },
+      { dryRun: true, report: "api-base-url", source: "mongo" },
       { out: l => bdOut.push(l), err: l => bdErr.push(l) },
     );
     process.env.ENCRYPTION_KEY = TEST_KEY;
@@ -495,10 +521,97 @@ async function main(): Promise<void> {
     await mongod.stop();
     deps.decrypt = realDecrypt;
   }
-  console.log("check-google-credential-types: ok");
+
+  // Postgres, the default source: same classes, wire ids, workspace names.
+  const pg = createTestPglite();
+  try {
+    await runPgliteMigrations(pg);
+    const pgDb = drizzle(pg, { schema: pgSchema }) as unknown as MakoPgDb;
+    setPgTestDb(pgDb);
+    const wsOid = "6650a1b2c3d4e5f6a7b8c9d0";
+    const goodOid = "6650a1b2c3d4e5f6a7b8c9d1";
+    const badOid = "6650a1b2c3d4e5f6a7b8c9d2";
+    await pgDb.insert(pgSchema.workspaces).values({
+      id: objectIdToUuid(wsOid),
+      name: "Acme PG Workspace",
+      slug: "acme-pg",
+    });
+    await pgDb.insert(pgSchema.databaseConnections).values([
+      {
+        id: objectIdToUuid(goodOid),
+        workspaceId: objectIdToUuid(wsOid),
+        name: "good",
+        type: "bigquery",
+        connectionEncrypted: enc({
+          project_id: "p",
+          service_account_json: JSON.stringify(goodKey),
+        }) as Record<string, unknown>,
+      },
+      {
+        id: objectIdToUuid(badOid),
+        workspaceId: objectIdToUuid(wsOid),
+        name: "bad",
+        type: "bigquery",
+        connectionEncrypted: enc({
+          project_id: "p",
+          service_account_json: JSON.stringify(externalAccount),
+        }) as Record<string, unknown>,
+      },
+    ]);
+    await pgDb.insert(pgSchema.workspaces).values({
+      id: uuidWs,
+      name: "Native UUID workspace",
+      slug: "native-pg",
+    });
+    await pgDb.insert(pgSchema.sourceConnections).values({
+      workspaceId: uuidWs,
+      name: "warehouse",
+      type: "bigquery",
+      configEncrypted: {
+        api_base_url: encryptString("https://bigquery.googleapis.com"),
+      },
+    });
+    const nativeReport: string[] = [];
+    const baseSummary = await runApiBaseUrlReport(
+      { dryRun: false, workspace: uuidWs, report: "api-base-url" },
+      { out: l => nativeReport.push(l), err: () => {} },
+    );
+    assert.deepEqual(baseSummary, { scanned: 1, classified: 1 });
+    assert.deepEqual(nativeReport[1].split("\t").slice(0, 6), [
+      uuidWs,
+      "Native UUID workspace",
+      "source",
+      "bigquery",
+      "google",
+      "1",
+    ]);
+    const pgOut: string[] = [];
+    const pgErr: string[] = [];
+    const pgSummary = await runCheck(
+      { dryRun: false, workspace: wsOid },
+      { out: l => pgOut.push(l), err: l => pgErr.push(l) },
+    );
+    assert.deepEqual(pgSummary, { scanned: 2, classified: 2, bad: 1 });
+    const pgRows = pgOut.slice(1).map(l => l.split("\t"));
+    const pgBad = pgRows.find(r => r[4] === "bad_type");
+    assert.ok(pgBad, "pg: external_account is bad_type");
+    assert.equal(pgBad[0], wsOid, "pg: workspace id prints in wire form");
+    assert.equal(pgBad[1], "Acme PG Workspace");
+    assert.equal(pgBad[5], "external_account");
+    assert.equal(pgBad[10], badOid, "pg: connection id prints in wire form");
+    assert.ok(pgRows.some(r => r[4] === "ok" && r[10] === ""));
+    const pgText = [...pgOut, ...pgErr].join("\n");
+    for (const secret of SECRETS) {
+      assert.ok(!pgText.includes(secret), `pg output leaked ${secret}`);
+    }
+  } finally {
+    resetPgTestDb();
+    await pg.close();
+  }
+  process.stdout.write("check-google-credential-types: ok\n");
 }
 
 void main().catch(error => {
   console.error(error);
-  process.exit(1);
+  process.exitCode = 1;
 });

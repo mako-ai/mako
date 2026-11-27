@@ -8,6 +8,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { objectIdToUuid } from "../database/pg/id-codec";
 import { ZERO_OID, assertSafeRelPath } from "./git";
 import {
   DEFAULT_BRANCH,
@@ -19,6 +20,7 @@ import {
   listTree,
   log,
   readBlob,
+  repoDirFor,
   resolveCommit,
   snapshotDirToTree,
   treeOfCommit,
@@ -40,6 +42,16 @@ afterEach(async () => {
     force: true,
     maxRetries: 5,
     retryDelay: 100,
+  });
+});
+
+describe("repoDirFor", () => {
+  it("resolves migrated and native workspace IDs discovered in Postgres", () => {
+    const oid = "6650a1b2c3d4e5f6a7b8c9d0";
+    const uuid = "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+    expect(repoDirFor(objectIdToUuid(oid))).toBe(repoDirFor(oid));
+    expect(path.basename(repoDirFor(uuid))).toBe(`${uuid}.git`);
+    expect(() => repoDirFor(`../${uuid}`)).toThrow("Invalid workspace id");
   });
 });
 

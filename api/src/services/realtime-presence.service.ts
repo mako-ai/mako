@@ -3,15 +3,21 @@
  *
  * Tracks which browser tabs currently hold an open realtime (SSE)
  * connection, per workspace. The SSE route heartbeats presence while a
- * connection is open; a Mongo TTL index reaps stale rows. This gives a
- * multi-instance-correct answer to "is any browser attached?" without
- * adding pub/sub KV scans.
+ * connection is open. This gives a multi-instance-correct answer to "is any
+ * browser attached?" without pub/sub KV scans.
+ *
+ * Storage: one Redis sorted set per workspace when REDIS_URL is set
+ * (member = clientId, score = last heartbeat in ms), shared across API
+ * instances like the chat stream state. Without REDIS_URL it lives in
+ * process memory with the same freshness rules — correct for a single API
+ * instance (local dev, tests). Presence is ephemeral by nature: a lost
+ * entry heals on the next 25s heartbeat, so nothing here needs durability.
  *
  * Consumers:
  *   - agent.routes.ts "no client attached" fallback for client-only tools.
  */
-import { Types } from "mongoose";
-import { RealtimePresence } from "../database/workspace-schema";
+import { Redis } from "ioredis";
+import { BASE_REDIS_OPTIONS } from "../utils/redis";
 import { loggers } from "../logging";
 
 const logger = loggers.api("realtime");
@@ -22,19 +28,164 @@ const logger = loggers.api("realtime");
  */
 const PRESENCE_FRESHNESS_MS = 60_000;
 
-/** Upsert (refresh) a client's presence row. Best-effort, never throws. */
+/**
+ * Entries older than this are pruned, and an idle workspace's whole key
+ * expires after it. Matches the 90s TTL index the Mongo collection used.
+ */
+const PRESENCE_TTL_SECONDS = 90;
+const PRESENCE_TTL_MS = PRESENCE_TTL_SECONDS * 1000;
+
+function presenceKey(workspaceId: string): string {
+  return `mako:realtime:presence:${workspaceId}`;
+}
+
+// --------------------------------------------------------------------------
+// Storage: Redis when configured, else in-process with the same windows.
+// --------------------------------------------------------------------------
+
+interface PresenceStore {
+  disconnect?(): void;
+  touch(workspaceId: string, clientId: string, now: number): Promise<void>;
+  clear(workspaceId: string, clientId: string): Promise<void>;
+  countFresh(workspaceId: string, now: number): Promise<number>;
+}
+
+function memoryStore(): PresenceStore {
+  const byWorkspace = new Map<string, Map<string, number>>();
+  return {
+    async touch(workspaceId, clientId, now) {
+      let clients = byWorkspace.get(workspaceId);
+      if (!clients) {
+        clients = new Map();
+        byWorkspace.set(workspaceId, clients);
+      }
+      clients.set(clientId, now);
+    },
+    async clear(workspaceId, clientId) {
+      const clients = byWorkspace.get(workspaceId);
+      if (!clients) return;
+      clients.delete(clientId);
+      if (clients.size === 0) byWorkspace.delete(workspaceId);
+    },
+    async countFresh(workspaceId, now) {
+      const clients = byWorkspace.get(workspaceId);
+      if (!clients) return 0;
+      let fresh = 0;
+      for (const [clientId, lastSeenAt] of clients) {
+        if (lastSeenAt <= now - PRESENCE_TTL_MS) {
+          clients.delete(clientId);
+        } else if (lastSeenAt >= now - PRESENCE_FRESHNESS_MS) {
+          fresh++;
+        }
+      }
+      if (clients.size === 0) byWorkspace.delete(workspaceId);
+      return fresh;
+    },
+  };
+}
+
+function redisStore(url: string): PresenceStore {
+  // Fail fast. The presence check sits on the agent's tool path: while Redis
+  // is down it must fail open in milliseconds, not after a queued command
+  // and its retries. No offline queue, one retry.
+  const redis = new Redis(url, {
+    ...BASE_REDIS_OPTIONS,
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+    connectTimeout: 2000,
+  });
+  redis.on("error", error =>
+    logger.warn("Realtime presence redis error", {
+      error: error instanceof Error ? error.message : String(error),
+    }),
+  );
+  // Share one bounded wait for the initial handshake. After the first
+  // attempt, disabling the offline queue makes outages fail immediately.
+  const firstReady = new Promise<void>(resolve => {
+    const done = () => {
+      clearTimeout(timer);
+      redis.off("ready", done);
+      redis.off("close", done);
+      resolve();
+    };
+    const timer = setTimeout(done, 2000);
+    redis.once("ready", done);
+    redis.once("close", done);
+    if (redis.status === "ready") done();
+  });
+  return {
+    disconnect: () => redis.disconnect(),
+    async touch(workspaceId, clientId, now) {
+      await firstReady;
+      const key = presenceKey(workspaceId);
+      const results = await redis
+        .multi()
+        .zadd(key, now, clientId)
+        .expire(key, PRESENCE_TTL_SECONDS)
+        .exec();
+      throwOnMultiError(results);
+    },
+    async clear(workspaceId, clientId) {
+      await firstReady;
+      await redis.zrem(presenceKey(workspaceId), clientId);
+    },
+    async countFresh(workspaceId, now) {
+      await firstReady;
+      const key = presenceKey(workspaceId);
+      // Bounds are inclusive: prune scores <= now - 90s, count scores
+      // >= now - 60s, matching the memory store.
+      const results = await redis
+        .multi()
+        .zremrangebyscore(key, "-inf", now - PRESENCE_TTL_MS)
+        .zcount(key, now - PRESENCE_FRESHNESS_MS, "+inf")
+        .exec();
+      throwOnMultiError(results);
+      const count = results?.[1]?.[1];
+      if (typeof count !== "number") throw new Error("Missing presence count");
+      return count;
+    },
+  };
+}
+
+/** ioredis reports per-command failures inside exec()'s result tuples. */
+function throwOnMultiError(
+  results: Array<[Error | null, unknown]> | null,
+): void {
+  if (!results) throw new Error("Redis transaction aborted");
+  for (const [error] of results) {
+    if (error) throw error;
+  }
+}
+
+let store: PresenceStore | null = null;
+function getStore(): PresenceStore {
+  if (!store) {
+    store = process.env.REDIS_URL
+      ? redisStore(process.env.REDIS_URL)
+      : memoryStore();
+  }
+  return store;
+}
+
+/** Test seam: drop the store so the next call rebuilds it from REDIS_URL. */
+export function resetRealtimePresenceForTests(): void {
+  store?.disconnect?.();
+  store = null;
+}
+
+// --------------------------------------------------------------------------
+// API
+// --------------------------------------------------------------------------
+
+/** Refresh a client's presence. Best-effort, never throws. */
 export async function touchRealtimePresence(
   workspaceId: string,
   clientId: string,
-  userId: string,
+  _userId: string,
 ): Promise<void> {
   if (!clientId) return;
   try {
-    await RealtimePresence.updateOne(
-      { workspaceId: new Types.ObjectId(workspaceId), clientId },
-      { $set: { lastSeenAt: new Date(), userId } },
-      { upsert: true },
-    );
+    await getStore().touch(workspaceId, clientId, Date.now());
   } catch (error) {
     logger.debug("Failed to touch realtime presence", {
       error,
@@ -44,17 +195,14 @@ export async function touchRealtimePresence(
   }
 }
 
-/** Remove a client's presence row on clean disconnect. Best-effort. */
+/** Remove a client's presence on clean disconnect. Best-effort. */
 export async function clearRealtimePresence(
   workspaceId: string,
   clientId: string,
 ): Promise<void> {
   if (!clientId) return;
   try {
-    await RealtimePresence.deleteOne({
-      workspaceId: new Types.ObjectId(workspaceId),
-      clientId,
-    });
+    await getStore().clear(workspaceId, clientId);
   } catch (error) {
     logger.debug("Failed to clear realtime presence", {
       error,
@@ -69,11 +217,7 @@ export async function hasAttachedClients(
   workspaceId: string,
 ): Promise<boolean> {
   try {
-    const fresh = await RealtimePresence.exists({
-      workspaceId: new Types.ObjectId(workspaceId),
-      lastSeenAt: { $gte: new Date(Date.now() - PRESENCE_FRESHNESS_MS) },
-    });
-    return fresh !== null;
+    return (await getStore().countFresh(workspaceId, Date.now())) > 0;
   } catch (error) {
     // Fail open: assuming a client is attached preserves today's behavior
     // (client-driven tool loop) rather than risking a wrong synthetic result.

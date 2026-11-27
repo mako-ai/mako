@@ -16,14 +16,30 @@ import path from "node:path";
 import { config as loadEnv } from "dotenv";
 loadEnv({ path: path.resolve(process.cwd(), ".env"), quiet: true });
 loadEnv({ path: path.resolve(process.cwd(), "..", ".env"), quiet: true });
-import mongoose from "mongoose";
+import { and, eq } from "drizzle-orm";
 import {
   adoptWorkspaceConsoles,
   reconcileConsoleDescriptions,
 } from "./workspace-consoles.service";
 import { resolveMirrorTarget } from "./cloud-repo.service";
 import { repoDirFor, repoExists } from "./repository.service";
-import { SavedConsole } from "../database/workspace-schema";
+import { closePgConnections, getPgDb } from "../database/pg/client";
+import { toWireId } from "../database/pg/id-codec";
+import { savedConsoles } from "../database/pg/schema/consoles-charts";
+
+/**
+ * Every workspace with at least one live saved console. Consoles are
+ * `pg_only`, so Postgres is the only copy worth asking.
+ */
+async function workspacesWithSavedConsoles(): Promise<string[]> {
+  const rows = await getPgDb()
+    .selectDistinct({ workspaceId: savedConsoles.workspaceId })
+    .from(savedConsoles)
+    .where(
+      and(eq(savedConsoles.isSaved, true), eq(savedConsoles.isDeleted, false)),
+    );
+  return rows.map(r => toWireId(r.workspaceId));
+}
 
 function arg(name: string): string | undefined {
   const at = process.argv.indexOf(`--${name}`);
@@ -35,9 +51,6 @@ async function main(): Promise<void> {
   const all = process.argv.includes("--all");
   const execute = process.argv.includes("--execute");
   const reconcile = process.argv.includes("--reconcile-descriptions");
-  const uri = process.env.DATABASE_URL;
-  if (!uri) throw new Error("DATABASE_URL is not set");
-  await mongoose.connect(uri);
   try {
     if (reconcile) {
       const n = await reconcileConsoleDescriptions(workspaceId);
@@ -47,15 +60,7 @@ async function main(): Promise<void> {
     let ids: string[];
     if (workspaceId) ids = [workspaceId];
     else if (all) {
-      ids = (
-        (await SavedConsole.distinct("workspaceId", {
-          isSaved: true,
-          $or: [
-            { is_deleted: { $ne: true } },
-            { is_deleted: { $exists: false } },
-          ],
-        })) as Array<{ toString(): string }>
-      ).map(w => w.toString());
+      ids = await workspacesWithSavedConsoles();
     } else {
       throw new Error(
         "Usage: migrate-consoles (--workspace <id> | --all) [--execute]",
@@ -76,7 +81,7 @@ async function main(): Promise<void> {
     }
     if (!execute) console.log("dry run — pass --execute to write");
   } finally {
-    await mongoose.disconnect();
+    await closePgConnections();
   }
 }
 

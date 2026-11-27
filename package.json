@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "concurrently \"pnpm --filter app run dev\" \"pnpm --filter api run dev\" \"pnpm dlx inngest-cli@1.53.0 dev\" \"./scripts/sandbox-tunnel.sh\"",
     "sandbox:tunnel": "./scripts/sandbox-tunnel.sh",
+    "mongo:drop-migrated": "tsx scripts/drop-migrated-mongo-collections.ts",
     "consoles:migrate": "pnpm --filter api exec tsx src/apps/migrate-consoles.cli.ts",
     "flows:export": "pnpm --filter api exec tsx src/services/flow-config-export.cli.ts",
     "artifacts:cors": "pnpm --filter api exec tsx src/services/artifact-bucket-cors.cli.ts",

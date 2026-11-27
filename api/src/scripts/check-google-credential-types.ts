@@ -1,4 +1,4 @@
-/* eslint-disable no-console, no-process-exit */
+/* eslint-disable no-process-exit -- standalone CLI exit codes */
 /**
  * ONE-OFF exploitation check. Written, never run by the author.
  *
@@ -10,10 +10,12 @@
  *
  *   pnpm --filter api exec tsx src/scripts/check-google-credential-types.ts --dry-run
  *   pnpm --filter api exec tsx src/scripts/check-google-credential-types.ts --i-understand-this-decrypts
- *   --workspace <24-hex id>   only that workspace
+ *   --workspace <id>          only that workspace (24-hex or UUID)
+ *   --source pg|mongo         where connections are read (default pg)
  *
  * Environment (process only; no .env file is loaded):
- *   DATABASE_URL      Mongo.
+ *   POSTGRES_URL      Postgres, the default source (connections are pg_only).
+ *   DATABASE_URL      Mongo, only with --source mongo (the frozen copy).
  *   ENCRYPTION_KEY    the API's own key (not needed with --dry-run).
  *
  * It only reads. It decrypts each candidate in memory, parses it and keeps
@@ -33,11 +35,19 @@
  *
  * `--dry-run` decrypts nothing. It counts candidates per workspace and type.
  */
+import { and, eq, gt, inArray } from "drizzle-orm";
 import mongoose from "mongoose";
 import { decryptString } from "../services/crypto.service";
 import { DatabaseConnection } from "../database/models/database-connections";
 import { SourceConnection } from "../database/models/source-connections";
 import { Workspace } from "../database/models/workspace";
+import { closePgConnections, getPgDb } from "../database/pg/client";
+import { parseEntityId, toWireId } from "../database/pg/id-codec";
+import {
+  databaseConnections,
+  sourceConnections,
+} from "../database/pg/schema/connections";
+import { workspaces } from "../database/pg/schema/workspaces";
 
 /** The one decrypt call site; a test swaps it to count calls. */
 export const deps = { decrypt: decryptString };
@@ -242,8 +252,6 @@ export function classifyStoredField(
   } finally {
     scrub(parsed);
     scrub(text);
-    text = null;
-    parsed = null;
   }
 }
 
@@ -273,6 +281,131 @@ interface StoredDoc {
   updatedAt?: Date;
   connection?: unknown;
   config?: unknown;
+}
+
+/**
+ * Where the connections come from. Postgres is the source of truth
+ * (connections are `pg_only`); the Mongo reader reads the frozen copy and
+ * backs the in-memory-Mongo unit test.
+ */
+interface ConnectionReader {
+  databaseConnections(workspace?: string): AsyncIterable<StoredDoc>;
+  sourceConnections(workspace?: string): AsyncIterable<StoredDoc>;
+  workspaceNames(ids: string[]): Promise<Map<string, string>>;
+}
+
+const mongoReader: ConnectionReader = {
+  databaseConnections: workspace =>
+    DatabaseConnection.collection.find(mongoFilter(workspace), {
+      projection: {
+        workspaceId: 1,
+        type: 1,
+        connection: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    }) as unknown as AsyncIterable<StoredDoc>,
+  sourceConnections: workspace =>
+    SourceConnection.collection.find(mongoFilter(workspace), {
+      projection: {
+        workspaceId: 1,
+        type: 1,
+        config: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    }) as unknown as AsyncIterable<StoredDoc>,
+  async workspaceNames(ids) {
+    const names = new Map<string, string>();
+    if (ids.length === 0) return names;
+    const rows = await Workspace.collection
+      .find(
+        { _id: { $in: ids.map(i => new mongoose.Types.ObjectId(i)) } },
+        { projection: { name: 1 } },
+      )
+      .toArray();
+    for (const r of rows) names.set(String(r._id), String(r.name ?? ""));
+    return names;
+  },
+};
+
+function mongoFilter(workspace?: string): Record<string, unknown> {
+  return workspace
+    ? { workspaceId: new mongoose.Types.ObjectId(workspace) }
+    : {};
+}
+
+/** The workspace's Postgres UUID, from a 24-hex id or a UUID. */
+function pgWorkspaceUuid(workspace: string): string {
+  const parsed = parseEntityId(workspace);
+  if (!parsed) throw new Error("--workspace needs a 24-hex id or a UUID");
+  return parsed.uuid;
+}
+
+/** Postgres reader. Ids print in wire form (24-hex for migrated rows). */
+function pgReader(): ConnectionReader {
+  async function* connections(
+    kind: Kind,
+    workspace?: string,
+  ): AsyncIterable<StoredDoc> {
+    const table = kind === "database" ? databaseConnections : sourceConnections;
+    const payload =
+      kind === "database"
+        ? databaseConnections.connectionEncrypted
+        : sourceConnections.configEncrypted;
+    const scope = workspace
+      ? eq(table.workspaceId, pgWorkspaceUuid(workspace))
+      : undefined;
+    const pageSize = 256;
+    let after: string | undefined;
+    for (;;) {
+      const rows = await getPgDb()
+        .select({
+          id: table.id,
+          workspaceId: table.workspaceId,
+          type: table.type,
+          createdAt: table.createdAt,
+          updatedAt: table.updatedAt,
+          payload,
+        })
+        .from(table)
+        .where(and(scope, after ? gt(table.id, after) : undefined))
+        .orderBy(table.id)
+        .limit(pageSize);
+      for (const r of rows) {
+        yield {
+          _id: toWireId(r.id),
+          workspaceId: toWireId(r.workspaceId),
+          type: r.type,
+          createdAt: r.createdAt,
+          updatedAt: r.updatedAt,
+          ...(kind === "database"
+            ? { connection: r.payload }
+            : { config: r.payload }),
+        };
+      }
+      if (rows.length < pageSize) return;
+      after = rows[rows.length - 1].id;
+    }
+  }
+  return {
+    databaseConnections: workspace => connections("database", workspace),
+    sourceConnections: workspace => connections("source", workspace),
+    async workspaceNames(ids) {
+      const names = new Map<string, string>();
+      if (ids.length === 0) return names;
+      const rows = await getPgDb()
+        .select({ id: workspaces.id, name: workspaces.name })
+        .from(workspaces)
+        .where(inArray(workspaces.id, ids.map(pgWorkspaceUuid)));
+      for (const r of rows) names.set(toWireId(r.id), r.name);
+      return names;
+    },
+  };
+}
+
+function readerFor(opts: CheckOptions): ConnectionReader {
+  return (opts.source ?? "pg") === "mongo" ? mongoReader : pgReader();
 }
 
 const UNPARSED = Symbol("string_config_unparsed");
@@ -347,7 +480,8 @@ interface Group {
 
 export const DECRYPT_FLAG = "--i-understand-this-decrypts";
 
-export const USAGE = `Usage: check-google-credential-types.ts (--dry-run | ${DECRYPT_FLAG}) [--workspace <24-hex id>]
+export const USAGE = `Usage: check-google-credential-types.ts (--dry-run | ${DECRYPT_FLAG}) [--workspace <id>] [--source pg|mongo]
+  --source    pg (default; POSTGRES_URL) or mongo (the frozen copy; DATABASE_URL)
   --report api-base-url
               second report: where each BigQuery connection's api_base_url
               points (google, loopback, private, other, empty); never the URL
@@ -362,6 +496,8 @@ export interface CheckOptions {
   workspace?: string;
   /** Default: the credential-type report. */
   report?: "api-base-url";
+  /** Default: pg. */
+  source?: "pg" | "mongo";
 }
 
 export interface CheckIO {
@@ -376,19 +512,37 @@ export function parseCheckArgs(argv: string[]): CheckOptions {
     const arg = argv[i];
     if (arg === "--dry-run") opts.dryRun = true;
     else if (arg === DECRYPT_FLAG) decrypts = true;
-    else if (arg === "--workspace") opts.workspace = argv[++i];
-    else if (arg === "--report") {
+    else if (arg === "--workspace") {
+      const workspace = argv[++i];
+      if (!workspace) throw new UsageError("--workspace needs an id");
+      opts.workspace = workspace;
+    } else if (arg === "--report") {
       if (argv[++i] !== "api-base-url") {
         throw new UsageError("--report only knows: api-base-url");
       }
       opts.report = "api-base-url";
+    } else if (arg === "--source" || arg.startsWith("--source=")) {
+      const source =
+        arg === "--source" ? argv[++i] : arg.slice("--source=".length);
+      if (source !== "pg" && source !== "mongo") {
+        throw new UsageError("--source only knows: pg, mongo");
+      }
+      opts.source = source;
     } else throw new Error(`Unknown argument: ${arg}`);
   }
   if (!opts.dryRun && !decrypts) {
     throw new UsageError("Pass --dry-run or " + DECRYPT_FLAG);
   }
-  if (opts.workspace !== undefined && !/^[0-9a-f]{24}$/i.test(opts.workspace)) {
-    throw new Error("--workspace needs a 24-hex workspace id");
+  if (opts.workspace !== undefined) {
+    const parsed = parseEntityId(opts.workspace);
+    // Mongo ids are always 24-hex; Postgres also has native UUID workspaces.
+    if (
+      !parsed ||
+      (opts.source === "mongo" &&
+        !mongoose.isObjectIdOrHexString(opts.workspace))
+    ) {
+      throw new Error("--workspace needs a 24-hex id (or a UUID with pg)");
+    }
   }
   return opts;
 }
@@ -407,35 +561,10 @@ export async function runCheck(
   let classified = 0;
   let bad = 0;
 
-  const filter = opts.workspace
-    ? { workspaceId: new mongoose.Types.ObjectId(opts.workspace) }
-    : {};
-
+  const reader = readerFor(opts);
   const sources: Array<[Kind, AsyncIterable<StoredDoc>]> = [
-    [
-      "database",
-      DatabaseConnection.collection.find(filter, {
-        projection: {
-          workspaceId: 1,
-          type: 1,
-          connection: 1,
-          createdAt: 1,
-          updatedAt: 1,
-        },
-      }) as unknown as AsyncIterable<StoredDoc>,
-    ],
-    [
-      "source",
-      SourceConnection.collection.find(filter, {
-        projection: {
-          workspaceId: 1,
-          type: 1,
-          config: 1,
-          createdAt: 1,
-          updatedAt: 1,
-        },
-      }) as unknown as AsyncIterable<StoredDoc>,
-    ],
+    ["database", reader.databaseConnections(opts.workspace)],
+    ["source", reader.sourceConnections(opts.workspace)],
   ];
 
   for (const [kind, cursor] of sources) {
@@ -519,17 +648,9 @@ export async function runCheck(
     }
   }
 
-  const ids = [...new Set([...groups.values()].map(g => g.workspaceId))];
-  const names = new Map<string, string>();
-  if (ids.length > 0) {
-    const rows = await Workspace.collection
-      .find(
-        { _id: { $in: ids.map(i => new mongoose.Types.ObjectId(i)) } },
-        { projection: { name: 1 } },
-      )
-      .toArray();
-    for (const r of rows) names.set(String(r._id), String(r.name ?? ""));
-  }
+  const names = await reader.workspaceNames([
+    ...new Set([...groups.values()].map(g => g.workspaceId)),
+  ]);
 
   io.out(
     [
@@ -690,7 +811,6 @@ function classifyStoredBaseUrl(raw: unknown): BaseUrlClass {
     return classifyBaseUrl(text);
   } finally {
     scrub(text);
-    text = null;
   }
 }
 
@@ -710,22 +830,10 @@ export async function runApiBaseUrlReport(
   const groups = new Map<string, BaseGroup>();
   let scanned = 0;
   let classified = 0;
-  const filter = opts.workspace
-    ? { workspaceId: new mongoose.Types.ObjectId(opts.workspace) }
-    : {};
+  const reader = readerFor(opts);
   const sources: Array<[Kind, AsyncIterable<StoredDoc>]> = [
-    [
-      "database",
-      DatabaseConnection.collection.find(filter, {
-        projection: { workspaceId: 1, type: 1, connection: 1 },
-      }) as unknown as AsyncIterable<StoredDoc>,
-    ],
-    [
-      "source",
-      SourceConnection.collection.find(filter, {
-        projection: { workspaceId: 1, type: 1, config: 1 },
-      }) as unknown as AsyncIterable<StoredDoc>,
-    ],
+    ["database", reader.databaseConnections(opts.workspace)],
+    ["source", reader.sourceConnections(opts.workspace)],
   ];
   for (const [kind, cursor] of sources) {
     for await (const doc of cursor) {
@@ -756,17 +864,9 @@ export async function runApiBaseUrlReport(
       if (LISTED_BASE_URL_CLASSES.has(cls)) g.ids.push(doc._id.toString());
     }
   }
-  const wsIds = [...new Set([...groups.values()].map(g => g.workspaceId))];
-  const names = new Map<string, string>();
-  if (wsIds.length > 0) {
-    const found = await Workspace.collection
-      .find(
-        { _id: { $in: wsIds.map(i => new mongoose.Types.ObjectId(i)) } },
-        { projection: { name: 1 } },
-      )
-      .toArray();
-    for (const r of found) names.set(String(r._id), String(r.name ?? ""));
-  }
+  const names = await reader.workspaceNames([
+    ...new Set([...groups.values()].map(g => g.workspaceId)),
+  ]);
   io.out(
     [
       "workspaceId",
@@ -828,17 +928,20 @@ export async function cli(
     }
     return 2;
   }
-  const url = env.DATABASE_URL?.trim();
-  if (!url) throw new Error("DATABASE_URL is not set");
+  const source = opts.source ?? "pg";
+  const urlVar = source === "mongo" ? "DATABASE_URL" : "POSTGRES_URL";
+  const url = env[urlVar]?.trim();
+  if (!url) throw new Error(`${urlVar} is not set`);
   if (!opts.dryRun && !("ENCRYPTION_KEY" in env)) {
     throw new Error("ENCRYPTION_KEY is not set");
   }
-  await mongoose.connect(url);
+  if (source === "mongo") await mongoose.connect(url);
   try {
     if (opts.report === "api-base-url") await runApiBaseUrlReport(opts, io);
     else await runCheck(opts, io);
   } finally {
-    await mongoose.disconnect();
+    if (source === "mongo") await mongoose.disconnect();
+    else await closePgConnections();
   }
   return 0;
 }

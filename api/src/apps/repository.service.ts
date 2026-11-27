@@ -19,6 +19,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { isObjectIdHex, isUuidString, toWireId } from "../database/pg/id-codec";
 import { appsReposRoot } from "./config";
 import {
   GitError,
@@ -77,9 +78,11 @@ function authorEnv(author?: GitAuthor): Record<string, string> {
   return env;
 }
 
-/** Absolute path of a workspace's bare repo. Id is validated as hex. */
+/** Resolve both workspace ID formats to the bare repo named by its wire ID. */
 export function repoDirFor(workspaceId: string): string {
-  if (!/^[0-9a-f]{24}$/i.test(workspaceId)) {
+  if (isUuidString(workspaceId)) {
+    workspaceId = toWireId(workspaceId);
+  } else if (!isObjectIdHex(workspaceId)) {
     throw new Error("Invalid workspace id");
   }
   return path.join(appsReposRoot(), `${workspaceId}.git`);

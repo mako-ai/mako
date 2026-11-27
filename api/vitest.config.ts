@@ -65,6 +65,7 @@ export default defineConfig({
       "src/database/pg/**/*.test.ts",
       "src/repositories/**/*.test.ts",
       "src/services/agent-chat/exact-history.test.ts",
+      "src/services/realtime-presence.service.test.ts",
     ],
     exclude: [
       "**/node_modules/**",
