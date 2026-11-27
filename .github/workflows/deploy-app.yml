@@ -1341,6 +1341,8 @@ jobs:
 
       - name: Verify prepared Cloud Run writers and activate the control plane
         timeout-minutes: 5
+        env:
+          GCP_MIGRATION_PROJECT_ID: ${{ vars.GCP_MIGRATION_PROJECT_ID }}
         run: |
           set -euo pipefail
           node scripts/check-control-plane-revisions.mjs
