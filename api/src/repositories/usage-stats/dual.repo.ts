@@ -80,9 +80,16 @@ import type {
 export const USAGE_STATS_DOMAIN = "usage_stats" as const;
 
 export const USAGE_STATS_SHADOW_OPTIONS: ShadowCompareOptions = {
-  // Summing 100k+ numeric(14,8) rows in PG vs IEEE-754 floats in Mongo can
-  // drift by ~1e-6–1e-5 USD; 1e-4 ($0.0001) avoids false-positive rounding
-  // alerts while still catching any meaningful cost discrepancy.
+  floatEpsilon: 1e-6,
+};
+
+/**
+ * Looser tolerance for multi-row cost-sum rollups (`SUM(cost_usd)` over 100k+
+ * `numeric(14,8)` rows in PG vs IEEE-754 float accumulation in Mongo can drift
+ * by ~1e-6–1e-5 USD). Kept separate from `USAGE_STATS_SHADOW_OPTIONS` so
+ * per-row reads still catch $0.00001-scale discrepancies.
+ */
+export const USAGE_STATS_ROLLUP_SHADOW_OPTIONS: ShadowCompareOptions = {
   floatEpsilon: 1e-4,
 };
 
@@ -209,6 +216,7 @@ export class DualUsageStatsRepository implements UsageStatsRepository {
       pg: () => Promise<T>;
       collectRawUserIds: (value: T) => Array<string | null | undefined>;
       canonicalize: (value: T, userMap: ReadonlyMap<string, string>) => unknown;
+      shadowOptions?: ShadowCompareOptions;
     },
   ): Promise<T> {
     let mongoCaptured = false;
@@ -246,7 +254,7 @@ export class DualUsageStatsRepository implements UsageStatsRepository {
         return res;
       },
       canonicalize: value => handlers.canonicalize(value, shadowUserMap),
-      shadowOptions: USAGE_STATS_SHADOW_OPTIONS,
+      shadowOptions: handlers.shadowOptions ?? USAGE_STATS_SHADOW_OPTIONS,
     });
   }
 
@@ -642,7 +650,7 @@ export class DualUsageStatsRepository implements UsageStatsRepository {
       {
         mongo: () => this.mongo.getWorkspaceLlmUsageSummary(workspaceId, range),
         pg: () => this.pg.getWorkspaceLlmUsageSummary(workspaceId, range),
-        shadowOptions: USAGE_STATS_SHADOW_OPTIONS,
+        shadowOptions: USAGE_STATS_ROLLUP_SHADOW_OPTIONS,
       },
     );
   }
@@ -684,6 +692,7 @@ export class DualUsageStatsRepository implements UsageStatsRepository {
             (a.userId ?? "").localeCompare(b.userId ?? ""),
           );
         },
+        shadowOptions: USAGE_STATS_ROLLUP_SHADOW_OPTIONS,
       },
     );
   }
@@ -705,7 +714,7 @@ export class DualUsageStatsRepository implements UsageStatsRepository {
           [...rows].sort((a, b) =>
             (a.modelId ?? "").localeCompare(b.modelId ?? ""),
           ),
-        shadowOptions: USAGE_STATS_SHADOW_OPTIONS,
+        shadowOptions: USAGE_STATS_ROLLUP_SHADOW_OPTIONS,
       },
     );
   }
@@ -774,7 +783,7 @@ export class DualUsageStatsRepository implements UsageStatsRepository {
           this.mongo.readWorkflowDailyCosts(workspaceId, workflowId, since),
         pg: () =>
           this.pg.readWorkflowDailyCosts(workspaceId, workflowId, since),
-        shadowOptions: USAGE_STATS_SHADOW_OPTIONS,
+        shadowOptions: USAGE_STATS_ROLLUP_SHADOW_OPTIONS,
       },
     );
   }

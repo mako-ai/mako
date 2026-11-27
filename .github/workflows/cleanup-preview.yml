@@ -218,6 +218,7 @@ jobs:
 
       - name: List open PRs
         run: |
+          set -o pipefail
           gh pr list --repo "${{ github.repository }}" --state open --limit 500 \
             --json number --jq '.[].number' | sort > /tmp/open_prs.txt
           echo "Open PRs: $(wc -l < /tmp/open_prs.txt)"
@@ -291,15 +292,17 @@ jobs:
         env:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
           NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+          GH_REPO: ${{ github.repository }}
         run: |
           if [ -z "${NEON_API_KEY}" ] || [ -z "${NEON_PROJECT_ID}" ]; then
             echo "NEON_API_KEY/NEON_PROJECT_ID unset; skipping Neon branch sweep"
             exit 0
           fi
           python3 - <<'PY'
-          import json, os, urllib.request
+          import json, os, subprocess, urllib.request
           api_key = os.environ["NEON_API_KEY"]
           proj_id = os.environ["NEON_PROJECT_ID"]
+          gh_repo = os.environ["GH_REPO"]
           with open("/tmp/open_prs.txt") as f:
               open_prs = {line.strip() for line in f if line.strip()}
           headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
@@ -311,15 +314,26 @@ jobs:
               if not name.startswith("pr-") or b.get("default") or b.get("protected"):
                   continue
               pr_num = name[3:]
-              if pr_num.isdigit() and pr_num not in open_prs:
-                  del_req = urllib.request.Request(
-                      f"https://console.neon.tech/api/v2/projects/{proj_id}/branches/{b['id']}",
-                      headers=headers,
-                      method="DELETE",
-                  )
-                  try:
-                      with urllib.request.urlopen(del_req, timeout=20) as del_resp:
-                          print(f"Deleted stale Neon branch {name} ({b['id']}): HTTP {del_resp.status}")
-                  except Exception as e:
-                      print(f"::warning::Failed to delete Neon branch {name}: {e}")
+              if not pr_num.isdigit() or pr_num in open_prs:
+                  continue
+              # Confirm the PR is explicitly MERGED or CLOSED via gh pr view before deleting
+              # so a truncated or failed open-PR listing can never delete a live preview branch.
+              pr_check = subprocess.run(
+                  ["gh", "pr", "view", pr_num, "--repo", gh_repo, "--json", "state", "--jq", ".state"],
+                  capture_output=True,
+                  text=True,
+              )
+              if pr_check.returncode != 0 or pr_check.stdout.strip() not in ("MERGED", "CLOSED"):
+                  print(f"Skipping Neon branch {name}: PR state is {pr_check.stdout.strip()!r} (rc={pr_check.returncode})")
+                  continue
+              del_req = urllib.request.Request(
+                  f"https://console.neon.tech/api/v2/projects/{proj_id}/branches/{b['id']}",
+                  headers=headers,
+                  method="DELETE",
+              )
+              try:
+                  with urllib.request.urlopen(del_req, timeout=20) as del_resp:
+                      print(f"Deleted stale Neon branch {name} ({b['id']}): HTTP {del_resp.status}")
+              except Exception as e:
+                  print(f"::warning::Failed to delete Neon branch {name}: {e}")
           PY
