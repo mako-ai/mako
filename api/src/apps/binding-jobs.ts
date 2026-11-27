@@ -22,9 +22,19 @@
  * object) are deleted whenever it creates a new one.
  */
 import fs from "node:fs/promises";
-import mongoose, { Schema, Types } from "mongoose";
+import { Types } from "mongoose";
+import { parseEntityId } from "../database/pg/id-codec";
+import {
+  appsMetadataRepo,
+  getMongoAppBindingJobModel,
+  toMongoObjectId,
+  type AppBindingJobRecord,
+} from "../repositories/apps-metadata";
 import { getArtifactStore } from "../services/artifact-store.service";
 import type { BindingPhase, BindingProgressEvent } from "./binding-progress";
+
+// Ensure Mongoose model stays compiled for Mongo tests inspecting it directly.
+void getMongoAppBindingJobModel();
 
 /**
  * A job's row lives this long past its last state change or heartbeat; a
@@ -99,38 +109,40 @@ export interface BindingJobDoc {
   updatedAt?: Date;
 }
 
-const AppBindingJob =
-  mongoose.models.AppBindingJob ??
-  mongoose.model(
-    "AppBindingJob",
-    new Schema(
-      {
-        workspaceId: { type: String, required: true },
-        projectId: { type: String, required: true },
-        name: { type: String, required: true },
-        kind: { type: String, enum: ["materialize", "dev-build"] },
-        actorId: { type: String, required: true },
-        userId: { type: String },
-        canWrite: { type: Boolean, default: false },
-        unregistered: { type: Boolean },
-        request: { type: Schema.Types.Mixed, default: {} },
-        status: {
-          type: String,
-          enum: ["queued", "running", "ready", "error"],
-          default: "queued",
-        },
-        result: { type: Schema.Types.Mixed },
-        error: { type: String },
-        errorStatus: { type: Number },
-        heartbeatAt: { type: Date },
-        progress: { type: Schema.Types.Mixed },
-        expiresAt: { type: Date, required: true },
-      },
-      { collection: "app_binding_jobs", timestamps: true },
-    )
-      .index({ projectId: 1, expiresAt: 1 })
-      .index({ status: 1, heartbeatAt: 1 }),
-  );
+function recordToBindingJobDoc(rec: AppBindingJobRecord): BindingJobDoc {
+  return {
+    _id: toMongoObjectId(rec.id),
+    workspaceId: rec.workspaceId,
+    projectId: rec.projectId,
+    name: rec.name,
+    kind: rec.kind ?? "materialize",
+    actorId: rec.actorId,
+    ...(rec.userId !== undefined ? { userId: rec.userId } : {}),
+    canWrite: rec.canWrite,
+    ...(rec.unregistered !== undefined
+      ? { unregistered: rec.unregistered }
+      : {}),
+    request: rec.request,
+    status: rec.status,
+    ...(rec.result !== undefined ? { result: rec.result } : {}),
+    ...(rec.error !== undefined ? { error: rec.error } : {}),
+    ...(rec.errorStatus !== undefined ? { errorStatus: rec.errorStatus } : {}),
+    ...(rec.heartbeatAt !== undefined ? { heartbeatAt: rec.heartbeatAt } : {}),
+    ...(rec.progress !== undefined
+      ? {
+          progress: rec.progress
+            ? {
+                ...rec.progress,
+                phase: rec.progress.phase as BindingPhase,
+              }
+            : null,
+        }
+      : {}),
+    expiresAt: rec.expiresAt,
+    createdAt: rec.createdAt,
+    updatedAt: rec.updatedAt,
+  };
+}
 
 export function jobDraftKey(projectId: string, jobId: string): string {
   return `apps/jobs/${projectId}/${jobId}.parquet`;
@@ -143,13 +155,20 @@ export async function createBindingJob(
   >,
   now: Date = new Date(),
 ): Promise<BindingJobDoc> {
-  await pruneExpiredJobs(input.projectId, now);
-  const doc = await AppBindingJob.create({
-    ...input,
-    status: "queued",
+  await pruneExpiredJobs(input.projectId, now, input.workspaceId);
+  const created = await appsMetadataRepo.createBindingJob({
+    workspaceId: input.workspaceId,
+    projectId: input.projectId,
+    name: input.name,
+    kind: input.kind,
+    actorId: input.actorId,
+    userId: input.userId,
+    canWrite: input.canWrite,
+    unregistered: input.unregistered,
+    request: input.request,
     expiresAt: new Date(now.getTime() + JOB_TTL_MS),
   });
-  return doc.toObject() as BindingJobDoc;
+  return recordToBindingJobDoc(created);
 }
 
 /** The job, if it belongs to this project and is still live. */
@@ -157,13 +176,16 @@ export async function getBindingJob(
   projectId: string,
   jobId: string,
   now: Date = new Date(),
+  workspaceId?: string,
 ): Promise<BindingJobDoc | null> {
-  if (!Types.ObjectId.isValid(jobId)) return null;
-  const doc = (await AppBindingJob.findOne({
-    _id: new Types.ObjectId(jobId),
+  if (!parseEntityId(jobId)) return null;
+  const rec = await appsMetadataRepo.findBindingJobById(
+    jobId,
     projectId,
-  }).lean()) as BindingJobDoc | null;
-  if (!doc) return null;
+    workspaceId,
+  );
+  if (!rec) return null;
+  const doc = recordToBindingJobDoc(rec);
   // An unfinished job never disappears under its poller.
   if (isFinished(doc) && doc.expiresAt <= now) return null;
   return expireIfStale(doc, now);
@@ -195,36 +217,28 @@ export async function expireIfStale(
 }
 
 async function failStaleJob(
-  job: Pick<BindingJobDoc, "_id" | "projectId" | "heartbeatAt">,
+  job: Pick<BindingJobDoc, "_id" | "projectId" | "heartbeatAt"> & {
+    workspaceId?: string;
+  },
   now: Date,
 ): Promise<BindingJobDoc | null> {
   // Conditional on the heartbeat still being the stale one: a worker that
   // just checked in keeps its job.
-  const updated = (await AppBindingJob.findOneAndUpdate(
-    {
-      _id: job._id,
-      status: "running",
-      $or: [
-        { heartbeatAt: { $lte: new Date(now.getTime() - JOB_LEASE_MS) } },
-        { heartbeatAt: null },
-      ],
-    },
-    {
-      $set: {
-        status: "error",
-        error: STALE_ERROR,
-        errorStatus: 502,
-        expiresAt: new Date(now.getTime() + JOB_TTL_MS),
-      },
-    },
-    { returnDocument: "after" },
-  ).lean()) as BindingJobDoc | null;
+  const updated = await appsMetadataRepo.casFailStaleBindingJob(
+    job._id.toString(),
+    new Date(now.getTime() - JOB_LEASE_MS),
+    STALE_ERROR,
+    502,
+    new Date(now.getTime() + JOB_TTL_MS),
+    job.workspaceId,
+  );
   if (updated) {
     // A worker that died between uploading its draft and recording it
     // leaves the object behind; nothing will ever point at it.
     await deleteQuietly(jobDraftKey(job.projectId, job._id.toString()));
+    return recordToBindingJobDoc(updated);
   }
-  return updated;
+  return null;
 }
 
 /**
@@ -234,21 +248,25 @@ async function failStaleJob(
 export async function sweepStaleBindingJobs(
   now: Date = new Date(),
 ): Promise<number> {
-  const stale = (await AppBindingJob.find({
-    status: "running",
-    $or: [
-      { heartbeatAt: { $lte: new Date(now.getTime() - JOB_LEASE_MS) } },
-      { heartbeatAt: null },
-    ],
-  })
-    .select("_id projectId heartbeatAt")
-    .limit(500)
-    .lean()) as unknown as Array<
-    Pick<BindingJobDoc, "_id" | "projectId" | "heartbeatAt">
-  >;
+  const stale = await appsMetadataRepo.listStaleRunningBindingJobs(
+    new Date(now.getTime() - JOB_LEASE_MS),
+    500,
+  );
   let failed = 0;
   for (const job of stale) {
-    if (await failStaleJob(job, now)) failed++;
+    if (
+      await failStaleJob(
+        {
+          _id: toMongoObjectId(job.id),
+          workspaceId: job.workspaceId,
+          projectId: job.projectId,
+          heartbeatAt: job.heartbeatAt,
+        },
+        now,
+      )
+    ) {
+      failed++;
+    }
   }
   return failed;
 }
@@ -257,15 +275,13 @@ export async function sweepStaleBindingJobs(
 export async function heartbeatBindingJob(
   jobId: string,
   now: Date = new Date(),
+  workspaceId?: string,
 ): Promise<void> {
-  await AppBindingJob.updateOne(
-    { _id: new Types.ObjectId(jobId), status: "running" },
-    {
-      $set: {
-        heartbeatAt: now,
-        expiresAt: new Date(now.getTime() + JOB_TTL_MS),
-      },
-    },
+  await appsMetadataRepo.heartbeatBindingJob(
+    jobId,
+    now,
+    new Date(now.getTime() + JOB_TTL_MS),
+    workspaceId,
   );
 }
 
@@ -281,8 +297,12 @@ async function deleteQuietly(key: string): Promise<void> {
 export async function recordBindingJobProgress(
   jobId: string,
   event: BindingProgressEvent,
-  now: Date = new Date(),
+  nowOrWorkspaceId?: Date | string,
+  workspaceId?: string,
 ): Promise<void> {
+  const now = nowOrWorkspaceId instanceof Date ? nowOrWorkspaceId : new Date();
+  const resolvedWorkspaceId =
+    typeof nowOrWorkspaceId === "string" ? nowOrWorkspaceId : workspaceId;
   const progress: BindingJobProgress = {
     phase: event.phase,
     ...(event.rowsWritten !== undefined
@@ -291,18 +311,25 @@ export async function recordBindingJobProgress(
     ...(event.bytes !== undefined ? { bytes: event.bytes } : {}),
     at: now,
   };
-  await AppBindingJob.updateOne(
-    { _id: new Types.ObjectId(jobId), status: "running" },
-    { $set: { progress } },
+  await appsMetadataRepo.updateBindingJobProgress(
+    jobId,
+    progress,
+    resolvedWorkspaceId,
   );
 }
 
 /** The worker's read: by id alone (the event carries only the id). */
 export async function getBindingJobById(
   jobId: string,
+  workspaceId?: string,
 ): Promise<BindingJobDoc | null> {
-  if (!Types.ObjectId.isValid(jobId)) return null;
-  return (await AppBindingJob.findById(jobId).lean()) as BindingJobDoc | null;
+  if (!parseEntityId(jobId)) return null;
+  const rec = await appsMetadataRepo.findBindingJobById(
+    jobId,
+    undefined,
+    workspaceId,
+  );
+  return rec ? recordToBindingJobDoc(rec) : null;
 }
 
 export async function markBindingJob(
@@ -311,19 +338,15 @@ export async function markBindingJob(
     | { status: "running" }
     | { status: "ready"; result: BindingJobResult }
     | { status: "error"; error: string; errorStatus: number },
+  workspaceId?: string,
 ): Promise<void> {
   const now = new Date();
-  await AppBindingJob.updateOne(
-    { _id: new Types.ObjectId(jobId) },
-    {
-      $set: {
-        ...update,
-        // Every state change extends the row: a result stays fetchable for
-        // a full TTL after it lands, and a running job starts its lease.
-        expiresAt: new Date(now.getTime() + JOB_TTL_MS),
-        ...(update.status === "running" ? { heartbeatAt: now } : {}),
-      },
-    },
+  await appsMetadataRepo.markBindingJob(
+    jobId,
+    update,
+    new Date(now.getTime() + JOB_TTL_MS),
+    update.status === "running" ? now : undefined,
+    workspaceId,
   );
 }
 
@@ -375,29 +398,33 @@ export function serializeBindingJob(job: BindingJobDoc) {
   };
 }
 
-async function pruneExpiredJobs(projectId: string, now: Date) {
+async function pruneExpiredJobs(
+  projectId: string,
+  now: Date,
+  workspaceId?: string,
+) {
   // Finished jobs only: a queued or running job's row is its poller's only
   // way to the result, and its worker's only place to put one.
-  const expired = (await AppBindingJob.find({
+  const expired = await appsMetadataRepo.listExpiredFinishedBindingJobs(
     projectId,
-    status: { $in: ["ready", "error"] },
-    expiresAt: { $lte: now },
-  })
-    .select("_id result")
-    .limit(200)
-    .lean()) as unknown as Array<Pick<BindingJobDoc, "_id" | "result">>;
+    now,
+    200,
+    workspaceId,
+  );
   if (expired.length === 0) return;
   for (const job of expired) {
     // The job's own draft object, if it ever wrote one — never the app's
     // artifact a committed build points at.
-    const own = jobDraftKey(projectId, job._id.toString());
+    const own = jobDraftKey(projectId, job.id);
     const key = job.result?.artifactKey;
     if (key && key !== own && key.startsWith(`apps/jobs/${projectId}/`)) {
       await deleteQuietly(key);
     }
     await deleteQuietly(own);
   }
-  await AppBindingJob.deleteMany({
-    _id: { $in: expired.map(job => job._id) },
-  });
+  await appsMetadataRepo.deleteBindingJobsByIds(
+    projectId,
+    expired.map(job => job.id),
+    workspaceId,
+  );
 }

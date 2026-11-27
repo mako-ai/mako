@@ -372,6 +372,7 @@ async function planDevBuildUnlabelled(
   }
 
   const projectId = project._id.toString();
+  const workspaceId = project.workspaceId?.toString();
   const hash = draftHash({
     connectionId: draft.binding.connectionId,
     databaseId: draft.binding.databaseId,
@@ -383,12 +384,24 @@ async function planDevBuildUnlabelled(
   if (!input.refresh) {
     // An explicit refresh skips both: it rebuilds, and a person clicking it
     // is not the reload loop the backoff exists for.
-    let cached = await deps.drafts.lookup(projectId, hash);
+    let cached = workspaceId
+      ? await deps.drafts.lookup(projectId, hash, undefined, workspaceId)
+      : await deps.drafts.lookup(projectId, hash);
     if (cached.kind === "hit" && !(await deps.artifactExists(cached.key))) {
       // Its object is gone: forget the row and decide again (a miss, or the
       // backoff if this draft has been failing).
-      await deps.drafts.forget(projectId, cached.key);
-      cached = await deps.drafts.lookup(projectId, hash);
+      if (workspaceId) {
+        await deps.drafts.forget(projectId, cached.key, workspaceId);
+        cached = await deps.drafts.lookup(
+          projectId,
+          hash,
+          undefined,
+          workspaceId,
+        );
+      } else {
+        await deps.drafts.forget(projectId, cached.key);
+        cached = await deps.drafts.lookup(projectId, hash);
+      }
       if (cached.kind === "hit") cached = { kind: "miss" };
     }
     if (cached.kind === "hit") {
@@ -425,6 +438,7 @@ async function planDevBuildUnlabelled(
         await deps.drafts
           .failed({
             projectId,
+            ...(workspaceId ? { workspaceId } : {}),
             name,
             hash,
             error: error instanceof Error ? error.message : String(error),
@@ -438,7 +452,13 @@ async function planDevBuildUnlabelled(
         bytes: built.byteSize,
       });
       try {
-        keptKey = await deps.drafts.built({ projectId, name, hash, ...built });
+        keptKey = await deps.drafts.built({
+          projectId,
+          ...(workspaceId ? { workspaceId } : {}),
+          name,
+          hash,
+          ...built,
+        });
       } catch (error) {
         // Not keeping it only costs the next request a rebuild.
         logger.warn("Could not keep draft build", {

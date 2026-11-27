@@ -3,8 +3,12 @@
  * with reads falling back to the last commit when the sandbox is down.
  */
 import path from "node:path";
-import { AppWorktree, type IAppProject } from "../../database/workspace-schema";
+import { type IAppProject } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
+import {
+  appsMetadataRepo,
+  toAppWorktreeCompat,
+} from "../../repositories/apps-metadata";
 import {
   boxGlob,
   boxGrep,
@@ -318,11 +322,18 @@ async function readSource(
   const branchRef = `refs/heads/${project.defaultBranch || DEFAULT_BRANCH}`;
   if (!userId) return { kind: "repo", repoDir, ref: branchRef };
 
-  const doc = await AppWorktree.findOne({
-    workspaceId: project.workspaceId,
+  const worktreeRec = await appsMetadataRepo.findWorktree(
+    project.workspaceId.toString(),
     userId,
+  );
+  if (!worktreeRec) return { kind: "repo", repoDir, ref: branchRef };
+  const doc = toAppWorktreeCompat(worktreeRec, async d => {
+    await appsMetadataRepo.updateWorktreeBranch(
+      d.workspaceId.toString(),
+      d.userId,
+      d.branch,
+    );
   });
-  if (!doc) return { kind: "repo", repoDir, ref: branchRef };
 
   const handle: WorktreeHandle = {
     doc,

@@ -32,7 +32,10 @@
  * the object it recorded, for a failure row nothing but the row.
  */
 import { createHash, randomBytes } from "node:crypto";
-import mongoose, { Schema, Types } from "mongoose";
+import {
+  appsMetadataRepo,
+  getMongoAppBindingDraftModel,
+} from "../repositories/apps-metadata";
 import { getArtifactStore } from "../services/artifact-store.service";
 import {
   snapshotArtifactKey,
@@ -41,6 +44,9 @@ import {
 } from "../services/binding-snapshot";
 import { cooldownMsFor } from "./live-binding-guard";
 import { loggers } from "../logging";
+
+// Ensure Mongoose model stays compiled for Mongo tests inspecting it directly.
+void getMongoAppBindingDraftModel();
 
 const logger = loggers.api("apps");
 
@@ -101,48 +107,6 @@ export function draftArtifactKey(
   return `apps/drafts/${projectId}/${hash}-${buildId}.parquet`;
 }
 
-interface DraftDoc {
-  _id: Types.ObjectId;
-  projectId: Types.ObjectId;
-  hash: string;
-  kind: "build" | "failure";
-  name: string;
-  key?: string | null;
-  builtAt?: Date | null;
-  rowCount?: number | null;
-  byteSize?: number | null;
-  failures?: number;
-  /** Refuse to re-run until then (failure backoff). */
-  until?: Date | null;
-  error?: string | null;
-  expiresAt: Date;
-}
-
-const AppBindingDraft =
-  mongoose.models.AppBindingDraft ??
-  mongoose.model(
-    "AppBindingDraft",
-    new Schema(
-      {
-        projectId: { type: Schema.Types.ObjectId, required: true },
-        hash: { type: String, required: true },
-        kind: { type: String, enum: ["build", "failure"], required: true },
-        name: { type: String, required: true },
-        key: { type: String },
-        builtAt: { type: Date },
-        rowCount: { type: Number },
-        byteSize: { type: Number },
-        failures: { type: Number },
-        until: { type: Date },
-        error: { type: String },
-        expiresAt: { type: Date, required: true },
-      },
-      { collection: "app_binding_drafts", timestamps: true },
-    )
-      .index({ projectId: 1, hash: 1, kind: 1, expiresAt: -1 })
-      .index({ projectId: 1, expiresAt: 1 }),
-  );
-
 export type DraftLookup =
   | { kind: "hit"; key: string; rowCount: number; builtAt: Date }
   | { kind: "cooling"; retryAfterMs: number; failures: number; error: string }
@@ -156,16 +120,14 @@ export async function lookupDraft(
   projectId: string,
   hash: string,
   now: Date = new Date(),
+  workspaceId?: string,
 ): Promise<DraftLookup> {
-  const project = new Types.ObjectId(projectId);
-  const build = (await AppBindingDraft.findOne({
-    projectId: project,
+  const build = await appsMetadataRepo.findActiveDraftBuild(
+    projectId,
     hash,
-    kind: "build",
-    expiresAt: { $gt: now },
-  })
-    .sort({ builtAt: -1 })
-    .lean()) as DraftDoc | null;
+    now,
+    workspaceId,
+  );
   if (build?.key && build.builtAt) {
     return {
       kind: "hit",
@@ -174,11 +136,11 @@ export async function lookupDraft(
       builtAt: build.builtAt,
     };
   }
-  const failure = (await AppBindingDraft.findOne({
-    projectId: project,
+  const failure = await appsMetadataRepo.findDraftFailure(
+    projectId,
     hash,
-    kind: "failure",
-  }).lean()) as DraftDoc | null;
+    workspaceId,
+  );
   if (failure?.until && failure.until > now) {
     return {
       kind: "cooling",
@@ -197,12 +159,9 @@ export async function lookupDraft(
 export async function forgetDraftBuild(
   projectId: string,
   key: string,
+  workspaceId?: string,
 ): Promise<void> {
-  await AppBindingDraft.deleteOne({
-    projectId: new Types.ObjectId(projectId),
-    kind: "build",
-    key,
-  });
+  await appsMetadataRepo.deleteDraftBuildByKey(projectId, key, workspaceId);
 }
 
 /**
@@ -212,6 +171,7 @@ export async function forgetDraftBuild(
  */
 export async function recordDraftBuilt(input: {
   projectId: string;
+  workspaceId?: string;
   name: string;
   hash: string;
   filePath: string;
@@ -220,7 +180,7 @@ export async function recordDraftBuilt(input: {
   now?: Date;
 }): Promise<string> {
   const now = input.now ?? new Date();
-  await pruneExpiredDrafts(input.projectId, now);
+  await pruneExpiredDrafts(input.projectId, now, input.workspaceId);
   const key = draftArtifactKey(
     input.projectId,
     input.hash,
@@ -244,23 +204,24 @@ export async function recordDraftBuilt(input: {
         draft: "true",
       }),
   });
-  const project = new Types.ObjectId(input.projectId);
-  await AppBindingDraft.create({
-    projectId: project,
-    hash: input.hash,
-    kind: "build",
-    name: input.name,
-    key,
-    builtAt: now,
-    rowCount: input.rowCount,
-    byteSize: input.byteSize,
-    expiresAt: new Date(now.getTime() + DRAFT_TTL_MS),
-  });
-  await AppBindingDraft.deleteMany({
-    projectId: project,
-    hash: input.hash,
-    kind: "failure",
-  });
+  await appsMetadataRepo.createDraftBuild(
+    {
+      projectId: input.projectId,
+      hash: input.hash,
+      name: input.name,
+      key,
+      builtAt: now,
+      rowCount: input.rowCount,
+      byteSize: input.byteSize,
+      expiresAt: new Date(now.getTime() + DRAFT_TTL_MS),
+    },
+    input.workspaceId,
+  );
+  await appsMetadataRepo.deleteDraftFailures(
+    input.projectId,
+    input.hash,
+    input.workspaceId,
+  );
   return key;
 }
 
@@ -273,47 +234,47 @@ export async function recordDraftBuilt(input: {
  */
 export async function recordDraftFailed(input: {
   projectId: string;
+  workspaceId?: string;
   name: string;
   hash: string;
   error: string;
   now?: Date;
 }): Promise<number> {
   const now = input.now ?? new Date();
-  const filter = {
-    projectId: new Types.ObjectId(input.projectId),
-    hash: input.hash,
-    kind: "failure",
-  };
-  const prior = (await AppBindingDraft.findOne(filter)
-    .select("failures")
-    .lean()) as Pick<DraftDoc, "failures"> | null;
+  const prior = await appsMetadataRepo.findDraftFailure(
+    input.projectId,
+    input.hash,
+    input.workspaceId,
+  );
   const failures = (prior?.failures ?? 0) + 1;
   const cooldownMs = cooldownMsFor(failures);
   const until = new Date(now.getTime() + cooldownMs);
-  await AppBindingDraft.updateOne(
-    filter,
+  await appsMetadataRepo.upsertDraftFailure(
     {
-      $set: {
-        name: input.name,
-        failures,
-        until,
-        error: input.error.slice(0, 2000),
-        expiresAt: new Date(until.getTime() + FAILURE_RETENTION_MS),
-      },
+      projectId: input.projectId,
+      hash: input.hash,
+      name: input.name,
+      failures,
+      until,
+      error: input.error.slice(0, 2000),
+      expiresAt: new Date(until.getTime() + FAILURE_RETENTION_MS),
     },
-    { upsert: true },
+    input.workspaceId,
   );
   return cooldownMs;
 }
 
-async function pruneExpiredDrafts(projectId: string, now: Date) {
-  const expired = (await AppBindingDraft.find({
-    projectId: new Types.ObjectId(projectId),
-    expiresAt: { $lte: now },
-  })
-    .select("_id key")
-    .limit(200)
-    .lean()) as unknown as Array<Pick<DraftDoc, "_id" | "key">>;
+async function pruneExpiredDrafts(
+  projectId: string,
+  now: Date,
+  workspaceId?: string,
+) {
+  const expired = await appsMetadataRepo.listExpiredDrafts(
+    projectId,
+    now,
+    200,
+    workspaceId,
+  );
   if (expired.length === 0) return;
   const store = getArtifactStore();
   for (const doc of expired) {
@@ -335,5 +296,9 @@ async function pruneExpiredDrafts(projectId: string, now: Date) {
       });
     }
   }
-  await AppBindingDraft.deleteMany({ _id: { $in: expired.map(d => d._id) } });
+  await appsMetadataRepo.deleteDraftsByIds(
+    projectId,
+    expired.map(d => d.id),
+    workspaceId,
+  );
 }

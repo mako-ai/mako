@@ -1,6 +1,6 @@
 import { Types } from "mongoose";
-import { ConnectionVerification } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { usageStatsRepo } from "../repositories/usage-stats";
 
 const logger = loggers.db();
 
@@ -45,17 +45,21 @@ export function recordConnectionVerification(entry: {
   durationMs: number;
   error?: string;
 }): void {
-  const { error, ...rest } = entry;
-  void ConnectionVerification.create({
-    ...rest,
-    verifiedAt: new Date(),
-    ...(error && !entry.success
-      ? {
-          errorClass: classifyConnectionError(error),
-          errorMessage: error.slice(0, 500),
-        }
-      : {}),
-  }).catch((err: unknown) => {
-    logger.warn("Failed to record connection verification", { err });
-  });
+  const { error, workspaceId, connectionId, ...rest } = entry;
+  void usageStatsRepo
+    .createConnectionVerification({
+      ...rest,
+      ...(workspaceId ? { workspaceId: workspaceId.toString() } : {}),
+      ...(connectionId ? { connectionId: connectionId.toString() } : {}),
+      verifiedAt: new Date(),
+      ...(error && !entry.success
+        ? {
+            errorClass: classifyConnectionError(error),
+            errorMessage: error.slice(0, 500),
+          }
+        : {}),
+    })
+    .catch((err: unknown) => {
+      logger.warn("Failed to record connection verification", { err });
+    });
 }

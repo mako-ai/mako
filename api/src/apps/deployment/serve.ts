@@ -23,7 +23,10 @@ import {
   bindingArtifactKeyByName,
   readBindingsTolerant,
 } from "../bindings.service";
-import { AppProject } from "../../database/workspace-schema";
+import {
+  appsMetadataRepo,
+  toAppProjectCompat,
+} from "../../repositories/apps-metadata";
 import { resolveAppViewer, type ViewerIdentity } from "../app-viewer.service";
 import {
   deploymentKey,
@@ -145,8 +148,10 @@ export async function serveDeploymentFile(input: {
   immutableUntil?: number;
   /** Stable signed parquet redirects; see serveParquetArtifact. */
   stableData?: { windowMs: number };
+  /** Optional workspace scope for per-workspace PG/Mongo rollout routing. */
+  workspaceId?: string;
 }): Promise<Response | null> {
-  const { projectId, sha, assetPath } = input;
+  const { projectId, sha, assetPath, workspaceId } = input;
   const immutableFor = input.immutableUntil
     ? Math.floor((input.immutableUntil - Date.now()) / 1000)
     : 0;
@@ -160,7 +165,10 @@ export async function serveDeploymentFile(input: {
   // Who the app is talking to — the SDK's useViewer(). Two small reads
   // (workspace, membership), only on this one request, never per asset.
   if (assetPath === "__data/viewer.json") {
-    const project = input.viewer ? await AppProject.findById(projectId) : null;
+    const projectRec = input.viewer
+      ? await appsMetadataRepo.findProjectById(projectId, workspaceId)
+      : null;
+    const project = projectRec ? toAppProjectCompat(projectRec) : null;
     const viewer = project
       ? await resolveAppViewer(project, input.viewer)
       : null;
@@ -178,7 +186,10 @@ export async function serveDeploymentFile(input: {
   // derives it from the repo's bindings so published apps get tables too.
   if (assetPath === "__data/index.json") {
     const index = await deploymentBindingIndex(projectId, sha);
-    const project = index ? null : await AppProject.findById(projectId);
+    const projectRec = index
+      ? null
+      : await appsMetadataRepo.findProjectById(projectId, workspaceId);
+    const project = projectRec ? toAppProjectCompat(projectRec) : null;
     // AT the deployed commit — see readSource's `at`. Tolerant, like the
     // per-binding data path: a malformed neighbour must not 500 the table
     // index that every healthy binding's registration depends on.
@@ -224,7 +235,10 @@ export async function serveDeploymentFile(input: {
     }
     const resolve = async () => {
       const index = await deploymentBindingIndex(projectId, sha);
-      const project = index ? null : await AppProject.findById(projectId);
+      const projectRec = index
+        ? null
+        : await appsMetadataRepo.findProjectById(projectId, workspaceId);
+      const project = projectRec ? toAppProjectCompat(projectRec) : null;
       const key = index
         ? Object.hasOwn(index, dataMatch[1])
           ? index[dataMatch[1]]

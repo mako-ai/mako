@@ -2,13 +2,11 @@
  * Syncing the index rows from the tree at main (once per push, serialized
  * per workspace), the per-process memo, and the authors of each app.
  */
-import { Types } from "mongoose";
 import {
-  AppIndexEntry,
-  AppIndexHead,
-  AppProject,
-  type IAppIndexEntry,
-} from "../../database/workspace-schema";
+  appsMetadataRepo,
+  type AppIndexEntryRecord,
+  type ProjectMoveSyncUpdate,
+} from "../../repositories/apps-metadata";
 import { loggers } from "../../logging";
 import { freshenForServe } from "../cloud-repo.service";
 import { runGit } from "../git";
@@ -54,7 +52,27 @@ const serialized = createSerializer();
 const snapshotCache = new Map<string, AppsIndexSnapshot>();
 
 export function rowToIndex(
-  row: Pick<IAppIndexEntry, keyof AppIndexRow>,
+  row: Pick<
+    AppIndexEntryRecord,
+    | "appId"
+    | "path"
+    | "slug"
+    | "scope"
+    | "ownerId"
+    | "treeOid"
+    | "title"
+    | "description"
+    | "hasManifestId"
+    | "duplicateOf"
+    | "schedules"
+    | "tables"
+    | "bindingTables"
+    | "bindings"
+    | "authorEmail"
+    | "firstCommitAt"
+    | "thumbnail"
+    | "icon"
+  >,
 ): AppIndexRow {
   return {
     appId: row.appId,
@@ -178,6 +196,18 @@ export async function firstCommitsOf(
   return out;
 }
 
+function isDuplicateKeyError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  if (code === 11000 || code === "23505") return true;
+  const cause = (error as { cause?: unknown }).cause;
+  return Boolean(
+    cause &&
+    typeof cause === "object" &&
+    (cause as { code?: unknown }).code === "23505",
+  );
+}
+
 /**
  * Rebuild the index from the tree at main. Idempotent; a no-op when the
  * index already describes main's current commit unless `force`. Returns the
@@ -193,12 +223,7 @@ export function syncAppsIndexFromRepo(
     } catch (error) {
       // Another workspace may have claimed a manifest id after our read.
       // Re-read ownership and assign this copy its own id.
-      if (!(
-        error &&
-        typeof error === "object" &&
-        "code" in error &&
-        error.code === 11000
-      )) {
+      if (!isDuplicateKeyError(error)) {
         throw error;
       }
       return syncNow(workspaceId, { force: true });
@@ -214,13 +239,13 @@ async function syncNow(
   if (repoDir == null) return null;
   let sha = await resolveCommit(repoDir, MAIN);
   if (!sha) return null;
-  const ws = new Types.ObjectId(workspaceId);
-  const head = await AppIndexHead.findOne({ workspaceId: ws }).lean();
+  const head = await appsMetadataRepo.findIndexHeadByWorkspace(workspaceId);
   if (head?.schemaVersion === INDEX_SCHEMA_VERSION && !options.force) {
     if (head.sha === sha) {
       const cached = snapshotCache.get(workspaceId);
       if (cached?.sha === sha) return cached;
-      const rows = await AppIndexEntry.find({ workspaceId: ws }).lean();
+      const rows =
+        await appsMetadataRepo.listIndexEntriesByWorkspace(workspaceId);
       const snapshot = {
         sha,
         apps: rows.map(rowToIndex),
@@ -249,7 +274,8 @@ async function syncNow(
       localSha &&
       (await isAncestor(repoDir, localSha, head.sha))
     ) {
-      const rows = await AppIndexEntry.find({ workspaceId: ws }).lean();
+      const rows =
+        await appsMetadataRepo.listIndexEntriesByWorkspace(workspaceId);
       return {
         sha: head.sha,
         apps: rows.map(rowToIndex),
@@ -279,21 +305,17 @@ async function syncNow(
     }
   }
 
-  // Retryable after a migration repairs old collisions; Model.init() retains
-  // a rejected index-build promise for the lifetime of the API process.
-  await AppIndexEntry.collection.createIndex({ appId: 1 }, { unique: true });
   const read = await readAppsAt(repoDir, sha);
   const directory = await loadOwnerDirectory(workspaceId);
-  const existing = await AppIndexEntry.find({ workspaceId: ws }).lean();
+  const existing =
+    await appsMetadataRepo.listIndexEntriesByWorkspace(workspaceId);
   const incumbents = new Map<string, string>();
   for (const row of existing) incumbents.set(row.appId, row.path);
   // Existing state owns the legacy identity, even before path was backfilled.
-  const projectRows = await AppProject.find({ workspaceId: ws })
-    .select("_id path slug title description access owner_id")
-    .lean();
+  const projectRows =
+    await appsMetadataRepo.listProjectsByWorkspace(workspaceId);
   for (const p of projectRows) {
-    const id = p._id.toString();
-    incumbents.set(id, p.path ?? `${APPS_DIR}/${p.slug}`);
+    incumbents.set(p.id, p.path ?? `${APPS_DIR}/${p.slug}`);
   }
   const candidateIds = [
     ...new Set([
@@ -307,21 +329,11 @@ async function syncNow(
       }),
     ]),
   ];
-  const [foreignProjects, foreignEntries] = await Promise.all([
-    AppProject.find({ workspaceId: { $ne: ws }, _id: { $in: candidateIds } })
-      .select("_id")
-      .lean(),
-    AppIndexEntry.find({
-      workspaceId: { $ne: ws },
-      appId: { $in: candidateIds },
-    })
-      .select("appId")
-      .lean(),
+  const [foreignProjectIds, foreignEntryAppIds] = await Promise.all([
+    appsMetadataRepo.listForeignProjectIds(workspaceId, candidateIds),
+    appsMetadataRepo.listForeignIndexAppIds(workspaceId, candidateIds),
   ]);
-  const unavailableIds = new Set([
-    ...foreignProjects.map(p => p._id.toString()),
-    ...foreignEntries.map(p => p.appId),
-  ]);
+  const unavailableIds = new Set([...foreignProjectIds, ...foreignEntryAppIds]);
   const ids = assignAppIds(
     workspaceId,
     read.apps.map(a => ({
@@ -360,8 +372,11 @@ async function syncNow(
   const firstCommits = await firstCommitsOf(repoDir, sha, undated);
 
   const rows: AppIndexRow[] = read.apps.map(app => {
-    const manifest = read.manifests.get(app.path)!;
-    const identity = ids.get(app.path)!;
+    const manifest = read.manifests.get(app.path);
+    const identity = ids.get(app.path);
+    if (!manifest || !identity) {
+      throw new Error(`Missing manifest or identity for ${app.path}`);
+    }
     const first = datedById.get(identity.appId) ?? firstCommits.get(app.path);
     return {
       appId: identity.appId,
@@ -395,46 +410,31 @@ async function syncNow(
   const stale = existing.filter(
     row => !keepIds.has(row.appId) || pathOwner.get(row.path) !== row.appId,
   );
-  if (stale.length > 0) {
-    await AppIndexEntry.deleteMany({
-      _id: { $in: stale.map(r => r._id) },
-    });
-  }
-  if (rows.length > 0) {
-    await AppIndexEntry.bulkWrite(
-      rows.map(row => ({
-        updateOne: {
-          filter: { workspaceId: ws, appId: row.appId },
-          update: {
-            $set: {
-              path: row.path,
-              slug: row.slug,
-              scope: row.scope,
-              ownerId: row.ownerId ?? null,
-              treeOid: row.treeOid,
-              title: row.title,
-              description: row.description ?? null,
-              hasManifestId: row.hasManifestId,
-              duplicateOf: row.duplicateOf ?? null,
-              schedules: row.schedules,
-              tables: row.tables,
-              bindingTables: row.bindingTables ?? [],
-              bindings: row.bindings,
-              authorEmail: row.authorEmail ?? null,
-              firstCommitAt: row.firstCommitAt
-                ? new Date(row.firstCommitAt)
-                : null,
-              thumbnail: row.thumbnail ?? null,
-              icon: row.icon ?? null,
-              indexedSha: sha,
-            },
-          },
-          upsert: true,
-        },
-      })),
-      { ordered: false },
-    );
-  }
+  await appsMetadataRepo.replaceWorkspaceIndexEntries(
+    workspaceId,
+    stale.map(r => r.id),
+    rows.map(row => ({
+      appId: row.appId,
+      path: row.path,
+      slug: row.slug,
+      scope: row.scope,
+      ownerId: row.ownerId ?? null,
+      treeOid: row.treeOid,
+      title: row.title,
+      description: row.description ?? null,
+      hasManifestId: row.hasManifestId,
+      duplicateOf: row.duplicateOf ?? null,
+      schedules: row.schedules,
+      tables: row.tables,
+      bindingTables: row.bindingTables ?? [],
+      bindings: row.bindings,
+      authorEmail: row.authorEmail ?? null,
+      firstCommitAt: row.firstCommitAt ? new Date(row.firstCommitAt) : null,
+      thumbnail: row.thumbnail ?? null,
+      icon: row.icon ?? null,
+      indexedSha: sha,
+    })),
+  );
 
   // A state row whose folder is now claimed by a DIFFERENT id (a manifest
   // stamped with another app's id landed at a legacy row's path) must give
@@ -443,21 +443,21 @@ async function syncNow(
   // folder; nothing deletes it.
   const orphaned = projectRows.filter(
     p =>
-      !keepIds.has(p._id.toString()) &&
+      !keepIds.has(p.id) &&
       p.path &&
       pathOwner.has(p.path) &&
-      pathOwner.get(p.path) !== p._id.toString(),
+      pathOwner.get(p.path) !== p.id,
   );
   if (orphaned.length > 0) {
-    await AppProject.updateMany(
-      { _id: { $in: orphaned.map(p => p._id) }, workspaceId: ws },
-      { $unset: { path: 1 } },
+    await appsMetadataRepo.unsetProjectsPath(
+      workspaceId,
+      orphaned.map(p => p.id),
     );
   }
 
   // Project rows follow the folder: a move in git relocates the app's state
   // row too, so appRootFor() keeps pointing at the right directory.
-  const projectById = new Map(projectRows.map(p => [p._id.toString(), p]));
+  const projectById = new Map(projectRows.map(p => [p.id, p]));
   const moves = rows.filter(row => {
     const p = projectById.get(row.appId);
     return (
@@ -474,55 +474,42 @@ async function syncNow(
       return p?.path !== row.path;
     });
     if (pathMoves.length > 0) {
-      await AppProject.updateMany(
-        {
-          _id: { $in: pathMoves.map(row => new Types.ObjectId(row.appId)) },
-          workspaceId: ws,
-        },
-        { $unset: { path: 1 } },
+      await appsMetadataRepo.unsetProjectsPath(
+        workspaceId,
+        pathMoves.map(row => row.appId),
       );
     }
-    await AppProject.bulkWrite(
-      moves.map(row => {
-        const p = projectById.get(row.appId);
-        const location = parseAppRepoPath(row.path);
-        const wasPrivate = parseAppRepoPath(p?.path ?? "")?.scope === "private";
-        // Visibility follows the tree: an app filed into someone's personal
-        // tree is theirs (private, owner = the tree's owner by the handle
-        // mapping); one filed back into the workspace tree is workspace
-        // content again. A folder whose handle is nobody's stays private to
-        // nobody — its name must not make it someone's.
-        const access =
-          location?.scope === "private"
-            ? { access: "private", owner_id: row.ownerId ?? null }
-            : wasPrivate
-              ? { access: "workspace" }
-              : {};
-        return {
-          updateOne: {
-            filter: { _id: new Types.ObjectId(row.appId), workspaceId: ws },
-            update: {
-              $set: {
-                path: row.path,
-                slug: row.slug,
-                title: row.title,
-                ...access,
-              },
-            },
-          },
-        };
-      }),
-      { ordered: false },
-    );
+    const moveUpdates: ProjectMoveSyncUpdate[] = moves.map(row => {
+      const p = projectById.get(row.appId);
+      const location = parseAppRepoPath(row.path);
+      const wasPrivate = parseAppRepoPath(p?.path ?? "")?.scope === "private";
+      // Visibility follows the tree: an app filed into someone's personal
+      // tree is theirs (private, owner = the tree's owner by the handle
+      // mapping); one filed back into the workspace tree is workspace
+      // content again. A folder whose handle is nobody's stays private to
+      // nobody — its name must not make it someone's.
+      const accessPatch =
+        location?.scope === "private"
+          ? { access: "private" as const, ownerId: row.ownerId ?? null }
+          : wasPrivate
+            ? { access: "workspace" as const }
+            : {};
+      return {
+        appId: row.appId,
+        path: row.path,
+        slug: row.slug,
+        title: row.title,
+        ...accessPatch,
+      };
+    });
+    await appsMetadataRepo.syncMovedProjects(workspaceId, moveUpdates);
   }
 
-  await AppIndexHead.updateOne(
-    { workspaceId: ws },
-    {
-      $set: { sha, schemaVersion: INDEX_SCHEMA_VERSION, folders: read.folders },
-    },
-    { upsert: true },
-  );
+  await appsMetadataRepo.upsertIndexHead(workspaceId, {
+    sha,
+    schemaVersion: INDEX_SCHEMA_VERSION,
+    folders: read.folders,
+  });
   const snapshot: AppsIndexSnapshot = {
     sha,
     apps: rows,

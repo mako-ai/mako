@@ -14,9 +14,11 @@
  * so a lost or late row changes a number in `list_skills` and nothing else.
  * Recording is fire-and-forget. It never fails or slows a load.
  */
-import mongoose, { Types } from "mongoose";
-import { SkillUsageDaily } from "../database/workspace-schema";
+import mongoose from "mongoose";
+import { hasPostgresConfig } from "../database/pg/client";
+import { parseEntityId } from "../database/pg/id-codec";
 import { loggers } from "../logging";
+import { usageStatsRepo } from "../repositories/usage-stats";
 
 const logger = loggers.api("skills-usage");
 
@@ -28,12 +30,6 @@ export type SkillUsageKind = "load" | "resource" | "relevant";
 export const SKILL_USAGE_WINDOW_DAYS = 30;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-const COUNTER_OF: Record<SkillUsageKind, string> = {
-  load: "loads",
-  resource: "resourceReads",
-  relevant: "relevantHits",
-};
 
 export interface SkillUsageTarget {
   skill: string;
@@ -70,58 +66,14 @@ export async function recordSkillUsageNow(
   source: SkillUsageSource,
   at: Date = new Date(),
 ): Promise<void> {
-  if (targets.length === 0 || !Types.ObjectId.isValid(workspaceId)) return;
-  const workspace = new Types.ObjectId(workspaceId);
-  const day = utcDay(at);
-  const operations = targets.map(target => ({
-    updateOne: {
-      filter: {
-        workspaceId: workspace,
-        scope: target.scope,
-        skill: target.skill,
-        source,
-        day,
-      },
-      update: {
-        $inc: { [COUNTER_OF[kind]]: 1 },
-        $min: { firstAt: at },
-        $max: { lastAt: at },
-      },
-      upsert: true,
-    },
-  }));
-  try {
-    await SkillUsageDaily.bulkWrite(operations, { ordered: false });
-  } catch (error) {
-    // Two first loads of a skill on one day can both try to insert its row.
-    // The loser gets a duplicate-key error for those rows only: bump them
-    // again now that the row exists.
-    const failed = duplicateKeyIndexes(error);
-    if (failed.length === 0) throw error;
-    await SkillUsageDaily.bulkWrite(
-      failed.map(index => operations[index]),
-      { ordered: false },
-    );
-  }
-}
-
-/** The operations of a bulk write that lost an upsert race, by position. */
-function duplicateKeyIndexes(error: unknown): number[] {
-  const writeErrors = (error as { writeErrors?: unknown }).writeErrors;
-  if (!Array.isArray(writeErrors) || writeErrors.length === 0) return [];
-  const indexes: number[] = [];
-  for (const entry of writeErrors as Array<{
-    code?: number;
-    index?: number;
-    err?: { code?: number; index?: number };
-  }>) {
-    const code = entry.code ?? entry.err?.code;
-    const index = entry.index ?? entry.err?.index;
-    // Any other write error is a real failure: let the caller see it.
-    if (code !== 11000 || typeof index !== "number") return [];
-    indexes.push(index);
-  }
-  return indexes;
+  if (targets.length === 0 || !parseEntityId(workspaceId)) return;
+  await usageStatsRepo.bumpSkillUsageDaily(
+    workspaceId,
+    targets,
+    kind,
+    source,
+    at,
+  );
 }
 
 /**
@@ -136,7 +88,7 @@ export function recordSkillUsage(
 ): void {
   if (targets.length === 0) return;
   // Without a live connection mongoose would buffer the write for 10 s.
-  if (mongoose.connection.readyState !== 1) return;
+  if (mongoose.connection.readyState !== 1 && !hasPostgresConfig()) return;
   void recordSkillUsageNow(workspaceId, targets, kind, source).catch(error => {
     logger.warn("Could not record skill usage", {
       workspaceId,
@@ -158,41 +110,14 @@ export async function getSkillUsage(
   now: Date = new Date(),
 ): Promise<Map<string, SkillUsageSummary>> {
   const usage = new Map<string, SkillUsageSummary>();
-  if (!Types.ObjectId.isValid(workspaceId)) return usage;
+  if (!parseEntityId(workspaceId)) return usage;
   // Today and the 29 days before it.
   const since = utcDay(
     new Date(now.getTime() - (SKILL_USAGE_WINDOW_DAYS - 1) * DAY_MS),
   );
-  const rows = await SkillUsageDaily.aggregate<{
-    _id: { scope: SkillUsageScope; skill: string };
-    loads30d: number;
-    lastLoadedAt: Date | null;
-  }>([
-    { $match: { workspaceId: new Types.ObjectId(workspaceId) } },
-    {
-      $group: {
-        _id: { scope: "$scope", skill: "$skill" },
-        loads30d: {
-          $sum: {
-            $cond: [
-              { $gte: ["$day", since] },
-              {
-                $add: [
-                  { $ifNull: ["$loads", 0] },
-                  { $ifNull: ["$resourceReads", 0] },
-                  { $ifNull: ["$relevantHits", 0] },
-                ],
-              },
-              0,
-            ],
-          },
-        },
-        lastLoadedAt: { $max: "$lastAt" },
-      },
-    },
-  ]);
+  const rows = await usageStatsRepo.getSkillUsageSummary(workspaceId, since);
   for (const row of rows) {
-    usage.set(skillUsageKey(row._id.scope, row._id.skill), {
+    usage.set(skillUsageKey(row.scope, row.skill), {
       loads30d: row.loads30d,
       lastLoadedAt: row.lastLoadedAt ?? null,
     });
@@ -205,7 +130,7 @@ export async function getSkillUsageOrNull(
   workspaceId: string,
   now: Date = new Date(),
 ): Promise<Map<string, SkillUsageSummary> | null> {
-  if (mongoose.connection.readyState !== 1) return null;
+  if (mongoose.connection.readyState !== 1 && !hasPostgresConfig()) return null;
   try {
     return await getSkillUsage(workspaceId, now);
   } catch (error) {

@@ -54,7 +54,11 @@ import {
   shareFingerprint,
   type PreviewGrant,
 } from "../apps/preview.service";
-import { AppProject, type IAppProject } from "../database/workspace-schema";
+import { type IAppProject } from "../database/workspace-schema";
+import {
+  appsMetadataRepo,
+  toAppProjectCompat,
+} from "../repositories/apps-metadata";
 import {
   findShareByToken,
   isOpenShare,
@@ -563,6 +567,7 @@ async function serveSharedApp(c: Context): Promise<Response> {
 
   const response = await serveDeploymentFile({
     projectId,
+    workspaceId: project.workspaceId.toString(),
     sha,
     assetPath,
     private: true,
@@ -760,7 +765,11 @@ export async function refreshForShareGrant(
   grant: PreviewGrant,
   name: string,
 ): Promise<Response> {
-  const project = await AppProject.findById(grant.projectId);
+  const projectRec = await appsMetadataRepo.findProjectById(
+    grant.projectId,
+    grant.workspaceId,
+  );
+  const project = projectRec ? toAppProjectCompat(projectRec) : null;
   const share = project?.publicShare;
   const current = share?.enabled && share.token ? share.token : null;
   if (

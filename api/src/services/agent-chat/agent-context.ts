@@ -6,8 +6,6 @@
  * Every optional enrichment is best-effort: a failure is logged and the turn
  * runs without it.
  */
-import { Types } from "mongoose";
-
 import type { AgentContext } from "../../agents";
 import type { ConsoleDataV2 } from "../../agent-lib/types";
 import { searchConsoles } from "../../agent-lib/tools/console-search-tools";
@@ -15,10 +13,10 @@ import {
   readWorkspacePromptFile,
   readWorkspaceSelfDirectiveFile,
 } from "../../apps/workspace-prompt";
-import { AppWorktree } from "../../database/workspace-schema";
 import { connectionsRepo } from "../../repositories/connections";
 import { isDbtShapedTurn } from "../../dbt/dbt-turn-shape";
 import { loggers } from "../../logging";
+import { appsMetadataRepo } from "../../repositories/apps-metadata";
 import { prepareAgentTurnGuidance } from "../agent-turn-preparation.service";
 import { buildMcpToolsForChat } from "../mcp-client.service";
 import type { OpenConsoleContext, OpenTabContext } from "./request";
@@ -232,14 +230,8 @@ export async function gatherTurnGuidance(input: {
   // The caller's Apps checkout branch, so the agent starts oriented instead
   // of spending a tool call on `git status`. The doc is synced by every exec
   // and checkout; a missing doc simply means "main".
-  const appsWorktree = await AppWorktree.findOne(
-    {
-      workspaceId: new Types.ObjectId(input.workspaceId),
-      userId: input.actorId,
-    },
-    { branch: 1 },
-  )
-    .lean()
+  const appsWorktree = await appsMetadataRepo
+    .findWorktree(input.workspaceId, input.actorId)
     .catch(() => null);
 
   return {

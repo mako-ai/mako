@@ -4,8 +4,7 @@
  * the worker sent; routes/workflows.ts). Queries and compute are not
  * counted. Runs from before costs were recorded have none.
  */
-import { Types } from "mongoose";
-import { LlmUsage } from "../database/schema";
+import { usageStatsRepo } from "../repositories/usage-stats";
 
 export interface StepCost {
   costUsd: number;
@@ -28,34 +27,10 @@ export async function readRunCosts(
   runIds: string[],
 ): Promise<Record<string, RunCost>> {
   if (runIds.length === 0) return {};
-  const rows = await LlmUsage.aggregate<{
-    _id: { runId: string; step?: string };
-    costUsd: number;
-    inputTokens: number;
-    outputTokens: number;
-    calls: number;
-    backfilled: boolean;
-  }>([
-    {
-      $match: {
-        workspaceId: new Types.ObjectId(workspaceId),
-        "workflowRun.runId": { $in: runIds },
-      },
-    },
-    {
-      $group: {
-        _id: { runId: "$workflowRun.runId", step: "$workflowRun.step" },
-        costUsd: { $sum: "$costUsd" },
-        inputTokens: { $sum: "$inputTokens" },
-        outputTokens: { $sum: "$outputTokens" },
-        calls: { $sum: 1 },
-        backfilled: { $max: { $ifNull: ["$workflowRun.backfilled", false] } },
-      },
-    },
-  ]);
+  const rows = await usageStatsRepo.readWorkflowRunCosts(workspaceId, runIds);
   const costs: Record<string, RunCost> = {};
   for (const row of rows) {
-    const run = (costs[row._id.runId] ??= {
+    const run = (costs[row.runId] ??= {
       costUsd: 0,
       inputTokens: 0,
       outputTokens: 0,
@@ -67,7 +42,7 @@ export async function readRunCosts(
     run.outputTokens += row.outputTokens;
     run.calls += row.calls;
     if (row.backfilled) run.backfilled = true;
-    run.steps[row._id.step ?? ""] = {
+    run.steps[row.step ?? ""] = {
       costUsd: round(row.costUsd),
       inputTokens: row.inputTokens,
       outputTokens: row.outputTokens,
@@ -84,33 +59,17 @@ export async function readWorkflowCost(
   days: number,
 ) {
   const since = new Date(Date.now() - days * 864e5);
-  const rows = await LlmUsage.aggregate<{
-    _id: string;
-    costUsd: number;
-    runs: string[];
-  }>([
-    {
-      $match: {
-        workspaceId: new Types.ObjectId(workspaceId),
-        "workflowRun.workflowId": workflowId,
-        createdAt: { $gte: since },
-      },
-    },
-    {
-      $group: {
-        _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
-        costUsd: { $sum: "$costUsd" },
-        runs: { $addToSet: "$workflowRun.runId" },
-      },
-    },
-    { $sort: { _id: 1 } },
-  ]);
+  const rows = await usageStatsRepo.readWorkflowDailyCosts(
+    workspaceId,
+    workflowId,
+    since,
+  );
   const byDay = rows.map(row => ({
-    day: row._id,
+    day: row.day,
     costUsd: round(row.costUsd),
-    runs: row.runs.length,
+    runs: row.runIds.length,
   }));
   const costUsd = round(byDay.reduce((sum, day) => sum + day.costUsd, 0));
-  const runs = new Set(rows.flatMap(row => row.runs)).size;
+  const runs = new Set(rows.flatMap(row => row.runIds)).size;
   return { workflowId, days, costUsd, runs, byDay };
 }

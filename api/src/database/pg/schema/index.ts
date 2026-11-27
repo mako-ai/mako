@@ -9,3 +9,5 @@ export * from "./auth";
 export * from "./workspaces";
 export * from "./connections";
 export * from "./consoles-charts";
+export * from "./apps-metadata";
+export * from "./usage-stats";

@@ -3,11 +3,11 @@
  * and search. Static paths: mounted before the `/{id}` routes.
  */
 import { createRoute, z } from "@hono/zod-openapi";
-import { Types } from "mongoose";
+import { APP_USAGE_PLACEMENT_SHELVES } from "../../database/workspace-schema";
 import {
-  APP_USAGE_PLACEMENT_SHELVES,
-  AppProject,
-} from "../../database/workspace-schema";
+  appsMetadataRepo,
+  toAppProjectCompat,
+} from "../../repositories/apps-metadata";
 import {
   findAppInSnapshot,
   loadAppsIndex,
@@ -204,12 +204,11 @@ appsHomeRoutes.openapi(
       if (!app) {
         return fail(c, 404, "App not found");
       }
-      const state = await AppProject.findOne({
-        _id: new Types.ObjectId(app.appId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      })
-        .select("access workspaceRole sharedWith owner_id createdBy")
-        .lean();
+      const stateRec = await appsMetadataRepo.findProjectById(
+        app.appId,
+        workspaceId,
+      );
+      const state = stateRec ? toAppProjectCompat(stateRec) : null;
       const role = await callerRole(c, workspaceId, userId);
       if (!canSeeIndexedApp(app, state, userId, role)) {
         return fail(c, 404, "App not found");

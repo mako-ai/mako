@@ -12,11 +12,13 @@
  * tools would contradict. Served by the get_workspace_context tool and the
  * MCP resource `mako://context`.
  */
-import { Types } from "mongoose";
 import { canSeeIndexedApp } from "../../apps/app-authorization";
 import { loadAppsIndex } from "../../apps/app-index.service";
-import { AppProject } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
+import {
+  appsMetadataRepo,
+  toAppProjectCompat,
+} from "../../repositories/apps-metadata";
 import { workspaceService } from "../../services/workspace.service";
 import {
   loadSemanticProjects,
@@ -66,12 +68,14 @@ export async function loadVisibleAppReads(
   try {
     const [snapshot, docs, member] = await Promise.all([
       loadAppsIndex(workspaceId),
-      AppProject.find({ workspaceId: new Types.ObjectId(workspaceId) }),
+      appsMetadataRepo.listProjectsByWorkspace(workspaceId),
       userId
         ? workspaceService.getMember(workspaceId, userId)
         : Promise.resolve(null),
     ]);
-    const stateById = new Map(docs.map(doc => [doc._id.toString(), doc]));
+    const stateById = new Map(
+      docs.map(doc => [doc.id, toAppProjectCompat(doc)]),
+    );
     return snapshot.apps
       .filter(app =>
         canSeeIndexedApp(app, stateById.get(app.appId), userId, member?.role),

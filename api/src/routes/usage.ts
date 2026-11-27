@@ -7,9 +7,8 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
-import { ObjectId } from "mongodb";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import { LlmUsage } from "../database/schema";
+import { parseEntityId } from "../database/pg/id-codec";
 import { loggers } from "../logging";
 import {
   AUTH_SECURITY,
@@ -19,6 +18,10 @@ import {
   pathParam,
   queryParam,
 } from "../openapi/core";
+import {
+  usageStatsRepo,
+  type DateRangeFilter,
+} from "../repositories/usage-stats";
 import { fail } from "./lib/respond";
 import { requireWorkspaceAccess } from "./lib/workspace-access";
 
@@ -77,27 +80,23 @@ usageRoutes.use(
 
 function parseDateRange(
   c: Context,
-): { ok: true; match: Record<string, unknown> } | { ok: false; error: string } {
+): { ok: true; range: DateRangeFilter } | { ok: false; error: string } {
   const from = c.req.query("from");
   const to = c.req.query("to");
-  const match: Record<string, unknown> = {};
-  if (from || to) {
-    const dateFilter: Record<string, Date> = {};
-    if (from) {
-      const d = new Date(from);
-      if (isNaN(d.getTime())) {
-        return { ok: false, error: "Invalid 'from' date" };
-      }
-      dateFilter.$gte = d;
+  const range: DateRangeFilter = {};
+  if (from) {
+    const d = new Date(from);
+    if (isNaN(d.getTime())) {
+      return { ok: false, error: "Invalid 'from' date" };
     }
-    if (to) {
-      const d = new Date(to);
-      if (isNaN(d.getTime())) return { ok: false, error: "Invalid 'to' date" };
-      dateFilter.$lte = d;
-    }
-    match.createdAt = dateFilter;
+    range.from = d;
   }
-  return { ok: true, match };
+  if (to) {
+    const d = new Date(to);
+    if (isNaN(d.getTime())) return { ok: false, error: "Invalid 'to' date" };
+    range.to = d;
+  }
+  return { ok: true, range };
 }
 
 usageRoutes.openapi(
@@ -120,45 +119,13 @@ usageRoutes.openapi(
     if (!workspaceId) return fail(c, 400, "Missing workspaceId");
     const parsed = parseDateRange(c);
     if (!parsed.ok) return fail(c, 400, parsed.error);
-    const dateFilter = parsed.match;
 
     try {
-      const [result] = await LlmUsage.aggregate([
-        {
-          $match: {
-            workspaceId: new ObjectId(workspaceId),
-            ...dateFilter,
-          },
-        },
-        {
-          $group: {
-            _id: null,
-            totalInputTokens: { $sum: "$inputTokens" },
-            totalOutputTokens: { $sum: "$outputTokens" },
-            totalCacheReadTokens: { $sum: "$cacheReadTokens" },
-            totalCacheWriteTokens: { $sum: "$cacheWriteTokens" },
-            totalReasoningTokens: { $sum: "$reasoningTokens" },
-            totalTokens: { $sum: "$totalTokens" },
-            totalCostUsd: { $sum: "$costUsd" },
-            invocationCount: { $sum: 1 },
-          },
-        },
-        { $project: { _id: 0 } },
-      ]);
-
-      return c.json(
-        result ?? {
-          totalInputTokens: 0,
-          totalOutputTokens: 0,
-          totalCacheReadTokens: 0,
-          totalCacheWriteTokens: 0,
-          totalReasoningTokens: 0,
-          totalTokens: 0,
-          totalCostUsd: 0,
-          invocationCount: 0,
-        },
-        200,
+      const result = await usageStatsRepo.getWorkspaceLlmUsageSummary(
+        workspaceId,
+        parsed.range,
       );
+      return c.json(result, 200);
     } catch (err) {
       logger.error("Error fetching usage summary", { error: err });
       return fail(c, 500, "Internal server error");
@@ -187,46 +154,12 @@ usageRoutes.openapi(
     if (!workspaceId) return fail(c, 400, "Missing workspaceId");
     const parsed = parseDateRange(c);
     if (!parsed.ok) return fail(c, 400, parsed.error);
-    const dateFilter = parsed.match;
 
     try {
-      const results = await LlmUsage.aggregate([
-        {
-          $match: {
-            workspaceId: new ObjectId(workspaceId),
-            ...dateFilter,
-          },
-        },
-        {
-          $group: {
-            _id: "$userId",
-            totalInputTokens: { $sum: "$inputTokens" },
-            totalOutputTokens: { $sum: "$outputTokens" },
-            totalCacheReadTokens: { $sum: "$cacheReadTokens" },
-            totalCacheWriteTokens: { $sum: "$cacheWriteTokens" },
-            totalReasoningTokens: { $sum: "$reasoningTokens" },
-            totalTokens: { $sum: "$totalTokens" },
-            totalCostUsd: { $sum: "$costUsd" },
-            invocationCount: { $sum: 1 },
-          },
-        },
-        {
-          $project: {
-            _id: 0,
-            userId: "$_id",
-            totalInputTokens: 1,
-            totalOutputTokens: 1,
-            totalCacheReadTokens: 1,
-            totalCacheWriteTokens: 1,
-            totalReasoningTokens: 1,
-            totalTokens: 1,
-            totalCostUsd: 1,
-            invocationCount: 1,
-          },
-        },
-        { $sort: { totalCostUsd: -1 } },
-      ]);
-
+      const results = await usageStatsRepo.getWorkspaceLlmUsageByUser(
+        workspaceId,
+        parsed.range,
+      );
       return c.json({ users: results }, 200);
     } catch (err) {
       logger.error("Error fetching usage by user", { error: err });
@@ -261,17 +194,15 @@ usageRoutes.openapi(
     const workspaceId = c.req.param("workspaceId");
     if (!workspaceId) return fail(c, 400, "Missing workspaceId");
     const chatId = c.req.param("chatId");
-    if (!chatId || !ObjectId.isValid(chatId)) {
+    if (!chatId || !parseEntityId(chatId)) {
       return fail(c, 400, "Invalid chatId");
     }
 
     try {
-      const results = await LlmUsage.find({
-        workspaceId: new ObjectId(workspaceId),
-        chatId: new ObjectId(chatId),
-      })
-        .sort({ createdAt: 1 })
-        .lean();
+      const results = await usageStatsRepo.listLlmUsageByChat(
+        workspaceId,
+        chatId,
+      );
 
       const totals = results.reduce(
         (acc, r) => {
@@ -331,46 +262,12 @@ usageRoutes.openapi(
     if (!workspaceId) return fail(c, 400, "Missing workspaceId");
     const parsed = parseDateRange(c);
     if (!parsed.ok) return fail(c, 400, parsed.error);
-    const dateFilter = parsed.match;
 
     try {
-      const results = await LlmUsage.aggregate([
-        {
-          $match: {
-            workspaceId: new ObjectId(workspaceId),
-            ...dateFilter,
-          },
-        },
-        {
-          $group: {
-            _id: "$modelId",
-            totalInputTokens: { $sum: "$inputTokens" },
-            totalOutputTokens: { $sum: "$outputTokens" },
-            totalCacheReadTokens: { $sum: "$cacheReadTokens" },
-            totalCacheWriteTokens: { $sum: "$cacheWriteTokens" },
-            totalReasoningTokens: { $sum: "$reasoningTokens" },
-            totalTokens: { $sum: "$totalTokens" },
-            totalCostUsd: { $sum: "$costUsd" },
-            invocationCount: { $sum: 1 },
-          },
-        },
-        {
-          $project: {
-            _id: 0,
-            modelId: "$_id",
-            totalInputTokens: 1,
-            totalOutputTokens: 1,
-            totalCacheReadTokens: 1,
-            totalCacheWriteTokens: 1,
-            totalReasoningTokens: 1,
-            totalTokens: 1,
-            totalCostUsd: 1,
-            invocationCount: 1,
-          },
-        },
-        { $sort: { totalCostUsd: -1 } },
-      ]);
-
+      const results = await usageStatsRepo.getWorkspaceLlmUsageByModel(
+        workspaceId,
+        parsed.range,
+      );
       return c.json({ models: results }, 200);
     } catch (err) {
       logger.error("Error fetching usage by model", { error: err });

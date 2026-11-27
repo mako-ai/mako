@@ -31,8 +31,7 @@
  *    per-surface choice (see autoCommitFileEdit's history in
  *    worktree.service); it is deliberately NOT policy here.
  */
-import { Types } from "mongoose";
-import { AppWorktree } from "../database/workspace-schema";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
 import { DEFAULT_BRANCH } from "./repository.service";
 
 /** Content kinds that commit through Mako (dbt joins with Block D3). */
@@ -66,10 +65,7 @@ export async function sessionBranchFor(
   workspaceId: string,
   actorId: string,
 ): Promise<string> {
-  const doc = await AppWorktree.findOne({
-    workspaceId: new Types.ObjectId(workspaceId),
-    userId: actorId,
-  });
+  const doc = await appsMetadataRepo.findWorktree(workspaceId, actorId);
   return doc?.branch || defaultBranchForActor(actorId);
 }
 

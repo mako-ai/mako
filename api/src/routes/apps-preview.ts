@@ -24,7 +24,10 @@ import {
   serverTimingHeader,
   wantsBindingProgress,
 } from "../apps/binding-progress";
-import { AppProject } from "../database/workspace-schema";
+import {
+  appsMetadataRepo,
+  toAppProjectCompat,
+} from "../repositories/apps-metadata";
 import { serveDeploymentFile } from "../apps/deployment.service";
 import { resolveAppViewerById } from "../apps/app-viewer.service";
 import { getArtifactStore } from "../services/artifact-store.service";
@@ -80,7 +83,13 @@ async function serveAsset(c: Context): Promise<Response> {
         ? await refreshForShareGrant(c, grant, name)
         : fail(c, 404, "Not found");
     }
-    const project = name ? await AppProject.findById(grant.projectId) : null;
+    const projectRec = name
+      ? await appsMetadataRepo.findProjectById(
+          grant.projectId,
+          grant.workspaceId,
+        )
+      : null;
+    const project = projectRec ? toAppProjectCompat(projectRec) : null;
     if (!name || !project) {
       return fail(c, 404, "Not found");
     }
@@ -167,7 +176,11 @@ async function serveAsset(c: Context): Promise<Response> {
   );
   if (dataMatch) {
     if (dataMatch[2] === "snapshot.json") {
-      const project = await AppProject.findById(grant.projectId);
+      const projectRec = await appsMetadataRepo.findProjectById(
+        grant.projectId,
+        grant.workspaceId,
+      );
+      const project = projectRec ? toAppProjectCompat(projectRec) : null;
       const parquetKey = project
         ? await bindingArtifactKeyByName(project, dataMatch[1], "")
         : null;
@@ -196,7 +209,11 @@ async function serveAsset(c: Context): Promise<Response> {
     // A repo read (the binding's definition decides its key): this is the
     // `resolving` phase a progress client sees.
     const resolve = async () => {
-      const project = await AppProject.findById(grant.projectId);
+      const projectRec = await appsMetadataRepo.findProjectById(
+        grant.projectId,
+        grant.workspaceId,
+      );
+      const project = projectRec ? toAppProjectCompat(projectRec) : null;
       const key = project
         ? await bindingArtifactKeyByName(project, dataMatch[1], "")
         : null;

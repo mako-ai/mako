@@ -42,10 +42,14 @@ export interface BindingJobRunnerDeps {
   plan: typeof planDevBuild;
   mark: typeof markBindingJob;
   storeDraft: typeof storeJobDraft;
-  heartbeat: (jobId: string) => Promise<void>;
+  heartbeat: (jobId: string, workspaceId?: string) => Promise<void>;
   heartbeatMs: number;
   /** Record the build's phase on the job row for its poller. */
-  progress: (jobId: string, event: BindingProgressEvent) => Promise<void>;
+  progress: (
+    jobId: string,
+    event: BindingProgressEvent,
+    workspaceId?: string,
+  ) => Promise<void>;
   /** A phase change is written at once; row counts at most this often. */
   progressMs: number;
 }
@@ -58,9 +62,11 @@ const defaultDeps: BindingJobRunnerDeps = {
   plan: planDevBuild,
   mark: markBindingJob,
   storeDraft: storeJobDraft,
-  heartbeat: jobId => heartbeatBindingJob(jobId),
+  heartbeat: (jobId, workspaceId) =>
+    heartbeatBindingJob(jobId, new Date(), workspaceId),
   heartbeatMs: JOB_HEARTBEAT_MS,
-  progress: (jobId, event) => recordBindingJobProgress(jobId, event),
+  progress: (jobId, event, workspaceId) =>
+    recordBindingJobProgress(jobId, event, new Date(), workspaceId),
   progressMs: 2_000,
 };
 
@@ -71,6 +77,7 @@ const defaultDeps: BindingJobRunnerDeps = {
  */
 function jobProgressWriter(
   jobId: string,
+  workspaceId: string,
   deps: BindingJobRunnerDeps,
 ): (event: BindingProgressEvent) => void {
   let lastPhase: string | null = null;
@@ -83,7 +90,7 @@ function jobProgressWriter(
     lastAt = now;
     // In order, never in parallel: an older count must not land last.
     chain = chain
-      .then(() => deps.progress(jobId, event))
+      .then(() => deps.progress(jobId, event, workspaceId))
       .catch(() => undefined);
   };
 }
@@ -106,25 +113,29 @@ export async function runBindingJob(
     unregistered = project !== null;
   }
   if (!project) {
-    await deps.mark(jobId, {
-      status: "error",
-      error: "App not found",
-      errorStatus: 404,
-    });
+    await deps.mark(
+      jobId,
+      {
+        status: "error",
+        error: "App not found",
+        errorStatus: 404,
+      },
+      job.workspaceId,
+    );
     return "error";
   }
-  await deps.mark(jobId, { status: "running" });
+  await deps.mark(jobId, { status: "running" }, job.workspaceId);
   // The lease: while this beats, the stale sweep leaves the job alone; if
   // the process dies, the beat stops and pollers get a terminal error.
   const beat = setInterval(() => {
-    deps.heartbeat(jobId).catch(() => undefined);
+    deps.heartbeat(jobId, job.workspaceId).catch(() => undefined);
   }, deps.heartbeatMs);
   try {
     const result = await withBindingProgress(
-      jobProgressWriter(jobId, deps),
+      jobProgressWriter(jobId, job.workspaceId, deps),
       () => build(job, project, unregistered, deps),
     );
-    await deps.mark(jobId, { status: "ready", result });
+    await deps.mark(jobId, { status: "ready", result }, job.workspaceId);
     return "ready";
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -135,11 +146,15 @@ export async function runBindingJob(
       kind: job.kind,
       error: message,
     });
-    await deps.mark(jobId, {
-      status: "error",
-      error: message,
-      errorStatus: error instanceof DevBuildError ? error.status : 502,
-    });
+    await deps.mark(
+      jobId,
+      {
+        status: "error",
+        error: message,
+        errorStatus: error instanceof DevBuildError ? error.status : 502,
+      },
+      job.workspaceId,
+    );
     return "error";
   } finally {
     clearInterval(beat);

@@ -5,8 +5,8 @@
  * Designed to be called fire-and-forget so it never blocks request handling.
  */
 
-import { ObjectId } from "mongodb";
-import { type IWorkflowRunRef, LlmUsage } from "../database/schema";
+import { type IWorkflowRunRef } from "../database/schema";
+import { usageStatsRepo } from "../repositories/usage-stats";
 import { computeInvocationCost } from "./cost-calculator";
 import { loggers } from "../logging";
 
@@ -74,10 +74,10 @@ export async function trackUsage(params: TrackUsageParams): Promise<void> {
       costedSteps = result.steps;
     }
 
-    await LlmUsage.create({
-      workspaceId: new ObjectId(params.workspaceId),
+    await usageStatsRepo.createLlmUsage({
+      workspaceId: params.workspaceId,
       userId: params.userId,
-      chatId: params.chatId ? new ObjectId(params.chatId) : undefined,
+      chatId: params.chatId,
       invocationType: params.invocationType,
       modelId: params.modelId,
       inputTokens: params.inputTokens,

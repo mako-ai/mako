@@ -9,13 +9,15 @@
  * visibility, the deployed sha, the share token — and the derived index that
  * makes this read one query.
  */
-import { Types } from "mongoose";
 import {
-  AppProject,
   type IAppProject,
   type IPublicShare,
 } from "../database/workspace-schema";
 import { timed } from "../middleware/server-timing";
+import {
+  appsMetadataRepo,
+  toAppProjectCompat,
+} from "../repositories/apps-metadata";
 import { canWriteResource } from "../utils/resource-acl";
 import { loadAppsIndex } from "./app-index.service";
 import { canSeeIndexedApp } from "./app-authorization";
@@ -69,15 +71,11 @@ export async function listVisibleApps(
     .catch(() => undefined);
   const [docs, verified] = await Promise.all([
     timed("list.projects", () =>
-      AppProject.find({ workspaceId: new Types.ObjectId(workspaceId) })
-        .select(
-          "_id access workspaceRole sharedWith owner_id createdBy publicShare publishedSha publishedAt chatEnabled",
-        )
-        .lean(),
+      appsMetadataRepo.listProjectsByWorkspace(workspaceId),
     ),
     timed("list.verified", () => verifiedAppIds(workspaceId)),
   ]);
-  const stateById = new Map(docs.map(d => [d._id.toString(), d]));
+  const stateById = new Map(docs.map(d => [d.id, toAppProjectCompat(d)]));
 
   const apps = folders
     // No record yet means nothing has restricted it — a folder someone
@@ -150,9 +148,11 @@ export async function firstUnwritableAppIn(
     a => a.path === fromPath || a.path.startsWith(`${fromPath}/`),
   );
   if (inside.length === 0) return undefined;
-  const rows = await AppProject.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-    _id: { $in: inside.map(a => new Types.ObjectId(a.appId)) },
-  });
+  const rows = (
+    await appsMetadataRepo.listProjectsByIds(
+      workspaceId,
+      inside.map(a => a.appId),
+    )
+  ).map(r => toAppProjectCompat(r));
   return rows.find(row => !canWriteResource(row, userId, role));
 }

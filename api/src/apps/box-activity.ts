@@ -17,9 +17,9 @@
  * write, not fifty.
  */
 import { Redis } from "ioredis";
-import { Types } from "mongoose";
-import { AppWorktree } from "../database/workspace-schema";
+import { parseEntityId } from "../database/pg/id-codec";
 import { loggers } from "../logging";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
 import { BoundedMap } from "../utils/bounded-map";
 import { BASE_REDIS_OPTIONS } from "../utils/redis";
 
@@ -49,7 +49,7 @@ export function parseSessionKey(
   const at = sessionKey.indexOf(":");
   if (at <= 0 || at === sessionKey.length - 1) return null;
   const workspaceId = sessionKey.slice(0, at);
-  if (!Types.ObjectId.isValid(workspaceId)) return null;
+  if (!parseEntityId(workspaceId)) return null;
   return { workspaceId, userId: sessionKey.slice(at + 1) };
 }
 
@@ -84,19 +84,11 @@ export async function recordBoxActivity(
   // A hold that reaches further always goes through.
   if (holdMs === 0 && !(await claimSharedWindow(sessionKey))) return;
   try {
-    await AppWorktree.updateOne(
-      {
-        workspaceId: new Types.ObjectId(parts.workspaceId),
-        userId: parts.userId,
-      },
-      {
-        $max: {
-          lastActivityAt: new Date(now),
-          ...(holdMs > 0 ? { activeUntil: new Date(until) } : {}),
-        },
-      },
-      // Activity is not an edit of the record: leave updatedAt alone.
-      { timestamps: false },
+    await appsMetadataRepo.bumpWorktreeActivity(
+      parts.workspaceId,
+      parts.userId,
+      new Date(now),
+      holdMs > 0 ? new Date(until) : undefined,
     );
   } catch (error) {
     lastWrite.delete(sessionKey);
@@ -234,24 +226,18 @@ export async function getBoxActivity(
   sessionKeys: string[],
 ): Promise<Map<string, BoxActivity>> {
   const out = new Map<string, BoxActivity>();
-  const or: Array<{ workspaceId: Types.ObjectId; userId: string }> = [];
+  const pairs: Array<{ workspaceId: string; actorId: string }> = [];
   for (const key of new Set(sessionKeys)) {
     out.set(key, { known: false, lastActivityAt: null, activeUntil: null });
     const parts = parseSessionKey(key);
     if (parts) {
-      or.push({
-        workspaceId: new Types.ObjectId(parts.workspaceId),
-        userId: parts.userId,
-      });
+      pairs.push({ workspaceId: parts.workspaceId, actorId: parts.userId });
     }
   }
-  if (or.length === 0) return out;
-  const docs = await AppWorktree.find(
-    { $or: or },
-    { workspaceId: 1, userId: 1, lastActivityAt: 1, activeUntil: 1 },
-  ).lean();
+  if (pairs.length === 0) return out;
+  const docs = await appsMetadataRepo.listWorktreesActivity(pairs);
   for (const doc of docs) {
-    out.set(`${doc.workspaceId.toString()}:${doc.userId}`, {
+    out.set(`${doc.workspaceId}:${doc.userId}`, {
       known: true,
       lastActivityAt: doc.lastActivityAt ?? null,
       activeUntil: doc.activeUntil ?? null,

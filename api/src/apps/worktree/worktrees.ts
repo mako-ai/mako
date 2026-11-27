@@ -2,13 +2,15 @@
  * Opening a worktree handle: the actor's worktree doc and sandbox for an app
  * (or the whole workspace repo).
  */
-import { Types } from "mongoose";
 import {
-  AppWorktree,
   type IAppProject,
   type IAppWorktree,
 } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
+import {
+  appsMetadataRepo,
+  toAppWorktreeCompat,
+} from "../../repositories/apps-metadata";
 import { boxHasRepo, boxHead } from "../box";
 import { ZERO_OID } from "../git";
 import {
@@ -121,10 +123,7 @@ async function ensureWorktreeCore(
   // The doc remembers which branch this actor is on (checkoutBranch writes
   // it); an actor with no doc yet starts on the default branch, like a fresh
   // clone. options.branch overrides both (publish pins main explicitly).
-  const existing = await AppWorktree.findOne({
-    workspaceId: new Types.ObjectId(workspaceId),
-    userId: actorId,
-  });
+  const existing = await appsMetadataRepo.findWorktree(workspaceId, actorId);
   const branch =
     options.branch ?? existing?.branch ?? defaultBranchForActor(actorId);
   let branchHead = await resolveCommit(repoDir, `refs/heads/${branch}`);
@@ -147,12 +146,19 @@ async function ensureWorktreeCore(
 
   // Atomic find-or-create: the agent routinely fires tool calls in parallel
   // right after app creation, so a findOne+create pair races itself into
-  // E11000 on the (workspaceId, userId) unique index.
-  const doc = await AppWorktree.findOneAndUpdate(
-    { workspaceId: new Types.ObjectId(workspaceId), userId: actorId },
-    { $setOnInsert: { branch } },
-    { returnDocument: "after", upsert: true },
+  // duplicate-key errors on the (workspaceId, actor) unique index.
+  const worktreeRec = await appsMetadataRepo.ensureWorktreeRow(
+    workspaceId,
+    actorId,
+    branch,
   );
+  const doc = toAppWorktreeCompat(worktreeRec, async d => {
+    await appsMetadataRepo.updateWorktreeBranch(
+      d.workspaceId.toString(),
+      d.userId,
+      d.branch,
+    );
+  });
 
   return { doc, repoDir };
 }
@@ -178,7 +184,11 @@ export async function syncBranchFromBox(handle: WorktreeHandle): Promise<void> {
         to: branch,
       });
       handle.doc.branch = branch;
-      await handle.doc.save();
+      await appsMetadataRepo.updateWorktreeBranch(
+        handle.doc.workspaceId.toString(),
+        handle.doc.userId,
+        branch,
+      );
     }
   } catch {
     // Not worth failing a read over.

@@ -2,9 +2,8 @@
  * Commits from the working copy, per-file git actions, file versions for
  * diffs, and restoring an app to an earlier version.
  */
-import { Types } from "mongoose";
-import { AppWorktree } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
+import { appsMetadataRepo } from "../../repositories/apps-metadata";
 import {
   boxCommitAll,
   boxCommitPathToBranch,
@@ -287,10 +286,7 @@ export async function commitAgentTurn(
   touchedPaths?: string[],
 ): Promise<Array<{ commitOid?: string }>> {
   if (touchedPaths && touchedPaths.length === 0) return [];
-  const doc = await AppWorktree.findOne({
-    workspaceId: new Types.ObjectId(workspaceId),
-    userId: actorId,
-  });
+  const doc = await appsMetadataRepo.findWorktree(workspaceId, actorId);
   if (!doc) return [];
 
   const ctx: SandboxExecContext = {

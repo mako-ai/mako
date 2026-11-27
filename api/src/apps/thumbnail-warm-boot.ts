@@ -9,8 +9,8 @@
  * again whenever a deploy adds a variant recipe. Store hits are HEAD
  * requests; only a miss touches git.
  */
-import { AppIndexEntry } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
 import { loadIndexedApps } from "./app-index.service";
 import {
   requestThumbnailWarm,
@@ -34,9 +34,7 @@ export async function backfillThumbnailVariants(): Promise<{
   checked: number;
   generated: number;
 }> {
-  const ids = await AppIndexEntry.distinct("workspaceId", {
-    thumbnail: { $exists: true },
-  });
+  const ids = await appsMetadataRepo.listDistinctWorkspaceIdsWithThumbnails();
   let checked = 0;
   let generated = 0;
   let failed = 0;

@@ -12,9 +12,8 @@
  * snapshot is only ever read back by the workspace and person it was
  * ranked for.
  */
-import { Types } from "mongoose";
-import { AppFeedSnapshot } from "../database/workspace-schema";
 import { authRepo } from "../repositories/auth";
+import { usageStatsRepo } from "../repositories/usage-stats";
 import { loggers } from "../logging";
 import { timed } from "../middleware/server-timing";
 import type { DiscoveryApp } from "./app-discovery.service";
@@ -76,7 +75,10 @@ export interface FeedDeps {
     now: Date,
   ) => Promise<FeedSignals>;
   saveSnapshot: (snapshot: StoredFeedSnapshot, now: Date) => Promise<string>;
-  loadSnapshot: (id: string) => Promise<StoredFeedSnapshot | null>;
+  loadSnapshot: (
+    id: string,
+    workspaceId?: string,
+  ) => Promise<StoredFeedSnapshot | null>;
 }
 
 export interface FeedPage {
@@ -175,21 +177,20 @@ export const defaultFeedDeps: FeedDeps = {
   },
   loadSignals: memoizedFeedSignals,
   saveSnapshot: async (snapshot, now) => {
-    const doc = await AppFeedSnapshot.create({
-      workspaceId: new Types.ObjectId(snapshot.workspaceId),
+    return usageStatsRepo.createFeedSnapshot({
+      workspaceId: snapshot.workspaceId,
       userId: snapshot.userId,
       popular: snapshot.popular,
       fresh: snapshot.fresh,
       recommended: snapshot.recommended,
       createdAt: now,
     });
-    return doc._id.toString();
   },
-  loadSnapshot: async id => {
-    const doc = await AppFeedSnapshot.findById(id).lean();
+  loadSnapshot: async (id, workspaceId) => {
+    const doc = await usageStatsRepo.findFeedSnapshotById(id, workspaceId);
     if (!doc) return null;
     return {
-      workspaceId: doc.workspaceId.toString(),
+      workspaceId: doc.workspaceId,
       userId: doc.userId ?? null,
       popular: doc.popular ?? [],
       fresh: doc.fresh ?? [],
@@ -230,7 +231,7 @@ export async function getFeedPage(
   if (options.cursor) {
     const cursor = decodeFeedCursor(options.cursor);
     if (!cursor) throw new FeedCursorError("Invalid feed cursor", 400);
-    const stored = await deps.loadSnapshot(cursor.snapshotId);
+    const stored = await deps.loadSnapshot(cursor.snapshotId, workspaceId);
     if (!stored) {
       throw new FeedCursorError("The feed expired; reload it", 410);
     }
