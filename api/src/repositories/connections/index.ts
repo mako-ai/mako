@@ -1,15 +1,19 @@
 /**
- * Phase 2A-1 (`connections`) repository singleton & barrel export.
- *
- * All runtime callers import `connectionsRepo` from here. Defaults to
- * `mongo_only` when `POSTGRES_URL` is unset (zero Postgres calls on hot paths).
+ * Connections repository singleton & barrel export (Neon Postgres `pg_only`).
  */
-import { DualConnectionsRepository } from "./dual.repo";
+import { createPgFirstRepoProxy } from "../resolve-repo";
+import { MongoConnectionsRepository } from "./mongo.repo";
+import { PgConnectionsRepository } from "./pg.repo";
+import type { ConnectionsRepository } from "./types";
 
-export const connectionsRepo = new DualConnectionsRepository();
+export const connectionsRepo: ConnectionsRepository =
+  createPgFirstRepoProxy<ConnectionsRepository>(
+    "connections",
+    new PgConnectionsRepository(),
+    new MongoConnectionsRepository(),
+  );
 
 export * from "./crypto";
-export * from "./dual.repo";
 export * from "./mapper";
 export * from "./mongo.repo";
 export * from "./pg.repo";

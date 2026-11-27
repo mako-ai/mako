@@ -52,7 +52,7 @@ import {
   chunkRows,
   dedupByKey,
   prefetchPgUserUuidMap,
-} from "../../migration/bulk-helpers";
+} from "../../database/pg/bulk-helpers";
 import {
   deserializeBindingRun,
   entityIdToPgUuid,

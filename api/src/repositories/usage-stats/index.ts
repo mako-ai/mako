@@ -1,26 +1,22 @@
 /**
- * Phase 2B `usage_stats` domain repository entry point.
- *
- * Exports the singleton `usageStatsRepo` (backed by `DualUsageStatsRepository`,
- * defaulting to `mongo_only` until `migration_domain_state` advances `usage_stats`)
- * plus test override hooks and concrete repository classes.
+ * Usage stats domain repository entry point (Neon Postgres `pg_only`).
  */
-import { DualUsageStatsRepository } from "./dual.repo";
+import { createPgFirstRepoProxy } from "../resolve-repo";
+import { MongoUsageStatsRepository } from "./mongo.repo";
+import { PgUsageStatsRepository } from "./pg.repo";
 import type { UsageStatsRepository } from "./types";
 
 export * from "./types";
 export * from "./mapper";
 export { MongoUsageStatsRepository } from "./mongo.repo";
 export { PgUsageStatsRepository } from "./pg.repo";
-export {
-  DualUsageStatsRepository,
-  USAGE_STATS_DOMAIN,
-  USAGE_STATS_SHADOW_OPTIONS,
-  type DualUsageStatsRepositoryDeps,
-} from "./dual.repo";
 
 const defaultUsageStatsRepo: UsageStatsRepository =
-  new DualUsageStatsRepository();
+  createPgFirstRepoProxy<UsageStatsRepository>(
+    "usage_stats",
+    new PgUsageStatsRepository(),
+    new MongoUsageStatsRepository(),
+  );
 let activeUsageStatsRepo: UsageStatsRepository = defaultUsageStatsRepo;
 
 export function getUsageStatsRepo(): UsageStatsRepository {

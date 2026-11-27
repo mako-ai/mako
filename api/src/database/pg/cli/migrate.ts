@@ -5,23 +5,33 @@
  *   pnpm --filter api run pg:migrate
  *   pnpm --filter api run pg:migrate -- --check
  *   pnpm --filter api run pg:migrate -- --post-backfill sessions-active-workspace-fk
- *   pnpm --filter api run pg:migrate -- --post-backfill sessions-active-workspace-fk --force
  */
+import fs from "node:fs";
+import path from "node:path";
 import { Command } from "commander";
-import { closePgConnections, getPgDirectDb } from "../../database/pg/client";
-import {
-  checkMigrationsFolder,
-  runPgMigrations,
-} from "../../database/pg/migrate";
+import dotenv from "dotenv";
+import { closePgConnections, getPgDirectDb } from "../client";
+import { checkMigrationsFolder, runPgMigrations } from "../migrate";
 import {
   POST_BACKFILL_STEPS,
   getPostBackfillStep,
   readPostBackfillStatements,
   runPostBackfillStep,
-} from "../../database/pg/post-backfill";
-import { loadMigrationCliEnv } from "./env";
+} from "../post-backfill";
 
-loadMigrationCliEnv();
+function loadCliEnv(): void {
+  const candidates = [
+    path.resolve(__dirname, "../../../../../.env"), // repo root
+    path.resolve(__dirname, "../../../../.env"), // api/.env fallback
+  ];
+  for (const envPath of candidates) {
+    if (fs.existsSync(envPath)) {
+      dotenv.config({ path: envPath, quiet: true });
+    }
+  }
+}
+
+loadCliEnv();
 
 const program = new Command()
   .name("pg:migrate")

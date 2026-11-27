@@ -60,7 +60,7 @@ import {
   chunkValues,
   dedupByKey,
   pickNewerByUpdatedAt,
-} from "../../migration/bulk-helpers";
+} from "../../database/pg/bulk-helpers";
 import { encodeChatListCursor } from "./cursor";
 import {
   computeMessageFingerprint,

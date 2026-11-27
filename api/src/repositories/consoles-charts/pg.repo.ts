@@ -1039,6 +1039,9 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
     if (Object.keys(set).length === 0) {
       return this.findConsoleById(workspaceId, consoleId);
     }
+    if (set.updatedAt === undefined) {
+      set.updatedAt = new Date();
+    }
     const db = this.getDb();
     const runUpdate = (setValues: Record<string, unknown>) =>
       db
@@ -1111,6 +1114,12 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
         : {}),
     };
     const setValues = await this.buildConsoleSetValues(patchWithInc);
+    if (
+      Object.keys(setValues).length > 0 &&
+      setValues.updatedAt === undefined
+    ) {
+      setValues.updatedAt = new Date();
+    }
 
     const guardActive =
       input.expectedVersion !== undefined ||
@@ -2491,6 +2500,9 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
     }
     if (Object.keys(set).length === 0) {
       return this.findNotebookIndex(workspaceId, notebookId);
+    }
+    if (set.updatedAt === undefined) {
+      set.updatedAt = new Date();
     }
     const rows = await this.getDb()
       .update(notebookIndexes)
