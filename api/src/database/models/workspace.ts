@@ -11,7 +11,15 @@ export interface IWorkspaceBilling {
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
   subscriptionStatus:
-    "active" | "past_due" | "canceled" | "trialing" | "incomplete" | null;
+    | "active"
+    | "past_due"
+    | "canceled"
+    | "trialing"
+    | "incomplete"
+    | "incomplete_expired"
+    | "unpaid"
+    | "paused"
+    | null;
   currentPeriodStart: Date | null;
   currentPeriodEnd: Date | null;
   usageQuotaUsd: number;
@@ -228,6 +236,9 @@ const WorkspaceSchema = new Schema<IWorkspace>(
           "canceled",
           "trialing",
           "incomplete",
+          "incomplete_expired",
+          "unpaid",
+          "paused",
           null,
         ],
         default: null,

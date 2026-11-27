@@ -639,7 +639,7 @@ export interface WorkspaceRepository {
     email: string,
     now?: Date,
   ): Promise<WorkspaceInviteWithRefs[]>;
-  cancelInvite(inviteId: string): Promise<boolean>;
+  cancelInvite(workspaceId: string, inviteId: string): Promise<boolean>;
   acceptInviteTransaction(
     token: string,
     userId: string,

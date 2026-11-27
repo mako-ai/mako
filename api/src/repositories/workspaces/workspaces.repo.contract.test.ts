@@ -20,8 +20,10 @@ import {
   it,
   vi,
 } from "vitest";
+import type Stripe from "stripe";
 import { loadPeopleDirectory } from "../../apps/app-owner.service";
 import { OwnerDirectory } from "../../apps/user-handles";
+import { syncSubscriptionToWorkspace } from "../../billing/billing.service";
 import { AcpPlanGrant } from "../../database/acp-plan-grant-schema";
 import {
   McpOAuthClient,
@@ -80,6 +82,7 @@ import {
   runParityVerification,
 } from "../../migration/verifier";
 import { workspaceService } from "../../services/workspace.service";
+import { sandboxRunOfKey } from "../../workflows/sandbox";
 import {
   DualAuthRepository,
   resetAuthRepoForTests,
@@ -88,8 +91,13 @@ import {
 import { DualWorkspaceRepository } from "./dual.repo";
 import { replayWorkspacesRetry } from "./dual-write";
 import { resetWorkspaceRepoForTests, setWorkspaceRepoForTests } from "./index";
-import { MongoWorkspaceRepository } from "./mongo.repo";
+import {
+  MongoWorkspaceRepository,
+  isTransactionsUnsupportedError,
+  runInMongoTransaction,
+} from "./mongo.repo";
 import { PgWorkspaceRepository } from "./pg.repo";
+import { resyncToPg } from "./sync";
 import {
   WORKSPACES_DOMAIN,
   WorkspaceSlugConflictError,
@@ -2163,7 +2171,8 @@ describe("Phase 1B WorkspaceRepository contract & migration lifecycle (10 tables
 
       // Wrong-workspace / nonexistent no-op deletes MUST write 0 tombstones!
       expect(await dualRepo.deleteApiKey(otherWs.id, keyById.id)).toBe(false);
-      expect(await dualRepo.cancelInvite(newDualId().oid)).toBe(false);
+      expect(await dualRepo.cancelInvite(ws.id, newDualId().oid)).toBe(false);
+      expect(await dualRepo.cancelInvite(otherWs.id, invite.id)).toBe(false);
       expect(await dualRepo.removeMember(otherWs.id, guest.mongoId)).toBe(
         false,
       );
@@ -2181,7 +2190,7 @@ describe("Phase 1B WorkspaceRepository contract & migration lifecycle (10 tables
         1,
       );
       expect(await dualRepo.removeMember(ws.id, guest.mongoId)).toBe(true);
-      expect(await dualRepo.cancelInvite(invite.id)).toBe(true);
+      expect(await dualRepo.cancelInvite(ws.id, invite.id)).toBe(true);
       expect(
         await dualRepo.revokeMcpGrantsForMember({
           workspaceId: ws.id,
@@ -2401,6 +2410,1143 @@ describe("Phase 1B WorkspaceRepository contract & migration lifecycle (10 tables
       expect(peopleDir.resolveEmail("alice@private-laptop.dev")?.userId).toBe(
         owner.pgUuid,
       );
+    });
+  });
+
+  // ── 6. PR #1554 Deep Review Regressions (12 findings) ──────────────────
+
+  describe("PR #1554 deep-review regressions", () => {
+    it("[4717269351] syncSubscriptionToWorkspace persists unpaid, paused, and incomplete_expired identically in Mongo and PG and downgrades plan to free", async () => {
+      const router = new MigrationRouter({
+        getDb: () => db,
+        hasPg: () => true,
+        enablePubSub: false,
+        cacheTtlMs: 0,
+      });
+      const dualRepo = new DualWorkspaceRepository({
+        router,
+        getDb: () => db,
+      });
+      const mongoRepo = new MongoWorkspaceRepository();
+      const pgRepo = new PgWorkspaceRepository({ getDb: () => db });
+      setWorkspaceRepoForTests(dualRepo);
+
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_mongo_read",
+      });
+      const owner = await seedUser({
+        mongoId: "stripe_owner_01",
+        email: "stripe@example.com",
+      });
+      const { workspace: ws } = await dualRepo.createWorkspaceWithOwner({
+        name: "Stripe Status WS",
+        slug: "stripe-status-ws",
+        userId: owner.mongoId,
+      });
+
+      const makeSub = (
+        status: Stripe.Subscription.Status,
+      ): Stripe.Subscription =>
+        ({
+          id: "sub_test_123",
+          customer: "cus_test_123",
+          status,
+          metadata: { workspaceId: ws.id },
+          current_period_start: Math.floor(Date.now() / 1000),
+          current_period_end: Math.floor(Date.now() / 1000) + 86_400 * 30,
+          items: { data: [] },
+        }) as unknown as Stripe.Subscription;
+
+      // Upgrade to pro first, then test all 3 previously-failing Stripe statuses under Stage 2 & Stage 5.
+      await syncSubscriptionToWorkspace(makeSub("active"), ws.id);
+      expect((await pgRepo.findById(ws.id))?.billing.plan).toBe("pro");
+
+      for (const status of [
+        "paused",
+        "unpaid",
+        "incomplete_expired",
+      ] as const) {
+        await syncSubscriptionToWorkspace(makeSub(status), ws.id);
+        const mWs = await mongoRepo.findById(ws.id);
+        const pWs = await pgRepo.findById(ws.id);
+        expect(mWs?.billing.subscriptionStatus).toBe(status);
+        expect(pWs?.billing.subscriptionStatus).toBe(status);
+        expect(pWs?.billing.plan).toBe("free");
+        expect(pWs?.settings.billingTier).toBe("free");
+      }
+
+      // Now switch to PG-primary (`pg_only`) and verify downgrade succeeds without PG 23514.
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "pg_only",
+      });
+      await syncSubscriptionToWorkspace(makeSub("trialing"), ws.id);
+      expect((await pgRepo.findById(ws.id))?.billing.plan).toBe("pro");
+      await syncSubscriptionToWorkspace(makeSub("paused"), ws.id);
+      const pgAfter = await pgRepo.findById(ws.id);
+      expect(pgAfter?.billing.subscriptionStatus).toBe("paused");
+      expect(pgAfter?.billing.plan).toBe("free");
+    });
+
+    it("[4717269792] workspace_api_keys backfill is insert-only so stale snapshots never overwrite live scopes, names, or flags", async () => {
+      const router = new MigrationRouter({
+        getDb: () => db,
+        hasPg: () => true,
+        enablePubSub: false,
+        cacheTtlMs: 0,
+      });
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_mongo_read",
+      });
+      const dualRepo = new DualWorkspaceRepository({
+        router,
+        getDb: () => db,
+      });
+      const pgRepo = new PgWorkspaceRepository({ getDb: () => db });
+
+      const owner = await seedUser({
+        mongoId: "key_stale_own01",
+        email: "key-stale@example.com",
+      });
+      const { workspace: ws } = await dualRepo.createWorkspaceWithOwner({
+        name: "Key Stale WS",
+        slug: "key-stale-ws",
+        userId: owner.mongoId,
+      });
+      const workerKey = await dualRepo.createApiKey({
+        workspaceId: ws.id,
+        name: "Workflows worker",
+        keyHash: makeHash("worker-stale"),
+        prefix: "revops_wrk0000",
+        scopes: ["workflows:runtime"],
+        createdBy: owner.mongoId,
+        agentRun: false,
+        recordWrites: false,
+      });
+
+      // Capture stale backfill snapshot BEFORE live mutations (last_used_at is NULL in both!)
+      const handler = getBackfillDomain(WORKSPACES_DOMAIN);
+      if (!handler?.validate) {
+        throw new Error("Expected workspaces_core backfill handler");
+      }
+      const staleBatch = await handler.fetchBatch({
+        afterCursor: null,
+        limit: 500,
+        workspaceId: null,
+      });
+      for (const item of staleBatch) {
+        expect((await handler.validate(item, db)).ok).toBe(true);
+      }
+
+      // Live dual-write upgrades scopes (does NOT touch lastUsedAt) and updates live PG metadata
+      await dualRepo.updateApiKeyScopesByName(ws.id, "Workflows worker", [
+        "mcp",
+        "query:write",
+        "workflows:runtime",
+      ]);
+      await db
+        .update(pgSchema.workspaceApiKeys)
+        .set({ name: "Renamed Live Key", agentRun: true, recordWrites: true })
+        .where(eq(pgSchema.workspaceApiKeys.id, objectIdToUuid(workerKey.id)));
+
+      // Also insert a Stage-1-only key (not yet in PG) to verify backfill still inserts missing keys.
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "mongo_only",
+      });
+      const missingKey = await dualRepo.createApiKey({
+        workspaceId: ws.id,
+        name: "Missing From PG Key",
+        keyHash: makeHash("worker-missing"),
+        prefix: "revops_mis0000",
+        scopes: ["mcp"],
+        createdBy: owner.mongoId,
+      });
+      const missingBatch = (
+        await handler.fetchBatch({
+          afterCursor: null,
+          limit: 500,
+          workspaceId: null,
+        })
+      ).filter(
+        i =>
+          i.targetTable === "workspace_api_keys" &&
+          i.entityId === objectIdToUuid(missingKey.id),
+      );
+      for (const item of missingBatch) {
+        expect((await handler.validate(item, db)).ok).toBe(true);
+      }
+
+      // Replay the stale snapshot + the new key: existing live key MUST stay untouched, missing key MUST insert!
+      await handler.upsertBatch([...staleBatch, ...missingBatch], db);
+
+      const keys = await pgRepo.listApiKeys(ws.id);
+      const liveKey = keys.find(k => k.id === workerKey.id);
+      expect(liveKey?.scopes).toEqual([
+        "mcp",
+        "query:write",
+        "workflows:runtime",
+      ]);
+      expect(liveKey?.name).toBe("Renamed Live Key");
+      expect(liveKey?.agentRun).toBe(true);
+      expect(liveKey?.recordWrites).toBe(true);
+      expect(keys.find(k => k.id === missingKey.id)?.name).toBe(
+        "Missing From PG Key",
+      );
+    });
+
+    it("[4717270238] backfill upserts enforce tombstones atomically inside the PG transaction so mid-batch live deletes are never resurrected", async () => {
+      const router = new MigrationRouter({
+        getDb: () => db,
+        hasPg: () => true,
+        enablePubSub: false,
+        cacheTtlMs: 0,
+      });
+      const dualRepo = new DualWorkspaceRepository({
+        router,
+        getDb: () => db,
+      });
+      const pgRepo = new PgWorkspaceRepository({ getDb: () => db });
+
+      const owner = await seedUser({
+        mongoId: "mid_tomb_own001",
+        email: "mid-tomb@example.com",
+      });
+      const member = await seedUser({
+        mongoId: "mid_tomb_mem001",
+        email: "mid-tomb-mem@example.com",
+      });
+
+      // Stage 1: seed entities in Mongo only (not in PG yet).
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "mongo_only",
+      });
+      const { workspace: ws } = await dualRepo.createWorkspaceWithOwner({
+        name: "Mid-Batch Tombstone WS",
+        slug: "mid-batch-tombstone-ws",
+        userId: owner.mongoId,
+      });
+      const { workspace: deletedWs } = await dualRepo.createWorkspaceWithOwner({
+        name: "Mid-Batch Deleted WS",
+        slug: "mid-batch-deleted-ws",
+        userId: owner.mongoId,
+      });
+      await dualRepo.addMember({
+        workspaceId: ws.id,
+        userId: member.mongoId,
+        role: "member",
+      });
+      const apiKey = await dualRepo.createApiKey({
+        workspaceId: ws.id,
+        name: "Mid-Batch Revoked Key",
+        keyHash: makeHash("mid-tomb-k"),
+        prefix: "revops_midt000",
+        scopes: ["mcp"],
+        createdBy: owner.mongoId,
+      });
+      await dualRepo.ensureMcpClient({
+        clientId: "mcpc_midtomb",
+        redirectUris: ["https://midtomb.example/cb"],
+      });
+      await dualRepo.createMcpToken({
+        accessTokenHash: makeHash("mid-tomb-at"),
+        refreshTokenHash: makeHash("mid-tomb-rt"),
+        clientId: "mcpc_midtomb",
+        userId: owner.mongoId,
+        workspaceId: ws.id,
+        scopes: ["mcp"],
+        accessExpiresAt: new Date(Date.now() + 3600_000),
+      });
+      await dualRepo.upsertGitHubInstallation({
+        workspaceId: ws.id,
+        installationId: 912345,
+        accountLogin: "mid-tomb-org",
+        accountType: "Organization",
+        repositorySelection: "all",
+        createdBy: owner.mongoId,
+      });
+
+      // Capture pre-delete batch and run `validate` BEFORE tombstones exist
+      // (simulating the exact race window after `runBackfill`'s initial batch tombstone check!).
+      const handler = getBackfillDomain(WORKSPACES_DOMAIN);
+      if (!handler?.validate) {
+        throw new Error("Expected workspaces_core backfill handler");
+      }
+      const preDeleteItems = await handler.fetchBatch({
+        afterCursor: null,
+        limit: 500,
+        workspaceId: null,
+      });
+      // Seed parent workspace & client in PG so validate() passes on child rows.
+      await resyncToPg(
+        "workspaces",
+        { entityIds: [ws.id, deletedWs.id] },
+        { getDb: () => db },
+      );
+      await resyncToPg(
+        "mcp_oauth_clients",
+        { entityIds: ["mcpc_midtomb"] },
+        { getDb: () => db },
+      );
+      for (const item of preDeleteItems) {
+        expect((await handler.validate(item, db)).ok).toBe(true);
+      }
+
+      // Now live Stage 2 deletes happen AFTER validate() and BEFORE upsertBatch()!
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_mongo_read",
+      });
+      expect(await dualRepo.deleteApiKey(ws.id, apiKey.id)).toBe(true);
+      expect(await dualRepo.removeMember(ws.id, member.mongoId)).toBe(true);
+      expect(
+        await dualRepo.revokeMcpConnection({
+          workspaceId: ws.id,
+          clientId: "mcpc_midtomb",
+          userId: owner.mongoId,
+        }),
+      ).toBe(1);
+      expect(await dualRepo.deleteGitHubInstallation(ws.id, 912345)).toBe(true);
+      expect(await dualRepo.deleteWorkspaceCascade(deletedWs.id)).toBe(true);
+
+      // Now the delayed backfill `upsertBatch` executes with pre-delete items -> MUST resurrect ZERO deleted rows!
+      await handler.upsertBatch(preDeleteItems, db);
+
+      expect(await pgRepo.findById(deletedWs.id)).toBeNull();
+      expect(await pgRepo.listApiKeys(ws.id)).toEqual([]);
+      expect(await pgRepo.findMember(ws.id, member.mongoId)).toBeNull();
+      expect(await pgRepo.listMcpConnections(ws.id)).toEqual([]);
+      expect(await pgRepo.findGitHubInstallation(ws.id, 912345)).toBeNull();
+    });
+
+    it("[4717270787] resyncToPg guards against tombstones and stale overwrites so delayed touch/resync calls never resurrect revoked credentials or clobber live updates", async () => {
+      const router = new MigrationRouter({
+        getDb: () => db,
+        hasPg: () => true,
+        enablePubSub: false,
+        cacheTtlMs: 0,
+      });
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_mongo_read",
+      });
+      const dualRepo = new DualWorkspaceRepository({
+        router,
+        getDb: () => db,
+      });
+      const pgRepo = new PgWorkspaceRepository({ getDb: () => db });
+
+      const owner = await seedUser({
+        mongoId: "resync_own_0001",
+        email: "resync@example.com",
+      });
+      const { workspace: ws } = await dualRepo.createWorkspaceWithOwner({
+        name: "Resync Guard WS",
+        slug: "resync-guard-ws",
+        userId: owner.mongoId,
+      });
+      const key = await dualRepo.createApiKey({
+        workspaceId: ws.id,
+        name: "Revoked Key",
+        keyHash: makeHash("rs-k1"),
+        prefix: "revops_rsk1000",
+        scopes: ["mcp"],
+        createdBy: owner.mongoId,
+      });
+      const liveKey = await dualRepo.createApiKey({
+        workspaceId: ws.id,
+        name: "Scoped Key",
+        keyHash: makeHash("rs-k2"),
+        prefix: "revops_rsk2000",
+        scopes: ["mcp"],
+        createdBy: owner.mongoId,
+      });
+      await dualRepo.ensureMcpClient({
+        clientId: "mcpc_rs",
+        redirectUris: ["https://rs.example/cb"],
+      });
+      const tok = await dualRepo.createMcpToken({
+        accessTokenHash: makeHash("rs-at1"),
+        refreshTokenHash: makeHash("rs-rt1"),
+        clientId: "mcpc_rs",
+        userId: owner.mongoId,
+        workspaceId: ws.id,
+        scopes: ["mcp"],
+        accessExpiresAt: new Date(Date.now() + 3600_000),
+      });
+      const liveTok = await dualRepo.createMcpToken({
+        accessTokenHash: makeHash("rs-at2"),
+        refreshTokenHash: makeHash("rs-rt2"),
+        clientId: "mcpc_rs",
+        userId: owner.mongoId,
+        workspaceId: ws.id,
+        scopes: ["mcp"],
+        accessExpiresAt: new Date(Date.now() + 3600_000),
+      });
+      const code = await dualRepo.createMcpCode({
+        codeHash: makeHash("rs-code"),
+        clientId: "mcpc_rs",
+        userId: owner.mongoId,
+        workspaceId: ws.id,
+        redirectUri: "https://rs.example/cb",
+        codeChallenge: "chal_rs",
+        scopes: ["mcp"],
+        expiresAt: new Date(Date.now() + 600_000),
+      });
+
+      // (a) Simulate a tombstone already written by a live revoke, while a stale Mongo read
+      //     still sees the key/token — `resyncToPg` MUST skip tombstoned IDs and NEVER resurrect!
+      await recordMigrationTombstone(
+        "workspace_api_keys",
+        objectIdToUuid(key.id),
+        db,
+      );
+      await db
+        .delete(pgSchema.workspaceApiKeys)
+        .where(eq(pgSchema.workspaceApiKeys.id, objectIdToUuid(key.id)));
+      await resyncToPg(
+        "workspace_api_keys",
+        { entityIds: [key.id], touchOnly: true },
+        { getDb: () => db },
+      );
+      expect(await pgRepo.findApiKeyByHash(key.keyHash)).toBeNull();
+
+      await recordMigrationTombstone(
+        "mcp_oauth_tokens",
+        objectIdToUuid(tok.id),
+        db,
+      );
+      await db
+        .delete(pgSchema.mcpOAuthTokens)
+        .where(eq(pgSchema.mcpOAuthTokens.id, objectIdToUuid(tok.id)));
+      await resyncToPg(
+        "mcp_oauth_tokens",
+        { entityIds: [tok.id], touchOnly: true },
+        { getDb: () => db },
+      );
+      expect(
+        await pgRepo.findValidMcpTokenByAccessHash(tok.accessTokenHash),
+      ).toBeNull();
+
+      // (b) `touchOnly` resync NEVER overwrites newer PG scopes or rotated token hashes!
+      const newerAccessHash = makeHash("rs-at2-rotated");
+      const touchTime = new Date(Date.now() + 60_000);
+      await db
+        .update(pgSchema.workspaceApiKeys)
+        .set({ scopes: ["mcp", "query:write", "workflows:runtime"] })
+        .where(eq(pgSchema.workspaceApiKeys.id, objectIdToUuid(liveKey.id)));
+      await Workspace.updateOne(
+        {
+          _id: new Types.ObjectId(ws.id),
+          "apiKeys._id": new Types.ObjectId(liveKey.id),
+        },
+        { $set: { "apiKeys.$.lastUsedAt": touchTime } },
+        { timestamps: false },
+      );
+      await resyncToPg(
+        "workspace_api_keys",
+        { entityIds: [liveKey.id], touchOnly: true },
+        { getDb: () => db },
+      );
+      const pgLiveKey = (await pgRepo.listApiKeys(ws.id)).find(
+        k => k.id === liveKey.id,
+      );
+      expect(pgLiveKey?.scopes).toEqual([
+        "mcp",
+        "query:write",
+        "workflows:runtime",
+      ]);
+      expect(pgLiveKey?.lastUsedAt?.getTime()).toBe(touchTime.getTime());
+
+      await db
+        .update(pgSchema.mcpOAuthTokens)
+        .set({
+          accessTokenHash: newerAccessHash,
+          accessExpiresAt: new Date(Date.now() + 7200_000),
+        })
+        .where(eq(pgSchema.mcpOAuthTokens.id, objectIdToUuid(liveTok.id)));
+      await McpOAuthToken.updateOne(
+        { _id: new Types.ObjectId(liveTok.id) },
+        { $set: { lastUsedAt: touchTime } },
+      );
+      await resyncToPg(
+        "mcp_oauth_tokens",
+        { entityIds: [liveTok.id], touchOnly: true },
+        { getDb: () => db },
+      );
+      const [pgLiveTok] = await db
+        .select()
+        .from(pgSchema.mcpOAuthTokens)
+        .where(eq(pgSchema.mcpOAuthTokens.id, objectIdToUuid(liveTok.id)));
+      expect(pgLiveTok?.accessTokenHash).toBe(newerAccessHash);
+      expect(pgLiveTok?.lastUsedAt?.getTime()).toBe(touchTime.getTime());
+
+      // (c) Redeemed MCP code in PG cannot be un-redeemed by a stale pre-redeem resync.
+      await db
+        .update(pgSchema.mcpOAuthCodes)
+        .set({ usedAt: touchTime })
+        .where(eq(pgSchema.mcpOAuthCodes.id, objectIdToUuid(code.id)));
+      await resyncToPg(
+        "mcp_oauth_codes",
+        { entityIds: [code.id] },
+        { getDb: () => db },
+      );
+      const [pgCode] = await db
+        .select()
+        .from(pgSchema.mcpOAuthCodes)
+        .where(eq(pgSchema.mcpOAuthCodes.id, objectIdToUuid(code.id)));
+      expect(pgCode?.usedAt).not.toBeNull();
+    });
+
+    it("[4717271507] Mongo find-then-delete methods delete ONLY the captured IDs so concurrently inserted rows are never dropped silently", async () => {
+      const mongoRepo = new MongoWorkspaceRepository();
+      const owner = await seedUser({
+        mongoId: "race_del_own001",
+        email: "race-del@example.com",
+      });
+      const { workspace: ws } = await mongoRepo.createWorkspaceWithOwner({
+        name: "Race Delete WS",
+        slug: "race-delete-ws",
+        userId: owner.mongoId,
+      });
+
+      // Seed initial token, API keys, and GitHub installation
+      await mongoRepo.ensureMcpClient({
+        clientId: "mcpc_race",
+        redirectUris: ["https://race.example/cb"],
+      });
+      const tok1 = await mongoRepo.createMcpToken({
+        accessTokenHash: makeHash("race-at1"),
+        refreshTokenHash: makeHash("race-rt1"),
+        clientId: "mcpc_race",
+        userId: owner.mongoId,
+        workspaceId: ws.id,
+        scopes: ["mcp"],
+        accessExpiresAt: new Date(Date.now() + 3600_000),
+      });
+
+      // Intercept McpOAuthToken.deleteMany to insert tok2 AFTER find() and BEFORE deleteMany() executes.
+      let tok2Id = "";
+      const origTokDeleteMany = McpOAuthToken.deleteMany.bind(McpOAuthToken);
+      const tokSpy = vi
+        .spyOn(McpOAuthToken, "deleteMany")
+        .mockImplementationOnce((async (filter: Record<string, unknown>) => {
+          const tok2 = await mongoRepo.createMcpToken({
+            accessTokenHash: makeHash("race-at2"),
+            refreshTokenHash: makeHash("race-rt2"),
+            clientId: "mcpc_race",
+            userId: owner.mongoId,
+            workspaceId: ws.id,
+            scopes: ["mcp"],
+            accessExpiresAt: new Date(Date.now() + 3600_000),
+          });
+          tok2Id = tok2.id;
+          return origTokDeleteMany(filter);
+        }) as unknown as typeof McpOAuthToken.deleteMany);
+
+      const deletedTokIds =
+        await mongoRepo.revokeMcpGrantsForMemberReturningIds({
+          workspaceId: ws.id,
+          userId: owner.mongoId,
+        });
+      tokSpy.mockRestore();
+      expect(deletedTokIds).toEqual([tok1.id]);
+      // Concurrently inserted tok2 MUST still exist in Mongo because it was NOT in the returned ID list!
+      expect(
+        await McpOAuthToken.findById(new Types.ObjectId(tok2Id)).lean(),
+      ).not.toBeNull();
+
+      // Same race check for revokeMcpConnectionReturningIds
+      let tok3Id = "";
+      const tokConnSpy = vi
+        .spyOn(McpOAuthToken, "deleteMany")
+        .mockImplementationOnce((async (filter: Record<string, unknown>) => {
+          const tok3 = await mongoRepo.createMcpToken({
+            accessTokenHash: makeHash("race-at3"),
+            refreshTokenHash: makeHash("race-rt3"),
+            clientId: "mcpc_race",
+            userId: owner.mongoId,
+            workspaceId: ws.id,
+            scopes: ["mcp"],
+            accessExpiresAt: new Date(Date.now() + 3600_000),
+          });
+          tok3Id = tok3.id;
+          return origTokDeleteMany(filter);
+        }) as unknown as typeof McpOAuthToken.deleteMany);
+
+      const deletedConnIds = await mongoRepo.revokeMcpConnectionReturningIds({
+        workspaceId: ws.id,
+        clientId: "mcpc_race",
+        userId: owner.mongoId,
+      });
+      tokConnSpy.mockRestore();
+      expect(deletedConnIds).toEqual([tok2Id]);
+      expect(
+        await McpOAuthToken.findById(new Types.ObjectId(tok3Id)).lean(),
+      ).not.toBeNull();
+
+      // Same race check for deleteApiKeysByCreatorReturningIds ($pull by exact _id list)
+      const k1 = await mongoRepo.createApiKey({
+        workspaceId: ws.id,
+        name: "Race Key 1",
+        keyHash: makeHash("race-k1"),
+        prefix: "revops_rck1000",
+        scopes: ["mcp"],
+        createdBy: owner.mongoId,
+      });
+      let k2Id = "";
+      const origWsUpdateOne = Workspace.updateOne.bind(Workspace);
+      const wsSpy = vi
+        .spyOn(Workspace, "updateOne")
+        .mockImplementationOnce((async (
+          filter: Record<string, unknown>,
+          update: Record<string, unknown>,
+          options?: Record<string, unknown>,
+        ) => {
+          const k2 = await mongoRepo.createApiKey({
+            workspaceId: ws.id,
+            name: "Race Key 2",
+            keyHash: makeHash("race-k2"),
+            prefix: "revops_rck2000",
+            scopes: ["mcp"],
+            createdBy: owner.mongoId,
+          });
+          k2Id = k2.id;
+          return origWsUpdateOne(filter, update, options);
+        }) as unknown as typeof Workspace.updateOne);
+
+      const deletedKeyIds = await mongoRepo.deleteApiKeysByCreatorReturningIds(
+        ws.id,
+        owner.mongoId,
+      );
+      wsSpy.mockRestore();
+      expect(deletedKeyIds).toEqual([k1.id]);
+      const remainingKeys = await mongoRepo.listApiKeys(ws.id);
+      expect(remainingKeys.map(k => k.id)).toEqual([k2Id]);
+
+      // Same race check for deleteGitHubInstallationsByInstallationIdReturningIds
+      const gh1 = await mongoRepo.upsertGitHubInstallation({
+        workspaceId: ws.id,
+        installationId: 444555,
+        accountLogin: "race-gh",
+        accountType: "Organization",
+        repositorySelection: "all",
+        createdBy: owner.mongoId,
+      });
+      const { workspace: ws2 } = await mongoRepo.createWorkspaceWithOwner({
+        name: "Race Delete WS 2",
+        slug: "race-delete-ws-2",
+        userId: owner.mongoId,
+      });
+      let gh2Id = "";
+      const origGhDeleteMany =
+        GitHubInstallation.deleteMany.bind(GitHubInstallation);
+      const ghSpy = vi
+        .spyOn(GitHubInstallation, "deleteMany")
+        .mockImplementationOnce((async (filter: Record<string, unknown>) => {
+          const gh2 = await mongoRepo.upsertGitHubInstallation({
+            workspaceId: ws2.id,
+            installationId: 444555,
+            accountLogin: "race-gh",
+            accountType: "Organization",
+            repositorySelection: "all",
+            createdBy: owner.mongoId,
+          });
+          gh2Id = gh2.id;
+          return origGhDeleteMany(filter);
+        }) as unknown as typeof GitHubInstallation.deleteMany);
+
+      const deletedGhIds =
+        await mongoRepo.deleteGitHubInstallationsByInstallationIdReturningIds(
+          444555,
+        );
+      ghSpy.mockRestore();
+      expect(deletedGhIds).toEqual([gh1.id]);
+      expect(
+        await GitHubInstallation.findById(new Types.ObjectId(gh2Id)).lean(),
+      ).not.toBeNull();
+    });
+
+    it("[4717272005] isTransactionsUnsupportedError rethrows Atlas code 251 (NoSuchTransaction) and generic code 20 (IllegalOperation) without non-transactional fallback", async () => {
+      const noSuchTx = Object.assign(
+        new Error("Transaction 42 has been aborted."),
+        { code: 251 },
+      );
+      const genericIllegalOp = Object.assign(
+        new Error(
+          "Cannot create namespace inside a multi-document transaction",
+        ),
+        { code: 20 },
+      );
+      const standaloneReplicaErr = Object.assign(
+        new Error(
+          "Transaction numbers are only allowed on a replica set member or mongos",
+        ),
+        { code: 20 },
+      );
+      const standaloneDriverErr = new Error(
+        "Standalone servers do not support transactions",
+      );
+
+      expect(isTransactionsUnsupportedError(noSuchTx)).toBe(false);
+      expect(isTransactionsUnsupportedError(genericIllegalOp)).toBe(false);
+      expect(isTransactionsUnsupportedError(standaloneReplicaErr)).toBe(true);
+      expect(isTransactionsUnsupportedError(standaloneDriverErr)).toBe(true);
+
+      // Verify runInMongoTransaction does NOT fall back on code 251 when topology is replica-set.
+      const fakeSession = {
+        startTransaction: vi.fn(),
+        commitTransaction: vi.fn(),
+        abortTransaction: vi.fn().mockResolvedValue(undefined),
+        endSession: vi.fn().mockResolvedValue(undefined),
+      };
+      const fakeClient = {
+        topology: { description: { type: "ReplicaSetWithPrimary" } },
+      };
+      const getClientSpy = vi
+        .spyOn(Workspace.db, "getClient")
+        .mockReturnValue(fakeClient as never);
+      const startSessionSpy = vi
+        .spyOn(Workspace.db, "startSession")
+        .mockResolvedValue(fakeSession as never);
+
+      try {
+        let calls = 0;
+        await expect(
+          runInMongoTransaction(async () => {
+            calls += 1;
+            throw noSuchTx;
+          }),
+        ).rejects.toThrow(/Transaction 42 has been aborted/);
+        expect(calls).toBe(1);
+
+        // Genuine standalone error DOES fall back once without session.
+        let fallbackCalls = 0;
+        const result = await runInMongoTransaction(async session => {
+          fallbackCalls += 1;
+          if (session) {
+            throw standaloneReplicaErr;
+          }
+          return "ok-fallback";
+        });
+        expect(result).toBe("ok-fallback");
+        expect(fallbackCalls).toBe(2);
+      } finally {
+        getClientSpy.mockRestore();
+        startSessionSpy.mockRestore();
+      }
+    });
+
+    it("[4717272990] replayWorkspacesRetry checks the current stage and drops stale retries directed at the new primary or a retired secondary", async () => {
+      const router = new MigrationRouter({
+        getDb: () => db,
+        hasPg: () => true,
+        enablePubSub: false,
+        cacheTtlMs: 0,
+      });
+      const dualRepo = new DualWorkspaceRepository({
+        router,
+        getDb: () => db,
+      });
+      const mongoRepo = new MongoWorkspaceRepository();
+      const pgRepo = new PgWorkspaceRepository({ getDb: () => db });
+
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_mongo_read",
+      });
+      const owner = await seedUser({
+        mongoId: "stage_rtry_own1",
+        email: "stage-retry@example.com",
+      });
+      const { workspace: ws } = await dualRepo.createWorkspaceWithOwner({
+        name: "Before Cutover",
+        slug: "stage-retry-ws",
+        userId: owner.mongoId,
+      });
+      await dualRepo.ensureMcpClient({
+        clientId: "mcpc_stage",
+        redirectUris: ["https://stage.example/cb"],
+      });
+      const origRefresh = makeHash("stage-rt-old");
+      const tok = await dualRepo.createMcpToken({
+        accessTokenHash: makeHash("stage-at-old"),
+        refreshTokenHash: origRefresh,
+        clientId: "mcpc_stage",
+        userId: owner.mongoId,
+        workspaceId: ws.id,
+        scopes: ["mcp"],
+        accessExpiresAt: new Date(Date.now() + 3600_000),
+      });
+
+      // Now flip to Stage 4 (PG primary) and rotate token + rename workspace in PG,
+      // while Mongo still has the old token hash (e.g., if secondary failed).
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_pg_read",
+      });
+      const rotatedAccess = makeHash("stage-at-new");
+      await pgRepo.rotateMcpRefreshToken({
+        currentRefreshTokenHash: origRefresh,
+        clientId: "mcpc_stage",
+        newAccessTokenHash: rotatedAccess,
+        newRefreshTokenHash: makeHash("stage-rt-new"),
+        newAccessExpiresAt: new Date(Date.now() + 7200_000),
+        newRefreshExpiresAt: null,
+        stripScopes: [],
+      });
+      await pgRepo.updateWorkspace(ws.id, { name: "Authoritative PG Name" });
+
+      // A stale `pg-sync-retry` queued during Stage 2 arrives NOW -> MUST be dropped!
+      const stalePgRetry: SyncRetryEventData = {
+        domain: WORKSPACES_DOMAIN,
+        operation: "createMcpToken",
+        target: "pg",
+        entityId: tok.id,
+        payload: {
+          targets: [
+            { table: "workspaces", entityIds: [ws.id] },
+            { table: "mcp_oauth_tokens", entityIds: [tok.id] },
+          ],
+        },
+        failedAt: new Date().toISOString(),
+        errorMessage: "old stage-2 timeout",
+      };
+      await replayWorkspacesRetry(stalePgRetry, { getDb: () => db });
+
+      expect((await pgRepo.findById(ws.id))?.name).toBe(
+        "Authoritative PG Name",
+      );
+      expect(
+        (await pgRepo.findValidMcpTokenByAccessHash(rotatedAccess))?.id,
+      ).toBe(tok.id);
+
+      // Flip to Stage 5 (`pg_only`): BOTH `pg` and `mongo` retries MUST be dropped!
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "pg_only",
+      });
+      await replayWorkspacesRetry(
+        { ...stalePgRetry, target: "mongo" },
+        { getDb: () => db },
+      );
+      expect((await mongoRepo.findById(ws.id))?.name).toBe("Before Cutover");
+
+      // Roll back to Stage 2 (`dual_write_mongo_read`): stale `mongo` retry MUST be dropped!
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_mongo_read",
+      });
+      await replayWorkspacesRetry(
+        { ...stalePgRetry, target: "mongo" },
+        { getDb: () => db },
+      );
+      expect((await mongoRepo.findById(ws.id))?.name).toBe("Before Cutover");
+    });
+
+    it("[4717273406] revokeAcpGrant resyncs only the revoked grant so another grant with an unresolvable user never blocks revocation", async () => {
+      const failures: SecondaryWriteFailureContext[] = [];
+      const router = new MigrationRouter({
+        getDb: () => db,
+        hasPg: () => true,
+        enablePubSub: false,
+        cacheTtlMs: 0,
+        onSecondaryFailure: async ctx => {
+          failures.push(ctx);
+        },
+      });
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_mongo_read",
+      });
+      const dualRepo = new DualWorkspaceRepository({
+        router,
+        getDb: () => db,
+      });
+      const pgRepo = new PgWorkspaceRepository({ getDb: () => db });
+
+      const validUser = await seedUser({
+        mongoId: "acp_valid_usr01",
+        email: "acp-valid@example.com",
+      });
+      const { workspace: ws } = await dualRepo.createWorkspaceWithOwner({
+        name: "ACP Scoped WS",
+        slug: "acp-scoped-ws",
+        userId: validUser.mongoId,
+      });
+      await dualRepo.upsertAcpGrant({
+        workspaceId: ws.id,
+        userId: validUser.mongoId,
+        agentSessionId: "acp-good-session",
+        planDigest: sha256("plan-good"),
+        grants: ["git-write"],
+        expiresAt: new Date(Date.now() + 3600_000),
+      });
+
+      // Plant an unrelated Mongo ACP grant for a deleted/missing PG user in the SAME workspace.
+      await AcpPlanGrant.create({
+        workspaceId: ws.id,
+        userId: "deleted_user_not_in_pg",
+        agentSessionId: "acp-orphan-session",
+        planDigest: sha256("plan-orphan"),
+        grants: ["git-write"],
+        status: "approved",
+        expiresAt: new Date(Date.now() + 3600_000),
+      });
+
+      failures.length = 0;
+      expect(
+        await dualRepo.revokeAcpGrant({
+          workspaceId: ws.id,
+          userId: validUser.mongoId,
+          agentSessionId: "acp-good-session",
+        }),
+      ).toBe(true);
+      expect(failures).toEqual([]);
+      expect(
+        await pgRepo.findActiveAcpGrant({
+          workspaceId: ws.id,
+          userId: validUser.mongoId,
+          agentSessionId: "acp-good-session",
+        }),
+      ).toBeNull();
+    });
+
+    it("[4717273987] unresolved API key creator throws in PG & Stage 2 resync (queuing retry) and is quarantined in backfill instead of silently storing NULL", async () => {
+      const failures: SecondaryWriteFailureContext[] = [];
+      const router = new MigrationRouter({
+        getDb: () => db,
+        hasPg: () => true,
+        enablePubSub: false,
+        cacheTtlMs: 0,
+        onSecondaryFailure: async ctx => {
+          failures.push(ctx);
+        },
+      });
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_mongo_read",
+      });
+      const dualRepo = new DualWorkspaceRepository({
+        router,
+        getDb: () => db,
+      });
+      const pgRepo = new PgWorkspaceRepository({ getDb: () => db });
+
+      const owner = await seedUser({
+        mongoId: "api_cr_owner_01",
+        email: "api-cr-owner@example.com",
+      });
+      const { workspace: ws } = await dualRepo.createWorkspaceWithOwner({
+        name: "Creator Check WS",
+        slug: "creator-check-ws",
+        userId: owner.mongoId,
+      });
+
+      // 1. Direct PG write throws when non-sentinel creator does not exist in PG `users`.
+      await expect(
+        pgRepo.createApiKey({
+          workspaceId: ws.id,
+          name: "Broken Creator Key",
+          keyHash: makeHash("missing-creator-pg"),
+          prefix: "revops_mis0001",
+          scopes: ["mcp"],
+          createdBy: "lagging_user_not_in_pg",
+        }),
+      ).rejects.toThrow(/Cannot resolve API key creator/);
+
+      await expect(
+        pgRepo.replaceApiKeyByName({
+          workspaceId: ws.id,
+          name: "Broken Replace Key",
+          keyHash: makeHash("missing-creator-rep"),
+          prefix: "revops_mis0002",
+          scopes: ["mcp"],
+          createdBy: "lagging_user_not_in_pg",
+        }),
+      ).rejects.toThrow(/Cannot resolve API key creator/);
+
+      // Synthetic sentinel `"system"` still maps cleanly to NULL.
+      const sysKey = await pgRepo.createApiKey({
+        workspaceId: ws.id,
+        name: "System Sentinel Key",
+        keyHash: makeHash("sys-sentinel"),
+        prefix: "revops_sys0001",
+        scopes: ["mcp"],
+        createdBy: "system",
+      });
+      expect(sysKey.createdBy).toBe("");
+
+      // 2. Stage 2 dual-write queues a pg-sync-retry when creator is lagging (does NOT write NULL to PG).
+      failures.length = 0;
+      const laggingKey = await dualRepo.createApiKey({
+        workspaceId: ws.id,
+        name: "Lagging Auth Key",
+        keyHash: makeHash("lagging-auth-k"),
+        prefix: "revops_lag0001",
+        scopes: ["mcp"],
+        createdBy: "lagging_user_retry1",
+      });
+      expect(failures).toHaveLength(1);
+      expect(await pgRepo.findApiKeyByHash(laggingKey.keyHash)).toBeNull();
+
+      // Once auth catches up and user arrives in PG, replaying the retry succeeds with non-null creator UUID!
+      const laggedUser = await seedUser({
+        mongoId: "lagging_user_retry1",
+        email: "lagged@example.com",
+      });
+      await replayWorkspacesRetry(
+        {
+          domain: WORKSPACES_DOMAIN,
+          operation: failures[0].operation,
+          target: "pg",
+          entityId: failures[0].entityId ?? laggingKey.id,
+          payload: failures[0].payload,
+          failedAt: new Date().toISOString(),
+          errorMessage: "lagging auth",
+        },
+        { getDb: () => db },
+      );
+      const syncedKey = await pgRepo.findApiKeyByHash(laggingKey.keyHash);
+      expect(syncedKey?.apiKey.createdBy).toBe(laggedUser.pgUuid);
+
+      // 3. Backfill quarantines API keys whose non-sentinel creator is missing in PG (never writes NULL silently).
+      const orphanKeyId = new Types.ObjectId(newDualId().oid);
+      await Workspace.updateOne(
+        { _id: new Types.ObjectId(ws.id) },
+        {
+          $push: {
+            apiKeys: {
+              _id: orphanKeyId,
+              name: "Orphan Creator Key",
+              keyHash: makeHash("orphan-cr-bf"),
+              prefix: "revops_orp0001",
+              scopes: ["mcp"],
+              createdBy: "ghost_creator_never_synced",
+              createdAt: new Date(),
+            },
+          },
+        },
+        { timestamps: false },
+      );
+      const bf = await runBackfill({
+        domain: `${WORKSPACES_DOMAIN}:workspace_api_keys`,
+        db,
+        resetCursor: true,
+      });
+      expect(bf.rowsQuarantined).toBe(1);
+      const quarantined = await db.select().from(pgSchema.migrationQuarantine);
+      expect(
+        quarantined.some(q => q.reason === "orphaned_api_key_creator_missing"),
+      ).toBe(true);
+      expect(
+        (await pgRepo.listApiKeys(ws.id)).some(
+          k => k.id === orphanKeyId.toHexString(),
+        ),
+      ).toBe(false);
+    });
+
+    it("[4717274345] cancelInvite is scoped by (workspaceId, inviteId) across Mongo, PG, and Dual repos", async () => {
+      const router = new MigrationRouter({
+        getDb: () => db,
+        hasPg: () => true,
+        enablePubSub: false,
+        cacheTtlMs: 0,
+      });
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_mongo_read",
+      });
+      const dualRepo = new DualWorkspaceRepository({
+        router,
+        getDb: () => db,
+      });
+      const mongoRepo = new MongoWorkspaceRepository();
+      const pgRepo = new PgWorkspaceRepository({ getDb: () => db });
+
+      const owner = await seedUser({
+        mongoId: "inv_scope_own01",
+        email: "inv-scope@example.com",
+      });
+      const { workspace: wsA } = await dualRepo.createWorkspaceWithOwner({
+        name: "Workspace A",
+        slug: "invite-scope-a",
+        userId: owner.mongoId,
+      });
+      const { workspace: wsB } = await dualRepo.createWorkspaceWithOwner({
+        name: "Workspace B",
+        slug: "invite-scope-b",
+        userId: owner.mongoId,
+      });
+      const invB = await dualRepo.createInvite({
+        workspaceId: wsB.id,
+        email: "victim@example.com",
+        token: "tok-ws-b-scoped",
+        role: "member",
+        invitedBy: owner.mongoId,
+        expiresAt: new Date(Date.now() + 86_400_000),
+      });
+
+      // Workspace A MUST NOT cancel Workspace B's invite in Mongo, PG, or Dual!
+      expect(await mongoRepo.cancelInvite(wsA.id, invB.id)).toBe(false);
+      expect(await pgRepo.cancelInvite(wsA.id, invB.id)).toBe(false);
+      expect(await dualRepo.cancelInvite(wsA.id, invB.id)).toBe(false);
+      expect(
+        await pgRepo.findPendingInviteByToken("tok-ws-b-scoped"),
+      ).not.toBeNull();
+      expect(
+        await mongoRepo.findPendingInviteByToken("tok-ws-b-scoped"),
+      ).not.toBeNull();
+      expect(await db.select().from(pgSchema.migrationTombstones)).toHaveLength(
+        0,
+      );
+
+      // Workspace B CAN cancel its own invite.
+      expect(await dualRepo.cancelInvite(wsB.id, invB.id)).toBe(true);
+      expect(
+        await pgRepo.findPendingInviteByToken("tok-ws-b-scoped"),
+      ).toBeNull();
+      expect(
+        await mongoRepo.findPendingInviteByToken("tok-ws-b-scoped"),
+      ).toBeNull();
+    });
+
+    it("[4717276184] sandboxRunOfKey matches PG API keys whose createdBy is UUIDv7 against legacy user IDs in sandbox key names", async () => {
+      const pgRepo = new PgWorkspaceRepository({ getDb: () => db });
+      const legacyUser = await seedUser({
+        mongoId: "sb_legacy_usr01",
+        email: "sandbox-user@example.com",
+      });
+      const { workspace: ws } = await pgRepo.createWorkspaceWithOwner({
+        name: "Sandbox Key WS",
+        slug: "sandbox-key-ws",
+        userId: legacyUser.mongoId,
+      });
+      const runId = "sandbox-11111111-2222-4333-8444-555555555555";
+      const pgKey = await pgRepo.createApiKey({
+        workspaceId: ws.id,
+        name: `Workflows sandbox ${legacyUser.mongoId} ${runId}`,
+        keyHash: makeHash("sandbox-pg-key"),
+        prefix: "revops_sbx0001",
+        scopes: ["mcp", "query:write", "workflows:runtime"],
+        createdBy: legacyUser.mongoId,
+        recordWrites: true,
+      });
+
+      // PG returns UUIDv7 createdBy while key name holds legacy user ID -> MUST match!
+      expect(pgKey.createdBy).toBe(legacyUser.pgUuid);
+      expect(sandboxRunOfKey(pgKey)).toBe(runId);
+
+      // Spoofed name with a different user's legacy ID MUST still return null!
+      expect(
+        sandboxRunOfKey({
+          name: `Workflows sandbox other_legacy_99 ${runId}`,
+          createdBy: pgKey.createdBy,
+        }),
+      ).toBeNull();
     });
   });
 });

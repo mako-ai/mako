@@ -25,31 +25,32 @@ import {
   parseEntityId,
   toWireId,
 } from "../../database/pg/id-codec";
-import type {
-  AcpPlanGrantRow,
-  GitHubAccountType,
-  GitHubInstallationRow,
-  GitHubRepoSelection,
-  McpOAuthClientRow,
-  McpOAuthCodeRow,
-  McpOAuthTokenRow,
-  NewAcpPlanGrantRow,
-  NewGitHubInstallationRow,
-  NewMcpOAuthClientRow,
-  NewMcpOAuthCodeRow,
-  NewMcpOAuthTokenRow,
-  NewWorkspaceApiKeyRow,
-  NewWorkspaceInviteRow,
-  NewWorkspaceMemberRow,
-  NewWorkspaceRow,
-  NewWorkspaceUserHandleRow,
-  WorkflowSlotJson,
-  WorkspaceApiKeyRow,
-  WorkspaceInviteRow,
-  WorkspaceMemberRow,
-  WorkspaceRepoBindingJson,
-  WorkspaceRow,
-  WorkspaceUserHandleRow,
+import {
+  SUBSCRIPTION_STATUSES as PG_SUBSCRIPTION_STATUSES,
+  type AcpPlanGrantRow,
+  type GitHubAccountType,
+  type GitHubInstallationRow,
+  type GitHubRepoSelection,
+  type McpOAuthClientRow,
+  type McpOAuthCodeRow,
+  type McpOAuthTokenRow,
+  type NewAcpPlanGrantRow,
+  type NewGitHubInstallationRow,
+  type NewMcpOAuthClientRow,
+  type NewMcpOAuthCodeRow,
+  type NewMcpOAuthTokenRow,
+  type NewWorkspaceApiKeyRow,
+  type NewWorkspaceInviteRow,
+  type NewWorkspaceMemberRow,
+  type NewWorkspaceRow,
+  type NewWorkspaceUserHandleRow,
+  type WorkflowSlotJson,
+  type WorkspaceApiKeyRow,
+  type WorkspaceInviteRow,
+  type WorkspaceMemberRow,
+  type WorkspaceRepoBindingJson,
+  type WorkspaceRow,
+  type WorkspaceUserHandleRow,
 } from "../../database/pg/schema/workspaces";
 import { coerceDate, stripUndefinedDeep } from "../auth/mapper";
 import type {
@@ -126,6 +127,13 @@ export function toPgUuid(id: IdLike): string {
     throw new Error(`Invalid entity id: ${JSON.stringify(String(id))}`);
   }
   return parsed.uuid;
+}
+
+/** Synthetic non-user creator sentinels that legitimately map to NULL in Postgres audit columns. */
+export const SYNTHETIC_USER_ID_SENTINELS = new Set<string>(["system", "test"]);
+
+export function isSyntheticUserId(userId: string): boolean {
+  return SYNTHETIC_USER_ID_SENTINELS.has(userId.trim().toLowerCase());
 }
 
 /** True if `id` is a usable workspace/entity id in either encoding. */
@@ -206,13 +214,9 @@ export interface MongoWorkspaceLike {
 }
 
 const BILLING_TIERS = new Set<BillingTier>(["free", "pro", "enterprise"]);
-const SUBSCRIPTION_STATUSES = new Set<SubscriptionStatus>([
-  "active",
-  "past_due",
-  "canceled",
-  "trialing",
-  "incomplete",
-]);
+const SUBSCRIPTION_STATUSES = new Set<SubscriptionStatus>(
+  PG_SUBSCRIPTION_STATUSES,
+);
 
 export function normalizeAutoJoin(raw: unknown): WorkspaceAutoJoin | undefined {
   if (!raw || typeof raw !== "object") {

@@ -8,6 +8,7 @@
 import Stripe from "stripe";
 import { ObjectId } from "mongodb";
 import { LlmUsage } from "../database/schema";
+import { SUBSCRIPTION_STATUSES } from "../database/pg/schema/workspaces";
 import {
   workspaceRepo,
   type SubscriptionStatus,
@@ -370,6 +371,23 @@ export async function getBillingStatus(workspaceId: string): Promise<{
   };
 }
 
+const ALLOWED_SUBSCRIPTION_STATUSES = new Set<string>(SUBSCRIPTION_STATUSES);
+
+function normalizeStripeSubscriptionStatus(
+  rawStatus: Stripe.Subscription.Status | string,
+): SubscriptionStatus {
+  if (ALLOWED_SUBSCRIPTION_STATUSES.has(rawStatus)) {
+    return rawStatus as SubscriptionStatus;
+  }
+  logger.warn(
+    "Unrecognized Stripe subscription status; falling back to canceled",
+    {
+      rawStatus,
+    },
+  );
+  return "canceled";
+}
+
 /**
  * Sync subscription data from a Stripe Subscription object to the workspace.
  */
@@ -385,7 +403,7 @@ export async function syncSubscriptionToWorkspace(
     return;
   }
 
-  const status = subscription.status;
+  const status = normalizeStripeSubscriptionStatus(subscription.status);
   const plan: BillingPlan =
     status === "active" || status === "trialing" ? "pro" : "free";
   const planDef = PLAN_DEFINITIONS[plan];
@@ -404,7 +422,7 @@ export async function syncSubscriptionToWorkspace(
 
   const patch: UpdateBillingPatch = {
     stripeSubscriptionId: subscription.id,
-    subscriptionStatus: status as SubscriptionStatus,
+    subscriptionStatus: status,
     currentPeriodStart: newPeriodStart,
     ...(newPeriodEnd && { currentPeriodEnd: newPeriodEnd }),
     plan,

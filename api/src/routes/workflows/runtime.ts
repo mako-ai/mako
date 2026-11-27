@@ -556,9 +556,12 @@ workflowRuntimeRoutes.post(
       | undefined;
     // A sandbox run's key says what its writes do: refused (started with an
     // API key) or recorded (a dry run, by the run its name gives).
+    const authUser = c.get("user") as { id?: string } | undefined;
     const refuseRun = key?.agentRun === true;
     const dryRunKey = key?.recordWrites === true;
-    const sandboxRun = dryRunKey ? sandboxRunOfKey(key) : null;
+    const sandboxRun = dryRunKey
+      ? sandboxRunOfKey(key, authUser?.id ? [authUser.id] : undefined)
+      : null;
     const mcpLogin = c.get("authType") === "mcpOAuth";
     const run = workflowRunOf(c);
     const deployedRun = run
@@ -592,7 +595,7 @@ workflowRuntimeRoutes.post(
           // only when Hatchet says it is a dry run).
           record: dryRunKey
             ? sandboxRun
-              ? { runId: sandboxRun, userId: worker.userId }
+              ? { runId: sandboxRun, userId: authUser?.id || worker.userId }
               : undefined
             : refuseRun || mcpLogin
               ? undefined

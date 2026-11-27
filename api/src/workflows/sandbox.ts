@@ -24,6 +24,11 @@ import {
   execInWorktree,
 } from "../apps/worktree.service";
 import { generateApiKey } from "../auth/api-key.middleware";
+import {
+  isUuidString,
+  isUuidv7,
+  legacyUserIdToUuidv7,
+} from "../database/pg/id-codec";
 import { loggers } from "../logging";
 import { workspaceRepo } from "../repositories/workspaces";
 import { HatchetError } from "./hatchet";
@@ -51,18 +56,66 @@ const REPLY_BUDGET = 180_000;
 const keyNameOf = (userId: string, runId: string) =>
   `${sandboxKeyName(userId)} ${runId}`;
 
+const SANDBOX_KEY_PREFIX = sandboxKeyName("");
+
+function userIdsEquivalent(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (
+    isUuidString(a) &&
+    isUuidString(b) &&
+    a.toLowerCase() === b.toLowerCase()
+  ) {
+    return true;
+  }
+  // Decision #3 legacy userId <-> deterministic UUIDv7 equivalence:
+  // `legacyUserIdToUuidv7(legacyId, createdAt)` derives bytes 6..15 (`slice(14)`)
+  // solely from SHA-256(legacyId), so a PG UUIDv7 `createdBy` matches a sandbox
+  // key named with the user's legacy ID (and vice versa) without a DB round-trip.
+  if (isUuidv7(a) && !isUuidv7(b)) {
+    return legacyUserIdToUuidv7(b, 0).slice(14) === a.toLowerCase().slice(14);
+  }
+  if (isUuidv7(b) && !isUuidv7(a)) {
+    return legacyUserIdToUuidv7(a, 0).slice(14) === b.toLowerCase().slice(14);
+  }
+  return false;
+}
+
 /**
  * The sandbox run a run's key was made for (`keyNameOf`), or null for any
  * other key. Trust it only from a key Mako made (`recordWrites` on it).
+ *
+ * Accepts both legacy user IDs and Postgres UUIDv7 `createdBy` values (as well
+ * as any additional creator aliases such as `c.get("user").id`) so mixed-stage
+ * reads where `workspaces_core` returns a UUIDv7 while the key name embeds a
+ * legacy user ID continue matching seamlessly.
  */
 export function sandboxRunOfKey(
   key: { name?: string; createdBy?: unknown } | undefined,
+  additionalCreatorIds?: ReadonlyArray<string | null | undefined>,
 ): string | null {
-  if (!key?.name || key.createdBy === undefined) return null;
-  const prefix = `${sandboxKeyName(String(key.createdBy))} `;
-  if (!key.name.startsWith(prefix)) return null;
-  const runId = key.name.slice(prefix.length);
-  return isSandboxRunId(runId) ? runId : null;
+  if (!key?.name || key.createdBy === undefined || key.createdBy === null) {
+    return null;
+  }
+  const creatorId = String(key.createdBy);
+  if (!creatorId || !key.name.startsWith(SANDBOX_KEY_PREFIX)) return null;
+  const rest = key.name.slice(SANDBOX_KEY_PREFIX.length);
+  const sep = rest.lastIndexOf(" ");
+  if (sep <= 0) return null;
+  const embeddedUserId = rest.slice(0, sep);
+  const runId = rest.slice(sep + 1);
+  if (!isSandboxRunId(runId)) return null;
+
+  if (userIdsEquivalent(embeddedUserId, creatorId)) return runId;
+  if (
+    additionalCreatorIds?.some(
+      alias =>
+        typeof alias === "string" && userIdsEquivalent(embeddedUserId, alias),
+    )
+  ) {
+    return runId;
+  }
+  return null;
 }
 const runsDir = (scratch: string) => `${scratch}/mako-workflow-runs`;
 

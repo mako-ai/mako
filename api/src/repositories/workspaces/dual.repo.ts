@@ -1069,7 +1069,12 @@ export class DualWorkspaceRepository implements WorkspaceRepository {
           ),
         targets: changed =>
           changed
-            ? [{ table: "workspace_api_keys", scope: { entityIds: [keyId] } }]
+            ? [
+                {
+                  table: "workspace_api_keys",
+                  scope: { entityIds: [keyId], touchOnly: true },
+                },
+              ]
             : [],
       },
       this.ctx,
@@ -1618,13 +1623,13 @@ export class DualWorkspaceRepository implements WorkspaceRepository {
     );
   }
 
-  cancelInvite(inviteId: string): Promise<boolean> {
+  cancelInvite(workspaceId: string, inviteId: string): Promise<boolean> {
     return dualWrite(
       {
         operation: "cancelInvite",
         entityId: inviteId,
-        mongo: () => this.mongo.cancelInvite(inviteId),
-        pg: () => this.pg.cancelInvite(inviteId),
+        mongo: () => this.mongo.cancelInvite(workspaceId, inviteId),
+        pg: () => this.pg.cancelInvite(workspaceId, inviteId),
         targets: deleted =>
           deleted
             ? [{ table: "workspace_invites", scope: { entityIds: [inviteId] } }]
@@ -1948,7 +1953,12 @@ export class DualWorkspaceRepository implements WorkspaceRepository {
           ),
         targets: changed =>
           changed
-            ? [{ table: "mcp_oauth_tokens", scope: { entityIds: [tokenId] } }]
+            ? [
+                {
+                  table: "mcp_oauth_tokens",
+                  scope: { entityIds: [tokenId], touchOnly: true },
+                },
+              ]
             : [],
       },
       this.ctx,
@@ -2060,30 +2070,24 @@ export class DualWorkspaceRepository implements WorkspaceRepository {
     );
   }
 
-  revokeAcpGrant(input: {
+  async revokeAcpGrant(input: {
     workspaceId: string;
     userId: string;
     agentSessionId: string;
     now?: Date;
   }): Promise<boolean> {
-    return dualWrite(
+    const revokedId = await dualWrite(
       {
         operation: "revokeAcpGrant",
         entityId: input.agentSessionId,
-        mongo: () => this.mongo.revokeAcpGrant(input),
-        pg: () => this.pg.revokeAcpGrant(input),
-        targets: revoked =>
-          revoked
-            ? [
-                {
-                  table: "acp_plan_grants",
-                  scope: { workspaceId: input.workspaceId },
-                },
-              ]
-            : [],
+        mongo: () => this.mongo.revokeAcpGrantReturningId(input),
+        pg: () => this.pg.revokeAcpGrantReturningId(input),
+        targets: id =>
+          id ? [{ table: "acp_plan_grants", scope: { entityIds: [id] } }] : [],
       },
       this.ctx,
     );
+    return revokedId !== null;
   }
 
   findActiveAcpGrant(input: {

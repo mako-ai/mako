@@ -30,6 +30,7 @@ import {
 import { normalizeEmail } from "../../utils/email.utils";
 import { authRepo } from "../auth";
 import {
+  fallbackApiKeyId,
   isEntityId,
   mongoAcpGrantToRecord,
   mongoApiKeyToRecord,
@@ -94,10 +95,6 @@ function oid(id: string): Types.ObjectId {
   return new Types.ObjectId(toWire(id));
 }
 
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 function getMongoErrorCode(err: unknown): number | undefined {
   if (err && typeof err === "object" && "code" in err) {
     const code = (err as { code?: unknown }).code;
@@ -136,16 +133,22 @@ function isMongoDupDefaultMember(err: unknown): boolean {
   return message.includes("userId") || message.includes("isDefaultMembership");
 }
 
-function isTransactionsUnsupportedError(err: unknown): boolean {
-  const code = getMongoErrorCode(err);
-  if (code === 20 || code === 251) {
-    return true;
-  }
+/**
+ * True ONLY for genuine standalone / non-replica-set topology errors where
+ * MongoDB does not support multi-document transactions at all.
+ *
+ * Never treat mid-transaction replica-set aborts (e.g. Atlas code 251
+ * `NoSuchTransaction` or unrelated code 20 `IllegalOperation`) as
+ * "transactions unsupported" — re-running those outside a transaction risks
+ * partial commits and duplicate writes.
+ */
+export function isTransactionsUnsupportedError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
   return (
     message.includes("Transaction numbers are only allowed on a replica set") ||
     message.includes("does not support retryable writes") ||
-    message.includes("Standalone servers do not support transactions")
+    message.includes("Standalone servers do not support transactions") ||
+    message.includes("Transactions are not supported")
   );
 }
 
@@ -160,7 +163,7 @@ function isStandaloneMongoTopology(): boolean {
   }
 }
 
-async function runInMongoTransaction<T>(
+export async function runInMongoTransaction<T>(
   work: (session: ClientSession | undefined) => Promise<T>,
 ): Promise<T> {
   if (isStandaloneMongoTopology()) {
@@ -997,6 +1000,47 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
     return res.modifiedCount > 0;
   }
 
+  private async pullCapturedApiKeys(
+    wsWire: string,
+    matched: MongoApiKeyLike[],
+  ): Promise<string[]> {
+    if (matched.length === 0) {
+      return [];
+    }
+    const oidIds: Types.ObjectId[] = [];
+    const legacyHashes: string[] = [];
+    const wireIds: string[] = [];
+    for (const k of matched) {
+      if (k._id != null) {
+        const wire = toWire(k._id);
+        wireIds.push(wire);
+        oidIds.push(oid(wire));
+      } else {
+        const hash = k.keyHash ?? "";
+        wireIds.push(fallbackApiKeyId(wsWire, hash));
+        legacyHashes.push(hash);
+      }
+    }
+    const pullMatch: Record<string, unknown> =
+      oidIds.length > 0 && legacyHashes.length > 0
+        ? {
+            $or: [
+              { _id: { $in: oidIds } },
+              { _id: { $exists: false }, keyHash: { $in: legacyHashes } },
+            ],
+          }
+        : oidIds.length > 0
+          ? { _id: { $in: oidIds } }
+          : { _id: { $exists: false }, keyHash: { $in: legacyHashes } };
+
+    const res = await Workspace.updateOne(
+      { _id: oid(wsWire) },
+      { $pull: { apiKeys: pullMatch } },
+      { timestamps: false },
+    );
+    return res.modifiedCount > 0 ? wireIds : [];
+  }
+
   async deleteApiKeysByNameReturningIds(
     workspaceId: string,
     name: string,
@@ -1005,17 +1049,14 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
       return [];
     }
     const wsWire = toWire(workspaceId);
-    const existing = await this.listApiKeys(wsWire);
-    const matchingIds = existing.filter(k => k.name === name).map(k => k.id);
-    if (matchingIds.length === 0) {
+    const doc = await Workspace.findById(oid(wsWire))
+      .select("_id apiKeys")
+      .lean<{ _id: Types.ObjectId; apiKeys?: MongoApiKeyLike[] } | null>();
+    if (!doc?.apiKeys?.length) {
       return [];
     }
-    const res = await Workspace.updateOne(
-      { _id: oid(wsWire) },
-      { $pull: { apiKeys: { name } } },
-      { timestamps: false },
-    );
-    return res.modifiedCount > 0 ? matchingIds : [];
+    const matched = doc.apiKeys.filter(k => (k.name ?? "") === name);
+    return this.pullCapturedApiKeys(wsWire, matched);
   }
 
   async deleteApiKeysByName(
@@ -1034,19 +1075,14 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
       return [];
     }
     const wsWire = toWire(workspaceId);
-    const existing = await this.listApiKeys(wsWire);
-    const matchingIds = existing
-      .filter(k => k.createdBy === createdBy)
-      .map(k => k.id);
-    if (matchingIds.length === 0) {
+    const doc = await Workspace.findById(oid(wsWire))
+      .select("_id apiKeys")
+      .lean<{ _id: Types.ObjectId; apiKeys?: MongoApiKeyLike[] } | null>();
+    if (!doc?.apiKeys?.length) {
       return [];
     }
-    const res = await Workspace.updateOne(
-      { _id: oid(wsWire) },
-      { $pull: { apiKeys: { createdBy } } },
-      { timestamps: false },
-    );
-    return res.modifiedCount > 0 ? matchingIds : [];
+    const matched = doc.apiKeys.filter(k => (k.createdBy ?? "") === createdBy);
+    return this.pullCapturedApiKeys(wsWire, matched);
   }
 
   async deleteApiKeysByCreator(
@@ -1067,30 +1103,20 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
       return [];
     }
     const wsWire = toWire(workspaceId);
-    const existing = await this.listApiKeys(wsWire);
-    const matchingIds = existing
-      .filter(
-        k =>
-          k.name.startsWith(namePrefix) &&
-          k.createdAt.getTime() < createdBefore.getTime(),
-      )
-      .map(k => k.id);
-    if (matchingIds.length === 0) {
+    const doc = await Workspace.findById(oid(wsWire))
+      .select("_id apiKeys")
+      .lean<{ _id: Types.ObjectId; apiKeys?: MongoApiKeyLike[] } | null>();
+    if (!doc?.apiKeys?.length) {
       return [];
     }
-    const res = await Workspace.updateOne(
-      { _id: oid(wsWire) },
-      {
-        $pull: {
-          apiKeys: {
-            name: { $regex: `^${escapeRegex(namePrefix)}` },
-            createdAt: { $lt: createdBefore },
-          },
-        },
-      },
-      { timestamps: false },
-    );
-    return res.modifiedCount > 0 ? matchingIds : [];
+    const matched = doc.apiKeys.filter(k => {
+      const rec = mongoApiKeyToRecord(wsWire, k);
+      return (
+        rec.name.startsWith(namePrefix) &&
+        rec.createdAt.getTime() < createdBefore.getTime()
+      );
+    });
+    return this.pullCapturedApiKeys(wsWire, matched);
   }
 
   async pruneExpiredApiKeysByNamePrefix(
@@ -1456,11 +1482,14 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
     }));
   }
 
-  async cancelInvite(inviteId: string): Promise<boolean> {
-    if (!isEntityId(inviteId)) {
+  async cancelInvite(workspaceId: string, inviteId: string): Promise<boolean> {
+    if (!isEntityId(workspaceId) || !isEntityId(inviteId)) {
       return false;
     }
-    const res = await WorkspaceInvite.deleteOne({ _id: oid(inviteId) });
+    const res = await WorkspaceInvite.deleteOne({
+      _id: oid(inviteId),
+      workspaceId: oid(workspaceId),
+    });
     return (res.deletedCount ?? 0) > 0;
   }
 
@@ -1487,8 +1516,18 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
       userId,
     }).lean<MongoMemberLike | null>();
     if (existingMember) {
-      inviteDoc.acceptedAt = now;
-      await inviteDoc.save();
+      const claimed = await WorkspaceInvite.findOneAndUpdate(
+        {
+          _id: inviteDoc._id,
+          acceptedAt: { $exists: false },
+          expiresAt: { $gt: now },
+        },
+        { $set: { acceptedAt: now } },
+        { returnDocument: "after" },
+      ).lean<MongoInviteLike | null>();
+      if (!claimed) {
+        throw new Error("Invalid or expired invite");
+      }
       const ws = await Workspace.findById(
         inviteDoc.workspaceId,
       ).lean<MongoWorkspaceLike | null>();
@@ -1498,16 +1537,24 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
       return {
         workspace: mongoWorkspaceToRecord(ws),
         member: mongoMemberToRecord(existingMember),
-        invite: mongoInviteToRecord(
-          inviteDoc.toObject() as unknown as MongoInviteLike,
-        ),
+        invite: mongoInviteToRecord(claimed),
       };
     }
 
     return runInMongoTransaction(async session => {
       const opts = session ? { session } : undefined;
-      inviteDoc.acceptedAt = now;
-      await inviteDoc.save(opts);
+      const claimed = await WorkspaceInvite.findOneAndUpdate(
+        {
+          _id: inviteDoc._id,
+          acceptedAt: { $exists: false },
+          expiresAt: { $gt: now },
+        },
+        { $set: { acceptedAt: now } },
+        { returnDocument: "after", ...opts },
+      ).lean<MongoInviteLike | null>();
+      if (!claimed) {
+        throw new Error("Invalid or expired invite");
+      }
 
       const memberDoc = new WorkspaceMember({
         _id: new Types.ObjectId(newDualId().oid),
@@ -1531,9 +1578,7 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
         member: mongoMemberToRecord(
           memberDoc.toObject() as unknown as MongoMemberLike,
         ),
-        invite: mongoInviteToRecord(
-          inviteDoc.toObject() as unknown as MongoInviteLike,
-        ),
+        invite: mongoInviteToRecord(claimed),
       };
     });
   }
@@ -1894,8 +1939,9 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
     if (docs.length === 0) {
       return [];
     }
-    await McpOAuthToken.deleteMany(filter);
-    return docs.map(d => toWire(d._id));
+    const oids = docs.map(d => d._id);
+    await McpOAuthToken.deleteMany({ _id: { $in: oids } });
+    return oids.map(id => toWire(id));
   }
 
   async revokeMcpGrantsForMember(input: {
@@ -1924,8 +1970,9 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
     if (docs.length === 0) {
       return [];
     }
-    await McpOAuthToken.deleteMany(filter);
-    return docs.map(d => toWire(d._id));
+    const oids = docs.map(d => d._id);
+    await McpOAuthToken.deleteMany({ _id: { $in: oids } });
+    return oids.map(id => toWire(id));
   }
 
   async revokeMcpConnection(input: {
@@ -1960,24 +2007,36 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
     return mongoAcpGrantToRecord(doc);
   }
 
-  async revokeAcpGrant(input: {
+  async revokeAcpGrantReturningId(input: {
     workspaceId: string;
     userId: string;
     agentSessionId: string;
     now?: Date;
-  }): Promise<boolean> {
+  }): Promise<string | null> {
     if (!input.workspaceId) {
-      return false;
+      return null;
     }
-    const res = await AcpPlanGrant.updateOne(
+    const updated = await AcpPlanGrant.findOneAndUpdate(
       {
         workspaceId: toWireOrRaw(input.workspaceId),
         userId: input.userId,
         agentSessionId: input.agentSessionId,
       },
       { $set: { status: "revoked", expiresAt: input.now ?? new Date() } },
-    );
-    return res.matchedCount > 0;
+      { returnDocument: "after" },
+    )
+      .select("_id")
+      .lean<{ _id: Types.ObjectId } | null>();
+    return updated ? toWire(updated._id) : null;
+  }
+
+  async revokeAcpGrant(input: {
+    workspaceId: string;
+    userId: string;
+    agentSessionId: string;
+    now?: Date;
+  }): Promise<boolean> {
+    return (await this.revokeAcpGrantReturningId(input)) !== null;
   }
 
   async findActiveAcpGrant(input: {
@@ -2089,9 +2148,9 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
     if (docs.length === 0) {
       return [];
     }
-    const ids = docs.map(d => toWire(d._id));
-    await GitHubInstallation.deleteMany({ installationId });
-    return ids;
+    const oids = docs.map(d => d._id);
+    await GitHubInstallation.deleteMany({ _id: { $in: oids } });
+    return oids.map(id => toWire(id));
   }
 
   async deleteGitHubInstallationsByInstallationId(
@@ -2123,8 +2182,9 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
     if (docs.length === 0) {
       return [];
     }
-    await GitHubInstallation.deleteMany(filter);
-    return docs.map(d => toWire(d._id));
+    const oids = docs.map(d => d._id);
+    await GitHubInstallation.deleteMany({ _id: { $in: oids } });
+    return oids.map(id => toWire(id));
   }
 
   async pruneStaleGitHubInstallations(

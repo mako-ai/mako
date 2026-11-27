@@ -15,10 +15,22 @@
  *     `migration/{pg,mongo}-sync-retry` with an ID-ONLY payload (zero raw secrets,
  *     hashes, tokens, or emails) that `replayWorkspacesRetry` replays idempotently.
  */
+import { and, eq, inArray } from "drizzle-orm";
 import { Types } from "mongoose";
 import { getPgDb, type MakoPgDb } from "../../database/pg/client";
+import { parseEntityId } from "../../database/pg/id-codec";
+import {
+  GLOBAL_SCOPE_KEY,
+  migrationDomainState,
+  type MigrationMode,
+} from "../../database/pg/schema/control-plane";
 import { Workspace } from "../../database/workspace-schema";
-import { migrationRouter, type MigrationRouter } from "../../migration/router";
+import { loggers } from "../../logging";
+import {
+  isMigrationForceMongoOnly,
+  migrationRouter,
+  type MigrationRouter,
+} from "../../migration/router";
 import type {
   ShadowCompareOptions,
   SyncRetryEventData,
@@ -30,6 +42,8 @@ import {
   WORKSPACES_TABLES,
   type WorkspacesTableName,
 } from "./types";
+
+const logger = loggers.migration();
 
 export interface ResyncTarget {
   table: WorkspacesTableName;
@@ -77,6 +91,7 @@ function serializeTargets(
     table: t.table,
     entityIds: [...(t.scope.entityIds ?? [])],
     ...(t.scope.workspaceId ? { workspaceId: t.scope.workspaceId } : {}),
+    ...(t.scope.touchOnly ? { touchOnly: true } : {}),
   }));
 }
 
@@ -168,14 +183,87 @@ export function dualRead<T>(
 
 const TABLES = new Set<string>(WORKSPACES_TABLES);
 
+function expectedSecondaryForMode(mode: MigrationMode): "pg" | "mongo" | null {
+  switch (mode) {
+    case "dual_write_mongo_read":
+    case "dual_write_shadow_compare":
+      return "pg";
+    case "dual_write_pg_read":
+      return "mongo";
+    case "mongo_only":
+    case "pg_only":
+      return null;
+  }
+}
+
+async function resolveCurrentWorkspacesMode(
+  getDb: () => MakoPgDb,
+  workspaceId: string | undefined,
+  router?: MigrationRouter,
+): Promise<MigrationMode> {
+  if (router) {
+    return (await router.getState(WORKSPACES_DOMAIN, workspaceId)).mode;
+  }
+  if (isMigrationForceMongoOnly()) {
+    return "mongo_only";
+  }
+  // Query Postgres control plane directly (bypassing any 5s router cache and
+  // propagating transient PG outages so Inngest retries rather than falsely
+  // dropping events as `mongo_only`).
+  const parsedWs = workspaceId ? parseEntityId(workspaceId) : null;
+  const scopeKeys = parsedWs
+    ? [GLOBAL_SCOPE_KEY, parsedWs.uuid]
+    : [GLOBAL_SCOPE_KEY];
+  const rows = await getDb()
+    .select({
+      scopeKey: migrationDomainState.scopeKey,
+      mode: migrationDomainState.mode,
+    })
+    .from(migrationDomainState)
+    .where(
+      and(
+        eq(migrationDomainState.domain, WORKSPACES_DOMAIN),
+        inArray(migrationDomainState.scopeKey, scopeKeys),
+      ),
+    );
+  const wsRow = parsedWs
+    ? rows.find(r => r.scopeKey === parsedWs.uuid)
+    : undefined;
+  const globalRow = rows.find(r => r.scopeKey === GLOBAL_SCOPE_KEY);
+  return (wsRow ?? globalRow)?.mode ?? "mongo_only";
+}
+
 /**
  * Inngest `migration/{pg,mongo}-sync-retry` replay for `workspaces_core`:
- * re-reads the primary rows named in the ID-only payload and resyncs the secondary.
+ * checks the current domain stage first so stale retries queued before a stage
+ * flip NEVER overwrite the new primary (or a retired secondary), then re-reads
+ * the authoritative primary rows named in the ID-only payload and resyncs.
  */
 export async function replayWorkspacesRetry(
   data: SyncRetryEventData,
-  ctx: { getDb?: () => MakoPgDb } = {},
+  ctx: DualContext = {},
 ): Promise<void> {
+  const getDb = ctx.getDb ?? getPgDb;
+  const currentMode = await resolveCurrentWorkspacesMode(
+    getDb,
+    data.workspaceId,
+    ctx.router,
+  );
+  const activeSecondary = expectedSecondaryForMode(currentMode);
+  if (activeSecondary !== data.target) {
+    logger.info(
+      "Skipping stale workspaces_core sync-retry event after stage change",
+      {
+        target: data.target,
+        activeSecondary,
+        mode: currentMode,
+        operation: data.operation,
+        entityId: data.entityId,
+      },
+    );
+    return;
+  }
+
   const raw = (data.payload?.targets ?? []) as Array<Record<string, unknown>>;
   const targets: ResyncTarget[] = [];
   for (const t of raw) {
@@ -190,10 +278,11 @@ export async function replayWorkspacesRetry(
           : undefined,
         workspaceId:
           typeof t.workspaceId === "string" ? t.workspaceId : undefined,
+        ...(t.touchOnly === true ? { touchOnly: true } : {}),
       },
     });
   }
-  await resyncAll(data.target, targets, ctx.getDb ?? getPgDb);
+  await resyncAll(data.target, targets, getDb);
   if (data.target === "mongo") {
     const unsetPrompt = data.payload?.unsetLegacyCustomPrompt as
       { workspaceId?: unknown; includeSelfDirective?: unknown } | undefined;

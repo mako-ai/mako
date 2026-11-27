@@ -9,6 +9,7 @@
  */
 import assert from "node:assert/strict";
 
+import { generateUuidv7, legacyUserIdToUuidv7 } from "../database/pg/id-codec";
 import { installRuntimeCommand } from "./runtime-files";
 import {
   type RunResult,
@@ -159,7 +160,63 @@ async function main() {
   assert.equal(sandboxRunOfKey({ name: "Mine", createdBy: "u1" }), null);
   assert.equal(sandboxRunOfKey(undefined), null);
 
-  console.log("sandbox runs tests passed");
+  // Mixed-stage PG UUIDv7 `createdBy` matches a sandbox key named with the
+  // user's legacy ID (and still rejects another user's embedded legacy ID).
+  const legacyId = "u_lucia_15chars";
+  const mappedUuidv7 = legacyUserIdToUuidv7(
+    legacyId,
+    new Date("2025-04-01T00:00:00Z"),
+  );
+  assert.equal(
+    sandboxRunOfKey({
+      name: `Workflows sandbox ${legacyId} ${RUN}`,
+      createdBy: mappedUuidv7,
+    }),
+    RUN,
+  );
+  assert.equal(
+    sandboxRunOfKey({
+      name: `Workflows sandbox ${legacyId} ${RUN}`,
+      createdBy: mappedUuidv7.toUpperCase(),
+    }),
+    RUN,
+  );
+  assert.equal(
+    sandboxRunOfKey({
+      name: `Workflows sandbox other_user_9999 ${RUN}`,
+      createdBy: mappedUuidv7,
+    }),
+    null,
+  );
+  // Symmetric: UUIDv7 embedded in key name matches both UUIDv7 and legacy createdBy.
+  assert.equal(
+    sandboxRunOfKey({
+      name: `Workflows sandbox ${mappedUuidv7} ${RUN}`,
+      createdBy: legacyId,
+    }),
+    RUN,
+  );
+  const nativeUuidv7 = generateUuidv7();
+  assert.equal(
+    sandboxRunOfKey({
+      name: `Workflows sandbox ${nativeUuidv7} ${RUN}`,
+      createdBy: nativeUuidv7.toUpperCase(),
+    }),
+    RUN,
+  );
+  // Additional creator alias (e.g. `c.get("user").id`) also matches.
+  assert.equal(
+    sandboxRunOfKey(
+      {
+        name: `Workflows sandbox ${legacyId} ${RUN}`,
+        createdBy: nativeUuidv7,
+      },
+      [legacyId],
+    ),
+    RUN,
+  );
+
+  console.info("sandbox runs tests passed");
 }
 
 main().catch(error => {

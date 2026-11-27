@@ -32,7 +32,10 @@ CREATE TABLE IF NOT EXISTS "workspaces" (
   "billing_subscription_status" text
     CONSTRAINT "workspaces_billing_subscription_status_check" CHECK (
       "billing_subscription_status" IS NULL
-      OR "billing_subscription_status" IN ('active', 'past_due', 'canceled', 'trialing', 'incomplete')
+      OR "billing_subscription_status" IN (
+        'active', 'past_due', 'canceled', 'trialing',
+        'incomplete', 'incomplete_expired', 'unpaid', 'paused'
+      )
     ),
   "billing_current_period_start" timestamptz,
   "billing_current_period_end" timestamptz,

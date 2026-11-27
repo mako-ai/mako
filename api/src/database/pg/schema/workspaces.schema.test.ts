@@ -105,6 +105,30 @@ describe("0003_phase1_workspaces schema", () => {
     expect(r.rows[0].h).toBeNull();
   });
 
+  it("allows all 8 Stripe subscription statuses (including unpaid, paused, incomplete_expired) and rejects unknown ones", async () => {
+    for (const status of schema.SUBSCRIPTION_STATUSES) {
+      await pg.query(
+        `UPDATE workspaces SET billing_subscription_status = $1 WHERE id = $2`,
+        [status, ws1],
+      );
+      const loaded = await pg.query<{ s: string | null }>(
+        `SELECT billing_subscription_status AS s FROM workspaces WHERE id = $1`,
+        [ws1],
+      );
+      expect(loaded.rows[0].s).toBe(status);
+    }
+    await pg.query(
+      `UPDATE workspaces SET billing_subscription_status = NULL WHERE id = $1`,
+      [ws1],
+    );
+    await expect(
+      pg.query(
+        `UPDATE workspaces SET billing_subscription_status = 'bogus_status' WHERE id = $1`,
+        [ws1],
+      ),
+    ).rejects.toThrow(/workspaces_billing_subscription_status_check/);
+  });
+
   it("keeps api key scopes NULL distinct from an empty array and enforces unique key_hash", async () => {
     const k1 = objectIdToUuid("6745f6f4a1b2c3d4e5f60720");
     const k2 = objectIdToUuid("6745f6f4a1b2c3d4e5f60721");
@@ -261,7 +285,7 @@ describe("0003_phase1_workspaces schema", () => {
     }
   });
 
-  it("attaches sessions.active_workspace_id FK post-backfill, nulling dangling refs, idempotently", async () => {
+  it("enforces workspaces_core completion + clean quarantine precondition before attaching sessions.active_workspace_id FK (overridable with force)", async () => {
     expect(POST_BACKFILL_STEPS.map(s => s.name)).toContain(
       "sessions-active-workspace-fk",
     );
@@ -277,7 +301,60 @@ describe("0003_phase1_workspaces schema", () => {
       [user1, ws1, dangling],
     );
 
-    await runPostBackfillStep(db, "sessions-active-workspace-fk");
+    // 1. Refuses when workspaces_core backfill has not started — and does NOT clear sessions!
+    await expect(
+      runPostBackfillStep(db, "sessions-active-workspace-fk"),
+    ).rejects.toThrow(/not_started/);
+    const stillIntact = await pg.query<{
+      token_hash: string;
+      active_workspace_id: string | null;
+    }>(
+      `SELECT token_hash, active_workspace_id FROM sessions WHERE token_hash = 'hash_dangling'`,
+    );
+    expect(stillIntact.rows[0].active_workspace_id).toBe(dangling);
+
+    // 2. Refuses when workspaces_core backfill is running / paused / failed.
+    for (const status of ["running", "paused", "failed"] as const) {
+      await pg.query(
+        `INSERT INTO migration_backfill_jobs (domain, scope_key, status)
+         VALUES ('workspaces_core', 'global', $1)
+         ON CONFLICT (domain, scope_key) DO UPDATE SET status = EXCLUDED.status`,
+        [status],
+      );
+      await expect(
+        runPostBackfillStep(db, "sessions-active-workspace-fk"),
+      ).rejects.toThrow(new RegExp(status));
+    }
+
+    // 3. Refuses when backfill is completed but an unresolved workspace row is quarantined.
+    await pg.query(
+      `UPDATE migration_backfill_jobs SET status = 'completed', completed_at = now()
+        WHERE domain = 'workspaces_core' AND scope_key = 'global'`,
+    );
+    await pg.query(
+      `INSERT INTO migration_quarantine (domain, collection_name, mongo_id, reason)
+       VALUES ('workspaces_core', 'workspaces', '6745f6f4a1b2c3d4e5f60799', 'invalid_workspace_missing_slug')`,
+    );
+    await expect(
+      runPostBackfillStep(db, "sessions-active-workspace-fk"),
+    ).rejects.toThrow(/quarantined/);
+    // Still untouched!
+    expect(
+      (
+        await pg.query<{ active_workspace_id: string | null }>(
+          `SELECT active_workspace_id FROM sessions WHERE token_hash = 'hash_dangling'`,
+        )
+      ).rows[0].active_workspace_id,
+    ).toBe(dangling);
+
+    // 4. Explicit `force: true` overrides the precondition (and works idempotently).
+    //    Also verify resolving quarantine allows running WITHOUT `force`.
+    await runPostBackfillStep(db, "sessions-active-workspace-fk", {
+      force: true,
+    });
+    await pg.query(
+      `UPDATE migration_quarantine SET resolved_at = now() WHERE domain = 'workspaces_core'`,
+    );
     await runPostBackfillStep(db, "sessions-active-workspace-fk");
 
     const r = await pg.query<{

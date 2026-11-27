@@ -35,6 +35,7 @@ import {
 import { getPgDb, type MakoPgDb } from "../../database/pg/client";
 import { isUuidString } from "../../database/pg/id-codec";
 import { users } from "../../database/pg/schema/auth";
+import { migrationTombstones } from "../../database/pg/schema/control-plane";
 import {
   acpPlanGrants,
   githubInstallations,
@@ -67,6 +68,7 @@ import {
   handleRecordToPgRow,
   inviteRecordToMongoDoc,
   inviteRecordToPgRow,
+  isSyntheticUserId,
   mcpClientRecordToMongoDoc,
   mcpClientRecordToPgRow,
   mcpCodeRecordToMongoDoc,
@@ -121,6 +123,12 @@ export interface ResyncScope {
   entityIds?: readonly string[];
   /** Resync every row of `table` belonging to this workspace (wire id). */
   workspaceId?: string;
+  /**
+   * When true (`touchApiKeyLastUsed` / `touchMcpTokenLastUsed`), conflict
+   * updates advance only `last_used_at` (via `GREATEST`) so a lagging touch
+   * resync can never overwrite newer scopes, names, or rotated token hashes.
+   */
+  touchOnly?: boolean;
 }
 
 export interface ResyncResult {
@@ -133,6 +141,83 @@ export interface ResyncDeps {
   getDb?: () => MakoPgDb;
   /** Record tombstones for rows deleted from Postgres (default true). */
   tombstones?: boolean;
+  /**
+   * Bypass stale-overwrite `setWhere` guards (used ONLY by `pg:verify --repair`
+   * when explicitly healing PG drift). Tombstone guards still apply.
+   */
+  force?: boolean;
+}
+
+export interface EntityLockTarget {
+  table: WorkspacesTableName;
+  entityId: string;
+}
+
+/**
+ * Acquire transaction-scoped Postgres advisory locks for `(table, entityId)`
+ * pairs in deterministic sorted order (single round-trip) so concurrent resync
+ * upserts, resync deletes, and backfill batches serialize without deadlocks.
+ */
+export async function lockWorkspacesEntities(
+  tx: MakoPgDb,
+  targets: readonly EntityLockTarget[],
+): Promise<void> {
+  const keys = [
+    ...new Set(
+      targets
+        .filter(t => Boolean(t.entityId))
+        .map(t => `${t.table}:${t.entityId.toLowerCase()}`),
+    ),
+  ].sort();
+  if (keys.length === 0) {
+    return;
+  }
+  const keyParams = sql.join(
+    keys.map(k => sql`${k}`),
+    sql`, `,
+  );
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(k, 0)) FROM (SELECT unnest(ARRAY[${keyParams}]::text[]) AS k ORDER BY k) AS sorted_keys`,
+  );
+}
+
+/**
+ * Load tombstoned `(table, entityId)` keys inside an already-locked PG
+ * transaction, returning keys formatted as `"${table}:${entityId.toLowerCase()}"`.
+ */
+export async function loadLockedTombstoneKeys(
+  tx: MakoPgDb,
+  targets: readonly EntityLockTarget[],
+): Promise<Set<string>> {
+  const byTable = new Map<string, string[]>();
+  for (const t of targets) {
+    if (!t.entityId) continue;
+    const id = t.entityId.toLowerCase();
+    const list = byTable.get(t.table);
+    if (list) {
+      list.push(id);
+    } else {
+      byTable.set(t.table, [id]);
+    }
+  }
+  const tombstoned = new Set<string>();
+  for (const [tbl, ids] of byTable) {
+    const uniqueIds = [...new Set(ids)];
+    if (uniqueIds.length === 0) continue;
+    const rows = await tx
+      .select({ entityId: migrationTombstones.entityId })
+      .from(migrationTombstones)
+      .where(
+        and(
+          eq(migrationTombstones.tableName, tbl),
+          inArray(migrationTombstones.entityId, uniqueIds),
+        ),
+      );
+    for (const row of rows) {
+      tombstoned.add(`${tbl}:${row.entityId.toLowerCase()}`);
+    }
+  }
+  return tombstoned;
 }
 
 function oid(id: string): Types.ObjectId {
@@ -224,6 +309,29 @@ function makeRequiredUuidMapper(
     }
     throw new Error(
       `Cannot sync row to Postgres: user ${JSON.stringify(userId)} not found in Postgres users table`,
+    );
+  };
+}
+
+/**
+ * Strict creator mapper for `workspace_api_keys.created_by`:
+ * empty or synthetic sentinels (`"system"`, `"test"`) map to NULL, while any
+ * real user ID absent from Postgres `users` throws so `MigrationRouter` queues
+ * a `pg-sync-retry` instead of writing a broken NULL creator.
+ */
+function makeApiKeyCreatorUuidMapper(
+  map: Map<string, string>,
+): NullableUserUuidMapper {
+  return userId => {
+    if (!userId || isSyntheticUserId(userId)) {
+      return null;
+    }
+    const resolved = map.get(userId) ?? map.get(userId.toLowerCase());
+    if (resolved) {
+      return resolved;
+    }
+    throw new Error(
+      `Cannot sync workspace_api_keys row to Postgres: creator ${JSON.stringify(userId)} not found in Postgres users table`,
     );
   };
 }
@@ -327,12 +435,17 @@ export async function resyncToPg(
 ): Promise<ResyncResult> {
   const db = (deps.getDb ?? getPgDb)();
   const withTombstones = deps.tombstones ?? true;
-  const tombstone = async (ids: string[]) => {
+  const force = deps.force ?? false;
+  const touchOnly = scope.touchOnly ?? false;
+  const recordTombstones = async (
+    targetDb: MakoPgDb,
+    ids: readonly string[],
+  ) => {
     if (!withTombstones) {
       return;
     }
     for (const id of ids) {
-      await recordMigrationTombstone(table, id, db);
+      await recordMigrationTombstone(table, id, targetDb);
     }
   };
 
@@ -346,18 +459,40 @@ export async function resyncToPg(
       );
       const mapNullable = makeNullableUuidMapper(userMap);
 
-      for (const record of records) {
-        const row = workspaceRecordToPgRow(record, mapNullable);
-        const { id: _id, ...rest } = row;
-        void _id;
-        await db
-          .insert(workspaces)
-          .values(row)
-          .onConflictDoUpdate({
-            target: workspaces.id,
-            set: rest,
-            setWhere: sql`${workspaces.updatedAt} <= excluded.updated_at`,
-          });
+      let upserted = 0;
+      if (records.length > 0) {
+        await db.transaction(async rawTx => {
+          const tx = rawTx as unknown as MakoPgDb;
+          const lockTargets: EntityLockTarget[] = records.map(r => ({
+            table: "workspaces",
+            entityId: toPgUuid(r.id),
+          }));
+          await lockWorkspacesEntities(tx, lockTargets);
+          const tombstoned = await loadLockedTombstoneKeys(tx, lockTargets);
+
+          for (const record of records) {
+            const row = workspaceRecordToPgRow(record, mapNullable);
+            if (tombstoned.has(`workspaces:${row.id.toLowerCase()}`)) {
+              continue;
+            }
+            const { id: _id, ...rest } = row;
+            void _id;
+            const written = await tx
+              .insert(workspaces)
+              .values(row)
+              .onConflictDoUpdate(
+                force
+                  ? { target: workspaces.id, set: rest }
+                  : {
+                      target: workspaces.id,
+                      set: rest,
+                      setWhere: sql`${workspaces.updatedAt} <= excluded.updated_at`,
+                    },
+              )
+              .returning({ id: workspaces.id });
+            upserted += written.length;
+          }
+        });
       }
       const present = new Set(records.map(r => r.id));
       const missing = uniq([
@@ -366,12 +501,24 @@ export async function resyncToPg(
       ])
         .map(toWire)
         .filter(id => !present.has(id));
+      let deletedCount = 0;
       if (missing.length > 0) {
         const missingPg = missing.map(toPgUuid);
-        await db.delete(workspaces).where(inArray(workspaces.id, missingPg));
-        await tombstone(missingPg);
+        await db.transaction(async rawTx => {
+          const tx = rawTx as unknown as MakoPgDb;
+          await lockWorkspacesEntities(
+            tx,
+            missingPg.map(id => ({ table: "workspaces", entityId: id })),
+          );
+          await recordTombstones(tx, missingPg);
+          const deletedRows = await tx
+            .delete(workspaces)
+            .where(inArray(workspaces.id, missingPg))
+            .returning({ id: workspaces.id });
+          deletedCount = deletedRows.length;
+        });
       }
-      return { table, upserted: records.length, deleted: missing.length };
+      return { table, upserted, deleted: deletedCount };
     }
 
     case "workspace_api_keys": {
@@ -384,35 +531,86 @@ export async function resyncToPg(
         db,
         records.map(r => r.createdBy),
       );
-      const mapNullable = makeNullableUuidMapper(userMap);
+      const mapCreator = makeApiKeyCreatorUuidMapper(userMap);
 
-      for (const record of records) {
-        const row = apiKeyRecordToPgRow(record, mapNullable);
-        const { id: _id, ...rest } = row;
-        void _id;
-        await db.insert(workspaceApiKeys).values(row).onConflictDoUpdate({
-          target: workspaceApiKeys.id,
-          set: rest,
+      let upserted = 0;
+      if (records.length > 0) {
+        await db.transaction(async rawTx => {
+          const tx = rawTx as unknown as MakoPgDb;
+          const lockTargets: EntityLockTarget[] = records.flatMap(r => [
+            { table: "workspace_api_keys", entityId: toPgUuid(r.id) },
+            { table: "workspaces", entityId: toPgUuid(r.workspaceId) },
+          ]);
+          await lockWorkspacesEntities(tx, lockTargets);
+          const tombstoned = await loadLockedTombstoneKeys(tx, lockTargets);
+
+          for (const record of records) {
+            const pgId = toPgUuid(record.id).toLowerCase();
+            const wsUuid = toPgUuid(record.workspaceId).toLowerCase();
+            if (
+              tombstoned.has(`workspace_api_keys:${pgId}`) ||
+              tombstoned.has(`workspaces:${wsUuid}`)
+            ) {
+              continue;
+            }
+            const row = apiKeyRecordToPgRow(record, mapCreator);
+            const { id: _id, ...rest } = row;
+            void _id;
+            const written = await tx
+              .insert(workspaceApiKeys)
+              .values(row)
+              .onConflictDoUpdate(
+                force
+                  ? { target: workspaceApiKeys.id, set: rest }
+                  : touchOnly
+                    ? {
+                        target: workspaceApiKeys.id,
+                        set: {
+                          lastUsedAt: sql`GREATEST(${workspaceApiKeys.lastUsedAt}, excluded.last_used_at)`,
+                        },
+                      }
+                    : {
+                        target: workspaceApiKeys.id,
+                        set: {
+                          ...rest,
+                          lastUsedAt: sql`GREATEST(${workspaceApiKeys.lastUsedAt}, excluded.last_used_at)`,
+                        },
+                        setWhere: sql`${workspaceApiKeys.lastUsedAt} IS NULL OR (excluded.last_used_at IS NOT NULL AND ${workspaceApiKeys.lastUsedAt} <= excluded.last_used_at)`,
+                      },
+              )
+              .returning({ id: workspaceApiKeys.id });
+            upserted += written.length;
+          }
         });
       }
       const presentPg = records.map(r => toPgUuid(r.id));
       const scopedIds = uniq(scope.entityIds);
       let deleted: string[] = [];
-      let toTombstone: string[] = [];
       if (scopedIds.length > 0) {
         const missing = scopedIds
           .map(toPgUuid)
           .filter(id => !presentPg.includes(id));
         if (missing.length > 0) {
-          deleted = (
-            await db
-              .delete(workspaceApiKeys)
-              .where(inArray(workspaceApiKeys.id, missing))
-              .returning({ id: workspaceApiKeys.id })
-          ).map(r => r.id);
-          // Tombstone ALL missing entity IDs (even those not yet backfilled into PG)
-          // so an in-flight backfill cannot resurrect a revoked API key.
-          toTombstone = missing;
+          await db.transaction(async rawTx => {
+            const tx = rawTx as unknown as MakoPgDb;
+            await lockWorkspacesEntities(
+              tx,
+              missing.map(id => ({
+                table: "workspace_api_keys",
+                entityId: id,
+              })),
+            );
+            // Tombstone ALL missing entity IDs atomically with the delete (even
+            // those not yet backfilled into PG) so neither an in-flight backfill
+            // nor a concurrent touch resync can resurrect a revoked API key.
+            await recordTombstones(tx, missing);
+            deleted = (
+              await tx
+                .delete(workspaceApiKeys)
+                .where(inArray(workspaceApiKeys.id, missing))
+                .returning({ id: workspaceApiKeys.id })
+            ).map(r => r.id);
+          });
         }
       } else if (scope.workspaceId) {
         const wsUuid = toPgUuid(scope.workspaceId);
@@ -422,20 +620,35 @@ export async function resyncToPg(
               notInArray(workspaceApiKeys.id, presentPg),
             )
           : eq(workspaceApiKeys.workspaceId, wsUuid);
-        deleted = (
+        const candidateIds = (
           await db
-            .delete(workspaceApiKeys)
+            .select({ id: workspaceApiKeys.id })
+            .from(workspaceApiKeys)
             .where(where)
-            .returning({ id: workspaceApiKeys.id })
         ).map(r => r.id);
-        toTombstone = deleted;
+        await db.transaction(async rawTx => {
+          const tx = rawTx as unknown as MakoPgDb;
+          await lockWorkspacesEntities(tx, [
+            ...candidateIds.map(id => ({
+              table: "workspace_api_keys" as const,
+              entityId: id,
+            })),
+            { table: "workspaces", entityId: wsUuid },
+          ]);
+          deleted = (
+            await tx
+              .delete(workspaceApiKeys)
+              .where(where)
+              .returning({ id: workspaceApiKeys.id })
+          ).map(r => r.id);
+          await recordTombstones(tx, deleted);
+        });
       }
-      await tombstone(toTombstone);
-      return { table, upserted: records.length, deleted: deleted.length };
+      return { table, upserted, deleted: deleted.length };
     }
 
     case "workspace_members":
-      return resyncSimpleToPg(db, table, scope, tombstone, {
+      return resyncSimpleToPg(db, table, scope, recordTombstones, {
         read: async f =>
           (await WorkspaceMember.find(f).lean<MongoMemberLike[]>()).map(
             mongoMemberToRecord,
@@ -450,21 +663,45 @@ export async function resyncToPg(
           for (const wsId of uniq(records.map(r => r.workspaceId))) {
             await ensurePgWorkspace(db, wsId);
           }
-          for (const r of records) {
-            const row = memberRecordToPgRow(r, mapRequired, new Date());
-            const { id: _id, ...rest } = row;
-            void _id;
-            await db.insert(workspaceMembers).values(row).onConflictDoUpdate({
-              target: workspaceMembers.id,
-              set: rest,
-            });
-          }
+          let upserted = 0;
+          await db.transaction(async rawTx => {
+            const tx = rawTx as unknown as MakoPgDb;
+            const lockTargets: EntityLockTarget[] = records.flatMap(r => [
+              { table: "workspace_members", entityId: toPgUuid(r.id) },
+              { table: "workspaces", entityId: toPgUuid(r.workspaceId) },
+            ]);
+            await lockWorkspacesEntities(tx, lockTargets);
+            const tombstoned = await loadLockedTombstoneKeys(tx, lockTargets);
+            for (const r of records) {
+              const pgId = toPgUuid(r.id).toLowerCase();
+              const wsUuid = toPgUuid(r.workspaceId).toLowerCase();
+              if (
+                tombstoned.has(`workspace_members:${pgId}`) ||
+                tombstoned.has(`workspaces:${wsUuid}`)
+              ) {
+                continue;
+              }
+              const row = memberRecordToPgRow(r, mapRequired, new Date());
+              const { id: _id, ...rest } = row;
+              void _id;
+              const written = await tx
+                .insert(workspaceMembers)
+                .values(row)
+                .onConflictDoUpdate({
+                  target: workspaceMembers.id,
+                  set: rest,
+                })
+                .returning({ id: workspaceMembers.id });
+              upserted += written.length;
+            }
+          });
+          return upserted;
         },
         pgTable: workspaceMembers,
       });
 
     case "workspace_invites":
-      return resyncSimpleToPg(db, table, scope, tombstone, {
+      return resyncSimpleToPg(db, table, scope, recordTombstones, {
         read: async f =>
           (await WorkspaceInvite.find(f).lean<MongoInviteLike[]>()).map(
             mongoInviteToRecord,
@@ -479,21 +716,53 @@ export async function resyncToPg(
           for (const wsId of uniq(records.map(r => r.workspaceId))) {
             await ensurePgWorkspace(db, wsId);
           }
-          for (const r of records) {
-            const row = inviteRecordToPgRow(r, mapNullable, new Date());
-            const { id: _id, ...rest } = row;
-            void _id;
-            await db.insert(workspaceInvites).values(row).onConflictDoUpdate({
-              target: workspaceInvites.id,
-              set: rest,
-            });
-          }
+          let upserted = 0;
+          await db.transaction(async rawTx => {
+            const tx = rawTx as unknown as MakoPgDb;
+            const lockTargets: EntityLockTarget[] = records.flatMap(r => [
+              { table: "workspace_invites", entityId: toPgUuid(r.id) },
+              { table: "workspaces", entityId: toPgUuid(r.workspaceId) },
+            ]);
+            await lockWorkspacesEntities(tx, lockTargets);
+            const tombstoned = await loadLockedTombstoneKeys(tx, lockTargets);
+            for (const r of records) {
+              const pgId = toPgUuid(r.id).toLowerCase();
+              const wsUuid = toPgUuid(r.workspaceId).toLowerCase();
+              if (
+                tombstoned.has(`workspace_invites:${pgId}`) ||
+                tombstoned.has(`workspaces:${wsUuid}`)
+              ) {
+                continue;
+              }
+              const row = inviteRecordToPgRow(r, mapNullable, new Date());
+              const { id: _id, ...rest } = row;
+              void _id;
+              const written = await tx
+                .insert(workspaceInvites)
+                .values(row)
+                .onConflictDoUpdate(
+                  force
+                    ? { target: workspaceInvites.id, set: rest }
+                    : {
+                        target: workspaceInvites.id,
+                        set: {
+                          ...rest,
+                          acceptedAt: sql`COALESCE(${workspaceInvites.acceptedAt}, excluded.accepted_at)`,
+                        },
+                        setWhere: sql`${workspaceInvites.acceptedAt} IS NULL AND ${workspaceInvites.expiresAt} <= excluded.expires_at`,
+                      },
+                )
+                .returning({ id: workspaceInvites.id });
+              upserted += written.length;
+            }
+          });
+          return upserted;
         },
         pgTable: workspaceInvites,
       });
 
     case "workspace_user_handles":
-      return resyncSimpleToPg(db, table, scope, tombstone, {
+      return resyncSimpleToPg(db, table, scope, recordTombstones, {
         read: async f =>
           (await WorkspaceUserHandle.find(f).lean<MongoHandleLike[]>()).map(
             mongoHandleToRecord,
@@ -508,18 +777,44 @@ export async function resyncToPg(
           for (const wsId of uniq(records.map(r => r.workspaceId))) {
             await ensurePgWorkspace(db, wsId);
           }
-          for (const r of records) {
-            const row = handleRecordToPgRow(r, mapNullable);
-            const { id: _id, ...rest } = row;
-            void _id;
-            await db
-              .insert(workspaceUserHandles)
-              .values(row)
-              .onConflictDoUpdate({
-                target: workspaceUserHandles.id,
-                set: rest,
-              });
-          }
+          let upserted = 0;
+          await db.transaction(async rawTx => {
+            const tx = rawTx as unknown as MakoPgDb;
+            const lockTargets: EntityLockTarget[] = records.flatMap(r => [
+              { table: "workspace_user_handles", entityId: toPgUuid(r.id) },
+              { table: "workspaces", entityId: toPgUuid(r.workspaceId) },
+            ]);
+            await lockWorkspacesEntities(tx, lockTargets);
+            const tombstoned = await loadLockedTombstoneKeys(tx, lockTargets);
+            for (const r of records) {
+              const pgId = toPgUuid(r.id).toLowerCase();
+              const wsUuid = toPgUuid(r.workspaceId).toLowerCase();
+              if (
+                tombstoned.has(`workspace_user_handles:${pgId}`) ||
+                tombstoned.has(`workspaces:${wsUuid}`)
+              ) {
+                continue;
+              }
+              const row = handleRecordToPgRow(r, mapNullable);
+              const { id: _id, ...rest } = row;
+              void _id;
+              const written = await tx
+                .insert(workspaceUserHandles)
+                .values(row)
+                .onConflictDoUpdate(
+                  force
+                    ? { target: workspaceUserHandles.id, set: rest }
+                    : {
+                        target: workspaceUserHandles.id,
+                        set: rest,
+                        setWhere: sql`${workspaceUserHandles.updatedAt} <= excluded.updated_at`,
+                      },
+                )
+                .returning({ id: workspaceUserHandles.id });
+              upserted += written.length;
+            }
+          });
+          return upserted;
         },
         pgTable: workspaceUserHandles,
       });
@@ -534,33 +829,69 @@ export async function resyncToPg(
           MongoMcpClientLike[]
         >()
       ).map(mongoMcpClientToRecord);
-      for (const r of records) {
-        const row = mcpClientRecordToPgRow(r);
-        await db
-          .insert(mcpOAuthClients)
-          .values(row)
-          .onConflictDoUpdate({
-            target: mcpOAuthClients.clientId,
-            set: { clientName: row.clientName, redirectUris: row.redirectUris },
-          });
+      let upserted = 0;
+      if (records.length > 0) {
+        await db.transaction(async rawTx => {
+          const tx = rawTx as unknown as MakoPgDb;
+          const lockTargets: EntityLockTarget[] = records.map(r => ({
+            table: "mcp_oauth_clients",
+            entityId: toPgUuid(r.id),
+          }));
+          await lockWorkspacesEntities(tx, lockTargets);
+          const tombstoned = await loadLockedTombstoneKeys(tx, lockTargets);
+          for (const r of records) {
+            const row = mcpClientRecordToPgRow(r);
+            if (tombstoned.has(`mcp_oauth_clients:${row.id.toLowerCase()}`)) {
+              continue;
+            }
+            const written = await tx
+              .insert(mcpOAuthClients)
+              .values(row)
+              .onConflictDoUpdate({
+                target: mcpOAuthClients.clientId,
+                set: {
+                  clientName: row.clientName,
+                  redirectUris: row.redirectUris,
+                },
+              })
+              .returning({ id: mcpOAuthClients.id });
+            upserted += written.length;
+          }
+        });
       }
       const present = new Set(records.map(r => r.clientId));
       const missing = clientIds.filter(c => !present.has(c));
       let deletedIds: string[] = [];
       if (missing.length > 0) {
-        deletedIds = (
+        const candidateIds = (
           await db
-            .delete(mcpOAuthClients)
+            .select({ id: mcpOAuthClients.id })
+            .from(mcpOAuthClients)
             .where(inArray(mcpOAuthClients.clientId, missing))
-            .returning({ id: mcpOAuthClients.id })
         ).map(r => r.id);
-        await tombstone(deletedIds);
+        await db.transaction(async rawTx => {
+          const tx = rawTx as unknown as MakoPgDb;
+          await lockWorkspacesEntities(
+            tx,
+            candidateIds.map(id => ({
+              table: "mcp_oauth_clients",
+              entityId: id,
+            })),
+          );
+          deletedIds = (
+            await tx
+              .delete(mcpOAuthClients)
+              .where(inArray(mcpOAuthClients.clientId, missing))
+              .returning({ id: mcpOAuthClients.id })
+          ).map(r => r.id);
+          await recordTombstones(tx, deletedIds);
+        });
       }
-      return { table, upserted: records.length, deleted: deletedIds.length };
+      return { table, upserted, deleted: deletedIds.length };
     }
 
     case "mcp_oauth_codes":
-      return resyncSimpleToPg(db, table, scope, tombstone, {
+      return resyncSimpleToPg(db, table, scope, recordTombstones, {
         read: async f =>
           (await McpOAuthCode.find(f).lean<MongoMcpCodeLike[]>()).map(
             mongoMcpCodeToRecord,
@@ -578,21 +909,53 @@ export async function resyncToPg(
           for (const clientId of uniq(records.map(r => r.clientId))) {
             await ensurePgMcpClient(db, clientId);
           }
-          for (const r of records) {
-            const row = mcpCodeRecordToPgRow(r, mapRequired);
-            const { id: _id, ...rest } = row;
-            void _id;
-            await db.insert(mcpOAuthCodes).values(row).onConflictDoUpdate({
-              target: mcpOAuthCodes.id,
-              set: rest,
-            });
-          }
+          let upserted = 0;
+          await db.transaction(async rawTx => {
+            const tx = rawTx as unknown as MakoPgDb;
+            const lockTargets: EntityLockTarget[] = records.flatMap(r => [
+              { table: "mcp_oauth_codes", entityId: toPgUuid(r.id) },
+              { table: "workspaces", entityId: toPgUuid(r.workspaceId) },
+            ]);
+            await lockWorkspacesEntities(tx, lockTargets);
+            const tombstoned = await loadLockedTombstoneKeys(tx, lockTargets);
+            for (const r of records) {
+              const pgId = toPgUuid(r.id).toLowerCase();
+              const wsUuid = toPgUuid(r.workspaceId).toLowerCase();
+              if (
+                tombstoned.has(`mcp_oauth_codes:${pgId}`) ||
+                tombstoned.has(`workspaces:${wsUuid}`)
+              ) {
+                continue;
+              }
+              const row = mcpCodeRecordToPgRow(r, mapRequired);
+              const { id: _id, ...rest } = row;
+              void _id;
+              const written = await tx
+                .insert(mcpOAuthCodes)
+                .values(row)
+                .onConflictDoUpdate(
+                  force
+                    ? { target: mcpOAuthCodes.id, set: rest }
+                    : {
+                        target: mcpOAuthCodes.id,
+                        set: {
+                          ...rest,
+                          usedAt: sql`COALESCE(${mcpOAuthCodes.usedAt}, excluded.used_at)`,
+                        },
+                        setWhere: sql`${mcpOAuthCodes.usedAt} IS NULL`,
+                      },
+                )
+                .returning({ id: mcpOAuthCodes.id });
+              upserted += written.length;
+            }
+          });
+          return upserted;
         },
         pgTable: mcpOAuthCodes,
       });
 
     case "mcp_oauth_tokens":
-      return resyncSimpleToPg(db, table, scope, tombstone, {
+      return resyncSimpleToPg(db, table, scope, recordTombstones, {
         read: async f =>
           (await McpOAuthToken.find(f).lean<MongoMcpTokenLike[]>()).map(
             mongoMcpTokenToRecord,
@@ -610,21 +973,62 @@ export async function resyncToPg(
           for (const clientId of uniq(records.map(r => r.clientId))) {
             await ensurePgMcpClient(db, clientId);
           }
-          for (const r of records) {
-            const row = mcpTokenRecordToPgRow(r, mapRequired, new Date());
-            const { id: _id, ...rest } = row;
-            void _id;
-            await db.insert(mcpOAuthTokens).values(row).onConflictDoUpdate({
-              target: mcpOAuthTokens.id,
-              set: rest,
-            });
-          }
+          let upserted = 0;
+          await db.transaction(async rawTx => {
+            const tx = rawTx as unknown as MakoPgDb;
+            const lockTargets: EntityLockTarget[] = records.flatMap(r => [
+              { table: "mcp_oauth_tokens", entityId: toPgUuid(r.id) },
+              { table: "workspaces", entityId: toPgUuid(r.workspaceId) },
+            ]);
+            await lockWorkspacesEntities(tx, lockTargets);
+            const tombstoned = await loadLockedTombstoneKeys(tx, lockTargets);
+            for (const r of records) {
+              const pgId = toPgUuid(r.id).toLowerCase();
+              const wsUuid = toPgUuid(r.workspaceId).toLowerCase();
+              if (
+                tombstoned.has(`mcp_oauth_tokens:${pgId}`) ||
+                tombstoned.has(`workspaces:${wsUuid}`)
+              ) {
+                continue;
+              }
+              const row = mcpTokenRecordToPgRow(r, mapRequired, new Date());
+              const { id: _id, ...rest } = row;
+              void _id;
+              const written = await tx
+                .insert(mcpOAuthTokens)
+                .values(row)
+                .onConflictDoUpdate(
+                  force
+                    ? { target: mcpOAuthTokens.id, set: rest }
+                    : touchOnly
+                      ? {
+                          target: mcpOAuthTokens.id,
+                          set: {
+                            lastUsedAt: sql`GREATEST(${mcpOAuthTokens.lastUsedAt}, excluded.last_used_at)`,
+                            updatedAt: sql`GREATEST(${mcpOAuthTokens.updatedAt}, excluded.updated_at)`,
+                          },
+                        }
+                      : {
+                          target: mcpOAuthTokens.id,
+                          set: {
+                            ...rest,
+                            lastUsedAt: sql`GREATEST(${mcpOAuthTokens.lastUsedAt}, excluded.last_used_at)`,
+                            updatedAt: sql`GREATEST(${mcpOAuthTokens.updatedAt}, excluded.updated_at)`,
+                          },
+                          setWhere: sql`${mcpOAuthTokens.accessExpiresAt} <= excluded.access_expires_at`,
+                        },
+                )
+                .returning({ id: mcpOAuthTokens.id });
+              upserted += written.length;
+            }
+          });
+          return upserted;
         },
         pgTable: mcpOAuthTokens,
       });
 
     case "acp_plan_grants":
-      return resyncSimpleToPg(db, table, scope, tombstone, {
+      return resyncSimpleToPg(db, table, scope, recordTombstones, {
         read: async f =>
           (await AcpPlanGrant.find(f).lean<MongoAcpGrantLike[]>()).map(
             mongoAcpGrantToRecord,
@@ -639,21 +1043,50 @@ export async function resyncToPg(
           for (const wsId of uniq(records.map(r => r.workspaceId))) {
             await ensurePgWorkspace(db, wsId);
           }
-          for (const r of records) {
-            const row = acpGrantRecordToPgRow(r, mapRequired);
-            const { id: _id, ...rest } = row;
-            void _id;
-            await db.insert(acpPlanGrants).values(row).onConflictDoUpdate({
-              target: acpPlanGrants.id,
-              set: rest,
-            });
-          }
+          let upserted = 0;
+          await db.transaction(async rawTx => {
+            const tx = rawTx as unknown as MakoPgDb;
+            const lockTargets: EntityLockTarget[] = records.flatMap(r => [
+              { table: "acp_plan_grants", entityId: toPgUuid(r.id) },
+              { table: "workspaces", entityId: toPgUuid(r.workspaceId) },
+            ]);
+            await lockWorkspacesEntities(tx, lockTargets);
+            const tombstoned = await loadLockedTombstoneKeys(tx, lockTargets);
+            for (const r of records) {
+              const pgId = toPgUuid(r.id).toLowerCase();
+              const wsUuid = toPgUuid(r.workspaceId).toLowerCase();
+              if (
+                tombstoned.has(`acp_plan_grants:${pgId}`) ||
+                tombstoned.has(`workspaces:${wsUuid}`)
+              ) {
+                continue;
+              }
+              const row = acpGrantRecordToPgRow(r, mapRequired);
+              const { id: _id, ...rest } = row;
+              void _id;
+              const written = await tx
+                .insert(acpPlanGrants)
+                .values(row)
+                .onConflictDoUpdate(
+                  force
+                    ? { target: acpPlanGrants.id, set: rest }
+                    : {
+                        target: acpPlanGrants.id,
+                        set: rest,
+                        setWhere: sql`${acpPlanGrants.updatedAt} <= excluded.updated_at AND (${acpPlanGrants.status} <> 'revoked' OR excluded.status = 'revoked' OR ${acpPlanGrants.updatedAt} < excluded.updated_at)`,
+                      },
+                )
+                .returning({ id: acpPlanGrants.id });
+              upserted += written.length;
+            }
+          });
+          return upserted;
         },
         pgTable: acpPlanGrants,
       });
 
     case "github_installations":
-      return resyncSimpleToPg(db, table, scope, tombstone, {
+      return resyncSimpleToPg(db, table, scope, recordTombstones, {
         read: async f =>
           (
             await GitHubInstallation.find(f).lean<
@@ -670,18 +1103,44 @@ export async function resyncToPg(
           for (const wsId of uniq(records.map(r => r.workspaceId))) {
             await ensurePgWorkspace(db, wsId);
           }
-          for (const r of records) {
-            const row = githubInstallationRecordToPgRow(r, mapNullable);
-            const { id: _id, ...rest } = row;
-            void _id;
-            await db
-              .insert(githubInstallations)
-              .values(row)
-              .onConflictDoUpdate({
-                target: githubInstallations.id,
-                set: rest,
-              });
-          }
+          let upserted = 0;
+          await db.transaction(async rawTx => {
+            const tx = rawTx as unknown as MakoPgDb;
+            const lockTargets: EntityLockTarget[] = records.flatMap(r => [
+              { table: "github_installations", entityId: toPgUuid(r.id) },
+              { table: "workspaces", entityId: toPgUuid(r.workspaceId) },
+            ]);
+            await lockWorkspacesEntities(tx, lockTargets);
+            const tombstoned = await loadLockedTombstoneKeys(tx, lockTargets);
+            for (const r of records) {
+              const pgId = toPgUuid(r.id).toLowerCase();
+              const wsUuid = toPgUuid(r.workspaceId).toLowerCase();
+              if (
+                tombstoned.has(`github_installations:${pgId}`) ||
+                tombstoned.has(`workspaces:${wsUuid}`)
+              ) {
+                continue;
+              }
+              const row = githubInstallationRecordToPgRow(r, mapNullable);
+              const { id: _id, ...rest } = row;
+              void _id;
+              const written = await tx
+                .insert(githubInstallations)
+                .values(row)
+                .onConflictDoUpdate(
+                  force
+                    ? { target: githubInstallations.id, set: rest }
+                    : {
+                        target: githubInstallations.id,
+                        set: rest,
+                        setWhere: sql`${githubInstallations.updatedAt} <= excluded.updated_at`,
+                      },
+                )
+                .returning({ id: githubInstallations.id });
+              upserted += written.length;
+            }
+          });
+          return upserted;
         },
         pgTable: githubInstallations,
       });
@@ -701,11 +1160,14 @@ async function resyncSimpleToPg<R extends { id: string }>(
   db: MakoPgDb,
   table: WorkspacesTableName,
   scope: ResyncScope,
-  tombstone: (ids: string[]) => Promise<void>,
+  recordTombstones: (
+    targetDb: MakoPgDb,
+    ids: readonly string[],
+  ) => Promise<void>,
   ops: {
     read: (filter: Record<string, unknown>) => Promise<R[]>;
     filter: Record<string, unknown> | null;
-    upsertBatch: (records: R[]) => Promise<void>;
+    upsertBatch: (records: R[]) => Promise<number>;
     pgTable: PgTableWithIdAndWorkspace;
   },
 ): Promise<ResyncResult> {
@@ -713,38 +1175,63 @@ async function resyncSimpleToPg<R extends { id: string }>(
     return { table, upserted: 0, deleted: 0 };
   }
   const records = await ops.read(ops.filter);
-  if (records.length > 0) {
-    await ops.upsertBatch(records);
-  }
+  const upserted = records.length > 0 ? await ops.upsertBatch(records) : 0;
   const presentPg = records.map(r => toPgUuid(r.id));
   const ids = uniq(scope.entityIds);
-  let where;
-  let explicitMissing: string[] | null = null;
   if (ids.length > 0) {
     const missing = ids.map(toPgUuid).filter(id => !presentPg.includes(id));
     if (missing.length === 0) {
-      return { table, upserted: records.length, deleted: 0 };
+      return { table, upserted, deleted: 0 };
     }
-    explicitMissing = missing;
-    where = inArray(ops.pgTable.id, missing);
-  } else if (scope.workspaceId) {
+    let deletedCount = 0;
+    await db.transaction(async rawTx => {
+      const tx = rawTx as unknown as MakoPgDb;
+      await lockWorkspacesEntities(
+        tx,
+        missing.map(id => ({ table, entityId: id })),
+      );
+      // When explicit entityIds were targeted, tombstone ALL missing IDs
+      // atomically with the delete (even if PG did not yet have them) so
+      // neither an in-flight backfill nor a concurrent resync can resurrect them.
+      await recordTombstones(tx, missing);
+      const deleted = await tx
+        .delete(ops.pgTable)
+        .where(inArray(ops.pgTable.id, missing))
+        .returning({ id: ops.pgTable.id });
+      deletedCount = deleted.length;
+    });
+    return { table, upserted, deleted: deletedCount };
+  }
+  if (scope.workspaceId) {
     const wsUuid = toPgUuid(scope.workspaceId);
-    where = presentPg.length
+    const where = presentPg.length
       ? and(
           eq(ops.pgTable.workspaceId, wsUuid),
           notInArray(ops.pgTable.id, presentPg),
         )
       : eq(ops.pgTable.workspaceId, wsUuid);
-  } else {
-    return { table, upserted: records.length, deleted: 0 };
+    const candidateIds = (
+      await db.select({ id: ops.pgTable.id }).from(ops.pgTable).where(where)
+    ).map(r => r.id);
+    let deletedCount = 0;
+    await db.transaction(async rawTx => {
+      const tx = rawTx as unknown as MakoPgDb;
+      await lockWorkspacesEntities(tx, [
+        ...candidateIds.map(id => ({ table, entityId: id })),
+        { table: "workspaces", entityId: wsUuid },
+      ]);
+      const deleted = (
+        await tx
+          .delete(ops.pgTable)
+          .where(where)
+          .returning({ id: ops.pgTable.id })
+      ).map(r => r.id);
+      await recordTombstones(tx, deleted);
+      deletedCount = deleted.length;
+    });
+    return { table, upserted, deleted: deletedCount };
   }
-  const deleted = (
-    await db.delete(ops.pgTable).where(where).returning({ id: ops.pgTable.id })
-  ).map(r => r.id);
-  // When explicit entityIds were targeted, tombstone ALL missing IDs even if PG
-  // did not yet have them so an in-flight backfill cannot resurrect deleted rows.
-  await tombstone(explicitMissing ?? deleted);
-  return { table, upserted: records.length, deleted: deleted.length };
+  return { table, upserted, deleted: 0 };
 }
 
 /** Upsert the parent workspace from Mongo if Postgres does not have it yet. */

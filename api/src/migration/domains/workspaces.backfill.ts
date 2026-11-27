@@ -62,6 +62,9 @@ import {
   githubInstallationRecordToPgRow,
   handleRecordToPgRow,
   inviteRecordToPgRow,
+  isSyntheticUserId,
+  loadLockedTombstoneKeys,
+  lockWorkspacesEntities,
   mcpClientRecordToPgRow,
   mcpCodeRecordToPgRow,
   mcpTokenRecordToPgRow,
@@ -93,6 +96,7 @@ import {
   toWire,
   workspaceRecordToPgRow,
   type AcpPlanGrantRecord,
+  type EntityLockTarget,
   type GitHubInstallationRecord,
   type McpOAuthClientRecord,
   type McpOAuthCodeRecord,
@@ -859,11 +863,28 @@ async function validateWorkspacesBackfillItem(
           sanitizedPayload: { id: doc.record.id },
         };
       }
-      doc.resolvedCreatedBy = await resolveCachedPgUserUuid(
-        db,
-        doc.record.createdBy,
-        cache,
-      );
+      if (doc.record.createdBy && !isSyntheticUserId(doc.record.createdBy)) {
+        const creatorUuid = await resolveCachedPgUserUuid(
+          db,
+          doc.record.createdBy,
+          cache,
+        );
+        if (!creatorUuid) {
+          return {
+            ok: false,
+            reason: "orphaned_api_key_creator_missing",
+            sanitizedPayload: {
+              table: doc.table,
+              id: doc.record.id,
+              workspaceId: doc.record.workspaceId,
+              createdBy: doc.record.createdBy,
+            },
+          };
+        }
+        doc.resolvedCreatedBy = creatorUuid;
+      } else {
+        doc.resolvedCreatedBy = null;
+      }
       return { ok: true };
     }
 
@@ -1118,214 +1139,271 @@ async function validateWorkspacesBackfillItem(
   }
 }
 
+const BACKFILL_TX_CHUNK_SIZE = 100;
+
+function workspaceIdOfBackfillDoc(doc: WorkspacesBackfillDoc): string | null {
+  if (!doc.record) return null;
+  switch (doc.table) {
+    case "workspaces":
+    case "mcp_oauth_clients":
+      return null;
+    default:
+      return toPgUuid(doc.record.workspaceId).toLowerCase();
+  }
+}
+
 async function upsertWorkspacesBackfillItems(
   items: Array<BackfillItem<WorkspacesBackfillDoc>>,
   db: MakoPgDb,
 ): Promise<number> {
   let upserted = 0;
-  for (const item of items) {
-    const { doc } = item;
-    if (!doc.record) {
-      continue;
-    }
 
-    switch (doc.table) {
-      case "workspaces": {
-        const row = workspaceRecordToPgRow(
-          doc.record,
-          () => doc.resolvedCreatedBy ?? null,
-        );
-        const { id: _id, ...rest } = row;
-        void _id;
-        await db
-          .insert(workspaces)
-          .values(row)
-          .onConflictDoUpdate({
-            target: workspaces.id,
-            set: rest,
-            setWhere: sql`${workspaces.updatedAt} <= excluded.updated_at`,
-          });
-        upserted += 1;
-        break;
-      }
-
-      case "workspace_api_keys": {
-        const row = apiKeyRecordToPgRow(
-          doc.record,
-          () => doc.resolvedCreatedBy ?? null,
-        );
-        const { id: _id, ...rest } = row;
-        void _id;
-        await db
-          .insert(workspaceApiKeys)
-          .values(row)
-          .onConflictDoUpdate({
-            target: workspaceApiKeys.id,
-            set: {
-              ...rest,
-              lastUsedAt: sql`GREATEST(${workspaceApiKeys.lastUsedAt}, excluded.last_used_at)`,
-            },
-            setWhere: sql`${workspaceApiKeys.lastUsedAt} IS NULL OR (excluded.last_used_at IS NOT NULL AND ${workspaceApiKeys.lastUsedAt} <= excluded.last_used_at)`,
-          });
-        upserted += 1;
-        break;
-      }
-
-      case "workspace_members": {
-        if (!doc.resolvedUserUuid) {
-          break;
-        }
-        const userUuid = doc.resolvedUserUuid;
-        const row = memberRecordToPgRow(doc.record, () => userUuid);
-        const { id: _id, ...rest } = row;
-        void _id;
-        await db
-          .insert(workspaceMembers)
-          .values(row)
-          .onConflictDoUpdate({
-            target: workspaceMembers.id,
-            set: rest,
-            setWhere: sql`${workspaceMembers.updatedAt} <= excluded.updated_at`,
-          });
-        upserted += 1;
-        break;
-      }
-
-      case "workspace_invites": {
-        const row = inviteRecordToPgRow(
-          doc.record,
-          () => doc.resolvedInvitedBy ?? null,
-        );
-        const { id: _id, ...rest } = row;
-        void _id;
-        await db
-          .insert(workspaceInvites)
-          .values(row)
-          .onConflictDoUpdate({
-            target: workspaceInvites.id,
-            set: {
-              ...rest,
-              acceptedAt: sql`COALESCE(${workspaceInvites.acceptedAt}, excluded.accepted_at)`,
-            },
-            setWhere: sql`${workspaceInvites.acceptedAt} IS NULL AND ${workspaceInvites.updatedAt} <= excluded.updated_at AND ${workspaceInvites.expiresAt} <= excluded.expires_at`,
-          });
-        upserted += 1;
-        break;
-      }
-
-      case "workspace_user_handles": {
-        const row = handleRecordToPgRow(
-          doc.record,
-          () => doc.resolvedUserUuid ?? null,
-        );
-        const { id: _id, ...rest } = row;
-        void _id;
-        await db
-          .insert(workspaceUserHandles)
-          .values(row)
-          .onConflictDoUpdate({
-            target: workspaceUserHandles.id,
-            set: rest,
-            setWhere: sql`${workspaceUserHandles.updatedAt} <= excluded.updated_at`,
-          });
-        upserted += 1;
-        break;
-      }
-
-      case "github_installations": {
-        const row = githubInstallationRecordToPgRow(
-          doc.record,
-          () => doc.resolvedCreatedBy ?? null,
-        );
-        const { id: _id, ...rest } = row;
-        void _id;
-        await db
-          .insert(githubInstallations)
-          .values(row)
-          .onConflictDoUpdate({
-            target: githubInstallations.id,
-            set: rest,
-            setWhere: sql`${githubInstallations.updatedAt} <= excluded.updated_at`,
-          });
-        upserted += 1;
-        break;
-      }
-
-      case "mcp_oauth_clients": {
-        const row = mcpClientRecordToPgRow(doc.record);
-        await db.insert(mcpOAuthClients).values(row).onConflictDoNothing({
-          target: mcpOAuthClients.clientId,
+  for (let i = 0; i < items.length; i += BACKFILL_TX_CHUNK_SIZE) {
+    const chunk = items.slice(i, i + BACKFILL_TX_CHUNK_SIZE);
+    await db.transaction(async rawTx => {
+      const tx = rawTx as unknown as MakoPgDb;
+      // Acquire sorted entity advisory locks and re-check migration_tombstones
+      // atomically inside the upsert transaction so live deletes that landed
+      // after the pre-validate batch check can NEVER be resurrected.
+      const lockTargets: EntityLockTarget[] = [];
+      for (const item of chunk) {
+        const { doc } = item;
+        if (!doc.record) continue;
+        lockTargets.push({
+          table: doc.table,
+          entityId: item.entityId.toLowerCase(),
         });
-        upserted += 1;
-        break;
-      }
-
-      case "mcp_oauth_codes": {
-        if (!doc.resolvedUserUuid) {
-          break;
+        const wsUuid = workspaceIdOfBackfillDoc(doc);
+        if (wsUuid) {
+          lockTargets.push({ table: "workspaces", entityId: wsUuid });
         }
-        const userUuid = doc.resolvedUserUuid;
-        const row = mcpCodeRecordToPgRow(doc.record, () => userUuid);
-        const { id: _id, ...rest } = row;
-        void _id;
-        await db
-          .insert(mcpOAuthCodes)
-          .values(row)
-          .onConflictDoUpdate({
-            target: mcpOAuthCodes.id,
-            set: {
-              ...rest,
-              usedAt: sql`COALESCE(${mcpOAuthCodes.usedAt}, excluded.used_at)`,
-            },
-            setWhere: sql`${mcpOAuthCodes.usedAt} IS NULL`,
-          });
-        upserted += 1;
-        break;
       }
+      await lockWorkspacesEntities(tx, lockTargets);
+      const tombstoned = await loadLockedTombstoneKeys(tx, lockTargets);
 
-      case "mcp_oauth_tokens": {
-        if (!doc.resolvedUserUuid) {
-          break;
+      for (const item of chunk) {
+        const { doc } = item;
+        if (!doc.record) {
+          continue;
         }
-        const userUuid = doc.resolvedUserUuid;
-        const row = mcpTokenRecordToPgRow(doc.record, () => userUuid);
-        const { id: _id, ...rest } = row;
-        void _id;
-        await db
-          .insert(mcpOAuthTokens)
-          .values(row)
-          .onConflictDoUpdate({
-            target: mcpOAuthTokens.id,
-            set: {
-              ...rest,
-              lastUsedAt: sql`GREATEST(${mcpOAuthTokens.lastUsedAt}, excluded.last_used_at)`,
-            },
-            setWhere: sql`${mcpOAuthTokens.updatedAt} <= excluded.updated_at AND ${mcpOAuthTokens.accessExpiresAt} <= excluded.access_expires_at AND (${mcpOAuthTokens.lastUsedAt} IS NULL OR (excluded.last_used_at IS NOT NULL AND ${mcpOAuthTokens.lastUsedAt} <= excluded.last_used_at))`,
-          });
-        upserted += 1;
-        break;
-      }
+        const entityKey = `${doc.table}:${item.entityId.toLowerCase()}`;
+        const wsUuid = workspaceIdOfBackfillDoc(doc);
+        if (
+          tombstoned.has(entityKey) ||
+          (wsUuid !== null && tombstoned.has(`workspaces:${wsUuid}`))
+        ) {
+          continue;
+        }
 
-      case "acp_plan_grants": {
-        if (!doc.resolvedUserUuid) {
-          break;
+        switch (doc.table) {
+          case "workspaces": {
+            const row = workspaceRecordToPgRow(
+              doc.record,
+              () => doc.resolvedCreatedBy ?? null,
+            );
+            const { id: _id, ...rest } = row;
+            void _id;
+            const written = await tx
+              .insert(workspaces)
+              .values(row)
+              .onConflictDoUpdate({
+                target: workspaces.id,
+                set: rest,
+                setWhere: sql`${workspaces.updatedAt} <= excluded.updated_at`,
+              })
+              .returning({ id: workspaces.id });
+            upserted += written.length;
+            break;
+          }
+
+          case "workspace_api_keys": {
+            // Insert-only for API keys: dual-writes keep existing rows current,
+            // and `workspace_api_keys` has no `updated_at` column, so
+            // `ON CONFLICT (id) DO NOTHING` guarantees stale backfill snapshots
+            // can never overwrite live scope/name/flag/last_used_at updates.
+            const row = apiKeyRecordToPgRow(
+              doc.record,
+              () => doc.resolvedCreatedBy ?? null,
+            );
+            const inserted = await tx
+              .insert(workspaceApiKeys)
+              .values(row)
+              .onConflictDoNothing({
+                target: workspaceApiKeys.id,
+              })
+              .returning({ id: workspaceApiKeys.id });
+            upserted += inserted.length;
+            break;
+          }
+
+          case "workspace_members": {
+            if (!doc.resolvedUserUuid) {
+              break;
+            }
+            const userUuid = doc.resolvedUserUuid;
+            const row = memberRecordToPgRow(doc.record, () => userUuid);
+            const { id: _id, ...rest } = row;
+            void _id;
+            const written = await tx
+              .insert(workspaceMembers)
+              .values(row)
+              .onConflictDoUpdate({
+                target: workspaceMembers.id,
+                set: rest,
+                setWhere: sql`${workspaceMembers.updatedAt} <= excluded.updated_at`,
+              })
+              .returning({ id: workspaceMembers.id });
+            upserted += written.length;
+            break;
+          }
+
+          case "workspace_invites": {
+            const row = inviteRecordToPgRow(
+              doc.record,
+              () => doc.resolvedInvitedBy ?? null,
+            );
+            const { id: _id, ...rest } = row;
+            void _id;
+            const written = await tx
+              .insert(workspaceInvites)
+              .values(row)
+              .onConflictDoUpdate({
+                target: workspaceInvites.id,
+                set: {
+                  ...rest,
+                  acceptedAt: sql`COALESCE(${workspaceInvites.acceptedAt}, excluded.accepted_at)`,
+                },
+                setWhere: sql`${workspaceInvites.acceptedAt} IS NULL AND ${workspaceInvites.updatedAt} <= excluded.updated_at AND ${workspaceInvites.expiresAt} <= excluded.expires_at`,
+              })
+              .returning({ id: workspaceInvites.id });
+            upserted += written.length;
+            break;
+          }
+
+          case "workspace_user_handles": {
+            const row = handleRecordToPgRow(
+              doc.record,
+              () => doc.resolvedUserUuid ?? null,
+            );
+            const { id: _id, ...rest } = row;
+            void _id;
+            const written = await tx
+              .insert(workspaceUserHandles)
+              .values(row)
+              .onConflictDoUpdate({
+                target: workspaceUserHandles.id,
+                set: rest,
+                setWhere: sql`${workspaceUserHandles.updatedAt} <= excluded.updated_at`,
+              })
+              .returning({ id: workspaceUserHandles.id });
+            upserted += written.length;
+            break;
+          }
+
+          case "github_installations": {
+            const row = githubInstallationRecordToPgRow(
+              doc.record,
+              () => doc.resolvedCreatedBy ?? null,
+            );
+            const { id: _id, ...rest } = row;
+            void _id;
+            const written = await tx
+              .insert(githubInstallations)
+              .values(row)
+              .onConflictDoUpdate({
+                target: githubInstallations.id,
+                set: rest,
+                setWhere: sql`${githubInstallations.updatedAt} <= excluded.updated_at`,
+              })
+              .returning({ id: githubInstallations.id });
+            upserted += written.length;
+            break;
+          }
+
+          case "mcp_oauth_clients": {
+            const row = mcpClientRecordToPgRow(doc.record);
+            const inserted = await tx
+              .insert(mcpOAuthClients)
+              .values(row)
+              .onConflictDoNothing({
+                target: mcpOAuthClients.clientId,
+              })
+              .returning({ id: mcpOAuthClients.id });
+            upserted += inserted.length;
+            break;
+          }
+
+          case "mcp_oauth_codes": {
+            if (!doc.resolvedUserUuid) {
+              break;
+            }
+            const userUuid = doc.resolvedUserUuid;
+            const row = mcpCodeRecordToPgRow(doc.record, () => userUuid);
+            const { id: _id, ...rest } = row;
+            void _id;
+            const written = await tx
+              .insert(mcpOAuthCodes)
+              .values(row)
+              .onConflictDoUpdate({
+                target: mcpOAuthCodes.id,
+                set: {
+                  ...rest,
+                  usedAt: sql`COALESCE(${mcpOAuthCodes.usedAt}, excluded.used_at)`,
+                },
+                setWhere: sql`${mcpOAuthCodes.usedAt} IS NULL`,
+              })
+              .returning({ id: mcpOAuthCodes.id });
+            upserted += written.length;
+            break;
+          }
+
+          case "mcp_oauth_tokens": {
+            if (!doc.resolvedUserUuid) {
+              break;
+            }
+            const userUuid = doc.resolvedUserUuid;
+            const row = mcpTokenRecordToPgRow(doc.record, () => userUuid);
+            const { id: _id, ...rest } = row;
+            void _id;
+            const written = await tx
+              .insert(mcpOAuthTokens)
+              .values(row)
+              .onConflictDoUpdate({
+                target: mcpOAuthTokens.id,
+                set: {
+                  ...rest,
+                  lastUsedAt: sql`GREATEST(${mcpOAuthTokens.lastUsedAt}, excluded.last_used_at)`,
+                },
+                setWhere: sql`${mcpOAuthTokens.updatedAt} <= excluded.updated_at AND ${mcpOAuthTokens.accessExpiresAt} <= excluded.access_expires_at AND (${mcpOAuthTokens.lastUsedAt} IS NULL OR (excluded.last_used_at IS NOT NULL AND ${mcpOAuthTokens.lastUsedAt} <= excluded.last_used_at))`,
+              })
+              .returning({ id: mcpOAuthTokens.id });
+            upserted += written.length;
+            break;
+          }
+
+          case "acp_plan_grants": {
+            if (!doc.resolvedUserUuid) {
+              break;
+            }
+            const userUuid = doc.resolvedUserUuid;
+            const row = acpGrantRecordToPgRow(doc.record, () => userUuid);
+            const { id: _id, ...rest } = row;
+            void _id;
+            const written = await tx
+              .insert(acpPlanGrants)
+              .values(row)
+              .onConflictDoUpdate({
+                target: acpPlanGrants.id,
+                set: rest,
+                setWhere: sql`${acpPlanGrants.updatedAt} <= excluded.updated_at AND (${acpPlanGrants.status} <> 'revoked' OR excluded.status = 'revoked' OR ${acpPlanGrants.updatedAt} < excluded.updated_at)`,
+              })
+              .returning({ id: acpPlanGrants.id });
+            upserted += written.length;
+            break;
+          }
         }
-        const userUuid = doc.resolvedUserUuid;
-        const row = acpGrantRecordToPgRow(doc.record, () => userUuid);
-        const { id: _id, ...rest } = row;
-        void _id;
-        await db
-          .insert(acpPlanGrants)
-          .values(row)
-          .onConflictDoUpdate({
-            target: acpPlanGrants.id,
-            set: rest,
-            setWhere: sql`${acpPlanGrants.updatedAt} <= excluded.updated_at AND (${acpPlanGrants.status} <> 'revoked' OR excluded.status = 'revoked' OR ${acpPlanGrants.updatedAt} < excluded.updated_at)`,
-          });
-        upserted += 1;
-        break;
       }
-    }
+    });
   }
   return upserted;
 }
@@ -1460,7 +1538,10 @@ function buildVerifierRecord(
       case "workspace_api_keys":
         record = {
           ...doc.record,
-          createdBy: mapNullable(doc.record.createdBy),
+          createdBy:
+            !doc.record.createdBy || isSyntheticUserId(doc.record.createdBy)
+              ? ""
+              : mapRequired(doc.record.createdBy),
         };
         break;
       case "workspace_members":
@@ -1697,42 +1778,17 @@ async function repairSingleRecord(
     const res = await resyncToPg(
       "mcp_oauth_clients",
       { entityIds: [doc.clientId] },
-      { getDb: () => db, tombstones: false },
+      { getDb: () => db, tombstones: false, force: true },
     );
     return res.upserted > 0 || res.deleted > 0;
   }
   if (!isObjectIdHex(wireId)) {
     return false;
   }
-  if (table === "workspaces") {
-    // Unconditional overwrite for --repair (bypasses stale-timestamp guard when repairing drift).
-    const doc = await Workspace.findById(
-      new Types.ObjectId(wireId),
-    ).lean<MongoWorkspaceLike | null>();
-    if (!doc) {
-      const deleted = await db
-        .delete(workspaces)
-        .where(eq(workspaces.id, pgEntityId.toLowerCase()))
-        .returning({ id: workspaces.id });
-      return deleted.length > 0;
-    }
-    const record = mongoWorkspaceToRecord(doc);
-    const userMap = await resolvePgUserUuidMap(db, [record.createdBy]);
-    const row = workspaceRecordToPgRow(record, u =>
-      u ? (userMap.get(u) ?? userMap.get(u.toLowerCase()) ?? null) : null,
-    );
-    const { id: _id, ...rest } = row;
-    void _id;
-    await db
-      .insert(workspaces)
-      .values(row)
-      .onConflictDoUpdate({ target: workspaces.id, set: rest });
-    return true;
-  }
   const res = await resyncToPg(
     table,
     { entityIds: [toWire(wireId)] },
-    { getDb: () => db, tombstones: false },
+    { getDb: () => db, tombstones: false, force: true },
   );
   return res.upserted > 0 || res.deleted > 0;
 }

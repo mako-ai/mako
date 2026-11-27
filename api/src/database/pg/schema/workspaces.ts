@@ -60,6 +60,9 @@ export const SUBSCRIPTION_STATUSES = [
   "canceled",
   "trialing",
   "incomplete",
+  "incomplete_expired",
+  "unpaid",
+  "paused",
 ] as const;
 export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
 
@@ -211,7 +214,7 @@ export const workspaces = pgTable(
     ),
     check(
       "workspaces_billing_subscription_status_check",
-      sql`${table.billingSubscriptionStatus} IS NULL OR ${table.billingSubscriptionStatus} IN ('active', 'past_due', 'canceled', 'trialing', 'incomplete')`,
+      sql`${table.billingSubscriptionStatus} IS NULL OR ${table.billingSubscriptionStatus} IN ('active', 'past_due', 'canceled', 'trialing', 'incomplete', 'incomplete_expired', 'unpaid', 'paused')`,
     ),
     uniqueIndex("uq_workspaces_slug").on(table.slug),
     index("idx_workspaces_created_by")

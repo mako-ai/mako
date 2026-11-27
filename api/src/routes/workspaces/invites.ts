@@ -162,7 +162,10 @@ workspaceInviteRoutes.openapi(
         return fail(c, 400, "Workspace ID mismatch");
       }
 
-      const cancelled = await workspaceService.cancelInvite(inviteId);
+      const cancelled = await workspaceService.cancelInvite(
+        workspaceId,
+        inviteId,
+      );
 
       if (!cancelled) {
         return fail(c, 404, "Invite not found");

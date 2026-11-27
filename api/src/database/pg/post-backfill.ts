@@ -10,8 +10,13 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { MakoPgDb } from "./client";
+import {
+  GLOBAL_SCOPE_KEY,
+  migrationBackfillJobs,
+  migrationQuarantine,
+} from "./schema/control-plane";
 
 export interface PostBackfillStep {
   /** CLI name (`--post-backfill <name>`). */
@@ -20,6 +25,55 @@ export interface PostBackfillStep {
   file: string;
   /** Precondition the operator must have satisfied before running it. */
   requires: string;
+  /** Optional runtime guard enforced before executing the step (bypassed only with `force: true`). */
+  assertPrecondition?: (db: MakoPgDb) => Promise<void>;
+}
+
+async function assertWorkspacesCoreBackfillReady(db: MakoPgDb): Promise<void> {
+  const [job] = await db
+    .select({
+      status: migrationBackfillJobs.status,
+    })
+    .from(migrationBackfillJobs)
+    .where(
+      and(
+        eq(migrationBackfillJobs.domain, "workspaces_core"),
+        eq(migrationBackfillJobs.scopeKey, GLOBAL_SCOPE_KEY),
+      ),
+    )
+    .limit(1);
+
+  if (!job || job.status !== "completed") {
+    const actualStatus = job?.status ?? "not_started";
+    throw new Error(
+      `Refusing to run post-backfill step "sessions-active-workspace-fk": ` +
+        `workspaces_core backfill status is "${actualStatus}" (must be "completed"). ` +
+        `Running early would permanently clear sessions.active_workspace_id for workspaces not yet copied. ` +
+        `Complete the workspaces_core backfill first, or pass --force to override.`,
+    );
+  }
+
+  const [quarantineRow] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(migrationQuarantine)
+    .where(
+      and(
+        inArray(migrationQuarantine.domain, [
+          "workspaces_core",
+          "workspaces_core:workspaces",
+        ]),
+        eq(migrationQuarantine.collectionName, "workspaces"),
+        isNull(migrationQuarantine.resolvedAt),
+      ),
+    );
+  const quarantinedCount = Number(quarantineRow?.count ?? 0);
+  if (quarantinedCount > 0) {
+    throw new Error(
+      `Refusing to run post-backfill step "sessions-active-workspace-fk": ` +
+        `${quarantinedCount} unresolved quarantined workspace row(s) exist in migration_quarantine. ` +
+        `Resolve them first so active sessions are not cleared, or pass --force to override.`,
+    );
+  }
 }
 
 export const POST_BACKFILL_STEPS: readonly PostBackfillStep[] = [
@@ -27,7 +81,8 @@ export const POST_BACKFILL_STEPS: readonly PostBackfillStep[] = [
     name: "sessions-active-workspace-fk",
     file: "0003a_sessions_workspace_fk.sql",
     requires:
-      "workspaces_core backfill completed (all workspaces present in Postgres)",
+      "workspaces_core backfill completed (all workspaces present in Postgres and no unresolved workspace quarantine rows)",
+    assertPrecondition: assertWorkspacesCoreBackfillReady,
   },
 ];
 
@@ -64,13 +119,25 @@ export function readPostBackfillStatements(
     .filter(s => s.replace(/--[^\n]*\n?/g, "").trim().length > 0);
 }
 
+export interface RunPostBackfillStepOptions {
+  customFolder?: string;
+  /** Bypass step precondition checks (explicit operator override via `--force`). */
+  force?: boolean;
+}
+
 /** Run a post-backfill step statement by statement (each is idempotent). */
 export async function runPostBackfillStep(
   db: MakoPgDb,
   name: string,
-  customFolder?: string,
+  options?: string | RunPostBackfillStepOptions,
 ): Promise<{ name: string; statements: number }> {
-  const statements = readPostBackfillStatements(name, customFolder);
+  const opts: RunPostBackfillStepOptions =
+    typeof options === "string" ? { customFolder: options } : (options ?? {});
+  const step = getPostBackfillStep(name);
+  if (!opts.force && step.assertPrecondition) {
+    await step.assertPrecondition(db);
+  }
+  const statements = readPostBackfillStatements(name, opts.customFolder);
   for (const statement of statements) {
     await db.execute(sql.raw(statement));
   }

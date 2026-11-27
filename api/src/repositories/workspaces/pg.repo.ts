@@ -54,6 +54,7 @@ import {
 import { normalizeEmail } from "../../utils/email.utils";
 import {
   isEntityId,
+  isSyntheticUserId,
   pgAcpGrantToRecord,
   pgApiKeyToRecord,
   pgGitHubInstallationToRecord,
@@ -211,6 +212,29 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
       return null;
     }
     return this.lookupPgUserUuid(userId, db);
+  }
+
+  /**
+   * Strict creator lookup for `workspace_api_keys.created_by`:
+   * empty or synthetic sentinels (`"system"`, `"test"`) store NULL, whereas any
+   * real user ID that cannot be resolved in `users` throws so callers/routers
+   * fail loudly or enqueue a sync-retry instead of storing a broken NULL creator
+   * (which causes 401s on auth and breaks `deleteApiKeysByCreator`).
+   */
+  private async resolveApiKeyCreatorWriteUserUuid(
+    userId: string | null | undefined,
+    db: PgQueryable = this.getDb(),
+  ): Promise<string | null> {
+    if (!userId || isSyntheticUserId(userId)) {
+      return null;
+    }
+    const resolved = await this.lookupPgUserUuid(userId, db);
+    if (!resolved) {
+      throw new Error(
+        `Cannot resolve API key creator ${JSON.stringify(userId)} in Postgres users table`,
+      );
+    }
+    return resolved;
   }
 
   /** Strict lookup for `NOT NULL` grant-bearing FKs (`ON DELETE CASCADE`). */
@@ -979,7 +1003,7 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
   async createApiKey(input: CreateApiKeyInput): Promise<WorkspaceApiKeyRecord> {
     const db = this.getDb();
     const id = input.id ? toPgUuid(input.id) : newDualId().uuid;
-    const createdByUuid = await this.resolveNullableWriteUserUuid(
+    const createdByUuid = await this.resolveApiKeyCreatorWriteUserUuid(
       input.createdBy,
       db,
     );
@@ -1019,7 +1043,7 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
           ),
         )
         .returning({ id: workspaceApiKeys.id });
-      const createdByUuid = await this.resolveNullableWriteUserUuid(
+      const createdByUuid = await this.resolveApiKeyCreatorWriteUserUuid(
         input.createdBy,
         tx,
       );
@@ -1731,13 +1755,18 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
     }));
   }
 
-  async cancelInvite(inviteId: string): Promise<boolean> {
-    if (!isEntityId(inviteId)) {
+  async cancelInvite(workspaceId: string, inviteId: string): Promise<boolean> {
+    if (!isEntityId(workspaceId) || !isEntityId(inviteId)) {
       return false;
     }
     const rows = await this.getDb()
       .delete(workspaceInvites)
-      .where(eq(workspaceInvites.id, toPgUuid(inviteId)))
+      .where(
+        and(
+          eq(workspaceInvites.id, toPgUuid(inviteId)),
+          eq(workspaceInvites.workspaceId, toPgUuid(workspaceId)),
+        ),
+      )
       .returning({ id: workspaceInvites.id });
     return rows.length > 0;
   }
@@ -2310,19 +2339,19 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
     return pgAcpGrantToRecord(row);
   }
 
-  async revokeAcpGrant(input: {
+  async revokeAcpGrantReturningId(input: {
     workspaceId: string;
     userId: string;
     agentSessionId: string;
     now?: Date;
-  }): Promise<boolean> {
+  }): Promise<string | null> {
     if (!isEntityId(input.workspaceId) || !input.userId) {
-      return false;
+      return null;
     }
     const db = this.getDb();
     const pgUserUuid = await this.resolveReadUserUuid(input.userId, db);
     if (!pgUserUuid) {
-      return false;
+      return null;
     }
     const now = input.now ?? new Date();
     const rows = await db
@@ -2336,7 +2365,16 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
         ),
       )
       .returning({ id: acpPlanGrants.id });
-    return rows.length > 0;
+    return rows[0] ? toWireId(rows[0].id) : null;
+  }
+
+  async revokeAcpGrant(input: {
+    workspaceId: string;
+    userId: string;
+    agentSessionId: string;
+    now?: Date;
+  }): Promise<boolean> {
+    return (await this.revokeAcpGrantReturningId(input)) !== null;
   }
 
   async findActiveAcpGrant(input: {

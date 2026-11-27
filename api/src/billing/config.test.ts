@@ -21,6 +21,19 @@ function testCanceledFallsBackToFree() {
   );
 }
 
+function testUnpaidPausedIncompleteExpiredFallBackToFree() {
+  for (const status of ["unpaid", "paused", "incomplete_expired"] as const) {
+    assert.equal(
+      getEffectiveBillingPlan({
+        plan: "pro",
+        subscriptionStatus: status,
+      }),
+      "free",
+      `expected ${status} to degrade to free`,
+    );
+  }
+}
+
 function testActivePlanIsPreserved() {
   assert.equal(
     getEffectiveBillingPlan({
@@ -56,6 +69,7 @@ function main() {
   testStartOfUtcMonthIgnoresServerTimezone();
   testPastDueFallsBackToFree();
   testCanceledFallsBackToFree();
+  testUnpaidPausedIncompleteExpiredFallBackToFree();
   testActivePlanIsPreserved();
   testMissingPlanDefaultsToFree();
 }

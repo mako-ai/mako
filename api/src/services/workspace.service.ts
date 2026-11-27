@@ -373,10 +373,10 @@ export class WorkspaceService {
   }
 
   /**
-   * Cancel invite
+   * Cancel invite (scoped to the workspace)
    */
-  async cancelInvite(inviteId: string): Promise<boolean> {
-    return workspaceRepo.cancelInvite(inviteId);
+  async cancelInvite(workspaceId: string, inviteId: string): Promise<boolean> {
+    return workspaceRepo.cancelInvite(workspaceId, inviteId);
   }
 
   /**

@@ -5,6 +5,7 @@
  *   pnpm --filter api run pg:migrate
  *   pnpm --filter api run pg:migrate -- --check
  *   pnpm --filter api run pg:migrate -- --post-backfill sessions-active-workspace-fk
+ *   pnpm --filter api run pg:migrate -- --post-backfill sessions-active-workspace-fk --force
  */
 import { Command } from "commander";
 import { closePgConnections, getPgDirectDb } from "../../database/pg/client";
@@ -30,6 +31,10 @@ const program = new Command()
   .option(
     "--post-backfill <step>",
     `Run one post-backfill DDL step instead of the journal (${POST_BACKFILL_STEPS.map(s => s.name).join(", ")})`,
+  )
+  .option(
+    "--force",
+    "Bypass post-backfill precondition checks (dangerous; operator override only)",
   );
 
 async function main(): Promise<void> {
@@ -42,6 +47,7 @@ async function main(): Promise<void> {
     check?: boolean;
     folder?: string;
     postBackfill?: string;
+    force?: boolean;
   }>();
 
   if (opts.postBackfill) {
@@ -52,7 +58,9 @@ async function main(): Promise<void> {
     );
     if (opts.check) return;
     try {
-      await runPostBackfillStep(getPgDirectDb(), step.name);
+      await runPostBackfillStep(getPgDirectDb(), step.name, {
+        force: Boolean(opts.force),
+      });
       console.info(`[pg:migrate] Post-backfill step "${step.name}" applied`);
     } finally {
       await closePgConnections();

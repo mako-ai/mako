@@ -178,7 +178,8 @@ export const workspaceRepo: WorkspaceRepository = {
     activeWorkspaceRepo.listPendingInvitesForWorkspace(workspaceId, now),
   listPendingInvitesForEmail: (email, now) =>
     activeWorkspaceRepo.listPendingInvitesForEmail(email, now),
-  cancelInvite: inviteId => activeWorkspaceRepo.cancelInvite(inviteId),
+  cancelInvite: (workspaceId, inviteId) =>
+    activeWorkspaceRepo.cancelInvite(workspaceId, inviteId),
   acceptInviteTransaction: (token, userId, now) =>
     activeWorkspaceRepo.acceptInviteTransaction(token, userId, now),
 
