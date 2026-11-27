@@ -394,6 +394,7 @@ describe("discovery facts", () => {
     // Freshness reads only the bindings the app still has: the deleted
     // `leads` binding's months-old state row must not age the app.
     const fresh = new Date(Date.now() - 60_000);
+    const stale = new Date("2026-08-01T00:00:00Z");
     await appsMetadataRepo.recordBindingRun(
       B_ID,
       "rows",
@@ -403,9 +404,18 @@ describe("discovery facts", () => {
     await appsMetadataRepo.recordBindingRun(
       B_ID,
       "leads",
-      { at: new Date("2026-08-01T00:00:00Z"), status: "error" },
+      { at: stale, status: "ready" },
       WS,
     );
+    await appsMetadataRepo.recordBindingRun(
+      B_ID,
+      "leads",
+      { at: new Date("2026-08-02T00:00:00Z"), status: "error" },
+      WS,
+    );
+    const deleted = await appsMetadataRepo.getBindingState(B_ID, "leads", WS);
+    expect(deleted?.lastMaterializedAt).toEqual(stale);
+    expect(deleted?.history?.[0]?.status).toBe("error");
     const discovered = (await listDiscoveryApps(WS, USER, "member")).find(
       a => a.id === B_ID,
     );
