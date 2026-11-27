@@ -67,6 +67,7 @@ export default defineConfig({
       // The shared PGlite harness every migrated suite uses.
       "src/test-support/pg-test.test.ts",
       "src/services/agent-chat/exact-history.test.ts",
+      "src/services/realtime-presence.service.test.ts",
     ],
     exclude: [
       "**/node_modules/**",

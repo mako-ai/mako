@@ -265,6 +265,10 @@ NOTEBOOK_KERNEL_API_URL=http://host.docker.internal:8080
 # (GET /api/agent/chat/:chatId/stream) and the shared kernel-session
 # registry (notebook kernels visible to every instance) work.
 REDIS_URL=redis://localhost:6379
+
+# Realtime SSE presence reads and writes the legacy Mongo collection during
+# the rolling cutover. Set false once all Mongo-only revisions have drained.
+REALTIME_PRESENCE_MONGO_COMPAT=true
 ```
 
 ## Technology Stack

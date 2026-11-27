@@ -4,7 +4,6 @@ import { getEmbeddingModel } from "../agent-lib/ai-gateway";
 import { loggers } from "../logging";
 import { hasPostgresConfig } from "../database/pg/client";
 import { consolesChartsRepo } from "../repositories/consoles-charts";
-import { databaseConnectionService } from "./database-connection.service";
 
 const logger = loggers.app();
 
@@ -66,53 +65,24 @@ export async function embedTexts(
   return embeddings;
 }
 
-let _mongoVectorSearchAvailable: boolean | null = null;
 let _pgVectorSearchAvailable: boolean | null = null;
 
 export async function isVectorSearchAvailable(
   _workspaceId?: string,
 ): Promise<boolean> {
-  if (hasPostgresConfig()) {
-    if (_pgVectorSearchAvailable !== null) return _pgVectorSearchAvailable;
-    _pgVectorSearchAvailable = await consolesChartsRepo.isPgVectorAvailable();
-    if (!_pgVectorSearchAvailable) {
-      logger.info(
-        "pgvector extension not available — falling back to Postgres full-text search",
-      );
-    }
-    return _pgVectorSearchAvailable;
-  }
-
-  if (_mongoVectorSearchAvailable !== null) return _mongoVectorSearchAvailable;
-  try {
-    const { db } = await databaseConnectionService.getMainConnection();
-    await db
-      .collection("savedconsoles")
-      .aggregate([
-        {
-          $vectorSearch: {
-            index: "console_embeddings",
-            path: "descriptionEmbedding",
-            queryVector: Array.from({ length: 1536 }, (_, i) =>
-              i === 0 ? 1 : 0,
-            ),
-            numCandidates: 1,
-            limit: 1,
-          },
-        },
-      ])
-      .toArray();
-    _mongoVectorSearchAvailable = true;
-  } catch {
-    _mongoVectorSearchAvailable = false;
+  // Legacy MongoMemoryServer tests without Postgres use text search. Vector
+  // search in the deployed consoles repository runs on pgvector.
+  if (!hasPostgresConfig()) return false;
+  if (_pgVectorSearchAvailable !== null) return _pgVectorSearchAvailable;
+  _pgVectorSearchAvailable = await consolesChartsRepo.isPgVectorAvailable();
+  if (!_pgVectorSearchAvailable) {
     logger.info(
-      "Atlas Vector Search not available — falling back to text search",
+      "pgvector extension not available — falling back to Postgres full-text search",
     );
   }
-  return _mongoVectorSearchAvailable;
+  return _pgVectorSearchAvailable;
 }
 
 export function resetVectorSearchCache(): void {
-  _mongoVectorSearchAvailable = null;
   _pgVectorSearchAvailable = null;
 }

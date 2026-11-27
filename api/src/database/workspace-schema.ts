@@ -34,7 +34,6 @@ export * from "./models/flow-data-diffs";
 export * from "./models/webhooks";
 export * from "./models/cdc";
 export * from "./models/notebooks";
-export * from "./models/realtime-presence";
 export * from "./models/dbt";
 export * from "./models/mcp";
 export * from "./models/apps";
