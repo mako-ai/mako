@@ -32,6 +32,11 @@ import {
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import mongoose, { Types } from "mongoose";
+import {
+  type PgTestDb,
+  setupPgTestDb,
+  ensureTestSourceConnection,
+} from "../../test-support/pg-test";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
 const BASE = "https://hooks.mako.test";
@@ -112,7 +117,7 @@ vi.mock("../../services/workspace.service", () => ({
   },
 }));
 
-import { Flow, SourceConnection } from "../../database/workspace-schema";
+import { Flow } from "../../database/workspace-schema";
 import {
   applyFlowUpdate,
   secretChange,
@@ -130,12 +135,14 @@ const ADMIN = "admin-user";
 const MEMBER = "member-user";
 
 let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 
 beforeAll(async () => {
   process.env.ENCRYPTION_KEY =
     process.env.ENCRYPTION_KEY ??
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   process.env.WEBHOOK_PUBLIC_BASE_URL = BASE;
+  pg = await setupPgTestDb();
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 }, 120_000);
@@ -143,12 +150,13 @@ beforeAll(async () => {
 afterAll(async () => {
   delete process.env.WEBHOOK_PUBLIC_BASE_URL;
   await mongoose.disconnect();
-  await mongo.stop();
+  await mongo?.stop();
+  await pg?.close();
 });
 
 beforeEach(async () => {
   await Flow.collection.deleteMany({});
-  await SourceConnection.collection.deleteMany({});
+  await pg.reset();
   state.subs.clear();
   state.creates = 0;
   state.updates = [];
@@ -166,9 +174,9 @@ async function makeFlow(
 ) {
   const _id = new Types.ObjectId();
   const dataSourceId = new Types.ObjectId();
-  await SourceConnection.collection.insertOne({
-    _id: dataSourceId,
-    workspaceId,
+  await ensureTestSourceConnection(pg.db, {
+    id: String(dataSourceId),
+    workspaceId: String(workspaceId),
     name: "ch_pandadoc",
     type: "ws:pandadoc",
     config: {},

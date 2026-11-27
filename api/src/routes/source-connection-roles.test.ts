@@ -4,7 +4,7 @@
  * enough. Viewers read only, even when listed. Revealing a key follows the
  * same rule.
  *
- * Real routes + real Mongo (mongodb-memory-server); auth, roles and the
+ * Real routes and PGlite; auth, roles and the
  * connector schema are mocked.
  */
 import {
@@ -17,22 +17,22 @@ import {
   vi,
 } from "vitest";
 import { Hono } from "hono";
-import { ConnectionAccessEvent } from "../access/connection-access-event";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { legacyUserIdToUuidv7 } from "../database/pg/id-codec";
+import { connectionsRepo } from "../repositories/connections";
+import {
+  type PgTestDb,
+  setupPgTestDb,
+  ensureTestWorkspace,
+  ensureTestUser,
+} from "../test-support/pg-test";
 
 const who = vi.hoisted(() => ({
-  userId: "member1",
+  userId: "",
   role: "member" as string | null,
   authType: "session",
   // Everyone else's role, for checking who may be added as a manager.
-  others: {
-    member2: "member",
-    "someone-else": "member",
-    admin2: "admin",
-    viewer2: "viewer",
-    owner1: "owner",
-  } as Record<string, string>,
+  others: {} as Record<string, string>,
 }));
 
 vi.mock("../auth/unified-auth.middleware", () => ({
@@ -53,7 +53,7 @@ vi.mock("../services/workspace.service", () => ({
       const role = userId === who.userId ? who.role : who.others[userId];
       return role ? { role } : null;
     }),
-    getOwnerIds: vi.fn(async () => ["owner1"]),
+    getOwnerIds: vi.fn(async () => [OWNER]),
   },
 }));
 
@@ -71,10 +71,18 @@ vi.mock("../connectors/registry", () => ({
 }));
 
 import { sourceConnectionRoutes } from "./source-connections";
-import { SourceConnection } from "../database/workspace-schema";
 
-let mongo: MongoMemoryServer;
-const WS = new Types.ObjectId();
+let pg: PgTestDb;
+const MEMBER = legacyUserIdToUuidv7("member1");
+const OTHER_MEMBER = legacyUserIdToUuidv7("member2");
+const CREATOR = legacyUserIdToUuidv7("someone-else");
+const ADMIN = legacyUserIdToUuidv7("admin1");
+const OTHER_ADMIN = legacyUserIdToUuidv7("admin2");
+const VIEWER = legacyUserIdToUuidv7("viewer1");
+const OTHER_VIEWER = legacyUserIdToUuidv7("viewer2");
+const OWNER = legacyUserIdToUuidv7("owner1");
+const STRANGER = legacyUserIdToUuidv7("stranger");
+const WS = new Types.ObjectId().toString();
 
 const app = new Hono();
 app.route(
@@ -114,23 +122,41 @@ function as(role: string | null, userId: string, authType = "session") {
 
 beforeAll(async () => {
   process.env.ENCRYPTION_KEY ??= "0".repeat(64);
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
 });
 
 let mine: string;
 let theirs: string;
 beforeEach(async () => {
-  await SourceConnection.deleteMany({});
+  await pg.reset();
+  await ensureTestWorkspace(pg.db, { id: WS });
+  for (const id of [
+    MEMBER,
+    OTHER_MEMBER,
+    CREATOR,
+    ADMIN,
+    OTHER_ADMIN,
+    VIEWER,
+    OTHER_VIEWER,
+    OWNER,
+  ]) {
+    await ensureTestUser(pg.db, { id });
+  }
+  who.others = {
+    [OTHER_MEMBER]: "member",
+    [CREATOR]: "member",
+    [OTHER_ADMIN]: "admin",
+    [OTHER_VIEWER]: "viewer",
+    [OWNER]: "owner",
+  };
   const make = async (name: string, createdBy: string) =>
     String(
       (
-        await SourceConnection.create({
+        await connectionsRepo.createSourceConnection({
           workspaceId: WS,
           name,
           type: "close",
@@ -140,8 +166,8 @@ beforeEach(async () => {
         })
       )._id,
     );
-  mine = await make("mine", "member1");
-  theirs = await make("theirs", "someone-else");
+  mine = await make("mine", MEMBER);
+  theirs = await make("theirs", CREATOR);
 });
 
 const create = () =>
@@ -166,7 +192,7 @@ const managersOfRow = async (id: string) => {
 };
 
 describe("viewer", () => {
-  beforeEach(() => as("viewer", "viewer1"));
+  beforeEach(() => as("viewer", VIEWER));
 
   it("reads, and is told it cannot change anything", async () => {
     const list = await req("GET", "/");
@@ -185,20 +211,22 @@ describe("viewer", () => {
       expect((await enable(id)).status).toBe(403);
       expect((await remove(id)).status).toBe(403);
     }
-    expect(await SourceConnection.countDocuments()).toBe(2);
-    expect((await SourceConnection.findById(mine).lean())?.name).toBe("mine");
+    expect((await connectionsRepo.listSourceConnections(WS)).length).toBe(2);
+    expect(
+      (await connectionsRepo.findSourceConnectionById(mine, WS))?.name,
+    ).toBe("mine");
   });
 });
 
 describe("member", () => {
-  beforeEach(() => as("member", "member1"));
+  beforeEach(() => as("member", MEMBER));
 
   it("creates, and is the first manager of what they create", async () => {
     const created = await create();
     expect(created.status).toBe(201);
     const body = (await created.json()).data;
     expect(body.canEdit).toBe(true);
-    expect(body.managers).toEqual(["member1"]);
+    expect(body.managers).toEqual([MEMBER]);
     expect((await rename(mine)).status).toBe(200);
     expect((await reveal(mine)).status).toBe(200);
     expect((await enable(mine)).status).toBe(200);
@@ -212,7 +240,7 @@ describe("member", () => {
     expect((await reveal(theirs)).status).toBe(403);
     expect((await enable(theirs)).status).toBe(403);
     expect((await remove(theirs)).status).toBe(403);
-    expect((await setManagers(theirs, ["member1"])).status).toBe(403);
+    expect((await setManagers(theirs, [MEMBER])).status).toBe(403);
     const list = (await (await req("GET", "/")).json()).data as {
       name: string;
       canEdit: boolean;
@@ -225,7 +253,7 @@ describe("member", () => {
 });
 
 describe("admin", () => {
-  beforeEach(() => as("admin", "admin1"));
+  beforeEach(() => as("admin", ADMIN));
 
   it("cannot configure a connection they are not a manager of", async () => {
     expect((await rename(theirs)).status).toBe(403);
@@ -236,26 +264,24 @@ describe("admin", () => {
     expect((await reveal(theirs)).status).toBe(403);
     expect((await enable(theirs)).status).toBe(403);
     expect((await remove(theirs)).status).toBe(403);
-    expect((await setManagers(theirs, ["admin1"])).status).toBe(403);
-    expect(await SourceConnection.countDocuments()).toBe(2);
+    expect((await setManagers(theirs, [ADMIN])).status).toBe(403);
+    expect((await connectionsRepo.listSourceConnections(WS)).length).toBe(2);
   });
 
   it("configures one once a manager adds them", async () => {
-    as("member", "someone-else");
-    who.others.admin1 = "admin";
-    expect((await setManagers(theirs, ["someone-else", "admin1"])).status).toBe(
-      200,
-    );
-    as("admin", "admin1");
+    as("member", CREATOR);
+    who.others[ADMIN] = "admin";
+    expect((await setManagers(theirs, [CREATOR, ADMIN])).status).toBe(200);
+    as("admin", ADMIN);
     expect((await managersOfRow(theirs)).canEdit).toBe(true);
     expect((await rename(theirs)).status).toBe(200);
     expect((await reveal(theirs)).status).toBe(200);
-    delete who.others.admin1;
+    delete who.others[ADMIN];
   });
 });
 
 describe("workspace owner", () => {
-  beforeEach(() => as("owner", "owner1"));
+  beforeEach(() => as("owner", OWNER));
 
   it("configures any connection, the way back when its managers are gone", async () => {
     expect((await rename(theirs)).status).toBe(200);
@@ -264,7 +290,7 @@ describe("workspace owner", () => {
         .status,
     ).toBe(200);
     expect((await reveal(theirs)).status).toBe(200);
-    expect((await setManagers(theirs, ["member2"])).status).toBe(200);
+    expect((await setManagers(theirs, [OTHER_MEMBER])).status).toBe(200);
     expect((await enable(theirs)).status).toBe(200);
     expect((await remove(theirs)).status).toBe(200);
     expect((await create()).status).toBe(201);
@@ -273,29 +299,27 @@ describe("workspace owner", () => {
 
 describe("managers list", () => {
   it("defaults to the creator for a connection stored without one", async () => {
-    as("viewer", "viewer1");
+    as("viewer", VIEWER);
     expect(await managersOfRow(theirs)).toEqual({
-      managers: ["someone-else"],
+      managers: [CREATOR],
       canEdit: false,
     });
   });
 
   it("a manager hands over: the new manager configures, the old one no longer does", async () => {
-    as("member", "member1");
-    expect((await setManagers(mine, ["member2"])).status).toBe(200);
+    as("member", MEMBER);
+    expect((await setManagers(mine, [OTHER_MEMBER])).status).toBe(200);
     expect((await rename(mine)).status).toBe(403);
-    as("member", "member2");
+    as("member", OTHER_MEMBER);
     expect((await rename(mine)).status).toBe(200);
-    expect((await managersOfRow(mine)).managers).toEqual(["member2"]);
+    expect((await managersOfRow(mine)).managers).toEqual([OTHER_MEMBER]);
     // Who handed the key over, and to whom, is recorded.
-    const events = await ConnectionAccessEvent.find({
-      connectionId: mine,
-    }).lean();
+    const events = await connectionsRepo.listConnectionAccessEvents(WS, mine);
     expect(events.map(e => [e.actor, e.via, e.changes])).toEqual([
       [
-        "member1",
+        MEMBER,
         "app",
-        { managers: { added: ["member2"], removed: ["member1"] } },
+        { managers: { added: [OTHER_MEMBER], removed: [MEMBER] } },
       ],
     ]);
   });
@@ -303,7 +327,7 @@ describe("managers list", () => {
   it("a connection created by `system` has no manager: the workspace owner manages it", async () => {
     const seeded = String(
       (
-        await SourceConnection.create({
+        await connectionsRepo.createSourceConnection({
           workspaceId: WS,
           name: "seeded",
           type: "close",
@@ -313,121 +337,123 @@ describe("managers list", () => {
         })
       )._id,
     );
-    as("member", "member1");
+    as("member", MEMBER);
     expect(await managersOfRow(seeded)).toEqual({
-      managers: ["owner1"],
+      managers: [OWNER],
       canEdit: false,
     });
     expect((await rename(seeded)).status).toBe(403);
     // Admins have no fallback: the owner is its manager.
-    as("admin", "admin2");
+    as("admin", OTHER_ADMIN);
     expect(await managersOfRow(seeded)).toEqual({
-      managers: ["owner1"],
+      managers: [OWNER],
       canEdit: false,
     });
     expect((await rename(seeded)).status).toBe(403);
     expect((await reveal(seeded)).status).toBe(403);
     // The owner hands it to someone, who then configures it.
-    as("owner", "owner1");
-    expect((await setManagers(seeded, ["member2"])).status).toBe(200);
-    as("member", "member2");
+    as("owner", OWNER);
+    expect((await setManagers(seeded, [OTHER_MEMBER])).status).toBe(200);
+    as("member", OTHER_MEMBER);
     expect((await rename(seeded)).status).toBe(200);
   });
 
   it("a connection whose managers all left goes to the workspace owner", async () => {
-    delete who.others["someone-else"];
-    as("admin", "admin2");
+    delete who.others[CREATOR];
+    as("admin", OTHER_ADMIN);
     expect((await rename(theirs)).status).toBe(403);
-    expect((await managersOfRow(theirs)).managers).toEqual(["owner1"]);
-    as("owner", "owner1");
+    expect((await managersOfRow(theirs)).managers).toEqual([OWNER]);
+    as("owner", OWNER);
     expect((await rename(theirs)).status).toBe(200);
-    who.others["someone-else"] = "member";
+    who.others[CREATOR] = "member";
   });
 
   it("records the creator as the first manager when a connection is created", async () => {
-    as("member", "member1");
+    as("member", MEMBER);
     const created = (await (await create()).json()).data;
-    const stored = await SourceConnection.findById(created._id).lean();
-    expect(stored?.createdBy).toBe("member1");
-    expect(stored?.managers).toEqual(["member1"]);
+    const stored = await connectionsRepo.findSourceConnectionById(
+      String(created._id),
+    );
+    expect(stored?.createdBy).toBe(MEMBER);
+    expect(stored?.managers).toEqual([MEMBER]);
   });
 
   it("does not show a listed manager who left or became a viewer", async () => {
-    as("member", "member1");
+    as("member", MEMBER);
     expect(
-      (await setManagers(mine, ["member1", "member2", "admin2"])).status,
+      (await setManagers(mine, [MEMBER, OTHER_MEMBER, OTHER_ADMIN])).status,
     ).toBe(200);
-    who.others.member2 = "viewer";
-    delete who.others.admin2;
-    expect((await managersOfRow(mine)).managers).toEqual(["member1"]);
-    who.others.member2 = "member";
-    who.others.admin2 = "admin";
+    who.others[OTHER_MEMBER] = "viewer";
+    delete who.others[OTHER_ADMIN];
+    expect((await managersOfRow(mine)).managers).toEqual([MEMBER]);
+    who.others[OTHER_MEMBER] = "member";
+    who.others[OTHER_ADMIN] = "admin";
   });
 
   it("refuses viewers, strangers and an empty list", async () => {
-    as("member", "member1");
-    const viewer = await setManagers(mine, ["member1", "viewer2"]);
+    as("member", MEMBER);
+    const viewer = await setManagers(mine, [MEMBER, OTHER_VIEWER]);
     expect(viewer.status).toBe(400);
     expect((await viewer.json()).error).toBe(
       "Managers must be members or admins of this workspace, not viewers.",
     );
-    expect((await setManagers(mine, ["member1", "stranger"])).status).toBe(400);
+    expect((await setManagers(mine, [MEMBER, STRANGER])).status).toBe(400);
     expect((await setManagers(mine, [])).status).toBe(400);
-    expect((await managersOfRow(mine)).managers).toEqual(["member1"]);
+    expect((await managersOfRow(mine)).managers).toEqual([MEMBER]);
   });
 
   it("a listed member demoted to viewer loses the right", async () => {
-    as("member", "member1");
-    expect((await setManagers(mine, ["member1", "member2"])).status).toBe(200);
-    as("viewer", "member2");
+    as("member", MEMBER);
+    expect((await setManagers(mine, [MEMBER, OTHER_MEMBER])).status).toBe(200);
+    as("viewer", OTHER_MEMBER);
     expect((await rename(mine)).status).toBe(403);
     expect((await reveal(mine)).status).toBe(403);
   });
 
   it("is changed in the app only, never with an API key", async () => {
-    as("member", "member1", "api_key");
-    const res = await setManagers(mine, ["member1", "member2"]);
+    as("member", MEMBER, "api_key");
+    const res = await setManagers(mine, [MEMBER, OTHER_MEMBER]);
     expect(res.status).toBe(403);
     expect((await res.json()).error).toMatch(/only be changed in the app/);
-    expect((await managersOfRow(mine)).managers).toEqual(["member1"]);
+    expect((await managersOfRow(mine)).managers).toEqual([MEMBER]);
   });
 
   it("cannot be set through the ordinary update", async () => {
-    as("member", "member1");
+    as("member", MEMBER);
     expect(
-      (await req("PUT", `/${mine}`, { managers: ["member2"], name: "x" }))
+      (await req("PUT", `/${mine}`, { managers: [OTHER_MEMBER], name: "x" }))
         .status,
     ).toBe(200);
-    expect((await managersOfRow(mine)).managers).toEqual(["member1"]);
+    expect((await managersOfRow(mine)).managers).toEqual([MEMBER]);
   });
 });
 
 describe("in the app only", () => {
   it("a key is revealed to a session, never to an API key", async () => {
-    as("member", "member1", "api_key");
+    as("member", MEMBER, "api_key");
     const res = await reveal(mine);
     expect(res.status).toBe(403);
     expect((await res.json()).error).toBe(
       "Keys can only be revealed in the app",
     );
-    as("member", "member1");
+    as("member", MEMBER);
     expect((await reveal(mine)).status).toBe(200);
   });
 
   it("an API key cannot change the address or type, but can rename", async () => {
     const api = String(
       (
-        await SourceConnection.create({
+        await connectionsRepo.createSourceConnection({
           workspaceId: WS,
           name: "api",
           type: "custom_api",
           config: { base_url: "https://a.example.com", token: "tok_123456" },
           settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
-          createdBy: "member1",
+          createdBy: MEMBER,
         })
       )._id,
     );
-    as("member", "member1", "api_key");
+    as("member", MEMBER, "api_key");
     const moved = await req("PUT", `/${api}`, {
       config: { base_url: "https://evil.example.com" },
     });
@@ -436,7 +462,7 @@ describe("in the app only", () => {
       "The address, how the key is sent and the headers can only be changed in the app",
     );
     expect((await req("PUT", `/${mine}`, { type: "stripe" })).status).toBe(403);
-    const row = await SourceConnection.findById(api).lean();
+    const row = await connectionsRepo.findSourceConnectionById(api, WS);
     expect(row?.config?.base_url).toBe("https://a.example.com");
     expect((await req("PUT", `/${api}`, { name: "renamed" })).status).toBe(200);
     // The same address sent back unchanged is not a change.
@@ -447,7 +473,7 @@ describe("in the app only", () => {
         })
       ).status,
     ).toBe(200);
-    as("member", "member1");
+    as("member", MEMBER);
     expect(
       (
         await req("PUT", `/${api}`, {
@@ -468,17 +494,17 @@ describe("in the app only", () => {
     };
     const api = String(
       (
-        await SourceConnection.create({
+        await connectionsRepo.createSourceConnection({
           workspaceId: WS,
           name: "api_fields",
           type: "custom_api",
           config: stored,
           settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
-          createdBy: "member1",
+          createdBy: MEMBER,
         })
       )._id,
     );
-    as("member", "member1", "api_key");
+    as("member", MEMBER, "api_key");
     for (const config of [
       { auth_type: "api_key_query" },
       { header_name: "X-Other" },
@@ -500,10 +526,10 @@ describe("in the app only", () => {
         })
       ).status,
     ).toBe(200);
-    const row = await SourceConnection.findById(api).lean();
+    const row = await connectionsRepo.findSourceConnectionById(api, WS);
     expect(row?.config?.auth_type).toBe("api_key_header");
     expect(row?.config?.extra_headers).toEqual(stored.extra_headers);
-    as("member", "member1");
+    as("member", MEMBER);
     expect(
       (
         await req("PUT", `/${api}`, {
@@ -518,7 +544,7 @@ describe("in the app only", () => {
   it("refuses a static header that sets the credential or the transport, in the app too", async () => {
     const api = String(
       (
-        await SourceConnection.create({
+        await connectionsRepo.createSourceConnection({
           workspaceId: WS,
           name: "api_headers",
           type: "custom_api",
@@ -529,11 +555,11 @@ describe("in the app only", () => {
             header_name: "X-Key",
           },
           settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
-          createdBy: "member1",
+          createdBy: MEMBER,
         })
       )._id,
     );
-    as("member", "member1");
+    as("member", MEMBER);
     for (const [name, value] of [
       ["Authorization", "Bearer x"],
       ["cookie", "a=b"],
@@ -548,13 +574,13 @@ describe("in the app only", () => {
       });
       expect(res.status, name).toBe(400);
     }
-    const row = await SourceConnection.findById(api).lean();
+    const row = await connectionsRepo.findSourceConnectionById(api, WS);
     expect(row?.config?.extra_headers).toBeUndefined();
   });
 });
 
 describe("a key with a control character inside", () => {
-  beforeEach(() => as("member", "member1"));
+  beforeEach(() => as("member", MEMBER));
   const REFUSAL =
     "This key contains an invalid character (a line break or control character).";
 
@@ -571,7 +597,7 @@ describe("a key with a control character inside", () => {
     });
     expect(updated.status).toBe(400);
     expect((await updated.json()).error).toBe(REFUSAL);
-    expect(await SourceConnection.countDocuments()).toBe(2);
+    expect((await connectionsRepo.listSourceConnections(WS)).length).toBe(2);
   });
 
   it("a line break at either end is trimmed, not refused", async () => {
@@ -586,7 +612,7 @@ describe("a key with a control character inside", () => {
 
 describe("not a member", () => {
   it("is refused at the door", async () => {
-    as(null, "stranger");
+    as(null, STRANGER);
     expect((await req("GET", "/")).status).toBe(403);
     expect((await create()).status).toBe(403);
   });

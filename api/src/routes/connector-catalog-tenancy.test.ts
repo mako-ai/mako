@@ -14,7 +14,7 @@
  * change and pass after it. The member case is the forward pin that keeps the
  * fix from being made by simply deleting the feature.
  *
- * Real routes + real Mongo; only auth and the workspace service are mocked,
+ * Real routes and PGlite; only auth and the workspace service are mocked,
  * because who the caller is is exactly what those two decide.
  */
 import {
@@ -27,8 +27,13 @@ import {
   vi,
 } from "vitest";
 import { Hono } from "hono";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { connectionsRepo } from "../repositories/connections";
+import {
+  type PgTestDb,
+  setupPgTestDb,
+  ensureTestWorkspace,
+} from "../test-support/pg-test";
 
 const ctx = vi.hoisted(() => ({
   signedIn: true,
@@ -69,9 +74,8 @@ vi.mock("../services/workspace.service", () => ({
 }));
 
 import { connectorRoutes } from "./connectors";
-import { ConnectorDefinition } from "../database/workspace-schema";
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 const WS_THEIRS = new Types.ObjectId().toString();
 
 const app = new Hono();
@@ -86,21 +90,20 @@ const get = (path: string, workspaceId?: string): Promise<Response> =>
   );
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
 });
 
 beforeEach(async () => {
   ctx.signedIn = true;
   ctx.memberOf = [];
-  await ConnectorDefinition.deleteMany({});
-  await ConnectorDefinition.create({
-    workspaceId: new Types.ObjectId(WS_THEIRS),
+  await pg.reset();
+  await ensureTestWorkspace(pg.db, { id: WS_THEIRS });
+  await connectionsRepo.upsertConnectorDefinition({
+    workspaceId: WS_THEIRS,
     slug: "acme-crm",
     runtime: "node",
     entry: "connector.ts",

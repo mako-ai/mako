@@ -2,7 +2,7 @@
  * Connector bundles through the two paths that use them: the push reconciler
  * and a run of a `SandboxedConnector`, with the flag on and off.
  *
- * Real Mongo (the index row is the thing being asserted). The repo listing,
+ * PGlite backs the connector index. The repo listing,
  * the sync box, the build box and object storage are mocked, so what is
  * tested is the wiring: which path a folder takes, what the row says
  * afterwards, and what `list_connectors` reports from it.
@@ -16,8 +16,13 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { connectionsRepo } from "../../../repositories/connections";
+import {
+  type PgTestDb,
+  setupPgTestDb,
+  ensureTestWorkspace,
+} from "../../../test-support/pg-test";
 
 const repo = vi.hoisted(() => ({
   commit: "c".repeat(40),
@@ -147,10 +152,7 @@ vi.mock("./store", () => ({
   ),
 }));
 
-import {
-  ConnectorDefinition,
-  type ISourceConnection,
-} from "../../../database/workspace-schema";
+import type { ISourceConnection } from "../../../database/workspace-schema";
 import {
   recordConnectionCheck,
   syncConnectorsFromRepo,
@@ -160,14 +162,12 @@ import { SandboxedConnector } from "../SandboxedConnector";
 import { createConnectorTools } from "../../../agent-lib/tools/connector-tools";
 import { CONNECTOR_BUNDLES_FLAG } from "./flag";
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
 }, 120_000);
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
   delete process.env[CONNECTOR_BUNDLES_FLAG];
 });
 
@@ -206,10 +206,11 @@ function folder(extra: Record<string, string | null> = {}) {
 }
 
 const row = (slug = "acme") =>
-  ConnectorDefinition.findOne({ workspaceId: WS, slug }).lean();
+  connectionsRepo.findConnectorDefinition(WS, slug);
 
 beforeEach(async () => {
-  await ConnectorDefinition.deleteMany({});
+  await pg.reset();
+  await ensureTestWorkspace(pg.db, { id: WS });
   repo.commit = "c".repeat(40);
   repo.files.clear();
   repo.nodeModules.clear();
@@ -497,9 +498,7 @@ describe("the push reconciler with bundles off", () => {
       "My_Lib",
       "shared",
     ]);
-    expect(await ConnectorDefinition.countDocuments({ workspaceId: WS })).toBe(
-      0,
-    );
+    expect(await connectionsRepo.listConnectorDefinitions(WS)).toHaveLength(0);
   });
 
   it("does not check the lockfile: package.json is an ordinary file", async () => {

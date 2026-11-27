@@ -6,7 +6,7 @@
  *
  * What is real: the publish pipeline (file collection, source hash, spec and
  * discover on the built bundle, the catalog and the store on the filesystem
- * artifact store), a bare git repo the workspace pushes to, Mongo, the push
+ * artifact store), a bare git repo the workspace pushes to, PGlite, the push
  * reconciler, `SandboxedConnector`, and every protocol command, each a real
  * process under the local sandbox provider. No E2B box is used.
  *
@@ -23,8 +23,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { connectionsRepo } from "../../../repositories/connections";
+import {
+  type PgTestDb,
+  setupPgTestDb,
+  ensureTestWorkspace,
+} from "../../../test-support/pg-test";
 import {
   FOLDER,
   ensureFolderInstalled,
@@ -95,10 +100,7 @@ vi.mock("../bundle/build-box", async importOriginal => {
   };
 });
 
-import {
-  ConnectorDefinition,
-  type ISourceConnection,
-} from "../../../database/workspace-schema";
+import type { ISourceConnection } from "../../../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -115,7 +117,7 @@ import { readCatalog } from "./store";
 const WS = new Types.ObjectId().toString();
 const API_KEY = "sk_test_conformance";
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 let tmpRoot = "";
 let server: ReplayServer;
 
@@ -129,16 +131,15 @@ beforeAll(async () => {
   process.env.DASHBOARD_ARTIFACT_DIR = path.join(tmpRoot, "artifacts");
   process.env[CONNECTOR_REGISTRY_FLAG] = "true";
   clearRegistryCatalogCache();
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
+  await ensureTestWorkspace(pg.db, { id: WS });
   server = await startReplayServer();
 }, 300_000);
 
 afterAll(async () => {
   await server?.close();
   await cleanupPublishBoxes();
-  await mongoose.disconnect();
-  await mongo?.stop();
+  await pg?.close();
   delete process.env[CONNECTOR_REGISTRY_FLAG];
   delete process.env.DASHBOARD_ARTIFACT_DIR;
   await fs.rm(tmpRoot, { recursive: true, force: true, maxRetries: 5 });
@@ -194,10 +195,7 @@ describe("the gate: mako/stripe@1 installed by reference", () => {
     const result = await syncConnectorsFromRepo(WS);
     expect(result).toMatchObject({ created: 1, blocked: 0 });
 
-    const row = await ConnectorDefinition.findOne({
-      workspaceId: WS,
-      slug: "stripe",
-    }).lean();
+    const row = await connectionsRepo.findConnectorDefinition(WS, "stripe");
     expect(row?.status).toBe("indexed");
     expect(row?.registry).toMatchObject({
       ref: "mako/stripe@1",

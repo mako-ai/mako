@@ -2,7 +2,7 @@
  * Key links: an agent creates a source connection without its key, and the
  * user pastes the key into Mako through a one-time link.
  *
- * Pins, end to end on real Mongo (mongodb-memory-server):
+ * Exercises the key-link lifecycle end to end with PGlite:
  *   - create_connection with the secret left out stores the connection
  *     inactive, without the secret, with only the token's HASH, and returns
  *     the link; inspect_connection reports `awaiting_key`, then `ready`;
@@ -26,11 +26,18 @@ import {
   vi,
 } from "vitest";
 import { Hono } from "hono";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { legacyUserIdToUuidv7 } from "../database/pg/id-codec";
+import { connectionsRepo } from "../repositories/connections";
+import {
+  type PgTestDb,
+  setupPgTestDb,
+  ensureTestWorkspace,
+  ensureTestUser,
+} from "../test-support/pg-test";
 
 const ctx = vi.hoisted(() => ({
-  userId: "u1",
+  userId: "",
   role: "member" as string | null,
   /** Runs inside the probe: a write that lands during the check window. */
   duringProbe: null as null | (() => Promise<void>),
@@ -115,13 +122,14 @@ vi.mock("../connectors/probe.service", async importOriginal => ({
 }));
 
 import { sourceConnectionRoutes } from "./source-connections";
-import { SourceConnection } from "../database/workspace-schema";
 import { createConnectionWriteTools } from "../agent-lib/tools/connection-write-tools";
 import { createConnectorTools } from "../agent-lib/tools/connector-tools";
 import { hashKeyToken } from "../connectors/connection-key-request.service";
 import { decryptString, encryptString } from "../services/crypto.service";
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
+const MEMBER_ID = legacyUserIdToUuidv7("u1");
+const OTHER_MEMBER_ID = legacyUserIdToUuidv7("u2");
 const WS = new Types.ObjectId().toString();
 const SECRET = "sk_live_pasted_in_the_app";
 
@@ -172,7 +180,7 @@ async function createWithoutKey(
   token: string;
   result: ToolResult;
 }> {
-  const tools = createConnectionWriteTools(WS, "u1");
+  const tools = createConnectionWriteTools(WS, MEMBER_ID);
   const execute = tools.create_connection.execute as unknown as (
     input: unknown,
   ) => Promise<ToolResult>;
@@ -196,22 +204,23 @@ beforeAll(async () => {
     process.env.ENCRYPTION_KEY ??
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
   process.env.CLIENT_URL = "https://mako.test";
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
 });
 
 beforeEach(async () => {
-  ctx.userId = "u1";
+  ctx.userId = MEMBER_ID;
   ctx.role = "member";
   ctx.authType = "session";
   ctx.duringProbe = null;
   ctx.probe = { success: true, message: "ok" };
-  await SourceConnection.deleteMany({});
+  await pg.reset();
+  await ensureTestWorkspace(pg.db, { id: WS });
+  await ensureTestUser(pg.db, { id: MEMBER_ID });
+  await ensureTestUser(pg.db, { id: OTHER_MEMBER_ID });
 });
 
 describe("create_connection without the key", () => {
@@ -226,23 +235,24 @@ describe("create_connection without the key", () => {
     );
     expect(link.hash.slice(1)).toBe(token);
 
-    const row = (await SourceConnection.findById(
-      connectionId,
-    ).lean()) as Record<string, any>;
-    expect(row.isActive).toBe(false);
-    expect(row.config.api_key).toBeUndefined();
-    expect(row.config.account).toBe("acct_1");
-    expect(row.keyRequest.tokenHash).toBe(hashKeyToken(token));
+    const row = await connectionsRepo.findSourceConnectionById(
+      String(connectionId),
+      WS,
+    );
+    expect(row?.isActive).toBe(false);
+    expect(row?.config.api_key).toBeUndefined();
+    expect(row?.config.account).toBe("acct_1");
+    expect(row?.keyRequest?.tokenHash).toBe(hashKeyToken(token));
     expect(JSON.stringify(row)).not.toContain(token);
 
     const inspected = await inspect(connectionId);
     expect(inspected.status).toBe("awaiting_key");
     expect(inspected.awaitingFields).toEqual(["api_key"]);
-    expect(JSON.stringify(inspected)).not.toContain(row.keyRequest.tokenHash);
+    expect(JSON.stringify(inspected)).not.toContain(row?.keyRequest?.tokenHash);
   });
 
   it("still takes a key passed in config, checked right away", async () => {
-    const execute = createConnectionWriteTools(WS, "u1").create_connection
+    const execute = createConnectionWriteTools(WS, MEMBER_ID).create_connection
       .execute as unknown as (input: unknown) => Promise<ToolResult>;
     const result = await execute({
       connector: "stripe",
@@ -251,11 +261,12 @@ describe("create_connection without the key", () => {
     });
     expect(result.status).toBeUndefined();
     expect(result.keyLink).toBeUndefined();
-    const row = (await SourceConnection.findById(
-      result.connectionId,
-    ).lean()) as any;
-    expect(row.keyRequest).toBeUndefined();
-    expect(row.isActive).toBe(true);
+    const row = await connectionsRepo.findSourceConnectionById(
+      String(result.connectionId),
+      WS,
+    );
+    expect(row?.keyRequest).toBeUndefined();
+    expect(row?.isActive).toBe(true);
   });
 });
 
@@ -281,27 +292,33 @@ describe("the key link", () => {
     });
     expect(unconfirmed.status).toBe(400);
     expect(
-      ((await SourceConnection.findById(connectionId).lean()) as any)
-        .keyRequest,
+      (await connectionsRepo.findSourceConnectionById(connectionId, WS))
+        ?.keyRequest,
     ).toBeDefined();
 
     const saved = await call("POST", token, { config: { api_key: SECRET } });
     expect(saved.status).toBe(200);
     expect(await saved.text()).not.toContain(SECRET);
 
-    const row = (await SourceConnection.findById(connectionId).lean()) as any;
-    expect(row.keyRequest).toBeUndefined();
-    expect(row.isActive).toBe(true);
-    expect(row.config.api_key).not.toBe(SECRET);
-    expect(decryptString(row.config.api_key)).toBe(SECRET);
+    const row = await connectionsRepo.findSourceConnectionById(
+      connectionId,
+      WS,
+    );
+    expect(row?.keyRequest).toBeUndefined();
+    expect(row?.isActive).toBe(true);
+    expect(row?.config.api_key).not.toBe(SECRET);
+    expect(decryptString(String(row?.config.api_key))).toBe(SECRET);
     expect((await inspect(connectionId)).status).toBe("ready");
 
     // Works once.
     const again = await call("POST", token, { config: { api_key: "other" } });
     expect(again.status).toBe(404);
     expect((await call("GET", token)).status).toBe(404);
-    const after = (await SourceConnection.findById(connectionId).lean()) as any;
-    expect(decryptString(after.config.api_key)).toBe(SECRET);
+    const after = await connectionsRepo.findSourceConnectionById(
+      connectionId,
+      WS,
+    );
+    expect(decryptString(String(after?.config.api_key))).toBe(SECRET);
   });
 
   it("sets only the fields it asks for", async () => {
@@ -317,10 +334,14 @@ describe("the key link", () => {
 
   it("is refused once expired", async () => {
     const { connectionId, token } = await createWithoutKey();
-    await SourceConnection.updateOne(
-      { _id: connectionId },
-      { $set: { "keyRequest.expiresAt": new Date(Date.now() - 1000) } },
+    const row = await connectionsRepo.findSourceConnectionById(
+      connectionId,
+      WS,
     );
+    if (!row?.keyRequest) throw new Error("Expected a pending key request");
+    await connectionsRepo.updateSourceConnection(connectionId, WS, {
+      keyRequest: { ...row.keyRequest, expiresAt: new Date(Date.now() - 1000) },
+    });
     expect((await call("GET", token)).status).toBe(410);
     expect(
       (await call("POST", token, { config: { api_key: SECRET } })).status,
@@ -356,10 +377,13 @@ describe("the key link", () => {
     expect(((await failed.json()) as { error: string }).error).toMatch(
       /Invalid API key/,
     );
-    const row = (await SourceConnection.findById(connectionId).lean()) as any;
-    expect(row.config.api_key).toBeUndefined();
-    expect(row.isActive).toBe(false);
-    expect(row.keyRequest.tokenHash).toBe(hashKeyToken(token));
+    const row = await connectionsRepo.findSourceConnectionById(
+      connectionId,
+      WS,
+    );
+    expect(row?.config.api_key).toBeUndefined();
+    expect(row?.isActive).toBe(false);
+    expect(row?.keyRequest?.tokenHash).toBe(hashKeyToken(token));
 
     ctx.probe = { success: true, message: "ok" };
     const fixed = await call("POST", token, { config: { api_key: SECRET } });
@@ -369,7 +393,7 @@ describe("the key link", () => {
 
   it("is for the connection's managers, not any member", async () => {
     const { token } = await createWithoutKey();
-    ctx.userId = "u2";
+    ctx.userId = OTHER_MEMBER_ID;
     ctx.role = "member";
     expect((await call("GET", token)).status).toBe(403);
     expect(
@@ -382,15 +406,17 @@ describe("the key link", () => {
     const theirs = encryptString("sk_live_saved_in_the_form");
     ctx.probe = { success: false, message: "Invalid API key" };
     ctx.duringProbe = async () => {
-      await SourceConnection.updateOne(
-        { _id: connectionId },
-        { $set: { "config.api_key": theirs } },
-      );
+      await connectionsRepo.updateSourceConnection(connectionId, WS, {
+        configPatch: { api_key: theirs },
+      });
     };
     const res = await call("POST", token, { config: { api_key: "typo" } });
     expect(res.status).toBe(422);
-    const row = (await SourceConnection.findById(connectionId).lean()) as any;
-    expect(row.config.api_key).toBe(theirs);
+    const row = await connectionsRepo.findSourceConnectionById(
+      connectionId,
+      WS,
+    );
+    expect(row?.config.api_key).toBe(theirs);
   });
 });
 
@@ -416,7 +442,8 @@ describe("a Custom API connection", () => {
       { name: "auth_type", label: "Credential type", value: "bearer" },
     ]);
     expect(
-      ((await SourceConnection.findById(connectionId).lean()) as any).isActive,
+      (await connectionsRepo.findSourceConnectionById(connectionId, WS))
+        ?.isActive,
     ).toBe(false);
   });
 });
@@ -447,12 +474,13 @@ describe("enabling a connection that waits for its key", () => {
     expect(put.status).toBe(409);
 
     // And so does update_connection over MCP.
-    const update = createConnectionWriteTools(WS, "u1").update_connection
+    const update = createConnectionWriteTools(WS, MEMBER_ID).update_connection
       .execute as unknown as (input: unknown) => Promise<ToolResult>;
     const updated = await update({ connectionId, active: true });
     expect(String(updated.error)).toMatch(/waiting for its key/);
     expect(
-      ((await SourceConnection.findById(connectionId).lean()) as any).isActive,
+      (await connectionsRepo.findSourceConnectionById(connectionId, WS))
+        ?.isActive,
     ).toBe(false);
 
     expect(

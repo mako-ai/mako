@@ -3,7 +3,7 @@
  * a run of a `SandboxedConnector`, and the agent tools, with the flag on and
  * off.
  *
- * Real Mongo (the index row is what is asserted) and a real registry on the
+ * PGlite for the connector index and a real registry on the
  * filesystem artifact store. The repo listing and the sync box are mocked, so
  * what is tested is the wiring: what a `source:` folder resolves to, what
  * the row records, which bundle a run installs, and what an agent is told.
@@ -20,8 +20,13 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { connectionsRepo } from "../../../repositories/connections";
+import {
+  type PgTestDb,
+  setupPgTestDb,
+  ensureTestWorkspace,
+} from "../../../test-support/pg-test";
 
 const repo = vi.hoisted(() => ({
   files: new Map<string, Map<string, Uint8Array>>(),
@@ -166,10 +171,7 @@ vi.mock("../sync-box", async importOriginal => {
   };
 });
 
-import {
-  ConnectorDefinition,
-  type ISourceConnection,
-} from "../../../database/workspace-schema";
+import type { ISourceConnection } from "../../../database/workspace-schema";
 import {
   recordConnectionCheck,
   syncConnectorsFromRepo,
@@ -187,17 +189,15 @@ import {
   writeRegistryArtifacts,
 } from "./store";
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 let storeDir = "";
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
   storeDir = await fs.mkdtemp(path.join(os.tmpdir(), "registry-reconcile-"));
   process.env.DASHBOARD_ARTIFACT_DIR = storeDir;
 }, 120_000);
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
   delete process.env[CONNECTOR_REGISTRY_FLAG];
   delete process.env.DASHBOARD_ARTIFACT_DIR;
   await fs.rm(storeDir, { recursive: true, force: true });
@@ -260,7 +260,7 @@ async function publish(version: string): Promise<string> {
 }
 
 const row = (slug = "stripe") =>
-  ConnectorDefinition.findOne({ workspaceId: WS, slug }).lean();
+  connectionsRepo.findConnectorDefinition(WS, slug);
 
 const connection = (slug = "stripe") =>
   ({
@@ -279,7 +279,8 @@ const tools = () =>
   >;
 
 beforeEach(async () => {
-  await ConnectorDefinition.deleteMany({});
+  await pg.reset();
+  await ensureTestWorkspace(pg.db, { id: WS });
   await fs.rm(path.join(storeDir, "connector-registry"), {
     recursive: true,
     force: true,
@@ -346,10 +347,10 @@ describe("install by reference, flag on", () => {
     repo.files.set("stripe", folder("source: mako/stripe@1\n"));
     await syncConnectorsFromRepo(WS);
     // A real check earned `verified` on 1.0.0.
-    await ConnectorDefinition.updateOne(
-      { workspaceId: WS, slug: "stripe" },
-      { $set: { status: "verified" } },
-    );
+    await connectionsRepo.recordConnectorDefinitionCheckResult(WS, "stripe", {
+      ok: true,
+      checkedAt: new Date(),
+    });
 
     // Nothing new: no spec, verified kept.
     box.runs.length = 0;
@@ -363,10 +364,10 @@ describe("install by reference, flag on", () => {
     const upgraded = await row();
     expect(upgraded?.registry).toMatchObject({ version: "1.2.0", hash: minor });
     expect(upgraded?.status).toBe("indexed");
-    await ConnectorDefinition.updateOne(
-      { workspaceId: WS, slug: "stripe" },
-      { $set: { status: "verified" } },
-    );
+    await connectionsRepo.recordConnectorDefinitionCheckResult(WS, "stripe", {
+      ok: true,
+      checkedAt: new Date(),
+    });
 
     // A major release: the row keeps 1.2.0 and says 2.0.0 exists.
     await publish("2.0.0");
@@ -608,10 +609,10 @@ describe("flag off: a push behaves as before", () => {
     );
     repo.files.set("stripe", folder("source: mako/stripe@1\n"));
     expect((await syncConnectorsFromRepo(WS)).created).toBe(2);
-    const stripeBefore = await ConnectorDefinition.findOne({
-      workspaceId: WS,
-      slug: "stripe",
-    }).lean();
+    const stripeBefore = await connectionsRepo.findConnectorDefinition(
+      WS,
+      "stripe",
+    );
     expect(stripeBefore?.status).toBe("indexed");
     if (!stripeBefore) throw new Error("expected stripe row");
 
@@ -640,10 +641,10 @@ describe("flag off: a push behaves as before", () => {
       const res = await syncConnectorsFromRepo(WS);
       expect(res.updated).toBe(1);
       expect(res.unchanged).toBe(1);
-      const stripeAfter = await ConnectorDefinition.findOne({
-        workspaceId: WS,
-        slug: "stripe",
-      }).lean();
+      const stripeAfter = await connectionsRepo.findConnectorDefinition(
+        WS,
+        "stripe",
+      );
       expect(stripeAfter?.sha).toBe("2".repeat(40));
       expect(stripeAfter?.registry?.upgradeAvailable).toBe("2.0.0");
       expect(stripeAfter?.status).toBe("verified");

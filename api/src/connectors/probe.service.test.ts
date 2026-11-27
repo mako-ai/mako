@@ -14,7 +14,7 @@
  * Plus the tenancy rule every connection route has: an id from another
  * workspace is "not found", never "here is their data".
  *
- * Real Mongo (mongodb-memory-server) for the ownership check; the connector
+ * PGlite for the ownership check; the connector
  * itself is a fake `BaseConnector` handed out by a mocked registry, because
  * the probe's contract is with `BaseConnector`, not with any vendor.
  */
@@ -27,8 +27,18 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { legacyUserIdToUuidv7 } from "../database/pg/id-codec";
+import {
+  connectionsRepo,
+  type UpdateSourceConnectionInput,
+} from "../repositories/connections";
+import {
+  type PgTestDb,
+  setupPgTestDb,
+  ensureTestWorkspace,
+  ensureTestUser,
+} from "../test-support/pg-test";
 
 import {
   BaseConnector,
@@ -92,7 +102,6 @@ vi.mock("./workspace/reconcile.service", () => ({
   }),
 }));
 
-import { SourceConnection } from "../database/workspace-schema";
 import { requestContextStorage } from "../logging/context";
 import {
   PROBE_MAX_LIMIT,
@@ -168,7 +177,12 @@ class FakeConnector extends BaseConnector {
   }
 }
 
-let mongo: MongoMemoryServer;
+const CREATOR = legacyUserIdToUuidv7("u1");
+const MEMBER = legacyUserIdToUuidv7("u2");
+const VIEWER = legacyUserIdToUuidv7("u3");
+const OWNER = legacyUserIdToUuidv7("boss");
+
+let pg: PgTestDb;
 let mine: Types.ObjectId;
 let theirs: Types.ObjectId;
 let fake: FakeConnector;
@@ -177,31 +191,33 @@ beforeAll(async () => {
   process.env.ENCRYPTION_KEY =
     process.env.ENCRYPTION_KEY ??
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
 }, 120_000);
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
 });
 
 beforeEach(async () => {
-  await SourceConnection.deleteMany({});
+  await pg.reset();
+  for (const id of [CREATOR, MEMBER, VIEWER, OWNER]) {
+    await ensureTestUser(pg.db, { id });
+  }
   mine = new Types.ObjectId();
   theirs = new Types.ObjectId();
   for (const [id, workspaceId] of [
     [mine, WS],
     [theirs, WS_THEIRS],
   ] as const) {
-    await SourceConnection.create({
-      _id: id,
-      workspaceId,
+    await ensureTestWorkspace(pg.db, { id: String(workspaceId) });
+    await connectionsRepo.createSourceConnection({
+      id: String(id),
+      workspaceId: String(workspaceId),
       name: "Vercel AI Gateway Usage",
       type: "stripe",
       config: {},
       settings: { rate_limit_delay_ms: 100, sync_batch_size: 100 },
-      createdBy: "u1",
+      createdBy: CREATOR,
     });
   }
   fake = new FakeConnector({
@@ -213,7 +229,12 @@ beforeEach(async () => {
   state.connector = fake;
   state.recorded = [];
   state.dataSourceType = "stripe";
-  state.roles = { u1: "member", u2: "member", u3: "viewer", boss: "owner" };
+  state.roles = {
+    [CREATOR]: "member",
+    [MEMBER]: "member",
+    [VIEWER]: "viewer",
+    [OWNER]: "owner",
+  };
 });
 
 const probe = (input: Partial<Parameters<typeof probeConnection>[0]> = {}) =>
@@ -419,8 +440,8 @@ describe("who may probe records", () => {
       { requestId: "r", method: "GET", path: "/", startTime: 0, ...principal },
       fn,
     );
-  const access = (fields: Record<string, unknown>) =>
-    SourceConnection.updateOne({ _id: mine }, { $set: fields });
+  const access = (patch: UpdateSourceConnectionInput) =>
+    connectionsRepo.updateSourceConnection(String(mine), String(WS), patch);
 
   beforeEach(() => {
     fake.page = [{ day: "2026-11-01" }];
@@ -429,15 +450,15 @@ describe("who may probe records", () => {
   it("with live reads off, only a manager or the owner reads records", async () => {
     // u1 created the connection, so manages it.
     expect(
-      (await as({ userId: "u1" }, () => probe({ entity: "models" }))).entity
+      (await as({ userId: CREATOR }, () => probe({ entity: "models" }))).entity
         ?.count,
     ).toBe(1);
     expect(
-      (await as({ userId: "boss" }, () => probe({ entity: "models" }))).entity
+      (await as({ userId: OWNER }, () => probe({ entity: "models" }))).entity
         ?.count,
     ).toBe(1);
     const refused = await failure(
-      as({ userId: "u2" }, () => probe({ entity: "models" })),
+      as({ userId: MEMBER }, () => probe({ entity: "models" })),
     );
     expect(refused.code).toBe("forbidden");
     expect(refused.status).toBe(403);
@@ -446,14 +467,14 @@ describe("who may probe records", () => {
   });
 
   it("a credential-only check stays open to every member", async () => {
-    const result = await as({ userId: "u2" }, () => probe());
+    const result = await as({ userId: MEMBER }, () => probe());
     expect(result.check.success).toBe(true);
   });
 
   it("with live reads on and no list, every member reads records", async () => {
     await access({ liveReads: true });
     expect(
-      (await as({ userId: "u2" }, () => probe({ entity: "models" }))).entity
+      (await as({ userId: MEMBER }, () => probe({ entity: "models" }))).entity
         ?.count,
     ).toBe(1);
   });
@@ -461,15 +482,15 @@ describe("who may probe records", () => {
   it("with a live readers list, only the listed, writers and managers read records", async () => {
     await access({
       liveReads: true,
-      liveReaders: [{ principal: "user:u3" }],
+      liveReaders: [{ principal: `user:${VIEWER}` }],
       writers: [{ principal: "workflow:*" }],
     });
     expect(
-      (await as({ userId: "u3" }, () => probe({ entity: "models" }))).entity
+      (await as({ userId: VIEWER }, () => probe({ entity: "models" }))).entity
         ?.count,
     ).toBe(1);
     expect(
-      (await as({ userId: "u1" }, () => probe({ entity: "models" }))).entity
+      (await as({ userId: CREATOR }, () => probe({ entity: "models" }))).entity
         ?.count,
     ).toBe(1);
     expect(
@@ -477,10 +498,10 @@ describe("who may probe records", () => {
         .entity?.count,
     ).toBe(1);
     const refused = await failure(
-      as({ userId: "u2" }, () => probe({ entity: "models" })),
+      as({ userId: MEMBER }, () => probe({ entity: "models" })),
     );
     expect(refused.code).toBe("forbidden");
-    expect(refused.message).toContain("user:u2 is not allowed");
+    expect(refused.message).toContain(`user:${MEMBER} is not allowed`);
     const worker = await failure(
       as({ workflowWorker: true }, () => probe({ entity: "models" })),
     );

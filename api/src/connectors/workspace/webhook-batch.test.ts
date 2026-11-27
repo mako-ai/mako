@@ -1,5 +1,5 @@
 /**
- * Webhook batches for workspace connectors, against a real in-memory Mongo.
+ * Webhook batches for workspace connectors with PGlite connections and MongoDB ingestion.
  *
  * The box is a fake runner (the one seam), so these check the API side of
  * every trust boundary:
@@ -24,6 +24,13 @@ import {
   vi,
 } from "vitest";
 import mongoose, { Types } from "mongoose";
+import { connectionsRepo } from "../../repositories/connections";
+import {
+  type PgTestDb,
+  setupPgTestDb,
+  ensureTestSourceConnection,
+  ensureTestDatabaseConnection,
+} from "../../test-support/pg-test";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
 const mocks = vi.hoisted(() => ({
@@ -39,12 +46,7 @@ vi.mock("./resolver", async importOriginal => ({
   loadConnectorDefinition: mocks.loadConnectorDefinition,
 }));
 
-import {
-  DatabaseConnection,
-  Flow,
-  SourceConnection,
-  WebhookEvent,
-} from "../../database/workspace-schema";
+import { Flow, WebhookEvent } from "../../database/workspace-schema";
 import { webhookRoutes } from "../../routes/webhooks";
 import {
   ingestPendingWebhookEvents,
@@ -77,6 +79,7 @@ const CLOSE_VERIFICATION = {
 };
 
 let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 const ws = new Types.ObjectId();
 const conn = new Types.ObjectId();
 const otherConn = new Types.ObjectId();
@@ -85,6 +88,7 @@ let flowId: Types.ObjectId;
 let otherFlowId: Types.ObjectId;
 
 beforeAll(async () => {
+  pg = await setupPgTestDb();
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
   // Build the real indexes first, so every test meets them (the unique
@@ -94,7 +98,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongo.stop();
+  await mongo?.stop();
+  await pg?.close();
 });
 
 async function makeFlow(dataSourceId: Types.ObjectId, extra = {}) {
@@ -138,28 +143,29 @@ beforeEach(async () => {
   await Promise.all([
     WebhookEvent.deleteMany({}),
     Flow.collection.deleteMany({}),
-    SourceConnection.collection.deleteMany({}),
-    DatabaseConnection.collection.deleteMany({}),
+    pg.reset(),
   ]);
-  await SourceConnection.collection.insertMany([
+  for (const connection of [
     {
-      _id: conn,
-      workspaceId: ws,
+      id: String(conn),
+      workspaceId: String(ws),
       name: "PL Close shadow",
       type: "ws:close",
       config: { api_key: "api_key_pl" },
     },
     {
-      _id: otherConn,
-      workspaceId: ws,
+      id: String(otherConn),
+      workspaceId: String(ws),
       name: "Other",
       type: "ws:close",
       config: { api_key: "api_key_other" },
     },
-  ]);
-  await DatabaseConnection.collection.insertOne({
-    _id: db,
-    workspaceId: ws,
+  ]) {
+    await ensureTestSourceConnection(pg.db, connection);
+  }
+  await ensureTestDatabaseConnection(pg.db, {
+    id: String(db),
+    workspaceId: String(ws),
     name: "bq",
     type: "bigquery",
   });
@@ -600,9 +606,9 @@ describe("a batch", () => {
 
   it("never reads a connection of another workspace, even one the flow row names", async () => {
     const foreignConn = new Types.ObjectId();
-    await SourceConnection.collection.insertOne({
-      _id: foreignConn,
-      workspaceId: new Types.ObjectId(),
+    await ensureTestSourceConnection(pg.db, {
+      id: String(foreignConn),
+      workspaceId: new Types.ObjectId().toString(),
       name: "Someone else's Close",
       type: "ws:close",
       config: { api_key: "api_key_foreign" },
@@ -1116,9 +1122,9 @@ describe("a batch", () => {
   it("drops the events of a flow pointed at a new in-process connection: they stay pinned", async () => {
     const e = await boxEvent();
     const inProcess = new Types.ObjectId();
-    await SourceConnection.collection.insertOne({
-      _id: inProcess,
-      workspaceId: ws,
+    await ensureTestSourceConnection(pg.db, {
+      id: String(inProcess),
+      workspaceId: String(ws),
       name: "PL Close",
       type: "close",
       config: {},
@@ -1143,10 +1149,9 @@ describe("a batch", () => {
   });
 
   it("drops the events of a flow whose connection became an in-process connector", async () => {
-    await SourceConnection.collection.updateOne(
-      { _id: conn },
-      { $set: { type: "close" } },
-    );
+    await connectionsRepo.updateSourceConnection(String(conn), String(ws), {
+      type: "close",
+    });
     const e = await boxEvent();
     const result = await processBoxWebhookBatch({
       flowId: String(flowId),
