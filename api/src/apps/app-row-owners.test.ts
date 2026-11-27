@@ -1,6 +1,6 @@
 /**
  * The app-row owner backfill (app-row-owners.ts) and the gated owner stamp
- * (project-rows.ts rowOwnerActor), on real git and an in-memory Mongo.
+ * (project-rows.ts rowOwnerActor), on real git and an PGlite.
  *
  * Claims under test: each derivation rule names the right person or nobody;
  * a system actor never becomes an owner; an existing owner is never
@@ -13,8 +13,15 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { legacyUserIdToUuidv7 } from "../database/pg/id-codec";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
+import {
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 
 import {
   applyOwnerProposals,
@@ -26,7 +33,7 @@ import {
   type OwnerlessRow,
   type WorkspaceOwnerSources,
 } from "./app-row-owners";
-import { AppProject, type IAppProject } from "../database/workspace-schema";
+import type { IAppProject } from "../database/workspace-schema";
 import {
   ROW_OWNER_PERSON_IDS_FLAG,
   ensureProjectRow,
@@ -39,18 +46,18 @@ const ALICE = "a1b2c3d4e5f6a7b";
 const BOB = "k9x8w7v6u5t4s3r";
 const SYSTEM_ACTORS = ["publish", "api-key", "scheduler", "app-chat", ""];
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 let tmpRoot: string;
 
 beforeAll(async () => {
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mako-row-owners-"));
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
+  await ensureTestUser(pg.db, { id: ALICE });
+  await ensureTestUser(pg.db, { id: BOB });
 }, 120_000);
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo?.stop();
+  await pg?.close();
   await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
@@ -509,16 +516,17 @@ describe("system actors never become owners", () => {
   );
 
   it("a proposal naming a system actor is never written", async () => {
-    const doc = await AppProject.create({
-      workspaceId: new Types.ObjectId(),
+    const workspace = await ensureTestWorkspace(pg.db);
+    const doc = await appsMetadataRepo.createProject({
+      workspaceId: workspace.id,
       title: "t",
       path: "apps/sys",
       access: "workspace",
     });
     const changed = await applyOwnerProposals([
       {
-        appId: doc._id.toString(),
-        workspaceId: doc.workspaceId.toString(),
+        appId: doc.id,
+        workspaceId: doc.workspaceId,
         path: "apps/sys",
         access: "workspace",
         rule: "folder-author",
@@ -526,7 +534,9 @@ describe("system actors never become owners", () => {
       },
     ]);
     expect(changed).toBe(0);
-    expect((await AppProject.findById(doc._id))?.owner_id).toBeUndefined();
+    expect(
+      (await appsMetadataRepo.findProjectById(doc.id))?.owner_id,
+    ).toBeUndefined();
   });
 });
 
@@ -536,15 +546,15 @@ describe("system actors never become owners", () => {
 
 describe("apply", () => {
   it("sets ownerless rows once, never overwrites an owner", async () => {
-    const ws = new Types.ObjectId();
-    const ownerless = await AppProject.create({
+    const { id: ws } = await ensureTestWorkspace(pg.db);
+    const ownerless = await appsMetadataRepo.createProject({
       workspaceId: ws,
       title: "Sales",
       path: "apps/sales",
       access: "workspace",
       createdBy: "",
     });
-    const owned = await AppProject.create({
+    const owned = await appsMetadataRepo.createProject({
       workspaceId: ws,
       title: "Ops",
       path: "apps/ops",
@@ -552,7 +562,7 @@ describe("apply", () => {
       owner_id: BOB,
       createdBy: BOB,
     });
-    const createdByOnly = await AppProject.create({
+    const createdByOnly = await appsMetadataRepo.createProject({
       workspaceId: ws,
       title: "Old",
       path: "apps/old",
@@ -560,16 +570,16 @@ describe("apply", () => {
       createdBy: BOB,
     });
 
-    const found = await findOwnerlessRows(ws.toString());
-    expect(found.map(r => r.appId)).toEqual([ownerless._id.toString()]);
+    const found = await findOwnerlessRows(ws);
+    expect(found.map(r => r.appId)).toEqual([ownerless.id]);
 
     const proposals = await Promise.all(
       found.map(r => proposeOwner(r, sources())),
     );
     // A stale or hand-written proposal aimed at owned rows must not land.
     const hostile = [owned, createdByOnly].map(d => ({
-      appId: d._id.toString(),
-      workspaceId: ws.toString(),
+      appId: d.id,
+      workspaceId: ws,
       path: d.path ?? "",
       access: "workspace" as const,
       rule: "folder-author" as const,
@@ -579,13 +589,18 @@ describe("apply", () => {
     expect(await applyOwnerProposals([...proposals, ...hostile])).toBe(1);
     expect(await applyOwnerProposals([...proposals, ...hostile])).toBe(0);
 
-    const after = await AppProject.findById(ownerless._id).lean();
-    expect(after).toMatchObject({ owner_id: ALICE, createdBy: ALICE });
-    expect((await AppProject.findById(owned._id))?.owner_id).toBe(BOB);
-    const old = await AppProject.findById(createdByOnly._id).lean();
+    const after = await appsMetadataRepo.findProjectById(ownerless.id);
+    expect(after).toMatchObject({
+      owner_id: legacyUserIdToUuidv7(ALICE),
+      createdBy: legacyUserIdToUuidv7(ALICE),
+    });
+    expect((await appsMetadataRepo.findProjectById(owned.id))?.owner_id).toBe(
+      legacyUserIdToUuidv7(BOB),
+    );
+    const old = await appsMetadataRepo.findProjectById(createdByOnly.id);
     expect(old?.owner_id).toBeUndefined();
-    expect(old?.createdBy).toBe(BOB);
-    expect(await findOwnerlessRows(ws.toString())).toEqual([]);
+    expect(old?.createdBy).toBe(legacyUserIdToUuidv7(BOB));
+    expect(await findOwnerlessRows(ws)).toEqual([]);
   });
 
   it("prints counts and prefixes, never emails or full ids", async () => {
@@ -612,32 +627,34 @@ describe("apply", () => {
 // ---------------------------------------------------------------------------
 
 describe("ensureProjectRow owner stamp", () => {
-  const folderOnly = (slug: string): IAppProject =>
-    ({
+  const folderOnly = async (slug: string): Promise<IAppProject> => {
+    const workspace = await ensureTestWorkspace(pg.db);
+    return {
       _id: new Types.ObjectId(),
-      workspaceId: new Types.ObjectId(),
+      workspaceId: new Types.ObjectId(workspace.id),
       title: slug,
       slug,
       path: `apps/${slug}`,
       access: "workspace",
       createdBy: "",
-    }) as IAppProject;
+    } as IAppProject;
+  };
 
   it("flag off: a 15-character id does not own, as before", async () => {
-    const created = await ensureProjectRow(folderOnly("off"), ALICE);
+    const created = await ensureProjectRow(await folderOnly("off"), ALICE);
     expect(created.owner_id ?? undefined).toBeUndefined();
   });
 
   it("flag on: a real user's id owns the row it creates", async () => {
     process.env[ROW_OWNER_PERSON_IDS_FLAG] = "1";
-    const created = await ensureProjectRow(folderOnly("on"), ALICE);
-    expect(created.owner_id).toBe(ALICE);
-    expect(created.createdBy).toBe(ALICE);
+    const created = await ensureProjectRow(await folderOnly("on"), ALICE);
+    expect(created.owner_id).toBe(legacyUserIdToUuidv7(ALICE));
+    expect(created.createdBy).toBe(legacyUserIdToUuidv7(ALICE));
   });
 
   it("flag on: an existing ownerless row is not claimed by a real user", async () => {
     process.env[ROW_OWNER_PERSON_IDS_FLAG] = "1";
-    const project = folderOnly("leftover");
+    const project = await folderOnly("leftover");
     // The push-deploy worker made the row before any person acted.
     expect((await ensureProjectRow(project, "publish")).owner_id).toBeFalsy();
     const touched = await ensureProjectRow(project, ALICE);
@@ -647,16 +664,21 @@ describe("ensureProjectRow owner stamp", () => {
 
   it("an existing ownerless row is still claimed by a 24-hex id, as before", async () => {
     process.env[ROW_OWNER_PERSON_IDS_FLAG] = "1";
-    const project = folderOnly("legacy");
+    const project = await folderOnly("legacy");
     await ensureProjectRow(project, "publish");
     const legacy = new Types.ObjectId().toString();
-    expect((await ensureProjectRow(project, legacy)).owner_id).toBe(legacy);
+    await ensureTestUser(pg.db, { id: legacy });
+    expect((await ensureProjectRow(project, legacy)).owner_id).toBe(
+      legacyUserIdToUuidv7(legacy),
+    );
   });
 
   it("flag on: an existing owner is kept against the next person", async () => {
     process.env[ROW_OWNER_PERSON_IDS_FLAG] = "1";
-    const project = folderOnly("kept");
+    const project = await folderOnly("kept");
     await ensureProjectRow(project, ALICE);
-    expect((await ensureProjectRow(project, BOB)).owner_id).toBe(ALICE);
+    expect((await ensureProjectRow(project, BOB)).owner_id).toBe(
+      legacyUserIdToUuidv7(ALICE),
+    );
   });
 });

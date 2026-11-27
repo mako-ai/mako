@@ -2,8 +2,7 @@
  * Apps in real folders: the index that reads the tree at main, the identity
  * that rides in `mako.json`, and the moves that keep it.
  *
- * Real bare repos under a temp APPS_GIT_ROOT and in-memory Mongo, the same
- * harness as the consoles suite. The claims under test:
+ * Real bare repos under a temp APPS_GIT_ROOT and PGlite. The claims under test:
  *
  *  - an app is any folder with a manifest under apps/ or users/<id>/apps/,
  *    at any depth, and nothing inside an app is a second app;
@@ -20,15 +19,18 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import { and, eq } from "drizzle-orm";
+import { generateUuidv7, objectIdToUuid } from "../database/pg/id-codec";
+import { appIndex, appIndexHeads } from "../database/pg/schema";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
+import { authRepo } from "../repositories/auth";
+import { workspaceRepo } from "../repositories/workspaces";
 import {
-  AppIndexEntry,
-  AppIndexHead,
-  AppProject,
-  WorkspaceMember,
-  WorkspaceUserHandle,
-} from "../database/workspace-schema";
-import { OAuthAccount, User } from "../database/schema";
-import { getMongoAppBindingStateModel } from "../repositories/apps-metadata/mongo.repo";
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 import { invalidateOwnerDirectory } from "./user-handles.service";
 import { invalidatePeopleDirectory } from "./app-owner.service";
 import {
@@ -76,7 +78,7 @@ import { listVisibleApps } from "./app-listing.service";
 import { canReadResource } from "../utils/resource-acl";
 import { up as isolateAppIds } from "../migrations/2026-09-16-190000_app_identity_isolation";
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 let tmpRoot: string;
 
 beforeAll(async () => {
@@ -84,13 +86,11 @@ beforeAll(async () => {
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_SANDBOX_PROVIDER = "local";
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -100,7 +100,7 @@ afterAll(async () => {
 });
 
 const WS = new Types.ObjectId().toString();
-const USER = new Types.ObjectId().toString();
+const USER = generateUuidv7();
 /** USER's personal folder name: `users/<handle>/`, never their id. */
 const HANDLE = "alice";
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
@@ -111,17 +111,14 @@ const manifest = (title: string, id?: string) =>
   "\n";
 
 beforeEach(async () => {
-  await AppIndexEntry.deleteMany({});
-  await AppIndexHead.deleteMany({});
-  await AppProject.deleteMany({});
-  await WorkspaceUserHandle.deleteMany({});
-  await WorkspaceUserHandle.create({
-    workspaceId: new Types.ObjectId(WS),
-    userId: USER,
-    handle: HANDLE,
-  });
+  await pg.reset();
+  await ensureTestWorkspace(pg.db, { id: WS });
+  await ensureTestUser(pg.db, { id: USER, email: "alice@acme.test" });
+  await workspaceRepo.insertHandlesBestEffort(WS, [
+    { userId: USER, handle: HANDLE },
+  ]);
   invalidateOwnerDirectory();
-  await unbindTestWorkspaceRepo(WS);
+  invalidatePeopleDirectory();
   invalidateAppsIndexCache();
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,
@@ -232,12 +229,10 @@ describe("discoverApps", () => {
 
 describe("personal trees resolve through the handle mapping only", () => {
   it("a folder's name makes nobody its owner; the mapping does", async () => {
-    const OTHER = new Types.ObjectId().toString();
-    await WorkspaceUserHandle.create({
-      workspaceId: new Types.ObjectId(WS),
-      userId: OTHER,
-      handle: "bob",
-    });
+    const { id: OTHER } = await ensureTestUser(pg.db);
+    await workspaceRepo.insertHandlesBestEffort(WS, [
+      { userId: OTHER, handle: "bob" },
+    ]);
     invalidateOwnerDirectory();
     await externalCommit({
       // Named by USER's raw id: not a handle → nobody's (the pre-migration
@@ -275,7 +270,9 @@ describe("personal trees resolve through the handle mapping only", () => {
     expect(row.owner_id).toBe(USER);
     expect(canReadResource(row, USER, "member")).toBe(true);
     expect(canReadResource(row, "someone-else", "member")).toBe(false);
-    const stored = await AppProject.findById(personal._id);
+    const stored = await appsMetadataRepo.findProjectById(
+      personal._id.toString(),
+    );
     expect(stored?.owner_id).toBe(USER);
     expect(stored?.access).toBe("private");
 
@@ -294,12 +291,10 @@ describe("personal trees resolve through the handle mapping only", () => {
   });
 
   it("usage surfaces (/usage, /recent) and authorship follow the mapping, not the folder name", async () => {
-    const OTHER = new Types.ObjectId().toString();
-    await WorkspaceUserHandle.create({
-      workspaceId: new Types.ObjectId(WS),
-      userId: OTHER,
-      handle: "bob",
-    });
+    const { id: OTHER } = await ensureTestUser(pg.db);
+    await workspaceRepo.insertHandlesBestEffort(WS, [
+      { userId: OTHER, handle: "bob" },
+    ]);
     invalidateOwnerDirectory();
     // A folder spelled like OTHER's raw id: not a handle, so not OTHER's.
     await externalCommit({
@@ -398,28 +393,24 @@ describe("discovery facts", () => {
 
     // Freshness reads only the bindings the app still has: the deleted
     // `leads` binding's months-old state row must not age the app.
-    const State = getMongoAppBindingStateModel();
     const fresh = new Date(Date.now() - 60_000);
-    await State.create([
-      {
-        projectId: new Types.ObjectId(B_ID),
-        name: "rows",
-        lastMaterializedAt: fresh,
-        history: [{ at: fresh, status: "ready" }],
-      },
-      {
-        projectId: new Types.ObjectId(B_ID),
-        name: "leads",
-        lastMaterializedAt: new Date("2026-08-01T00:00:00Z"),
-        history: [{ at: new Date("2026-08-01T00:00:00Z"), status: "error" }],
-      },
-    ]);
+    await appsMetadataRepo.recordBindingRun(
+      B_ID,
+      "rows",
+      { at: fresh, status: "ready" },
+      WS,
+    );
+    await appsMetadataRepo.recordBindingRun(
+      B_ID,
+      "leads",
+      { at: new Date("2026-08-01T00:00:00Z"), status: "error" },
+      WS,
+    );
     const discovered = (await listDiscoveryApps(WS, USER, "member")).find(
       a => a.id === B_ID,
     );
     expect(discovered?.dataRefreshedAt).toBe(fresh.toISOString());
     expect(discovered?.health.bindingErrors).toEqual([]);
-    await State.deleteMany({ projectId: new Types.ObjectId(B_ID) });
   });
 
   it("credits the first human, not the platform commit that created the folder", async () => {
@@ -440,28 +431,29 @@ describe("discovery facts", () => {
   });
 
   it("shows each app's owner as the workspace member, not a commit email", async () => {
-    const ws = new Types.ObjectId(WS);
-    const joan = new Types.ObjectId().toString();
-    const tim = new Types.ObjectId().toString();
-    await User.create([
-      { _id: USER, email: "alice@acme.test", emailVerified: true },
-      { _id: joan, email: "joan@acme.test", emailVerified: true },
-      { _id: tim, email: "tim@acme.test", emailVerified: true },
-    ]);
-    await WorkspaceMember.create([
-      { workspaceId: ws, userId: USER, role: "owner", joinedAt: new Date(1) },
-      { workspaceId: ws, userId: joan, role: "member", joinedAt: new Date(2) },
-      { workspaceId: ws, userId: tim, role: "member", joinedAt: new Date(3) },
-    ]);
-    await OAuthAccount.create([
-      // Joan signs in with GitHub (id 42) whose email is his gmail.
-      {
-        userId: joan,
-        provider: "github",
-        providerUserId: "42",
-        email: "rodriguezjoan@gmail.com",
-      },
-    ]);
+    const { id: joan } = await ensureTestUser(pg.db, {
+      email: "joan@acme.test",
+    });
+    const { id: tim } = await ensureTestUser(pg.db, { email: "tim@acme.test" });
+    for (const [userId, role, joinedAt] of [
+      [USER, "owner", new Date(1)],
+      [joan, "member", new Date(2)],
+      [tim, "member", new Date(3)],
+    ] as const) {
+      await workspaceRepo.addMember({
+        workspaceId: WS,
+        userId,
+        role,
+        joinedAt,
+      });
+    }
+    // Joan signs in with GitHub (id 42) whose email is his gmail.
+    await authRepo.createOAuthAccount({
+      userId: joan,
+      provider: "github",
+      providerUserId: "42",
+      email: "rodriguezjoan@gmail.com",
+    });
     const commitAs = async (email: string, writes: Record<string, string>) => {
       await commitBlobsOnBranch(
         repoDirFor(WS),
@@ -486,43 +478,37 @@ describe("discovery facts", () => {
     await commitAs("alice@gmail.com", {
       "apps/gmail/mako.json": manifest("Gmail"),
     });
-    try {
-      invalidateOwnerDirectory();
-      invalidatePeopleDirectory();
-      const apps = await listDiscoveryApps(WS, USER, "owner");
-      const owner = (p: string) => apps.find(a => a.path === p)?.owner;
-      const joanHandle = (await WorkspaceUserHandle.findOne({ userId: joan }))
-        ?.handle;
-      expect(joanHandle).toBe("joan");
-      expect(owner("apps/alias")).toMatchObject({ userId: joan, name: "joan" });
-      expect(owner("apps/noreply")).toMatchObject({
-        userId: joan,
-        name: "joan",
-      });
-      // The workspace's domain is acme.test; tim@ there is the only `tim`.
-      expect(owner("apps/local")).toMatchObject({ userId: tim, name: "tim" });
-      // Nobody here: the GitHub login, never the numeric prefix.
-      expect(owner("apps/stranger")).toEqual({ name: "t-m-v" });
-      // A public mail domain never matches by local part.
-      expect(owner("apps/gmail")).toEqual({ name: "alice" });
-      // The personal app: its tree's owner.
-      expect(owner(`users/${HANDLE}/apps/c`)).toMatchObject({
-        userId: USER,
-        name: HANDLE,
-        email: "alice@acme.test",
-      });
-      // Search finds an app by its owner's member handle.
-      expect(
-        searchDiscoveryApps(apps, "joan")
-          .map(a => a.path)
-          .sort(),
-      ).toEqual(["apps/alias", "apps/noreply"]);
-    } finally {
-      await User.deleteMany({});
-      await WorkspaceMember.deleteMany({});
-      await OAuthAccount.deleteMany({});
-      invalidatePeopleDirectory();
-    }
+    invalidateOwnerDirectory();
+    invalidatePeopleDirectory();
+    const apps = await listDiscoveryApps(WS, USER, "owner");
+    const owner = (p: string) => apps.find(a => a.path === p)?.owner;
+    const joanHandle = (await workspaceRepo.listHandles(WS)).find(
+      row => row.userId === joan,
+    )?.handle;
+    expect(joanHandle).toBe("joan");
+    expect(owner("apps/alias")).toMatchObject({ userId: joan, name: "joan" });
+    expect(owner("apps/noreply")).toMatchObject({
+      userId: joan,
+      name: "joan",
+    });
+    // The workspace's domain is acme.test; tim@ there is the only `tim`.
+    expect(owner("apps/local")).toMatchObject({ userId: tim, name: "tim" });
+    // Nobody here: the GitHub login, never the numeric prefix.
+    expect(owner("apps/stranger")).toEqual({ name: "t-m-v" });
+    // A public mail domain never matches by local part.
+    expect(owner("apps/gmail")).toEqual({ name: "alice" });
+    // The personal app: its tree's owner.
+    expect(owner(`users/${HANDLE}/apps/c`)).toMatchObject({
+      userId: USER,
+      name: HANDLE,
+      email: "alice@acme.test",
+    });
+    // Search finds an app by its owner's member handle.
+    expect(
+      searchDiscoveryApps(apps, "joan")
+        .map(a => a.path)
+        .sort(),
+    ).toEqual(["apps/alias", "apps/noreply"]);
   });
 
   it("indexes the app's own thumbnail (png before svg) and serves it inert", async () => {
@@ -603,7 +589,7 @@ describe("discovery facts", () => {
 
 describe("the index", () => {
   it("rebuilds an older index at the same git sha before serving legacy permissions", async () => {
-    const legacy = await AppProject.create({
+    const legacy = await appsMetadataRepo.createProject({
       workspaceId: WS,
       slug: "a",
       title: "A",
@@ -611,50 +597,88 @@ describe("the index", () => {
       createdBy: USER,
     });
     await loadAppsIndex(WS);
-    await AppIndexEntry.updateOne(
-      { workspaceId: WS, path: "apps/a" },
-      { $set: { appId: derivedAppId(WS, "a").toHexString() } },
-    );
-    await AppIndexHead.updateOne(
-      { workspaceId: WS },
-      { $unset: { schemaVersion: 1 } },
-    );
+    const wsUuid = objectIdToUuid(WS);
+    await pg.db
+      .update(appIndex)
+      .set({ appId: objectIdToUuid(derivedAppId(WS, "a").toHexString()) })
+      .where(
+        and(eq(appIndex.workspaceId, wsUuid), eq(appIndex.path, "apps/a")),
+      );
+    await pg.db
+      .update(appIndexHeads)
+      .set({ schemaVersion: null })
+      .where(eq(appIndexHeads.workspaceId, wsUuid));
     invalidateAppsIndexCache();
     const resolved = (await resolveProjectRef(WS, "a"))!;
-    expect(resolved._id).toEqual(legacy._id);
+    expect(resolved._id.toString()).toBe(legacy.id);
     expect(canReadResource(resolved, "someone-else", "member")).toBe(false);
   });
 
-  it("rebuilds duplicate index identities without touching app state, and migrates twice", async () => {
-    const state = await AppProject.create({
-      workspaceId: WS,
-      slug: "a",
-      title: "A",
-      access: "private",
-      createdBy: USER,
-    });
-    await loadAppsIndex(WS);
-    await AppIndexEntry.collection.dropIndex("appId_1");
-    const original = await AppIndexEntry.findOne({ appId: B_ID }).lean();
-    if (!original || !mongoose.connection.db) {
-      throw new Error("Missing fixture");
+  it("clears duplicate legacy index identities without touching app state, and migrates twice", async () => {
+    const mongo = await MongoMemoryServer.create();
+    const connection = mongoose.createConnection(mongo.getUri());
+    try {
+      const db = (await connection.asPromise()).db;
+      if (!db) throw new Error("Missing legacy migration database");
+      const workspaceId = new Types.ObjectId(WS);
+      const id = new Types.ObjectId();
+      const state = {
+        _id: id,
+        workspaceId,
+        slug: "a",
+        title: "A",
+        access: "private" as const,
+        createdBy: USER,
+      };
+      await db.collection("app_projects").insertOne(state);
+      const legacyIndex = {
+        appId: B_ID,
+        path: "apps/Sales/CH/b",
+        slug: "b",
+        scope: "workspace" as const,
+        treeOid: "0".repeat(40),
+        title: "B",
+        hasManifestId: true,
+        schedules: [],
+        indexedSha: "0".repeat(40),
+      };
+      await db
+        .collection("app_index")
+        .createIndex({ workspaceId: 1, appId: 1 }, { unique: true });
+      await db.collection("app_index").insertMany([
+        { ...legacyIndex, workspaceId },
+        { ...legacyIndex, workspaceId: new Types.ObjectId() },
+      ]);
+      await db
+        .collection("app_index_heads")
+        .insertOne({ workspaceId, sha: legacyIndex.indexedSha });
+      await isolateAppIds(db);
+      await isolateAppIds(db);
+      expect(await db.collection("app_index").countDocuments()).toBe(0);
+      expect(await db.collection("app_index_heads").countDocuments()).toBe(0);
+      expect(
+        (await db.collection("app_projects").findOne({ _id: id }))?.access,
+      ).toBe("private");
+
+      await appsMetadataRepo.createProject({
+        id: id.toHexString(),
+        workspaceId: WS,
+        slug: state.slug,
+        title: state.title,
+        access: state.access,
+        createdBy: state.createdBy,
+      });
+      expect((await resolveProjectRef(WS, "a"))?._id.toString()).toBe(
+        id.toHexString(),
+      );
+    } finally {
+      await connection.close();
+      await mongo.stop();
     }
-    await AppIndexEntry.collection.insertOne({
-      ...original,
-      _id: new Types.ObjectId(),
-      workspaceId: new Types.ObjectId(),
-    });
-    await isolateAppIds(mongoose.connection.db);
-    await isolateAppIds(mongoose.connection.db);
-    expect(await AppIndexEntry.countDocuments()).toBe(0);
-    expect(await AppIndexHead.countDocuments()).toBe(0);
-    expect((await AppProject.findById(state._id))?.access).toBe("private");
-    invalidateAppsIndexCache();
-    expect((await resolveProjectRef(WS, "a"))?._id).toEqual(state._id);
   });
 
   it("preserves a legacy private app's random id, permissions and deployment", async () => {
-    const legacy = await AppProject.create({
+    const legacy = await appsMetadataRepo.createProject({
       workspaceId: WS,
       slug: "a",
       title: "A",
@@ -664,10 +688,12 @@ describe("the index", () => {
       publishedSha: "a".repeat(40),
     });
     const resolved = (await resolveProjectRef(WS, "a"))!;
-    expect(resolved._id.toString()).toBe(legacy._id.toString());
+    expect(resolved._id.toString()).toBe(legacy.id);
     expect(resolved.publishedSha).toBe(legacy.publishedSha);
     expect(canReadResource(resolved, "another-user", "member")).toBe(false);
-    expect((await ensureProjectRow(resolved, USER))._id).toEqual(legacy._id);
+    expect((await ensureProjectRow(resolved, USER))._id.toString()).toBe(
+      legacy.id,
+    );
     await moveProject(resolved, {
       scope: "workspace",
       folderSegments: ["Legacy"],
@@ -679,25 +705,27 @@ describe("the index", () => {
   });
 
   it("gives a manifest claiming another workspace's state a separate id", async () => {
-    const foreign = await AppProject.create({
-      _id: B_ID,
-      workspaceId: new Types.ObjectId(),
+    const workspace = await ensureTestWorkspace(pg.db);
+    const owner = await ensureTestUser(pg.db);
+    const foreign = await appsMetadataRepo.createProject({
+      id: B_ID,
+      workspaceId: workspace.id,
       slug: "foreign",
       title: "Foreign",
       access: "private",
-      createdBy: "foreign-owner",
+      createdBy: owner.id,
     });
     const resolved = (await resolveProjectRef(WS, "b"))!;
     expect(resolved._id.toString()).not.toBe(B_ID);
     const persisted = await ensureProjectRow(resolved, USER);
     expect(persisted.workspaceId.toString()).toBe(WS);
-    expect((await AppProject.findById(B_ID))?.workspaceId).toEqual(
+    expect((await appsMetadataRepo.findProjectById(B_ID))?.workspaceId).toEqual(
       foreign.workspaceId,
     );
     // Defense in depth: even a stale/forged caller shape cannot return foreign state.
     await expect(
       ensureProjectRow(
-        { ...resolved, _id: foreign._id } as typeof resolved,
+        { ...resolved, _id: new Types.ObjectId(foreign.id) } as typeof resolved,
         USER,
       ),
     ).rejects.toThrow();
@@ -761,14 +789,10 @@ describe("the index", () => {
       "apps/Sales/CH",
     ]);
     // Persisted, so every instance and the scheduler read the same rows.
-    expect(
-      await AppIndexEntry.countDocuments({
-        workspaceId: new Types.ObjectId(WS),
-      }),
-    ).toBe(3);
-    const head = await AppIndexHead.findOne({
-      workspaceId: new Types.ObjectId(WS),
-    }).lean();
+    expect(await appsMetadataRepo.listIndexEntriesByWorkspace(WS)).toHaveLength(
+      3,
+    );
+    const head = await appsMetadataRepo.findIndexHeadByWorkspace(WS);
     expect(head?.sha).toBe(snapshot.sha);
   });
 
@@ -816,7 +840,9 @@ describe("the index", () => {
     );
     snapshot = await loadAppsIndex(WS);
     expect(snapshot.apps.find(a => a.appId === B_ID)?.path).toBe("apps/Ops/b");
-    expect((await AppProject.findById(B_ID))?.path).toBe("apps/Ops/b");
+    expect((await appsMetadataRepo.findProjectById(B_ID))?.path).toBe(
+      "apps/Ops/b",
+    );
   });
 
   it("does not let a copied folder steal its source's id", async () => {
@@ -867,7 +893,9 @@ describe("moves", () => {
     const snapshot = await loadAppsIndex(WS);
     expect(snapshot.apps.find(x => x.appId === id)?.path).toBe("apps/Sales/a");
     expect(snapshot.apps.map(x => x.slug).sort()).toEqual(["a", "b", "c"]);
-    expect((await AppProject.findById(id))?.path).toBe("apps/Sales/a");
+    expect((await appsMetadataRepo.findProjectById(id))?.path).toBe(
+      "apps/Sales/a",
+    );
     // Every ref still resolves to the same app.
     expect((await resolveProjectRef(WS, id))?._id.toString()).toBe(id);
     expect((await resolveProjectRef(WS, "apps/Sales/a"))?._id.toString()).toBe(
@@ -1033,7 +1061,9 @@ describe("identity across laptop moves", () => {
     expect(moved?.appId).toBe(aId);
     expect(moved?.hasManifestId).toBe(false);
     expect(snapshot.apps.some(a => a.path === "apps/a")).toBe(false);
-    expect((await AppProject.findById(aId))?.path).toBe("apps/Sales/a");
+    expect((await appsMetadataRepo.findProjectById(aId))?.path).toBe(
+      "apps/Sales/a",
+    );
     expect(await treeOidOf("apps/Sales/a")).toBe(oid);
     // Deploy-on-push sees the same app with the same tree: nothing to do.
     const after = (await resolveCommit(repoDirFor(WS), MAIN))!;
@@ -1084,8 +1114,10 @@ describe("identity across laptop moves", () => {
     expect(snapshot.apps.find(a => a.appId === dId)?.path).toBe(
       "apps/Sales/CH/b",
     );
-    expect((await AppProject.findById(B_ID))?.path).toBe("apps/d");
-    expect((await AppProject.findById(dId))?.path).toBe("apps/Sales/CH/b");
+    expect((await appsMetadataRepo.findProjectById(B_ID))?.path).toBe("apps/d");
+    expect((await appsMetadataRepo.findProjectById(dId))?.path).toBe(
+      "apps/Sales/CH/b",
+    );
   });
 
   it("frees a legacy row's path when a stamped manifest with another id lands there", async () => {
@@ -1096,7 +1128,7 @@ describe("identity across laptop moves", () => {
     await externalCommit({ "apps/a/mako.json": manifest("A2", newId) });
     const snapshot = await loadAppsIndex(WS);
     expect(snapshot.apps.find(a => a.path === "apps/a")?.appId).toBe(newId);
-    expect((await AppProject.findById(aId))?.path).toBeUndefined();
+    expect((await appsMetadataRepo.findProjectById(aId))?.path).toBeUndefined();
     // The new identity can now take the folder's state row.
     const row = await ensureProjectRow(
       (await resolveProjectRef(WS, newId))!,
@@ -1116,7 +1148,7 @@ describe("identity across laptop moves", () => {
     const stale = await loadAppsIndex(WS);
     expect(stale.sha).toBe(fresh.sha);
     expect(stale.apps.some(a => a.path === "apps/new")).toBe(true);
-    expect((await AppIndexHead.findOne({ workspaceId: WS }))?.sha).toBe(
+    expect((await appsMetadataRepo.findIndexHeadByWorkspace(WS))?.sha).toBe(
       fresh.sha,
     );
   });
@@ -1128,17 +1160,17 @@ describe("schema bump during a rolling deploy", () => {
     await externalCommit({ "apps/new/mako.json": manifest("New") });
     const fresh = await loadAppsIndex(WS);
     // An older revision wrote the head: its schema version is not ours.
-    await AppIndexHead.updateOne(
-      { workspaceId: WS },
-      { $set: { schemaVersion: 3 } },
-    );
+    await pg.db
+      .update(appIndexHeads)
+      .set({ schemaVersion: 3 })
+      .where(eq(appIndexHeads.workspaceId, objectIdToUuid(WS)));
     // This instance's clone is still on the older commit.
     await runGit(["-C", repoDirFor(WS), "update-ref", MAIN, before]);
     invalidateAppsIndexCache(WS);
     const rebuilt = await loadAppsIndex(WS);
     expect(rebuilt.sha).toBe(fresh.sha);
     expect(rebuilt.apps.some(a => a.path === "apps/new")).toBe(true);
-    const head = await AppIndexHead.findOne({ workspaceId: WS });
+    const head = await appsMetadataRepo.findIndexHeadByWorkspace(WS);
     expect(head?.sha).toBe(fresh.sha);
     expect(head?.schemaVersion).not.toBe(3);
   });
@@ -1162,7 +1194,9 @@ describe("identity across laptop moves, second round", () => {
     const snapshot = await loadAppsIndex(WS);
     const moved = snapshot.apps.find(a => a.path === "apps/Sales/a");
     expect(moved?.appId).toBe(aId);
-    expect((await AppProject.findById(aId))?.path).toBe("apps/Sales/a");
+    expect((await appsMetadataRepo.findProjectById(aId))?.path).toBe(
+      "apps/Sales/a",
+    );
     // Edited, so it IS changed — under the same id, never as a new app.
     const after = (await resolveCommit(repoDirFor(WS), MAIN))!;
     expect(await appFolderChanged(WS, repoDirFor(WS), aId, before, after)).toBe(
@@ -1227,7 +1261,7 @@ describe("visibility follows the tree", () => {
       { scope: "private", ownerId: USER, folderSegments: [] },
       { userId: USER },
     );
-    let row = (await AppProject.findById(a._id))!;
+    let row = (await appsMetadataRepo.findProjectById(a._id.toString()))!;
     expect(row.path).toBe(`users/${HANDLE}/apps/a`);
     expect(row.access).toBe("private");
     expect(row.owner_id).toBe(USER);
@@ -1237,7 +1271,7 @@ describe("visibility follows the tree", () => {
       { scope: "workspace", folderSegments: [] },
       { userId: USER },
     );
-    row = (await AppProject.findById(a._id))!;
+    row = (await appsMetadataRepo.findProjectById(a._id.toString()))!;
     expect(row.path).toBe("apps/a");
     expect(row.access).toBe("workspace");
   });
@@ -1255,7 +1289,7 @@ describe("visibility follows the tree", () => {
       ["apps/a/mako.json", "apps/a/src/main.tsx", "apps/a/fixtures/mako.json"],
     );
     await loadAppsIndex(WS);
-    const row = (await AppProject.findById(aId))!;
+    const row = (await appsMetadataRepo.findProjectById(aId))!;
     expect(row.path).toBe(`users/${HANDLE}/apps/a`);
     expect(row.access).toBe("private");
     expect(row.owner_id).toBe(USER);
@@ -1263,7 +1297,7 @@ describe("visibility follows the tree", () => {
 });
 
 describe("ambiguous slugs", () => {
-  it("resolve to nothing rather than to whichever row Mongo returns first", async () => {
+  it("resolve to nothing rather than to whichever row the database returns first", async () => {
     await externalCommit({ "apps/Ops/c/mako.json": manifest("Ops C") });
     await loadAppsIndex(WS);
     // "c" now names users/<HANDLE>/apps/c and apps/Ops/c; neither is top-level.

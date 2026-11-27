@@ -3,7 +3,7 @@
  * Mako's origin, so without a CSP sandbox that code would run as
  * app.mako.ai with a signed-in visitor's session in reach.
  *
- * Pinned here, against the real share routes and real Mongo:
+ * Pinned here, against the real share routes and PGlite:
  * - every document the share serves carries the sandbox, never
  *   allow-same-origin; scripts and data carry the wildcard ACAO an
  *   opaque-origin page needs;
@@ -21,8 +21,12 @@ import type { AddressInfo } from "node:net";
 import bcrypt from "bcrypt";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 import {
   afterAll,
   beforeAll,
@@ -80,7 +84,7 @@ vi.mock("../apps/deployment.service", () => ({
 
 import { cors } from "hono/cors";
 import { publicShareRoutes, SHARE_APP_SANDBOX } from "./public-share";
-import { AppProject } from "../database/workspace-schema";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
 
 const OPEN = "open-share-token";
 const LOCKED = "locked-share-token";
@@ -104,45 +108,47 @@ function server() {
   return app;
 }
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 
 beforeAll(async () => {
   vi.stubEnv("SESSION_SECRET", "share-sandbox-test-secret");
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
   const passwordHash = await bcrypt.hash("pw", 4);
+  const workspace = await ensureTestWorkspace(pg.db);
+  await ensureTestUser(pg.db, { id: "owner" });
   const base = {
-    workspaceId: new Types.ObjectId(),
+    workspaceId: workspace.id,
     access: "workspace" as const,
     owner_id: "owner",
     createdBy: "owner",
     publishedSha: "38ce8e7b28e8ace0c1d83bdacb95e28df3d5175b",
   };
-  await AppProject.create([
-    {
-      ...base,
-      title: "Open",
-      slug: "open",
-      publicShare: { enabled: true, token: OPEN },
-    },
-    {
-      ...base,
-      title: "Locked",
-      slug: "locked",
-      publicShare: { enabled: true, token: LOCKED, passwordHash },
-    },
-    {
-      ...base,
-      title: "Other",
-      slug: "other",
-      publicShare: { enabled: true, token: OTHER, passwordHash },
-    },
-  ]);
+  await Promise.all(
+    [
+      {
+        ...base,
+        title: "Open",
+        slug: "open",
+        publicShare: { enabled: true, token: OPEN },
+      },
+      {
+        ...base,
+        title: "Locked",
+        slug: "locked",
+        publicShare: { enabled: true, token: LOCKED, passwordHash },
+      },
+      {
+        ...base,
+        title: "Other",
+        slug: "other",
+        publicShare: { enabled: true, token: OTHER, passwordHash },
+      },
+    ].map(project => appsMetadataRepo.createProject(project)),
+  );
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo?.stop();
+  await pg?.close();
   vi.unstubAllEnvs();
 });
 

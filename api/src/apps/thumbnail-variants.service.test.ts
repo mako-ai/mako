@@ -3,21 +3,16 @@
  * key, then served from the store by any instance — without git. Plus the
  * main-moved pre-warm and the persisted-index lookup the hot paths use.
  *
- * Real bare repo + in-memory Mongo + the filesystem artifact store.
+ * Real bare repo + PGlite + the filesystem artifact store.
  */
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { setupPgTestDb, type PgTestDb } from "../test-support/pg-test";
 import sharp from "sharp";
-import {
-  AppIndexEntry,
-  AppIndexHead,
-  AppProject,
-  Workspace,
-} from "../database/workspace-schema";
+
 import { initRepo, repoDirFor } from "./repository.service";
 import {
   bindTestWorkspaceRepo,
@@ -41,7 +36,7 @@ import { backfillThumbnailVariants } from "./thumbnail-warm-boot";
 import { ogRoutes } from "../routes/og";
 import { RequestTimings, runWithTimings } from "../middleware/server-timing";
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 let tmpRoot: string;
 let poster: Buffer;
 
@@ -61,8 +56,7 @@ beforeAll(async () => {
   process.env.APPS_SANDBOX_PROVIDER = "local";
   process.env.DASHBOARD_ARTIFACT_DIR = path.join(tmpRoot, "artifacts");
   process.env.SESSION_SECRET ||= "test-secret";
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
   poster = await sharp({
     create: {
       width: 1200,
@@ -77,8 +71,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -88,10 +81,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await AppIndexEntry.deleteMany({});
-  await AppIndexHead.deleteMany({});
-  await AppProject.deleteMany({});
-  await unbindTestWorkspaceRepo(WS);
+  await pg.reset();
   invalidateAppsIndexCache();
   variantCache.clear();
   resetThumbnailWarmState();
@@ -116,13 +106,9 @@ beforeEach(async () => {
     "users/alice/apps/mine/thumbnail.png": poster,
   });
   await bindTestWorkspaceRepo(WS);
-  await Workspace.updateOne(
-    { _id: new Types.ObjectId(WS) },
-    { $unset: { "settings.linkPreviews": 1 } },
-  );
 });
 
-/** Index synced (rows persisted in Mongo), as any instance would leave it. */
+/** Index synced (rows persisted in Postgres), as any instance would leave it. */
 async function indexed() {
   const snapshot = await loadAppsIndex(WS);
   const row = (id: Types.ObjectId) =>
@@ -251,7 +237,7 @@ describe("backfillThumbnailVariants (on boot)", () => {
 });
 
 describe("persisted-index lookup", () => {
-  it("resolves by id and slug from Mongo rows, with no repo bound", async () => {
+  it("resolves by id and slug from Postgres rows, with no repo bound", async () => {
     await indexed();
     await unbindTestWorkspaceRepo(WS);
     invalidateAppsIndexCache();
@@ -265,7 +251,7 @@ describe("persisted-index lookup", () => {
     expect(await resolveIndexedAppRef("not-an-id", "board")).toBeNull();
   });
 
-  it("serves the OG image on a 'fresh instance' from store + Mongo alone", async () => {
+  it("serves the OG image on a 'fresh instance' from store + Postgres alone", async () => {
     const { snapshot } = await indexed();
     await warmThumbnailVariants(WS, snapshot.apps);
     await stored(

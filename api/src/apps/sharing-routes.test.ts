@@ -7,9 +7,28 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  generateObjectIdHex,
+  generateUuidv7,
+  isUuidString,
+  legacyUserIdToUuidv7,
+  objectIdToUuid,
+} from "../database/pg/id-codec";
+import {
+  appsMetadataRepo,
+  type AppProjectRecord,
+} from "../repositories/apps-metadata";
+import {
+  ensureTestMember,
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 import type { Context, Next } from "hono";
+import { asc, eq } from "drizzle-orm";
+import { appUsageDaily, appUsageEvents } from "../database/pg/schema";
+import { workspaceRepo } from "../repositories/workspaces";
 
 // Supply an authenticated identity; keep membership, ACLs, persistence and
 // the mounted sharing routes real so a missing role cannot pass unnoticed.
@@ -17,7 +36,9 @@ const identity = vi.hoisted(() => ({ userId: "admin" }));
 vi.mock("../auth/unified-auth.middleware", () => ({
   unifiedAuthMiddleware: async (c: Context, next: Next) => {
     c.set("user", {
-      id: identity.userId,
+      id: isUuidString(identity.userId)
+        ? identity.userId
+        : legacyUserIdToUuidv7(identity.userId),
       email: `${identity.userId}@example.com`,
     });
     await next();
@@ -29,54 +50,40 @@ import { appsRoutes } from "../routes/apps";
 import { publicShareRoutes, recordSharedAppOpen } from "../routes/public-share";
 import { anonIdFromCookie, resetUsageThrottle } from "./app-usage.service";
 import { invalidateOwnerDirectory } from "./user-handles.service";
-import { User } from "../database/schema";
-import {
-  AppProject,
-  AppUsageDaily,
-  AppUsageEvent,
-  Workspace,
-  WorkspaceMember,
-  type IAppProject,
-} from "../database/workspace-schema";
 
 const app = createRouter();
 app.route("/api/workspaces/:workspaceId/apps", appsRoutes);
 app.route("/api/share", publicShareRoutes);
 
-const workspaceId = new Types.ObjectId();
-let mongo: MongoMemoryServer;
-let project: IAppProject;
+const workspaceId = generateObjectIdHex();
+let pg: PgTestDb;
+let project: AppProjectRecord;
 
 beforeAll(async () => {
   vi.stubEnv("ENCRYPTION_KEY", "ab".repeat(32));
   vi.stubEnv("SESSION_SECRET", "sharing-route-test-secret");
   vi.stubEnv("BCRYPT_ROUNDS", "4");
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
-  await User.create(
-    ["admin", "owner", "member", "viewer", "app-owner", "newcomer"].map(id => ({
-      _id: id,
-      email: `${id}@example.com`,
-    })),
-  );
-  await Workspace.collection.insertOne({
-    _id: workspaceId,
-    name: "Sharing test",
-  });
+  pg = await setupPgTestDb();
 });
 
 beforeEach(async () => {
   identity.userId = "admin";
-  await AppProject.deleteMany({});
-  await WorkspaceMember.deleteMany({});
-  await Workspace.updateOne({ _id: workspaceId }, { $unset: { settings: "" } });
-  await WorkspaceMember.create([
-    { workspaceId, userId: "admin", role: "admin" },
-    { workspaceId, userId: "owner", role: "owner" },
-    { workspaceId, userId: "member", role: "member" },
-    { workspaceId, userId: "viewer", role: "viewer" },
-  ]);
-  project = await AppProject.create({
+  await pg.reset();
+  await ensureTestWorkspace(pg.db, { id: workspaceId, name: "Sharing test" });
+  for (const id of [
+    "admin",
+    "owner",
+    "member",
+    "viewer",
+    "app-owner",
+    "newcomer",
+  ]) {
+    await ensureTestUser(pg.db, { id, email: `${id}@example.com` });
+  }
+  for (const role of ["admin", "owner", "member", "viewer"] as const) {
+    await ensureTestMember(pg.db, { workspaceId, userId: role, role });
+  }
+  project = await appsMetadataRepo.createProject({
     workspaceId,
     title: "Financial Model",
     slug: "financial-model",
@@ -87,14 +94,13 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo?.stop();
+  await pg?.close();
   vi.unstubAllEnvs();
 });
 
 function manage(suffix: string, method: string, body?: object) {
   return app.request(
-    `/api/workspaces/${workspaceId}/apps/${project._id}/${suffix}`,
+    `/api/workspaces/${workspaceId}/apps/${project.id}/${suffix}`,
     {
       method,
       ...(body
@@ -156,14 +162,16 @@ describe("app sharing authorization", () => {
     expect(
       (
         await manage("collaborators", "POST", {
-          userId: "viewer",
+          userId: legacyUserIdToUuidv7("viewer"),
           role: "viewer",
         })
       ).status,
     ).toBe(200);
-    const saved = await AppProject.findById(project._id);
+    const saved = await appsMetadataRepo.findProjectById(project.id);
     expect(saved?.workspaceRole).toBe("editor");
-    expect(saved?.sharedWith?.map(entry => entry.userId)).toContain("viewer");
+    expect(saved?.sharedWith?.map(entry => entry.userId)).toContain(
+      legacyUserIdToUuidv7("viewer"),
+    );
   });
 
   it.each(["member", "viewer"])(
@@ -175,14 +183,16 @@ describe("app sharing authorization", () => {
           .status,
       ).toBe(403);
       expect(
-        (await AppProject.findById(project._id))?.publicShare?.enabled,
+        (await appsMetadataRepo.findProjectById(project.id))?.publicShare
+          ?.enabled,
       ).not.toBe(true);
     },
   );
 
   it("does not let admins share another person's private app", async () => {
-    project.access = "private";
-    await project.save();
+    await appsMetadataRepo.updateProjectSharing(workspaceId, project.id, {
+      access: "private",
+    });
     expect(
       (await manage("public-share", "POST", { password: "test-password" }))
         .status,
@@ -199,18 +209,13 @@ describe("app sharing authorization", () => {
 
   it("preserves domain auto-join without granting sharing rights", async () => {
     identity.userId = "newcomer";
-    await Workspace.updateOne(
-      { _id: workspaceId },
-      {
-        $set: {
-          "settings.autoJoin": { domains: ["example.com"], role: "viewer" },
-        },
-      },
-    );
+    await workspaceRepo.setAutoJoin(workspaceId, {
+      domains: ["example.com"],
+      role: "viewer",
+    });
     expect((await manage("collaborators", "GET")).status).toBe(200);
     expect(
-      (await WorkspaceMember.findOne({ workspaceId, userId: "newcomer" }))
-        ?.role,
+      (await workspaceRepo.findMember(workspaceId, "newcomer"))?.role,
     ).toBe("viewer");
     expect(
       (await manage("public-share", "POST", { password: "test-password" }))
@@ -220,31 +225,26 @@ describe("app sharing authorization", () => {
 });
 
 describe("a personal app's row, through the sharing routes", () => {
-  const carol = new Types.ObjectId().toString();
-  const someone = new Types.ObjectId().toString();
-  const wsAdmin = new Types.ObjectId().toString();
-
-  beforeAll(async () => {
-    await User.create(
-      [
-        [carol, "carol"],
-        [someone, "someone"],
-        [wsAdmin, "ws-admin"],
-      ].map(([_id, name]) => ({ _id, email: `${name}@example.com` })),
-    );
-  });
+  const carol = generateUuidv7();
+  const someone = generateUuidv7();
+  const wsAdmin = generateUuidv7();
 
   beforeEach(async () => {
-    await WorkspaceMember.create([
-      { workspaceId, userId: carol, role: "member" },
-      { workspaceId, userId: someone, role: "member" },
-      { workspaceId, userId: wsAdmin, role: "admin" },
-    ]);
+    await ensureTestUser(pg.db, { id: carol, email: "carol@example.com" });
+    await ensureTestUser(pg.db, { id: someone, email: "someone@example.com" });
+    await ensureTestUser(pg.db, { id: wsAdmin, email: "ws-admin@example.com" });
+    await ensureTestMember(pg.db, { workspaceId, userId: carol });
+    await ensureTestMember(pg.db, { workspaceId, userId: someone });
+    await ensureTestMember(pg.db, {
+      workspaceId,
+      userId: wsAdmin,
+      role: "admin",
+    });
     invalidateOwnerDirectory();
   });
 
   const row = (path: string) =>
-    AppProject.create({
+    appsMetadataRepo.createProject({
       workspaceId,
       title: "Personal",
       slug: path.split("/").pop(),
@@ -271,7 +271,7 @@ describe("a personal app's row, through the sharing routes", () => {
     async (_role, actor) => {
       project = await row("users/carol/apps/pushed");
       expect(await refused(actor())).toEqual([403, 403, 403, 403]);
-      const saved = await AppProject.findById(project._id);
+      const saved = await appsMetadataRepo.findProjectById(project.id);
       expect(saved?.owner_id).toBe(carol);
       expect(saved?.access).toBe("private");
       expect(saved?.publicShare?.enabled ?? false).toBe(false);
@@ -292,7 +292,7 @@ describe("a personal app's row, through the sharing routes", () => {
     async (_role, actor) => {
       project = await row("users/nobody/apps/orphan");
       expect(await refused(actor())).toEqual([403, 403, 403, 403]);
-      const saved = await AppProject.findById(project._id);
+      const saved = await appsMetadataRepo.findProjectById(project.id);
       expect(saved?.owner_id ?? undefined).toBeUndefined();
       expect(saved?.createdBy || undefined).toBeUndefined();
     },
@@ -302,7 +302,7 @@ describe("a personal app's row, through the sharing routes", () => {
 describe("anonymous share viewers (usage)", () => {
   // The share route's open recording, on a stand-in for the served entry:
   // the real one needs a built deployment in the artifact store.
-  const APP_ID = new Types.ObjectId().toString();
+  const APP_ID = generateObjectIdHex();
   const probe = createRouter();
   probe.get("/api/share/t/app/", c => {
     const response = new Response("<!doctype html>", {
@@ -314,13 +314,13 @@ describe("anonymous share viewers (usage)", () => {
   const load = (headers: Record<string, string>) =>
     probe.request("/api/share/t/app/", { headers });
   const events = () =>
-    AppUsageEvent.find({ appId: APP_ID }).sort({ at: 1 }).lean();
+    pg.db
+      .select()
+      .from(appUsageEvents)
+      .where(eq(appUsageEvents.appId, objectIdToUuid(APP_ID)))
+      .orderBy(asc(appUsageEvents.at));
 
-  beforeEach(async () => {
-    resetUsageThrottle();
-    await AppUsageEvent.deleteMany({});
-    await AppUsageDaily.deleteMany({});
-  });
+  beforeEach(() => resetUsageThrottle());
 
   it("gives a first-time viewer a cookie and records only its hash", async () => {
     const first = await load({ "sec-fetch-dest": "document" });
@@ -363,6 +363,11 @@ describe("anonymous share viewers (usage)", () => {
     expect(res.headers.get("set-cookie")).toBeNull();
     await vi.waitFor(async () => expect(await events()).toHaveLength(1));
     expect((await events())[0].uaClass).toBe("bot");
-    expect(await AppUsageDaily.countDocuments({ appId: APP_ID })).toBe(0);
+    expect(
+      await pg.db.$count(
+        appUsageDaily,
+        eq(appUsageDaily.appId, objectIdToUuid(APP_ID)),
+      ),
+    ).toBe(0);
   });
 });

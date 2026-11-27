@@ -2,27 +2,24 @@
  * Link previews for public shares: which shares describe their app, the
  * tags in the served HTML, and the preview image endpoint.
  *
- * A real bare repo (the app folder carries thumbnail.png) and in-memory
- * Mongo, the same harness as the apps index suite.
+ * A real bare repo (the app folder carries thumbnail.png) and PGlite.
  */
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import {
+  setupPgTestDb,
+  type PgTestDb,
+  ensureTestWorkspace,
+  ensureTestUser,
+} from "../test-support/pg-test";
 import sharp from "sharp";
-import {
-  AppIndexEntry,
-  AppIndexHead,
-  AppProject,
-  Workspace,
-} from "../database/workspace-schema";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
+import { workspaceRepo } from "../repositories/workspaces";
 import { initRepo, repoDirFor } from "../apps/repository.service";
-import {
-  bindTestWorkspaceRepo,
-  unbindTestWorkspaceRepo,
-} from "../apps/bind-test-workspace-repo";
+import { bindTestWorkspaceRepo } from "../apps/bind-test-workspace-repo";
 import {
   invalidateAppsIndexCache,
   loadAppsIndex,
@@ -45,7 +42,7 @@ import {
   shareTokenFromPath,
 } from "./share-og.service";
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 let tmpRoot: string;
 /** A real 1600×1000 PNG: the OG image re-encodes and caps it. */
 let posterPng: Buffer;
@@ -57,8 +54,7 @@ beforeAll(async () => {
   process.env.APPS_SANDBOX_PROVIDER = "local";
   process.env.DASHBOARD_ARTIFACT_DIR = path.join(tmpRoot, "artifacts");
   process.env.SESSION_SECRET ||= "test-secret";
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
   // Coarse noise, blown up: a ~650 KB PNG (under the 3 MB blob cap) whose
   // straight q85 JPEG would still be ~450 KB, so the cap has to bite.
   const grain = await sharp({
@@ -79,8 +75,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -107,10 +102,7 @@ const manifest = (id: Types.ObjectId, title: string, description?: string) =>
   });
 
 beforeEach(async () => {
-  await AppIndexEntry.deleteMany({});
-  await AppIndexHead.deleteMany({});
-  await AppProject.deleteMany({});
-  await unbindTestWorkspaceRepo(WS);
+  await pg.reset();
   invalidateAppsIndexCache();
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,
@@ -143,51 +135,54 @@ beforeEach(async () => {
     "users/alice/apps/mine/thumbnail.png": "PERSONAL-PNG",
   });
   await bindTestWorkspaceRepo(WS);
-  await Workspace.updateOne(
-    { _id: new Types.ObjectId(WS) },
-    { $unset: { "settings.linkPreviews": 1 } },
-  );
+  const owner = await ensureTestUser(pg.db);
   const base = {
-    workspaceId: new Types.ObjectId(WS),
+    workspaceId: WS,
     access: "workspace" as const,
     createdBy: "",
     defaultBranch: "main",
   };
-  await AppProject.create([
-    {
-      ...base,
-      _id: OPEN,
-      title: "Leads",
-      slug: "open",
-      path: "apps/open",
-      publicShare: { enabled: true, token: "open-share" },
-    },
-    {
-      ...base,
-      _id: LOCKED,
-      title: "Secret board",
-      slug: "locked",
-      path: "apps/locked",
-      publicShare: { enabled: true, token: "locked-share", passwordHash: "x" },
-    },
-    {
-      ...base,
-      _id: SVG_ONLY,
-      title: "Vector only",
-      slug: "svg",
-      path: "apps/svg",
-      publicShare: { enabled: true, token: "svg-share" },
-    },
-    {
-      ...base,
-      _id: RESTRICTED,
-      title: "Board pack",
-      slug: "restricted",
-      path: "apps/restricted",
-      access: "private",
-      owner_id: new Types.ObjectId().toString(),
-    },
-  ]);
+  await Promise.all(
+    [
+      {
+        ...base,
+        id: OPEN.toHexString(),
+        title: "Leads",
+        slug: "open",
+        path: "apps/open",
+        publicShare: { enabled: true, token: "open-share" },
+      },
+      {
+        ...base,
+        id: LOCKED.toHexString(),
+        title: "Secret board",
+        slug: "locked",
+        path: "apps/locked",
+        publicShare: {
+          enabled: true,
+          token: "locked-share",
+          passwordHash: "x",
+        },
+      },
+      {
+        ...base,
+        id: SVG_ONLY.toHexString(),
+        title: "Vector only",
+        slug: "svg",
+        path: "apps/svg",
+        publicShare: { enabled: true, token: "svg-share" },
+      },
+      {
+        ...base,
+        id: RESTRICTED.toHexString(),
+        title: "Board pack",
+        slug: "restricted",
+        path: "apps/restricted",
+        access: "private" as const,
+        owner_id: owner.id,
+      },
+    ].map(project => appsMetadataRepo.createProject(project)),
+  );
 });
 
 describe("share link previews", () => {
@@ -316,10 +311,7 @@ describe("in-app link previews", () => {
       expect(tags?.image).toBe(`${ORIGIN}/og-default.png`);
       expect(JSON.stringify(tags)).not.toMatch(/Board pack|Alice/);
     }
-    await Workspace.updateOne(
-      { _id: new Types.ObjectId(WS) },
-      { $set: { "settings.linkPreviews": false } },
-    );
+    await workspaceRepo.setLinkPreviews(WS, false);
     const tags = await ogTagsForPath(view(PLAIN), ORIGIN);
     expect(tags?.title).toBe(GENERIC_SHARE_TITLE);
   });
@@ -340,10 +332,7 @@ describe("in-app link previews", () => {
       );
       expect(res.status).toBe(404);
     }
-    await Workspace.updateOne(
-      { _id: new Types.ObjectId(WS) },
-      { $set: { "settings.linkPreviews": false } },
-    );
+    await workspaceRepo.setLinkPreviews(WS, false);
     const off = await ogRoutes.request(
       `/app-image/${WS}/${PLAIN.toHexString()}`,
     );
@@ -408,7 +397,6 @@ describe("app tab links (/apps/<ref>)", () => {
   beforeEach(async () => {
     clearTabRefCache();
     await loadAppsIndex(WS); // the index rows the lookup reads
-    await Workspace.deleteOne({ _id: OTHER_WS });
   });
 
   it("resolves an id to its own workspace", async () => {
@@ -429,34 +417,32 @@ describe("app tab links (/apps/<ref>)", () => {
   });
 
   it("stays generic when a slug is ambiguous across workspaces", async () => {
-    await Workspace.create({
-      _id: OTHER_WS,
+    await ensureTestWorkspace(pg.db, {
+      id: OTHER_WS.toHexString(),
       name: "other",
-      slug: `other-${OTHER_WS.toHexString()}`,
-      createdBy: "test",
-      settings: {},
-      billing: {},
     });
-    await AppIndexEntry.create({
-      workspaceId: OTHER_WS,
-      appId: new Types.ObjectId().toHexString(),
-      path: "apps/plain",
-      slug: "plain",
-      scope: "workspace",
-      treeOid: "0".repeat(40),
-      title: "Someone else's board",
-      hasManifestId: true,
-      schedules: [],
-      indexedSha: "0".repeat(40),
-    });
+    await appsMetadataRepo.replaceWorkspaceIndexEntries(
+      OTHER_WS.toHexString(),
+      [],
+      [
+        {
+          appId: new Types.ObjectId().toHexString(),
+          path: "apps/plain",
+          slug: "plain",
+          scope: "workspace",
+          treeOid: "0".repeat(40),
+          title: "Someone else's board",
+          hasManifestId: true,
+          schedules: [],
+          indexedSha: "0".repeat(40),
+        },
+      ],
+    );
     const tags = await ogTagsForPath("/apps/plain", ORIGIN);
     expect(tags?.title).toBe(GENERIC_SHARE_TITLE);
 
     // A workspace that opted out of previews does not count as a candidate.
-    await Workspace.updateOne(
-      { _id: OTHER_WS },
-      { $set: { "settings.linkPreviews": false } },
-    );
+    await workspaceRepo.setLinkPreviews(OTHER_WS.toHexString(), false);
     clearTabRefCache();
     expect((await ogTagsForPath("/apps/plain", ORIGIN))?.title).toBe(
       "Team board",

@@ -3,13 +3,17 @@
  * and who may see which app's numbers.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { asc, eq } from "drizzle-orm";
+import { legacyUserIdToUuidv7 } from "../database/pg/id-codec";
+import { appUsageDaily, appUsageEvents } from "../database/pg/schema";
 import {
-  AppProject,
-  AppUsageDaily,
-  AppUsageEvent,
-} from "../database/workspace-schema";
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
+
 import {
   acceptUsageBeat,
   anonIdFromCookie,
@@ -26,9 +30,14 @@ import {
   servedOpenSource,
   type AppUsageRollup,
 } from "./app-usage.service";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
+import {
+  DEFAULT_PG_TTL_RULES,
+  reapExpiredRows,
+} from "../database/pg/ttl-reaper";
 import { canSeeIndexedApp } from "./app-authorization";
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 const WS = new Types.ObjectId().toString();
 const APP = new Types.ObjectId().toString();
 const OTHER_APP = new Types.ObjectId().toString();
@@ -40,20 +49,19 @@ const must = <T>(value: T | undefined): T => {
 };
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
-  await AppUsageDaily.syncIndexes();
+  pg = await setupPgTestDb();
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
 });
 
 beforeEach(async () => {
-  await AppUsageDaily.deleteMany({});
-  await AppUsageEvent.deleteMany({});
-  await AppProject.deleteMany({});
+  await pg.reset();
+  await ensureTestWorkspace(pg.db, { id: WS });
+  for (const id of ["u1", "u2", "owner", "viewer", "me", "someone"]) {
+    await ensureTestUser(pg.db, { id });
+  }
   resetUsageThrottle();
 });
 
@@ -84,13 +92,14 @@ describe("recordAppUsage", () => {
       source: "embed",
       at: at("2026-10-20T15:00:00Z"),
     });
-    const rows = await AppUsageDaily.find({}).lean();
+    const rows = await pg.db.select().from(appUsageDaily);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       day: "2026-10-20",
       opens: 2,
       activeSeconds: 120,
-      sources: { app: 1, embed: 1 },
+      sourcesApp: 1,
+      sourcesEmbed: 1,
     });
     expect(rows[0].firstAt.toISOString()).toBe("2026-10-20T09:00:00.000Z");
     expect(rows[0].lastAt.toISOString()).toBe("2026-10-20T15:00:00.000Z");
@@ -118,7 +127,7 @@ describe("recordAppUsage", () => {
       userId: "u2",
       at: at("2026-10-20T00:01:00Z"),
     });
-    expect(await AppUsageDaily.countDocuments({})).toBe(3);
+    expect(await pg.db.$count(appUsageDaily)).toBe(3);
   });
 
   it("collapses anonymous share viewers into one row per app per day", async () => {
@@ -131,12 +140,12 @@ describe("recordAppUsage", () => {
     } as const;
     await recordAppUsage({ ...base, at: at("2026-10-20T08:00:00Z") });
     await recordAppUsage({ ...base, at: at("2026-10-20T09:00:00Z") });
-    const rows = await AppUsageDaily.find({}).lean();
+    const rows = await pg.db.select().from(appUsageDaily);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       userId: null,
       opens: 2,
-      sources: { share: 2 },
+      sourcesShare: 2,
     });
   });
 });
@@ -224,9 +233,9 @@ describe("popularity score", () => {
 
 describe("getAppUsageStats", () => {
   it("excludes the app's owner and reads only the window", async () => {
-    await AppProject.create({
-      _id: new Types.ObjectId(APP),
-      workspaceId: new Types.ObjectId(WS),
+    await appsMetadataRepo.createProject({
+      id: APP,
+      workspaceId: WS,
       title: "Sales",
       slug: "sales",
       access: "workspace",
@@ -270,10 +279,11 @@ describe("getAppUsageStats", () => {
   });
 
   it("never mixes workspaces", async () => {
+    const workspace = await ensureTestWorkspace(pg.db);
     await recordAppUsage({
-      workspaceId: new Types.ObjectId().toString(),
+      workspaceId: workspace.id,
       appId: APP,
-      userId: "u",
+      userId: "u1",
       kind: "open",
       source: "app",
       at: NOW,
@@ -415,10 +425,13 @@ describe("raw event log", () => {
       uaClass: "desktop",
       at: at("2026-10-20T09:01:00Z"),
     });
-    const events = await AppUsageEvent.find({}).sort({ at: 1 }).lean();
+    const events = await pg.db
+      .select()
+      .from(appUsageEvents)
+      .orderBy(asc(appUsageEvents.at));
     expect(events.map(e => e.kind)).toEqual(["open", "heartbeat"]);
     expect(events[0]).toMatchObject({
-      userId: "u1",
+      userId: legacyUserIdToUuidv7("u1"),
       anonId: null,
       sessionId: "s1",
       referrerKind: "external",
@@ -437,10 +450,10 @@ describe("raw event log", () => {
     } as const;
     await recordAppUsage({ ...base, at: NOW });
     await recordAppUsage({ ...base, at: NOW, throttled: true });
-    const events = await AppUsageEvent.find({}).lean();
+    const events = await pg.db.select().from(appUsageEvents);
     expect(events).toHaveLength(2);
     expect(events.filter(e => e.throttled)).toHaveLength(1);
-    const [row] = await AppUsageDaily.find({}).lean();
+    const [row] = await pg.db.select().from(appUsageDaily);
     expect(row.opens).toBe(1);
   });
 
@@ -455,17 +468,36 @@ describe("raw event log", () => {
       uaClass: "bot",
       at: NOW,
     });
-    expect(await AppUsageEvent.countDocuments({ uaClass: "bot" })).toBe(1);
-    expect(await AppUsageDaily.countDocuments({})).toBe(0);
+    expect(
+      await pg.db.$count(appUsageEvents, eq(appUsageEvents.uaClass, "bot")),
+    ).toBe(1);
+    expect(await pg.db.$count(appUsageDaily)).toBe(0);
   });
 
   it("expires events after about 13 months", async () => {
-    await AppUsageEvent.syncIndexes();
-    const ttl = (await AppUsageEvent.collection.indexes()).find(
-      i => i.expireAfterSeconds !== undefined,
+    const day = 24 * 60 * 60 * 1000;
+    const rule = DEFAULT_PG_TTL_RULES.find(
+      rule => rule.tableName === "app_usage_events",
     );
-    expect(ttl?.key).toEqual({ at: 1 });
-    expect(ttl?.expireAfterSeconds).toBe(400 * 24 * 60 * 60);
+    if (!rule) throw new Error("missing app event retention rule");
+    expect(rule.olderThanMs).toBe(400 * day);
+    for (const age of [399, 401]) {
+      await recordAppUsage({
+        workspaceId: WS,
+        appId: APP,
+        userId: null,
+        kind: "open",
+        source: "share",
+        at: new Date(NOW.getTime() - age * day),
+      });
+    }
+    expect((await reapExpiredRows(rule, { db: pg.db, now: NOW })).deleted).toBe(
+      1,
+    );
+    const rows = await pg.db.select().from(appUsageEvents);
+    expect(rows.map(row => row.at)).toEqual([
+      new Date(NOW.getTime() - 399 * day),
+    ]);
   });
 });
 
@@ -564,9 +596,9 @@ describe("served opens", () => {
     });
     expect(counted).toBe(true);
     await expect
-      .poll(() => AppUsageEvent.countDocuments({}), { timeout: 2000 })
+      .poll(() => pg.db.$count(appUsageEvents), { timeout: 2000 })
       .toBe(1);
-    const event = await AppUsageEvent.findOne({}).lean();
+    const [event] = await pg.db.select().from(appUsageEvents);
     expect(event).toMatchObject({
       source: "share",
       userId: null,
@@ -578,13 +610,17 @@ describe("served opens", () => {
     // A reload a second later is logged, flagged, and not double counted.
     recordServedOpen(served);
     await expect
-      .poll(() => AppUsageEvent.countDocuments({ throttled: true }), {
-        timeout: 2000,
-      })
+      .poll(
+        () => pg.db.$count(appUsageEvents, eq(appUsageEvents.throttled, true)),
+        {
+          timeout: 2000,
+        },
+      )
       .toBe(1);
-    const row = await AppUsageDaily.findOne({}).lean();
+    const [row] = await pg.db.select().from(appUsageDaily);
     expect(row?.opens).toBe(1);
-    expect(row?.userId).toBe(anonId);
+    expect(row?.userId).toBeNull();
+    expect(row?.anonId).toBe(anonId);
   });
 
   it("ignores the bundle's own requests", () => {

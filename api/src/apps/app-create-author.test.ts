@@ -6,15 +6,23 @@
  *  - an app row owned by the requester (owner_id and createdBy), and
  *  - a scaffold commit authored by the requester, committed by Mako
  *    (bot@mako.ai), carrying a `Mako-Requested-By: <userId>` trailer.
- * Real git, a real local sandbox and an in-memory Mongo; only auth is faked.
+ * Real git, a real local sandbox and PGlite; only auth is faked.
  */
 import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  generateObjectIdHex,
+  legacyUserIdToUuidv7,
+} from "../database/pg/id-codec";
+import {
+  ensureTestMember,
+  ensureTestUser,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 import type { Context, Next } from "hono";
 
 const identity = vi.hoisted(() => ({ userId: "" }));
@@ -30,8 +38,8 @@ import { initRepo, repoDirFor } from "./repository.service";
 import { seededTemplateFiles } from "./workspace-template";
 import { bindTestWorkspaceRepo } from "./bind-test-workspace-repo";
 import { createProject, REQUESTED_BY_TRAILER } from "./worktree/projects";
-import { User } from "../database/schema";
-import { AppProject, WorkspaceMember } from "../database/workspace-schema";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
+import { authRepo } from "../repositories/auth";
 import { createRouter } from "../openapi/core";
 import { appsRoutes } from "../routes/apps";
 import { createAppsTools } from "../agent-lib/tools/apps-tools";
@@ -43,10 +51,10 @@ const UI_USER = "u1b2c3d4e5f6a7b";
 const CHAT_USER = "c1b2c3d4e5f6a7b";
 const MCP_USER = "m1b2c3d4e5f6a7b";
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 let tmpRoot: string;
 let gitServer: TestGitServer;
-const WS = new Types.ObjectId().toString();
+const WS = generateObjectIdHex();
 
 type Executable = {
   execute: (input: Record<string, unknown>) => Promise<{
@@ -66,30 +74,24 @@ beforeAll(async () => {
     process.env.SESSION_SECRET || "test-secret-for-git-tokens";
   gitServer = await startTestGitServer();
   process.env.APPS_GIT_ORIGIN_URL = gitServer.url;
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
   await initRepo(repoDirFor(WS), seededTemplateFiles());
   await bindTestWorkspaceRepo(WS);
-  await User.create(
-    [UI_USER, CHAT_USER, MCP_USER].map(id => ({
-      _id: id,
-      email: `${id}@example.com`,
-      name: `Person ${id.slice(0, 2)}`,
-    })),
-  );
-  await WorkspaceMember.create(
-    [UI_USER, CHAT_USER, MCP_USER].map(userId => ({
-      workspaceId: new Types.ObjectId(WS),
-      userId,
-      role: "member" as const,
-    })),
+  await Promise.all(
+    [UI_USER, CHAT_USER, MCP_USER].map(async id => {
+      await ensureTestUser(pg.db, {
+        id,
+        email: `${id}@example.com`,
+        name: `Person ${id.slice(0, 2)}`,
+      });
+      await ensureTestMember(pg.db, { workspaceId: WS, userId: id });
+    }),
   );
 }, 120_000);
 
 afterAll(async () => {
   await gitServer?.close();
-  await mongoose.disconnect();
-  await mongo?.stop();
+  await pg?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -123,13 +125,19 @@ function scaffoldCommit(appPath: string) {
   };
 }
 
-async function expectRequestedBy(appId: string, userId: string) {
-  const row = await AppProject.findById(appId).lean();
-  expect(row?.owner_id).toBe(userId);
-  expect(row?.createdBy).toBe(userId);
+async function expectRequestedBy(
+  appId: string,
+  userId: string,
+  emailPrefix = userId,
+) {
+  const row = await appsMetadataRepo.findProjectById(appId);
+  const expectedOwner = await authRepo.resolveUserUuid(userId);
+  expect(expectedOwner).toBeTruthy();
+  expect(row?.owner_id).toBe(expectedOwner);
+  expect(row?.createdBy).toBe(expectedOwner);
   const commit = scaffoldCommit(row?.path ?? "");
   expect(commit).toMatchObject({
-    author: `${userId}@example.com`,
+    author: `${emailPrefix}@example.com`,
     committer: "bot@mako.ai",
     trailer: userId,
   });
@@ -168,9 +176,10 @@ describe("app creation names its requester", () => {
   }, 180_000);
 
   it("MCP: app_create_app through the MCP toolset", async () => {
+    const userId = legacyUserIdToUuidv7(MCP_USER);
     const tools = buildMakoMcpToolset({
       workspaceId: WS,
-      userId: MCP_USER,
+      userId,
       memberRole: "member",
       scopes: [...WORKSPACE_API_KEY_SCOPES],
     }) as unknown as { app_create_app: Executable };
@@ -182,7 +191,7 @@ describe("app creation names its requester", () => {
     expect(result.success).toBe(true);
     // No folder: the requester's personal tree, still theirs.
     expect(result.path).toMatch(/^users\/[^/]+\/apps\/mcp-made$/);
-    await expectRequestedBy(result.app ?? "", MCP_USER);
+    await expectRequestedBy(result.app ?? "", userId, MCP_USER);
   }, 180_000);
 
   it("no requester: Mako authors it, no trailer, no owner", async () => {
@@ -190,7 +199,7 @@ describe("app creation names its requester", () => {
       workspaceId: WS,
       title: "Nobody Made",
     });
-    const row = await AppProject.findById(project._id).lean();
+    const row = await appsMetadataRepo.findProjectById(project._id.toString());
     expect(row?.owner_id ?? undefined).toBeUndefined();
     expect(row?.createdBy).toBe("");
     expect(scaffoldCommit(row?.path ?? "")).toMatchObject({
