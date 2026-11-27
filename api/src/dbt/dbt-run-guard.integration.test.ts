@@ -21,6 +21,11 @@ import {
 } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 
 vi.mock("../inngest/client", () => ({
   inngest: { send: vi.fn(async () => ({ ids: [] })) },
@@ -38,26 +43,30 @@ import {
   setUserDevEnvPreference,
 } from "./dbt-environments.service";
 import {
-  AppWorktree,
   DbtEnvPreference,
   DbtJob,
   DbtProject,
   DbtRun,
 } from "../database/workspace-schema";
 
+import { appsMetadataRepo } from "../repositories/apps-metadata";
+
 const sendMock = inngest.send as unknown as ReturnType<typeof vi.fn>;
 
+let pg: PgTestDb;
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId();
 
 beforeAll(async () => {
+  pg = await setupPgTestDb();
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 });
 
 afterAll(async () => {
+  await pg?.close();
   await mongoose.disconnect();
-  await mongo.stop();
+  await mongo?.stop();
 });
 
 beforeEach(async () => {
@@ -66,9 +75,10 @@ beforeEach(async () => {
     DbtProject.deleteMany({}),
     DbtRun.deleteMany({}),
     DbtJob.deleteMany({}),
-    AppWorktree.deleteMany({}),
+    pg.reset(),
     DbtEnvPreference.deleteMany({}),
   ]);
+  await ensureTestWorkspace(pg.db, { id: String(WS), ownerUserId: "u1" });
 });
 
 function envs() {
@@ -184,11 +194,11 @@ describe("sourceBranch provenance stamping", () => {
     expect(tracked.workingTreeUserId).toBe("u1");
 
     // Explicit session branch → that branch.
-    await AppWorktree.create({
-      workspaceId: WS,
-      userId: "u1",
-      branch: "feat/leads-rollup",
-    });
+    await appsMetadataRepo.ensureWorktreeRow(
+      String(WS),
+      "u1",
+      "feat/leads-rollup",
+    );
     const feature = await triggerDbtRun(
       adhocParams(project._id.toString(), "dev"),
     );

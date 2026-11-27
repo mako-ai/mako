@@ -29,6 +29,12 @@ import {
 } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../../test-support/pg-test";
 
 const stored = vi.hoisted(() => new Map<string, Buffer>());
 const reads = vi.hoisted(() => ({ count: 0 }));
@@ -48,16 +54,11 @@ vi.mock("../../services/realtime.service", () => ({
   publishRealtimeEvent: vi.fn(),
 }));
 
+import { generateUuidv7 } from "../../database/pg/id-codec";
+import { workspaceUserHandles } from "../../database/pg/schema";
 import { createDbtServerTools } from "./dbt-tools";
 import { createDbtOntologyTools } from "./dbt-ontology-tools";
-import {
-  AppIndexEntry,
-  AppIndexHead,
-  AppProject,
-  DbtProject,
-  DbtRun,
-  WorkspaceUserHandle,
-} from "../../database/workspace-schema";
+import { DbtProject, DbtRun } from "../../database/workspace-schema";
 import {
   commitBlobsOnBranch,
   DEFAULT_BRANCH,
@@ -86,12 +87,13 @@ import {
   ONTOLOGY_REGISTRY_YAML,
 } from "../../dbt/test-support/ontology-fixtures";
 
+let pg: PgTestDb;
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
 const WS = new Types.ObjectId().toString();
 const CONN = new Types.ObjectId();
-const ANA = new Types.ObjectId().toString();
-const BOB = new Types.ObjectId().toString();
+const ANA = generateUuidv7();
+const BOB = generateUuidv7();
 
 const manifest = (title: string) =>
   `${JSON.stringify({ schemaVersion: 1, title }, null, 2)}\n`;
@@ -175,13 +177,15 @@ beforeAll(async () => {
   process.env.APPS_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_SANDBOX_PROVIDER = "local";
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
+  pg = await setupPgTestDb();
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 }, 120_000);
 
 afterAll(async () => {
+  await pg?.close();
   await mongoose.disconnect();
-  await mongo.stop();
+  await mongo?.stop();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -194,14 +198,13 @@ beforeEach(async () => {
   await Promise.all([
     DbtProject.deleteMany({}),
     DbtRun.deleteMany({}),
-    AppIndexEntry.deleteMany({}),
-    AppIndexHead.deleteMany({}),
-    AppProject.deleteMany({}),
-    WorkspaceUserHandle.deleteMany({}),
+    pg.reset(),
   ]);
-  await WorkspaceUserHandle.create({
-    workspaceId: new Types.ObjectId(WS),
-    userId: ANA,
+  const workspace = await ensureTestWorkspace(pg.db, { id: WS });
+  const user = await ensureTestUser(pg.db, { id: ANA });
+  await pg.db.insert(workspaceUserHandles).values({
+    workspaceId: workspace.uuid,
+    userId: user.id,
     handle: "ana",
   });
   stored.clear();
@@ -211,7 +214,6 @@ beforeEach(async () => {
   clearSemanticCatalogCache();
   invalidateOwnerDirectory();
   invalidateAppsIndexCache();
-  await unbindTestWorkspaceRepo(WS);
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,
     force: true,

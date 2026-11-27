@@ -20,12 +20,14 @@ import {
 } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
-
 import {
-  DatabaseConnection,
-  Flow,
-  SourceConnection,
-} from "../../database/workspace-schema";
+  ensureTestDatabaseConnection,
+  ensureTestSourceConnection,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../../test-support/pg-test";
+
+import { Flow } from "../../database/workspace-schema";
 import {
   applyFlowUpdate,
   buildNewFlow,
@@ -141,6 +143,7 @@ describe("compareLayoutToTable", () => {
   });
 });
 
+let pg: PgTestDb;
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId();
 const SOURCE = new Types.ObjectId();
@@ -148,26 +151,38 @@ const DEST = new Types.ObjectId();
 const PG_DEST = new Types.ObjectId();
 
 beforeAll(async () => {
+  pg = await setupPgTestDb();
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 }, 120_000);
 
 afterAll(async () => {
+  await pg?.close();
   await mongoose.disconnect();
-  await mongo.stop();
+  await mongo?.stop();
 });
 
 beforeEach(async () => {
   vi.restoreAllMocks();
-  await SourceConnection.collection.deleteMany({});
-  await DatabaseConnection.collection.deleteMany({});
-  await SourceConnection.collection.insertMany([
-    { _id: SOURCE, workspaceId: WS, name: "Close", type: "close", config: {} },
-  ] as never[]);
-  await DatabaseConnection.collection.insertMany([
-    { _id: DEST, workspaceId: WS, name: "bq", type: "bigquery" },
-    { _id: PG_DEST, workspaceId: WS, name: "pg", type: "postgresql" },
-  ] as never[]);
+  await pg.reset();
+  await ensureTestSourceConnection(pg.db, {
+    id: String(SOURCE),
+    workspaceId: String(WS),
+    name: "Close",
+    type: "close",
+  });
+  await ensureTestDatabaseConnection(pg.db, {
+    id: String(DEST),
+    workspaceId: String(WS),
+    name: "bq",
+    type: "bigquery",
+  });
+  await ensureTestDatabaseConnection(pg.db, {
+    id: String(PG_DEST),
+    workspaceId: String(WS),
+    name: "pg",
+    type: "postgresql",
+  });
 });
 
 function describeTablesAs(

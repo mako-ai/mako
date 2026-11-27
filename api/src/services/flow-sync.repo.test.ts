@@ -27,6 +27,12 @@ import {
 } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  ensureTestDatabaseConnection,
+  ensureTestSourceConnection,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 
 vi.mock("../integrations/github/app-auth", () => ({
   resolveRepoToken: async () => undefined,
@@ -35,11 +41,7 @@ vi.mock("../inngest/client", () => ({
   inngest: { send: vi.fn(async () => undefined) },
 }));
 
-import {
-  DatabaseConnection,
-  Flow,
-  SourceConnection,
-} from "../database/workspace-schema";
+import { Flow } from "../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
   blobOid,
@@ -66,6 +68,7 @@ import {
 import { isCronDue } from "./cron-due";
 import { BigQueryDestinationAdapter } from "../sync-cdc/adapters/bigquery";
 
+let pg: PgTestDb;
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
 let WS: string;
@@ -118,13 +121,15 @@ async function push(writes: Record<string, string>): Promise<void> {
 beforeAll(async () => {
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "flow-sync-repo-"));
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
+  pg = await setupPgTestDb();
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 }, 120_000);
 
 afterAll(async () => {
+  await pg?.close();
   await mongoose.disconnect();
-  await mongo.stop();
+  await mongo?.stop();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -138,26 +143,23 @@ async function seedConnections(
   ws: string,
   ids: { source: string; dest: string },
 ): Promise<void> {
-  const workspaceId = new Types.ObjectId(ws);
-  await SourceConnection.collection.insertOne({
-    _id: new Types.ObjectId(ids.source),
-    workspaceId,
+  await ensureTestSourceConnection(pg.db, {
+    id: ids.source,
+    workspaceId: ws,
     name: "Close",
     type: "close",
-  } as any);
-  await DatabaseConnection.collection.insertOne({
-    _id: new Types.ObjectId(ids.dest),
-    workspaceId,
+  });
+  await ensureTestDatabaseConnection(pg.db, {
+    id: ids.dest,
+    workspaceId: ws,
     name: "Warehouse",
     type: "bigquery",
-  } as any);
+  });
 }
 
 beforeEach(async () => {
   WS = new Types.ObjectId().toString();
-  await Flow.deleteMany({});
-  await SourceConnection.collection.deleteMany({});
-  await DatabaseConnection.collection.deleteMany({});
+  await Promise.all([pg.reset(), Flow.deleteMany({})]);
   await seedConnections(WS, { source: CONNECTOR, dest: DEST });
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
   await bindTestWorkspaceRepo(WS);

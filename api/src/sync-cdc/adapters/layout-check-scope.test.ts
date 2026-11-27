@@ -14,10 +14,14 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import {
+  ensureTestDatabaseConnection,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../../test-support/pg-test";
 
-import { DatabaseConnection, Flow } from "../../database/workspace-schema";
+import { Flow } from "../../database/workspace-schema";
 import { applyFlowUpdate } from "../../services/flow-mutation.service";
 import { BigQueryDestinationAdapter } from "./bigquery";
 import { getLiveTableMeta } from "./bigquery-schema";
@@ -35,26 +39,27 @@ const REAL: LiveTableDescription = {
   clusterFields: ["a", "b", "c", "d"],
 };
 
-let mongo: MongoMemoryServer;
+let pg: PgTestDb;
 const WS = new Types.ObjectId();
 const DEST = new Types.ObjectId();
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pg = await setupPgTestDb();
 }, 120_000);
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pg?.close();
 });
 
 beforeEach(async () => {
   vi.restoreAllMocks();
-  await DatabaseConnection.collection.deleteMany({});
-  await DatabaseConnection.collection.insertMany([
-    { _id: DEST, workspaceId: WS, name: "bq", type: "bigquery" },
-  ] as never[]);
+  await pg.reset();
+  await ensureTestDatabaseConnection(pg.db, {
+    id: String(DEST),
+    workspaceId: String(WS),
+    name: "bq",
+    type: "bigquery",
+  });
 });
 
 function describeAs(

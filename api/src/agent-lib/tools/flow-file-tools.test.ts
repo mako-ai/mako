@@ -32,6 +32,12 @@ import {
 } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  ensureTestDatabaseConnection,
+  ensureTestSourceConnection,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../../test-support/pg-test";
 
 const state = vi.hoisted(() => ({
   sent: [] as Array<{ name: string; data: unknown }>,
@@ -46,12 +52,7 @@ vi.mock("../../inngest/client", () => ({
   },
 }));
 
-import {
-  CdcEntityState,
-  SourceConnection,
-  DatabaseConnection,
-  Flow,
-} from "../../database/workspace-schema";
+import { CdcEntityState, Flow } from "../../database/workspace-schema";
 import { initRepo, repoDirFor } from "../../apps/repository.service";
 import { bindTestWorkspaceRepo } from "../../apps/bind-test-workspace-repo";
 import { checkFlowFiles, createFlowFileTools } from "./flow-file-tools";
@@ -70,6 +71,7 @@ import { unifiedAgentFactory } from "../../agents/unified";
 import { READ_ONLY_TOOL_NAMES } from "@mako/agent-tools";
 import type { AgentContext } from "../../agents/types";
 
+let pg: PgTestDb;
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
 let WS: Types.ObjectId;
@@ -130,13 +132,15 @@ beforeAll(async () => {
   process.env.ENCRYPTION_KEY =
     process.env.ENCRYPTION_KEY ??
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  pg = await setupPgTestDb();
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 }, 120_000);
 
 afterAll(async () => {
+  await pg?.close();
   await mongoose.disconnect();
-  await mongo.stop();
+  await mongo?.stop();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -151,23 +155,20 @@ beforeEach(async () => {
   DEST = new Types.ObjectId();
   state.sent = [];
   await Promise.all([
+    pg.reset(),
     Flow.deleteMany({}),
     CdcEntityState.deleteMany({}),
-    SourceConnection.deleteMany({}),
-    DatabaseConnection.deleteMany({}),
   ]);
-  await SourceConnection.create({
-    _id: CONNECTOR,
-    workspaceId: WS,
+  await ensureTestSourceConnection(pg.db, {
+    id: String(CONNECTOR),
+    workspaceId: String(WS),
     name: "Stripe",
     type: "stripe",
-    config: {},
-    settings: { rate_limit_delay_ms: 100, sync_batch_size: 100 },
     createdBy: "u1",
   });
-  await DatabaseConnection.create({
-    _id: DEST,
-    workspaceId: WS,
+  await ensureTestDatabaseConnection(pg.db, {
+    id: String(DEST),
+    workspaceId: String(WS),
     name: "Warehouse",
     type: "bigquery",
     connection: { projectId: "p", keyFilename: "k" },

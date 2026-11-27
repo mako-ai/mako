@@ -1,11 +1,10 @@
 /**
  * dbt routes — in-process integration tests.
  *
- * Boots the real `dbtRoutes` Hono app against an ephemeral mongodb-memory-server
- * and drives it via `app.request()`. Auth + workspace-role resolution and the
- * heavy collaborators (runner, Inngest, GitHub, artifact store, entity
- * versioning) are mocked so the tests exercise routing, RBAC, validation, and
- * Mongoose persistence deterministically — no subprocess, no network.
+ * Drives the real `dbtRoutes` Hono app via `app.request()` with dbt data in
+ * MongoDB and connection metadata in PGlite. Mocked auth, workspace roles,
+ * runner, Inngest, GitHub, artifact storage and entity versioning keep the
+ * focus on routing, RBAC, validation and persistence.
  */
 import {
   afterAll,
@@ -19,6 +18,11 @@ import {
 import { Hono } from "hono";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  ensureTestDatabaseConnection,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 
 // Mutable caller role for the RBAC matrix (hoisted so the mock factory sees it).
 const ctx = vi.hoisted(() => ({
@@ -107,7 +111,9 @@ import path from "node:path";
 import { dbtRoutes } from "./dbt.routes";
 import { seedDbtGitTree } from "../dbt/test-support/git-tree";
 import { bindTestWorkspaceRepo } from "../apps/bind-test-workspace-repo";
-import { DatabaseConnection } from "../database/workspace-schema";
+import { eq } from "drizzle-orm";
+import { objectIdToUuid } from "../database/pg/id-codec";
+import { databaseConnections } from "../database/pg/schema";
 import { runAdhocDbtCommand } from "../dbt/dbt-project.service";
 import { startLocalDbtRun } from "../dbt/local-run.service";
 import {
@@ -128,6 +134,7 @@ const jobRunMock = triggerDbtJobRun as unknown as ReturnType<typeof vi.fn>;
 const localRunMock = startLocalDbtRun as unknown as ReturnType<typeof vi.fn>;
 const retryMock = triggerDbtRunRetry as unknown as ReturnType<typeof vi.fn>;
 
+let pg: PgTestDb;
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId().toString();
 const CONN = new Types.ObjectId().toString();
@@ -184,13 +191,15 @@ beforeAll(async () => {
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_SANDBOX_PROVIDER = "local";
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
+  pg = await setupPgTestDb();
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 });
 
 afterAll(async () => {
+  await pg?.close();
   await mongoose.disconnect();
-  await mongo.stop();
+  await mongo?.stop();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -208,8 +217,7 @@ beforeEach(async () => {
     mongoose.connection.collection("dbt_projects").deleteMany({}),
     mongoose.connection.collection("dbt_jobs").deleteMany({}),
     mongoose.connection.collection("dbt_runs").deleteMany({}),
-    mongoose.connection.collection("app_worktrees").deleteMany({}),
-    mongoose.connection.collection("databaseconnections").deleteMany({}),
+    pg.reset(),
   ]);
   // Fresh bare workspace repo per test: file writes are commits now.
   await fs.rm(path.join(tmpRoot, "repos"), {
@@ -220,9 +228,9 @@ beforeEach(async () => {
   });
   await bindTestWorkspaceRepo(WS);
   await seedDbtGitTree(WS, { "dbt_project.yml": "name: analytics\n" });
-  await DatabaseConnection.collection.insertOne({
-    _id: new Types.ObjectId(CONN),
-    workspaceId: new Types.ObjectId(WS),
+  await ensureTestDatabaseConnection(pg.db, {
+    id: CONN,
+    workspaceId: WS,
     name: "pg",
     type: "postgresql",
     connection: { host: "localhost", port: 5432 },
@@ -451,12 +459,10 @@ describe("project CRUD", () => {
   });
 
   it("rejects an environment bound to a non-dbt-compatible connection", async () => {
-    await mongoose.connection
-      .collection("databaseconnections")
-      .updateOne(
-        { _id: new Types.ObjectId(CONN) },
-        { $set: { type: "mongodb" } },
-      );
+    await pg.db
+      .update(databaseConnections)
+      .set({ type: "mongodb" })
+      .where(eq(databaseConnections.id, objectIdToUuid(CONN)));
     ctx.role = "owner";
     const res = await req("POST", "/projects", NEW_PROJECT);
     expect(res.status).toBe(400);
@@ -465,9 +471,9 @@ describe("project CRUD", () => {
 
   it("stores an environment's read connection, in the row and in dbt/environments.yml", async () => {
     const READ = new Types.ObjectId();
-    await DatabaseConnection.collection.insertOne({
-      _id: READ,
-      workspaceId: new Types.ObjectId(WS),
+    await ensureTestDatabaseConnection(pg.db, {
+      id: String(READ),
+      workspaceId: WS,
       name: "pg (read-only)",
       type: "postgresql",
       connection: { host: "localhost", port: 5432 },
@@ -504,9 +510,9 @@ describe("project CRUD", () => {
     expect((await missing.json()).error).toMatch(/Read connection not found/);
 
     const BQ = new Types.ObjectId();
-    await DatabaseConnection.collection.insertOne({
-      _id: BQ,
-      workspaceId: new Types.ObjectId(WS),
+    await ensureTestDatabaseConnection(pg.db, {
+      id: String(BQ),
+      workspaceId: WS,
       name: "bq",
       type: "bigquery",
       connection: {},

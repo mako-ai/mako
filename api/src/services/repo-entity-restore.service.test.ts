@@ -19,6 +19,12 @@ import {
 } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  ensureTestDatabaseConnection,
+  ensureTestSourceConnection,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 
 vi.mock("../integrations/github/app-auth", () => ({
   resolveRepoToken: async () => undefined,
@@ -38,11 +44,7 @@ vi.mock("../connectors/workspace/reconcile.service", () => ({
   syncConnectorsFromRepo: (...args: unknown[]) => syncConnectors(...args),
 }));
 
-import {
-  DatabaseConnection,
-  Flow,
-  SourceConnection,
-} from "../database/workspace-schema";
+import { Flow } from "../database/workspace-schema";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -69,6 +71,7 @@ import {
   restoreFlowTo,
 } from "./repo-entity-restore.service";
 
+let pg: PgTestDb;
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
 let WS: string;
@@ -116,13 +119,15 @@ async function fileAtMain(rel: string): Promise<string | null> {
 beforeAll(async () => {
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "repo-entity-restore-"));
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
+  pg = await setupPgTestDb();
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 }, 120_000);
 
 afterAll(async () => {
+  await pg?.close();
   await mongoose.disconnect();
-  await mongo.stop();
+  await mongo?.stop();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -134,23 +139,21 @@ afterAll(async () => {
 beforeEach(async () => {
   WS = new Types.ObjectId().toString();
   syncConnectors.mockClear();
-  await Flow.deleteMany({});
+  await Promise.all([pg.reset(), Flow.deleteMany({})]);
   // The connections the flow files name, in this workspace: the reactor
   // refuses a file naming any other (flow-connection-scope.ts).
-  await SourceConnection.collection.deleteMany({});
-  await DatabaseConnection.collection.deleteMany({});
-  await SourceConnection.collection.insertOne({
-    _id: new Types.ObjectId(CONNECTOR),
-    workspaceId: new Types.ObjectId(WS),
+  await ensureTestSourceConnection(pg.db, {
+    id: CONNECTOR,
+    workspaceId: WS,
     name: "Close",
     type: "close",
-  } as any);
-  await DatabaseConnection.collection.insertOne({
-    _id: new Types.ObjectId(DEST),
-    workspaceId: new Types.ObjectId(WS),
+  });
+  await ensureTestDatabaseConnection(pg.db, {
+    id: DEST,
+    workspaceId: WS,
     name: "Warehouse",
     type: "bigquery",
-  } as any);
+  });
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
   await bindTestWorkspaceRepo(WS);
 });

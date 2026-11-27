@@ -38,6 +38,12 @@ import {
 } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  ensureTestDatabaseConnection,
+  ensureTestSourceConnection,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../../test-support/pg-test";
 
 const state = vi.hoisted(() => ({
   /** The GitHub App token call fails while set. */
@@ -81,11 +87,7 @@ import {
   resetFreshenHooks,
   seedMirroredWorkspace,
 } from "../../apps/cloud-repo/durable-main.testkit";
-import {
-  DatabaseConnection,
-  Flow,
-  SourceConnection,
-} from "../../database/workspace-schema";
+import { Flow } from "../../database/workspace-schema";
 import { syncFlowsFromRepo } from "../../services/flow-sync.service";
 import { commitFlowFile } from "../../services/flow-config.service";
 import { commitToMainDurably } from "../../apps/cloud-repo/durable-main";
@@ -102,6 +104,7 @@ import { createFlowSyncTools } from "./flow-sync-tools";
 const CONNECTOR = new Types.ObjectId().toString();
 const DEST = new Types.ObjectId().toString();
 
+let pg: PgTestDb;
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
 let remoteDir: string;
@@ -182,13 +185,15 @@ beforeAll(async () => {
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "flow-update-durable-"));
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_GITHUB_REMOTE_BASE = `file://${path.join(tmpRoot, "remotes")}`;
+  pg = await setupPgTestDb();
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 }, 120_000);
 
 afterAll(async () => {
+  await pg?.close();
   await mongoose.disconnect();
-  await mongo.stop();
+  await mongo?.stop();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -202,22 +207,19 @@ beforeEach(async () => {
   state.tokenFail = false;
   resetFreshenHooks();
   WS = new Types.ObjectId().toString();
-  await Flow.deleteMany({});
-  await SourceConnection.collection.deleteMany({});
-  await DatabaseConnection.collection.deleteMany({});
-  const workspaceId = new Types.ObjectId(WS);
-  await SourceConnection.collection.insertOne({
-    _id: new Types.ObjectId(CONNECTOR),
-    workspaceId,
+  await Promise.all([pg.reset(), Flow.deleteMany({})]);
+  await ensureTestSourceConnection(pg.db, {
+    id: CONNECTOR,
+    workspaceId: WS,
     name: "Stripe",
     type: "stripe",
-  } as any);
-  await DatabaseConnection.collection.insertOne({
-    _id: new Types.ObjectId(DEST),
-    workspaceId,
+  });
+  await ensureTestDatabaseConnection(pg.db, {
+    id: DEST,
+    workspaceId: WS,
     name: "Warehouse",
     type: "bigquery",
-  } as any);
+  });
   remoteDir = await seedMirroredWorkspace(path.join(tmpRoot, "remotes"), WS, {
     "README.md": "x\n",
     "flows/close-a.yml": flowYaml("Close A"),
