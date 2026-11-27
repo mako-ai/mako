@@ -928,11 +928,13 @@ describe("Phase 1B WorkspaceRepository contract & migration lifecycle (10 tables
           shadowEvents.push(evt);
         },
       });
+      let rngValue = 0.0;
       const router = new MigrationRouter({
         getDb: () => db,
         hasPg: () => true,
         enablePubSub: false,
         shadowRunner,
+        rng: () => rngValue,
         onSecondaryFailure: async ctx => {
           failures.push(ctx);
         },
@@ -1014,11 +1016,12 @@ describe("Phase 1B WorkspaceRepository contract & migration lifecycle (10 tables
       });
       expect(await pgRepo.findGitHubInstallation(ws.id, 777001)).not.toBeNull();
 
-      // Stage 3: dual_write_shadow_compare with sampleRate=0 -> ZERO PG hot-path reads!
+      // Stage 3: dual_write_shadow_compare when unsampled (rng >= shadowSampleRate) -> ZERO PG hot-path reads!
+      rngValue = 0.99;
       await router.setDomainState({
         domain: WORKSPACES_DOMAIN,
         mode: "dual_write_shadow_compare",
-        shadowSampleRate: 0,
+        shadowSampleRate: 0.5,
       });
       pgFindSpy.mockClear();
       pgMemberSpy.mockClear();
@@ -1028,6 +1031,7 @@ describe("Phase 1B WorkspaceRepository contract & migration lifecycle (10 tables
       expect(pgMemberSpy).not.toHaveBeenCalled();
 
       // Stage 3 with sampleRate=1 -> shadow-compare runs and reports 0 diffs!
+      rngValue = 0.0;
       await router.setDomainState({
         domain: WORKSPACES_DOMAIN,
         mode: "dual_write_shadow_compare",
