@@ -75,6 +75,13 @@ export interface MigrationRouterOptions {
   hasPg?: () => boolean;
   isForceMongoOnly?: () => boolean;
   enablePubSub?: boolean;
+  /**
+   * Eagerly subscribe to pub/sub invalidation in the constructor when `enablePubSub`
+   * and Postgres are enabled (default `true`). Set `false` for module-level singletons
+   * whose lifecycle is managed explicitly at server boot/shutdown so importing the
+   * module never opens a Redis socket in CLI scripts.
+   */
+  autoSubscribe?: boolean;
   onSecondaryFailure?: (ctx: SecondaryWriteFailureContext) => Promise<void>;
 }
 
@@ -200,6 +207,7 @@ export class MigrationRouter {
   private readonly hasPg: () => boolean;
   private readonly isForceMongoOnly: () => boolean;
   private readonly enablePubSub: boolean;
+  private readonly autoSubscribe: boolean;
   private readonly onSecondaryFailure: (
     ctx: SecondaryWriteFailureContext,
   ) => Promise<void>;
@@ -222,13 +230,14 @@ export class MigrationRouter {
     this.isForceMongoOnly =
       options.isForceMongoOnly ?? isMigrationForceMongoOnly;
     this.enablePubSub = options.enablePubSub ?? true;
+    this.autoSubscribe = options.autoSubscribe ?? true;
     this.onSecondaryFailure =
       options.onSecondaryFailure ?? defaultDispatchSyncRetry;
 
     // Eagerly establish cross-instance invalidation subscription whenever
     // Postgres is configured so entries cannot be cached before the listener
     // is active.
-    if (this.enablePubSub && this.hasPg()) {
+    if (this.enablePubSub && this.autoSubscribe && this.hasPg()) {
       void this.startInvalidationListener();
     }
   }
@@ -363,6 +372,7 @@ export class MigrationRouter {
 
     if (
       this.enablePubSub &&
+      !this.stopped &&
       !this.pubSubReady &&
       !this.pubSubInitPromise &&
       now - this.lastPubSubAttemptAt >= 30_000
@@ -866,4 +876,7 @@ export async function purgeMigrationTombstones(
     );
 }
 
-export const migrationRouter = new MigrationRouter();
+// Module-level singleton: `autoSubscribe: false` prevents opening a Redis
+// subscriber socket on bare module import (CLI scripts / tests); the API server
+// starts the listener eagerly at boot in `api/src/index.ts`.
+export const migrationRouter = new MigrationRouter({ autoSubscribe: false });

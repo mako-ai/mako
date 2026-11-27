@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import path from "node:path";
 import type { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import {
@@ -660,5 +662,57 @@ describe("MigrationRouter (5-stage dual-run state machine)", () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
     expect(failures[1].updatedAt).toBeDefined();
+  });
+
+  it("does not open a Redis subscriber on bare module import and does not re-subscribe after stopInvalidationListener", async () => {
+    // 1. Bare import of router.ts with POSTGRES_URL + unreachable REDIS_URL must exit cleanly (no hang)
+    const apiRoot = path.resolve(__dirname, "../..");
+    const tsxBin = path.resolve(apiRoot, "../node_modules/.bin/tsx");
+    const stdout = execFileSync(
+      tsxBin,
+      [
+        "-e",
+        'import { MigrationRouter, migrationRouter } from "./src/migration/router"; console.log("imported", Boolean(MigrationRouter && migrationRouter));',
+      ],
+      {
+        cwd: apiRoot,
+        encoding: "utf8",
+        timeout: 5_000,
+        env: {
+          ...process.env,
+          POSTGRES_URL: "postgresql://localhost:5432/mako",
+          REDIS_URL: "redis://127.0.0.1:1",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    expect(stdout).toContain("imported true");
+
+    // 2. After stopInvalidationListener(), a late getState() must NOT re-open the subscriber
+    const routerA = new MigrationRouter({
+      enablePubSub: true,
+      cacheTtlMs: 60_000,
+    });
+    const routerB = new MigrationRouter({
+      enablePubSub: true,
+      cacheTtlMs: 60_000,
+    });
+    try {
+      await routerB.startInvalidationListener();
+      await routerB.stopInvalidationListener();
+
+      // Prime routerB cache AFTER stopping listener (must not re-subscribe)
+      expect((await routerB.getState("dbt")).mode).toBe("mongo_only");
+
+      // Broadcast from routerA -> routerB stays cached because listener remained stopped
+      await routerA.setDomainState({
+        domain: "dbt",
+        mode: "dual_write_pg_read",
+      });
+      expect((await routerB.getState("dbt")).mode).toBe("mongo_only");
+    } finally {
+      await routerA.stopInvalidationListener();
+      await routerB.stopInvalidationListener();
+    }
   });
 });
