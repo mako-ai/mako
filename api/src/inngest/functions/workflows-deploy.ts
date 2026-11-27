@@ -8,7 +8,7 @@
 import { inngest } from "../client";
 import { loggers } from "../../logging";
 import { appsRequireConnectedRepo } from "../../apps/config";
-import { Workspace } from "../../database/workspace-schema";
+import { workspaceRepo } from "../../repositories/workspaces";
 import { deployWorkflowsFromRepo } from "../../workflows/on-push";
 
 const log = loggers.api("workflows-deploy");
@@ -56,12 +56,8 @@ export const workflowsDeployReconcileFunction = inngest.createFunction(
   },
   async ({ step }) => {
     if (!appsRequireConnectedRepo()) return { skipped: "not production" };
-    const workspaceIds = await step.run("list-deployed", async () =>
-      (
-        await Workspace.find({ "workflows.live": { $exists: true } })
-          .select("_id")
-          .lean()
-      ).map(w => w._id.toString()),
+    const workspaceIds = await step.run("list-deployed", () =>
+      workspaceRepo.listIdsWithDeployedWorkflows(),
     );
     await step.run("request", () =>
       Promise.all(

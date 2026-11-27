@@ -112,6 +112,7 @@ export const JsonBody = {
 type WorkspaceMemberResponseSource = {
   _id: unknown;
   userId?: unknown;
+  user?: { id?: unknown; email?: unknown } | null;
   role: string;
   joinedAt: unknown;
 };
@@ -124,10 +125,17 @@ export function serializeWorkspaceMember(
       ? (member.userId as { _id?: unknown; email?: unknown })
       : null;
 
+  const email =
+    typeof member.user?.email === "string"
+      ? member.user.email
+      : typeof populatedUser?.email === "string"
+        ? populatedUser.email
+        : "";
+
   return {
     id: member._id,
     userId: populatedUser?._id ?? member.userId,
-    email: typeof populatedUser?.email === "string" ? populatedUser.email : "",
+    email,
     role: member.role,
     joinedAt: member.joinedAt,
   };

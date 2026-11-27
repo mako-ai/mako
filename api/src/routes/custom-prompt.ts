@@ -1,6 +1,6 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { Types } from "mongoose";
-import { Workspace } from "../database/workspace-schema";
+import { workspaceRepo } from "../repositories/workspaces";
 import { loggers } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import {
@@ -95,7 +95,7 @@ customPromptRoutes.openapi(
         return fail(c, 400, "Valid workspace ID is required");
       }
 
-      const workspace = await Workspace.findById(workspaceId);
+      const workspace = await workspaceRepo.findById(workspaceId);
 
       if (!workspace) {
         return fail(c, 404, "Workspace not found");
@@ -221,7 +221,7 @@ customPromptRoutes.openapi(
         return fail(c, 400, "Valid workspace ID is required");
       }
 
-      const workspace = await Workspace.findById(workspaceId).select("_id");
+      const workspace = await workspaceRepo.findById(workspaceId);
       if (!workspace) {
         return fail(c, 404, "Workspace not found");
       }
@@ -230,10 +230,7 @@ customPromptRoutes.openapi(
       // branch. The legacy Mongo field is cleared so it can never shadow
       // the file for readers still falling back to it.
       await commitWorkspacePrompt(workspaceId, content, c.get("user")?.id);
-      await Workspace.updateOne(
-        { _id: workspace._id },
-        { $unset: { "settings.customPrompt": "" } },
-      );
+      await workspaceRepo.unsetLegacyCustomPrompt(workspace.id);
 
       return c.json(
         {
@@ -291,7 +288,7 @@ customPromptRoutes.openapi(
         return fail(c, 400, "Valid workspace ID is required");
       }
 
-      const workspace = await Workspace.findById(workspaceId).select("_id");
+      const workspace = await workspaceRepo.findById(workspaceId);
       if (!workspace) {
         return fail(c, 404, "Workspace not found");
       }
@@ -301,10 +298,7 @@ customPromptRoutes.openapi(
         DEFAULT_CUSTOM_PROMPT,
         c.get("user")?.id,
       );
-      await Workspace.updateOne(
-        { _id: workspace._id },
-        { $unset: { "settings.customPrompt": "" } },
-      );
+      await workspaceRepo.unsetLegacyCustomPrompt(workspace.id);
 
       return c.json(
         {

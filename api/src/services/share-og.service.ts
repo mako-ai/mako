@@ -24,9 +24,9 @@ import { Types } from "mongoose";
 import {
   AppIndexEntry,
   AppProject,
-  Workspace,
   type IAppProject,
 } from "../database/workspace-schema";
+import { workspaceRepo } from "../repositories/workspaces";
 import {
   resolveAppRef,
   resolveIndexedAppRef,
@@ -222,9 +222,7 @@ export async function previewableWorkspaceApp(
 ): Promise<AppIndexRow | null> {
   if (!Types.ObjectId.isValid(workspaceId)) return null;
   const ws = new Types.ObjectId(workspaceId);
-  const workspace = await Workspace.findById(ws)
-    .select("settings.linkPreviews")
-    .lean();
+  const workspace = await workspaceRepo.findById(workspaceId);
   if (!workspace || workspace.settings?.linkPreviews === false) return null;
   // Persisted rows first (no git: a crawler must not wait on a clone).
   const row =
@@ -379,13 +377,12 @@ async function lookupTabRef(
     .limit(20)
     .lean();
   if (rows.length === 0) return null;
-  const workspaces = await Workspace.find({
-    _id: { $in: [...new Set(rows.map(r => r.workspaceId.toString()))] },
-    "settings.linkPreviews": { $ne: false },
-  })
-    .select("_id")
-    .lean();
-  const allowed = new Set(workspaces.map(w => w._id.toString()));
+  const workspaces = await workspaceRepo.findByIds([
+    ...new Set(rows.map(r => r.workspaceId.toString())),
+  ]);
+  const allowed = new Set(
+    workspaces.filter(w => w.settings?.linkPreviews !== false).map(w => w.id),
+  );
   const candidates = rows.filter(r => allowed.has(r.workspaceId.toString()));
   if (candidates.length !== 1) return null;
   return {

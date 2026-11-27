@@ -5,7 +5,10 @@
  * When BILLING_ENABLED is false, this middleware is a no-op.
  */
 
-import { Workspace, IWorkspaceBilling } from "../database/workspace-schema";
+import {
+  workspaceRepo,
+  type WorkspaceBilling,
+} from "../repositories/workspaces";
 import {
   getEffectiveBillingPlan,
   isBillingEnabled,
@@ -37,7 +40,7 @@ export async function checkBillingLimits(
     return { allowed: true };
   }
 
-  const workspace = await Workspace.findById(workspaceId).select("billing");
+  const workspace = await workspaceRepo.findById(workspaceId);
   if (!workspace) {
     return {
       allowed: false,
@@ -46,7 +49,7 @@ export async function checkBillingLimits(
     };
   }
 
-  const billing: IWorkspaceBilling = workspace.billing || {
+  const billing: WorkspaceBilling = workspace.billing || {
     stripeCustomerId: null,
     stripeSubscriptionId: null,
     subscriptionStatus: null,
@@ -55,12 +58,15 @@ export async function checkBillingLimits(
     usageQuotaUsd: PLAN_DEFINITIONS.free.usageQuotaUsd,
     hardLimitUsd: PLAN_DEFINITIONS.free.hardLimitUsd,
     plan: "free",
+    lastReportedOverageCents: 0,
+    pendingReportedOverageCents: null,
+    pendingMeterEventIdempotencyKey: null,
   };
 
   // For canceled/past_due subscriptions, degrade to free tier behavior
   const effectivePlan = getEffectiveBillingPlan(billing);
 
-  const effectiveBilling: IWorkspaceBilling = {
+  const effectiveBilling: WorkspaceBilling = {
     ...billing,
     plan: effectivePlan,
     usageQuotaUsd:

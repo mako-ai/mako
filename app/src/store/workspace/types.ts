@@ -5,7 +5,15 @@ export interface WorkspaceBilling {
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
   subscriptionStatus:
-    "active" | "past_due" | "canceled" | "trialing" | "incomplete" | null;
+    | "active"
+    | "past_due"
+    | "canceled"
+    | "trialing"
+    | "incomplete"
+    | "incomplete_expired"
+    | "unpaid"
+    | "paused"
+    | null;
   currentPeriodStart: string | null;
   currentPeriodEnd: string | null;
   usageQuotaUsd: number;

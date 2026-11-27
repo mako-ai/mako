@@ -16,7 +16,6 @@
  * the dbt git surface can be deleted with Block D3 without breaking apps.
  */
 import { createRoute, z } from "@hono/zod-openapi";
-import { Types } from "mongoose";
 import { loggers } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import {
@@ -27,7 +26,7 @@ import {
 import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
-import { GitHubInstallation } from "../database/workspace-schema";
+import { workspaceRepo } from "../repositories/workspaces";
 import { resolveRepoToken } from "../integrations/github/app-auth";
 import { signInstallState } from "../integrations/github/install-state";
 import { getGitHubAppSlug } from "../integrations/github/config";
@@ -545,10 +544,10 @@ workspaceRepoRoutes.openapi(
         return fail(c, 400, "Invalid owner or repo name");
       }
       if (installationId) {
-        const installation = await GitHubInstallation.findOne({
-          workspaceId: new Types.ObjectId(workspaceId),
+        const installation = await workspaceRepo.findGitHubInstallation(
+          workspaceId,
           installationId,
-        });
+        );
         if (!installation) {
           return fail(c, 404, "Installation not found");
         }

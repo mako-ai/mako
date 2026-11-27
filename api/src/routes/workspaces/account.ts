@@ -44,10 +44,10 @@ accountWorkspaceRoutes.openapi(
 
       return c.json({
         success: true,
-        data: invites.map((invite: any) => ({
+        data: invites.map(invite => ({
           token: invite.token,
-          workspaceName: invite.workspaceId?.name || "Unknown Workspace",
-          inviterEmail: invite.invitedBy?.email || "Unknown",
+          workspaceName: invite.workspace?.name || "Unknown Workspace",
+          inviterEmail: invite.inviter?.email || "Unknown",
           role: invite.role,
           expiresAt: invite.expiresAt,
         })),
@@ -250,16 +250,11 @@ accountWorkspaceRoutes.openapi(
       }
 
       // Return invite details without sensitive data
-      const workspace = invite.workspaceId as unknown as {
-        name?: string;
-      } | null;
-      const inviter = invite.invitedBy as unknown as { email?: string } | null;
-
       return c.json({
         success: true,
         data: {
-          workspaceName: workspace?.name || "Unknown Workspace",
-          inviterEmail: inviter?.email || "Unknown",
+          workspaceName: invite.workspace?.name || "Unknown Workspace",
+          inviterEmail: invite.inviter?.email || "Unknown",
           inviteeEmail: invite.email,
           role: invite.role,
           expiresAt: invite.expiresAt,

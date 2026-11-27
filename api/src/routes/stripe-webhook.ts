@@ -7,7 +7,7 @@
 
 import { createRoute } from "@hono/zod-openapi";
 import Stripe from "stripe";
-import { Workspace } from "../database/workspace-schema";
+import { workspaceRepo } from "../repositories/workspaces";
 import {
   isBillingEnabled,
   STRIPE_BILLING_API_VERSION,
@@ -88,10 +88,9 @@ stripeWebhookRoutes.openapi(
               : session.customer?.id;
 
           if (workspaceId && customerId) {
-            await Workspace.updateOne(
-              { _id: workspaceId },
-              { $set: { "billing.stripeCustomerId": customerId } },
-            );
+            await workspaceRepo.updateBilling(workspaceId, {
+              stripeCustomerId: customerId,
+            });
             logger.info("Linked Stripe customer to workspace from checkout", {
               workspaceId,
               customerId,
@@ -112,10 +111,8 @@ stripeWebhookRoutes.openapi(
               typeof subscription.customer === "string"
                 ? subscription.customer
                 : subscription.customer.id;
-            const ws = await Workspace.findOne({
-              "billing.stripeCustomerId": customerId,
-            }).select("_id");
-            workspaceId = ws?._id?.toString();
+            const ws = await workspaceRepo.findByStripeCustomerId(customerId);
+            workspaceId = ws?.id;
           }
 
           await syncSubscriptionToWorkspace(subscription, workspaceId);
@@ -133,10 +130,8 @@ stripeWebhookRoutes.openapi(
               typeof subscription.customer === "string"
                 ? subscription.customer
                 : subscription.customer.id;
-            const ws = await Workspace.findOne({
-              "billing.stripeCustomerId": customerId,
-            }).select("_id");
-            workspaceId = ws?._id?.toString();
+            const ws = await workspaceRepo.findByStripeCustomerId(customerId);
+            workspaceId = ws?.id;
           }
 
           await handleSubscriptionDeleted(subscription, workspaceId);
@@ -151,10 +146,7 @@ stripeWebhookRoutes.openapi(
               : invoice.customer?.id;
 
           if (customerId) {
-            await Workspace.updateOne(
-              { "billing.stripeCustomerId": customerId },
-              { $set: { "billing.subscriptionStatus": "past_due" } },
-            );
+            await workspaceRepo.markStripeCustomerPastDue(customerId);
             logger.warn(
               "Invoice payment failed, marked workspace as past_due",
               {

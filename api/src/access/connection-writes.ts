@@ -15,10 +15,10 @@
  */
 import { Types } from "mongoose";
 import {
-  WorkspaceMember,
   type IConnectionWriter,
   type IDatabaseConnection,
 } from "../database/workspace-schema";
+import { workspaceRepo } from "../repositories/workspaces";
 import { getRequestContext, requestContextStorage } from "../logging/context";
 import { loggers } from "../logging";
 import {
@@ -308,13 +308,11 @@ export async function principalsOutsideWorkspace(
 ): Promise<string[]> {
   const people = principals.filter(p => p.startsWith("user:"));
   if (people.length === 0) return [];
-  const members = await WorkspaceMember.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-    userId: { $in: people.map(p => p.slice("user:".length)) },
-  })
-    .select("userId")
-    .lean();
-  const known = new Set(members.map(m => `user:${String(m.userId)}`));
+  const matchedIds = await workspaceRepo.findMatchingMemberUserIds(
+    workspaceId,
+    people.map(p => p.slice("user:".length)),
+  );
+  const known = new Set(matchedIds.map(id => `user:${id}`));
   return people.filter(p => !known.has(p));
 }
 
@@ -325,14 +323,12 @@ export async function viewerPrincipals(
 ): Promise<string[]> {
   const people = principals.filter(p => p.startsWith("user:"));
   if (people.length === 0) return [];
-  const viewers = await WorkspaceMember.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-    userId: { $in: people.map(p => p.slice("user:".length)) },
-    role: "viewer",
-  })
-    .select("userId")
-    .lean();
-  return viewers.map(m => `user:${String(m.userId)}`);
+  const viewerIds = await workspaceRepo.findMatchingMemberUserIds(
+    workspaceId,
+    people.map(p => p.slice("user:".length)),
+    "viewer",
+  );
+  return viewerIds.map(id => `user:${id}`);
 }
 
 /**

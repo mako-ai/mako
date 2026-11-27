@@ -121,11 +121,11 @@ workspaceInviteRoutes.openapi(
 
       return c.json({
         success: true,
-        data: invites.map((invite: any) => ({
+        data: invites.map(invite => ({
           id: invite._id,
           email: invite.email,
           role: invite.role,
-          invitedBy: invite.invitedBy?.email || "",
+          invitedBy: invite.inviter?.email || "",
           expiresAt: invite.expiresAt,
         })),
       });
@@ -162,7 +162,10 @@ workspaceInviteRoutes.openapi(
         return fail(c, 400, "Workspace ID mismatch");
       }
 
-      const cancelled = await workspaceService.cancelInvite(inviteId);
+      const cancelled = await workspaceService.cancelInvite(
+        workspaceId,
+        inviteId,
+      );
 
       if (!cancelled) {
         return fail(c, 404, "Invite not found");

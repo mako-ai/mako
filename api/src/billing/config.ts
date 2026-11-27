@@ -16,7 +16,15 @@ export function isBillingEnabled(): boolean {
 export type BillingPlan = "free" | "pro" | "enterprise";
 
 export type SubscriptionStatus =
-  "active" | "past_due" | "canceled" | "trialing" | "incomplete" | null;
+  | "active"
+  | "past_due"
+  | "canceled"
+  | "trialing"
+  | "incomplete"
+  | "incomplete_expired"
+  | "unpaid"
+  | "paused"
+  | null;
 
 export type ModelTier = "free" | "pro";
 
@@ -72,7 +80,10 @@ export function getEffectiveBillingPlan(input?: {
 }): BillingPlan {
   if (
     input?.subscriptionStatus === "canceled" ||
-    input?.subscriptionStatus === "past_due"
+    input?.subscriptionStatus === "past_due" ||
+    input?.subscriptionStatus === "unpaid" ||
+    input?.subscriptionStatus === "paused" ||
+    input?.subscriptionStatus === "incomplete_expired"
   ) {
     return "free";
   }

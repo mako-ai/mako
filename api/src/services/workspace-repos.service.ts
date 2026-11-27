@@ -18,13 +18,12 @@ import {
   DbtProject,
   EntityVersion,
   Flow,
-  GitHubInstallation,
   NotebookFolder,
   NotebookIndex,
   SavedConsole,
-  Workspace,
   type IWorkspaceRepoBinding,
 } from "../database/workspace-schema";
+import { workspaceRepo } from "../repositories/workspaces";
 import { loggers } from "../logging";
 import { repoDirFor } from "../apps/repository.service";
 
@@ -51,13 +50,8 @@ export async function getWorkspaceRepo(
 export async function storedBindings(
   workspaceId: string,
 ): Promise<IWorkspaceRepoBinding[]> {
-  const ws = await Workspace.findById(workspaceId)
-    .select("workspaceRepos appsRepo")
-    .lean();
-  if (ws?.workspaceRepos?.length) return ws.workspaceRepos;
-  // Pre-migration fallback: the old single apps binding.
-  const legacy = ws?.appsRepo as IWorkspaceRepoBinding | undefined;
-  return legacy ? [legacy] : [];
+  const ws = await workspaceRepo.findById(workspaceId);
+  return ws?.workspaceRepos ?? [];
 }
 
 export interface ConnectWorkspaceRepoInput {
@@ -88,10 +82,10 @@ export async function connectWorkspaceRepo(
   // If an installation id is supplied it MUST belong to this workspace — the
   // same cross-tenant guard dbt applies before touching a repo.
   if (input.installationId !== undefined) {
-    const installation = await GitHubInstallation.findOne({
-      workspaceId: new Types.ObjectId(input.workspaceId),
-      installationId: input.installationId,
-    });
+    const installation = await workspaceRepo.findGitHubInstallation(
+      input.workspaceId,
+      input.installationId,
+    );
     if (!installation) {
       throw new Error("GitHub installation not found for this workspace");
     }
@@ -120,10 +114,7 @@ export async function connectWorkspaceRepo(
     );
   }
   const next = [binding];
-  await Workspace.updateOne(
-    { _id: new Types.ObjectId(input.workspaceId) },
-    { $set: { workspaceRepos: next }, $unset: { appsRepo: "" } },
-  );
+  await workspaceRepo.setWorkspaceRepos(input.workspaceId, next);
   logger.info("Workspace repo connected", {
     workspaceId: input.workspaceId,
     owner,
@@ -159,10 +150,7 @@ export async function disconnectWorkspaceRepo(
   if (opts.purge !== false) {
     await purgeMigratedContentIndex(workspaceId);
   }
-  await Workspace.updateOne(
-    { _id: new Types.ObjectId(workspaceId) },
-    { $set: { workspaceRepos: next }, $unset: { appsRepo: "" } },
-  );
+  await workspaceRepo.setWorkspaceRepos(workspaceId, next);
   logger.info("Workspace repo disconnected", { workspaceId, owner, repo });
 }
 
@@ -185,10 +173,9 @@ export async function purgeMigratedContentIndex(
     DbtJob.deleteMany({ workspaceId: id }),
     DbtProject.deleteMany({ workspaceId: id }),
   ]);
-  await Workspace.updateOne(
-    { _id: id },
-    { $unset: { "settings.customPrompt": "", selfDirective: "" } },
-  );
+  await workspaceRepo.unsetLegacyCustomPrompt(workspaceId, {
+    includeSelfDirective: true,
+  });
   await fs.rm(repoDirFor(workspaceId), { recursive: true, force: true });
   logger.info("Purged migrated content index after repo disconnect", {
     workspaceId,
@@ -203,15 +190,7 @@ export async function findWorkspaceIdsByRepoBinding(
   owner: string,
   repo: string,
 ): Promise<string[]> {
-  const wss = await Workspace.find({
-    $or: [
-      { workspaceRepos: { $elemMatch: { owner, repo } } },
-      { "appsRepo.owner": owner, "appsRepo.repo": repo },
-    ],
-  })
-    .select("_id")
-    .lean();
-  return wss.map(ws => String(ws._id));
+  return workspaceRepo.findWorkspaceIdsByRepoBinding(owner, repo);
 }
 
 /**

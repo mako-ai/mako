@@ -1,9 +1,8 @@
 import { createHash } from "node:crypto";
 import type { CapabilityGrant } from "@mako/agent-tools";
 
-import { AcpPlanGrant } from "../database/acp-plan-grant-schema";
-import { McpOAuthToken } from "../database/mcp-oauth-schema";
 import { ACP_MCP_CLIENT_ID } from "../auth/mcp-oauth.service";
+import { workspaceRepo } from "../repositories/workspaces";
 
 const PLAN_GRANT_TTL_MS = 2 * 60 * 60 * 1000;
 
@@ -16,12 +15,11 @@ export async function assertAcpAgentSessionOwner(input: {
   userId: string;
   agentSessionId: string;
 }): Promise<void> {
-  const ownsSession = await McpOAuthToken.exists({
+  const ownsSession = await workspaceRepo.hasActiveMcpAgentSession({
     workspaceId: input.workspaceId,
     userId: input.userId,
     clientId: ACP_MCP_CLIENT_ID,
     agentSessionId: input.agentSessionId,
-    refreshExpiresAt: { $gt: new Date() },
   });
   if (!ownsSession) {
     throw new Error("ACP agent session not found");
@@ -41,20 +39,14 @@ export async function approveAcpPlanGrant(input: {
   await assertAcpAgentSessionOwner(input);
   const expiresAt = new Date(Date.now() + PLAN_GRANT_TTL_MS);
   const grants = [...new Set(input.grants)];
-  await AcpPlanGrant.findOneAndUpdate(
-    { agentSessionId: input.agentSessionId },
-    {
-      $set: {
-        workspaceId: input.workspaceId,
-        userId: input.userId,
-        planDigest: planDigest(input.planMarkdown),
-        grants,
-        status: "approved",
-        expiresAt,
-      },
-    },
-    { upsert: true, returnDocument: "after" },
-  );
+  await workspaceRepo.upsertAcpGrant({
+    workspaceId: input.workspaceId,
+    userId: input.userId,
+    agentSessionId: input.agentSessionId,
+    planDigest: planDigest(input.planMarkdown),
+    grants,
+    expiresAt,
+  });
   return { grants, expiresAt };
 }
 
@@ -64,14 +56,11 @@ export async function revokeAcpPlanGrant(input: {
   agentSessionId: string;
 }): Promise<void> {
   await assertAcpAgentSessionOwner(input);
-  await AcpPlanGrant.updateOne(
-    {
-      workspaceId: input.workspaceId,
-      userId: input.userId,
-      agentSessionId: input.agentSessionId,
-    },
-    { $set: { status: "revoked", expiresAt: new Date() } },
-  );
+  await workspaceRepo.revokeAcpGrant({
+    workspaceId: input.workspaceId,
+    userId: input.userId,
+    agentSessionId: input.agentSessionId,
+  });
 }
 
 export async function resolveAcpPlanGrants(input: {
@@ -79,15 +68,13 @@ export async function resolveAcpPlanGrants(input: {
   userId: string;
   agentSessionId?: string;
 }): Promise<CapabilityGrant[]> {
-  if (!input.agentSessionId) return [];
-  const grant = await AcpPlanGrant.findOne({
+  if (!input.agentSessionId) {
+    return [];
+  }
+  const grant = await workspaceRepo.findActiveAcpGrant({
     workspaceId: input.workspaceId,
     userId: input.userId,
     agentSessionId: input.agentSessionId,
-    status: "approved",
-    expiresAt: { $gt: new Date() },
-  })
-    .select({ grants: 1 })
-    .lean();
-  return grant?.grants ?? [];
+  });
+  return (grant?.grants ?? []) as CapabilityGrant[];
 }

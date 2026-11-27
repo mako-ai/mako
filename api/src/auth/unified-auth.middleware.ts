@@ -9,8 +9,8 @@ import {
 } from "./mcp-oauth.service";
 import { resolveWorkspaceApiKeyScopes } from "./api-key-scopes";
 import { scopedKeyMayAccess } from "./scoped-key-routes";
-import { Workspace } from "../database/workspace-schema";
-import { User } from "../database/schema";
+import { authRepo } from "../repositories/auth";
+import { workspaceRepo } from "../repositories/workspaces";
 import {
   loggers,
   enrichContextWithUser,
@@ -83,23 +83,23 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
           );
         }
         const [tokenUser, workspace] = await Promise.all([
-          User.findById(validated.userId).lean(),
-          Workspace.findById(validated.workspaceId),
+          authRepo.findUserById(validated.userId),
+          workspaceRepo.findById(validated.workspaceId),
         ]);
         if (!tokenUser || !workspace) {
           return c.json({ error: "Invalid MCP access token" }, 401);
         }
 
-        c.set("user", { id: tokenUser._id, email: tokenUser.email });
+        c.set("user", { id: tokenUser.id, email: tokenUser.email });
         c.set("workspace", workspace);
         c.set("authType", "mcpOAuth");
-        c.set("workspaceId", workspace._id.toString());
+        c.set("workspaceId", workspace.id);
         c.set("mcpOAuthScopes", validated.scopes);
         c.set("mcpOAuthClientId", validated.clientId);
         c.set("mcpAgentSessionId", validated.agentSessionId);
 
-        enrichContextWithUser(tokenUser._id);
-        enrichContextWithWorkspace(workspace._id.toString());
+        enrichContextWithUser(tokenUser.id);
+        enrichContextWithWorkspace(workspace.id);
 
         await next();
         return;
@@ -120,24 +120,35 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
         }
         const keyHash = pass ? null : hashApiKey(apiKey);
 
-        // Find workspace with this API key
-        const workspace = pass
-          ? Types.ObjectId.isValid(pass.workspaceId)
-            ? await Workspace.findById(pass.workspaceId)
-            : null
-          : await Workspace.findOne({ "apiKeys.keyHash": keyHash });
+        // Find workspace + API key (pass tokens resolve via workspaceId + worker key id)
+        let workspace = null;
+        let workspaceApiKey = undefined;
+        if (pass) {
+          if (Types.ObjectId.isValid(pass.workspaceId)) {
+            const [ws, keys] = await Promise.all([
+              workspaceRepo.findById(pass.workspaceId),
+              workspaceRepo.listApiKeys(pass.workspaceId),
+            ]);
+            workspace = ws;
+            workspaceApiKey = keys.find(
+              k =>
+                k.name === workerKeyName() &&
+                !!k.keyHash &&
+                keyIdOf(k.keyHash) === pass.keyId,
+            );
+          }
+        } else if (keyHash) {
+          const found = await workspaceRepo.findApiKeyByHash(keyHash);
+          if (found) {
+            workspace = found.workspace;
+            workspaceApiKey = found.apiKey;
+          }
+        }
 
         if (pass && !workspace) {
           return c.json({ error: "Invalid workflow pass" }, 401);
         }
         if (workspace) {
-          const workspaceApiKey = workspace.apiKeys?.find(k =>
-            pass
-              ? k.name === workerKeyName() &&
-                !!k.keyHash &&
-                keyIdOf(k.keyHash) === pass.keyId
-              : k.keyHash === keyHash,
-          );
           if (pass && !workspaceApiKey) {
             return c.json(
               {
@@ -160,7 +171,7 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
           }
           if (!workspaceApiKey?.createdBy) {
             logger.warn("API key is missing creator metadata", {
-              workspaceId: workspace._id.toString(),
+              workspaceId: workspace.id,
             });
             return c.json({ error: "Invalid API key" }, 401);
           }
@@ -182,42 +193,37 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
             );
           }
 
-          const creator = await User.findById(workspaceApiKey.createdBy).lean();
+          const creator = await authRepo.findUserById(
+            workspaceApiKey.createdBy,
+          );
           if (!creator) {
             logger.warn("API key creator not found", {
-              workspaceId: workspace._id.toString(),
+              workspaceId: workspace.id,
               createdBy: workspaceApiKey.createdBy,
             });
             return c.json({ error: "Invalid API key owner" }, 401);
           }
 
-          // Update last used timestamp
-          await Workspace.updateOne(
-            {
-              _id: workspace._id,
-              "apiKeys.keyHash": keyHash,
-            },
-            {
-              $set: {
-                "apiKeys.$.lastUsedAt": new Date(),
-              },
-            },
+          // Update last used timestamp (throttled to at most once per minute)
+          await workspaceRepo.touchApiKeyLastUsed(
+            workspace.id,
+            workspaceApiKey.id,
           );
 
           // API keys are workspace-scoped, but they also act on behalf of
           // the user who created them so private resources remain visible.
           c.set("user", {
-            id: creator._id,
+            id: creator.id,
             email: creator.email,
           });
           c.set("workspace", workspace);
           c.set("apiKey", workspaceApiKey);
           c.set("authType", "apiKey");
-          c.set("workspaceId", workspace._id.toString());
+          c.set("workspaceId", workspace.id);
 
-          enrichContextWithUser(creator._id);
+          enrichContextWithUser(creator.id);
           // Enrich logging context with workspace ID (API key auth)
-          enrichContextWithWorkspace(workspace._id.toString());
+          enrichContextWithWorkspace(workspace.id);
           // A deployed workflow acts as itself only with a pass: the worker
           // key alone, whatever workflow a request says it is for, acts as
           // no one who can be listed (access/connection-writes.ts). A sandbox

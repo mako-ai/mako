@@ -13,15 +13,16 @@
 import * as crypto from "crypto";
 
 import {
-  McpOAuthClient,
-  McpOAuthCode,
-  McpOAuthToken,
-} from "../database/mcp-oauth-schema";
+  workspaceRepo,
+  type McpConnectionSummary,
+} from "../repositories/workspaces";
 import {
   INTERNAL_WORKSPACE_API_KEY_SCOPES,
   type WorkspaceApiKeyScope,
   resolveWorkspaceApiKeyScopes,
 } from "./api-key-scopes";
+
+export type { McpConnectionSummary };
 
 export const MCP_ACCESS_TOKEN_PREFIX = "mcpat_";
 const MCP_REFRESH_TOKEN_PREFIX = "mcprt_";
@@ -46,7 +47,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export function refreshIdleTtlMs(): number | null {
   const raw = process.env.MCP_REFRESH_TOKEN_IDLE_DAYS;
   const days = raw === undefined || raw === "" ? 30 : Number(raw);
-  if (!Number.isFinite(days) || days < 0) return 30 * DAY_MS;
+  if (!Number.isFinite(days) || days < 0) {
+    return 30 * DAY_MS;
+  }
   return days === 0 ? null : days * DAY_MS;
 }
 
@@ -57,6 +60,7 @@ function refreshExpiryFields(clientId: string): { refreshExpiresAt?: Date } {
   const idle = refreshIdleTtlMs();
   return idle === null ? {} : { refreshExpiresAt: new Date(Date.now() + idle) };
 }
+
 /** Avoid a write per MCP request: bump lastUsedAt at most once a minute. */
 const LAST_USED_WRITE_INTERVAL_MS = 60 * 1000;
 
@@ -102,7 +106,9 @@ export function isAllowedRedirectUri(uri: string): boolean {
   } catch {
     return false;
   }
-  if (parsed.protocol === "https:") return true;
+  if (parsed.protocol === "https:") {
+    return true;
+  }
   if (parsed.protocol === "http:") {
     return (
       parsed.hostname === "localhost" ||
@@ -131,7 +137,7 @@ export async function registerOAuthClient(input: {
     }
   }
   const clientId = randomToken(CLIENT_ID_PREFIX).slice(0, 40);
-  await McpOAuthClient.create({
+  await workspaceRepo.createMcpClient({
     clientId,
     clientName: input.clientName?.slice(0, 200),
     redirectUris: input.redirectUris,
@@ -140,7 +146,7 @@ export async function registerOAuthClient(input: {
 }
 
 export async function getOAuthClient(clientId: string) {
-  return McpOAuthClient.findOne({ clientId }).lean();
+  return workspaceRepo.findMcpClient(clientId);
 }
 
 export async function createAuthorizationCode(input: {
@@ -152,7 +158,7 @@ export async function createAuthorizationCode(input: {
   scopes: WorkspaceApiKeyScope[];
 }): Promise<string> {
   const code = randomToken("mcpac_");
-  await McpOAuthCode.create({
+  await workspaceRepo.createMcpCode({
     codeHash: sha256(code),
     clientId: input.clientId,
     userId: input.userId,
@@ -182,7 +188,7 @@ async function issueTokens(grant: {
 }): Promise<IssuedTokens> {
   const accessToken = randomToken(MCP_ACCESS_TOKEN_PREFIX);
   const refreshToken = randomToken(MCP_REFRESH_TOKEN_PREFIX);
-  await McpOAuthToken.create({
+  await workspaceRepo.createMcpToken({
     accessTokenHash: sha256(accessToken),
     refreshTokenHash: sha256(refreshToken),
     clientId: grant.clientId,
@@ -207,27 +213,14 @@ export const ACP_MCP_CLIENT_ID = "mako-acp-local";
 export const ACP_MCP_CLIENT_NAME = "Mako Coding Agent (ACP)";
 
 async function ensureAcpMcpClient(): Promise<void> {
-  const existing = await McpOAuthClient.findOne({
+  await workspaceRepo.ensureMcpClient({
     clientId: ACP_MCP_CLIENT_ID,
-  }).lean();
-  if (existing) return;
-  try {
-    await McpOAuthClient.create({
-      clientId: ACP_MCP_CLIENT_ID,
-      clientName: ACP_MCP_CLIENT_NAME,
-      // Session-minted grants never use the authorize redirect; keep a valid
-      // loopback URI so the client row satisfies registration constraints.
-      // Public /authorize must reject this clientId (session-mint only).
-      redirectUris: ["http://127.0.0.1/acp-callback"],
-    });
-  } catch (error) {
-    // Concurrent first mints can race the unique clientId index.
-    const code =
-      error && typeof error === "object" && "code" in error
-        ? (error as { code?: unknown }).code
-        : undefined;
-    if (code !== 11000) throw error;
-  }
+    clientName: ACP_MCP_CLIENT_NAME,
+    // Session-minted grants never use the authorize redirect; keep a valid
+    // loopback URI so the client row satisfies registration constraints.
+    // Public /authorize must reject this clientId (session-mint only).
+    redirectUris: ["http://127.0.0.1/acp-callback"],
+  });
 }
 
 /**
@@ -268,16 +261,10 @@ export async function exchangeAuthorizationCode(input: {
   codeVerifier: string;
 }): Promise<IssuedTokens> {
   // Atomically claim the code so a replayed request can never win the race.
-  const record = await McpOAuthCode.findOneAndUpdate(
-    {
-      codeHash: sha256(input.code),
-      usedAt: { $exists: false },
-      expiresAt: { $gt: new Date() },
-    },
-    { $set: { usedAt: new Date() } },
-    { returnDocument: "after" },
-  );
-  if (!record) throw new Error("invalid_grant: unknown or expired code");
+  const record = await workspaceRepo.redeemMcpCodeOnce(sha256(input.code));
+  if (!record) {
+    throw new Error("invalid_grant: unknown or expired code");
+  }
   if (record.clientId !== input.clientId) {
     throw new Error("invalid_grant: code was issued to a different client");
   }
@@ -304,43 +291,21 @@ export async function refreshAccessToken(input: {
   }
   const accessToken = randomToken(MCP_ACCESS_TOKEN_PREFIX);
   const refreshToken = randomToken(MCP_REFRESH_TOKEN_PREFIX);
-  // Rotate atomically in place: a failed write or wrong client must not
-  // destroy a valid grant. Only one caller may consume each refresh token.
-  // Scopes are NEVER widened: a refresh carries exactly what was consented
-  // to (minus internal scopes, which a browser grant must not hold). A grant
-  // made before a scope existed gets it by signing in again, not silently.
-  // The refresh expiry slides forward (see refreshIdleTtlMs).
   const idle = refreshIdleTtlMs();
-  const record = await McpOAuthToken.findOneAndUpdate(
-    {
-      refreshTokenHash: sha256(input.refreshToken),
-      clientId: input.clientId,
-      $or: [
-        { refreshExpiresAt: { $exists: false } },
-        { refreshExpiresAt: { $gt: new Date() } },
-      ],
-    },
-    [
-      {
-        $set: {
-          accessTokenHash: sha256(accessToken),
-          refreshTokenHash: sha256(refreshToken),
-          accessExpiresAt: new Date(Date.now() + ACCESS_TOKEN_TTL_MS),
-          scopes: {
-            $setDifference: [
-              { $ifNull: ["$scopes", []] },
-              { $literal: [...INTERNAL_WORKSPACE_API_KEY_SCOPES] },
-            ],
-          },
-        },
-      },
-      idle === null
-        ? { $unset: "refreshExpiresAt" }
-        : { $set: { refreshExpiresAt: new Date(Date.now() + idle) } },
-    ],
-    { returnDocument: "after", updatePipeline: true },
-  );
-  if (!record) throw new Error("invalid_grant: unknown or expired token");
+  const now = new Date();
+  const record = await workspaceRepo.rotateMcpRefreshToken({
+    currentRefreshTokenHash: sha256(input.refreshToken),
+    clientId: input.clientId,
+    newAccessTokenHash: sha256(accessToken),
+    newRefreshTokenHash: sha256(refreshToken),
+    newAccessExpiresAt: new Date(now.getTime() + ACCESS_TOKEN_TTL_MS),
+    newRefreshExpiresAt: idle === null ? null : new Date(now.getTime() + idle),
+    stripScopes: INTERNAL_WORKSPACE_API_KEY_SCOPES,
+    now,
+  });
+  if (!record) {
+    throw new Error("invalid_grant: unknown or expired token");
+  }
   return {
     accessToken,
     refreshToken,
@@ -350,65 +315,10 @@ export async function refreshAccessToken(input: {
   };
 }
 
-/**
- * One row per connected agent: a (client × user) pair that holds at least one
- * live grant in the workspace. Rotation preserves the grant, so connectedAt
- * remains the original authorization time.
- */
-export interface McpConnectionSummary {
-  clientId: string;
-  clientName?: string;
-  userId: string;
-  connectedAt: Date;
-  lastUsedAt?: Date;
-  accessExpiresAt: Date;
-}
-
 export async function listMcpConnections(
   workspaceId: string,
 ): Promise<McpConnectionSummary[]> {
-  const grants = await McpOAuthToken.aggregate<{
-    _id: { clientId: string; userId: string };
-    connectedAt: Date;
-    lastUsedAt?: Date;
-    accessExpiresAt: Date;
-  }>([
-    {
-      $match: {
-        workspaceId,
-        $or: [
-          { refreshExpiresAt: { $exists: false } },
-          { refreshExpiresAt: { $gt: new Date() } },
-        ],
-      },
-    },
-    {
-      $group: {
-        _id: { clientId: "$clientId", userId: "$userId" },
-        connectedAt: { $min: "$createdAt" },
-        lastUsedAt: { $max: "$lastUsedAt" },
-        accessExpiresAt: { $max: "$accessExpiresAt" },
-      },
-    },
-    { $sort: { lastUsedAt: -1, connectedAt: -1 } },
-  ]);
-
-  const clientIds = [...new Set(grants.map(g => g._id.clientId))];
-  const clients = await McpOAuthClient.find({ clientId: { $in: clientIds } })
-    .select("clientId clientName")
-    .lean();
-  const nameByClientId = new Map(
-    clients.map(c => [c.clientId, c.clientName] as const),
-  );
-
-  return grants.map(g => ({
-    clientId: g._id.clientId,
-    clientName: nameByClientId.get(g._id.clientId),
-    userId: g._id.userId,
-    connectedAt: g.connectedAt,
-    lastUsedAt: g.lastUsedAt,
-    accessExpiresAt: g.accessExpiresAt,
-  }));
+  return workspaceRepo.listMcpConnections(workspaceId);
 }
 
 /**
@@ -420,11 +330,7 @@ export async function revokeMcpGrantsForMember(input: {
   workspaceId: string;
   userId: string;
 }): Promise<number> {
-  const result = await McpOAuthToken.deleteMany({
-    workspaceId: input.workspaceId,
-    userId: input.userId,
-  });
-  return result.deletedCount ?? 0;
+  return workspaceRepo.revokeMcpGrantsForMember(input);
 }
 
 /**
@@ -437,12 +343,7 @@ export async function revokeMcpConnection(input: {
   clientId: string;
   userId: string;
 }): Promise<number> {
-  const result = await McpOAuthToken.deleteMany({
-    workspaceId: input.workspaceId,
-    clientId: input.clientId,
-    userId: input.userId,
-  });
-  return result.deletedCount ?? 0;
+  return workspaceRepo.revokeMcpConnection(input);
 }
 
 export interface ValidatedMcpToken {
@@ -457,21 +358,22 @@ export interface ValidatedMcpToken {
 export async function validateMcpAccessToken(
   token: string,
 ): Promise<ValidatedMcpToken | null> {
-  const record = await McpOAuthToken.findOne({
-    accessTokenHash: sha256(token),
-    accessExpiresAt: { $gt: new Date() },
-  }).lean();
-  if (!record) return null;
+  const now = new Date();
+  const record = await workspaceRepo.findValidMcpTokenByAccessHash(
+    sha256(token),
+    now,
+  );
+  if (!record) {
+    return null;
+  }
 
-  const now = Date.now();
   const lastUsed = record.lastUsedAt?.getTime() ?? 0;
-  if (now - lastUsed > LAST_USED_WRITE_INTERVAL_MS) {
-    McpOAuthToken.updateOne(
-      { _id: record._id },
-      { $set: { lastUsedAt: new Date() } },
-    ).catch(() => {
-      /* telemetry only */
-    });
+  if (now.getTime() - lastUsed > LAST_USED_WRITE_INTERVAL_MS) {
+    workspaceRepo
+      .touchMcpTokenLastUsed(record.id, now, LAST_USED_WRITE_INTERVAL_MS)
+      .catch(() => {
+        /* telemetry only */
+      });
   }
 
   return {
