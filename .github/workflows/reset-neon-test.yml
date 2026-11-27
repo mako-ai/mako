@@ -62,7 +62,7 @@ jobs:
           except ValueError as exc:
               raise RuntimeError(f"Invalid max_branch_age_days={raw_max_days!r}: {exc}")
 
-          PROTECTED_NAMES = {"production", "main", "master", "staging", "test"}
+          PROTECTED_NAMES = {"production", "prod", "main", "master", "staging", "test", "integration"}
 
           def neon(method, path, body=None):
               data = json.dumps(body).encode() if body is not None else None
