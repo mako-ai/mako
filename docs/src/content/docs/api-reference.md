@@ -48,6 +48,8 @@ Create API keys in **Workspace settings → API Keys**. The same page surfaces y
 | `PUT`  | `/api/workspaces/:id/settings/limits` | Update refresh concurrency limits                                                                                         |
 | `GET`  | `/api/workspaces/:id/auto-join`       | Get domain auto-join settings (email domains that auto-join on first sign-in, and the role granted: `member` \| `viewer`) |
 | `PUT`  | `/api/workspaces/:id/auto-join`       | Set domain auto-join (`{ domains: string[] (max 20), role?: "member" \| "viewer" }`, default role `viewer`)               |
+| `GET`  | `/api/workspaces/auto-join-offers`    | Workspaces the caller can join by email domain (an owner/admin holds a verified address on that domain)                   |
+| `POST` | `/api/workspaces/:id/join`            | Join a workspace that auto-joins the caller's email domain                                                                |
 
 ## Database Connections
 

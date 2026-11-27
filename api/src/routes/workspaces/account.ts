@@ -5,6 +5,10 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { unifiedAuthMiddleware } from "../../auth/unified-auth.middleware";
 import { workspaceService } from "../../services/workspace.service";
+import {
+  ensureAutoJoin,
+  findAutoJoinOffers,
+} from "../../services/auto-join.service";
 import { optionalWorkspace } from "../../middleware/workspace.middleware";
 import { normalizeEmail } from "../../utils/email.utils";
 import { loggers } from "../../logging";
@@ -14,7 +18,12 @@ import {
   createRouter,
   dataResponse,
 } from "../../openapi/core";
-import { CreateWorkspaceBody, WorkspaceSchema, TokenParam } from "./schemas";
+import {
+  CreateWorkspaceBody,
+  IdParam,
+  WorkspaceSchema,
+  TokenParam,
+} from "./schemas";
 import { fail, failFromThrown } from "../lib/respond";
 
 const logger = loggers.workspace();
@@ -55,6 +64,79 @@ accountWorkspaceRoutes.openapi(
     } catch (error) {
       logger.error("Error getting pending invites", { error });
       return failFromThrown(c, error, "Failed to get pending invites");
+    }
+  },
+);
+
+// Workspaces the current user can join by email domain (onboarding offers
+// them next to pending invites, so a link-less sign-in does not end in a
+// look-alike workspace — auto-join.service)
+accountWorkspaceRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/auto-join-offers",
+    tags: ["Workspaces"],
+    summary: "List workspaces the current user can join by email domain",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware] as const,
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const user = c.get("user");
+      if (!user) {
+        return fail(c, 401, "Unauthorized");
+      }
+      return c.json({ success: true, data: await findAutoJoinOffers(user) });
+    } catch (error) {
+      logger.error("Error getting auto-join offers", { error });
+      return failFromThrown(c, error, "Failed to get auto-join offers");
+    }
+  },
+);
+
+// Join a workspace that auto-joins the current user's email domain
+accountWorkspaceRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/join",
+    tags: ["Workspaces"],
+    summary: "Join a workspace by email domain",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware] as const,
+    request: { params: IdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const user = c.get("user");
+      if (!user) {
+        return fail(c, 401, "Unauthorized");
+      }
+      if (c.get("workspace")) {
+        return fail(c, 403, "API keys are scoped to one workspace");
+      }
+      const workspaceId = c.req.param("id");
+      const member = await ensureAutoJoin(workspaceId, user);
+      if (!member) {
+        return fail(c, 403, "Access denied to workspace");
+      }
+      const workspace = await workspaceService.getWorkspaceById(workspaceId);
+      if (!workspace) {
+        return fail(c, 404, "Workspace not found");
+      }
+      return c.json({
+        success: true,
+        data: {
+          id: workspace._id,
+          name: workspace.name,
+          slug: workspace.slug,
+          role: member.role,
+        },
+      });
+    } catch (error) {
+      logger.error("Error joining workspace by domain", { error });
+      return failFromThrown(c, error, "Failed to join workspace");
     }
   },
 );

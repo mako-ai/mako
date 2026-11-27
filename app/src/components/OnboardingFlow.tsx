@@ -19,7 +19,11 @@ import {
   ArrowForward as ArrowForwardIcon,
   ArrowBack as ArrowBackIcon,
 } from "@mui/icons-material";
-import { useWorkspaceStore, type PendingInvite } from "../store/workspaceStore";
+import {
+  useWorkspaceStore,
+  type AutoJoinOffer,
+  type PendingInvite,
+} from "../store/workspaceStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { trackEvent } from "../lib/analytics";
 import { useOnboarding } from "../contexts/onboarding-context";
@@ -54,6 +58,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   const {
     createWorkspaceForOnboarding,
     acceptInvite,
+    joinByDomain,
     currentWorkspace,
     refreshWorkspaces,
   } = useWorkspace();
@@ -62,6 +67,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
   const [state, setState] = useState<OnboardingState>("loading");
   const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
+  const [autoJoinOffers, setAutoJoinOffers] = useState<AutoJoinOffer[]>([]);
   const [workspaceName, setWorkspaceName] = useState("");
   // The prompt users kept typing INTO the name field — given its own home.
   const [buildIntent, setBuildIntent] = useState("");
@@ -179,10 +185,14 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
     const loadInvites = async () => {
       try {
-        const invites = await useWorkspaceStore
-          .getState()
-          .getPendingInvitesForUser();
+        const store = useWorkspaceStore.getState();
+        const [invites, offers] = await Promise.all([
+          store.getPendingInvitesForUser(),
+          // An offer is a shortcut: never let it block the invites.
+          store.getAutoJoinOffers().catch(() => []),
+        ]);
         setPendingInvites(invites);
+        setAutoJoinOffers(offers);
         setState("choose-workspace");
       } catch (error: unknown) {
         console.error("Failed to load pending invites:", error);
@@ -194,23 +204,24 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     loadInvites();
   }, [isResumingOnboarding]);
 
-  const handleAcceptInvite = useCallback(
-    async (token: string) => {
-      setAcceptingToken(token);
+  // Joins through an invite or the email domain; `key` marks the busy button.
+  const handleJoin = useCallback(
+    async (key: string, join: () => Promise<unknown>) => {
+      setAcceptingToken(key);
       setErrorMessage("");
 
       try {
-        await acceptInvite(token);
+        await join();
 
         trackOnboardingCompleted("joined");
         finishOnboarding();
       } catch (error: unknown) {
         const err = error as Error;
-        setErrorMessage(err.message || "Failed to accept invitation");
+        setErrorMessage(err.message || "Failed to join workspace");
         setAcceptingToken(null);
       }
     },
-    [acceptInvite, finishOnboarding, trackOnboardingCompleted],
+    [finishOnboarding, trackOnboardingCompleted],
   );
 
   const handleCreateWorkspace = useCallback(async () => {
@@ -481,7 +492,21 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   }
 
   // Choose workspace step (existing flow for pending invites or creating new)
-  const hasInvites = pendingInvites.length > 0;
+  const joinChoices = [
+    ...pendingInvites.map(invite => ({
+      key: invite.token,
+      name: invite.workspaceName,
+      detail: `Invited by ${invite.inviterEmail} • ${invite.role}`,
+      join: () => acceptInvite(invite.token),
+    })),
+    ...autoJoinOffers.map(offer => ({
+      key: offer.workspaceId,
+      name: offer.workspaceName,
+      detail: `Open to everyone at @${offer.domain} • ${offer.role}`,
+      join: () => joinByDomain(offer.workspaceId),
+    })),
+  ];
+  const hasInvites = joinChoices.length > 0;
 
   return (
     <AuthLayout
@@ -512,31 +537,33 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                 letterSpacing: 0.5,
               }}
             >
-              Pending Invitations
+              {pendingInvites.length > 0
+                ? "Pending Invitations"
+                : "Your team is already here"}
             </Typography>
             <List disablePadding>
-              {pendingInvites.map((invite, index) => (
-                <Box key={invite.token}>
+              {joinChoices.map((choice, index) => (
+                <Box key={choice.key}>
                   {index > 0 && <Divider />}
                   <ListItem sx={{ py: 2, px: 0 }}>
                     <ListItemIcon sx={{ minWidth: 40 }}>
                       <BusinessIcon />
                     </ListItemIcon>
                     <ListItemText
-                      primary={invite.workspaceName}
-                      secondary={`Invited by ${invite.inviterEmail} • ${invite.role}`}
+                      primary={choice.name}
+                      secondary={choice.detail}
                     />
                     <Button
                       variant="contained"
                       size="small"
                       endIcon={
-                        acceptingToken === invite.token ? (
+                        acceptingToken === choice.key ? (
                           <CircularProgress size={16} color="inherit" />
                         ) : (
                           <ArrowForwardIcon />
                         )
                       }
-                      onClick={() => handleAcceptInvite(invite.token)}
+                      onClick={() => handleJoin(choice.key, choice.join)}
                       disabled={acceptingToken !== null}
                     >
                       Join

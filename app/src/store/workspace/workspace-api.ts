@@ -7,6 +7,7 @@
  */
 import { api, unwrap } from "../../api";
 import type {
+  AutoJoinOffer,
   Workspace,
   WorkspaceMember,
   WorkspaceInvite,
@@ -252,6 +253,26 @@ class WorkspaceApi {
   async getPendingInvitesForUser(): Promise<PendingInvite[]> {
     const body = unwrap(await api.GET("/api/workspaces/pending-invites"));
     return (body.data ?? []) as PendingInvite[];
+  }
+
+  /**
+   * Workspaces the current user can join by email domain
+   */
+  async getAutoJoinOffers(): Promise<AutoJoinOffer[]> {
+    const body = unwrap(await api.GET("/api/workspaces/auto-join-offers"));
+    return (body.data ?? []) as AutoJoinOffer[];
+  }
+
+  /**
+   * Join a workspace that auto-joins the current user's email domain
+   */
+  async joinByDomain(workspaceId: string): Promise<Workspace> {
+    const body = unwrap(
+      await api.POST("/api/workspaces/{id}/join", {
+        params: { path: { id: workspaceId } },
+      }),
+    );
+    return body.data as Workspace;
   }
 }
 
