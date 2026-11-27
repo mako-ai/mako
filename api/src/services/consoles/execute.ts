@@ -6,16 +6,18 @@
  * gate.
  */
 import { Types } from "mongoose";
-import {
-  SavedConsole,
-  type IDatabaseConnection,
-  type ISavedConsole,
-  type IWorkspaceApiKey,
+import type {
+  IDatabaseConnection,
+  IWorkspaceApiKey,
 } from "../../database/workspace-schema";
 import {
   connectionsRepo,
   type DatabaseConnectionRecord,
 } from "../../repositories/connections";
+import {
+  consolesChartsRepo,
+  type SavedConsoleRecord,
+} from "../../repositories/consoles-charts";
 import { restQueryAccessFromStoredScopes } from "../../auth/api-key-scopes";
 import { viewerWriteRefusal } from "../../access/viewer-writes";
 import { liveConsoleCode } from "../../apps/workspace-consoles.service";
@@ -52,7 +54,7 @@ function refuse(status: 400 | 403 | 404, error: string): ConsoleRunOutcome {
 }
 
 /** `{ collection, operation, query }` for a structured MongoDB console. */
-function structuredMongoQuery(savedConsole: ISavedConsole) {
+function structuredMongoQuery(savedConsole: SavedConsoleRecord) {
   const opts = savedConsole.mongoOptions;
   return savedConsole.language === "mongodb" &&
     opts?.collection &&
@@ -65,7 +67,7 @@ function structuredMongoQuery(savedConsole: ISavedConsole) {
     : null;
 }
 
-function consoleStamp(savedConsole: ISavedConsole) {
+function consoleStamp(savedConsole: SavedConsoleRecord) {
   return {
     id: savedConsole._id,
     name: savedConsole.name,
@@ -108,10 +110,10 @@ export async function executeConsoleRequest(input: {
     }
     consoleIdParsed = new Types.ObjectId(consoleId);
 
-    const savedConsole = await SavedConsole.findOne({
-      _id: consoleIdParsed,
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    const savedConsole = await consolesChartsRepo.findConsoleById(
+      workspaceId,
+      consoleId,
+    );
     if (!savedConsole) return refuse(404, "Console not found");
     if (
       userId &&
@@ -193,19 +195,17 @@ export async function executeConsoleRequest(input: {
         );
 
     // Update execution stats
-    await SavedConsole.updateOne(
-      { _id: savedConsole._id },
-      {
-        $set: { lastExecutedAt: new Date() },
-        $inc: { executionCount: 1 },
-      },
+    await consolesChartsRepo.recordConsoleExecution(
+      workspaceId,
+      savedConsole.id,
+      { lastExecutedAt: new Date() },
     );
 
     // API-key executes count as external use (monitor integrations separately
     // from in-app runs).
     if (apiKey) {
       void recordConsoleExternalUse(
-        savedConsole._id.toString(),
+        savedConsole.id,
         workspaceId,
         "api",
         "execute",
@@ -236,7 +236,7 @@ export async function executeConsoleRequest(input: {
         workspaceId: new Types.ObjectId(workspaceId),
         connectionId: database._id,
         databaseName: savedConsole.databaseName || database.connection.database,
-        consoleId: savedConsole._id,
+        consoleId: consoleIdParsed,
         source: apiKey ? "api" : "console_ui",
         databaseType: database.type,
         queryLanguage: mapConsoleLanguageToQueryLanguage(savedConsole.language),
@@ -337,10 +337,10 @@ export async function exportConsoleResults(input: {
     return { ok: false, status: 400, error: "Invalid console ID" };
   }
 
-  const savedConsole = await SavedConsole.findOne({
-    _id: new Types.ObjectId(consoleId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+  const savedConsole = await consolesChartsRepo.findConsoleById(
+    workspaceId,
+    consoleId,
+  );
   // Same read rule as execute: a console the caller cannot read (private,
   // or in a folder they cannot see) is "not found", not exportable.
   if (

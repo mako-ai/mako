@@ -9,13 +9,13 @@ import {
   Flow,
   NotificationDelivery,
   NotificationRule,
-  SavedConsole,
   decrypt,
   type INotificationRuleChannel,
   type NotificationChannelType,
   type NotificationResourceType,
   type NotificationTrigger,
 } from "../database/workspace-schema";
+import { consolesChartsRepo } from "../repositories/consoles-charts";
 import { loggers } from "../logging";
 import { requireWorkspaceAdmin } from "../middleware/workspace-admin.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
@@ -89,15 +89,15 @@ async function assertResourceInWorkspace(
   resourceType: NotificationResourceType,
   resourceId: string,
 ): Promise<boolean> {
-  const ws = new Types.ObjectId(workspaceId);
-  const rid = new Types.ObjectId(resourceId);
   if (resourceType === "scheduled_query") {
-    const doc = await SavedConsole.findOne({
-      _id: rid,
-      workspaceId: ws,
-    }).lean();
+    const doc = await consolesChartsRepo.findConsoleById(
+      workspaceId,
+      resourceId,
+    );
     return !!doc;
   }
+  const ws = new Types.ObjectId(workspaceId);
+  const rid = new Types.ObjectId(resourceId);
   const doc = await Flow.findOne({
     _id: rid,
     workspaceId: ws,

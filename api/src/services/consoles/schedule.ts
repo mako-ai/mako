@@ -4,11 +4,7 @@
  * Callers have checked the id is a valid ObjectId and the caller is a
  * workspace admin. `null` means the console does not exist.
  */
-import { Types } from "mongoose";
-import {
-  SavedConsole,
-  ScheduledQueryRun,
-} from "../../database/workspace-schema";
+import { consolesChartsRepo } from "../../repositories/consoles-charts";
 import { inngest } from "../../inngest";
 import { commitConsoleState } from "../../apps/workspace-consoles.service";
 import {
@@ -16,13 +12,6 @@ import {
   resumedScheduledRun,
   validateScheduledConsoleSchedule,
 } from "../scheduled-query-schedule.service";
-
-function inWorkspace(workspaceId: string, consoleId: string) {
-  return {
-    _id: new Types.ObjectId(consoleId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  };
-}
 
 /** Throws when the cron or timezone is invalid. */
 export async function setConsoleSchedule(input: {
@@ -32,10 +21,11 @@ export async function setConsoleSchedule(input: {
   timezone?: string | null;
   actorUserId: string | undefined;
 }) {
-  const savedConsole = await SavedConsole.findOne({
-    ...inWorkspace(input.workspaceId, input.consoleId),
-    $or: [{ is_deleted: { $ne: true } }, { is_deleted: { $exists: false } }],
-  });
+  const savedConsole = await consolesChartsRepo.findConsoleById(
+    input.workspaceId,
+    input.consoleId,
+    { excludeDeleted: true },
+  );
   if (!savedConsole) return null;
 
   const schedule = validateScheduledConsoleSchedule({
@@ -44,27 +34,33 @@ export async function setConsoleSchedule(input: {
   });
   const nextAt = getNextScheduledConsoleRunAt(schedule);
 
-  savedConsole.schedule = schedule;
   // Setting the schedule resumes one Mako paused (schedule-pause.ts).
-  savedConsole.scheduledRun = resumedScheduledRun(
-    savedConsole.scheduledRun,
-    nextAt,
-  );
-  savedConsole.isSaved = true;
+  const scheduledRun = resumedScheduledRun(savedConsole.scheduledRun, nextAt);
+  const nextRow = {
+    ...savedConsole,
+    schedule,
+    scheduledRun,
+    isSaved: true,
+  };
   // The schedule is authored: it lives in the file's front-matter.
   const committed = await commitConsoleState({
-    row: savedConsole,
+    row: nextRow,
     previousPath: savedConsole.path,
     actorUserId: input.actorUserId,
     message: `schedule: ${savedConsole.name}`,
   });
-  savedConsole.path = committed.path;
-  savedConsole.sourceBlobSha = committed.sourceBlobSha;
-  await savedConsole.save();
+
+  await consolesChartsRepo.updateConsole(input.workspaceId, savedConsole.id, {
+    schedule,
+    scheduledRun,
+    isSaved: true,
+    path: committed.path,
+    sourceBlobSha: committed.sourceBlobSha,
+  });
 
   return {
-    schedule: savedConsole.schedule,
-    scheduledRun: savedConsole.scheduledRun,
+    schedule,
+    scheduledRun,
   };
 }
 
@@ -74,15 +70,15 @@ export async function clearConsoleSchedule(input: {
   consoleId: string;
   actorUserId: string | undefined;
 }): Promise<boolean> {
-  const current = await SavedConsole.findOne(
-    inWorkspace(input.workspaceId, input.consoleId),
+  const current = await consolesChartsRepo.findConsoleById(
+    input.workspaceId,
+    input.consoleId,
   );
   if (!current) return false;
-  const unscheduledSet: Record<string, unknown> = {};
+  const unscheduledSet: { path?: string; sourceBlobSha?: string } = {};
   if (current.isSaved) {
-    current.schedule = undefined;
     const committed = await commitConsoleState({
-      row: current,
+      row: { ...current, schedule: undefined },
       previousPath: current.path,
       actorUserId: input.actorUserId,
       message: `unschedule: ${current.name}`,
@@ -90,15 +86,10 @@ export async function clearConsoleSchedule(input: {
     unscheduledSet.path = committed.path;
     unscheduledSet.sourceBlobSha = committed.sourceBlobSha;
   }
-  await SavedConsole.updateOne(
-    { _id: current._id },
-    {
-      ...(Object.keys(unscheduledSet).length ? { $set: unscheduledSet } : {}),
-      $unset: {
-        schedule: 1,
-        "scheduledRun.nextAt": 1,
-      },
-    },
+  await consolesChartsRepo.clearConsoleSchedule(
+    input.workspaceId,
+    current.id,
+    Object.keys(unscheduledSet).length ? unscheduledSet : undefined,
   );
   return true;
 }
@@ -109,9 +100,10 @@ export async function triggerConsoleRun(input: {
   consoleId: string;
   triggeredBy: string | undefined;
 }) {
-  const savedConsole = await SavedConsole.findOne(
-    inWorkspace(input.workspaceId, input.consoleId),
-  ).select("_id");
+  const savedConsole = await consolesChartsRepo.findConsoleById(
+    input.workspaceId,
+    input.consoleId,
+  );
   if (!savedConsole) return null;
 
   return inngest.send({
@@ -131,29 +123,19 @@ export async function listScheduledRuns(input: {
   consoleId: string;
   limit: number;
 }) {
-  const workspaceObjectId = new Types.ObjectId(input.workspaceId);
-  const consoleObjectId = new Types.ObjectId(input.consoleId);
-
   const [runs, consoleDoc] = await Promise.all([
-    ScheduledQueryRun.find({
-      workspaceId: workspaceObjectId,
-      consoleId: consoleObjectId,
-    })
-      .sort({ triggeredAt: -1 })
-      .limit(input.limit)
-      .lean(),
-    SavedConsole.findOne({
-      _id: consoleObjectId,
-      workspaceId: workspaceObjectId,
-    })
-      .select("scheduledRun")
-      .lean(),
+    consolesChartsRepo.listScheduledQueryRuns(
+      input.workspaceId,
+      input.consoleId,
+      input.limit,
+    ),
+    consolesChartsRepo.findConsoleById(input.workspaceId, input.consoleId),
   ]);
 
   return {
     scheduledRun: consoleDoc?.scheduledRun,
     runs: runs.map(run => ({
-      id: run._id.toString(),
+      id: run.id,
       triggeredAt: run.triggeredAt,
       startedAt: run.startedAt,
       completedAt: run.completedAt,

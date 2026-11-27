@@ -8,9 +8,9 @@
 import { createHash } from "node:crypto";
 import { Types } from "mongoose";
 import {
-  SavedConsole,
-  type ISavedConsole,
-} from "../../database/workspace-schema";
+  consolesChartsRepo,
+  type SavedConsoleRecord,
+} from "../../repositories/consoles-charts";
 import type { OwnerDirectory } from "../user-handles";
 import { loadOwnerDirectory } from "../user-handles.service";
 import { boundRepoDirIfExists } from "../workspace-repo-required";
@@ -52,7 +52,7 @@ export interface ConsoleDefinitionAtMain {
 
 export interface LiveConsole extends ConsoleDefinitionAtMain {
   /** Derived index row when one exists (ACL, lastRun, embeddings, id). */
-  row: ISavedConsole | null;
+  row: SavedConsoleRecord | null;
   /** Row `_id`, or a derived id when the file has no row yet. */
   id: Types.ObjectId;
 }
@@ -182,9 +182,10 @@ export async function readConsoleDefinitionAtMain(
   return defs.find(d => d.path === path) ?? null;
 }
 
-async function savedIndexRows(workspaceId: string): Promise<ISavedConsole[]> {
-  return SavedConsole.find({
-    workspaceId: new Types.ObjectId(workspaceId),
+async function savedIndexRows(
+  workspaceId: string,
+): Promise<SavedConsoleRecord[]> {
+  return consolesChartsRepo.listConsolesByWorkspace(workspaceId, {
     isSaved: true,
   });
 }
@@ -192,9 +193,9 @@ async function savedIndexRows(workspaceId: string): Promise<ISavedConsole[]> {
 function joinLiveConsoles(
   workspaceId: string,
   defs: ConsoleDefinitionAtMain[],
-  rows: ISavedConsole[],
+  rows: SavedConsoleRecord[],
 ): LiveConsole[] {
-  const byPath = new Map<string, ISavedConsole>();
+  const byPath = new Map<string, SavedConsoleRecord>();
   for (const row of rows) {
     if (row.path) byPath.set(row.path, row);
   }
@@ -203,7 +204,9 @@ function joinLiveConsoles(
     return {
       ...def,
       row,
-      id: row?._id ?? derivedConsoleId(workspaceId, def.path),
+      id: row
+        ? new Types.ObjectId(row.id)
+        : derivedConsoleId(workspaceId, def.path),
     };
   });
 }
@@ -255,12 +258,9 @@ export async function liveConsoleCode(
 export async function loadLiveConsoleById(
   workspaceId: string,
   consoleId: string,
-): Promise<{ draft: ISavedConsole } | { live: LiveConsole } | null> {
+): Promise<{ draft: SavedConsoleRecord } | { live: LiveConsole } | null> {
   if (!Types.ObjectId.isValid(consoleId)) return null;
-  const row = await SavedConsole.findOne({
-    _id: new Types.ObjectId(consoleId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+  const row = await consolesChartsRepo.findConsoleById(workspaceId, consoleId);
   if (row && row.isSaved === false) return { draft: row };
 
   const repoDir = await boundRepoDirIfExists(workspaceId);
@@ -269,7 +269,7 @@ export async function loadLiveConsoleById(
   if (row?.path) {
     const def = await readConsoleDefinitionAtMain(workspaceId, row.path);
     if (!def) return null;
-    return { live: { ...def, row, id: row._id } };
+    return { live: { ...def, row, id: new Types.ObjectId(row.id) } };
   }
 
   const live = await loadLiveConsoles(workspaceId);

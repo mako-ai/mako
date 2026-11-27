@@ -4,7 +4,7 @@
  * to. A refusal is `{ ok: false, status, error }`.
  */
 import { Types } from "mongoose";
-import { SavedConsole } from "../../database/workspace-schema";
+import { consolesChartsRepo } from "../../repositories/consoles-charts";
 import { publishRealtimeEvent } from "../realtime.service";
 import { canWriteConsole } from "./access";
 import { renameConsole, softDeleteConsole } from "./crud";
@@ -13,10 +13,7 @@ export type LifecycleResult =
   { ok: true } | { ok: false; status: 400 | 403 | 404; error: string };
 
 function findInWorkspace(workspaceId: string, consoleId: string) {
-  return SavedConsole.findOne({
-    _id: new Types.ObjectId(consoleId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+  return consolesChartsRepo.findConsoleById(workspaceId, consoleId);
 }
 
 /** PATCH /{id}/rename. `name` may carry a folder path ("a/b/name"). */
@@ -59,13 +56,9 @@ export async function renameConsoleAs(input: {
   // Bump the draft revision so revision-sync catches the rename, then
   // poke subscribers (other tabs/users update the tab title live).
   if (validId) {
-    const renamed = await SavedConsole.findOneAndUpdate(
-      {
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      },
-      { $inc: { draftRevision: 1 } },
-      { returnDocument: "after" },
+    const renamed = await consolesChartsRepo.bumpConsoleDraftRevision(
+      workspaceId,
+      consoleId,
     );
     if (renamed) {
       publishRealtimeEvent(workspaceId, {

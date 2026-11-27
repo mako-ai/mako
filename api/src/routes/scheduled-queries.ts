@@ -1,7 +1,6 @@
 import { createRoute, z } from "@hono/zod-openapi";
-import { Types } from "mongoose";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import { SavedConsole } from "../database/workspace-schema";
+import { consolesChartsRepo } from "../repositories/consoles-charts";
 import { loggers } from "../logging";
 import { requireWorkspaceAdmin } from "../middleware/workspace-admin.middleware";
 import { consoleWorkspaceAccess } from "./consoles/middleware";
@@ -54,28 +53,23 @@ scheduledQueryRoutes.openapi(
     try {
       const { workspaceId } = c.req.valid("param");
 
-      const consoles = await SavedConsole.find({
-        workspaceId: new Types.ObjectId(workspaceId),
-        isSaved: true,
-        "schedule.cron": { $exists: true, $ne: "" },
-        $or: [
-          { is_deleted: { $ne: true } },
-          { is_deleted: { $exists: false } },
-        ],
-      })
-        .select(
-          "_id name schedule scheduledRun connectionId databaseName databaseId access owner_id createdBy updatedAt",
-        )
-        .sort({ name: 1 })
-        .lean();
+      const consoles = await consolesChartsRepo.listConsolesByWorkspace(
+        workspaceId,
+        {
+          isSaved: true,
+          hasSchedule: true,
+          excludeDeleted: true,
+          sortBy: "nameAsc",
+        },
+      );
 
       return c.json(
         {
           success: true as const,
           scheduledQueries: consoles.map(consoleDoc => ({
-            id: consoleDoc._id.toString(),
+            id: consoleDoc.id,
             name: consoleDoc.name,
-            connectionId: consoleDoc.connectionId?.toString(),
+            connectionId: consoleDoc.connectionId,
             databaseId: consoleDoc.databaseId,
             databaseName: consoleDoc.databaseName,
             schedule: consoleDoc.schedule,

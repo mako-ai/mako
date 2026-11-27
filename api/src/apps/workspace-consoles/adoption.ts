@@ -4,14 +4,14 @@
  * marker. The DB migration and the operator CLI both call it, and so does
  * the first console write on a not-yet-adopted workspace.
  */
-import { Types } from "mongoose";
+import type { ConsoleAccessLevel } from "../../database/workspace-schema";
+import { isObjectIdHex } from "../../database/pg/id-codec";
 import {
-  EntityVersion,
-  SavedConsole,
-  type ConsoleAccessLevel,
-  type IEntityVersion,
-  type ISavedConsole,
-} from "../../database/workspace-schema";
+  consolesChartsRepo,
+  type EntityVersionRecord,
+  type SavedConsoleRecord,
+  type UpdateConsolePatch,
+} from "../../repositories/consoles-charts";
 import { loggers } from "../../logging";
 import { mirrorPushNow, resolveMirrorTarget } from "../cloud-repo.service";
 import {
@@ -74,7 +74,7 @@ interface VersionState {
 
 /** A version snapshot, completed from the live row where it is silent. */
 async function stateFromSnapshot(
-  row: ISavedConsole,
+  row: SavedConsoleRecord,
   snapshot: Record<string, unknown>,
   folderCache: Map<string, FolderLean | null>,
 ): Promise<VersionState> {
@@ -103,24 +103,23 @@ async function stateFromSnapshot(
     code: s.code ?? row.code,
     language: (s.language as ConsoleLanguage) ?? row.language,
     connectionId:
-      s.connectionId && Types.ObjectId.isValid(s.connectionId)
-        ? new Types.ObjectId(s.connectionId)
+      s.connectionId && isObjectIdHex(s.connectionId)
+        ? s.connectionId
         : row.connectionId,
     databaseName: s.databaseName ?? row.databaseName,
     databaseId: s.databaseId ?? row.databaseId,
     chartSpec: s.chartSpec ?? row.chartSpec,
     resultsViewMode: s.resultsViewMode ?? row.resultsViewMode,
     mongoOptions:
-      (s.mongoOptions as ISavedConsole["mongoOptions"]) ?? row.mongoOptions,
+      (s.mongoOptions as SavedConsoleRecord["mongoOptions"]) ??
+      row.mongoOptions,
     schedule: row.schedule,
     access: s.access ?? row.access,
     isPrivate: (s.access ?? row.access) === "private",
     owner_id: row.owner_id,
     createdBy: row.createdBy,
     folderId:
-      s.folderId && Types.ObjectId.isValid(s.folderId)
-        ? new Types.ObjectId(s.folderId)
-        : row.folderId,
+      s.folderId && isObjectIdHex(s.folderId) ? s.folderId : row.folderId,
   };
   const folderSegments = await folderSegmentsFor(
     merged.folderId,
@@ -135,7 +134,7 @@ async function stateFromSnapshot(
 }
 
 async function versionAuthors(
-  versions: IEntityVersion[],
+  versions: EntityVersionRecord[],
 ): Promise<Map<string, GitAuthor>> {
   const out = new Map<string, GitAuthor>();
   for (const id of new Set(versions.map(v => v.savedBy).filter(Boolean))) {
@@ -146,7 +145,7 @@ async function versionAuthors(
 }
 
 function versionAuthor(
-  version: IEntityVersion,
+  version: EntityVersionRecord,
   known: Map<string, GitAuthor>,
 ): GitAuthor {
   if (version.savedByName === "System") {
@@ -182,7 +181,6 @@ export async function adoptWorkspaceConsoles(
     actorUserId?: string;
   },
 ): Promise<AdoptionReport> {
-  const ws = new Types.ObjectId(workspaceId);
   const report: AdoptionReport = {
     workspaceId,
     consoles: 0,
@@ -193,21 +191,20 @@ export async function adoptWorkspaceConsoles(
     durable: false,
     dryRun: Boolean(options.dryRun),
   };
-  const rows = (await SavedConsole.find({
-    workspaceId: ws,
+  const rows = await consolesChartsRepo.listConsolesByWorkspace(workspaceId, {
     isSaved: true,
-    $or: [{ is_deleted: { $ne: true } }, { is_deleted: { $exists: false } }],
-  })
-    .select("+descriptionEmbedding")
-    .sort({ createdAt: 1 })) as ISavedConsole[];
+    excludeDeleted: true,
+    includeEmbedding: true,
+    sortBy: "createdAtAsc",
+  });
   report.consoles = rows.length;
   if (options.dryRun) {
     if (options.replayHistory) {
-      report.versionsReplayed = await EntityVersion.countDocuments({
-        workspaceId: ws,
-        entityType: "console",
-        entityId: { $in: rows.map(r => r._id) },
-      });
+      report.versionsReplayed = await consolesChartsRepo.countEntityVersions(
+        workspaceId,
+        "console",
+        rows.map(r => r.id),
+      );
     }
     return report;
   }
@@ -265,10 +262,11 @@ export async function adoptWorkspaceConsoles(
     let previousPath: string | null =
       row.path && tree.has(row.path) ? row.path : null;
     if (options.replayHistory && !row.path) {
-      const versions = (await EntityVersion.find({
-        entityType: "console",
-        entityId: row._id,
-      }).sort({ version: 1 })) as IEntityVersion[];
+      const versions = await consolesChartsRepo.listEntityVersionsAscending(
+        workspaceId,
+        row.id,
+        "console",
+      );
       const known = await versionAuthors(versions);
       for (const version of versions) {
         const vs = await stateFromSnapshot(
@@ -358,22 +356,22 @@ function uniquePath(
 }
 
 async function stampRow(
-  row: ISavedConsole,
+  row: SavedConsoleRecord,
   path: string,
   sourceBlobSha: string,
 ): Promise<void> {
-  const set: Record<string, unknown> = { path, sourceBlobSha };
+  const patch: UpdateConsolePatch = { path, sourceBlobSha };
   const hasEmbedding =
     Array.isArray(row.descriptionEmbedding) &&
     row.descriptionEmbedding.length > 0;
   if (!row.descriptionSource) {
-    set.descriptionSource = descriptionIsAuthored(row)
+    patch.descriptionSource = descriptionIsAuthored(row)
       ? "authored"
       : "generated";
   }
   // Keep every existing embedding: it described this same content.
   if (hasEmbedding && !row.descriptionSourceSha) {
-    set.descriptionSourceSha = sourceBlobSha;
+    patch.descriptionSourceSha = sourceBlobSha;
   }
-  await SavedConsole.updateOne({ _id: row._id }, { $set: set });
+  await consolesChartsRepo.updateConsole(row.workspaceId, row.id, patch);
 }

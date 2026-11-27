@@ -7,8 +7,11 @@ import type {
   ConsoleAccessLevel,
   ISavedConsole,
 } from "../../database/workspace-schema";
+import type { SavedConsoleRecord } from "../../repositories/consoles-charts";
 import { canReadResource, canWriteResource } from "../../utils/resource-acl";
 import { FolderChainCache, folderAccess } from "../../utils/folder-chain";
+
+export type ConsoleAccessSubject = ISavedConsole | SavedConsoleRecord;
 
 /** Options for the folder-inheritance checks. */
 export interface InheritanceOptions {
@@ -31,7 +34,7 @@ export function legacyAccess(row: {
 
 /** The effective access level for a console (before folder inheritance). */
 export function resolveConsoleAccess(
-  console: ISavedConsole,
+  console: ConsoleAccessSubject,
 ): ConsoleAccessLevel {
   return legacyAccess(console);
 }
@@ -40,7 +43,7 @@ export function resolveConsoleAccess(
  * Whether `userId` is an explicit collaborator (viewer or editor).
  */
 export function isConsoleCollaborator(
-  console: ISavedConsole,
+  console: ConsoleAccessSubject,
   userId: string,
 ): boolean {
   return (console.sharedWith || []).some(s => s.userId === userId);
@@ -50,7 +53,7 @@ export function isConsoleCollaborator(
  * Check whether `userId` can read the given console.
  */
 export function canReadConsole(
-  console: ISavedConsole,
+  console: ConsoleAccessSubject,
   userId: string,
   memberRole?: string,
 ): boolean {
@@ -65,7 +68,7 @@ export function canReadConsole(
  * console.
  */
 export function canWriteConsole(
-  console: ISavedConsole,
+  console: ConsoleAccessSubject,
   userId: string,
   memberRole?: string,
 ): boolean {
@@ -81,7 +84,7 @@ export function canWriteConsole(
  * (fail closed) rather than looked up unscoped.
  */
 function folderCacheFor(
-  console: ISavedConsole,
+  console: ConsoleAccessSubject,
   options?: InheritanceOptions,
 ): FolderChainCache | null {
   if (options?.folders) return options.folders;
@@ -91,7 +94,7 @@ function folderCacheFor(
 
 /** Whether any folder up the console's chain grants workspace access. */
 async function inheritsWorkspaceAccess(
-  console: ISavedConsole,
+  console: ConsoleAccessSubject,
   options?: InheritanceOptions,
 ): Promise<boolean> {
   const folderId = console.folderId?.toString();
@@ -109,7 +112,7 @@ async function inheritsWorkspaceAccess(
  * of consoles) to avoid a query per level per console.
  */
 export async function canReadConsoleWithInheritance(
-  console: ISavedConsole,
+  console: ConsoleAccessSubject,
   userId: string,
   options?: InheritanceOptions,
 ): Promise<boolean> {
@@ -127,7 +130,7 @@ export async function canReadConsoleWithInheritance(
  * Resolve the access level a user sees after folder inheritance.
  */
 export async function resolveConsoleAccessWithInheritance(
-  console: ISavedConsole,
+  console: ConsoleAccessSubject,
   options?: InheritanceOptions,
 ): Promise<ConsoleAccessLevel> {
   const ownAccess = resolveConsoleAccess(console);

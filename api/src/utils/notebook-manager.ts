@@ -1,12 +1,15 @@
-import { Types } from "mongoose";
-import { sortTreeNodes, wouldCreateFolderCycle } from "./folder-tree";
+import type { Types } from "mongoose";
+import { sortTreeNodes } from "./folder-tree";
 
-import {
-  NotebookFolder,
-  NotebookIndex,
-  type INotebookFolder,
-  type INotebookIndex,
+import type {
+  INotebookFolder,
+  INotebookIndex,
 } from "../database/workspace-schema";
+import {
+  consolesChartsRepo,
+  type NotebookFolderRecord,
+  type NotebookIndexRecord,
+} from "../repositories/consoles-charts";
 import { loggers } from "../logging";
 import {
   canReadResource,
@@ -18,6 +21,8 @@ import { syncNotebookIndexFromStore } from "../services/notebook-index.service";
 const logger = loggers.api("notebook-manager");
 
 export type NotebookAccessLevel = "private" | "workspace";
+export type NotebookIndexSubject = INotebookIndex | NotebookIndexRecord;
+export type NotebookFolderSubject = INotebookFolder | NotebookFolderRecord;
 
 export interface NotebookTreeNode {
   id: string;
@@ -31,7 +36,7 @@ export interface NotebookTreeNode {
   updatedAt?: string;
 }
 
-function indexAsResource(index: INotebookIndex): ShareableResourceLike {
+function indexAsResource(index: NotebookIndexSubject): ShareableResourceLike {
   return {
     owner_id: index.ownerId,
     access: index.access,
@@ -44,16 +49,16 @@ function indexAsResource(index: INotebookIndex): ShareableResourceLike {
  * Centralized permission + tree logic for notebooks.
  */
 export class NotebookManager {
-  static isOwner(index: INotebookIndex, userId: string): boolean {
+  static isOwner(index: NotebookIndexSubject, userId: string): boolean {
     return index.ownerId === userId;
   }
 
-  static isCollaborator(index: INotebookIndex, userId: string): boolean {
+  static isCollaborator(index: NotebookIndexSubject, userId: string): boolean {
     return (index.sharedWith || []).some(s => s.userId === userId);
   }
 
   static canRead(
-    index: INotebookIndex,
+    index: NotebookIndexSubject,
     userId: string,
     memberRole?: string,
     effectiveAccess?: NotebookAccessLevel,
@@ -64,7 +69,7 @@ export class NotebookManager {
   }
 
   static canWrite(
-    index: INotebookIndex,
+    index: NotebookIndexSubject,
     userId: string,
     isAdmin: boolean = false,
     memberRole?: string,
@@ -79,7 +84,7 @@ export class NotebookManager {
   }
 
   static canReadFolder(
-    folder: INotebookFolder,
+    folder: NotebookFolderSubject,
     userId: string,
     memberRole?: string,
     effectiveAccess?: NotebookAccessLevel,
@@ -96,7 +101,7 @@ export class NotebookManager {
   }
 
   static canWriteFolder(
-    folder: INotebookFolder,
+    folder: NotebookFolderSubject,
     userId: string,
     isAdmin: boolean = false,
     memberRole?: string,
@@ -123,12 +128,12 @@ export class NotebookManager {
   }
 
   static buildTree(
-    folders: INotebookFolder[],
-    notebooks: INotebookIndex[],
+    folders: NotebookFolderSubject[],
+    notebooks: NotebookIndexSubject[],
     userId?: string,
     isAdmin: boolean = false,
     memberRole?: string,
-    folderById?: Map<string, INotebookFolder>,
+    folderById?: Map<string, NotebookFolderSubject>,
   ): NotebookTreeNode[] {
     const folderMap = new Map<string, NotebookTreeNode>();
     const rootItems: NotebookTreeNode[] = [];
@@ -211,8 +216,8 @@ export class NotebookManager {
 
   static effectiveAccessForItem(
     ownAccess: NotebookAccessLevel,
-    folderId: Types.ObjectId | undefined,
-    folderById: Map<string, INotebookFolder>,
+    folderId: Types.ObjectId | string | undefined,
+    folderById: Map<string, NotebookFolderSubject>,
   ): NotebookAccessLevel {
     if (ownAccess === "workspace") return "workspace";
     let currentFolderId = folderId?.toString();
@@ -237,35 +242,32 @@ export class NotebookManager {
       await syncNotebookIndexFromStore(workspaceId);
 
       const isAdmin = userRole === "owner" || userRole === "admin";
-      const wsId = new Types.ObjectId(workspaceId);
 
       const [folders, notebooks] = await Promise.all([
-        NotebookFolder.find({ workspaceId: wsId }).sort({ name: 1 }),
-        NotebookIndex.find({
-          workspaceId: wsId,
-          $or: [
-            { access: "workspace" },
-            { access: "private", ownerId: userId },
-            { "sharedWith.userId": userId },
-          ],
-        }).sort({ name: 1 }),
+        consolesChartsRepo.listNotebookFolders(workspaceId, {
+          sortByName: true,
+        }),
+        consolesChartsRepo.listNotebookIndexes(workspaceId, {
+          sortByName: true,
+          visibleForUserId: userId,
+        }),
       ]);
 
-      const folderById = new Map<string, INotebookFolder>();
+      const folderById = new Map<string, NotebookFolderSubject>();
       for (const f of folders) {
-        folderById.set(f._id.toString(), f);
+        folderById.set(f.id, f);
       }
 
       const effectiveAccess = (
         ownAccess: NotebookAccessLevel,
-        folderId?: Types.ObjectId,
+        folderId?: string,
       ): NotebookAccessLevel =>
         NotebookManager.effectiveAccessForItem(ownAccess, folderId, folderById);
 
       const classify = (
         ownAccess: NotebookAccessLevel,
         ownerId: string | undefined,
-        folderId?: Types.ObjectId,
+        folderId?: string,
       ): "my" | "workspace" | null => {
         const access = effectiveAccess(ownAccess, folderId);
         if (access === "workspace") return "workspace";
@@ -273,8 +275,8 @@ export class NotebookManager {
         return null;
       };
 
-      const myNotebooksRaw: INotebookIndex[] = [];
-      const sharedNotebooksRaw: INotebookIndex[] = [];
+      const myNotebooksRaw: NotebookIndexRecord[] = [];
+      const sharedNotebooksRaw: NotebookIndexRecord[] = [];
 
       for (const n of notebooks) {
         const ownerId = n.ownerId?.toString();
@@ -286,8 +288,8 @@ export class NotebookManager {
         else if (section === "workspace") sharedNotebooksRaw.push(n);
       }
 
-      const myFolders: INotebookFolder[] = [];
-      const sharedFolders: INotebookFolder[] = [];
+      const myFolders: NotebookFolderRecord[] = [];
+      const sharedFolders: NotebookFolderRecord[] = [];
 
       for (const f of folders) {
         const ownerId = f.ownerId?.toString();
@@ -325,27 +327,24 @@ export class NotebookManager {
     targetParentId: string | null,
     workspaceId: string,
   ): Promise<boolean> {
-    return wouldCreateFolderCycle(
-      NotebookFolder,
+    return consolesChartsRepo.wouldCreateNotebookFolderCycle(
+      workspaceId,
       folderId,
       targetParentId,
-      workspaceId,
     );
   }
 
   static async getEffectiveAccessForNotebook(
-    index: INotebookIndex,
+    index: NotebookIndexSubject,
     workspaceId: string,
   ): Promise<NotebookAccessLevel> {
     if (index.access === "workspace") return "workspace";
     if (!index.folderId) return index.access || "private";
 
-    const folders = await NotebookFolder.find({
-      workspaceId: new Types.ObjectId(workspaceId),
-    }).lean();
-    const folderById = new Map<string, INotebookFolder>();
+    const folders = await consolesChartsRepo.listNotebookFolders(workspaceId);
+    const folderById = new Map<string, NotebookFolderSubject>();
     for (const f of folders) {
-      folderById.set(f._id.toString(), f as INotebookFolder);
+      folderById.set(f.id, f);
     }
     return NotebookManager.effectiveAccessForItem(
       index.access || "private",

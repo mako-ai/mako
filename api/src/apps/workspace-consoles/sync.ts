@@ -7,11 +7,14 @@
  * a repo that has not adopted (`consoles/README.md` absent).
  */
 import { Types } from "mongoose";
+import type { ConsoleAccessLevel } from "../../database/workspace-schema";
 import {
-  SavedConsole,
-  type ConsoleAccessLevel,
-  type ISavedConsole,
-} from "../../database/workspace-schema";
+  consolesChartsRepo,
+  type ConsoleMongoOptions,
+  type CreateConsoleInput,
+  type SavedConsoleRecord,
+  type UpdateConsolePatch,
+} from "../../repositories/consoles-charts";
 import { loggers } from "../../logging";
 import { publishRealtimeEvent } from "../../services/realtime.service";
 import {
@@ -61,7 +64,7 @@ export interface ConsoleSyncStats {
 /** Serialize per workspace: two rapid pushes must not interleave a sync. */
 const serialized = createSerializer();
 
-type IndexRow = ISavedConsole;
+type IndexRow = SavedConsoleRecord;
 
 /**
  * Reconcile the index with `main`. Called after every push that reaches
@@ -99,12 +102,11 @@ async function syncNow(
   for (const e of entries) byPath.set(e.path, e);
   const consoleEntries = entries.filter(e => parseConsoleRepoPath(e.path));
 
-  const ws = new Types.ObjectId(workspaceId);
-  const rows = (await SavedConsole.find({
-    workspaceId: ws,
+  const rows = await consolesChartsRepo.listConsolesByWorkspace(workspaceId, {
     isSaved: true,
-    path: { $exists: true, $ne: null },
-  }).select("+descriptionEmbedding")) as IndexRow[];
+    hasPath: true,
+    includeEmbedding: true,
+  });
   const rowByPath = new Map<string, IndexRow>();
   for (const r of rows) if (r.path) rowByPath.set(r.path, r);
   const seenRows = new Set<string>();
@@ -194,13 +196,16 @@ async function syncNow(
         parsed.meta.databaseId === parsed.meta.connectionId
           ? null
           : (parsed.meta.databaseId ?? null);
-      const set: Record<string, unknown> = {
+      const folderIdStr = folderId ? folderId.toString() : null;
+      const mongoOptions =
+        (parsed.meta.mongoOptions as ConsoleMongoOptions | undefined) ?? null;
+      const patch: UpdateConsolePatch = {
         path: entry.path,
         sourceBlobSha: entry.oid,
         name: location.name,
         language: location.language,
         code: parsed.code,
-        folderId: folderId ?? null,
+        folderId: folderIdStr,
         access,
         isPrivate: access === "private",
         owner_id: ownerId,
@@ -208,7 +213,7 @@ async function syncNow(
         databaseName: parsed.meta.databaseName ?? null,
         databaseId,
         resultsViewMode: parsed.meta.resultsViewMode ?? null,
-        mongoOptions: parsed.meta.mongoOptions ?? null,
+        mongoOptions,
         chartSpec: chartSpec ?? null,
         is_deleted: false,
         isSaved: true,
@@ -216,60 +221,80 @@ async function syncNow(
         updatedAt: new Date(),
       };
       if (parsed.meta.description) {
-        set.description = parsed.meta.description;
-        set.descriptionSource = "authored";
+        patch.description = parsed.meta.description;
+        patch.descriptionSource = "authored";
       } else if (row && descriptionIsAuthored(row)) {
         // The author removed their description: the generated one takes over
         // on the next derivation.
-        set.description = "";
-        set.descriptionSource = "generated";
+        patch.description = "";
+        patch.descriptionSource = "generated";
       }
-      const scheduleSet = scheduleFields(parsed.meta.schedule, row);
-      Object.assign(set, scheduleSet.set);
+      Object.assign(patch, scheduleFields(parsed.meta.schedule, row));
 
       if (row) {
-        await SavedConsole.updateOne(
-          { _id: row._id },
+        const fresh = await consolesChartsRepo.updateConsole(
+          workspaceId,
+          row.id,
           {
-            $set: set,
-            $inc: { version: 1, draftRevision: 1 },
-            $unset: { deletedAt: "", ...scheduleSet.unset },
+            ...patch,
+            deletedAt: null,
+            incVersion: 1,
+            incDraftRevision: 1,
           },
         );
-        const fresh = await SavedConsole.findById(row._id);
         if (fresh) touched.push(fresh);
         continue;
       }
 
+      const derivedId = derivedConsoleId(workspaceId, entry.path).toString();
       try {
-        const created = await SavedConsole.create({
-          _id: derivedConsoleId(workspaceId, entry.path),
-          workspaceId: ws,
+        const createInput: CreateConsoleInput = {
+          id: derivedId,
+          workspaceId,
           createdBy: actor,
           executionCount: 0,
           version: 1,
           draftRevision: 1,
-          ...set,
-        });
+          name: location.name,
+          code: parsed.code,
+          language: location.language,
+          path: entry.path,
+          sourceBlobSha: entry.oid,
+          folderId: folderIdStr,
+          access,
+          isPrivate: access === "private",
+          owner_id: ownerId,
+          connectionId,
+          databaseName: parsed.meta.databaseName ?? null,
+          databaseId,
+          resultsViewMode: parsed.meta.resultsViewMode ?? null,
+          mongoOptions,
+          chartSpec: chartSpec ?? null,
+          description: patch.description,
+          descriptionSource: patch.descriptionSource,
+          schedule: patch.schedule,
+          scheduledRun: patch.scheduledRun,
+          is_deleted: false,
+          isSaved: true,
+          lastDraftOrigin: "user",
+          updatedAt: patch.updatedAt,
+        };
+        const created = await consolesChartsRepo.createConsole(createInput);
         stats.created++;
-        seenRows.add(created._id.toString());
+        seenRows.add(created.id);
         touched.push(created);
       } catch {
         // Unique-id race with a concurrent list/sync: keep the winner so a
         // git-only file that already appeared under the derived id does not
         // mint a second row.
         const winner =
-          (await SavedConsole.findById(
-            derivedConsoleId(workspaceId, entry.path),
-          )) ??
-          (await SavedConsole.findOne({
-            workspaceId: ws,
-            path: entry.path,
-            isSaved: true,
+          (await consolesChartsRepo.findConsoleById(workspaceId, derivedId)) ??
+          (await consolesChartsRepo.findConsoleByPath(workspaceId, entry.path, {
+            isSavedOnly: true,
           }));
         if (!winner) throw new Error("Could not persist the console index row");
         stats.created++;
-        seenRows.add(winner._id.toString());
+        seenRows.add(winner.id);
         touched.push(winner);
       }
     } catch (error) {
@@ -283,26 +308,28 @@ async function syncNow(
 
   // Deletions: adopted repo, path gone, blob not claimed by a rename.
   for (const row of rows) {
-    if (seenRows.has(row._id.toString())) continue;
+    if (seenRows.has(row.id)) continue;
     if (!row.path || byPath.has(row.path) || row.is_deleted) continue;
-    const deleted = await SavedConsole.updateOne(
-      { _id: row._id, is_deleted: { $ne: true } },
-      { $set: { is_deleted: true, deletedAt: new Date() } },
+    const deleted = await consolesChartsRepo.softDeleteConsole(
+      workspaceId,
+      row.id,
+      new Date(),
+      { onlyIfNotDeleted: true },
     );
     // Duplicate push deliveries or concurrent instances may reconcile the
     // same commit. Only the process that changed the row may broadcast it.
-    if (deleted.modifiedCount === 0) continue;
+    if (!deleted) continue;
     stats.deleted++;
     publishRealtimeEvent(workspaceId, {
       type: "console.deleted",
-      consoleId: row._id.toString(),
+      consoleId: row.id,
     });
   }
 
   for (const row of touched) {
     publishRealtimeEvent(workspaceId, {
       type: "console.updated",
-      consoleId: row._id.toString(),
+      consoleId: row.id,
       draftRevision: row.draftRevision ?? 1,
       name: row.name,
       updatedBy: actor,
@@ -311,7 +338,7 @@ async function syncNow(
     if (row.descriptionSourceSha !== row.sourceBlobSha) {
       requestConsoleDescription({
         workspaceId,
-        consoleId: row._id.toString(),
+        consoleId: row.id,
       });
     }
   }
@@ -332,10 +359,10 @@ async function scopedConnectionId(
   workspaceId: string,
   connectionId: string | undefined,
   path: string,
-): Promise<Types.ObjectId | null> {
+): Promise<string | null> {
   if (!connectionId || !Types.ObjectId.isValid(connectionId)) return null;
   if (await workspaceOwnsConnection(workspaceId, connectionId)) {
-    return new Types.ObjectId(connectionId);
+    return connectionId;
   }
   logger.error(
     "Console file names a connection outside this workspace; indexed without it",
@@ -357,34 +384,29 @@ async function sidecarMatches(
 function scheduleFields(
   schedule: { cron: string; timezone: string } | undefined,
   row: IndexRow | undefined,
-): { set: Record<string, unknown>; unset: Record<string, ""> } {
+): Partial<UpdateConsolePatch> {
   if (!schedule) {
-    return row?.schedule?.cron
-      ? { set: {}, unset: { schedule: "", scheduledRun: "" } }
-      : { set: {}, unset: {} };
+    return row?.schedule?.cron ? { schedule: null, scheduledRun: null } : {};
   }
   try {
     const valid = validateScheduledConsoleSchedule(schedule);
     const same =
       row?.schedule?.cron === valid.cron &&
       row?.schedule?.timezone === valid.timezone;
-    if (same) return { set: {}, unset: {} };
+    if (same) return {};
     return {
-      set: {
-        schedule: valid,
-        // A changed schedule resumes one Mako paused.
-        scheduledRun: resumedScheduledRun(
-          row?.scheduledRun,
-          getNextScheduledConsoleRunAt(valid),
-        ),
-      },
-      unset: {},
+      schedule: valid,
+      // A changed schedule resumes one Mako paused.
+      scheduledRun: resumedScheduledRun(
+        row?.scheduledRun,
+        getNextScheduledConsoleRunAt(valid),
+      ),
     };
   } catch (error) {
     logger.warn("Ignoring invalid console schedule from repo", {
       schedule,
       error: error instanceof Error ? error.message : String(error),
     });
-    return { set: {}, unset: {} };
+    return {};
   }
 }

@@ -5,7 +5,7 @@
  */
 import { Types } from "mongoose";
 import { RepoRequiredError } from "../../apps/config";
-import { ConsoleFolder, SavedConsole } from "../../database/workspace-schema";
+import { consolesChartsRepo } from "../../repositories/consoles-charts";
 import { createRouter } from "../../openapi/core";
 import {
   canWriteConsole,
@@ -16,7 +16,6 @@ import {
   moveConsoleFolder,
   renameConsoleFolder,
 } from "../../services/consoles";
-import { wouldCreateFolderCycle } from "../../utils/folder-tree";
 import { registerFolderRoutes, type FolderBackend } from "../lib/folder-routes";
 import { repoRequired } from "./shared";
 
@@ -73,11 +72,10 @@ const consoleFolderBackend: FolderBackend = {
     if (denied) return denied;
     if (
       parentId &&
-      (await wouldCreateFolderCycle(
-        ConsoleFolder,
+      (await consolesChartsRepo.wouldCreateConsoleFolderCycle(
+        ctx.workspaceId,
         folderId,
         parentId,
-        ctx.workspaceId,
       ))
     ) {
       return {
@@ -98,10 +96,10 @@ const consoleFolderBackend: FolderBackend = {
 
   moveItem: async (ctx, { itemId, folderId, access }) => {
     if (Types.ObjectId.isValid(itemId)) {
-      const existing = await SavedConsole.findOne({
-        _id: new Types.ObjectId(itemId),
-        workspaceId: new Types.ObjectId(ctx.workspaceId),
-      });
+      const existing = await consolesChartsRepo.findConsoleById(
+        ctx.workspaceId,
+        itemId,
+      );
       if (existing && !canWriteConsole(existing, ctx.userId, ctx.role)) {
         return {
           ok: false,

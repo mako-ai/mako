@@ -84,6 +84,12 @@ export const POST_BACKFILL_STEPS: readonly PostBackfillStep[] = [
       "workspaces_core backfill completed (all workspaces present in Postgres and no unresolved workspace quarantine rows)",
     assertPrecondition: assertWorkspacesCoreBackfillReady,
   },
+  {
+    name: "consoles-connection-fk",
+    file: "0005a_consoles_connection_fk.sql",
+    requires:
+      "connections and consoles_charts backfills completed (all database_connections and saved_consoles present in Postgres)",
+  },
 ];
 
 export function resolvePostBackfillFolder(customFolder?: string): string {

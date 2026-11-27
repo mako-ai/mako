@@ -5,11 +5,12 @@
  * telemetry.
  */
 import { Types } from "mongoose";
+import type { ConsoleAccessLevel } from "../../database/workspace-schema";
 import {
-  SavedConsole,
-  type ConsoleAccessLevel,
-  type ISavedConsole,
-} from "../../database/workspace-schema";
+  consolesChartsRepo,
+  type SavedConsoleRecord,
+  type UpdateConsolePatch,
+} from "../../repositories/consoles-charts";
 import { getLogger } from "../../logging";
 import {
   commitConsoleRemoval,
@@ -20,6 +21,15 @@ import { canReadConsoleWithInheritance, canWriteConsole } from "./access";
 import { ensureConsoleFolderPath, findFolderByPath } from "./folders";
 
 const logger = getLogger(["api", "consoles"]);
+
+export class ConsoleNotFoundError extends Error {
+  readonly status = 404;
+
+  constructor(consoleId?: string) {
+    super(consoleId ? `Console not found: ${consoleId}` : "Console not found");
+    this.name = "ConsoleNotFoundError";
+  }
+}
 
 /**
  * Save console content to database
@@ -40,7 +50,7 @@ export async function saveConsole(
     isPrivate?: boolean;
     access?: ConsoleAccessLevel;
   },
-): Promise<ISavedConsole> {
+): Promise<SavedConsoleRecord> {
   try {
     const parts = consolePath.split("/");
     const consoleName = parts[parts.length - 1];
@@ -61,33 +71,25 @@ export async function saveConsole(
     // Look up existing console - try by ID first, then by name + folder
     // The POST route handles conflict detection for new consoles
     // The path-based PUT route needs the name + folder fallback to update existing consoles
-    let savedConsole: ISavedConsole | null = null;
+    let savedConsole: SavedConsoleRecord | null = null;
 
     if (options?.id && Types.ObjectId.isValid(options.id)) {
       // ID-based lookup (used by POST route and conflict resolution)
-      savedConsole = await SavedConsole.findOne({
-        _id: new Types.ObjectId(options.id),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+      savedConsole = await consolesChartsRepo.findConsoleById(
+        workspaceId,
+        options.id,
+      );
     }
 
     // Fallback: look up by name + folder for path-based PUT requests
     // Only match saved consoles (isSaved: true), not drafts
     if (!savedConsole) {
-      const query: Record<string, unknown> = {
-        name: consoleName,
-        workspaceId: new Types.ObjectId(workspaceId),
-        isSaved: true, // Only match saved consoles, not drafts
-      };
-
-      if (folderId) {
-        query.folderId = new Types.ObjectId(folderId);
-      } else {
-        // For root level consoles, check that folderId is null/undefined
-        query.$or = [{ folderId: null }, { folderId: { $exists: false } }];
-      }
-
-      savedConsole = await SavedConsole.findOne(query);
+      savedConsole = await consolesChartsRepo.findConsoleByNameAndFolder(
+        workspaceId,
+        consoleName,
+        folderId ?? null,
+        { isSavedOnly: true },
+      );
     }
 
     const requestedAccess =
@@ -99,96 +101,153 @@ export async function saveConsole(
           : "workspace");
 
     if (savedConsole) {
-      // Update existing console (draft -> saved)
-      savedConsole.name = consoleName; // Update name (may change if draft is being saved with a path)
-      savedConsole.folderId = folderId
-        ? new Types.ObjectId(folderId)
-        : undefined; // Update folder (draft -> saved with path)
-      savedConsole.code = content;
-      savedConsole.isSaved = true; // Mark as explicitly saved (no longer a draft)
-      savedConsole.updatedAt = new Date();
-      if (connectionId !== undefined) {
-        savedConsole.connectionId = connectionId
-          ? new Types.ObjectId(connectionId)
-          : undefined;
-      }
-      if (databaseName !== undefined) {
-        savedConsole.databaseName = databaseName;
-      }
-      if (databaseId !== undefined) {
-        savedConsole.databaseId = databaseId;
-      }
-      if (options?.description !== undefined) {
-        savedConsole.description = options.description;
-      }
-      if (options?.language) savedConsole.language = options.language;
-      if (requestedAccess !== undefined) {
-        savedConsole.access = requestedAccess;
-        savedConsole.isPrivate = requestedAccess === "private";
-      }
-      // Backfill owner_id if missing
-      if (!savedConsole.owner_id) {
-        savedConsole.owner_id = savedConsole.createdBy;
-      }
-      // Backfill access if missing
-      if (!savedConsole.access) {
-        savedConsole.access = savedConsole.isPrivate ? "private" : "workspace";
-      }
+      const nextAccess =
+        requestedAccess ??
+        savedConsole.access ??
+        (savedConsole.isPrivate ? "private" : "workspace");
+      const nextOwner = savedConsole.owner_id || savedConsole.createdBy;
+      const desired: SavedConsoleRecord = {
+        ...savedConsole,
+        name: consoleName,
+        folderId: folderId || undefined,
+        code: content,
+        isSaved: true,
+        updatedAt: new Date(),
+        connectionId:
+          connectionId !== undefined
+            ? connectionId || undefined
+            : savedConsole.connectionId,
+        databaseName:
+          databaseName !== undefined ? databaseName : savedConsole.databaseName,
+        databaseId:
+          databaseId !== undefined ? databaseId : savedConsole.databaseId,
+        description:
+          options?.description !== undefined
+            ? options.description
+            : savedConsole.description,
+        language: options?.language ?? savedConsole.language,
+        access: nextAccess,
+        isPrivate: nextAccess === "private",
+        owner_id: nextOwner,
+      };
 
       // Git first (apps.md §16.3): the file is the record, the row follows.
       const committed = await commitConsoleState({
-        row: savedConsole,
+        row: desired,
         previousPath: savedConsole.path,
         actorUserId: userId,
         message: `save: ${consolePath}`,
       });
-      savedConsole.path = committed.path;
-      savedConsole.sourceBlobSha = committed.sourceBlobSha;
-      await savedConsole.save();
-    } else {
-      // Create new console (explicitly saved)
-      const access =
-        options?.access ?? (options?.isPrivate ? "private" : "workspace");
-      const isPrivate = access === "private";
-      const consoleData: Record<string, unknown> = {
-        workspaceId: new Types.ObjectId(workspaceId),
-        folderId: folderId ? new Types.ObjectId(folderId) : undefined,
-        connectionId: connectionId
-          ? new Types.ObjectId(connectionId)
-          : undefined,
-        databaseName: databaseName,
-        databaseId: databaseId,
-        name: consoleName,
-        description: options?.description || "",
-        code: content,
-        language: options?.language || detectConsoleLanguage(content),
-        createdBy: userId,
-        isPrivate,
+
+      const patch: UpdateConsolePatch = {
+        name: desired.name,
+        folderId: folderId ?? null,
+        code: desired.code,
         isSaved: true,
-        executionCount: 0,
-        access,
-        owner_id: userId,
+        updatedAt: desired.updatedAt,
+        access: desired.access,
+        isPrivate: desired.isPrivate,
+        owner_id: nextOwner,
+        path: committed.path,
+        sourceBlobSha: committed.sourceBlobSha,
       };
-
-      // Use client-provided ID if available and valid
-      if (options?.id && Types.ObjectId.isValid(options.id)) {
-        consoleData._id = new Types.ObjectId(options.id);
+      if (connectionId !== undefined) patch.connectionId = connectionId || null;
+      if (databaseName !== undefined) patch.databaseName = databaseName;
+      if (databaseId !== undefined) patch.databaseId = databaseId;
+      if (options?.description !== undefined) {
+        patch.description = options.description;
       }
+      if (options?.language) patch.language = options.language;
 
-      savedConsole = new SavedConsole(consoleData);
-      const committed = await commitConsoleState({
-        row: savedConsole,
-        actorUserId: userId,
-        message: `create: ${consolePath}`,
-      });
-      savedConsole.path = committed.path;
-      savedConsole.sourceBlobSha = committed.sourceBlobSha;
-      await savedConsole.save();
+      const updated = await consolesChartsRepo.updateConsole(
+        workspaceId,
+        savedConsole.id,
+        patch,
+      );
+      if (!updated) {
+        try {
+          await commitConsoleRemoval({
+            workspaceId,
+            path: committed.path,
+            actorUserId: userId,
+            message: `revert: ${committed.path}`,
+          });
+        } catch (revertError) {
+          logger.error(
+            "Could not revert console commit after concurrent deletion",
+            {
+              path: committed.path,
+              consoleId: savedConsole.id,
+              error:
+                revertError instanceof Error
+                  ? revertError.message
+                  : String(revertError),
+            },
+          );
+        }
+        throw new ConsoleNotFoundError(savedConsole.id);
+      }
+      return updated;
     }
 
-    return savedConsole;
+    // Create new console (explicitly saved)
+    const access =
+      options?.access ?? (options?.isPrivate ? "private" : "workspace");
+    const isPrivate = access === "private";
+    const language = options?.language || detectConsoleLanguage(content);
+    const id =
+      options?.id && Types.ObjectId.isValid(options.id)
+        ? options.id
+        : new Types.ObjectId().toString();
+    const draftRow = {
+      workspaceId,
+      folderId: folderId || undefined,
+      connectionId: connectionId || undefined,
+      databaseName,
+      databaseId,
+      name: consoleName,
+      description: options?.description || "",
+      code: content,
+      language,
+      createdBy: userId,
+      isPrivate,
+      access,
+      owner_id: userId,
+    };
+
+    const committed = await commitConsoleState({
+      row: draftRow,
+      actorUserId: userId,
+      message: `create: ${consolePath}`,
+    });
+
+    return await consolesChartsRepo.createConsole({
+      id,
+      workspaceId,
+      folderId: folderId ?? null,
+      connectionId: connectionId ?? null,
+      databaseName,
+      databaseId,
+      name: consoleName,
+      description: options?.description || "",
+      code: content,
+      language,
+      createdBy: userId,
+      isPrivate,
+      isSaved: true,
+      executionCount: 0,
+      access,
+      owner_id: userId,
+      path: committed.path,
+      sourceBlobSha: committed.sourceBlobSha,
+    });
   } catch (error) {
-    if (error instanceof RepoRequiredError) throw error;
+    if (
+      error instanceof RepoRequiredError ||
+      error instanceof ConsoleNotFoundError
+    ) {
+      throw error;
+    }
     logger.error("Error saving console to database", { error });
     throw error;
   }
@@ -220,47 +279,43 @@ export async function renameConsole(
       );
     }
 
-    const updateFields: Record<string, unknown> = {
+    const patch: UpdateConsolePatch = {
       name: consoleName,
       updatedAt: new Date(),
     };
 
     // Update folderId if we have a folder path
     if (parts.length > 1) {
-      updateFields.folderId = folderId ? new Types.ObjectId(folderId) : null;
+      patch.folderId = folderId ?? null;
     }
 
-    const current = await SavedConsole.findOne({
-      _id: new Types.ObjectId(consoleId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    const current = await consolesChartsRepo.findConsoleById(
+      workspaceId,
+      consoleId,
+    );
     if (!current) return false;
     if (current.isSaved) {
-      current.name = consoleName;
-      if (parts.length > 1) {
-        current.folderId = folderId ? new Types.ObjectId(folderId) : undefined;
-      }
+      const nextRow: SavedConsoleRecord = {
+        ...current,
+        name: consoleName,
+        ...(parts.length > 1 ? { folderId: folderId || undefined } : {}),
+      };
       const committed = await commitConsoleState({
-        row: current,
+        row: nextRow,
         previousPath: current.path,
         actorUserId: userId,
         message: `rename: ${consoleName}`,
       });
-      updateFields.path = committed.path;
-      updateFields.sourceBlobSha = committed.sourceBlobSha;
+      patch.path = committed.path;
+      patch.sourceBlobSha = committed.sourceBlobSha;
     }
 
-    const result = await SavedConsole.updateOne(
-      {
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      },
-      {
-        $set: updateFields,
-      },
+    const updated = await consolesChartsRepo.updateConsole(
+      workspaceId,
+      consoleId,
+      patch,
     );
-
-    return result.modifiedCount > 0;
+    return updated !== null;
   } catch (error) {
     if (error instanceof RepoRequiredError) throw error;
     logger.error("Error renaming console", { error });
@@ -278,56 +333,45 @@ export async function moveConsole(
   access?: ConsoleAccessLevel,
   userId?: string,
 ): Promise<boolean> {
-  const objectId = Types.ObjectId.isValid(consoleId)
-    ? new Types.ObjectId(consoleId)
-    : null;
-  if (!objectId) return false;
+  if (!Types.ObjectId.isValid(consoleId)) return false;
 
-  const updateFields: Record<string, unknown> = {
+  const patch: UpdateConsolePatch = {
+    folderId: folderId ?? null,
     updatedAt: new Date(),
   };
 
-  if (folderId) {
-    updateFields.folderId = new Types.ObjectId(folderId);
-  } else {
-    updateFields.folderId = null;
-  }
-
   if (access) {
-    updateFields.access = access;
-    updateFields.isPrivate = access === "private";
+    patch.access = access;
+    patch.isPrivate = access === "private";
   }
 
-  const current = await SavedConsole.findOne({
-    _id: objectId,
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+  const current = await consolesChartsRepo.findConsoleById(
+    workspaceId,
+    consoleId,
+  );
   if (!current) return false;
   if (current.isSaved) {
-    current.folderId = folderId ? new Types.ObjectId(folderId) : undefined;
-    if (access) {
-      current.access = access;
-      current.isPrivate = access === "private";
-    }
+    const nextRow: SavedConsoleRecord = {
+      ...current,
+      folderId: folderId || undefined,
+      ...(access ? { access, isPrivate: access === "private" } : {}),
+    };
     const committed = await commitConsoleState({
-      row: current,
+      row: nextRow,
       previousPath: current.path,
       actorUserId: userId,
       message: `move: ${current.name}`,
     });
-    updateFields.path = committed.path;
-    updateFields.sourceBlobSha = committed.sourceBlobSha;
+    patch.path = committed.path;
+    patch.sourceBlobSha = committed.sourceBlobSha;
   }
 
-  const result = await SavedConsole.updateOne(
-    {
-      _id: objectId,
-      workspaceId: new Types.ObjectId(workspaceId),
-    },
-    { $set: updateFields },
+  const updated = await consolesChartsRepo.updateConsole(
+    workspaceId,
+    consoleId,
+    patch,
   );
-
-  return result.modifiedCount > 0;
+  return updated !== null;
 }
 
 /**
@@ -339,12 +383,12 @@ export async function updateConsoleAccess(
   workspaceId: string,
   userId: string,
   access: ConsoleAccessLevel,
-): Promise<ISavedConsole | null> {
+): Promise<SavedConsoleRecord | null> {
   try {
-    const savedConsole = await SavedConsole.findOne({
-      _id: new Types.ObjectId(consoleId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    const savedConsole = await consolesChartsRepo.findConsoleById(
+      workspaceId,
+      consoleId,
+    );
 
     if (!savedConsole) return null;
 
@@ -353,21 +397,31 @@ export async function updateConsoleAccess(
     )?.toString();
     if (ownerId !== userId) return null;
 
-    savedConsole.access = access;
-    savedConsole.isPrivate = access === "private";
-    savedConsole.updatedAt = new Date();
+    const patch: UpdateConsolePatch = {
+      access,
+      isPrivate: access === "private",
+      updatedAt: new Date(),
+    };
     if (savedConsole.isSaved) {
+      const nextRow: SavedConsoleRecord = {
+        ...savedConsole,
+        access,
+        isPrivate: access === "private",
+      };
       const committed = await commitConsoleState({
-        row: savedConsole,
+        row: nextRow,
         previousPath: savedConsole.path,
         actorUserId: userId,
         message: `access ${access}: ${savedConsole.name}`,
       });
-      savedConsole.path = committed.path;
-      savedConsole.sourceBlobSha = committed.sourceBlobSha;
+      patch.path = committed.path;
+      patch.sourceBlobSha = committed.sourceBlobSha;
     }
-    await savedConsole.save();
-    return savedConsole;
+    return await consolesChartsRepo.updateConsole(
+      workspaceId,
+      consoleId,
+      patch,
+    );
   } catch (error) {
     if (error instanceof RepoRequiredError) throw error;
     logger.error("Error updating console access", { error });
@@ -384,10 +438,10 @@ export async function softDeleteConsole(
   userId?: string,
 ): Promise<boolean> {
   if (!Types.ObjectId.isValid(consoleId)) return false;
-  const current = await SavedConsole.findOne({
-    _id: new Types.ObjectId(consoleId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  }).select("path name");
+  const current = await consolesChartsRepo.findConsoleById(
+    workspaceId,
+    consoleId,
+  );
   if (!current) return false;
   // The row keeps its `path` so a restore puts the file back where it was.
   if (current.path) {
@@ -398,14 +452,7 @@ export async function softDeleteConsole(
       message: `delete: ${current.path}`,
     });
   }
-  const result = await SavedConsole.updateOne(
-    {
-      _id: new Types.ObjectId(consoleId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    },
-    { $set: { is_deleted: true, deletedAt: new Date() } },
-  );
-  return result.modifiedCount > 0;
+  return await consolesChartsRepo.softDeleteConsole(workspaceId, consoleId);
 }
 
 /**
@@ -418,31 +465,24 @@ export async function restoreConsole(
   memberRole?: string,
 ): Promise<boolean> {
   if (!Types.ObjectId.isValid(consoleId)) return false;
-  const current = await SavedConsole.findOne({
-    _id: new Types.ObjectId(consoleId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+  const current = await consolesChartsRepo.findConsoleById(
+    workspaceId,
+    consoleId,
+  );
   if (!current) return false;
   // A console the caller cannot write is "not found", not restorable.
   if (userId && !canWriteConsole(current, userId, memberRole)) return false;
-  const set: Record<string, unknown> = { is_deleted: false };
+  const patch: { path?: string; sourceBlobSha?: string } = {};
   if (current.isSaved) {
     const committed = await commitConsoleState({
       row: current,
       actorUserId: userId,
       message: `restore: ${current.name}`,
     });
-    set.path = committed.path;
-    set.sourceBlobSha = committed.sourceBlobSha;
+    patch.path = committed.path;
+    patch.sourceBlobSha = committed.sourceBlobSha;
   }
-  const result = await SavedConsole.updateOne(
-    {
-      _id: new Types.ObjectId(consoleId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    },
-    { $set: set, $unset: { deletedAt: "" } },
-  );
-  return result.modifiedCount > 0;
+  return await consolesChartsRepo.restoreConsole(workspaceId, consoleId, patch);
 }
 
 /**
@@ -452,18 +492,18 @@ export async function duplicateConsole(
   consoleId: string,
   workspaceId: string,
   userId: string,
-): Promise<ISavedConsole | null> {
+): Promise<SavedConsoleRecord | null> {
   if (!Types.ObjectId.isValid(consoleId)) return null;
-  const original = await SavedConsole.findOne({
-    _id: new Types.ObjectId(consoleId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+  const original = await consolesChartsRepo.findConsoleById(
+    workspaceId,
+    consoleId,
+  );
   if (!original) return null;
   // Same read rule as execute and export: a console the caller cannot read
   // (private, or in a folder they cannot see) is "not found", not copyable.
   if (!(await canReadConsoleWithInheritance(original, userId))) return null;
 
-  const copy = new SavedConsole({
+  const copyDraft = {
     workspaceId: original.workspaceId,
     folderId: original.folderId,
     connectionId: original.connectionId,
@@ -476,20 +516,21 @@ export async function duplicateConsole(
     mongoOptions: original.mongoOptions,
     createdBy: userId,
     isPrivate: true,
-    isSaved: true,
     access: "private" as const,
     owner_id: userId,
-    executionCount: 0,
-  });
+  };
   const committed = await commitConsoleState({
-    row: copy,
+    row: copyDraft,
     actorUserId: userId,
     message: `duplicate: ${original.name}`,
   });
-  copy.path = committed.path;
-  copy.sourceBlobSha = committed.sourceBlobSha;
-  await copy.save();
-  return copy;
+  return await consolesChartsRepo.createConsole({
+    ...copyDraft,
+    isSaved: true,
+    executionCount: 0,
+    path: committed.path,
+    sourceBlobSha: committed.sourceBlobSha,
+  });
 }
 
 /**
@@ -499,7 +540,7 @@ export async function duplicateConsole(
 export async function getConsoleByPath(
   consolePath: string,
   workspaceId: string,
-): Promise<ISavedConsole | null> {
+): Promise<SavedConsoleRecord | null> {
   try {
     const parts = consolePath.split("/");
     const consoleName = parts[parts.length - 1];
@@ -517,24 +558,14 @@ export async function getConsoleByPath(
       }
     }
 
-    // Build query for console with same name in same folder (or root if no folder)
-    // Only match explicitly saved consoles (isSaved: true) - not drafts
-    const query: Record<string, unknown> = {
-      name: consoleName,
-      workspaceId: new Types.ObjectId(workspaceId),
-      isSaved: true, // Only match saved consoles, not drafts
-    };
-
-    if (folderId) {
-      query.folderId = new Types.ObjectId(folderId);
-    } else {
-      // For root level consoles (hasFolder is false), check that folderId is null/undefined
-      query.$or = [{ folderId: null }, { folderId: { $exists: false } }];
-    }
-
-    // Sort by updatedAt descending to get the most recently updated console
-    // in case there are duplicate entries
-    return await SavedConsole.findOne(query).sort({ updatedAt: -1 });
+    // Only match explicitly saved consoles (isSaved: true) - not drafts.
+    // Sorted by updatedAt descending to pick the most recently updated console.
+    return await consolesChartsRepo.findConsoleByNameAndFolder(
+      workspaceId,
+      consoleName,
+      folderId ?? null,
+      { isSavedOnly: true },
+    );
   } catch (error) {
     logger.error("Error getting console by path", { error });
     return null;
@@ -556,39 +587,12 @@ export async function recordConsoleExternalUse(
 ): Promise<void> {
   if (!Types.ObjectId.isValid(consoleId)) return;
   try {
-    const now = new Date();
-    const filter: Record<string, unknown> = {
-      _id: new Types.ObjectId(consoleId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    };
-
-    if (mode === "access") {
-      // Throttle access bumps so chatty MCP/API clients don't hammer writes.
-      filter.$or = [
-        { lastExternalUsedAt: { $exists: false } },
-        { lastExternalUsedAt: null },
-        {
-          lastExternalUsedAt: {
-            $lte: new Date(now.getTime() - 60_000),
-          },
-        },
-      ];
-      await SavedConsole.updateOne(filter, {
-        $set: {
-          lastExternalUsedAt: now,
-          lastExternalSource: source,
-        },
-      });
-      return;
-    }
-
-    await SavedConsole.updateOne(filter, {
-      $set: {
-        lastExternalUsedAt: now,
-        lastExternalSource: source,
-      },
-      $inc: { externalUseCount: 1 },
-    });
+    await consolesChartsRepo.recordConsoleExternalUse(
+      workspaceId,
+      consoleId,
+      source,
+      mode,
+    );
   } catch (error) {
     if (error instanceof RepoRequiredError) throw error;
     logger.error("Error recording external console use", {

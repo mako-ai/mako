@@ -14,12 +14,8 @@
  * Notices: a transient failure notifies on every run, as before. A permanent
  * cause notifies on its first failure and on the pause, never in between.
  */
-import { Types } from "mongoose";
 import { isWriteRefusal } from "../../access/connection-writes";
-import {
-  SavedConsole,
-  type ISavedConsole,
-} from "../../database/workspace-schema";
+import { consolesChartsRepo } from "../../repositories/consoles-charts";
 import { emitScheduledQueryTerminalEvent } from "../flow-run-notification.emit";
 import { classifyError } from "../console-execution.service";
 
@@ -56,33 +52,65 @@ export interface ScheduledRunOutcome {
  * `scheduledRun.*` values to set (lastAt, lastDurationMs, nextAt, …).
  */
 export async function recordScheduledRunOutcome(input: {
+  workspaceId?: string;
   consoleId: string;
   error?: string;
   fields: Record<string, unknown>;
   now?: Date;
 }): Promise<ScheduledRunOutcome> {
-  const _id = new Types.ObjectId(input.consoleId);
+  const lastAt =
+    input.fields["scheduledRun.lastAt"] instanceof Date
+      ? (input.fields["scheduledRun.lastAt"] as Date)
+      : (input.now ?? new Date());
+  const lastDurationMs =
+    typeof input.fields["scheduledRun.lastDurationMs"] === "number"
+      ? (input.fields["scheduledRun.lastDurationMs"] as number)
+      : undefined;
+  const lastRowCount =
+    typeof input.fields["scheduledRun.lastRowCount"] === "number"
+      ? (input.fields["scheduledRun.lastRowCount"] as number)
+      : undefined;
+  const lastRowsAffected =
+    typeof input.fields["scheduledRun.lastRowsAffected"] === "number"
+      ? (input.fields["scheduledRun.lastRowsAffected"] as number)
+      : undefined;
+  const nextAt =
+    input.fields["scheduledRun.nextAt"] instanceof Date
+      ? (input.fields["scheduledRun.nextAt"] as Date)
+      : undefined;
 
   if (input.error === undefined) {
-    await SavedConsole.updateOne(
-      { _id },
-      {
-        $set: {
-          ...input.fields,
-          "scheduledRun.consecutiveFailures": 0,
-          "scheduledRun.permanentFailures": 0,
-        },
-        $inc: { "scheduledRun.runCount": 1 },
-      },
-    );
+    let workspaceId = input.workspaceId;
+    if (!workspaceId) {
+      const existing = await consolesChartsRepo.findConsoleByIdGlobal(
+        input.consoleId,
+      );
+      workspaceId = existing?.workspaceId;
+    }
+    if (workspaceId) {
+      await consolesChartsRepo.updateConsoleScheduleOutcome({
+        workspaceId,
+        consoleId: input.consoleId,
+        isError: false,
+        lastAt,
+        lastDurationMs,
+        lastRowCount,
+        lastRowsAffected,
+        nextAt,
+        permanentFailures: 0,
+      });
+    }
     return { notify: true };
   }
 
   // The executor runs one console at a time (concurrency key consoleId), so
   // read-then-write cannot race another run of the same console.
-  const previous = (await SavedConsole.findOne({ _id })
-    .select("schedule scheduledRun")
-    .lean()) as Pick<ISavedConsole, "schedule" | "scheduledRun"> | null;
+  const previous = input.workspaceId
+    ? await consolesChartsRepo.findConsoleById(
+        input.workspaceId,
+        input.consoleId,
+      )
+    : await consolesChartsRepo.findConsoleByIdGlobal(input.consoleId);
 
   const fix = permanentFailureFix(input.error);
   const sameCause =
@@ -98,36 +126,30 @@ export async function recordScheduledRunOutcome(input: {
     Boolean(previous?.schedule?.cron) &&
     !previous?.scheduledRun?.pausedAt;
 
-  const fields = { ...input.fields };
   let pausedReason: string | undefined;
   if (pause) {
-    delete fields["scheduledRun.nextAt"];
     pausedReason = `Mako paused this schedule after ${permanentFailures} runs failed the same way: ${input.error} ${fix}`;
   }
 
-  await SavedConsole.updateOne(
-    { _id },
-    {
-      $set: {
-        ...fields,
-        "scheduledRun.lastStatus": "error",
-        // The pause notice replaces the error, so the console shows it.
-        "scheduledRun.lastError": pausedReason ?? input.error,
-        "scheduledRun.permanentFailures": permanentFailures,
-        ...(pause
-          ? {
-              "scheduledRun.pausedAt": input.now ?? new Date(),
-              "scheduledRun.pausedReason": pausedReason,
-            }
-          : {}),
-      },
-      $inc: {
-        "scheduledRun.runCount": 1,
-        "scheduledRun.consecutiveFailures": 1,
-      },
-      ...(pause ? { $unset: { "scheduledRun.nextAt": 1 } } : {}),
-    },
-  );
+  const workspaceId = input.workspaceId ?? previous?.workspaceId;
+  if (workspaceId) {
+    await consolesChartsRepo.updateConsoleScheduleOutcome({
+      workspaceId,
+      consoleId: input.consoleId,
+      isError: true,
+      lastAt,
+      lastDurationMs,
+      lastRowCount,
+      lastRowsAffected,
+      nextAt: pause ? undefined : nextAt,
+      clearNextAt: pause,
+      // The pause notice replaces the error, so the console shows it.
+      lastError: pausedReason ?? input.error,
+      permanentFailures,
+      pausedAt: pause ? (input.now ?? new Date()) : undefined,
+      pausedReason,
+    });
+  }
 
   return { notify: !fix || permanentFailures === 1 || pause, pausedReason };
 }

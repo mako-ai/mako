@@ -29,11 +29,12 @@ import {
   buildModificationDiff,
   type ConsoleModification,
 } from "@mako/agent-tools";
-import {
-  SavedConsole,
-  type ISavedConsole,
-} from "../../database/workspace-schema";
 import { connectionsRepo } from "../../repositories/connections";
+import {
+  consolesChartsRepo,
+  type SavedConsoleRecord,
+  type UpdateConsolePatch,
+} from "../../repositories/consoles-charts";
 import { ConsoleManager } from "../../utils/console-manager";
 import { liveConsoleCode } from "../../apps/workspace-consoles.service";
 import { workspaceService } from "../../services/workspace.service";
@@ -118,7 +119,7 @@ export interface ServerConsoleToolsOptions {
 }
 
 interface LoadedConsole {
-  doc: ISavedConsole;
+  doc: SavedConsoleRecord;
 }
 
 type LoadResult = LoadedConsole | { error: string };
@@ -172,11 +173,11 @@ export function createServerConsoleTools({
     if (!Types.ObjectId.isValid(consoleId)) {
       return { error: `Invalid console ID: ${consoleId}` };
     }
-    const doc = await SavedConsole.findOne({
-      _id: new Types.ObjectId(consoleId),
-      workspaceId: new Types.ObjectId(workspaceId),
-      $or: [{ is_deleted: { $ne: true } }, { is_deleted: { $exists: false } }],
-    });
+    const doc = await consolesChartsRepo.findConsoleById(
+      workspaceId,
+      consoleId,
+      { excludeDeleted: true },
+    );
     if (!doc) {
       return {
         error: `Console with ID ${consoleId} not found. Use list_open_consoles or search_consoles to see available consoles.`,
@@ -194,7 +195,7 @@ export function createServerConsoleTools({
     return { doc };
   };
 
-  const canWrite = async (doc: ISavedConsole): Promise<boolean> => {
+  const canWrite = async (doc: SavedConsoleRecord): Promise<boolean> => {
     if (!userId) return true; // workspace-scoped API-key automation
     let isAdmin: boolean;
     try {
@@ -206,10 +207,10 @@ export function createServerConsoleTools({
     return ConsoleManager.canWrite(doc, userId, isAdmin);
   };
 
-  const publishUpdated = (doc: ISavedConsole) => {
+  const publishUpdated = (doc: SavedConsoleRecord) => {
     publishRealtimeEvent(workspaceId, {
       type: "console.updated",
-      consoleId: doc._id.toString(),
+      consoleId: doc.id,
       draftRevision: doc.draftRevision ?? 1,
       name: doc.name,
       updatedBy: userId ?? "agent",
@@ -348,7 +349,7 @@ export function createServerConsoleTools({
               const diff = buildModificationDiff(currentContent, modification);
               const currentRevision = doc.draftRevision ?? 1;
 
-              const setFields: Record<string, unknown> = {
+              const setFields: UpdateConsolePatch = {
                 code: newContent,
                 updatedAt: new Date(),
                 // Mark agent origin so a reconnecting client surfaces this as a
@@ -366,18 +367,13 @@ export function createServerConsoleTools({
               };
               if (title) setFields.name = leafConsoleName(title) || title;
 
-              const updated = await SavedConsole.findOneAndUpdate(
-                {
-                  _id: doc._id,
-                  workspaceId: new Types.ObjectId(workspaceId),
-                  draftRevision:
-                    currentRevision === 1
-                      ? { $in: [1, null] }
-                      : currentRevision,
-                },
-                { $set: setFields },
-                { returnDocument: "after" },
-              );
+              const updated = await consolesChartsRepo.guardedSaveConsole({
+                workspaceId,
+                consoleId: doc.id,
+                expectedDraftRevision: currentRevision,
+                upsert: false,
+                set: setFields,
+              });
 
               if (!updated) {
                 logger.debug("modify_console revision race, retrying", {
@@ -448,14 +444,12 @@ export function createServerConsoleTools({
             if (connection.type === "mongodb") language = "javascript";
           }
 
-          const doc = await SavedConsole.create({
-            workspaceId: new Types.ObjectId(workspaceId),
+          const doc = await consolesChartsRepo.createConsole({
+            workspaceId,
             name: leafConsoleName(title) || "Untitled",
             code: content || "",
             language,
-            connectionId: connectionId
-              ? new Types.ObjectId(connectionId)
-              : undefined,
+            connectionId: connectionId ?? null,
             databaseId,
             databaseName,
             createdBy: userId ?? "agent",
@@ -469,12 +463,12 @@ export function createServerConsoleTools({
           });
 
           publishUpdated(doc);
-          publishOpenIntent(doc._id.toString());
+          publishOpenIntent(doc.id);
 
           return {
             success: true,
             _eventType: "console_creation",
-            consoleId: doc._id.toString(),
+            consoleId: doc.id,
             title: doc.name,
             content: doc.code,
             connectionId: connectionId,
@@ -535,21 +529,19 @@ export function createServerConsoleTools({
             };
           }
 
-          const updated = await SavedConsole.findOneAndUpdate(
-            { _id: doc._id, workspaceId: new Types.ObjectId(workspaceId) },
+          const updated = await consolesChartsRepo.updateConsole(
+            workspaceId,
+            doc.id,
             {
-              $set: {
-                connectionId: new Types.ObjectId(connectionId),
-                databaseId,
-                databaseName,
-                updatedAt: new Date(),
-                // Null-safe bump (see modify_console): the schema default
-                // reports a legacy console's revision as 1 while `$inc` on the
-                // absent field also yields 1, so set the next value explicitly.
-                draftRevision: (doc.draftRevision ?? 1) + 1,
-              },
+              connectionId,
+              databaseId,
+              databaseName,
+              updatedAt: new Date(),
+              // Null-safe bump (see modify_console): the schema default
+              // reports a legacy console's revision as 1 while `$inc` on the
+              // absent field also yields 1, so set the next value explicitly.
+              draftRevision: (doc.draftRevision ?? 1) + 1,
             },
-            { returnDocument: "after" },
           );
           if (!updated) {
             return { success: false, error: "Console not found" };

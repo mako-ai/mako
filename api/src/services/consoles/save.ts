@@ -7,13 +7,14 @@
  * returns as-is, or a refusal (status + error + the conflict detail the
  * client resolves with).
  */
-import { Types } from "mongoose";
-import {
-  SavedConsole,
-  type ConsoleAccessLevel,
-  type ISavedConsole,
-} from "../../database/workspace-schema";
+import type { ConsoleAccessLevel } from "../../database/workspace-schema";
 import { connectionsRepo } from "../../repositories/connections";
+import {
+  consolesChartsRepo,
+  type CreateConsoleInput,
+  type SavedConsoleRecord,
+  type UpdateConsolePatch,
+} from "../../repositories/consoles-charts";
 import {
   commitConsoleState,
   loadLiveConsoleById,
@@ -22,12 +23,12 @@ import {
 } from "../../apps/workspace-consoles.service";
 import { buildConsoleWriteGuard } from "../console-save-guards";
 import { publishRealtimeEvent } from "../realtime.service";
-import { canWriteConsole } from "./access";
+import { canWriteConsole, type ConsoleAccessSubject } from "./access";
 import {
   FOREIGN_CONNECTION_ERROR,
   connectionIdAllowed,
 } from "./connection-scope";
-import { getConsoleByPath, saveConsole } from "./crud";
+import { ConsoleNotFoundError, getConsoleByPath, saveConsole } from "./crud";
 import { ensureConsoleFolderPath } from "./folders";
 
 type ConsoleLanguage = "sql" | "javascript" | "mongodb";
@@ -71,14 +72,14 @@ export interface ConsoleSaveBody {
 }
 
 /** A different saved console already at `path`: the client resolves it. */
-function pathConflict(existing: ISavedConsole, path: string) {
+function pathConflict(existing: SavedConsoleRecord, path: string) {
   return {
     ok: false as const,
     status: 409 as const,
     error: "conflict",
     detail: {
       conflict: {
-        existingId: existing._id.toString(),
+        existingId: existing.id,
         existingContent: existing.code,
         existingName: existing.name,
         existingLanguage: existing.language,
@@ -144,7 +145,7 @@ async function saveAtPath(input: {
   options: Parameters<typeof saveConsole>[7];
   /** Chart spec / view mode (authored: committed with the file). */
   view?: Pick<ConsoleSaveBody, "chartSpec" | "resultsViewMode">;
-}): Promise<ISavedConsole> {
+}): Promise<SavedConsoleRecord> {
   const { workspaceId, user } = input;
   const savedConsole = await saveConsole(
     input.path,
@@ -164,7 +165,7 @@ async function saveAtPath(input: {
     view &&
     (view.chartSpec !== undefined || view.resultsViewMode !== undefined)
   ) {
-    const chartUpdate: Record<string, unknown> = {};
+    const chartUpdate: UpdateConsolePatch = { version: 1 };
     if (view.chartSpec !== undefined) {
       chartUpdate.chartSpec = view.chartSpec;
       savedConsole.chartSpec = view.chartSpec;
@@ -181,20 +182,21 @@ async function saveAtPath(input: {
     });
     chartUpdate.path = committed.path;
     chartUpdate.sourceBlobSha = committed.sourceBlobSha;
-    await SavedConsole.findByIdAndUpdate(savedConsole._id, {
-      $set: chartUpdate,
+    await consolesChartsRepo.updateConsole(
+      workspaceId,
+      savedConsole.id,
+      chartUpdate,
+    );
+  } else {
+    // Start the version count (a no-op when the row is gone).
+    await consolesChartsRepo.updateConsole(workspaceId, savedConsole.id, {
+      version: 1,
     });
   }
 
-  // Start the version count (a no-op when the row is gone).
-  await SavedConsole.updateOne(
-    { _id: savedConsole._id },
-    { $set: { version: 1 } },
-  );
-
   // Description + embedding are derived from the committed content,
   // debounced and sha-guarded (apps.md §16.4).
-  describeLater(workspaceId, savedConsole._id.toString(), user);
+  describeLater(workspaceId, savedConsole.id, user);
   return savedConsole;
 }
 
@@ -242,27 +244,35 @@ export async function createConsoleAtPath(input: {
     consoleIdToUse = existingConsole._id.toString();
   }
 
-  const savedConsole = await saveAtPath({
-    workspaceId,
-    user: input.user,
-    path,
-    content: input.content,
-    connectionId: targetConnectionId,
-    databaseName: input.databaseName,
-    databaseId: input.databaseId,
-    options: {
-      id: consoleIdToUse,
-      folderId: input.folderId,
-      description: input.description,
-      language: input.language,
-      isPrivate: input.isPrivate,
-      access: input.access,
-    },
-    view: {
-      chartSpec: input.chartSpec,
-      resultsViewMode: input.resultsViewMode,
-    },
-  });
+  let savedConsole: SavedConsoleRecord;
+  try {
+    savedConsole = await saveAtPath({
+      workspaceId,
+      user: input.user,
+      path,
+      content: input.content,
+      connectionId: targetConnectionId,
+      databaseName: input.databaseName,
+      databaseId: input.databaseId,
+      options: {
+        id: consoleIdToUse,
+        folderId: input.folderId,
+        description: input.description,
+        language: input.language,
+        isPrivate: input.isPrivate,
+        access: input.access,
+      },
+      view: {
+        chartSpec: input.chartSpec,
+        resultsViewMode: input.resultsViewMode,
+      },
+    });
+  } catch (error) {
+    if (error instanceof ConsoleNotFoundError) {
+      return { ok: false, status: 404, error: "Console not found" };
+    }
+    throw error;
+  }
 
   return {
     ok: true,
@@ -293,22 +303,30 @@ export async function saveConsoleByPath(input: {
     workspaceId,
     body.connectionId,
   );
-  const savedConsole = await saveAtPath({
-    workspaceId,
-    user: input.user,
-    path: input.path,
-    content: body.content,
-    connectionId: targetConnectionId,
-    databaseName: body.databaseName,
-    databaseId: body.databaseId,
-    options: {
-      folderId: body.folderId,
-      description: body.description,
-      language: body.language,
-      isPrivate: body.isPrivate,
-      access: body.access,
-    },
-  });
+  let savedConsole: SavedConsoleRecord;
+  try {
+    savedConsole = await saveAtPath({
+      workspaceId,
+      user: input.user,
+      path: input.path,
+      content: body.content,
+      connectionId: targetConnectionId,
+      databaseName: body.databaseName,
+      databaseId: body.databaseId,
+      options: {
+        folderId: body.folderId,
+        description: body.description,
+        language: body.language,
+        isPrivate: body.isPrivate,
+        access: body.access,
+      },
+    });
+  } catch (error) {
+    if (error instanceof ConsoleNotFoundError) {
+      return { ok: false, status: 404, error: "Console not found" };
+    }
+    throw error;
+  }
   return {
     ok: true,
     payload: {
@@ -329,11 +347,11 @@ export interface SavedById {
   console: { id: string; name: string };
 }
 
-function savedById(result: ISavedConsole): SavedById {
+function savedById(result: SavedConsoleRecord): SavedById {
   return {
     version: result.version,
     draftRevision: result.draftRevision ?? 1,
-    console: { id: result._id.toString(), name: result.name },
+    console: { id: result.id, name: result.name },
   };
 }
 
@@ -349,10 +367,10 @@ export async function saveConsoleById(input: {
   body: ConsoleSaveBody;
 }): Promise<SaveResult<SavedById>> {
   const { workspaceId, consoleId, user, body } = input;
-  const existingById = await SavedConsole.findOne({
-    _id: new Types.ObjectId(consoleId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+  const existingById = await consolesChartsRepo.findConsoleById(
+    workspaceId,
+    consoleId,
+  );
   // A console that exists only in git (no row yet) is addressed by its
   // derived id. It still has an owner (its path scope) and a language
   // (its extension): the ACL check must run against the file, and the
@@ -363,12 +381,13 @@ export async function saveConsoleById(input: {
       ? await loadLiveConsoleById(workspaceId, consoleId)
       : null;
   const liveFile = liveOnly && "live" in liveOnly ? liveOnly.live : null;
-  const aclSubject: ISavedConsole | null =
+  const aclSubject: ConsoleAccessSubject | null =
     existingById ??
     (liveFile
       ? ({
-          _id: liveFile.id,
-          workspaceId: new Types.ObjectId(workspaceId),
+          id: liveFile.id.toString(),
+          _id: liveFile.id.toString(),
+          workspaceId,
           access:
             liveFile.location.scope === "private" ? "private" : "workspace",
           isPrivate: liveFile.location.scope === "private",
@@ -376,9 +395,9 @@ export async function saveConsoleById(input: {
             liveFile.location.ownerId || liveFile.row?.owner_id || "git",
           createdBy:
             liveFile.location.ownerId || liveFile.row?.createdBy || "git",
-          sharedWith: liveFile.row?.sharedWith,
-          workspaceRole: liveFile.row?.workspaceRole,
-        } as unknown as ISavedConsole)
+          sharedWith: liveFile.row?.sharedWith ?? [],
+          workspaceRole: liveFile.row?.workspaceRole ?? "viewer",
+        } as unknown as ConsoleAccessSubject)
       : null);
   if (aclSubject && !canWriteConsole(aclSubject, user.id, input.memberRole)) {
     return {
@@ -408,12 +427,12 @@ export async function saveConsoleById(input: {
     typeof body.clientId === "string" ? body.clientId.slice(0, 64) : undefined;
   const expectedDraftRevision = counter(body.expectedDraftRevision);
   const publishConsoleUpdated = (
-    doc: ISavedConsole,
+    doc: SavedConsoleRecord,
     origin: "draft" | "save",
   ) => {
     publishRealtimeEvent(workspaceId, {
       type: "console.updated",
-      consoleId: doc._id.toString(),
+      consoleId: doc.id,
       draftRevision: doc.draftRevision ?? 1,
       name: doc.name,
       updatedBy: user.id,
@@ -422,25 +441,23 @@ export async function saveConsoleById(input: {
     });
   };
 
-  const idFilter = {
-    _id: new Types.ObjectId(consoleId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  };
   // Explicit saves are guarded on BOTH counters when the client sent
   // them: `version` catches concurrent explicit saves, `draftRevision`
   // catches everything else that moves the draft (agent modify_console,
   // another tab's autosave) — without it a stale window's Cmd+S passes
   // the version guard and silently reverts those edits. See
   // console-save-guards.ts for the atomic-filter / no-upsert semantics.
-  const { filter: guardedFilter, guardActive: saveGuardActive } =
-    buildConsoleWriteGuard({
-      baseFilter: idFilter,
-      docExists: existingById !== null,
-      expectedVersion,
-      expectedDraftRevision,
-    });
+  const { guardActive: saveGuardActive } = buildConsoleWriteGuard({
+    baseFilter: {},
+    docExists: existingById !== null,
+    expectedVersion,
+    expectedDraftRevision,
+  });
   const versionConflict = async (): Promise<SaveResult<SavedById>> => {
-    const current = await SavedConsole.findOne(idFilter);
+    const current = await consolesChartsRepo.findConsoleById(
+      workspaceId,
+      consoleId,
+    );
     return {
       ok: false,
       status: 409,
@@ -460,8 +477,8 @@ export async function saveConsoleById(input: {
   };
   /** The explicit save's commit + guarded write; null when the guard lost. */
   const explicitSave = async (
-    setFields: Record<string, unknown>,
-    setOnInsertFields: Record<string, unknown>,
+    setFields: UpdateConsolePatch,
+    setOnInsertFields: Partial<CreateConsoleInput>,
     projection: { previousPath?: string | null; message: string },
   ): Promise<SaveResult<SavedById>> => {
     // Git first (apps.md §16.3), then the guarded row write; a lost
@@ -472,31 +489,34 @@ export async function saveConsoleById(input: {
       ...(projection.previousPath !== undefined
         ? { previousPath: projection.previousPath }
         : {}),
-      set: setFields,
-      onInsert: setOnInsertFields,
+      set: setFields as Record<string, unknown>,
+      onInsert: setOnInsertFields as Record<string, unknown>,
       actorUserId: user.id,
       message: projection.message,
     });
     setFields.path = projected.path;
     setFields.sourceBlobSha = projected.sourceBlobSha;
 
-    const result = await SavedConsole.findOneAndUpdate(
-      guardedFilter,
-      {
-        $set: setFields,
-        $inc: { version: 1, draftRevision: 1 },
-        $setOnInsert: setOnInsertFields,
-      },
-      { upsert: !saveGuardActive, returnDocument: "after" },
-    );
+    const result = await consolesChartsRepo.guardedSaveConsole({
+      workspaceId,
+      consoleId,
+      expectedVersion: existingById !== null ? expectedVersion : undefined,
+      expectedDraftRevision:
+        existingById !== null ? expectedDraftRevision : undefined,
+      upsert: !saveGuardActive,
+      set: setFields,
+      incVersion: 1,
+      incDraftRevision: 1,
+      setOnInsert: setOnInsertFields,
+    });
     if (!result) {
       await projected.revert();
       return versionConflict();
     }
 
-    publishConsoleUpdated(result as ISavedConsole, "save");
-    describeLater(workspaceId, result._id.toString(), user);
-    return { ok: true, payload: savedById(result as ISavedConsole) };
+    publishConsoleUpdated(result, "save");
+    describeLater(workspaceId, result.id, user);
+    return { ok: true, payload: savedById(result) };
   };
 
   // If this is an explicit save with a path, check for path conflicts
@@ -505,7 +525,7 @@ export async function saveConsoleById(input: {
     const existingConsole = await getConsoleByPath(consolePath, workspaceId);
 
     // If a different console exists at this path, return conflict
-    if (existingConsole && existingConsole._id.toString() !== consoleId) {
+    if (existingConsole && existingConsole.id !== consoleId) {
       return pathConflict(existingConsole, consolePath);
     }
 
@@ -522,13 +542,11 @@ export async function saveConsoleById(input: {
     }
 
     // Update with path information (use upsert in case console hasn't been auto-saved yet)
-    const setFields: Record<string, unknown> = {
+    const setFields: UpdateConsolePatch = {
       code: body.content,
       name: consoleName,
-      folderId: folderId ? new Types.ObjectId(folderId) : undefined,
-      connectionId: body.connectionId
-        ? new Types.ObjectId(body.connectionId)
-        : undefined,
+      folderId: folderId || undefined,
+      connectionId: body.connectionId || undefined,
       databaseName: body.databaseName,
       databaseId: body.databaseId,
       isSaved: true,
@@ -546,7 +564,7 @@ export async function saveConsoleById(input: {
       setFields.isPrivate = body.access === "private";
     }
 
-    const setOnInsertFields: Record<string, unknown> = {
+    const setOnInsertFields: Partial<CreateConsoleInput> = {
       createdBy: user.id,
       owner_id: user.id,
       language: liveFile?.location.language ?? ("sql" as const),
@@ -565,11 +583,9 @@ export async function saveConsoleById(input: {
   }
 
   // Build $set object - only include name if title is explicitly provided
-  const setFields: Record<string, unknown> = {
+  const setFields: UpdateConsolePatch = {
     code: body.content,
-    connectionId: body.connectionId
-      ? new Types.ObjectId(body.connectionId)
-      : undefined,
+    connectionId: body.connectionId || undefined,
     databaseName: body.databaseName,
     databaseId: body.databaseId,
     updatedAt: now,
@@ -595,7 +611,7 @@ export async function saveConsoleById(input: {
   // Explicit save without a path (e.g. Cmd+S on an already saved console).
   if (isExplicitSave) {
     setFields.isSaved = true;
-    const setOnInsertFields: Record<string, unknown> = {
+    const setOnInsertFields: Partial<CreateConsoleInput> = {
       createdBy: user.id,
       owner_id: user.id,
       language: "sql" as const,
@@ -625,7 +641,7 @@ export async function saveConsoleById(input: {
   // draft-revision-checked: a stale tab gets 409 draft_conflict instead
   // of overwriting a newer draft (another tab, another user, or the
   // agent). Clients without the field keep legacy last-write-wins.
-  const setOnInsertFields: Record<string, unknown> = {
+  const setOnInsertFields: Partial<CreateConsoleInput> = {
     createdBy: user.id,
     owner_id: user.id,
     language: "sql" as const,
@@ -640,27 +656,30 @@ export async function saveConsoleById(input: {
     setOnInsertFields.name = "Untitled";
   }
 
-  const { filter: draftFilter, guardActive: useDraftGuard } =
-    buildConsoleWriteGuard({
-      baseFilter: idFilter,
-      docExists: existingById !== null,
-      // Draft autosaves are deliberately NOT version-guarded (that
-      // counter belongs to explicit saves).
-      expectedDraftRevision,
-    });
+  const { guardActive: useDraftGuard } = buildConsoleWriteGuard({
+    baseFilter: {},
+    docExists: existingById !== null,
+    // Draft autosaves are deliberately NOT version-guarded (that
+    // counter belongs to explicit saves).
+    expectedDraftRevision,
+  });
 
-  const result = await SavedConsole.findOneAndUpdate(
-    draftFilter,
-    {
-      $set: setFields,
-      $inc: { draftRevision: 1 },
-      $setOnInsert: setOnInsertFields,
-    },
-    { upsert: !useDraftGuard, returnDocument: "after" },
-  );
+  const result = await consolesChartsRepo.guardedSaveConsole({
+    workspaceId,
+    consoleId,
+    expectedDraftRevision:
+      existingById !== null ? expectedDraftRevision : undefined,
+    upsert: !useDraftGuard,
+    set: setFields,
+    incDraftRevision: 1,
+    setOnInsert: setOnInsertFields,
+  });
 
   if (!result) {
-    const current = await SavedConsole.findOne(idFilter);
+    const current = await consolesChartsRepo.findConsoleById(
+      workspaceId,
+      consoleId,
+    );
     return {
       ok: false,
       status: 409,
@@ -676,6 +695,6 @@ export async function saveConsoleById(input: {
     };
   }
 
-  publishConsoleUpdated(result as ISavedConsole, "draft");
-  return { ok: true, payload: savedById(result as ISavedConsole) };
+  publishConsoleUpdated(result, "draft");
+  return { ok: true, payload: savedById(result) };
 }

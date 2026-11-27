@@ -2,15 +2,14 @@ import { tool } from "ai";
 import { z } from "zod";
 import { Types } from "mongoose";
 import type { AgentToolExecutionContext } from "../../agents/types";
-import { SavedConsole } from "../../database/workspace-schema";
 import { connectionsRepo } from "../../repositories/connections";
+import { consolesChartsRepo } from "../../repositories/consoles-charts";
 import {
   embedText,
   isEmbeddingAvailable,
   isVectorSearchAvailable,
   getEmbeddingModelName,
 } from "../../services/embedding.service";
-import { databaseConnectionService } from "../../services/database-connection.service";
 import { loggers } from "../../logging";
 import {
   isAgentToolAbortError,
@@ -35,127 +34,28 @@ async function vectorSearch(
   queryEmbedding: number[],
   workspaceId: string,
   limit: number,
-): Promise<ConsoleSearchResult[]> {
-  const { db } = await databaseConnectionService.getMainConnection();
-  const results = await db
-    .collection("savedconsoles")
-    .aggregate([
-      {
-        $vectorSearch: {
-          index: "console_embeddings",
-          path: "descriptionEmbedding",
-          queryVector: queryEmbedding,
-          numCandidates: limit * 10,
-          limit: limit * 2,
-          filter: {
-            workspaceId: new Types.ObjectId(workspaceId),
-            is_deleted: { $ne: true },
-          },
-        },
-      },
-      {
-        $addFields: {
-          vectorScore: { $meta: "vectorSearchScore" },
-        },
-      },
-      {
-        $project: {
-          _id: 1,
-          name: 1,
-          description: 1,
-          connectionId: 1,
-          databaseName: 1,
-          language: 1,
-          isSaved: 1,
-          updatedAt: 1,
-          vectorScore: 1,
-        },
-      },
-    ])
-    .toArray();
-
-  return results
-    .filter(r => r.isSaved === true)
-    .map(r => ({
-      id: r._id.toString(),
-      title: r.name,
-      description: r.description || "",
-      connectionId: r.connectionId?.toString(),
-      databaseName: r.databaseName,
-      language: r.language,
-      isSaved: true,
-      updatedAt: r.updatedAt,
-      score: r.vectorScore || 0,
-    })) as any[];
+  embeddingModel?: string | null,
+): Promise<any[]> {
+  return consolesChartsRepo.searchConsolesVector(workspaceId, queryEmbedding, {
+    limit,
+    embeddingModel,
+  });
 }
 
 async function textSearch(
   query: string,
   workspaceId: string,
   limit: number,
-): Promise<ConsoleSearchResult[]> {
-  const results = await SavedConsole.find(
-    {
-      $text: { $search: query },
-      workspaceId: new Types.ObjectId(workspaceId),
-      isSaved: true,
-      $or: [{ is_deleted: { $ne: true } }, { is_deleted: { $exists: false } }],
-    },
-    { score: { $meta: "textScore" } },
-  )
-    .select(
-      "name description connectionId databaseName language isSaved updatedAt",
-    )
-    .sort({ score: { $meta: "textScore" } })
-    .limit(limit * 2)
-    .lean();
-
-  return results.map((r: any) => ({
-    id: r._id.toString(),
-    title: r.name,
-    description: r.description || "",
-    connectionId: r.connectionId?.toString(),
-    databaseName: r.databaseName,
-    language: r.language,
-    isSaved: r.isSaved === true,
-    updatedAt: r.updatedAt,
-    score: r._score || 0,
-  }));
-}
-
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+): Promise<any[]> {
+  return consolesChartsRepo.searchConsolesText(workspaceId, query, { limit });
 }
 
 async function regexNameSearch(
   query: string,
   workspaceId: string,
   limit: number,
-): Promise<ConsoleSearchResult[]> {
-  const results = await SavedConsole.find({
-    name: { $regex: escapeRegex(query), $options: "i" },
-    workspaceId: new Types.ObjectId(workspaceId),
-    isSaved: true,
-    $or: [{ is_deleted: { $ne: true } }, { is_deleted: { $exists: false } }],
-  })
-    .select(
-      "name description connectionId databaseName language isSaved updatedAt",
-    )
-    .sort({ updatedAt: -1 })
-    .limit(limit * 2)
-    .lean();
-
-  return results.map((r: any) => ({
-    id: r._id.toString(),
-    title: r.name,
-    description: r.description || "",
-    connectionId: r.connectionId?.toString(),
-    databaseName: r.databaseName,
-    language: r.language,
-    isSaved: r.isSaved === true,
-    updatedAt: r.updatedAt,
-    score: 0.5,
-  }));
+): Promise<any[]> {
+  return consolesChartsRepo.searchConsolesName(workspaceId, query, { limit });
 }
 
 function computeCompositeScore(item: any, maxRelevanceScore: number): number {
@@ -217,14 +117,20 @@ export async function searchConsoles(
   let results: any[] = [];
 
   throwIfAborted(signal);
-  const canVector = isEmbeddingAvailable() && (await isVectorSearchAvailable());
+  const canVector =
+    isEmbeddingAvailable() && (await isVectorSearchAvailable(workspaceId));
 
   if (canVector) {
     try {
       const embedding = await embedText(query);
       if (embedding) {
         const currentModel = getEmbeddingModelName();
-        const vectorResults = await vectorSearch(embedding, workspaceId, limit);
+        const vectorResults = await vectorSearch(
+          embedding,
+          workspaceId,
+          limit,
+          currentModel,
+        );
         throwIfAborted(signal);
         results = vectorResults.filter(
           (r: any) => !r.embeddingModel || r.embeddingModel === currentModel,

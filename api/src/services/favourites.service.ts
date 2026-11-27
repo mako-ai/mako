@@ -18,7 +18,11 @@
  * filters on both; there is no sharing, no admin override.
  */
 import { Types } from "mongoose";
-import { Favourite, type FavouriteKind } from "../database/workspace-schema";
+import type { FavouriteKind } from "../database/workspace-schema";
+import {
+  consolesChartsRepo,
+  type FavouriteRecord,
+} from "../repositories/consoles-charts";
 
 export const FAVOURITE_KINDS: readonly FavouriteKind[] = [
   "app",
@@ -53,24 +57,9 @@ function fail<T>(status: 400 | 404 | 409, error: string): FavouriteResult<T> {
   return { ok: false, status, error };
 }
 
-function scopeFilter(scope: FavouriteScope) {
+function toJson(row: FavouriteRecord): FavouriteJson {
   return {
-    workspaceId: new Types.ObjectId(scope.workspaceId),
-    userId: scope.userId,
-  };
-}
-
-function toJson(row: {
-  _id: Types.ObjectId;
-  parentId?: string | null;
-  type: "folder" | "item";
-  title?: string;
-  kind?: FavouriteKind;
-  refId?: string;
-  position: number;
-}): FavouriteJson {
-  return {
-    id: row._id.toString(),
+    id: row.id,
     parentId: row.parentId ?? null,
     type: row.type,
     ...(row.type === "folder" ? { title: row.title ?? "" } : {}),
@@ -83,9 +72,10 @@ function toJson(row: {
 export async function listFavourites(
   scope: FavouriteScope,
 ): Promise<FavouriteJson[]> {
-  const rows = await Favourite.find(scopeFilter(scope))
-    .sort({ parentId: 1, position: 1, _id: 1 })
-    .lean();
+  const rows = await consolesChartsRepo.listFavourites(
+    scope.workspaceId,
+    scope.userId,
+  );
   // Items of a kind that no longer exists (e.g. stars on the removed
   // dashboards) stay in the table but are never sent to the client.
   return rows
@@ -101,27 +91,27 @@ async function nextPosition(
   scope: FavouriteScope,
   parentId: string | null,
 ): Promise<number> {
-  const last = await Favourite.findOne({ ...scopeFilter(scope), parentId })
-    .sort({ position: -1 })
-    .select("position")
-    .lean();
-  return (last?.position ?? -1) + 1;
+  return consolesChartsRepo.getNextFavouritePosition(
+    scope.workspaceId,
+    scope.userId,
+    parentId,
+  );
 }
 
 /** A folder this person owns, or null. */
 async function ownFolder(
   scope: FavouriteScope,
   id: string,
-): Promise<{ _id: Types.ObjectId; parentId: string | null } | null> {
+): Promise<{ id: string; parentId: string | null } | null> {
   if (!Types.ObjectId.isValid(id)) return null;
-  const row = await Favourite.findOne({
-    ...scopeFilter(scope),
-    _id: new Types.ObjectId(id),
-    type: "folder",
-  })
-    .select("_id parentId")
-    .lean();
-  return row ? { _id: row._id, parentId: row.parentId ?? null } : null;
+  const row = await consolesChartsRepo.findFavouriteById(
+    scope.workspaceId,
+    scope.userId,
+    id,
+  );
+  return row && row.type === "folder"
+    ? { id: row.id, parentId: row.parentId ?? null }
+    : null;
 }
 
 /**
@@ -147,7 +137,10 @@ async function depthOf(
 }
 
 async function assertRoom(scope: FavouriteScope): Promise<string | null> {
-  const count = await Favourite.countDocuments(scopeFilter(scope));
+  const count = await consolesChartsRepo.countFavourites(
+    scope.workspaceId,
+    scope.userId,
+  );
   return count >= MAX_FAVOURITES_PER_USER
     ? `Favourites are limited to ${MAX_FAVOURITES_PER_USER} entries`
     : null;
@@ -175,8 +168,9 @@ export async function createFavouriteFolder(
   }
   const room = await assertRoom(scope);
   if (room) return fail(409, room);
-  const row = await Favourite.create({
-    ...scopeFilter(scope),
+  const row = await consolesChartsRepo.createFavourite({
+    workspaceId: scope.workspaceId,
+    userId: scope.userId,
     parentId,
     type: "folder",
     title,
@@ -203,12 +197,12 @@ export async function addFavourite(
   if (parentId && !(await ownFolder(scope, parentId))) {
     return fail(404, "Folder not found");
   }
-  const existing = await Favourite.findOne({
-    ...scopeFilter(scope),
-    type: "item",
-    kind: input.kind,
+  const existing = await consolesChartsRepo.findFavouriteByRef(
+    scope.workspaceId,
+    scope.userId,
+    input.kind,
     refId,
-  }).lean();
+  );
   if (existing) {
     // Idempotent star — but a star INTO a folder of something already
     // starred is a move, not a no-op: dropping a starred console on a
@@ -217,38 +211,28 @@ export async function addFavourite(
       input.parentId !== undefined &&
       String(existing.parentId ?? "") !== String(parentId ?? "")
     ) {
-      const moved = await Favourite.findOneAndUpdate(
-        { _id: existing._id, ...scopeFilter(scope) },
-        { $set: { parentId, position: await nextPosition(scope, parentId) } },
-        { returnDocument: "after" },
-      ).lean();
+      const moved = await consolesChartsRepo.updateFavouriteSimple(
+        scope.workspaceId,
+        scope.userId,
+        existing.id,
+        { parentId, position: await nextPosition(scope, parentId) },
+      );
       return { ok: true, value: toJson(moved ?? existing) };
     }
     return { ok: true, value: toJson(existing) };
   }
   const room = await assertRoom(scope);
   if (room) return fail(409, room);
-  try {
-    const row = await Favourite.create({
-      ...scopeFilter(scope),
-      parentId,
-      type: "item",
-      kind: input.kind,
-      refId,
-      position: await nextPosition(scope, parentId),
-    });
-    return { ok: true, value: toJson(row) };
-  } catch (error) {
-    // Lost the unique-index race: the other writer's row is the answer.
-    const winner = await Favourite.findOne({
-      ...scopeFilter(scope),
-      type: "item",
-      kind: input.kind,
-      refId,
-    }).lean();
-    if (winner) return { ok: true, value: toJson(winner) };
-    throw error;
-  }
+  const row = await consolesChartsRepo.createFavourite({
+    workspaceId: scope.workspaceId,
+    userId: scope.userId,
+    parentId,
+    type: "item",
+    kind: input.kind,
+    refId,
+    position: await nextPosition(scope, parentId),
+  });
+  return { ok: true, value: toJson(row) };
 }
 
 /** Unstar by (kind, refId). Removing nothing is not an error. */
@@ -256,13 +240,13 @@ export async function removeFavouriteByRef(
   scope: FavouriteScope,
   input: { kind: FavouriteKind; refId: string },
 ): Promise<{ removed: boolean }> {
-  const result = await Favourite.deleteOne({
-    ...scopeFilter(scope),
-    type: "item",
-    kind: input.kind,
-    refId: input.refId,
-  });
-  return { removed: result.deletedCount > 0 };
+  const removed = await consolesChartsRepo.deleteFavouriteByRef(
+    scope.workspaceId,
+    scope.userId,
+    input.kind,
+    input.refId,
+  );
+  return { removed };
 }
 
 /**
@@ -276,13 +260,14 @@ export async function updateFavourite(
   patch: { parentId?: string | null; position?: number; title?: string },
 ): Promise<FavouriteResult<FavouriteJson>> {
   if (!Types.ObjectId.isValid(id)) return fail(404, "Favourite not found");
-  const row = await Favourite.findOne({
-    ...scopeFilter(scope),
-    _id: new Types.ObjectId(id),
-  });
+  const row = await consolesChartsRepo.findFavouriteById(
+    scope.workspaceId,
+    scope.userId,
+    id,
+  );
   if (!row) return fail(404, "Favourite not found");
 
-  const set: Record<string, unknown> = {};
+  let nextTitle: string | undefined;
   if (patch.title !== undefined) {
     if (row.type !== "folder") return fail(400, "Only folders have a title");
     const title = patch.title.trim();
@@ -293,7 +278,7 @@ export async function updateFavourite(
         `Folder names are limited to ${MAX_FOLDER_NAME_LENGTH} characters`,
       );
     }
-    set.title = title;
+    nextTitle = title;
   }
 
   const moving = patch.parentId !== undefined || patch.position !== undefined;
@@ -313,58 +298,62 @@ export async function updateFavourite(
         return fail(400, `Folders nest at most ${MAX_FAVOURITE_DEPTH} deep`);
       }
     }
-    const siblings = await Favourite.find({
-      ...scopeFilter(scope),
-      parentId: targetParent,
-      _id: { $ne: row._id },
-    })
-      .sort({ position: 1, _id: 1 })
-      .select("_id")
-      .lean();
+    const siblings = await consolesChartsRepo.listFavouriteSiblings(
+      scope.workspaceId,
+      scope.userId,
+      targetParent,
+      row.id,
+    );
     const wanted = patch.position ?? siblings.length;
     const index = Math.max(0, Math.min(wanted, siblings.length));
     const order = [
-      ...siblings.slice(0, index).map(s => s._id),
-      row._id,
-      ...siblings.slice(index).map(s => s._id),
+      ...siblings.slice(0, index).map(s => s.id),
+      row.id,
+      ...siblings.slice(index).map(s => s.id),
     ];
-    const writes = order.map((sid, position) => ({
-      updateOne: {
-        filter: { _id: sid },
-        update: {
-          $set: sid.equals(row._id)
-            ? { position, parentId: targetParent, ...set }
-            : { position },
-        },
-      },
-    }));
-    await Favourite.bulkWrite(writes, { ordered: false });
+    await consolesChartsRepo.reorderFavourites(
+      scope.workspaceId,
+      scope.userId,
+      order.map((sid, position) =>
+        sid === row.id
+          ? {
+              id: sid,
+              position,
+              parentId: targetParent,
+              ...(nextTitle !== undefined ? { title: nextTitle } : {}),
+            }
+          : { id: sid, position },
+      ),
+    );
     // Close the gap the row left behind, if it changed parent.
     const oldParent = row.parentId ?? null;
     if (oldParent !== targetParent) {
-      const left = await Favourite.find({
-        ...scopeFilter(scope),
-        parentId: oldParent,
-      })
-        .sort({ position: 1, _id: 1 })
-        .select("_id")
-        .lean();
+      const left = await consolesChartsRepo.listFavouriteSiblings(
+        scope.workspaceId,
+        scope.userId,
+        oldParent,
+      );
       if (left.length > 0) {
-        await Favourite.bulkWrite(
-          left.map((s, position) => ({
-            updateOne: {
-              filter: { _id: s._id },
-              update: { $set: { position } },
-            },
-          })),
-          { ordered: false },
+        await consolesChartsRepo.reorderFavourites(
+          scope.workspaceId,
+          scope.userId,
+          left.map((s, position) => ({ id: s.id, position })),
         );
       }
     }
-  } else if (Object.keys(set).length > 0) {
-    await Favourite.updateOne({ _id: row._id }, { $set: set });
+  } else if (nextTitle !== undefined) {
+    await consolesChartsRepo.updateFavouriteSimple(
+      scope.workspaceId,
+      scope.userId,
+      row.id,
+      { title: nextTitle },
+    );
   }
-  const fresh = await Favourite.findById(row._id).lean();
+  const fresh = await consolesChartsRepo.findFavouriteById(
+    scope.workspaceId,
+    scope.userId,
+    row.id,
+  );
   return { ok: true, value: toJson(fresh ?? row) };
 }
 
@@ -377,27 +366,11 @@ export async function deleteFavourite(
   id: string,
 ): Promise<FavouriteResult<{ removed: number }>> {
   if (!Types.ObjectId.isValid(id)) return fail(404, "Favourite not found");
-  const root = await Favourite.findOne({
-    ...scopeFilter(scope),
-    _id: new Types.ObjectId(id),
-  })
-    .select("_id type")
-    .lean();
-  if (!root) return fail(404, "Favourite not found");
-  const ids: Types.ObjectId[] = [root._id];
-  if (root.type === "folder") {
-    let frontier = [root._id.toString()];
-    while (frontier.length > 0) {
-      const children = await Favourite.find({
-        ...scopeFilter(scope),
-        parentId: { $in: frontier },
-      })
-        .select("_id")
-        .lean();
-      frontier = children.map(c => c._id.toString());
-      ids.push(...children.map(c => c._id));
-    }
-  }
-  const result = await Favourite.deleteMany({ _id: { $in: ids } });
-  return { ok: true, value: { removed: result.deletedCount } };
+  const removed = await consolesChartsRepo.deleteFavouriteSubtree(
+    scope.workspaceId,
+    scope.userId,
+    id,
+  );
+  if (removed === 0) return fail(404, "Favourite not found");
+  return { ok: true, value: { removed } };
 }

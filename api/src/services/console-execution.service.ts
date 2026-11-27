@@ -13,15 +13,16 @@
 import { withQueryLabels } from "./bigquery-labels";
 import { isWrite } from "../access/connection-writes";
 import { Types } from "mongoose";
-import {
-  SavedConsole,
-  type ISavedConsole,
-  type IDatabaseConnection,
-} from "../database/workspace-schema";
+import type { IDatabaseConnection } from "../database/workspace-schema";
 import {
   connectionsRepo,
   type DatabaseConnectionRecord,
 } from "../repositories/connections";
+import {
+  consolesChartsRepo,
+  type ConsoleLastRunRecord,
+  type SavedConsoleRecord,
+} from "../repositories/consoles-charts";
 import { databaseConnectionService } from "./database-connection.service";
 import {
   queryExecutionService,
@@ -147,10 +148,10 @@ function capSampleRows(rows: unknown[]): unknown[] | undefined {
 type ResolvedConsoleRun =
   | {
       ok: true;
-      savedConsole: ISavedConsole;
+      savedConsole: SavedConsoleRecord;
       database: DatabaseConnectionRecord;
     }
-  | { ok: false; error: string; savedConsole?: ISavedConsole | null };
+  | { ok: false; error: string; savedConsole?: SavedConsoleRecord | null };
 
 /**
  * Load + validate the console and its connection. Shared by the inline and
@@ -163,10 +164,10 @@ async function resolveConsoleForRun(
 ): Promise<ResolvedConsoleRun> {
   const { workspaceId, consoleId } = input;
 
-  const savedConsole = await SavedConsole.findOne({
-    _id: new Types.ObjectId(consoleId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+  const savedConsole = await consolesChartsRepo.findConsoleById(
+    workspaceId,
+    consoleId,
+  );
   if (!savedConsole) {
     return { ok: false, error: "Console not found" };
   }
@@ -207,7 +208,7 @@ async function resolveConsoleForRun(
  * on whether a tool call is still awaiting it.
  */
 async function runResolvedConsole(args: {
-  savedConsole: ISavedConsole;
+  savedConsole: SavedConsoleRecord;
   database: DatabaseConnectionRecord;
   input: ExecuteSavedConsoleInput;
   startTime: number;
@@ -303,7 +304,7 @@ async function runResolvedConsole(args: {
       : "error";
 
   // Update execution stats + persist the run artifact (capped).
-  const lastRun: ISavedConsole["lastRun"] = {
+  const lastRun: ConsoleLastRunRecord = {
     at: new Date(),
     status: finalStatus,
     rowCount: result.success ? rowCount : undefined,
@@ -317,14 +318,16 @@ async function runResolvedConsole(args: {
     executionId: input.executionId,
   };
   try {
-    await SavedConsole.updateOne(
-      { _id: savedConsole._id },
+    // The run artifact is part of the replicated draft state: bumping
+    // the revision lets revisions-sync deliver it to windows that
+    // missed the console.run.completed event (reconnect, tab focus).
+    await consolesChartsRepo.recordConsoleExecution(
+      workspaceId,
+      savedConsole.id,
       {
-        $set: { lastExecutedAt: new Date(), lastRun },
-        // The run artifact is part of the replicated draft state: bumping
-        // the revision lets revisions-sync deliver it to windows that
-        // missed the console.run.completed event (reconnect, tab focus).
-        $inc: { executionCount: 1, draftRevision: 1 },
+        lastExecutedAt: new Date(),
+        lastRun,
+        bumpDraftRevision: true,
       },
     );
   } catch (error) {
@@ -342,7 +345,7 @@ async function runResolvedConsole(args: {
     workspaceId: new Types.ObjectId(workspaceId),
     connectionId: database._id,
     databaseName: savedConsole.databaseName || database.connection.database,
-    consoleId: savedConsole._id,
+    consoleId: new Types.ObjectId(savedConsole.id),
     source,
     databaseType: database.type,
     queryLanguage: mapConsoleLanguageToQueryLanguage(savedConsole.language),
@@ -474,7 +477,7 @@ export async function startDetachedConsoleRun(
 
   // Persist the running marker so check_query_status (DB-backed,
   // cross-instance) can report progress before the task completes.
-  const runningMarker: ISavedConsole["lastRun"] = {
+  const runningMarker: ConsoleLastRunRecord = {
     at: startedAt,
     status: "running",
     durationMs: 0,
@@ -484,13 +487,11 @@ export async function startDetachedConsoleRun(
     executionId,
   };
   try {
-    await SavedConsole.updateOne(
-      { _id: savedConsole._id },
-      {
-        $set: { lastExecutedAt: startedAt, lastRun: runningMarker },
-        $inc: { draftRevision: 1 },
-      },
-    );
+    await consolesChartsRepo.updateConsole(workspaceId, savedConsole.id, {
+      lastExecutedAt: startedAt,
+      lastRun: runningMarker,
+      incDraftRevision: 1,
+    });
   } catch (error) {
     logger.warn("Failed to persist console running marker", {
       error,

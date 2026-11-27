@@ -8,6 +8,7 @@
 import { registerAuthMigrationDomain } from "./auth.backfill";
 import { registerWorkspacesMigrationDomain } from "./workspaces.backfill";
 import { registerConnectionsMigrationDomain } from "./connections.backfill";
+import { registerConsolesChartsMigrationDomain } from "./consoles-charts.backfill";
 
 let registered = false;
 
@@ -22,6 +23,7 @@ export function registerMigrationDomains(
   registerAuthMigrationDomain();
   registerWorkspacesMigrationDomain();
   registerConnectionsMigrationDomain();
+  registerConsolesChartsMigrationDomain();
   registered = true;
 }
 
@@ -29,4 +31,5 @@ export {
   registerAuthMigrationDomain,
   registerWorkspacesMigrationDomain,
   registerConnectionsMigrationDomain,
+  registerConsolesChartsMigrationDomain,
 };

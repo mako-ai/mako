@@ -6,8 +6,12 @@
  */
 import { Types } from "mongoose";
 import { inngest } from "../../inngest/client";
-import { SavedConsole } from "../../database/workspace-schema";
+import { DatabaseConnection } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
+import {
+  consolesChartsRepo,
+  type UpdateConsolePatch,
+} from "../../repositories/consoles-charts";
 import {
   generateDescriptionAndEmbedding,
   isDescriptionGenAvailable,
@@ -60,9 +64,7 @@ export async function deriveConsoleDescription(
     force?: boolean;
   } = {},
 ): Promise<DeriveOutcome> {
-  const row = await SavedConsole.findById(consoleId).populate<{
-    connectionId?: { name?: string; type?: string } | null;
-  }>("connectionId", "name type");
+  const row = await consolesChartsRepo.findConsoleByIdGlobal(consoleId);
   if (!row) return "missing";
   const sourceSha = row.sourceBlobSha;
   const currentModel = getEmbeddingModelName();
@@ -81,8 +83,15 @@ export async function deriveConsoleDescription(
   let description: string | null = authored ? (row.description ?? null) : null;
   if (!authored) {
     if (!isDescriptionGenAvailable()) return "unavailable";
-    const connection = row.connectionId as
-      { name?: string; type?: string } | null | undefined;
+    const connection =
+      row.connectionId && Types.ObjectId.isValid(row.connectionId)
+        ? await DatabaseConnection.findOne({
+            _id: new Types.ObjectId(row.connectionId),
+            workspaceId: new Types.ObjectId(row.workspaceId),
+          })
+            .select("name type")
+            .lean<{ name?: string; type?: string } | null>()
+        : null;
     const generated = await generateDescriptionAndEmbedding(
       {
         code: row.code ?? "",
@@ -95,26 +104,40 @@ export async function deriveConsoleDescription(
         resultSample: options.context?.resultSample,
       },
       options.tracking
-        ? { workspaceId: row.workspaceId.toString(), ...options.tracking }
+        ? { workspaceId: row.workspaceId, ...options.tracking }
         : undefined,
     );
     description = generated.description;
     if (!description) return "unavailable";
-    const set: Record<string, unknown> = {
+    const patch: Pick<
+      UpdateConsolePatch,
+      | "description"
+      | "descriptionSource"
+      | "descriptionGeneratedAt"
+      | "descriptionSourceSha"
+      | "descriptionEmbedding"
+      | "embeddingModel"
+    > = {
       description,
       descriptionSource: "generated",
       descriptionGeneratedAt: new Date(),
       descriptionSourceSha: sourceSha ?? null,
     };
     if (generated.embedding) {
-      set.descriptionEmbedding = generated.embedding;
-      set.embeddingModel = generated.embeddingModel;
+      patch.descriptionEmbedding = generated.embedding;
+      patch.embeddingModel = generated.embeddingModel;
     }
-    return guardedWrite(row._id, sourceSha, set);
+    return guardedWrite(row.workspaceId, row.id, sourceSha, patch);
   }
 
   // Authored: embed the text as written.
-  const set: Record<string, unknown> = {
+  const patch: Pick<
+    UpdateConsolePatch,
+    | "descriptionSource"
+    | "descriptionSourceSha"
+    | "descriptionEmbedding"
+    | "embeddingModel"
+  > = {
     descriptionSource: "authored",
     descriptionSourceSha: sourceSha ?? null,
   };
@@ -122,8 +145,8 @@ export async function deriveConsoleDescription(
     try {
       const embedding = await embedText(description);
       if (embedding) {
-        set.descriptionEmbedding = embedding;
-        set.embeddingModel = currentModel;
+        patch.descriptionEmbedding = embedding;
+        patch.embeddingModel = currentModel;
       }
     } catch (error) {
       logger.warn("Console embedding failed", {
@@ -132,21 +155,30 @@ export async function deriveConsoleDescription(
       });
     }
   }
-  return guardedWrite(row._id, sourceSha, set);
+  return guardedWrite(row.workspaceId, row.id, sourceSha, patch);
 }
 
 async function guardedWrite(
-  id: Types.ObjectId,
+  workspaceId: string,
+  id: string,
   sourceSha: string | undefined,
-  set: Record<string, unknown>,
+  patch: Pick<
+    UpdateConsolePatch,
+    | "description"
+    | "descriptionSource"
+    | "descriptionGeneratedAt"
+    | "descriptionSourceSha"
+    | "descriptionEmbedding"
+    | "embeddingModel"
+  >,
 ): Promise<DeriveOutcome> {
-  const filter: Record<string, unknown> = { _id: id };
-  // Rows never projected to git (drafts, unadopted workspaces) have no sha
-  // to guard on; a projected row must still be at the sha we derived from.
-  if (sourceSha) filter.sourceBlobSha = sourceSha;
-  else filter.sourceBlobSha = { $in: [null, undefined] };
-  const result = await SavedConsole.updateOne(filter, { $set: set });
-  return result.matchedCount > 0 ? "updated" : "raced";
+  const matched = await consolesChartsRepo.guardedUpdateConsoleDescription(
+    workspaceId,
+    id,
+    sourceSha,
+    patch,
+  );
+  return matched ? "updated" : "raced";
 }
 
 /**
@@ -158,28 +190,14 @@ export async function reconcileConsoleDescriptions(
   workspaceId?: string,
 ): Promise<number> {
   const currentModel = getEmbeddingModelName();
-  const filter: Record<string, unknown> = {
-    isSaved: true,
-    $or: [{ is_deleted: { $ne: true } }, { is_deleted: { $exists: false } }],
-    $and: [
-      {
-        $or: [
-          { $expr: { $ne: ["$descriptionSourceSha", "$sourceBlobSha"] } },
-          ...(currentModel
-            ? [{ embeddingModel: { $exists: true, $ne: currentModel } }]
-            : []),
-        ],
-      },
-    ],
-  };
-  if (workspaceId) filter.workspaceId = new Types.ObjectId(workspaceId);
-  const rows = await SavedConsole.find(filter)
-    .select("_id workspaceId")
-    .lean<Array<{ _id: Types.ObjectId; workspaceId: Types.ObjectId }>>();
+  const rows = await consolesChartsRepo.listConsolesNeedingDescription({
+    workspaceId,
+    currentEmbeddingModel: currentModel,
+  });
   for (const row of rows) {
     requestConsoleDescription({
-      workspaceId: row.workspaceId.toString(),
-      consoleId: row._id.toString(),
+      workspaceId: row.workspaceId,
+      consoleId: row.id,
     });
   }
   return rows.length;
