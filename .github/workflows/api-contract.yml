@@ -18,6 +18,7 @@ on:
     types: [opened, synchronize, reopened]
     paths:
       - "api/**"
+      - "scripts/check-control-plane-revisions*.mjs"
       - "app/src/api/**"
       - "app/src/store/**"
       - "docs/src/openapi/**"
@@ -140,6 +141,9 @@ jobs:
             exit 1
           fi
           echo "@makoai/app-sdk@$version is published"
+
+      - name: Control-plane writer drain fixtures
+        run: node --test scripts/check-control-plane-revisions.test.mjs
 
       - name: API tsx suites + apps vitest config
         # api/package.json "test": the hand-rolled tsx + node:assert chain,

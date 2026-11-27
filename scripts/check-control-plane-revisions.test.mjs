@@ -51,7 +51,8 @@ function fixture() {
       const index = Number(url.searchParams.get("pageToken"));
       return {
         revisions: [service.revisions[index]],
-        nextPageToken: index === 0 ? "1" : undefined,
+        nextPageToken:
+          index + 1 < service.revisions.length ? String(index + 1) : undefined,
       };
     }
     return structuredClone(service);
@@ -70,7 +71,8 @@ test("both independent services serve prepared revisions and have retired their 
 
 test("a prepared main and a 100% live unprepared canary stop activation", async () => {
   const { canary, get } = fixture();
-  const old = canary.revisions[0];
+  const [old] = canary.revisions;
+  canary.revisions = [old];
   old.conditions = [{ state: "CONDITION_SUCCEEDED" }];
   canary.latestReadyRevision = canary.latestCreatedRevision = old.name;
   canary.trafficStatuses = [{ revision: old.name, percent: 100 }];

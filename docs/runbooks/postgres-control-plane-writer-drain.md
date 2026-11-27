@@ -4,7 +4,7 @@ The release lead collects this evidence after both production services have comp
 
 ## Verify Cloud Run retirement
 
-The main service `mako` and the independently deployed `mako-canary` both receive `PROD_DATABASE_URL`. Each owns its own endpoint and traffic split. The canary accepts API requests and runs startup catalog writes even with scheduled sync and webhook processing disabled. Prepare main through the standard production deployment and canary through the existing production migration canary workflow, using the reviewed preparation revision on master. Record both completed run IDs. Until the canary receives a prepared image through its own release, activation stays on hold.
+The main service `mako` and the independently deployed `mako-canary` both receive `PROD_DATABASE_URL`. The seed-database workflow also reads this secret for its production dump and writes to the target database. Each owns its own endpoint and traffic split. The canary accepts API requests and runs startup catalog writes even with scheduled sync and webhook processing disabled. Prepare main through the standard production deployment and canary through the existing production migration canary workflow, using the reviewed preparation revision on master. Record both completed run IDs. Until the canary receives a prepared image through its own release, activation stays on hold.
 
 From the preparation checkout, use the main project from `GCP_PROD_DEPLOY_CONFIG.project_id`, the canary project from `GCP_MIGRATION_PROJECT_ID`, and the workflows’ `GCP_REGION`. Run the verifier with an identity that can read services and revisions and save its JSON output in the release record.
 
