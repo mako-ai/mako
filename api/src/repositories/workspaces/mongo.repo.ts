@@ -972,20 +972,54 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
     return apiKey;
   }
 
+  async updateApiKeyScopesByNameReturningIds(
+    workspaceId: string,
+    name: string,
+    scopes: WorkspaceApiKeyScope[],
+  ): Promise<string[]> {
+    if (!isEntityId(workspaceId)) {
+      return [];
+    }
+    const doc = await Workspace.findOneAndUpdate(
+      { _id: oid(workspaceId), "apiKeys.name": name },
+      { $set: { "apiKeys.$[k].scopes": scopes } },
+      {
+        arrayFilters: [{ "k.name": name }],
+        new: true,
+        timestamps: false,
+        projection: { _id: 1, apiKeys: 1 },
+      },
+    ).lean<{ _id: Types.ObjectId; apiKeys?: MongoApiKeyLike[] } | null>();
+    if (!doc) {
+      return [];
+    }
+    const wsWire = toWire(doc._id);
+    const ids: string[] = [];
+    for (const k of doc.apiKeys ?? []) {
+      if (k.name !== name) continue;
+      ids.push(
+        k._id != null
+          ? toWire(k._id)
+          : fallbackApiKeyId(wsWire, k.keyHash ?? ""),
+      );
+    }
+    return ids;
+  }
+
   async updateApiKeyScopesByName(
     workspaceId: string,
     name: string,
     scopes: WorkspaceApiKeyScope[],
   ): Promise<boolean> {
-    if (!isEntityId(workspaceId)) {
-      return false;
-    }
-    const res = await Workspace.updateOne(
-      { _id: oid(workspaceId), "apiKeys.name": name },
-      { $set: { "apiKeys.$.scopes": scopes } },
-      { timestamps: false },
+    return (
+      (
+        await this.updateApiKeyScopesByNameReturningIds(
+          workspaceId,
+          name,
+          scopes,
+        )
+      ).length > 0
     );
-    return res.matchedCount > 0;
   }
 
   async deleteApiKey(workspaceId: string, keyId: string): Promise<boolean> {

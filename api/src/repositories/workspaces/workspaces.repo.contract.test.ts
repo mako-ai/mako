@@ -3548,5 +3548,163 @@ describe("Phase 1B WorkspaceRepository contract & migration lifecycle (10 tables
         }),
       ).toBeNull();
     });
+
+    it("[verifier #146] updateApiKeyScopesByName updates PG scopes even when PG last_used_at is newer, preserves GREATEST(last_used_at), and scopes resync to the updated key(s) only", async () => {
+      const failures: Array<{ operation: string; error: unknown }> = [];
+      const router = new MigrationRouter({
+        getDb: () => db,
+        hasPg: () => true,
+        enablePubSub: false,
+        cacheTtlMs: 0,
+        onSecondaryFailure: async ctx => {
+          failures.push({ operation: ctx.operation, error: ctx.error });
+        },
+      });
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_mongo_read",
+      });
+      const dualRepo = new DualWorkspaceRepository({
+        router,
+        getDb: () => db,
+      });
+      const pgRepo = new PgWorkspaceRepository({ getDb: () => db });
+      const mongoRepo = new MongoWorkspaceRepository();
+
+      const owner = await seedUser({
+        mongoId: "scope_sync_u01",
+        email: "scope-sync@example.com",
+      });
+      const { workspace: ws } = await dualRepo.createWorkspaceWithOwner({
+        name: "Scope Sync WS",
+        slug: "scope-sync-ws",
+        userId: owner.mongoId,
+      });
+
+      const workerKey = await dualRepo.createApiKey({
+        workspaceId: ws.id,
+        name: "Worker Runtime Key",
+        keyHash: makeHash("worker-scope-sync"),
+        prefix: "revops_wrk0001",
+        scopes: ["workflows:runtime"],
+        createdBy: owner.mongoId,
+      });
+      expect(failures).toHaveLength(0);
+
+      // (a) Simulate touchApiKeyLastUsed advancing PG last_used_at ahead of Mongo
+      //     (Mongo still has lastUsedAt = null, PG has t2).
+      const newerTouch = new Date("2026-11-27T12:00:00.000Z");
+      await pgRepo.touchApiKeyLastUsed(ws.id, workerKey.id, newerTouch);
+
+      // Update scopes via Stage 2 dual-write -> MUST update PG scopes AND keep
+      // the newer PG last_used_at via GREATEST.
+      expect(
+        await dualRepo.updateApiKeyScopesByName(ws.id, "Worker Runtime Key", [
+          "workflows:runtime",
+          "mcp",
+          "query:write",
+        ]),
+      ).toBe(true);
+      expect(failures).toHaveLength(0);
+
+      const afterFirstUpdate = await pgRepo.findApiKeyByHash(workerKey.keyHash);
+      expect(afterFirstUpdate?.apiKey.scopes).toEqual([
+        "workflows:runtime",
+        "mcp",
+        "query:write",
+      ]);
+      expect(afterFirstUpdate?.apiKey.lastUsedAt?.toISOString()).toBe(
+        newerTouch.toISOString(),
+      );
+
+      // Also verify when Mongo has an older non-null t1 < PG t2.
+      const olderTouch = new Date("2026-11-27T11:00:00.000Z");
+      await mongoRepo.touchApiKeyLastUsed(ws.id, workerKey.id, olderTouch);
+      expect(
+        await dualRepo.updateApiKeyScopesByName(ws.id, "Worker Runtime Key", [
+          "workflows:runtime",
+          "mcp",
+        ]),
+      ).toBe(true);
+      expect(failures).toHaveLength(0);
+
+      const afterSecondUpdate = await pgRepo.findApiKeyByHash(
+        workerKey.keyHash,
+      );
+      expect(afterSecondUpdate?.apiKey.scopes).toEqual([
+        "workflows:runtime",
+        "mcp",
+      ]);
+      expect(afterSecondUpdate?.apiKey.lastUsedAt?.toISOString()).toBe(
+        newerTouch.toISOString(),
+      );
+
+      // (b) Insert an unrelated API key in Mongo with an unresolvable creator
+      //     AND a concurrently created API key that already committed to PG.
+      await Workspace.updateOne(
+        { _id: new Types.ObjectId(ws.id) },
+        {
+          $push: {
+            apiKeys: {
+              _id: new Types.ObjectId(newDualId().oid),
+              name: "Unrelated Orphan Creator Key",
+              keyHash: makeHash("unrelated-orphan-key"),
+              prefix: "revops_uop0001",
+              scopes: ["mcp"],
+              createdBy: "ghost_user_missing_from_pg",
+              createdAt: new Date(),
+            },
+          },
+        },
+        { timestamps: false },
+      );
+      const concurrentPgKey = await pgRepo.createApiKey({
+        workspaceId: ws.id,
+        name: "Concurrent PG-Only Key",
+        keyHash: makeHash("concurrent-pg-key"),
+        prefix: "revops_cpg0001",
+        scopes: ["mcp"],
+        createdBy: owner.mongoId,
+      });
+
+      // Updating Worker Runtime Key MUST succeed with 0 failures (ignoring the
+      // unrelated orphaned-creator key) and MUST NOT delete or tombstone the
+      // concurrently created PG key!
+      expect(
+        await dualRepo.updateApiKeyScopesByName(ws.id, "Worker Runtime Key", [
+          "workflows:runtime",
+          "query:write",
+        ]),
+      ).toBe(true);
+      expect(failures).toHaveLength(0);
+
+      const afterThirdUpdate = await pgRepo.findApiKeyByHash(workerKey.keyHash);
+      expect(afterThirdUpdate?.apiKey.scopes).toEqual([
+        "workflows:runtime",
+        "query:write",
+      ]);
+      expect(
+        await pgRepo.findApiKeyByHash(concurrentPgKey.keyHash),
+      ).not.toBeNull();
+      expect(await db.select().from(pgSchema.migrationTombstones)).toHaveLength(
+        0,
+      );
+
+      // Stage 4 (dual_write_pg_read): updateApiKeyScopesByName also syncs PG -> Mongo cleanly.
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_pg_read",
+      });
+      expect(
+        await dualRepo.updateApiKeyScopesByName(ws.id, "Worker Runtime Key", [
+          "workflows:runtime",
+        ]),
+      ).toBe(true);
+      expect(failures).toHaveLength(0);
+      const mongoAfterStage4 = await mongoRepo.findApiKeyByHash(
+        workerKey.keyHash,
+      );
+      expect(mongoAfterStage4?.apiKey.scopes).toEqual(["workflows:runtime"]);
+    });
   });
 });

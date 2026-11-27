@@ -932,25 +932,35 @@ export class DualWorkspaceRepository implements WorkspaceRepository {
     return apiKey;
   }
 
-  updateApiKeyScopesByName(
+  async updateApiKeyScopesByName(
     workspaceId: string,
     name: string,
     scopes: WorkspaceApiKeyScope[],
   ): Promise<boolean> {
-    return dualWrite(
+    const updatedIds = await dualWrite(
       {
         operation: "updateApiKeyScopesByName",
         entityId: workspaceId,
         mongo: () =>
-          this.mongo.updateApiKeyScopesByName(workspaceId, name, scopes),
-        pg: () => this.pg.updateApiKeyScopesByName(workspaceId, name, scopes),
-        targets: matched =>
-          matched
-            ? [{ table: "workspace_api_keys", scope: { workspaceId } }]
+          this.mongo.updateApiKeyScopesByNameReturningIds(
+            workspaceId,
+            name,
+            scopes,
+          ),
+        pg: () =>
+          this.pg.updateApiKeyScopesByNameReturningIds(
+            workspaceId,
+            name,
+            scopes,
+          ),
+        targets: ids =>
+          ids.length > 0
+            ? [{ table: "workspace_api_keys", scope: { entityIds: ids } }]
             : [],
       },
       this.ctx,
     );
+    return updatedIds.length > 0;
   }
 
   deleteApiKey(workspaceId: string, keyId: string): Promise<boolean> {

@@ -575,7 +575,6 @@ export async function resyncToPg(
                           ...rest,
                           lastUsedAt: sql`GREATEST(${workspaceApiKeys.lastUsedAt}, excluded.last_used_at)`,
                         },
-                        setWhere: sql`${workspaceApiKeys.lastUsedAt} IS NULL OR (excluded.last_used_at IS NOT NULL AND ${workspaceApiKeys.lastUsedAt} <= excluded.last_used_at)`,
                       },
               )
               .returning({ id: workspaceApiKeys.id });

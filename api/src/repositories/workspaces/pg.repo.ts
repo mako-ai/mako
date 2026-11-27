@@ -1078,13 +1078,13 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
     return apiKey;
   }
 
-  async updateApiKeyScopesByName(
+  async updateApiKeyScopesByNameReturningIds(
     workspaceId: string,
     name: string,
     scopes: WorkspaceApiKeyScope[],
-  ): Promise<boolean> {
+  ): Promise<string[]> {
     if (!isEntityId(workspaceId)) {
-      return false;
+      return [];
     }
     const rows = await this.getDb()
       .update(workspaceApiKeys)
@@ -1096,7 +1096,23 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
         ),
       )
       .returning({ id: workspaceApiKeys.id });
-    return rows.length > 0;
+    return rows.map(r => toWireId(r.id));
+  }
+
+  async updateApiKeyScopesByName(
+    workspaceId: string,
+    name: string,
+    scopes: WorkspaceApiKeyScope[],
+  ): Promise<boolean> {
+    return (
+      (
+        await this.updateApiKeyScopesByNameReturningIds(
+          workspaceId,
+          name,
+          scopes,
+        )
+      ).length > 0
+    );
   }
 
   async deleteApiKey(workspaceId: string, keyId: string): Promise<boolean> {
