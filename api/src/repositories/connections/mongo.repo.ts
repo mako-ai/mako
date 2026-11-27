@@ -37,26 +37,28 @@ import {
   type MongoDatabaseConnectionLike,
   type MongoSourceConnectionLike,
 } from "./mapper";
-import type {
-  ClaimSourceConnectionKeyRequestInput,
-  ConnectionAccessEventRecord,
-  ConnectionWriteEventRecord,
-  ConnectionsRepository,
-  ConnectorDefinitionBuildRecord,
-  ConnectorDefinitionRecord,
-  CreateDatabaseConnectionInput,
-  CreateSourceConnectionInput,
-  DatabaseConnectionRecord,
-  DatabaseConnectionSummary,
-  FindSourceConnectionByIdOrNameResult,
-  RecentWriterAggregate,
-  RecordConnectionAccessEventInput,
-  RecordConnectionWriteEventInput,
-  RollbackSourceConnectionKeyRequestInput,
-  SourceConnectionRecord,
-  UpdateDatabaseConnectionInput,
-  UpdateSourceConnectionInput,
-  UpsertConnectorDefinitionInput,
+import {
+  isDatabaseConnectionType,
+  type ClaimSourceConnectionKeyRequestInput,
+  type ConnectionAccessEventRecord,
+  type ConnectionWriteEventRecord,
+  type ConnectionsRepository,
+  type ConnectorDefinitionBuildRecord,
+  type ConnectorDefinitionRecord,
+  type CreateDatabaseConnectionInput,
+  type CreateSourceConnectionInput,
+  type DatabaseConnectionRecord,
+  type DatabaseConnectionSummary,
+  type FindSourceConnectionByIdOrNameResult,
+  type RecentWriterAggregate,
+  type RecordConnectionAccessEventInput,
+  type RecordConnectionWriteEventInput,
+  type RollbackSourceConnectionKeyRequestInput,
+  type SourceConnectionRecord,
+  type UpdateConnectorDefinitionMetadataInput,
+  type UpdateDatabaseConnectionInput,
+  type UpdateSourceConnectionInput,
+  type UpsertConnectorDefinitionInput,
 } from "./types";
 
 function toObjectIdOrNull(id: string): Types.ObjectId | null {
@@ -101,6 +103,20 @@ export class MongoConnectionsRepository implements ConnectionsRepository {
       .find({ workspaceId: wsOid }, { projection: { connection: 0 } })
       .sort({ createdAt: -1 })
       .toArray()) as unknown as MongoDatabaseConnectionLike[];
+    return docs.map(mongoDatabaseConnectionToSummary);
+  }
+
+  async listAllDatabaseConnectionMetadata(
+    limit?: number,
+  ): Promise<DatabaseConnectionSummary[]> {
+    const cursor = DatabaseConnection.collection
+      .find({}, { projection: { connection: 0 } })
+      .sort({ createdAt: -1 });
+    if (limit !== undefined && limit > 0) {
+      cursor.limit(limit);
+    }
+    const docs =
+      (await cursor.toArray()) as unknown as MongoDatabaseConnectionLike[];
     return docs.map(mongoDatabaseConnectionToSummary);
   }
 
@@ -245,6 +261,11 @@ export class MongoConnectionsRepository implements ConnectionsRepository {
   async createDatabaseConnection(
     input: CreateDatabaseConnectionInput,
   ): Promise<DatabaseConnectionRecord> {
+    if (!isDatabaseConnectionType(input.type)) {
+      throw new Error(
+        `Invalid database connection type: ${String(input.type)}`,
+      );
+    }
     const now = input.createdAt ?? new Date();
     const updatedAt = input.updatedAt ?? now;
     const oid = input.id
@@ -458,6 +479,27 @@ export class MongoConnectionsRepository implements ConnectionsRepository {
     }));
   }
 
+  async listSourceConnectionIdNameWorkspaces(
+    filter: { isActive?: boolean } = {},
+  ): Promise<Array<{ id: string; name: string; workspaceId: string }>> {
+    const query: Record<string, unknown> = {};
+    if (filter.isActive !== undefined) query.isActive = filter.isActive;
+    const docs = await SourceConnection.find(query)
+      .select("_id name workspaceId")
+      .lean<
+        Array<{
+          _id: Types.ObjectId | string;
+          name: string;
+          workspaceId: Types.ObjectId | string;
+        }>
+      >();
+    return docs.map(d => ({
+      id: entityIdToMongoHex(d._id),
+      name: String(d.name ?? ""),
+      workspaceId: entityIdToMongoHex(d.workspaceId),
+    }));
+  }
+
   async findSourceConnectionById(
     id: string,
     workspaceId?: string,
@@ -612,8 +654,21 @@ export class MongoConnectionsRepository implements ConnectionsRepository {
       $set.description = patch.description.trim();
     }
     if (patch.type !== undefined) $set.type = patch.type;
+    if (patch.config !== undefined && patch.configPatch !== undefined) {
+      throw new Error(
+        "updateSourceConnection cannot specify both config and configPatch",
+      );
+    }
     if (patch.config !== undefined) {
       $set.config = stripUndefinedDeep(patch.config);
+    } else if (patch.configPatch !== undefined) {
+      for (const [key, value] of Object.entries(patch.configPatch)) {
+        if (value === undefined) continue;
+        if (!key || key.includes(".") || key.startsWith("$")) {
+          throw new Error(`Invalid source connection config key: ${key}`);
+        }
+        $set[`config.${key}`] = stripUndefinedDeep(value);
+      }
     }
     if (patch.settings !== undefined) {
       $set.settings = normalizeSourceSettings(patch.settings);
@@ -1061,6 +1116,39 @@ export class MongoConnectionsRepository implements ConnectionsRepository {
     return mongoConnectorDefinitionToRecord(updated);
   }
 
+  async updateConnectorDefinitionMetadata(
+    workspaceId: string,
+    slug: string,
+    patch: UpdateConnectorDefinitionMetadataInput,
+  ): Promise<boolean> {
+    const wsOid = toObjectIdOrNull(workspaceId);
+    if (!wsOid) return false;
+    const now = patch.now ?? new Date();
+    const filter: Record<string, unknown> = {
+      workspaceId: wsOid,
+      slug: slug.trim(),
+    };
+    if (patch.expectedSourceSha !== undefined) {
+      filter.sourceSha = patch.expectedSourceSha;
+    }
+    const $set: Record<string, unknown> = { updatedAt: now };
+    const $unset: Record<string, ""> = {};
+    if (patch.sha !== undefined) $set.sha = patch.sha;
+    if (patch.entry !== undefined) $set.entry = patch.entry;
+    if (patch.registry === null) {
+      $unset.registry = "";
+    } else if (patch.registry !== undefined) {
+      $set.registry = stripUndefinedDeep({ ...patch.registry });
+    }
+    const updateDoc: Record<string, unknown> = { $set };
+    if (Object.keys($unset).length > 0) updateDoc.$unset = $unset;
+    const res = await ConnectorDefinition.collection.updateOne(
+      filter,
+      updateDoc,
+    );
+    return res.matchedCount > 0;
+  }
+
   async recordConnectorDefinitionBuild(
     workspaceId: string,
     slug: string,
@@ -1151,6 +1239,45 @@ export class MongoConnectionsRepository implements ConnectionsRepository {
       (await this.deleteConnectorDefinitionReturningId(workspaceId, slug)) !==
       null
     );
+  }
+
+  async deleteConnectorDefinitionById(
+    id: string,
+    workspaceId: string,
+  ): Promise<boolean> {
+    const oid = toObjectIdOrNull(id);
+    const wsOid = toObjectIdOrNull(workspaceId);
+    if (!oid || !wsOid) return false;
+    const res = await ConnectorDefinition.collection.deleteOne({
+      _id: oid,
+      workspaceId: wsOid,
+    });
+    return res.deletedCount > 0;
+  }
+
+  async deleteConnectorDefinitionsByIds(
+    ids: readonly string[],
+    workspaceId: string,
+  ): Promise<string[]> {
+    const wsOid = toObjectIdOrNull(workspaceId);
+    if (!wsOid) return [];
+    const oids = ids
+      .map(toObjectIdOrNull)
+      .filter((v): v is Types.ObjectId => v !== null);
+    if (oids.length === 0) return [];
+    const toDelete = await ConnectorDefinition.collection
+      .find(
+        { _id: { $in: oids }, workspaceId: wsOid },
+        { projection: { _id: 1 } },
+      )
+      .toArray();
+    if (toDelete.length === 0) return [];
+    const deleteOids = toDelete.map(d => d._id);
+    await ConnectorDefinition.collection.deleteMany({
+      _id: { $in: deleteOids },
+      workspaceId: wsOid,
+    });
+    return deleteOids.map(oid => entityIdToMongoHex(oid));
   }
 
   async deleteConnectorDefinitionsNotInSlugs(

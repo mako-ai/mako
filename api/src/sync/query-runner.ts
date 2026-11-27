@@ -2,7 +2,7 @@ import { Db } from "mongodb";
 import * as fs from "fs";
 import * as path from "path";
 import * as dotenv from "dotenv";
-import { DatabaseConnection } from "../database/workspace-schema";
+import { connectionsRepo } from "../repositories/connections";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { loggers } from "../logging";
 
@@ -20,11 +20,10 @@ class QueryRunner {
 
   private async initializePrimaryDatabase() {
     try {
-      const databases = await DatabaseConnection.find({})
-        .sort({ createdAt: -1 })
-        .limit(1);
+      const databases =
+        await connectionsRepo.listAllDatabaseConnectionMetadata(1);
       if (databases.length > 0) {
-        this.currentDataSource = databases[0]._id.toString();
+        this.currentDataSource = databases[0].id;
       }
     } catch (error) {
       logger.error("Failed to initialize primary database", { error });
@@ -41,7 +40,8 @@ class QueryRunner {
     }
 
     // Get data source configuration
-    const dataSource = await DatabaseConnection.findById(sourceId);
+    const dataSource =
+      await connectionsRepo.findDatabaseConnectionById(sourceId);
     if (!dataSource) {
       throw new Error(`MongoDB data source '${sourceId}' not found`);
     }
@@ -51,7 +51,7 @@ class QueryRunner {
       "datasource",
       sourceId,
       async id => {
-        const ds = await DatabaseConnection.findById(id);
+        const ds = await connectionsRepo.findDatabaseConnectionById(id);
         if (!ds || !ds.connection.connectionString) return null;
         return {
           connectionString: ds.connection.connectionString,
@@ -168,11 +168,10 @@ class QueryRunner {
     }[]
   > {
     try {
-      const databases = await DatabaseConnection.find({}).sort({
-        createdAt: -1,
-      });
+      const databases =
+        await connectionsRepo.listAllDatabaseConnectionMetadata();
       return databases.map(db => ({
-        id: db._id.toString(),
+        id: db.id,
         name: db.name,
         description: "",
       }));
@@ -186,7 +185,8 @@ class QueryRunner {
    * Switch the default data source for queries
    */
   async setDefaultDataSource(dataSourceId: string): Promise<void> {
-    const source = await DatabaseConnection.findById(dataSourceId);
+    const source =
+      await connectionsRepo.findDatabaseConnectionById(dataSourceId);
     if (!source) {
       throw new Error(`MongoDB data source '${dataSourceId}' not found`);
     }

@@ -14,7 +14,10 @@ import {
   type IDatabaseConnection,
   Flow,
 } from "../../database/workspace-schema";
-import { connectionsRepo } from "../../repositories/connections";
+import {
+  connectionsRepo,
+  isDatabaseConnectionType,
+} from "../../repositories/connections";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { recordConnectionVerification } from "../../services/connection-verification.service";
 import { Types } from "mongoose";
@@ -344,6 +347,16 @@ connectionRoutes.openapi(
       if (!body.name || !body.type) {
         return c.json(
           { success: false, error: "Name and type are required" },
+          400,
+        );
+      }
+
+      if (!isDatabaseConnectionType(body.type)) {
+        return c.json(
+          {
+            success: false,
+            error: `Unsupported database type: ${String(body.type)}`,
+          },
           400,
         );
       }

@@ -23,7 +23,6 @@ import {
   isUuidString,
   objectIdToUuid,
   parseEntityId,
-  uuidToObjectId,
 } from "../../database/pg/id-codec";
 import {
   CONNECTION_ACCESS_KINDS,
@@ -148,22 +147,25 @@ type ConnectionsBackfillDoc =
       table: "database_connections";
       rawId: string;
       rawWorkspaceId: string;
-      summary: DatabaseConnectionSummary;
-      connectionEncrypted: Record<string, unknown>;
+      summary?: DatabaseConnectionSummary;
+      connectionEncrypted?: Record<string, unknown>;
+      parseError?: string;
       pgRow?: NewDatabaseConnectionRow;
     }
   | {
       table: "source_connections";
       rawId: string;
       rawWorkspaceId: string;
-      record: SourceConnectionRecord;
+      record?: SourceConnectionRecord;
+      parseError?: string;
       pgRow?: NewSourceConnectionRow;
     }
   | {
       table: "connector_definitions";
       rawId: string;
       rawWorkspaceId: string;
-      record: ConnectorDefinitionRecord;
+      record?: ConnectorDefinitionRecord;
+      parseError?: string;
       pgRow?: NewConnectorDefinitionRow;
     }
   | {
@@ -171,7 +173,8 @@ type ConnectionsBackfillDoc =
       rawId: string;
       rawWorkspaceId: string;
       rawConnectionId: string;
-      record: ConnectionAccessEventRecord;
+      record?: ConnectionAccessEventRecord;
+      parseError?: string;
       pgRow?: NewConnectionAccessEventRow;
     }
   | {
@@ -179,7 +182,8 @@ type ConnectionsBackfillDoc =
       rawId: string;
       rawWorkspaceId: string;
       rawConnectionId: string;
-      record: ConnectionWriteEventRecord;
+      record?: ConnectionWriteEventRecord;
+      parseError?: string;
       pgRow?: NewConnectionWriteEventRow;
     };
 
@@ -261,6 +265,17 @@ function rawIdString(raw: unknown): string {
   return String(raw ?? "");
 }
 
+function safeEntityIdFromRaw(raw: unknown): {
+  rawId: string;
+  entityId: string;
+} {
+  const rawId = rawIdString(raw);
+  return {
+    rawId,
+    entityId: isObjectIdHex(rawId) ? objectIdToUuid(rawId) : rawId,
+  };
+}
+
 function makeMemoizedUserResolver(db: MakoPgDb): UserUuidResolver {
   const cache = new Map<string, string | null>();
   return async (idOrLegacyId: string): Promise<string | null> => {
@@ -330,26 +345,40 @@ async function fetchStageBackfillItems(
         .limit(limit)
         .toArray()) as unknown as MongoDatabaseConnectionLike[];
       return docs.map(doc => {
-        const rawId = rawIdString(doc._id);
+        const { rawId, entityId } = safeEntityIdFromRaw(doc._id);
         const rawWsId = rawIdString(doc.workspaceId);
-        const summary = mongoDatabaseConnectionToSummary(doc);
-        const connectionEncrypted = extractRawEncryptedConnection(
-          doc.connection,
-        );
-        const entityId = isObjectIdHex(rawId) ? objectIdToUuid(rawId) : rawId;
-        return {
-          cursor: makeCursor(rawId),
-          entityId,
-          targetTable: "database_connections",
-          collectionName: meta.collection,
-          doc: {
-            table: "database_connections",
-            rawId,
-            rawWorkspaceId: rawWsId,
-            summary,
-            connectionEncrypted,
-          },
-        };
+        try {
+          const summary = mongoDatabaseConnectionToSummary(doc);
+          const connectionEncrypted = extractRawEncryptedConnection(
+            doc.connection,
+          );
+          return {
+            cursor: makeCursor(rawId),
+            entityId,
+            targetTable: "database_connections",
+            collectionName: meta.collection,
+            doc: {
+              table: "database_connections",
+              rawId,
+              rawWorkspaceId: rawWsId,
+              summary,
+              connectionEncrypted,
+            },
+          };
+        } catch (err) {
+          return {
+            cursor: makeCursor(rawId),
+            entityId,
+            targetTable: "database_connections",
+            collectionName: meta.collection,
+            doc: {
+              table: "database_connections",
+              rawId,
+              rawWorkspaceId: rawWsId,
+              parseError: err instanceof Error ? err.message : String(err),
+            },
+          };
+        }
       });
     }
 
@@ -360,22 +389,36 @@ async function fetchStageBackfillItems(
         .limit(limit)
         .toArray()) as unknown as MongoSourceConnectionLike[];
       return docs.map(doc => {
-        const rawId = rawIdString(doc._id);
+        const { rawId, entityId } = safeEntityIdFromRaw(doc._id);
         const rawWsId = rawIdString(doc.workspaceId);
-        const record = mongoSourceConnectionToRecord(doc);
-        const entityId = isObjectIdHex(rawId) ? objectIdToUuid(rawId) : rawId;
-        return {
-          cursor: makeCursor(rawId),
-          entityId,
-          targetTable: "source_connections",
-          collectionName: meta.collection,
-          doc: {
-            table: "source_connections",
-            rawId,
-            rawWorkspaceId: rawWsId,
-            record,
-          },
-        };
+        try {
+          const record = mongoSourceConnectionToRecord(doc);
+          return {
+            cursor: makeCursor(rawId),
+            entityId,
+            targetTable: "source_connections",
+            collectionName: meta.collection,
+            doc: {
+              table: "source_connections",
+              rawId,
+              rawWorkspaceId: rawWsId,
+              record,
+            },
+          };
+        } catch (err) {
+          return {
+            cursor: makeCursor(rawId),
+            entityId,
+            targetTable: "source_connections",
+            collectionName: meta.collection,
+            doc: {
+              table: "source_connections",
+              rawId,
+              rawWorkspaceId: rawWsId,
+              parseError: err instanceof Error ? err.message : String(err),
+            },
+          };
+        }
       });
     }
 
@@ -386,22 +429,36 @@ async function fetchStageBackfillItems(
         .limit(limit)
         .toArray()) as unknown as MongoConnectorDefinitionLike[];
       return docs.map(doc => {
-        const rawId = rawIdString(doc._id);
+        const { rawId, entityId } = safeEntityIdFromRaw(doc._id);
         const rawWsId = rawIdString(doc.workspaceId);
-        const record = mongoConnectorDefinitionToRecord(doc);
-        const entityId = isObjectIdHex(rawId) ? objectIdToUuid(rawId) : rawId;
-        return {
-          cursor: makeCursor(rawId),
-          entityId,
-          targetTable: "connector_definitions",
-          collectionName: meta.collection,
-          doc: {
-            table: "connector_definitions",
-            rawId,
-            rawWorkspaceId: rawWsId,
-            record,
-          },
-        };
+        try {
+          const record = mongoConnectorDefinitionToRecord(doc);
+          return {
+            cursor: makeCursor(rawId),
+            entityId,
+            targetTable: "connector_definitions",
+            collectionName: meta.collection,
+            doc: {
+              table: "connector_definitions",
+              rawId,
+              rawWorkspaceId: rawWsId,
+              record,
+            },
+          };
+        } catch (err) {
+          return {
+            cursor: makeCursor(rawId),
+            entityId,
+            targetTable: "connector_definitions",
+            collectionName: meta.collection,
+            doc: {
+              table: "connector_definitions",
+              rawId,
+              rawWorkspaceId: rawWsId,
+              parseError: err instanceof Error ? err.message : String(err),
+            },
+          };
+        }
       });
     }
 
@@ -412,24 +469,39 @@ async function fetchStageBackfillItems(
         .limit(limit)
         .toArray()) as unknown as MongoConnectionAccessEventLike[];
       return docs.map(doc => {
-        const rawId = rawIdString(doc._id);
+        const { rawId, entityId } = safeEntityIdFromRaw(doc._id);
         const rawWsId = rawIdString(doc.workspaceId);
         const rawConnId = rawIdString(doc.connectionId);
-        const record = mongoAccessEventToRecord(doc);
-        const entityId = isObjectIdHex(rawId) ? objectIdToUuid(rawId) : rawId;
-        return {
-          cursor: makeCursor(rawId),
-          entityId,
-          targetTable: "connection_access_events",
-          collectionName: meta.collection,
-          doc: {
-            table: "connection_access_events",
-            rawId,
-            rawWorkspaceId: rawWsId,
-            rawConnectionId: rawConnId,
-            record,
-          },
-        };
+        try {
+          const record = mongoAccessEventToRecord(doc);
+          return {
+            cursor: makeCursor(rawId),
+            entityId,
+            targetTable: "connection_access_events",
+            collectionName: meta.collection,
+            doc: {
+              table: "connection_access_events",
+              rawId,
+              rawWorkspaceId: rawWsId,
+              rawConnectionId: rawConnId,
+              record,
+            },
+          };
+        } catch (err) {
+          return {
+            cursor: makeCursor(rawId),
+            entityId,
+            targetTable: "connection_access_events",
+            collectionName: meta.collection,
+            doc: {
+              table: "connection_access_events",
+              rawId,
+              rawWorkspaceId: rawWsId,
+              rawConnectionId: rawConnId,
+              parseError: err instanceof Error ? err.message : String(err),
+            },
+          };
+        }
       });
     }
 
@@ -440,24 +512,39 @@ async function fetchStageBackfillItems(
         .limit(limit)
         .toArray()) as unknown as MongoConnectionWriteEventLike[];
       return docs.map(doc => {
-        const rawId = rawIdString(doc._id);
+        const { rawId, entityId } = safeEntityIdFromRaw(doc._id);
         const rawWsId = rawIdString(doc.workspaceId);
         const rawConnId = rawIdString(doc.connectionId);
-        const record = mongoWriteEventToRecord(doc);
-        const entityId = isObjectIdHex(rawId) ? objectIdToUuid(rawId) : rawId;
-        return {
-          cursor: makeCursor(rawId),
-          entityId,
-          targetTable: "connection_write_events",
-          collectionName: meta.collection,
-          doc: {
-            table: "connection_write_events",
-            rawId,
-            rawWorkspaceId: rawWsId,
-            rawConnectionId: rawConnId,
-            record,
-          },
-        };
+        try {
+          const record = mongoWriteEventToRecord(doc);
+          return {
+            cursor: makeCursor(rawId),
+            entityId,
+            targetTable: "connection_write_events",
+            collectionName: meta.collection,
+            doc: {
+              table: "connection_write_events",
+              rawId,
+              rawWorkspaceId: rawWsId,
+              rawConnectionId: rawConnId,
+              record,
+            },
+          };
+        } catch (err) {
+          return {
+            cursor: makeCursor(rawId),
+            entityId,
+            targetTable: "connection_write_events",
+            collectionName: meta.collection,
+            doc: {
+              table: "connection_write_events",
+              rawId,
+              rawWorkspaceId: rawWsId,
+              rawConnectionId: rawConnId,
+              parseError: err instanceof Error ? err.message : String(err),
+            },
+          };
+        }
       });
     }
   }
@@ -489,6 +576,32 @@ async function validateConnectionsBackfillItem(
       },
     };
   }
+  if (
+    (doc.table === "connection_access_events" ||
+      doc.table === "connection_write_events") &&
+    !isObjectIdHex(doc.rawConnectionId)
+  ) {
+    return {
+      ok: false,
+      reason: "invalid_connection_object_id",
+      sanitizedPayload: {
+        table: doc.table,
+        id: doc.rawId,
+        connectionId: doc.rawConnectionId,
+      },
+    };
+  }
+  if (doc.parseError) {
+    return {
+      ok: false,
+      reason: `invalid_${doc.table}_document`,
+      sanitizedPayload: {
+        table: doc.table,
+        id: doc.rawId,
+        error: doc.parseError,
+      },
+    };
+  }
   const wsUuid = objectIdToUuid(doc.rawWorkspaceId);
   if (!(await workspaceExistsInPg(db, wsUuid, wsExistsCache))) {
     return {
@@ -504,6 +617,13 @@ async function validateConnectionsBackfillItem(
 
   switch (doc.table) {
     case "database_connections": {
+      if (!doc.summary) {
+        return {
+          ok: false,
+          reason: "invalid_database_connections_document",
+          sanitizedPayload: { table: doc.table, id: doc.rawId },
+        };
+      }
       if (!VALID_DB_TYPES.has(doc.summary.type)) {
         return {
           ok: false,
@@ -517,7 +637,7 @@ async function validateConnectionsBackfillItem(
           workspaceId: doc.summary.workspaceId,
           name: doc.summary.name,
           type: doc.summary.type,
-          connectionEncrypted: doc.connectionEncrypted,
+          connectionEncrypted: doc.connectionEncrypted ?? {},
           isDemo: doc.summary.isDemo,
           allowAgentWrites: doc.summary.allowAgentWrites,
           writers: doc.summary.writers,
@@ -532,6 +652,13 @@ async function validateConnectionsBackfillItem(
     }
 
     case "source_connections": {
+      if (!doc.record) {
+        return {
+          ok: false,
+          reason: "invalid_source_connections_document",
+          sanitizedPayload: { table: doc.table, id: doc.rawId },
+        };
+      }
       if (!doc.record.name || !doc.record.type) {
         return {
           ok: false,
@@ -544,6 +671,13 @@ async function validateConnectionsBackfillItem(
     }
 
     case "connector_definitions": {
+      if (!doc.record) {
+        return {
+          ok: false,
+          reason: "invalid_connector_definitions_document",
+          sanitizedPayload: { table: doc.table, id: doc.rawId },
+        };
+      }
       if (
         !doc.record.slug ||
         !VALID_CONNECTOR_STATUSES.has(doc.record.status)
@@ -563,15 +697,11 @@ async function validateConnectionsBackfillItem(
     }
 
     case "connection_access_events": {
-      if (!isObjectIdHex(doc.rawConnectionId)) {
+      if (!doc.record) {
         return {
           ok: false,
-          reason: "invalid_connection_object_id",
-          sanitizedPayload: {
-            table: doc.table,
-            id: doc.rawId,
-            connectionId: doc.rawConnectionId,
-          },
+          reason: "invalid_connection_access_events_document",
+          sanitizedPayload: { table: doc.table, id: doc.rawId },
         };
       }
       if (
@@ -593,15 +723,11 @@ async function validateConnectionsBackfillItem(
     }
 
     case "connection_write_events": {
-      if (!isObjectIdHex(doc.rawConnectionId)) {
+      if (!doc.record) {
         return {
           ok: false,
-          reason: "invalid_connection_object_id",
-          sanitizedPayload: {
-            table: doc.table,
-            id: doc.rawId,
-            connectionId: doc.rawConnectionId,
-          },
+          reason: "invalid_connection_write_events_document",
+          sanitizedPayload: { table: doc.table, id: doc.rawId },
         };
       }
       doc.pgRow = await writeEventToPgInsert(doc.record, resolveUserUuid);
@@ -890,137 +1016,160 @@ async function buildVerifierRecord(
 ): Promise<VerifierMongoRecord> {
   const { doc } = item;
   const pgEntityId = item.entityId.toLowerCase();
-  let expectedRecord: unknown;
+  let expectedRecord: unknown = null;
 
-  switch (doc.table) {
-    case "database_connections": {
-      const pgRow = await databaseConnectionToPgInsert(
-        {
-          id: doc.summary.id,
-          workspaceId: doc.summary.workspaceId,
-          name: doc.summary.name,
-          type: doc.summary.type,
-          connectionEncrypted: doc.connectionEncrypted,
-          isDemo: doc.summary.isDemo,
-          allowAgentWrites: doc.summary.allowAgentWrites,
-          writers: doc.summary.writers,
-          createdBy: doc.summary.createdBy,
-          lastConnectedAt: doc.summary.lastConnectedAt,
-          createdAt: doc.summary.createdAt,
-          updatedAt: doc.summary.updatedAt,
-        },
-        resolveUserUuid,
-      );
-      expectedRecord = canonicalizePgDbConnForVerify({
-        id: pgRow.id,
-        workspaceId: pgRow.workspaceId,
-        name: pgRow.name,
-        type: pgRow.type,
-        connectionEncrypted: pgRow.connectionEncrypted ?? {},
-        isDemo: pgRow.isDemo ?? false,
-        allowAgentWrites: pgRow.allowAgentWrites ?? false,
-        writers: pgRow.writers ?? null,
-        createdBy: pgRow.createdBy ?? null,
-        lastConnectedAt: pgRow.lastConnectedAt ?? null,
-        createdAt: pgRow.createdAt ?? new Date(0),
-        updatedAt: pgRow.updatedAt ?? new Date(0),
-      });
-      break;
-    }
+  const canConvert =
+    !doc.parseError &&
+    isObjectIdHex(doc.rawId) &&
+    isObjectIdHex(doc.rawWorkspaceId) &&
+    (doc.table === "connection_access_events" ||
+    doc.table === "connection_write_events"
+      ? isObjectIdHex(doc.rawConnectionId)
+      : true);
 
-    case "source_connections": {
-      const pgRow = await sourceConnectionToPgInsert(
-        doc.record,
-        resolveUserUuid,
-      );
-      expectedRecord = pgSourceConnectionToRecord({
-        id: pgRow.id,
-        workspaceId: pgRow.workspaceId,
-        name: pgRow.name,
-        type: pgRow.type,
-        description: pgRow.description ?? null,
-        configEncrypted: pgRow.configEncrypted ?? {},
-        settings: pgRow.settings ?? {
-          sync_batch_size: 100,
-          rate_limit_delay_ms: 200,
-        },
-        targetDatabaseIds: pgRow.targetDatabaseIds ?? [],
-        writers: pgRow.writers ?? null,
-        liveReads: pgRow.liveReads ?? false,
-        liveReaders: pgRow.liveReaders ?? null,
-        managers: pgRow.managers ?? null,
-        createdBy: pgRow.createdBy ?? null,
-        lastSyncedAt: pgRow.lastSyncedAt ?? null,
-        isActive: pgRow.isActive ?? true,
-        keyRequestTokenHash: pgRow.keyRequestTokenHash ?? null,
-        keyRequestExpiresAt: pgRow.keyRequestExpiresAt ?? null,
-        keyRequestFields: pgRow.keyRequestFields ?? null,
-        keyRequestRequestedBy: pgRow.keyRequestRequestedBy ?? null,
-        keyRequestCreatedAt: pgRow.keyRequestCreatedAt ?? null,
-        createdAt: pgRow.createdAt ?? new Date(0),
-        updatedAt: pgRow.updatedAt ?? new Date(0),
-      });
-      break;
-    }
+  if (canConvert) {
+    try {
+      switch (doc.table) {
+        case "database_connections": {
+          if (!doc.summary) break;
+          const pgRow = await databaseConnectionToPgInsert(
+            {
+              id: doc.summary.id,
+              workspaceId: doc.summary.workspaceId,
+              name: doc.summary.name,
+              type: doc.summary.type,
+              connectionEncrypted: doc.connectionEncrypted ?? {},
+              isDemo: doc.summary.isDemo,
+              allowAgentWrites: doc.summary.allowAgentWrites,
+              writers: doc.summary.writers,
+              createdBy: doc.summary.createdBy,
+              lastConnectedAt: doc.summary.lastConnectedAt,
+              createdAt: doc.summary.createdAt,
+              updatedAt: doc.summary.updatedAt,
+            },
+            resolveUserUuid,
+          );
+          expectedRecord = canonicalizePgDbConnForVerify({
+            id: pgRow.id,
+            workspaceId: pgRow.workspaceId,
+            name: pgRow.name,
+            type: pgRow.type,
+            connectionEncrypted: pgRow.connectionEncrypted ?? {},
+            isDemo: pgRow.isDemo ?? false,
+            allowAgentWrites: pgRow.allowAgentWrites ?? false,
+            writers: pgRow.writers ?? null,
+            createdBy: pgRow.createdBy ?? null,
+            lastConnectedAt: pgRow.lastConnectedAt ?? null,
+            createdAt: pgRow.createdAt ?? new Date(0),
+            updatedAt: pgRow.updatedAt ?? new Date(0),
+          });
+          break;
+        }
 
-    case "connector_definitions": {
-      const pgRow = connectorDefinitionToPgInsert(doc.record);
-      expectedRecord = pgConnectorDefinitionToRecord({
-        id: pgRow.id,
-        workspaceId: pgRow.workspaceId,
-        slug: pgRow.slug,
-        runtime: pgRow.runtime ?? "node",
-        entry: pgRow.entry ?? "connector.ts",
-        sha: pgRow.sha,
-        sourceSha: pgRow.sourceSha,
-        spec: pgRow.spec ?? null,
-        status: pgRow.status ?? "indexed",
-        blockedReason: pgRow.blockedReason ?? null,
-        indexRetryAttempts: pgRow.indexRetryAttempts ?? null,
-        nextIndexRetryAt: pgRow.nextIndexRetryAt ?? null,
-        entities: pgRow.entities ?? [],
-        hasIcon: pgRow.hasIcon ?? false,
-        lastCheckedAt: pgRow.lastCheckedAt ?? null,
-        lastCheckError: pgRow.lastCheckError ?? null,
-        build: pgRow.build ?? null,
-        registry: pgRow.registry ?? null,
-        createdAt: pgRow.createdAt ?? new Date(0),
-        updatedAt: pgRow.updatedAt ?? new Date(0),
-      });
-      break;
-    }
+        case "source_connections": {
+          if (!doc.record) break;
+          const pgRow = await sourceConnectionToPgInsert(
+            doc.record,
+            resolveUserUuid,
+          );
+          expectedRecord = pgSourceConnectionToRecord({
+            id: pgRow.id,
+            workspaceId: pgRow.workspaceId,
+            name: pgRow.name,
+            type: pgRow.type,
+            description: pgRow.description ?? null,
+            configEncrypted: pgRow.configEncrypted ?? {},
+            settings: pgRow.settings ?? {
+              sync_batch_size: 100,
+              rate_limit_delay_ms: 200,
+            },
+            targetDatabaseIds: pgRow.targetDatabaseIds ?? [],
+            writers: pgRow.writers ?? null,
+            liveReads: pgRow.liveReads ?? false,
+            liveReaders: pgRow.liveReaders ?? null,
+            managers: pgRow.managers ?? null,
+            createdBy: pgRow.createdBy ?? null,
+            lastSyncedAt: pgRow.lastSyncedAt ?? null,
+            isActive: pgRow.isActive ?? true,
+            keyRequestTokenHash: pgRow.keyRequestTokenHash ?? null,
+            keyRequestExpiresAt: pgRow.keyRequestExpiresAt ?? null,
+            keyRequestFields: pgRow.keyRequestFields ?? null,
+            keyRequestRequestedBy: pgRow.keyRequestRequestedBy ?? null,
+            keyRequestCreatedAt: pgRow.keyRequestCreatedAt ?? null,
+            createdAt: pgRow.createdAt ?? new Date(0),
+            updatedAt: pgRow.updatedAt ?? new Date(0),
+          });
+          break;
+        }
 
-    case "connection_access_events": {
-      const pgRow = await accessEventToPgInsert(doc.record, resolveUserUuid);
-      expectedRecord = pgAccessEventToRecord({
-        id: pgRow.id,
-        workspaceId: pgRow.workspaceId,
-        connectionId: pgRow.connectionId,
-        kind: pgRow.kind,
-        actorUserId: pgRow.actorUserId ?? null,
-        actorRaw: pgRow.actorRaw ?? null,
-        via: pgRow.via,
-        changes: pgRow.changes,
-        at: pgRow.at ?? new Date(0),
-      });
-      break;
-    }
+        case "connector_definitions": {
+          if (!doc.record) break;
+          const pgRow = connectorDefinitionToPgInsert(doc.record);
+          expectedRecord = pgConnectorDefinitionToRecord({
+            id: pgRow.id,
+            workspaceId: pgRow.workspaceId,
+            slug: pgRow.slug,
+            runtime: pgRow.runtime ?? "node",
+            entry: pgRow.entry ?? "connector.ts",
+            sha: pgRow.sha,
+            sourceSha: pgRow.sourceSha,
+            spec: pgRow.spec ?? null,
+            status: pgRow.status ?? "indexed",
+            blockedReason: pgRow.blockedReason ?? null,
+            indexRetryAttempts: pgRow.indexRetryAttempts ?? null,
+            nextIndexRetryAt: pgRow.nextIndexRetryAt ?? null,
+            entities: pgRow.entities ?? [],
+            hasIcon: pgRow.hasIcon ?? false,
+            lastCheckedAt: pgRow.lastCheckedAt ?? null,
+            lastCheckError: pgRow.lastCheckError ?? null,
+            build: pgRow.build ?? null,
+            registry: pgRow.registry ?? null,
+            createdAt: pgRow.createdAt ?? new Date(0),
+            updatedAt: pgRow.updatedAt ?? new Date(0),
+          });
+          break;
+        }
 
-    case "connection_write_events": {
-      const pgRow = await writeEventToPgInsert(doc.record, resolveUserUuid);
-      expectedRecord = pgWriteEventToRecord({
-        id: pgRow.id,
-        workspaceId: pgRow.workspaceId,
-        connectionId: pgRow.connectionId,
-        principal: pgRow.principal,
-        actorUserId: pgRow.actorUserId ?? null,
-        target: pgRow.target ?? null,
-        allowed: pgRow.allowed,
-        status: pgRow.status ?? null,
-        error: pgRow.error ?? null,
-        at: pgRow.at ?? new Date(0),
-      });
-      break;
+        case "connection_access_events": {
+          if (!doc.record) break;
+          const pgRow = await accessEventToPgInsert(
+            doc.record,
+            resolveUserUuid,
+          );
+          expectedRecord = pgAccessEventToRecord({
+            id: pgRow.id,
+            workspaceId: pgRow.workspaceId,
+            connectionId: pgRow.connectionId,
+            kind: pgRow.kind,
+            actorUserId: pgRow.actorUserId ?? null,
+            actorRaw: pgRow.actorRaw ?? null,
+            via: pgRow.via,
+            changes: pgRow.changes,
+            at: pgRow.at ?? new Date(0),
+          });
+          break;
+        }
+
+        case "connection_write_events": {
+          if (!doc.record) break;
+          const pgRow = await writeEventToPgInsert(doc.record, resolveUserUuid);
+          expectedRecord = pgWriteEventToRecord({
+            id: pgRow.id,
+            workspaceId: pgRow.workspaceId,
+            connectionId: pgRow.connectionId,
+            principal: pgRow.principal,
+            actorUserId: pgRow.actorUserId ?? null,
+            target: pgRow.target ?? null,
+            allowed: pgRow.allowed,
+            status: pgRow.status ?? null,
+            error: pgRow.error ?? null,
+            at: pgRow.at ?? new Date(0),
+          });
+          break;
+        }
+      }
+    } catch {
+      expectedRecord = null;
     }
   }
 
@@ -1040,114 +1189,119 @@ async function repairSingleConnectionsRecord(
   pgRepo: PgConnectionsRepository,
   wsExistsCache: Map<string, boolean> = new Map(),
 ): Promise<boolean> {
-  const oidHex = uuidToObjectId(pgEntityId);
-  if (!oidHex || !isObjectIdHex(oidHex)) return false;
-  const oid = new Types.ObjectId(oidHex);
-  const resolver = makeMemoizedUserResolver(db);
-  const ensureWorkspace = async (rawWsId: string): Promise<boolean> => {
-    if (!isObjectIdHex(rawWsId)) return false;
-    return workspaceExistsInPg(db, objectIdToUuid(rawWsId), wsExistsCache);
-  };
+  try {
+    const oidHex = parseEntityId(pgEntityId)?.oid;
+    if (!oidHex || !isObjectIdHex(oidHex)) return false;
+    const oid = new Types.ObjectId(oidHex);
+    const resolver = makeMemoizedUserResolver(db);
+    const ensureWorkspace = async (rawWsId: string): Promise<boolean> => {
+      if (!isObjectIdHex(rawWsId)) return false;
+      return workspaceExistsInPg(db, objectIdToUuid(rawWsId), wsExistsCache);
+    };
 
-  switch (table) {
-    case "database_connections": {
-      const doc = (await DatabaseConnection.collection.findOne({
-        _id: oid,
-      })) as unknown as MongoDatabaseConnectionLike | null;
-      if (!doc || !(await ensureWorkspace(rawIdString(doc.workspaceId)))) {
-        return false;
+    switch (table) {
+      case "database_connections": {
+        const doc = (await DatabaseConnection.collection.findOne({
+          _id: oid,
+        })) as unknown as MongoDatabaseConnectionLike | null;
+        if (!doc || !(await ensureWorkspace(rawIdString(doc.workspaceId)))) {
+          return false;
+        }
+        const summary = mongoDatabaseConnectionToSummary(doc);
+        if (!VALID_DB_TYPES.has(summary.type)) return false;
+        const connectionEncrypted = extractRawEncryptedConnection(
+          doc.connection,
+        );
+        const row = await databaseConnectionToPgInsert(
+          {
+            id: summary.id,
+            workspaceId: summary.workspaceId,
+            name: summary.name,
+            type: summary.type,
+            connectionEncrypted,
+            isDemo: summary.isDemo,
+            allowAgentWrites: summary.allowAgentWrites,
+            writers: summary.writers,
+            createdBy: summary.createdBy,
+            lastConnectedAt: summary.lastConnectedAt,
+            createdAt: summary.createdAt,
+            updatedAt: summary.updatedAt,
+          },
+          resolver,
+        );
+        return pgRepo.upsertDatabaseConnectionWithGuard(row, db);
       }
-      const summary = mongoDatabaseConnectionToSummary(doc);
-      if (!VALID_DB_TYPES.has(summary.type)) return false;
-      const connectionEncrypted = extractRawEncryptedConnection(doc.connection);
-      const row = await databaseConnectionToPgInsert(
-        {
-          id: summary.id,
-          workspaceId: summary.workspaceId,
-          name: summary.name,
-          type: summary.type,
-          connectionEncrypted,
-          isDemo: summary.isDemo,
-          allowAgentWrites: summary.allowAgentWrites,
-          writers: summary.writers,
-          createdBy: summary.createdBy,
-          lastConnectedAt: summary.lastConnectedAt,
-          createdAt: summary.createdAt,
-          updatedAt: summary.updatedAt,
-        },
-        resolver,
-      );
-      return pgRepo.upsertDatabaseConnectionWithGuard(row, db);
-    }
 
-    case "source_connections": {
-      const doc = (await SourceConnection.collection.findOne({
-        _id: oid,
-      })) as unknown as MongoSourceConnectionLike | null;
-      if (!doc || !(await ensureWorkspace(rawIdString(doc.workspaceId)))) {
-        return false;
+      case "source_connections": {
+        const doc = (await SourceConnection.collection.findOne({
+          _id: oid,
+        })) as unknown as MongoSourceConnectionLike | null;
+        if (!doc || !(await ensureWorkspace(rawIdString(doc.workspaceId)))) {
+          return false;
+        }
+        const record = mongoSourceConnectionToRecord(doc);
+        if (!record.name || !record.type) return false;
+        const row = await sourceConnectionToPgInsert(record, resolver);
+        return pgRepo.upsertSourceConnectionWithGuard(row, db);
       }
-      const row = await sourceConnectionToPgInsert(
-        mongoSourceConnectionToRecord(doc),
-        resolver,
-      );
-      return pgRepo.upsertSourceConnectionWithGuard(row, db);
-    }
 
-    case "connector_definitions": {
-      const doc = (await ConnectorDefinition.collection.findOne({
-        _id: oid,
-      })) as unknown as MongoConnectorDefinitionLike | null;
-      if (!doc || !(await ensureWorkspace(rawIdString(doc.workspaceId)))) {
-        return false;
+      case "connector_definitions": {
+        const doc = (await ConnectorDefinition.collection.findOne({
+          _id: oid,
+        })) as unknown as MongoConnectorDefinitionLike | null;
+        if (!doc || !(await ensureWorkspace(rawIdString(doc.workspaceId)))) {
+          return false;
+        }
+        const record = mongoConnectorDefinitionToRecord(doc);
+        if (!record.slug || !VALID_CONNECTOR_STATUSES.has(record.status)) {
+          return false;
+        }
+        const row = connectorDefinitionToPgInsert(record);
+        return pgRepo.upsertConnectorDefinitionWithGuard(row, db);
       }
-      const record = mongoConnectorDefinitionToRecord(doc);
-      if (!record.slug || !VALID_CONNECTOR_STATUSES.has(record.status)) {
-        return false;
-      }
-      const row = connectorDefinitionToPgInsert(record);
-      return pgRepo.upsertConnectorDefinitionWithGuard(row, db);
-    }
 
-    case "connection_access_events": {
-      const doc = (await ConnectionAccessEvent.collection.findOne({
-        _id: oid,
-      })) as unknown as MongoConnectionAccessEventLike | null;
-      if (
-        !doc ||
-        !(await ensureWorkspace(rawIdString(doc.workspaceId))) ||
-        !isObjectIdHex(rawIdString(doc.connectionId))
-      ) {
-        return false;
+      case "connection_access_events": {
+        const doc = (await ConnectionAccessEvent.collection.findOne({
+          _id: oid,
+        })) as unknown as MongoConnectionAccessEventLike | null;
+        if (
+          !doc ||
+          !(await ensureWorkspace(rawIdString(doc.workspaceId))) ||
+          !isObjectIdHex(rawIdString(doc.connectionId))
+        ) {
+          return false;
+        }
+        const record = mongoAccessEventToRecord(doc);
+        if (
+          !VALID_ACCESS_KINDS.has(record.kind) ||
+          !VALID_ACCESS_VIAS.has(record.via)
+        ) {
+          return false;
+        }
+        const row = await accessEventToPgInsert(record, resolver);
+        return pgRepo.upsertAccessEventIgnoreConflict(row, db);
       }
-      const record = mongoAccessEventToRecord(doc);
-      if (
-        !VALID_ACCESS_KINDS.has(record.kind) ||
-        !VALID_ACCESS_VIAS.has(record.via)
-      ) {
-        return false;
-      }
-      const row = await accessEventToPgInsert(record, resolver);
-      return pgRepo.upsertAccessEventIgnoreConflict(row, db);
-    }
 
-    case "connection_write_events": {
-      const doc = (await ConnectionWriteEvent.collection.findOne({
-        _id: oid,
-      })) as unknown as MongoConnectionWriteEventLike | null;
-      if (
-        !doc ||
-        !(await ensureWorkspace(rawIdString(doc.workspaceId))) ||
-        !isObjectIdHex(rawIdString(doc.connectionId))
-      ) {
-        return false;
+      case "connection_write_events": {
+        const doc = (await ConnectionWriteEvent.collection.findOne({
+          _id: oid,
+        })) as unknown as MongoConnectionWriteEventLike | null;
+        if (
+          !doc ||
+          !(await ensureWorkspace(rawIdString(doc.workspaceId))) ||
+          !isObjectIdHex(rawIdString(doc.connectionId))
+        ) {
+          return false;
+        }
+        const row = await writeEventToPgInsert(
+          mongoWriteEventToRecord(doc),
+          resolver,
+        );
+        return pgRepo.upsertWriteEventCoalesceOutcome(row, db);
       }
-      const row = await writeEventToPgInsert(
-        mongoWriteEventToRecord(doc),
-        resolver,
-      );
-      return pgRepo.upsertWriteEventCoalesceOutcome(row, db);
     }
+  } catch {
+    return false;
   }
 }
 
@@ -1439,6 +1593,7 @@ export async function replayConnectionsWriteToPg(
     }
 
     case "upsertConnectorDefinition":
+    case "updateConnectorDefinitionMetadata":
     case "recordConnectorDefinitionBuild":
     case "recordConnectorDefinitionCheckResult": {
       const workspaceId = tryEntityIdToMongoHex(payload.workspaceId);
@@ -1459,7 +1614,37 @@ export async function replayConnectionsWriteToPg(
     case "deleteConnectorDefinition": {
       const workspaceId = String(payload.workspaceId ?? "");
       const slug = String(payload.slug ?? "");
-      if (!workspaceId || !slug) return;
+      if (!workspaceId) return;
+      const payloadDefId = tryEntityIdToMongoHex(payload.definitionId);
+      if (payloadDefId) {
+        // Delete and tombstone strictly by definitionId (PK) so a delayed retry
+        // never wipes or tombstones a newer definition that reused the slug.
+        const stillInMongo = await ConnectorDefinition.collection.findOne(
+          { _id: new Types.ObjectId(payloadDefId) },
+          { projection: { _id: 1 } },
+        );
+        if (stillInMongo) return;
+        await pgRepo.deleteConnectorDefinitionById(
+          payloadDefId,
+          workspaceId,
+          db,
+        );
+        await recordMigrationTombstone(
+          "connector_definitions",
+          objectIdToUuid(payloadDefId),
+          db,
+        );
+        return;
+      }
+      // Legacy fallback without definitionId: confirm the slug is absent from
+      // Mongo before deleting from PG so a re-indexed definition survives.
+      const wsHex = tryEntityIdToMongoHex(workspaceId);
+      if (!wsHex || !slug) return;
+      const slugInMongo = await ConnectorDefinition.collection.findOne(
+        { workspaceId: new Types.ObjectId(wsHex), slug: slug.trim() },
+        { projection: { _id: 1 } },
+      );
+      if (slugInMongo) return;
       const pgDeletedId = await pgRepo.deleteConnectorDefinitionReturningId(
         workspaceId,
         slug,
@@ -1472,59 +1657,56 @@ export async function replayConnectionsWriteToPg(
           db,
         );
       }
-      const payloadDefId = tryEntityIdToMongoHex(payload.definitionId);
-      if (payloadDefId && payloadDefId !== pgDeletedId) {
-        const stillInMongo = await ConnectorDefinition.collection.findOne(
-          { _id: new Types.ObjectId(payloadDefId) },
-          { projection: { _id: 1 } },
-        );
-        if (!stillInMongo) {
-          await recordMigrationTombstone(
-            "connector_definitions",
-            objectIdToUuid(payloadDefId),
-            db,
-          );
-        }
-      }
       return;
     }
 
     case "deleteConnectorDefinitionsNotInSlugs": {
       const workspaceId = String(payload.workspaceId ?? "");
-      const keepSlugs = Array.isArray(payload.keepSlugs)
-        ? payload.keepSlugs.map(String)
-        : [];
       if (!workspaceId) return;
-      const deleted = await pgRepo.deleteConnectorDefinitionsNotInSlugs(
+      // Delete and tombstone strictly the captured deletedIds (after confirming
+      // each is absent from Mongo) instead of re-evaluating keepSlugs against
+      // live PG state, which would wipe definitions created after the call.
+      const rawDeletedIds = Array.isArray(payload.deletedIds)
+        ? payload.deletedIds
+        : [];
+      const candidateHexIds = [
+        ...new Set(
+          rawDeletedIds
+            .map(tryEntityIdToMongoHex)
+            .filter((v): v is string => v !== null),
+        ),
+      ];
+      if (candidateHexIds.length === 0) return;
+
+      const stillInMongoDocs = await ConnectorDefinition.collection
+        .find(
+          {
+            _id: {
+              $in: candidateHexIds.map(hex => new Types.ObjectId(hex)),
+            },
+          },
+          { projection: { _id: 1 } },
+        )
+        .toArray();
+      const stillInMongoSet = new Set(
+        stillInMongoDocs.map(d => rawIdString(d._id).toLowerCase()),
+      );
+      const confirmedAbsent = candidateHexIds.filter(
+        hex => !stillInMongoSet.has(hex.toLowerCase()),
+      );
+      if (confirmedAbsent.length === 0) return;
+
+      await pgRepo.deleteConnectorDefinitionsByIds(
+        confirmedAbsent,
         workspaceId,
-        keepSlugs,
         db,
       );
-      const tombstoned = new Set<string>();
-      for (const wireId of deleted) {
-        tombstoned.add(wireId);
+      for (const hex of confirmedAbsent) {
         await recordMigrationTombstone(
           "connector_definitions",
-          objectIdToUuid(wireId),
+          objectIdToUuid(hex),
           db,
         );
-      }
-      if (Array.isArray(payload.deletedIds)) {
-        for (const rawId of payload.deletedIds) {
-          const hex = tryEntityIdToMongoHex(rawId);
-          if (!hex || tombstoned.has(hex)) continue;
-          const stillInMongo = await ConnectorDefinition.collection.findOne(
-            { _id: new Types.ObjectId(hex) },
-            { projection: { _id: 1 } },
-          );
-          if (!stillInMongo) {
-            await recordMigrationTombstone(
-              "connector_definitions",
-              objectIdToUuid(hex),
-              db,
-            );
-          }
-        }
       }
       return;
     }
@@ -1619,6 +1801,7 @@ export async function replayConnectionsWriteToMongo(
     }
 
     case "upsertConnectorDefinition":
+    case "updateConnectorDefinitionMetadata":
     case "recordConnectorDefinitionBuild":
     case "recordConnectorDefinitionCheckResult": {
       const workspaceId = String(payload.workspaceId ?? "");
@@ -1638,23 +1821,60 @@ export async function replayConnectionsWriteToMongo(
     case "deleteConnectorDefinition": {
       const workspaceId = String(payload.workspaceId ?? "");
       const slug = String(payload.slug ?? "");
-      if (workspaceId && slug) {
-        await mongoRepo.deleteConnectorDefinition(workspaceId, slug);
+      if (!workspaceId) return;
+      const payloadDefId = tryEntityIdToMongoHex(payload.definitionId);
+      if (payloadDefId) {
+        const stillInPg = await pgRepo.findConnectorDefinitionById(
+          payloadDefId,
+          db,
+        );
+        if (stillInPg) return;
+        await mongoRepo.deleteConnectorDefinitionById(
+          payloadDefId,
+          workspaceId,
+        );
+        return;
       }
+      if (!slug) return;
+      const slugInPg = await pgRepo.findConnectorDefinition(
+        workspaceId,
+        slug,
+        db,
+      );
+      if (slugInPg) return;
+      await mongoRepo.deleteConnectorDefinition(workspaceId, slug);
       return;
     }
 
     case "deleteConnectorDefinitionsNotInSlugs": {
       const workspaceId = String(payload.workspaceId ?? "");
-      const keepSlugs = Array.isArray(payload.keepSlugs)
-        ? payload.keepSlugs.map(String)
+      if (!workspaceId) return;
+      const rawDeletedIds = Array.isArray(payload.deletedIds)
+        ? payload.deletedIds
         : [];
-      if (workspaceId) {
-        await mongoRepo.deleteConnectorDefinitionsNotInSlugs(
-          workspaceId,
-          keepSlugs,
-        );
-      }
+      const candidateHexIds = [
+        ...new Set(
+          rawDeletedIds
+            .map(tryEntityIdToMongoHex)
+            .filter((v): v is string => v !== null),
+        ),
+      ];
+      if (candidateHexIds.length === 0) return;
+
+      const stillInPgIds = await pgRepo.findExistingConnectorDefinitionIds(
+        candidateHexIds,
+        db,
+      );
+      const stillInPgSet = new Set(stillInPgIds.map(id => id.toLowerCase()));
+      const confirmedAbsent = candidateHexIds.filter(
+        hex => !stillInPgSet.has(hex.toLowerCase()),
+      );
+      if (confirmedAbsent.length === 0) return;
+
+      await mongoRepo.deleteConnectorDefinitionsByIds(
+        confirmedAbsent,
+        workspaceId,
+      );
       return;
     }
 

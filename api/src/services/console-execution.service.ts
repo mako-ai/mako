@@ -15,10 +15,13 @@ import { isWrite } from "../access/connection-writes";
 import { Types } from "mongoose";
 import {
   SavedConsole,
-  DatabaseConnection,
   type ISavedConsole,
   type IDatabaseConnection,
 } from "../database/workspace-schema";
+import {
+  connectionsRepo,
+  type DatabaseConnectionRecord,
+} from "../repositories/connections";
 import { databaseConnectionService } from "./database-connection.service";
 import {
   queryExecutionService,
@@ -142,7 +145,11 @@ function capSampleRows(rows: unknown[]): unknown[] | undefined {
 }
 
 type ResolvedConsoleRun =
-  | { ok: true; savedConsole: ISavedConsole; database: IDatabaseConnection }
+  | {
+      ok: true;
+      savedConsole: ISavedConsole;
+      database: DatabaseConnectionRecord;
+    }
   | { ok: false; error: string; savedConsole?: ISavedConsole | null };
 
 /**
@@ -178,11 +185,9 @@ async function resolveConsoleForRun(
     };
   }
 
-  const database: IDatabaseConnection | null = await DatabaseConnection.findOne(
-    {
-      _id: savedConsole.connectionId,
-      workspaceId: new Types.ObjectId(workspaceId),
-    },
+  const database = await connectionsRepo.findDatabaseConnectionById(
+    savedConsole.connectionId.toString(),
+    workspaceId,
   );
   if (!database) {
     return {
@@ -203,7 +208,7 @@ async function resolveConsoleForRun(
  */
 async function runResolvedConsole(args: {
   savedConsole: ISavedConsole;
-  database: IDatabaseConnection;
+  database: DatabaseConnectionRecord;
   input: ExecuteSavedConsoleInput;
   startTime: number;
   /** Detached correlation: persisted on lastRun so it can be polled/cancelled. */
@@ -249,7 +254,7 @@ async function runResolvedConsole(args: {
         query: savedConsole.code,
       };
       result = (await databaseConnectionService.executeQuery(
-        database,
+        database as unknown as IDatabaseConnection,
         mongoQuery,
         { ...savedConsole.mongoOptions, ...executionOptions },
       )) as typeof result;
@@ -263,7 +268,7 @@ async function runResolvedConsole(args: {
         },
         () =>
           databaseConnectionService.executeQuery(
-            database,
+            database as unknown as IDatabaseConnection,
             savedConsole.code,
             executionOptions,
           ),

@@ -53,6 +53,13 @@ const box = vi.hoisted(() => ({
   fail: null as string | null,
   cleanupFail: null as string | null,
   retired: [] as Array<{ workspaceId: string; reason: string }>,
+  onCommand: null as
+    | ((input: {
+        command: string;
+        connectorDir: string;
+        entry?: string;
+      }) => Promise<void> | void)
+    | null,
 }));
 vi.mock("../sync-box", async importOriginal => {
   const actual = await importOriginal<typeof import("../sync-box")>();
@@ -93,6 +100,7 @@ vi.mock("../sync-box", async importOriginal => {
           dir: input.connectorDir,
           entry: input.entry,
         });
+        await box.onCommand?.(input);
         // The bundle's bytes say which version it is, as a real one would.
         const key = input.connectorDir.replace("/box/bundles/", "");
         const version = box.bundles.has(key)
@@ -162,7 +170,10 @@ import {
   ConnectorDefinition,
   type ISourceConnection,
 } from "../../../database/workspace-schema";
-import { syncConnectorsFromRepo } from "../reconcile.service";
+import {
+  recordConnectionCheck,
+  syncConnectorsFromRepo,
+} from "../reconcile.service";
 import { SandboxedConnector } from "../SandboxedConnector";
 import { createConnectorTools } from "../../../agent-lib/tools/connector-tools";
 import { CONNECTOR_REGISTRY_FLAG } from "./flag";
@@ -583,5 +594,61 @@ describe("flag off: a push behaves as before", () => {
     expect(blocked?.blockedReason).toContain("needs a `runtime`");
     expect(blocked?.registry).toBeUndefined();
     expect(box.runs).toHaveLength(0);
+  });
+
+  it("indexReference preserves concurrent verified status when only commit sha or upgradeAvailable changes", async () => {
+    process.env[CONNECTOR_REGISTRY_FLAG] = "true";
+    await publish("1.0.0");
+    repo.commit = "1".repeat(40);
+    repo.files.set(
+      "alpha",
+      folder("runtime: node\nentry: connector.ts\n", {
+        "connector.ts": "export default 1;\n",
+      }),
+    );
+    repo.files.set("stripe", folder("source: mako/stripe@1\n"));
+    expect((await syncConnectorsFromRepo(WS)).created).toBe(2);
+    const stripeBefore = await ConnectorDefinition.findOne({
+      workspaceId: WS,
+      slug: "stripe",
+    }).lean();
+    expect(stripeBefore?.status).toBe("indexed");
+    if (!stripeBefore) throw new Error("expected stripe row");
+
+    // Publish a new major (2.0.0) so stripe's registry metadata updates (upgradeAvailable)
+    // while alpha changes and triggers runSpec. During alpha's spec, stripe gets verified.
+    await publish("2.0.0");
+    repo.commit = "2".repeat(40);
+    repo.files.set(
+      "alpha",
+      folder("runtime: node\nentry: connector.ts\n", {
+        "connector.ts": "export default 2;\n",
+      }),
+    );
+    box.onCommand = async input => {
+      if (input.command === "spec" && input.connectorDir.includes("alpha")) {
+        const updated = await recordConnectionCheck({
+          workspaceId: WS,
+          slug: "stripe",
+          sourceSha: stripeBefore.sourceSha,
+          success: true,
+        });
+        expect(updated).toBe(true);
+      }
+    };
+    try {
+      const res = await syncConnectorsFromRepo(WS);
+      expect(res.updated).toBe(1);
+      expect(res.unchanged).toBe(1);
+      const stripeAfter = await ConnectorDefinition.findOne({
+        workspaceId: WS,
+        slug: "stripe",
+      }).lean();
+      expect(stripeAfter?.sha).toBe("2".repeat(40));
+      expect(stripeAfter?.registry?.upgradeAvailable).toBe("2.0.0");
+      expect(stripeAfter?.status).toBe("verified");
+    } finally {
+      box.onCommand = null;
+    }
   });
 });

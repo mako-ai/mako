@@ -43,6 +43,9 @@ import {
   Flow,
   WorkspaceMember,
 } from "../../database/workspace-schema";
+import { hashKeyToken } from "../../connectors/connection-key-request.service";
+import { connectionsRepo } from "../../repositories/connections";
+import { syncConnectorRegistry } from "../../sync/connector-registry";
 import { encryptString } from "../../services/crypto.service";
 import { createConnectorTools, nonSecretConfig } from "./connector-tools";
 import {
@@ -382,6 +385,75 @@ describe("update_connection", () => {
     expect(configUpdateProblem({ a: "b" }, null, "x")).toMatch(
       /no config schema/,
     );
+  });
+
+  it("patches only changed config keys so a concurrently claimed key-link secret is not erased", async () => {
+    const token = "one-time-link-token-concurrent";
+    const tokenHash = hashKeyToken(token);
+    const pendingId = new Types.ObjectId();
+    await SourceConnection.create({
+      _id: pendingId,
+      workspaceId: new Types.ObjectId(WS),
+      name: "crm-pending",
+      type: "acme_crm",
+      config: { account_id: "acct_old" },
+      isActive: false,
+      settings: { rate_limit_delay_ms: 100, sync_batch_size: 100 },
+      createdBy: "manager1",
+      managers: ["manager1"],
+      keyRequest: {
+        tokenHash,
+        expiresAt: new Date(Date.now() + 60_000),
+        fields: ["api_key"],
+        requestedBy: "manager1",
+        createdAt: new Date(),
+      },
+    });
+
+    const claimedCiphertext = encryptString("sk_claimed_during_update");
+    const schemaSpy = vi
+      .spyOn(syncConnectorRegistry, "getConfigSchemaForType")
+      .mockImplementationOnce(async () => {
+        // Simulate the user submitting the key link AFTER update_connection
+        // loaded `row` and BEFORE updateSourceConnection runs.
+        const claimed = await connectionsRepo.claimSourceConnectionKeyRequest({
+          id: pendingId.toString(),
+          workspaceId: WS,
+          tokenHash,
+          encryptedFields: { api_key: claimedCiphertext },
+        });
+        expect(claimed).toBe(true);
+        return {
+          fields: [
+            { name: "account_id", label: "Account ID", type: "string" },
+            {
+              name: "api_key",
+              label: "API Key",
+              type: "password",
+              required: true,
+            },
+          ],
+        };
+      });
+
+    try {
+      const result = await writeTools("manager1").update_connection.execute({
+        connectionId: pendingId.toString(),
+        config: { account_id: "acct_new" },
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.changed).toContain("config.account_id");
+
+      const stored = await SourceConnection.findById(pendingId).lean();
+      expect(stored?.isActive).toBe(true);
+      expect(stored?.keyRequest).toBeUndefined();
+      expect(stored?.config).toEqual({
+        account_id: "acct_new",
+        api_key: claimedCiphertext,
+      });
+    } finally {
+      schemaSpy.mockRestore();
+    }
   });
 });
 

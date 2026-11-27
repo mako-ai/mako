@@ -1,4 +1,4 @@
-import { IDatabaseConnection } from "../database/workspace-schema";
+import type { DatabaseConnectionRecord } from "../repositories/connections";
 import { DatabaseDriver } from "./driver";
 import { databaseRegistry } from "./registry";
 
@@ -14,7 +14,7 @@ export interface ConsoleTemplateNode {
  * local agent so both return identical templates.
  */
 export function buildConsoleTemplate(
-  database: Pick<IDatabaseConnection, "type" | "connection">,
+  database: Pick<DatabaseConnectionRecord, "type" | "connection">,
   node?: ConsoleTemplateNode,
 ): { language: string; template: string } {
   const driver = databaseRegistry.getDriver(database.type) as

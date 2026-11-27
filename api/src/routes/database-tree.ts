@@ -264,7 +264,7 @@ databaseTreeRoutes.openapi(
     const metadataRaw = c.req.query("metadata");
     const metadata = metadataRaw ? JSON.parse(String(metadataRaw)) : undefined;
 
-    const data = buildConsoleTemplate(database as any, {
+    const data = buildConsoleTemplate(database, {
       id: nodeId ? String(nodeId) : undefined,
       kind: nodeKind ? String(nodeKind) : undefined,
       metadata,

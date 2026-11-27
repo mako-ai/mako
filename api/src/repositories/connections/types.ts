@@ -8,14 +8,27 @@
  *   - connection_write_events  (Mongo `connection_write_events`)
  *   - connector_definitions    (Mongo `connectordefinitions`)
  */
-import type {
-  ConnectionAccessChangesJson,
-  ConnectionAccessKind,
-  ConnectionAccessVia,
-  ConnectorDefinitionStatus,
-  DatabaseConnectionType,
-  SourceConnectionSettingsJson,
+import {
+  DATABASE_CONNECTION_TYPES,
+  type ConnectionAccessChangesJson,
+  type ConnectionAccessKind,
+  type ConnectionAccessVia,
+  type ConnectorDefinitionStatus,
+  type DatabaseConnectionType,
+  type SourceConnectionSettingsJson,
 } from "../../database/pg/schema/connections";
+
+export { DATABASE_CONNECTION_TYPES };
+
+export const ALLOWED_DB_CONNECTION_TYPES: ReadonlySet<string> = new Set(
+  DATABASE_CONNECTION_TYPES,
+);
+
+export function isDatabaseConnectionType(
+  value: unknown,
+): value is DatabaseConnectionType {
+  return typeof value === "string" && ALLOWED_DB_CONNECTION_TYPES.has(value);
+}
 
 export type {
   ConnectionAccessChangesJson,
@@ -260,7 +273,14 @@ export interface UpdateSourceConnectionInput {
   name?: string;
   description?: string | null;
   type?: string;
+  /** Full replacement of `config` (mutually exclusive with `configPatch`). */
   config?: Record<string, unknown>;
+  /**
+   * Partial top-level merge into `config` (dotted-path `$set` in Mongo,
+   * `jsonb ||` in Postgres) so untouched keys — including concurrently claimed
+   * key-link secrets — are never overwritten from a stale read.
+   */
+  configPatch?: Record<string, unknown>;
   settings?: SourceConnectionSettingsJson;
   targetDatabases?: string[];
   writers?: ConnectionWriterRecord[] | null;
@@ -339,6 +359,14 @@ export interface UpsertConnectorDefinitionInput {
   now?: Date;
 }
 
+export interface UpdateConnectorDefinitionMetadataInput {
+  sha?: string;
+  entry?: string;
+  registry?: ConnectorDefinitionRegistryRecord | null;
+  expectedSourceSha?: string;
+  now?: Date;
+}
+
 export interface FindSourceConnectionByIdOrNameResult {
   connection: SourceConnectionRecord | null;
   ambiguous?: boolean;
@@ -351,6 +379,9 @@ export interface ConnectionsRepository {
   ): Promise<DatabaseConnectionRecord[]>;
   listDatabaseConnectionMetadata(
     workspaceId: string,
+  ): Promise<DatabaseConnectionSummary[]>;
+  listAllDatabaseConnectionMetadata(
+    limit?: number,
   ): Promise<DatabaseConnectionSummary[]>;
   findDatabaseConnectionById(
     id: string,
@@ -471,6 +502,11 @@ export interface ConnectionsRepository {
   upsertConnectorDefinition(
     input: UpsertConnectorDefinitionInput,
   ): Promise<ConnectorDefinitionRecord>;
+  updateConnectorDefinitionMetadata(
+    workspaceId: string,
+    slug: string,
+    patch: UpdateConnectorDefinitionMetadataInput,
+  ): Promise<boolean>;
   recordConnectorDefinitionBuild(
     workspaceId: string,
     slug: string,

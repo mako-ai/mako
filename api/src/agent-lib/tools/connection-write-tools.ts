@@ -626,9 +626,9 @@ export function createConnectionWriteTools(
             );
             if (problem) return { error: problem };
             assertCredentialCharacters(config, schema);
-            // Merge plain fields onto stored config so existing encrypted
-            // secrets stay untouched as ciphertext.
-            patch.config = { ...(row.config ?? {}), ...config };
+            // Patch only the changed plain fields so stored secrets — including
+            // a key claimed concurrently via a one-time key link — stay untouched.
+            patch.configPatch = { ...config };
             for (const key of Object.keys(config)) {
               changed.push(`config.${key}`);
             }

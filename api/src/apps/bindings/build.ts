@@ -26,10 +26,10 @@ import {
   storeParquetWithSnapshot,
 } from "../../services/binding-snapshot";
 import {
-  DatabaseConnection,
   type IAppProject,
   type IDatabaseConnection,
 } from "../../database/workspace-schema";
+import { connectionsRepo } from "../../repositories/connections";
 import {
   buildQueryParquetFile,
   storeParquetArtifactFile,
@@ -87,15 +87,15 @@ async function bindingConnection(
   binding: AppBinding,
 ): Promise<IDatabaseConnection> {
   const connection = Types.ObjectId.isValid(binding.connectionId)
-    ? await DatabaseConnection.findOne({
-        _id: new Types.ObjectId(binding.connectionId),
-        workspaceId: project.workspaceId,
-      })
+    ? await connectionsRepo.findDatabaseConnectionById(
+        binding.connectionId,
+        project.workspaceId.toString(),
+      )
     : null;
   if (!connection) {
     throw new Error(`Connection ${binding.connectionId} not found`);
   }
-  return connection;
+  return connection as unknown as IDatabaseConnection;
 }
 
 /**

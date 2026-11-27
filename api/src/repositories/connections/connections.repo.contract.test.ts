@@ -55,6 +55,7 @@ import {
 } from "../../migration/domains/connections.backfill";
 import {
   MigrationRouter,
+  migrationRouter,
   recordMigrationTombstone,
 } from "../../migration/router";
 import {
@@ -75,12 +76,25 @@ import {
   listVerifierDomains,
   runParityVerification,
 } from "../../migration/verifier";
+import { buildConsoleTemplate } from "../../databases/console-template";
+import { enrichWithConnectionNames } from "../../agent-lib/tools/console-search-tools";
+import { loadWorkspaceTurnContext } from "../../services/agent-chat/agent-context";
+import {
+  connectionIdAllowed,
+  findWorkspaceConnection,
+  workspaceOwnsConnection,
+} from "../../services/consoles/connection-scope";
 import { encryptString, isEncryptedValue } from "../../services/crypto.service";
 import { decryptConnectionObject, encryptConnectionObject } from "./crypto";
 import { DualConnectionsRepository } from "./dual.repo";
+import { connectionsRepo } from "./index";
 import { MongoConnectionsRepository } from "./mongo.repo";
 import { PgConnectionsRepository } from "./pg.repo";
-import type { ConnectionsRepository } from "./types";
+import {
+  DATABASE_CONNECTION_TYPES,
+  isDatabaseConnectionType,
+  type ConnectionsRepository,
+} from "./types";
 
 const TEST_ENCRYPTION_KEY = randomBytes(32).toString("hex");
 
@@ -2271,5 +2285,935 @@ describe("Phase 2A-1 ConnectionsRepository contract & migration lifecycle", () =
         },
       }),
     ).toBe(true);
+  });
+
+  // ── PR #1555 review-comment regressions (all 9 inline comments) ───────────
+
+  it("PR #1555 #1 [4717225416]: malformed Mongo docs across all 5 tables quarantine instead of aborting backfill/verify", async () => {
+    clearBackfillRegistryForTests();
+    clearVerifierRegistryForTests();
+    clearTtlRegistryForTests();
+    registerMigrationDomains({ force: true });
+
+    const mongoRepo = new MongoConnectionsRepository();
+    const pgRepo = new PgConnectionsRepository({ getDb: () => db });
+    const now = new Date("2026-11-25T10:00:00.000Z");
+
+    // Seed malformed docs in all 5 collections (non-hex _id, missing/bad workspaceId, bad connectionId)
+    await DatabaseConnection.collection.insertMany([
+      {
+        _id: "bad-db-id" as unknown as mongoose.Types.ObjectId,
+        workspaceId: new mongoose.Types.ObjectId(wsAOid),
+        name: "Malformed ID DB",
+        type: "postgresql",
+        connection: {},
+        createdBy: nativeUserUuid,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        _id: new mongoose.Types.ObjectId(newDualId().oid),
+        workspaceId: undefined as unknown as mongoose.Types.ObjectId,
+        name: "Missing WS DB",
+        type: "postgresql",
+        connection: {},
+        createdBy: nativeUserUuid,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    await SourceConnection.collection.insertOne({
+      _id: "bad-src-id" as unknown as mongoose.Types.ObjectId,
+      workspaceId: new mongoose.Types.ObjectId(wsAOid),
+      name: "Bad Src",
+      type: "stripe",
+      config: {},
+      settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
+      createdBy: nativeUserUuid,
+      isActive: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await ConnectorDefinition.collection.insertOne({
+      _id: "bad-def-id" as unknown as mongoose.Types.ObjectId,
+      workspaceId: new mongoose.Types.ObjectId(wsAOid),
+      slug: "bad-def",
+      sha: "s1",
+      sourceSha: "src1",
+      status: "indexed",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await ConnectionAccessEvent.collection.insertOne({
+      _id: new mongoose.Types.ObjectId(newDualId().oid),
+      workspaceId: new mongoose.Types.ObjectId(wsAOid),
+      connectionId: "not-an-oid" as unknown as mongoose.Types.ObjectId,
+      kind: "database",
+      actor: nativeUserUuid,
+      via: "app",
+      changes: { agentWrites: true },
+      at: now,
+    });
+    await ConnectionWriteEvent.collection.insertOne({
+      _id: new mongoose.Types.ObjectId(newDualId().oid),
+      workspaceId: new mongoose.Types.ObjectId(wsAOid),
+      connectionId: undefined as unknown as mongoose.Types.ObjectId,
+      principal: `user:${nativeUserUuid}`,
+      allowed: true,
+      at: now,
+    });
+
+    // Seed valid docs AFTER the malformed docs to verify cursor advances cleanly
+    const validDb = await mongoRepo.createDatabaseConnection({
+      workspaceId: wsAOid,
+      name: "Valid After Bad",
+      type: "postgresql",
+      connection: { host: "good.internal" },
+      createdBy: nativeUserUuid,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const validSrc = await mongoRepo.createSourceConnection({
+      workspaceId: wsAOid,
+      name: "Valid Src After Bad",
+      type: "stripe",
+      config: { account_id: "acct_1" },
+      settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
+      createdBy: nativeUserUuid,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const validDef = await mongoRepo.upsertConnectorDefinition({
+      workspaceId: wsAOid,
+      slug: "valid-after-bad",
+      sha: "sha-ok",
+      sourceSha: "src-ok",
+      status: "indexed",
+      now,
+    });
+    const validAccess = await mongoRepo.recordConnectionAccessEvent({
+      workspaceId: wsAOid,
+      connectionId: validDb.id,
+      kind: "database",
+      actor: nativeUserUuid,
+      via: "app",
+      changes: { agentWrites: true },
+      at: now,
+    });
+    const validWrite = await mongoRepo.recordConnectionWriteEvent({
+      workspaceId: wsAOid,
+      connectionId: validDb.id,
+      principal: `user:${nativeUserUuid}`,
+      allowed: true,
+      at: now,
+    });
+
+    // Use tiny batchSize=2 to force cursor pagination right across the bad docs
+    const summary = await runBackfill({
+      domain: "connections",
+      batchSize: 2,
+      db,
+    });
+    expect(summary.status).toBe("completed");
+    expect(summary.rowsQuarantined).toBe(6);
+    expect(summary.rowsUpserted).toBe(5);
+
+    const quarantined = await db.select().from(pgSchema.migrationQuarantine);
+    expect(quarantined.map(d => d.reason).sort()).toEqual([
+      "invalid_connection_object_id",
+      "invalid_connection_object_id",
+      "invalid_object_id",
+      "invalid_object_id",
+      "invalid_object_id",
+      "invalid_workspace_object_id",
+    ]);
+
+    // All 5 valid docs after the malformed docs were backfilled cleanly
+    expect(await pgRepo.findDatabaseConnectionById(validDb.id)).not.toBeNull();
+    expect(await pgRepo.findSourceConnectionById(validSrc.id)).not.toBeNull();
+    expect(
+      await pgRepo.findConnectorDefinition(wsAOid, validDef.slug),
+    ).not.toBeNull();
+    expect(
+      await pgRepo.findConnectionAccessEventById(validAccess.id),
+    ).not.toBeNull();
+    expect(
+      await pgRepo.findConnectionWriteEventById(validWrite.id),
+    ).not.toBeNull();
+
+    // Parity verification (+ --repair) must also advance past malformed docs without throwing
+    const report = await runParityVerification({
+      domain: "connections",
+      batchSize: 2,
+      repair: true,
+      db,
+    });
+    expect(report.matched).toBe(5);
+    expect(report.missingInPg).toBe(6);
+  });
+
+  it("PR #1555 #2 [4717225872]: buildConsoleTemplate accepts DatabaseConnectionRecord cleanly without any cast", async () => {
+    const pgRepo = new PgConnectionsRepository({ getDb: () => db });
+    const bq = await pgRepo.createDatabaseConnection({
+      workspaceId: wsAOid,
+      name: "BQ Warehouse",
+      type: "bigquery",
+      connection: { project_id: "acme-analytics" },
+      createdBy: nativeUserUuid,
+    });
+    const bqTemplate = buildConsoleTemplate(bq, { id: "sales.orders" });
+    expect(bqTemplate.language).toBe("sql");
+    expect(bqTemplate.template).toBe(
+      "SELECT * FROM `acme-analytics.sales.orders` LIMIT 500;",
+    );
+
+    const mongoDb = await pgRepo.createDatabaseConnection({
+      workspaceId: wsAOid,
+      name: "App Mongo",
+      type: "mongodb",
+      connection: { connectionString: "mongodb://localhost/app" },
+      createdBy: nativeUserUuid,
+    });
+    const mongoTemplate = buildConsoleTemplate(mongoDb, {
+      id: "users",
+      kind: "collection",
+    });
+    expect(mongoTemplate.language).toBe("mongodb");
+    expect(mongoTemplate.template).toContain('db.getCollection("users")');
+  });
+
+  it("PR #1555 #3 [4717279742]: configPatch merges changed keys atomically without erasing a concurrently claimed key-link secret", async () => {
+    const mongoRepo = new MongoConnectionsRepository();
+    const pgRepo = new PgConnectionsRepository({ getDb: () => db });
+    const router = new MigrationRouter({
+      getDb: () => db,
+      hasPg: () => true,
+      isForceMongoOnly: () => false,
+    });
+    await router.setDomainState({
+      domain: "connections",
+      mode: "dual_write_mongo_read",
+    });
+    const dual = new DualConnectionsRepository({
+      mongo: mongoRepo,
+      pg: pgRepo,
+      router,
+      getDb: () => db,
+    });
+
+    const tokenHash = sha256Hex("key-link-race-token");
+    const created = await dual.createSourceConnection({
+      workspaceId: wsAOid,
+      name: "Awaiting Key",
+      type: "stripe",
+      config: { base_url: "https://old.example", account_id: "acct_old" },
+      settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
+      createdBy: nativeUserUuid,
+      isActive: false,
+      keyRequest: {
+        tokenHash,
+        expiresAt: new Date(Date.now() + 60_000),
+        fields: ["api_key"],
+        requestedBy: nativeUserUuid,
+        createdAt: new Date(),
+      },
+    });
+
+    // User claims key link concurrently, setting encrypted config.api_key
+    const encryptedKey = encryptString("sk_live_claimed_secret");
+    expect(
+      await dual.claimSourceConnectionKeyRequest({
+        id: created.id,
+        workspaceId: wsAOid,
+        tokenHash,
+        encryptedFields: { api_key: encryptedKey },
+      }),
+    ).toBe(true);
+
+    // Concurrent tool update patches only the changed non-secret key
+    await dual.updateSourceConnection(created.id, wsAOid, {
+      configPatch: { account_id: "acct_new" },
+    });
+
+    for (const store of [mongoRepo, pgRepo] as const) {
+      const stored = await store.findSourceConnectionById(created.id, wsAOid);
+      expect(stored?.isActive).toBe(true);
+      expect(stored?.keyRequest).toBeUndefined();
+      expect(stored?.config).toEqual({
+        base_url: "https://old.example",
+        account_id: "acct_new",
+        api_key: encryptedKey,
+      });
+    }
+
+    // Passing both config and configPatch is refused cleanly
+    await expect(
+      mongoRepo.updateSourceConnection(created.id, wsAOid, {
+        config: {},
+        configPatch: { account_id: "x" },
+      }),
+    ).rejects.toThrow(/cannot specify both/);
+    await expect(
+      pgRepo.updateSourceConnection(created.id, wsAOid, {
+        config: {},
+        configPatch: { account_id: "x" },
+      }),
+    ).rejects.toThrow(/cannot specify both/);
+  });
+
+  it("PR #1555 #4 [4717280251]: updateConnectorDefinitionMetadata updates sha/entry/registry without overwriting concurrent status transitions", async () => {
+    const mongoRepo = new MongoConnectionsRepository();
+    const pgRepo = new PgConnectionsRepository({ getDb: () => db });
+    const router = new MigrationRouter({
+      getDb: () => db,
+      hasPg: () => true,
+      isForceMongoOnly: () => false,
+    });
+    await router.setDomainState({
+      domain: "connections",
+      mode: "dual_write_mongo_read",
+    });
+    const dual = new DualConnectionsRepository({
+      mongo: mongoRepo,
+      pg: pgRepo,
+      router,
+      getDb: () => db,
+    });
+
+    const t0 = new Date("2026-11-25T10:00:00.000Z");
+    const t1 = new Date("2026-11-25T10:01:00.000Z");
+    const t2 = new Date("2026-11-25T10:02:00.000Z");
+
+    await dual.upsertConnectorDefinition({
+      workspaceId: wsAOid,
+      slug: "crm",
+      sha: "commit-1",
+      sourceSha: "src-1",
+      entry: "connector.ts",
+      status: "indexed",
+      now: t0,
+    });
+
+    // Concurrent check transitions indexed -> verified
+    expect(
+      await dual.recordConnectorDefinitionCheckResult(wsAOid, "crm", {
+        ok: true,
+        checkedAt: t1,
+        expectedSourceSha: "src-1",
+      }),
+    ).toBe(true);
+
+    // Reconcile metadata update touches ONLY sha + entry, leaving status="verified" intact
+    expect(
+      await dual.updateConnectorDefinitionMetadata(wsAOid, "crm", {
+        sha: "commit-2",
+        entry: "index.ts",
+        expectedSourceSha: "src-1",
+        now: t2,
+      }),
+    ).toBe(true);
+
+    for (const store of [mongoRepo, pgRepo] as const) {
+      const def = await store.findConnectorDefinition(wsAOid, "crm");
+      expect(def?.sha).toBe("commit-2");
+      expect(def?.entry).toBe("index.ts");
+      expect(def?.status).toBe("verified");
+      expect(def?.lastCheckedAt).toEqual(t1);
+    }
+
+    // Reverse transition: failed check demotes verified -> indexed + lastCheckError,
+    // and registry metadata update preserves indexed + lastCheckError
+    expect(
+      await dual.recordConnectorDefinitionCheckResult(wsAOid, "crm", {
+        ok: false,
+        checkedAt: t2,
+        expectedSourceSha: "src-1",
+        error: "401 Unauthorized",
+      }),
+    ).toBe(true);
+
+    expect(
+      await dual.updateConnectorDefinitionMetadata(wsAOid, "crm", {
+        sha: "commit-3",
+        expectedSourceSha: "src-1",
+        registry: {
+          ref: "mako/crm@1",
+          slug: "crm",
+          range: "^1.0.0",
+          version: "1.0.0",
+          hash: "h1",
+          sha256: "s256",
+          latest: "2.0.0",
+          upgradeAvailable: "2.0.0",
+          resolvedAt: t0,
+        },
+      }),
+    ).toBe(true);
+
+    for (const store of [mongoRepo, pgRepo] as const) {
+      const def = await store.findConnectorDefinition(wsAOid, "crm");
+      expect(def?.sha).toBe("commit-3");
+      expect(def?.status).toBe("indexed");
+      expect(def?.lastCheckError).toBe("401 Unauthorized");
+      expect(def?.registry?.upgradeAvailable).toBe("2.0.0");
+    }
+
+    // Stale expectedSourceSha is a safe no-op
+    expect(
+      await dual.updateConnectorDefinitionMetadata(wsAOid, "crm", {
+        sha: "stale-commit",
+        expectedSourceSha: "src-wrong",
+      }),
+    ).toBe(false);
+  });
+
+  it("PR #1555 #5 [4717280786] & #6 [4717281218]: connector definition delete sync-retries operate strictly by PK/captured IDs in both directions", async () => {
+    const mongoRepo = new MongoConnectionsRepository();
+    const pgRepo = new PgConnectionsRepository({ getDb: () => db });
+    const t0 = new Date("2026-11-25T10:00:00.000Z");
+    const t1 = new Date("2026-11-25T10:01:00.000Z");
+
+    // ── #5 Mongo -> PG direction: delete A for slug "s", re-index B for slug "s", then replay A's delete
+    const defA = await mongoRepo.upsertConnectorDefinition({
+      workspaceId: wsAOid,
+      slug: "reused-slug",
+      sha: "sha-a",
+      sourceSha: "src-a",
+      status: "indexed",
+      now: t0,
+    });
+    await pgRepo.upsertConnectorDefinition({
+      id: defA.id,
+      workspaceId: wsAOid,
+      slug: "reused-slug",
+      sha: "sha-a",
+      sourceSha: "src-a",
+      status: "indexed",
+      now: t0,
+    });
+    // Mongo deletes A (PG delete failed and queued retry with definitionId = defA.id)
+    await mongoRepo.deleteConnectorDefinition(wsAOid, "reused-slug");
+    // Before retry runs, connector is re-indexed as B in both stores
+    const defB = await mongoRepo.upsertConnectorDefinition({
+      workspaceId: wsAOid,
+      slug: "reused-slug",
+      sha: "sha-b",
+      sourceSha: "src-b",
+      status: "indexed",
+      now: t1,
+    });
+    expect(defB.id).not.toBe(defA.id);
+    await pgRepo.upsertConnectorDefinitionWithGuard(
+      {
+        id: objectIdToUuid(defB.id),
+        workspaceId: objectIdToUuid(wsAOid),
+        slug: "reused-slug",
+        runtime: "node",
+        entry: "connector.ts",
+        sha: "sha-b",
+        sourceSha: "src-b",
+        status: "indexed",
+        entities: [],
+        hasIcon: false,
+        createdAt: t1,
+        updatedAt: t1,
+      },
+      db,
+    );
+
+    // Delayed retry for A runs — must NOT delete or tombstone B!
+    await replayConnectionsWriteToPg(
+      {
+        target: "pg",
+        domain: "connections",
+        operation: "deleteConnectorDefinition",
+        entityId: `${wsAOid}:reused-slug`,
+        workspaceId: wsAOid,
+        payload: {
+          table: "connector_definitions",
+          workspaceId: wsAOid,
+          slug: "reused-slug",
+          definitionId: defA.id,
+        },
+        failedAt: t0.toISOString(),
+        errorMessage: "timeout",
+      },
+      db,
+    );
+
+    const survivingB = await pgRepo.findConnectorDefinition(
+      wsAOid,
+      "reused-slug",
+    );
+    expect(survivingB?.id).toBe(defB.id);
+    const tombstonesAfter5 = await db
+      .select()
+      .from(pgSchema.migrationTombstones);
+    expect(
+      tombstonesAfter5.some(t => t.entityId === objectIdToUuid(defA.id)),
+    ).toBe(true);
+    expect(
+      tombstonesAfter5.some(t => t.entityId === objectIdToUuid(defB.id)),
+    ).toBe(false);
+
+    // Legacy replay without definitionId must also preserve B while slug exists in Mongo
+    await replayConnectionsWriteToPg(
+      {
+        target: "pg",
+        domain: "connections",
+        operation: "deleteConnectorDefinition",
+        entityId: `${wsAOid}:reused-slug`,
+        workspaceId: wsAOid,
+        payload: {
+          table: "connector_definitions",
+          workspaceId: wsAOid,
+          slug: "reused-slug",
+        },
+        failedAt: t0.toISOString(),
+        errorMessage: "timeout",
+      },
+      db,
+    );
+    expect(
+      (await pgRepo.findConnectorDefinition(wsAOid, "reused-slug"))?.id,
+    ).toBe(defB.id);
+
+    // ── #5 PG -> Mongo symmetric direction: replay deleting defA must NOT delete defB in Mongo
+    await replayConnectionsWriteToMongo(
+      {
+        target: "mongo",
+        domain: "connections",
+        operation: "deleteConnectorDefinition",
+        entityId: `${wsAOid}:reused-slug`,
+        workspaceId: wsAOid,
+        payload: {
+          table: "connector_definitions",
+          workspaceId: wsAOid,
+          slug: "reused-slug",
+          definitionId: defA.id,
+        },
+        failedAt: t0.toISOString(),
+        errorMessage: "timeout",
+      },
+      db,
+    );
+    expect(
+      (await mongoRepo.findConnectorDefinition(wsAOid, "reused-slug"))?.id,
+    ).toBe(defB.id);
+
+    // ── #6 Mongo -> PG: deleteConnectorDefinitionsNotInSlugs replay deletes ONLY captured deletedIds
+    const oldX = await mongoRepo.upsertConnectorDefinition({
+      workspaceId: wsAOid,
+      slug: "old-x",
+      sha: "sx",
+      sourceSha: "ssx",
+      status: "indexed",
+      now: t0,
+    });
+    await pgRepo.upsertConnectorDefinition({
+      id: oldX.id,
+      workspaceId: wsAOid,
+      slug: "old-x",
+      sha: "sx",
+      sourceSha: "ssx",
+      status: "indexed",
+      now: t0,
+    });
+    // Original call kept ["reused-slug"] and deleted oldX in Mongo (PG failed)
+    await mongoRepo.deleteConnectorDefinitionsNotInSlugs(wsAOid, [
+      "reused-slug",
+    ]);
+    // Later reconcile added new slug "brand-new-c" to both stores
+    const newC = await mongoRepo.upsertConnectorDefinition({
+      workspaceId: wsAOid,
+      slug: "brand-new-c",
+      sha: "sc",
+      sourceSha: "ssc",
+      status: "indexed",
+      now: t1,
+    });
+    await pgRepo.upsertConnectorDefinition({
+      id: newC.id,
+      workspaceId: wsAOid,
+      slug: "brand-new-c",
+      sha: "sc",
+      sourceSha: "ssc",
+      status: "indexed",
+      now: t1,
+    });
+
+    await replayConnectionsWriteToPg(
+      {
+        target: "pg",
+        domain: "connections",
+        operation: "deleteConnectorDefinitionsNotInSlugs",
+        entityId: wsAOid,
+        workspaceId: wsAOid,
+        payload: {
+          table: "connector_definitions",
+          workspaceId: wsAOid,
+          keepSlugs: ["reused-slug"],
+          deletedIds: [oldX.id],
+        },
+        failedAt: t0.toISOString(),
+        errorMessage: "timeout",
+      },
+      db,
+    );
+
+    expect(await pgRepo.findConnectorDefinition(wsAOid, "old-x")).toBeNull();
+    expect(
+      (await pgRepo.findConnectorDefinition(wsAOid, "brand-new-c"))?.id,
+    ).toBe(newC.id);
+    const tombstonesAfter6 = await db
+      .select()
+      .from(pgSchema.migrationTombstones);
+    expect(
+      tombstonesAfter6.some(t => t.entityId === objectIdToUuid(oldX.id)),
+    ).toBe(true);
+    expect(
+      tombstonesAfter6.some(t => t.entityId === objectIdToUuid(newC.id)),
+    ).toBe(false);
+
+    // ── #6 PG -> Mongo symmetric direction: replay deletes oldY in Mongo, preserves brand-new-c
+    const oldY = await pgRepo.upsertConnectorDefinition({
+      workspaceId: wsAOid,
+      slug: "old-y",
+      sha: "sy",
+      sourceSha: "ssy",
+      status: "indexed",
+      now: t0,
+    });
+    await mongoRepo.upsertConnectorDefinition({
+      id: oldY.id,
+      workspaceId: wsAOid,
+      slug: "old-y",
+      sha: "sy",
+      sourceSha: "ssy",
+      status: "indexed",
+      now: t0,
+    });
+    await pgRepo.deleteConnectorDefinition(wsAOid, "old-y");
+
+    await replayConnectionsWriteToMongo(
+      {
+        target: "mongo",
+        domain: "connections",
+        operation: "deleteConnectorDefinitionsNotInSlugs",
+        entityId: wsAOid,
+        workspaceId: wsAOid,
+        payload: {
+          table: "connector_definitions",
+          workspaceId: wsAOid,
+          keepSlugs: ["reused-slug"],
+          deletedIds: [oldY.id],
+        },
+        failedAt: t0.toISOString(),
+        errorMessage: "timeout",
+      },
+      db,
+    );
+    expect(await mongoRepo.findConnectorDefinition(wsAOid, "old-y")).toBeNull();
+    expect(
+      (await mongoRepo.findConnectorDefinition(wsAOid, "brand-new-c"))?.id,
+    ).toBe(newC.id);
+  });
+
+  it("PR #1555 #7 [4717281738]: rejects unknown DatabaseConnection.type before writing to Mongo or PG", async () => {
+    const mongoRepo = new MongoConnectionsRepository();
+    const pgRepo = new PgConnectionsRepository({ getDb: () => db });
+    const captured: SecondaryWriteFailureContext[] = [];
+    const router = new MigrationRouter({
+      getDb: () => db,
+      hasPg: () => true,
+      isForceMongoOnly: () => false,
+      onSecondaryFailure: async ctx => {
+        captured.push(ctx);
+      },
+    });
+    await router.setDomainState({
+      domain: "connections",
+      mode: "dual_write_mongo_read",
+    });
+    const dual = new DualConnectionsRepository({
+      mongo: mongoRepo,
+      pg: pgRepo,
+      router,
+      getDb: () => db,
+    });
+
+    for (const validType of DATABASE_CONNECTION_TYPES) {
+      expect(isDatabaseConnectionType(validType)).toBe(true);
+    }
+    expect(isDatabaseConnectionType("oracle")).toBe(false);
+    expect(isDatabaseConnectionType("")).toBe(false);
+    expect(isDatabaseConnectionType(null)).toBe(false);
+
+    const invalidInput = {
+      workspaceId: wsAOid,
+      name: "Bad Oracle",
+      type: "oracle" as unknown as (typeof DATABASE_CONNECTION_TYPES)[number],
+      connection: { host: "oracle.internal" },
+      createdBy: nativeUserUuid,
+    };
+
+    await expect(
+      mongoRepo.createDatabaseConnection(invalidInput),
+    ).rejects.toThrow(/Invalid database connection type: oracle/);
+    await expect(pgRepo.createDatabaseConnection(invalidInput)).rejects.toThrow(
+      /Invalid database connection type: oracle/,
+    );
+    await expect(dual.createDatabaseConnection(invalidInput)).rejects.toThrow(
+      /Invalid database connection type: oracle/,
+    );
+
+    expect(
+      await DatabaseConnection.collection.countDocuments({
+        name: "Bad Oracle",
+      }),
+    ).toBe(0);
+    expect(await pgRepo.countDatabaseConnections(wsAOid)).toBe(0);
+    expect(captured).toHaveLength(0);
+  });
+
+  it("PR #1555 #8 [4717282289]: console, agent-context, search, and query-runner readers work under pg_only and preserve cross-tenant guard", async () => {
+    setPgTestDb(db);
+    migrationRouter.invalidateCache();
+    try {
+      // Global stays mongo_only; wsA is canary pg_only; wsB remains mongo_only
+      await migrationRouter.setDomainState({
+        domain: "connections",
+        mode: "mongo_only",
+      });
+      await migrationRouter.setDomainState({
+        domain: "connections",
+        workspaceId: wsAOid,
+        mode: "pg_only",
+      });
+
+      // Create PG-only connection C in wsA and Mongo-only connection M in wsB
+      const pgConn = await connectionsRepo.createDatabaseConnection({
+        workspaceId: wsAOid,
+        name: "PG Only Warehouse",
+        type: "postgresql",
+        connection: { host: "pg-only.internal", database: "analytics" },
+        createdBy: nativeUserUuid,
+      });
+      const mongoConn = await connectionsRepo.createDatabaseConnection({
+        workspaceId: wsBOid,
+        name: "Mongo Only Warehouse",
+        type: "mongodb",
+        connection: { connectionString: "mongodb://mongo-only.internal/db" },
+        createdBy: nativeUserUuid,
+      });
+
+      // Confirm pgConn is strictly absent from Mongo and mongoConn strictly absent from PG
+      expect(
+        await DatabaseConnection.collection.countDocuments({
+          _id: new mongoose.Types.ObjectId(pgConn.id),
+        }),
+      ).toBe(0);
+
+      // connection-scope helpers
+      expect(await workspaceOwnsConnection(wsAOid, pgConn.id)).toBe(true);
+      expect(await workspaceOwnsConnection(wsBOid, pgConn.id)).toBe(false);
+      // Cross-tenant guard MUST refuse wsB storing wsA's PG-only connection ID!
+      expect(await connectionIdAllowed(wsBOid, pgConn.id)).toBe(false);
+      expect(await connectionIdAllowed(wsAOid, pgConn.id)).toBe(true);
+      expect(await connectionIdAllowed(wsAOid, mongoConn.id)).toBe(false);
+      expect(
+        await connectionIdAllowed(
+          wsAOid,
+          new mongoose.Types.ObjectId().toHexString(),
+        ),
+      ).toBe(true);
+
+      const foundOwn = await findWorkspaceConnection(wsAOid, pgConn.id);
+      expect(foundOwn?.id).toBe(pgConn.id);
+      expect(foundOwn?.connection.host).toBe("pg-only.internal");
+      expect(await findWorkspaceConnection(wsBOid, pgConn.id)).toBeNull();
+
+      // agent-context lists PG-only databases
+      const turnCtx = await loadWorkspaceTurnContext(wsAOid, [
+        {
+          id: "tab-1",
+          title: "SQL",
+          content: "SELECT 1",
+          contentTruncated: false,
+          lineCount: 1,
+          connectionId: pgConn.id,
+        },
+      ]);
+      expect(turnCtx.databases).toEqual([
+        expect.objectContaining({
+          id: pgConn.id,
+          name: "PG Only Warehouse",
+          type: "postgresql",
+        }),
+      ]);
+      expect(turnCtx.consoles[0]?.connectionType).toBe("postgresql");
+
+      // console-search enrichWithConnectionNames resolves PG-only connection names
+      const searchHits = [
+        { id: "c1", connectionId: pgConn.id },
+        { id: "c2", connectionId: mongoConn.id },
+      ] as unknown as Parameters<typeof enrichWithConnectionNames>[0];
+      await enrichWithConnectionNames(searchHits, wsAOid);
+      expect(
+        (searchHits as Array<{ connectionName?: string }>)[0].connectionName,
+      ).toBe("PG Only Warehouse");
+      expect(
+        (searchHits as Array<{ connectionName?: string }>)[1].connectionName,
+      ).toBeUndefined();
+
+      // Cross-workspace database connection readers (used by QueryRunner)
+      const allMeta = await connectionsRepo.listAllDatabaseConnectionMetadata();
+      expect(allMeta.map(m => m.id).sort()).toEqual(
+        [pgConn.id, mongoConn.id].sort(),
+      );
+      expect(
+        (await connectionsRepo.findDatabaseConnectionById(pgConn.id))?.name,
+      ).toBe("PG Only Warehouse");
+      expect(
+        (await connectionsRepo.findDatabaseConnectionById(mongoConn.id))?.name,
+      ).toBe("Mongo Only Warehouse");
+    } finally {
+      migrationRouter.invalidateCache();
+      resetPgTestDb();
+    }
+  });
+
+  it("PR #1555 #9 [4717282622]: cross-workspace source-connection reads respect per-workspace overrides and skip PG when disabled/forced off", async () => {
+    const mongoRepo = new MongoConnectionsRepository();
+    const pgRepo = new PgConnectionsRepository({ getDb: () => db });
+    const router = new MigrationRouter({
+      getDb: () => db,
+      hasPg: () => true,
+      isForceMongoOnly: () => false,
+    });
+    const dual = new DualConnectionsRepository({
+      mongo: mongoRepo,
+      pg: pgRepo,
+      router,
+      getDb: () => db,
+      hasPg: () => true,
+      isForceMongoOnly: () => false,
+    });
+
+    // Global = mongo_only, wsA overridden to pg_only
+    await router.setDomainState({ domain: "connections", mode: "mongo_only" });
+    await router.setDomainState({
+      domain: "connections",
+      workspaceId: wsAOid,
+      mode: "pg_only",
+    });
+
+    const pgOnlyWsASrc = await pgRepo.createSourceConnection({
+      workspaceId: wsAOid,
+      name: "WS-A PG Active",
+      type: "stripe",
+      config: { k: "pg" },
+      settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
+      createdBy: nativeUserUuid,
+      isActive: true,
+    });
+    // Stale Mongo row for pg_only wsA must be ignored
+    await mongoRepo.createSourceConnection({
+      workspaceId: wsAOid,
+      name: "WS-A Stale Mongo",
+      type: "stripe",
+      config: { k: "stale" },
+      settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
+      createdBy: nativeUserUuid,
+      isActive: true,
+    });
+    const mongoOnlyWsBSrc = await mongoRepo.createSourceConnection({
+      workspaceId: wsBOid,
+      name: "WS-B Mongo Active",
+      type: "stripe",
+      config: { k: "mongo" },
+      settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
+      createdBy: nativeUserUuid,
+      isActive: true,
+    });
+    // Stale PG row for mongo_only wsB must be ignored
+    await pgRepo.createSourceConnection({
+      workspaceId: wsBOid,
+      name: "WS-B Stale PG",
+      type: "stripe",
+      config: { k: "stale-pg" },
+      settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
+      createdBy: nativeUserUuid,
+      isActive: true,
+    });
+
+    const activeGlobalMongo = await dual.listActiveSourceConnections({
+      type: "stripe",
+    });
+    expect(activeGlobalMongo.map(c => c.id).sort()).toEqual(
+      [pgOnlyWsASrc.id, mongoOnlyWsBSrc.id].sort(),
+    );
+
+    const idNamesGlobalMongo = await dual.listSourceConnectionIdNames({
+      isActive: true,
+    });
+    expect(idNamesGlobalMongo.map(c => c.id).sort()).toEqual(
+      [pgOnlyWsASrc.id, mongoOnlyWsBSrc.id].sort(),
+    );
+
+    // Reverse: global = pg_only, wsB overridden to mongo_only
+    await router.setDomainState({ domain: "connections", mode: "pg_only" });
+    await router.setDomainState({
+      domain: "connections",
+      workspaceId: wsBOid,
+      mode: "mongo_only",
+    });
+
+    const activeGlobalPg = await dual.listActiveSourceConnections();
+    expect(activeGlobalPg.map(c => c.id).sort()).toEqual(
+      [pgOnlyWsASrc.id, mongoOnlyWsBSrc.id].sort(),
+    );
+
+    const idNamesGlobalPg = await dual.listSourceConnectionIdNames();
+    expect(idNamesGlobalPg.map(c => c.id).sort()).toEqual(
+      [pgOnlyWsASrc.id, mongoOnlyWsBSrc.id].sort(),
+    );
+
+    // Zero PG calls when PG disabled or MIGRATION_FORCE_MONGO_ONLY=true
+    let pgCalls = 0;
+    const countingDb = () => {
+      pgCalls += 1;
+      throw new Error("PG must not be touched when disabled/forced off");
+    };
+    const dualNoPg = new DualConnectionsRepository({
+      mongo: mongoRepo,
+      pg: new PgConnectionsRepository({ getDb: countingDb }),
+      router: new MigrationRouter({
+        getDb: countingDb,
+        hasPg: () => false,
+        isForceMongoOnly: () => false,
+      }),
+      getDb: countingDb,
+      hasPg: () => false,
+      isForceMongoOnly: () => false,
+    });
+    const dualForcedMongo = new DualConnectionsRepository({
+      mongo: mongoRepo,
+      pg: new PgConnectionsRepository({ getDb: countingDb }),
+      router: new MigrationRouter({
+        getDb: countingDb,
+        hasPg: () => true,
+        isForceMongoOnly: () => true,
+      }),
+      getDb: countingDb,
+      hasPg: () => true,
+      isForceMongoOnly: () => true,
+    });
+
+    await dualNoPg.listActiveSourceConnections();
+    await dualNoPg.listSourceConnectionIdNames();
+    await dualForcedMongo.listActiveSourceConnections();
+    await dualForcedMongo.listSourceConnectionIdNames();
+    expect(pgCalls).toBe(0);
   });
 });

@@ -11,6 +11,7 @@
  *   - `listRecentWriters` & `listWorkspaceIdsWithDueRetries` execute native SQL queries.
  */
 import { and, desc, eq, inArray, notInArray, or, sql } from "drizzle-orm";
+import type { PgUpdateSetSource } from "drizzle-orm/pg-core";
 import { extractRows, getPgDb, type MakoPgDb } from "../../database/pg/client";
 import {
   isObjectIdHex,
@@ -55,26 +56,28 @@ import {
   writersToPgJson,
   type UserUuidResolver,
 } from "./mapper";
-import type {
-  ClaimSourceConnectionKeyRequestInput,
-  ConnectionAccessEventRecord,
-  ConnectionWriteEventRecord,
-  ConnectionsRepository,
-  ConnectorDefinitionBuildRecord,
-  ConnectorDefinitionRecord,
-  CreateDatabaseConnectionInput,
-  CreateSourceConnectionInput,
-  DatabaseConnectionRecord,
-  DatabaseConnectionSummary,
-  FindSourceConnectionByIdOrNameResult,
-  RecentWriterAggregate,
-  RecordConnectionAccessEventInput,
-  RecordConnectionWriteEventInput,
-  RollbackSourceConnectionKeyRequestInput,
-  SourceConnectionRecord,
-  UpdateDatabaseConnectionInput,
-  UpdateSourceConnectionInput,
-  UpsertConnectorDefinitionInput,
+import {
+  isDatabaseConnectionType,
+  type ClaimSourceConnectionKeyRequestInput,
+  type ConnectionAccessEventRecord,
+  type ConnectionWriteEventRecord,
+  type ConnectionsRepository,
+  type ConnectorDefinitionBuildRecord,
+  type ConnectorDefinitionRecord,
+  type CreateDatabaseConnectionInput,
+  type CreateSourceConnectionInput,
+  type DatabaseConnectionRecord,
+  type DatabaseConnectionSummary,
+  type FindSourceConnectionByIdOrNameResult,
+  type RecentWriterAggregate,
+  type RecordConnectionAccessEventInput,
+  type RecordConnectionWriteEventInput,
+  type RollbackSourceConnectionKeyRequestInput,
+  type SourceConnectionRecord,
+  type UpdateConnectorDefinitionMetadataInput,
+  type UpdateDatabaseConnectionInput,
+  type UpdateSourceConnectionInput,
+  type UpsertConnectorDefinitionInput,
 } from "./types";
 
 function tryEntityIdToPgUuid(id: string): string | null {
@@ -185,6 +188,36 @@ export class PgConnectionsRepository implements ConnectionsRepository {
       .from(databaseConnections)
       .where(eq(databaseConnections.workspaceId, wsUuid))
       .orderBy(desc(databaseConnections.createdAt));
+    return rows.map(row =>
+      pgDatabaseConnectionToSummary({
+        ...row,
+        connectionEncrypted: {},
+      }),
+    );
+  }
+
+  async listAllDatabaseConnectionMetadata(
+    limit?: number,
+    db: MakoPgDb = this.getDb(),
+  ): Promise<DatabaseConnectionSummary[]> {
+    const base = db
+      .select({
+        id: databaseConnections.id,
+        workspaceId: databaseConnections.workspaceId,
+        name: databaseConnections.name,
+        type: databaseConnections.type,
+        isDemo: databaseConnections.isDemo,
+        allowAgentWrites: databaseConnections.allowAgentWrites,
+        writers: databaseConnections.writers,
+        createdBy: databaseConnections.createdBy,
+        lastConnectedAt: databaseConnections.lastConnectedAt,
+        createdAt: databaseConnections.createdAt,
+        updatedAt: databaseConnections.updatedAt,
+      })
+      .from(databaseConnections)
+      .orderBy(desc(databaseConnections.createdAt));
+    const rows =
+      limit !== undefined && limit > 0 ? await base.limit(limit) : await base;
     return rows.map(row =>
       pgDatabaseConnectionToSummary({
         ...row,
@@ -403,6 +436,11 @@ export class PgConnectionsRepository implements ConnectionsRepository {
     input: CreateDatabaseConnectionInput,
     db: MakoPgDb = this.getDb(),
   ): Promise<DatabaseConnectionRecord> {
+    if (!isDatabaseConnectionType(input.type)) {
+      throw new Error(
+        `Invalid database connection type: ${String(input.type)}`,
+      );
+    }
     const now = input.createdAt ?? new Date();
     const updatedAt = input.updatedAt ?? now;
     const wireId = input.id ?? newDualId(now.getTime()).oid;
@@ -636,6 +674,28 @@ export class PgConnectionsRepository implements ConnectionsRepository {
     return rows.map(r => ({ id: toWireId(r.id), name: r.name }));
   }
 
+  async listSourceConnectionIdNameWorkspaces(
+    filter: { isActive?: boolean } = {},
+    db: MakoPgDb = this.getDb(),
+  ): Promise<Array<{ id: string; name: string; workspaceId: string }>> {
+    const baseQuery = db
+      .select({
+        id: sourceConnections.id,
+        name: sourceConnections.name,
+        workspaceId: sourceConnections.workspaceId,
+      })
+      .from(sourceConnections);
+    const rows =
+      filter.isActive !== undefined
+        ? await baseQuery.where(eq(sourceConnections.isActive, filter.isActive))
+        : await baseQuery;
+    return rows.map(r => ({
+      id: toWireId(r.id),
+      name: r.name,
+      workspaceId: toWireId(r.workspaceId),
+    }));
+  }
+
   async findSourceConnectionById(
     id: string,
     workspaceId?: string,
@@ -795,7 +855,7 @@ export class PgConnectionsRepository implements ConnectionsRepository {
     if (!pgId || !wsUuid) return null;
 
     const resolver = this.makeUserResolver(db);
-    const values: Partial<typeof sourceConnections.$inferInsert> = {
+    const values: PgUpdateSetSource<typeof sourceConnections> = {
       updatedAt: patch.updatedAt ?? new Date(),
     };
 
@@ -805,8 +865,23 @@ export class PgConnectionsRepository implements ConnectionsRepository {
       values.description = patch.description.trim();
     }
     if (patch.type !== undefined) values.type = patch.type;
+    if (patch.config !== undefined && patch.configPatch !== undefined) {
+      throw new Error(
+        "updateSourceConnection cannot specify both config and configPatch",
+      );
+    }
     if (patch.config !== undefined) {
       values.configEncrypted = stripUndefinedDeep(patch.config);
+    } else if (patch.configPatch !== undefined) {
+      const cleanedPatch = stripUndefinedDeep(patch.configPatch);
+      for (const key of Object.keys(cleanedPatch)) {
+        if (!key || key.includes(".") || key.startsWith("$")) {
+          throw new Error(`Invalid source connection config key: ${key}`);
+        }
+      }
+      if (Object.keys(cleanedPatch).length > 0) {
+        values.configEncrypted = sql`COALESCE(${sourceConnections.configEncrypted}, '{}'::jsonb) || ${JSON.stringify(cleanedPatch)}::jsonb`;
+      }
     }
     if (patch.settings !== undefined) {
       values.settings = normalizeSourceSettings(patch.settings);
@@ -1402,6 +1477,73 @@ export class PgConnectionsRepository implements ConnectionsRepository {
     return pgConnectorDefinitionToRecord(rows[0]);
   }
 
+  async updateConnectorDefinitionMetadata(
+    workspaceId: string,
+    slug: string,
+    patch: UpdateConnectorDefinitionMetadataInput,
+    db: MakoPgDb = this.getDb(),
+  ): Promise<boolean> {
+    const wsUuid = tryEntityIdToPgUuid(workspaceId);
+    if (!wsUuid) return false;
+    const now = patch.now ?? new Date();
+    const predicates = [
+      eq(connectorDefinitions.workspaceId, wsUuid),
+      eq(connectorDefinitions.slug, slug.trim()),
+    ];
+    if (patch.expectedSourceSha !== undefined) {
+      predicates.push(
+        eq(connectorDefinitions.sourceSha, patch.expectedSourceSha),
+      );
+    }
+    const values: Partial<typeof connectorDefinitions.$inferInsert> = {
+      updatedAt: now,
+    };
+    if (patch.sha !== undefined) values.sha = patch.sha;
+    if (patch.entry !== undefined) values.entry = patch.entry;
+    if (patch.registry === null) {
+      values.registry = null;
+    } else if (patch.registry !== undefined) {
+      values.registry = registryToPgJson(patch.registry);
+    }
+    const rows = await db
+      .update(connectorDefinitions)
+      .set(values)
+      .where(and(...predicates))
+      .returning({ id: connectorDefinitions.id });
+    return rows.length > 0;
+  }
+
+  async findConnectorDefinitionById(
+    id: string,
+    db: MakoPgDb = this.getDb(),
+  ): Promise<ConnectorDefinitionRecord | null> {
+    const pgId = tryEntityIdToPgUuid(id);
+    if (!pgId) return null;
+    const rows = await db
+      .select()
+      .from(connectorDefinitions)
+      .where(eq(connectorDefinitions.id, pgId))
+      .limit(1);
+    return rows[0] ? pgConnectorDefinitionToRecord(rows[0]) : null;
+  }
+
+  async findExistingConnectorDefinitionIds(
+    ids: readonly string[],
+    db: MakoPgDb = this.getDb(),
+  ): Promise<string[]> {
+    const uuids = [
+      ...new Set(
+        ids.map(tryEntityIdToPgUuid).filter((v): v is string => v !== null),
+      ),
+    ];
+    if (uuids.length === 0) return [];
+    const rows = await db
+      .select({ id: connectorDefinitions.id })
+      .from(connectorDefinitions)
+      .where(inArray(connectorDefinitions.id, uuids));
+    return rows.map(r => toWireId(r.id));
+  }
+
   async recordConnectorDefinitionBuild(
     workspaceId: string,
     slug: string,
@@ -1508,6 +1650,51 @@ export class PgConnectionsRepository implements ConnectionsRepository {
         db,
       )) !== null
     );
+  }
+
+  async deleteConnectorDefinitionById(
+    id: string,
+    workspaceId: string,
+    db: MakoPgDb = this.getDb(),
+  ): Promise<boolean> {
+    const pgId = tryEntityIdToPgUuid(id);
+    const wsUuid = tryEntityIdToPgUuid(workspaceId);
+    if (!pgId || !wsUuid) return false;
+    const rows = await db
+      .delete(connectorDefinitions)
+      .where(
+        and(
+          eq(connectorDefinitions.id, pgId),
+          eq(connectorDefinitions.workspaceId, wsUuid),
+        ),
+      )
+      .returning({ id: connectorDefinitions.id });
+    return rows.length > 0;
+  }
+
+  async deleteConnectorDefinitionsByIds(
+    ids: readonly string[],
+    workspaceId: string,
+    db: MakoPgDb = this.getDb(),
+  ): Promise<string[]> {
+    const wsUuid = tryEntityIdToPgUuid(workspaceId);
+    if (!wsUuid) return [];
+    const uuids = [
+      ...new Set(
+        ids.map(tryEntityIdToPgUuid).filter((v): v is string => v !== null),
+      ),
+    ];
+    if (uuids.length === 0) return [];
+    const rows = await db
+      .delete(connectorDefinitions)
+      .where(
+        and(
+          eq(connectorDefinitions.workspaceId, wsUuid),
+          inArray(connectorDefinitions.id, uuids),
+        ),
+      )
+      .returning({ id: connectorDefinitions.id });
+    return rows.map(r => toWireId(r.id));
   }
 
   async deleteConnectorDefinitionsNotInSlugs(

@@ -320,14 +320,15 @@ async function reconcile(
       // defaults to connector.ts, and a connector whose yaml names another
       // file would otherwise keep running the wrong one forever.
       if (row.sha !== commit || row.entry !== parsed.value.entry) {
-        await connectionsRepo.upsertConnectorDefinition({
+        await connectionsRepo.updateConnectorDefinitionMetadata(
           workspaceId,
           slug,
-          sha: commit,
-          sourceSha: row.sourceSha,
-          entry: parsed.value.entry,
-          status: row.status,
-        });
+          {
+            sha: commit,
+            entry: parsed.value.entry,
+            expectedSourceSha: row.sourceSha,
+          },
+        );
       }
       result.unchanged++;
       continue;
@@ -662,17 +663,18 @@ async function indexReference(input: {
       previous?.upgradeAvailable !== resolution.upgradeAvailable ||
       previous?.ref !== resolution.ref
     ) {
-      await connectionsRepo.upsertConnectorDefinition({
+      await connectionsRepo.updateConnectorDefinitionMetadata(
         workspaceId,
         slug,
-        sha: commit,
-        sourceSha: row.sourceSha,
-        status: row.status,
-        registry: {
-          ...resolution,
-          resolvedAt: previous?.resolvedAt ?? resolution.resolvedAt,
+        {
+          sha: commit,
+          expectedSourceSha: row.sourceSha,
+          registry: {
+            ...resolution,
+            resolvedAt: previous?.resolvedAt ?? resolution.resolvedAt,
+          },
         },
-      });
+      );
     }
     return "unchanged";
   }
