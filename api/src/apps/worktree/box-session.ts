@@ -2,7 +2,7 @@
  * The actor's sandbox: its session key, the git identity it commits as, and
  * hydrating it (clone, remote, pull) with the caches that keep that cheap.
  */
-import { User } from "../../database/schema";
+import { authRepo } from "../../repositories/auth";
 import { loggers } from "../../logging";
 import { BoundedMap } from "../../utils/bounded-map";
 import {
@@ -74,9 +74,7 @@ export async function resolveActorIdentity(
   if (actorIdentityCache.has(userId)) return actorIdentityCache.get(userId);
   let identity: { name: string; email: string } | undefined;
   try {
-    const user = await User.findById(userId).select("email").lean<{
-      email?: string;
-    } | null>();
+    const user = await authRepo.findUserById(userId);
     if (user?.email) {
       identity = {
         name: user.email.split("@")[0] || user.email,

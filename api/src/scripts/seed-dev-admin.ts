@@ -81,7 +81,7 @@ async function main(): Promise<void> {
 
   // Import models/services lazily so a connection failure above short-circuits
   // before any model side effects run.
-  const { User } = await import("../database/schema");
+  const { authRepo } = await import("../repositories/auth");
   const { DatabaseConnection } = await import("../database/workspace-schema");
   const { workspaceService } = await import("../services/workspace.service");
 
@@ -90,9 +90,9 @@ async function main(): Promise<void> {
 
   // Upsert the user: always (re)set the password + verified + onboarding-complete
   // so login works reliably even after a prod restore.
-  let user = await User.findOne({ email: DEV_ADMIN_EMAIL });
+  let user = await authRepo.findUserByEmail(DEV_ADMIN_EMAIL);
   if (!user) {
-    user = await User.create({
+    user = await authRepo.createUser({
       email: DEV_ADMIN_EMAIL,
       hashedPassword,
       emailVerified: true,
@@ -100,13 +100,15 @@ async function main(): Promise<void> {
     });
     console.log(`[seed-dev-admin] Created user ${DEV_ADMIN_EMAIL}`);
   } else {
-    user.hashedPassword = hashedPassword;
-    user.emailVerified = true;
-    user.onboarding = {
-      ...(user.onboarding || {}),
-      completedAt: user.onboarding?.completedAt || new Date(),
-    };
-    await user.save();
+    user =
+      (await authRepo.updateUser(user.id, {
+        hashedPassword,
+        emailVerified: true,
+        onboarding: {
+          ...(user.onboarding || {}),
+          completedAt: user.onboarding?.completedAt || new Date(),
+        },
+      })) ?? user;
     console.log(`[seed-dev-admin] Updated existing user ${DEV_ADMIN_EMAIL}`);
   }
 
@@ -161,6 +163,12 @@ main()
   .finally(async () => {
     try {
       await mongoose.disconnect();
+    } catch {
+      /* ignore */
+    }
+    try {
+      const { closePgConnections } = await import("../database/pg/client");
+      await closePgConnections();
     } catch {
       /* ignore */
     }

@@ -50,7 +50,7 @@ describe("migration Inngest sync-retry & scripts/neon-branch.ts guards", () => {
   it("fails loudly with NonRetriableError when no sync-retry handler is registered instead of dropping events", async () => {
     const eventData = {
       target: "pg" as const,
-      domain: "auth",
+      domain: "unregistered_test_domain",
       operation: "createUser",
       entityId: "user_1",
       idempotencyKey: "0193694c-a920-7000-8000-000000000001",
@@ -68,11 +68,11 @@ describe("migration Inngest sync-retry & scripts/neon-branch.ts guards", () => {
 
     // Once registered, replays cleanly and forwards idempotency metadata
     const handler = vi.fn(async () => undefined);
-    registerSyncRetryHandler("pg", "auth", handler);
+    registerSyncRetryHandler("pg", "unregistered_test_domain", handler);
     const result = await dispatchSyncRetry("pg", eventData);
     expect(result).toEqual({
       status: "replayed",
-      domain: "auth",
+      domain: "unregistered_test_domain",
       entityId: "user_1",
       idempotencyKey: eventData.idempotencyKey,
     });

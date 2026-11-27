@@ -2,7 +2,7 @@
  * Git authors for console commits: a Mako user id → name + email, cached.
  * Shared beyond consoles (flows, skills, notebooks, dbt commit as the user).
  */
-import { User } from "../../database/schema";
+import { authRepo } from "../../repositories/auth";
 import { BoundedMap } from "../../utils/bounded-map";
 import type { GitAuthor } from "../repository.service";
 
@@ -20,9 +20,7 @@ export async function authorForUser(
   if (authorCache.has(userId)) return authorCache.get(userId);
   let author: GitAuthor | undefined;
   try {
-    const user = await User.findById(userId)
-      .select("email name")
-      .lean<{ email?: string; name?: string } | null>();
+    const user = await authRepo.findUserById(userId);
     if (user?.email) {
       author = {
         name: user.name?.trim() || user.email.split("@")[0] || user.email,

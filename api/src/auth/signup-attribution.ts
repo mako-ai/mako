@@ -14,7 +14,7 @@
  * Privacy: no IP address is stored; the cookie only carries what the browser
  * already sent. Values are whitelisted and truncated before persisting.
  */
-import { UserAttribution } from "../database/schema";
+import { authRepo } from "../repositories/auth";
 import { loggers } from "../logging";
 
 const logger = loggers.auth();
@@ -156,22 +156,16 @@ export async function captureSignupAttribution(
     const parsed = parseAttributionCookieValue(options.attributionCookie);
     if (!parsed) return;
 
-    await UserAttribution.updateOne(
-      { _id: options.userId },
-      {
-        $setOnInsert: {
-          _id: options.userId,
-          sid: parsed.sid,
-          gclid: parsed.gclid,
-          signupMethod: options.signupMethod,
-          country: str(options.country, 2),
-          firstTouch: parsed.first,
-          lastTouch: parsed.last,
-          capturedAt: new Date(),
-        },
-      },
-      { upsert: true },
-    );
+    await authRepo.upsertAttributionOnce({
+      userId: options.userId,
+      sid: parsed.sid,
+      gclid: parsed.gclid,
+      signupMethod: options.signupMethod,
+      country: str(options.country, 2),
+      firstTouch: parsed.first as Record<string, unknown>,
+      lastTouch: parsed.last as Record<string, unknown>,
+      capturedAt: new Date(),
+    });
   } catch (error) {
     logger.warn("Failed to persist signup attribution", {
       userId: options.userId,

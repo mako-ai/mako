@@ -6,6 +6,7 @@
  */
 import { inngest } from "../../client";
 import { hasPostgresConfig } from "../../../database/pg/client";
+import { registerMigrationDomains } from "../../../migration/domains";
 import {
   listTtlRules,
   reapAllRegisteredTablesOrThrow,
@@ -23,6 +24,7 @@ export const migrationPgTtlReaperFunction = inngest.createFunction(
     if (!hasPostgresConfig()) {
       return { skipped: "POSTGRES_URL not configured" };
     }
+    registerMigrationDomains();
     if (listTtlRules().length === 0) {
       return { skipped: "no TTL rules registered" };
     }

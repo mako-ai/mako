@@ -61,6 +61,10 @@ export interface BackfillItem<TDoc = unknown> {
   entityId: string;
   /** Optional workspace ID (24-hex ObjectId or UUID). */
   workspaceId?: string | null;
+  /** Optional per-item target table override for multi-table composite domain handlers. */
+  targetTable?: string;
+  /** Optional per-item Mongo collection override for quarantine records in composite handlers. */
+  collectionName?: string;
   doc: TDoc;
 }
 
@@ -397,16 +401,27 @@ export async function runBackfill(
       batchesRun += 1;
       rowsProcessed += batch.length;
 
-      const tombstoned = await findTombstonedEntityIds(
-        db,
-        handler.targetTable,
-        batch.map(item => item.entityId),
-      );
+      const idsByTable = new Map<string, string[]>();
+      for (const item of batch) {
+        const tbl = item.targetTable ?? handler.targetTable;
+        const list = idsByTable.get(tbl);
+        if (list) {
+          list.push(item.entityId);
+        } else {
+          idsByTable.set(tbl, [item.entityId]);
+        }
+      }
+
+      const tombstonedByTable = new Map<string, Set<string>>();
+      for (const [tbl, ids] of idsByTable) {
+        tombstonedByTable.set(tbl, await findTombstonedEntityIds(db, tbl, ids));
+      }
 
       const eligible: Array<BackfillItem<any>> = [];
       const pendingQuarantines: QuarantineEntry[] = [];
       for (const item of batch) {
-        if (tombstoned.has(normalizeEntityId(item.entityId))) {
+        const tbl = item.targetTable ?? handler.targetTable;
+        if (tombstonedByTable.get(tbl)?.has(normalizeEntityId(item.entityId))) {
           rowsSkippedTombstone += 1;
           continue;
         }
@@ -416,7 +431,7 @@ export async function runBackfill(
             if (!dryRun) {
               pendingQuarantines.push({
                 domain: options.domain,
-                collectionName: handler.collectionName,
+                collectionName: item.collectionName ?? handler.collectionName,
                 mongoId: item.cursor,
                 workspaceId: item.workspaceId ?? options.workspaceId ?? null,
                 reason: verdict.reason,
@@ -452,14 +467,31 @@ export async function runBackfill(
           let skippedLate = 0;
           let upserted = 0;
           if (eligible.length > 0) {
-            const lateTombstoned = await findTombstonedEntityIds(
-              txDb,
-              handler.targetTable,
-              eligible.map(item => item.entityId),
-            );
+            const eligibleIdsByTable = new Map<string, string[]>();
+            for (const item of eligible) {
+              const tbl = item.targetTable ?? handler.targetTable;
+              const list = eligibleIdsByTable.get(tbl);
+              if (list) {
+                list.push(item.entityId);
+              } else {
+                eligibleIdsByTable.set(tbl, [item.entityId]);
+              }
+            }
+            const lateTombstonedByTable = new Map<string, Set<string>>();
+            for (const [tbl, ids] of eligibleIdsByTable) {
+              lateTombstonedByTable.set(
+                tbl,
+                await findTombstonedEntityIds(txDb, tbl, ids),
+              );
+            }
             const stillEligible: Array<BackfillItem<any>> = [];
             for (const item of eligible) {
-              if (lateTombstoned.has(normalizeEntityId(item.entityId))) {
+              const tbl = item.targetTable ?? handler.targetTable;
+              if (
+                lateTombstonedByTable
+                  .get(tbl)
+                  ?.has(normalizeEntityId(item.entityId))
+              ) {
                 skippedLate += 1;
                 continue;
               }

@@ -82,7 +82,7 @@ import {
   peopleOf,
   type Caller,
 } from "../../access/source-connection-access";
-import { User } from "../../database/schema";
+import { authRepo } from "../../repositories/auth";
 import {
   DatabaseConnection,
   SourceConnection,
@@ -178,12 +178,8 @@ async function resolvePrincipals(refs: string[]): Promise<Map<string, string>> {
     ...new Set(refs.filter(r => EMAIL.test(r)).map(r => r.toLowerCase())),
   ];
   const users =
-    emails.length > 0
-      ? await User.find({ email: { $in: emails } })
-          .select("_id email")
-          .lean()
-      : [];
-  const idOf = new Map(users.map(u => [u.email, String(u._id)]));
+    emails.length > 0 ? await authRepo.findUsersByEmails(emails) : [];
+  const idOf = new Map(users.map(u => [u.email, u.id]));
   return new Map(
     refs.map(ref => {
       const id = EMAIL.test(ref) ? idOf.get(ref.toLowerCase()) : undefined;

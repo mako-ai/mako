@@ -8,10 +8,13 @@
  */
 import { Command } from "commander";
 import { closePgConnections } from "../../database/pg/client";
+import { registerMigrationDomains } from "../domains";
 import { listVerifierDomains, runParityVerification } from "../verifier";
 import { loadMigrationCliEnv } from "./env";
 
 loadMigrationCliEnv();
+
+registerMigrationDomains();
 
 const program = new Command()
   .name("pg:verify")
