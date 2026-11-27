@@ -1,4 +1,5 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import net from "node:net";
 import path from "node:path";
 import type { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
@@ -713,6 +714,154 @@ describe("MigrationRouter (5-stage dual-run state machine)", () => {
     } finally {
       await routerA.stopInvalidationListener();
       await routerB.stopInvalidationListener();
+    }
+  });
+
+  it("closes its Redis publisher on stopInvalidationListener so short-lived CLIs exit cleanly", async () => {
+    // Spin up a minimal RESP2 server that accepts ioredis INFO/PUBLISH/QUIT commands
+    // and records every command sent by the child process.
+    const receivedCommands: string[] = [];
+    const server = net.createServer(socket => {
+      let buf = "";
+      socket.on("data", chunk => {
+        buf += chunk.toString("utf8");
+        while (buf.length > 0) {
+          if (!buf.startsWith("*")) break;
+          const firstCrlf = buf.indexOf("\r\n");
+          if (firstCrlf === -1) break;
+          const count = Number.parseInt(buf.slice(1, firstCrlf), 10);
+          let pos = firstCrlf + 2;
+          const args: string[] = [];
+          let complete = true;
+          for (let i = 0; i < count; i++) {
+            if (buf[pos] !== "$") {
+              complete = false;
+              break;
+            }
+            const lenEnd = buf.indexOf("\r\n", pos);
+            if (lenEnd === -1) {
+              complete = false;
+              break;
+            }
+            const len = Number.parseInt(buf.slice(pos + 1, lenEnd), 10);
+            const argStart = lenEnd + 2;
+            const argEnd = argStart + len;
+            if (buf.length < argEnd + 2) {
+              complete = false;
+              break;
+            }
+            args.push(buf.slice(argStart, argEnd));
+            pos = argEnd + 2;
+          }
+          if (!complete) break;
+          buf = buf.slice(pos);
+
+          const cmd = (args[0] ?? "").toUpperCase();
+          receivedCommands.push(cmd);
+          if (cmd === "INFO") {
+            socket.write("$0\r\n\r\n");
+          } else if (cmd === "PUBLISH") {
+            socket.write(":1\r\n");
+          } else if (cmd === "QUIT") {
+            socket.write("+OK\r\n");
+            socket.end();
+          } else {
+            socket.write("+OK\r\n");
+          }
+        }
+      });
+    });
+
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (!addr || typeof addr === "string") {
+      throw new Error("Expected TCP server address");
+    }
+
+    const apiRoot = path.resolve(__dirname, "../..");
+    const tsxBin = path.resolve(apiRoot, "../node_modules/.bin/tsx");
+    const script = `
+      import { drizzle } from "drizzle-orm/pglite";
+      import { createTestPglite } from "./src/database/pg/test-pglite";
+      import { runPgliteMigrations } from "./src/database/pg/migrate";
+      import * as schema from "./src/database/pg/schema";
+      import { MigrationRouter } from "./src/migration/router";
+      import type { MakoPgDb } from "./src/database/pg/client";
+
+      async function run() {
+        const pg = createTestPglite();
+        await runPgliteMigrations(pg);
+        const db = drizzle(pg, { schema }) as unknown as MakoPgDb;
+        const router = new MigrationRouter({
+          enablePubSub: true,
+          autoSubscribe: false,
+          getDb: () => db,
+          hasPg: () => true,
+        });
+        try {
+          await router.setDomainState({
+            domain: "mcp",
+            mode: "dual_write_mongo_read",
+            updatedBy: "test:redis-quit",
+          });
+        } finally {
+          await router.stopInvalidationListener();
+          await pg.close();
+        }
+        console.log("clean-exit-ok");
+      }
+      run().catch(err => {
+        console.error(err);
+        process.exitCode = 1;
+      });
+    `;
+
+    try {
+      const result = await new Promise<{
+        code: number | null;
+        stdout: string;
+        stderr: string;
+      }>((resolve, reject) => {
+        const child = spawn(tsxBin, ["-e", script], {
+          cwd: apiRoot,
+          env: {
+            ...process.env,
+            REDIS_URL: `redis://127.0.0.1:${addr.port}`,
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", d => {
+          stdout += String(d);
+        });
+        child.stderr.on("data", d => {
+          stderr += String(d);
+        });
+        const timeout = setTimeout(() => {
+          child.kill("SIGKILL");
+          reject(
+            new Error(
+              `Child hung waiting for Redis publisher socket to close (stdout=${stdout}, stderr=${stderr})`,
+            ),
+          );
+        }, 10_000);
+        child.on("close", code => {
+          clearTimeout(timeout);
+          resolve({ code, stdout, stderr });
+        });
+        child.on("error", err => {
+          clearTimeout(timeout);
+          reject(err);
+        });
+      });
+
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toContain("clean-exit-ok");
+      expect(receivedCommands).toContain("PUBLISH");
+      expect(receivedCommands).toContain("QUIT");
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
     }
   });
 });

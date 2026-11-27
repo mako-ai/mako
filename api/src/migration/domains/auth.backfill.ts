@@ -20,7 +20,7 @@
  *   4. `email_verifications` (independent)
  *   5. `desktop_auth_codes`  (FK -> users.id)
  */
-import { eq, gt, inArray, or } from "drizzle-orm";
+import { eq, gt, inArray, or, sql } from "drizzle-orm";
 import { Types } from "mongoose";
 import {
   DesktopAuthCode,
@@ -49,20 +49,25 @@ import {
   AUTH_SHADOW_OPTIONS,
   MongoAuthRepository,
   PgAuthRepository,
+  attributionRecordToPgInsert,
   canonicalizeUserForCompare,
   deriveUserUuidv7,
+  desktopAuthCodeRecordToPgInsert,
+  emailVerificationRecordToPgInsert,
   mongoAttributionToRecord,
   mongoDesktopAuthCodeToRecord,
   mongoEmailVerificationToRecord,
   mongoOAuthAccountToRecord,
   mongoUserToRecord,
   normalizeEmailKey,
+  oauthAccountRecordToPgInsert,
   oauthIdToPgUuid,
   pgAttributionToRecord,
   pgDesktopAuthCodeToRecord,
   pgEmailVerificationToRecord,
   pgOAuthAccountToRecord,
   pgUserToRecord,
+  userRecordToPgInsert,
   type DesktopAuthCodeRecord,
   type EmailVerificationRecord,
   type MongoAttributionLike,
@@ -80,6 +85,15 @@ import {
   type BackfillItem,
   type BackfillValidationResult,
 } from "../backfill";
+import {
+  buildExcludedSet,
+  chunkRows,
+  chunkValues,
+  dedupByKey,
+  groupContiguous,
+  pickNewerByUpdatedAt,
+  prefetchPgUserUuidMap,
+} from "../bulk-helpers";
 import { recordMigrationTombstone } from "../router";
 import { registerTtlRule } from "../ttl-reaper";
 import type { SyncRetryEventData } from "../types";
@@ -355,10 +369,64 @@ async function fetchStageBackfillItems(
   }
 }
 
+interface AuthBatchValidationState {
+  userMap: Map<string, string>;
+  prepared: boolean;
+}
+
+function createAuthBatchValidationState(): AuthBatchValidationState {
+  return { userMap: new Map(), prepared: false };
+}
+
+function resetAuthBatchValidationState(state: AuthBatchValidationState): void {
+  state.userMap.clear();
+  state.prepared = false;
+}
+
+async function prepareAuthBatch(
+  items: ReadonlyArray<BackfillItem<AuthBackfillDoc>>,
+  db: MakoPgDb,
+  state: AuthBatchValidationState,
+): Promise<void> {
+  const neededUserIds: string[] = [];
+  for (const { doc } of items) {
+    if (
+      doc.table === "user_attributions" ||
+      doc.table === "oauth_accounts" ||
+      doc.table === "desktop_auth_codes"
+    ) {
+      if (doc.record.userId) neededUserIds.push(doc.record.userId);
+    }
+  }
+  const fetched = await prefetchPgUserUuidMap(db, neededUserIds);
+  for (const [k, v] of fetched) {
+    state.userMap.set(k, v);
+  }
+  state.prepared = true;
+}
+
+async function resolveAuthBatchUserUuid(
+  db: MakoPgDb,
+  userId: string,
+  state: AuthBatchValidationState,
+): Promise<string | null> {
+  if (!userId) return null;
+  const cached =
+    state.userMap.get(userId) ?? state.userMap.get(userId.toLowerCase());
+  if (cached) return cached;
+  if (state.prepared) return null;
+  const resolved = await resolvePgUserUuid(db, userId);
+  if (resolved) {
+    state.userMap.set(userId, resolved);
+    state.userMap.set(resolved, resolved);
+  }
+  return resolved;
+}
+
 async function validateAuthBackfillItem(
   item: BackfillItem<AuthBackfillDoc>,
   db: MakoPgDb,
-  batchUserMap: Map<string, string>,
+  state: AuthBatchValidationState,
 ): Promise<BackfillValidationResult> {
   const { doc } = item;
   switch (doc.table) {
@@ -370,8 +438,8 @@ async function validateAuthBackfillItem(
           sanitizedPayload: { userId: doc.record.id },
         };
       }
-      batchUserMap.set(doc.record.id, doc.pgUserUuid);
-      batchUserMap.set(doc.pgUserUuid, doc.pgUserUuid);
+      state.userMap.set(doc.record.id, doc.pgUserUuid);
+      state.userMap.set(doc.pgUserUuid, doc.pgUserUuid);
       return { ok: true };
     }
 
@@ -386,9 +454,11 @@ async function validateAuthBackfillItem(
           },
         };
       }
-      const pgUserUuid =
-        batchUserMap.get(doc.record.userId) ??
-        (await resolvePgUserUuid(db, doc.record.userId));
+      const pgUserUuid = await resolveAuthBatchUserUuid(
+        db,
+        doc.record.userId,
+        state,
+      );
       if (!pgUserUuid) {
         return {
           ok: false,
@@ -424,9 +494,11 @@ async function validateAuthBackfillItem(
           },
         };
       }
-      const pgUserUuid =
-        batchUserMap.get(doc.record.userId) ??
-        (await resolvePgUserUuid(db, doc.record.userId));
+      const pgUserUuid = await resolveAuthBatchUserUuid(
+        db,
+        doc.record.userId,
+        state,
+      );
       if (!pgUserUuid) {
         return {
           ok: false,
@@ -457,9 +529,11 @@ async function validateAuthBackfillItem(
     }
 
     case "desktop_auth_codes": {
-      const pgUserUuid =
-        batchUserMap.get(doc.record.userId) ??
-        (await resolvePgUserUuid(db, doc.record.userId));
+      const pgUserUuid = await resolveAuthBatchUserUuid(
+        db,
+        doc.record.userId,
+        state,
+      );
       if (!pgUserUuid) {
         return {
           ok: false,
@@ -482,46 +556,301 @@ async function upsertAuthBackfillItems(
   pgRepo: PgAuthRepository,
 ): Promise<number> {
   let upserted = 0;
-  for (const item of items) {
-    const { doc } = item;
-    let wrote = false;
-    switch (doc.table) {
-      case "users":
-        wrote = await pgRepo.upsertUserWithGuard(doc.record, db);
-        break;
-      case "user_attributions":
-        if (doc.resolvedUserUuid) {
-          wrote = await pgRepo.upsertAttributionIgnoreConflict(
-            doc.record,
-            doc.resolvedUserUuid,
-            db,
-          );
+
+  for (const group of groupContiguous(items, item => item.doc.table)) {
+    switch (group.key) {
+      case "users": {
+        const mapped = dedupByKey(
+          group.items.map(item => {
+            const record = (
+              item.doc as Extract<AuthBackfillDoc, { table: "users" }>
+            ).record;
+            const row = userRecordToPgInsert(record);
+            return { record, row, updatedAt: row.updatedAt };
+          }),
+          entry => entry.row.id.toLowerCase(),
+          pickNewerByUpdatedAt,
+        );
+        if (mapped.length === 0) break;
+
+        // Detect intra-batch or existing-DB email / legacy_id collisions against
+        // a different users.id so non-colliding rows bulk-insert cleanly without
+        // aborting the batch transaction.
+        const emailCounts = new Map<string, number>();
+        const legacyCounts = new Map<string, number>();
+        for (const { row } of mapped) {
+          emailCounts.set(row.email, (emailCounts.get(row.email) ?? 0) + 1);
+          if (row.legacyId) {
+            legacyCounts.set(
+              row.legacyId,
+              (legacyCounts.get(row.legacyId) ?? 0) + 1,
+            );
+          }
+        }
+
+        const existingByEmail = new Map<string, string>();
+        const existingByLegacy = new Map<string, string>();
+        const emails = [...emailCounts.keys()];
+        const legacyIds = [...legacyCounts.keys()];
+        for (const emailChunk of chunkValues(emails)) {
+          const rows = await db
+            .select({ id: users.id, email: users.email })
+            .from(users)
+            .where(inArray(users.email, emailChunk));
+          for (const r of rows) {
+            existingByEmail.set(r.email, r.id.toLowerCase());
+          }
+        }
+        for (const legacyChunk of chunkValues(legacyIds)) {
+          const rows = await db
+            .select({ id: users.id, legacyId: users.legacyId })
+            .from(users)
+            .where(inArray(users.legacyId, legacyChunk));
+          for (const r of rows) {
+            if (r.legacyId) {
+              existingByLegacy.set(r.legacyId, r.id.toLowerCase());
+            }
+          }
+        }
+
+        const bulkRows: Array<typeof users.$inferInsert> = [];
+        const fallbackRecords: UserRecord[] = [];
+        for (const { record, row } of mapped) {
+          const rowId = row.id.toLowerCase();
+          const intraEmailDup = (emailCounts.get(row.email) ?? 0) > 1;
+          const intraLegacyDup =
+            row.legacyId != null && (legacyCounts.get(row.legacyId) ?? 0) > 1;
+          const existingEmailOwner = existingByEmail.get(row.email);
+          const existingLegacyOwner = row.legacyId
+            ? existingByLegacy.get(row.legacyId)
+            : undefined;
+          if (
+            intraEmailDup ||
+            intraLegacyDup ||
+            (existingEmailOwner && existingEmailOwner !== rowId) ||
+            (existingLegacyOwner && existingLegacyOwner !== rowId)
+          ) {
+            fallbackRecords.push(record);
+          } else {
+            bulkRows.push(row);
+          }
+        }
+
+        const setCols = buildExcludedSet(users, ["id", "createdAt"], {
+          legacyId: sql`COALESCE(${users.legacyId}, EXCLUDED."legacy_id")`,
+        });
+        for (const chunk of chunkRows(bulkRows, 13, 300)) {
+          const written = await db
+            .insert(users)
+            .values(chunk)
+            .onConflictDoUpdate({
+              target: users.id,
+              set: setCols,
+              setWhere: sql`${users.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${users.updatedAt}`,
+            })
+            .returning({ id: users.id });
+          upserted += written.length;
+        }
+        for (const record of fallbackRecords) {
+          if (await pgRepo.upsertUserWithGuard(record, db)) {
+            upserted += 1;
+          }
         }
         break;
-      case "oauth_accounts":
-        if (doc.resolvedUserUuid) {
-          wrote = await pgRepo.upsertOAuthAccountIdempotent(
-            doc.record,
-            doc.resolvedUserUuid,
-            db,
-          );
+      }
+
+      case "user_attributions": {
+        const rows = dedupByKey(
+          group.items
+            .map(item => {
+              const d = item.doc as Extract<
+                AuthBackfillDoc,
+                { table: "user_attributions" }
+              >;
+              if (!d.resolvedUserUuid) return null;
+              return attributionRecordToPgInsert(d.record, d.resolvedUserUuid);
+            })
+            .filter(
+              (r): r is typeof userAttributions.$inferInsert => r !== null,
+            ),
+          r => r.userId.toLowerCase(),
+          existing => existing,
+        );
+        for (const chunk of chunkRows(rows, 8, 400)) {
+          const written = await db
+            .insert(userAttributions)
+            .values(chunk)
+            .onConflictDoNothing({ target: userAttributions.userId })
+            .returning({ userId: userAttributions.userId });
+          upserted += written.length;
         }
         break;
-      case "email_verifications":
-        wrote = await pgRepo.upsertEmailVerificationIdempotent(doc.record, db);
-        break;
-      case "desktop_auth_codes":
-        if (doc.resolvedUserUuid) {
-          wrote = await pgRepo.upsertDesktopAuthCodeIdempotent(
-            doc.record,
-            doc.resolvedUserUuid,
-            db,
-          );
+      }
+
+      case "oauth_accounts": {
+        const entries = dedupByKey(
+          group.items
+            .map(item => {
+              const d = item.doc as Extract<
+                AuthBackfillDoc,
+                { table: "oauth_accounts" }
+              >;
+              if (!d.resolvedUserUuid) return null;
+              return {
+                record: d.record,
+                pgUserUuid: d.resolvedUserUuid,
+                row: oauthAccountRecordToPgInsert(d.record, d.resolvedUserUuid),
+              };
+            })
+            .filter((e): e is NonNullable<typeof e> => e !== null),
+          e => e.row.id.toLowerCase(),
+        );
+        if (entries.length === 0) break;
+
+        const providerKeyCounts = new Map<string, number>();
+        for (const { row } of entries) {
+          const key = `${row.provider}\0${row.providerUserId}`;
+          providerKeyCounts.set(key, (providerKeyCounts.get(key) ?? 0) + 1);
+        }
+
+        const existingByProvider = new Map<string, string>();
+        const providerUserIds = [
+          ...new Set(entries.map(e => e.row.providerUserId)),
+        ];
+        for (const uidChunk of chunkValues(providerUserIds)) {
+          const rows = await db
+            .select({
+              id: oauthAccounts.id,
+              provider: oauthAccounts.provider,
+              providerUserId: oauthAccounts.providerUserId,
+            })
+            .from(oauthAccounts)
+            .where(inArray(oauthAccounts.providerUserId, uidChunk));
+          for (const r of rows) {
+            existingByProvider.set(
+              `${r.provider}\0${r.providerUserId}`,
+              r.id.toLowerCase(),
+            );
+          }
+        }
+
+        const bulkRows: Array<typeof oauthAccounts.$inferInsert> = [];
+        const fallbackEntries: typeof entries = [];
+        for (const entry of entries) {
+          const key = `${entry.row.provider}\0${entry.row.providerUserId}`;
+          const existingId = existingByProvider.get(key);
+          if (
+            (providerKeyCounts.get(key) ?? 0) > 1 ||
+            (existingId && existingId !== entry.row.id.toLowerCase())
+          ) {
+            fallbackEntries.push(entry);
+          } else {
+            bulkRows.push(entry.row);
+          }
+        }
+
+        for (const chunk of chunkRows(bulkRows, 6, 400)) {
+          const written = await db
+            .insert(oauthAccounts)
+            .values(chunk)
+            .onConflictDoUpdate({
+              target: oauthAccounts.id,
+              set: {
+                userId: sql`EXCLUDED."user_id"`,
+                provider: sql`EXCLUDED."provider"`,
+                providerUserId: sql`EXCLUDED."provider_user_id"`,
+                email: sql`EXCLUDED."email"`,
+              },
+            })
+            .returning({ id: oauthAccounts.id });
+          upserted += written.length;
+        }
+        for (const entry of fallbackEntries) {
+          if (
+            await pgRepo.upsertOAuthAccountIdempotent(
+              entry.record,
+              entry.pgUserUuid,
+              db,
+            )
+          ) {
+            upserted += 1;
+          }
         }
         break;
+      }
+
+      case "email_verifications": {
+        const rows = dedupByKey(
+          group.items.map(item =>
+            emailVerificationRecordToPgInsert(
+              (
+                item.doc as Extract<
+                  AuthBackfillDoc,
+                  { table: "email_verifications" }
+                >
+              ).record,
+            ),
+          ),
+          r => r.id,
+        );
+        for (const chunk of chunkRows(rows, 6, 400)) {
+          const written = await db
+            .insert(emailVerifications)
+            .values(chunk)
+            .onConflictDoUpdate({
+              target: emailVerifications.id,
+              set: {
+                email: sql`EXCLUDED."email"`,
+                code: sql`EXCLUDED."code"`,
+                type: sql`EXCLUDED."type"`,
+                expiresAt: sql`EXCLUDED."expires_at"`,
+              },
+            })
+            .returning({ id: emailVerifications.id });
+          upserted += written.length;
+        }
+        break;
+      }
+
+      case "desktop_auth_codes": {
+        const rows = dedupByKey(
+          group.items
+            .map(item => {
+              const d = item.doc as Extract<
+                AuthBackfillDoc,
+                { table: "desktop_auth_codes" }
+              >;
+              if (!d.resolvedUserUuid) return null;
+              return desktopAuthCodeRecordToPgInsert(
+                d.record,
+                d.resolvedUserUuid,
+              );
+            })
+            .filter(
+              (r): r is typeof desktopAuthCodes.$inferInsert => r !== null,
+            ),
+          r => r.id,
+        );
+        for (const chunk of chunkRows(rows, 5, 400)) {
+          const written = await db
+            .insert(desktopAuthCodes)
+            .values(chunk)
+            .onConflictDoUpdate({
+              target: desktopAuthCodes.id,
+              set: {
+                userId: sql`EXCLUDED."user_id"`,
+                challenge: sql`EXCLUDED."challenge"`,
+                expiresAt: sql`EXCLUDED."expires_at"`,
+              },
+            })
+            .returning({ id: desktopAuthCodes.id });
+          upserted += written.length;
+        }
+        break;
+      }
     }
-    if (wrote) upserted += 1;
   }
+
   return upserted;
 }
 
@@ -531,14 +860,14 @@ async function upsertAuthBackfillItems(
  */
 export function createAuthBackfillHandler(): BackfillDomainHandler<AuthBackfillDoc> {
   const pgRepo = new PgAuthRepository();
-  const batchUserMap = new Map<string, string>();
+  const batchState = createAuthBatchValidationState();
 
   return {
     domain: "auth",
     collectionName: "users",
     targetTable: "users",
     async fetchBatch({ afterCursor, limit }) {
-      batchUserMap.clear();
+      resetAuthBatchValidationState(batchState);
       const parsed = decodeCompositeCursor(afterCursor);
       const startStage = parsed ? parsed.stage : 1;
       const items: Array<BackfillItem<AuthBackfillDoc>> = [];
@@ -561,8 +890,11 @@ export function createAuthBackfillHandler(): BackfillDomainHandler<AuthBackfillD
 
       return items;
     },
+    prepareBatch(items, db) {
+      return prepareAuthBatch(items, db, batchState);
+    },
     validate(item, db) {
-      return validateAuthBackfillItem(item, db, batchUserMap);
+      return validateAuthBackfillItem(item, db, batchState);
     },
     upsertBatch(items, db) {
       return upsertAuthBackfillItems(items, db, pgRepo);
@@ -577,18 +909,21 @@ export function createAuthTableBackfillHandler(
   meta: AuthStageMeta,
 ): BackfillDomainHandler<AuthBackfillDoc> {
   const pgRepo = new PgAuthRepository();
-  const batchUserMap = new Map<string, string>();
+  const batchState = createAuthBatchValidationState();
 
   return {
     domain: `auth:${meta.table}`,
     collectionName: meta.collection,
     targetTable: meta.table,
     async fetchBatch({ afterCursor, limit }) {
-      batchUserMap.clear();
+      resetAuthBatchValidationState(batchState);
       return fetchStageBackfillItems(meta, afterCursor, limit, false);
     },
+    prepareBatch(items, db) {
+      return prepareAuthBatch(items, db, batchState);
+    },
     validate(item, db) {
-      return validateAuthBackfillItem(item, db, batchUserMap);
+      return validateAuthBackfillItem(item, db, batchState);
     },
     upsertBatch(items, db) {
       return upsertAuthBackfillItems(items, db, pgRepo);

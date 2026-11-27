@@ -167,6 +167,9 @@ export function canonicalizeForDiff(
   if (value === null) {
     return null;
   }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
   if (value instanceof Date) {
     return Number.isNaN(value.getTime()) ? null : value.toISOString();
   }

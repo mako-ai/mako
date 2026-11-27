@@ -7,6 +7,7 @@
  *   pnpm --filter api run pg:backfill -- --domain chat --workspace <oid-or-uuid> --dry-run
  */
 import { Command } from "commander";
+import mongoose from "mongoose";
 import { closePgConnections } from "../../database/pg/client";
 import { listBackfillDomains, runBackfill } from "../backfill";
 import { registerMigrationDomains } from "../domains";
@@ -84,7 +85,15 @@ async function main(): Promise<void> {
     return;
   }
 
+  const mongoUri = process.env.DATABASE_URL?.trim();
+  if (!mongoUri) {
+    console.error("Error: DATABASE_URL must be set to run pg:backfill.");
+    process.exitCode = 1;
+    return;
+  }
+
   try {
+    await mongoose.connect(mongoUri);
     const summary = await runBackfill({
       domain: opts.domain,
       workspaceId: opts.workspace ?? null,
@@ -95,6 +104,9 @@ async function main(): Promise<void> {
     });
     console.info(JSON.stringify(summary, null, 2));
   } finally {
+    if (mongoose.connection.readyState !== 0) {
+      await mongoose.disconnect();
+    }
     await closePgConnections();
   }
 }

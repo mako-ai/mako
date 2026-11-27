@@ -13,7 +13,7 @@
  *   4. `connection_access_events` (FK -> workspaces, users; soft ref connection_id)
  *   5. `connection_write_events`  (FK -> workspaces, users; soft ref connection_id)
  */
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { Types } from "mongoose";
 import { ConnectionAccessEvent } from "../../access/connection-access-event";
 import { ConnectionWriteEvent } from "../../access/connection-write-event";
@@ -55,6 +55,7 @@ import {
   accessEventToPgInsert,
   connectorDefinitionToPgInsert,
   databaseConnectionToPgInsert,
+  extractPrincipalUserId,
   mongoAccessEventToRecord,
   mongoConnectorDefinitionToRecord,
   mongoDatabaseConnectionToSummary,
@@ -87,6 +88,16 @@ import {
   type BackfillItem,
   type BackfillValidationResult,
 } from "../backfill";
+import {
+  buildExcludedSet,
+  chunkRows,
+  chunkValues,
+  dedupByKey,
+  groupContiguous,
+  pickNewerByUpdatedAt,
+  prefetchExistingKeySet,
+  prefetchPgUserUuidMap,
+} from "../bulk-helpers";
 import { recordMigrationTombstone } from "../router";
 import { registerTtlRule } from "../ttl-reaper";
 import type { SyncRetryEventData } from "../types";
@@ -285,6 +296,130 @@ function makeMemoizedUserResolver(db: MakoPgDb): UserUuidResolver {
     cache.set(idOrLegacyId, resolved);
     return resolved;
   };
+}
+
+function makePrefetchedUserResolver(
+  userMap: ReadonlyMap<string, string>,
+): UserUuidResolver {
+  return (idOrLegacyId: string): string | null => {
+    if (!idOrLegacyId) return null;
+    return (
+      userMap.get(idOrLegacyId) ??
+      userMap.get(idOrLegacyId.toLowerCase()) ??
+      null
+    );
+  };
+}
+
+function pushWriterUserIds(
+  writers: ReadonlyArray<{ principal: string; addedBy?: string }> | undefined,
+  out: string[],
+): void {
+  if (!writers) return;
+  for (const w of writers) {
+    const extracted = extractPrincipalUserId(w.principal);
+    if (extracted) out.push(extracted.userId);
+    if (w.addedBy) out.push(w.addedBy);
+  }
+}
+
+function pushWriterLabelUserIds(
+  labels: readonly string[] | undefined,
+  out: string[],
+): void {
+  if (!labels) return;
+  for (const label of labels) {
+    const spaceIdx = label.indexOf(" ");
+    const principalPart = spaceIdx === -1 ? label : label.slice(0, spaceIdx);
+    const extracted = extractPrincipalUserId(principalPart);
+    if (extracted) out.push(extracted.userId);
+  }
+}
+
+function collectConnectionsRawUserIds(
+  items: ReadonlyArray<BackfillItem<ConnectionsBackfillDoc>>,
+): string[] {
+  const out: string[] = [];
+  for (const { doc } of items) {
+    switch (doc.table) {
+      case "database_connections":
+        if (doc.summary) {
+          if (doc.summary.createdBy) out.push(doc.summary.createdBy);
+          pushWriterUserIds(doc.summary.writers, out);
+        }
+        break;
+      case "source_connections":
+        if (doc.record) {
+          if (doc.record.createdBy) out.push(doc.record.createdBy);
+          pushWriterUserIds(doc.record.writers, out);
+          pushWriterUserIds(doc.record.liveReaders, out);
+          if (doc.record.managers) {
+            for (const m of doc.record.managers) {
+              if (m) out.push(m);
+            }
+          }
+          if (doc.record.keyRequest?.requestedBy) {
+            out.push(doc.record.keyRequest.requestedBy);
+          }
+        }
+        break;
+      case "connector_definitions":
+        break;
+      case "connection_access_events":
+        if (doc.record) {
+          if (doc.record.actor) out.push(doc.record.actor);
+          const changes = doc.record.changes;
+          if (changes.writers) {
+            pushWriterLabelUserIds(changes.writers.added, out);
+            pushWriterLabelUserIds(changes.writers.removed, out);
+          }
+          if (changes.liveReaders) {
+            pushWriterLabelUserIds(changes.liveReaders.added, out);
+            pushWriterLabelUserIds(changes.liveReaders.removed, out);
+          }
+          if (changes.managers) {
+            for (const id of changes.managers.added) if (id) out.push(id);
+            for (const id of changes.managers.removed) if (id) out.push(id);
+          }
+        }
+        break;
+      case "connection_write_events":
+        if (doc.record) {
+          const extracted = extractPrincipalUserId(doc.record.principal);
+          if (extracted) out.push(extracted.userId);
+        }
+        break;
+    }
+  }
+  return out;
+}
+
+async function prepareConnectionsBatch(
+  items: ReadonlyArray<BackfillItem<ConnectionsBackfillDoc>>,
+  db: MakoPgDb,
+  wsExistsCache: Map<string, boolean>,
+): Promise<UserUuidResolver> {
+  const wsUuids = new Set<string>();
+  for (const { doc } of items) {
+    if (isObjectIdHex(doc.rawWorkspaceId)) {
+      const wsUuid = objectIdToUuid(doc.rawWorkspaceId).toLowerCase();
+      if (!wsExistsCache.has(wsUuid)) {
+        wsUuids.add(wsUuid);
+      }
+    }
+  }
+  const wsUuidList = [...wsUuids];
+  const rawUserIds = collectConnectionsRawUserIds(items);
+
+  const [foundWs, userMap] = await Promise.all([
+    prefetchExistingKeySet(db, workspaces, workspaces.id, wsUuidList),
+    prefetchPgUserUuidMap(db, rawUserIds),
+  ]);
+
+  for (const wsUuid of wsUuidList) {
+    wsExistsCache.set(wsUuid, foundWs.has(wsUuid));
+  }
+  return makePrefetchedUserResolver(userMap);
 }
 
 async function workspaceExistsInPg(
@@ -742,41 +877,235 @@ async function upsertConnectionsBackfillItems(
   pgRepo: PgConnectionsRepository,
 ): Promise<number> {
   let upserted = 0;
-  for (const item of items) {
-    const { doc } = item;
-    let wrote = false;
-    switch (doc.table) {
-      case "database_connections":
-        if (doc.pgRow) {
-          wrote = await pgRepo.upsertDatabaseConnectionWithGuard(doc.pgRow, db);
+
+  for (const group of groupContiguous(items, item => item.doc.table)) {
+    switch (group.key) {
+      case "database_connections": {
+        const rows = dedupByKey(
+          group.items
+            .map(
+              item =>
+                (
+                  item.doc as Extract<
+                    ConnectionsBackfillDoc,
+                    { table: "database_connections" }
+                  >
+                ).pgRow,
+            )
+            .filter((r): r is NewDatabaseConnectionRow => r !== undefined),
+          r => r.id.toLowerCase(),
+          pickNewerByUpdatedAt,
+        );
+        const setCols = buildExcludedSet(databaseConnections, [
+          "id",
+          "workspaceId",
+          "createdAt",
+        ]);
+        for (const chunk of chunkRows(rows, 12, 300)) {
+          const written = await db
+            .insert(databaseConnections)
+            .values(chunk)
+            .onConflictDoUpdate({
+              target: databaseConnections.id,
+              set: setCols,
+              setWhere: sql`${databaseConnections.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${databaseConnections.updatedAt}`,
+            })
+            .returning({ id: databaseConnections.id });
+          upserted += written.length;
         }
         break;
-      case "source_connections":
-        if (doc.pgRow) {
-          wrote = await pgRepo.upsertSourceConnectionWithGuard(doc.pgRow, db);
+      }
+
+      case "source_connections": {
+        const rows = dedupByKey(
+          group.items
+            .map(
+              item =>
+                (
+                  item.doc as Extract<
+                    ConnectionsBackfillDoc,
+                    { table: "source_connections" }
+                  >
+                ).pgRow,
+            )
+            .filter((r): r is NewSourceConnectionRow => r !== undefined),
+          r => r.id.toLowerCase(),
+          pickNewerByUpdatedAt,
+        );
+        const setCols = buildExcludedSet(sourceConnections, [
+          "id",
+          "workspaceId",
+          "createdAt",
+        ]);
+        for (const chunk of chunkRows(rows, 22, 250)) {
+          const written = await db
+            .insert(sourceConnections)
+            .values(chunk)
+            .onConflictDoUpdate({
+              target: sourceConnections.id,
+              set: setCols,
+              setWhere: sql`${sourceConnections.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${sourceConnections.updatedAt}`,
+            })
+            .returning({ id: sourceConnections.id });
+          upserted += written.length;
         }
         break;
-      case "connector_definitions":
-        if (doc.pgRow) {
-          wrote = await pgRepo.upsertConnectorDefinitionWithGuard(
-            doc.pgRow,
-            db,
+      }
+
+      case "connector_definitions": {
+        const rawRows = group.items
+          .map(
+            item =>
+              (
+                item.doc as Extract<
+                  ConnectionsBackfillDoc,
+                  { table: "connector_definitions" }
+                >
+              ).pgRow,
+          )
+          .filter((r): r is NewConnectorDefinitionRow => r !== undefined);
+        const rows = dedupByKey(
+          dedupByKey(rawRows, r => r.id.toLowerCase(), pickNewerByUpdatedAt),
+          r => `${r.workspaceId.toLowerCase()}\0${r.slug}`,
+          pickNewerByUpdatedAt,
+        );
+        if (rows.length === 0) break;
+
+        // Prefetch existing (workspace_id, slug) rows so delete+recreate PK
+        // reconciliation matches `upsertConnectorDefinitionWithGuard` exactly.
+        const wsUuids = [
+          ...new Set(rows.map(r => r.workspaceId.toLowerCase())),
+        ];
+        const slugs = [...new Set(rows.map(r => r.slug))];
+        const existingBySlug = new Map<string, string>();
+        for (const wsChunk of chunkValues(wsUuids)) {
+          for (const slugChunk of chunkValues(slugs)) {
+            const existing = await db
+              .select({
+                id: connectorDefinitions.id,
+                workspaceId: connectorDefinitions.workspaceId,
+                slug: connectorDefinitions.slug,
+              })
+              .from(connectorDefinitions)
+              .where(
+                and(
+                  inArray(connectorDefinitions.workspaceId, wsChunk),
+                  inArray(connectorDefinitions.slug, slugChunk),
+                ),
+              );
+            for (const row of existing) {
+              existingBySlug.set(
+                `${row.workspaceId.toLowerCase()}\0${row.slug}`,
+                row.id.toLowerCase(),
+              );
+            }
+          }
+        }
+
+        const bulkRows: NewConnectorDefinitionRow[] = [];
+        const collidingRows: NewConnectorDefinitionRow[] = [];
+        for (const row of rows) {
+          const existingId = existingBySlug.get(
+            `${row.workspaceId.toLowerCase()}\0${row.slug}`,
           );
+          if (existingId && existingId !== row.id.toLowerCase()) {
+            collidingRows.push(row);
+          } else {
+            bulkRows.push(row);
+          }
+        }
+
+        const setCols = buildExcludedSet(connectorDefinitions, [
+          "id",
+          "workspaceId",
+          "createdAt",
+        ]);
+        for (const chunk of chunkRows(bulkRows, 20, 250)) {
+          const written = await db
+            .insert(connectorDefinitions)
+            .values(chunk)
+            .onConflictDoUpdate({
+              target: connectorDefinitions.id,
+              set: setCols,
+              setWhere: sql`${connectorDefinitions.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${connectorDefinitions.updatedAt}`,
+            })
+            .returning({ id: connectorDefinitions.id });
+          upserted += written.length;
+        }
+        for (const row of collidingRows) {
+          if (await pgRepo.upsertConnectorDefinitionWithGuard(row, db)) {
+            upserted += 1;
+          }
         }
         break;
-      case "connection_access_events":
-        if (doc.pgRow) {
-          wrote = await pgRepo.upsertAccessEventIgnoreConflict(doc.pgRow, db);
+      }
+
+      case "connection_access_events": {
+        const rows = dedupByKey(
+          group.items
+            .map(
+              item =>
+                (
+                  item.doc as Extract<
+                    ConnectionsBackfillDoc,
+                    { table: "connection_access_events" }
+                  >
+                ).pgRow,
+            )
+            .filter((r): r is NewConnectionAccessEventRow => r !== undefined),
+          r => r.id.toLowerCase(),
+          existing => existing,
+        );
+        for (const chunk of chunkRows(rows, 9, 400)) {
+          const written = await db
+            .insert(connectionAccessEvents)
+            .values(chunk)
+            .onConflictDoNothing({ target: connectionAccessEvents.id })
+            .returning({ id: connectionAccessEvents.id });
+          upserted += written.length;
         }
         break;
-      case "connection_write_events":
-        if (doc.pgRow) {
-          wrote = await pgRepo.upsertWriteEventCoalesceOutcome(doc.pgRow, db);
+      }
+
+      case "connection_write_events": {
+        const rows = dedupByKey(
+          group.items
+            .map(
+              item =>
+                (
+                  item.doc as Extract<
+                    ConnectionsBackfillDoc,
+                    { table: "connection_write_events" }
+                  >
+                ).pgRow,
+            )
+            .filter((r): r is NewConnectionWriteEventRow => r !== undefined),
+          r => r.id.toLowerCase(),
+          (existing, incoming) => ({
+            ...existing,
+            status: existing.status ?? incoming.status ?? null,
+            error: existing.error ?? incoming.error ?? null,
+          }),
+        );
+        for (const chunk of chunkRows(rows, 10, 400)) {
+          const written = await db
+            .insert(connectionWriteEvents)
+            .values(chunk)
+            .onConflictDoUpdate({
+              target: connectionWriteEvents.id,
+              set: {
+                status: sql`COALESCE(${connectionWriteEvents.status}, EXCLUDED."status")`,
+                error: sql`COALESCE(${connectionWriteEvents.error}, EXCLUDED."error")`,
+              },
+            })
+            .returning({ id: connectionWriteEvents.id });
+          upserted += written.length;
         }
         break;
+      }
     }
-    if (wrote) upserted += 1;
   }
+
   return upserted;
 }
 
@@ -815,6 +1144,9 @@ export function createConnectionsBackfillHandler(): BackfillDomainHandler<Connec
 
       return items;
     },
+    async prepareBatch(items, db) {
+      batchResolver = await prepareConnectionsBatch(items, db, wsExistsCache);
+    },
     validate(item, db) {
       batchResolver ??= makeMemoizedUserResolver(db);
       return validateConnectionsBackfillItem(
@@ -851,6 +1183,9 @@ export function createConnectionsTableBackfillHandler(
         workspaceId,
         false,
       );
+    },
+    async prepareBatch(items, db) {
+      batchResolver = await prepareConnectionsBatch(items, db, wsExistsCache);
     },
     validate(item, db) {
       batchResolver ??= makeMemoizedUserResolver(db);
@@ -1334,7 +1669,11 @@ export function createConnectionsVerifierHandler(): VerifierDomainHandler {
         items.push(...batch);
       }
 
-      const resolver = makeMemoizedUserResolver(db);
+      const userMap = await prefetchPgUserUuidMap(
+        db,
+        collectConnectionsRawUserIds(items),
+      );
+      const resolver = makePrefetchedUserResolver(userMap);
       return Promise.all(
         items.map(item => buildVerifierRecord(item, resolver, true)),
       );
@@ -1410,7 +1749,11 @@ export function createConnectionsTableVerifierHandler(
         workspaceId,
         false,
       );
-      const resolver = makeMemoizedUserResolver(db);
+      const userMap = await prefetchPgUserUuidMap(
+        db,
+        collectConnectionsRawUserIds(items),
+      );
+      const resolver = makePrefetchedUserResolver(userMap);
       return Promise.all(
         items.map(item => buildVerifierRecord(item, resolver, false)),
       );

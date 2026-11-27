@@ -109,6 +109,15 @@ import {
   type BackfillItem,
   type BackfillValidationResult,
 } from "../backfill";
+import {
+  buildExcludedSet,
+  chunkRows,
+  chunkValues,
+  dedupByKey,
+  groupContiguous,
+  pickNewerByUpdatedAt,
+  prefetchPgUserUuidMap,
+} from "../bulk-helpers";
 import type { SyncRetryEventData } from "../types";
 import {
   registerVerifierDomain,
@@ -278,12 +287,16 @@ async function resolvePgWorkspaceSet(
         .filter((u): u is string => Boolean(u)),
     ),
   ];
-  if (uuids.length === 0) return new Set();
-  const rows = await db
-    .select({ id: workspaces.id })
-    .from(workspaces)
-    .where(inArray(workspaces.id, uuids));
-  return new Set(rows.map(r => r.id.toLowerCase()));
+  const out = new Set<string>();
+  if (uuids.length === 0) return out;
+  for (const chunk of chunkValues(uuids)) {
+    const rows = await db
+      .select({ id: workspaces.id })
+      .from(workspaces)
+      .where(inArray(workspaces.id, chunk));
+    for (const r of rows) out.add(r.id.toLowerCase());
+  }
+  return out;
 }
 
 async function resolvePgUserMap(
@@ -1542,54 +1555,801 @@ async function upsertBindingJobRecordToPg(
     });
 }
 
+const APPS_SYSTEM_ACTORS = new Set([
+  "",
+  "publish",
+  "api-key",
+  "scheduler",
+  "system",
+  "worker",
+  "app-chat",
+]);
+
+function resolveAppsUserFromMap(
+  rawUserId: string | null | undefined,
+  userMap: ReadonlyMap<string, string>,
+): string | null {
+  if (!rawUserId) return null;
+  const trimmed = rawUserId.trim();
+  if (!trimmed || APPS_SYSTEM_ACTORS.has(trimmed)) return null;
+  return userMap.get(trimmed) ?? userMap.get(trimmed.toLowerCase()) ?? null;
+}
+
+function resolveWorktreeActorFromMap(
+  rawActorId: string,
+  userMap: ReadonlyMap<string, string>,
+): { actorId: string; userId: string | null } {
+  const resolved = resolveAppsUserFromMap(rawActorId, userMap);
+  if (resolved) {
+    return { actorId: resolved, userId: resolved };
+  }
+  return { actorId: rawActorId, userId: null };
+}
+
+function maxNullableDate(
+  a: Date | null | undefined,
+  b: Date | null | undefined,
+): Date | null {
+  if (!a) return b ?? null;
+  if (!b) return a;
+  return a.getTime() >= b.getTime() ? a : b;
+}
+
+async function prepareAppsBatch(
+  items: ReadonlyArray<BackfillItem<AppsBackfillDoc>>,
+  db: MakoPgDb,
+  workspaceCache: Map<string, boolean>,
+): Promise<void> {
+  const wsUuids = new Set<string>();
+  for (const { doc } of items) {
+    if ("workspaceId" in doc.record && doc.record.workspaceId) {
+      const parsed = parseEntityId(doc.record.workspaceId);
+      if (parsed && !workspaceCache.has(parsed.uuid)) {
+        wsUuids.add(parsed.uuid);
+      }
+    }
+  }
+  if (wsUuids.size === 0) return;
+  const uuidList = [...wsUuids];
+  const found = await resolvePgWorkspaceSet(db, uuidList);
+  for (const uuid of uuidList) {
+    workspaceCache.set(uuid, found.has(uuid));
+  }
+}
+
 async function upsertAppsBackfillItems(
   items: Array<BackfillItem<AppsBackfillDoc>>,
   db: MakoPgDb,
-  pgRepo: PgAppsMetadataRepository,
 ): Promise<number> {
+  if (items.length === 0) return 0;
+
+  const userMap = await prefetchPgUserUuidMap(
+    db,
+    collectRawUserIdsFromItems(items),
+  );
   let upserted = 0;
-  const guarded = { guarded: true };
-  for (const item of items) {
-    const { doc } = item;
-    switch (doc.table) {
-      case "app_projects":
-        await upsertProjectRecordToPg(doc.record, db, pgRepo, guarded);
+
+  for (const group of groupContiguous(items, item => item.doc.table)) {
+    switch (group.key) {
+      case "app_projects": {
+        const mapped = dedupByKey(
+          group.items.map(item => {
+            const rec = (
+              item.doc as Extract<AppsBackfillDoc, { table: "app_projects" }>
+            ).record;
+            const sharedWithJson =
+              rec.sharedWith !== undefined
+                ? serializeShareEntries(
+                    rec.sharedWith,
+                    raw =>
+                      userMap.get(raw) ?? userMap.get(raw.toLowerCase()) ?? raw,
+                  )
+                : null;
+            const row: typeof appProjects.$inferInsert = {
+              id: entityIdToPgUuid(rec.id),
+              workspaceId: entityIdToPgUuid(rec.workspaceId),
+              title: rec.title,
+              slug: rec.slug ?? null,
+              path: rec.path ?? null,
+              description: rec.description ?? null,
+              access: rec.access,
+              workspaceRole: rec.workspaceRole ?? null,
+              sharedWith: sharedWithJson,
+              ownerId: resolveAppsUserFromMap(rec.owner_id, userMap),
+              createdBy: resolveAppsUserFromMap(rec.createdBy, userMap),
+              defaultBranch: rec.defaultBranch,
+              cloudRepoOwner: rec.cloudRepo?.owner ?? null,
+              cloudRepoName: rec.cloudRepo?.repo ?? null,
+              publishedSha: rec.publishedSha ?? null,
+              chatEnabled: rec.chatEnabled ?? null,
+              publishedAt: rec.publishedAt ?? null,
+              lastDeployError: serializeLastDeployError(rec.lastDeployError),
+              bindingRefreshErrors: serializeBindingRefreshErrors(
+                rec.bindingRefreshErrors,
+              ),
+              deployProgress: serializeDeployProgress(rec.deployProgress),
+              publicShareEnabled: Boolean(rec.publicShare?.enabled),
+              publicShareToken: rec.publicShare?.token ?? null,
+              publicSharePasswordHash: rec.publicShare?.passwordHash ?? null,
+              publicSharePasswordEncrypted:
+                rec.publicShare?.passwordEncrypted ?? null,
+              publicShareCreatedAt: rec.publicShare?.createdAt ?? null,
+              publicShareCreatedBy: resolveAppsUserFromMap(
+                rec.publicShare?.createdBy,
+                userMap,
+              ),
+              publicShareAllowLiveQueries: Boolean(
+                rec.publicShare?.allowLiveQueries,
+              ),
+              env: rec.env ?? null,
+              createdAt: rec.createdAt,
+              updatedAt: rec.updatedAt,
+            };
+            return { rec, row, updatedAt: rec.updatedAt };
+          }),
+          e => e.row.id.toLowerCase(),
+          pickNewerByUpdatedAt,
+        );
+
+        const setCols = buildExcludedSet(appProjects, [
+          "id",
+          "workspaceId",
+          "createdAt",
+        ]);
+        for (const sub of chunkRows(
+          mapped.map(m => m.row),
+          30,
+          150,
+        )) {
+          await db
+            .insert(appProjects)
+            .values(sub)
+            .onConflictDoUpdate({
+              target: appProjects.id,
+              set: setCols,
+              setWhere: sql`${appProjects.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${appProjects.updatedAt}`,
+            });
+        }
+        upserted += group.items.length;
         break;
-      case "app_index":
-        await upsertIndexEntryRecordToPg(doc.record, db, pgRepo, guarded);
+      }
+
+      case "app_index": {
+        const rawRows = group.items.map(item => {
+          const rec = (
+            item.doc as Extract<AppsBackfillDoc, { table: "app_index" }>
+          ).record;
+          return {
+            id: entityIdToPgUuid(rec.id),
+            workspaceId: entityIdToPgUuid(rec.workspaceId),
+            appId: entityIdToPgUuid(rec.appId),
+            path: rec.path,
+            slug: rec.slug,
+            scope: rec.scope,
+            ownerId: resolveAppsUserFromMap(rec.ownerId, userMap),
+            treeOid: rec.treeOid,
+            title: rec.title,
+            description: rec.description ?? null,
+            hasManifestId: rec.hasManifestId,
+            duplicateOf: optionalEntityIdToPgUuid(rec.duplicateOf),
+            schedules: rec.schedules,
+            tables: rec.tables ?? null,
+            bindingTables: rec.bindingTables ?? null,
+            bindings: rec.bindings ?? null,
+            authorEmail: rec.authorEmail ?? null,
+            firstCommitAt: rec.firstCommitAt ?? null,
+            thumbnail: rec.thumbnail ?? null,
+            icon: rec.icon ?? null,
+            indexedSha: rec.indexedSha,
+            createdAt: rec.createdAt,
+            updatedAt: rec.updatedAt,
+          } satisfies typeof appIndex.$inferInsert;
+        });
+        const rows = dedupByKey(
+          dedupByKey(rawRows, r => r.appId.toLowerCase(), pickNewerByUpdatedAt),
+          r => `${r.workspaceId.toLowerCase()}\0${r.path}`,
+          pickNewerByUpdatedAt,
+        );
+        const setCols = buildExcludedSet(appIndex, ["appId", "createdAt"]);
+        for (const sub of chunkRows(rows, 23, 200)) {
+          const updated = await db
+            .insert(appIndex)
+            .values(sub)
+            .onConflictDoUpdate({
+              target: appIndex.appId,
+              set: setCols,
+              setWhere: sql`${appIndex.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${appIndex.updatedAt}`,
+            })
+            .returning({ id: appIndex.id });
+          if (updated.length < sub.length) {
+            const updatedIds = new Set(updated.map(r => r.id.toLowerCase()));
+            for (const row of sub) {
+              if (!updatedIds.has(row.id.toLowerCase())) {
+                await db
+                  .update(appIndex)
+                  .set({ id: row.id })
+                  .where(
+                    and(eq(appIndex.appId, row.appId), ne(appIndex.id, row.id)),
+                  );
+              }
+            }
+          }
+        }
+        upserted += group.items.length;
         break;
-      case "app_index_heads":
-        await upsertIndexHeadRecordToPg(doc.record, db, guarded);
+      }
+
+      case "app_index_heads": {
+        const rows = dedupByKey(
+          group.items.map(item => {
+            const rec = (
+              item.doc as Extract<AppsBackfillDoc, { table: "app_index_heads" }>
+            ).record;
+            return {
+              id: entityIdToPgUuid(rec.id),
+              workspaceId: entityIdToPgUuid(rec.workspaceId),
+              sha: rec.sha,
+              schemaVersion: rec.schemaVersion ?? null,
+              folders: rec.folders,
+              createdAt: rec.createdAt,
+              updatedAt: rec.updatedAt,
+            } satisfies typeof appIndexHeads.$inferInsert;
+          }),
+          r => r.workspaceId.toLowerCase(),
+          pickNewerByUpdatedAt,
+        );
+        const setCols = buildExcludedSet(appIndexHeads, [
+          "workspaceId",
+          "createdAt",
+        ]);
+        for (const sub of chunkRows(rows, 7, 300)) {
+          const updated = await db
+            .insert(appIndexHeads)
+            .values(sub)
+            .onConflictDoUpdate({
+              target: appIndexHeads.workspaceId,
+              set: setCols,
+              setWhere: sql`${appIndexHeads.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${appIndexHeads.updatedAt}`,
+            })
+            .returning({ id: appIndexHeads.id });
+          if (updated.length < sub.length) {
+            const updatedIds = new Set(updated.map(r => r.id.toLowerCase()));
+            for (const row of sub) {
+              if (!updatedIds.has(row.id.toLowerCase())) {
+                await db
+                  .update(appIndexHeads)
+                  .set({ id: row.id })
+                  .where(
+                    and(
+                      eq(appIndexHeads.workspaceId, row.workspaceId),
+                      ne(appIndexHeads.id, row.id),
+                    ),
+                  );
+              }
+            }
+          }
+        }
+        upserted += group.items.length;
         break;
-      case "app_embeddings":
-        await upsertEmbeddingRecordToPg(doc.record, db, guarded);
+      }
+
+      case "app_embeddings": {
+        const rows = dedupByKey(
+          group.items.map(item => {
+            const rec = (
+              item.doc as Extract<AppsBackfillDoc, { table: "app_embeddings" }>
+            ).record;
+            return {
+              id: entityIdToPgUuid(rec.id),
+              workspaceId: entityIdToPgUuid(rec.workspaceId),
+              appId: entityIdToPgUuid(rec.appId),
+              path: rec.path,
+              treeOid: rec.treeOid,
+              docHash: rec.docHash,
+              embeddingModel: rec.embeddingModel,
+              vector: rec.vector,
+              terms: rec.terms ?? null,
+              createdAt: rec.createdAt,
+              updatedAt: rec.updatedAt,
+            } satisfies typeof appEmbeddings.$inferInsert;
+          }),
+          r => `${r.workspaceId.toLowerCase()}\0${r.appId.toLowerCase()}`,
+          pickNewerByUpdatedAt,
+        );
+        const setCols = buildExcludedSet(appEmbeddings, [
+          "workspaceId",
+          "appId",
+          "createdAt",
+        ]);
+        for (const sub of chunkRows(rows, 11, 50)) {
+          const updated = await db
+            .insert(appEmbeddings)
+            .values(sub)
+            .onConflictDoUpdate({
+              target: [appEmbeddings.workspaceId, appEmbeddings.appId],
+              set: setCols,
+              setWhere: sql`${appEmbeddings.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${appEmbeddings.updatedAt}`,
+            })
+            .returning({ id: appEmbeddings.id });
+          if (updated.length < sub.length) {
+            const updatedIds = new Set(updated.map(r => r.id.toLowerCase()));
+            for (const row of sub) {
+              if (!updatedIds.has(row.id.toLowerCase())) {
+                await db
+                  .update(appEmbeddings)
+                  .set({ id: row.id })
+                  .where(
+                    and(
+                      eq(appEmbeddings.workspaceId, row.workspaceId),
+                      eq(appEmbeddings.appId, row.appId),
+                      ne(appEmbeddings.id, row.id),
+                    ),
+                  );
+              }
+            }
+          }
+        }
+        upserted += group.items.length;
         break;
-      case "app_lifecycle":
-        await upsertLifecycleRecordToPg(doc.record, db, pgRepo, guarded);
+      }
+
+      case "app_lifecycle": {
+        const rows = dedupByKey(
+          group.items.map(item => {
+            const rec = (
+              item.doc as Extract<AppsBackfillDoc, { table: "app_lifecycle" }>
+            ).record;
+            return {
+              id: entityIdToPgUuid(rec.id),
+              workspaceId: entityIdToPgUuid(rec.workspaceId),
+              appId: entityIdToPgUuid(rec.appId),
+              verifiedAt: rec.verifiedAt ?? null,
+              verifiedBy: resolveAppsUserFromMap(rec.verifiedBy, userMap),
+              staleSince: rec.staleSince ?? null,
+              staleNotifiedTo: rec.staleNotifiedTo ?? null,
+              schedulesPausedAt: rec.schedulesPausedAt ?? null,
+              archivedAt: rec.archivedAt ?? null,
+              archivedFrom: rec.archivedFrom ?? null,
+              archivedTo: rec.archivedTo ?? null,
+              restoredAt: rec.restoredAt ?? null,
+              restoredBy: resolveAppsUserFromMap(rec.restoredBy, userMap),
+              createdAt: rec.createdAt,
+              updatedAt: rec.updatedAt,
+            } satisfies typeof appLifecycle.$inferInsert;
+          }),
+          r => `${r.workspaceId.toLowerCase()}\0${r.appId.toLowerCase()}`,
+          pickNewerByUpdatedAt,
+        );
+        const setCols = buildExcludedSet(appLifecycle, [
+          "workspaceId",
+          "appId",
+          "createdAt",
+        ]);
+        for (const sub of chunkRows(rows, 15, 250)) {
+          const updated = await db
+            .insert(appLifecycle)
+            .values(sub)
+            .onConflictDoUpdate({
+              target: [appLifecycle.workspaceId, appLifecycle.appId],
+              set: setCols,
+              setWhere: sql`${appLifecycle.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${appLifecycle.updatedAt}`,
+            })
+            .returning({ id: appLifecycle.id });
+          if (updated.length < sub.length) {
+            const updatedIds = new Set(updated.map(r => r.id.toLowerCase()));
+            for (const row of sub) {
+              if (!updatedIds.has(row.id.toLowerCase())) {
+                await db
+                  .update(appLifecycle)
+                  .set({ id: row.id })
+                  .where(
+                    and(
+                      eq(appLifecycle.workspaceId, row.workspaceId),
+                      eq(appLifecycle.appId, row.appId),
+                      ne(appLifecycle.id, row.id),
+                    ),
+                  );
+              }
+            }
+          }
+        }
+        upserted += group.items.length;
         break;
-      case "app_deploy_commit_statuses":
-        await upsertCommitStatusRecordToPg(doc.record, db, guarded);
+      }
+
+      case "app_deploy_commit_statuses": {
+        const rows = dedupByKey(
+          group.items.map(item => {
+            const rec = (
+              item.doc as Extract<
+                AppsBackfillDoc,
+                { table: "app_deploy_commit_statuses" }
+              >
+            ).record;
+            return {
+              id: entityIdToPgUuid(rec.id),
+              workspaceId: entityIdToPgUuid(rec.workspaceId),
+              appId: entityIdToPgUuid(rec.appId),
+              sha: rec.sha,
+              state: rec.state,
+              createdAt: rec.createdAt,
+              updatedAt: rec.updatedAt,
+            } satisfies typeof appDeployCommitStatuses.$inferInsert;
+          }),
+          r =>
+            `${r.workspaceId.toLowerCase()}\0${r.appId.toLowerCase()}\0${r.sha}`,
+          pickNewerByUpdatedAt,
+        );
+        for (const sub of chunkRows(rows, 7, 350)) {
+          const updated = await db
+            .insert(appDeployCommitStatuses)
+            .values(sub)
+            .onConflictDoUpdate({
+              target: [
+                appDeployCommitStatuses.workspaceId,
+                appDeployCommitStatuses.appId,
+                appDeployCommitStatuses.sha,
+              ],
+              set: {
+                id: sql`EXCLUDED."id"`,
+                state: sql`EXCLUDED."state"`,
+                updatedAt: sql`EXCLUDED."updated_at"`,
+              },
+              setWhere: sql`${appDeployCommitStatuses.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${appDeployCommitStatuses.updatedAt}`,
+            })
+            .returning({ id: appDeployCommitStatuses.id });
+          if (updated.length < sub.length) {
+            const updatedIds = new Set(updated.map(r => r.id.toLowerCase()));
+            for (const row of sub) {
+              if (!updatedIds.has(row.id.toLowerCase())) {
+                await db
+                  .update(appDeployCommitStatuses)
+                  .set({ id: row.id })
+                  .where(
+                    and(
+                      eq(appDeployCommitStatuses.workspaceId, row.workspaceId),
+                      eq(appDeployCommitStatuses.appId, row.appId),
+                      eq(appDeployCommitStatuses.sha, row.sha),
+                      ne(appDeployCommitStatuses.id, row.id),
+                    ),
+                  );
+              }
+            }
+          }
+        }
+        upserted += group.items.length;
         break;
-      case "app_worktrees":
-        await upsertWorktreeRecordToPg(doc.record, db, pgRepo, guarded);
+      }
+
+      case "app_worktrees": {
+        const rows = dedupByKey(
+          group.items.map(item => {
+            const rec = (
+              item.doc as Extract<AppsBackfillDoc, { table: "app_worktrees" }>
+            ).record;
+            const actor = resolveWorktreeActorFromMap(rec.userId, userMap);
+            return {
+              id: entityIdToPgUuid(rec.id),
+              workspaceId: entityIdToPgUuid(rec.workspaceId),
+              projectId: optionalEntityIdToPgUuid(rec.projectId),
+              actorId: actor.actorId,
+              userId: actor.userId,
+              branch: rec.branch,
+              lastActivityAt: rec.lastActivityAt ?? null,
+              activeUntil: rec.activeUntil ?? null,
+              idlePausedAt: rec.idlePausedAt ?? null,
+              idlePauseHoldUntil: rec.idlePauseHoldUntil ?? null,
+              idlePauseHoldSetAt: rec.idlePauseHoldSetAt ?? null,
+              createdAt: rec.createdAt,
+              updatedAt: rec.updatedAt,
+            } satisfies typeof appWorktrees.$inferInsert;
+          }),
+          r => `${r.workspaceId.toLowerCase()}\0${r.actorId}`,
+          (existing, incoming) => {
+            const winner = pickNewerByUpdatedAt(existing, incoming);
+            return {
+              ...winner,
+              lastActivityAt: maxNullableDate(
+                existing.lastActivityAt,
+                incoming.lastActivityAt,
+              ),
+              activeUntil: maxNullableDate(
+                existing.activeUntil,
+                incoming.activeUntil,
+              ),
+            };
+          },
+        );
+        const setCols = buildExcludedSet(
+          appWorktrees,
+          ["workspaceId", "actorId", "createdAt"],
+          {
+            lastActivityAt: sql`GREATEST(${appWorktrees.lastActivityAt}, EXCLUDED."last_activity_at")`,
+            activeUntil: sql`GREATEST(${appWorktrees.activeUntil}, EXCLUDED."active_until")`,
+          },
+        );
+        for (const sub of chunkRows(rows, 13, 250)) {
+          const updated = await db
+            .insert(appWorktrees)
+            .values(sub)
+            .onConflictDoUpdate({
+              target: [appWorktrees.workspaceId, appWorktrees.actorId],
+              set: setCols,
+              setWhere: sql`${appWorktrees.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${appWorktrees.updatedAt}`,
+            })
+            .returning({ id: appWorktrees.id });
+          if (updated.length < sub.length) {
+            const updatedIds = new Set(updated.map(r => r.id.toLowerCase()));
+            for (const row of sub) {
+              if (!updatedIds.has(row.id.toLowerCase())) {
+                await db
+                  .update(appWorktrees)
+                  .set({ id: row.id })
+                  .where(
+                    and(
+                      eq(appWorktrees.workspaceId, row.workspaceId),
+                      eq(appWorktrees.actorId, row.actorId),
+                      ne(appWorktrees.id, row.id),
+                    ),
+                  );
+              }
+            }
+          }
+        }
+        upserted += group.items.length;
         break;
-      case "app_binding_state":
-        await upsertBindingStateRecordToPg(doc.record, db, guarded);
+      }
+
+      case "app_binding_state": {
+        const rows = dedupByKey(
+          group.items.map(item => {
+            const rec = (
+              item.doc as Extract<
+                AppsBackfillDoc,
+                { table: "app_binding_state" }
+              >
+            ).record;
+            return {
+              id: entityIdToPgUuid(rec.id),
+              projectId: entityIdToPgUuid(rec.projectId),
+              name: rec.name,
+              lastMaterializedAt: rec.lastMaterializedAt ?? null,
+              lastRowCount: rec.lastRowCount ?? null,
+              publicRefreshAt: rec.publicRefreshAt ?? null,
+              history: rec.history
+                ? rec.history.map(serializeBindingRun)
+                : null,
+              createdAt: rec.createdAt,
+              updatedAt: rec.updatedAt,
+            } satisfies typeof appBindingState.$inferInsert;
+          }),
+          r => `${r.projectId.toLowerCase()}\0${r.name}`,
+          (existing, incoming) => {
+            const winner = pickNewerByUpdatedAt(existing, incoming);
+            return {
+              ...winner,
+              publicRefreshAt: maxNullableDate(
+                existing.publicRefreshAt,
+                incoming.publicRefreshAt,
+              ),
+            };
+          },
+        );
+        const setCols = buildExcludedSet(
+          appBindingState,
+          ["projectId", "name", "createdAt"],
+          {
+            publicRefreshAt: sql`GREATEST(${appBindingState.publicRefreshAt}, EXCLUDED."public_refresh_at")`,
+          },
+        );
+        for (const sub of chunkRows(rows, 9, 200)) {
+          const updated = await db
+            .insert(appBindingState)
+            .values(sub)
+            .onConflictDoUpdate({
+              target: [appBindingState.projectId, appBindingState.name],
+              set: setCols,
+              setWhere: sql`${appBindingState.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${appBindingState.updatedAt}`,
+            })
+            .returning({ id: appBindingState.id });
+          if (updated.length < sub.length) {
+            const updatedIds = new Set(updated.map(r => r.id.toLowerCase()));
+            for (const row of sub) {
+              if (!updatedIds.has(row.id.toLowerCase())) {
+                await db
+                  .update(appBindingState)
+                  .set({ id: row.id })
+                  .where(
+                    and(
+                      eq(appBindingState.projectId, row.projectId),
+                      eq(appBindingState.name, row.name),
+                      ne(appBindingState.id, row.id),
+                    ),
+                  );
+              }
+            }
+          }
+        }
+        upserted += group.items.length;
         break;
-      case "app_binding_drafts":
-        await upsertBindingDraftRecordToPg(doc.record, db, guarded);
+      }
+
+      case "app_binding_drafts": {
+        const draftRecs = group.items.map(
+          item =>
+            (
+              item.doc as Extract<
+                AppsBackfillDoc,
+                { table: "app_binding_drafts" }
+              >
+            ).record,
+        );
+        const nonFailureRecs: AppBindingDraftRecord[] = [];
+        const failureRecs: AppBindingDraftRecord[] = [];
+        for (const rec of draftRecs) {
+          if (rec.kind === "failure") failureRecs.push(rec);
+          else nonFailureRecs.push(rec);
+        }
+
+        const toDraftRow = (
+          rec: AppBindingDraftRecord,
+        ): typeof appBindingDrafts.$inferInsert => ({
+          id: entityIdToPgUuid(rec.id),
+          projectId: entityIdToPgUuid(rec.projectId),
+          hash: rec.hash,
+          kind: rec.kind,
+          name: rec.name,
+          key: rec.key ?? null,
+          builtAt: rec.builtAt ?? null,
+          rowCount: rec.rowCount ?? null,
+          byteSize: rec.byteSize ?? null,
+          failures: rec.failures ?? null,
+          until: rec.until ?? null,
+          error: rec.error ?? null,
+          expiresAt: rec.expiresAt,
+          createdAt: rec.createdAt,
+          updatedAt: rec.updatedAt,
+        });
+
+        const existingFailureKeys = new Set<string>();
+        const failureKeyCounts = new Map<string, number>();
+        if (failureRecs.length > 0) {
+          const projUuids = [
+            ...new Set(failureRecs.map(r => entityIdToPgUuid(r.projectId))),
+          ];
+          for (const rec of failureRecs) {
+            const key = `${entityIdToPgUuid(rec.projectId)}\0${rec.hash}`;
+            failureKeyCounts.set(key, (failureKeyCounts.get(key) ?? 0) + 1);
+          }
+          for (const projChunk of chunkValues(projUuids)) {
+            const existing = await db
+              .select({
+                projectId: appBindingDrafts.projectId,
+                hash: appBindingDrafts.hash,
+              })
+              .from(appBindingDrafts)
+              .where(
+                and(
+                  inArray(appBindingDrafts.projectId, projChunk),
+                  eq(appBindingDrafts.kind, "failure"),
+                ),
+              );
+            for (const r of existing) {
+              existingFailureKeys.add(
+                `${r.projectId.toLowerCase()}\0${r.hash}`,
+              );
+            }
+          }
+        }
+
+        const bulkDraftRows: Array<typeof appBindingDrafts.$inferInsert> =
+          nonFailureRecs.map(toDraftRow);
+        const fallbackFailureRecs: AppBindingDraftRecord[] = [];
+        for (const rec of failureRecs) {
+          const key = `${entityIdToPgUuid(rec.projectId)}\0${rec.hash}`;
+          if (
+            existingFailureKeys.has(key) ||
+            (failureKeyCounts.get(key) ?? 0) > 1
+          ) {
+            fallbackFailureRecs.push(rec);
+          } else {
+            bulkDraftRows.push(toDraftRow(rec));
+          }
+        }
+
+        const dedupedDrafts = dedupByKey(
+          bulkDraftRows,
+          r => r.id.toLowerCase(),
+          pickNewerByUpdatedAt,
+        );
+        const setCols = buildExcludedSet(appBindingDrafts, [
+          "id",
+          "projectId",
+          "hash",
+          "createdAt",
+        ]);
+        for (const sub of chunkRows(dedupedDrafts, 15, 250)) {
+          await db
+            .insert(appBindingDrafts)
+            .values(sub)
+            .onConflictDoUpdate({
+              target: appBindingDrafts.id,
+              set: setCols,
+              setWhere: sql`${appBindingDrafts.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${appBindingDrafts.updatedAt}`,
+            });
+        }
+        for (const rec of fallbackFailureRecs) {
+          await upsertBindingDraftRecordToPg(rec, db, { guarded: true });
+        }
+        upserted += group.items.length;
         break;
-      case "app_binding_jobs":
-        await upsertBindingJobRecordToPg(doc.record, db, pgRepo, guarded);
+      }
+
+      case "app_binding_jobs": {
+        const rows = dedupByKey(
+          group.items.map(item => {
+            const rec = (
+              item.doc as Extract<
+                AppsBackfillDoc,
+                { table: "app_binding_jobs" }
+              >
+            ).record;
+            return {
+              id: entityIdToPgUuid(rec.id),
+              workspaceId: entityIdToPgUuid(rec.workspaceId),
+              projectId: entityIdToPgUuid(rec.projectId),
+              name: rec.name,
+              kind: rec.kind ?? null,
+              actorId: rec.actorId,
+              userId: resolveAppsUserFromMap(rec.userId, userMap),
+              canWrite: rec.canWrite,
+              unregistered: rec.unregistered ?? null,
+              request: rec.request,
+              status: rec.status,
+              result: rec.result ?? null,
+              error: rec.error ?? null,
+              errorStatus: rec.errorStatus ?? null,
+              heartbeatAt: rec.heartbeatAt ?? null,
+              progress: serializeJobProgress(rec.progress),
+              expiresAt: rec.expiresAt,
+              createdAt: rec.createdAt,
+              updatedAt: rec.updatedAt,
+            } satisfies typeof appBindingJobs.$inferInsert;
+          }),
+          r => r.id.toLowerCase(),
+          pickNewerByUpdatedAt,
+        );
+        for (const sub of chunkRows(rows, 19, 200)) {
+          await db
+            .insert(appBindingJobs)
+            .values(sub)
+            .onConflictDoUpdate({
+              target: appBindingJobs.id,
+              set: {
+                actorId: sql`EXCLUDED."actor_id"`,
+                userId: sql`EXCLUDED."user_id"`,
+                status: sql`EXCLUDED."status"`,
+                result: sql`EXCLUDED."result"`,
+                error: sql`EXCLUDED."error"`,
+                errorStatus: sql`EXCLUDED."error_status"`,
+                heartbeatAt: sql`EXCLUDED."heartbeat_at"`,
+                progress: sql`EXCLUDED."progress"`,
+                expiresAt: sql`EXCLUDED."expires_at"`,
+                updatedAt: sql`EXCLUDED."updated_at"`,
+              },
+              setWhere: sql`${appBindingJobs.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${appBindingJobs.updatedAt}`,
+            });
+        }
+        upserted += group.items.length;
         break;
+      }
     }
-    upserted += 1;
   }
+
   return upserted;
 }
 
 export function createAppsMetadataBackfillHandler(): BackfillDomainHandler<AppsBackfillDoc> {
-  const pgRepo = new PgAppsMetadataRepository();
   const workspaceCache = new Map<string, boolean>();
 
   return {
@@ -1619,11 +2379,14 @@ export function createAppsMetadataBackfillHandler(): BackfillDomainHandler<AppsB
       }
       return items;
     },
+    prepareBatch(items, db) {
+      return prepareAppsBatch(items, db, workspaceCache);
+    },
     validate(item, db) {
       return validateAppsBackfillItem(item, db, workspaceCache);
     },
     upsertBatch(items, db) {
-      return upsertAppsBackfillItems(items, db, pgRepo);
+      return upsertAppsBackfillItems(items, db);
     },
   };
 }
@@ -1631,7 +2394,6 @@ export function createAppsMetadataBackfillHandler(): BackfillDomainHandler<AppsB
 export function createAppsMetadataTableBackfillHandler(
   meta: AppsStageMeta,
 ): BackfillDomainHandler<AppsBackfillDoc> {
-  const pgRepo = new PgAppsMetadataRepository();
   const workspaceCache = new Map<string, boolean>();
 
   return {
@@ -1642,11 +2404,14 @@ export function createAppsMetadataTableBackfillHandler(
       workspaceCache.clear();
       return fetchStageItems(meta, afterCursor, limit, workspaceId, false);
     },
+    prepareBatch(items, db) {
+      return prepareAppsBatch(items, db, workspaceCache);
+    },
     validate(item, db) {
       return validateAppsBackfillItem(item, db, workspaceCache);
     },
     upsertBatch(items, db) {
-      return upsertAppsBackfillItems(items, db, pgRepo);
+      return upsertAppsBackfillItems(items, db);
     },
   };
 }

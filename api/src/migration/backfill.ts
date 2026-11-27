@@ -27,6 +27,7 @@ import {
   migrationTombstones,
 } from "../database/pg/schema/control-plane";
 import { loggers } from "../logging";
+import { chunkRows, chunkValues, dedupByKey } from "./bulk-helpers";
 import type { BackfillProgressSummary, MigrationDomain } from "./types";
 
 const logger = loggers.migration();
@@ -85,6 +86,16 @@ export interface BackfillDomainHandler<TDoc = unknown> {
     limit: number;
     workspaceId: string | null;
   }): Promise<Array<BackfillItem<TDoc>>>;
+  /**
+   * Optional per-batch prefetch hook invoked once right before `validate` runs
+   * on non-tombstoned items in a batch. Allows handlers to batch-prefetch FK
+   * existence sets and user UUID lookup maps in O(1) Postgres queries instead
+   * of per-row SELECTs inside `validate()`.
+   */
+  prepareBatch?: (
+    items: Array<BackfillItem<TDoc>>,
+    db: MakoPgDb,
+  ) => Promise<void> | void;
   /** Optional validation (e.g. FK existence, closed UTC day check). Failed items are quarantined. */
   validate?: (
     item: BackfillItem<TDoc>,
@@ -174,17 +185,23 @@ export async function findTombstonedEntityIds(
   entityIds: string[],
 ): Promise<Set<string>> {
   if (entityIds.length === 0) return new Set();
-  const normalized = entityIds.map(normalizeEntityId);
-  const rows = await db
-    .select({ entityId: migrationTombstones.entityId })
-    .from(migrationTombstones)
-    .where(
-      and(
-        eq(migrationTombstones.tableName, tableName),
-        inArray(migrationTombstones.entityId, normalized),
-      ),
-    );
-  return new Set(rows.map(r => normalizeEntityId(r.entityId)));
+  const normalized = [...new Set(entityIds.map(normalizeEntityId))];
+  const out = new Set<string>();
+  for (const chunk of chunkValues(normalized)) {
+    const rows = await db
+      .select({ entityId: migrationTombstones.entityId })
+      .from(migrationTombstones)
+      .where(
+        and(
+          eq(migrationTombstones.tableName, tableName),
+          inArray(migrationTombstones.entityId, chunk),
+        ),
+      );
+    for (const r of rows) {
+      out.add(normalizeEntityId(r.entityId));
+    }
+  }
+  return out;
 }
 
 export interface QuarantineEntry {
@@ -232,6 +249,53 @@ export async function quarantineRecord(
     })
     .returning({ id: migrationQuarantine.id });
   return inserted.length > 0;
+}
+
+/**
+ * Bulk-insert unmigratable/orphaned Mongo records into `migration_quarantine`.
+ * Deduplicates unresolved rows via `uq_migration_quarantine_unresolved` and
+ * returns the number of newly inserted quarantine rows.
+ */
+export async function quarantineRecordsBatch(
+  db: MakoPgDb,
+  entries: readonly QuarantineEntry[],
+): Promise<number> {
+  if (entries.length === 0) return 0;
+  const deduped = dedupByKey(
+    entries,
+    e => `${e.domain}\0${e.collectionName}\0${e.mongoId}`,
+    existing => existing,
+  );
+  const now = new Date();
+  let insertedCount = 0;
+  for (const chunk of chunkRows(deduped, 7, 300)) {
+    const inserted = await db
+      .insert(migrationQuarantine)
+      .values(
+        chunk.map(entry => ({
+          domain: entry.domain,
+          collectionName: entry.collectionName,
+          mongoId: entry.mongoId,
+          workspaceId: entry.workspaceId
+            ? (parseEntityId(entry.workspaceId)?.uuid ?? null)
+            : null,
+          reason: entry.reason,
+          payload: entry.payload ?? null,
+          quarantinedAt: now,
+        })),
+      )
+      .onConflictDoNothing({
+        target: [
+          migrationQuarantine.domain,
+          migrationQuarantine.collectionName,
+          migrationQuarantine.mongoId,
+        ],
+        where: sql`${migrationQuarantine.resolvedAt} IS NULL`,
+      })
+      .returning({ id: migrationQuarantine.id });
+    insertedCount += inserted.length;
+  }
+  return insertedCount;
 }
 
 export interface RunBackfillOptions {
@@ -412,19 +476,31 @@ export async function runBackfill(
         }
       }
 
-      const tombstonedByTable = new Map<string, Set<string>>();
-      for (const [tbl, ids] of idsByTable) {
-        tombstonedByTable.set(tbl, await findTombstonedEntityIds(db, tbl, ids));
-      }
+      const tombstonedEntries = await Promise.all(
+        [...idsByTable.entries()].map(
+          async ([tbl, ids]) =>
+            [tbl, await findTombstonedEntityIds(db, tbl, ids)] as const,
+        ),
+      );
+      const tombstonedByTable = new Map<string, Set<string>>(tombstonedEntries);
 
-      const eligible: Array<BackfillItem<any>> = [];
-      const pendingQuarantines: QuarantineEntry[] = [];
+      const nonTombstoned: Array<BackfillItem<any>> = [];
       for (const item of batch) {
         const tbl = item.targetTable ?? handler.targetTable;
         if (tombstonedByTable.get(tbl)?.has(normalizeEntityId(item.entityId))) {
           rowsSkippedTombstone += 1;
           continue;
         }
+        nonTombstoned.push(item);
+      }
+
+      if (handler.prepareBatch && nonTombstoned.length > 0) {
+        await handler.prepareBatch(nonTombstoned, db);
+      }
+
+      const eligible: Array<BackfillItem<any>> = [];
+      const pendingQuarantines: QuarantineEntry[] = [];
+      for (const item of nonTombstoned) {
         if (handler.validate) {
           const verdict = await handler.validate(item, db);
           if (!verdict.ok) {
@@ -456,13 +532,10 @@ export async function runBackfill(
         const nextRowsProcessed = rowsProcessed;
         const txOutcome = await db.transaction(async tx => {
           const txDb = tx as unknown as MakoPgDb;
-          let quarantinedInBatch = 0;
-          for (const entry of pendingQuarantines) {
-            const inserted = await quarantineRecord(txDb, entry);
-            if (inserted) {
-              quarantinedInBatch += 1;
-            }
-          }
+          const quarantinedInBatch =
+            pendingQuarantines.length > 0
+              ? await quarantineRecordsBatch(txDb, pendingQuarantines)
+              : 0;
 
           let skippedLate = 0;
           let upserted = 0;

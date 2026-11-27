@@ -1,0 +1,2 @@
+ALTER TABLE "chat_messages" DROP CONSTRAINT "chat_messages_role_check";--> statement-breakpoint
+ALTER TABLE "chat_messages" ADD CONSTRAINT "chat_messages_role_check" CHECK ("chat_messages"."role" IN ('user', 'assistant', 'system', 'tool'));

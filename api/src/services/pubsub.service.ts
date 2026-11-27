@@ -34,6 +34,16 @@ import { loggers } from "../logging";
 
 export type { Publisher, Subscriber } from "resumable-stream/generic";
 
+export interface PubSubPublisher extends Publisher {
+  /** Close the underlying connection when backed by Redis; no-op in memory mode. */
+  quit: () => Promise<void>;
+}
+
+export interface PubSubSubscriber extends Subscriber {
+  /** Close the underlying connection when backed by Redis; no-op in memory mode. */
+  quit: () => Promise<void>;
+}
+
 const logger = loggers.api("pubsub");
 
 // ── Failure reporting ─────────────────────────────────────────────
@@ -117,9 +127,10 @@ class InMemoryPubSub {
     return entry.value;
   }
 
-  createPublisher(): Publisher {
+  createPublisher(): PubSubPublisher {
     return {
       connect: async () => undefined,
+      quit: async () => undefined,
       publish: async (channel: string, message: string) => {
         return this.emitter.emit(channel, message) ? 1 : 0;
       },
@@ -140,12 +151,18 @@ class InMemoryPubSub {
     };
   }
 
-  createSubscriber(): Subscriber {
+  createSubscriber(): PubSubSubscriber {
     // Each subscriber tracks its own listeners so unsubscribe(channel) only
     // detaches itself, matching Redis client semantics.
     const listeners = new Map<string, (message: string) => void>();
     return {
       connect: async () => undefined,
+      quit: async () => {
+        for (const [channel, listener] of listeners) {
+          this.emitter.off(channel, listener);
+        }
+        listeners.clear();
+      },
       subscribe: async (
         channel: string,
         callback: (message: string) => void,
@@ -192,10 +209,34 @@ export function getPubSubBackendKind(): "redis" | "memory" {
 // every subscribed message in Redis mode (workspace realtime + cross-instance
 // stream resume), which is exactly the outage this comment prevents recurring.
 
+const REDIS_QUIT_TIMEOUT_MS = 2_000;
+
+/**
+ * Gracefully close an ioredis connection: sends QUIT when ready (with a bounded
+ * timeout so shutdown cannot hang) and always calls disconnect() to tear down
+ * any open socket or reconnect timer.
+ */
+async function closeRedisConnection(redis: Redis): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    if (redis.status === "ready") {
+      const timeout = new Promise<void>(resolve => {
+        timer = setTimeout(resolve, REDIS_QUIT_TIMEOUT_MS);
+        timer.unref();
+      });
+      await Promise.race([redis.quit().catch(() => undefined), timeout]);
+    }
+  } finally {
+    if (timer) clearTimeout(timer);
+    redis.disconnect();
+  }
+}
+
 /** Wrap an ioredis connection as a resumable-stream Publisher. */
-function redisPublisher(redis: Redis): Publisher {
+function redisPublisher(redis: Redis): PubSubPublisher {
   return {
     connect: async () => undefined,
+    quit: () => closeRedisConnection(redis),
     publish: (channel: string, message: string) =>
       redis.publish(channel, message),
     set: async (key: string, value: string, options?: { EX?: number }) =>
@@ -213,13 +254,17 @@ function redisPublisher(redis: Redis): Publisher {
  * handlers — mirroring the in-process impl (one handler per channel, last wins,
  * which matches how both consumers subscribe each channel exactly once).
  */
-function redisSubscriber(redis: Redis): Subscriber {
+function redisSubscriber(redis: Redis): PubSubSubscriber {
   const handlers = new Map<string, (message: string) => void>();
   redis.on("message", (channel: string, message: string) => {
     handlers.get(channel)?.(message);
   });
   return {
     connect: async () => undefined,
+    quit: async () => {
+      handlers.clear();
+      await closeRedisConnection(redis);
+    },
     subscribe: async (channel: string, callback: (message: string) => void) => {
       handlers.set(channel, callback);
       await redis.subscribe(channel);
@@ -235,7 +280,7 @@ function redisSubscriber(redis: Redis): Subscriber {
  * Create a publisher handle. Redis mode: a fresh connection the caller owns.
  * Memory mode: a handle onto the shared in-process backend.
  */
-export function createPubSubPublisher(): Publisher {
+export function createPubSubPublisher(): PubSubPublisher {
   const redisUrl = process.env.REDIS_URL;
   if (redisUrl) {
     return redisPublisher(
@@ -253,7 +298,7 @@ export function createPubSubPublisher(): Publisher {
  * (a subscriber-mode connection cannot issue regular commands — never reuse
  * it as a publisher). Memory mode: a handle onto the shared backend.
  */
-export function createPubSubSubscriber(): Subscriber {
+export function createPubSubSubscriber(): PubSubSubscriber {
   const redisUrl = process.env.REDIS_URL;
   if (redisUrl) {
     return redisSubscriber(

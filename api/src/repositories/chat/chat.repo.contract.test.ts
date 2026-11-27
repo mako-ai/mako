@@ -1751,4 +1751,109 @@ describe("Phase 3 normalized Chat repository & migration contract suite", () => 
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("preserves JSON-encoded string tool payloads without Drizzle double-parsing (findById, findByIds, prefix preservation)", async () => {
+    const chat = await pgRepo.create({
+      workspaceId: wsId,
+      createdBy: user1Uuid,
+      title: "JSON string tool outputs",
+    });
+
+    const jsonStringOutput = JSON.stringify({
+      results: "# Search Results\nFound 2 messages",
+      pagination_info: { page: 1 },
+    });
+    const initialMessages: StoredChatMessage[] = [
+      {
+        id: "m-json-str-1",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-mcp_slack_search",
+            toolCallId: "tc-json-str-1",
+            toolName: "mcp_slack_search",
+            state: "output-available",
+            input: '{"query":"hello"}',
+            output: jsonStringOutput,
+            rawInput: '{"query":"hello"}',
+            toolMetadata: "123",
+          },
+          {
+            type: "tool-mcp_scalar_strings",
+            toolCallId: "tc-json-str-2",
+            toolName: "mcp_scalar_strings",
+            state: "output-available",
+            input: "null",
+            output: "true",
+            toolMetadata: "false",
+          },
+        ],
+      },
+    ];
+
+    await pgRepo.saveMessages({
+      chatId: chat.id,
+      workspaceId: wsId,
+      userId: user1Uuid,
+      messages: initialMessages,
+    });
+
+    // 1. findById preserves exact string types (never double-parsed into objects/numbers/booleans/null)
+    const loadedSingle = await pgRepo.findById(chat.id, wsId);
+    if (!loadedSingle) throw new Error("expected loadedSingle chat");
+    const p0 = loadedSingle.messages[0].parts[0];
+    const p1 = loadedSingle.messages[0].parts[1];
+    expect(typeof p0.input).toBe("string");
+    expect(p0.input).toBe('{"query":"hello"}');
+    expect(typeof p0.output).toBe("string");
+    expect(p0.output).toBe(jsonStringOutput);
+    expect(typeof p0.rawInput).toBe("string");
+    expect(p0.rawInput).toBe('{"query":"hello"}');
+    expect(typeof p0.toolMetadata).toBe("string");
+    expect(p0.toolMetadata).toBe("123");
+
+    expect(typeof p1.input).toBe("string");
+    expect(p1.input).toBe("null");
+    expect(typeof p1.output).toBe("string");
+    expect(p1.output).toBe("true");
+    expect(typeof p1.toolMetadata).toBe("string");
+    expect(p1.toolMetadata).toBe("false");
+
+    // 2. findByIds batch hydration returns identical exact string types
+    const batchMap = await pgRepo.findByIds([chat.id]);
+    const loadedBatch = batchMap.get(objectIdToUuid(chat.id));
+    expect(loadedBatch?.messages[0].parts[0].output).toBe(jsonStringOutput);
+    expect(loadedBatch?.messages[0].parts[1].input).toBe("null");
+    expect(loadedBatch?.messages[0].parts[1].output).toBe("true");
+
+    // 3. Diff-aware prefix preservation keeps original chat_message_parts.id intact on append
+    const beforeRows = await pg.query<{ id: string }>(
+      `SELECT id FROM chat_message_parts WHERE chat_id = $1 ORDER BY order_index`,
+      [objectIdToUuid(chat.id)],
+    );
+    const beforeIds = beforeRows.rows.map(r => r.id);
+    expect(beforeIds).toHaveLength(2);
+    await pgRepo.saveMessages({
+      chatId: chat.id,
+      workspaceId: wsId,
+      userId: user1Uuid,
+      messages: [
+        ...initialMessages,
+        {
+          id: "m-json-str-2",
+          role: "user",
+          parts: [{ type: "text", text: "Follow-up" }],
+        },
+      ],
+    });
+    const afterRows = await pg.query<{ id: string }>(
+      `SELECT p.id FROM chat_message_parts p
+         JOIN chat_messages m ON m.id = p.message_id
+        WHERE p.chat_id = $1
+        ORDER BY m.ordinal, p.order_index`,
+      [objectIdToUuid(chat.id)],
+    );
+    const afterIds = afterRows.rows.map(r => r.id);
+    expect(afterIds.slice(0, beforeIds.length)).toEqual(beforeIds);
+  });
 });

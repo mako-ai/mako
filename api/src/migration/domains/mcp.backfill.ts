@@ -10,7 +10,7 @@
  *   - Inngest dead-letter sync-retry replay handlers (`pg` and `mongo`).
  *   - Hourly Postgres batched TTL reaper rule for `mcp_oauth_flows` (10m).
  */
-import { eq, inArray, or } from "drizzle-orm";
+import { eq, inArray, or, sql } from "drizzle-orm";
 import { Types } from "mongoose";
 import {
   McpConnectionConfig,
@@ -39,6 +39,9 @@ import {
   MCP_SHADOW_OPTIONS,
   MongoMcpRepository,
   PgMcpRepository,
+  mcpConnectionConfigRecordToPgInsert,
+  mcpServerRecordToPgInsert,
+  mcpToolGrantRecordToPgInsert,
   mongoMcpConnectionConfigToRecord,
   mongoMcpServerToRecord,
   mongoMcpToolGrantToRecord,
@@ -59,6 +62,15 @@ import {
   type BackfillItem,
   type BackfillValidationResult,
 } from "../backfill";
+import {
+  buildExcludedSet,
+  chunkRows,
+  dedupByKey,
+  groupContiguous,
+  pickNewerByUpdatedAt,
+  prefetchExistingKeySet,
+  prefetchPgUserUuidMap,
+} from "../bulk-helpers";
 import { recordMigrationTombstone } from "../router";
 import { registerTtlRule } from "../ttl-reaper";
 import type { SyncRetryEventData } from "../types";
@@ -267,10 +279,84 @@ async function fetchStageBackfillItems(
   }
 }
 
+interface McpBatchValidationContext {
+  serverUuids: Set<string>;
+  workspaceUuids: Set<string>;
+  userMap: Map<string, string>;
+  prepared: boolean;
+}
+
+function createMcpBatchValidationContext(): McpBatchValidationContext {
+  return {
+    serverUuids: new Set<string>(),
+    workspaceUuids: new Set<string>(),
+    userMap: new Map<string, string>(),
+    prepared: false,
+  };
+}
+
+function clearMcpBatchValidationContext(ctx: McpBatchValidationContext): void {
+  ctx.serverUuids.clear();
+  ctx.workspaceUuids.clear();
+  ctx.userMap.clear();
+  ctx.prepared = false;
+}
+
+async function prepareMcpBatch(
+  items: ReadonlyArray<BackfillItem<McpBackfillDoc>>,
+  db: MakoPgDb,
+  ctx: McpBatchValidationContext,
+): Promise<void> {
+  const wsUuids: string[] = [];
+  const serverUuids: string[] = [];
+  const rawUserIds: Array<string | null | undefined> = [];
+
+  for (const { doc } of items) {
+    const wsUuid = parseEntityId(doc.record.workspaceId)?.uuid;
+    if (wsUuid) wsUuids.push(wsUuid);
+    if (doc.table === "mcp_servers") {
+      rawUserIds.push(doc.record.createdBy);
+    } else {
+      const serverUuid = parseEntityId(doc.record.serverId)?.uuid;
+      if (serverUuid) serverUuids.push(serverUuid);
+      rawUserIds.push(doc.record.userId);
+    }
+  }
+
+  const [foundWs, foundServers, resolvedUsers] = await Promise.all([
+    prefetchExistingKeySet(db, workspaces, workspaces.id, wsUuids),
+    prefetchExistingKeySet(db, mcpServers, mcpServers.id, serverUuids),
+    prefetchPgUserUuidMap(db, rawUserIds),
+  ]);
+
+  for (const id of foundWs) ctx.workspaceUuids.add(id);
+  for (const id of foundServers) ctx.serverUuids.add(id);
+  for (const [k, v] of resolvedUsers) ctx.userMap.set(k, v);
+  ctx.prepared = true;
+}
+
+async function resolveMcpBatchUserUuid(
+  db: MakoPgDb,
+  userId: string | null,
+  ctx: McpBatchValidationContext,
+): Promise<string | null> {
+  if (!userId || userId === "system") return null;
+  const cached =
+    ctx.userMap.get(userId) ?? ctx.userMap.get(userId.toLowerCase());
+  if (cached) return cached;
+  if (ctx.prepared) return null;
+  const resolved = await resolveUserUuid(db, userId);
+  if (resolved) {
+    ctx.userMap.set(userId, resolved);
+    ctx.userMap.set(resolved, resolved);
+  }
+  return resolved;
+}
+
 async function validateMcpBackfillItem(
   item: BackfillItem<McpBackfillDoc>,
   db: MakoPgDb,
-  batchServerUuids: Set<string>,
+  ctx: McpBatchValidationContext,
 ): Promise<BackfillValidationResult> {
   const { doc } = item;
   const wsUuid = parseEntityId(doc.record.workspaceId)?.uuid;
@@ -281,21 +367,35 @@ async function validateMcpBackfillItem(
       sanitizedPayload: { table: doc.table, id: doc.record.id },
     };
   }
-  const wsRows = await db
-    .select({ id: workspaces.id })
-    .from(workspaces)
-    .where(eq(workspaces.id, wsUuid))
-    .limit(1);
-  if (!wsRows[0]) {
-    return {
-      ok: false,
-      reason: "orphaned_workspace_missing",
-      sanitizedPayload: {
-        table: doc.table,
-        id: doc.record.id,
-        workspaceId: doc.record.workspaceId,
-      },
-    };
+  if (!ctx.workspaceUuids.has(wsUuid)) {
+    if (ctx.prepared) {
+      return {
+        ok: false,
+        reason: "orphaned_workspace_missing",
+        sanitizedPayload: {
+          table: doc.table,
+          id: doc.record.id,
+          workspaceId: doc.record.workspaceId,
+        },
+      };
+    }
+    const wsRows = await db
+      .select({ id: workspaces.id })
+      .from(workspaces)
+      .where(eq(workspaces.id, wsUuid))
+      .limit(1);
+    if (!wsRows[0]) {
+      return {
+        ok: false,
+        reason: "orphaned_workspace_missing",
+        sanitizedPayload: {
+          table: doc.table,
+          id: doc.record.id,
+          workspaceId: doc.record.workspaceId,
+        },
+      };
+    }
+    ctx.workspaceUuids.add(wsUuid);
   }
 
   switch (doc.table) {
@@ -307,11 +407,12 @@ async function validateMcpBackfillItem(
           sanitizedPayload: { id: doc.record.id },
         };
       }
-      doc.resolvedCreatedByUuid = await resolveUserUuid(
+      doc.resolvedCreatedByUuid = await resolveMcpBatchUserUuid(
         db,
         doc.record.createdBy,
+        ctx,
       );
-      batchServerUuids.add(objectIdToUuid(doc.record.id));
+      ctx.serverUuids.add(objectIdToUuid(doc.record.id));
       return { ok: true };
     }
 
@@ -324,7 +425,18 @@ async function validateMcpBackfillItem(
           sanitizedPayload: { id: doc.record.id },
         };
       }
-      if (!batchServerUuids.has(serverUuid)) {
+      if (!ctx.serverUuids.has(serverUuid)) {
+        if (ctx.prepared) {
+          return {
+            ok: false,
+            reason: "orphaned_server_missing",
+            sanitizedPayload: {
+              table: doc.table,
+              id: doc.record.id,
+              serverId: doc.record.serverId,
+            },
+          };
+        }
         const sRows = await db
           .select({ id: mcpServers.id })
           .from(mcpServers)
@@ -341,9 +453,14 @@ async function validateMcpBackfillItem(
             },
           };
         }
+        ctx.serverUuids.add(serverUuid);
       }
       if (doc.record.userId !== null) {
-        const userUuid = await resolveUserUuid(db, doc.record.userId);
+        const userUuid = await resolveMcpBatchUserUuid(
+          db,
+          doc.record.userId,
+          ctx,
+        );
         if (!userUuid) {
           return {
             ok: false,
@@ -371,7 +488,18 @@ async function validateMcpBackfillItem(
           sanitizedPayload: { id: doc.record.id },
         };
       }
-      if (!batchServerUuids.has(serverUuid)) {
+      if (!ctx.serverUuids.has(serverUuid)) {
+        if (ctx.prepared) {
+          return {
+            ok: false,
+            reason: "orphaned_server_missing",
+            sanitizedPayload: {
+              table: doc.table,
+              id: doc.record.id,
+              serverId: doc.record.serverId,
+            },
+          };
+        }
         const sRows = await db
           .select({ id: mcpServers.id })
           .from(mcpServers)
@@ -388,8 +516,13 @@ async function validateMcpBackfillItem(
             },
           };
         }
+        ctx.serverUuids.add(serverUuid);
       }
-      const userUuid = await resolveUserUuid(db, doc.record.userId);
+      const userUuid = await resolveMcpBatchUserUuid(
+        db,
+        doc.record.userId,
+        ctx,
+      );
       if (!userUuid) {
         return {
           ok: false,
@@ -410,52 +543,163 @@ async function validateMcpBackfillItem(
 async function upsertMcpBackfillItems(
   items: Array<BackfillItem<McpBackfillDoc>>,
   db: MakoPgDb,
-  pgRepo: PgMcpRepository,
 ): Promise<number> {
   let upserted = 0;
-  for (const item of items) {
-    const { doc } = item;
-    let wrote = false;
-    switch (doc.table) {
-      case "mcp_servers":
-        wrote = await pgRepo.upsertServerWithGuard(
-          doc.record,
-          doc.resolvedCreatedByUuid ?? null,
-          db,
+
+  for (const group of groupContiguous(items, item => item.doc.table)) {
+    switch (group.key) {
+      case "mcp_servers": {
+        const rows = dedupByKey(
+          group.items
+            .map(item => {
+              const d = item.doc as Extract<
+                McpBackfillDoc,
+                { table: "mcp_servers" }
+              >;
+              const idUuid = parseEntityId(d.record.id)?.uuid;
+              const wsUuid = parseEntityId(d.record.workspaceId)?.uuid;
+              if (!idUuid || !wsUuid) return null;
+              return mcpServerRecordToPgInsert(d.record, {
+                idUuid,
+                workspaceUuid: wsUuid,
+                createdByUuid: d.resolvedCreatedByUuid ?? null,
+              });
+            })
+            .filter((r): r is typeof mcpServers.$inferInsert => r !== null),
+          r => r.id.toLowerCase(),
+          pickNewerByUpdatedAt,
         );
-        break;
-      case "mcp_connection_configs":
-        wrote = await pgRepo.upsertConnectionConfigWithGuard(
-          doc.record,
-          doc.resolvedUserUuid ?? null,
-          db,
-        );
-        break;
-      case "mcp_tool_grants":
-        if (doc.resolvedUserUuid) {
-          wrote = await pgRepo.upsertToolGrantWithGuard(
-            doc.record,
-            doc.resolvedUserUuid,
-            db,
-          );
+        const setCols = buildExcludedSet(mcpServers, [
+          "id",
+          "workspaceId",
+          "createdAt",
+        ]);
+        for (const sub of chunkRows(rows, 21, 200)) {
+          const written = await db
+            .insert(mcpServers)
+            .values(sub)
+            .onConflictDoUpdate({
+              target: mcpServers.id,
+              set: setCols,
+              setWhere: sql`${mcpServers.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${mcpServers.updatedAt}`,
+            })
+            .returning({ id: mcpServers.id });
+          upserted += written.length;
         }
         break;
+      }
+
+      case "mcp_connection_configs": {
+        const rows = dedupByKey(
+          group.items
+            .map(item => {
+              const d = item.doc as Extract<
+                McpBackfillDoc,
+                { table: "mcp_connection_configs" }
+              >;
+              const idUuid = parseEntityId(d.record.id)?.uuid;
+              const wsUuid = parseEntityId(d.record.workspaceId)?.uuid;
+              const serverUuid = parseEntityId(d.record.serverId)?.uuid;
+              if (!idUuid || !wsUuid || !serverUuid) return null;
+              return mcpConnectionConfigRecordToPgInsert(d.record, {
+                idUuid,
+                workspaceUuid: wsUuid,
+                serverUuid,
+                userUuid: d.resolvedUserUuid ?? null,
+              });
+            })
+            .filter(
+              (r): r is typeof mcpConnectionConfigs.$inferInsert => r !== null,
+            ),
+          r =>
+            `${r.serverId.toLowerCase()}\0${r.userId ? r.userId.toLowerCase() : "__NULL__"}`,
+          pickNewerByUpdatedAt,
+        );
+        for (const sub of chunkRows(rows, 9, 250)) {
+          const written = await db
+            .insert(mcpConnectionConfigs)
+            .values(sub)
+            .onConflictDoUpdate({
+              target: [
+                mcpConnectionConfigs.serverId,
+                mcpConnectionConfigs.userId,
+              ],
+              set: {
+                headersEncrypted: sql`EXCLUDED."headers_encrypted"`,
+                oauthTokensEncrypted: sql`EXCLUDED."oauth_tokens_encrypted"`,
+                oauthExpiresAt: sql`EXCLUDED."oauth_expires_at"`,
+                updatedAt: sql`EXCLUDED."updated_at"`,
+              },
+              setWhere: sql`${mcpConnectionConfigs.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${mcpConnectionConfigs.updatedAt}`,
+            })
+            .returning({ id: mcpConnectionConfigs.id });
+          upserted += written.length;
+        }
+        break;
+      }
+
+      case "mcp_tool_grants": {
+        const rows = dedupByKey(
+          group.items
+            .map(item => {
+              const d = item.doc as Extract<
+                McpBackfillDoc,
+                { table: "mcp_tool_grants" }
+              >;
+              if (!d.resolvedUserUuid) return null;
+              const idUuid = parseEntityId(d.record.id)?.uuid;
+              const wsUuid = parseEntityId(d.record.workspaceId)?.uuid;
+              const serverUuid = parseEntityId(d.record.serverId)?.uuid;
+              if (!idUuid || !wsUuid || !serverUuid) return null;
+              return mcpToolGrantRecordToPgInsert(d.record, {
+                idUuid,
+                workspaceUuid: wsUuid,
+                serverUuid,
+                userUuid: d.resolvedUserUuid,
+              });
+            })
+            .filter((r): r is typeof mcpToolGrants.$inferInsert => r !== null),
+          r =>
+            `${r.serverId.toLowerCase()}\0${r.userId.toLowerCase()}\0${r.toolName}`,
+          pickNewerByUpdatedAt,
+        );
+        for (const sub of chunkRows(rows, 8, 300)) {
+          const written = await db
+            .insert(mcpToolGrants)
+            .values(sub)
+            .onConflictDoUpdate({
+              target: [
+                mcpToolGrants.serverId,
+                mcpToolGrants.userId,
+                mcpToolGrants.toolName,
+              ],
+              set: {
+                decision: sql`EXCLUDED."decision"`,
+                lastUsedAt: sql`EXCLUDED."last_used_at"`,
+                updatedAt: sql`EXCLUDED."updated_at"`,
+              },
+              setWhere: sql`${mcpToolGrants.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${mcpToolGrants.updatedAt}`,
+            })
+            .returning({ id: mcpToolGrants.id });
+          upserted += written.length;
+        }
+        break;
+      }
     }
-    if (wrote) upserted += 1;
   }
+
   return upserted;
 }
 
 export function createMcpBackfillHandler(): BackfillDomainHandler<McpBackfillDoc> {
-  const pgRepo = new PgMcpRepository();
-  const batchServerUuids = new Set<string>();
+  const batchCtx = createMcpBatchValidationContext();
 
   return {
     domain: MCP_DOMAIN,
     collectionName: "mcp_servers",
     targetTable: "mcp_servers",
     async fetchBatch({ afterCursor, limit, workspaceId }) {
-      batchServerUuids.clear();
+      clearMcpBatchValidationContext(batchCtx);
       const parsed = decodeCompositeCursor(afterCursor);
       const startStage = parsed ? parsed.stage : 1;
       const items: Array<BackfillItem<McpBackfillDoc>> = [];
@@ -477,11 +721,14 @@ export function createMcpBackfillHandler(): BackfillDomainHandler<McpBackfillDoc
       }
       return items;
     },
+    prepareBatch(items, db) {
+      return prepareMcpBatch(items, db, batchCtx);
+    },
     validate(item, db) {
-      return validateMcpBackfillItem(item, db, batchServerUuids);
+      return validateMcpBackfillItem(item, db, batchCtx);
     },
     upsertBatch(items, db) {
-      return upsertMcpBackfillItems(items, db, pgRepo);
+      return upsertMcpBackfillItems(items, db);
     },
   };
 }
@@ -489,15 +736,14 @@ export function createMcpBackfillHandler(): BackfillDomainHandler<McpBackfillDoc
 export function createMcpTableBackfillHandler(
   meta: McpStageMeta,
 ): BackfillDomainHandler<McpBackfillDoc> {
-  const pgRepo = new PgMcpRepository();
-  const batchServerUuids = new Set<string>();
+  const batchCtx = createMcpBatchValidationContext();
 
   return {
     domain: `${MCP_DOMAIN}:${meta.table}`,
     collectionName: meta.collection,
     targetTable: meta.table,
     async fetchBatch({ afterCursor, limit, workspaceId }) {
-      batchServerUuids.clear();
+      clearMcpBatchValidationContext(batchCtx);
       return fetchStageBackfillItems(
         meta,
         afterCursor,
@@ -506,11 +752,14 @@ export function createMcpTableBackfillHandler(
         false,
       );
     },
+    prepareBatch(items, db) {
+      return prepareMcpBatch(items, db, batchCtx);
+    },
     validate(item, db) {
-      return validateMcpBackfillItem(item, db, batchServerUuids);
+      return validateMcpBackfillItem(item, db, batchCtx);
     },
     upsertBatch(items, db) {
-      return upsertMcpBackfillItems(items, db, pgRepo);
+      return upsertMcpBackfillItems(items, db);
     },
   };
 }

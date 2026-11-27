@@ -7,6 +7,7 @@
  *   pnpm --filter api run pg:verify -- --domain chat --workspace <oid-or-uuid> --repair
  */
 import { Command } from "commander";
+import mongoose from "mongoose";
 import { closePgConnections } from "../../database/pg/client";
 import { registerMigrationDomains } from "../domains";
 import { listVerifierDomains, runParityVerification } from "../verifier";
@@ -69,7 +70,15 @@ async function main(): Promise<void> {
     return;
   }
 
+  const mongoUri = process.env.DATABASE_URL?.trim();
+  if (!mongoUri) {
+    console.error("Error: DATABASE_URL must be set to run pg:verify.");
+    process.exitCode = 1;
+    return;
+  }
+
   try {
+    await mongoose.connect(mongoUri);
     const report = await runParityVerification({
       domain: opts.domain,
       workspaceId: opts.workspace ?? null,
@@ -81,6 +90,9 @@ async function main(): Promise<void> {
       process.exitCode = 1;
     }
   } finally {
+    if (mongoose.connection.readyState !== 0) {
+      await mongoose.disconnect();
+    }
     await closePgConnections();
   }
 }
