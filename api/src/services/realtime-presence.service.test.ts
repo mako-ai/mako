@@ -176,11 +176,12 @@ describe("realtime presence (Redis sorted set)", () => {
     expect(await hasAttachedClients(WS)).toBe(true);
   });
 
-  it("touch runs ZADD then EXPIRE 90 in one transaction", async () => {
+  it("touch refreshes the tab, prunes stale members and renews the key in one transaction", async () => {
     await touchRealtimePresence(WS, "tab-1", "user-1");
     expect(redisMock.state.calls).toEqual([
       ["multi"],
       ["zadd", key, T0, "tab-1"],
+      ["zremrangebyscore", key, "-inf", T0 - 90_000],
       ["expire", key, 90],
       ["exec"],
     ]);

@@ -133,6 +133,8 @@ function redisStore(url: string): PresenceStore {
       const results = await redis
         .multi()
         .zadd(key, now, clientId)
+        // A busy workspace keeps extending its key's TTL even if a tab vanishes.
+        .zremrangebyscore(key, "-inf", now - PRESENCE_TTL_MS)
         .expire(key, PRESENCE_TTL_SECONDS)
         .exec();
       throwOnMultiError(results);
