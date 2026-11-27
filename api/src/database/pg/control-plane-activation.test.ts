@@ -23,7 +23,11 @@ import {
 import { ModelCatalogSnapshot } from "../schema";
 import { appsBoxPolicyRepo } from "../../repositories/control-plane-app";
 import { notificationsRepo } from "../../repositories/notifications";
-import { activateControlPlane } from "../../repositories/control-plane-fence";
+import {
+  activateControlPlane,
+  CONTROL_PLANE_DOMAIN,
+  publishedCutoverTime,
+} from "../../repositories/control-plane-fence";
 import { warmCatalog } from "../../services/model-catalog.service";
 import { keepRecordedWrite } from "../../workflows/recorded-writes";
 import { copyAndVerifyControlPlane } from "./cli/backfill-control-plane-small";
@@ -240,6 +244,121 @@ describe("live control-plane activation", () => {
       now,
     );
     expect(mongoLookup).not.toHaveBeenCalled();
+  });
+
+  function recordDuringHandoff() {
+    return keepRecordedWrite(
+      ws.oid,
+      { runId: "publication-retry" },
+      { _id: connectionId, name: "fixture" },
+      { method: "POST", url: "https://fixture.invalid", headers: {} },
+    );
+  }
+
+  async function failPublicationAfterCopy() {
+    expect(await recordDuringHandoff()).toBe("kept");
+    const mongoDb = mongoose.connection
+      .getClient()
+      .db(mongoose.connection.name);
+    // Reject just the publication update on the real replica set. The Mongo
+    // transaction still admits the lock update and all source reads.
+    await mongoDb.command({
+      collMod: "migration_writer_fences",
+      validator: { owner: "mongo" },
+      validationAction: "error",
+    });
+    try {
+      await expect(
+        activateControlPlane(at => copyAndVerifyControlPlane(db, at)),
+      ).rejects.toMatchObject({ code: 121 });
+    } finally {
+      await mongoDb.command({
+        collMod: "migration_writer_fences",
+        validator: {},
+      });
+    }
+    const [receipt] = await db.select().from(schema.migrationDomainState);
+    expect(receipt).toMatchObject({
+      domain: CONTROL_PLANE_DOMAIN,
+      mode: "pg_only",
+    });
+    expect(
+      (await db.select().from(schema.workflowRecordedRuns)).map(r => r.count),
+    ).toEqual([1]);
+    expect(
+      (await db.select().from(schema.workflowRecordedWrites)).map(r => r.seq),
+    ).toEqual([0]);
+    const fence = await mongoDb
+      .collection<{ _id: string; owner: string; cutoverAt?: Date }>(
+        "migration_writer_fences",
+      )
+      .findOne(
+        { _id: CONTROL_PLANE_DOMAIN },
+        { readConcern: { level: "majority" } },
+      );
+    expect(fence?.owner).toBe("mongo");
+    expect(fence?.cutoverAt).toBeUndefined();
+    return receipt;
+  }
+
+  it("keeps Mongo authoritative when a legacy write lands after PG commits but before a publication retry", async () => {
+    const staged = await failPublicationAfterCopy();
+    expect(await recordDuringHandoff()).toBe("kept");
+    await expect(
+      activateControlPlane(at => copyAndVerifyControlPlane(db, at)),
+    ).rejects.toMatchObject({
+      phase: "before",
+      reports: {
+        workflow_recorded_runs: {
+          parity: { different: 1, differentFields: { count: 1 } },
+        },
+        workflow_recorded_writes: { parity: { matched: 1, missingInPg: 1 } },
+      },
+    });
+    await expect(publishedCutoverTime()).rejects.toThrow(
+      "Missing committed Mongo handoff",
+    );
+    expect(await db.select().from(schema.migrationDomainState)).toEqual([
+      staged,
+    ]);
+    // A normal caller can continue writing even after the retry refuses the stale target.
+    expect(await recordDuringHandoff()).toBe("kept");
+    expect(
+      (
+        await WorkflowRecordedWrite.find({ runId: "publication-retry" })
+          .sort({ seq: 1 })
+          .lean()
+      ).map(r => r.seq),
+    ).toEqual([0, 1, 2]);
+    expect(
+      (await db.select().from(schema.workflowRecordedRuns)).map(r => r.count),
+    ).toEqual([1]);
+    expect(
+      (await db.select().from(schema.workflowRecordedWrites)).map(r => r.seq),
+    ).toEqual([0]);
+  });
+
+  it("publishes an exactly matching staged copy on retry and resumes at the next PG sequence", async () => {
+    await failPublicationAfterCopy();
+    expect(
+      await activateControlPlane(at => copyAndVerifyControlPlane(db, at)),
+    ).toBe("activated");
+    const [receipt] = await db.select().from(schema.migrationDomainState);
+    expect(await publishedCutoverTime()).toEqual(receipt.updatedAt);
+    expect(await recordDuringHandoff()).toBe("kept");
+    expect(
+      await WorkflowRecordedWrite.countDocuments({
+        runId: "publication-retry",
+      }),
+    ).toBe(1);
+    expect(
+      (
+        await db
+          .select()
+          .from(schema.workflowRecordedWrites)
+          .orderBy(schema.workflowRecordedWrites.seq)
+      ).map(r => r.seq),
+    ).toEqual([0, 1]);
   });
 
   it("refuses same-key content drift, rolls back PG and lets a waiting writer continue on Mongo", async () => {
