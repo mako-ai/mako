@@ -16,7 +16,7 @@
  *       * `skill_usage_daily`        (400d on `last_at`)
  *       * NEVER registers `llm_usage` or `app_usage_daily`!
  */
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { Types } from "mongoose";
 import { LlmUsage } from "../../database/schema";
 import {
@@ -58,7 +58,9 @@ import {
   buildPgDailyViewerColumns,
   canonicalizeAppUsageDailyForCompare,
   canonicalizeSkillUsageDailyForCompare,
+  costUsdToPgNumeric,
   entityIdToPgUuid,
+  isAnonVisitorId,
   mongoAppFeedSnapshotToRecord,
   mongoAppUsageDailyToRecord,
   mongoAppUsageEventToRecord,
@@ -66,6 +68,7 @@ import {
   mongoLlmUsageToRecord,
   mongoQueryExecutionToRecord,
   mongoSkillUsageDailyToRecord,
+  optionalEntityIdToPgUuid,
   pgAppFeedSnapshotToRecord,
   pgAppUsageDailyToRecord,
   pgAppUsageEventToRecord,
@@ -100,6 +103,13 @@ import {
   type BackfillItem,
   type BackfillValidationResult,
 } from "../backfill";
+import {
+  chunkRows,
+  chunkValues,
+  dedupByKey,
+  groupContiguous,
+  prefetchPgUserUuidMap,
+} from "../bulk-helpers";
 import { registerTtlRule } from "../ttl-reaper";
 import type { SyncRetryEventData } from "../types";
 import {
@@ -255,12 +265,16 @@ async function resolvePgWorkspaceSet(
         .filter((u): u is string => Boolean(u)),
     ),
   ];
-  if (uuids.length === 0) return new Set();
-  const rows = await db
-    .select({ id: workspaces.id })
-    .from(workspaces)
-    .where(inArray(workspaces.id, uuids));
-  return new Set(rows.map(r => r.id.toLowerCase()));
+  const out = new Set<string>();
+  if (uuids.length === 0) return out;
+  for (const chunk of chunkValues(uuids)) {
+    const rows = await db
+      .select({ id: workspaces.id })
+      .from(workspaces)
+      .where(inArray(workspaces.id, chunk));
+    for (const r of rows) out.add(r.id.toLowerCase());
+  }
+  return out;
 }
 
 async function resolvePgUserMap(
@@ -306,12 +320,16 @@ async function resolvePgApiKeySet(
         .filter((u): u is string => Boolean(u)),
     ),
   ];
-  if (uuids.length === 0) return new Set();
-  const rows = await db
-    .select({ id: workspaceApiKeys.id })
-    .from(workspaceApiKeys)
-    .where(inArray(workspaceApiKeys.id, uuids));
-  return new Set(rows.map(r => r.id.toLowerCase()));
+  const out = new Set<string>();
+  if (uuids.length === 0) return out;
+  for (const chunk of chunkValues(uuids)) {
+    const rows = await db
+      .select({ id: workspaceApiKeys.id })
+      .from(workspaceApiKeys)
+      .where(inArray(workspaceApiKeys.id, chunk));
+    for (const r of rows) out.add(r.id.toLowerCase());
+  }
+  return out;
 }
 
 async function resolvePgConnectionSet(
@@ -325,12 +343,16 @@ async function resolvePgConnectionSet(
         .filter((u): u is string => Boolean(u)),
     ),
   ];
-  if (uuids.length === 0) return new Set();
-  const rows = await db
-    .select({ id: databaseConnections.id })
-    .from(databaseConnections)
-    .where(inArray(databaseConnections.id, uuids));
-  return new Set(rows.map(r => r.id.toLowerCase()));
+  const out = new Set<string>();
+  if (uuids.length === 0) return out;
+  for (const chunk of chunkValues(uuids)) {
+    const rows = await db
+      .select({ id: databaseConnections.id })
+      .from(databaseConnections)
+      .where(inArray(databaseConnections.id, chunk));
+    for (const r of rows) out.add(r.id.toLowerCase());
+  }
+  return out;
 }
 
 async function buildPgUuidToMongoUserIdMap(
@@ -670,60 +692,453 @@ async function validateUsageBackfillItem(
   }
 }
 
+const USAGE_SYSTEM_USER_SENTINELS = new Set([
+  "",
+  "system",
+  "worker",
+  "publish",
+  "api-key",
+  "scheduler",
+  "app-chat",
+]);
+
+function resolveNullableUserFromMap(
+  rawUserId: string | null | undefined,
+  userMap: ReadonlyMap<string, string>,
+): string | null {
+  if (!rawUserId) return null;
+  const trimmed = rawUserId.trim();
+  const isAnon: boolean = isAnonVisitorId(trimmed);
+  if (!trimmed || USAGE_SYSTEM_USER_SENTINELS.has(trimmed) || isAnon) {
+    return null;
+  }
+  return userMap.get(trimmed) ?? userMap.get(trimmed.toLowerCase()) ?? null;
+}
+
+async function prepareUsageBatch(
+  items: Array<BackfillItem<UsageBackfillDoc>>,
+  db: MakoPgDb,
+  workspaceCache: Map<string, boolean>,
+): Promise<void> {
+  const uuidsToCheck = new Set<string>();
+  for (const { doc } of items) {
+    if (doc.table === "llm_usage") continue;
+    const wsId = doc.record.workspaceId;
+    if (!wsId) continue;
+    const parsed = parseEntityId(wsId);
+    if (parsed && !workspaceCache.has(parsed.uuid)) {
+      uuidsToCheck.add(parsed.uuid);
+    }
+  }
+  if (uuidsToCheck.size === 0) return;
+  const uuidList = [...uuidsToCheck];
+  const found = await resolvePgWorkspaceSet(db, uuidList);
+  for (const uuid of uuidList) {
+    workspaceCache.set(uuid, found.has(uuid));
+  }
+}
+
 async function upsertUsageBackfillItems(
   items: Array<BackfillItem<UsageBackfillDoc>>,
   db: MakoPgDb,
-  pgRepo: PgUsageStatsRepository,
 ): Promise<number> {
-  let upserted = 0;
-  for (const item of items) {
-    const { doc } = item;
-    switch (doc.table) {
-      case "app_usage_daily": {
-        const resolvedUserUuid = await pgRepo.resolveNullableUserUuid(
-          doc.record.userId,
-          db,
-        );
-        const wrote = await pgRepo.upsertAppUsageDailyClosedDay(
-          doc.record,
-          resolvedUserUuid,
-          { db },
-        );
-        if (wrote) upserted += 1;
-        break;
+  if (items.length === 0) return 0;
+
+  const rawUserIds: string[] = [];
+  const apiKeyIds: string[] = [];
+  const connIds: string[] = [];
+  for (const { doc } of items) {
+    if ("userId" in doc.record && doc.record.userId) {
+      const trimmed = doc.record.userId.trim();
+      if (
+        trimmed &&
+        !USAGE_SYSTEM_USER_SENTINELS.has(trimmed) &&
+        !isAnonVisitorId(trimmed)
+      ) {
+        rawUserIds.push(trimmed);
       }
-      case "app_usage_events":
-        await pgRepo.createAppUsageEvent(doc.record, db);
-        upserted += 1;
-        break;
-      case "skill_usage_daily": {
-        const wrote = await pgRepo.upsertSkillUsageDailyClosedDay(doc.record, {
-          db,
-        });
-        if (wrote) upserted += 1;
-        break;
-      }
-      case "llm_usage":
-        await pgRepo.createLlmUsage(doc.record, db);
-        upserted += 1;
-        break;
-      case "query_executions":
-        await pgRepo.createQueryExecution(doc.record, db);
-        upserted += 1;
-        break;
-      case "connection_verifications":
-        await pgRepo.createConnectionVerification(doc.record, db);
-        upserted += 1;
-        break;
+    }
+    if (doc.table === "query_executions" && doc.record.apiKeyId) {
+      apiKeyIds.push(doc.record.apiKeyId);
+    }
+    if (doc.table === "connection_verifications" && doc.record.connectionId) {
+      connIds.push(doc.record.connectionId);
     }
   }
+
+  const [userMap, validApiKeyUuids, validConnectionUuids] = await Promise.all([
+    prefetchPgUserUuidMap(db, rawUserIds),
+    resolvePgApiKeySet(db, apiKeyIds),
+    resolvePgConnectionSet(db, connIds),
+  ]);
+
+  let upserted = 0;
+
+  for (const group of groupContiguous(items, item => item.doc.table)) {
+    switch (group.key) {
+      case "app_usage_daily": {
+        const rows = dedupByKey(
+          group.items.map(item => {
+            const rec = (
+              item.doc as Extract<
+                UsageBackfillDoc,
+                { table: "app_usage_daily" }
+              >
+            ).record;
+            const resolvedUserUuid = resolveNullableUserFromMap(
+              rec.userId,
+              userMap,
+            );
+            const viewer = buildPgDailyViewerColumns({
+              rawUserId: rec.userId,
+              resolvedPgUserUuid: resolvedUserUuid,
+            });
+            return {
+              id: entityIdToPgUuid(rec.id),
+              workspaceId: entityIdToPgUuid(rec.workspaceId),
+              appId: entityIdToPgUuid(rec.appId),
+              userId: viewer.userId,
+              anonId: viewer.anonId,
+              visitorKey: viewer.visitorKey,
+              day: rec.day,
+              opens: rec.opens,
+              activeSeconds: rec.activeSeconds,
+              sourcesApp: rec.sources.app ?? 0,
+              sourcesShare: rec.sources.share ?? 0,
+              sourcesEmbed: rec.sources.embed ?? 0,
+              firstAt: rec.firstAt,
+              lastAt: rec.lastAt,
+            };
+          }),
+          r => `${r.workspaceId}|${r.appId}|${r.visitorKey}|${r.day}`,
+          (existing, incoming) => ({
+            ...incoming,
+            opens: Math.max(existing.opens, incoming.opens),
+            activeSeconds: Math.max(
+              existing.activeSeconds,
+              incoming.activeSeconds,
+            ),
+            sourcesApp: Math.max(existing.sourcesApp, incoming.sourcesApp),
+            sourcesShare: Math.max(
+              existing.sourcesShare,
+              incoming.sourcesShare,
+            ),
+            sourcesEmbed: Math.max(
+              existing.sourcesEmbed,
+              incoming.sourcesEmbed,
+            ),
+            firstAt:
+              existing.firstAt.getTime() <= incoming.firstAt.getTime()
+                ? existing.firstAt
+                : incoming.firstAt,
+            lastAt:
+              existing.lastAt.getTime() >= incoming.lastAt.getTime()
+                ? existing.lastAt
+                : incoming.lastAt,
+          }),
+        );
+        for (const chunk of chunkRows(rows, 14, 300)) {
+          const written = await db
+            .insert(appUsageDaily)
+            .values(chunk)
+            .onConflictDoUpdate({
+              target: [
+                appUsageDaily.workspaceId,
+                appUsageDaily.appId,
+                appUsageDaily.visitorKey,
+                appUsageDaily.day,
+              ],
+              set: {
+                id: sql`EXCLUDED."id"`,
+                opens: sql`GREATEST(${appUsageDaily.opens}, EXCLUDED."opens")`,
+                activeSeconds: sql`GREATEST(${appUsageDaily.activeSeconds}, EXCLUDED."active_seconds")`,
+                sourcesApp: sql`GREATEST(${appUsageDaily.sourcesApp}, EXCLUDED."sources_app")`,
+                sourcesShare: sql`GREATEST(${appUsageDaily.sourcesShare}, EXCLUDED."sources_share")`,
+                sourcesEmbed: sql`GREATEST(${appUsageDaily.sourcesEmbed}, EXCLUDED."sources_embed")`,
+                firstAt: sql`LEAST(${appUsageDaily.firstAt}, EXCLUDED."first_at")`,
+                lastAt: sql`GREATEST(${appUsageDaily.lastAt}, EXCLUDED."last_at")`,
+              },
+            })
+            .returning({ id: appUsageDaily.id });
+          upserted += written.length;
+        }
+        break;
+      }
+
+      case "app_usage_events": {
+        const rows = dedupByKey(
+          group.items.map(item => {
+            const rec = (
+              item.doc as Extract<
+                UsageBackfillDoc,
+                { table: "app_usage_events" }
+              >
+            ).record;
+            const resolvedUserUuid = resolveNullableUserFromMap(
+              rec.userId,
+              userMap,
+            );
+            const anonId = resolvedUserUuid
+              ? null
+              : isAnonVisitorId(rec.userId)
+                ? rec.userId
+                : (rec.anonId ?? null);
+            return {
+              id: entityIdToPgUuid(rec.id),
+              workspaceId: entityIdToPgUuid(rec.workspaceId),
+              appId: entityIdToPgUuid(rec.appId),
+              at: rec.at,
+              kind: rec.kind,
+              source: rec.source,
+              userId: resolvedUserUuid,
+              anonId,
+              sessionId: rec.sessionId ?? null,
+              referrerKind: rec.referrerKind ?? null,
+              uaClass: rec.uaClass,
+              throttled: rec.throttled ?? null,
+              placement: rec.placement ?? null,
+              backfill: rec.backfill ?? null,
+            } satisfies typeof appUsageEvents.$inferInsert;
+          }),
+          r => r.id,
+          existing => existing,
+        );
+        for (const chunk of chunkRows(rows, 14, 350)) {
+          await db
+            .insert(appUsageEvents)
+            .values(chunk)
+            .onConflictDoNothing({ target: appUsageEvents.id });
+        }
+        upserted += group.items.length;
+        break;
+      }
+
+      case "skill_usage_daily": {
+        const rows = dedupByKey(
+          group.items.map(item => {
+            const rec = (
+              item.doc as Extract<
+                UsageBackfillDoc,
+                { table: "skill_usage_daily" }
+              >
+            ).record;
+            return {
+              id: entityIdToPgUuid(rec.id),
+              workspaceId: entityIdToPgUuid(rec.workspaceId),
+              scope: rec.scope,
+              skill: rec.skill,
+              source: rec.source,
+              day: rec.day,
+              loads: rec.loads,
+              resourceReads: rec.resourceReads,
+              relevantHits: rec.relevantHits,
+              firstAt: rec.firstAt,
+              lastAt: rec.lastAt,
+            };
+          }),
+          r => `${r.workspaceId}|${r.scope}|${r.skill}|${r.source}|${r.day}`,
+          (existing, incoming) => ({
+            ...incoming,
+            loads: Math.max(existing.loads, incoming.loads),
+            resourceReads: Math.max(
+              existing.resourceReads,
+              incoming.resourceReads,
+            ),
+            relevantHits: Math.max(
+              existing.relevantHits,
+              incoming.relevantHits,
+            ),
+            firstAt:
+              existing.firstAt.getTime() <= incoming.firstAt.getTime()
+                ? existing.firstAt
+                : incoming.firstAt,
+            lastAt:
+              existing.lastAt.getTime() >= incoming.lastAt.getTime()
+                ? existing.lastAt
+                : incoming.lastAt,
+          }),
+        );
+        for (const chunk of chunkRows(rows, 11, 350)) {
+          const written = await db
+            .insert(skillUsageDaily)
+            .values(chunk)
+            .onConflictDoUpdate({
+              target: [
+                skillUsageDaily.workspaceId,
+                skillUsageDaily.scope,
+                skillUsageDaily.skill,
+                skillUsageDaily.source,
+                skillUsageDaily.day,
+              ],
+              set: {
+                id: sql`EXCLUDED."id"`,
+                loads: sql`GREATEST(${skillUsageDaily.loads}, EXCLUDED."loads")`,
+                resourceReads: sql`GREATEST(${skillUsageDaily.resourceReads}, EXCLUDED."resource_reads")`,
+                relevantHits: sql`GREATEST(${skillUsageDaily.relevantHits}, EXCLUDED."relevant_hits")`,
+                firstAt: sql`LEAST(${skillUsageDaily.firstAt}, EXCLUDED."first_at")`,
+                lastAt: sql`GREATEST(${skillUsageDaily.lastAt}, EXCLUDED."last_at")`,
+              },
+            })
+            .returning({ id: skillUsageDaily.id });
+          upserted += written.length;
+        }
+        break;
+      }
+
+      case "llm_usage": {
+        const rows = dedupByKey(
+          group.items.map(item => {
+            const rec = (
+              item.doc as Extract<UsageBackfillDoc, { table: "llm_usage" }>
+            ).record;
+            return {
+              id: entityIdToPgUuid(rec.id),
+              workspaceId: entityIdToPgUuid(rec.workspaceId),
+              userId: resolveNullableUserFromMap(rec.userId, userMap),
+              chatId: optionalEntityIdToPgUuid(rec.chatId),
+              invocationType: rec.invocationType,
+              modelId: rec.modelId,
+              inputTokens: rec.inputTokens,
+              outputTokens: rec.outputTokens,
+              cacheReadTokens: rec.cacheReadTokens ?? 0,
+              cacheWriteTokens: rec.cacheWriteTokens ?? 0,
+              reasoningTokens: rec.reasoningTokens ?? 0,
+              totalTokens: rec.totalTokens,
+              costUsd: costUsdToPgNumeric(rec.costUsd),
+              steps: rec.steps ?? null,
+              agentId: rec.agentId ?? null,
+              tags: rec.tags ?? null,
+              durationMs: rec.durationMs ?? null,
+              workflowId: rec.workflowRun?.workflowId ?? null,
+              workflowRunId: rec.workflowRun?.runId ?? null,
+              workflowStep: rec.workflowRun?.step ?? null,
+              workflowBackfilled: rec.workflowRun?.backfilled ?? null,
+              createdAt: rec.createdAt,
+            } satisfies typeof llmUsage.$inferInsert;
+          }),
+          r => r.id,
+          (existing, incoming) => ({
+            ...existing,
+            workflowId: incoming.workflowId ?? existing.workflowId,
+            workflowRunId: incoming.workflowRunId ?? existing.workflowRunId,
+            workflowStep: incoming.workflowStep ?? existing.workflowStep,
+            workflowBackfilled:
+              incoming.workflowBackfilled ?? existing.workflowBackfilled,
+          }),
+        );
+        for (const chunk of chunkRows(rows, 22, 300)) {
+          await db
+            .insert(llmUsage)
+            .values(chunk)
+            .onConflictDoUpdate({
+              target: llmUsage.id,
+              set: {
+                workflowId: sql`COALESCE(EXCLUDED."workflow_id", ${llmUsage.workflowId})`,
+                workflowRunId: sql`COALESCE(EXCLUDED."workflow_run_id", ${llmUsage.workflowRunId})`,
+                workflowStep: sql`COALESCE(EXCLUDED."workflow_step", ${llmUsage.workflowStep})`,
+                workflowBackfilled: sql`COALESCE(EXCLUDED."workflow_backfilled", ${llmUsage.workflowBackfilled})`,
+              },
+            });
+        }
+        upserted += group.items.length;
+        break;
+      }
+
+      case "query_executions": {
+        const rows = dedupByKey(
+          group.items.map(item => {
+            const rec = (
+              item.doc as Extract<
+                UsageBackfillDoc,
+                { table: "query_executions" }
+              >
+            ).record;
+            const rawApiKeyUuid = optionalEntityIdToPgUuid(rec.apiKeyId);
+            const apiKeyUuid =
+              rawApiKeyUuid && validApiKeyUuids.has(rawApiKeyUuid)
+                ? rawApiKeyUuid
+                : null;
+            return {
+              id: entityIdToPgUuid(rec.id),
+              executedAt: rec.executedAt,
+              userId: resolveNullableUserFromMap(rec.userId, userMap),
+              apiKeyId: apiKeyUuid,
+              workspaceId: entityIdToPgUuid(rec.workspaceId),
+              connectionId: entityIdToPgUuid(rec.connectionId),
+              databaseName: rec.databaseName ?? null,
+              consoleId: optionalEntityIdToPgUuid(rec.consoleId),
+              source: rec.source,
+              databaseType: rec.databaseType,
+              queryLanguage: rec.queryLanguage,
+              status: rec.status,
+              executionTimeMs: rec.executionTimeMs,
+              rowCount: rec.rowCount ?? null,
+              errorType: rec.errorType ?? null,
+              bytesScanned: rec.bytesScanned ?? null,
+            } satisfies typeof queryExecutions.$inferInsert;
+          }),
+          r => r.id,
+          existing => existing,
+        );
+        for (const chunk of chunkRows(rows, 16, 350)) {
+          await db
+            .insert(queryExecutions)
+            .values(chunk)
+            .onConflictDoNothing({ target: queryExecutions.id });
+        }
+        upserted += group.items.length;
+        break;
+      }
+
+      case "connection_verifications": {
+        const rows = dedupByKey(
+          group.items.map(item => {
+            const rec = (
+              item.doc as Extract<
+                UsageBackfillDoc,
+                { table: "connection_verifications" }
+              >
+            ).record;
+            const rawConnUuid = optionalEntityIdToPgUuid(rec.connectionId);
+            const connUuid =
+              rawConnUuid && validConnectionUuids.has(rawConnUuid)
+                ? rawConnUuid
+                : null;
+            return {
+              id: entityIdToPgUuid(rec.id),
+              verifiedAt: rec.verifiedAt,
+              userId: resolveNullableUserFromMap(rec.userId, userMap),
+              workspaceId: optionalEntityIdToPgUuid(rec.workspaceId),
+              connectionId: connUuid,
+              databaseType: rec.databaseType,
+              trigger: rec.trigger,
+              success: rec.success,
+              durationMs: rec.durationMs,
+              errorClass: rec.errorClass ?? null,
+              errorMessage: rec.errorMessage ?? null,
+            } satisfies typeof connectionVerifications.$inferInsert;
+          }),
+          r => r.id,
+          existing => existing,
+        );
+        for (const chunk of chunkRows(rows, 11, 350)) {
+          await db
+            .insert(connectionVerifications)
+            .values(chunk)
+            .onConflictDoNothing({ target: connectionVerifications.id });
+        }
+        upserted += group.items.length;
+        break;
+      }
+    }
+  }
+
   return upserted;
 }
 
 export function createUsageStatsBackfillHandler(
   options: { now?: () => Date } = {},
 ): BackfillDomainHandler<UsageBackfillDoc> {
-  const pgRepo = new PgUsageStatsRepository();
   const nowFn = options.now ?? (() => new Date());
   const workspaceCache = new Map<string, boolean>();
 
@@ -756,11 +1171,14 @@ export function createUsageStatsBackfillHandler(
       }
       return items;
     },
+    prepareBatch(items, db) {
+      return prepareUsageBatch(items, db, workspaceCache);
+    },
     validate(item, db) {
       return validateUsageBackfillItem(item, db, nowFn(), workspaceCache);
     },
     upsertBatch(items, db) {
-      return upsertUsageBackfillItems(items, db, pgRepo);
+      return upsertUsageBackfillItems(items, db);
     },
   };
 }
@@ -769,7 +1187,6 @@ export function createUsageStatsTableBackfillHandler(
   meta: UsageStageMeta,
   options: { now?: () => Date } = {},
 ): BackfillDomainHandler<UsageBackfillDoc> {
-  const pgRepo = new PgUsageStatsRepository();
   const nowFn = options.now ?? (() => new Date());
   const workspaceCache = new Map<string, boolean>();
 
@@ -788,11 +1205,14 @@ export function createUsageStatsTableBackfillHandler(
         nowFn(),
       );
     },
+    prepareBatch(items, db) {
+      return prepareUsageBatch(items, db, workspaceCache);
+    },
     validate(item, db) {
       return validateUsageBackfillItem(item, db, nowFn(), workspaceCache);
     },
     upsertBatch(items, db) {
-      return upsertUsageBackfillItems(items, db, pgRepo);
+      return upsertUsageBackfillItems(items, db);
     },
   };
 }

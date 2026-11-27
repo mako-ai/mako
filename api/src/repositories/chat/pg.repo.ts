@@ -42,6 +42,13 @@ import {
   sanitizePgJsonValue,
   sanitizePgString,
 } from "../../utils/message-sanitizer";
+import {
+  buildExcludedSet,
+  chunkRows,
+  chunkValues,
+  dedupByKey,
+  pickNewerByUpdatedAt,
+} from "../../migration/bulk-helpers";
 import { encodeChatListCursor } from "./cursor";
 import {
   computeMessageFingerprint,
@@ -533,6 +540,114 @@ export class PgChatRepository implements ChatRepository {
     return rows[0] ? this.hydrateChat(rows[0], db) : null;
   }
 
+  /**
+   * Batch-load & hydrate multiple chats in 4 `IN (...)` queries (eliminates N+1
+   * hydration in offline parity verification).
+   */
+  async findByIds(
+    chatIds: readonly string[],
+    db: MakoPgDb = this.getDb(),
+  ): Promise<Map<string, ChatRecord>> {
+    const validUuids = [
+      ...new Set(
+        chatIds
+          .map(parseUuidOrNull)
+          .filter((u): u is string => u !== null)
+          .map(u => u.toLowerCase()),
+      ),
+    ];
+    const out = new Map<string, ChatRecord>();
+    if (validUuids.length === 0) return out;
+
+    for (const chunk of chunkValues(validUuids, 1000)) {
+      const [chatRows, messageRows, joinedParts, usageRows] = await Promise.all(
+        [
+          db.select().from(chats).where(inArray(chats.id, chunk)),
+          db
+            .select()
+            .from(chatMessages)
+            .where(inArray(chatMessages.chatId, chunk))
+            .orderBy(asc(chatMessages.ordinal)),
+          db
+            .select({
+              part: chatMessageParts,
+              hasToolInput: sql<boolean>`${chatMessageParts.toolInput} IS NOT NULL`,
+              hasToolOutput: sql<boolean>`${chatMessageParts.toolOutput} IS NOT NULL`,
+              hasToolRawInput: sql<boolean>`${chatMessageParts.toolRawInput} IS NOT NULL`,
+              hasToolMetadata: sql<boolean>`${chatMessageParts.toolMetadata} IS NOT NULL`,
+              metadata: chatMessagePartMetadata,
+            })
+            .from(chatMessageParts)
+            .leftJoin(
+              chatMessagePartMetadata,
+              eq(chatMessagePartMetadata.partId, chatMessageParts.id),
+            )
+            .where(inArray(chatMessageParts.chatId, chunk))
+            .orderBy(
+              asc(chatMessageParts.messageId),
+              asc(chatMessageParts.orderIndex),
+            ),
+          db
+            .select()
+            .from(chatUsageEntries)
+            .where(inArray(chatUsageEntries.chatId, chunk))
+            .orderBy(asc(chatUsageEntries.entryIndex)),
+        ],
+      );
+
+      const msgsByChat = new Map<string, ChatMessageRow[]>();
+      for (const m of messageRows) {
+        const key = m.chatId.toLowerCase();
+        const list = msgsByChat.get(key);
+        if (list) list.push(m);
+        else msgsByChat.set(key, [m]);
+      }
+
+      const partsByChat = new Map<string, Map<string, HydratedPartRow[]>>();
+      for (const row of joinedParts) {
+        const chatKey = row.part.chatId.toLowerCase();
+        let byMsg = partsByChat.get(chatKey);
+        if (!byMsg) {
+          byMsg = new Map();
+          partsByChat.set(chatKey, byMsg);
+        }
+        const entry: HydratedPartRow = {
+          part: row.part,
+          hasToolInput: Boolean(row.hasToolInput),
+          hasToolOutput: Boolean(row.hasToolOutput),
+          hasToolRawInput: Boolean(row.hasToolRawInput),
+          hasToolMetadata: Boolean(row.hasToolMetadata),
+          metadata: row.metadata ?? null,
+        };
+        const list = byMsg.get(row.part.messageId);
+        if (list) list.push(entry);
+        else byMsg.set(row.part.messageId, [entry]);
+      }
+
+      const usageByChat = new Map<string, typeof usageRows>();
+      for (const u of usageRows) {
+        const key = u.chatId.toLowerCase();
+        const list = usageByChat.get(key);
+        if (list) list.push(u);
+        else usageByChat.set(key, [u]);
+      }
+
+      for (const chatRow of chatRows) {
+        const chatKey = chatRow.id.toLowerCase();
+        out.set(
+          chatKey,
+          hydratePgChatRecord({
+            chat: chatRow,
+            messages: msgsByChat.get(chatKey) ?? [],
+            partsByMessageId: partsByChat.get(chatKey) ?? new Map(),
+            usageEntries: usageByChat.get(chatKey) ?? [],
+          }),
+        );
+      }
+    }
+    return out;
+  }
+
   async findOwnedById(
     workspaceId: string,
     chatId: string,
@@ -965,6 +1080,492 @@ export class PgChatRepository implements ChatRepository {
 
       return true;
     });
+  }
+
+  /**
+   * Vectorized full-chat backfill upsert guarded by `updated_at`.
+   * Preserves byte-exact prefix fingerprinting, message/part/metadata/usage
+   * layout, and stale-write guards while executing O(1) bulk statements per
+   * chunk instead of per-chat round-trips.
+   */
+  async upsertFullChatsBatchWithGuard(
+    entries: ReadonlyArray<{
+      record: ChatRecord;
+      createdByUuid: string | null;
+    }>,
+    db: MakoPgDb = this.getDb(),
+  ): Promise<number> {
+    if (entries.length === 0) return 0;
+
+    interface PreparedChatEntry {
+      chatUuid: string;
+      record: ChatRecord;
+      createdByUuid: string | null;
+      updatedAt: Date;
+      chatRow: typeof chats.$inferInsert;
+    }
+
+    const preparedRaw: PreparedChatEntry[] = [];
+    for (const { record, createdByUuid } of entries) {
+      const chatUuid = parseUuidOrNull(record.id);
+      const wsUuid = parseUuidOrNull(record.workspaceId);
+      if (!chatUuid || !wsUuid) continue;
+      const appUuid = parseUuidOrNull(record.appId);
+      const pinnedConsoleUuid = parseUuidOrNull(record.pinnedConsoleId);
+      const checkpointJson = record.turnCheckpoint
+        ? {
+            message: sanitizePgJsonValue(record.turnCheckpoint.message),
+            at: record.turnCheckpoint.at.toISOString(),
+            streamId: sanitizePgString(record.turnCheckpoint.streamId),
+          }
+        : null;
+      preparedRaw.push({
+        chatUuid: chatUuid.toLowerCase(),
+        record,
+        createdByUuid,
+        updatedAt: record.updatedAt,
+        chatRow: {
+          id: chatUuid.toLowerCase(),
+          workspaceId: wsUuid,
+          createdBy: createdByUuid,
+          title: sanitizePgString(record.title),
+          titleGenerated: record.titleGenerated,
+          source: record.source,
+          appId: appUuid,
+          threadId: sanitizeNullableString(record.threadId),
+          activeAgent: record.activeAgent,
+          pinnedConsoleId: pinnedConsoleUuid,
+          activeStreamId: sanitizeNullableString(record.activeStreamId),
+          activeStreamAliveAt: record.activeStreamAliveAt,
+          turnCheckpoint: checkpointJson,
+          localAcp: record.localAcp
+            ? sanitizePgJsonValue(record.localAcp)
+            : null,
+          systemPrompt: sanitizeNullableString(record.systemPrompt),
+          workspacePrompt: sanitizeNullableString(record.workspacePrompt),
+          usagePromptTokens: record.usage.promptTokens,
+          usageCompletionTokens: record.usage.completionTokens,
+          usageTotalTokens: record.usage.totalTokens,
+          usageCacheReadTokens: record.usage.cacheReadTokens,
+          usageCacheWriteTokens: record.usage.cacheWriteTokens,
+          usageReasoningTokens: record.usage.reasoningTokens,
+          usageCostUsd: String(record.usage.costUsd),
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+        },
+      });
+    }
+
+    const deduped = dedupByKey(
+      preparedRaw,
+      e => e.chatUuid,
+      pickNewerByUpdatedAt,
+    );
+    if (deduped.length === 0) return 0;
+
+    const chatSetCols = buildExcludedSet(chats, [
+      "id",
+      "workspaceId",
+      "createdAt",
+    ]);
+    let totalUpserted = 0;
+
+    for (const chunk of chunkRows(deduped, 25, 100)) {
+      // 1. Bulk upsert chat headers with stale-write guard.
+      const inserted = await db
+        .insert(chats)
+        .values(chunk.map(e => e.chatRow))
+        .onConflictDoUpdate({
+          target: chats.id,
+          set: chatSetCols,
+          setWhere: sql`${chats.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${chats.updatedAt}`,
+        })
+        .returning({ id: chats.id });
+
+      if (inserted.length === 0) continue;
+
+      const writtenIds = new Set(inserted.map(r => r.id.toLowerCase()));
+      const writtenEntries = chunk.filter(e => writtenIds.has(e.chatUuid));
+      totalUpserted += writtenEntries.length;
+
+      const writtenChatUuids = writtenEntries.map(e => e.chatUuid);
+
+      // 2. Batch-fetch existing messages across all written chats in this chunk.
+      const existingMsgs = await db
+        .select()
+        .from(chatMessages)
+        .where(inArray(chatMessages.chatId, writtenChatUuids))
+        .orderBy(asc(chatMessages.ordinal));
+
+      const existingMsgsByChat = new Map<string, ChatMessageRow[]>();
+      for (const m of existingMsgs) {
+        const key = m.chatId.toLowerCase();
+        const list = existingMsgsByChat.get(key);
+        if (list) list.push(m);
+        else existingMsgsByChat.set(key, [m]);
+      }
+
+      // Only load existing parts when at least one chat already had messages (live overlap / re-run).
+      const existingPartsByChat = new Map<
+        string,
+        Map<string, HydratedPartRow[]>
+      >();
+      if (existingMsgsByChat.size > 0) {
+        const chatIdsWithMsgs = [...existingMsgsByChat.keys()];
+        const joined = await db
+          .select({
+            part: chatMessageParts,
+            hasToolInput: sql<boolean>`${chatMessageParts.toolInput} IS NOT NULL`,
+            hasToolOutput: sql<boolean>`${chatMessageParts.toolOutput} IS NOT NULL`,
+            hasToolRawInput: sql<boolean>`${chatMessageParts.toolRawInput} IS NOT NULL`,
+            hasToolMetadata: sql<boolean>`${chatMessageParts.toolMetadata} IS NOT NULL`,
+            metadata: chatMessagePartMetadata,
+          })
+          .from(chatMessageParts)
+          .leftJoin(
+            chatMessagePartMetadata,
+            eq(chatMessagePartMetadata.partId, chatMessageParts.id),
+          )
+          .where(inArray(chatMessageParts.chatId, chatIdsWithMsgs))
+          .orderBy(
+            asc(chatMessageParts.messageId),
+            asc(chatMessageParts.orderIndex),
+          );
+
+        for (const row of joined) {
+          const chatKey = row.part.chatId.toLowerCase();
+          let byMsg = existingPartsByChat.get(chatKey);
+          if (!byMsg) {
+            byMsg = new Map();
+            existingPartsByChat.set(chatKey, byMsg);
+          }
+          const entry: HydratedPartRow = {
+            part: row.part,
+            hasToolInput: Boolean(row.hasToolInput),
+            hasToolOutput: Boolean(row.hasToolOutput),
+            hasToolRawInput: Boolean(row.hasToolRawInput),
+            hasToolMetadata: Boolean(row.hasToolMetadata),
+            metadata: row.metadata ?? null,
+          };
+          const list = byMsg.get(row.part.messageId);
+          if (list) list.push(entry);
+          else byMsg.set(row.part.messageId, [entry]);
+        }
+      }
+
+      // Compute diff-aware prefix per chat & collect deletes + tail message inserts.
+      const deleteConditions: Array<ReturnType<typeof and>> = [];
+      const pendingMessages: Array<{
+        chatUuid: string;
+        ordinal: number;
+        msg: StoredChatMessage;
+        now: Date;
+      }> = [];
+
+      for (const entry of writtenEntries) {
+        const cleanIncoming = entry.record.messages.map(msg =>
+          sanitizePgJsonValue(msg),
+        );
+        const existingRows = existingMsgsByChat.get(entry.chatUuid) ?? [];
+        let changedFrom = 0;
+
+        if (existingRows.length > 0) {
+          const existingHydrated = hydratePgChatRecord({
+            chat: {
+              id: entry.chatUuid,
+              workspaceId: entry.chatUuid,
+              createdBy: null,
+              title: "",
+              titleGenerated: false,
+              source: "chat",
+              appId: null,
+              threadId: null,
+              activeAgent: null,
+              pinnedConsoleId: null,
+              activeStreamId: null,
+              activeStreamAliveAt: null,
+              turnCheckpoint: null,
+              localAcp: null,
+              systemPrompt: null,
+              workspacePrompt: null,
+              usagePromptTokens: 0,
+              usageCompletionTokens: 0,
+              usageTotalTokens: 0,
+              usageCacheReadTokens: 0,
+              usageCacheWriteTokens: 0,
+              usageReasoningTokens: 0,
+              usageCostUsd: "0",
+              createdAt: entry.updatedAt,
+              updatedAt: entry.updatedAt,
+            },
+            messages: existingRows,
+            partsByMessageId:
+              existingPartsByChat.get(entry.chatUuid) ?? new Map(),
+            usageEntries: [],
+          }).messages;
+
+          const commonLen = Math.min(
+            existingHydrated.length,
+            cleanIncoming.length,
+          );
+          while (changedFrom < commonLen) {
+            if (
+              existingRows[changedFrom].ordinal !== changedFrom ||
+              computeMessageFingerprint(existingHydrated[changedFrom]) !==
+                computeMessageFingerprint(cleanIncoming[changedFrom])
+            ) {
+              break;
+            }
+            changedFrom += 1;
+          }
+
+          if (changedFrom < existingRows.length) {
+            deleteConditions.push(
+              and(
+                eq(chatMessages.chatId, entry.chatUuid),
+                sql`${chatMessages.ordinal} >= ${changedFrom}`,
+              ),
+            );
+          }
+        }
+
+        for (let ord = changedFrom; ord < cleanIncoming.length; ord++) {
+          pendingMessages.push({
+            chatUuid: entry.chatUuid,
+            ordinal: ord,
+            msg: cleanIncoming[ord],
+            now: entry.updatedAt,
+          });
+        }
+      }
+
+      if (deleteConditions.length > 0) {
+        const whereDelete =
+          deleteConditions.length === 1
+            ? deleteConditions[0]
+            : or(...deleteConditions);
+        if (whereDelete) {
+          await db.delete(chatMessages).where(whereDelete);
+        }
+      }
+
+      // 3. Bulk-insert all tail chat_messages across the chunk.
+      if (pendingMessages.length > 0) {
+        const messageIdByChatOrdinal = new Map<string, string>();
+        for (const msgChunk of chunkRows(pendingMessages, 6, 300)) {
+          const insertedMsgs = await db
+            .insert(chatMessages)
+            .values(
+              msgChunk.map(m => ({
+                chatId: m.chatUuid,
+                ordinal: m.ordinal,
+                clientMessageId: m.msg.id ?? null,
+                role: m.msg.role,
+                metadata: m.msg.metadata ?? null,
+                createdAt: m.msg.createdAt ?? m.now,
+              })),
+            )
+            .returning({
+              id: chatMessages.id,
+              chatId: chatMessages.chatId,
+              ordinal: chatMessages.ordinal,
+            });
+          for (const row of insertedMsgs) {
+            messageIdByChatOrdinal.set(
+              `${row.chatId.toLowerCase()}:${row.ordinal}`,
+              row.id,
+            );
+          }
+        }
+
+        // 4. Unpack all parts across inserted tail messages.
+        const pendingParts: Array<{
+          chatUuid: string;
+          messageId: string;
+          now: Date;
+          unpacked: UnpackedPartForPg;
+        }> = [];
+        const candidateAttachmentUuids = new Set<string>();
+
+        for (const m of pendingMessages) {
+          const messageId = messageIdByChatOrdinal.get(
+            `${m.chatUuid}:${m.ordinal}`,
+          );
+          if (!messageId) continue;
+          const parts = Array.isArray(m.msg.parts) ? m.msg.parts : [];
+          for (let orderIndex = 0; orderIndex < parts.length; orderIndex++) {
+            const unpacked = unpackPartForPg(parts[orderIndex], orderIndex);
+            if (unpacked.candidateAttachmentUuid) {
+              candidateAttachmentUuids.add(unpacked.candidateAttachmentUuid);
+            }
+            pendingParts.push({
+              chatUuid: m.chatUuid,
+              messageId,
+              now: m.now,
+              unpacked,
+            });
+          }
+        }
+
+        if (pendingParts.length > 0) {
+          const validChatAttachments = new Set<string>();
+          if (candidateAttachmentUuids.size > 0) {
+            for (const attChunk of chunkValues([...candidateAttachmentUuids])) {
+              const attRows = await db
+                .select({
+                  id: chatAttachments.id,
+                  chatId: chatAttachments.chatId,
+                })
+                .from(chatAttachments)
+                .where(inArray(chatAttachments.id, attChunk));
+              for (const r of attRows) {
+                validChatAttachments.add(
+                  `${r.chatId.toLowerCase()}:${r.id.toLowerCase()}`,
+                );
+              }
+            }
+          }
+
+          const pendingMetadata: Array<{
+            partId: string;
+            providerMetadata: unknown;
+            callProviderMetadata: unknown;
+            resultProviderMetadata: unknown;
+          }> = [];
+
+          for (const partChunk of chunkRows(pendingParts, 25, 100)) {
+            const insertedParts = await db
+              .insert(chatMessageParts)
+              .values(
+                partChunk.map(({ chatUuid, messageId, now, unpacked }) => ({
+                  chatId: chatUuid,
+                  messageId,
+                  orderIndex: unpacked.orderIndex,
+                  partType: unpacked.partType,
+                  rawType: unpacked.rawType,
+                  textValue: unpacked.textValue,
+                  fileUrl: unpacked.fileUrl,
+                  fileMediaType: unpacked.fileMediaType,
+                  fileFilename: unpacked.fileFilename,
+                  attachmentId:
+                    unpacked.candidateAttachmentUuid &&
+                    validChatAttachments.has(
+                      `${chatUuid}:${unpacked.candidateAttachmentUuid}`,
+                    )
+                      ? unpacked.candidateAttachmentUuid
+                      : null,
+                  isDynamicTool: unpacked.isDynamicTool,
+                  toolCallId: unpacked.toolCallId,
+                  toolName: unpacked.toolName,
+                  toolState: unpacked.toolState,
+                  toolInput: toPgJsonbValue(
+                    unpacked.hasToolInput,
+                    unpacked.toolInput,
+                  ),
+                  toolOutput: toPgJsonbValue(
+                    unpacked.hasToolOutput,
+                    unpacked.toolOutput,
+                  ),
+                  toolErrorText: unpacked.toolErrorText,
+                  toolRawInput: toPgJsonbValue(
+                    unpacked.hasToolRawInput,
+                    unpacked.toolRawInput,
+                  ),
+                  toolApproval: unpacked.toolApproval,
+                  toolProviderExecuted: unpacked.toolProviderExecuted,
+                  toolPreliminary: unpacked.toolPreliminary,
+                  toolTitle: unpacked.toolTitle,
+                  toolMetadata: toPgJsonbValue(
+                    unpacked.hasToolMetadata,
+                    unpacked.toolMetadata,
+                  ),
+                  extraPayload: unpacked.extraPayload,
+                  createdAt: now,
+                })),
+              )
+              .returning({
+                id: chatMessageParts.id,
+                messageId: chatMessageParts.messageId,
+                orderIndex: chatMessageParts.orderIndex,
+              });
+
+            const partIdByKey = new Map<string, string>();
+            for (const p of insertedParts) {
+              partIdByKey.set(`${p.messageId}:${p.orderIndex}`, p.id);
+            }
+            for (const { messageId, unpacked } of partChunk) {
+              if (!unpacked.metadata) continue;
+              const partId = partIdByKey.get(
+                `${messageId}:${unpacked.orderIndex}`,
+              );
+              if (!partId) continue;
+              pendingMetadata.push({
+                partId,
+                providerMetadata: unpacked.metadata.providerMetadata ?? null,
+                callProviderMetadata:
+                  unpacked.metadata.callProviderMetadata ?? null,
+                resultProviderMetadata:
+                  unpacked.metadata.resultProviderMetadata ?? null,
+              });
+            }
+          }
+
+          for (const metaChunk of chunkRows(pendingMetadata, 4, 250)) {
+            await db.insert(chatMessagePartMetadata).values(metaChunk);
+          }
+        }
+      }
+
+      // 5. Bulk-upsert chat_usage_entries across all written chats in this chunk.
+      const pendingUsage: Array<typeof chatUsageEntries.$inferInsert> = [];
+      for (const entry of writtenEntries) {
+        for (let idx = 0; idx < entry.record.usage.history.length; idx++) {
+          const h = entry.record.usage.history[idx];
+          pendingUsage.push({
+            chatId: entry.chatUuid,
+            entryIndex: h.entryIndex ?? idx,
+            assistantMessageIndex: h.messageIndex,
+            model: sanitizeNullableString(h.model),
+            promptTokens: h.promptTokens,
+            completionTokens: h.completionTokens,
+            totalTokens: h.totalTokens,
+            cacheReadTokens: h.cacheReadTokens,
+            cacheWriteTokens: h.cacheWriteTokens,
+            reasoningTokens: h.reasoningTokens,
+            costUsd: String(h.costUsd),
+            recordedAt: h.timestamp,
+          });
+        }
+      }
+      if (pendingUsage.length > 0) {
+        const dedupedUsage = dedupByKey(
+          pendingUsage,
+          u => `${u.chatId}:${u.entryIndex}`,
+        );
+        for (const usageChunk of chunkRows(dedupedUsage, 12, 300)) {
+          await db
+            .insert(chatUsageEntries)
+            .values(usageChunk)
+            .onConflictDoUpdate({
+              target: [chatUsageEntries.chatId, chatUsageEntries.entryIndex],
+              set: {
+                assistantMessageIndex: sql`EXCLUDED."assistant_message_index"`,
+                model: sql`EXCLUDED."model"`,
+                promptTokens: sql`EXCLUDED."prompt_tokens"`,
+                completionTokens: sql`EXCLUDED."completion_tokens"`,
+                totalTokens: sql`EXCLUDED."total_tokens"`,
+                cacheReadTokens: sql`EXCLUDED."cache_read_tokens"`,
+                cacheWriteTokens: sql`EXCLUDED."cache_write_tokens"`,
+                reasoningTokens: sql`EXCLUDED."reasoning_tokens"`,
+                costUsd: sql`EXCLUDED."cost_usd"`,
+                recordedAt: sql`EXCLUDED."recorded_at"`,
+              },
+            });
+        }
+      }
+    }
+
+    return totalUpserted;
   }
 
   async updateThreadFields(
@@ -1436,6 +2037,180 @@ export class PgChatRepository implements ChatRepository {
     }
 
     return inserted.length > 0;
+  }
+
+  /**
+   * Vectorized backfill upsert for `chat_attachments` + bulk back-linking of
+   * `chat_message_parts.attachment_id` whose `file_url` references `/chat-images/<wireId>`.
+   */
+  async upsertAttachmentsBatchWithBacklink(
+    entries: ReadonlyArray<{
+      record: ChatAttachmentRecord;
+      createdByUuid: string | null;
+    }>,
+    db: MakoPgDb = this.getDb(),
+  ): Promise<number> {
+    if (entries.length === 0) return 0;
+
+    interface PreparedAttachment {
+      idUuid: string;
+      wsUuid: string;
+      chatUuid: string;
+      wireId: string;
+      sha256: string;
+      row: typeof chatAttachments.$inferInsert;
+    }
+
+    const preparedRaw: PreparedAttachment[] = [];
+    for (const { record, createdByUuid } of entries) {
+      const idUuid = parseUuidOrNull(record.id)?.toLowerCase();
+      const wsUuid = parseUuidOrNull(record.workspaceId)?.toLowerCase();
+      const chatUuid = parseUuidOrNull(record.chatId)?.toLowerCase();
+      if (!idUuid || !wsUuid || !chatUuid) continue;
+      const cleanSha = sanitizePgString(record.sha256);
+      preparedRaw.push({
+        idUuid,
+        wsUuid,
+        chatUuid,
+        wireId: parseEntityId(record.id)?.oid ?? record.id,
+        sha256: cleanSha,
+        row: {
+          id: idUuid,
+          workspaceId: wsUuid,
+          chatId: chatUuid,
+          createdBy: createdByUuid,
+          storageKey: sanitizePgString(record.storageKey),
+          mediaType: sanitizePgString(record.mediaType),
+          filename: sanitizeNullableString(record.filename),
+          size: record.size,
+          sha256: cleanSha,
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+        },
+      });
+    }
+
+    const deduped = dedupByKey(
+      dedupByKey(
+        preparedRaw,
+        e => e.idUuid,
+        existing => existing,
+      ),
+      e => `${e.wsUuid}\0${e.chatUuid}\0${e.sha256}`,
+      existing => existing,
+    );
+    if (deduped.length === 0) return 0;
+
+    let insertedCount = 0;
+    const insertedIds = new Set<string>();
+    for (const sub of chunkRows(deduped, 11, 300)) {
+      const inserted = await db
+        .insert(chatAttachments)
+        .values(sub.map(e => e.row))
+        .onConflictDoNothing()
+        .returning({ id: chatAttachments.id });
+      insertedCount += inserted.length;
+      for (const r of inserted) insertedIds.add(r.id.toLowerCase());
+    }
+
+    // Resolve actual attachment UUIDs for any conflicted rows so back-links
+    // never point at a non-existent UUID.
+    const conflicted = deduped.filter(e => !insertedIds.has(e.idUuid));
+    const existingById = new Map<string, string>();
+    const existingByHash = new Map<string, string>();
+    if (conflicted.length > 0) {
+      const conflictChatIds = [...new Set(conflicted.map(e => e.chatUuid))];
+      for (const chatChunk of chunkValues(conflictChatIds)) {
+        const existing = await db
+          .select({
+            id: chatAttachments.id,
+            workspaceId: chatAttachments.workspaceId,
+            chatId: chatAttachments.chatId,
+            sha256: chatAttachments.sha256,
+          })
+          .from(chatAttachments)
+          .where(inArray(chatAttachments.chatId, chatChunk));
+        for (const r of existing) {
+          const id = r.id.toLowerCase();
+          existingById.set(id, id);
+          existingByHash.set(
+            `${r.workspaceId.toLowerCase()}\0${r.chatId.toLowerCase()}\0${r.sha256}`,
+            id,
+          );
+        }
+      }
+    }
+
+    // Group target attachment UUIDs by chatId for bulk back-linking.
+    const targetsByChat = new Map<
+      string,
+      Array<{ suffix: string; targetUuid: string }>
+    >();
+    for (const e of deduped) {
+      const targetUuid = insertedIds.has(e.idUuid)
+        ? e.idUuid
+        : (existingById.get(e.idUuid) ??
+          existingByHash.get(`${e.wsUuid}\0${e.chatUuid}\0${e.sha256}`) ??
+          null);
+      if (!targetUuid) continue;
+      const suffix = `/chat-images/${e.wireId}`;
+      const list = targetsByChat.get(e.chatUuid);
+      if (list) list.push({ suffix, targetUuid });
+      else targetsByChat.set(e.chatUuid, [{ suffix, targetUuid }]);
+    }
+
+    if (targetsByChat.size > 0) {
+      const chatIdsToScan = [...targetsByChat.keys()];
+      const partUpdates: Array<{ partId: string; attachmentId: string }> = [];
+      for (const chatChunk of chunkValues(chatIdsToScan)) {
+        const unlinkedParts = await db
+          .select({
+            id: chatMessageParts.id,
+            chatId: chatMessageParts.chatId,
+            fileUrl: chatMessageParts.fileUrl,
+          })
+          .from(chatMessageParts)
+          .where(
+            and(
+              inArray(chatMessageParts.chatId, chatChunk),
+              eq(chatMessageParts.partType, "file"),
+              sql`${chatMessageParts.attachmentId} IS NULL`,
+              sql`${chatMessageParts.fileUrl} IS NOT NULL`,
+            ),
+          );
+
+        for (const part of unlinkedParts) {
+          const url = part.fileUrl;
+          if (!url) continue;
+          const candidates = targetsByChat.get(part.chatId.toLowerCase());
+          if (!candidates) continue;
+          for (const { suffix, targetUuid } of candidates) {
+            const idx = url.indexOf(suffix);
+            if (idx === -1) continue;
+            const after = url[idx + suffix.length];
+            if (after === undefined || after === "?" || after === "#") {
+              partUpdates.push({ partId: part.id, attachmentId: targetUuid });
+              break;
+            }
+          }
+        }
+      }
+
+      for (const updChunk of chunkRows(partUpdates, 2, 300)) {
+        const valuesSql = sql.join(
+          updChunk.map(u => sql`(${u.partId}::uuid, ${u.attachmentId}::uuid)`),
+          sql`, `,
+        );
+        await db.execute(sql`
+          UPDATE "chat_message_parts" AS t
+          SET "attachment_id" = v."attachment_id"
+          FROM (VALUES ${valuesSql}) AS v("id", "attachment_id")
+          WHERE t."id" = v."id" AND t."attachment_id" IS NULL
+        `);
+      }
+    }
+
+    return insertedCount;
   }
 
   async findAttachmentById(

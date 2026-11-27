@@ -24,6 +24,7 @@
     "pg:migrate": "tsx -r dotenv/config src/migration/cli/migrate.ts",
     "pg:backfill": "tsx -r dotenv/config src/migration/cli/backfill.ts",
     "pg:verify": "tsx -r dotenv/config src/migration/cli/verify.ts",
+    "pg:mode": "tsx -r dotenv/config src/migration/cli/mode.ts",
     "pg:rewrite-user-ids": "tsx -r dotenv/config src/migration/cli/rewrite-user-ids.ts",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives",
     "lint:fix": "eslint . --ext ts,tsx --fix"

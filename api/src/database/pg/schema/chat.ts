@@ -34,10 +34,20 @@ import { workspaces } from "./workspaces";
 export const CHAT_SOURCES = ["chat", "app", "workflow"] as const;
 export type ChatSource = (typeof CHAT_SOURCES)[number];
 
-export const CHAT_ACTIVE_AGENTS = ["mongo", "bigquery", "triage"] as const;
+export const CHAT_ACTIVE_AGENTS = [
+  "mongo",
+  "bigquery",
+  "postgres",
+  "triage",
+] as const;
 export type ChatActiveAgent = (typeof CHAT_ACTIVE_AGENTS)[number];
 
-export const CHAT_MESSAGE_ROLES = ["user", "assistant", "system"] as const;
+export const CHAT_MESSAGE_ROLES = [
+  "user",
+  "assistant",
+  "system",
+  "tool",
+] as const;
 export type ChatMessageRole = (typeof CHAT_MESSAGE_ROLES)[number];
 
 export const CHAT_PART_TYPES = [
@@ -166,7 +176,7 @@ export const chats = pgTable(
     ),
     check(
       "chats_active_agent_check",
-      sql`${table.activeAgent} IS NULL OR ${table.activeAgent} IN ('mongo', 'bigquery', 'triage')`,
+      sql`${table.activeAgent} IS NULL OR ${table.activeAgent} IN ('mongo', 'bigquery', 'postgres', 'triage')`,
     ),
   ],
 );
@@ -194,7 +204,7 @@ export const chatMessages = pgTable(
     check("chat_messages_ordinal_check", sql`${table.ordinal} >= 0`),
     check(
       "chat_messages_role_check",
-      sql`${table.role} IN ('user', 'assistant', 'system')`,
+      sql`${table.role} IN ('user', 'assistant', 'system', 'tool')`,
     ),
   ],
 );

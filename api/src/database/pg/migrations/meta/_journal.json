@@ -64,6 +64,20 @@
       "when": 1764180008000,
       "tag": "0008_phase3_chat",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1795782573660,
+      "tag": "0009_chat_messages_tool_role",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795782797677,
+      "tag": "0010_chat_active_agent_postgres",
+      "breakpoints": true
     }
   ]
 }

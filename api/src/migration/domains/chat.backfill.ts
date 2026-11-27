@@ -45,6 +45,11 @@ import {
   type BackfillItem,
   type BackfillValidationResult,
 } from "../backfill";
+import {
+  groupContiguous,
+  prefetchExistingKeySet,
+  prefetchPgUserUuidMap,
+} from "../bulk-helpers";
 import { recordMigrationTombstone } from "../router";
 import type { SyncRetryEventData } from "../types";
 import {
@@ -223,10 +228,84 @@ async function fetchStageBackfillItems(
   }
 }
 
+interface ChatBatchValidationContext {
+  chatUuids: Set<string>;
+  workspaceUuids: Set<string>;
+  userMap: Map<string, string>;
+  prepared: boolean;
+}
+
+function createChatBatchValidationContext(): ChatBatchValidationContext {
+  return {
+    chatUuids: new Set<string>(),
+    workspaceUuids: new Set<string>(),
+    userMap: new Map<string, string>(),
+    prepared: false,
+  };
+}
+
+function clearChatBatchValidationContext(
+  ctx: ChatBatchValidationContext,
+): void {
+  ctx.chatUuids.clear();
+  ctx.workspaceUuids.clear();
+  ctx.userMap.clear();
+  ctx.prepared = false;
+}
+
+async function prepareChatBatch(
+  items: ReadonlyArray<BackfillItem<ChatBackfillDoc>>,
+  db: MakoPgDb,
+  ctx: ChatBatchValidationContext,
+): Promise<void> {
+  const wsUuids: string[] = [];
+  const parentChatUuids: string[] = [];
+  const rawUserIds: Array<string | null | undefined> = [];
+
+  for (const { doc } of items) {
+    const wsUuid = parseEntityId(doc.record.workspaceId)?.uuid;
+    if (wsUuid) wsUuids.push(wsUuid);
+    rawUserIds.push(doc.record.createdBy);
+    if (doc.table === "chat_attachments") {
+      const chatUuid = parseEntityId(doc.record.chatId)?.uuid;
+      if (chatUuid) parentChatUuids.push(chatUuid);
+    }
+  }
+
+  const [foundWs, foundChats, resolvedUsers] = await Promise.all([
+    prefetchExistingKeySet(db, workspaces, workspaces.id, wsUuids),
+    prefetchExistingKeySet(db, chats, chats.id, parentChatUuids),
+    prefetchPgUserUuidMap(db, rawUserIds),
+  ]);
+
+  for (const id of foundWs) ctx.workspaceUuids.add(id);
+  for (const id of foundChats) ctx.chatUuids.add(id);
+  for (const [k, v] of resolvedUsers) ctx.userMap.set(k, v);
+  ctx.prepared = true;
+}
+
+async function resolveChatBatchUserUuid(
+  db: MakoPgDb,
+  userId: string | null,
+  ctx: ChatBatchValidationContext,
+): Promise<string | null> {
+  if (!userId || userId === "system") return null;
+  const cached =
+    ctx.userMap.get(userId) ?? ctx.userMap.get(userId.toLowerCase());
+  if (cached) return cached;
+  if (ctx.prepared) return null;
+  const resolved = await resolveUserUuid(db, userId);
+  if (resolved) {
+    ctx.userMap.set(userId, resolved);
+    ctx.userMap.set(resolved, resolved);
+  }
+  return resolved;
+}
+
 async function validateChatBackfillItem(
   item: BackfillItem<ChatBackfillDoc>,
   db: MakoPgDb,
-  batchChatUuids: Set<string>,
+  ctx: ChatBatchValidationContext,
 ): Promise<BackfillValidationResult> {
   const { doc } = item;
   const wsUuid = parseEntityId(doc.record.workspaceId)?.uuid;
@@ -237,30 +316,45 @@ async function validateChatBackfillItem(
       sanitizedPayload: { table: doc.table, id: doc.record.id },
     };
   }
-  const wsRows = await db
-    .select({ id: workspaces.id })
-    .from(workspaces)
-    .where(eq(workspaces.id, wsUuid))
-    .limit(1);
-  if (!wsRows[0]) {
-    return {
-      ok: false,
-      reason: "orphaned_workspace_missing",
-      sanitizedPayload: {
-        table: doc.table,
-        id: doc.record.id,
-        workspaceId: doc.record.workspaceId,
-      },
-    };
+  if (!ctx.workspaceUuids.has(wsUuid)) {
+    if (ctx.prepared) {
+      return {
+        ok: false,
+        reason: "orphaned_workspace_missing",
+        sanitizedPayload: {
+          table: doc.table,
+          id: doc.record.id,
+          workspaceId: doc.record.workspaceId,
+        },
+      };
+    }
+    const wsRows = await db
+      .select({ id: workspaces.id })
+      .from(workspaces)
+      .where(eq(workspaces.id, wsUuid))
+      .limit(1);
+    if (!wsRows[0]) {
+      return {
+        ok: false,
+        reason: "orphaned_workspace_missing",
+        sanitizedPayload: {
+          table: doc.table,
+          id: doc.record.id,
+          workspaceId: doc.record.workspaceId,
+        },
+      };
+    }
+    ctx.workspaceUuids.add(wsUuid);
   }
 
   switch (doc.table) {
     case "chats": {
-      doc.resolvedCreatedByUuid = await resolveUserUuid(
+      doc.resolvedCreatedByUuid = await resolveChatBatchUserUuid(
         db,
         doc.record.createdBy,
+        ctx,
       );
-      batchChatUuids.add(objectIdToUuid(doc.record.id));
+      ctx.chatUuids.add(objectIdToUuid(doc.record.id));
       return { ok: true };
     }
 
@@ -277,7 +371,19 @@ async function validateChatBackfillItem(
           },
         };
       }
-      if (!batchChatUuids.has(chatUuid)) {
+      if (!ctx.chatUuids.has(chatUuid)) {
+        if (ctx.prepared) {
+          return {
+            ok: false,
+            reason: "orphaned_chat_missing",
+            sanitizedPayload: {
+              table: "chat_attachments",
+              id: doc.record.id,
+              chatId: doc.record.chatId,
+              storageKey: doc.record.storageKey,
+            },
+          };
+        }
         const parentRows = await db
           .select({ id: chats.id })
           .from(chats)
@@ -295,10 +401,12 @@ async function validateChatBackfillItem(
             },
           };
         }
+        ctx.chatUuids.add(chatUuid);
       }
-      doc.resolvedCreatedByUuid = await resolveUserUuid(
+      doc.resolvedCreatedByUuid = await resolveChatBatchUserUuid(
         db,
         doc.record.createdBy,
+        ctx,
       );
       return { ok: true };
     }
@@ -311,40 +419,51 @@ async function upsertChatBackfillItems(
   pgRepo: PgChatRepository,
 ): Promise<number> {
   let upserted = 0;
-  for (const item of items) {
-    const { doc } = item;
-    let wrote = false;
-    switch (doc.table) {
+
+  for (const group of groupContiguous(items, item => item.doc.table)) {
+    switch (group.key) {
       case "chats":
-        wrote = await pgRepo.upsertFullChatWithGuard(
-          doc.record,
-          doc.resolvedCreatedByUuid ?? null,
+        upserted += await pgRepo.upsertFullChatsBatchWithGuard(
+          group.items.map(item => {
+            const d = item.doc as Extract<ChatBackfillDoc, { table: "chats" }>;
+            return {
+              record: d.record,
+              createdByUuid: d.resolvedCreatedByUuid ?? null,
+            };
+          }),
           db,
         );
         break;
       case "chat_attachments":
-        wrote = await pgRepo.upsertAttachmentWithBacklink(
-          doc.record,
-          doc.resolvedCreatedByUuid ?? null,
+        upserted += await pgRepo.upsertAttachmentsBatchWithBacklink(
+          group.items.map(item => {
+            const d = item.doc as Extract<
+              ChatBackfillDoc,
+              { table: "chat_attachments" }
+            >;
+            return {
+              record: d.record,
+              createdByUuid: d.resolvedCreatedByUuid ?? null,
+            };
+          }),
           db,
         );
         break;
     }
-    if (wrote) upserted += 1;
   }
   return upserted;
 }
 
 export function createChatBackfillHandler(): BackfillDomainHandler<ChatBackfillDoc> {
   const pgRepo = new PgChatRepository();
-  const batchChatUuids = new Set<string>();
+  const batchCtx = createChatBatchValidationContext();
 
   return {
     domain: CHAT_DOMAIN,
     collectionName: "chats",
     targetTable: "chats",
     async fetchBatch({ afterCursor, limit, workspaceId }) {
-      batchChatUuids.clear();
+      clearChatBatchValidationContext(batchCtx);
       const parsed = decodeCompositeCursor(afterCursor);
       const startStage = parsed ? parsed.stage : 1;
       const items: Array<BackfillItem<ChatBackfillDoc>> = [];
@@ -366,8 +485,11 @@ export function createChatBackfillHandler(): BackfillDomainHandler<ChatBackfillD
       }
       return items;
     },
+    prepareBatch(items, db) {
+      return prepareChatBatch(items, db, batchCtx);
+    },
     validate(item, db) {
-      return validateChatBackfillItem(item, db, batchChatUuids);
+      return validateChatBackfillItem(item, db, batchCtx);
     },
     upsertBatch(items, db) {
       return upsertChatBackfillItems(items, db, pgRepo);
@@ -379,14 +501,14 @@ export function createChatTableBackfillHandler(
   meta: ChatStageMeta,
 ): BackfillDomainHandler<ChatBackfillDoc> {
   const pgRepo = new PgChatRepository();
-  const batchChatUuids = new Set<string>();
+  const batchCtx = createChatBatchValidationContext();
 
   return {
     domain: `${CHAT_DOMAIN}:${meta.table}`,
     collectionName: meta.collection,
     targetTable: meta.table,
     async fetchBatch({ afterCursor, limit, workspaceId }) {
-      batchChatUuids.clear();
+      clearChatBatchValidationContext(batchCtx);
       return fetchStageBackfillItems(
         meta,
         afterCursor,
@@ -395,8 +517,11 @@ export function createChatTableBackfillHandler(
         false,
       );
     },
+    prepareBatch(items, db) {
+      return prepareChatBatch(items, db, batchCtx);
+    },
     validate(item, db) {
-      return validateChatBackfillItem(item, db, batchChatUuids);
+      return validateChatBackfillItem(item, db, batchCtx);
     },
     upsertBatch(items, db) {
       return upsertChatBackfillItems(items, db, pgRepo);
@@ -418,11 +543,9 @@ async function fetchPgRecordsForTable(
 
   switch (table) {
     case "chats": {
-      for (const pgUuid of valid) {
-        const record = await pgRepo.findById(pgUuid, undefined, db);
-        if (record) {
-          out.set(pgUuid, canonicalizeChatForCompare(record));
-        }
+      const hydratedMap = await pgRepo.findByIds(valid, db);
+      for (const [pgUuid, record] of hydratedMap) {
+        out.set(pgUuid, canonicalizeChatForCompare(record));
       }
       return out;
     }

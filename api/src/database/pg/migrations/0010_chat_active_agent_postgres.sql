@@ -1,0 +1,2 @@
+ALTER TABLE "chats" DROP CONSTRAINT "chats_active_agent_check";--> statement-breakpoint
+ALTER TABLE "chats" ADD CONSTRAINT "chats_active_agent_check" CHECK ("chats"."active_agent" IS NULL OR "chats"."active_agent" IN ('mongo', 'bigquery', 'postgres', 'triage'));

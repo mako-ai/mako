@@ -46,6 +46,7 @@ import {
   notebookIndexes,
   savedConsoles,
   scheduledQueryRuns,
+  type NewSavedConsoleRow,
 } from "../../database/pg/schema/consoles-charts";
 import { workspaces } from "../../database/pg/schema/workspaces";
 import { registerSyncRetryHandler } from "../../inngest/functions/migration/sync-retry";
@@ -57,6 +58,7 @@ import {
   PgConsolesChartsRepository,
   isNonUserSentinel,
   isValidFavouriteKind,
+  lastRunToPgJson,
   mongoConsoleFolderToRecord,
   mongoEntityVersionToRecord,
   mongoFavouriteToRecord,
@@ -72,6 +74,8 @@ import {
   pgNotebookIndexToRecord,
   pgSavedConsoleToRecord,
   pgScheduledQueryRunToRecord,
+  resolveOptionalUserUuid,
+  shareEntriesToPgJson,
   toPgUuid,
   type ConsoleFolderRecord,
   type EntityVersionRecord,
@@ -96,6 +100,16 @@ import {
   type BackfillItem,
   type BackfillValidationResult,
 } from "../backfill";
+import {
+  buildExcludedSet,
+  chunkRows,
+  chunkValues,
+  dedupByKey,
+  groupContiguous,
+  pickNewerByUpdatedAt,
+  prefetchExistingKeySet,
+  prefetchPgUserUuidMap,
+} from "../bulk-helpers";
 import { recordMigrationTombstone } from "../router";
 import { registerTtlRule } from "../ttl-reaper";
 import type { SyncRetryEventData } from "../types";
@@ -709,6 +723,10 @@ interface BatchValidationContext {
   savedConsoleIds: Set<string>;
   notebookFolderIds: Set<string>;
   favouriteIds: Set<string>;
+  knownWorkspaceIds: Set<string>;
+  checkedWorkspaceIds: Set<string>;
+  userMap: Map<string, string>;
+  prepared: boolean;
 }
 
 function createBatchValidationContext(): BatchValidationContext {
@@ -717,6 +735,10 @@ function createBatchValidationContext(): BatchValidationContext {
     savedConsoleIds: new Set<string>(),
     notebookFolderIds: new Set<string>(),
     favouriteIds: new Set<string>(),
+    knownWorkspaceIds: new Set<string>(),
+    checkedWorkspaceIds: new Set<string>(),
+    userMap: new Map<string, string>(),
+    prepared: false,
   };
 }
 
@@ -725,6 +747,114 @@ function clearBatchValidationContext(ctx: BatchValidationContext): void {
   ctx.savedConsoleIds.clear();
   ctx.notebookFolderIds.clear();
   ctx.favouriteIds.clear();
+  ctx.knownWorkspaceIds.clear();
+  ctx.checkedWorkspaceIds.clear();
+  ctx.userMap.clear();
+  ctx.prepared = false;
+}
+
+async function prepareConsolesChartsBatch(
+  items: ReadonlyArray<BackfillItem<CompositeBackfillDoc>>,
+  db: MakoPgDb,
+  ctx: BatchValidationContext,
+): Promise<void> {
+  const wsUuids = new Set<string>();
+  const favUserIds: string[] = [];
+  const consoleParentIds: string[] = [];
+  const notebookParentIds: string[] = [];
+  const favParentIds: string[] = [];
+
+  for (const { doc } of items) {
+    switch (doc.stage) {
+      case "console_folders":
+      case "saved_consoles":
+      case "notebook_folders":
+      case "notebook_indexes":
+      case "scheduled_query_runs": {
+        const wsUuid = optionalPgUuid(doc.record.workspaceId);
+        if (wsUuid) wsUuids.add(wsUuid);
+        break;
+      }
+      case "entity_versions": {
+        const wsUuid = optionalPgUuid(doc.workspaceId);
+        if (wsUuid) wsUuids.add(wsUuid);
+        break;
+      }
+      case "favourites": {
+        const wsUuid = optionalPgUuid(doc.workspaceId);
+        if (wsUuid) wsUuids.add(wsUuid);
+        if (doc.rawUserId && !isNonUserSentinel(doc.rawUserId)) {
+          favUserIds.push(doc.rawUserId);
+        }
+        break;
+      }
+      case "console_folders_parents": {
+        const pUuid = optionalPgUuid(doc.parentId);
+        if (pUuid) consoleParentIds.push(pUuid);
+        break;
+      }
+      case "notebook_folders_parents": {
+        const pUuid = optionalPgUuid(doc.parentId);
+        if (pUuid) notebookParentIds.push(pUuid);
+        break;
+      }
+      case "favourites_parents": {
+        const pUuid = optionalPgUuid(doc.parentId);
+        if (pUuid) favParentIds.push(pUuid);
+        break;
+      }
+    }
+  }
+
+  const wsList = [...wsUuids];
+  const [
+    foundWs,
+    resolvedUsers,
+    foundConsoleParents,
+    foundNotebookParents,
+    foundFavParents,
+  ] = await Promise.all([
+    prefetchExistingKeySet(db, workspaces, workspaces.id, wsList),
+    prefetchPgUserUuidMap(db, favUserIds),
+    prefetchExistingKeySet(
+      db,
+      consoleFolders,
+      consoleFolders.id,
+      consoleParentIds,
+    ),
+    prefetchExistingKeySet(
+      db,
+      notebookFolders,
+      notebookFolders.id,
+      notebookParentIds,
+    ),
+    prefetchExistingKeySet(db, favourites, favourites.id, favParentIds),
+  ]);
+
+  for (const wsUuid of wsList) {
+    ctx.checkedWorkspaceIds.add(wsUuid);
+    if (foundWs.has(wsUuid)) ctx.knownWorkspaceIds.add(wsUuid);
+  }
+  for (const [k, v] of resolvedUsers) ctx.userMap.set(k, v);
+  for (const id of foundConsoleParents) ctx.consoleFolderIds.add(id);
+  for (const id of foundNotebookParents) ctx.notebookFolderIds.add(id);
+  for (const id of foundFavParents) ctx.favouriteIds.add(id);
+  ctx.prepared = true;
+}
+
+async function checkCachedWorkspaceExists(
+  db: MakoPgDb,
+  wsId: string,
+  ctx: BatchValidationContext,
+): Promise<boolean> {
+  const wsUuid = optionalPgUuid(wsId);
+  if (!wsUuid) return false;
+  if (ctx.knownWorkspaceIds.has(wsUuid)) return true;
+  if (ctx.checkedWorkspaceIds.has(wsUuid) || ctx.prepared) return false;
+  ctx.checkedWorkspaceIds.add(wsUuid);
+  const exists = await pgWorkspaceExists(db, wsId);
+  if (exists) ctx.knownWorkspaceIds.add(wsUuid);
+  return exists;
 }
 
 async function validateCompositeItem(
@@ -745,7 +875,9 @@ async function validateCompositeItem(
               : `legacy_entity_type_${payload.rawEntityType || "unknown"}`,
         };
       }
-      if (!(await pgWorkspaceExists(db, payload.workspaceId))) {
+      if (
+        !(await checkCachedWorkspaceExists(db, payload.workspaceId, batchCtx))
+      ) {
         return { ok: false, reason: "orphan_workspace_id" };
       }
       return { ok: true };
@@ -761,11 +893,18 @@ async function validateCompositeItem(
           reason: `invalid_favourite_${payload.rawType}_${payload.rawKind ?? "null"}`,
         };
       }
-      if (!(await pgWorkspaceExists(db, payload.workspaceId))) {
+      if (
+        !(await checkCachedWorkspaceExists(db, payload.workspaceId, batchCtx))
+      ) {
         return { ok: false, reason: "orphan_workspace_id" };
       }
-      const userMap = await resolvePgUserUuidsBatch(db, [payload.rawUserId]);
-      if (!makeBatchResolver(userMap)(payload.rawUserId)) {
+      let resolvedUser = makeBatchResolver(batchCtx.userMap)(payload.rawUserId);
+      if (!resolvedUser && !batchCtx.prepared) {
+        const userMap = await resolvePgUserUuidsBatch(db, [payload.rawUserId]);
+        for (const [k, v] of userMap) batchCtx.userMap.set(k, v);
+        resolvedUser = makeBatchResolver(batchCtx.userMap)(payload.rawUserId);
+      }
+      if (!resolvedUser) {
         return { ok: false, reason: "orphan_user_id" };
       }
       batchCtx.favouriteIds.add(toPgUuid(payload.record.id).toLowerCase());
@@ -773,7 +912,13 @@ async function validateCompositeItem(
     }
 
     case "scheduled_query_runs": {
-      if (!(await pgWorkspaceExists(db, payload.record.workspaceId))) {
+      if (
+        !(await checkCachedWorkspaceExists(
+          db,
+          payload.record.workspaceId,
+          batchCtx,
+        ))
+      ) {
         return { ok: false, reason: "orphan_workspace_id" };
       }
       const consoleUuid = optionalPgUuid(payload.record.consoleId);
@@ -789,6 +934,9 @@ async function validateCompositeItem(
       if (batchCtx.consoleFolderIds.has(parentUuid.toLowerCase())) {
         return { ok: true };
       }
+      if (batchCtx.prepared) {
+        return { ok: false, reason: "orphan_parent_folder" };
+      }
       const exists = await db
         .select({ id: consoleFolders.id })
         .from(consoleFolders)
@@ -797,6 +945,7 @@ async function validateCompositeItem(
       if (exists.length === 0) {
         return { ok: false, reason: "orphan_parent_folder" };
       }
+      batchCtx.consoleFolderIds.add(parentUuid.toLowerCase());
       return { ok: true };
     }
 
@@ -806,6 +955,9 @@ async function validateCompositeItem(
       if (batchCtx.notebookFolderIds.has(parentUuid.toLowerCase())) {
         return { ok: true };
       }
+      if (batchCtx.prepared) {
+        return { ok: false, reason: "orphan_parent_folder" };
+      }
       const exists = await db
         .select({ id: notebookFolders.id })
         .from(notebookFolders)
@@ -814,6 +966,7 @@ async function validateCompositeItem(
       if (exists.length === 0) {
         return { ok: false, reason: "orphan_parent_folder" };
       }
+      batchCtx.notebookFolderIds.add(parentUuid.toLowerCase());
       return { ok: true };
     }
 
@@ -823,6 +976,9 @@ async function validateCompositeItem(
       if (batchCtx.favouriteIds.has(parentUuid.toLowerCase())) {
         return { ok: true };
       }
+      if (batchCtx.prepared) {
+        return { ok: false, reason: "orphan_parent_favourite" };
+      }
       const exists = await db
         .select({ id: favourites.id })
         .from(favourites)
@@ -831,11 +987,18 @@ async function validateCompositeItem(
       if (exists.length === 0) {
         return { ok: false, reason: "orphan_parent_favourite" };
       }
+      batchCtx.favouriteIds.add(parentUuid.toLowerCase());
       return { ok: true };
     }
 
     case "console_folders": {
-      if (!(await pgWorkspaceExists(db, payload.record.workspaceId))) {
+      if (
+        !(await checkCachedWorkspaceExists(
+          db,
+          payload.record.workspaceId,
+          batchCtx,
+        ))
+      ) {
         return { ok: false, reason: "orphan_workspace_id" };
       }
       batchCtx.consoleFolderIds.add(toPgUuid(payload.record.id).toLowerCase());
@@ -843,7 +1006,13 @@ async function validateCompositeItem(
     }
 
     case "saved_consoles": {
-      if (!(await pgWorkspaceExists(db, payload.record.workspaceId))) {
+      if (
+        !(await checkCachedWorkspaceExists(
+          db,
+          payload.record.workspaceId,
+          batchCtx,
+        ))
+      ) {
         return { ok: false, reason: "orphan_workspace_id" };
       }
       if (!isValidEmbedding(payload.record.descriptionEmbedding)) {
@@ -854,7 +1023,13 @@ async function validateCompositeItem(
     }
 
     case "notebook_folders": {
-      if (!(await pgWorkspaceExists(db, payload.record.workspaceId))) {
+      if (
+        !(await checkCachedWorkspaceExists(
+          db,
+          payload.record.workspaceId,
+          batchCtx,
+        ))
+      ) {
         return { ok: false, reason: "orphan_workspace_id" };
       }
       batchCtx.notebookFolderIds.add(toPgUuid(payload.record.id).toLowerCase());
@@ -862,12 +1037,94 @@ async function validateCompositeItem(
     }
 
     case "notebook_indexes": {
-      if (!(await pgWorkspaceExists(db, payload.record.workspaceId))) {
+      if (
+        !(await checkCachedWorkspaceExists(
+          db,
+          payload.record.workspaceId,
+          batchCtx,
+        ))
+      ) {
         return { ok: false, reason: "orphan_workspace_id" };
       }
       return { ok: true };
     }
   }
+}
+
+async function buildSavedConsolePgRow(
+  record: SavedConsoleRecord,
+  safeFolderId: string | undefined,
+  safeConnectionId: string | undefined,
+  resolveUser: UserUuidResolver,
+): Promise<NewSavedConsoleRow> {
+  const access = record.access ?? "private";
+  const [createdByUuid, ownerUuid, sharedWithJson, lastRunJson] =
+    await Promise.all([
+      resolveOptionalUserUuid(record.createdBy, resolveUser),
+      resolveOptionalUserUuid(record.owner_id, resolveUser),
+      shareEntriesToPgJson(record.sharedWith, resolveUser),
+      lastRunToPgJson(record.lastRun, resolveUser),
+    ]);
+  const sr = record.scheduledRun;
+  return {
+    id: toPgUuid(record.id),
+    workspaceId: toPgUuid(record.workspaceId),
+    folderId: optionalPgUuid(safeFolderId),
+    connectionId: optionalPgUuid(safeConnectionId),
+    databaseName: record.databaseName ?? null,
+    databaseId: record.databaseId ?? null,
+    name: record.name,
+    description: record.description ?? null,
+    descriptionEmbedding:
+      record.descriptionEmbedding && record.descriptionEmbedding.length > 0
+        ? record.descriptionEmbedding
+        : null,
+    embeddingModel: record.embeddingModel ?? null,
+    descriptionGeneratedAt: record.descriptionGeneratedAt ?? null,
+    path: record.path ?? null,
+    sourceBlobSha: record.sourceBlobSha ?? null,
+    descriptionSourceSha: record.descriptionSourceSha ?? null,
+    descriptionSource: record.descriptionSource ?? null,
+    code: record.code,
+    language: record.language,
+    chartSpec: record.chartSpec ?? null,
+    resultsViewMode: record.resultsViewMode ?? null,
+    mongoOptions: record.mongoOptions ?? null,
+    createdBy: createdByUuid,
+    ownerId: ownerUuid,
+    isPrivate: record.isPrivate ?? access === "private",
+    isSaved: record.isSaved ?? false,
+    access,
+    workspaceRole: record.workspaceRole ?? "viewer",
+    sharedWith: sharedWithJson,
+    scheduleCron: record.schedule?.cron ?? null,
+    scheduleTimezone: record.schedule?.timezone ?? null,
+    scheduledRunNextAt: sr?.nextAt ?? null,
+    scheduledRunLastAt: sr?.lastAt ?? null,
+    scheduledRunLastStatus: sr?.lastStatus ?? null,
+    scheduledRunLastError: sr?.lastError ?? null,
+    scheduledRunLastDurationMs: sr?.lastDurationMs ?? null,
+    scheduledRunLastRowsAffected: sr?.lastRowsAffected ?? null,
+    scheduledRunLastRowCount: sr?.lastRowCount ?? null,
+    scheduledRunCount: sr?.runCount ?? 0,
+    scheduledRunConsecutiveFailures: sr?.consecutiveFailures ?? 0,
+    scheduledRunPermanentFailures: sr?.permanentFailures ?? null,
+    scheduledRunPausedAt: sr?.pausedAt ?? null,
+    scheduledRunPausedReason: sr?.pausedReason ?? null,
+    version: record.version ?? 1,
+    draftRevision: record.draftRevision ?? 1,
+    lastDraftOrigin: record.lastDraftOrigin ?? null,
+    lastRun: lastRunJson,
+    lastExecutedAt: record.lastExecutedAt ?? null,
+    executionCount: record.executionCount ?? 0,
+    lastExternalUsedAt: record.lastExternalUsedAt ?? null,
+    externalUseCount: record.externalUseCount ?? 0,
+    lastExternalSource: record.lastExternalSource ?? null,
+    isDeleted: record.is_deleted ?? false,
+    deletedAt: record.deletedAt ?? null,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
 }
 
 async function upsertCompositeBatch(
@@ -877,8 +1134,12 @@ async function upsertCompositeBatch(
 ): Promise<number> {
   if (items.length === 0) return 0;
 
-  // Collect all user IDs in this batch for a single PG lookup.
+  // Collect all user IDs and FK references across this batch for O(1) PG lookups.
   const rawUserIds: Array<string | null | undefined> = [];
+  const consoleFolderIds = new Set<string>();
+  const consoleConnectionIds = new Set<string>();
+  const notebookFolderIds = new Set<string>();
+
   for (const item of items) {
     const d = item.doc;
     if (d.stage === "console_folders") rawUserIds.push(d.record.ownerId);
@@ -891,6 +1152,14 @@ async function upsertCompositeBatch(
       for (const s of d.record.sharedWith) {
         rawUserIds.push(s.userId, s.addedBy);
       }
+      if (d.record.folderId) {
+        const fUuid = optionalPgUuid(d.record.folderId);
+        if (fUuid) consoleFolderIds.add(fUuid);
+      }
+      if (d.record.connectionId) {
+        const cUuid = optionalPgUuid(d.record.connectionId);
+        if (cUuid) consoleConnectionIds.add(cUuid);
+      }
     } else if (d.stage === "entity_versions" && d.record) {
       rawUserIds.push(d.record.savedBy);
     } else if (d.stage === "notebook_folders") {
@@ -900,6 +1169,10 @@ async function upsertCompositeBatch(
       for (const s of d.record.sharedWith) {
         rawUserIds.push(s.userId, s.addedBy);
       }
+      if (d.record.folderId) {
+        const fUuid = optionalPgUuid(d.record.folderId);
+        if (fUuid) notebookFolderIds.add(fUuid);
+      }
     } else if (d.stage === "favourites" && d.record) {
       rawUserIds.push(d.record.userId);
     } else if (d.stage === "scheduled_query_runs") {
@@ -907,196 +1180,625 @@ async function upsertCompositeBatch(
     }
   }
 
-  const userMap = await resolvePgUserUuidsBatch(db, rawUserIds);
+  const [userMap, existingConsoleFolders, existingNotebookFolders, hasConnFk] =
+    await Promise.all([
+      resolvePgUserUuidsBatch(db, rawUserIds),
+      prefetchExistingKeySet(db, consoleFolders, consoleFolders.id, [
+        ...consoleFolderIds,
+      ]),
+      prefetchExistingKeySet(db, notebookFolders, notebookFolders.id, [
+        ...notebookFolderIds,
+      ]),
+      consoleConnectionIds.size > 0
+        ? hasConsolesConnectionFk(db)
+        : Promise.resolve(false),
+    ]);
+
+  const validateConnections = consoleConnectionIds.size > 0 && hasConnFk;
+  const existingConnections = validateConnections
+    ? await prefetchExistingKeySet(
+        db,
+        databaseConnections,
+        databaseConnections.id,
+        [...consoleConnectionIds],
+      )
+    : new Set<string>();
+
+  const batchResolver = makeBatchResolver(userMap);
   const pgRepo = new PgConsolesChartsRepository({
     getDb: () => db,
-    resolveUserUuid: makeBatchResolver(userMap),
+    resolveUserUuid: batchResolver,
   });
 
-  // Pre-fetch existing folder IDs (and database_connections IDs once 0005a FK is
-  // attached) for saved_consoles / notebook_indexes so dangling deleted references
-  // null out cleanly instead of failing FK 23503.
-  const consoleFolderIds = new Set<string>();
-  const consoleConnectionIds = new Set<string>();
-  const notebookFolderIds = new Set<string>();
-  for (const item of items) {
-    if (item.doc.stage === "saved_consoles") {
-      if (item.doc.record.folderId) {
-        const fUuid = optionalPgUuid(item.doc.record.folderId);
-        if (fUuid) consoleFolderIds.add(fUuid);
-      }
-      if (item.doc.record.connectionId) {
-        const cUuid = optionalPgUuid(item.doc.record.connectionId);
-        if (cUuid) consoleConnectionIds.add(cUuid);
-      }
-    }
-    if (item.doc.stage === "notebook_indexes" && item.doc.record.folderId) {
-      const fUuid = optionalPgUuid(item.doc.record.folderId);
-      if (fUuid) notebookFolderIds.add(fUuid);
-    }
-  }
-  const existingConsoleFolders = new Set<string>();
-  if (consoleFolderIds.size > 0) {
-    const rows = await db
-      .select({ id: consoleFolders.id })
-      .from(consoleFolders)
-      .where(inArray(consoleFolders.id, [...consoleFolderIds]));
-    for (const r of rows) existingConsoleFolders.add(r.id.toLowerCase());
-  }
-  const existingConnections = new Set<string>();
-  const validateConnections =
-    consoleConnectionIds.size > 0 && (await hasConsolesConnectionFk(db));
-  if (validateConnections) {
-    const rows = await db
-      .select({ id: databaseConnections.id })
-      .from(databaseConnections)
-      .where(inArray(databaseConnections.id, [...consoleConnectionIds]));
-    for (const r of rows) existingConnections.add(r.id.toLowerCase());
-  }
-  const existingNotebookFolders = new Set<string>();
-  if (notebookFolderIds.size > 0) {
-    const rows = await db
-      .select({ id: notebookFolders.id })
-      .from(notebookFolders)
-      .where(inArray(notebookFolders.id, [...notebookFolderIds]));
-    for (const r of rows) existingNotebookFolders.add(r.id.toLowerCase());
-  }
-
   let upserted = 0;
-  for (const item of items) {
-    const d = item.doc;
-    switch (d.stage) {
+
+  for (const group of groupContiguous(items, item => item.doc.stage)) {
+    switch (group.key) {
       case "console_folders": {
-        // Pass 1: insert with parentId cleared so child-before-parent never fails FK.
-        // Without `ignoreUpdatedAtGuard`, `onConflictDoNothing` preserves live Stage 2 rows.
-        await pgRepo.upsertConsoleFolder(
-          { ...d.record, parentId: undefined },
-          { db, ignoreUpdatedAtGuard: options.ignoreUpdatedAtGuard },
+        const rows = dedupByKey(
+          await Promise.all(
+            group.items.map(async item => {
+              const rec = (
+                item.doc as Extract<
+                  CompositeBackfillDoc,
+                  { stage: "console_folders" }
+                >
+              ).record;
+              const ownerUuid = await resolveOptionalUserUuid(
+                rec.ownerId,
+                batchResolver,
+              );
+              return {
+                id: toPgUuid(rec.id),
+                workspaceId: toPgUuid(rec.workspaceId),
+                name: rec.name,
+                parentId: null,
+                isPrivate: rec.isPrivate,
+                ownerId: ownerUuid,
+                access: rec.access,
+                createdAt: rec.createdAt,
+              } satisfies typeof consoleFolders.$inferInsert;
+            }),
+          ),
+          r => r.id.toLowerCase(),
+          options.ignoreUpdatedAtGuard ? undefined : existing => existing,
         );
-        upserted += 1;
-        break;
-      }
-      case "console_folders_parents": {
-        const whereCond = options.ignoreUpdatedAtGuard
-          ? eq(consoleFolders.id, toPgUuid(d.id))
-          : and(
-              eq(consoleFolders.id, toPgUuid(d.id)),
-              isNull(consoleFolders.parentId),
-            );
-        await db
-          .update(consoleFolders)
-          .set({ parentId: toPgUuid(d.parentId) })
-          .where(whereCond);
-        upserted += 1;
-        break;
-      }
-      case "saved_consoles": {
-        const folderUuid = optionalPgUuid(d.record.folderId);
-        const safeFolderId =
-          folderUuid && existingConsoleFolders.has(folderUuid)
-            ? d.record.folderId
-            : undefined;
-        let safeConnectionId = d.record.connectionId;
-        if (validateConnections && safeConnectionId) {
-          const connUuid = optionalPgUuid(safeConnectionId);
-          if (!connUuid || !existingConnections.has(connUuid)) {
-            safeConnectionId = undefined;
+        const setCols = buildExcludedSet(consoleFolders, [
+          "id",
+          "workspaceId",
+          "createdAt",
+        ]);
+        for (const chunk of chunkRows(rows, 8, 300)) {
+          const insert = db.insert(consoleFolders).values(chunk);
+          if (options.ignoreUpdatedAtGuard) {
+            await insert.onConflictDoUpdate({
+              target: consoleFolders.id,
+              set: setCols,
+            });
+          } else {
+            await insert.onConflictDoNothing({ target: consoleFolders.id });
+          }
+          for (const r of chunk) {
+            existingConsoleFolders.add(r.id.toLowerCase());
           }
         }
-        await pgRepo.upsertConsole(
-          {
-            ...d.record,
-            folderId: safeFolderId,
-            connectionId: safeConnectionId,
-          },
-          {
-            db,
-            ignoreUpdatedAtGuard: options.ignoreUpdatedAtGuard,
-            connectionValidated: true,
-          },
-        );
-        upserted += 1;
+        upserted += group.items.length;
         break;
       }
+
+      case "console_folders_parents": {
+        const pairs = dedupByKey(
+          group.items.map(item => {
+            const d = item.doc as Extract<
+              CompositeBackfillDoc,
+              { stage: "console_folders_parents" }
+            >;
+            return { id: toPgUuid(d.id), parentId: toPgUuid(d.parentId) };
+          }),
+          p => p.id.toLowerCase(),
+        );
+        for (const chunk of chunkRows(pairs, 2, 300)) {
+          const valuesSql = sql.join(
+            chunk.map(p => sql`(${p.id}::uuid, ${p.parentId}::uuid)`),
+            sql`, `,
+          );
+          if (options.ignoreUpdatedAtGuard) {
+            await db.execute(sql`
+              UPDATE "console_folders" AS t
+              SET "parent_id" = v."parent_id"
+              FROM (VALUES ${valuesSql}) AS v("id", "parent_id")
+              WHERE t."id" = v."id"
+            `);
+          } else {
+            await db.execute(sql`
+              UPDATE "console_folders" AS t
+              SET "parent_id" = v."parent_id"
+              FROM (VALUES ${valuesSql}) AS v("id", "parent_id")
+              WHERE t."id" = v."id" AND t."parent_id" IS NULL
+            `);
+          }
+        }
+        upserted += group.items.length;
+        break;
+      }
+
+      case "saved_consoles": {
+        const rows = dedupByKey(
+          await Promise.all(
+            group.items.map(item => {
+              const rec = (
+                item.doc as Extract<
+                  CompositeBackfillDoc,
+                  { stage: "saved_consoles" }
+                >
+              ).record;
+              const folderUuid = optionalPgUuid(rec.folderId);
+              const safeFolderId =
+                folderUuid && existingConsoleFolders.has(folderUuid)
+                  ? rec.folderId
+                  : undefined;
+              let safeConnectionId = rec.connectionId;
+              if (validateConnections && safeConnectionId) {
+                const connUuid = optionalPgUuid(safeConnectionId);
+                if (!connUuid || !existingConnections.has(connUuid)) {
+                  safeConnectionId = undefined;
+                }
+              }
+              return buildSavedConsolePgRow(
+                rec,
+                safeFolderId,
+                safeConnectionId,
+                batchResolver,
+              );
+            }),
+          ),
+          r => r.id.toLowerCase(),
+          pickNewerByUpdatedAt,
+        );
+        const setCols = buildExcludedSet(savedConsoles, [
+          "id",
+          "workspaceId",
+          "createdAt",
+        ]);
+        for (const chunk of chunkRows(rows, 53, 100)) {
+          await db
+            .insert(savedConsoles)
+            .values(chunk)
+            .onConflictDoUpdate({
+              target: savedConsoles.id,
+              set: setCols,
+              ...(options.ignoreUpdatedAtGuard
+                ? {}
+                : {
+                    setWhere: sql`${savedConsoles.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${savedConsoles.updatedAt}`,
+                  }),
+            });
+        }
+        upserted += group.items.length;
+        break;
+      }
+
       case "entity_versions": {
-        if (!d.record) break;
-        await pgRepo.upsertEntityVersion(d.record, db);
-        upserted += 1;
+        const validRecs = group.items
+          .map(
+            item =>
+              (
+                item.doc as Extract<
+                  CompositeBackfillDoc,
+                  { stage: "entity_versions" }
+                >
+              ).record,
+          )
+          .filter((rec): rec is NonNullable<typeof rec> => rec !== null);
+        const rows = dedupByKey(
+          await Promise.all(
+            validRecs.map(async rec => {
+              const savedByUuid = await resolveOptionalUserUuid(
+                rec.savedBy,
+                batchResolver,
+              );
+              return {
+                id: toPgUuid(rec.id),
+                workspaceId: toPgUuid(rec.workspaceId),
+                entityType: rec.entityType,
+                entityId: toPgUuid(rec.entityId),
+                version: rec.version,
+                snapshot: rec.snapshot,
+                savedBy: savedByUuid,
+                savedByName: rec.savedByName,
+                comment: rec.comment,
+                restoredFrom: rec.restoredFrom ?? null,
+                createdAt: rec.createdAt,
+              } satisfies typeof entityVersions.$inferInsert;
+            }),
+          ),
+          r => r.id.toLowerCase(),
+          existing => existing,
+        );
+        for (const chunk of chunkRows(rows, 11, 200)) {
+          await db.insert(entityVersions).values(chunk).onConflictDoNothing();
+        }
+        upserted += validRecs.length;
         break;
       }
+
       case "notebook_folders": {
-        // Pass 1: parentId cleared; `onConflictDoNothing` preserves live Stage 2 rows.
-        await pgRepo.upsertNotebookFolder(
-          { ...d.record, parentId: undefined },
-          { db, ignoreUpdatedAtGuard: options.ignoreUpdatedAtGuard },
+        const rows = dedupByKey(
+          await Promise.all(
+            group.items.map(async item => {
+              const rec = (
+                item.doc as Extract<
+                  CompositeBackfillDoc,
+                  { stage: "notebook_folders" }
+                >
+              ).record;
+              const ownerUuid = await resolveOptionalUserUuid(
+                rec.ownerId,
+                batchResolver,
+              );
+              return {
+                id: toPgUuid(rec.id),
+                workspaceId: toPgUuid(rec.workspaceId),
+                name: rec.name,
+                parentId: null,
+                ownerId: ownerUuid,
+                access: rec.access,
+                createdAt: rec.createdAt,
+              } satisfies typeof notebookFolders.$inferInsert;
+            }),
+          ),
+          r => r.id.toLowerCase(),
+          options.ignoreUpdatedAtGuard ? undefined : existing => existing,
         );
-        upserted += 1;
+        const setCols = buildExcludedSet(notebookFolders, [
+          "id",
+          "workspaceId",
+          "createdAt",
+        ]);
+        for (const chunk of chunkRows(rows, 7, 300)) {
+          const insert = db.insert(notebookFolders).values(chunk);
+          if (options.ignoreUpdatedAtGuard) {
+            await insert.onConflictDoUpdate({
+              target: notebookFolders.id,
+              set: setCols,
+            });
+          } else {
+            await insert.onConflictDoNothing({ target: notebookFolders.id });
+          }
+          for (const r of chunk) {
+            existingNotebookFolders.add(r.id.toLowerCase());
+          }
+        }
+        upserted += group.items.length;
         break;
       }
+
       case "notebook_folders_parents": {
-        const whereCond = options.ignoreUpdatedAtGuard
-          ? eq(notebookFolders.id, toPgUuid(d.id))
-          : and(
-              eq(notebookFolders.id, toPgUuid(d.id)),
-              isNull(notebookFolders.parentId),
-            );
-        await db
-          .update(notebookFolders)
-          .set({ parentId: toPgUuid(d.parentId) })
-          .where(whereCond);
-        upserted += 1;
+        const pairs = dedupByKey(
+          group.items.map(item => {
+            const d = item.doc as Extract<
+              CompositeBackfillDoc,
+              { stage: "notebook_folders_parents" }
+            >;
+            return { id: toPgUuid(d.id), parentId: toPgUuid(d.parentId) };
+          }),
+          p => p.id.toLowerCase(),
+        );
+        for (const chunk of chunkRows(pairs, 2, 300)) {
+          const valuesSql = sql.join(
+            chunk.map(p => sql`(${p.id}::uuid, ${p.parentId}::uuid)`),
+            sql`, `,
+          );
+          if (options.ignoreUpdatedAtGuard) {
+            await db.execute(sql`
+              UPDATE "notebook_folders" AS t
+              SET "parent_id" = v."parent_id"
+              FROM (VALUES ${valuesSql}) AS v("id", "parent_id")
+              WHERE t."id" = v."id"
+            `);
+          } else {
+            await db.execute(sql`
+              UPDATE "notebook_folders" AS t
+              SET "parent_id" = v."parent_id"
+              FROM (VALUES ${valuesSql}) AS v("id", "parent_id")
+              WHERE t."id" = v."id" AND t."parent_id" IS NULL
+            `);
+          }
+        }
+        upserted += group.items.length;
         break;
       }
+
       case "notebook_indexes": {
-        const folderUuid = optionalPgUuid(d.record.folderId);
-        const safeFolderId =
-          folderUuid && existingNotebookFolders.has(folderUuid)
-            ? d.record.folderId
-            : undefined;
-        await pgRepo.upsertNotebookIndex(
-          { ...d.record, folderId: safeFolderId },
-          { db, ignoreUpdatedAtGuard: options.ignoreUpdatedAtGuard },
+        const rawRows = await Promise.all(
+          group.items.map(async item => {
+            const rec = (
+              item.doc as Extract<
+                CompositeBackfillDoc,
+                { stage: "notebook_indexes" }
+              >
+            ).record;
+            const folderUuid = optionalPgUuid(rec.folderId);
+            const safeFolderId =
+              folderUuid && existingNotebookFolders.has(folderUuid)
+                ? rec.folderId
+                : undefined;
+            const [ownerUuid, sharedWithJson] = await Promise.all([
+              resolveOptionalUserUuid(rec.ownerId, batchResolver),
+              shareEntriesToPgJson(rec.sharedWith, batchResolver),
+            ]);
+            return {
+              id: toPgUuid(rec.id),
+              notebookId: rec.notebookId,
+              workspaceId: toPgUuid(rec.workspaceId),
+              name: rec.name,
+              folderId: optionalPgUuid(safeFolderId),
+              ownerId: ownerUuid,
+              access: rec.access,
+              path: rec.path ?? null,
+              checkpointBlobSha: rec.checkpointBlobSha ?? null,
+              workspaceRole: rec.workspaceRole,
+              sharedWith: sharedWithJson,
+              updatedAt: rec.updatedAt,
+            } satisfies typeof notebookIndexes.$inferInsert;
+          }),
         );
-        upserted += 1;
+        const rows = dedupByKey(
+          dedupByKey(rawRows, r => r.id.toLowerCase(), pickNewerByUpdatedAt),
+          r => `${r.workspaceId.toLowerCase()}\0${r.notebookId}`,
+          pickNewerByUpdatedAt,
+        );
+        const setCols = buildExcludedSet(notebookIndexes, [
+          "workspaceId",
+          "notebookId",
+        ]);
+        for (const chunk of chunkRows(rows, 12, 250)) {
+          await db
+            .insert(notebookIndexes)
+            .values(chunk)
+            .onConflictDoUpdate({
+              target: [notebookIndexes.workspaceId, notebookIndexes.notebookId],
+              set: setCols,
+              ...(options.ignoreUpdatedAtGuard
+                ? {}
+                : {
+                    setWhere: sql`${notebookIndexes.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${notebookIndexes.updatedAt}`,
+                  }),
+            });
+        }
+        upserted += group.items.length;
         break;
       }
+
       case "favourites": {
-        if (!d.record) break;
-        // Pass 1: insert with parentId = null; preserve existing parentId on conflict.
-        await pgRepo.upsertFavourite(
-          { ...d.record, parentId: null },
-          {
-            db,
-            ignoreUpdatedAtGuard: options.ignoreUpdatedAtGuard,
-            preserveParentOnConflict: !options.ignoreUpdatedAtGuard,
-          },
+        const validRecs = group.items
+          .map(
+            item =>
+              (
+                item.doc as Extract<
+                  CompositeBackfillDoc,
+                  { stage: "favourites" }
+                >
+              ).record,
+          )
+          .filter((r): r is FavouriteRecord => r !== null);
+        if (validRecs.length === 0) break;
+
+        const mapped = dedupByKey(
+          validRecs.map(rec => {
+            const userUuid = batchResolver(rec.userId);
+            return {
+              rec,
+              row: {
+                id: toPgUuid(rec.id),
+                workspaceId: toPgUuid(rec.workspaceId),
+                userId:
+                  typeof userUuid === "string"
+                    ? userUuid
+                    : toPgUuid(rec.userId),
+                parentId: null,
+                type: rec.type,
+                title: rec.type === "folder" ? (rec.title ?? "") : null,
+                kind: rec.type === "item" ? (rec.kind ?? null) : null,
+                refId: rec.type === "item" ? (rec.refId ?? null) : null,
+                position: rec.position,
+                createdAt: rec.createdAt,
+                updatedAt: rec.updatedAt,
+              } satisfies typeof favourites.$inferInsert,
+              updatedAt: rec.updatedAt,
+            };
+          }),
+          e => e.row.id.toLowerCase(),
+          pickNewerByUpdatedAt,
         );
-        upserted += 1;
+
+        // Prefetch existing `type = 'item'` rows matching these workspaces/users
+        // so delete+recreate under a new PK never trips `idx_favourites_item_unique`.
+        const itemEntries = mapped.filter(
+          e => e.row.type === "item" && e.row.kind && e.row.refId,
+        );
+        const refCounts = new Map<string, number>();
+        for (const { row } of itemEntries) {
+          const refKey = `${row.workspaceId.toLowerCase()}\0${row.userId.toLowerCase()}\0${row.kind}\0${row.refId}`;
+          refCounts.set(refKey, (refCounts.get(refKey) ?? 0) + 1);
+        }
+        const existingByRef = new Map<string, string>();
+        if (itemEntries.length > 0) {
+          const wsUuids = [
+            ...new Set(itemEntries.map(e => e.row.workspaceId.toLowerCase())),
+          ];
+          const userUuids = [
+            ...new Set(itemEntries.map(e => e.row.userId.toLowerCase())),
+          ];
+          for (const wsChunk of chunkValues(wsUuids)) {
+            for (const userChunk of chunkValues(userUuids)) {
+              const existing = await db
+                .select({
+                  id: favourites.id,
+                  workspaceId: favourites.workspaceId,
+                  userId: favourites.userId,
+                  kind: favourites.kind,
+                  refId: favourites.refId,
+                })
+                .from(favourites)
+                .where(
+                  and(
+                    inArray(favourites.workspaceId, wsChunk),
+                    inArray(favourites.userId, userChunk),
+                    eq(favourites.type, "item"),
+                  ),
+                );
+              for (const r of existing) {
+                if (r.kind && r.refId) {
+                  existingByRef.set(
+                    `${r.workspaceId.toLowerCase()}\0${r.userId.toLowerCase()}\0${r.kind}\0${r.refId}`,
+                    r.id.toLowerCase(),
+                  );
+                }
+              }
+            }
+          }
+        }
+
+        const bulkRows: Array<typeof favourites.$inferInsert> = [];
+        const fallbackRecs: FavouriteRecord[] = [];
+        for (const { rec, row } of mapped) {
+          if (row.type === "item" && row.kind && row.refId) {
+            const refKey = `${row.workspaceId.toLowerCase()}\0${row.userId.toLowerCase()}\0${row.kind}\0${row.refId}`;
+            const existingId = existingByRef.get(refKey);
+            if (
+              (refCounts.get(refKey) ?? 0) > 1 ||
+              (existingId && existingId !== row.id.toLowerCase())
+            ) {
+              fallbackRecs.push(rec);
+              continue;
+            }
+          }
+          bulkRows.push(row);
+        }
+
+        const preserveParentOnConflict = !options.ignoreUpdatedAtGuard;
+        const conflictSet: Partial<
+          Record<keyof typeof favourites.$inferInsert, ReturnType<typeof sql>>
+        > = {
+          title: sql`EXCLUDED."title"`,
+          position: sql`EXCLUDED."position"`,
+          updatedAt: sql`EXCLUDED."updated_at"`,
+        };
+        if (!preserveParentOnConflict) {
+          conflictSet.parentId = sql`EXCLUDED."parent_id"`;
+        }
+        for (const chunk of chunkRows(bulkRows, 11, 300)) {
+          await db
+            .insert(favourites)
+            .values(chunk)
+            .onConflictDoUpdate({
+              target: favourites.id,
+              set: conflictSet,
+              ...(options.ignoreUpdatedAtGuard
+                ? {}
+                : {
+                    setWhere: sql`${favourites.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${favourites.updatedAt}`,
+                  }),
+            });
+        }
+        for (const rec of fallbackRecs) {
+          await pgRepo.upsertFavourite(
+            { ...rec, parentId: null },
+            {
+              db,
+              ignoreUpdatedAtGuard: options.ignoreUpdatedAtGuard,
+              preserveParentOnConflict,
+            },
+          );
+        }
+        upserted += validRecs.length;
         break;
       }
+
       case "favourites_parents": {
-        const whereCond = options.ignoreUpdatedAtGuard
-          ? eq(favourites.id, toPgUuid(d.id))
-          : and(
-              eq(favourites.id, toPgUuid(d.id)),
-              or(
-                isNull(favourites.updatedAt),
-                lte(favourites.updatedAt, d.updatedAt),
-              ),
-            );
-        await db
-          .update(favourites)
-          .set({ parentId: toPgUuid(d.parentId) })
-          .where(whereCond);
-        upserted += 1;
+        const pairs = dedupByKey(
+          group.items.map(item => {
+            const d = item.doc as Extract<
+              CompositeBackfillDoc,
+              { stage: "favourites_parents" }
+            >;
+            return {
+              id: toPgUuid(d.id),
+              parentId: toPgUuid(d.parentId),
+              updatedAt: d.updatedAt,
+            };
+          }),
+          p => p.id.toLowerCase(),
+          pickNewerByUpdatedAt,
+        );
+        for (const chunk of chunkRows(pairs, 3, 300)) {
+          const valuesSql = sql.join(
+            chunk.map(
+              p =>
+                sql`(${p.id}::uuid, ${p.parentId}::uuid, ${p.updatedAt.toISOString()}::timestamptz)`,
+            ),
+            sql`, `,
+          );
+          if (options.ignoreUpdatedAtGuard) {
+            await db.execute(sql`
+              UPDATE "favourites" AS t
+              SET "parent_id" = v."parent_id"
+              FROM (VALUES ${valuesSql}) AS v("id", "parent_id", "updated_at")
+              WHERE t."id" = v."id"
+            `);
+          } else {
+            await db.execute(sql`
+              UPDATE "favourites" AS t
+              SET "parent_id" = v."parent_id"
+              FROM (VALUES ${valuesSql}) AS v("id", "parent_id", "updated_at")
+              WHERE t."id" = v."id"
+                AND (t."updated_at" IS NULL OR t."updated_at" <= v."updated_at")
+            `);
+          }
+        }
+        upserted += group.items.length;
         break;
       }
+
       case "scheduled_query_runs": {
-        await pgRepo.upsertScheduledQueryRun(d.record, {
-          db,
-          ignoreUpdatedAtGuard: options.ignoreUpdatedAtGuard,
-        });
-        upserted += 1;
+        const rows = dedupByKey(
+          await Promise.all(
+            group.items.map(async item => {
+              const rec = (
+                item.doc as Extract<
+                  CompositeBackfillDoc,
+                  { stage: "scheduled_query_runs" }
+                >
+              ).record;
+              const triggeredByUuid = await resolveOptionalUserUuid(
+                rec.triggeredBy,
+                batchResolver,
+              );
+              return {
+                id: toPgUuid(rec.id),
+                workspaceId: toPgUuid(rec.workspaceId),
+                consoleId: toPgUuid(rec.consoleId),
+                triggeredAt: rec.triggeredAt,
+                startedAt: rec.startedAt ?? null,
+                completedAt: rec.completedAt ?? null,
+                status: rec.status,
+                triggerType: rec.triggerType,
+                triggeredBy: triggeredByUuid,
+                durationMs: rec.durationMs ?? null,
+                rowsAffected: rec.rowsAffected ?? null,
+                rowCount: rec.rowCount ?? null,
+                errorMessage: rec.error?.message ?? null,
+                errorCode: rec.error?.code ?? null,
+                inngestRunId: rec.inngestRunId ?? null,
+              } satisfies typeof scheduledQueryRuns.$inferInsert;
+            }),
+          ),
+          r => r.id.toLowerCase(),
+        );
+        const setCols = buildExcludedSet(scheduledQueryRuns, [
+          "id",
+          "workspaceId",
+          "consoleId",
+          "triggeredAt",
+          "triggerType",
+          "triggeredBy",
+        ]);
+        for (const chunk of chunkRows(rows, 15, 300)) {
+          await db
+            .insert(scheduledQueryRuns)
+            .values(chunk)
+            .onConflictDoUpdate({
+              target: scheduledQueryRuns.id,
+              set: setCols,
+              ...(options.ignoreUpdatedAtGuard
+                ? {}
+                : {
+                    setWhere: sql`(${scheduledQueryRuns.completedAt} IS NULL OR (EXCLUDED."completed_at" IS NOT NULL AND EXCLUDED."completed_at" >= ${scheduledQueryRuns.completedAt})) AND (${scheduledQueryRuns.startedAt} IS NULL OR EXCLUDED."started_at" IS NOT NULL)`,
+                  }),
+            });
+        }
+        upserted += group.items.length;
         break;
       }
     }
@@ -1132,6 +1834,8 @@ export function createConsolesChartsBackfillHandler(): BackfillDomainHandler<Com
       }
       return items;
     },
+    prepareBatch: (items, db) =>
+      prepareConsolesChartsBatch(items, db, batchCtx),
     validate: (item, db) => validateCompositeItem(item, db, batchCtx),
     upsertBatch: (items, db) => upsertCompositeBatch(items, db),
   };
@@ -1171,6 +1875,8 @@ function createSingleTableBackfillHandler(
       }
       return items;
     },
+    prepareBatch: (items, db) =>
+      prepareConsolesChartsBatch(items, db, batchCtx),
     validate: (item, db) => validateCompositeItem(item, db, batchCtx),
     upsertBatch: (items, db) => upsertCompositeBatch(items, db),
   };
