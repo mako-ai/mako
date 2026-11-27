@@ -1339,6 +1339,17 @@ jobs:
             echo "Skipping pg:migrate (not present on this commit)"
           fi
 
+      - name: Verify prepared Cloud Run writers and activate the control plane
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          node scripts/check-control-plane-revisions.mjs
+          POSTGRES_DIRECT_URL=$(gcloud secrets versions access latest \
+            --secret=POSTGRES_DIRECT_URL --project="${GCP_PROJECT_ID}")
+          test -n "${POSTGRES_DIRECT_URL}"
+          echo "::add-mask::${POSTGRES_DIRECT_URL}"
+          POSTGRES_DIRECT_URL="${POSTGRES_DIRECT_URL}" pnpm --filter api exec tsx src/database/pg/cli/backfill-control-plane-small.ts --activate
+
       - name: Keep Neon test branch schema in sync with production
         continue-on-error: true
         env:
@@ -1426,6 +1437,7 @@ jobs:
             --subnet=mako-subnet \
             --vpc-egress=all-traffic \
             --set-env-vars BASE_URL=${BASE_URL} \
+            --set-env-vars MAKO_CONTROL_PLANE_PG_ACTIVE=1 \
             --set-env-vars MAKO_CONTROL_PLANE_FENCE_V1=1 \
             --set-env-vars API_RATE_LIMIT_MODE=enforce \
             --set-env-vars "APPS_LIFECYCLE_ENFORCE=${APPS_LIFECYCLE_ENFORCE}" \
