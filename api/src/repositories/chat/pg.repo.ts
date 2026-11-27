@@ -19,7 +19,17 @@
  *   - Exact keyset pagination `(updated_at DESC, id DESC)` parity with UUIDv8 ordering.
  */
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  getTableColumns,
+  inArray,
+  lt,
+  or,
+  sql,
+} from "drizzle-orm";
 import { extractRows, getPgDb, type MakoPgDb } from "../../database/pg/client";
 import {
   isUuidString,
@@ -35,6 +45,8 @@ import {
   chatMessages,
   chats,
   chatUsageEntries,
+  type ChatMessagePartMetadataRow,
+  type ChatMessagePartRow,
   type ChatMessageRow,
   type ChatRow,
 } from "../../database/pg/schema/chat";
@@ -90,6 +102,70 @@ function toPgJsonbValue(hasValue: boolean, value: unknown) {
   return sanitizePgJsonValue(value);
 }
 
+/**
+ * Drizzle's built-in `PgJsonb.mapFromDriverValue` calls `JSON.parse(value)`
+ * whenever `typeof value === "string"`, which double-parses JSONB string scalars
+ * whose text happens to be valid JSON (e.g. MCP tool outputs such as
+ * `'{"results":...}'`, `'123'`, `'true'`, `'null'`). Projecting the four
+ * arbitrary-JSON tool columns via `::text` bypasses `PgJsonb.mapFromDriverValue`,
+ * distinguishes SQL `NULL` (omitted) from JSON `'null'::jsonb`, avoids sending
+ * large payloads twice over the wire, and decodes identically on both
+ * `postgres.js` and `pglite`.
+ */
+const {
+  toolInput: _omittedToolInput,
+  toolOutput: _omittedToolOutput,
+  toolRawInput: _omittedToolRawInput,
+  toolMetadata: _omittedToolMetadata,
+  ...chatMessagePartBaseColumns
+} = getTableColumns(chatMessageParts);
+
+const HYDRATED_PART_SELECT = {
+  part: chatMessagePartBaseColumns,
+  toolInputText: sql<string | null>`${chatMessageParts.toolInput}::text`,
+  toolOutputText: sql<string | null>`${chatMessageParts.toolOutput}::text`,
+  toolRawInputText: sql<string | null>`${chatMessageParts.toolRawInput}::text`,
+  toolMetadataText: sql<string | null>`${chatMessageParts.toolMetadata}::text`,
+  metadata: chatMessagePartMetadata,
+};
+
+type HydratedPartSelectRow = {
+  part: Omit<
+    ChatMessagePartRow,
+    "toolInput" | "toolOutput" | "toolRawInput" | "toolMetadata"
+  >;
+  toolInputText: string | null;
+  toolOutputText: string | null;
+  toolRawInputText: string | null;
+  toolMetadataText: string | null;
+  metadata: ChatMessagePartMetadataRow | null;
+};
+
+function decodeExactPgJsonbText(rawText: string | null): unknown {
+  return rawText === null ? null : (JSON.parse(rawText) as unknown);
+}
+
+function toHydratedPartRow(row: HydratedPartSelectRow): HydratedPartRow {
+  const hasToolInput = row.toolInputText !== null;
+  const hasToolOutput = row.toolOutputText !== null;
+  const hasToolRawInput = row.toolRawInputText !== null;
+  const hasToolMetadata = row.toolMetadataText !== null;
+  return {
+    part: {
+      ...row.part,
+      toolInput: decodeExactPgJsonbText(row.toolInputText),
+      toolOutput: decodeExactPgJsonbText(row.toolOutputText),
+      toolRawInput: decodeExactPgJsonbText(row.toolRawInputText),
+      toolMetadata: decodeExactPgJsonbText(row.toolMetadataText),
+    },
+    hasToolInput,
+    hasToolOutput,
+    hasToolRawInput,
+    hasToolMetadata,
+    metadata: row.metadata ?? null,
+  };
+}
+
 type PgTx = Parameters<Parameters<MakoPgDb["transaction"]>[0]>[0];
 type PgQueryable = MakoPgDb | PgTx;
 
@@ -130,14 +206,7 @@ export class PgChatRepository implements ChatRepository {
     db: PgQueryable,
   ): Promise<Map<string, HydratedPartRow[]>> {
     const joined = await db
-      .select({
-        part: chatMessageParts,
-        hasToolInput: sql<boolean>`${chatMessageParts.toolInput} IS NOT NULL`,
-        hasToolOutput: sql<boolean>`${chatMessageParts.toolOutput} IS NOT NULL`,
-        hasToolRawInput: sql<boolean>`${chatMessageParts.toolRawInput} IS NOT NULL`,
-        hasToolMetadata: sql<boolean>`${chatMessageParts.toolMetadata} IS NOT NULL`,
-        metadata: chatMessagePartMetadata,
-      })
+      .select(HYDRATED_PART_SELECT)
       .from(chatMessageParts)
       .leftJoin(
         chatMessagePartMetadata,
@@ -151,14 +220,7 @@ export class PgChatRepository implements ChatRepository {
 
     const byMessage = new Map<string, HydratedPartRow[]>();
     for (const row of joined) {
-      const entry: HydratedPartRow = {
-        part: row.part,
-        hasToolInput: Boolean(row.hasToolInput),
-        hasToolOutput: Boolean(row.hasToolOutput),
-        hasToolRawInput: Boolean(row.hasToolRawInput),
-        hasToolMetadata: Boolean(row.hasToolMetadata),
-        metadata: row.metadata ?? null,
-      };
+      const entry = toHydratedPartRow(row);
       const list = byMessage.get(row.part.messageId);
       if (list) list.push(entry);
       else byMessage.set(row.part.messageId, [entry]);
@@ -569,14 +631,7 @@ export class PgChatRepository implements ChatRepository {
             .where(inArray(chatMessages.chatId, chunk))
             .orderBy(asc(chatMessages.ordinal)),
           db
-            .select({
-              part: chatMessageParts,
-              hasToolInput: sql<boolean>`${chatMessageParts.toolInput} IS NOT NULL`,
-              hasToolOutput: sql<boolean>`${chatMessageParts.toolOutput} IS NOT NULL`,
-              hasToolRawInput: sql<boolean>`${chatMessageParts.toolRawInput} IS NOT NULL`,
-              hasToolMetadata: sql<boolean>`${chatMessageParts.toolMetadata} IS NOT NULL`,
-              metadata: chatMessagePartMetadata,
-            })
+            .select(HYDRATED_PART_SELECT)
             .from(chatMessageParts)
             .leftJoin(
               chatMessagePartMetadata,
@@ -611,14 +666,7 @@ export class PgChatRepository implements ChatRepository {
           byMsg = new Map();
           partsByChat.set(chatKey, byMsg);
         }
-        const entry: HydratedPartRow = {
-          part: row.part,
-          hasToolInput: Boolean(row.hasToolInput),
-          hasToolOutput: Boolean(row.hasToolOutput),
-          hasToolRawInput: Boolean(row.hasToolRawInput),
-          hasToolMetadata: Boolean(row.hasToolMetadata),
-          metadata: row.metadata ?? null,
-        };
+        const entry = toHydratedPartRow(row);
         const list = byMsg.get(row.part.messageId);
         if (list) list.push(entry);
         else byMsg.set(row.part.messageId, [entry]);
@@ -1213,14 +1261,7 @@ export class PgChatRepository implements ChatRepository {
       if (existingMsgsByChat.size > 0) {
         const chatIdsWithMsgs = [...existingMsgsByChat.keys()];
         const joined = await db
-          .select({
-            part: chatMessageParts,
-            hasToolInput: sql<boolean>`${chatMessageParts.toolInput} IS NOT NULL`,
-            hasToolOutput: sql<boolean>`${chatMessageParts.toolOutput} IS NOT NULL`,
-            hasToolRawInput: sql<boolean>`${chatMessageParts.toolRawInput} IS NOT NULL`,
-            hasToolMetadata: sql<boolean>`${chatMessageParts.toolMetadata} IS NOT NULL`,
-            metadata: chatMessagePartMetadata,
-          })
+          .select(HYDRATED_PART_SELECT)
           .from(chatMessageParts)
           .leftJoin(
             chatMessagePartMetadata,
@@ -1239,14 +1280,7 @@ export class PgChatRepository implements ChatRepository {
             byMsg = new Map();
             existingPartsByChat.set(chatKey, byMsg);
           }
-          const entry: HydratedPartRow = {
-            part: row.part,
-            hasToolInput: Boolean(row.hasToolInput),
-            hasToolOutput: Boolean(row.hasToolOutput),
-            hasToolRawInput: Boolean(row.hasToolRawInput),
-            hasToolMetadata: Boolean(row.hasToolMetadata),
-            metadata: row.metadata ?? null,
-          };
+          const entry = toHydratedPartRow(row);
           const list = byMsg.get(row.part.messageId);
           if (list) list.push(entry);
           else byMsg.set(row.part.messageId, [entry]);

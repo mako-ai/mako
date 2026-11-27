@@ -642,6 +642,14 @@ async function repairChatEntity(
       ).lean<MongoChatAttachmentLike | null>();
       if (!doc) return false;
       const record = mongoChatAttachmentToRecord(doc);
+      const chatUuid = parseEntityId(record.chatId)?.uuid;
+      if (!chatUuid) return false;
+      const parentRows = await db
+        .select({ id: chats.id })
+        .from(chats)
+        .where(eq(chats.id, chatUuid))
+        .limit(1);
+      if (!parentRows[0]) return false;
       const createdByUuid = await resolveUserUuid(db, record.createdBy);
       return pgRepo.upsertAttachmentWithBacklink(record, createdByUuid, db);
     }
