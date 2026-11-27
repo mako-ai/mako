@@ -1,30 +1,6 @@
-/**
- * Phase 2B (`usage_stats` domain — 7 tables) repository contract, zero-23505
- * `visitor_key` dedupe on `DELETE FROM users`, SQL aggregation parity,
- * `app_feed_snapshots` 24h Stage 4 PG->Mongo read-fallback, closed-UTC-day
- * backfill & `$inc` no-double-count, single rollover-day reconciliation,
- * 5-stage dual-run + Stage 4->2 rollback, sync-retry, TTL reaper, and deferred
- * `0006a_conn_verif_connection_fk.sql` post-backfill verification suite.
- */
-import type { PGlite } from "@electric-sql/pglite";
 import { and, eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
-import mongoose from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-} from "vitest";
-import {
-  resetPgTestDb,
-  setPgTestDb,
-  type MakoPgDb,
-} from "../../database/pg/client";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   generateUuidv7,
   isUuidv7,
@@ -33,27 +9,16 @@ import {
   objectIdToUuid,
 } from "../../database/pg/id-codec";
 import { runPgliteMigrations } from "../../database/pg/migrate";
-import { readPostBackfillStatements } from "../../database/pg/post-backfill";
-import * as pgSchema from "../../database/pg/schema";
 import { createTestPglite } from "../../database/pg/test-pglite";
+import { readPostBackfillStatements } from "../../database/pg/post-backfill";
+import { setupPgTestDb, type PgTestDb } from "../../test-support/pg-test";
+import * as pgSchema from "../../database/pg/schema";
 import { queryExecutionService } from "../../services/query-execution.service";
-import { LlmUsage } from "../../database/schema";
-import {
-  AppFeedSnapshot,
-  AppUsageDaily,
-  AppUsageEvent,
-  ConnectionVerification,
-  QueryExecution,
-  SkillUsageDaily,
-} from "../../database/workspace-schema";
-import { MongoUsageStatsRepository } from "./mongo.repo";
 import { PgUsageStatsRepository } from "./pg.repo";
 import type { UsageStatsRepository } from "./types";
 
-describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
-  let mongo: MongoMemoryServer;
-  let pg: PGlite;
-  let db: MakoPgDb;
+describe("PostgreSQL UsageStatsRepository", () => {
+  let h: PgTestDb;
 
   let wsId: string;
   let wsUuid: string;
@@ -65,21 +30,7 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
   let seededConnUuid: string;
 
   beforeAll(async () => {
-    mongo = await MongoMemoryServer.create();
-    await mongoose.connect(mongo.getUri());
-    await Promise.all([
-      AppUsageDaily.syncIndexes(),
-      AppUsageEvent.syncIndexes(),
-      AppFeedSnapshot.syncIndexes(),
-      SkillUsageDaily.syncIndexes(),
-      LlmUsage.syncIndexes(),
-      QueryExecution.syncIndexes(),
-      ConnectionVerification.syncIndexes(),
-    ]);
-
-    pg = createTestPglite();
-    await runPgliteMigrations(pg);
-    db = drizzle(pg, { schema: pgSchema }) as unknown as MakoPgDb;
+    h = await setupPgTestDb();
   });
 
   async function seedBaseFixtures(): Promise<void> {
@@ -95,7 +46,7 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
     seededConnId = conn.oid;
     seededConnUuid = conn.uuid;
 
-    await db.insert(pgSchema.users).values([
+    await h.db.insert(pgSchema.users).values([
       {
         id: user1Uuid,
         legacyId: "luciauser000001",
@@ -110,14 +61,14 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
       },
     ]);
 
-    await db.insert(pgSchema.workspaces).values({
+    await h.db.insert(pgSchema.workspaces).values({
       id: wsUuid,
       name: "Acme Workspace",
       slug: `acme-${wsId.slice(-6)}`,
       createdBy: user1Uuid,
     });
 
-    await db.insert(pgSchema.workspaceApiKeys).values({
+    await h.db.insert(pgSchema.workspaceApiKeys).values({
       id: apiKeyUuid,
       workspaceId: wsUuid,
       name: "CI Key",
@@ -126,7 +77,7 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
       createdBy: user1Uuid,
     });
 
-    await db.insert(pgSchema.databaseConnections).values({
+    await h.db.insert(pgSchema.databaseConnections).values({
       id: seededConnUuid,
       workspaceId: wsUuid,
       name: "Seeded DB",
@@ -136,493 +87,424 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
     });
   }
 
-  async function cleanAllStores(): Promise<void> {
-    await Promise.all([
-      AppUsageDaily.deleteMany({}),
-      AppUsageEvent.deleteMany({}),
-      AppFeedSnapshot.deleteMany({}),
-      SkillUsageDaily.deleteMany({}),
-      LlmUsage.deleteMany({}),
-      QueryExecution.deleteMany({}),
-      ConnectionVerification.deleteMany({}),
-    ]);
-    await pg.exec(`
-      DELETE FROM app_usage_daily;
-      DELETE FROM app_usage_events;
-      DELETE FROM app_feed_snapshots;
-      DELETE FROM skill_usage_daily;
-      DELETE FROM llm_usage;
-      DELETE FROM query_executions;
-      DELETE FROM connection_verifications;
-      DELETE FROM database_connections;
-      DELETE FROM workspace_api_keys;
-      DELETE FROM workspaces;
-      DELETE FROM users;
-      DELETE FROM migration_domain_state;
-      DELETE FROM migration_backfill_jobs;
-      DELETE FROM migration_tombstones;
-      DELETE FROM migration_quarantine;
-    `);
-  }
-
   beforeEach(async () => {
-    setPgTestDb(db);
-    await cleanAllStores();
+    await h.reset();
     await seedBaseFixtures();
   });
 
-  afterEach(() => {
-    resetPgTestDb();
-  });
-
   afterAll(async () => {
-    await mongoose.disconnect();
-    await mongo.stop();
-    await pg.close();
+    await h.close();
   });
 
-  // ── 1. Shared repository contract (Mongo AND Postgres) ───────────────────
+  const repo: UsageStatsRepository = new PgUsageStatsRepository({
+    getDb: () => h.db,
+  });
 
-  const implementations: Array<{
-    name: string;
-    isPg: boolean;
-    create: () => UsageStatsRepository;
-  }> = [
-    {
-      name: "MongoUsageStatsRepository",
-      isPg: false,
-      create: () => new MongoUsageStatsRepository(),
-    },
-    {
-      name: "PgUsageStatsRepository",
-      isPg: true,
-      create: () => new PgUsageStatsRepository({ getDb: () => db }),
-    },
-  ];
+  it("records app usage events, bumps daily rollups atomically, and computes rollups/recent/hot workspaces", async () => {
+    const app1 = newDualId().oid;
+    const app2 = newDualId().oid;
+    const t1 = new Date("2026-11-24T10:00:00.000Z");
+    const t2 = new Date("2026-11-24T10:05:00.000Z");
+    const t3 = new Date("2026-11-25T14:00:00.000Z");
 
-  for (const impl of implementations) {
-    describe(`UsageStatsRepository contract: ${impl.name}`, () => {
-      it("records app usage events, bumps daily rollups atomically, and computes rollups/recent/hot workspaces", async () => {
-        const repo = impl.create();
-        const app1 = newDualId().oid;
-        const app2 = newDualId().oid;
-        const t1 = new Date("2026-11-24T10:00:00.000Z");
-        const t2 = new Date("2026-11-24T10:05:00.000Z");
-        const t3 = new Date("2026-11-25T14:00:00.000Z");
-
-        const ev = await repo.createAppUsageEvent({
-          workspaceId: wsId,
-          appId: app1,
-          at: t1,
-          kind: "open",
-          source: "app",
-          userId: user1Uuid,
-          anonId: null,
-          sessionId: "sess-1",
-          referrerKind: "internal",
-          uaClass: "desktop",
-          placement: { surface: "home", shelf: "popular", position: 0 },
-        });
-        expect(ev.appId).toBe(app1);
-        expect(ev.userId).toBe(user1Uuid);
-        expect(ev.placement).toEqual({
-          surface: "home",
-          shelf: "popular",
-          position: 0,
-        });
-
-        await repo.bumpAppUsageDaily({
-          workspaceId: wsId,
-          appId: app1,
-          userId: user1Uuid,
-          day: "2026-11-24",
-          kind: "open",
-          source: "app",
-          at: t1,
-        });
-        await repo.bumpAppUsageDaily({
-          workspaceId: wsId,
-          appId: app1,
-          userId: user1Uuid,
-          day: "2026-11-24",
-          kind: "heartbeat",
-          source: "app",
-          heartbeatSeconds: 60,
-          at: t2,
-        });
-        await repo.bumpAppUsageDaily({
-          workspaceId: wsId,
-          appId: app1,
-          userId: user1Uuid,
-          day: "2026-11-25",
-          kind: "open",
-          source: "share",
-          at: t3,
-        });
-        await repo.bumpAppUsageDaily({
-          workspaceId: wsId,
-          appId: app1,
-          userId: null,
-          anonId: "anon:cookieHash1",
-          day: "2026-11-25",
-          kind: "open",
-          source: "share",
-          at: t3,
-        });
-        await repo.bumpAppUsageDaily({
-          workspaceId: wsId,
-          appId: app2,
-          userId: null,
-          anonId: null,
-          day: "2026-11-25",
-          kind: "open",
-          source: "embed",
-          at: t3,
-        });
-
-        const rollups = await repo.loadAppUsageRollups(wsId, "2026-11-24");
-        expect(rollups).toHaveLength(3);
-        const u1Rollup = rollups.find(
-          r => r.appId === app1 && r.userId === user1Uuid,
-        );
-        expect(u1Rollup).toBeDefined();
-        if (!u1Rollup) throw new Error("Expected u1Rollup");
-        expect(u1Rollup.days.sort()).toEqual(["2026-11-24", "2026-11-25"]);
-        expect(u1Rollup.opens).toBe(2);
-        expect(u1Rollup.activeSeconds).toBe(60);
-        expect(u1Rollup.lastAt.toISOString()).toBe(t3.toISOString());
-
-        const anonIdentified = rollups.find(
-          r => r.appId === app1 && r.userId === "anon:cookieHash1",
-        );
-        expect(anonIdentified?.opens).toBe(1);
-
-        const anonCollapsed = rollups.find(
-          r => r.appId === app2 && r.userId === null,
-        );
-        expect(anonCollapsed?.opens).toBe(1);
-
-        const dayRows = await repo.listAppUsageDaysSince(wsId, "2026-11-24");
-        expect(dayRows).toHaveLength(4);
-
-        const recent = await repo.getRecentlyViewedApps(
-          wsId,
-          user1Uuid,
-          new Date("2026-11-20T00:00:00.000Z"),
-          10,
-        );
-        expect(recent).toHaveLength(1);
-        expect(recent[0].appId).toBe(app1);
-
-        const hot = await repo.getHotWorkspaceUsageSince(
-          new Date("2026-11-25T00:00:00.000Z"),
-        );
-        expect(hot).toHaveLength(1);
-        expect(hot[0].workspaceId).toBe(wsId);
-
-        expect(await repo.findEarliestAppUsageDay(wsId)).toBe("2026-11-24");
-      });
-
-      it("persists app_feed_snapshots and enforces 24h expiry on PG", async () => {
-        const repo = impl.create();
-        const createdAt = new Date("2026-11-25T10:00:00.000Z");
-        const snapId = await repo.createFeedSnapshot({
-          workspaceId: wsId,
-          userId: user1Uuid,
-          popular: ["a1"],
-          fresh: ["a2"],
-          recommended: ["a3", "a4"],
-          createdAt,
-        });
-
-        const found = await repo.findFeedSnapshotById(
-          snapId,
-          wsId,
-          new Date("2026-11-25T12:00:00.000Z"),
-        );
-        expect(found).not.toBeNull();
-        if (!found) throw new Error("Expected feed snapshot");
-        expect(found.recommended).toEqual(["a3", "a4"]);
-
-        if (impl.isPg) {
-          const expired = await repo.findFeedSnapshotById(
-            snapId,
-            wsId,
-            new Date("2026-11-26T11:00:00.000Z"),
-          );
-          expect(expired).toBeNull();
-        }
-      });
-
-      it("bumps skill_usage_daily atomically and computes 30-day window sums + all-time lastLoadedAt", async () => {
-        const repo = impl.create();
-        const oldAt = new Date("2026-10-01T08:00:00.000Z");
-        const recentAt = new Date("2026-11-25T09:00:00.000Z");
-
-        await repo.bumpSkillUsageDaily(
-          wsId,
-          [{ scope: "workspace", skill: "sql-tuning" }],
-          "load",
-          "agent",
-          oldAt,
-        );
-        await repo.bumpSkillUsageDaily(
-          wsId,
-          [
-            { scope: "workspace", skill: "sql-tuning" },
-            { scope: "system", skill: "apps" },
-          ],
-          "resource",
-          "mcp",
-          recentAt,
-        );
-        await repo.bumpSkillUsageDaily(
-          wsId,
-          [{ scope: "workspace", skill: "sql-tuning" }],
-          "relevant",
-          "agent",
-          recentAt,
-        );
-
-        const summary = await repo.getSkillUsageSummary(wsId, "2026-11-01");
-        const sqlSkill = summary.find(
-          s => s.scope === "workspace" && s.skill === "sql-tuning",
-        );
-        expect(sqlSkill?.loads30d).toBe(2); // oldAt excluded from 30d window
-        expect(sqlSkill?.lastLoadedAt?.toISOString()).toBe(
-          recentAt.toISOString(),
-        );
-
-        const sysApps = summary.find(
-          s => s.scope === "system" && s.skill === "apps",
-        );
-        expect(sysApps?.loads30d).toBe(1);
-      });
-
-      it("computes exact LLM usage summaries, breakdowns, chat history, and workflow costs", async () => {
-        const repo = impl.create();
-        const chatId = newDualId().oid;
-        const d1 = new Date("2026-11-24T08:00:00.000Z");
-        const d2 = new Date("2026-11-25T10:00:00.000Z");
-
-        await repo.createLlmUsage({
-          workspaceId: wsId,
-          userId: user1Uuid,
-          chatId,
-          invocationType: "chat",
-          modelId: "claude-sonnet-4",
-          inputTokens: 1000,
-          outputTokens: 500,
-          cacheReadTokens: 200,
-          cacheWriteTokens: 100,
-          reasoningTokens: 50,
-          totalTokens: 1850,
-          costUsd: 0.0125,
-          createdAt: d1,
-        });
-        await repo.createLlmUsage({
-          workspaceId: wsId,
-          userId: user2Uuid,
-          chatId,
-          invocationType: "chat",
-          modelId: "gpt-4o",
-          inputTokens: 400,
-          outputTokens: 100,
-          totalTokens: 500,
-          costUsd: 0.005,
-          createdAt: d2,
-        });
-        const wfCall = await repo.createLlmUsage({
-          workspaceId: wsId,
-          userId: user1Uuid,
-          invocationType: "workflow",
-          modelId: "claude-sonnet-4",
-          inputTokens: 2000,
-          outputTokens: 300,
-          totalTokens: 2300,
-          costUsd: 0.025,
-          workflowRun: {
-            workflowId: "wf-daily",
-            runId: "run-1",
-            step: "summarize",
-          },
-          createdAt: d2,
-        });
-        const unattributed = await repo.createLlmUsage({
-          workspaceId: wsId,
-          userId: user1Uuid,
-          invocationType: "workflow",
-          modelId: "claude-sonnet-4",
-          inputTokens: 100,
-          outputTokens: 50,
-          totalTokens: 150,
-          costUsd: 0.002,
-          durationMs: 1200,
-          createdAt: d2,
-        });
-        expect(wfCall.workflowRun?.runId).toBe("run-1");
-
-        const summary = await repo.getWorkspaceLlmUsageSummary(wsId);
-        expect(summary.invocationCount).toBe(4);
-        expect(summary.totalInputTokens).toBe(3500);
-        expect(summary.totalOutputTokens).toBe(950);
-        expect(summary.totalTokens).toBe(4800);
-        expect(summary.totalCostUsd).toBeCloseTo(0.0445, 6);
-
-        const ranged = await repo.getWorkspaceLlmUsageSummary(wsId, {
-          from: new Date("2026-11-25T00:00:00.000Z"),
-        });
-        expect(ranged.invocationCount).toBe(3);
-
-        const byUser = await repo.getWorkspaceLlmUsageByUser(wsId);
-        expect(byUser).toHaveLength(2);
-        expect(byUser[0].userId).toBe(user1Uuid);
-        expect(byUser[0].totalCostUsd).toBeCloseTo(0.0395, 6);
-        expect(byUser[1].userId).toBe(user2Uuid);
-
-        const byModel = await repo.getWorkspaceLlmUsageByModel(wsId);
-        expect(byModel).toHaveLength(2);
-        expect(byModel[0].modelId).toBe("claude-sonnet-4");
-        expect(byModel[0].invocationCount).toBe(3);
-
-        const byChat = await repo.listLlmUsageByChat(wsId, chatId);
-        expect(byChat).toHaveLength(2);
-        expect(byChat[0].modelId).toBe("claude-sonnet-4");
-        expect(byChat[1].modelId).toBe("gpt-4o");
-
-        const runCosts = await repo.readWorkflowRunCosts(wsId, ["run-1"]);
-        expect(runCosts).toHaveLength(1);
-        expect(runCosts[0].step).toBe("summarize");
-        expect(runCosts[0].costUsd).toBeCloseTo(0.025, 6);
-
-        const dailyCosts = await repo.readWorkflowDailyCosts(
-          wsId,
-          "wf-daily",
-          new Date("2026-11-20T00:00:00.000Z"),
-        );
-        expect(dailyCosts).toHaveLength(1);
-        expect(dailyCosts[0].day).toBe("2026-11-25");
-        expect(dailyCosts[0].runIds).toEqual(["run-1"]);
-
-        const unattrList = await repo.listUnattributedWorkflowCalls(
-          wsId,
-          new Date("2026-11-24T00:00:00.000Z"),
-        );
-        expect(unattrList.map(u => u.id)).toEqual([unattributed.id]);
-
-        const patched = await repo.attachWorkflowRunToCalls(wsId, [
-          {
-            id: unattributed.id,
-            workflowId: "wf-daily",
-            runId: "run-2",
-            step: "enrich",
-          },
-        ]);
-        expect(patched).toBe(1);
-        const run2Costs = await repo.readWorkflowRunCosts(wsId, ["run-2"]);
-        expect(run2Costs[0].backfilled).toBe(true);
-      });
-
-      it("tracks query_executions (including missing apiKeyId safety) and computes SQL aggregation summaries", async () => {
-        const repo = impl.create();
-        const connId = newDualId().oid;
-        const consoleId = newDualId().oid;
-        const deletedKeyId = newDualId().oid;
-        const t1 = new Date("2026-11-25T08:00:00.000Z");
-        const t2 = new Date("2026-11-25T09:00:00.000Z");
-
-        const q1 = await repo.createQueryExecution({
-          workspaceId: wsId,
-          connectionId: connId,
-          consoleId,
-          userId: user1Uuid,
-          apiKeyId,
-          source: "console_ui",
-          databaseType: "postgresql",
-          queryLanguage: "sql",
-          status: "success",
-          executionTimeMs: 120,
-          rowCount: 42,
-          executedAt: t1,
-        });
-        expect(q1.apiKeyId).toBe(apiKeyId);
-
-        const q2 = await repo.createQueryExecution({
-          workspaceId: wsId,
-          connectionId: connId,
-          consoleId,
-          userId: user2Uuid,
-          apiKeyId: deletedKeyId,
-          source: "api",
-          databaseType: "bigquery",
-          queryLanguage: "sql",
-          status: "error",
-          executionTimeMs: 280,
-          errorType: "syntax",
-          executedAt: t2,
-        });
-        if (impl.isPg) {
-          // Deleted/nonexistent API key safely nulled rather than crashing FK 23503
-          expect(q2.apiKeyId).toBeUndefined();
-        }
-
-        const page = await repo.listWorkspaceQueryExecutions(wsId, {
-          limit: 1,
-          offset: 0,
-        });
-        expect(page.total).toBe(2);
-        expect(page.executions).toHaveLength(1);
-        expect(page.executions[0].status).toBe("error");
-
-        const consoleList = await repo.listConsoleQueryExecutions(
-          wsId,
-          consoleId,
-          10,
-        );
-        expect(consoleList).toHaveLength(2);
-
-        const summary = await repo.getWorkspaceQueryExecutionSummary(
-          wsId,
-          new Date("2026-11-25T00:00:00.000Z"),
-          new Date("2026-11-25T23:59:59.000Z"),
-        );
-        expect(summary.totalExecutions).toBe(2);
-        expect(summary.successCount).toBe(1);
-        expect(summary.errorCount).toBe(1);
-        expect(summary.cancelledCount).toBe(0);
-        expect(summary.timeoutCount).toBe(0);
-        expect(summary.totalExecutionTimeMs).toBe(400);
-        expect(summary.avgExecutionTimeMs).toBe(200);
-        expect(summary.bySource).toEqual({ console_ui: 1, api: 1 });
-        expect(summary.byDatabaseType).toEqual({ postgresql: 1, bigquery: 1 });
-        expect(summary.byUser[user1Uuid]).toBe(1);
-        expect(summary.byUser[user2Uuid]).toBe(1);
-      });
-
-      it("records connection_verifications with optional workspace/connection/errorClass", async () => {
-        const repo = impl.create();
-        const rec = await repo.createConnectionVerification({
-          workspaceId: wsId,
-          connectionId: seededConnId,
-          userId: user1Uuid,
-          databaseType: "postgresql",
-          trigger: "saved_test",
-          success: false,
-          durationMs: 310,
-          errorClass: "auth_failed",
-          errorMessage: "password authentication failed",
-        });
-        expect(rec.workspaceId).toBe(wsId);
-        expect(rec.connectionId).toBe(seededConnId);
-        expect(rec.errorClass).toBe("auth_failed");
-      });
+    const ev = await repo.createAppUsageEvent({
+      workspaceId: wsId,
+      appId: app1,
+      at: t1,
+      kind: "open",
+      source: "app",
+      userId: user1Uuid,
+      anonId: null,
+      sessionId: "sess-1",
+      referrerKind: "internal",
+      uaClass: "desktop",
+      placement: { surface: "home", shelf: "popular", position: 0 },
     });
-  }
+    expect(ev.appId).toBe(app1);
+    expect(ev.userId).toBe(user1Uuid);
+    expect(ev.placement).toEqual({
+      surface: "home",
+      shelf: "popular",
+      position: 0,
+    });
 
-  // ── 2. app_usage_daily visitor_key dedupe + DELETE FROM users zero-23505 ─
+    await repo.bumpAppUsageDaily({
+      workspaceId: wsId,
+      appId: app1,
+      userId: user1Uuid,
+      day: "2026-11-24",
+      kind: "open",
+      source: "app",
+      at: t1,
+    });
+    await repo.bumpAppUsageDaily({
+      workspaceId: wsId,
+      appId: app1,
+      userId: user1Uuid,
+      day: "2026-11-24",
+      kind: "heartbeat",
+      source: "app",
+      heartbeatSeconds: 60,
+      at: t2,
+    });
+    await repo.bumpAppUsageDaily({
+      workspaceId: wsId,
+      appId: app1,
+      userId: user1Uuid,
+      day: "2026-11-25",
+      kind: "open",
+      source: "share",
+      at: t3,
+    });
+    await repo.bumpAppUsageDaily({
+      workspaceId: wsId,
+      appId: app1,
+      userId: null,
+      anonId: "anon:cookieHash1",
+      day: "2026-11-25",
+      kind: "open",
+      source: "share",
+      at: t3,
+    });
+    await repo.bumpAppUsageDaily({
+      workspaceId: wsId,
+      appId: app2,
+      userId: null,
+      anonId: null,
+      day: "2026-11-25",
+      kind: "open",
+      source: "embed",
+      at: t3,
+    });
+
+    const rollups = await repo.loadAppUsageRollups(wsId, "2026-11-24");
+    expect(rollups).toHaveLength(3);
+    const u1Rollup = rollups.find(
+      r => r.appId === app1 && r.userId === user1Uuid,
+    );
+    expect(u1Rollup).toBeDefined();
+    if (!u1Rollup) throw new Error("Expected u1Rollup");
+    expect(u1Rollup.days.sort()).toEqual(["2026-11-24", "2026-11-25"]);
+    expect(u1Rollup.opens).toBe(2);
+    expect(u1Rollup.activeSeconds).toBe(60);
+    expect(u1Rollup.lastAt.toISOString()).toBe(t3.toISOString());
+
+    const anonIdentified = rollups.find(
+      r => r.appId === app1 && r.userId === "anon:cookieHash1",
+    );
+    expect(anonIdentified?.opens).toBe(1);
+
+    const anonCollapsed = rollups.find(
+      r => r.appId === app2 && r.userId === null,
+    );
+    expect(anonCollapsed?.opens).toBe(1);
+
+    const dayRows = await repo.listAppUsageDaysSince(wsId, "2026-11-24");
+    expect(dayRows).toHaveLength(4);
+
+    const recent = await repo.getRecentlyViewedApps(
+      wsId,
+      user1Uuid,
+      new Date("2026-11-20T00:00:00.000Z"),
+      10,
+    );
+    expect(recent).toHaveLength(1);
+    expect(recent[0].appId).toBe(app1);
+
+    const hot = await repo.getHotWorkspaceUsageSince(
+      new Date("2026-11-25T00:00:00.000Z"),
+    );
+    expect(hot).toHaveLength(1);
+    expect(hot[0].workspaceId).toBe(wsId);
+
+    expect(await repo.findEarliestAppUsageDay(wsId)).toBe("2026-11-24");
+  });
+
+  it("persists app_feed_snapshots and enforces 24h expiry on PG", async () => {
+    const createdAt = new Date("2026-11-25T10:00:00.000Z");
+    const snapId = await repo.createFeedSnapshot({
+      workspaceId: wsId,
+      userId: user1Uuid,
+      popular: ["a1"],
+      fresh: ["a2"],
+      recommended: ["a3", "a4"],
+      createdAt,
+    });
+
+    const found = await repo.findFeedSnapshotById(
+      snapId,
+      wsId,
+      new Date("2026-11-25T12:00:00.000Z"),
+    );
+    expect(found).not.toBeNull();
+    if (!found) throw new Error("Expected feed snapshot");
+    expect(found.recommended).toEqual(["a3", "a4"]);
+
+    const expired = await repo.findFeedSnapshotById(
+      snapId,
+      wsId,
+      new Date("2026-11-26T11:00:00.000Z"),
+    );
+    expect(expired).toBeNull();
+  });
+
+  it("bumps skill_usage_daily atomically and computes 30-day window sums + all-time lastLoadedAt", async () => {
+    const oldAt = new Date("2026-10-01T08:00:00.000Z");
+    const recentAt = new Date("2026-11-25T09:00:00.000Z");
+
+    await repo.bumpSkillUsageDaily(
+      wsId,
+      [{ scope: "workspace", skill: "sql-tuning" }],
+      "load",
+      "agent",
+      oldAt,
+    );
+    await repo.bumpSkillUsageDaily(
+      wsId,
+      [
+        { scope: "workspace", skill: "sql-tuning" },
+        { scope: "system", skill: "apps" },
+      ],
+      "resource",
+      "mcp",
+      recentAt,
+    );
+    await repo.bumpSkillUsageDaily(
+      wsId,
+      [{ scope: "workspace", skill: "sql-tuning" }],
+      "relevant",
+      "agent",
+      recentAt,
+    );
+
+    const summary = await repo.getSkillUsageSummary(wsId, "2026-11-01");
+    const sqlSkill = summary.find(
+      s => s.scope === "workspace" && s.skill === "sql-tuning",
+    );
+    expect(sqlSkill?.loads30d).toBe(2); // oldAt excluded from 30d window
+    expect(sqlSkill?.lastLoadedAt?.toISOString()).toBe(recentAt.toISOString());
+
+    const sysApps = summary.find(
+      s => s.scope === "system" && s.skill === "apps",
+    );
+    expect(sysApps?.loads30d).toBe(1);
+  });
+
+  it("computes exact LLM usage summaries, breakdowns, chat history, and workflow costs", async () => {
+    const chatId = newDualId().oid;
+    const d1 = new Date("2026-11-24T08:00:00.000Z");
+    const d2 = new Date("2026-11-25T10:00:00.000Z");
+
+    await repo.createLlmUsage({
+      workspaceId: wsId,
+      userId: user1Uuid,
+      chatId,
+      invocationType: "chat",
+      modelId: "claude-sonnet-4",
+      inputTokens: 1000,
+      outputTokens: 500,
+      cacheReadTokens: 200,
+      cacheWriteTokens: 100,
+      reasoningTokens: 50,
+      totalTokens: 1850,
+      costUsd: 0.0125,
+      createdAt: d1,
+    });
+    await repo.createLlmUsage({
+      workspaceId: wsId,
+      userId: user2Uuid,
+      chatId,
+      invocationType: "chat",
+      modelId: "gpt-4o",
+      inputTokens: 400,
+      outputTokens: 100,
+      totalTokens: 500,
+      costUsd: 0.005,
+      createdAt: d2,
+    });
+    const wfCall = await repo.createLlmUsage({
+      workspaceId: wsId,
+      userId: user1Uuid,
+      invocationType: "workflow",
+      modelId: "claude-sonnet-4",
+      inputTokens: 2000,
+      outputTokens: 300,
+      totalTokens: 2300,
+      costUsd: 0.025,
+      workflowRun: {
+        workflowId: "wf-daily",
+        runId: "run-1",
+        step: "summarize",
+      },
+      createdAt: d2,
+    });
+    const unattributed = await repo.createLlmUsage({
+      workspaceId: wsId,
+      userId: user1Uuid,
+      invocationType: "workflow",
+      modelId: "claude-sonnet-4",
+      inputTokens: 100,
+      outputTokens: 50,
+      totalTokens: 150,
+      costUsd: 0.002,
+      durationMs: 1200,
+      createdAt: d2,
+    });
+    expect(wfCall.workflowRun?.runId).toBe("run-1");
+
+    const summary = await repo.getWorkspaceLlmUsageSummary(wsId);
+    expect(summary.invocationCount).toBe(4);
+    expect(summary.totalInputTokens).toBe(3500);
+    expect(summary.totalOutputTokens).toBe(950);
+    expect(summary.totalTokens).toBe(4800);
+    expect(summary.totalCostUsd).toBeCloseTo(0.0445, 6);
+
+    const ranged = await repo.getWorkspaceLlmUsageSummary(wsId, {
+      from: new Date("2026-11-25T00:00:00.000Z"),
+    });
+    expect(ranged.invocationCount).toBe(3);
+
+    const byUser = await repo.getWorkspaceLlmUsageByUser(wsId);
+    expect(byUser).toHaveLength(2);
+    expect(byUser[0].userId).toBe(user1Uuid);
+    expect(byUser[0].totalCostUsd).toBeCloseTo(0.0395, 6);
+    expect(byUser[1].userId).toBe(user2Uuid);
+
+    const byModel = await repo.getWorkspaceLlmUsageByModel(wsId);
+    expect(byModel).toHaveLength(2);
+    expect(byModel[0].modelId).toBe("claude-sonnet-4");
+    expect(byModel[0].invocationCount).toBe(3);
+
+    const byChat = await repo.listLlmUsageByChat(wsId, chatId);
+    expect(byChat).toHaveLength(2);
+    expect(byChat[0].modelId).toBe("claude-sonnet-4");
+    expect(byChat[1].modelId).toBe("gpt-4o");
+
+    const runCosts = await repo.readWorkflowRunCosts(wsId, ["run-1"]);
+    expect(runCosts).toHaveLength(1);
+    expect(runCosts[0].step).toBe("summarize");
+    expect(runCosts[0].costUsd).toBeCloseTo(0.025, 6);
+
+    const dailyCosts = await repo.readWorkflowDailyCosts(
+      wsId,
+      "wf-daily",
+      new Date("2026-11-20T00:00:00.000Z"),
+    );
+    expect(dailyCosts).toHaveLength(1);
+    expect(dailyCosts[0].day).toBe("2026-11-25");
+    expect(dailyCosts[0].runIds).toEqual(["run-1"]);
+
+    const unattrList = await repo.listUnattributedWorkflowCalls(
+      wsId,
+      new Date("2026-11-24T00:00:00.000Z"),
+    );
+    expect(unattrList.map(u => u.id)).toEqual([unattributed.id]);
+
+    const patched = await repo.attachWorkflowRunToCalls(wsId, [
+      {
+        id: unattributed.id,
+        workflowId: "wf-daily",
+        runId: "run-2",
+        step: "enrich",
+      },
+    ]);
+    expect(patched).toBe(1);
+    const run2Costs = await repo.readWorkflowRunCosts(wsId, ["run-2"]);
+    expect(run2Costs[0].backfilled).toBe(true);
+  });
+
+  it("tracks query_executions (including missing apiKeyId safety) and computes SQL aggregation summaries", async () => {
+    const connId = newDualId().oid;
+    const consoleId = newDualId().oid;
+    const deletedKeyId = newDualId().oid;
+    const t1 = new Date("2026-11-25T08:00:00.000Z");
+    const t2 = new Date("2026-11-25T09:00:00.000Z");
+
+    const q1 = await repo.createQueryExecution({
+      workspaceId: wsId,
+      connectionId: connId,
+      consoleId,
+      userId: user1Uuid,
+      apiKeyId,
+      source: "console_ui",
+      databaseType: "postgresql",
+      queryLanguage: "sql",
+      status: "success",
+      executionTimeMs: 120,
+      rowCount: 42,
+      executedAt: t1,
+    });
+    expect(q1.apiKeyId).toBe(apiKeyId);
+
+    const q2 = await repo.createQueryExecution({
+      workspaceId: wsId,
+      connectionId: connId,
+      consoleId,
+      userId: user2Uuid,
+      apiKeyId: deletedKeyId,
+      source: "api",
+      databaseType: "bigquery",
+      queryLanguage: "sql",
+      status: "error",
+      executionTimeMs: 280,
+      errorType: "syntax",
+      executedAt: t2,
+    });
+    // Deleted/nonexistent API key safely nulled rather than crashing FK 23503
+    expect(q2.apiKeyId).toBeUndefined();
+
+    const page = await repo.listWorkspaceQueryExecutions(wsId, {
+      limit: 1,
+      offset: 0,
+    });
+    expect(page.total).toBe(2);
+    expect(page.executions).toHaveLength(1);
+    expect(page.executions[0].status).toBe("error");
+
+    const consoleList = await repo.listConsoleQueryExecutions(
+      wsId,
+      consoleId,
+      10,
+    );
+    expect(consoleList).toHaveLength(2);
+
+    const summary = await repo.getWorkspaceQueryExecutionSummary(
+      wsId,
+      new Date("2026-11-25T00:00:00.000Z"),
+      new Date("2026-11-25T23:59:59.000Z"),
+    );
+    expect(summary.totalExecutions).toBe(2);
+    expect(summary.successCount).toBe(1);
+    expect(summary.errorCount).toBe(1);
+    expect(summary.cancelledCount).toBe(0);
+    expect(summary.timeoutCount).toBe(0);
+    expect(summary.totalExecutionTimeMs).toBe(400);
+    expect(summary.avgExecutionTimeMs).toBe(200);
+    expect(summary.bySource).toEqual({ console_ui: 1, api: 1 });
+    expect(summary.byDatabaseType).toEqual({ postgresql: 1, bigquery: 1 });
+    expect(summary.byUser[user1Uuid]).toBe(1);
+    expect(summary.byUser[user2Uuid]).toBe(1);
+  });
+
+  it("records connection_verifications with optional workspace/connection/errorClass", async () => {
+    const rec = await repo.createConnectionVerification({
+      workspaceId: wsId,
+      connectionId: seededConnId,
+      userId: user1Uuid,
+      databaseType: "postgresql",
+      trigger: "saved_test",
+      success: false,
+      durationMs: 310,
+      errorClass: "auth_failed",
+      errorMessage: "password authentication failed",
+    });
+    expect(rec.workspaceId).toBe(wsId);
+    expect(rec.connectionId).toBe(seededConnId);
+    expect(rec.errorClass).toBe("auth_failed");
+  });
 
   it("enforces app_usage_daily immutable visitor_key so DELETE FROM users never triggers 23505", async () => {
-    const pgRepo = new PgUsageStatsRepository({ getDb: () => db });
+    const pgRepo = new PgUsageStatsRepository({ getDb: () => h.db });
     const appId = newDualId().oid;
     const day = "2026-11-25";
     const at = new Date("2026-11-25T15:00:00.000Z");
@@ -660,10 +542,10 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
 
     // Delete user2 directly in Postgres — must NOT raise 23505 despite existing unattributed 'anon' row!
     await expect(
-      db.delete(pgSchema.users).where(eq(pgSchema.users.id, user2Uuid)),
+      h.db.delete(pgSchema.users).where(eq(pgSchema.users.id, user2Uuid)),
     ).resolves.not.toThrow();
 
-    const rawRows = await db
+    const rawRows = await h.db
       .select()
       .from(pgSchema.appUsageDaily)
       .where(
@@ -689,20 +571,12 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
 
     // CHECK constraint rejects setting BOTH user_id and anon_id
     await expect(
-      pg.exec(`
+      h.pg.exec(`
         INSERT INTO app_usage_daily (id, workspace_id, app_id, user_id, anon_id, visitor_key, day, first_at, last_at)
         VALUES ('${generateUuidv7()}', '${wsUuid}', '${objectIdToUuid(appId)}', '${user1Uuid}', 'anon:illegal', 'bad', '${day}', now(), now());
       `),
     ).rejects.toThrow();
   });
-
-  // ── 3. 5-stage dual-run + Stage 4->2 rollback + app_feed_snapshots fallback
-
-  // ── 4. Closed-UTC-day backfill, GREATEST no-double-count, rollover, verifier, sync-retry
-
-  // ── 5. TTL reaper registration & billing-ledger safety ───────────────────
-
-  // ── 6. Deferred post-backfill 0006a_conn_verif_connection_fk.sql ─────────
 
   it("applies deferred 0006a_conn_verif_connection_fk.sql idempotently and nulls dangling connection_ids", async () => {
     const stmts = readPostBackfillStatements("conn-verif-connection-fk");
@@ -711,7 +585,7 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
     // Run on an isolated PGlite instance so we don't mutate the shared schema
     const isoPg = createTestPglite();
     await runPgliteMigrations(isoPg);
-    const isoDb = drizzle(isoPg, { schema: pgSchema }) as unknown as MakoPgDb;
+    const isoDb = drizzle(isoPg, { schema: pgSchema });
 
     try {
       const isoWsUuid = newDualId().uuid;
@@ -775,10 +649,9 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
   });
 
   it("queryExecutionService handles PG-generated UUIDv7 execution and apiKey IDs without BSONError", async () => {
-    setPgTestDb(db);
     const connId = newDualId().oid;
     const consoleId = newDualId().oid;
-    const [apiKeyRow] = await db
+    const [apiKeyRow] = await h.db
       .insert(pgSchema.workspaceApiKeys)
       .values({
         workspaceId: wsUuid,

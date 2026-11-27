@@ -1,22 +1,15 @@
 /**
  * Normalized Chat domain repository entry point (Neon Postgres `pg_only`).
  */
-import { createPgFirstRepoProxy } from "../resolve-repo";
-import { MongoChatRepository } from "./mongo.repo";
 import { PgChatRepository } from "./pg.repo";
 import type { ChatRepository } from "./types";
 
 export * from "./types";
 export * from "./cursor";
 export * from "./mapper";
-export { MongoChatRepository } from "./mongo.repo";
 export { PgChatRepository } from "./pg.repo";
 
-const defaultChatRepo: ChatRepository = createPgFirstRepoProxy<ChatRepository>(
-  "chat",
-  new PgChatRepository(),
-  new MongoChatRepository(),
-);
+const defaultChatRepo: ChatRepository = new PgChatRepository();
 let activeChatRepo: ChatRepository = defaultChatRepo;
 
 export function getChatRepo(): ChatRepository {

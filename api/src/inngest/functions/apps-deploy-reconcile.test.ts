@@ -17,12 +17,9 @@ vi.mock("../client", () => ({
     send: vi.fn(async () => ({})),
   },
 }));
-vi.mock("../../database/workspace-schema", () => ({
-  AppProject: {
-    find: vi.fn(() => ({
-      select: () => ({ lean: async () => state.rows }),
-    })),
-    updateOne: vi.fn(),
+vi.mock("../../repositories/apps-metadata", () => ({
+  appsMetadataRepo: {
+    listPublishedProjects: vi.fn(async () => state.rows),
   },
 }));
 vi.mock("../../apps/deployment.service", () => ({
@@ -71,7 +68,7 @@ const run = async () => {
 };
 
 const row = (deployProgress?: Record<string, unknown>) => ({
-  _id: "app",
+  id: "app",
   workspaceId: "ws",
   path: "apps/web-performance",
   publishedSha: "1".repeat(40),

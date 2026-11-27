@@ -1,9 +1,6 @@
 /**
  * Keyset pagination cursor encoding/decoding and Mongo filter helpers for
  * user chat history lists (`GET /api/workspaces/:wid/chats`).
- *
- * Kept dependency-free so both `MongoChatRepository`, `PgChatRepository`, and
- * `chat-list.service.ts` share one canonical cursor contract with zero cycles.
  */
 import { Types } from "mongoose";
 import {

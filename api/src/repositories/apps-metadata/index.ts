@@ -1,22 +1,15 @@
 /**
  * Apps metadata domain repository entry point (Neon Postgres `pg_only`).
  */
-import { createPgFirstRepoProxy } from "../resolve-repo";
-import { MongoAppsMetadataRepository } from "./mongo.repo";
 import { PgAppsMetadataRepository } from "./pg.repo";
 import type { AppsMetadataRepository } from "./types";
 
 export * from "./types";
 export * from "./mapper";
-export { MongoAppsMetadataRepository };
 export { PgAppsMetadataRepository } from "./pg.repo";
 
 const defaultAppsMetadataRepo: AppsMetadataRepository =
-  createPgFirstRepoProxy<AppsMetadataRepository>(
-    "apps_metadata",
-    new PgAppsMetadataRepository(),
-    new MongoAppsMetadataRepository(),
-  );
+  new PgAppsMetadataRepository();
 let activeAppsMetadataRepo: AppsMetadataRepository = defaultAppsMetadataRepo;
 
 export function getAppsMetadataRepo(): AppsMetadataRepository {

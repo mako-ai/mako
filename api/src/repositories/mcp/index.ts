@@ -1,21 +1,14 @@
 /**
  * MCP domain repository entry point (Neon Postgres `pg_only`).
  */
-import { createPgFirstRepoProxy } from "../resolve-repo";
-import { MongoMcpRepository } from "./mongo.repo";
 import { PgMcpRepository } from "./pg.repo";
 import type { McpRepository } from "./types";
 
 export * from "./types";
 export * from "./mapper";
-export { MongoMcpRepository } from "./mongo.repo";
 export { PgMcpRepository } from "./pg.repo";
 
-const defaultMcpRepo: McpRepository = createPgFirstRepoProxy<McpRepository>(
-  "mcp",
-  new PgMcpRepository(),
-  new MongoMcpRepository(),
-);
+const defaultMcpRepo: McpRepository = new PgMcpRepository();
 let activeMcpRepo: McpRepository = defaultMcpRepo;
 
 export function getMcpRepo(): McpRepository {

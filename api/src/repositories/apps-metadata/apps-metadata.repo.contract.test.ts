@@ -1,58 +1,17 @@
-/**
- * Phase 2B (`apps_metadata` domain — 10 tables) repository contract,
- * 1536-dim pgvector parity, real-user + system-actor `app_worktrees`,
- * atomic CAS (`claimPublicBindingRefresh`, `casResolvePendingCommitStatus`),
- * blob-safe expiry (ZERO blind TTL rules for `app_binding_drafts` / `app_binding_jobs`),
- * 5-stage dual-run + Stage 4->2 rollback, secret redaction in `shadow-compare`,
- * backfill + tombstones + quarantine, parity verifier (`--repair`), and sync-retry tests.
- */
-import type { PGlite } from "@electric-sql/pglite";
 import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/pglite";
-import mongoose from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-} from "vitest";
-import {
-  resetPgTestDb,
-  setPgTestDb,
-  type MakoPgDb,
-} from "../../database/pg/client";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   generateUuidv7,
   isUuidv7,
   newDualId,
 } from "../../database/pg/id-codec";
-import { runPgliteMigrations } from "../../database/pg/migrate";
+import { setupPgTestDb, type PgTestDb } from "../../test-support/pg-test";
 import * as pgSchema from "../../database/pg/schema";
-import { createTestPglite } from "../../database/pg/test-pglite";
-import {
-  AppDeployCommitStatus,
-  AppEmbedding,
-  AppIndexEntry,
-  AppIndexHead,
-  AppLifecycleState,
-  AppProject,
-  AppWorktree,
-} from "../../database/workspace-schema";
 import {
   buildProjectSharingPatch,
   toAppProjectCompat,
   toAppWorktreeCompat,
 } from "./mapper";
-import {
-  MongoAppsMetadataRepository,
-  getMongoAppBindingDraftModel,
-  getMongoAppBindingJobModel,
-  getMongoAppBindingStateModel,
-} from "./mongo.repo";
 import { PgAppsMetadataRepository } from "./pg.repo";
 import type { AppsMetadataRepository } from "./types";
 
@@ -64,10 +23,8 @@ function makeVector(seed: number, dims = 1536): number[] {
   return vec;
 }
 
-describe("Phase 2B AppsMetadataRepository contract & migration lifecycle", () => {
-  let mongo: MongoMemoryServer;
-  let pg: PGlite;
-  let db: MakoPgDb;
+describe("PostgreSQL AppsMetadataRepository", () => {
+  let h: PgTestDb;
 
   let wsId: string;
   let wsUuid: string;
@@ -77,24 +34,7 @@ describe("Phase 2B AppsMetadataRepository contract & migration lifecycle", () =>
   let user2Uuid: string;
 
   beforeAll(async () => {
-    mongo = await MongoMemoryServer.create();
-    await mongoose.connect(mongo.getUri());
-    await Promise.all([
-      AppProject.syncIndexes(),
-      AppIndexEntry.syncIndexes(),
-      AppIndexHead.syncIndexes(),
-      AppEmbedding.syncIndexes(),
-      AppLifecycleState.syncIndexes(),
-      AppDeployCommitStatus.syncIndexes(),
-      AppWorktree.syncIndexes(),
-      getMongoAppBindingStateModel().syncIndexes(),
-      getMongoAppBindingDraftModel().syncIndexes(),
-      getMongoAppBindingJobModel().syncIndexes(),
-    ]);
-
-    pg = createTestPglite();
-    await runPgliteMigrations(pg);
-    db = drizzle(pg, { schema: pgSchema }) as unknown as MakoPgDb;
+    h = await setupPgTestDb();
   });
 
   async function seedBaseFixtures(): Promise<void> {
@@ -107,7 +47,7 @@ describe("Phase 2B AppsMetadataRepository contract & migration lifecycle", () =>
     user1Uuid = generateUuidv7();
     user2Uuid = generateUuidv7();
 
-    await db.insert(pgSchema.users).values([
+    await h.db.insert(pgSchema.users).values([
       {
         id: user1Uuid,
         legacyId: "luciaapps000001",
@@ -122,7 +62,7 @@ describe("Phase 2B AppsMetadataRepository contract & migration lifecycle", () =>
       },
     ]);
 
-    await db.insert(pgSchema.workspaces).values([
+    await h.db.insert(pgSchema.workspaces).values([
       {
         id: wsUuid,
         name: "Primary Apps WS",
@@ -138,668 +78,567 @@ describe("Phase 2B AppsMetadataRepository contract & migration lifecycle", () =>
     ]);
   }
 
-  async function cleanAllStores(): Promise<void> {
-    await Promise.all([
-      AppProject.deleteMany({}),
-      AppIndexEntry.deleteMany({}),
-      AppIndexHead.deleteMany({}),
-      AppEmbedding.deleteMany({}),
-      AppLifecycleState.deleteMany({}),
-      AppDeployCommitStatus.deleteMany({}),
-      AppWorktree.deleteMany({}),
-      getMongoAppBindingStateModel().deleteMany({}),
-      getMongoAppBindingDraftModel().deleteMany({}),
-      getMongoAppBindingJobModel().deleteMany({}),
-    ]);
-    await pg.exec(`
-      DELETE FROM app_binding_jobs;
-      DELETE FROM app_binding_drafts;
-      DELETE FROM app_binding_state;
-      DELETE FROM app_worktrees;
-      DELETE FROM app_deploy_commit_statuses;
-      DELETE FROM app_lifecycle;
-      DELETE FROM app_embeddings;
-      DELETE FROM app_index_heads;
-      DELETE FROM app_index;
-      DELETE FROM app_projects;
-      DELETE FROM workspaces;
-      DELETE FROM users;
-      DELETE FROM migration_domain_state;
-      DELETE FROM migration_backfill_jobs;
-      DELETE FROM migration_tombstones;
-      DELETE FROM migration_quarantine;
-    `);
-  }
-
   beforeEach(async () => {
-    setPgTestDb(db);
-    await cleanAllStores();
+    await h.reset();
     await seedBaseFixtures();
   });
 
-  afterEach(() => {
-    resetPgTestDb();
-  });
-
   afterAll(async () => {
-    await mongoose.disconnect();
-    await mongo.stop();
-    await pg.close();
+    await h.close();
   });
 
-  // ── 1. Shared contract across Mongo AND Postgres for all 10 tables ───────
+  const repo: AppsMetadataRepository = new PgAppsMetadataRepository({
+    getDb: () => h.db,
+  });
 
-  const implementations: Array<{
-    name: string;
-    isPg: boolean;
-    create: () => AppsMetadataRepository;
-  }> = [
-    {
-      name: "MongoAppsMetadataRepository",
-      isPg: false,
-      create: () => new MongoAppsMetadataRepository(),
-    },
-    {
-      name: "PgAppsMetadataRepository",
-      isPg: true,
-      create: () => new PgAppsMetadataRepository({ getDb: () => db }),
-    },
-  ];
+  it("covers app_projects CRUD, sharing, opaque secrets, deploy progress, publishedSha CAS, and errors", async () => {
+    const now = new Date("2026-11-25T10:00:00.000Z");
 
-  for (const impl of implementations) {
-    describe(`AppsMetadataRepository contract: ${impl.name}`, () => {
-      it("covers app_projects CRUD, sharing, opaque secrets, deploy progress, publishedSha CAS, and errors", async () => {
-        const repo = impl.create();
-        const now = new Date("2026-11-25T10:00:00.000Z");
-
-        const created = await repo.createProject({
-          workspaceId: wsId,
-          title: "Sales Overview",
-          slug: "sales-overview",
-          path: "apps/sales-overview",
-          access: "private",
-          owner_id: user1Uuid,
-          createdBy: user1Uuid,
-        });
-        expect(created.title).toBe("Sales Overview");
-        expect(created.access).toBe("private");
-
-        // Ownerless claim test
-        const ownerless = await repo.createProject({
-          workspaceId: wsId,
-          title: "Imported App",
-          slug: "imported",
-          path: "apps/imported",
-          access: "workspace",
-        });
-        expect(
-          await repo.claimOwnerlessProjectRow(wsId, ownerless.id, user1Uuid),
-        ).toBe(true);
-        expect(
-          await repo.claimOwnerlessProjectRow(wsId, ownerless.id, user2Uuid),
-        ).toBe(false);
-
-        // Sharing + opaque public share password + encrypted env
-        await repo.updateProjectSharing(wsId, created.id, {
-          access: "workspace",
-          workspaceRole: "editor",
-          sharedWith: [
-            {
-              userId: impl.isPg ? "luciaapps000002" : user2Uuid,
-              role: "editor",
-              addedAt: now,
-              addedBy: impl.isPg ? "luciaapps000001" : user1Uuid,
-            },
-          ],
-          publicShare: {
-            enabled: true,
-            token: "sales-share-token",
-            passwordHash: "$2b$10$opaqueBcryptHash",
-            passwordEncrypted: "iv:tag:opaqueCiphertext",
-            createdAt: now,
-            createdBy: user1Uuid,
-            allowLiveQueries: true,
-          },
-          chatEnabled: true,
-        });
-
-        await repo.updateProjectEnv(wsId, created.id, [
-          {
-            key: "STRIPE_KEY",
-            valueEncrypted: "enc:v1:superSecretValue",
-            secret: true,
-          },
-        ]);
-
-        const byToken = await repo.findProjectByShareToken("sales-share-token");
-        expect(byToken?.id).toBe(created.id);
-        expect(byToken?.publicShare?.passwordHash).toBe(
-          "$2b$10$opaqueBcryptHash",
-        );
-        expect(byToken?.publicShare?.passwordEncrypted).toBe(
-          "iv:tag:opaqueCiphertext",
-        );
-        expect(byToken?.env).toEqual([
-          {
-            key: "STRIPE_KEY",
-            valueEncrypted: "enc:v1:superSecretValue",
-            secret: true,
-          },
-        ]);
-        // PG rewrote legacy Lucia ID in sharedWith to canonical UUID!
-        expect(byToken?.sharedWith?.[0].userId).toBe(user2Uuid);
-        expect(byToken?.sharedWith?.[0].addedBy).toBe(user1Uuid);
-
-        expect(await repo.isShareTokenTaken("sales-share-token")).toBe(true);
-        expect(
-          await repo.isShareTokenTaken("sales-share-token", created.id),
-        ).toBe(false);
-
-        // Deploy progress + publishedSha CAS + errors
-        const sha1 = "a".repeat(40);
-        const sha2 = "b".repeat(40);
-        await repo.setDeployProgressQueued(wsId, created.id, {
-          sha: sha1,
-          stage: "queued",
-          startedAt: now,
-          stageStartedAt: now,
-          updatedAt: now,
-        });
-        await repo.advanceDeployProgressStage(
-          wsId,
-          created.id,
-          sha1,
-          "bindings",
-          new Date(now.getTime() + 5000),
-          new Date(now.getTime() - 60000),
-        );
-        await repo.updateDeployProgressBindings(
-          wsId,
-          created.id,
-          sha1,
-          { total: 3, prepared: 2, current: "orders" },
-          new Date(now.getTime() + 6000),
-        );
-        expect(
-          (await repo.findProjectById(created.id, wsId))?.deployProgress
-            ?.bindings?.prepared,
-        ).toBe(2);
-
-        const pub1 = await repo.setPublishedSha(wsId, created.id, sha1, now);
-        expect(pub1.matched).toBe(true);
-        // CAS mismatch fails cleanly
-        const pubOvertaken = await repo.setPublishedSha(
-          wsId,
-          created.id,
-          sha2,
-          now,
-          "wrong-sha",
-        );
-        expect(pubOvertaken.matched).toBe(false);
-        // CAS match succeeds
-        const pub2 = await repo.setPublishedSha(
-          wsId,
-          created.id,
-          sha2,
-          now,
-          sha1,
-        );
-        expect(pub2.matched).toBe(true);
-
-        await repo.setLastDeployError(wsId, created.id, {
-          sha: sha2,
-          stage: "build",
-          message: "vite failed",
-          at: now,
-        });
-        await repo.clearLastDeployErrorIfSha(wsId, created.id, sha1);
-        expect(
-          (await repo.findProjectById(created.id, wsId))?.lastDeployError?.sha,
-        ).toBe(sha2);
-        await repo.clearLastDeployErrorIfSha(wsId, created.id, sha2);
-        expect(
-          (await repo.findProjectById(created.id, wsId))?.lastDeployError,
-        ).toBeUndefined();
-
-        await repo.setBindingRefreshError(wsId, created.id, "orders", {
-          sha: sha2,
-          message: "timeout",
-          attempts: 1,
-          at: now,
-        });
-        expect(
-          (await repo.findProjectById(created.id, wsId))?.bindingRefreshErrors
-            ?.orders?.attempts,
-        ).toBe(1);
-        await repo.clearBindingRefreshError(wsId, created.id, "orders");
-        expect(
-          (await repo.findProjectById(created.id, wsId))?.bindingRefreshErrors,
-        ).toBeUndefined();
-
-        await repo.clearDeployProgress(wsId, created.id, sha1);
-        await repo.clearPublishedSha(wsId, created.id);
-        expect(
-          (await repo.findProjectById(created.id, wsId))?.publishedSha,
-        ).toBeUndefined();
-
-        // Location sync & foreign checks
-        await repo.syncMovedProjects(wsId, [
-          {
-            appId: created.id,
-            path: "apps/finance/sales",
-            slug: "sales",
-            title: "Sales Moved",
-            access: "workspace",
-          },
-        ]);
-        expect(
-          (await repo.findProjectByPath(wsId, "apps/finance/sales"))?.id,
-        ).toBe(created.id);
-        expect(
-          await repo.listForeignProjectIds(ws2Id, [created.id, ownerless.id]),
-        ).toHaveLength(2);
-
-        await repo.deleteProject(wsId, ownerless.id);
-        expect(await repo.findProjectById(ownerless.id, wsId)).toBeNull();
-      });
-
-      it("covers app_index, app_index_heads, app_embeddings (1536-d pgvector), app_lifecycle, and commit status CAS", async () => {
-        const repo = impl.create();
-        const app1 = newDualId().oid;
-        const app2 = newDualId().oid;
-        const sha = "c".repeat(40);
-
-        await repo.replaceWorkspaceIndexEntries(
-          wsId,
-          [],
-          [
-            {
-              appId: app1,
-              path: "apps/rev",
-              slug: "rev",
-              scope: "workspace",
-              treeOid: "t1",
-              title: "Revenue",
-              hasManifestId: true,
-              schedules: [{ binding: "daily", cron: "0 * * * *" }],
-              tables: ["orders"],
-              bindings: ["daily"],
-              thumbnail: { file: "thumbnail.png", oid: "blob1" },
-              indexedSha: sha,
-            },
-            {
-              appId: app2,
-              path: "users/alice/apps/notes",
-              slug: "notes",
-              scope: "private",
-              ownerId: user1Uuid,
-              treeOid: "t2",
-              title: "Notes",
-              hasManifestId: false,
-              schedules: [],
-              indexedSha: sha,
-            },
-          ],
-        );
-        await repo.upsertIndexHead(wsId, {
-          sha,
-          schemaVersion: 7,
-          folders: ["apps/rev", "users/alice/apps"],
-        });
-
-        expect((await repo.findIndexHeadByWorkspace(wsId))?.folders).toEqual([
-          "apps/rev",
-          "users/alice/apps",
-        ]);
-        expect(await repo.listIndexEntriesByWorkspace(wsId)).toHaveLength(2);
-        expect(await repo.indexEntryExistsByAppId(app1)).toBe(true);
-        expect(await repo.listIndexEntriesWithSchedules()).toHaveLength(1);
-        expect(await repo.listDistinctWorkspaceIdsWithThumbnails()).toEqual([
-          wsId,
-        ]);
-        expect(await repo.listForeignIndexAppIds(ws2Id, [app1])).toEqual([
-          app1,
-        ]);
-
-        // 1536-dim pgvector embeddings
-        const vec = makeVector(3, 1536);
-        await repo.upsertEmbeddingsBatch(
-          wsId,
-          [
-            {
-              appId: app1,
-              path: "apps/rev",
-              treeOid: "t1",
-              docHash: "hash1",
-              embeddingModel: "text-embedding-3-small",
-              vector: vec,
-              terms: ["revenue", "orders"],
-            },
-          ],
-          [],
-        );
-        await repo.upsertEmbeddingsBatch(
-          wsId,
-          [],
-          [{ appId: app1, path: "apps/rev-renamed", treeOid: "t1b" }],
-        );
-        const embMeta = await repo.listEmbeddingsMetaByWorkspace(wsId);
-        expect(embMeta).toHaveLength(1);
-        expect(embMeta[0].path).toBe("apps/rev-renamed");
-        const embVecs = await repo.listEmbeddingsByWorkspaceAndModel(
-          wsId,
-          "text-embedding-3-small",
-        );
-        expect(embVecs[0].vector).toHaveLength(1536);
-        expect(embVecs[0].vector[5]).toBeCloseTo(vec[5], 4);
-        await repo.deleteEmbeddingsByAppIds(wsId, [app1]);
-        expect(await repo.listEmbeddingsMetaByWorkspace(wsId)).toHaveLength(0);
-
-        // Lifecycle
-        const t = new Date("2026-11-25T10:00:00.000Z");
-        await repo.upsertLifecyclePatch(wsId, app1, {
-          set: {
-            verifiedAt: t,
-            verifiedBy: user1Uuid,
-            staleSince: t,
-            schedulesPausedAt: t,
-            archivedAt: t,
-            archivedFrom: "apps/rev",
-            archivedTo: "archive/apps/rev",
-          },
-        });
-        expect(await repo.listVerifiedAppIds(wsId)).toEqual([app1]);
-        expect(await repo.listPausedScheduleAppIds()).toEqual([app1]);
-        expect(
-          await repo.listLifecycleByArchivedTo(wsId, ["archive/apps/rev"]),
-        ).toEqual([
-          { archivedTo: "archive/apps/rev", archivedFrom: "apps/rev" },
-        ]);
-
-        await repo.clearStaleAndPausedOnOpen(wsId, app1);
-        expect(await repo.listPausedScheduleAppIds()).toEqual([]);
-
-        await repo.markAppRestored(wsId, app1, t, user1Uuid);
-        const lc = (await repo.listLifecycleByWorkspace(wsId))[0];
-        expect(lc.restoredBy).toBe(user1Uuid);
-        expect(lc.archivedAt).toBeUndefined();
-
-        // Commit status CAS: only 1 winner!
-        await repo.upsertCommitStatus(wsId, app1, sha, "pending");
-        expect(
-          await repo.listPendingCommitStatusesExcludingSha(
-            wsId,
-            app1,
-            "d".repeat(40),
-          ),
-        ).toEqual([sha]);
-        const [win1, win2] = await Promise.all([
-          repo.casResolvePendingCommitStatus(wsId, app1, sha, "superseded"),
-          repo.casResolvePendingCommitStatus(wsId, app1, sha, "success"),
-        ]);
-        expect([win1, win2].filter(Boolean)).toHaveLength(1);
-      });
-
-      it("covers app_worktrees (real users + system actors), atomic claimPublicBindingRefresh, drafts & jobs", async () => {
-        const repo = impl.create();
-        const now = new Date("2026-11-25T10:00:00.000Z");
-
-        // Real user + system actors ("publish", "api-key")
-        const userWt = await repo.ensureWorktreeRow(wsId, user1Uuid, "main");
-        const pubWt = await repo.ensureWorktreeRow(wsId, "publish", "main");
-        const keyWt = await repo.ensureWorktreeRow(wsId, "api-key", "main");
-        expect(userWt.userId).toBe(user1Uuid);
-        expect(pubWt.userId).toBe("publish");
-        expect(keyWt.userId).toBe("api-key");
-
-        await repo.updateWorktreeBranch(wsId, user1Uuid, "feat/charts");
-        const beforeActivity = await repo.findWorktree(wsId, user1Uuid);
-        expect(beforeActivity).not.toBeNull();
-        if (!beforeActivity) {
-          throw new Error("Expected worktree before activity");
-        }
-        expect(beforeActivity.branch).toBe("feat/charts");
-
-        // Activity bump must preserve updatedAt and use GREATEST
-        await repo.bumpWorktreeActivity(
-          wsId,
-          user1Uuid,
-          now,
-          new Date(now.getTime() + 60_000),
-        );
-        const afterActivity = await repo.findWorktree(wsId, user1Uuid);
-        expect(afterActivity).not.toBeNull();
-        if (!afterActivity) throw new Error("Expected worktree after activity");
-        expect(afterActivity.updatedAt.getTime()).toBe(
-          beforeActivity.updatedAt.getTime(),
-        );
-        expect(afterActivity.lastActivityAt?.toISOString()).toBe(
-          now.toISOString(),
-        );
-
-        // Pause history capped to latest 5
-        for (let i = 1; i <= 7; i++) {
-          await repo.recordWorktreePause(
-            wsId,
-            user1Uuid,
-            new Date(now.getTime() + i * 1000),
-          );
-        }
-        const pauseHist = await repo.getWorktreePauseHistory(wsId, user1Uuid);
-        expect(pauseHist.pausedAt).toHaveLength(5);
-
-        await repo.holdWorktreePausing(
-          wsId,
-          user1Uuid,
-          new Date(now.getTime() + 1_800_000),
-          now,
-        );
-        expect(
-          (await repo.getWorktreePauseHistory(wsId, user1Uuid)).holdUntil,
-        ).not.toBeNull();
-
-        const actList = await repo.listWorktreesActivity([
-          { workspaceId: wsId, actorId: user1Uuid },
-          { workspaceId: wsId, actorId: "publish" },
-        ]);
-        expect(actList).toHaveLength(2);
-
-        // Binding state: history capped to 20 newest-first + atomic cooldown claim
-        const projId = newDualId().oid;
-        for (let i = 1; i <= 25; i++) {
-          await repo.recordBindingRun(
-            projId,
-            "sales",
-            {
-              at: new Date(now.getTime() + i * 1000),
-              status: "ready",
-              rowCount: i,
-              durationMs: 100,
-              artifactKey: `apps/bindings/k${i}.parquet`,
-            },
-            wsId,
-          );
-        }
-        const state = await repo.getBindingState(projId, "sales", wsId);
-        expect(state?.lastRowCount).toBe(25);
-        expect(state?.history).toHaveLength(20);
-        expect(state?.history?.[0].rowCount).toBe(25);
-
-        const summary = await repo.listBindingStatesByProjects(wsId, [projId]);
-        expect(summary).toHaveLength(1);
-        expect(summary[0].history).toHaveLength(1);
-
-        const claim1 = await repo.claimPublicBindingRefresh(
-          projId,
-          "orders",
-          300_000,
-          now,
-          wsId,
-        );
-        expect(claim1).toEqual({ claimed: true });
-        const claim2 = await repo.claimPublicBindingRefresh(
-          projId,
-          "orders",
-          300_000,
-          new Date(now.getTime() + 60_000),
-          wsId,
-        );
-        expect(claim2.claimed).toBe(false);
-        if (!claim2.claimed) {
-          expect(claim2.retryAfterMs).toBeGreaterThanOrEqual(200_000);
-        }
-        const claim3 = await repo.claimPublicBindingRefresh(
-          projId,
-          "orders",
-          300_000,
-          new Date(now.getTime() + 301_000),
-          wsId,
-        );
-        expect(claim3).toEqual({ claimed: true });
-
-        // Binding drafts (app-pruned)
-        const draft = await repo.createDraftBuild(
-          {
-            projectId: projId,
-            hash: "h1",
-            name: "sales",
-            key: `apps/drafts/${projId}/h1-1.parquet`,
-            builtAt: now,
-            rowCount: 10,
-            byteSize: 512,
-            expiresAt: new Date(now.getTime() + 600_000),
-          },
-          wsId,
-        );
-        expect(
-          (await repo.findActiveDraftBuild(projId, "h1", now, wsId))?.id,
-        ).toBe(draft.id);
-        await repo.upsertDraftFailure(
-          {
-            projectId: projId,
-            hash: "h2",
-            name: "broken",
-            failures: 2,
-            until: new Date(now.getTime() + 120_000),
-            error: "syntax error",
-            expiresAt: new Date(now.getTime() + 600_000),
-          },
-          wsId,
-        );
-        expect(
-          (await repo.findDraftFailure(projId, "h2", wsId))?.failures,
-        ).toBe(2);
-        const expiredDrafts = await repo.listExpiredDrafts(
-          projId,
-          new Date(now.getTime() + 700_000),
-          100,
-          wsId,
-        );
-        expect(expiredDrafts).toHaveLength(2);
-        await repo.deleteDraftsByIds(
-          projId,
-          expiredDrafts.map(d => d.id),
-          wsId,
-        );
-        expect(
-          await repo.listExpiredDrafts(
-            projId,
-            new Date(now.getTime() + 700_000),
-            100,
-            wsId,
-          ),
-        ).toHaveLength(0);
-
-        // Binding jobs (app-pruned + stale CAS)
-        const job = await repo.createBindingJob({
-          workspaceId: wsId,
-          projectId: projId,
-          name: "sales",
-          kind: "materialize",
-          actorId: user1Uuid,
-          userId: user1Uuid,
-          canWrite: true,
-          request: { refresh: true },
-          expiresAt: new Date(now.getTime() + 3_600_000),
-        });
-        await repo.markBindingJob(
-          job.id,
-          { status: "running" },
-          new Date(now.getTime() + 3_600_000),
-          now,
-          wsId,
-        );
-        await repo.updateBindingJobProgress(
-          job.id,
-          { phase: "querying", rowsWritten: 100, at: now },
-          wsId,
-        );
-        expect(
-          (await repo.findBindingJobById(job.id, projId, wsId))?.progress
-            ?.phase,
-        ).toBe("querying");
-
-        const staleList = await repo.listStaleRunningBindingJobs(
-          new Date(now.getTime() + 60_000),
-          100,
-        );
-        expect(staleList.map(j => j.id)).toContain(job.id);
-        const failed = await repo.casFailStaleBindingJob(
-          job.id,
-          new Date(now.getTime() + 60_000),
-          "worker died",
-          502,
-          new Date(now.getTime() + 100_000),
-          wsId,
-        );
-        expect(failed?.status).toBe("error");
-
-        const expJobs = await repo.listExpiredFinishedBindingJobs(
-          projId,
-          new Date(now.getTime() + 200_000),
-          100,
-          wsId,
-        );
-        expect(expJobs.map(j => j.id)).toEqual([job.id]);
-        await repo.deleteBindingJobsByIds(projId, [job.id], wsId);
-        expect(await repo.findBindingJobById(job.id, projId, wsId)).toBeNull();
-      });
+    const created = await repo.createProject({
+      workspaceId: wsId,
+      title: "Sales Overview",
+      slug: "sales-overview",
+      path: "apps/sales-overview",
+      access: "private",
+      owner_id: user1Uuid,
+      createdBy: user1Uuid,
     });
-  }
+    expect(created.title).toBe("Sales Overview");
+    expect(created.access).toBe("private");
 
-  // ── 2. PG app_worktrees ON DELETE CASCADE for real users, preserves system actors
+    // Ownerless claim test
+    const ownerless = await repo.createProject({
+      workspaceId: wsId,
+      title: "Imported App",
+      slug: "imported",
+      path: "apps/imported",
+      access: "workspace",
+    });
+    expect(
+      await repo.claimOwnerlessProjectRow(wsId, ownerless.id, user1Uuid),
+    ).toBe(true);
+    expect(
+      await repo.claimOwnerlessProjectRow(wsId, ownerless.id, user2Uuid),
+    ).toBe(false);
+
+    // Sharing + opaque public share password + encrypted env
+    await repo.updateProjectSharing(wsId, created.id, {
+      access: "workspace",
+      workspaceRole: "editor",
+      sharedWith: [
+        {
+          userId: "luciaapps000002",
+          role: "editor",
+          addedAt: now,
+          addedBy: "luciaapps000001",
+        },
+      ],
+      publicShare: {
+        enabled: true,
+        token: "sales-share-token",
+        passwordHash: "$2b$10$opaqueBcryptHash",
+        passwordEncrypted: "iv:tag:opaqueCiphertext",
+        createdAt: now,
+        createdBy: user1Uuid,
+        allowLiveQueries: true,
+      },
+      chatEnabled: true,
+    });
+
+    await repo.updateProjectEnv(wsId, created.id, [
+      {
+        key: "STRIPE_KEY",
+        valueEncrypted: "enc:v1:superSecretValue",
+        secret: true,
+      },
+    ]);
+
+    const byToken = await repo.findProjectByShareToken("sales-share-token");
+    expect(byToken?.id).toBe(created.id);
+    expect(byToken?.publicShare?.passwordHash).toBe("$2b$10$opaqueBcryptHash");
+    expect(byToken?.publicShare?.passwordEncrypted).toBe(
+      "iv:tag:opaqueCiphertext",
+    );
+    expect(byToken?.env).toEqual([
+      {
+        key: "STRIPE_KEY",
+        valueEncrypted: "enc:v1:superSecretValue",
+        secret: true,
+      },
+    ]);
+    // PG rewrote legacy Lucia ID in sharedWith to canonical UUID!
+    expect(byToken?.sharedWith?.[0].userId).toBe(user2Uuid);
+    expect(byToken?.sharedWith?.[0].addedBy).toBe(user1Uuid);
+
+    expect(await repo.isShareTokenTaken("sales-share-token")).toBe(true);
+    expect(await repo.isShareTokenTaken("sales-share-token", created.id)).toBe(
+      false,
+    );
+
+    // Deploy progress + publishedSha CAS + errors
+    const sha1 = "a".repeat(40);
+    const sha2 = "b".repeat(40);
+    await repo.setDeployProgressQueued(wsId, created.id, {
+      sha: sha1,
+      stage: "queued",
+      startedAt: now,
+      stageStartedAt: now,
+      updatedAt: now,
+    });
+    await repo.advanceDeployProgressStage(
+      wsId,
+      created.id,
+      sha1,
+      "bindings",
+      new Date(now.getTime() + 5000),
+      new Date(now.getTime() - 60000),
+    );
+    await repo.updateDeployProgressBindings(
+      wsId,
+      created.id,
+      sha1,
+      { total: 3, prepared: 2, current: "orders" },
+      new Date(now.getTime() + 6000),
+    );
+    expect(
+      (await repo.findProjectById(created.id, wsId))?.deployProgress?.bindings
+        ?.prepared,
+    ).toBe(2);
+
+    const pub1 = await repo.setPublishedSha(wsId, created.id, sha1, now);
+    expect(pub1.matched).toBe(true);
+    // CAS mismatch fails cleanly
+    const pubOvertaken = await repo.setPublishedSha(
+      wsId,
+      created.id,
+      sha2,
+      now,
+      "wrong-sha",
+    );
+    expect(pubOvertaken.matched).toBe(false);
+    // CAS match succeeds
+    const pub2 = await repo.setPublishedSha(wsId, created.id, sha2, now, sha1);
+    expect(pub2.matched).toBe(true);
+
+    await repo.setLastDeployError(wsId, created.id, {
+      sha: sha2,
+      stage: "build",
+      message: "vite failed",
+      at: now,
+    });
+    await repo.clearLastDeployErrorIfSha(wsId, created.id, sha1);
+    expect(
+      (await repo.findProjectById(created.id, wsId))?.lastDeployError?.sha,
+    ).toBe(sha2);
+    await repo.clearLastDeployErrorIfSha(wsId, created.id, sha2);
+    expect(
+      (await repo.findProjectById(created.id, wsId))?.lastDeployError,
+    ).toBeUndefined();
+
+    await repo.setBindingRefreshError(wsId, created.id, "orders", {
+      sha: sha2,
+      message: "timeout",
+      attempts: 1,
+      at: now,
+    });
+    expect(
+      (await repo.findProjectById(created.id, wsId))?.bindingRefreshErrors
+        ?.orders?.attempts,
+    ).toBe(1);
+    await repo.clearBindingRefreshError(wsId, created.id, "orders");
+    expect(
+      (await repo.findProjectById(created.id, wsId))?.bindingRefreshErrors,
+    ).toBeUndefined();
+
+    await repo.clearDeployProgress(wsId, created.id, sha1);
+    await repo.clearPublishedSha(wsId, created.id);
+    expect(
+      (await repo.findProjectById(created.id, wsId))?.publishedSha,
+    ).toBeUndefined();
+
+    // Location sync & foreign checks
+    await repo.syncMovedProjects(wsId, [
+      {
+        appId: created.id,
+        path: "apps/finance/sales",
+        slug: "sales",
+        title: "Sales Moved",
+        access: "workspace",
+      },
+    ]);
+    expect((await repo.findProjectByPath(wsId, "apps/finance/sales"))?.id).toBe(
+      created.id,
+    );
+    expect(
+      await repo.listForeignProjectIds(ws2Id, [created.id, ownerless.id]),
+    ).toHaveLength(2);
+
+    await repo.deleteProject(wsId, ownerless.id);
+    expect(await repo.findProjectById(ownerless.id, wsId)).toBeNull();
+  });
+
+  it("covers app_index, app_index_heads, app_embeddings (1536-d pgvector), app_lifecycle, and commit status CAS", async () => {
+    const app1 = newDualId().oid;
+    const app2 = newDualId().oid;
+    const sha = "c".repeat(40);
+
+    await repo.replaceWorkspaceIndexEntries(
+      wsId,
+      [],
+      [
+        {
+          appId: app1,
+          path: "apps/rev",
+          slug: "rev",
+          scope: "workspace",
+          treeOid: "t1",
+          title: "Revenue",
+          hasManifestId: true,
+          schedules: [{ binding: "daily", cron: "0 * * * *" }],
+          tables: ["orders"],
+          bindings: ["daily"],
+          thumbnail: { file: "thumbnail.png", oid: "blob1" },
+          indexedSha: sha,
+        },
+        {
+          appId: app2,
+          path: "users/alice/apps/notes",
+          slug: "notes",
+          scope: "private",
+          ownerId: user1Uuid,
+          treeOid: "t2",
+          title: "Notes",
+          hasManifestId: false,
+          schedules: [],
+          indexedSha: sha,
+        },
+      ],
+    );
+    await repo.upsertIndexHead(wsId, {
+      sha,
+      schemaVersion: 7,
+      folders: ["apps/rev", "users/alice/apps"],
+    });
+
+    expect((await repo.findIndexHeadByWorkspace(wsId))?.folders).toEqual([
+      "apps/rev",
+      "users/alice/apps",
+    ]);
+    expect(await repo.listIndexEntriesByWorkspace(wsId)).toHaveLength(2);
+    expect(await repo.indexEntryExistsByAppId(app1)).toBe(true);
+    expect(await repo.listIndexEntriesWithSchedules()).toHaveLength(1);
+    expect(await repo.listDistinctWorkspaceIdsWithThumbnails()).toEqual([wsId]);
+    expect(await repo.listForeignIndexAppIds(ws2Id, [app1])).toEqual([app1]);
+
+    // 1536-dim pgvector embeddings
+    const vec = makeVector(3, 1536);
+    await repo.upsertEmbeddingsBatch(
+      wsId,
+      [
+        {
+          appId: app1,
+          path: "apps/rev",
+          treeOid: "t1",
+          docHash: "hash1",
+          embeddingModel: "text-embedding-3-small",
+          vector: vec,
+          terms: ["revenue", "orders"],
+        },
+      ],
+      [],
+    );
+    await repo.upsertEmbeddingsBatch(
+      wsId,
+      [],
+      [{ appId: app1, path: "apps/rev-renamed", treeOid: "t1b" }],
+    );
+    const embMeta = await repo.listEmbeddingsMetaByWorkspace(wsId);
+    expect(embMeta).toHaveLength(1);
+    expect(embMeta[0].path).toBe("apps/rev-renamed");
+    const embVecs = await repo.listEmbeddingsByWorkspaceAndModel(
+      wsId,
+      "text-embedding-3-small",
+    );
+    expect(embVecs[0].vector).toHaveLength(1536);
+    expect(embVecs[0].vector[5]).toBeCloseTo(vec[5], 4);
+    await repo.deleteEmbeddingsByAppIds(wsId, [app1]);
+    expect(await repo.listEmbeddingsMetaByWorkspace(wsId)).toHaveLength(0);
+
+    // Lifecycle
+    const t = new Date("2026-11-25T10:00:00.000Z");
+    await repo.upsertLifecyclePatch(wsId, app1, {
+      set: {
+        verifiedAt: t,
+        verifiedBy: user1Uuid,
+        staleSince: t,
+        schedulesPausedAt: t,
+        archivedAt: t,
+        archivedFrom: "apps/rev",
+        archivedTo: "archive/apps/rev",
+      },
+    });
+    expect(await repo.listVerifiedAppIds(wsId)).toEqual([app1]);
+    expect(await repo.listPausedScheduleAppIds()).toEqual([app1]);
+    expect(
+      await repo.listLifecycleByArchivedTo(wsId, ["archive/apps/rev"]),
+    ).toEqual([{ archivedTo: "archive/apps/rev", archivedFrom: "apps/rev" }]);
+
+    await repo.clearStaleAndPausedOnOpen(wsId, app1);
+    expect(await repo.listPausedScheduleAppIds()).toEqual([]);
+
+    await repo.markAppRestored(wsId, app1, t, user1Uuid);
+    const lc = (await repo.listLifecycleByWorkspace(wsId))[0];
+    expect(lc.restoredBy).toBe(user1Uuid);
+    expect(lc.archivedAt).toBeUndefined();
+
+    // Commit status CAS: only 1 winner!
+    await repo.upsertCommitStatus(wsId, app1, sha, "pending");
+    expect(
+      await repo.listPendingCommitStatusesExcludingSha(
+        wsId,
+        app1,
+        "d".repeat(40),
+      ),
+    ).toEqual([sha]);
+    const [win1, win2] = await Promise.all([
+      repo.casResolvePendingCommitStatus(wsId, app1, sha, "superseded"),
+      repo.casResolvePendingCommitStatus(wsId, app1, sha, "success"),
+    ]);
+    expect([win1, win2].filter(Boolean)).toHaveLength(1);
+  });
+
+  it("covers app_worktrees (real users + system actors), atomic claimPublicBindingRefresh, drafts & jobs", async () => {
+    const now = new Date("2026-11-25T10:00:00.000Z");
+
+    // Real user + system actors ("publish", "api-key")
+    const userWt = await repo.ensureWorktreeRow(wsId, user1Uuid, "main");
+    const pubWt = await repo.ensureWorktreeRow(wsId, "publish", "main");
+    const keyWt = await repo.ensureWorktreeRow(wsId, "api-key", "main");
+    expect(userWt.userId).toBe(user1Uuid);
+    expect(pubWt.userId).toBe("publish");
+    expect(keyWt.userId).toBe("api-key");
+
+    await repo.updateWorktreeBranch(wsId, user1Uuid, "feat/charts");
+    const beforeActivity = await repo.findWorktree(wsId, user1Uuid);
+    expect(beforeActivity).not.toBeNull();
+    if (!beforeActivity) {
+      throw new Error("Expected worktree before activity");
+    }
+    expect(beforeActivity.branch).toBe("feat/charts");
+
+    // Activity bump must preserve updatedAt and use GREATEST
+    await repo.bumpWorktreeActivity(
+      wsId,
+      user1Uuid,
+      now,
+      new Date(now.getTime() + 60_000),
+    );
+    const afterActivity = await repo.findWorktree(wsId, user1Uuid);
+    expect(afterActivity).not.toBeNull();
+    if (!afterActivity) throw new Error("Expected worktree after activity");
+    expect(afterActivity.updatedAt.getTime()).toBe(
+      beforeActivity.updatedAt.getTime(),
+    );
+    expect(afterActivity.lastActivityAt?.toISOString()).toBe(now.toISOString());
+
+    // Pause history capped to latest 5
+    for (let i = 1; i <= 7; i++) {
+      await repo.recordWorktreePause(
+        wsId,
+        user1Uuid,
+        new Date(now.getTime() + i * 1000),
+      );
+    }
+    const pauseHist = await repo.getWorktreePauseHistory(wsId, user1Uuid);
+    expect(pauseHist.pausedAt).toHaveLength(5);
+
+    await repo.holdWorktreePausing(
+      wsId,
+      user1Uuid,
+      new Date(now.getTime() + 1_800_000),
+      now,
+    );
+    expect(
+      (await repo.getWorktreePauseHistory(wsId, user1Uuid)).holdUntil,
+    ).not.toBeNull();
+
+    const actList = await repo.listWorktreesActivity([
+      { workspaceId: wsId, actorId: user1Uuid },
+      { workspaceId: wsId, actorId: "publish" },
+    ]);
+    expect(actList).toHaveLength(2);
+
+    // Binding state: history capped to 20 newest-first + atomic cooldown claim
+    const projId = newDualId().oid;
+    for (let i = 1; i <= 25; i++) {
+      await repo.recordBindingRun(
+        projId,
+        "sales",
+        {
+          at: new Date(now.getTime() + i * 1000),
+          status: "ready",
+          rowCount: i,
+          durationMs: 100,
+          artifactKey: `apps/bindings/k${i}.parquet`,
+        },
+        wsId,
+      );
+    }
+    const state = await repo.getBindingState(projId, "sales", wsId);
+    expect(state?.lastRowCount).toBe(25);
+    expect(state?.history).toHaveLength(20);
+    expect(state?.history?.[0].rowCount).toBe(25);
+
+    const summary = await repo.listBindingStatesByProjects(wsId, [projId]);
+    expect(summary).toHaveLength(1);
+    expect(summary[0].history).toHaveLength(1);
+
+    const claim1 = await repo.claimPublicBindingRefresh(
+      projId,
+      "orders",
+      300_000,
+      now,
+      wsId,
+    );
+    expect(claim1).toEqual({ claimed: true });
+    const claim2 = await repo.claimPublicBindingRefresh(
+      projId,
+      "orders",
+      300_000,
+      new Date(now.getTime() + 60_000),
+      wsId,
+    );
+    expect(claim2.claimed).toBe(false);
+    if (!claim2.claimed) {
+      expect(claim2.retryAfterMs).toBeGreaterThanOrEqual(200_000);
+    }
+    const claim3 = await repo.claimPublicBindingRefresh(
+      projId,
+      "orders",
+      300_000,
+      new Date(now.getTime() + 301_000),
+      wsId,
+    );
+    expect(claim3).toEqual({ claimed: true });
+
+    // Binding drafts (app-pruned)
+    const draft = await repo.createDraftBuild(
+      {
+        projectId: projId,
+        hash: "h1",
+        name: "sales",
+        key: `apps/drafts/${projId}/h1-1.parquet`,
+        builtAt: now,
+        rowCount: 10,
+        byteSize: 512,
+        expiresAt: new Date(now.getTime() + 600_000),
+      },
+      wsId,
+    );
+    expect((await repo.findActiveDraftBuild(projId, "h1", now, wsId))?.id).toBe(
+      draft.id,
+    );
+    await repo.upsertDraftFailure(
+      {
+        projectId: projId,
+        hash: "h2",
+        name: "broken",
+        failures: 2,
+        until: new Date(now.getTime() + 120_000),
+        error: "syntax error",
+        expiresAt: new Date(now.getTime() + 600_000),
+      },
+      wsId,
+    );
+    expect((await repo.findDraftFailure(projId, "h2", wsId))?.failures).toBe(2);
+    const expiredDrafts = await repo.listExpiredDrafts(
+      projId,
+      new Date(now.getTime() + 700_000),
+      100,
+      wsId,
+    );
+    expect(expiredDrafts).toHaveLength(2);
+    await repo.deleteDraftsByIds(
+      projId,
+      expiredDrafts.map(d => d.id),
+      wsId,
+    );
+    expect(
+      await repo.listExpiredDrafts(
+        projId,
+        new Date(now.getTime() + 700_000),
+        100,
+        wsId,
+      ),
+    ).toHaveLength(0);
+
+    // Binding jobs (app-pruned + stale CAS)
+    const job = await repo.createBindingJob({
+      workspaceId: wsId,
+      projectId: projId,
+      name: "sales",
+      kind: "materialize",
+      actorId: user1Uuid,
+      userId: user1Uuid,
+      canWrite: true,
+      request: { refresh: true },
+      expiresAt: new Date(now.getTime() + 3_600_000),
+    });
+    await repo.markBindingJob(
+      job.id,
+      { status: "running" },
+      new Date(now.getTime() + 3_600_000),
+      now,
+      wsId,
+    );
+    await repo.updateBindingJobProgress(
+      job.id,
+      { phase: "querying", rowsWritten: 100, at: now },
+      wsId,
+    );
+    expect(
+      (await repo.findBindingJobById(job.id, projId, wsId))?.progress?.phase,
+    ).toBe("querying");
+
+    const staleList = await repo.listStaleRunningBindingJobs(
+      new Date(now.getTime() + 60_000),
+      100,
+    );
+    expect(staleList.map(j => j.id)).toContain(job.id);
+    const failed = await repo.casFailStaleBindingJob(
+      job.id,
+      new Date(now.getTime() + 60_000),
+      "worker died",
+      502,
+      new Date(now.getTime() + 100_000),
+      wsId,
+    );
+    expect(failed?.status).toBe("error");
+
+    const expJobs = await repo.listExpiredFinishedBindingJobs(
+      projId,
+      new Date(now.getTime() + 200_000),
+      100,
+      wsId,
+    );
+    expect(expJobs.map(j => j.id)).toEqual([job.id]);
+    await repo.deleteBindingJobsByIds(projId, [job.id], wsId);
+    expect(await repo.findBindingJobById(job.id, projId, wsId)).toBeNull();
+  });
 
   it("cascades personal app_worktrees on DELETE FROM users while keeping system actors intact", async () => {
-    const pgRepo = new PgAppsMetadataRepository({ getDb: () => db });
+    const pgRepo = new PgAppsMetadataRepository({ getDb: () => h.db });
     await pgRepo.ensureWorktreeRow(wsId, user2Uuid, "main");
     await pgRepo.ensureWorktreeRow(wsId, "publish", "main");
 
-    await db.delete(pgSchema.users).where(eq(pgSchema.users.id, user2Uuid));
+    await h.db.delete(pgSchema.users).where(eq(pgSchema.users.id, user2Uuid));
 
     expect(await pgRepo.findWorktree(wsId, user2Uuid)).toBeNull();
     expect(await pgRepo.findWorktree(wsId, "publish")).not.toBeNull();
   });
 
-  // ── 3. Blob-safe expiry invariant: ZERO TTL rules for binding drafts/jobs
-
-  // ── 4. 5-stage dual-run + Stage 4->2 rollback + secret redaction ─────────
-
-  // ── 5. Backfill, tombstones, quarantine, parity verifier (--repair), sync-retry
-
-  // ── 6. Stage 3 legacy 15-char user-ID shadow-compare (0 mismatches & 0 critical-path PG calls)
-
-  // ── 7. Stage 5 per-workspace canary (ws1 = pg_only, global = mongo_only) ──
-
-  // ── 8. Stage 4->2 reverse-sync: $unset cleared fields + legacy_id mapping ──
-
-  // ── 9. Natural-key PK drift --repair, failure draft dedupe, guarded repair & missing-workspace safety
-
-  // ── 10. Cross-tenant delete scoping & exact tombstones ───────────────────
-
-  // ── 11. PR #1557 review hardening regressions ──────────────────────────────
-
   it("blocks cross-workspace app_index overwrite with 23505 (PR #1557 #4717230459)", async () => {
-    const pgRepo = new PgAppsMetadataRepository({ getDb: () => db });
+    const pgRepo = new PgAppsMetadataRepository({ getDb: () => h.db });
     const sharedAppId = newDualId().oid;
 
     await pgRepo.replaceWorkspaceIndexEntries(
@@ -856,14 +695,14 @@ describe("Phase 2B AppsMetadataRepository contract & migration lifecycle", () =>
   });
 
   it("refreshes updated_at on ensureWorktreeRow conflict so warm-boot sees active sandboxes (PR #1557 #4717231215)", async () => {
-    const pgRepo = new PgAppsMetadataRepository({ getDb: () => db });
+    const pgRepo = new PgAppsMetadataRepository({ getDb: () => h.db });
     const initial = await pgRepo.ensureWorktreeRow(wsId, user1Uuid, "main");
     expect(isUuidv7(initial.id)).toBe(true);
     const compat = toAppWorktreeCompat(initial);
     expect(String(compat._id)).toBe(initial.id);
     expect(String(compat.workspaceId)).toBe(wsId);
     const staleAt = new Date(Date.now() - 48 * 60 * 60 * 1000);
-    await db
+    await h.db
       .update(pgSchema.appWorktrees)
       .set({ updatedAt: staleAt })
       .where(eq(pgSchema.appWorktrees.id, initial.id));
@@ -883,7 +722,7 @@ describe("Phase 2B AppsMetadataRepository contract & migration lifecycle", () =>
   });
 
   it("applies targeted sharing patches on compat save() so concurrent edits never clobber (PR #1557 #4717291676)", async () => {
-    const pgRepo = new PgAppsMetadataRepository({ getDb: () => db });
+    const pgRepo = new PgAppsMetadataRepository({ getDb: () => h.db });
     const now = new Date("2026-11-26T10:00:00.000Z");
     const created = await pgRepo.createProject({
       workspaceId: wsId,
@@ -958,7 +797,7 @@ describe("Phase 2B AppsMetadataRepository contract & migration lifecycle", () =>
   });
 
   it("preserves raw legacy actor_id on app_binding_jobs while storing PG user_id FK (PR #1557 #4717293835)", async () => {
-    const pgRepo = new PgAppsMetadataRepository({ getDb: () => db });
+    const pgRepo = new PgAppsMetadataRepository({ getDb: () => h.db });
     const projId = newDualId().oid;
     const job = await pgRepo.createBindingJob({
       workspaceId: wsId,
@@ -979,7 +818,7 @@ describe("Phase 2B AppsMetadataRepository contract & migration lifecycle", () =>
   });
 
   it("rejects unresolved non-sentinel owners instead of silently storing NULL (PR #1557 #4717294515)", async () => {
-    const pgRepo = new PgAppsMetadataRepository({ getDb: () => db });
+    const pgRepo = new PgAppsMetadataRepository({ getDb: () => h.db });
     const missingUser = "luciaunbackfill";
 
     // Live runtime writes must throw when owner/createdBy is absent from PG users

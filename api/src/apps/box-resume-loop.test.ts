@@ -8,6 +8,7 @@
  */
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -135,17 +136,6 @@ vi.mock("./worktree/repo", async importOriginal => ({
   repoFor: vi.fn(async () => sdk.repoDir),
   repoForWorkspace: vi.fn(async () => sdk.repoDir),
 }));
-vi.mock("../database/workspace-schema", async importOriginal => ({
-  ...(await importOriginal<typeof import("../database/workspace-schema")>()),
-  AppWorktree: {
-    findOne: vi.fn(async () => ({
-      workspaceId: { toString: () => WS },
-      userId: USER,
-      branch: "main",
-      save: async () => undefined,
-    })),
-  },
-}));
 vi.mock("../workflows/recorded-writes", () => ({
   withRecordedWrites: vi.fn(
     async (_ws: string, _id: string, run: unknown) => run,
@@ -156,6 +146,7 @@ vi.mock("./box-agent", () => ({
   forgetBoxAgent: vi.fn(),
 }));
 
+import { appsMetadataRepo } from "../repositories/apps-metadata";
 import { getBoxState } from "./box-state.service";
 import { devServerStatus, discoverDevServers } from "./dev-server/status";
 import { sandboxStatsIfRunning, tailBoxLog } from "./sandbox-ops.service";
@@ -201,8 +192,20 @@ afterAll(async () => {
   await fs.rm(sdk.repoDir, { recursive: true, force: true });
 });
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.spyOn(appsMetadataRepo, "findWorktree").mockResolvedValue({
+    id: "6846e6a01b05af0948070bbb",
+    workspaceId: WS,
+    userId: USER,
+    branch: "main",
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+  });
   sdk.state = "paused";
   sdk.snapshot = "with-dev-server";
   process.env.E2B_API_KEY = "test-key";

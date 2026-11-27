@@ -1,29 +1,7 @@
-/**
- * Phase 3 (Part 1) `mcp` domain repository & migration contract test suite.
- *
- * Covers:
- *   - 0007_phase3_mcp schema constraints (4 tables, `UNIQUE NULLS NOT DISTINCT`
- *     for workspace-shared `user_id IS NULL` vs per-user configs, ON DELETE CASCADE).
- *   - `MongoMcpRepository`, `PgMcpRepository`, and `DualMcpRepository` across
- *     all 5 `MigrationMode` stages + instant Stage 4 -> Stage 2 rollback.
- *   - Opaque encrypted blob fidelity & redaction of all 4 encrypted fields in `shadow-compare`.
- *   - `mcp_oauth_flows` 10-minute read-time SQL guard, hourly TTL reaper, skipped backfill,
- *     and Stage 4 10m PG -> Mongo read-fallback for in-flight OAuth flows.
- *   - Resumable FK-ordered backfill (`mcp_servers` -> `mcp_connection_configs` -> `mcp_tool_grants`),
- *     orphan quarantine, delete tombstones, parity verifier, and `--repair`.
- */
 import type { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate as drizzlePgliteMigrate } from "drizzle-orm/pglite/migrator";
-import { MongoMemoryServer } from "mongodb-memory-server";
-import mongoose from "mongoose";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import {
-  McpConnectionConfig,
-  McpOAuthFlow,
-  McpServer,
-  McpToolGrant,
-} from "../../database/models/mcp";
 import {
   resetPgTestDb,
   setPgTestDb,
@@ -40,7 +18,6 @@ import { createTestPglite } from "../../database/pg/test-pglite";
 import { McpDuplicateServerNameError, PgMcpRepository } from "./index";
 
 describe("Phase 3 MCP repository & migration contract suite", () => {
-  let mongoServer: MongoMemoryServer;
   let pg: PGlite;
   let db: MakoPgDb;
   let pgRepo: PgMcpRepository;
@@ -51,13 +28,6 @@ describe("Phase 3 MCP repository & migration contract suite", () => {
   const wsUuid = objectIdToUuid(wsId);
 
   beforeAll(async () => {
-    mongoServer = await MongoMemoryServer.create();
-    await mongoose.connect(mongoServer.getUri(), { dbName: "mako_mcp_test" });
-    await McpServer.createIndexes();
-    await McpConnectionConfig.createIndexes();
-    await McpOAuthFlow.createIndexes();
-    await McpToolGrant.createIndexes();
-
     pg = createTestPglite();
     db = drizzle(pg, { schema }) as unknown as MakoPgDb;
     const migrationsFolder = resolveMigrationsFolder();
@@ -81,17 +51,9 @@ describe("Phase 3 MCP repository & migration contract suite", () => {
   afterAll(async () => {
     resetPgTestDb();
     await pg.close();
-    await mongoose.disconnect();
-    await mongoServer.stop();
   });
 
   beforeEach(async () => {
-    await Promise.all([
-      McpServer.deleteMany({}),
-      McpConnectionConfig.deleteMany({}),
-      McpOAuthFlow.deleteMany({}),
-      McpToolGrant.deleteMany({}),
-    ]);
     await pg.exec(`
       TRUNCATE mcp_tool_grants, mcp_oauth_flows, mcp_connection_configs, mcp_servers,
                migration_domain_state, migration_backfill_jobs, migration_tombstones, migration_quarantine

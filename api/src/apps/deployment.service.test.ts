@@ -1,5 +1,22 @@
 import { Readable } from "node:stream";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import {
+  appsMetadataRepo,
+  toAppProjectCompat,
+} from "../repositories/apps-metadata";
+import {
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 import type { ArtifactStore } from "../services/artifact-store.service";
 
 const stores = vi.hoisted(() => ({
@@ -50,13 +67,6 @@ vi.mock("./bindings.service", () => ({
     bindings: stores.bindings,
     skipped: stores.skipped,
   })),
-}));
-
-vi.mock("../database/workspace-schema", () => ({
-  AppProject: {
-    findById: vi.fn(async () => ({ _id: "project" })),
-    updateOne: vi.fn(),
-  },
 }));
 
 vi.mock("./app-viewer.service", () => ({
@@ -115,7 +125,32 @@ import {
   readBindingsTolerant,
   type AppBinding,
 } from "./bindings.service";
-import { AppProject } from "../database/workspace-schema";
+const projectId = "6a9411eb4c8b33609a65e665";
+const workspaceId = "6a9411eb4c8b33609a65e666";
+const originalSha = "2".repeat(40);
+let pg: PgTestDb;
+let project: ReturnType<typeof toAppProjectCompat>;
+
+beforeAll(async () => {
+  pg = await setupPgTestDb();
+});
+
+beforeEach(async () => {
+  await pg.reset();
+  await ensureTestWorkspace(pg.db, { id: workspaceId });
+  const row = await appsMetadataRepo.createProject({
+    id: projectId,
+    workspaceId,
+    title: "Sales",
+    slug: "sales",
+    publishedSha: originalSha,
+  });
+  project = toAppProjectCompat(row);
+});
+
+afterAll(async () => {
+  await pg.close();
+});
 
 function mockStore(
   existingKeys: string[],
@@ -141,7 +176,6 @@ function mockStore(
 }
 
 describe("published deployment artifact source", () => {
-  const projectId = "6a9411eb4c8b33609a65e665";
   const sha = "38ce8e7b28e8ace0c1d83bdacb95e28df3d5175b";
   const indexKey = deploymentKey(projectId, sha, "index.html");
 
@@ -282,9 +316,6 @@ describe("published deployment artifact source", () => {
 });
 
 describe("deployment binding index", () => {
-  const projectId = "6a9411eb4c8b33609a65e665";
-  const project = { _id: { toString: () => projectId } } as never;
-
   beforeEach(() => {
     stores.primary = mockStore([]);
     stores.source = undefined;
@@ -445,9 +476,6 @@ describe("deployment binding index", () => {
 
 describe("deployment binding readiness", () => {
   const sha = "38ce8e7b28e8ace0c1d83bdacb95e28df3d5175b";
-  const project = {
-    _id: { toString: () => "6a9411eb4c8b33609a65e665" },
-  } as never;
 
   beforeEach(() => {
     stores.primary = mockStore([]);
@@ -599,20 +627,28 @@ describe("deployment binding readiness", () => {
     it("reports every binding as prepared when the builds finish", async () => {
       seedRelease();
       trackBuilds();
+      const progress = vi.spyOn(
+        appsMetadataRepo,
+        "updateDeployProgressBindings",
+      );
+      try {
+        await ensureDeploymentBindings(project, sha, { now: startedAt });
 
-      await ensureDeploymentBindings(project, sha, { now: startedAt });
-
-      const progress = vi
-        .mocked(AppProject.updateOne)
-        .mock.calls.map(
-          call =>
-            (call[1] as { $set?: Record<string, unknown> }).$set?.[
-              "deployProgress.bindings"
-            ] as { prepared: number; total: number } | undefined,
-        )
-        .filter(Boolean);
-      expect(progress[0]).toEqual({ total: 134, prepared: 0 });
-      expect(progress.at(-1)).toEqual({ total: 134, prepared: 134 });
+        expect(progress.mock.calls[0]?.[3]).toEqual({
+          total: 134,
+          prepared: 0,
+        });
+        const row = await appsMetadataRepo.findProjectById(
+          projectId,
+          workspaceId,
+        );
+        expect(row?.deployProgress?.bindings).toEqual({
+          total: 134,
+          prepared: 134,
+        });
+      } finally {
+        progress.mockRestore();
+      }
     });
 
     it("a failed build blocks the release, names the binding and starts nothing new", async () => {
@@ -640,9 +676,6 @@ describe("deployment binding readiness", () => {
     });
 
     it("a refresh that cannot be queued does not stop the repoint", async () => {
-      vi.mocked(AppProject.updateOne).mockResolvedValueOnce({
-        matchedCount: 1,
-      } as never);
       refreshes.send.mockRejectedValueOnce(new Error("inngest down"));
 
       await expect(
@@ -651,12 +684,13 @@ describe("deployment binding readiness", () => {
     });
 
     it("the repoint queues the refreshes once the release is live", async () => {
-      vi.mocked(AppProject.updateOne).mockResolvedValueOnce({
-        matchedCount: 1,
-      } as never);
-
       await setPublishedSha(project, sha, { refreshing: ["old_0", "old_1"] });
 
+      const row = await appsMetadataRepo.findProjectById(
+        projectId,
+        workspaceId,
+      );
+      expect(row?.publishedSha).toBe(sha);
       expect(refreshes.send).toHaveBeenCalledWith(project, sha, [
         "old_0",
         "old_1",
@@ -664,10 +698,6 @@ describe("deployment binding readiness", () => {
     });
 
     it("a conditional repoint that lost queues nothing and says so", async () => {
-      vi.mocked(AppProject.updateOne).mockResolvedValueOnce({
-        matchedCount: 0,
-      } as never);
-
       await expect(
         setPublishedSha(project, sha, {
           expected: "1".repeat(40),
@@ -675,9 +705,11 @@ describe("deployment binding readiness", () => {
         }),
       ).resolves.toBe(false);
 
-      expect(vi.mocked(AppProject.updateOne).mock.calls[0][0]).toMatchObject({
-        publishedSha: "1".repeat(40),
-      });
+      const row = await appsMetadataRepo.findProjectById(
+        projectId,
+        workspaceId,
+      );
+      expect(row?.publishedSha).toBe(originalSha);
       expect(refreshes.send).not.toHaveBeenCalled();
     });
   });

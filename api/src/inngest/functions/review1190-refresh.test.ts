@@ -2,12 +2,12 @@
  * Review of PR #1190: after-publish refresh and the reconcile's in-flight test.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { appsMetadataRepo } from "../../repositories/apps-metadata";
 
 const state = vi.hoisted(() => ({
   publishedSha: "c".repeat(40),
   rows: [] as Array<Record<string, unknown>>,
   sent: [] as unknown[],
-  updates: [] as unknown[],
   bindingState: null as null | { history: Array<{ at: Date; status: string }> },
   buildError: null as Error | null,
 }));
@@ -22,18 +22,18 @@ vi.mock("../client", () => ({
     }),
   },
 }));
-vi.mock("../../database/workspace-schema", () => ({
-  AppIndexEntry: {},
-  AppProject: {
-    findById: vi.fn(async () => ({
-      _id: "app",
+vi.mock("../../repositories/apps-metadata", async () => ({
+  toAppProjectCompat: (await import("../../repositories/apps-metadata/mapper"))
+    .toAppProjectCompat,
+  appsMetadataRepo: {
+    findProjectById: vi.fn(async () => ({
+      id: "app",
       workspaceId: "ws",
       publishedSha: state.publishedSha,
     })),
-    find: vi.fn(() => ({ select: () => ({ lean: async () => state.rows }) })),
-    updateOne: vi.fn(async (...args: unknown[]) => {
-      state.updates.push(args);
-    }),
+    setBindingRefreshError: vi.fn(),
+    clearBindingRefreshError: vi.fn(),
+    listPublishedProjects: vi.fn(async () => state.rows),
   },
 }));
 vi.mock("../../apps/app-index.service", () => ({ loadAppsIndex: vi.fn() }));
@@ -105,7 +105,6 @@ beforeEach(() => {
   state.publishedSha = LIVE;
   state.rows = [];
   state.sent = [];
-  state.updates = [];
   state.bindingState = null;
   state.buildError = null;
 });
@@ -117,10 +116,9 @@ describe("stale-served binding whose rebuild fails", () => {
     const result = await runBindingMaterializeEvent(after(LIVE));
 
     expect(result).toEqual({ ok: false }); // this much holds
-    // No deploy failure, no row write, no retry (retries: 0).
     const surfaced =
       vi.mocked(recordDeployFailure).mock.calls.length > 0 ||
-      state.updates.length > 0;
+      vi.mocked(appsMetadataRepo.setBindingRefreshError).mock.calls.length > 0;
     expect(surfaced).toBe(true);
   });
 });
@@ -172,7 +170,7 @@ describe("reconcile while main moved under a walk", () => {
     const now = new Date();
     state.rows = [
       {
-        _id: "app",
+        id: "app",
         workspaceId: "ws",
         path: "apps/web-performance",
         publishedSha: OLD,

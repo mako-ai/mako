@@ -6,8 +6,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
-  project: { _id: "app", workspaceId: "ws", publishedSha: "" } as {
-    _id: string;
+  project: { id: "app", workspaceId: "ws", publishedSha: "" } as {
+    id: string;
     workspaceId: string;
     publishedSha: string;
   } | null,
@@ -24,11 +24,14 @@ const state = vi.hoisted(() => ({
 vi.mock("../client", () => ({
   inngest: { createFunction: vi.fn(() => ({})), send: vi.fn(async () => ({})) },
 }));
-vi.mock("../../database/workspace-schema", () => ({
-  AppIndexEntry: {},
-  AppProject: {
-    findById: vi.fn(async () => state.project),
-    updateOne: vi.fn(async () => ({ matchedCount: 1 })),
+vi.mock("../../repositories/apps-metadata", async importOriginal => ({
+  ...(await importOriginal<
+    typeof import("../../repositories/apps-metadata")
+  >()),
+  appsMetadataRepo: {
+    findProjectById: vi.fn(async () => state.project),
+    setBindingRefreshError: vi.fn(),
+    clearBindingRefreshError: vi.fn(),
   },
 }));
 vi.mock("../../apps/app-index.service", () => ({ loadAppsIndex: vi.fn() }));
@@ -46,7 +49,7 @@ vi.mock("../../apps/bindings.service", () => ({
 }));
 
 import { inngest } from "../client";
-import { AppProject } from "../../database/workspace-schema";
+import { appsMetadataRepo } from "../../repositories/apps-metadata";
 import {
   materializeAppBinding,
   readCommittedBinding,
@@ -69,7 +72,7 @@ const scheduled = {
 const afterPublish = { ...scheduled, at: sha, afterPublish: true };
 
 beforeEach(() => {
-  state.project = { _id: "app", workspaceId: "ws", publishedSha: sha };
+  state.project = { id: "app", workspaceId: "ws", publishedSha: sha };
   state.binding = {
     name: "sales",
     connectionId: "warehouse",
@@ -90,7 +93,7 @@ describe("runBindingMaterializeEvent", () => {
 
     expect(readCommittedBinding).toHaveBeenCalledTimes(1);
     expect(materializeAppBinding).toHaveBeenCalledWith(
-      expect.objectContaining(state.project),
+      expect.objectContaining({ ...state.project, _id: "app" }),
       "sales",
       "scheduler",
       { at: undefined, binding: state.binding },
@@ -131,13 +134,13 @@ describe("runBindingMaterializeEvent", () => {
     });
 
     expect(readCommittedBinding).toHaveBeenCalledWith(
-      expect.objectContaining(state.project),
+      expect.objectContaining({ ...state.project, _id: "app" }),
       "sales",
       undefined,
       sha,
     );
     expect(materializeAppBinding).toHaveBeenCalledWith(
-      expect.objectContaining(state.project),
+      expect.objectContaining({ ...state.project, _id: "app" }),
       "sales",
       "publish",
       { at: sha, binding: state.binding },
@@ -168,14 +171,12 @@ describe("runBindingMaterializeEvent", () => {
       ok: false,
     });
 
-    const update = vi.mocked(AppProject.updateOne).mock.calls[0][1] as {
-      $set: Record<string, { sha: string; message: string; attempts: number }>;
-    };
-    expect(update.$set["bindingRefreshErrors.sales"]).toMatchObject({
-      sha,
-      message: "boom",
-      attempts: 1,
-    });
+    expect(appsMetadataRepo.setBindingRefreshError).toHaveBeenCalledWith(
+      "ws",
+      "app",
+      "sales",
+      expect.objectContaining({ sha, message: "boom", attempts: 1 }),
+    );
     const retry = vi.mocked(inngest.send).mock.calls[0][0] as {
       ts: number;
       data: { attempt: number };
@@ -193,7 +194,7 @@ describe("runBindingMaterializeEvent", () => {
     });
 
     expect(inngest.send).not.toHaveBeenCalled();
-    expect(AppProject.updateOne).toHaveBeenCalledTimes(1);
+    expect(appsMetadataRepo.setBindingRefreshError).toHaveBeenCalledTimes(1);
   });
 
   it("a read error is a failure to retry, not a binding that is gone", async () => {
@@ -210,14 +211,16 @@ describe("runBindingMaterializeEvent", () => {
   it("a success clears the binding's recorded failure", async () => {
     await runBindingMaterializeEvent(afterPublish);
 
-    expect(vi.mocked(AppProject.updateOne).mock.calls[0][1]).toEqual({
-      $unset: { "bindingRefreshErrors.sales": 1 },
-    });
+    expect(appsMetadataRepo.clearBindingRefreshError).toHaveBeenCalledWith(
+      "ws",
+      "app",
+      "sales",
+    );
   });
 
   it("stands down when its commit is no longer live", async () => {
     state.project = {
-      _id: "app",
+      id: "app",
       workspaceId: "ws",
       publishedSha: "e".repeat(40),
     };

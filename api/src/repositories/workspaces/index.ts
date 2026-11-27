@@ -1,22 +1,14 @@
 /**
  * Workspaces core & GitHub installations repository entry point (Neon Postgres `pg_only`).
  */
-import { createPgFirstRepoProxy } from "../resolve-repo";
-import { MongoWorkspaceRepository } from "./mongo.repo";
 import { PgWorkspaceRepository } from "./pg.repo";
 import type { WorkspaceRepository } from "./types";
 
 export * from "./types";
 export * from "./mapper";
-export { MongoWorkspaceRepository } from "./mongo.repo";
 export { PgWorkspaceRepository } from "./pg.repo";
 
-const defaultWorkspaceRepo: WorkspaceRepository =
-  createPgFirstRepoProxy<WorkspaceRepository>(
-    "workspaces_core",
-    new PgWorkspaceRepository(),
-    new MongoWorkspaceRepository(),
-  );
+const defaultWorkspaceRepo: WorkspaceRepository = new PgWorkspaceRepository();
 let activeWorkspaceRepo: WorkspaceRepository = defaultWorkspaceRepo;
 
 export function getWorkspaceRepoInstance(): WorkspaceRepository {

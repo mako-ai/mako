@@ -2,13 +2,11 @@
  * Second review of PR #1190: bindingRefreshErrors writes and clears, dedupe ids.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { appsMetadataRepo } from "../../repositories/apps-metadata";
 
 const state = vi.hoisted(() => ({
   publishedSha: "c".repeat(40),
   sent: [] as Array<Record<string, unknown>>,
-  updates: [] as Array<
-    [Record<string, unknown>, Record<string, Record<string, unknown>>]
-  >,
   bindingState: null as null | { history: Array<{ at: Date; status: string }> },
   buildError: null as Error | null,
   artifactReady: false,
@@ -26,22 +24,17 @@ vi.mock("../client", () => ({
     ),
   },
 }));
-vi.mock("../../database/workspace-schema", () => ({
-  AppIndexEntry: {},
-  AppProject: {
-    findById: vi.fn(async () => ({
-      _id: "app",
+vi.mock("../../repositories/apps-metadata", async () => ({
+  toAppProjectCompat: (await import("../../repositories/apps-metadata/mapper"))
+    .toAppProjectCompat,
+  appsMetadataRepo: {
+    findProjectById: vi.fn(async () => ({
+      id: "app",
       workspaceId: "ws",
       publishedSha: state.publishedSha,
     })),
-    updateOne: vi.fn(
-      async (
-        filter: Record<string, unknown>,
-        update: Record<string, Record<string, unknown>>,
-      ) => {
-        state.updates.push([filter, update]);
-      },
-    ),
+    setBindingRefreshError: vi.fn(),
+    clearBindingRefreshError: vi.fn(),
   },
 }));
 vi.mock("../../apps/app-index.service", () => ({ loadAppsIndex: vi.fn() }));
@@ -84,20 +77,10 @@ const after = (attempt = 1) => ({
   afterPublish: true,
   attempt,
 });
-const unsets = () =>
-  state.updates
-    .filter(([, update]) => update.$unset)
-    .map(([, update]) => update.$unset);
-const sets = () =>
-  state.updates
-    .filter(([, update]) => update.$set)
-    .map(([, update]) => update.$set);
-
 beforeEach(() => {
   vi.clearAllMocks();
   state.publishedSha = LIVE;
   state.sent = [];
-  state.updates = [];
   state.bindingState = null;
   state.buildError = null;
   state.artifactReady = false;
@@ -107,7 +90,17 @@ describe("bindingRefreshErrors writes", () => {
   it("HELD: a failed refresh records the entry and queues one delayed retry", async () => {
     state.buildError = new Error("Unrecognized name: x");
     await runBindingMaterializeEvent(after(1));
-    expect(sets()[0]).toHaveProperty("bindingRefreshErrors.sales");
+    expect(appsMetadataRepo.setBindingRefreshError).toHaveBeenCalledWith(
+      "ws",
+      "app",
+      "sales",
+      {
+        sha: LIVE,
+        message: "Unrecognized name: x",
+        attempts: 1,
+        at: expect.any(Date),
+      },
+    );
     expect(state.sent).toHaveLength(1);
     expect(state.sent[0].ts as number).toBeGreaterThan(Date.now() + 5 * 60_000);
     expect((state.sent[0].data as { attempt: number }).attempt).toBe(2);
@@ -116,7 +109,7 @@ describe("bindingRefreshErrors writes", () => {
   it("HELD: attempt 3 records and stops", async () => {
     state.buildError = new Error("Unrecognized name: x");
     await runBindingMaterializeEvent(after(3));
-    expect(sets()).toHaveLength(1);
+    expect(appsMetadataRepo.setBindingRefreshError).toHaveBeenCalledTimes(1);
     expect(state.sent).toHaveLength(0);
   });
 });
@@ -130,7 +123,7 @@ describe("bindingRefreshErrors clears", () => {
       state.publishedSha = "a".repeat(40);
       const result = await runBindingMaterializeEvent(scheduled);
       expect(result).toMatchObject({ ok: true });
-      expect(unsets()).toHaveLength(0);
+      expect(appsMetadataRepo.clearBindingRefreshError).not.toHaveBeenCalled();
     },
   );
 
@@ -141,7 +134,9 @@ describe("bindingRefreshErrors clears", () => {
       state.artifactReady = true;
       const result = await runBindingMaterializeEvent(after(2));
       expect(result).toEqual({ skipped: "not-due" });
-      expect(unsets()).toHaveLength(1);
+      expect(
+        vi.mocked(appsMetadataRepo.clearBindingRefreshError).mock.calls,
+      ).toEqual([["ws", "app", "sales"]]);
     },
   );
 });

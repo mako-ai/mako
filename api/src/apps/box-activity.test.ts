@@ -4,11 +4,17 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const db = vi.hoisted(() => ({
-  updateOne: vi.fn(async () => ({ acknowledged: true })),
-  find: vi.fn(),
+import type { AppsMetadataRepository } from "../repositories/apps-metadata";
+
+const appsMetadataRepo = vi.hoisted(() => ({
+  bumpWorktreeActivity: vi.fn(async () => undefined),
+  listWorktreesActivity:
+    vi.fn<AppsMetadataRepository["listWorktreesActivity"]>(),
 }));
-vi.mock("../database/workspace-schema", () => ({ AppWorktree: db }));
+vi.mock("../repositories/apps-metadata", async importOriginal => ({
+  ...(await importOriginal<typeof import("../repositories/apps-metadata")>()),
+  appsMetadataRepo,
+}));
 
 const provider = vi.hoisted(() => ({
   id: "e2b",
@@ -43,7 +49,8 @@ import { tailBoxLog } from "./sandbox-ops.service";
 import { discoverDevServers } from "./dev-server/status";
 
 const WS = "6846e6a01b05af0948070582";
-const KEY = `${WS}:6846e6a01b05af0948070999`;
+const USER = "6846e6a01b05af0948070999";
+const KEY = `${WS}:${USER}`;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -68,26 +75,23 @@ describe("parseSessionKey", () => {
 });
 
 describe("recordBoxActivity", () => {
-  it("moves lastActivityAt forward without touching updatedAt", async () => {
+  it("records the activity timestamp for the workspace and actor", async () => {
     await recordBoxActivity(KEY, "edit", { now: 1_000_000 });
-    expect(db.updateOne).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: "6846e6a01b05af0948070999" }),
-      { $max: { lastActivityAt: new Date(1_000_000) } },
-      { timestamps: false },
+    expect(appsMetadataRepo.bumpWorktreeActivity).toHaveBeenCalledWith(
+      WS,
+      USER,
+      new Date(1_000_000),
+      undefined,
     );
   });
 
   it("records a hold for long work", async () => {
     await recordBoxActivity(KEY, "agent-exec", { now: 0, holdMs: 600_000 });
-    expect(db.updateOne).toHaveBeenCalledWith(
-      expect.anything(),
-      {
-        $max: {
-          lastActivityAt: new Date(0),
-          activeUntil: new Date(600_000),
-        },
-      },
-      { timestamps: false },
+    expect(appsMetadataRepo.bumpWorktreeActivity).toHaveBeenCalledWith(
+      WS,
+      USER,
+      new Date(0),
+      new Date(600_000),
     );
   });
 
@@ -95,19 +99,21 @@ describe("recordBoxActivity", () => {
     await recordBoxActivity(KEY, "agent-exec", { now: 0 });
     await recordBoxActivity(KEY, "agent-exec", { now: 5_000 });
     await recordBoxActivity(KEY, "edit", { now: 20_000 });
-    expect(db.updateOne).toHaveBeenCalledTimes(1);
+    expect(appsMetadataRepo.bumpWorktreeActivity).toHaveBeenCalledTimes(1);
     await recordBoxActivity(KEY, "edit", { now: 31_000 });
-    expect(db.updateOne).toHaveBeenCalledTimes(2);
+    expect(appsMetadataRepo.bumpWorktreeActivity).toHaveBeenCalledTimes(2);
   });
 
   it("writes inside the throttle when a longer hold arrives", async () => {
     await recordBoxActivity(KEY, "edit", { now: 0 });
     await recordBoxActivity(KEY, "agent-exec", { now: 1_000, holdMs: 120_000 });
-    expect(db.updateOne).toHaveBeenCalledTimes(2);
+    expect(appsMetadataRepo.bumpWorktreeActivity).toHaveBeenCalledTimes(2);
   });
 
   it("never throws when the database does", async () => {
-    db.updateOne.mockRejectedValueOnce(new Error("down"));
+    appsMetadataRepo.bumpWorktreeActivity.mockRejectedValueOnce(
+      new Error("down"),
+    );
     await expect(recordBoxActivity(KEY, "edit")).resolves.toBeUndefined();
   });
 });
@@ -145,11 +151,11 @@ describe("shared throttle (Redis)", () => {
     // A second process: its own in-process throttle is empty.
     resetBoxActivityThrottleForTests();
     await recordBoxActivity(KEY, "read", { now: 1_000 });
-    expect(db.updateOne).toHaveBeenCalledTimes(1);
+    expect(appsMetadataRepo.bumpWorktreeActivity).toHaveBeenCalledTimes(1);
     redis.tick(30_000);
     resetBoxActivityThrottleForTests();
     await recordBoxActivity(KEY, "read", { now: 31_000 });
-    expect(db.updateOne).toHaveBeenCalledTimes(2);
+    expect(appsMetadataRepo.bumpWorktreeActivity).toHaveBeenCalledTimes(2);
   });
 
   it("a hold always goes through the shared throttle", async () => {
@@ -157,7 +163,7 @@ describe("shared throttle (Redis)", () => {
     await recordBoxActivity(KEY, "read", { now: 0 });
     resetBoxActivityThrottleForTests();
     await recordBoxActivity(KEY, "agent-exec", { now: 1_000, holdMs: 120_000 });
-    expect(db.updateOne).toHaveBeenCalledTimes(2);
+    expect(appsMetadataRepo.bumpWorktreeActivity).toHaveBeenCalledTimes(2);
   });
 
   it("Redis down: the write still happens", async () => {
@@ -167,7 +173,7 @@ describe("shared throttle (Redis)", () => {
       }),
     } as never);
     await recordBoxActivity(KEY, "read", { now: 0 });
-    expect(db.updateOne).toHaveBeenCalledTimes(1);
+    expect(appsMetadataRepo.bumpWorktreeActivity).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -202,16 +208,19 @@ describe("resume caller", () => {
 
 describe("getBoxActivity", () => {
   it("marks keys without a row as unknown", async () => {
-    db.find.mockReturnValue({
-      lean: async () => [
-        {
-          workspaceId: { toString: () => WS },
-          userId: "6846e6a01b05af0948070999",
-          lastActivityAt: new Date(5),
-        },
-      ],
-    });
+    appsMetadataRepo.listWorktreesActivity.mockResolvedValueOnce([
+      {
+        workspaceId: WS,
+        userId: USER,
+        lastActivityAt: new Date(5),
+        activeUntil: null,
+      },
+    ]);
     const out = await getBoxActivity([KEY, `${WS}:someone-else`]);
+    expect(appsMetadataRepo.listWorktreesActivity).toHaveBeenCalledWith([
+      { workspaceId: WS, actorId: USER },
+      { workspaceId: WS, actorId: "someone-else" },
+    ]);
     expect(out.get(KEY)).toEqual({
       known: true,
       lastActivityAt: new Date(5),
@@ -229,7 +238,7 @@ describe("polls never wake a paused box", () => {
       chunk: "",
     });
     expect(provider.exec).not.toHaveBeenCalled();
-    expect(db.updateOne).not.toHaveBeenCalled();
+    expect(appsMetadataRepo.bumpWorktreeActivity).not.toHaveBeenCalled();
   });
 
   it("dev-server discovery answers empty without an exec", async () => {
@@ -243,6 +252,6 @@ describe("polls never wake a paused box", () => {
     const tail = await tailBoxLog({ sessionKey: KEY }, "/tmp/x.log", 0);
     expect(tail).toEqual({ size: 12, chunk: "hello" });
     expect(provider.exec).toHaveBeenCalledTimes(1);
-    expect(db.updateOne).not.toHaveBeenCalled();
+    expect(appsMetadataRepo.bumpWorktreeActivity).not.toHaveBeenCalled();
   });
 });
