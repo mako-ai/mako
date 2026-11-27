@@ -6,8 +6,8 @@
  * mongoose threw Cast to ObjectId and the route mapped it to 500 with the
  * CastError message in the body.
  *
- * Real routes + real Mongo (mongodb-memory-server); auth and workspace
- * access are mocked.
+ * Real routes + real Postgres (PGlite, test-support/pg-test.ts); auth and
+ * workspace access are mocked.
  */
 import {
   afterAll,
@@ -19,8 +19,8 @@ import {
   vi,
 } from "vitest";
 import { Hono } from "hono";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { setupPgTestDb, type PgTestDb } from "../test-support/pg-test";
 
 vi.mock("../auth/unified-auth.middleware", () => ({
   unifiedAuthMiddleware: async (
@@ -42,7 +42,7 @@ vi.mock("../services/workspace.service", () => ({
 
 import { sourceConnectionRoutes } from "./source-connections";
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 const WS = new Types.ObjectId().toString();
 
 const app = new Hono();
@@ -70,18 +70,15 @@ beforeAll(async () => {
   process.env.ENCRYPTION_KEY =
     process.env.ENCRYPTION_KEY ??
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh.close();
 });
 
 beforeEach(async () => {
-  const { SourceConnection } = await import("../database/workspace-schema");
-  await SourceConnection.deleteMany({});
+  await pgh.reset();
 });
 
 describe("invalid source-connection ids are 400, not 500", () => {

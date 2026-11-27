@@ -9,8 +9,6 @@
  * host there, so ChatGPT sent the user to a host without their session.
  */
 import { createHash, randomBytes } from "node:crypto";
-import mongoose from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 
 const USER_ID = "64b000000000000000000001";
@@ -41,12 +39,13 @@ vi.mock("../services/workspace.service", () => ({
   },
 }));
 
-import {
-  McpOAuthClient,
-  McpOAuthCode,
-  McpOAuthToken,
-} from "../database/mcp-oauth-schema";
 import { makoServerInfo } from "../mcp/mako-mcp-server";
+import {
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 import { mcpOAuthRoutes, mcpOAuthWellKnownRoutes } from "./mcp-oauth.routes";
 
 const PUBLIC = "https://app.mako.ai";
@@ -58,17 +57,11 @@ const EDGE = {
   "x-forwarded-proto": "https",
 };
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 const saved = { ...process.env };
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
-  await Promise.all([
-    McpOAuthClient.init(),
-    McpOAuthCode.init(),
-    McpOAuthToken.init(),
-  ]);
+  pgh = await setupPgTestDb();
 });
 beforeEach(async () => {
   process.env = { ...saved };
@@ -76,16 +69,14 @@ beforeEach(async () => {
   process.env.CLIENT_URL = PUBLIC;
   process.env.BASE_URL = PUBLIC;
   process.env.K_SERVICE = "mako";
-  await Promise.all([
-    McpOAuthClient.deleteMany({}),
-    McpOAuthCode.deleteMany({}),
-    McpOAuthToken.deleteMany({}),
-  ]);
+  await pgh.reset();
+  // Codes and tokens hold FKs to the user and workspace the consent names.
+  await ensureTestUser(pgh.db, { id: USER_ID });
+  await ensureTestWorkspace(pgh.db, { id: WORKSPACE_ID });
 });
 afterAll(async () => {
   process.env = { ...saved };
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh.close();
 });
 
 function viaEdge(

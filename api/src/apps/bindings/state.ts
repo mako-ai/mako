@@ -2,15 +2,8 @@
  * Derived runtime state per binding — when its artifact was built, its run
  * history, and the public-refresh claim. Not the source of truth: the repo is.
  */
-import {
-  appsMetadataRepo,
-  getMongoAppBindingStateModel,
-} from "../../repositories/apps-metadata";
+import { appsMetadataRepo } from "../../repositories/apps-metadata";
 import { type ParquetCodec } from "../../utils/parquet-compression";
-
-// Ensure Mongoose model remains compiled for callers/tests inspecting
-// `mongoose.model("AppBindingState")` directly.
-void getMongoAppBindingStateModel();
 
 /**
  * Derived runtime state per binding (NOT source of truth — that is the repo).

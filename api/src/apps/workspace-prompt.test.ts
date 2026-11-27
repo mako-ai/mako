@@ -1,13 +1,13 @@
 /**
- * PROMPT.md in the workspace repo (apps.md §21): the same bare-repo +
- * mongodb-memory-server rig the consoles/skills suites use.
+ * PROMPT.md in the workspace repo (apps.md §21): a bare repo on disk, and the
+ * workspace's repo binding in PGlite (test-support/pg-test.ts).
  */
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { setupPgTestDb, type PgTestDb } from "../test-support/pg-test";
 import {
   DEFAULT_BRANCH,
   initRepo,
@@ -27,7 +27,7 @@ import {
   unbindTestWorkspaceRepo,
 } from "./bind-test-workspace-repo";
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmpRoot: string;
 const WS = new Types.ObjectId().toString();
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
@@ -37,13 +37,11 @@ beforeAll(async () => {
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_SANDBOX_PROVIDER = "local";
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -53,6 +51,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  await pgh.reset();
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,
     force: true,

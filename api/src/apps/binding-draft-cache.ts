@@ -32,10 +32,7 @@
  * the object it recorded, for a failure row nothing but the row.
  */
 import { createHash, randomBytes } from "node:crypto";
-import {
-  appsMetadataRepo,
-  getMongoAppBindingDraftModel,
-} from "../repositories/apps-metadata";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
 import { getArtifactStore } from "../services/artifact-store.service";
 import {
   snapshotArtifactKey,
@@ -44,9 +41,6 @@ import {
 } from "../services/binding-snapshot";
 import { cooldownMsFor } from "./live-binding-guard";
 import { loggers } from "../logging";
-
-// Ensure Mongoose model stays compiled for Mongo tests inspecting it directly.
-void getMongoAppBindingDraftModel();
 
 const logger = loggers.api("apps");
 

@@ -1,7 +1,7 @@
 /**
  * Skills are files at main (apps.md §27): real bare repos under a temp
- * APPS_GIT_ROOT, no Mongo, no network. mongodb-memory-server is started only
- * because the workspace-repo binding helpers read the Workspace model.
+ * APPS_GIT_ROOT, no Mongo, no network. PGlite (test-support/pg-test.ts) holds
+ * the workspace-repo binding the binding helpers write.
  */
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -15,8 +15,8 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { setupPgTestDb, type PgTestDb } from "../test-support/pg-test";
 import {
   MAX_SKILL_BODY_CHARS,
   MAX_SKILL_FILE_BYTES,
@@ -57,7 +57,7 @@ import {
   unbindTestWorkspaceRepo,
 } from "./bind-test-workspace-repo";
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmpRoot: string;
 
 beforeAll(async () => {
@@ -66,13 +66,11 @@ beforeAll(async () => {
   process.env.APPS_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_SANDBOX_PROVIDER = "local";
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -85,6 +83,7 @@ const WS = new Types.ObjectId().toString();
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
 
 beforeEach(async () => {
+  await pgh.reset();
   invalidateSkillCatalog(WS);
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,

@@ -1,6 +1,6 @@
 /**
  * Draft build reuse + failure backoff (binding-draft-cache.ts), against
- * mongodb-memory-server and the filesystem artifact store. What these pin:
+ * PGlite (test-support/pg-test.ts) and the filesystem artifact store. What these pin:
  *
  *   - the hash covers everything that ran, including dev-relation freshness;
  *   - each build has its own object key (concurrent builds never clobber or
@@ -14,8 +14,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { and, eq, type SQL } from "drizzle-orm";
+import { Types } from "mongoose";
+import { objectIdToUuid } from "../database/pg/id-codec";
+import { appBindingDrafts } from "../database/pg/schema";
+import { setupPgTestDb, type PgTestDb } from "../test-support/pg-test";
 import {
   DRAFT_TTL_MS,
   FAILURE_RETENTION_MS,
@@ -27,22 +30,25 @@ import {
 } from "./binding-draft-cache";
 import { getArtifactStore } from "../services/artifact-store.service";
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmpRoot: string;
 const PROJECT = new Types.ObjectId().toString();
-const rows = () => mongoose.connection.collection("app_binding_drafts");
+const PROJECT_UUID = objectIdToUuid(PROJECT);
+const draftRows = (...filters: SQL[]) =>
+  pgh.db
+    .select()
+    .from(appBindingDrafts)
+    .where(and(eq(appBindingDrafts.projectId, PROJECT_UUID), ...filters));
 
 beforeAll(async () => {
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "draft-cache-test-"));
   process.env.DASHBOARD_ARTIFACT_DIR = path.join(tmpRoot, "artifacts");
   delete process.env.DASHBOARD_ARTIFACT_STORE;
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
 }, 120_000);
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -52,7 +58,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await rows().deleteMany({});
+  await pgh.reset();
 });
 
 async function localParquet(contents = "PAR1") {
@@ -159,7 +165,7 @@ describe("draft reuse", () => {
     const store = getArtifactStore();
     expect(await store.exists(old)).toBe(false);
     expect(await store.exists(fresh)).toBe(true);
-    expect(await rows().countDocuments({ key: old })).toBe(0);
+    expect(await draftRows(eq(appBindingDrafts.key, old))).toHaveLength(0);
     expect(await lookupDraft(PROJECT, hash, later)).toMatchObject({
       kind: "hit",
       key: fresh,
@@ -221,7 +227,10 @@ describe("failure backoff", () => {
       error: "bad",
       now: t0,
     });
-    const row = await rows().findOne({ hash, kind: "failure" });
+    const [row] = await draftRows(
+      eq(appBindingDrafts.hash, hash),
+      eq(appBindingDrafts.kind, "failure"),
+    );
     expect(row?.expiresAt).toEqual(
       new Date(t0.getTime() + 60_000 + FAILURE_RETENTION_MS),
     );
@@ -230,6 +239,11 @@ describe("failure backoff", () => {
       draftHash({ connectionId: "c1", renderedCode: "select other" }),
       new Date(t0.getTime() + 60_000 + FAILURE_RETENTION_MS + 1),
     );
-    expect(await rows().countDocuments({ hash, kind: "failure" })).toBe(0);
+    expect(
+      await draftRows(
+        eq(appBindingDrafts.hash, hash),
+        eq(appBindingDrafts.kind, "failure"),
+      ),
+    ).toHaveLength(0);
   });
 });

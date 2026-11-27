@@ -28,6 +28,7 @@ import {
   WorkspaceUserHandle,
 } from "../database/workspace-schema";
 import { OAuthAccount, User } from "../database/schema";
+import { getMongoAppBindingStateModel } from "../repositories/apps-metadata/mongo.repo";
 import { invalidateOwnerDirectory } from "./user-handles.service";
 import { invalidatePeopleDirectory } from "./app-owner.service";
 import {
@@ -397,7 +398,7 @@ describe("discovery facts", () => {
 
     // Freshness reads only the bindings the app still has: the deleted
     // `leads` binding's months-old state row must not age the app.
-    const State = mongoose.model("AppBindingState");
+    const State = getMongoAppBindingStateModel();
     const fresh = new Date(Date.now() - 60_000);
     await State.create([
       {

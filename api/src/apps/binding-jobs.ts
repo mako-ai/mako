@@ -26,15 +26,11 @@ import { Types } from "mongoose";
 import { parseEntityId } from "../database/pg/id-codec";
 import {
   appsMetadataRepo,
-  getMongoAppBindingJobModel,
   toMongoObjectId,
   type AppBindingJobRecord,
 } from "../repositories/apps-metadata";
 import { getArtifactStore } from "../services/artifact-store.service";
 import type { BindingPhase, BindingProgressEvent } from "./binding-progress";
-
-// Ensure Mongoose model stays compiled for Mongo tests inspecting it directly.
-void getMongoAppBindingJobModel();
 
 /**
  * A job's row lives this long past its last state change or heartbeat; a

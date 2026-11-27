@@ -64,6 +64,8 @@ export default defineConfig({
       // Platform Postgres (Neon): bijective ID codec, TTL reaper, schema & repo contracts.
       "src/database/pg/**/*.test.ts",
       "src/repositories/**/*.test.ts",
+      // The shared PGlite harness every migrated suite uses.
+      "src/test-support/pg-test.test.ts",
       "src/services/agent-chat/exact-history.test.ts",
     ],
     exclude: [

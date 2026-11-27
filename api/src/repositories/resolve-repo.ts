@@ -1,10 +1,16 @@
 import { hasPostgresConfig } from "../database/pg/client";
 
+/**
+ * `MAKO_TEST_MONGO_FALLBACK=0` turns the fallback off even under vitest, so
+ * a suite migrated to PGlite (`test-support/pg-test.ts`) proves that every
+ * repository call it makes reaches Postgres: any call made without
+ * `setPgTestDb()` throws instead of reading Mongo.
+ */
 function isLegacyMongoTestEnv(): boolean {
+  const flag = process.env.MAKO_TEST_MONGO_FALLBACK;
+  if (flag === "0") return false;
   return Boolean(
-    process.env.VITEST ||
-    process.env.NODE_ENV === "test" ||
-    process.env.MAKO_TEST_MONGO_FALLBACK === "1",
+    process.env.VITEST || process.env.NODE_ENV === "test" || flag === "1",
   );
 }
 

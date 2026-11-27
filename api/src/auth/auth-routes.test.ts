@@ -2,38 +2,33 @@
  * Email/password auth routes: the brute-force limits (per IP from trusted
  * hops only, and per account regardless of IP) and the error contract (a
  * user-facing AuthError keeps its message; anything else is a generic 500,
- * and a failed verification email never fails register).
+ * and a failed verification email never fails register). Runs on PGlite.
  */
 import bcrypt from "bcrypt";
 import { Hono } from "hono";
-import mongoose from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { count, eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
-import { EmailVerification, Session, User } from "../database/schema";
+import { emailVerifications } from "../database/pg/schema";
+import { authRepo } from "../repositories/auth";
+import { setupPgTestDb, type PgTestDb } from "../test-support/pg-test";
 import { emailService } from "../services/email.service";
 import { resetRateLimitForTests } from "../middleware/rate-limit";
 import { authRoutes } from "./auth.controller";
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 const app = new Hono().route("/api/auth", authRoutes);
 
 beforeAll(async () => {
   delete process.env.REDIS_URL;
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
 });
 beforeEach(async () => {
   vi.restoreAllMocks();
   resetRateLimitForTests();
-  await Promise.all([
-    User.deleteMany({}),
-    EmailVerification.deleteMany({}),
-    Session.deleteMany({}),
-  ]);
+  await pgh.reset();
 });
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh.close();
 });
 
 let ipCounter = 0;
@@ -52,8 +47,8 @@ function post(
 }
 
 async function createUser(email: string, password: string, verified = true) {
-  await User.create({
-    _id: `u${Math.random().toString(36).slice(2, 12)}`,
+  await authRepo.createUser({
+    id: `u${Math.random().toString(36).slice(2, 12)}`,
     email,
     hashedPassword: await bcrypt.hash(password, 4),
     emailVerified: verified,
@@ -78,7 +73,7 @@ it("a forged x-forwarded-for per request no longer buys a fresh IP bucket", asyn
 
 it("rotating IPs cannot brute-force a reset code: 5 wrong guesses, then 429", async () => {
   await createUser("victim@example.com", "correct-horse-battery");
-  await EmailVerification.create({
+  await authRepo.createEmailVerification({
     email: "victim@example.com",
     code: "123456",
     type: "password_reset",
@@ -164,9 +159,11 @@ it("register succeeds (and does not leak the transport error) when the verificat
   expect(body.emailSent).toBe(false);
   expect(JSON.stringify(body)).not.toContain("fetch failed");
   // The code exists, so "resend" (or the code, once delivered) still works.
-  expect(
-    await EmailVerification.countDocuments({ email: "new@example.com" }),
-  ).toBe(1);
+  const [{ n }] = await pgh.db
+    .select({ n: count() })
+    .from(emailVerifications)
+    .where(eq(emailVerifications.email, "new@example.com"));
+  expect(n).toBe(1);
 
   // Resend while email is still down: a clean 503, not the raw error.
   const resend = await post(
@@ -190,7 +187,7 @@ it("register succeeds (and does not leak the transport error) when the verificat
 });
 
 it("an unexpected failure is a generic 500, never the internal message", async () => {
-  vi.spyOn(User, "findOne").mockImplementation(() => {
+  vi.spyOn(authRepo, "findUserByEmail").mockImplementation(() => {
     throw new Error("MongoServerSelectionError: connect ECONNREFUSED 10.0.0.5");
   });
   const res = await post(

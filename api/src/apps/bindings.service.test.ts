@@ -9,7 +9,7 @@
  * narrow read safe: it agrees with the all-bindings read, and a malformed
  * NEIGHBOUR no longer decides whether a healthy binding has data.
  *
- * Real git, a real local sandbox and mongodb-memory-server, like the worktree
+ * Real git, a real local sandbox and PGlite (test-support/pg-test.ts), like the worktree
  * suite next door — the point is that reads go through the same source
  * resolution the API uses.
  */
@@ -17,8 +17,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import {
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 import {
   BindingNotFoundError,
   bindingArtifactKey,
@@ -44,7 +49,7 @@ import { seededTemplateFiles } from "./workspace-template";
 import { bindTestWorkspaceRepo } from "./bind-test-workspace-repo";
 import { startTestGitServer, type TestGitServer } from "./test-git-server";
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmpRoot: string;
 let gitServer: TestGitServer;
 
@@ -63,14 +68,12 @@ beforeAll(async () => {
   delete process.env.MAKO_CLOUD_GITHUB_APP_ID;
   delete process.env.MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY;
 
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
 });
 
 afterAll(async () => {
   await gitServer?.close();
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -83,8 +86,9 @@ const WS = new Types.ObjectId().toString();
 const USER = "user-1";
 
 beforeEach(async () => {
-  await mongoose.connection.collection("app_projects").deleteMany({});
-  await mongoose.connection.collection("app_worktrees").deleteMany({});
+  await pgh.reset();
+  await ensureTestWorkspace(pgh.db, { id: WS });
+  await ensureTestUser(pgh.db, { id: USER });
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,
     force: true,

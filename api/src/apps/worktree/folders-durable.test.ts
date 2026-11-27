@@ -1,8 +1,7 @@
 /**
  * App moves, folder writes and app creation land on the mirror's main even
  * when GitHub's main moves under them. Real git (a file:// "GitHub" remote
- * and the instance's local bare cache) and real Mongo, the harness of
- * flow-update-durable.test.ts.
+ * and the instance's local bare cache) with workspace metadata in PGlite.
  *
  * On 2026-11-18 at 23:30 UTC four POST /apps/:id/move calls failed with
  * "Could not store the change durably (GitHub push failed)". The push sent
@@ -27,8 +26,12 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import {
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../../test-support/pg-test";
 
 vi.mock("../../integrations/github/app-auth", () => ({
   resolveRepoToken: async () => undefined,
@@ -57,11 +60,6 @@ import {
 } from "../cloud-repo/durable-main.testkit";
 import { invalidateAppsIndexCache } from "../app-index.service";
 import {
-  AppIndexEntry,
-  AppIndexHead,
-  AppProject,
-} from "../../database/workspace-schema";
-import {
   createAppFolder,
   createProject,
   moveAppFolder,
@@ -73,7 +71,7 @@ const A_ID = new Types.ObjectId().toHexString();
 const manifest = (title: string, id: string) =>
   `${JSON.stringify({ id, schemaVersion: 1, title }, null, 2)}\n`;
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmpRoot: string;
 let remoteDir: string;
 let WS: string;
@@ -143,13 +141,11 @@ beforeAll(async () => {
   process.env.APPS_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_SANDBOX_PROVIDER = "local";
   process.env.APPS_GITHUB_REMOTE_BASE = `file://${path.join(tmpRoot, "remotes")}`;
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
 }, 120_000);
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -162,9 +158,8 @@ beforeEach(async () => {
   process.env.APPS_CONNECTED_REPO_PUSH = "allow";
   resetFreshenHooks();
   WS = new Types.ObjectId().toString();
-  await AppIndexEntry.deleteMany({});
-  await AppIndexHead.deleteMany({});
-  await AppProject.deleteMany({});
+  await pgh.reset();
+  await ensureTestWorkspace(pgh.db, { id: WS });
   invalidateAppsIndexCache();
   remoteDir = await seedMirroredWorkspace(path.join(tmpRoot, "remotes"), WS, {
     "README.md": "x\n",

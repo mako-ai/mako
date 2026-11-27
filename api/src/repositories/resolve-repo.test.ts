@@ -57,6 +57,7 @@ describe("createPgFirstRepoProxy", () => {
 
   it("uses Mongo test fallback only in test env when Postgres is unset", () => {
     delete process.env.POSTGRES_URL;
+    delete process.env.MAKO_TEST_MONGO_FALLBACK;
     resetPgTestDb();
     const proxy = createPgFirstRepoProxy<DemoRepo>(
       "demo",
@@ -85,6 +86,7 @@ describe("createPgFirstRepoProxy", () => {
 
     // Mongo fallback mode (no POSTGRES_URL)
     delete process.env.POSTGRES_URL;
+    delete process.env.MAKO_TEST_MONGO_FALLBACK;
     resetPgTestDb();
     const mongoSpy = vi.spyOn(proxy, "tag").mockReturnValue("spied-mongo");
     expect(proxy.tag()).toBe("spied-mongo");
@@ -99,6 +101,20 @@ describe("createPgFirstRepoProxy", () => {
     expect(proxy.tag()).toBe("spied-pg");
     expect(pgSpy).toHaveBeenCalledTimes(1);
     pgSpy.mockRestore();
+    expect(proxy.tag()).toBe("pg");
+  });
+
+  it("MAKO_TEST_MONGO_FALLBACK=0 refuses the Mongo fallback under vitest", () => {
+    delete process.env.POSTGRES_URL;
+    process.env.MAKO_TEST_MONGO_FALLBACK = "0";
+    resetPgTestDb();
+    const proxy = createPgFirstRepoProxy<DemoRepo>(
+      "demo",
+      { tag: () => "pg" },
+      { tag: () => "mongo" },
+    );
+    expect(() => proxy.tag()).toThrow(/\[demo\] POSTGRES_URL is required/);
+    setPgTestDb({} as MakoPgDb);
     expect(proxy.tag()).toBe("pg");
   });
 

@@ -18,7 +18,7 @@
     "apps:build-template": "tsx src/apps/e2b-template.ts",
     "apps:build-connector-template": "E2B_TEMPLATE_ALIAS=mako-connector-sync E2B_TEMPLATE_MEMORY_MB=4096 tsx src/apps/e2b-template.ts",
     "test:apps:watch": "vitest --config vitest.apps.config.ts",
-    "test:pg": "vitest run src/database/pg src/repositories",
+    "test:pg": "vitest run src/database/pg src/repositories src/test-support/pg-test",
     "test:tsx": "node --import tsx scripts/run-tsx-tests.mjs",
     "pg:generate": "drizzle-kit generate --config src/database/pg/drizzle.config.ts",
     "pg:migrate": "tsx -r dotenv/config src/database/pg/cli/migrate.ts",

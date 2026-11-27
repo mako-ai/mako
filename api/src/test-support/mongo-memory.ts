@@ -59,5 +59,7 @@ export function patchMongoMemoryServer(
   } as typeof MongoMemoryServer.create;
 }
 
-process.env.MAKO_TEST_MONGO_FALLBACK = "1";
+// An explicit MAKO_TEST_MONGO_FALLBACK=0 survives: it is how a PGlite suite
+// proves no repository call falls back to Mongo (resolve-repo.ts).
+process.env.MAKO_TEST_MONGO_FALLBACK ??= "1";
 patchMongoMemoryServer();
