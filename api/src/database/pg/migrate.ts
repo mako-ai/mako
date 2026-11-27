@@ -10,7 +10,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 import { loggers } from "../../logging";
-import { isLocalPostgres } from "./client";
+import { isLocalPostgres, resolvePgSslOption } from "./client";
 
 const logger = loggers.migration();
 
@@ -114,7 +114,7 @@ export async function runPgMigrations(
     max: 1,
     connect_timeout: 15,
     prepare: !connectionString.includes("-pooler"),
-    ssl: local ? false : "require",
+    ssl: resolvePgSslOption(connectionString),
   });
 
   const start = Date.now();

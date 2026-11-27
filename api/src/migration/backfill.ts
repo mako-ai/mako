@@ -13,9 +13,13 @@
  *   - Orphan/corrupt legacy documents are recorded in `migration_quarantine` instead
  *     of aborting the entire batch.
  */
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import { getPgDirectDb, type MakoPgDb } from "../database/pg/client";
-import { normalizeEntityId, parseEntityId } from "../database/pg/id-codec";
+import {
+  generateUuidv7,
+  normalizeEntityId,
+  parseEntityId,
+} from "../database/pg/id-codec";
 import {
   GLOBAL_SCOPE_KEY,
   migrationBackfillJobs,
@@ -26,6 +30,29 @@ import { loggers } from "../logging";
 import type { BackfillProgressSummary, MigrationDomain } from "./types";
 
 const logger = loggers.migration();
+
+/** Default lease duration (10 minutes) before an abandoned `running` backfill job can be reclaimed. */
+export const DEFAULT_BACKFILL_LEASE_MS = 10 * 60 * 1000;
+
+/** Thrown when another worker currently holds an active lease on the `(domain, scope)` backfill job. */
+export class BackfillJobLockedError extends Error {
+  constructor(domain: string, scopeKey: string) {
+    super(
+      `Backfill job for domain "${domain}" (scope "${scopeKey}") is already running with an active lease.`,
+    );
+    this.name = "BackfillJobLockedError";
+  }
+}
+
+/** Thrown when a running backfill worker discovers its lease was stolen or cleared before checkpointing. */
+export class BackfillLeaseLostError extends Error {
+  constructor(domain: string, scopeKey: string) {
+    super(
+      `Backfill lease lost for domain "${domain}" (scope "${scopeKey}") before checkpoint update.`,
+    );
+    this.name = "BackfillLeaseLostError";
+  }
+}
 
 export interface BackfillItem<TDoc = unknown> {
   /** Monotonic cursor value (typically Mongo `_id` as 24-hex ObjectId or string). */
@@ -62,6 +89,13 @@ export interface BackfillDomainHandler<TDoc = unknown> {
   /**
    * Idempotently upsert `items` into Postgres (using `ON CONFLICT DO UPDATE` guarded by
    * `updated_at` or `ON CONFLICT DO NOTHING` for immutable tables).
+   *
+   * **Tombstone atomicity contract:** Implementations MUST guard each INSERT with
+   * `notTombstonedSql(targetTable, entityId)` (`INSERT ... SELECT ... WHERE NOT EXISTS
+   * (SELECT 1 FROM migration_tombstones ...)`) so a concurrent live delete racing with
+   * backfill can never be resurrected. `runBackfill()` also re-checks tombstones inside
+   * the upsert transaction immediately before invoking `upsertBatch()`.
+   *
    * Returns the number of rows upserted.
    */
   upsertBatch(items: Array<BackfillItem<TDoc>>, db: MakoPgDb): Promise<number>;
@@ -106,6 +140,29 @@ export function isClosedUtcDay(day: string, now: Date = new Date()): boolean {
   return day < currentUtcDay(now);
 }
 
+/**
+ * Build a SQL `NOT EXISTS` predicate against `migration_tombstones` so backfill
+ * `INSERT ... SELECT ... WHERE ${notTombstonedSql(tableName, entityId)}` checks
+ * tombstones atomically in the same statement as the upsert.
+ *
+ * Accepts either a raw entity ID string (normalized via `normalizeEntityId`) or
+ * a SQL expression (e.g. a column/alias from a `VALUES` CTE).
+ */
+export function notTombstonedSql(
+  tableName: string,
+  entityId: string | SQL,
+): SQL {
+  const idExpr =
+    typeof entityId === "string"
+      ? sql`${normalizeEntityId(entityId)}`
+      : entityId;
+  return sql`NOT EXISTS (
+    SELECT 1 FROM "migration_tombstones" AS _mt
+    WHERE _mt."table_name" = ${tableName}
+      AND _mt."entity_id" = ${idExpr}
+  )`;
+}
+
 /** Return the subset of `entityIds` that currently have a tombstone for `tableName`. */
 export async function findTombstonedEntityIds(
   db: MakoPgDb,
@@ -135,23 +192,42 @@ export interface QuarantineEntry {
   payload?: Record<string, unknown>;
 }
 
-/** Persist an unmigratable/orphaned Mongo record into `migration_quarantine`. */
+/**
+ * Persist an unmigratable/orphaned Mongo record into `migration_quarantine`.
+ * Deduplicates unresolved rows via the partial unique index
+ * `uq_migration_quarantine_unresolved (domain, collection_name, mongo_id) WHERE resolved_at IS NULL`.
+ *
+ * Returns `true` if a new quarantine row was inserted, or `false` if an
+ * unresolved quarantine entry already existed for this document.
+ */
 export async function quarantineRecord(
   db: MakoPgDb,
   entry: QuarantineEntry,
-): Promise<void> {
+): Promise<boolean> {
   const wsUuid = entry.workspaceId
     ? (parseEntityId(entry.workspaceId)?.uuid ?? null)
     : null;
-  await db.insert(migrationQuarantine).values({
-    domain: entry.domain,
-    collectionName: entry.collectionName,
-    mongoId: entry.mongoId,
-    workspaceId: wsUuid,
-    reason: entry.reason,
-    payload: entry.payload ?? null,
-    quarantinedAt: new Date(),
-  });
+  const inserted = await db
+    .insert(migrationQuarantine)
+    .values({
+      domain: entry.domain,
+      collectionName: entry.collectionName,
+      mongoId: entry.mongoId,
+      workspaceId: wsUuid,
+      reason: entry.reason,
+      payload: entry.payload ?? null,
+      quarantinedAt: new Date(),
+    })
+    .onConflictDoNothing({
+      target: [
+        migrationQuarantine.domain,
+        migrationQuarantine.collectionName,
+        migrationQuarantine.mongoId,
+      ],
+      where: sql`${migrationQuarantine.resolvedAt} IS NULL`,
+    })
+    .returning({ id: migrationQuarantine.id });
+  return inserted.length > 0;
 }
 
 export interface RunBackfillOptions {
@@ -164,6 +240,8 @@ export interface RunBackfillOptions {
   dryRun?: boolean;
   /** Ignore any saved checkpoint and restart from the beginning. */
   resetCursor?: boolean;
+  /** Lease duration (ms) before a stale `running` job may be reclaimed (default 10m). */
+  leaseTimeoutMs?: number;
   db?: MakoPgDb;
   handler?: BackfillDomainHandler<any>;
 }
@@ -182,6 +260,10 @@ export async function runBackfill(
   const db = options.db ?? getPgDirectDb();
   const batchSize = Math.max(1, options.batchSize ?? 1000);
   const dryRun = options.dryRun ?? false;
+  const leaseTimeoutMs = Math.max(
+    1,
+    options.leaseTimeoutMs ?? DEFAULT_BACKFILL_LEASE_MS,
+  );
 
   let scopeKey = GLOBAL_SCOPE_KEY;
   let workspaceUuid: string | null = null;
@@ -202,39 +284,69 @@ export async function runBackfill(
   let rowsSkippedTombstone = 0;
   let rowsQuarantined = 0;
 
-  if (!options.resetCursor) {
-    const existing = await db
-      .select()
-      .from(migrationBackfillJobs)
-      .where(
-        and(
-          eq(migrationBackfillJobs.domain, options.domain),
-          eq(migrationBackfillJobs.scopeKey, scopeKey),
-        ),
-      );
-    if (existing[0]) {
-      lastCursor = existing[0].lastCursor;
-      rowsProcessed = existing[0].rowsProcessed;
-      rowsUpserted = existing[0].rowsUpserted;
-      rowsSkippedTombstone = existing[0].rowsSkippedTombstone;
-      rowsQuarantined = existing[0].rowsQuarantined;
-    }
-  }
-
   const startedAt = new Date();
-  if (!dryRun) {
-    await db
+  const leaseToken = generateUuidv7();
+
+  if (dryRun) {
+    if (!options.resetCursor) {
+      const existing = await db
+        .select()
+        .from(migrationBackfillJobs)
+        .where(
+          and(
+            eq(migrationBackfillJobs.domain, options.domain),
+            eq(migrationBackfillJobs.scopeKey, scopeKey),
+          ),
+        );
+      if (existing[0]) {
+        lastCursor = existing[0].lastCursor;
+        rowsProcessed = existing[0].rowsProcessed;
+        rowsUpserted = existing[0].rowsUpserted;
+        rowsSkippedTombstone = existing[0].rowsSkippedTombstone;
+        rowsQuarantined = existing[0].rowsQuarantined;
+      }
+    }
+  } else {
+    // Atomically claim the job lease. Succeeds only if no job row exists yet,
+    // the job is not currently `running`, or an existing `running` job's lease
+    // has expired (`updated_at < now - leaseTimeoutMs`).
+    const leaseCutoff = new Date(startedAt.getTime() - leaseTimeoutMs);
+    const conflictSet = options.resetCursor
+      ? {
+          status: "running" as const,
+          leaseToken,
+          lastCursor: null,
+          rowsProcessed: 0,
+          rowsUpserted: 0,
+          rowsSkippedTombstone: 0,
+          rowsQuarantined: 0,
+          errorMessage: null,
+          startedAt,
+          completedAt: null,
+          updatedAt: startedAt,
+        }
+      : {
+          status: "running" as const,
+          leaseToken,
+          errorMessage: null,
+          startedAt,
+          completedAt: null,
+          updatedAt: startedAt,
+        };
+
+    const claimed = await db
       .insert(migrationBackfillJobs)
       .values({
         domain: options.domain,
         scopeKey,
         workspaceId: workspaceUuid,
         status: "running",
-        lastCursor,
-        rowsProcessed,
-        rowsUpserted,
-        rowsSkippedTombstone,
-        rowsQuarantined,
+        leaseToken,
+        lastCursor: null,
+        rowsProcessed: 0,
+        rowsUpserted: 0,
+        rowsSkippedTombstone: 0,
+        rowsQuarantined: 0,
         errorMessage: null,
         startedAt,
         completedAt: null,
@@ -242,19 +354,24 @@ export async function runBackfill(
       })
       .onConflictDoUpdate({
         target: [migrationBackfillJobs.domain, migrationBackfillJobs.scopeKey],
-        set: {
-          status: "running",
-          lastCursor,
-          rowsProcessed,
-          rowsUpserted,
-          rowsSkippedTombstone,
-          rowsQuarantined,
-          errorMessage: null,
-          startedAt,
-          completedAt: null,
-          updatedAt: startedAt,
-        },
-      });
+        set: conflictSet,
+        setWhere: or(
+          ne(migrationBackfillJobs.status, "running"),
+          lt(migrationBackfillJobs.updatedAt, leaseCutoff),
+        ),
+      })
+      .returning();
+
+    if (claimed.length === 0) {
+      throw new BackfillJobLockedError(options.domain, scopeKey);
+    }
+
+    const job = claimed[0];
+    lastCursor = job.lastCursor;
+    rowsProcessed = job.rowsProcessed;
+    rowsUpserted = job.rowsUpserted;
+    rowsSkippedTombstone = job.rowsSkippedTombstone;
+    rowsQuarantined = job.rowsQuarantined;
   }
 
   let batchesRun = 0;
@@ -287,6 +404,7 @@ export async function runBackfill(
       );
 
       const eligible: Array<BackfillItem<any>> = [];
+      const pendingQuarantines: QuarantineEntry[] = [];
       for (const item of batch) {
         if (tombstoned.has(normalizeEntityId(item.entityId))) {
           rowsSkippedTombstone += 1;
@@ -295,9 +413,8 @@ export async function runBackfill(
         if (handler.validate) {
           const verdict = await handler.validate(item, db);
           if (!verdict.ok) {
-            rowsQuarantined += 1;
             if (!dryRun) {
-              await quarantineRecord(db, {
+              pendingQuarantines.push({
                 domain: options.domain,
                 collectionName: handler.collectionName,
                 mongoId: item.cursor,
@@ -305,6 +422,8 @@ export async function runBackfill(
                 reason: verdict.reason,
                 payload: verdict.sanitizedPayload,
               });
+            } else {
+              rowsQuarantined += 1;
             }
             continue;
           }
@@ -312,31 +431,75 @@ export async function runBackfill(
         eligible.push(item);
       }
 
-      if (!dryRun && eligible.length > 0) {
-        rowsUpserted += await handler.upsertBatch(eligible, db);
-      } else if (dryRun) {
-        rowsUpserted += eligible.length;
-      }
-
       lastCursor = batch[batch.length - 1].cursor;
 
       if (!dryRun) {
-        await db
-          .update(migrationBackfillJobs)
-          .set({
-            lastCursor,
-            rowsProcessed,
-            rowsUpserted,
-            rowsSkippedTombstone,
-            rowsQuarantined,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(migrationBackfillJobs.domain, options.domain),
-              eq(migrationBackfillJobs.scopeKey, scopeKey),
-            ),
-          );
+        // Atomically commit quarantine inserts, final tombstone re-check,
+        // upsertBatch, and CAS cursor/heartbeat update in a single transaction.
+        // If `upsertBatch` fails or the lease was stolen, the entire batch
+        // (including quarantine inserts and upserts) rolls back cleanly.
+        const nextRowsProcessed = rowsProcessed;
+        const txOutcome = await db.transaction(async tx => {
+          const txDb = tx as unknown as MakoPgDb;
+          let quarantinedInBatch = 0;
+          for (const entry of pendingQuarantines) {
+            const inserted = await quarantineRecord(txDb, entry);
+            if (inserted) {
+              quarantinedInBatch += 1;
+            }
+          }
+
+          let skippedLate = 0;
+          let upserted = 0;
+          if (eligible.length > 0) {
+            const lateTombstoned = await findTombstonedEntityIds(
+              txDb,
+              handler.targetTable,
+              eligible.map(item => item.entityId),
+            );
+            const stillEligible: Array<BackfillItem<any>> = [];
+            for (const item of eligible) {
+              if (lateTombstoned.has(normalizeEntityId(item.entityId))) {
+                skippedLate += 1;
+                continue;
+              }
+              stillEligible.push(item);
+            }
+            if (stillEligible.length > 0) {
+              upserted = await handler.upsertBatch(stillEligible, txDb);
+            }
+          }
+
+          const updated = await txDb
+            .update(migrationBackfillJobs)
+            .set({
+              lastCursor,
+              rowsProcessed: nextRowsProcessed,
+              rowsUpserted: rowsUpserted + upserted,
+              rowsSkippedTombstone: rowsSkippedTombstone + skippedLate,
+              rowsQuarantined: rowsQuarantined + quarantinedInBatch,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(migrationBackfillJobs.domain, options.domain),
+                eq(migrationBackfillJobs.scopeKey, scopeKey),
+                eq(migrationBackfillJobs.status, "running"),
+                eq(migrationBackfillJobs.leaseToken, leaseToken),
+              ),
+            )
+            .returning({ domain: migrationBackfillJobs.domain });
+          if (updated.length === 0) {
+            throw new BackfillLeaseLostError(options.domain, scopeKey);
+          }
+
+          return { upserted, skippedLate, quarantinedInBatch };
+        });
+        rowsQuarantined += txOutcome.quarantinedInBatch;
+        rowsSkippedTombstone += txOutcome.skippedLate;
+        rowsUpserted += txOutcome.upserted;
+      } else {
+        rowsUpserted += eligible.length;
       }
 
       if (batch.length < batchSize) {
@@ -346,10 +509,11 @@ export async function runBackfill(
 
     if (!dryRun) {
       const now = new Date();
-      await db
+      const finished = await db
         .update(migrationBackfillJobs)
         .set({
           status: finalStatus,
+          leaseToken: null,
           lastCursor,
           rowsProcessed,
           rowsUpserted,
@@ -362,8 +526,14 @@ export async function runBackfill(
           and(
             eq(migrationBackfillJobs.domain, options.domain),
             eq(migrationBackfillJobs.scopeKey, scopeKey),
+            eq(migrationBackfillJobs.status, "running"),
+            eq(migrationBackfillJobs.leaseToken, leaseToken),
           ),
-        );
+        )
+        .returning({ domain: migrationBackfillJobs.domain });
+      if (finished.length === 0) {
+        throw new BackfillLeaseLostError(options.domain, scopeKey);
+      }
     }
 
     logger.info("Backfill run finished", {
@@ -392,11 +562,12 @@ export async function runBackfill(
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    if (!dryRun) {
+    if (!dryRun && !(error instanceof BackfillLeaseLostError)) {
       await db
         .update(migrationBackfillJobs)
         .set({
           status: "failed",
+          leaseToken: null,
           errorMessage,
           updatedAt: new Date(),
         })
@@ -404,6 +575,7 @@ export async function runBackfill(
           and(
             eq(migrationBackfillJobs.domain, options.domain),
             eq(migrationBackfillJobs.scopeKey, scopeKey),
+            eq(migrationBackfillJobs.leaseToken, leaseToken),
           ),
         );
     }

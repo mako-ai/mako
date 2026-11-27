@@ -9,6 +9,7 @@ import {
   assertSafeSqlIdentifier,
   clearTtlRegistryForTests,
   reapAllRegisteredTables,
+  reapAllRegisteredTablesOrThrow,
   reapExpiredRows,
   registerTtlRule,
 } from "./ttl-reaper";
@@ -140,5 +141,34 @@ describe("ttl-reaper (batched ctid expiration)", () => {
     expect(() =>
       assertSafeSqlIdentifier("1leading_digit", "tableName"),
     ).toThrow(/Unsafe SQL/);
+  });
+
+  it("reapAllRegisteredTablesOrThrow reaps healthy tables and throws an aggregated error when any table fails", async () => {
+    const now = new Date("2026-11-26T18:00:00.000Z");
+    await pg.query(
+      `INSERT INTO test_ttl_tokens (expires_at) VALUES ($1::timestamptz), ($2::timestamptz)`,
+      [
+        new Date(now.getTime() - 60_000).toISOString(),
+        new Date(now.getTime() + 60_000).toISOString(),
+      ],
+    );
+
+    // Register broken table FIRST to verify healthy tables registered after it STILL reap before throwing
+    registerTtlRule({
+      tableName: "missing_broken_table",
+      timestampColumn: "expires_at",
+    });
+    registerTtlRule({
+      tableName: "test_ttl_tokens",
+      timestampColumn: "expires_at",
+    });
+
+    await expect(reapAllRegisteredTablesOrThrow({ db, now })).rejects.toThrow(
+      /missing_broken_table/,
+    );
+
+    // Healthy table was still reaped (only active token remains)
+    const remaining = await pg.query("SELECT * FROM test_ttl_tokens");
+    expect(remaining.rows).toHaveLength(1);
   });
 });

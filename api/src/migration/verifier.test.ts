@@ -187,4 +187,29 @@ describe("parity verifier", () => {
     expect(report2.ok).toBe(true);
     expect(report2.matched).toBe(2);
   });
+
+  it("throws immediately when repair: true is requested for a handler without a repair method", async () => {
+    let fetched = false;
+    const readOnlyHandler: VerifierDomainHandler = {
+      domain: "notifications",
+      targetTable: "notifications",
+      async fetchMongoBatch() {
+        fetched = true;
+        return [];
+      },
+      async fetchPgByIds() {
+        return new Map();
+      },
+    };
+
+    await expect(
+      runParityVerification({
+        domain: "notifications",
+        repair: true,
+        db,
+        handler: readOnlyHandler,
+      }),
+    ).rejects.toThrow(/does not implement a repair handler/);
+    expect(fetched).toBe(false);
+  });
 });

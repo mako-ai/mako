@@ -46,6 +46,12 @@ export interface SyncRetryEventData {
   entityId: string;
   workspaceId?: string;
   payload?: Record<string, unknown>;
+  /** Unique idempotency key for this logical write so replays can deduplicate (e.g. `$inc` rollups). */
+  idempotencyKey?: string;
+  /** ISO-8601 timestamp captured when the write began so delayed replays never overwrite newer writes. */
+  updatedAt?: string;
+  /** True when the original secondary write timed out and its AbortSignal was aborted. */
+  timedOut?: boolean;
   failedAt: string;
   errorMessage: string;
 }
@@ -57,6 +63,12 @@ export interface SecondaryWriteFailureContext {
   entityId?: string;
   workspaceId?: string;
   payload?: Record<string, unknown>;
+  /** Unique idempotency key for this logical write (caller-supplied or generated UUIDv7). */
+  idempotencyKey?: string;
+  /** ISO-8601 timestamp captured when the write began for stale-replay protection. */
+  updatedAt?: string;
+  /** True when the failure was a timeout (in-flight secondary write was signalled to abort). */
+  timedOut?: boolean;
   error: unknown;
 }
 

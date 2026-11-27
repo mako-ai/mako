@@ -397,4 +397,268 @@ describe("MigrationRouter (5-stage dual-run state machine)", () => {
     );
     expect(result).toBe("primary-ok");
   });
+
+  it("preserves stale fallback across invalidateCache on PG blips and fails closed on cold cache misses", async () => {
+    let shouldFail = false;
+    const router = new MigrationRouter({
+      enablePubSub: false,
+      cacheTtlMs: 60_000,
+      getDb: () => {
+        if (shouldFail) throw new Error("transient neon timeout");
+        return db;
+      },
+    });
+
+    const ws1 = newDualId();
+    const wsUnseen = newDualId();
+
+    // 1. Cold cache + PG outage -> fail closed (throw), never silently route to mongo_only
+    shouldFail = true;
+    await expect(router.getState("auth", ws1.oid)).rejects.toThrow(
+      /transient neon timeout/,
+    );
+    shouldFail = false;
+
+    // 2. Promote auth to pg_only and warm cache
+    await router.setDomainState({
+      domain: "auth",
+      mode: "pg_only",
+    });
+    expect((await router.getState("auth")).mode).toBe("pg_only");
+    expect((await router.getState("auth", ws1.oid)).mode).toBe("pg_only");
+
+    // 3. Invalidation (e.g. canary override on another workspace) marks entries stale
+    //    instead of deleting them -> immediate PG blip STILL serves pg_only!
+    router.invalidateCache("auth");
+    shouldFail = true;
+    expect((await router.getState("auth")).mode).toBe("pg_only");
+    expect((await router.getState("auth", ws1.oid)).mode).toBe("pg_only");
+    // Even a previously unseen workspace falls back to cached auth::global instead of mongo_only
+    expect((await router.getState("auth", wsUnseen.oid)).mode).toBe("pg_only");
+  });
+
+  it("prevents an in-flight SELECT from re-caching a stale stage after invalidation and subscribes eagerly", async () => {
+    // Part A: in-flight SELECT race guarded by per-domain generation counter
+    let releaseSlowQuery!: () => void;
+    let slowQueryStarted!: () => void;
+    const slowStartedPromise = new Promise<void>(resolve => {
+      slowQueryStarted = resolve;
+    });
+    let interceptOnce = true;
+
+    const router = new MigrationRouter({
+      enablePubSub: false,
+      cacheTtlMs: 60_000,
+      getDb: () => {
+        if (!interceptOnce) return db;
+        interceptOnce = false;
+        return {
+          select: () => ({
+            from: () => ({
+              where: async () => {
+                // Read row BEFORE rollback happens
+                const rows = await db
+                  .select()
+                  .from(schema.migrationDomainState);
+                slowQueryStarted();
+                await new Promise<void>(resolve => {
+                  releaseSlowQuery = resolve;
+                });
+                return rows;
+              },
+            }),
+          }),
+        } as unknown as MakoPgDb;
+      },
+    });
+
+    // Seed DB with dual_write_pg_read (bypassing router so cache is empty)
+    await db.insert(schema.migrationDomainState).values({
+      domain: "chat",
+      scopeKey: "global",
+      workspaceId: null,
+      mode: "dual_write_pg_read",
+      shadowSampleRate: 0.5,
+    });
+
+    // Start slow read (captures pre-rollback snapshot)
+    const inflightRead = router.getState("chat");
+    await slowStartedPromise;
+
+    // Rollback commits in DB and pub/sub invalidation fires while slow read is still in flight
+    await db
+      .update(schema.migrationDomainState)
+      .set({ mode: "dual_write_mongo_read" });
+    router.invalidateCache("chat");
+
+    // Release slow query: returns the old mode to its own caller, but MUST NOT cache it
+    releaseSlowQuery();
+    expect((await inflightRead).mode).toBe("dual_write_pg_read");
+
+    // Next read immediately observes the rollback without waiting for cacheTtlMs!
+    expect((await router.getState("chat")).mode).toBe("dual_write_mongo_read");
+
+    // Part B: eager pub/sub subscription at construction (without manual startInvalidationListener call)
+    const routerA = new MigrationRouter({
+      enablePubSub: true,
+      cacheTtlMs: 60_000,
+    });
+    const routerB = new MigrationRouter({
+      enablePubSub: true,
+      cacheTtlMs: 60_000,
+    });
+    try {
+      // Allow eager constructor subscription microtasks to settle
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect((await routerB.getState("connections")).mode).toBe("mongo_only");
+
+      await routerA.setDomainState({
+        domain: "connections",
+        mode: "dual_write_pg_read",
+      });
+      expect((await routerB.getState("connections")).mode).toBe(
+        "dual_write_pg_read",
+      );
+    } finally {
+      await routerA.stopInvalidationListener();
+      await routerB.stopInvalidationListener();
+    }
+  });
+
+  it("preserves shadowSampleRate when omitted on stage transitions and rejects dual_write_shadow_compare with rate 0", async () => {
+    const router = new MigrationRouter({ enablePubSub: false });
+
+    // Reject entering dual_write_shadow_compare without a positive rate
+    await expect(
+      router.setDomainState({
+        domain: "mcp",
+        mode: "dual_write_shadow_compare",
+      }),
+    ).rejects.toThrow(/shadowSampleRate > 0/);
+    await expect(
+      router.setDomainState({
+        domain: "mcp",
+        mode: "dual_write_shadow_compare",
+        shadowSampleRate: 0,
+      }),
+    ).rejects.toThrow(/shadowSampleRate > 0/);
+
+    // Enter Stage 3 with 0.75 sample rate
+    const s3 = await router.setDomainState({
+      domain: "mcp",
+      mode: "dual_write_shadow_compare",
+      shadowSampleRate: 0.75,
+    });
+    expect(s3.shadowSampleRate).toBe(0.75);
+
+    // Promote to Stage 4 without passing shadowSampleRate -> MUST preserve 0.75
+    const s4 = await router.setDomainState({
+      domain: "mcp",
+      mode: "dual_write_pg_read",
+    });
+    expect(s4.mode).toBe("dual_write_pg_read");
+    expect(s4.shadowSampleRate).toBe(0.75);
+    expect((await router.getState("mcp")).shadowSampleRate).toBe(0.75);
+
+    // Roll back to Stage 3 without passing shadowSampleRate -> preserves existing 0.75
+    const backToS3 = await router.setDomainState({
+      domain: "mcp",
+      mode: "dual_write_shadow_compare",
+    });
+    expect(backToS3.shadowSampleRate).toBe(0.75);
+
+    // Explicitly passing 0 clears shadowSampleRate on non-Stage-3 modes
+    const s4Zero = await router.setDomainState({
+      domain: "mcp",
+      mode: "dual_write_pg_read",
+      shadowSampleRate: 0,
+    });
+    expect(s4Zero.shadowSampleRate).toBe(0);
+    expect((await router.getState("mcp")).shadowSampleRate).toBe(0);
+  });
+
+  it("aborts timed-out secondary writes via AbortSignal and attaches idempotencyKey + updatedAt to retry context", async () => {
+    const failures: SecondaryWriteFailureContext[] = [];
+    const router = new MigrationRouter({
+      enablePubSub: false,
+      secondaryTimeoutMs: 30,
+      onSecondaryFailure: async ctx => {
+        failures.push(ctx);
+      },
+    });
+
+    await router.setDomainState({
+      domain: "usage_stats",
+      mode: "dual_write_mongo_read",
+    });
+
+    let receivedSignal: AbortSignal | undefined;
+    let signalWasAbortedWhenHookRan = false;
+    let committedDespiteAbort = false;
+    const writeTs = new Date("2026-11-27T08:00:00.000Z");
+
+    const res = await router.executeWrite(
+      {
+        domain: "usage_stats",
+        operation: "incrementDaily",
+        entityId: "stat_1",
+        idempotencyKey: "idem-key-123",
+        updatedAt: writeTs,
+        retryPayload: { delta: 1 },
+      },
+      {
+        mongo: async () => "primary-ok",
+        pg: signal => {
+          receivedSignal = signal;
+          return new Promise<string>(resolve => {
+            const t = setTimeout(() => {
+              if (!signal?.aborted) {
+                committedDespiteAbort = true;
+              }
+              resolve("pg-late");
+            }, 80);
+            signal?.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(t);
+                resolve("pg-aborted");
+              },
+              { once: true },
+            );
+          });
+        },
+        onSecondaryFailure: async ctx => {
+          signalWasAbortedWhenHookRan = Boolean(receivedSignal?.aborted);
+          failures.push(ctx);
+        },
+      },
+    );
+
+    expect(res).toBe("primary-ok");
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(receivedSignal?.aborted).toBe(true);
+    expect(signalWasAbortedWhenHookRan).toBe(true);
+    expect(committedDespiteAbort).toBe(false);
+    expect(failures).toHaveLength(1);
+    expect(failures[0].timedOut).toBe(true);
+    expect(failures[0].idempotencyKey).toBe("idem-key-123");
+    expect(failures[0].updatedAt).toBe(writeTs.toISOString());
+
+    // Non-timeout error generates a default UUIDv7 idempotencyKey and timedOut: false
+    await router.executeWrite(
+      { domain: "usage_stats", operation: "updateStat", entityId: "stat_2" },
+      {
+        mongo: async () => "ok",
+        pg: async () => {
+          throw new Error("boom");
+        },
+      },
+    );
+    expect(failures).toHaveLength(2);
+    expect(failures[1].timedOut).toBe(false);
+    expect(failures[1].idempotencyKey).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(failures[1].updatedAt).toBeDefined();
+  });
 });

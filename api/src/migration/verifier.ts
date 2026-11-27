@@ -117,6 +117,11 @@ export async function runParityVerification(
   const batchSize = Math.max(1, options.batchSize ?? 1000);
   const maxSamples = options.maxSamples ?? 50;
   const doRepair = options.repair ?? false;
+  if (doRepair && !handler.repair) {
+    throw new Error(
+      `Parity verifier for domain "${options.domain}" does not implement a repair handler; cannot run with --repair.`,
+    );
+  }
   const workspaceId = options.workspaceId ?? null;
 
   const start = Date.now();

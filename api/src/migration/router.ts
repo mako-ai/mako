@@ -22,7 +22,11 @@ import {
   hasPostgresConfig,
   type MakoPgDb,
 } from "../database/pg/client";
-import { normalizeEntityId, parseEntityId } from "../database/pg/id-codec";
+import {
+  generateUuidv7,
+  normalizeEntityId,
+  parseEntityId,
+} from "../database/pg/id-codec";
 import {
   GLOBAL_SCOPE_KEY,
   migrationDomainState,
@@ -92,6 +96,10 @@ export interface RouterOperationContext {
   entityId?: string;
   /** Metadata attached to dead-letter retry events on secondary write failure. */
   retryPayload?: Record<string, unknown>;
+  /** Optional caller-supplied idempotency key for retry deduplication (defaults to a fresh UUIDv7). */
+  idempotencyKey?: string;
+  /** Optional monotonic write timestamp (`Date` or ISO string) carried to retry handlers for stale-write guards. */
+  updatedAt?: Date | string;
 }
 
 export interface ExecuteReadHandlers<T> {
@@ -102,8 +110,8 @@ export interface ExecuteReadHandlers<T> {
 }
 
 export interface ExecuteWriteHandlers<T> {
-  mongo: () => Promise<T>;
-  pg: () => Promise<T>;
+  mongo: (signal?: AbortSignal) => Promise<T>;
+  pg: (signal?: AbortSignal) => Promise<T>;
   secondaryTimeoutMs?: number;
   onSecondaryFailure?: (ctx: SecondaryWriteFailureContext) => Promise<void>;
 }
@@ -124,22 +132,11 @@ function normalizeScopeKey(workspaceId: string | null | undefined): {
   return { scopeKey: parsed.uuid, workspaceUuid: parsed.uuid };
 }
 
-function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  label: string,
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    timer.unref?.();
-  });
-
-  return Promise.race([promise, timeoutPromise]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
+class SecondaryWriteTimeoutError extends Error {
+  constructor(label: string, timeoutMs: number) {
+    super(`${label} timed out after ${timeoutMs}ms`);
+    this.name = "SecondaryWriteTimeoutError";
+  }
 }
 
 async function defaultDispatchSyncRetry(
@@ -157,19 +154,27 @@ async function defaultDispatchSyncRetry(
     entityId: ctx.entityId ?? "unknown",
     workspaceId: ctx.workspaceId,
     payload: ctx.payload,
+    idempotencyKey: ctx.idempotencyKey,
+    updatedAt: ctx.updatedAt,
+    timedOut: ctx.timedOut,
     failedAt: new Date().toISOString(),
     errorMessage:
       ctx.error instanceof Error ? ctx.error.message : String(ctx.error),
   };
 
   try {
-    await inngest.send({ name: eventName, data });
+    await inngest.send({
+      ...(data.idempotencyKey ? { id: data.idempotencyKey } : {}),
+      name: eventName,
+      data,
+    });
   } catch (sendError) {
     logger.error("Failed to enqueue migration sync-retry event", {
       eventName,
       domain: ctx.domain,
       operation: ctx.operation,
       entityId: ctx.entityId,
+      idempotencyKey: data.idempotencyKey,
       sendError:
         sendError instanceof Error ? sendError.message : String(sendError),
     });
@@ -184,6 +189,9 @@ export function isMigrationForceMongoOnly(): boolean {
 
 export class MigrationRouter {
   private readonly cache = new Map<string, CacheEntry>();
+  private readonly domainGenerations = new Map<string, number>();
+  private nextGeneration = 0;
+  private globalGeneration = 0;
   private readonly cacheTtlMs: number;
   private readonly secondaryTimeoutMs: number;
   private readonly shadowRunner: ShadowCompareRunner;
@@ -198,7 +206,10 @@ export class MigrationRouter {
 
   private publisher: Publisher | null = null;
   private subscriber: Subscriber | null = null;
-  private pubSubSubscribed = false;
+  private pubSubReady = false;
+  private pubSubInitPromise: Promise<void> | null = null;
+  private lastPubSubAttemptAt = 0;
+  private stopped = false;
 
   constructor(options: MigrationRouterOptions = {}) {
     this.cacheTtlMs = options.cacheTtlMs ?? DEFAULT_STATE_CACHE_TTL_MS;
@@ -213,43 +224,79 @@ export class MigrationRouter {
     this.enablePubSub = options.enablePubSub ?? true;
     this.onSecondaryFailure =
       options.onSecondaryFailure ?? defaultDispatchSyncRetry;
+
+    // Eagerly establish cross-instance invalidation subscription whenever
+    // Postgres is configured so entries cannot be cached before the listener
+    // is active.
+    if (this.enablePubSub && this.hasPg()) {
+      void this.startInvalidationListener();
+    }
   }
 
   private cacheKey(domain: string, scopeKey: string): string {
     return `${domain}::${scopeKey}`;
   }
 
+  private getDomainGeneration(domain: string): number {
+    return Math.max(
+      this.globalGeneration,
+      this.domainGenerations.get(domain) ?? 0,
+    );
+  }
+
   /** Subscribe once to cross-instance invalidation broadcasts. */
   async startInvalidationListener(): Promise<void> {
-    if (!this.enablePubSub || this.pubSubSubscribed) return;
-    this.pubSubSubscribed = true;
-    try {
-      this.subscriber = createPubSubSubscriber();
-      await this.subscriber.connect();
-      await this.subscriber.subscribe(MIGRATION_STATE_CHANNEL, raw => {
-        try {
-          const msg = JSON.parse(raw) as { domain?: string };
-          if (msg.domain) {
-            this.invalidateCache(msg.domain);
-          } else {
+    if (!this.enablePubSub) return;
+    this.stopped = false;
+    if (this.pubSubReady) return;
+    if (this.pubSubInitPromise) return this.pubSubInitPromise;
+
+    this.lastPubSubAttemptAt = Date.now();
+    this.pubSubInitPromise = (async () => {
+      try {
+        const sub = createPubSubSubscriber();
+        await sub.connect();
+        await sub.subscribe(MIGRATION_STATE_CHANNEL, raw => {
+          try {
+            const msg = JSON.parse(raw) as { domain?: string };
+            if (msg.domain) {
+              this.invalidateCache(msg.domain);
+            } else {
+              this.invalidateCache();
+            }
+          } catch {
             this.invalidateCache();
           }
-        } catch {
-          this.invalidateCache();
+        });
+        if (this.stopped) {
+          await sub.unsubscribe(MIGRATION_STATE_CHANNEL).catch(() => undefined);
+          return;
         }
-      });
-    } catch (error) {
-      this.pubSubSubscribed = false;
-      logger.warn(
-        "Migration state pub/sub listener unavailable; using TTL cache only",
-        {
-          error: error instanceof Error ? error.message : String(error),
-        },
-      );
-    }
+        this.subscriber = sub;
+        this.pubSubReady = true;
+        // Invalidate any entries cached or queries started before subscription
+        // became active so a missed broadcast during startup cannot linger.
+        this.invalidateCache();
+      } catch (error) {
+        logger.warn(
+          "Migration state pub/sub listener unavailable; using TTL cache only",
+          {
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+      } finally {
+        this.pubSubInitPromise = null;
+      }
+    })();
+
+    return this.pubSubInitPromise;
   }
 
   async stopInvalidationListener(): Promise<void> {
+    this.stopped = true;
+    if (this.pubSubInitPromise) {
+      await this.pubSubInitPromise.catch(() => undefined);
+    }
     if (this.subscriber) {
       try {
         await this.subscriber.unsubscribe(MIGRATION_STATE_CHANNEL);
@@ -259,19 +306,31 @@ export class MigrationRouter {
       this.subscriber = null;
     }
     this.publisher = null;
-    this.pubSubSubscribed = false;
+    this.pubSubReady = false;
   }
 
-  /** Clear cached rollout state (for one domain or all domains). */
+  /**
+   * Mark cached rollout state stale (for one domain or all domains) and bump
+   * the generation counter so any in-flight SELECT cannot re-cache stale state.
+   *
+   * Entries are kept with `expiresAt = 0` rather than deleted so a transient PG
+   * blip immediately after an invalidation still serves last-known-good state
+   * instead of failing closed or split-braining back to Mongo.
+   */
   invalidateCache(domain?: string): void {
+    const nextGen = ++this.nextGeneration;
     if (!domain) {
-      this.cache.clear();
+      this.globalGeneration = nextGen;
+      for (const entry of this.cache.values()) {
+        entry.expiresAt = 0;
+      }
       return;
     }
+    this.domainGenerations.set(domain, nextGen);
     const prefix = `${domain}::`;
-    for (const key of this.cache.keys()) {
+    for (const [key, entry] of this.cache.entries()) {
       if (key.startsWith(prefix)) {
-        this.cache.delete(key);
+        entry.expiresAt = 0;
       }
     }
   }
@@ -302,8 +361,13 @@ export class MigrationRouter {
       return cached.state;
     }
 
-    if (this.enablePubSub && !this.pubSubSubscribed) {
-      // Lazy listener activation without blocking reads if Redis is slow
+    if (
+      this.enablePubSub &&
+      !this.pubSubReady &&
+      !this.pubSubInitPromise &&
+      now - this.lastPubSubAttemptAt >= 30_000
+    ) {
+      // Retry subscription if PG became configured after construction or Redis recovered
       void this.startInvalidationListener();
     }
 
@@ -311,6 +375,10 @@ export class MigrationRouter {
       scopeKey === GLOBAL_SCOPE_KEY
         ? [GLOBAL_SCOPE_KEY]
         : [GLOBAL_SCOPE_KEY, scopeKey];
+
+    // Capture per-domain generation BEFORE executing the SELECT so an invalidation
+    // arriving while this query is in flight prevents re-caching stale stage state.
+    const generationBefore = this.getDomainGeneration(domain);
 
     try {
       const db = this.getDb();
@@ -347,88 +415,193 @@ export class MigrationRouter {
             shadowSampleRate: 0,
           };
 
-      this.cache.set(key, {
-        state: resolved,
-        expiresAt: now + this.cacheTtlMs,
-      });
+      if (this.getDomainGeneration(domain) === generationBefore) {
+        const expiresAt = Date.now() + this.cacheTtlMs;
+        this.cache.set(key, {
+          state: resolved,
+          expiresAt,
+        });
+        // Also remember the domain's global default whenever we fetched it so
+        // previously unseen workspaces can still fall back on a transient PG blip.
+        if (scopeKey !== GLOBAL_SCOPE_KEY && globalRow) {
+          const globalKey = this.cacheKey(domain, GLOBAL_SCOPE_KEY);
+          this.cache.set(globalKey, {
+            state: {
+              domain,
+              scopeKey: globalRow.scopeKey,
+              workspaceId: globalRow.workspaceId,
+              mode: globalRow.mode,
+              shadowSampleRate: globalRow.shadowSampleRate,
+            },
+            expiresAt,
+          });
+        }
+      }
       return resolved;
     } catch (error) {
       // Preserve last known state on transient PG blips (avoid split-brain back into
       // frozen Mongo once a domain has advanced to dual_write_pg_read / pg_only).
-      // Only fall back to mongo_only on a cold cache miss.
-      if (cached) {
+      // On a true cold cache miss (no known state for this scope or domain global),
+      // fail closed by rethrowing rather than silently routing to Mongo.
+      const staleFallback =
+        cached ??
+        (scopeKey !== GLOBAL_SCOPE_KEY
+          ? this.cache.get(this.cacheKey(domain, GLOBAL_SCOPE_KEY))
+          : undefined);
+      if (staleFallback) {
         logger.error(
           "Failed to refresh migration_domain_state; serving stale cached state",
           {
             domain,
             scopeKey,
-            staleMode: cached.state.mode,
+            staleScopeKey: staleFallback.state.scopeKey,
+            staleMode: staleFallback.state.mode,
             error: error instanceof Error ? error.message : String(error),
           },
         );
-        return cached.state;
+        return staleFallback.state;
       }
       logger.error(
-        "Failed to read migration_domain_state (cold cache); failing safe to mongo_only",
+        "Failed to read migration_domain_state on cold cache; failing closed",
         {
           domain,
           scopeKey,
           error: error instanceof Error ? error.message : String(error),
         },
       );
-      return {
-        domain,
-        scopeKey: GLOBAL_SCOPE_KEY,
-        workspaceId: null,
-        mode: "mongo_only",
-        shadowSampleRate: 0,
-      };
+      throw error;
     }
   }
 
   /**
    * Upsert rollout stage in `migration_domain_state` and broadcast invalidation
    * to all API instances.
+   *
+   * Omitting `shadowSampleRate` preserves any existing `shadow_sample_rate` on
+   * conflict instead of silently resetting it to `0`. Entering
+   * `dual_write_shadow_compare` requires an effective `shadowSampleRate > 0`.
    */
   async setDomainState(
     input: SetDomainStateInput,
   ): Promise<ResolvedDomainState> {
-    const sampleRate = input.shadowSampleRate ?? 0;
-    if (sampleRate < 0 || sampleRate > 1 || Number.isNaN(sampleRate)) {
-      throw new Error(
-        `shadowSampleRate must be within [0, 1], got ${sampleRate}`,
-      );
+    if (input.shadowSampleRate !== undefined) {
+      if (
+        input.shadowSampleRate < 0 ||
+        input.shadowSampleRate > 1 ||
+        Number.isNaN(input.shadowSampleRate)
+      ) {
+        throw new Error(
+          `shadowSampleRate must be within [0, 1], got ${input.shadowSampleRate}`,
+        );
+      }
+      if (
+        input.mode === "dual_write_shadow_compare" &&
+        input.shadowSampleRate <= 0
+      ) {
+        throw new Error(
+          "dual_write_shadow_compare requires shadowSampleRate > 0",
+        );
+      }
     }
 
     const { scopeKey, workspaceUuid } = normalizeScopeKey(input.workspaceId);
     const now = new Date();
     const db = this.getDb();
 
-    await db
-      .insert(migrationDomainState)
-      .values({
-        domain: input.domain,
-        scopeKey,
-        workspaceId: workspaceUuid,
+    const persisted = await db.transaction(async tx => {
+      if (
+        input.mode === "dual_write_shadow_compare" &&
+        input.shadowSampleRate === undefined
+      ) {
+        const existing = await tx
+          .select({ shadowSampleRate: migrationDomainState.shadowSampleRate })
+          .from(migrationDomainState)
+          .where(
+            and(
+              eq(migrationDomainState.domain, input.domain),
+              eq(migrationDomainState.scopeKey, scopeKey),
+            ),
+          );
+        if (!existing[0] || existing[0].shadowSampleRate <= 0) {
+          throw new Error(
+            "dual_write_shadow_compare requires shadowSampleRate > 0 " +
+              "(pass shadowSampleRate explicitly or preserve an existing positive rate)",
+          );
+        }
+      }
+
+      const conflictSet: {
+        mode: MigrationMode;
+        shadowSampleRate?: number;
+        updatedBy: string | null;
+        notes: string | null;
+        updatedAt: Date;
+      } = {
         mode: input.mode,
-        shadowSampleRate: sampleRate,
         updatedBy: input.updatedBy ?? null,
         notes: input.notes ?? null,
-        createdAt: now,
         updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: [migrationDomainState.domain, migrationDomainState.scopeKey],
-        set: {
+      };
+      if (input.shadowSampleRate !== undefined) {
+        conflictSet.shadowSampleRate = input.shadowSampleRate;
+      }
+
+      const [row] = await tx
+        .insert(migrationDomainState)
+        .values({
+          domain: input.domain,
+          scopeKey,
+          workspaceId: workspaceUuid,
           mode: input.mode,
-          shadowSampleRate: sampleRate,
+          shadowSampleRate: input.shadowSampleRate ?? 0,
           updatedBy: input.updatedBy ?? null,
           notes: input.notes ?? null,
+          createdAt: now,
           updatedAt: now,
-        },
-      });
+        })
+        .onConflictDoUpdate({
+          target: [migrationDomainState.domain, migrationDomainState.scopeKey],
+          set: conflictSet,
+        })
+        .returning();
+
+      if (
+        input.mode === "dual_write_shadow_compare" &&
+        row.shadowSampleRate <= 0
+      ) {
+        throw new Error(
+          "dual_write_shadow_compare requires shadowSampleRate > 0",
+        );
+      }
+      return row;
+    });
+
+    const resolved: ResolvedDomainState = {
+      domain: persisted.domain,
+      scopeKey: persisted.scopeKey,
+      workspaceId: persisted.workspaceId,
+      mode: persisted.mode,
+      shadowSampleRate: persisted.shadowSampleRate,
+    };
 
     this.invalidateCache(input.domain);
+    // Keep the newly persisted state as an already-expired fallback entry so
+    // the next read refreshes from PG while an immediate PG blip won't cold-miss
+    // or revert to a superseded stage.
+    const exactKey = this.cacheKey(input.domain, scopeKey);
+    this.cache.set(exactKey, { state: resolved, expiresAt: 0 });
+    if (scopeKey === GLOBAL_SCOPE_KEY) {
+      const prefix = `${input.domain}::`;
+      for (const [entryKey, entry] of this.cache.entries()) {
+        if (
+          entryKey.startsWith(prefix) &&
+          entry.state.scopeKey === GLOBAL_SCOPE_KEY
+        ) {
+          entry.state = resolved;
+          entry.expiresAt = 0;
+        }
+      }
+    }
 
     if (this.enablePubSub) {
       try {
@@ -448,13 +621,7 @@ export class MigrationRouter {
       }
     }
 
-    return {
-      domain: input.domain,
-      scopeKey,
-      workspaceId: workspaceUuid,
-      mode: input.mode,
-      shadowSampleRate: sampleRate,
-    };
+    return resolved;
   }
 
   /**
@@ -544,6 +711,10 @@ export class MigrationRouter {
     const state = await this.getState(ctx.domain, ctx.workspaceId);
     const timeoutMs = handlers.secondaryTimeoutMs ?? this.secondaryTimeoutMs;
     const onFailure = handlers.onSecondaryFailure ?? this.onSecondaryFailure;
+    const writeUpdatedAt =
+      ctx.updatedAt instanceof Date
+        ? ctx.updatedAt.toISOString()
+        : (ctx.updatedAt ?? new Date().toISOString());
 
     switch (state.mode) {
       case "mongo_only":
@@ -558,6 +729,7 @@ export class MigrationRouter {
           handlers.pg,
           timeoutMs,
           onFailure,
+          writeUpdatedAt,
         );
         return primaryResult;
       }
@@ -570,6 +742,7 @@ export class MigrationRouter {
           handlers.mongo,
           timeoutMs,
           onFailure,
+          writeUpdatedAt,
         );
         return primaryResult;
       }
@@ -582,17 +755,36 @@ export class MigrationRouter {
   private async runSecondaryWrite(
     target: "pg" | "mongo",
     ctx: RouterOperationContext,
-    writeFn: () => Promise<unknown>,
+    writeFn: (signal?: AbortSignal) => Promise<unknown>,
     timeoutMs: number,
     onFailure: (ctx: SecondaryWriteFailureContext) => Promise<void>,
+    updatedAt: string,
   ): Promise<void> {
+    const controller = new AbortController();
+    const label = `Secondary ${target} write (${ctx.domain}.${ctx.operation})`;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const writePromise = Promise.resolve().then(() =>
+      writeFn(controller.signal),
+    );
+    // Avoid unhandled rejections if the underlying driver rejects after timeout
+    // aborts the signal and wins the race.
+    writePromise.catch(() => undefined);
+
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        const timeoutError = new SecondaryWriteTimeoutError(label, timeoutMs);
+        controller.abort(timeoutError);
+        reject(timeoutError);
+      }, timeoutMs);
+      timer.unref?.();
+    });
+
     try {
-      await withTimeout(
-        writeFn(),
-        timeoutMs,
-        `Secondary ${target} write (${ctx.domain}.${ctx.operation})`,
-      );
+      await Promise.race([writePromise, timeoutPromise]);
     } catch (error) {
+      const timedOut = error instanceof SecondaryWriteTimeoutError;
+      const idempotencyKey = ctx.idempotencyKey ?? generateUuidv7();
       recordWriteError(ctx.domain, target, ctx.operation);
       logger.error("Secondary dual-write failed (primary succeeded)", {
         target,
@@ -600,6 +792,9 @@ export class MigrationRouter {
         operation: ctx.operation,
         entityId: ctx.entityId,
         workspaceId: ctx.workspaceId ?? undefined,
+        idempotencyKey,
+        updatedAt,
+        timedOut,
         error: error instanceof Error ? error.message : String(error),
       });
       try {
@@ -610,6 +805,9 @@ export class MigrationRouter {
           entityId: ctx.entityId,
           workspaceId: ctx.workspaceId ?? undefined,
           payload: ctx.retryPayload,
+          idempotencyKey,
+          updatedAt,
+          timedOut,
           error,
         });
       } catch (hookError) {
@@ -618,10 +816,13 @@ export class MigrationRouter {
           domain: ctx.domain,
           operation: ctx.operation,
           entityId: ctx.entityId,
+          idempotencyKey,
           hookError:
             hookError instanceof Error ? hookError.message : String(hookError),
         });
       }
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 }

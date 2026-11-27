@@ -7,6 +7,7 @@
  *   - `migration_tombstones`: delete markers preventing stale backfill resurrections
  *   - `migration_quarantine`: orphaned/corrupt legacy Mongo docs skipped during backfill
  */
+import { sql } from "drizzle-orm";
 import {
   bigint,
   index,
@@ -16,6 +17,7 @@ import {
   real,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 
@@ -96,6 +98,8 @@ export const migrationBackfillJobs = pgTable(
       .notNull()
       .default(0),
     errorMessage: text("error_message"),
+    /** Unique lease token held by the currently running backfill worker for CAS checkpointing. */
+    leaseToken: text("lease_token"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     updatedAt: timestamp("updated_at", { withTimezone: true })
@@ -154,6 +158,9 @@ export const migrationQuarantine = pgTable(
       table.domain,
       table.resolvedAt,
     ),
+    uniqueIndex("uq_migration_quarantine_unresolved")
+      .on(table.domain, table.collectionName, table.mongoId)
+      .where(sql`${table.resolvedAt} IS NULL`),
   ],
 );
 

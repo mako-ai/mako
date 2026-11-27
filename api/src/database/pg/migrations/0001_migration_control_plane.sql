@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS "migration_backfill_jobs" (
   "rows_skipped_tombstone" bigint NOT NULL DEFAULT 0,
   "rows_quarantined" bigint NOT NULL DEFAULT 0,
   "error_message" text,
+  "lease_token" text,
   "started_at" timestamptz,
   "completed_at" timestamptz,
   "updated_at" timestamptz NOT NULL DEFAULT now(),
@@ -73,3 +74,7 @@ CREATE INDEX IF NOT EXISTS "idx_migration_quarantine_domain_col"
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_migration_quarantine_unresolved"
   ON "migration_quarantine" ("domain", "resolved_at");
+--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "uq_migration_quarantine_unresolved"
+  ON "migration_quarantine" ("domain", "collection_name", "mongo_id")
+  WHERE "resolved_at" IS NULL;

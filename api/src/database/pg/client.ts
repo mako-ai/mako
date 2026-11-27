@@ -4,7 +4,7 @@
  * Supports three connection modes behind one unified Drizzle API:
  *   1. Default runtime (`postgres.js` over Neon PgBouncer `-pooler` URL):
  *      - `prepare: false` (required for PgBouncer transaction pooling)
- *      - `ssl: "require"` for remote hosts; SSL disabled for localhost/127.0.0.1/::1
+ *      - `ssl: "verify-full"` for remote hosts; SSL disabled for localhost/127.0.0.1/::1
  *      - Full interactive transactions + native TCP TLS latency on Cloud Run
  *   2. WebSocket fallback (`PG_DRIVER=neon-ws` over `@neondatabase/serverless` Pool):
  *      - Tunnels Postgres over WSS port 443 using Node 24 native `globalThis.WebSocket`
@@ -49,6 +49,20 @@ export function isLocalPostgres(url: string | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Resolve the `postgres.js` `ssl` option for `url`.
+ *
+ * Local/container hosts disable TLS (`false`). All remote hosts (e.g. Neon)
+ * enforce `"verify-full"` so server certificates and hostnames are always
+ * verified (in `postgres.js`, `"require"` sets `rejectUnauthorized: false` and
+ * overrides URL `sslmode`, leaving connections vulnerable to MITM).
+ */
+export function resolvePgSslOption(
+  url: string | undefined,
+): false | "verify-full" {
+  return isLocalPostgres(url) ? false : "verify-full";
 }
 
 /** Resolve which runtime driver to use for `url`. Local hosts always use `postgres.js`. */
@@ -164,7 +178,7 @@ export function getPgDb(): MakoPgDb {
     // Neon's pooled endpoint uses PgBouncer in transaction pooling mode,
     // which rejects named prepared statements across pooled sessions.
     prepare: false,
-    ssl: local ? false : "require",
+    ssl: resolvePgSslOption(connectionString),
   });
   runtimeDb = drizzlePostgresJs(runtimeSql, { schema }) as unknown as MakoPgDb;
   logger.info("Initialized platform Postgres client (postgres.js)", {
@@ -204,7 +218,7 @@ export function getPgDirectDb(): MakoPgDb {
     idle_timeout: 30,
     connect_timeout: connectTimeoutSec,
     prepare: !connectionString.includes("-pooler"),
-    ssl: local ? false : "require",
+    ssl: resolvePgSslOption(connectionString),
   });
   directDb = drizzlePostgresJs(directSql, { schema }) as unknown as MakoPgDb;
   logger.info("Initialized direct platform Postgres client", {

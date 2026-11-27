@@ -163,3 +163,24 @@ export async function reapAllRegisteredTables(
 
   return { results, errors };
 }
+
+/**
+ * Reap all registered tables and throw an aggregated error if any table failed.
+ * Remaining tables still reap before throwing so one broken table never blocks
+ * healthy tables, while Inngest retries and alerts on the failure.
+ */
+export async function reapAllRegisteredTablesOrThrow(
+  options: { db?: MakoPgDb; now?: Date } = {},
+): Promise<{ results: TtlReapTableResult[]; errors: Record<string, string> }> {
+  const outcome = await reapAllRegisteredTables(options);
+  const failedEntries = Object.entries(outcome.errors);
+  if (failedEntries.length > 0) {
+    const details = failedEntries
+      .map(([table, msg]) => `${table}: ${msg}`)
+      .join("; ");
+    throw new Error(
+      `TTL reaper failed for ${failedEntries.length} table(s): ${details}`,
+    );
+  }
+  return outcome;
+}

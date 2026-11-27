@@ -9,12 +9,22 @@
  * Domain repositories register their idempotent replay handlers via
  * `registerSyncRetryHandler(domain, handler)` during Phases 1–3.
  */
+import { NonRetriableError } from "inngest";
 import { inngest } from "../../client";
 import { loggers } from "../../../logging";
 import type { SyncRetryEventData } from "../../../migration/types";
 
 const logger = loggers.inngest("migration-sync-retry");
 
+/**
+ * Domain replay handler for failed secondary dual-writes.
+ *
+ * Implementations MUST be idempotent and respect `data.idempotencyKey` and
+ * `data.updatedAt` (for example via SQL `updated_at` guards or
+ * `isSyncRetryStale()`) so a delayed replay or timed-out original write that
+ * eventually committed can never double-apply `$inc` rollups or overwrite a
+ * newer record.
+ */
 export type SyncRetryHandler = (data: SyncRetryEventData) => Promise<void>;
 
 const retryHandlers = new Map<string, SyncRetryHandler>();
@@ -42,30 +52,55 @@ export function clearSyncRetryHandlersForTests(): void {
   retryHandlers.clear();
 }
 
-async function dispatchSyncRetry(
+/**
+ * Return true when a retry event's `updatedAt` timestamp is strictly older than
+ * the target record's current `updatedAt`, indicating a newer write has already
+ * landed and this delayed replay must be skipped.
+ */
+export function isSyncRetryStale(
+  eventUpdatedAt: string | Date | undefined | null,
+  currentUpdatedAt: string | Date | undefined | null,
+): boolean {
+  if (!eventUpdatedAt || !currentUpdatedAt) return false;
+  const eventMs =
+    eventUpdatedAt instanceof Date
+      ? eventUpdatedAt.getTime()
+      : Date.parse(eventUpdatedAt);
+  const currentMs =
+    currentUpdatedAt instanceof Date
+      ? currentUpdatedAt.getTime()
+      : Date.parse(currentUpdatedAt);
+  if (!Number.isFinite(eventMs) || !Number.isFinite(currentMs)) {
+    return false;
+  }
+  return eventMs < currentMs;
+}
+
+export async function dispatchSyncRetry(
   target: "pg" | "mongo",
   data: SyncRetryEventData,
 ): Promise<{
-  status: "replayed" | "no_handler";
+  status: "replayed";
   domain: string;
   entityId: string;
+  idempotencyKey?: string;
 }> {
   const handler = getSyncRetryHandler(target, data.domain);
   if (!handler) {
-    logger.warn(
-      "No sync-retry handler registered for domain; skipping replay",
+    const message =
+      `No sync-retry handler registered for target "${target}", domain "${data.domain}" ` +
+      `(operation="${data.operation}", entityId="${data.entityId}")`;
+    logger.error(
+      "No sync-retry handler registered for domain; failing run so event can be replayed",
       {
         target,
         domain: data.domain,
         operation: data.operation,
         entityId: data.entityId,
+        idempotencyKey: data.idempotencyKey,
       },
     );
-    return {
-      status: "no_handler",
-      domain: data.domain,
-      entityId: data.entityId,
-    };
+    throw new NonRetriableError(message);
   }
 
   await handler(data);
@@ -74,15 +109,27 @@ async function dispatchSyncRetry(
     domain: data.domain,
     operation: data.operation,
     entityId: data.entityId,
+    idempotencyKey: data.idempotencyKey,
   });
-  return { status: "replayed", domain: data.domain, entityId: data.entityId };
+  return {
+    status: "replayed",
+    domain: data.domain,
+    entityId: data.entityId,
+    idempotencyKey: data.idempotencyKey,
+  };
 }
+
+export const MIGRATION_SYNC_RETRY_CONCURRENCY_KEY =
+  "event.data.domain + ':' + event.data.entityId";
 
 export const migrationPgSyncRetryFunction = inngest.createFunction(
   {
     id: "migration-pg-sync-retry",
     name: "Migration: retry secondary Postgres write",
-    concurrency: { limit: 10 },
+    concurrency: [
+      { limit: 1, key: MIGRATION_SYNC_RETRY_CONCURRENCY_KEY },
+      { limit: 10 },
+    ],
     retries: 5,
     triggers: { event: "migration/pg-sync-retry" },
   },
@@ -96,7 +143,10 @@ export const migrationMongoSyncRetryFunction = inngest.createFunction(
   {
     id: "migration-mongo-sync-retry",
     name: "Migration: retry secondary MongoDB write",
-    concurrency: { limit: 10 },
+    concurrency: [
+      { limit: 1, key: MIGRATION_SYNC_RETRY_CONCURRENCY_KEY },
+      { limit: 10 },
+    ],
     retries: 5,
     triggers: { event: "migration/mongo-sync-retry" },
   },

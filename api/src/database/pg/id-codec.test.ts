@@ -1,4 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import type { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate as drizzlePgliteMigrate } from "drizzle-orm/pglite/migrator";
@@ -10,6 +12,7 @@ import {
   isLocalPostgres,
   resetPgTestDb,
   resolvePgDriver,
+  resolvePgSslOption,
 } from "./client";
 import {
   generateObjectIdHex,
@@ -313,6 +316,75 @@ describe("id-codec (RFC 9562 UUIDv8 bijection)", () => {
       ),
     ).toBe("postgres");
 
+    // TLS certificate verification: remote hosts MUST use verify-full (never insecure "require")
+    expect(
+      resolvePgSslOption("postgresql://mako:mako@localhost:5433/mako"),
+    ).toBe(false);
+    expect(
+      resolvePgSslOption("postgresql://mako:mako@127.0.0.1:5433/mako"),
+    ).toBe(false);
+    expect(resolvePgSslOption("postgresql://mako:mako@[::1]:5433/mako")).toBe(
+      false,
+    );
+    expect(
+      resolvePgSslOption("postgresql://mako:mako@postgres-platform:5432/mako"),
+    ).toBe(false);
+    expect(
+      resolvePgSslOption(
+        "postgresql://u:p@ep-cool-pooler.neon.tech/neondb?sslmode=require",
+      ),
+    ).toBe("verify-full");
+    expect(
+      resolvePgSslOption("postgresql://u:p@ep-cool.neon.tech/neondb"),
+    ).toBe("verify-full");
+
+    // Verify Drizzle meta/ snapshots exist for every journal entry and chain cleanly
+    const migrationsDir = resolveMigrationsFolder();
+    const journal = JSON.parse(
+      fs.readFileSync(
+        path.join(migrationsDir, "meta", "_journal.json"),
+        "utf8",
+      ),
+    ) as { entries: Array<{ idx: number; tag: string }> };
+    let expectedPrevId = "00000000-0000-0000-0000-000000000000";
+    for (const entry of journal.entries) {
+      const snapFile = path.join(
+        migrationsDir,
+        "meta",
+        `${String(entry.idx).padStart(4, "0")}_snapshot.json`,
+      );
+      expect(fs.existsSync(snapFile)).toBe(true);
+      const snap = JSON.parse(fs.readFileSync(snapFile, "utf8")) as {
+        id: string;
+        prevId: string;
+        dialect: string;
+        tables: Record<
+          string,
+          {
+            columns: Record<string, unknown>;
+            indexes: Record<string, unknown>;
+          }
+        >;
+      };
+      expect(snap.dialect).toBe("postgresql");
+      expect(snap.prevId).toBe(expectedPrevId);
+      expectedPrevId = snap.id;
+      if (entry.idx === 1) {
+        expect(Object.keys(snap.tables).sort()).toEqual([
+          "public.migration_backfill_jobs",
+          "public.migration_domain_state",
+          "public.migration_quarantine",
+          "public.migration_tombstones",
+        ]);
+        expect(
+          snap.tables["public.migration_backfill_jobs"].columns,
+        ).toHaveProperty("lease_token");
+        expect(
+          snap.tables["public.migration_quarantine"].indexes,
+        ).toHaveProperty("uq_migration_quarantine_unresolved");
+      }
+    }
+
     // normalizeEntityId lowercases UUID/ObjectId hex but preserves case-sensitive base64url text PKs
     expect(normalizeEntityId("6745F6F4A1B2C3D4E5F60718")).toBe(
       "6745f6f4a1b2c3d4e5f60718",
@@ -501,5 +573,34 @@ describe("id-codec (RFC 9562 UUIDv8 bijection)", () => {
 
     // Reject empty string
     expect(() => legacyUserIdToUuidv7("")).toThrow();
+  });
+
+  it("stays strictly monotonic across 12-bit rand_a counter rollovers when called repeatedly with the same explicit nowMs", () => {
+    const fixedMs = Date.UTC(2026, 10, 27, 9, 0, 0, 0);
+    // 12-bit rand_a seeds in [0, 2047] and rolls over at 4096, so 6,000 calls
+    // at the exact same nowMs guarantees multiple rollovers.
+    let prev = "";
+    let sawRollover = false;
+    for (let i = 0; i < 6_000; i++) {
+      const id = generateUuidv7(fixedMs);
+      expect(isUuidv7(id)).toBe(true);
+      if (prev) {
+        expect(id > prev).toBe(true);
+      }
+      const ts = uuidv7Timestamp(id)?.getTime() ?? -1;
+      if (ts > fixedMs) {
+        sawRollover = true;
+      }
+      prev = id;
+    }
+    expect(sawRollover).toBe(true);
+
+    // Advancing nowMs by +1ms when emitted timestamp already rolled past fixedMs + 1 stays monotonic
+    const nextPlusOne = generateUuidv7(fixedMs + 1);
+    expect(nextPlusOne > prev).toBe(true);
+
+    // Passing a genuinely distinct historical timestamp afterwards still honors the explicit timestamp
+    const epochId = generateUuidv7(0);
+    expect(uuidv7Timestamp(epochId)?.getTime()).toBe(0);
   });
 });

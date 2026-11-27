@@ -8,7 +8,7 @@ import { inngest } from "../../client";
 import { hasPostgresConfig } from "../../../database/pg/client";
 import {
   listTtlRules,
-  reapAllRegisteredTables,
+  reapAllRegisteredTablesOrThrow,
 } from "../../../migration/ttl-reaper";
 
 export const migrationPgTtlReaperFunction = inngest.createFunction(
@@ -26,6 +26,8 @@ export const migrationPgTtlReaperFunction = inngest.createFunction(
     if (listTtlRules().length === 0) {
       return { skipped: "no TTL rules registered" };
     }
-    return step.run("reap-expired-rows", () => reapAllRegisteredTables());
+    return step.run("reap-expired-rows", () =>
+      reapAllRegisteredTablesOrThrow(),
+    );
   },
 );

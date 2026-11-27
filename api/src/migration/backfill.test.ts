@@ -8,9 +8,12 @@ import { runPgliteMigrations } from "../database/pg/migrate";
 import * as schema from "../database/pg/schema";
 import { createTestPglite } from "../database/pg/test-pglite";
 import {
+  BackfillJobLockedError,
+  BackfillLeaseLostError,
   clearBackfillRegistryForTests,
   currentUtcDay,
   isClosedUtcDay,
+  notTombstonedSql,
   registerBackfillDomain,
   runBackfill,
   type BackfillDomainHandler,
@@ -99,7 +102,11 @@ describe("backfill engine", () => {
         for (const item of items) {
           const res = await targetDb.execute(sql`
             INSERT INTO test_backfill_items (id, title, updated_at)
-            VALUES (${item.doc.uuid}::uuid, ${item.doc.title}, ${item.doc.updatedAt.toISOString()}::timestamptz)
+            SELECT
+              ${item.doc.uuid}::uuid,
+              ${item.doc.title},
+              ${item.doc.updatedAt.toISOString()}::timestamptz
+            WHERE ${notTombstonedSql("test_backfill_items", item.doc.uuid)}
             ON CONFLICT (id) DO UPDATE SET
               title = EXCLUDED.title,
               updated_at = EXCLUDED.updated_at
@@ -222,5 +229,229 @@ describe("backfill engine", () => {
     expect(isClosedUtcDay("2026-11-26", now)).toBe(false);
     expect(isClosedUtcDay("2026-11-27", now)).toBe(false);
     expect(isClosedUtcDay("invalid", now)).toBe(false);
+  });
+
+  it("prevents resurrecting rows tombstoned during validate() or right before SQL INSERT", async () => {
+    const docs = makeDocs(3);
+    const deletedDuringValidate = docs[0];
+    const deletedDuringUpsert = docs[1];
+    const survivor = docs[2];
+
+    const base = buildHandler(docs);
+    const upsertSeenIds: string[] = [];
+
+    const summary = await runBackfill({
+      domain: "apps_metadata",
+      batchSize: 10,
+      db,
+      handler: {
+        ...base,
+        async validate(item, targetDb) {
+          // Simulate a live delete arriving AFTER the initial tombstone scan while validate() runs
+          if (item.doc.uuid === deletedDuringValidate.uuid) {
+            await recordMigrationTombstone(
+              "test_backfill_items",
+              deletedDuringValidate.uuid,
+              targetDb,
+            );
+          }
+          return { ok: true };
+        },
+        async upsertBatch(items, targetDb) {
+          upsertSeenIds.push(...items.map(i => i.doc.uuid));
+          // Simulate a live delete arriving even AFTER transactional pre-upsert re-check,
+          // right before the SQL INSERT executes -> notTombstonedSql blocks resurrection atomically!
+          await recordMigrationTombstone(
+            "test_backfill_items",
+            deletedDuringUpsert.uuid,
+            targetDb,
+          );
+          return base.upsertBatch(items, targetDb);
+        },
+      },
+    });
+
+    expect(summary.status).toBe("completed");
+    // deletedDuringValidate was filtered out by the transactional re-check before upsertBatch
+    expect(upsertSeenIds).not.toContain(deletedDuringValidate.uuid);
+    expect(summary.rowsSkippedTombstone).toBe(1);
+    // deletedDuringUpsert was blocked atomically by notTombstonedSql inside INSERT ... SELECT
+    expect(summary.rowsUpserted).toBe(1);
+
+    const rows = await pg.query<{ id: string }>(
+      "SELECT id::text FROM test_backfill_items",
+    );
+    expect(rows.rows.map(r => r.id)).toEqual([survivor.uuid]);
+  });
+
+  it("prevents concurrent backfill runs via atomic lease claim, supports stale lease recovery, and aborts on lease loss", async () => {
+    const docs = makeDocs(4);
+    const base = buildHandler(docs);
+
+    let batch1Started!: () => void;
+    let releaseBatch1!: () => void;
+    const batch1StartedPromise = new Promise<void>(resolve => {
+      batch1Started = resolve;
+    });
+    const batch1Gate = new Promise<void>(resolve => {
+      releaseBatch1 = resolve;
+    });
+
+    // Start run 1 and pause it mid-flight inside fetchBatch
+    const run1Promise = runBackfill({
+      domain: "apps_metadata",
+      batchSize: 2,
+      db,
+      handler: {
+        ...base,
+        async fetchBatch(params) {
+          if (params.afterCursor === null) {
+            batch1Started();
+            await batch1Gate;
+          }
+          return base.fetchBatch(params);
+        },
+      },
+    });
+
+    await batch1StartedPromise;
+
+    // Concurrent run 2 on the same (domain, scope) MUST be rejected without touching run 1's row
+    await expect(
+      runBackfill({
+        domain: "apps_metadata",
+        batchSize: 2,
+        db,
+        handler: base,
+      }),
+    ).rejects.toThrow(BackfillJobLockedError);
+
+    // Release run 1 -> completes cleanly with exact counters
+    releaseBatch1();
+    const run1 = await run1Promise;
+    expect(run1.status).toBe("completed");
+    expect(run1.rowsProcessed).toBe(4);
+    expect(run1.rowsUpserted).toBe(4);
+
+    // Stale lease recovery: simulate a crashed worker stuck in `running` 20 minutes ago
+    const staleAt = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    await pg.query(
+      `UPDATE migration_backfill_jobs
+       SET status = 'running', lease_token = 'crashed-worker', last_cursor = NULL,
+           rows_processed = 0, rows_upserted = 0, updated_at = $1::timestamptz
+       WHERE domain = 'apps_metadata' AND scope_key = 'global'`,
+      [staleAt],
+    );
+
+    const recovered = await runBackfill({
+      domain: "apps_metadata",
+      batchSize: 10,
+      leaseTimeoutMs: 60_000,
+      db,
+      handler: base,
+    });
+    expect(recovered.status).toBe("completed");
+    expect(recovered.rowsProcessed).toBe(4);
+
+    // Lease loss CAS: if another worker steals lease_token mid-batch, the old worker aborts
+    // with BackfillLeaseLostError, rolls back its batch writes, and does NOT clobber the new owner's row
+    await pg.exec(
+      "DELETE FROM test_backfill_items; DELETE FROM migration_backfill_jobs;",
+    );
+    let stoleLease = false;
+    await expect(
+      runBackfill({
+        domain: "apps_metadata",
+        batchSize: 2,
+        db,
+        handler: {
+          ...base,
+          async validate(item, targetDb) {
+            if (!stoleLease) {
+              stoleLease = true;
+              await targetDb.execute(sql`
+                UPDATE migration_backfill_jobs
+                SET lease_token = 'new-owner-token'
+                WHERE domain = 'apps_metadata' AND scope_key = 'global'
+              `);
+            }
+            return { ok: true };
+          },
+        },
+      }),
+    ).rejects.toThrow(BackfillLeaseLostError);
+
+    const jobAfterSteal = await db.select().from(schema.migrationBackfillJobs);
+    expect(jobAfterSteal[0].status).toBe("running");
+    expect(jobAfterSteal[0].leaseToken).toBe("new-owner-token");
+    // Batch upserts were rolled back when CAS failed
+    const itemsAfterSteal = await pg.query("SELECT * FROM test_backfill_items");
+    expect(itemsAfterSteal.rows).toHaveLength(0);
+  });
+
+  it("deduplicates unresolved migration_quarantine rows across retries and --reset-cursor runs", async () => {
+    const docs = makeDocs(3);
+    docs[0].orphan = true;
+    const base = buildHandler(docs);
+
+    // First attempt: quarantines docs[0], then upsertBatch fails before cursor checkpoint is saved
+    let failOnce = true;
+    await expect(
+      runBackfill({
+        domain: "apps_metadata",
+        batchSize: 10,
+        db,
+        handler: {
+          ...base,
+          async upsertBatch(items, targetDb) {
+            if (failOnce) {
+              failOnce = false;
+              throw new Error("transient upsert error");
+            }
+            return base.upsertBatch(items, targetDb);
+          },
+        },
+      }),
+    ).rejects.toThrow(/transient upsert error/);
+
+    // Transaction rolled back the failed batch cleanly -> 0 leaked quarantine rows
+    expect(await db.select().from(schema.migrationQuarantine)).toHaveLength(0);
+
+    // Resume after failure: quarantines docs[0] once cleanly (rowsQuarantined === 1)
+    const resumed = await runBackfill({
+      domain: "apps_metadata",
+      batchSize: 10,
+      db,
+      handler: base,
+    });
+    expect(resumed.status).toBe("completed");
+    expect(resumed.rowsQuarantined).toBe(1);
+    expect(await db.select().from(schema.migrationQuarantine)).toHaveLength(1);
+
+    // --reset-cursor re-run: partial unique index + onConflictDoNothing keeps 1 row and 0 duplicates
+    const resetRun = await runBackfill({
+      domain: "apps_metadata",
+      batchSize: 10,
+      resetCursor: true,
+      db,
+      handler: base,
+    });
+    expect(resetRun.status).toBe("completed");
+    expect(resetRun.rowsQuarantined).toBe(0);
+    expect(await db.select().from(schema.migrationQuarantine)).toHaveLength(1);
+
+    // Once resolved, a subsequent failure for the same doc CAN insert a fresh quarantine row
+    await pg.exec(
+      "UPDATE migration_quarantine SET resolved_at = now() WHERE resolved_at IS NULL;",
+    );
+    const afterResolve = await runBackfill({
+      domain: "apps_metadata",
+      batchSize: 10,
+      resetCursor: true,
+      db,
+      handler: base,
+    });
+    expect(afterResolve.rowsQuarantined).toBe(1);
+    expect(await db.select().from(schema.migrationQuarantine)).toHaveLength(2);
   });
 });

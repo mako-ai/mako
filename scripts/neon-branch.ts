@@ -23,9 +23,11 @@ import {
   copyFileSync,
   existsSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
 } from "node:fs";
 import { userInfo } from "node:os";
+import { fileURLToPath } from "node:url";
 
 const ENV_FILE = ".env";
 const ENV_TEMPLATE = ".env.example";
@@ -35,6 +37,22 @@ const PARENT_BRANCH_DEFAULT = process.env.NEON_PARENT_BRANCH || "staging";
 const GCP_PROJECT = process.env.GCP_PROJECT || "revops-462013";
 const PROD_POOLED_SECRET = "POSTGRES_URL";
 const PROD_DIRECT_SECRET = "POSTGRES_DIRECT_URL";
+
+/**
+ * Shared/protected Neon branch names that `create-dev`, `reset-dev`, and
+ * `resolve-integration` must NEVER reset, delete, or write into local `.env`.
+ */
+export const PROTECTED_BRANCH_NAMES: ReadonlySet<string> = new Set([
+  "main",
+  "master",
+  "prod",
+  "production",
+  "staging",
+  "integration",
+  PARENT_BRANCH_DEFAULT.toLowerCase(),
+]);
+
+const DEV_BRANCH_NAME_RE = /^dev-[a-z0-9][a-z0-9-]*$/;
 
 type Command =
   | "create-dev"
@@ -72,12 +90,70 @@ function neonctl(args: string[], silent = true): string {
   return run("neonctl", args, silent);
 }
 
-function sanitizeBranchSlug(raw: string): string {
+export function sanitizeBranchSlug(raw: string): string {
   return raw
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 48);
+}
+
+/**
+ * Reject shared/protected branch names and require a `dev-` prefix for
+ * `create-dev` and `reset-dev` so operators can never wipe `staging` or point
+ * local `.env` at production (`main`).
+ */
+export function assertSafeDevBranchName(
+  branch: string,
+  command: "create-dev" | "reset-dev",
+  defaultBranchName?: string,
+): void {
+  const lower = branch.toLowerCase();
+  if (!lower) {
+    throw new Error(`${command}: branch name cannot be empty.`);
+  }
+  if (
+    PROTECTED_BRANCH_NAMES.has(lower) ||
+    (defaultBranchName && lower === defaultBranchName.toLowerCase())
+  ) {
+    throw new Error(
+      `${command}: refusing protected/shared branch "${branch}". ` +
+        `Developer commands require a "dev-" prefix (e.g. dev-alice).`,
+    );
+  }
+  if (!DEV_BRANCH_NAME_RE.test(lower)) {
+    throw new Error(
+      `${command}: branch name "${branch}" must start with "dev-" (e.g. dev-alice) ` +
+        `to prevent modifying shared or protected branches.`,
+    );
+  }
+}
+
+export function assertNotProtectedBranch(
+  branch: string,
+  command: string,
+  defaultBranchName?: string,
+): void {
+  const lower = branch.toLowerCase();
+  if (
+    !lower ||
+    PROTECTED_BRANCH_NAMES.has(lower) ||
+    (defaultBranchName && lower === defaultBranchName.toLowerCase())
+  ) {
+    throw new Error(
+      `${command}: refusing protected/shared branch "${branch}".`,
+    );
+  }
+}
+
+export function isSensitiveOutputKey(key: string): boolean {
+  const lower = key.toLowerCase();
+  return (
+    lower.includes("url") ||
+    lower.includes("password") ||
+    lower.includes("secret") ||
+    lower.includes("token")
+  );
 }
 
 function unquote(value: string): string {
@@ -220,8 +296,11 @@ function getConnectionString(
   return neonctl(args);
 }
 
-function emitOutput(key: string, value: string): void {
+export function emitOutput(key: string, value: string): void {
   if (process.env.GITHUB_OUTPUT) {
+    if (isSensitiveOutputKey(key)) {
+      console.info(`::add-mask::${value}`);
+    }
     appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
   } else {
     console.info(`${key}=${value}`);
@@ -317,6 +396,13 @@ function main(): void {
 
     case "create-dev": {
       const branch = arg ? sanitizeBranchSlug(arg) : defaultDevBranchName();
+      assertSafeDevBranchName(branch, "create-dev");
+      const existing = findBranch(projectId, branch);
+      if (existing?.default) {
+        throw new Error(
+          `create-dev: refusing default Neon branch "${branch}".`,
+        );
+      }
       ensureBranch(projectId, branch);
       const pooled = getConnectionString(projectId, branch, true);
       const direct = getConnectionString(projectId, branch, false);
@@ -332,14 +418,19 @@ function main(): void {
 
     case "reset-dev": {
       const branch = arg ? sanitizeBranchSlug(arg) : defaultDevBranchName();
-      const parent = resolveParentBranch(projectId);
-      if (findBranch(projectId, branch)) {
-        console.info(`Resetting Neon branch ${branch} to parent ${parent}...`);
+      assertSafeDevBranchName(branch, "reset-dev");
+      const existing = findBranch(projectId, branch);
+      if (existing?.default) {
+        throw new Error(`reset-dev: refusing default Neon branch "${branch}".`);
+      }
+      if (existing) {
+        console.info(`Resetting Neon branch ${branch} to its parent branch...`);
         neonctl(
           ["branches", "reset", branch, "--project-id", projectId, "--parent"],
           false,
         );
       } else {
+        const parent = resolveParentBranch(projectId);
         ensureBranch(projectId, branch, parent);
       }
       const pooled = getConnectionString(projectId, branch, true);
@@ -374,9 +465,15 @@ function main(): void {
       }
       const slug = sanitizeBranchSlug(arg);
       const branch = slug.startsWith("preview-") ? slug : `preview-pr-${slug}`;
-      if (!findBranch(projectId, branch)) {
+      const existing = findBranch(projectId, branch);
+      if (!existing) {
         console.info(`Neon branch ${branch} does not exist (already deleted).`);
         return;
+      }
+      if (existing.default) {
+        throw new Error(
+          `delete-preview: refusing default Neon branch "${branch}".`,
+        );
       }
       neonctl(["branches", "delete", branch, "--project-id", projectId], false);
       console.info(`Deleted Neon preview branch ${branch}.`);
@@ -387,6 +484,13 @@ function main(): void {
       const branch = arg
         ? sanitizeBranchSlug(arg)
         : `ci-integration-${Date.now().toString(36)}`;
+      assertNotProtectedBranch(branch, "resolve-integration");
+      const existing = findBranch(projectId, branch);
+      if (existing?.default) {
+        throw new Error(
+          `resolve-integration: refusing default Neon branch "${branch}".`,
+        );
+      }
       ensureBranch(projectId, branch);
       emitOutput("branch", branch);
       emitOutput("postgres_url", getConnectionString(projectId, branch, true));
@@ -420,12 +524,26 @@ function main(): void {
   }
 }
 
-try {
-  main();
-} catch (error) {
-  console.error(
-    "[neon-branch] Error:",
-    error instanceof Error ? error.message : String(error),
-  );
-  process.exitCode = 1;
+const isDirectExecution = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return (
+      realpathSync(process.argv[1]) ===
+      realpathSync(fileURLToPath(import.meta.url))
+    );
+  } catch {
+    return false;
+  }
+})();
+
+if (isDirectExecution) {
+  try {
+    main();
+  } catch (error) {
+    console.error(
+      "[neon-branch] Error:",
+      error instanceof Error ? error.message : String(error),
+    );
+    process.exitCode = 1;
+  }
 }

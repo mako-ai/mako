@@ -282,10 +282,14 @@ export function uuidv7Timestamp(uuid: string): Date | null {
 
 // Separate monotonic states for default wall-clock calls vs explicit `nowMs`
 // calls so passing a future or epoch-0 timestamp never poisons or resets
-// wall-clock monotonicity (RFC 9562 §6.2).
+// wall-clock monotonicity (RFC 9562 §6.2). For explicit calls, track both the
+// requested millisecond and the emitted millisecond (which may advance past
+// requestedMs on 12-bit `rand_a` rollover) so repeated calls at the same
+// `nowMs` never step backwards after rollover.
 let lastClockTsMs = -1;
 let lastClockRandA = 0;
-let lastExplicitTsMs = -1;
+let lastExplicitRequestedMs = -1;
+let lastExplicitEmittedTsMs = -1;
 let lastExplicitRandA = 0;
 
 /**
@@ -295,8 +299,8 @@ let lastExplicitRandA = 0;
  * - Default (omitted `nowMs`): uses `Date.now()` and guards against wall-clock
  *   regressions so generated IDs are strictly monotonic in-process.
  * - Explicit `nowMs`: honors the requested millisecond timestamp while staying
- *   strictly monotonic across repeated calls at the same `nowMs`, without
- *   mutating the wall-clock monotonic state.
+ *   strictly monotonic across repeated calls at the same `nowMs` (even across
+ *   12-bit counter rollovers), without mutating the wall-clock monotonic state.
  */
 export function generateUuidv7(nowMs?: number): string {
   const explicit = nowMs !== undefined;
@@ -309,8 +313,13 @@ export function generateUuidv7(nowMs?: number): string {
         `Invalid UUIDv7 timestamp (expected 0..${MAX_UUIDV7_TS_MS}): ${String(nowMs)}`,
       );
     }
-    tsMs = Math.floor(nowMs);
-    if (tsMs === lastExplicitTsMs) {
+    const requestedMs = Math.floor(nowMs);
+    if (
+      lastExplicitRequestedMs >= 0 &&
+      requestedMs >= lastExplicitRequestedMs &&
+      requestedMs <= lastExplicitEmittedTsMs
+    ) {
+      tsMs = lastExplicitEmittedTsMs;
       randA = lastExplicitRandA + 1;
       if (randA > 0xfff) {
         tsMs = Math.min(MAX_UUIDV7_TS_MS, tsMs + 1);
@@ -318,9 +327,11 @@ export function generateUuidv7(nowMs?: number): string {
       }
     } else {
       // Clear the top bit of the 12-bit seed so same-ms increments have >= 2048 steps before rollover.
+      tsMs = requestedMs;
       randA = randomBytes(2).readUInt16BE(0) & 0x07ff;
     }
-    lastExplicitTsMs = tsMs;
+    lastExplicitRequestedMs = requestedMs;
+    lastExplicitEmittedTsMs = tsMs;
     lastExplicitRandA = randA;
   } else {
     tsMs = Math.max(0, Math.min(MAX_UUIDV7_TS_MS, Math.floor(Date.now())));

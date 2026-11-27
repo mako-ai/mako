@@ -12,7 +12,8 @@ import fs from "fs";
 import path from "path";
 import type { Context } from "hono";
 import { connectDatabase } from "./database/schema";
-import { closePgConnections } from "./database/pg/client";
+import { closePgConnections, hasPostgresConfig } from "./database/pg/client";
+import { migrationRouter } from "./migration/router";
 import { ensureFlowExecutionTtlIndex } from "./database/flow-execution-retention";
 import {
   injectOgTags,
@@ -508,6 +509,10 @@ async function main(): Promise<void> {
     });
   });
 
+  if (hasPostgresConfig()) {
+    void migrationRouter.startInvalidationListener();
+  }
+
   // Fill the shared store with any missing card / link-preview variants so
   // a crawler's first hit on a fresh instance is a store read, not a clone.
   scheduleThumbnailBackfillOnBoot();
@@ -603,7 +608,8 @@ async function gracefulShutdown(
       logger.info("Mongoose connection closed");
     }
 
-    // Close platform Postgres connections if opened
+    // Stop migration state pub/sub listener and close platform Postgres connections if opened
+    await migrationRouter.stopInvalidationListener();
     await closePgConnections();
   } catch (error) {
     logger.error("Error during graceful shutdown", { error });
