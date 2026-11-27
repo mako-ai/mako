@@ -166,6 +166,28 @@ jobs:
               )
               with urllib.request.urlopen(del_req, timeout=20) as del_resp:
                   print(f"Deleted Neon branch {branch_name} ({target['id']}): HTTP {del_resp.status}")
+
+              # Garbage-collect any `test-pre-reset-*` snapshot branch that now has no child branches.
+              req2 = urllib.request.Request(f"https://console.neon.tech/api/v2/projects/{proj_id}/branches", headers=headers)
+              with urllib.request.urlopen(req2, timeout=20) as resp2:
+                  remaining = json.loads(resp2.read().decode())["branches"]
+              parent_ids = {b.get("parent_id") for b in remaining if b.get("parent_id")}
+              for snap in remaining:
+                  sname = snap.get("name", "")
+                  if not sname.startswith("test-pre-reset-") or snap.get("default") or snap.get("protected"):
+                      continue
+                  if snap["id"] in parent_ids:
+                      continue
+                  snap_del = urllib.request.Request(
+                      f"https://console.neon.tech/api/v2/projects/{proj_id}/branches/{snap['id']}",
+                      headers=headers,
+                      method="DELETE",
+                  )
+                  try:
+                      with urllib.request.urlopen(snap_del, timeout=20) as sresp:
+                          print(f"Swept childless snapshot branch {sname} ({snap['id']}): HTTP {sresp.status}")
+                  except Exception as exc:
+                      print(f"::warning::Failed to sweep snapshot branch {sname}: {exc}")
           PY
 
       - name: Comment on PR
@@ -336,4 +358,26 @@ jobs:
                       print(f"Deleted stale Neon branch {name} ({b['id']}): HTTP {del_resp.status}")
               except Exception as e:
                   print(f"::warning::Failed to delete Neon branch {name}: {e}")
+
+          # Sweep any `test-pre-reset-*` snapshot branches that no longer have child branches.
+          req2 = urllib.request.Request(f"https://console.neon.tech/api/v2/projects/{proj_id}/branches", headers=headers)
+          with urllib.request.urlopen(req2, timeout=20) as resp2:
+              remaining = json.loads(resp2.read().decode())["branches"]
+          parent_ids = {b.get("parent_id") for b in remaining if b.get("parent_id")}
+          for snap in remaining:
+              sname = snap.get("name", "")
+              if not sname.startswith("test-pre-reset-") or snap.get("default") or snap.get("protected"):
+                  continue
+              if snap["id"] in parent_ids:
+                  continue
+              snap_del = urllib.request.Request(
+                  f"https://console.neon.tech/api/v2/projects/{proj_id}/branches/{snap['id']}",
+                  headers=headers,
+                  method="DELETE",
+              )
+              try:
+                  with urllib.request.urlopen(snap_del, timeout=20) as sresp:
+                      print(f"Swept childless snapshot branch {sname} ({snap['id']}): HTTP {sresp.status}")
+              except Exception as exc:
+                  print(f"::warning::Failed to sweep snapshot branch {sname}: {exc}")
           PY

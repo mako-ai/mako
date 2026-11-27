@@ -1,0 +1,117 @@
+name: Reset Neon Test Branch
+
+on:
+  schedule:
+    # Nightly at 03:00 UTC — instantly reset the shared Neon `test` branch
+    # to the latest `production` state (copy-on-write restore, ~1s).
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reset-neon-test
+  cancel-in-progress: false
+
+jobs:
+  reset-test-branch:
+    name: Reset Neon test branch from production
+    runs-on: ubuntu-latest
+    env:
+      NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+      NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+    steps:
+      - name: Reset Neon test branch in place from production
+        run: |
+          if [ -z "${NEON_API_KEY}" ] || [ -z "${NEON_PROJECT_ID}" ]; then
+            echo "::error::NEON_API_KEY and NEON_PROJECT_ID secrets must be configured"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import datetime, json, os, time, urllib.error, urllib.request
+
+          api_key = os.environ["NEON_API_KEY"]
+          proj_id = os.environ["NEON_PROJECT_ID"]
+
+          def neon(method, path, body=None):
+              data = json.dumps(body).encode() if body is not None else None
+              req = urllib.request.Request(
+                  f"https://console.neon.tech/api/v2{path}",
+                  data=data,
+                  method=method,
+                  headers={
+                      "Authorization": f"Bearer {api_key}",
+                      "Accept": "application/json",
+                      "Content-Type": "application/json",
+                  },
+              )
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  raw = r.read().decode()
+                  return json.loads(raw) if raw else {}
+
+          branches = neon("GET", f"/projects/{proj_id}/branches").get("branches", [])
+          prod = next((b for b in branches if b.get("default") or b.get("name") == "production"), None)
+          test_branch = next((b for b in branches if b.get("name") == "test"), None)
+
+          if not prod:
+              raise RuntimeError(f"Production branch not found in Neon project {proj_id}")
+          if not test_branch:
+              raise RuntimeError(f"Test branch 'test' not found in Neon project {proj_id}")
+
+          # Explicit safety guards: never reset or mutate production.
+          if test_branch["id"] == prod["id"] or test_branch.get("default") or test_branch.get("protected"):
+              raise RuntimeError(
+                  f"SAFETY ERROR: refusing to reset protected/default branch {test_branch['name']} ({test_branch['id']})"
+              )
+
+          active_children = [b for b in branches if b.get("parent_id") == test_branch["id"]]
+          payload = {"source_branch_id": prod["id"]}
+          preserved_name = None
+          if active_children:
+              ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
+              preserved_name = f"test-pre-reset-{ts}"
+              payload["preserve_under_name"] = preserved_name
+              print(
+                  f"test has {len(active_children)} active child branch(es) "
+                  f"({', '.join(c['name'] for c in active_children)}); "
+                  f"preserving snapshot under {preserved_name} while resetting test"
+              )
+          else:
+              print(f"Resetting Neon branch 'test' ({test_branch['id']}) in place from 'production' ({prod['id']})")
+
+          neon("POST", f"/projects/{proj_id}/branches/{test_branch['id']}/restore", payload)
+
+          for _ in range(30):
+              info = neon("GET", f"/projects/{proj_id}/branches/{test_branch['id']}")["branch"]
+              if info.get("current_state") == "ready":
+                  break
+              time.sleep(2)
+
+          # Sweep any old `test-pre-reset-*` snapshot branches that no longer have child branches.
+          refreshed = neon("GET", f"/projects/{proj_id}/branches").get("branches", [])
+          parent_ids = {b.get("parent_id") for b in refreshed if b.get("parent_id")}
+          swept = []
+          for b in refreshed:
+              name = b.get("name", "")
+              if not name.startswith("test-pre-reset-") or b.get("default") or b.get("protected"):
+                  continue
+              if b["id"] in parent_ids:
+                  continue
+              try:
+                  neon("DELETE", f"/projects/{proj_id}/branches/{b['id']}")
+                  swept.append(name)
+                  print(f"Swept childless snapshot branch {name} ({b['id']})")
+              except Exception as exc:
+                  print(f"::warning::Failed to delete snapshot branch {name}: {exc}")
+
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a") as f:
+                  f.write("## 🧪 Neon `test` Branch Reset Complete\n\n")
+                  f.write("| | |\n|---|---|\n")
+                  f.write(f"| **Branch** | `test` (`{test_branch['id']}`) |\n")
+                  f.write(f"| **Source** | `production` (`{prod['id']}`) |\n")
+                  f.write(f"| **Active PR children preserved** | {len(active_children)}{f' (`{preserved_name}`)' if preserved_name else ''} |\n")
+                  f.write(f"| **Stale snapshots swept** | {len(swept)} |\n")
+          PY

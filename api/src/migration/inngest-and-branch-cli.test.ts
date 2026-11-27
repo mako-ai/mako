@@ -158,6 +158,7 @@ if (args[0] === "branches" && args[1] === "list") {
     try {
       // 1. Refuse protected/shared names and non-`dev-` branches in reset-dev & create-dev
       for (const [cmd, branch] of [
+        ["reset-dev", "test"],
         ["reset-dev", "staging"],
         ["reset-dev", "main"],
         ["reset-dev", "master"],
@@ -165,9 +166,11 @@ if (args[0] === "branches" && args[1] === "list") {
         ["reset-dev", "prod"],
         ["reset-dev", "integration"],
         ["create-dev", "main"],
+        ["create-dev", "test"],
         ["create-dev", "staging"],
         ["create-dev", "custom-branch"],
         ["resolve-integration", "main"],
+        ["resolve-integration", "test"],
         ["resolve-integration", "staging"],
       ]) {
         const res = runCli([cmd, branch]);

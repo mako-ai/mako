@@ -95,8 +95,8 @@ jobs:
             MIGRATIONS_CHANGED="false"
           fi
 
-          # Check git diff for Postgres Drizzle migration changes (triggers isolated Neon branch)
-          PG_MIGRATION_CHANGES=$(git diff origin/master...HEAD --name-only -- 'api/src/database/pg/migrations/**' | wc -l | tr -d ' ')
+          # Check git diff for Postgres Drizzle migration changes (triggers instant per-PR Neon branch)
+          PG_MIGRATION_CHANGES=$(git diff origin/master...HEAD --name-only -- 'api/src/database/pg/migrations/**' 'api/src/database/pg/post-backfill/**' | wc -l | tr -d ' ')
           echo "Found $PG_MIGRATION_CHANGES Postgres migration file(s) changed"
           if [ "$PG_MIGRATION_CHANGES" -gt 0 ]; then
             echo "pg_migrations_changed=true" >> $GITHUB_OUTPUT
@@ -611,12 +611,12 @@ jobs:
             echo "db_url=${{ secrets.STAGING_DATABASE_URL }}" >> "$GITHUB_OUTPUT"
           fi
 
-      # Isolate Postgres on a per-PR Neon branch whenever this preview uses an
-      # ephemeral Mongo DB or modifies Drizzle migrations, so PR previews never
-      # mutate or collide on the shared staging Neon branch.
-      - name: Setup ephemeral Neon branch for PR preview
+      # Instant Neon branch ONLY when this PR modifies Postgres migrations;
+      # otherwise the preview connects directly to the shared Neon `test` branch
+      # (which tracks production and is reset nightly).
+      - name: Setup instant Neon branch for PR preview
         id: ephemeral-pg
-        if: needs.detect-changes.outputs.migrations_changed == 'true' || needs.detect-changes.outputs.rebuild_ephemeral_db == 'true' || needs.detect-changes.outputs.pg_migrations_changed == 'true'
+        if: needs.detect-changes.outputs.pg_migrations_changed == 'true'
         env:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
           NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
@@ -625,8 +625,8 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           if [ -z "${NEON_API_KEY}" ] || [ -z "${NEON_PROJECT_ID}" ]; then
-            echo "NEON_API_KEY/NEON_PROJECT_ID unset; leaving POSTGRES_URL unset on ephemeral preview"
-            echo "using_ephemeral_pg=unset" >> "$GITHUB_OUTPUT"
+            echo "NEON_API_KEY/NEON_PROJECT_ID unset; falling back to Secret Manager test branch"
+            echo "using_ephemeral_pg=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           python3 - <<'PY'
@@ -656,14 +656,17 @@ jobs:
                   return json.loads(raw) if raw else {}
 
           branches = neon("GET", f"/projects/{proj_id}/branches").get("branches", [])
-          staging = next((b for b in branches if b.get("name") == "staging"), None)
-          if not staging:
-              raise RuntimeError(f"Parent branch 'staging' not found in Neon project {proj_id}")
+          test_branch = next((b for b in branches if b.get("name") == "test"), None)
+          if not test_branch:
+              raise RuntimeError(f"Parent branch 'test' not found in Neon project {proj_id}")
+          if test_branch.get("default") or test_branch.get("protected"):
+              raise RuntimeError(f"Refusing to branch previews from protected/default branch '{test_branch.get('name')}'")
 
           # Clean up stale pr-* Neon branches for closed/merged PRs
+          deleted_any = False
           for b in branches:
               bname = b.get("name", "")
-              if not bname.startswith("pr-") or bname == branch_name:
+              if not bname.startswith("pr-") or bname == branch_name or b.get("default") or b.get("protected"):
                   continue
               other_pr = bname[3:]
               if not other_pr.isdigit():
@@ -682,19 +685,23 @@ jobs:
                   print(f"Deleting stale Neon branch {bname} (PR #{other_pr} is {state})")
                   try:
                       neon("DELETE", f"/projects/{proj_id}/branches/{b['id']}")
+                      deleted_any = True
                   except Exception as exc:
                       print(f"Warning: failed to delete stale Neon branch {bname}: {exc}")
 
+          if deleted_any:
+              branches = neon("GET", f"/projects/{proj_id}/branches").get("branches", [])
+
           target = next((b for b in branches if b.get("name") == branch_name), None)
           if target and rebuild:
-              print(f"Recreating Neon branch {branch_name} from staging (rebuild requested)")
+              print(f"Recreating instant Neon branch {branch_name} from test (rebuild requested)")
               neon("DELETE", f"/projects/{proj_id}/branches/{target['id']}")
               target = None
 
           if not target:
-              print(f"Creating ephemeral Neon branch {branch_name} from staging ({staging['id']})")
+              print(f"Creating instant Neon branch {branch_name} from test ({test_branch['id']})")
               created = neon("POST", f"/projects/{proj_id}/branches", {
-                  "branch": {"name": branch_name, "parent_id": staging["id"]},
+                  "branch": {"name": branch_name, "parent_id": test_branch["id"]},
                   "endpoints": [{"type": "read_write"}],
               })
               target = created["branch"]
@@ -717,6 +724,7 @@ jobs:
           print(f"::add-mask::{pg_direct_url}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               out.write("using_ephemeral_pg=true\n")
+              out.write(f"pg_branch={branch_name}\n")
               out.write(f"pg_url={pg_url}\n")
               out.write(f"pg_direct_url={pg_direct_url}\n")
           PY
@@ -726,7 +734,7 @@ jobs:
         env:
           POSTGRES_DIRECT_URL: ${{ steps.ephemeral-pg.outputs.pg_direct_url }}
         run: |
-          if [ -f api/src/migration/cli/migrate.ts ]; then
+          if node -e 'process.exit(require("./api/package.json").scripts?.["pg:migrate"] ? 0 : 1)'; then
             pnpm --filter api run pg:migrate
           else
             echo "Skipping pg:migrate (not present on this commit)"
@@ -761,30 +769,46 @@ jobs:
           SECRET_MOUNTS="HATCHET_ADMIN_PASSWORD=HATCHET_ADMIN_PASSWORD:latest,E2B_API_KEY=E2B_API_KEY:${E2B_KEY_VERSION}"
           PG_ENV_FLAGS=()
           if [ "${USING_EPHEMERAL_PG}" = "true" ]; then
-            echo "Postgres: using isolated ephemeral Neon branch pr-${PR_NUMBER}"
+            echo "Postgres: using instant per-PR Neon branch pr-${PR_NUMBER} (from test)"
             # If this preview was previously deployed with secret-mounted POSTGRES_*
             # env vars, remove those secret mounts first so gcloud run deploy does
             # not fail switching them to literal per-PR branch URLs.
-            EXISTING_SECRETS=$(gcloud run services describe "${SERVICE_NAME}"               --project "${GCP_PROJECT_ID}" --region "${GCP_REGION}"               --format='value(spec.template.spec.containers[0].env[].valueFrom.secretKeyRef.name)' 2>/dev/null || true)
+            EXISTING_SECRETS=$(gcloud run services describe "${SERVICE_NAME}" \
+              --project "${GCP_PROJECT_ID}" --region "${GCP_REGION}" \
+              --format='value(spec.template.spec.containers[0].env[].valueFrom.secretKeyRef.name)' 2>/dev/null || true)
             if echo "${EXISTING_SECRETS}" | grep -qE '(^|;)POSTGRES_(DIRECT_)?URL(;|$)'; then
               echo "Clearing previous Secret Manager POSTGRES_* mounts before switching to ephemeral Neon branch"
-              gcloud run services update "${SERVICE_NAME}"                 --project "${GCP_PROJECT_ID}" --region "${GCP_REGION}"                 --remove-secrets=POSTGRES_URL,POSTGRES_DIRECT_URL --quiet
+              gcloud run services update "${SERVICE_NAME}" \
+                --project "${GCP_PROJECT_ID}" --region "${GCP_REGION}" \
+                --remove-secrets=POSTGRES_URL,POSTGRES_DIRECT_URL --quiet
             fi
             PG_ENV_FLAGS+=(--set-env-vars "POSTGRES_URL=${EPHEMERAL_PG_URL}")
             PG_ENV_FLAGS+=(--set-env-vars "POSTGRES_DIRECT_URL=${EPHEMERAL_PG_DIRECT_URL}")
-          elif [ "${USING_EPHEMERAL_PG}" = "unset" ]; then
-            echo "Postgres: unset on ephemeral preview (NEON_API_KEY/NEON_PROJECT_ID unavailable)"
           else
+            echo "Postgres: connecting to shared Neon test branch (no Postgres migrations in PR)"
+            # If this preview previously had literal per-PR POSTGRES_* env vars
+            # (e.g. a migration commit was later reverted), clear them first so
+            # gcloud run deploy can mount Secret Manager test-branch secrets cleanly.
+            EXISTING_LITERAL_PG=$(gcloud run services describe "${SERVICE_NAME}" \
+              --project "${GCP_PROJECT_ID}" --region "${GCP_REGION}" \
+              --format='json(spec.template.spec.containers[0].env)' 2>/dev/null | \
+              python3 -c 'import json,sys; d=json.load(sys.stdin); envs=d.get("spec",{}).get("template",{}).get("spec",{}).get("containers",[{}])[0].get("env",[]) if isinstance(d,dict) else (d or []); print("yes" if any(e.get("name") in ("POSTGRES_URL","POSTGRES_DIRECT_URL") and "value" in e for e in envs) else "no")' 2>/dev/null || echo "no")
+            if [ "${EXISTING_LITERAL_PG}" = "yes" ]; then
+              echo "Clearing previous literal POSTGRES_* env vars before switching back to shared test branch"
+              gcloud run services update "${SERVICE_NAME}" \
+                --project "${GCP_PROJECT_ID}" --region "${GCP_REGION}" \
+                --remove-env-vars=POSTGRES_URL,POSTGRES_DIRECT_URL --quiet
+            fi
             POSTGRES_URL_VERSION=$(gcloud secrets versions list POSTGRES_URL \
               --project "${GCP_PROJECT_ID}" --filter=state:enabled \
               --sort-by=~createTime --limit=1 --format='value(name.basename())')
             test -n "${POSTGRES_URL_VERSION}"
-            echo "POSTGRES_URL: Secret Manager version ${POSTGRES_URL_VERSION}"
+            echo "POSTGRES_URL (test branch): Secret Manager version ${POSTGRES_URL_VERSION}"
             POSTGRES_DIRECT_URL_VERSION=$(gcloud secrets versions list POSTGRES_DIRECT_URL \
               --project "${GCP_PROJECT_ID}" --filter=state:enabled \
               --sort-by=~createTime --limit=1 --format='value(name.basename())')
             test -n "${POSTGRES_DIRECT_URL_VERSION}"
-            echo "POSTGRES_DIRECT_URL: Secret Manager version ${POSTGRES_DIRECT_URL_VERSION}"
+            echo "POSTGRES_DIRECT_URL (test branch): Secret Manager version ${POSTGRES_DIRECT_URL_VERSION}"
             SECRET_MOUNTS="${SECRET_MOUNTS},POSTGRES_URL=POSTGRES_URL:${POSTGRES_URL_VERSION},POSTGRES_DIRECT_URL=POSTGRES_DIRECT_URL:${POSTGRES_DIRECT_URL_VERSION}"
           fi
           # --project is explicit because the auth action exports CLOUDSDK_CORE_PROJECT
@@ -939,9 +963,14 @@ jobs:
             const previewUrl = `https://pr-${prNumber}.mako.ai`;
             const cloudRunUrl = `${{ steps.deploy.outputs.cloud_run_url }}`;
             const usingEphemeral = '${{ needs.detect-changes.outputs.migrations_changed }}' === 'true';
+            const usingEphemeralPg = '${{ steps.ephemeral-pg.outputs.using_ephemeral_pg }}' === 'true';
             const rebuiltDb = '${{ needs.detect-changes.outputs.rebuild_ephemeral_db }}' === 'true';
             const repo = context.repo;
             const rebuildUrl = `https://github.com/${repo.owner}/${repo.repo}/actions/workflows/deploy-app.yml`;
+
+            const pgInfo = usingEphemeralPg
+              ? `🌿 Instant Neon branch \`pr-${prNumber}\` (from \`test\`, migrations applied)`
+              : `🧪 Shared Neon \`test\` branch (tracks prod, reset nightly)`;
 
             let dbInfo = '📦 Shared staging';
             if (usingEphemeral) {
@@ -959,7 +988,8 @@ jobs:
             |---|---|
             | **Preview URL** | [${previewUrl}](${previewUrl}) |
             | **Cloud Run URL** | [${cloudRunUrl}](${cloudRunUrl}) |
-            | **Database** | ${dbInfo} |
+            | **Postgres (Neon)** | ${pgInfo} |
+            | **MongoDB** | ${dbInfo} |
             | **OAuth** | ✅ Enabled (via production proxy) |
 
             > **Note:** OAuth login routes through production (\`app.mako.ai\`) using the OAuth proxy pattern. Email/password also works.
@@ -1296,7 +1326,7 @@ jobs:
 
       - name: Run Postgres migrations
         run: |
-          if [ -f api/src/migration/cli/migrate.ts ]; then
+          if node -e 'process.exit(require("./api/package.json").scripts?.["pg:migrate"] ? 0 : 1)'; then
             POSTGRES_DIRECT_URL=$(gcloud secrets versions access latest \
               --secret=POSTGRES_DIRECT_URL --project="${GCP_PROJECT_ID}")
             test -n "${POSTGRES_DIRECT_URL}"

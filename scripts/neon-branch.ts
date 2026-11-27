@@ -33,8 +33,8 @@ const ENV_FILE = ".env";
 const ENV_TEMPLATE = ".env.example";
 const DB_NAME = process.env.NEON_DB_NAME || "neondb";
 const ROLE_NAME = process.env.NEON_ROLE_NAME || "neondb_owner";
-const PARENT_BRANCH_DEFAULT = process.env.NEON_PARENT_BRANCH || "staging";
-const GCP_PROJECT = process.env.GCP_PROJECT || "revops-462013";
+const PARENT_BRANCH_DEFAULT = process.env.NEON_PARENT_BRANCH || "test";
+const GCP_PROJECT = process.env.GCP_PROJECT || "mako-ai-prod";
 const PROD_POOLED_SECRET = "POSTGRES_URL";
 const PROD_DIRECT_SECRET = "POSTGRES_DIRECT_URL";
 
@@ -48,6 +48,7 @@ export const PROTECTED_BRANCH_NAMES: ReadonlySet<string> = new Set([
   "prod",
   "production",
   "staging",
+  "test",
   "integration",
   PARENT_BRANCH_DEFAULT.toLowerCase(),
 ]);
