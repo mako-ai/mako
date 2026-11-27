@@ -2,8 +2,8 @@
  * The connection proxy end to end: the runtime's own `lib/mako.ts`
  * `connection()` (deploy/workflows/runtime/defaults), run inside the
  * AsyncLocalStorage worker.mjs sets, calls Mako's runtime route over real
- * HTTP with the worker's key or a person's own key. In-memory Mongo; only the
- * service on the other side is replaced (setTransportForTests).
+ * HTTP with the worker's key or a person's own key. PGlite stores platform
+ * rows and Mongo stores recorded dry runs. The vendor transport is stubbed.
  *
  * Pins: live reads are off on a connection that never had the field; once
  * on, a read passes for an unlisted workflow; an unlisted write is refused
@@ -30,17 +30,27 @@ import { pathToFileURL } from "node:url";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { MongoMemoryServer } from "mongodb-memory-server";
-import mongoose, { Types } from "mongoose";
+import mongoose from "mongoose";
+import { desc, eq } from "drizzle-orm";
 
-import { ConnectionWriteEvent } from "../access/connection-write-event";
-import { connectionsRepo } from "../repositories/connections";
-import { hashApiKey } from "../auth/api-key.middleware";
-import { User } from "../database/schema";
 import {
-  SourceConnection,
-  Workspace,
-  WorkspaceMember,
-} from "../database/workspace-schema";
+  connectionsRepo,
+  pgWriteEventToRecord,
+} from "../repositories/connections";
+import { workspaceRepo } from "../repositories/workspaces";
+import { hashApiKey } from "../auth/api-key.middleware";
+import type { WorkspaceApiKeyScope } from "../auth/api-key-scopes";
+import {
+  generateObjectIdHex,
+  legacyUserIdToUuidv7,
+  objectIdToUuid,
+} from "../database/pg/id-codec";
+import { connectionWriteEvents, workspaces } from "../database/pg/schema";
+import {
+  ensureTestMember,
+  ensureTestWorkspace,
+  setupPgTestDb,
+} from "../test-support/pg-test";
 import { loggingMiddleware } from "../logging";
 import { requestContextStorage } from "../logging/context";
 import { createConnectorTools } from "../agent-lib/tools/connector-tools";
@@ -236,22 +246,23 @@ const attempt = (run: () => Promise<unknown>): Promise<string> =>
   );
 
 async function main() {
+  const h = await setupPgTestDb();
+  // Recorded dry runs still use their Mongo control-plane collections.
   const mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
-  // The source connection manager reads through the main connection.
-  process.env.DATABASE_URL = mongo.getUri();
-  process.env.DATABASE_NAME = mongoose.connection.db?.databaseName ?? "test";
   process.env.ENCRYPTION_KEY ??= "0".repeat(64);
 
   const sent: Sent[] = [];
   /** The allowed writes in the log when each request was sent. */
   const loggedAtSend: { status?: number }[][] = [];
+  const readEvents = () =>
+    h.db.select().from(connectionWriteEvents).orderBy(connectionWriteEvents.at);
   const transportBack: Parameters<typeof setTransportForTests>[0] = async (
     url,
     options,
   ) => {
     loggedAtSend.push(
-      await ConnectionWriteEvent.find({ allowed: true }).sort({ at: 1 }).lean(),
+      (await readEvents()).filter(row => row.allowed).map(pgWriteEventToRecord),
     );
     sent.push({
       url,
@@ -318,66 +329,68 @@ async function main() {
   const app = new Hono();
   app.use("*", loggingMiddleware({}));
   app.route("/api/workflows/runtime", workflowRuntimeRoutes);
-  const server = serve({ fetch: app.fetch, port: 0 });
+  const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
   await new Promise(resolve => server.once("listening", resolve));
   const { port } = server.address() as AddressInfo;
   try {
-    const ws = new Types.ObjectId();
-    await User.create({ _id: "deployer", email: "deployer@example.com" });
-    await WorkspaceMember.create({
-      workspaceId: ws,
-      userId: "deployer",
-      role: "owner",
-      joinedAt: new Date(),
+    const deployer = legacyUserIdToUuidv7("deployer");
+    const vera = legacyUserIdToUuidv7("vera");
+    const leaverId = legacyUserIdToUuidv7("leaver");
+    const mia = legacyUserIdToUuidv7("mia");
+    const workspace = await ensureTestWorkspace(h.db, {
+      ownerUserId: deployer,
     });
-    const key = (name: string, value: string, scopes: string[]) => ({
-      _id: new Types.ObjectId(),
+    const ws = workspace.id;
+    const key = (
+      name: string,
+      value: string,
+      scopes: WorkspaceApiKeyScope[],
+    ) => ({
       name,
       keyHash: hashApiKey(value),
       prefix: value.slice(0, 14),
       scopes,
       createdAt: new Date(),
-      createdBy: "deployer",
+      createdBy: deployer,
     });
-    await Workspace.collection.insertOne({
-      _id: ws,
-      name: "t",
-      slug: `t-${ws}`,
-      createdBy: "deployer",
-      settings: {},
-      apiKeys: [
-        key("Workflows worker", WORKER_KEY, [
-          "mcp",
-          "query:write",
-          "workflows:runtime",
-        ]),
-        // `mako workflow run` / a sandbox run: the person's own grant.
-        key("Mine", PERSON_KEY, ["mcp", "workflows:run"]),
-      ],
-      workflows: {
-        hatchetToken: encryptString(HATCHET_TOKEN),
-        live: {
+    for (const apiKey of [
+      key("Workflows worker", WORKER_KEY, [
+        "mcp",
+        "query:write",
+        "workflows:runtime",
+      ]),
+      // `mako workflow run` / a sandbox run: the person's own grant.
+      key("Mine", PERSON_KEY, ["mcp", "workflows:run"]),
+    ]) {
+      await workspaceRepo.createApiKey({ workspaceId: ws, ...apiKey });
+    }
+    await h.db
+      .update(workspaces)
+      .set({
+        workflowsHatchetTokenEncrypted: encryptString(HATCHET_TOKEN),
+        workflowsLive: {
           sha: "a".repeat(40),
           tree: "t",
           names: ["fr-offer-to-cash", "other-flow", CAPTURED_WORKFLOW],
         },
-      },
-    });
+      })
+      .where(eq(workspaces.id, workspace.uuid));
+
     const settings = { sync_batch_size: 100, rate_limit_delay_ms: 0 };
-    const close = await SourceConnection.create({
+    const close = await connectionsRepo.createSourceConnection({
       workspaceId: ws,
       name: "ch_close",
       type: "custom_api",
       config: CLOSE_STYLE_CONFIG,
       settings,
-      createdBy: "deployer",
+      createdBy: deployer,
     });
     const twin = {
       workspaceId: ws,
       type: "custom_api",
       config: CLOSE_STYLE_CONFIG,
       settings,
-      createdBy: "deployer",
+      createdBy: deployer,
       liveReads: true,
     };
     const running = new AsyncLocalStorage<string>();
@@ -414,13 +427,11 @@ async function main() {
     };
     const events = async (expected: number) => {
       for (let i = 0; i < 60; i++) {
-        const found = await ConnectionWriteEvent.find({})
-          .sort({ at: 1 })
-          .lean();
+        const found = (await readEvents()).map(pgWriteEventToRecord);
         if (found.length >= expected) return found;
         await new Promise(resolve => setTimeout(resolve, 50));
       }
-      return ConnectionWriteEvent.find({}).sort({ at: 1 }).lean();
+      return (await readEvents()).map(pgWriteEventToRecord);
     };
 
     const worker = await load(WORKER_KEY);
@@ -434,7 +445,9 @@ async function main() {
       /Live reads are off for ch_close/,
     );
     assert.equal(sent.length, 0, "a refused read is never sent");
-    await SourceConnection.updateMany({}, { $set: { liveReads: true } });
+    await connectionsRepo.updateSourceConnection(close.id, ws, {
+      liveReads: true,
+    });
 
     // A read passes for a workflow on no list, by connection name.
     const lead = await running.run("other-flow", () =>
@@ -469,10 +482,9 @@ async function main() {
     assert.equal(recorded[0].allowed, false);
 
     // Deployed workflows are listed together: any of them writes, as itself.
-    await SourceConnection.updateOne(
-      { _id: close._id },
-      { $set: { writers: [{ principal: "workflow:*" }] } },
-    );
+    await connectionsRepo.updateSourceConnection(close.id, ws, {
+      writers: [{ principal: "workflow:*" }],
+    });
     assert.equal(
       await running.run("fr-offer-to-cash", () =>
         attempt(() =>
@@ -611,7 +623,7 @@ async function main() {
       ),
       "ok",
     );
-    const dryRecorded = (await recordedWritesOf(String(ws), DRY_RUN)).writes;
+    const dryRecorded = (await recordedWritesOf(ws, DRY_RUN)).writes;
     assert.equal(dryRecorded.length, 2);
     assert.deepEqual(
       { ...dryRecorded[0], at: undefined },
@@ -629,12 +641,12 @@ async function main() {
       },
     );
     assert.ok(!JSON.stringify(dryRecorded).includes(CLOSE_KEY));
-    assert.equal((await recordedWritesOf(String(ws), DRY_PERSON_RUN)).total, 1);
-    assert.equal((await recordedWritesOf(String(ws), AGENT_RUN)).total, 0);
-    assert.equal((await recordedWritesOf(String(ws), KEY_RUN)).total, 0);
+    assert.equal((await recordedWritesOf(ws, DRY_PERSON_RUN)).total, 1);
+    assert.equal((await recordedWritesOf(ws, AGENT_RUN)).total, 0);
+    assert.equal((await recordedWritesOf(ws, KEY_RUN)).total, 0);
     // Another workspace does not see them.
     assert.equal(
-      (await recordedWritesOf(String(new Types.ObjectId()), DRY_RUN)).total,
+      (await recordedWritesOf(generateObjectIdHex(), DRY_RUN)).total,
       0,
     );
     assert.equal(
@@ -660,10 +672,14 @@ async function main() {
       sentBeforeAgentRun + 3,
       "only the agent runs' writes and the read were sent",
     );
-    const refusedRows = await ConnectionWriteEvent.find({ allowed: false })
-      .sort({ at: -1 })
-      .limit(5)
-      .lean();
+    const refusedRows = (
+      await h.db
+        .select()
+        .from(connectionWriteEvents)
+        .where(eq(connectionWriteEvents.allowed, false))
+        .orderBy(desc(connectionWriteEvents.at))
+        .limit(5)
+    ).map(pgWriteEventToRecord);
     assert.deepEqual(refusedRows.map(r => r.principal).reverse(), [
       ...Array(2).fill("agent:workflow:fr-offer-to-cash"),
       ...Array(3).fill("dry-run:workflow:fr-offer-to-cash"),
@@ -833,13 +849,11 @@ async function main() {
       /private address|failed/i,
     );
     setTransportForTests(transportBack);
-    const failed = await ConnectionWriteEvent.findOne({})
-      .sort({ at: -1 })
-      .lean();
+    const failed = (await readEvents()).map(pgWriteEventToRecord).at(-1);
     assert.equal(failed?.allowed, true);
     assert.match(failed?.error ?? "", /a private address/);
     assert.equal(failed?.status, undefined);
-    await ConnectionWriteEvent.deleteMany({});
+    await h.db.delete(connectionWriteEvents);
 
     // A listed writer writes anywhere through the connection: no path limit.
     assert.equal(
@@ -859,10 +873,10 @@ async function main() {
           person.connection("ch_close").post("/task/", { text: "x" }),
         ),
       ),
-      /^user:deployer is not allowed to write to ch_close/,
+      new RegExp(`^user:${deployer} is not allowed to write to ch_close`),
     );
     recorded = await events(2);
-    assert.equal(recorded.at(-1)?.principal, "user:deployer");
+    assert.equal(recorded.at(-1)?.principal, `user:${deployer}`);
     assert.equal(recorded.at(-1)?.allowed, false);
     // ...and reads like anyone.
     assert.equal(
@@ -874,7 +888,7 @@ async function main() {
 
     // An agent only reads, whoever it acts for.
     const agentWrite = await connectionRequest({
-      workspaceId: String(ws),
+      workspaceId: ws,
       connection: "ch_close",
       request: { method: "POST", path: "/task/" },
       readOnly: true,
@@ -893,22 +907,24 @@ async function main() {
     assert.equal(recorded.at(-1)?.allowed, false);
 
     // A viewer never writes, even when listed.
-    await WorkspaceMember.create({
+    await ensureTestMember(h.db, {
       workspaceId: ws,
-      userId: "vera",
+      userId: vera,
       role: "viewer",
-      joinedAt: new Date(),
     });
-    await SourceConnection.updateOne(
-      { _id: close._id },
-      { $push: { writers: { principal: "user:vera" } } },
-    );
+    await connectionsRepo.updateSourceConnection(close.id, ws, {
+      writers: [
+        ...((await connectionsRepo.findSourceConnectionById(close.id, ws))
+          ?.writers ?? []),
+        { principal: `user:${vera}` },
+      ],
+    });
     const sentBeforeViewer = sent.length;
     const viewerWrite = await connectionRequest({
-      workspaceId: String(ws),
+      workspaceId: ws,
       connection: "ch_close",
       request: { method: "POST", path: "/task/" },
-      actor: "user:vera",
+      actor: `user:${vera}`,
     }).then(
       () => "ok",
       (error: Error) => error.message,
@@ -916,10 +932,10 @@ async function main() {
     assert.match(viewerWrite, /^Viewers can't write through a connection/);
     assert.equal(sent.length, sentBeforeViewer);
     recorded = await events(4);
-    assert.equal(recorded.at(-1)?.principal, "user:vera");
+    assert.equal(recorded.at(-1)?.principal, `user:${vera}`);
     assert.equal(recorded.at(-1)?.allowed, false);
     const agentRead = await connectionRequest({
-      workspaceId: String(ws),
+      workspaceId: ws,
       connection: "ch_close",
       request: { method: "GET", path: "/lead/" },
       readOnly: true,
@@ -929,21 +945,22 @@ async function main() {
     // A sandbox run's key outlives its person's membership; its rights do
     // not: a former member's write and read are refused, recorded, not sent.
     const LEAVER_KEY = "revops_leaver_sandbox_key_tests_only";
-    await User.create({ _id: "leaver", email: "leaver@example.com" });
-    await WorkspaceMember.create({
+    await ensureTestMember(h.db, {
       workspaceId: ws,
-      userId: "leaver",
+      userId: leaverId,
       role: "member",
-      joinedAt: new Date(),
     });
-    await SourceConnection.updateOne(
-      { _id: close._id },
-      { $push: { writers: { principal: "user:leaver" } } },
-    );
+    await connectionsRepo.updateSourceConnection(close.id, ws, {
+      writers: [
+        ...((await connectionsRepo.findSourceConnectionById(close.id, ws))
+          ?.writers ?? []),
+        { principal: `user:${leaverId}` },
+      ],
+    });
     await setKey(
-      String(ws),
-      "leaver",
-      "Workflows sandbox leaver run",
+      ws,
+      leaverId,
+      `Workflows sandbox ${leaverId} run`,
       LEAVER_KEY,
       {
         agentRun: false,
@@ -955,7 +972,7 @@ async function main() {
       "ok",
       "a member's own sandbox run writes while listed",
     );
-    await WorkspaceMember.deleteOne({ workspaceId: ws, userId: "leaver" });
+    await workspaceRepo.removeMember(ws, leaverId);
     const sentBeforeLeaver = sent.length;
     const leaverWrite = await leaver
       .connection("ch_close")
@@ -965,7 +982,10 @@ async function main() {
         (error: { status?: number; message: string }) => error,
       );
     assert.equal(leaverWrite.status, 403);
-    assert.match(leaverWrite.message, /^user:leaver is not a member/);
+    assert.match(
+      leaverWrite.message,
+      new RegExp(`^user:${leaverId} is not a member`),
+    );
     const leaverRead = await leaver
       .connection("ch_close")
       .request("GET", "/lead/")
@@ -979,11 +999,9 @@ async function main() {
       sentBeforeLeaver,
       "nothing a former member asks is sent",
     );
-    const leaverRows = await ConnectionWriteEvent.find({
-      principal: "user:leaver",
-    })
-      .sort({ at: 1 })
-      .lean();
+    const leaverRows = (await readEvents()).filter(
+      row => row.principal === `user:${leaverId}`,
+    );
     assert.deepEqual(
       leaverRows.map(r => [r.target, r.allowed]),
       [
@@ -1000,9 +1018,9 @@ async function main() {
     const SANDBOX_RUN = "sandbox-5f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
     const AGENT_SANDBOX_KEY = "revops_agent_sandbox_key_tests_only";
     await setKey(
-      String(ws),
-      "deployer",
-      `Workflows sandbox deployer ${SANDBOX_RUN}`,
+      ws,
+      deployer,
+      `Workflows sandbox ${deployer} ${SANDBOX_RUN}`,
       AGENT_SANDBOX_KEY,
       { recordWrites: true },
     );
@@ -1016,22 +1034,22 @@ async function main() {
     assert.equal((slack.body as { wouldSend?: boolean }).wouldSend, false);
     assert.match(
       String((slack.body as { message?: string }).message),
-      /A real run would be refused: user:deployer is not on ch_close's writers list/,
+      new RegExp(
+        `A real run would be refused: user:${deployer} is not on ch_close's writers list`,
+      ),
     );
     assert.equal(
       sent.length,
       sentBeforeSandbox,
       "a recorded write is not sent",
     );
-    const mine = (
-      await recordedWritesOf(String(ws), SANDBOX_RUN, { userId: "deployer" })
-    ).writes;
+    const mine = (await recordedWritesOf(ws, SANDBOX_RUN, { userId: deployer }))
+      .writes;
     assert.equal(mine.length, 1);
     assert.deepEqual(mine[0].body, { text: "Weekly digest" });
     assert.equal(mine[0].headers.authorization, "Basic [redacted]");
     assert.equal(
-      (await recordedWritesOf(String(ws), SANDBOX_RUN, { userId: "vera" }))
-        .total,
+      (await recordedWritesOf(ws, SANDBOX_RUN, { userId: vera })).total,
       0,
       "a sandbox run's recorded writes are its person's only",
     );
@@ -1041,12 +1059,12 @@ async function main() {
       .connection("ch_close")
       .request("POST", "/task/", { text: long });
     const [, cutShown] = (
-      await recordedWritesOf(String(ws), SANDBOX_RUN, { userId: "deployer" })
+      await recordedWritesOf(ws, SANDBOX_RUN, { userId: deployer })
     ).writes;
     assert.match(String(cutShown.body), /chars; full: true for all\)$/);
     const [, whole] = (
-      await recordedWritesOf(String(ws), SANDBOX_RUN, {
-        userId: "deployer",
+      await recordedWritesOf(ws, SANDBOX_RUN, {
+        userId: deployer,
         full: true,
       })
     ).writes;
@@ -1074,9 +1092,9 @@ async function main() {
     // A sandbox run started with a key (CI): its writes refused.
     const CI_SANDBOX_KEY = "revops_ci_sandbox_key_tests_only";
     await setKey(
-      String(ws),
-      "deployer",
-      "Workflows sandbox deployer sandbox-6f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+      ws,
+      deployer,
+      `Workflows sandbox ${deployer} sandbox-6f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f`,
       CI_SANDBOX_KEY,
       { agentRun: true },
     );
@@ -1086,7 +1104,7 @@ async function main() {
       /^Agents and runs started with an API key only read through connections/,
     );
     const NAMELESS_KEY = "revops_agent_nameless_key_tests_only";
-    await setKey(String(ws), "deployer", "Something else", NAMELESS_KEY, {
+    await setKey(ws, deployer, "Something else", NAMELESS_KEY, {
       recordWrites: true,
     });
     const nameless = await load(NAMELESS_KEY);
@@ -1098,7 +1116,7 @@ async function main() {
 
     // No one identified: the write is refused.
     const nobody = await connectionRequest({
-      workspaceId: String(ws),
+      workspaceId: ws,
       connection: "ch_close",
       request: { method: "POST", path: "/task/" },
     }).then(
@@ -1109,7 +1127,7 @@ async function main() {
 
     // Another workspace's connection does not exist here.
     const elsewhere = await connectionRequest({
-      workspaceId: String(new Types.ObjectId()),
+      workspaceId: generateObjectIdHex(),
       connection: String(close._id),
       request: { method: "GET", path: "/lead/" },
     }).then(
@@ -1119,12 +1137,13 @@ async function main() {
     assert.match(elsewhere, /^No connection/);
 
     // Two connections with one name: a name is refused, the id still works.
-    const [dupA] = await SourceConnection.create([
-      { ...twin, name: "dup_name" },
-      { ...twin, name: "dup_name" },
-    ]);
+    const dupA = await connectionsRepo.createSourceConnection({
+      ...twin,
+      name: "dup_name",
+    });
+    await connectionsRepo.createSourceConnection({ ...twin, name: "dup_name" });
     const byName = await connectionRequest({
-      workspaceId: String(ws),
+      workspaceId: ws,
       connection: "dup_name",
       request: { method: "GET", path: "/lead/" },
     }).then(
@@ -1137,25 +1156,25 @@ async function main() {
       "Several connections are called dup_name; use its id.",
     );
     const byId = await connectionRequest({
-      workspaceId: String(ws),
+      workspaceId: ws,
       connection: String(dupA._id),
       request: { method: "GET", path: "/lead/" },
     });
     assert.equal(byId.status, 200);
 
     // Live readers listed: only they, and the writers, read live.
-    const limited = await SourceConnection.create({
+    const limited = await connectionsRepo.createSourceConnection({
       ...twin,
       // A Stripe connection: the one built-in with named operations here.
       type: "stripe",
       config: { api_key: encryptString(CLOSE_KEY) },
       name: "ch_limited",
-      liveReaders: [{ principal: "user:deployer" }],
+      liveReaders: [{ principal: `user:${deployer}` }],
     });
     const readAs = (actor?: string, readOnly?: boolean) =>
       attempt(() =>
         connectionRequest({
-          workspaceId: String(ws),
+          workspaceId: ws,
           connection: "ch_limited",
           request: { method: "GET", path: "/lead/" },
           ...(actor ? { actor } : {}),
@@ -1163,9 +1182,9 @@ async function main() {
         }),
       );
     const sentBeforeLimited = sent.length;
-    assert.equal(await readAs("user:deployer"), "ok");
+    assert.equal(await readAs(`user:${deployer}`), "ok");
     // An agent reads as the person it acts for.
-    assert.equal(await readAs("user:deployer", true), "ok");
+    assert.equal(await readAs(`user:${deployer}`, true), "ok");
     assert.equal(sent.length, sentBeforeLimited + 2);
     // A deployed workflow on no list is refused, through the worker too.
     assert.match(
@@ -1175,17 +1194,12 @@ async function main() {
       /^workflow:other-flow is not allowed to read ch_limited live\. .*allow workflow:other-flow/,
     );
     // One workflow listed by name reads; another, on the same worker, not.
-    await SourceConnection.updateOne(
-      { _id: limited._id },
-      {
-        $set: {
-          liveReaders: [
-            { principal: "user:deployer" },
-            { principal: "workflow:fr-offer-to-cash" },
-          ],
-        },
-      },
-    );
+    await connectionsRepo.updateSourceConnection(limited.id, ws, {
+      liveReaders: [
+        { principal: `user:${deployer}` },
+        { principal: "workflow:fr-offer-to-cash" },
+      ],
+    });
     assert.equal(
       await running.run("fr-offer-to-cash", () =>
         attempt(() => worker.connection("ch_limited").get("/lead/")),
@@ -1217,10 +1231,9 @@ async function main() {
       ((await borrowedKey.json()) as { error: string }).error,
       /^worker:workflows is not allowed to read ch_limited live/,
     );
-    await SourceConnection.updateOne(
-      { _id: limited._id },
-      { $set: { liveReaders: [{ principal: "user:deployer" }] } },
-    );
+    await connectionsRepo.updateSourceConnection(limited.id, ws, {
+      liveReaders: [{ principal: `user:${deployer}` }],
+    });
     // The worker naming no deployed workflow is no one a list can hold.
     assert.match(
       await readAs("worker:workflows"),
@@ -1234,17 +1247,17 @@ async function main() {
       "a refused read is never sent",
     );
     assert.equal(
-      await ConnectionWriteEvent.countDocuments({
-        connectionId: limited._id,
-      }),
+      await h.db.$count(
+        connectionWriteEvents,
+        eq(connectionWriteEvents.connectionId, objectIdToUuid(limited.id)),
+      ),
       0,
       "reads are not in the write log",
     );
     // A writer reads what it writes to: deployed workflows as one.
-    await SourceConnection.updateOne(
-      { _id: limited._id },
-      { $set: { writers: [{ principal: "workflow:*" }] } },
-    );
+    await connectionsRepo.updateSourceConnection(limited.id, ws, {
+      writers: [{ principal: "workflow:*" }],
+    });
     assert.equal(
       await running.run("other-flow", () =>
         attempt(() => worker.connection("ch_limited").get("/lead/")),
@@ -1252,49 +1265,40 @@ async function main() {
       "ok",
     );
     // An empty list: only the writers.
-    await SourceConnection.updateOne(
-      { _id: limited._id },
-      { $set: { liveReaders: [] } },
-    );
+    await connectionsRepo.updateSourceConnection(limited.id, ws, {
+      liveReaders: [],
+    });
     assert.match(
-      await readAs("user:deployer"),
-      /^user:deployer is not allowed to read ch_limited live/,
+      await readAs(`user:${deployer}`),
+      new RegExp(`^user:${deployer} is not allowed to read ch_limited live`),
     );
     assert.equal(await readAs("workflow:other-flow"), "ok");
     // No list: everyone again, the unidentified included (as before lists).
-    await SourceConnection.updateOne(
-      { _id: limited._id },
-      { $unset: { liveReaders: 1 } },
-    );
+    await connectionsRepo.updateSourceConnection(limited.id, ws, {
+      liveReaders: null,
+    });
     assert.equal(await readAs(), "ok");
     // Live reads off wins over any list.
-    await SourceConnection.updateOne(
-      { _id: limited._id },
-      {
-        $set: {
-          liveReads: false,
-          liveReaders: [{ principal: "user:deployer" }],
-        },
-      },
-    );
-    assert.match(await readAs("user:deployer"), /^Live reads are off/);
+    await connectionsRepo.updateSourceConnection(limited.id, ws, {
+      liveReads: false,
+      liveReaders: [{ principal: `user:${deployer}` }],
+    });
+    assert.match(await readAs(`user:${deployer}`), /^Live reads are off/);
     // Live reads off refuse the agent's own call (call_connection) for
     // everyone: the owner, a member who manages nothing, a viewer and a
     // workflow. No live readers list, so only live reads decide.
-    await WorkspaceMember.create({
+    await ensureTestMember(h.db, {
       workspaceId: ws,
-      userId: "mia",
+      userId: mia,
       role: "member",
-      joinedAt: new Date(),
     });
-    await SourceConnection.updateOne(
-      { _id: limited._id },
-      { $unset: { liveReaders: 1 } },
-    );
+    await connectionsRepo.updateSourceConnection(limited.id, ws, {
+      liveReaders: null,
+    });
     const callAs = (actor: string) =>
       attempt(() =>
         connectionRequest({
-          workspaceId: String(ws),
+          workspaceId: ws,
           connection: "ch_limited",
           request: { method: "GET", path: "/lead/" },
           actor,
@@ -1304,9 +1308,9 @@ async function main() {
       );
     const sentBeforeOff = sent.length;
     for (const actor of [
-      "user:deployer",
-      "user:mia",
-      "user:vera",
+      `user:${deployer}`,
+      `user:${mia}`,
+      `user:${vera}`,
       "workflow:other-flow",
     ]) {
       assert.match(
@@ -1316,14 +1320,13 @@ async function main() {
       );
     }
     assert.ok(
-      (await callAs("user:deployer")).includes(`/cx/${limited._id}`),
+      (await callAs(`user:${deployer}`)).includes(`/cx/${limited._id}`),
       "the refusal links the connection's Access tab",
     );
     // The real tool, under the request context each sign-in leaves: MCP
     // OAuth (/api/mcp) and a legacy unscoped key on /api/agent both act as
     // the owner, and both are refused.
-    const callTool = createConnectorTools(String(ws))
-      .call_connection as unknown as {
+    const callTool = createConnectorTools(ws).call_connection as unknown as {
       execute: (input: unknown) => Promise<Record<string, unknown>>;
     };
     for (const route of ["/api/mcp", "/api/agent/chat"]) {
@@ -1333,7 +1336,7 @@ async function main() {
           method: "POST",
           path: route,
           startTime: Date.now(),
-          userId: "deployer",
+          userId: deployer,
         },
         () =>
           callTool.execute({
@@ -1352,10 +1355,9 @@ async function main() {
 
     // Live reads on: a named operation builds the request and passes the
     // same checks, within a per-person, per-connection budget.
-    await SourceConnection.updateOne(
-      { _id: limited._id },
-      { $set: { liveReads: true } },
-    );
+    await connectionsRepo.updateSourceConnection(limited.id, ws, {
+      liveReads: true,
+    });
     process.env.AGENT_CALLS_PER_MINUTE = "2";
     // Keep the three calls in one budget window.
     if (60_000 - (Date.now() % 60_000) < 5_000) {
@@ -1364,10 +1366,10 @@ async function main() {
     const search = () =>
       attempt(() =>
         connectionRequest({
-          workspaceId: String(ws),
+          workspaceId: ws,
           connection: "ch_limited",
           operation: { name: "search_customers", params: { query: "Dupont" } },
-          actor: "user:deployer",
+          actor: `user:${deployer}`,
           readOnly: true,
           agentBudget: true,
         }),
@@ -1385,15 +1387,14 @@ async function main() {
     );
     assert.equal(sent.length, sentBeforeOperation + 2, "over budget: not sent");
     // Another person has a budget of their own; a workflow is not counted.
-    assert.equal(await callAs("user:mia"), "ok");
+    assert.equal(await callAs(`user:${mia}`), "ok");
     assert.equal(await readAs("workflow:other-flow"), "ok");
     delete process.env.AGENT_CALLS_PER_MINUTE;
 
     // Live reads turned off again: reads are refused.
-    await SourceConnection.updateOne(
-      { _id: close._id },
-      { $set: { liveReads: false } },
-    );
+    await connectionsRepo.updateSourceConnection(close.id, ws, {
+      liveReads: false,
+    });
     assert.match(
       await running.run("other-flow", () =>
         attempt(() => worker.connection("ch_close").get("/lead/")),
@@ -1404,8 +1405,8 @@ async function main() {
     // Every new connection starts with live reads off, a Custom API too.
     await connectorRegistry.ready();
     const custom = await createSourceConnection({
-      workspaceId: String(ws),
-      userId: "deployer",
+      workspaceId: ws,
+      userId: deployer,
       name: "new_custom",
       type: "custom_api",
       config: { base_url: "https://x.example.com", token: "t0ken_value" },
@@ -1415,8 +1416,8 @@ async function main() {
     // a new `rest` connection is refused.
     await assert.rejects(
       createSourceConnection({
-        workspaceId: String(ws),
-        userId: "deployer",
+        workspaceId: ws,
+        userId: deployer,
         name: "new_rest",
         type: "rest",
         config: { api_base_url: "https://x.example.com" },
@@ -1433,10 +1434,10 @@ async function main() {
     ).closeAllConnections();
     server.close();
     await new Promise(resolve => setTimeout(resolve, 300));
-    // The source connection manager's own client to the main database.
     await databaseConnectionService.closeAllConnections();
     await mongoose.disconnect();
     await mongo.stop();
+    await h.close();
   }
 }
 

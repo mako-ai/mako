@@ -4,7 +4,7 @@
  * timeout cancels it, it is behind the worker's key, and a write needs the
  * workflow on the connection's writers list.
  *
- * In-memory Mongo. The SQL runs on a real Postgres when
+ * PGlite. The SQL runs on a real Postgres when
  * MAKO_TEST_POSTGRES_URL is set (e.g. postgres://me@localhost:5432/postgres;
  * the test makes and drops its own schema); otherwise the Postgres reads and
  * writes are answered by a small in-memory stand-in, so everything above the
@@ -13,19 +13,20 @@
  * Run with: pnpm --filter api exec tsx src/routes/workflows-runtime-query.db.test.ts
  */
 import assert from "node:assert/strict";
+import { and, eq } from "drizzle-orm";
+import { queryExecutions, workspaces } from "../database/pg/schema";
+import { workspaceRepo } from "../repositories/workspaces";
+import type { WorkspaceApiKeyScope } from "../auth/api-key-scopes";
+import { ensureTestWorkspace, setupPgTestDb } from "../test-support/pg-test";
+import { generateObjectIdHex } from "../database/pg/id-codec";
+import {
+  connectionsRepo,
+  type DatabaseConnectionRecord,
+} from "../repositories/connections";
 import { Hono } from "hono";
-import { MongoMemoryServer } from "mongodb-memory-server";
-import mongoose, { Types } from "mongoose";
 
 import { asSystem } from "../access/connection-writes";
 import { hashApiKey } from "../auth/api-key.middleware";
-import { User } from "../database/schema";
-import {
-  DatabaseConnection,
-  QueryExecution,
-  Workspace,
-  WorkspaceMember,
-} from "../database/workspace-schema";
 import { loggingMiddleware } from "../logging";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { encryptString } from "../services/crypto.service";
@@ -190,12 +191,11 @@ function stubPostgres() {
 
 async function main() {
   const postgresUrl = process.env.MAKO_TEST_POSTGRES_URL;
-  const mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  const h = await setupPgTestDb();
   process.env.ENCRYPTION_KEY ??= "0".repeat(64);
-  const ws = new Types.ObjectId();
+  const ws = generateObjectIdHex();
   workspaceId = ws.toString();
-  let db: { _id: Types.ObjectId } | null = null;
+  let db: DatabaseConnectionRecord | null = null;
   setFirstReadRetryForTests([0, 0, 0]);
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (
@@ -215,15 +215,15 @@ async function main() {
     });
   }) as typeof fetch;
   try {
-    await User.create({ _id: "deployer", email: "deployer@example.com" });
-    await WorkspaceMember.create({
-      workspaceId: ws,
-      userId: "deployer",
-      role: "owner",
-      joinedAt: new Date(),
+    const workspace = await ensureTestWorkspace(h.db, {
+      ownerUserId: "deployer",
+      id: ws,
     });
-    const key = (name: string, value: string, scopes: string[]) => ({
-      _id: new Types.ObjectId(),
+    const key = (
+      name: string,
+      value: string,
+      scopes: WorkspaceApiKeyScope[],
+    ) => ({
       name,
       keyHash: hashApiKey(value),
       prefix: value.slice(0, 14),
@@ -231,36 +231,34 @@ async function main() {
       createdAt: new Date(),
       createdBy: "deployer",
     });
-    await Workspace.collection.insertOne({
-      _id: ws,
-      name: "t",
-      slug: `t-${ws}`,
-      createdBy: "deployer",
-      settings: {},
-      apiKeys: [
-        key(workerKeyName(), WORKER_KEY, WORKER_KEY_SCOPES),
-        // May query and write, but is not the worker.
-        key("Mine", OTHER_KEY, ["mcp", "query:write"]),
-        // A sandbox dry run's key: its SQL only reads.
-        {
-          ...key(
-            "Workflows sandbox deployer sandbox-5f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
-            DRY_RUN_KEY,
-            WORKER_KEY_SCOPES,
-          ),
-          recordWrites: true,
-        },
-      ],
-      workflows: {
-        hatchetToken: encryptString(HATCHET_TOKEN),
-        live: {
+    for (const apiKey of [
+      key(workerKeyName(), WORKER_KEY, WORKER_KEY_SCOPES),
+      // May query and write, but is not the worker.
+      key("Mine", OTHER_KEY, ["mcp", "query:write"]),
+      // A sandbox dry run's key: its SQL only reads.
+      {
+        ...key(
+          "Workflows sandbox deployer sandbox-5f6f3d2c-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+          DRY_RUN_KEY,
+          WORKER_KEY_SCOPES,
+        ),
+        recordWrites: true,
+      },
+    ]) {
+      await workspaceRepo.createApiKey({ workspaceId: ws, ...apiKey });
+    }
+    await h.db
+      .update(workspaces)
+      .set({
+        workflowsHatchetTokenEncrypted: encryptString(HATCHET_TOKEN),
+        workflowsLive: {
           sha: "a".repeat(40),
           tree: "t",
           names: ["crm-chat-classifier", "other-flow"],
         },
-      },
-    });
-    db = await DatabaseConnection.create({
+      })
+      .where(eq(workspaces.id, workspace.uuid));
+    db = await connectionsRepo.createDatabaseConnection({
       workspaceId: ws,
       name: "local_pg",
       type: "postgresql",
@@ -273,7 +271,7 @@ async function main() {
       createdBy: "deployer",
       writers: [{ principal: "workflow:crm-chat-classifier" }],
     });
-    const connectionId = String(db._id);
+    const connectionId = db.id;
     const target = db;
     let stats: ReturnType<typeof stubPostgres> | null = null;
 
@@ -499,14 +497,24 @@ async function main() {
 
     // Each query is in the workspace's query history, like the agent's.
     for (let i = 0; i < 50; i++) {
-      if ((await QueryExecution.countDocuments({ workspaceId: ws })) > 0) break;
+      if (
+        (await h.db.$count(
+          queryExecutions,
+          eq(queryExecutions.workspaceId, workspace.uuid),
+        )) > 0
+      ) {
+        break;
+      }
       await new Promise(resolve => setTimeout(resolve, 20));
     }
     assert.ok(
-      (await QueryExecution.countDocuments({
-        workspaceId: ws,
-        source: "agent",
-      })) > 0,
+      (await h.db.$count(
+        queryExecutions,
+        and(
+          eq(queryExecutions.workspaceId, workspace.uuid),
+          eq(queryExecutions.source, "agent"),
+        ),
+      )) > 0,
     );
 
     console.log(
@@ -528,8 +536,7 @@ async function main() {
     // Query tracking is written without waiting: let it land.
     await new Promise(resolve => setTimeout(resolve, 300));
     globalThis.fetch = realFetch;
-    await mongoose.disconnect();
-    await mongo.stop();
+    await h.close();
   }
 }
 

@@ -5,21 +5,33 @@
  * since become a viewer does not block saving. Source connections are
  * stricter (source-connection-writers.test.ts).
  *
- * Real routes, real Mongo (mongodb-memory-server) and real workspace roles;
+ * Real routes, PGlite and real workspace roles;
  * only the session is a stand-in.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { OpenAPIHono } from "@hono/zod-openapi";
-import { ConnectionAccessEvent } from "../access/connection-access-event";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  generateObjectIdHex,
+  legacyUserIdToUuidv7,
+} from "../database/pg/id-codec";
+import { connectionsRepo } from "../repositories/connections";
+import {
+  ensureTestMember,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
+
+const OWNER = legacyUserIdToUuidv7("owner");
+const VIC = legacyUserIdToUuidv7("vic");
+const DEE = legacyUserIdToUuidv7("dee");
 
 vi.mock("../auth/unified-auth.middleware", () => ({
   unifiedAuthMiddleware: async (
     c: { set: (k: string, v: unknown) => void },
     next: () => Promise<void>,
   ) => {
-    c.set("user", { id: "owner" });
+    c.set("user", { id: OWNER });
     c.set("session", { id: "s" });
     c.set("authType", "session");
     await next();
@@ -27,101 +39,73 @@ vi.mock("../auth/unified-auth.middleware", () => ({
 }));
 
 import { workspaceDatabaseRoutes } from "./workspace-databases";
-import {
-  DatabaseConnection,
-  Workspace,
-  WorkspaceMember,
-} from "../database/workspace-schema";
-
-let mongo: MongoMemoryServer;
-const WS = new Types.ObjectId();
+let h: PgTestDb;
+const WS = generateObjectIdHex();
 const app = new OpenAPIHono();
 app.route("/api/workspaces/:workspaceId/databases", workspaceDatabaseRoutes);
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  h = await setupPgTestDb();
   process.env.ENCRYPTION_KEY ??= "0".repeat(64);
-  await Workspace.collection.insertOne({
-    _id: WS,
-    name: "t",
-    slug: `t-${WS}`,
-    createdBy: "owner",
-    settings: {},
-  });
-  for (const [userId, role] of [
-    ["owner", "owner"],
-    ["vic", "viewer"],
-    ["dee", "viewer"],
-  ] as const) {
-    await WorkspaceMember.create({
-      workspaceId: WS,
-      userId,
-      role,
-      joinedAt: new Date(),
-    });
+  await ensureTestWorkspace(h.db, { id: WS, ownerUserId: OWNER });
+  for (const userId of [VIC, DEE]) {
+    await ensureTestMember(h.db, { workspaceId: WS, userId, role: "viewer" });
   }
 });
 
-afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
-});
+afterAll(() => h.close());
 
 describe("PUT /databases/{id}/writers in the app", () => {
   it("lists a viewer and keeps a stored writer who became a viewer", async () => {
     // Dee was listed while a member, and is a viewer now.
-    const db = await DatabaseConnection.create({
+    const db = await connectionsRepo.createDatabaseConnection({
       workspaceId: WS,
       name: "Warehouse",
       type: "postgresql",
       connection: { host: "localhost", database: "w" },
-      createdBy: "owner",
+      createdBy: OWNER,
       writers: [
-        { principal: "user:dee", addedBy: "owner", addedAt: new Date() },
+        { principal: `user:${DEE}`, addedBy: OWNER, addedAt: new Date() },
       ],
     });
     const put = (writers: object[]) =>
-      app.request(`/api/workspaces/${WS}/databases/${db._id}/writers`, {
+      app.request(`/api/workspaces/${WS}/databases/${db.id}/writers`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ writers }),
       });
     const res = await put([
-      { principal: "user:dee" },
-      { principal: "user:vic" },
+      { principal: `user:${DEE}` },
+      { principal: `user:${VIC}` },
     ]);
     expect(res.status, await res.clone().text()).toBe(200);
-    const stored = await DatabaseConnection.findById(db._id).lean();
-    expect(stored?.writers?.map(w => w.principal).sort()).toEqual([
-      "user:dee",
-      "user:vic",
-    ]);
+    const stored = await connectionsRepo.findDatabaseConnectionById(db.id, WS);
+    expect(stored?.writers?.map(w => w.principal).sort()).toEqual(
+      [`user:${DEE}`, `user:${VIC}`].sort(),
+    );
     // Someone outside the workspace is still refused.
     expect((await put([{ principal: "user:stranger" }])).status).toBe(400);
     // The change is recorded, with who made it; the refusal is not.
-    const events = await ConnectionAccessEvent.find({
-      connectionId: db._id,
-    }).lean();
+    const events = await connectionsRepo.listConnectionAccessEvents(WS, db.id);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       kind: "database",
       via: "app",
-      changes: { writers: { added: ["user:vic"], removed: [] } },
+      changes: { writers: { added: [`user:${VIC}`], removed: [] } },
     });
     expect(events[0].actor).toBeTruthy();
   });
 
   it("records allowAgentWrites switched on and off, and nothing for another edit", async () => {
-    const db = await DatabaseConnection.create({
+    const db = await connectionsRepo.createDatabaseConnection({
       workspaceId: WS,
       name: "Agents",
       type: "postgresql",
       connection: { host: "localhost", database: "a" },
-      createdBy: "owner",
+      createdBy: OWNER,
     });
     const put = (body: object) =>
-      app.request(`/api/workspaces/${WS}/databases/${db._id}`, {
+      app.request(`/api/workspaces/${WS}/databases/${db.id}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -131,19 +115,17 @@ describe("PUT /databases/{id}/writers in the app", () => {
     expect((await put({ allowAgentWrites: true })).status).toBe(200);
     expect((await put({ name: "Agents 2" })).status).toBe(200);
     expect((await put({ allowAgentWrites: false })).status).toBe(200);
-    const events = await ConnectionAccessEvent.find({ connectionId: db._id })
-      .sort({ at: 1 })
-      .lean();
+    const events = (
+      await connectionsRepo.listConnectionAccessEvents(WS, db.id)
+    ).reverse();
     expect(events.map(e => [e.actor, e.via, e.changes])).toEqual([
-      ["owner", "app", { agentWrites: true }],
-      ["owner", "app", { agentWrites: false }],
+      [OWNER, "app", { agentWrites: true }],
+      [OWNER, "app", { agentWrites: false }],
     ]);
   });
 
   it("rejects POST /databases with an unknown database type before inserting", async () => {
-    const beforeCount = await DatabaseConnection.countDocuments({
-      workspaceId: WS,
-    });
+    const beforeCount = await connectionsRepo.countDatabaseConnections(WS);
     const res = await app.request(`/api/workspaces/${WS}/databases`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -157,7 +139,7 @@ describe("PUT /databases/{id}/writers in the app", () => {
     const body = (await res.json()) as { success: boolean; error?: string };
     expect(body.success).toBe(false);
     expect(body.error).toContain("Unsupported database type");
-    expect(await DatabaseConnection.countDocuments({ workspaceId: WS })).toBe(
+    expect(await connectionsRepo.countDatabaseConnections(WS)).toBe(
       beforeCount,
     );
   });

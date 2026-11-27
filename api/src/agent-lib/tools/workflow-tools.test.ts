@@ -1,14 +1,22 @@
 /**
- * The workflow tools against a real (in-memory) Mongo and a stand-in
+ * The workflow tools against PGlite and a stand-in
  * Hatchet: what the agent is told about what is deployed, that a run starts
  * the workflow, that the switches are an admin's, and that Hatchet's
  * responses are trimmed to what a model needs.
  */
 import assert from "node:assert/strict";
 import { MongoMemoryServer } from "mongodb-memory-server";
-import mongoose, { Types } from "mongoose";
+import mongoose from "mongoose";
+import { eq } from "drizzle-orm";
 
-import { Workspace, WorkspaceMember } from "../../database/workspace-schema";
+import { workspaces, type WorkflowSlotJson } from "../../database/pg/schema";
+import { workspaceRepo } from "../../repositories/workspaces";
+import {
+  ensureTestMember,
+  ensureTestWorkspace,
+  setupPgTestDb,
+} from "../../test-support/pg-test";
+
 import { encryptString } from "../../services/crypto.service";
 import { createWorkflowTools } from "./workflow-tools";
 
@@ -107,34 +115,38 @@ globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
 }) as typeof fetch;
 
 async function main() {
+  const h = await setupPgTestDb();
+  // Run detail still reads the recorded-workflow-write collection.
   const mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
   process.env.HATCHET_CLIENT_TOKEN = TOKEN;
   process.env.ENCRYPTION_KEY ??= "0".repeat(64);
   try {
-    const id = new Types.ObjectId();
-    await Workspace.collection.insertOne({
-      _id: id,
-      name: "t",
-      slug: `t-${id}`,
-      createdBy: "tester",
-      workflows: {
-        hatchetToken: encryptString(TOKEN),
-        live: {
-          sha: SHA_B,
-          tree: "tb",
-          names: ["daily-digest", "weekly-report"],
-          running: { sha: SHA_A },
-          failed: { sha: SHA_B, error: "error TS2322" },
-        },
-        active: ["weekly-report"],
-      },
+    const workspace = await ensureTestWorkspace(h.db, {
+      ownerUserId: "tester",
     });
-    await WorkspaceMember.collection.insertMany([
-      { workspaceId: id, userId: "admin", role: "admin" },
-      { workspaceId: id, userId: "member", role: "member" },
-      { workspaceId: id, userId: "viewer", role: "viewer" },
-    ]);
+    const id = workspace.id;
+    const live = {
+      sha: SHA_B,
+      tree: "tb",
+      names: ["daily-digest", "weekly-report"],
+      running: { sha: SHA_A },
+    };
+    const failedBuildSlot = { sha: SHA_B, error: "error TS2322" };
+    const setLive = async (slot: WorkflowSlotJson) => {
+      await h.db
+        .update(workspaces)
+        .set({ workflowsLive: slot })
+        .where(eq(workspaces.id, workspace.uuid));
+    };
+    await workspaceRepo.setWorkflowHatchetToken(id, encryptString(TOKEN));
+    await setLive({ ...live, failed: failedBuildSlot });
+    await workspaceRepo.setWorkflowTrigger(id, "weekly-report", {
+      active: true,
+    });
+    for (const role of ["admin", "member", "viewer"] as const) {
+      await ensureTestMember(h.db, { workspaceId: id, userId: role, role });
+    }
     const as = (userId: string) =>
       createWorkflowTools({ workspaceId: id.toString(), userId });
     const admin = as("admin");
@@ -161,10 +173,7 @@ async function main() {
 
     // A deploy under way: `wait` answers once the worker runs the commit,
     // or with `deploying: true` when the time is up first.
-    await Workspace.updateOne(
-      { _id: id },
-      { $unset: { "workflows.live.failed": 1 } },
-    );
+    await setLive(live);
     const pending = await call(tools, "workflows_status", { wait: 0.1 });
     assert.equal(pending.deploying, true);
     assert.equal(pending.deployment.liveSha, SHA_A);
@@ -183,11 +192,7 @@ async function main() {
     assert.equal(cancelled.deploying, true);
     assert.ok(Date.now() - startedAt < 5000);
     const goesLive = setTimeout(
-      () =>
-        void Workspace.updateOne(
-          { _id: id },
-          { $set: { "workflows.live.running.sha": SHA_B } },
-        ).exec(),
+      () => void setLive({ ...live, running: { sha: SHA_B } }),
       500,
     );
     // A commit the repository does not hold: an error, not a wait that
@@ -205,15 +210,7 @@ async function main() {
     clearTimeout(goesLive);
     assert.equal(settled.deploying, undefined);
     assert.equal(settled.deployment.liveSha, SHA_B);
-    await Workspace.updateOne(
-      { _id: id },
-      {
-        $set: {
-          "workflows.live.running.sha": SHA_A,
-          "workflows.live.failed": { sha: SHA_B, error: "error TS2322" },
-        },
-      },
-    );
+    await setLive({ ...live, failed: failedBuildSlot });
     assert.equal(
       (await call(admin, "workflows_status", {})).workflows[0].webhookUrl,
       null,
@@ -233,11 +230,11 @@ async function main() {
     assert.ok(!JSON.stringify(overview).includes(TOKEN));
 
     // A run starts the workflow by its name, active or not.
-    const live = await call(tools, "workflows_run", {
+    const triggered = await call(tools, "workflows_run", {
       workflowId: "daily-digest",
       input: { limit: 5 },
     });
-    assert.deepEqual([live.success, live.runId], [true, RUN]);
+    assert.deepEqual([triggered.success, triggered.runId], [true, RUN]);
     assert.equal(requests.at(-1)?.body.workflowName, "daily-digest");
     assert.deepEqual(requests.at(-1)?.body.input, { limit: 5 });
     assert.equal(requests.at(-1)?.body.additionalMetadata.trigger, "agent");
@@ -295,8 +292,7 @@ async function main() {
     // The triggers are an admin's: active on and off, and never a name that
     // is not one.
     const activeOf = async () =>
-      (await Workspace.findById(id).select("workflows.active").lean())
-        ?.workflows?.active;
+      (await workspaceRepo.findById(id))?.workflows?.active;
     const triggers = (who: typeof tools, change: object) =>
       call(who, "workflows_triggers", {
         workflowId: "daily-digest",
@@ -353,6 +349,7 @@ async function main() {
     delete process.env.HATCHET_CLIENT_TOKEN;
     await mongoose.disconnect();
     await mongo.stop();
+    await h.close();
   }
 }
 

@@ -5,7 +5,7 @@
  * workflow name they send grants nothing. The deployed worker's key keeps
  * the workflow's rights, and the worker's other routes stay the worker's.
  *
- * Real auth middleware and routes over HTTP, in-memory Mongo. The SQL runs
+ * Real auth middleware and routes over HTTP, PGlite. The SQL runs
  * on a real Postgres when MAKO_TEST_POSTGRES_URL is set (the test makes and
  * drops its own schema); otherwise a stand-in answers the driver calls. The
  * AI gateway is a stand-in that records what it was sent.
@@ -13,25 +13,33 @@
  * Run with: pnpm --filter api exec tsx src/routes/workflows-runtime-person.db.test.ts
  */
 import assert from "node:assert/strict";
+import { eq } from "drizzle-orm";
+import { workspaces, connectionWriteEvents } from "../database/pg/schema";
+import { workspaceRepo } from "../repositories/workspaces";
+import type { WorkspaceApiKeyScope } from "../auth/api-key-scopes";
+import {
+  ensureTestWorkspace,
+  ensureTestMember,
+  setupPgTestDb,
+} from "../test-support/pg-test";
+import {
+  generateObjectIdHex,
+  legacyUserIdToUuidv7,
+} from "../database/pg/id-codec";
+import {
+  connectionsRepo,
+  type DatabaseConnectionRecord,
+} from "../repositories/connections";
 import { Hono } from "hono";
-import { MongoMemoryServer } from "mongodb-memory-server";
-import mongoose, { Types } from "mongoose";
 
 import { asSystem } from "../access/connection-writes";
 import { hashApiKey } from "../auth/api-key.middleware";
 import { mintMcpAccessTokenForUser } from "../auth/mcp-oauth.service";
-import { User } from "../database/schema";
-import { ConnectionWriteEvent } from "../access/connection-write-event";
 import { setTransportForTests } from "../connections/forward";
 import { encryptString } from "../services/crypto.service";
-import {
-  DatabaseConnection,
-  SourceConnection,
-  Workspace,
-  WorkspaceMember,
-} from "../database/workspace-schema";
 import { loggingMiddleware } from "../logging";
 import { databaseConnectionService } from "../services/database-connection.service";
+import { queryExecutionService } from "../services/query-execution.service";
 import { setKey } from "../workflows/on-push";
 import { keyIdOf, mintPass } from "../workflows/pass";
 import { setFirstReadRetryForTests } from "../workflows/runs";
@@ -78,15 +86,20 @@ const call = async (
 
 async function main() {
   const postgresUrl = process.env.MAKO_TEST_POSTGRES_URL;
-  const mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
-  // The source connection manager reads through the main connection.
-  process.env.DATABASE_URL = mongo.getUri();
-  process.env.DATABASE_NAME = mongoose.connection.db?.databaseName ?? "test";
+  const h = await setupPgTestDb();
   process.env.ENCRYPTION_KEY ??= "0".repeat(64);
   process.env.AI_GATEWAY_API_KEY = "gateway-key";
-  const ws = new Types.ObjectId();
-  let db: { _id: Types.ObjectId } | null = null;
+  const ws = generateObjectIdHex();
+  let db: DatabaseConnectionRecord | null = null;
+  // The SQL route responds before its query-history write completes. Keep the
+  // real write promises so teardown can wait for them before closing PGlite.
+  const trackAsync = queryExecutionService.trackAsync;
+  const pendingExecutions: Array<ReturnType<typeof trackAsync>> = [];
+  queryExecutionService.trackAsync = input => {
+    const execution = trackAsync.call(queryExecutionService, input);
+    pendingExecutions.push(execution);
+    return execution;
+  };
   setFirstReadRetryForTests([0, 0, 0]);
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (
@@ -104,22 +117,17 @@ async function main() {
     });
   }) as typeof fetch;
   try {
-    for (const id of ["deployer", "marc"]) {
-      await User.create({ _id: id, email: `${id}@example.com` });
-      await WorkspaceMember.create({
-        workspaceId: ws,
-        userId: id,
-        role: id === "deployer" ? "owner" : "member",
-        joinedAt: new Date(),
-      });
-    }
+    const workspace = await ensureTestWorkspace(h.db, {
+      ownerUserId: "deployer",
+      id: ws,
+    });
+    await ensureTestMember(h.db, { workspaceId: ws, userId: "marc" });
     const key = (
       name: string,
       value: string,
-      scopes: string[],
+      scopes: WorkspaceApiKeyScope[],
       by: string,
     ) => ({
-      _id: new Types.ObjectId(),
       name,
       keyHash: hashApiKey(value),
       prefix: value.slice(0, 14),
@@ -127,28 +135,30 @@ async function main() {
       createdAt: new Date(),
       createdBy: by,
     });
-    await Workspace.collection.insertOne({
-      _id: ws,
-      name: "t",
-      slug: `t-${ws}`,
-      createdBy: "deployer",
-      settings: {},
-      apiKeys: [
-        key(workerKeyName(), WORKER_KEY, WORKER_KEY_SCOPES, "deployer"),
-        key("Marc's MCP", NO_RUN_KEY, ["mcp", "query:write"], "marc"),
-        key(
-          "Marc's runs",
-          MARC_RUN_KEY,
-          ["mcp", "query:read", "workflows:run"],
-          "marc",
-        ),
-      ],
-      workflows: {
-        hatchetToken: encryptString(HATCHET_TOKEN),
-        live: { sha: "a".repeat(40), tree: "t", names: ["billing-sync"] },
-      },
-    });
-    db = await DatabaseConnection.create({
+    for (const apiKey of [
+      key(workerKeyName(), WORKER_KEY, WORKER_KEY_SCOPES, "deployer"),
+      key("Marc's MCP", NO_RUN_KEY, ["mcp", "query:write"], "marc"),
+      key(
+        "Marc's runs",
+        MARC_RUN_KEY,
+        ["mcp", "query:read", "workflows:run"],
+        "marc",
+      ),
+    ]) {
+      await workspaceRepo.createApiKey({ workspaceId: ws, ...apiKey });
+    }
+    await h.db
+      .update(workspaces)
+      .set({
+        workflowsHatchetTokenEncrypted: encryptString(HATCHET_TOKEN),
+        workflowsLive: {
+          sha: "a".repeat(40),
+          tree: "t",
+          names: ["billing-sync"],
+        },
+      })
+      .where(eq(workspaces.id, workspace.uuid));
+    db = await connectionsRepo.createDatabaseConnection({
       workspaceId: ws,
       name: "local_pg",
       type: "postgresql",
@@ -164,7 +174,7 @@ async function main() {
         { principal: "workflow:billing-sync", where: `${SCHEMA}.workflows` },
       ],
     });
-    const connectionId = String(db._id);
+    const connectionId = db.id;
     const target = db;
     if (postgresUrl) {
       const setup = await asSystem(() =>
@@ -254,7 +264,7 @@ async function main() {
 
     // Through a source connection, a login (an agent acting for marc) only
     // reads, even with marc on the writers list; marc's own key writes.
-    const close = await SourceConnection.create({
+    const close = await connectionsRepo.createSourceConnection({
       workspaceId: ws,
       name: "ch_close",
       type: "close",
@@ -288,10 +298,13 @@ async function main() {
       assert.equal(forwarded.length, 0, "a refused write is never sent");
       let attempt = null;
       for (let i = 0; i < 40 && !attempt; i++) {
-        attempt = await ConnectionWriteEvent.findOne({}).lean();
+        attempt = (await h.db.select().from(connectionWriteEvents).limit(1))[0];
         if (!attempt) await new Promise(r => setTimeout(r, 50));
       }
-      assert.equal(attempt?.principal, "agent:user:marc");
+      assert.equal(
+        attempt?.principal,
+        `agent:user:${legacyUserIdToUuidv7("marc")}`,
+      );
       assert.equal(attempt?.allowed, false);
       res = await request(login, "GET");
       assert.equal(res.status, 200, JSON.stringify(res.body));
@@ -325,15 +338,18 @@ async function main() {
       );
       res = await request(OWN_RUN_KEY, "POST");
       assert.equal(res.status, 200, JSON.stringify(res.body));
-      await ConnectionWriteEvent.deleteMany({});
+      await h.db.delete(connectionWriteEvents);
       res = await request(AGENT_RUN_KEY, "POST");
       assert.equal(res.status, 403, JSON.stringify(res.body));
       assert.match(
         res.body.error,
         /^Agents and runs started with an API key only read/,
       );
-      attempt = await ConnectionWriteEvent.findOne({}).lean();
-      assert.equal(attempt?.principal, "agent:user:marc");
+      attempt = (await h.db.select().from(connectionWriteEvents).limit(1))[0];
+      assert.equal(
+        attempt?.principal,
+        `agent:user:${legacyUserIdToUuidv7("marc")}`,
+      );
       assert.equal(attempt?.allowed, false);
       res = await request(AGENT_RUN_KEY, "GET");
       assert.equal(res.status, 200, JSON.stringify(res.body));
@@ -366,7 +382,7 @@ async function main() {
     // they leave the workspace; the worker's key is not concerned.
     res = await query(MARC_RUN_KEY, "SELECT 1 AS one");
     assert.equal(res.status, 200, JSON.stringify(res.body));
-    await WorkspaceMember.deleteOne({ workspaceId: ws, userId: "marc" });
+    await workspaceRepo.removeMember(ws, "marc");
     res = await query(MARC_RUN_KEY, "SELECT 1 AS one");
     assert.equal(res.status, 403, JSON.stringify(res.body));
     assert.match(res.body.error, /no longer a member of this workspace/);
@@ -388,8 +404,9 @@ async function main() {
     }
     await databaseConnectionService.closeAllConnections();
     globalThis.fetch = realFetch;
-    await mongoose.disconnect();
-    await mongo.stop();
+    queryExecutionService.trackAsync = trackAsync;
+    await Promise.all(pendingExecutions);
+    await h.close();
   }
 }
 

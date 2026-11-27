@@ -1,38 +1,46 @@
 /**
  * Console folder inheritance walks (folder-chain.ts + ConsoleManager)
- * against an in-memory Mongo: one query per tree level for a whole batch,
+ * against PGlite: one query per tree level for a whole batch,
  * scoped to the workspace, and terminating on a parentId cycle.
  *
  * Run: npx tsx src/utils/folder-chain.db.test.ts
  */
 import assert from "node:assert/strict";
-import { MongoMemoryServer } from "mongodb-memory-server";
-import mongoose, { Types } from "mongoose";
-
 import {
-  ConsoleFolder,
-  type ISavedConsole,
-} from "../database/workspace-schema";
+  ensureTestWorkspace,
+  ensureTestUser,
+  setupPgTestDb,
+} from "../test-support/pg-test";
+import { consoleFolders } from "../database/pg/schema";
+import { generateObjectIdHex, objectIdToUuid } from "../database/pg/id-codec";
+import {
+  consolesChartsRepo,
+  type CreateConsoleFolderInput,
+} from "../repositories/consoles-charts";
+
+import type { ISavedConsole } from "../database/workspace-schema";
 import { ConsoleManager } from "./console-manager";
 import { FolderChainCache, MAX_FOLDER_DEPTH } from "./folder-chain";
 
 async function main(): Promise<void> {
-  const mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
-  const ws = new Types.ObjectId();
-  const otherWs = new Types.ObjectId();
-  const folder = async (fields: Record<string, unknown>) => {
-    const _id = new Types.ObjectId();
-    await ConsoleFolder.collection.insertOne({
-      _id,
-      workspaceId: ws,
-      ownerId: "owner",
-      ...fields,
-    });
-    return _id;
-  };
+  const h = await setupPgTestDb();
+  const ws = generateObjectIdHex();
+  const otherWs = generateObjectIdHex();
+  const folder = async (
+    fields: Pick<CreateConsoleFolderInput, "name" | "access" | "parentId">,
+  ) =>
+    (
+      await consolesChartsRepo.createConsoleFolder({
+        workspaceId: ws,
+        ownerId: "owner",
+        ...fields,
+      })
+    ).id;
 
   try {
+    const workspace = await ensureTestWorkspace(h.db, { id: ws });
+    await ensureTestWorkspace(h.db, { id: otherWs });
+    await ensureTestUser(h.db, { id: "owner" });
     // root (workspace) > mid (private) > leaf (private)
     const root = await folder({ name: "root", access: "workspace" });
     const mid = await folder({
@@ -52,9 +60,10 @@ async function main(): Promise<void> {
     let queries = 0;
     const counting = FolderChainCache.withLoader(async ids => {
       queries++;
-      return (await ConsoleFolder.find({ _id: { $in: ids }, workspaceId: ws })
-        .select("name access isPrivate parentId")
-        .lean()) as never;
+      return consolesChartsRepo.findConsoleFoldersByIds(
+        ws.toString(),
+        ids.map(String),
+      );
     });
     await counting.prefetch([
       String(leaf),
@@ -73,9 +82,9 @@ async function main(): Promise<void> {
     );
 
     const manager = new ConsoleManager();
-    const privateConsole = (folderId: Types.ObjectId, workspaceId = ws) =>
+    const privateConsole = (folderId: string, workspaceId = ws) =>
       ({
-        _id: new Types.ObjectId(),
+        _id: generateObjectIdHex(),
         workspaceId,
         folderId,
         access: "private",
@@ -111,11 +120,25 @@ async function main(): Promise<void> {
     );
 
     // A parentId cycle (a <-> b, both private) terminates.
-    const a = new Types.ObjectId();
-    const b = new Types.ObjectId();
-    await ConsoleFolder.collection.insertMany([
-      { _id: a, workspaceId: ws, name: "a", access: "private", parentId: b },
-      { _id: b, workspaceId: ws, name: "b", access: "private", parentId: a },
+    const a = generateObjectIdHex();
+    const b = generateObjectIdHex();
+    const aUuid = objectIdToUuid(a);
+    const bUuid = objectIdToUuid(b);
+    await h.db.insert(consoleFolders).values([
+      {
+        id: aUuid,
+        workspaceId: workspace.uuid,
+        name: "a",
+        access: "private",
+        parentId: bUuid,
+      },
+      {
+        id: bUuid,
+        workspaceId: workspace.uuid,
+        name: "b",
+        access: "private",
+        parentId: aUuid,
+      },
     ]);
     assert.equal(
       await manager.canReadWithInheritance(privateConsole(a), "reader"),
@@ -128,7 +151,7 @@ async function main(): Promise<void> {
     );
 
     // A very deep chain is cut at MAX_FOLDER_DEPTH.
-    let parent: Types.ObjectId | undefined;
+    let parent: string | undefined;
     for (let i = 0; i < MAX_FOLDER_DEPTH + 10; i++) {
       parent = await folder({
         name: `d${i}`,
@@ -141,8 +164,7 @@ async function main(): Promise<void> {
 
     console.info("folder-chain.db.test: ok");
   } finally {
-    await mongoose.disconnect();
-    await mongo.stop();
+    await h.close();
   }
 }
 

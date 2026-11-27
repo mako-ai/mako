@@ -4,7 +4,8 @@
  * (the workflow and run it names, a pass for that step instead of the
  * worker key: pass-fetch.test-helper.ts), calls Mako's runtime query route
  * over real HTTP (and a person's key calls the MCP endpoint); Mako sees
- * `workflow:<name>` and its writers list decides. In-memory Mongo; only the BigQuery driver is stubbed, so a write
+ * `workflow:<name>` and its writers list decides. PGlite stores platform data.
+ * Only the BigQuery driver is stubbed, so a write
  * that passes the check "succeeds" without a warehouse.
  *
  * Needs the runtime's packages: npm install --prefix deploy/workflows/runtime
@@ -12,6 +13,13 @@
  * Run with: pnpm --filter api exec tsx src/workflows/worker-identity.db.test.ts
  */
 import assert from "node:assert/strict";
+import { legacyUserIdToUuidv7 } from "../database/pg/id-codec";
+import { eq } from "drizzle-orm";
+import { workspaces, connectionWriteEvents } from "../database/pg/schema";
+import { workspaceRepo } from "../repositories/workspaces";
+import type { WorkspaceApiKeyScope } from "../auth/api-key-scopes";
+import { ensureTestWorkspace, setupPgTestDb } from "../test-support/pg-test";
+import { connectionsRepo } from "../repositories/connections";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -19,17 +27,8 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
-import { MongoMemoryServer } from "mongodb-memory-server";
-import mongoose, { Types } from "mongoose";
 
-import { ConnectionWriteEvent } from "../access/connection-write-event";
 import { hashApiKey } from "../auth/api-key.middleware";
-import { User } from "../database/schema";
-import {
-  DatabaseConnection,
-  Workspace,
-  WorkspaceMember,
-} from "../database/workspace-schema";
 import { loggingMiddleware } from "../logging";
 import { mcpProtocolRoutes } from "../routes/mcp-server.routes";
 import { workflowRuntimeRoutes } from "../routes/workflows";
@@ -70,14 +69,13 @@ const attempt = (run: () => Promise<unknown>): Promise<Answer> =>
   );
 
 async function main() {
-  const mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  const h = await setupPgTestDb();
   process.env.ENCRYPTION_KEY ??= "0".repeat(64);
   const app = new Hono();
   app.use("*", loggingMiddleware({}));
   app.route("/api/mcp", mcpProtocolRoutes);
   app.route("/api/workflows/runtime", workflowRuntimeRoutes);
-  const server = serve({ fetch: app.fetch, port: 0 });
+  const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
   await new Promise(resolve => server.once("listening", resolve));
   const { port } = server.address() as AddressInfo;
   setFirstReadRetryForTests([0, 0, 0]);
@@ -105,54 +103,52 @@ async function main() {
     });
   }) as typeof fetch;
   try {
-    const ws = new Types.ObjectId();
-    await User.create({ _id: "deployer", email: "deployer@example.com" });
-    await WorkspaceMember.create({
-      workspaceId: ws,
-      userId: "deployer",
-      role: "owner",
-      joinedAt: new Date(),
+    const deployer = legacyUserIdToUuidv7("deployer");
+    const workspace = await ensureTestWorkspace(h.db, {
+      ownerUserId: deployer,
     });
-    const key = (name: string, value: string, scopes: string[]) => ({
-      _id: new Types.ObjectId(),
+    const ws = workspace.id;
+    const key = (
+      name: string,
+      value: string,
+      scopes: WorkspaceApiKeyScope[],
+    ) => ({
       name,
       keyHash: hashApiKey(value),
       prefix: value.slice(0, 14),
       scopes,
       createdAt: new Date(),
-      createdBy: "deployer",
+      createdBy: deployer,
     });
-    await Workspace.collection.insertOne({
-      _id: ws,
-      name: "t",
-      slug: `t-${ws}`,
-      createdBy: "deployer",
-      settings: {},
-      apiKeys: [
-        // As on-push.ts makes the worker's key.
-        key("Workflows worker", WORKER_KEY, [
-          "mcp",
-          "query:write",
-          "workflows:runtime",
-        ]),
-        // A person's key that may write: it cannot name a workflow.
-        key("Mine", PERSON_KEY, ["mcp", "query:write"]),
-      ],
-      workflows: {
-        hatchetToken: encryptString(HATCHET_TOKEN),
-        live: {
+    for (const apiKey of [
+      // As on-push.ts makes the worker's key.
+      key("Workflows worker", WORKER_KEY, [
+        "mcp",
+        "query:write",
+        "workflows:runtime",
+      ]),
+      // A person's key that may write: it cannot name a workflow.
+      key("Mine", PERSON_KEY, ["mcp", "query:write"]),
+    ]) {
+      await workspaceRepo.createApiKey({ workspaceId: ws, ...apiKey });
+    }
+    await h.db
+      .update(workspaces)
+      .set({
+        workflowsHatchetTokenEncrypted: encryptString(HATCHET_TOKEN),
+        workflowsLive: {
           sha: "a".repeat(40),
           tree: "t",
           names: ["crm-chat-classifier", "other-flow"],
         },
-      },
-    });
-    const db = await DatabaseConnection.create({
+      })
+      .where(eq(workspaces.id, workspace.uuid));
+    const db = await connectionsRepo.createDatabaseConnection({
       workspaceId: ws,
       name: "bigquery_write",
       type: "bigquery",
       connection: { project_id: "realadvisor-prod" },
-      createdBy: "deployer",
+      createdBy: deployer,
       writers: [
         { principal: "workflow:crm-chat-classifier", where: "crm_ai_chat" },
       ],
@@ -183,7 +179,7 @@ async function main() {
     };
     const uninstall = installPassFetch({
       workerKey: WORKER_KEY,
-      workspaceId: () => ws.toString(),
+      workspaceId: () => ws,
       makoOrigin: () => `http://127.0.0.1:${port}`,
     });
     const load = async (apiKey: string): Promise<Mako> => {
@@ -200,13 +196,17 @@ async function main() {
     };
     const events = async (expected: number) => {
       for (let i = 0; i < 60; i++) {
-        const found = await ConnectionWriteEvent.find({})
-          .sort({ at: 1 })
-          .lean();
+        const found = await h.db
+          .select()
+          .from(connectionWriteEvents)
+          .orderBy(connectionWriteEvents.at);
         if (found.length >= expected) return found;
         await new Promise(resolve => setTimeout(resolve, 50));
       }
-      return ConnectionWriteEvent.find({}).sort({ at: 1 }).lean();
+      return h.db
+        .select()
+        .from(connectionWriteEvents)
+        .orderBy(connectionWriteEvents.at);
     };
     const id = String(db._id);
 
@@ -275,10 +275,10 @@ async function main() {
     assert.equal(mine.success, false);
     assert.match(
       mine.error ?? "",
-      /^user:deployer is not allowed to write to bigquery_write/,
+      new RegExp(`^user:${deployer} is not allowed to write to bigquery_write`),
     );
     recorded = await events(4);
-    assert.equal(recorded[3].principal, "user:deployer");
+    assert.equal(recorded[3].principal, `user:${deployer}`);
     assert.equal(recorded[3].allowed, false);
     assert.equal(ran.length, 1, "no refused write reached the driver");
 
@@ -318,8 +318,7 @@ async function main() {
     server.close();
     // Query tracking is written without waiting: let it land.
     await new Promise(resolve => setTimeout(resolve, 300));
-    await mongoose.disconnect();
-    await mongo.stop();
+    await h.close();
   }
 }
 

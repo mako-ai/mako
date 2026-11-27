@@ -3,13 +3,20 @@
  *
  * Pure-logic coverage (risk tiers, tool-name prefixing, allowlist filtering,
  * URL safety) plus crypto round-trips. DB-dependent behavior (grants →
- * needsApproval) is covered by the in-memory-Mongo test below.
+ * needsApproval) is covered by the PGlite tests below.
  *
  * Run: tsx src/services/mcp-client.service.test.ts
  */
 import assert from "node:assert/strict";
-import { MongoMemoryReplSet } from "mongodb-memory-server";
-import mongoose, { Types } from "mongoose";
+import { eq } from "drizzle-orm";
+import { objectIdToUuid } from "../database/pg/id-codec";
+import { mcpServers } from "../database/pg/schema";
+import { mcpRepo } from "../repositories/mcp";
+import {
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+} from "../test-support/pg-test";
 
 process.env.ENCRYPTION_KEY =
   process.env.ENCRYPTION_KEY ??
@@ -33,12 +40,7 @@ import {
   encryptRecord,
   encryptString,
 } from "./crypto.service";
-import {
-  type IMcpServer,
-  McpConnectionConfig,
-  McpServer,
-  McpToolGrant,
-} from "../database/workspace-schema";
+import type { IMcpServer } from "../database/workspace-schema";
 import {
   CLOSE_MCP_PRESET,
   CUSTOM_MCP_PRESET,
@@ -365,20 +367,19 @@ function testEnvOAuthClient() {
 }
 
 /**
- * Manual OAuth client registration (Slack model), against in-memory Mongo:
+ * Manual OAuth client registration (Slack model), against PGlite:
  * connect is blocked with a setup message until an admin saves the app,
  * saving stores the client encrypted (retrievable), and re-saving clears
  * previously issued tokens (they belonged to the old client).
  */
 async function testManualOAuthClient() {
-  const replSet = await MongoMemoryReplSet.create({
-    replSet: { count: 1 },
-  });
-  await mongoose.connect(replSet.getUri("mako-test-oauth"));
+  const h = await setupPgTestDb();
 
   try {
-    const workspaceId = new Types.ObjectId();
-    const server = await McpServer.create({
+    const { id: workspaceId } = await ensureTestWorkspace(h.db, {
+      ownerUserId: "user-1",
+    });
+    const server = await mcpRepo.createServer({
       workspaceId,
       name: "Slack",
       connectorType: "slack",
@@ -415,12 +416,11 @@ async function testManualOAuthClient() {
     assert.equal(await hasMcpOAuthClient(server), false);
 
     // Simulate a stale token from a previous app registration.
-    await McpConnectionConfig.create({
+    await mcpRepo.upsertConnectionOAuthTokens({
       workspaceId,
-      serverId: server._id,
+      serverId: server.id,
       userId: "user-1",
-      headers: {},
-      oauthTokens: encryptString(
+      oauthTokensEncrypted: encryptString(
         JSON.stringify({ access_token: "old", token_type: "Bearer" }),
       ),
       oauthExpiresAt: Date.now() + 60_000,
@@ -434,8 +434,8 @@ async function testManualOAuthClient() {
     assert.equal(await hasMcpOAuthClient(server), true);
 
     // Stored encrypted, decrypts back to the exact client information.
-    const saved = await McpServer.findById(server._id).select("oauth").lean();
-    const encrypted = saved?.oauth?.clientInformation;
+    const saved = await mcpRepo.findServerById(server.id, workspaceId);
+    const encrypted = saved?.oauthClientInformationEncrypted;
     assert.ok(encrypted);
     assert.ok(!encrypted.includes("shhh"));
     assert.deepEqual(JSON.parse(decryptString(encrypted)), {
@@ -444,15 +444,16 @@ async function testManualOAuthClient() {
     });
 
     // Old tokens were invalidated — members must reconnect.
-    const config = await McpConnectionConfig.findOne({
-      serverId: server._id,
-      userId: "user-1",
-    }).lean();
-    assert.equal(config?.oauthTokens, undefined);
-    assert.equal(config?.oauthExpiresAt, undefined);
+    const config = await mcpRepo.findConnectionConfig(
+      workspaceId,
+      server.id,
+      "user-1",
+    );
+    assert.ok(config, "the connection config is preserved");
+    assert.equal(config.oauthTokensEncrypted, null);
+    assert.equal(config.oauthExpiresAt, null);
   } finally {
-    await mongoose.disconnect();
-    await replSet.stop();
+    await h.close();
   }
 }
 
@@ -482,23 +483,23 @@ function testCryptoRoundTrip() {
 }
 
 /**
- * Grants → approval flow, against in-memory Mongo:
+ * Grants → approval flow, against PGlite:
  * read tools auto-run (no grant); write tools need approval until an
  * always_allow grant (tool or server-wide `*`) exists; always_deny tools
  * skip the prompt and refuse at execute time; destructive tools stay
  * prompt-only unless the admin unlocked grants.
  */
 async function testGrantsAndNeedsApproval() {
-  const replSet = await MongoMemoryReplSet.create({
-    replSet: { count: 1 },
-  });
-  await mongoose.connect(replSet.getUri("mako-test"));
+  const h = await setupPgTestDb();
 
   try {
-    const workspaceId = new Types.ObjectId();
+    const { id: workspaceId } = await ensureTestWorkspace(h.db, {
+      ownerUserId: "user-1",
+    });
     const userId = "user-1";
+    await ensureTestUser(h.db, { id: "user-2" });
 
-    const server = await McpServer.create({
+    const server = await mcpRepo.createServer({
       workspaceId,
       name: "Close CRM",
       connectorType: "close",
@@ -535,11 +536,11 @@ async function testGrantsAndNeedsApproval() {
         },
       ],
     });
-    await McpConnectionConfig.create({
+    await mcpRepo.upsertConnectionCredentials({
       workspaceId,
-      serverId: server._id,
+      serverId: server.id,
       userId: "",
-      headers: encryptRecord({ "Close-API-Key": "test" }),
+      headersEncrypted: encryptRecord({ "Close-API-Key": "test" }),
     });
 
     const loadTools = () =>
@@ -573,10 +574,23 @@ async function testGrantsAndNeedsApproval() {
     assert.equal(await needsApproval("mcp_close_crm_lead_update"), true);
     assert.equal(await needsApproval("mcp_close_crm_lead_delete"), true);
 
+    const removeGrant = async (toolName: string) => {
+      const grant = (
+        await mcpRepo.listToolGrantsForUser(workspaceId, server.id, userId)
+      ).find(row => row.toolName === toolName);
+      assert.ok(grant);
+      await mcpRepo.deleteToolGrantById(
+        workspaceId,
+        server.id,
+        grant.id,
+        userId,
+      );
+    };
+
     // Server-wide Always allow covers every always-ceiling write tool.
-    await McpToolGrant.create({
+    await mcpRepo.upsertToolGrant({
       workspaceId,
-      serverId: server._id,
+      serverId: server.id,
       userId,
       toolName: "*",
       decision: "always_allow",
@@ -587,9 +601,9 @@ async function testGrantsAndNeedsApproval() {
     assert.equal(await needsApproval("mcp_close_crm_lead_delete"), true);
 
     // Tool-level Block beats a server-wide Always allow.
-    await McpToolGrant.create({
+    await mcpRepo.upsertToolGrant({
       workspaceId,
-      serverId: server._id,
+      serverId: server.id,
       userId,
       toolName: "lead_update",
       decision: "always_deny",
@@ -605,14 +619,10 @@ async function testGrantsAndNeedsApproval() {
     assert.equal(updateDenied.denied, true);
 
     // Clear the server-wide grant; per-tool Always allow still works.
-    await McpToolGrant.deleteOne({
-      serverId: server._id,
-      userId,
-      toolName: "*",
-    });
-    await McpToolGrant.create({
+    await removeGrant("*");
+    await mcpRepo.upsertToolGrant({
       workspaceId,
-      serverId: server._id,
+      serverId: server.id,
       userId,
       toolName: "lead_create",
       decision: "always_allow",
@@ -623,9 +633,9 @@ async function testGrantsAndNeedsApproval() {
 
     // Destructive tool: defaults to an "ask" ceiling, so an always_allow
     // grant is IGNORED until an admin explicitly relaxes that tool.
-    await McpToolGrant.create({
+    await mcpRepo.upsertToolGrant({
       workspaceId,
-      serverId: server._id,
+      serverId: server.id,
       userId,
       toolName: "lead_delete",
       decision: "always_allow",
@@ -633,63 +643,61 @@ async function testGrantsAndNeedsApproval() {
     assert.equal(await needsApproval("mcp_close_crm_lead_delete"), true);
 
     // Admin relaxes the ceiling for lead_delete: the grant now applies.
-    await McpServer.updateOne(
-      { _id: server._id },
-      { $set: { "toolPolicy.restrictions": { lead_delete: "always" } } },
-    );
+    await mcpRepo.updateServer(workspaceId, server.id, {
+      toolPolicy: {
+        restrictions: {
+          lead_delete: "always",
+        },
+      },
+    });
     chatTools = await loadTools();
     assert.equal(await needsApproval("mcp_close_crm_lead_delete"), false);
 
     // Admin "ask" restriction caps the user's Always allow on any tool.
-    await McpServer.updateOne(
-      { _id: server._id },
-      {
-        $set: {
-          "toolPolicy.restrictions": {
-            lead_delete: "always",
-            lead_create: "ask",
-          },
+    await mcpRepo.updateServer(workspaceId, server.id, {
+      toolPolicy: {
+        restrictions: {
+          lead_delete: "always",
+          lead_create: "ask",
         },
       },
-    );
+    });
     chatTools = await loadTools();
     assert.equal(await needsApproval("mcp_close_crm_lead_create"), true);
 
     // Admin "block" removes the tool from the agent entirely.
-    await McpServer.updateOne(
-      { _id: server._id },
-      {
-        $set: {
-          "toolPolicy.restrictions": {
-            lead_delete: "always",
-            lead_create: "block",
-          },
+    await mcpRepo.updateServer(workspaceId, server.id, {
+      toolPolicy: {
+        restrictions: {
+          lead_delete: "always",
+          lead_create: "block",
         },
       },
-    );
+    });
     chatTools = await loadTools();
     assert.equal(chatTools.tools["mcp_close_crm_lead_create"], undefined);
 
     // Restore an open ceiling for the remaining assertions.
-    await McpServer.updateOne(
-      { _id: server._id },
-      { $set: { "toolPolicy.restrictions": { lead_delete: "always" } } },
-    );
-    // Drop the tool-level block so lead_update is promptable again.
-    await McpToolGrant.deleteOne({
-      serverId: server._id,
-      userId,
-      toolName: "lead_update",
+    await mcpRepo.updateServer(workspaceId, server.id, {
+      toolPolicy: {
+        restrictions: {
+          lead_delete: "always",
+        },
+      },
     });
+    // Drop the tool-level block so lead_update is promptable again.
+    await removeGrant("lead_update");
     chatTools = await loadTools();
 
     // "Always deny": no prompt, and execute refuses without contacting the
     // MCP server.
-    await McpToolGrant.updateOne(
-      { serverId: server._id, userId, toolName: "lead_create" },
-      { $set: { decision: "always_deny" } },
-      { upsert: true },
-    );
+    await mcpRepo.upsertToolGrant({
+      workspaceId,
+      serverId: server.id,
+      userId,
+      toolName: "lead_create",
+      decision: "always_deny",
+    });
     chatTools = await loadTools();
     assert.equal(await needsApproval("mcp_close_crm_lead_create"), false);
     const createTool = chatTools.tools["mcp_close_crm_lead_create"];
@@ -732,10 +740,7 @@ async function testGrantsAndNeedsApproval() {
 
     // A tool captured earlier in the turn must not execute after the server is
     // disconnected or removed from availability.
-    await McpServer.updateOne(
-      { _id: server._id },
-      { $set: { status: "error" } },
-    );
+    await mcpRepo.updateServer(workspaceId, server.id, { status: "error" });
     const staleReadTool = chatTools.tools["mcp_close_crm_lead_search"];
     assert.ok(staleReadTool.execute);
     const disconnected = (await staleReadTool.execute(
@@ -744,24 +749,20 @@ async function testGrantsAndNeedsApproval() {
     )) as { success: boolean; error?: string };
     assert.equal(disconnected.success, false);
     assert.match(disconnected.error ?? "", /no longer connected/i);
-    await McpServer.updateOne(
-      { _id: server._id },
-      { $set: { status: "connected" } },
-    );
+    await mcpRepo.updateServer(workspaceId, server.id, { status: "connected" });
 
     // User-performer servers without the user's credential are skipped.
-    await McpServer.updateOne(
-      { _id: server._id },
-      { $set: { authPerformer: "user" } },
-    );
+    await h.db
+      .update(mcpServers)
+      .set({ authPerformer: "user" })
+      .where(eq(mcpServers.id, objectIdToUuid(server.id)));
     const noCred = await buildMcpToolsForChat({
       workspaceId: workspaceId.toString(),
       userId,
     });
     assert.equal(noCred.allToolNames.length, 0);
   } finally {
-    await mongoose.disconnect();
-    await replSet.stop();
+    await h.close();
   }
 }
 
