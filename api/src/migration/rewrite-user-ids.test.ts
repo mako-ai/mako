@@ -1043,7 +1043,13 @@ describe("User-ID reference rewrite tool (Decision #3)", () => {
       "dual_write_mongo_read",
       "dual_write_shadow_compare",
     ] as const) {
-      await router.setDomainState({ domain: "auth", mode: blockedMode });
+      await router.setDomainState({
+        domain: "auth",
+        mode: blockedMode,
+        ...(blockedMode === "dual_write_shadow_compare"
+          ? { shadowSampleRate: 0.1 }
+          : {}),
+      });
       await expect(
         assertAuthStageAllowsRewriteApply({ router }),
       ).rejects.toThrow(new RegExp(blockedMode));

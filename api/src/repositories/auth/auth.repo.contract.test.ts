@@ -1496,10 +1496,11 @@ describe("Phase 1A AuthRepository contract & migration lifecycle (Decision #3)",
       maxInflight: 8,
       onEvent: e => shadowEvents.push(e),
     });
+    let rngValue = 0.0;
     const router = new MigrationRouter({
       enablePubSub: false,
       shadowRunner,
-      rng: () => 0.0,
+      rng: () => rngValue,
     });
     const mongoRepo = new MongoAuthRepository();
     const pgRepo = new PgAuthRepository({ getDb: () => db });
@@ -1577,11 +1578,12 @@ describe("Phase 1A AuthRepository contract & migration lifecycle (Decision #3)",
     const pgUser = await pgRepo.findUserById(legacyId);
     if (!pgUser) throw new Error("Expected pgUser to exist");
 
-    // Stage 3 with shadowSampleRate = 0 -> ZERO PG calls across every read method!
+    // Stage 3 when read is not sampled (rng >= shadowSampleRate) -> ZERO PG calls across every read method!
+    rngValue = 0.99;
     await router.setDomainState({
       domain: "auth",
       mode: "dual_write_shadow_compare",
-      shadowSampleRate: 0,
+      shadowSampleRate: 0.5,
     });
     for (const k of Object.keys(counts) as Array<keyof typeof counts>) {
       counts[k] = 0;
@@ -1639,6 +1641,7 @@ describe("Phase 1A AuthRepository contract & migration lifecycle (Decision #3)",
     expect(counts.findUsersByIds).toBe(1); // unchanged
 
     // Stage 3 & Stage 4 with shadowSampleRate = 1 -> shadow compare matches cleanly for legacy user!
+    rngValue = 0.0;
     await router.setDomainState({
       domain: "auth",
       mode: "dual_write_shadow_compare",
@@ -2072,7 +2075,7 @@ describe("Phase 1A AuthRepository contract & migration lifecycle (Decision #3)",
     await router.setDomainState({
       domain: "auth",
       mode: "dual_write_shadow_compare",
-      shadowSampleRate: 0,
+      shadowSampleRate: 1,
     });
     const legacyUser = await dual.createUser({
       id: "sess_rollback_u1",
