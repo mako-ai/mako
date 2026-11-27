@@ -9,8 +9,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import {
+  ensureTestMember,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../../test-support/pg-test";
 
 import { bindTestWorkspaceRepo } from "../../apps/bind-test-workspace-repo";
 import { runGit } from "../../apps/git";
@@ -21,7 +25,7 @@ import {
 } from "../../apps/test-git-server";
 import { seededTemplateFiles } from "../../apps/workspace-template";
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmpRoot: string;
 let gitServer: TestGitServer;
 const WS = new Types.ObjectId().toString();
@@ -61,22 +65,29 @@ beforeAll(async () => {
     process.env.SESSION_SECRET || "test-secret-for-git-tokens";
   gitServer = await startTestGitServer();
   process.env.APPS_GIT_ORIGIN_URL = gitServer.url;
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
   await initRepo(repoDirFor(WS), seededTemplateFiles());
   await bindTestWorkspaceRepo(WS);
-  const { WorkspaceMember } = await import("../../database/workspace-schema");
-  await WorkspaceMember.collection.insertMany([
-    { workspaceId: new Types.ObjectId(WS), userId: ADMIN, role: "admin" },
-    { workspaceId: new Types.ObjectId(WS), userId: MEMBER, role: "member" },
-    { workspaceId: new Types.ObjectId(WS), userId: VIEWER, role: "viewer" },
-  ]);
+  await ensureTestMember(pgh.db, {
+    workspaceId: WS,
+    userId: ADMIN,
+    role: "admin",
+  });
+  await ensureTestMember(pgh.db, {
+    workspaceId: WS,
+    userId: MEMBER,
+    role: "member",
+  });
+  await ensureTestMember(pgh.db, {
+    workspaceId: WS,
+    userId: VIEWER,
+    role: "viewer",
+  });
 }, 120_000);
 
 afterAll(async () => {
   await gitServer?.close();
-  await mongoose.disconnect();
-  await mongo?.stop();
+  await pgh?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,

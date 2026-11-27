@@ -20,8 +20,13 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import {
+  ensureTestUser,
+  ensureTestDatabaseConnection,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../../test-support/pg-test";
 
 const sent = vi.hoisted(
   () => [] as Array<{ name: string; data: Record<string, unknown> }>,
@@ -40,10 +45,7 @@ vi.mock("../../inngest/client", () => ({
   },
 }));
 
-import {
-  SavedConsole,
-  ScheduledQueryRun,
-} from "../../database/workspace-schema";
+import { consolesChartsRepo } from "../../repositories/consoles-charts";
 import { initRepo, repoDirFor } from "../../apps/repository.service";
 import { bindTestWorkspaceRepo } from "../../apps/bind-test-workspace-repo";
 import {
@@ -52,7 +54,6 @@ import {
   refusal,
   unidentifiedWriterRefusal,
 } from "../../access/connection-writes";
-import { findDueScheduledRuns } from "../scheduled-run-claim";
 import {
   PAUSE_AFTER_PERMANENT_FAILURES,
   notifyScheduledRunOutcome,
@@ -61,7 +62,7 @@ import {
 } from "./schedule-pause";
 import { setConsoleSchedule } from "./schedule";
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmpRoot: string;
 let WS: string;
 const USER = new Types.ObjectId().toString();
@@ -74,13 +75,11 @@ beforeAll(async () => {
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "schedule-pause-"));
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
 }, 120_000);
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -92,19 +91,22 @@ afterAll(async () => {
 beforeEach(async () => {
   WS = new Types.ObjectId().toString();
   sent.length = 0;
-  await SavedConsole.deleteMany({});
-  await ScheduledQueryRun.deleteMany({});
+  await pgh.reset();
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
   await bindTestWorkspaceRepo(WS);
 });
 
 async function scheduledConsole() {
-  const row = await SavedConsole.create({
-    workspaceId: new Types.ObjectId(WS),
+  await ensureTestUser(pgh.db, { id: USER });
+  const connection = await ensureTestDatabaseConnection(pgh.db, {
+    workspaceId: WS,
+  });
+  const row = await consolesChartsRepo.createConsole({
+    workspaceId: WS,
     name: "hourly",
     code: "INSERT INTO s.t VALUES (1)",
     language: "sql",
-    connectionId: new Types.ObjectId(),
+    connectionId: connection.id,
     createdBy: USER,
     owner_id: USER,
     isSaved: true,
@@ -118,15 +120,15 @@ async function scheduledConsole() {
       consecutiveFailures: 0,
     },
   });
-  return row._id.toString();
+  return row.id;
 }
 
 /** One run as the executor finishes it: record, then notify. */
 async function run(consoleId: string, error?: string) {
   const completedAt = new Date();
-  const runDoc = await ScheduledQueryRun.create({
-    workspaceId: new Types.ObjectId(WS),
-    consoleId: new Types.ObjectId(consoleId),
+  const runDoc = await consolesChartsRepo.createScheduledQueryRun({
+    workspaceId: WS,
+    consoleId,
     triggeredAt: completedAt,
     completedAt,
     status: error === undefined ? "success" : "error",
@@ -145,14 +147,14 @@ async function run(consoleId: string, error?: string) {
   await notifyScheduledRunOutcome(outcome, {
     workspaceId: WS,
     consoleId,
-    runId: runDoc._id.toString(),
+    runId: runDoc.id,
     triggerType: "schedule",
   });
   return outcome;
 }
 
 async function scheduledRunOf(consoleId: string) {
-  const row = await SavedConsole.findById(consoleId).lean();
+  const row = await consolesChartsRepo.findConsoleById(WS, consoleId);
   return row?.scheduledRun;
 }
 
@@ -206,8 +208,7 @@ describe("scheduled console pause", () => {
     expect(state?.permanentFailures).toBe(3);
 
     // The scheduler no longer picks it up: no run, so no more notices.
-    const due = await findDueScheduledRuns(
-      SavedConsole,
+    const due = await consolesChartsRepo.findDueScheduledConsoles(
       new Date(Date.now() + 365 * 86_400_000),
     );
     expect(due.map(d => d.id)).not.toContain(id);
@@ -217,9 +218,9 @@ describe("scheduled console pause", () => {
     expect(sentNotices[0].data.errorMessage).toBe(REFUSED);
     expect(sentNotices[1].data.errorMessage).toBe(third.pausedReason);
     // The schedule itself stays: resuming needs no new cron.
-    expect((await SavedConsole.findById(id).lean())?.schedule?.cron).toBe(
-      "0 * * * *",
-    );
+    expect(
+      (await consolesChartsRepo.findConsoleById(WS, id))?.schedule?.cron,
+    ).toBe("0 * * * *");
   });
 
   it("transient failures never pause and notify every run", async () => {

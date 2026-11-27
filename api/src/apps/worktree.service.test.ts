@@ -2,7 +2,7 @@
  * Apps worktree service — integration tests.
  *
  * Real git, a real local sandbox, a real git server on a real port, and
- * mongodb-memory-server. The sandbox is an ordinary clone with an ordinary
+ * PGlite. The sandbox is an ordinary clone with an ordinary
  * remote, so these exercise the same path a developer's machine would: clone,
  * edit, commit, push, and read back from the server.
  *
@@ -25,8 +25,17 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { eq } from "drizzle-orm";
+import { objectIdToUuid } from "../database/pg/id-codec";
+import { appWorktrees } from "../database/pg/schema";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
+import {
+  ensureTestMember,
+  ensureTestUser,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 import {
   appRootFor,
   boxCtx,
@@ -47,11 +56,6 @@ import {
   writeFile,
   scopeOf,
 } from "./worktree.service";
-import {
-  AppProject,
-  AppWorktree,
-  WorkspaceMember,
-} from "../database/workspace-schema";
 import { getSandboxProvider } from "./sandbox/provider";
 import {
   DEFAULT_BRANCH,
@@ -72,7 +76,7 @@ import {
 } from "./bind-test-workspace-repo";
 import { startTestGitServer, type TestGitServer } from "./test-git-server";
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmpRoot: string;
 let gitServer: TestGitServer;
 
@@ -89,17 +93,12 @@ beforeAll(async () => {
     process.env.SESSION_SECRET || "test-secret-for-git-tokens";
   gitServer = await startTestGitServer();
   process.env.APPS_GIT_ORIGIN_URL = gitServer.url;
-  // Hermetic: never let a configured cloud org make createProject create
-  // real GitHub repos from tests (e.g. when the shell exports .env).
-
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
 });
 
 afterAll(async () => {
   await gitServer?.close();
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -112,8 +111,7 @@ const WS = new Types.ObjectId().toString();
 const USER = "user-1";
 
 beforeEach(async () => {
-  await mongoose.connection.collection("app_projects").deleteMany({});
-  await mongoose.connection.collection("app_worktrees").deleteMany({});
+  await pgh.reset();
   // §10: ONE repo per workspace — wipe the git/session roots so each test
   // starts from an empty workspace repo.
   await fs.rm(path.join(tmpRoot, "repos"), {
@@ -130,6 +128,7 @@ beforeEach(async () => {
   });
   await initRepo(repoDirFor(WS), seededTemplateFiles());
   await bindTestWorkspaceRepo(WS);
+  await ensureTestUser(pgh.db, { id: USER });
 });
 
 /** Lose the machine. Not every provider can, and a test must not pretend. */
@@ -234,7 +233,9 @@ describe("project lifecycle", () => {
         userId: USER,
       });
 
-      expect(await AppProject.findById(project._id)).not.toBeNull();
+      expect(
+        await appsMetadataRepo.findProjectById(project._id.toString(), WS),
+      ).not.toBeNull();
       expect(
         (await listTree(remoteDir, DEFAULT_BRANCH)).map(entry => entry.path),
       ).toContain(`${project.path}/mako.json`);
@@ -806,11 +807,16 @@ describe("connector code reaches main through an admin", () => {
   const ADMIN = "admin-1";
 
   beforeEach(async () => {
-    await mongoose.connection.collection("workspacemembers").deleteMany({});
-    await WorkspaceMember.collection.insertMany([
-      { workspaceId: new Types.ObjectId(WS), userId: MEMBER, role: "member" },
-      { workspaceId: new Types.ObjectId(WS), userId: ADMIN, role: "admin" },
-    ]);
+    await ensureTestMember(pgh.db, {
+      workspaceId: WS,
+      userId: MEMBER,
+      role: "member",
+    });
+    await ensureTestMember(pgh.db, {
+      workspaceId: WS,
+      userId: ADMIN,
+      role: "admin",
+    });
   });
 
   async function connectorBranch(name: string) {
@@ -995,9 +1001,10 @@ describe("multi-actor isolation", () => {
     expect(viewerFiles).not.toContain("alice.txt");
     expect(viewerFiles).not.toContain("bob.txt");
 
-    const worktrees = await AppWorktree.find({
-      workspaceId: project.workspaceId,
-    });
+    const worktrees = await pgh.db
+      .select({ id: appWorktrees.id })
+      .from(appWorktrees)
+      .where(eq(appWorktrees.workspaceId, objectIdToUuid(WS)));
     expect(worktrees).toHaveLength(2);
   });
 });

@@ -16,8 +16,8 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { setupPgTestDb, type PgTestDb } from "../test-support/pg-test";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -29,7 +29,8 @@ import { serializeSkillFile, skillFilePath } from "../apps/skill-files";
 import { invalidateSkillCatalog } from "../apps/workspace-skills.service";
 import { bindTestWorkspaceRepo } from "../apps/bind-test-workspace-repo";
 import { createSkillTools } from "../agent-lib/tools/skill-tools";
-import { SkillUsageDaily } from "../database/workspace-schema";
+import { skillUsageDaily } from "../database/pg/schema";
+import { usageStatsRepo } from "../repositories/usage-stats";
 import {
   INDEX_DESCRIPTION_CHARS,
   deleteSkill,
@@ -44,7 +45,7 @@ import {
   toggleSkillSuppressed,
 } from "./skills.service";
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmpRoot: string;
 const WS = new Types.ObjectId().toString();
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
@@ -55,13 +56,11 @@ beforeAll(async () => {
   process.env.APPS_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_SANDBOX_PROVIDER = "local";
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -373,7 +372,7 @@ describe("skill tools: hidden files, resources, usage", () => {
   async function usageRows(total: number) {
     return vi.waitFor(
       async () => {
-        const rows = await SkillUsageDaily.find({}).lean();
+        const rows = await pgh.db.select().from(skillUsageDaily);
         const sum = rows.reduce(
           (n, row) =>
             n +
@@ -389,12 +388,8 @@ describe("skill tools: hidden files, resources, usage", () => {
     );
   }
 
-  beforeAll(async () => {
-    await SkillUsageDaily.syncIndexes();
-  });
-
   beforeEach(async () => {
-    await SkillUsageDaily.deleteMany({});
+    await pgh.db.delete(skillUsageDaily);
     await saveSkill(WS, input("recon", "Reconcile the ledger."), "u1");
     await commitBlobsOnBranch(
       repoDirFor(WS),
@@ -556,8 +551,8 @@ describe("skill tools: hidden files, resources, usage", () => {
 
   it("a load still answers when the usage write fails", async () => {
     const write = vi
-      .spyOn(SkillUsageDaily, "bulkWrite")
-      .mockRejectedValue(new Error("mongo is down"));
+      .spyOn(usageStatsRepo, "bumpSkillUsageDaily")
+      .mockRejectedValue(new Error("database is down"));
     try {
       const tools = createSkillTools(WS, "u1");
       const loaded = await run<{ success: boolean; skill: { body: string } }>(
@@ -684,7 +679,7 @@ describe("skill tools: hidden files, resources, usage", () => {
       success: false,
       error: 'skill "no_such_skill" not found',
     });
-    expect(await SkillUsageDaily.countDocuments({})).toBe(0);
+    expect(await pgh.db.$count(skillUsageDaily)).toBe(0);
   });
 
   it("a hidden workspace override of a system skill is named beside the system body", async () => {
@@ -716,9 +711,9 @@ describe("skill tools: hidden files, resources, usage", () => {
 
   it("the admin list leaves usage out when it cannot be read: no false 0", async () => {
     const aggregate = vi
-      .spyOn(SkillUsageDaily, "aggregate")
+      .spyOn(usageStatsRepo, "getSkillUsageSummary")
       .mockImplementation(() => {
-        throw new Error("mongo is down");
+        throw new Error("database is down");
       });
     try {
       const list = await listSkillsForAdmin(WS);

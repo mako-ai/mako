@@ -9,9 +9,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
-import { AppWorktree } from "../database/workspace-schema";
+import { Types } from "mongoose";
+import { setupPgTestDb, type PgTestDb } from "../test-support/pg-test";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -38,7 +38,7 @@ import {
 } from "./worktree.service";
 import { bindTestWorkspaceRepo } from "./bind-test-workspace-repo";
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmpRoot: string;
 
 beforeAll(async () => {
@@ -47,13 +47,11 @@ beforeAll(async () => {
   process.env.APPS_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_SANDBOX_PROVIDER = "local";
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -84,7 +82,7 @@ async function seedRepo(): Promise<string> {
 }
 
 beforeEach(async () => {
-  await AppWorktree.deleteMany({});
+  await pgh.reset();
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,
     force: true,
@@ -102,11 +100,8 @@ describe("ensureWorkspaceWorktree", () => {
     expect(handle.appRoot).toBe("");
     expect(handle.doc.branch).toBe(DEFAULT_BRANCH);
     // Same session doc an app-scoped handle would use: keyed by workspace.
-    const doc = await AppWorktree.findOne({
-      workspaceId: new Types.ObjectId(WS),
-      userId: USER,
-    });
-    expect(doc?._id.toString()).toBe(handle.doc._id.toString());
+    const doc = await appsMetadataRepo.findWorktree(WS, USER);
+    expect(doc?.id).toBe(handle.doc._id.toString());
   });
 });
 
@@ -189,14 +184,10 @@ describe("branch policy", () => {
   });
 
   it("apps follow the session branch; indexed kinds pin to the default branch", async () => {
-    await AppWorktree.create({
-      workspaceId: new Types.ObjectId(WS),
-      userId: USER,
-      branch: "feature/reports",
-    });
+    await appsMetadataRepo.ensureWorktreeRow(WS, USER, "feature/reports");
     expect(await sessionBranchFor(WS, USER)).toBe("feature/reports");
     expect(await commitBranchFor("app", WS, USER)).toBe("feature/reports");
-    // Consoles/skills are derived-index kinds: their Mongo rows mirror main,
+    // Consoles/skills are derived-index kinds: their Postgres rows mirror main,
     // so a save must not land on a branch the index never reads.
     expect(await commitBranchFor("console", WS, USER)).toBe(DEFAULT_BRANCH);
     expect(await commitBranchFor("skill", WS, USER)).toBe(DEFAULT_BRANCH);

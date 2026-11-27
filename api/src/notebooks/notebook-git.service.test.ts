@@ -1,17 +1,20 @@
 /**
  * Notebook checkpoints in the workspace repo (apps.md §24): real bare repo,
- * real filesystem notebook store, mongodb-memory-server for the index.
+ * real filesystem notebook store, a PGlite index.
  */
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { generateUuidv7 } from "../database/pg/id-codec";
+import { consolesChartsRepo } from "../repositories/consoles-charts";
+import { workspaceRepo } from "../repositories/workspaces";
 import {
-  NotebookIndex,
-  WorkspaceUserHandle,
-} from "../database/workspace-schema";
+  ensureTestUser,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 import { invalidateOwnerDirectory } from "../apps/user-handles.service";
 import {
   DEFAULT_BRANCH,
@@ -39,8 +42,9 @@ import {
   unbindTestWorkspaceRepo,
 } from "../apps/bind-test-workspace-repo";
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmpRoot: string;
+const USER = generateUuidv7();
 const WS = new Types.ObjectId().toString();
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
 
@@ -51,13 +55,11 @@ beforeAll(async () => {
   process.env.APPS_SANDBOX_PROVIDER = "local";
   delete process.env.NOTEBOOK_GCS_BUCKET;
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
 }, 120_000);
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -67,14 +69,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await NotebookIndex.deleteMany({});
-  // u1's personal folder is `users/joan/` — named by handle, never by id.
-  await WorkspaceUserHandle.deleteMany({});
-  await WorkspaceUserHandle.create({
-    workspaceId: new Types.ObjectId(WS),
-    userId: "u1",
-    handle: "joan",
-  });
+  await pgh.reset();
   invalidateOwnerDirectory();
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,
@@ -88,6 +83,11 @@ beforeEach(async () => {
   });
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
   await bindTestWorkspaceRepo(WS);
+  // The user's personal folder is `users/joan/`.
+  await ensureTestUser(pgh.db, { id: USER });
+  await workspaceRepo.insertHandlesBestEffort(WS, [
+    { userId: USER, handle: "joan" },
+  ]);
 });
 
 async function seedNotebook(name: string, access: "private" | "workspace") {
@@ -106,11 +106,11 @@ async function seedNotebook(name: string, access: "private" | "workspace") {
       },
     ],
   });
-  await NotebookIndex.create({
-    workspaceId: new Types.ObjectId(WS),
+  await consolesChartsRepo.createNotebookIndex({
+    workspaceId: WS,
     notebookId: doc.id,
     name,
-    ownerId: "u1",
+    ownerId: USER,
     access,
     updatedAt: new Date(),
   });
@@ -130,7 +130,7 @@ describe("checkpoint", () => {
   it("skips leftover local git when no GitHub repo is bound", async () => {
     await unbindTestWorkspaceRepo(WS);
     const id = await seedNotebook("Orphan", "workspace");
-    const result = await checkpointNotebook(WS, id, "u1");
+    const result = await checkpointNotebook(WS, id, USER);
     expect(result).toEqual({
       committed: false,
       skippedReason: "no_repository",
@@ -140,8 +140,8 @@ describe("checkpoint", () => {
 
   it("does not list leftover local git history when no GitHub repo is bound", async () => {
     const id = await seedNotebook("History leak", "workspace");
-    await checkpointNotebook(WS, id, "u1");
-    const index = await NotebookIndex.findOne({ notebookId: id });
+    await checkpointNotebook(WS, id, USER);
+    const index = await consolesChartsRepo.findNotebookIndex(WS, id);
     expect(index?.path).toBeTruthy();
     expect(await notebookHistory(index!)).not.toEqual([]);
     await unbindTestWorkspaceRepo(WS);
@@ -150,7 +150,7 @@ describe("checkpoint", () => {
 
   it("commits a stripped single-notebook .deepnote at the access-scoped path", async () => {
     const id = await seedNotebook("Revenue walk", "workspace");
-    const result = await checkpointNotebook(WS, id, "u1");
+    const result = await checkpointNotebook(WS, id, USER);
     expect(result.committed).toBe(true);
 
     const contents = await fileAt("notebooks/revenue-walk.deepnote");
@@ -163,13 +163,13 @@ describe("checkpoint", () => {
     expect(contents).not.toContain("executionCount");
 
     // Idempotent: same content → no second commit.
-    const again = await checkpointNotebook(WS, id, "u1");
+    const again = await checkpointNotebook(WS, id, USER);
     expect(again.committed).toBe(false);
   });
 
   it("a private notebook lands under users/<owner>/notebooks/", async () => {
     const id = await seedNotebook("Scratch pad", "private");
-    await checkpointNotebook(WS, id, "u1");
+    await checkpointNotebook(WS, id, USER);
     expect(
       await fileAt("users/joan/notebooks/scratch-pad.deepnote"),
     ).toBeTruthy();
@@ -177,12 +177,11 @@ describe("checkpoint", () => {
 
   it("an access flip moves the file in one commit", async () => {
     const id = await seedNotebook("Shared later", "private");
-    await checkpointNotebook(WS, id, "u1");
-    await NotebookIndex.updateOne(
-      { notebookId: id },
-      { $set: { access: "workspace" } },
-    );
-    await checkpointNotebook(WS, id, "u1");
+    await checkpointNotebook(WS, id, USER);
+    await consolesChartsRepo.updateNotebookIndex(WS, id, {
+      access: "workspace",
+    });
+    await checkpointNotebook(WS, id, USER);
     expect(
       await fileAt("users/joan/notebooks/shared-later.deepnote"),
     ).toBeNull();
@@ -193,9 +192,9 @@ describe("checkpoint", () => {
 
   it("removeNotebookFile deletes the committed file", async () => {
     const id = await seedNotebook("Doomed", "workspace");
-    await checkpointNotebook(WS, id, "u1");
-    const index = await NotebookIndex.findOne({ notebookId: id });
-    await removeNotebookFile(WS, index!, "u1");
+    await checkpointNotebook(WS, id, USER);
+    const index = await consolesChartsRepo.findNotebookIndex(WS, id);
+    await removeNotebookFile(WS, index!, USER);
     expect(await fileAt("notebooks/doomed.deepnote")).toBeNull();
   });
 });
@@ -203,7 +202,7 @@ describe("checkpoint", () => {
 describe("push-sync", () => {
   it("an external .deepnote edit flows into the store when the doc is level", async () => {
     const id = await seedNotebook("Synced", "workspace");
-    await checkpointNotebook(WS, id, "u1");
+    await checkpointNotebook(WS, id, USER);
     const raw = (await fileAt("notebooks/synced.deepnote"))!;
     const parsed = parseNotebookFile(raw)!;
     parsed.blocks[0] = { ...parsed.blocks[0], source: "# Synced (edited)" };
@@ -226,7 +225,7 @@ describe("push-sync", () => {
 
   it("the live editor wins over a stale external edit", async () => {
     const id = await seedNotebook("Contended", "workspace");
-    await checkpointNotebook(WS, id, "u1");
+    await checkpointNotebook(WS, id, USER);
     // Live edit AFTER the checkpoint…
     await getNotebookStore().update(WS, id, {
       blocks: [{ id: "b1", type: "markdown", source: "# LIVE WORK" }],

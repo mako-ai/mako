@@ -4,14 +4,17 @@
  * The vault holds tenant credentials, so the specs pin the security posture
  * rather than CRUD mechanics: values are encrypted at rest, secrets never
  * echo back through the list, the build target can never see a secret, and
- * the VITE_/secret contradiction is refused at the door. Real mongoose against
- * mongodb-memory-server — encryption and persistence are the subject here,
- * not something to mock away.
+ * the VITE_/secret contradiction is refused at the door. The tests check encryption and persistence against PGlite.
  */
 import crypto from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import {
+  ensureTestWorkspace,
+  ensureTestUser,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 import {
   AppEnvValidationError,
   deleteAppEnvVar,
@@ -20,31 +23,37 @@ import {
   setAppEnvVar,
   validateAppEnvInput,
 } from "./env.service";
-import { AppProject, type IAppProject } from "../database/workspace-schema";
+import {
+  appsMetadataRepo,
+  toAppProjectCompat,
+} from "../repositories/apps-metadata";
+import type { IAppProject } from "../database/workspace-schema";
 import { isEncryptedValue } from "../services/crypto.service";
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 
 beforeAll(async () => {
   process.env.ENCRYPTION_KEY =
     process.env.ENCRYPTION_KEY || crypto.randomBytes(32).toString("hex");
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
+  await ensureTestUser(pgh.db, { id: "tester" });
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh?.close();
 });
 
 async function makeProject(): Promise<IAppProject> {
-  return AppProject.create({
-    workspaceId: new Types.ObjectId(),
-    title: "Env test app",
-    slug: `env-test-${new Types.ObjectId().toString().slice(-8)}`,
-    access: "workspace",
-    createdBy: "tester",
-  });
+  const workspace = await ensureTestWorkspace(pgh.db);
+  return toAppProjectCompat(
+    await appsMetadataRepo.createProject({
+      workspaceId: workspace.id,
+      title: "Env test app",
+      slug: `env-test-${new Types.ObjectId().toString().slice(-8)}`,
+      access: "workspace",
+      createdBy: "tester",
+    }),
+  );
 }
 
 describe("validateAppEnvInput", () => {
@@ -108,7 +117,7 @@ describe("set / list / delete", () => {
       secret: true,
     });
     const forged = {
-      ...foreign.toObject(),
+      ...foreign,
       workspaceId: new Types.ObjectId(),
     } as IAppProject;
     expect(await listAppEnvVars(forged)).toEqual([]);
@@ -130,7 +139,7 @@ describe("set / list / delete", () => {
       secret: true,
     });
     const folderOnly = {
-      ...existing.toObject(),
+      ...existing,
       _id: new Types.ObjectId(),
       path: `apps/nested/${existing.slug}`,
     } as IAppProject;
@@ -145,7 +154,7 @@ describe("set / list / delete", () => {
       secret: false,
     });
 
-    const row = await AppProject.findById(project._id);
+    const row = await appsMetadataRepo.findProjectById(project._id.toString());
     expect(row?.env).toHaveLength(1);
     expect(row?.env?.[0].valueEncrypted).not.toContain("AIzaPlainlyVisible");
     expect(isEncryptedValue(row?.env?.[0].valueEncrypted ?? "")).toBe(true);
@@ -217,13 +226,15 @@ describe("resolveAppEnv", () => {
     const project = await makeProject();
     // A handle can hold a project loaded long before an env edit — resolving
     // through that stale doc must still see the current vault.
-    const stale = await AppProject.findById(project._id);
+    const row = await appsMetadataRepo.findProjectById(project._id.toString());
+    if (!row) throw new Error("Missing app fixture");
+    const stale = toAppProjectCompat(row);
     await setAppEnvVar(project, {
       key: "ADDED_LATER",
       value: "v",
       secret: false,
     });
-    expect(await resolveAppEnv(stale as IAppProject, "dev")).toEqual({
+    expect(await resolveAppEnv(stale, "dev")).toEqual({
       ADDED_LATER: "v",
     });
   });

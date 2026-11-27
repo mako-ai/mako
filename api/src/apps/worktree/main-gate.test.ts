@@ -10,8 +10,13 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import {
+  ensureTestMember,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../../test-support/pg-test";
 
 const mocks = vi.hoisted(() => ({
   promoteToMain: vi.fn(),
@@ -38,13 +43,12 @@ vi.mock("../cloud-repo.service", () => ({
   mirrorPushNow: vi.fn(async () => undefined),
 }));
 
-import { WorkspaceMember } from "../../database/workspace-schema";
 import { publishApp } from "../app-publish.service";
 import { assertMayLandOnMain } from "./main-gate";
 
 const run = promisify(execFile);
 const WS = new Types.ObjectId().toString();
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmp: string;
 let repoDir: string;
 let mainSha: string;
@@ -81,17 +85,22 @@ beforeAll(async () => {
   mocks.repoDir = repoDir;
   mocks.mainSha = mainSha;
 
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
-  await WorkspaceMember.collection.insertMany([
-    { workspaceId: new Types.ObjectId(WS), userId: "member", role: "member" },
-    { workspaceId: new Types.ObjectId(WS), userId: "admin", role: "admin" },
-  ]);
+  pgh = await setupPgTestDb();
+  await ensureTestWorkspace(pgh.db, { id: WS });
+  await ensureTestMember(pgh.db, {
+    workspaceId: WS,
+    userId: "member",
+    role: "member",
+  });
+  await ensureTestMember(pgh.db, {
+    workspaceId: WS,
+    userId: "admin",
+    role: "admin",
+  });
 }, 120_000);
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo?.stop();
+  await pgh?.close();
   await fs.rm(tmp, { recursive: true, force: true });
 });
 

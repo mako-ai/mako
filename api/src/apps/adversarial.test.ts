@@ -11,8 +11,20 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { and, eq } from "drizzle-orm";
+import { generateUuidv7, objectIdToUuid } from "../database/pg/id-codec";
+import { appWorktrees, workspaceUserHandles } from "../database/pg/schema";
+import {
+  appsMetadataRepo,
+  type CreateAppProjectInput,
+} from "../repositories/apps-metadata";
+import { workspaceRepo } from "../repositories/workspaces";
+import {
+  ensureTestUser,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 
 import { startTestGitServer, type TestGitServer } from "./test-git-server";
 import { initRepo, repoDirFor } from "./repository.service";
@@ -20,7 +32,7 @@ import { seededTemplateFiles } from "./workspace-template";
 import { bindTestWorkspaceRepo } from "./bind-test-workspace-repo";
 import { scopeOf } from "./worktree.service";
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmpRoot: string;
 let gitServer: TestGitServer;
 const WS = new Types.ObjectId().toString();
@@ -36,16 +48,15 @@ beforeAll(async () => {
     process.env.SESSION_SECRET || "test-secret-for-git-tokens";
   gitServer = await startTestGitServer();
   process.env.APPS_GIT_ORIGIN_URL = gitServer.url;
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
   await initRepo(repoDirFor(WS), seededTemplateFiles());
   await bindTestWorkspaceRepo(WS);
+  await ensureTestUser(pgh.db, { id: USER });
 }, 120_000);
 
 afterAll(async () => {
   await gitServer?.close();
-  await mongoose.disconnect();
-  await mongo?.stop();
+  await pgh?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -64,8 +75,7 @@ async function makeProject() {
 }
 
 beforeEach(async () => {
-  const { AppWorktree } = await import("../database/workspace-schema");
-  await AppWorktree.deleteMany({});
+  await pgh.db.delete(appWorktrees);
   // A fresh MACHINE per test, explicitly. This used to happen by accident:
   // the session key was the worktree doc's _id, so wiping the docs above
   // silently rotated every box. Keys are convention now (workspace:user),
@@ -815,7 +825,6 @@ describe("publishing a folder-only app (repo-imported, no row)", () => {
     const { synthesizeProjectFromFolder, ensureProjectRow } =
       await import("./worktree.service");
     const { setPublishedSha } = await import("./deployment.service");
-    const { AppProject } = await import("../database/workspace-schema");
 
     // A workspace whose repo arrived by IMPORT (connected-repo adoption):
     // the app exists as a folder, no AppProject row anywhere.
@@ -832,7 +841,9 @@ describe("publishing a folder-only app (repo-imported, no row)", () => {
     // The old failure mode: setPublishedSha on the synthesized shape is an
     // updateOne against an _id no document has — a silent no-op.
     await setPublishedSha(synth!, sha);
-    expect(await AppProject.findOne({ _id: synth!._id })).toBeNull();
+    expect(
+      await appsMetadataRepo.findProjectById(synth!._id.toString()),
+    ).toBeNull();
 
     // Publish now materializes the row first (same DERIVED id), and the sha
     // sticks.
@@ -841,7 +852,9 @@ describe("publishing a folder-only app (repo-imported, no row)", () => {
     expect(row.slug).toBe("pubfix");
     expect(row.access).toBe("workspace");
     await setPublishedSha(row, sha);
-    const reread = await AppProject.findOne({ _id: synth!._id });
+    const reread = await appsMetadataRepo.findProjectById(
+      synth!._id.toString(),
+    );
     expect(reread?.publishedSha).toBe(sha);
 
     // Idempotent: a second materialize returns the winner, sha intact.
@@ -854,7 +867,6 @@ describe("publishing a folder-only app (repo-imported, no row)", () => {
     const { initRepo, repoDirFor } = await import("./repository.service");
     const { synthesizeProjectFromFolder, ensureProjectRow, PUBLISH_ACTOR } =
       await import("./worktree.service");
-    const { AppProject } = await import("../database/workspace-schema");
     const { getResourceOwnerId } = await import("../utils/resource-acl");
 
     const ws3 = new Types.ObjectId().toString();
@@ -874,20 +886,21 @@ describe("publishing a folder-only app (repo-imported, no row)", () => {
 
     // First human act (publish / restrict / share / env) claims ownership.
     const alice = new Types.ObjectId().toString();
+    const aliceUser = await ensureTestUser(pgh.db, { id: alice });
     const claimed = await ensureProjectRow(synth!, alice);
-    expect(claimed.owner_id).toBe(alice);
-    expect(claimed.createdBy).toBe(alice);
-    expect(getResourceOwnerId(claimed)).toBe(alice);
+    expect(claimed.owner_id).toBe(aliceUser.id);
+    expect(claimed.createdBy).toBe(aliceUser.id);
+    expect(getResourceOwnerId(claimed)).toBe(aliceUser.id);
 
     // Ownership is sticky: a later actor (or the worker) does not take it.
     const bob = new Types.ObjectId().toString();
-    expect((await ensureProjectRow(synth!, bob)).owner_id).toBe(alice);
+    expect((await ensureProjectRow(synth!, bob)).owner_id).toBe(aliceUser.id);
     expect((await ensureProjectRow(synth!, PUBLISH_ACTOR)).owner_id).toBe(
-      alice,
+      aliceUser.id,
     );
-    expect((await AppProject.findOne({ _id: synth!._id }))?.owner_id).toBe(
-      alice,
-    );
+    expect(
+      (await appsMetadataRepo.findProjectById(synth!._id.toString()))?.owner_id,
+    ).toBe(aliceUser.id);
   }, 60_000);
 });
 
@@ -897,19 +910,16 @@ describe("a personal app's row is its owner's alone", () => {
   // These go through resolveProjectRef, the shape the routes hand in.
   const setup = async (files: Record<string, string>) => {
     const { initRepo, repoDirFor } = await import("./repository.service");
-    const { WorkspaceUserHandle } =
-      await import("../database/workspace-schema");
     const { invalidateOwnerDirectory } = await import("./user-handles.service");
     const ws = new Types.ObjectId().toString();
-    const owner = new Types.ObjectId().toString();
-    await WorkspaceUserHandle.create({
-      workspaceId: new Types.ObjectId(ws),
-      userId: owner,
-      handle: "carol",
-    });
-    invalidateOwnerDirectory();
+    const owner = generateUuidv7();
     await initRepo(repoDirFor(ws), files);
     await bindTestWorkspaceRepo(ws);
+    await ensureTestUser(pgh.db, { id: owner });
+    await workspaceRepo.insertHandlesBestEffort(ws, [
+      { userId: owner, handle: "carol" },
+    ]);
+    invalidateOwnerDirectory();
     return { ws, owner };
   };
   const manifest = (title: string) => JSON.stringify({ title });
@@ -918,15 +928,14 @@ describe("a personal app's row is its owner's alone", () => {
   const ownerlessRow = async (
     ws: string,
     appPath: string,
-    fields: Record<string, unknown> = {},
+    fields: Pick<CreateAppProjectInput, "createdBy" | "owner_id"> = {},
   ) => {
     const { resolveProjectRef } = await import("./worktree.service");
-    const { AppProject } = await import("../database/workspace-schema");
     const synth = await resolveProjectRef(ws, appPath);
     expect(synth).not.toBeNull();
-    await AppProject.create({
-      _id: synth!._id,
-      workspaceId: synth!.workspaceId,
+    await appsMetadataRepo.createProject({
+      id: synth!._id.toString(),
+      workspaceId: ws,
       title: synth!.title,
       slug: synth!.slug,
       path: synth!.path,
@@ -941,7 +950,6 @@ describe("a personal app's row is its owner's alone", () => {
   it("a new row goes to the folder's owner, private, for every other actor", async () => {
     const { resolveProjectRef, ensureProjectRow, PUBLISH_ACTOR } =
       await import("./worktree.service");
-    const { AppProject } = await import("../database/workspace-schema");
     const { canManageSharing, canReadResource } =
       await import("../utils/resource-acl");
     const { ws, owner } = await setup({
@@ -960,14 +968,13 @@ describe("a personal app's row is its owner's alone", () => {
         expect(canReadResource(row, other, role)).toBe(false);
       }
       expect(canManageSharing(row, owner, "member")).toBe(true);
-      await AppProject.deleteOne({ _id: row._id });
+      await appsMetadataRepo.deleteProject(ws, row._id.toString());
     }
   }, 60_000);
 
   it("an ownerless personal row resolved by path or id goes to its owner", async () => {
     const { resolveProjectRef, ensureProjectRow, PUBLISH_ACTOR } =
       await import("./worktree.service");
-    const { AppProject } = await import("../database/workspace-schema");
     const { canManageSharing } = await import("../utils/resource-acl");
     const { ws, owner } = await setup({
       "users/carol/apps/pushed/mako.json": manifest("Pushed"),
@@ -983,13 +990,14 @@ describe("a personal app's row is its owner's alone", () => {
 
     const byId = await resolveProjectRef(ws, id.toString());
     expect((await ensureProjectRow(byId!, PUBLISH_ACTOR)).owner_id).toBe(owner);
-    expect((await AppProject.findOne({ _id: id }))?.owner_id).toBe(owner);
+    expect(
+      (await appsMetadataRepo.findProjectById(id.toString()))?.owner_id,
+    ).toBe(owner);
   }, 60_000);
 
   it("a personal folder whose handle nobody holds stays ownerless", async () => {
     const { resolveProjectRef, ensureProjectRow } =
       await import("./worktree.service");
-    const { AppProject } = await import("../database/workspace-schema");
     const { canManageSharing } = await import("../utils/resource-acl");
     const { ws } = await setup({
       "users/nobody/apps/orphan/mako.json": manifest("Orphan"),
@@ -1005,7 +1013,9 @@ describe("a personal app's row is its owner's alone", () => {
       expect(canManageSharing(row, actor, "admin")).toBe(false);
     }
     // The same for a row that already exists when the next actor arrives.
-    const stored = await AppProject.findOne({ _id: project!._id });
+    const stored = await appsMetadataRepo.findProjectById(
+      project!._id.toString(),
+    );
     expect(stored?.owner_id ?? undefined).toBeUndefined();
   }, 60_000);
 
@@ -1016,7 +1026,8 @@ describe("a personal app's row is its owner's alone", () => {
       "users/carol/apps/kept/mako.json": manifest("Kept"),
       "users/carol/apps/created/mako.json": manifest("Created"),
     });
-    const previous = newUser();
+    const previous = generateUuidv7();
+    await ensureTestUser(pgh.db, { id: previous });
     await ownerlessRow(ws, "users/carol/apps/kept", {
       owner_id: previous,
       createdBy: previous,
@@ -1035,8 +1046,6 @@ describe("a personal app's row is its owner's alone", () => {
   it("a handle that changes takes the folder's unclaimed rows with it, never to the actor", async () => {
     const { resolveProjectRef, ensureProjectRow } =
       await import("./worktree.service");
-    const { WorkspaceUserHandle } =
-      await import("../database/workspace-schema");
     const { invalidateOwnerDirectory } = await import("./user-handles.service");
     const { ws, owner } = await setup({
       "users/carol/apps/before/mako.json": manifest("Before"),
@@ -1046,10 +1055,16 @@ describe("a personal app's row is its owner's alone", () => {
     const before = await resolveProjectRef(ws, "users/carol/apps/before");
     expect((await ensureProjectRow(before!, newUser())).owner_id).toBe(owner);
 
-    await WorkspaceUserHandle.updateOne(
-      { workspaceId: new Types.ObjectId(ws), userId: owner },
-      { $set: { handle: "carol-new" } },
-    );
+    const user = await ensureTestUser(pgh.db, { id: owner });
+    await pgh.db
+      .update(workspaceUserHandles)
+      .set({ handle: "carol-new" })
+      .where(
+        and(
+          eq(workspaceUserHandles.workspaceId, objectIdToUuid(ws)),
+          eq(workspaceUserHandles.userId, user.id),
+        ),
+      );
     invalidateOwnerDirectory();
 
     const other = newUser();
@@ -1066,19 +1081,18 @@ describe("a personal app's row is its owner's alone", () => {
   it("a private ownerless row outside a resolvable personal tree stays ownerless", async () => {
     const { resolveProjectRef, ensureProjectRow } =
       await import("./worktree.service");
-    const { AppProject } = await import("../database/workspace-schema");
     const { ws } = await setup({ "apps/x/mako.json": manifest("X") });
-    const workspaceId = new Types.ObjectId(ws);
+    const workspaceId = ws;
     // No path left (the index gives a row's path up to another app), and a
     // personal path the parser refuses (the handle is not a valid handle).
-    const pathless = await AppProject.create({
+    const pathless = await appsMetadataRepo.createProject({
       workspaceId,
       title: "Pathless",
       slug: "pathless",
       access: "private",
       createdBy: "",
     });
-    const unparsed = await AppProject.create({
+    const unparsed = await appsMetadataRepo.createProject({
       workspaceId,
       title: "Unparsed",
       slug: "unparsed",
@@ -1087,7 +1101,7 @@ describe("a personal app's row is its owner's alone", () => {
       createdBy: "",
     });
     for (const doc of [pathless, unparsed]) {
-      const project = await resolveProjectRef(ws, doc._id.toString());
+      const project = await resolveProjectRef(ws, doc.id);
       const row = await ensureProjectRow(project!, newUser());
       expect(row.owner_id ?? undefined).toBeUndefined();
     }
@@ -1102,15 +1116,16 @@ describe("a personal app's row is its owner's alone", () => {
     });
     const actor = newUser();
     const shared = await resolveProjectRef(ws, "shared");
+    const actorUser = await ensureTestUser(pgh.db, { id: actor });
     const row = await ensureProjectRow(shared!, actor);
-    expect(row.owner_id).toBe(actor);
+    expect(row.owner_id).toBe(actorUser.id);
     expect(row.access).toBe("workspace");
 
     const pushed = await resolveProjectRef(ws, "ownerless");
     const deployed = await ensureProjectRow(pushed!, PUBLISH_ACTOR);
     expect(deployed.owner_id ?? undefined).toBeUndefined();
     const claimed = await ensureProjectRow(deployed, actor);
-    expect(claimed.owner_id).toBe(actor);
+    expect(claimed.owner_id).toBe(actorUser.id);
     expect(claimed.access).toBe("workspace");
   }, 60_000);
 });
