@@ -91,7 +91,9 @@ export const chats = pgTable(
   "chats",
   {
     /** Bijective ObjectId <-> RFC 9562 UUIDv8. */
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -184,7 +186,9 @@ export const chats = pgTable(
 export const chatMessages = pgTable(
   "chat_messages",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     chatId: uuid("chat_id")
       .notNull()
       .references(() => chats.id, { onDelete: "cascade" }),
@@ -213,7 +217,9 @@ export const chatAttachments = pgTable(
   "chat_attachments",
   {
     /** Bijective ObjectId <-> RFC 9562 UUIDv8 (preserves `/chat-images/:id`). */
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -253,7 +259,9 @@ export const chatAttachments = pgTable(
 export const chatMessageParts = pgTable(
   "chat_message_parts",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     chatId: uuid("chat_id")
       .notNull()
       .references(() => chats.id, { onDelete: "cascade" }),
@@ -358,7 +366,9 @@ export const chatMessagePartMetadata = pgTable(
 export const chatUsageEntries = pgTable(
   "chat_usage_entries",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     chatId: uuid("chat_id")
       .notNull()
       .references(() => chats.id, { onDelete: "cascade" }),

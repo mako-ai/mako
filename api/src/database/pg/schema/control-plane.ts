@@ -136,7 +136,9 @@ export const migrationTombstones = pgTable(
 export const migrationQuarantine = pgTable(
   "migration_quarantine",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     domain: text("domain").notNull(),
     collectionName: text("collection_name").notNull(),
     mongoId: text("mongo_id").notNull(),

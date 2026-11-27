@@ -166,7 +166,9 @@ export interface AppBindingJobProgressJson {
 export const appProjects = pgTable(
   "app_projects",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -266,7 +268,9 @@ export const appProjects = pgTable(
 export const appIndex = pgTable(
   "app_index",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -327,7 +331,9 @@ export const appIndex = pgTable(
 export const appIndexHeads = pgTable(
   "app_index_heads",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -350,7 +356,9 @@ export const appIndexHeads = pgTable(
 export const appEmbeddings = pgTable(
   "app_embeddings",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -377,7 +385,9 @@ export const appEmbeddings = pgTable(
 export const appLifecycle = pgTable(
   "app_lifecycle",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -416,7 +426,9 @@ export const appLifecycle = pgTable(
 export const appDeployCommitStatuses = pgTable(
   "app_deploy_commit_statuses",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -452,7 +464,9 @@ export const appDeployCommitStatuses = pgTable(
 export const appWorktrees = pgTable(
   "app_worktrees",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -506,7 +520,9 @@ export const appWorktrees = pgTable(
 export const appBindingState = pgTable(
   "app_binding_state",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     /** Bijective UUIDv8 of appId (soft ref). */
     projectId: uuid("project_id").notNull(),
     name: text("name").notNull(),
@@ -539,7 +555,9 @@ export const appBindingState = pgTable(
 export const appBindingDrafts = pgTable(
   "app_binding_drafts",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     /** Bijective UUIDv8 of appId (soft ref). */
     projectId: uuid("project_id").notNull(),
     hash: text("hash").notNull(),
@@ -582,7 +600,9 @@ export const appBindingDrafts = pgTable(
 export const appBindingJobs = pgTable(
   "app_binding_jobs",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),

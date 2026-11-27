@@ -1127,10 +1127,10 @@ export class PgConnectionsRepository implements ConnectionsRepository {
     db: MakoPgDb = this.getDb(),
   ): Promise<ConnectionAccessEventRecord> {
     const at = input.at ?? new Date();
-    const wireId = input.id ?? newDualId(at.getTime()).oid;
+    const placeholderId = input.id ?? "00000000-0000-7000-8000-000000000000";
     const record: ConnectionAccessEventRecord = {
-      id: wireId,
-      _id: wireId,
+      id: placeholderId,
+      _id: placeholderId,
       workspaceId: input.workspaceId,
       connectionId: input.connectionId,
       kind: input.kind,
@@ -1143,9 +1143,10 @@ export class PgConnectionsRepository implements ConnectionsRepository {
       record,
       this.makeUserResolver(db),
     );
+    const { id: _omitId, ...withoutId } = insertRow;
     const rows = await db
       .insert(connectionAccessEvents)
-      .values(insertRow)
+      .values(input.id ? insertRow : withoutId)
       .returning();
     return pgAccessEventToRecord(rows[0]);
   }
@@ -1206,7 +1207,6 @@ export class PgConnectionsRepository implements ConnectionsRepository {
     db: MakoPgDb = this.getDb(),
   ): Promise<ConnectionWriteEventRecord> {
     const at = input.at ?? new Date();
-    const wireId = input.id ?? newDualId(at.getTime()).oid;
     const { principal, actorUserId } = await rewritePrincipalForPg(
       input.principal,
       this.makeUserResolver(db),
@@ -1214,7 +1214,7 @@ export class PgConnectionsRepository implements ConnectionsRepository {
     const rows = await db
       .insert(connectionWriteEvents)
       .values({
-        id: entityIdToPgUuid(wireId),
+        ...(input.id ? { id: entityIdToPgUuid(input.id) } : {}),
         workspaceId: entityIdToPgUuid(input.workspaceId),
         connectionId: entityIdToPgUuid(input.connectionId),
         principal,

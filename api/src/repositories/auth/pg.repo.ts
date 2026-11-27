@@ -11,11 +11,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, gt, inArray, isNotNull, lte, ne, or, sql } from "drizzle-orm";
 import { extractRows, getPgDb, type MakoPgDb } from "../../database/pg/client";
-import {
-  generateUuidv7,
-  isUuidString,
-  newDualId,
-} from "../../database/pg/id-codec";
+import { generateUuidv7, isUuidString } from "../../database/pg/id-codec";
 import {
   desktopAuthCodes,
   emailVerifications,
@@ -446,15 +442,13 @@ export class PgAuthRepository implements AuthRepository {
     input: CreateOAuthAccountInput,
   ): Promise<OAuthAccountRecord> {
     const createdAt = input.createdAt ?? new Date();
-    const pgId = input.id
-      ? oauthIdToPgUuid(input.id)
-      : newDualId(createdAt.getTime()).uuid;
+    const pgId = input.id ? oauthIdToPgUuid(input.id) : undefined;
     const pgUserUuid = await this.resolveWriteUserUuid(input.userId);
 
     const rows = await this.getDb()
       .insert(oauthAccounts)
       .values({
-        id: pgId,
+        ...(pgId ? { id: pgId } : {}),
         userId: pgUserUuid,
         provider: input.provider,
         providerUserId: input.providerUserId,

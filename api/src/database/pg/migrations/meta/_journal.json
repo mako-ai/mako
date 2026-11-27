@@ -78,6 +78,13 @@
       "when": 1795782797677,
       "tag": "0010_chat_active_agent_postgres",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1795797406777,
+      "tag": "0011_native_uuidv7_defaults",
+      "breakpoints": true
     }
   ]
 }

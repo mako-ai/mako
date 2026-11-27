@@ -117,7 +117,9 @@ export interface WorkflowSlotJson {
 export const workspaces = pgTable(
   "workspaces",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     name: text("name").notNull(),
     slug: text("slug").notNull(),
     /** Nullable UUIDv7 FK: NULL for legacy `"system"`/deleted creators. */
@@ -236,7 +238,9 @@ export const workspaceApiKeys = pgTable(
   "workspace_api_keys",
   {
     /** Bijective UUIDv8 of `apiKeys[]._id` (referenced by `query_executions.api_key_id`). */
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -270,7 +274,9 @@ export const workspaceApiKeys = pgTable(
 export const workspaceMembers = pgTable(
   "workspace_members",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -307,7 +313,9 @@ export const workspaceMembers = pgTable(
 export const workspaceInvites = pgTable(
   "workspace_invites",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -349,7 +357,9 @@ export const workspaceInvites = pgTable(
 export const workspaceUserHandles = pgTable(
   "workspace_user_handles",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -379,7 +389,9 @@ export const workspaceUserHandles = pgTable(
 export const mcpOAuthClients = pgTable(
   "mcp_oauth_clients",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     clientId: text("client_id").notNull(),
     clientName: text("client_name"),
     redirectUris: text("redirect_uris").array().notNull(),
@@ -393,7 +405,9 @@ export const mcpOAuthClients = pgTable(
 export const mcpOAuthCodes = pgTable(
   "mcp_oauth_codes",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     codeHash: text("code_hash").notNull(),
     clientId: text("client_id")
       .notNull()
@@ -419,7 +433,9 @@ export const mcpOAuthCodes = pgTable(
 export const mcpOAuthTokens = pgTable(
   "mcp_oauth_tokens",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     accessTokenHash: text("access_token_hash").notNull(),
     refreshTokenHash: text("refresh_token_hash").notNull(),
     clientId: text("client_id")
@@ -462,7 +478,9 @@ export const mcpOAuthTokens = pgTable(
 export const acpPlanGrants = pgTable(
   "acp_plan_grants",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -495,7 +513,9 @@ export const acpPlanGrants = pgTable(
 export const githubInstallations = pgTable(
   "github_installations",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),

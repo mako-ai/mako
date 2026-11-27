@@ -39,7 +39,9 @@ export const mcpServers = pgTable(
   "mcp_servers",
   {
     /** Bijective ObjectId <-> RFC 9562 UUIDv8. */
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -140,7 +142,9 @@ export const mcpConnectionConfigs = pgTable(
   "mcp_connection_configs",
   {
     /** Bijective ObjectId <-> RFC 9562 UUIDv8. */
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -183,7 +187,9 @@ export const mcpOauthFlows = pgTable(
   "mcp_oauth_flows",
   {
     /** Bijective ObjectId <-> RFC 9562 UUIDv8. */
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     state: text("state").notNull().unique("mcp_oauth_flows_state_unique"),
     workspaceId: uuid("workspace_id")
       .notNull()
@@ -210,7 +216,9 @@ export const mcpToolGrants = pgTable(
   "mcp_tool_grants",
   {
     /** Bijective ObjectId <-> RFC 9562 UUIDv8. */
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),

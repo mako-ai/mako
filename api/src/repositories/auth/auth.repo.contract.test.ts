@@ -345,7 +345,11 @@ describe("Phase 1A AuthRepository contract & migration lifecycle (Decision #3)",
           providerUserId: "gh-456",
           email: "oauth2@example.com",
         });
-        expect(github.id).toMatch(/^[0-9a-f]{24}$/);
+        if (repo instanceof PgAuthRepository) {
+          expect(isUuidv7(github.id)).toBe(true);
+        } else {
+          expect(github.id).toMatch(/^[0-9a-f]{24}$/);
+        }
 
         expect(
           await repo.findOAuthAccountByProvider("google", "g-123"),

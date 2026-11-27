@@ -1184,7 +1184,8 @@ export function canonicalizeProjectForShadow(
  * shared route helpers (`collaborator-routes`, `public-share-routes`) through the repo.
  */
 function toCompatId(id: string): Types.ObjectId | string {
-  return parseEntityId(id) ? toMongoObjectId(id) : id;
+  const parsed = parseEntityId(id);
+  return parsed?.oid ? new Types.ObjectId(parsed.oid) : id;
 }
 
 export function buildProjectSharingPatch(

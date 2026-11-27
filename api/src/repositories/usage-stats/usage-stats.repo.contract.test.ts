@@ -27,6 +27,7 @@ import {
 } from "../../database/pg/client";
 import {
   generateUuidv7,
+  isUuidv7,
   legacyUserIdToUuidv7,
   newDualId,
   objectIdToUuid,
@@ -35,6 +36,7 @@ import { runPgliteMigrations } from "../../database/pg/migrate";
 import { readPostBackfillStatements } from "../../database/pg/post-backfill";
 import * as pgSchema from "../../database/pg/schema";
 import { createTestPglite } from "../../database/pg/test-pglite";
+import { queryExecutionService } from "../../services/query-execution.service";
 import { LlmUsage } from "../../database/schema";
 import {
   AppFeedSnapshot,
@@ -772,13 +774,51 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
     }
   });
 
-  // ── 7. Stage 3 legacy 15-char user-ID + "system" sentinel shadow-compare & query_executions parity
+  it("queryExecutionService handles PG-generated UUIDv7 execution and apiKey IDs without BSONError", async () => {
+    setPgTestDb(db);
+    const connId = newDualId().oid;
+    const consoleId = newDualId().oid;
+    const [apiKeyRow] = await db
+      .insert(pgSchema.workspaceApiKeys)
+      .values({
+        workspaceId: wsUuid,
+        name: "uuidv7-test-key",
+        keyHash: "hash-uuidv7-test",
+        prefix: "mako_v7",
+        createdBy: user1Uuid,
+      })
+      .returning();
+    expect(isUuidv7(apiKeyRow.id)).toBe(true);
 
-  // ── 8. Stage 5 per-workspace canary partitioning for global scans & workspace-less lookup
+    const tracked = await queryExecutionService.trackAsync({
+      userId: user1Uuid,
+      apiKeyId: apiKeyRow.id,
+      workspaceId: wsId,
+      connectionId: connId,
+      consoleId,
+      source: "api",
+      databaseType: "postgresql",
+      queryLanguage: "sql",
+      status: "success",
+      executionTimeMs: 42,
+      rowCount: 7,
+    });
+    expect(tracked).not.toBeNull();
+    expect(isUuidv7(String(tracked?._id))).toBe(true);
+    expect(String(tracked?.apiKeyId)).toBe(apiKeyRow.id);
 
-  // ── 9. Stage 4->2 reverse-sync: legacy_id mapping, targeted daily replay, clean events, UUIDv8 PG replay
+    const consoleExecs = await queryExecutionService.getConsoleExecutions(
+      wsId,
+      consoleId,
+    );
+    expect(consoleExecs).toHaveLength(1);
+    expect(isUuidv7(String(consoleExecs[0]._id))).toBe(true);
+    expect(String(consoleExecs[0].apiKeyId)).toBe(apiKeyRow.id);
 
-  // ── 10. Natural-key PK drift --repair, deleted apiKeyId, and missing workspaceId safety
-
-  // ── 11. PR #1557 review hardening regressions ──────────────────────────────
+    const wsExecs = await queryExecutionService.getWorkspaceExecutions(wsId);
+    expect(wsExecs.total).toBeGreaterThanOrEqual(1);
+    expect(
+      wsExecs.executions.some(e => String(e._id) === String(tracked?._id)),
+    ).toBe(true);
+  });
 });

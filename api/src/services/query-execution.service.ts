@@ -1,4 +1,5 @@
 import { Types } from "mongoose";
+import { parseEntityId } from "../database/pg/id-codec";
 import { type IQueryExecution } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import {
@@ -8,16 +9,21 @@ import {
 
 const logger = loggers.query();
 
+function toCompatObjectId(id: string): Types.ObjectId | string {
+  const parsed = parseEntityId(id);
+  return parsed?.oid ? new Types.ObjectId(parsed.oid) : id;
+}
+
 function recordToQueryExecutionCompat(
   rec: QueryExecutionRecord,
 ): IQueryExecution {
   return {
     ...rec,
-    _id: new Types.ObjectId(rec.id),
-    workspaceId: new Types.ObjectId(rec.workspaceId),
-    connectionId: new Types.ObjectId(rec.connectionId),
-    ...(rec.apiKeyId ? { apiKeyId: new Types.ObjectId(rec.apiKeyId) } : {}),
-    ...(rec.consoleId ? { consoleId: new Types.ObjectId(rec.consoleId) } : {}),
+    _id: toCompatObjectId(rec.id),
+    workspaceId: toCompatObjectId(rec.workspaceId),
+    connectionId: toCompatObjectId(rec.connectionId),
+    ...(rec.apiKeyId ? { apiKeyId: toCompatObjectId(rec.apiKeyId) } : {}),
+    ...(rec.consoleId ? { consoleId: toCompatObjectId(rec.consoleId) } : {}),
   } as unknown as IQueryExecution;
 }
 

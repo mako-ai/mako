@@ -133,7 +133,9 @@ export interface ConsoleLastRunJson {
 export const consoleFolders = pgTable(
   "console_folders",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -179,7 +181,9 @@ export const consoleFolders = pgTable(
 export const savedConsoles = pgTable(
   "saved_consoles",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -370,7 +374,9 @@ export const savedConsoles = pgTable(
 export const entityVersions = pgTable(
   "entity_versions",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -417,7 +423,9 @@ export const entityVersions = pgTable(
 export const notebookFolders = pgTable(
   "notebook_folders",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -457,7 +465,9 @@ export const notebookFolders = pgTable(
 export const notebookIndexes = pgTable(
   "notebook_indexes",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     notebookId: text("notebook_id").notNull(),
     workspaceId: uuid("workspace_id")
       .notNull()
@@ -525,7 +535,9 @@ export const notebookIndexes = pgTable(
 export const favourites = pgTable(
   "favourites",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
@@ -575,7 +587,9 @@ export const favourites = pgTable(
 export const scheduledQueryRuns = pgTable(
   "scheduled_query_runs",
   {
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),

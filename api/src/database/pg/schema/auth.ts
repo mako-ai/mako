@@ -48,7 +48,9 @@ export const users = pgTable(
   "users",
   {
     /** Canonical RFC 9562 UUIDv7 user identifier. */
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     /** Original Mongo `_id` (15-char Lucia ID, old UUIDv4, or matching UUIDv7). */
     legacyId: text("legacy_id").unique(),
     email: text("email").notNull().unique(),
@@ -121,7 +123,9 @@ export const oauthAccounts = pgTable(
   "oauth_accounts",
   {
     /** Bijective ObjectId -> RFC 9562 UUIDv8 during dual-run; native UUID afterwards. */
-    id: uuid("id").primaryKey(),
+    id: uuid("id")
+      .primaryKey()
+      .default(sql`uuidv7()`),
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
