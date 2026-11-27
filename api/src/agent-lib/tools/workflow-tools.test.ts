@@ -5,7 +5,7 @@
  * responses are trimmed to what a model needs.
  */
 import assert from "node:assert/strict";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose from "mongoose";
 import { eq } from "drizzle-orm";
 
@@ -117,7 +117,8 @@ globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
 async function main() {
   const h = await setupPgTestDb();
   // Run detail still reads the recorded-workflow-write collection.
-  const mongo = await MongoMemoryServer.create();
+  process.env.MAKO_CONTROL_PLANE_FENCE_V1 = "1";
+  const mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(mongo.getUri());
   process.env.HATCHET_CLIENT_TOKEN = TOKEN;
   process.env.ENCRYPTION_KEY ??= "0".repeat(64);

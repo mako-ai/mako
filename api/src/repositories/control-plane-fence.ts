@@ -116,8 +116,9 @@ export function createControlPlaneRepo<T extends object>(
           if (result !== usePg) return result;
         }
         const pgMethod = Reflect.get(pg, prop);
-        if (typeof pgMethod !== "function")
+        if (typeof pgMethod !== "function") {
           throw new Error("Unknown PG repository method");
+        }
         return Reflect.apply(pgMethod, pg, args);
       };
     },

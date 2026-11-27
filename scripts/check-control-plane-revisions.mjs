@@ -59,35 +59,7 @@ export function checkControlPlaneRevisions(service, revisions) {
   };
 }
 
-async function main() {
-  const { GCP_PROJECT_ID, GCP_REGION, SERVICE_NAME } = process.env;
-  if (
-    ![GCP_PROJECT_ID, GCP_REGION, SERVICE_NAME].every(
-      v => v && /^[a-z0-9-]+$/.test(v),
-    )
-  )
-    throw new Error("Missing Cloud Run target");
-  const url =
-    "https://run.googleapis.com/v2/projects/" +
-    GCP_PROJECT_ID +
-    "/locations/" +
-    GCP_REGION +
-    "/services/" +
-    SERVICE_NAME;
-  const token = execFileSync("gcloud", ["auth", "print-access-token"], {
-    encoding: "utf8",
-  }).trim();
-  const get = async url => {
-    const response = await fetch(url, {
-      headers: { Authorization: "Bearer " + token },
-    });
-    if (!response.ok)
-      throw new Error(
-        "Cloud Run metadata unavailable (HTTP " + response.status + ")",
-      );
-    return response.json();
-  };
-  const service = await get(url);
+async function readRevisions(url, get) {
   const revisions = [];
   let pageToken = "";
   do {
@@ -110,12 +82,73 @@ async function main() {
     }
     pageToken = page.nextPageToken;
   } while (pageToken);
-  const evidence = checkControlPlaneRevisions(service, revisions);
-  const final = await get(url);
-  if (final.etag !== service.etag || !service.etag || final.reconciling)
-    throw new Error("Cloud Run service changed during verification");
+  return revisions;
+}
+
+export async function verifyControlPlaneWriters(env, get) {
+  const { GCP_PROJECT_ID, GCP_MIGRATION_PROJECT_ID, GCP_REGION } = env;
+  if (
+    ![GCP_PROJECT_ID, GCP_MIGRATION_PROJECT_ID, GCP_REGION].every(
+      value => value && /^[a-z0-9-]+$/.test(value),
+    )
+  ) {
+    throw new Error(
+      "Both production project IDs and the Cloud Run region are required",
+    );
+  }
+
+  // Each service owns an independent endpoint and its own 100% traffic split.
+  const services = [
+    [GCP_PROJECT_ID, "mako"],
+    [GCP_MIGRATION_PROJECT_ID, "mako-canary"],
+  ].map(([project, service]) => {
+    const resource = `projects/${project}/locations/${GCP_REGION}/services/${service}`;
+    return { resource, url: "https://run.googleapis.com/v2/" + resource };
+  });
+  const snapshots = [];
+  for (const { resource, url } of services) {
+    const service = await get(url);
+    snapshots.push({ resource, url, service });
+  }
+
+  const evidence = [];
+  for (const { resource, url, service } of snapshots) {
+    try {
+      const revisions = await readRevisions(url, get);
+      evidence.push({
+        ...checkControlPlaneRevisions(service, revisions),
+        resource,
+      });
+    } catch (error) {
+      throw new Error(resource + ": " + error.message);
+    }
+  }
+  // Bracket the entire cross-service inventory with both generation checks.
+  for (const { resource, url, service } of snapshots) {
+    const final = await get(url);
+    if (!service.etag || final.etag !== service.etag || final.reconciling) {
+      throw new Error(resource + " changed during writer verification");
+    }
+  }
+  return { checkedAt: new Date().toISOString(), services: evidence };
+}
+
+async function main() {
+  const token = execFileSync("gcloud", ["auth", "print-access-token"], {
+    encoding: "utf8",
+  }).trim();
+  const get = async url => {
+    const response = await fetch(url, {
+      headers: { Authorization: "Bearer " + token },
+    });
+    if (!response.ok)
+      throw new Error(
+        url.split("?")[0] + " unavailable (HTTP " + response.status + ")",
+      );
+    return response.json();
+  };
   console.info(
-    JSON.stringify({ checkedAt: new Date().toISOString(), ...evidence }),
+    JSON.stringify(await verifyControlPlaneWriters(process.env, get)),
   );
 }
 

@@ -29,7 +29,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose from "mongoose";
 import { desc, eq } from "drizzle-orm";
 
@@ -248,7 +248,8 @@ const attempt = (run: () => Promise<unknown>): Promise<string> =>
 async function main() {
   const h = await setupPgTestDb();
   // Recorded dry runs still use their Mongo control-plane collections.
-  const mongo = await MongoMemoryServer.create();
+  process.env.MAKO_CONTROL_PLANE_FENCE_V1 = "1";
+  const mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(mongo.getUri());
   process.env.ENCRYPTION_KEY ??= "0".repeat(64);
 

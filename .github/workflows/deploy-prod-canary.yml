@@ -19,6 +19,10 @@ permissions:
 jobs:
   deploy-canary:
     name: Deploy isolated production canary
+    # Both serving services can write to the same production control plane.
+    concurrency:
+      group: production-control-plane-writers
+      cancel-in-progress: false
     if: inputs.confirm == 'mako-ai-prod' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     environment:
@@ -194,6 +198,7 @@ jobs:
             --set-env-vars WEBHOOK_PUBLIC_BASE_URL=${WEBHOOK_PUBLIC_BASE_URL} \
             --set-env-vars DASHBOARD_ARTIFACT_PREFIX=dashboard-artifacts/canary \
             --set-env-vars DASHBOARD_ARTIFACT_STORE=gcs \
+            --set-env-vars MAKO_CONTROL_PLANE_FENCE_V1=1 \
             --set-env-vars DATABASE_URL=${DATABASE_URL} \
             --set-env-vars GCS_DASHBOARD_BUCKET=${GCS_DASHBOARD_BUCKET} \
             --set-env-vars DISABLE_SCHEDULED_SYNC=true \
