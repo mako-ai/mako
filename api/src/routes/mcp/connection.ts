@@ -1,6 +1,5 @@
 /** Connecting an MCP server: credentials, OAuth client and flow, test + tool refresh. */
 import { createRoute, z } from "@hono/zod-openapi";
-import { Types } from "mongoose";
 import { loggers } from "../../logging";
 import { AuthenticatedContext } from "../../middleware/workspace.middleware";
 import {
@@ -8,7 +7,8 @@ import {
   OPEN_RESPONSES,
   createRouter,
 } from "../../openapi/core";
-import { McpConnectionConfig } from "../../database/workspace-schema";
+import { parseEntityId } from "../../database/pg/id-codec";
+import { mcpRepo } from "../../repositories/mcp";
 import { getMcpPreset } from "../../mcp/presets";
 import { encryptRecord } from "../../services/crypto.service";
 import { discoverMcpTools } from "../../services/mcp-client.service";
@@ -53,7 +53,7 @@ mcpServerConnectionRoutes.openapi(
     try {
       const workspaceId = c.req.param("workspaceId");
       const id = c.req.param("id");
-      if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
+      if (!workspaceId || !parseEntityId(workspaceId)) {
         return fail(c, 400, "Valid workspace ID is required");
       }
       const user = (c as AuthenticatedContext).get("user");
@@ -65,7 +65,7 @@ mcpServerConnectionRoutes.openapi(
         return fail(c, 404, "Server not found");
       }
 
-      let configUserId: string;
+      let configUserId: string | null;
       if (server.authPerformer === "workspace") {
         const adminUserId = await requireAdmin(
           c as AuthenticatedContext,
@@ -74,7 +74,7 @@ mcpServerConnectionRoutes.openapi(
         if (!adminUserId) {
           return fail(c, 403, "Workspace admin role required");
         }
-        configUserId = "";
+        configUserId = null;
       } else {
         configUserId = user.id;
       }
@@ -84,20 +84,17 @@ mcpServerConnectionRoutes.openapi(
         return fail(c, 400, "Invalid request body");
       }
 
-      await McpConnectionConfig.updateOne(
-        { serverId: server._id, userId: configUserId },
-        {
-          $set: {
-            workspaceId: server.workspaceId,
-            headers: encryptRecord(parsed.data.headers),
-          },
-        },
-        { upsert: true },
-      );
+      await mcpRepo.upsertConnectionCredentials({
+        workspaceId: server.workspaceId,
+        serverId: server.id,
+        userId: configUserId,
+        headersEncrypted: encryptRecord(parsed.data.headers),
+      });
 
       if (server.status === "created") {
-        server.status = "awaiting_auth";
-        await server.save();
+        await mcpRepo.updateServer(server.workspaceId, server.id, {
+          status: "awaiting_auth",
+        });
       }
 
       return c.json({ success: true });
@@ -135,7 +132,7 @@ mcpServerConnectionRoutes.openapi(
     try {
       const workspaceId = c.req.param("workspaceId");
       const id = c.req.param("id");
-      if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
+      if (!workspaceId || !parseEntityId(workspaceId)) {
         return fail(c, 400, "Valid workspace ID is required");
       }
       // The app credential is shared by every connecting member — admin only.
@@ -258,7 +255,7 @@ mcpServerConnectionRoutes.openapi(
     try {
       const workspaceId = c.req.param("workspaceId");
       const id = c.req.param("id");
-      if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
+      if (!workspaceId || !parseEntityId(workspaceId)) {
         return fail(c, 400, "Valid workspace ID is required");
       }
       const user = (c as AuthenticatedContext).get("user");
@@ -271,14 +268,15 @@ mcpServerConnectionRoutes.openapi(
       }
 
       // Test with the credential this request's user would use at chat time.
-      const configUserId = server.authPerformer === "user" ? user.id : "";
-      const config = await McpConnectionConfig.findOne({
-        serverId: server._id,
-        userId: configUserId,
-      }).lean();
+      const configUserId = server.authPerformer === "user" ? user.id : null;
+      const config = await mcpRepo.findConnectionConfig(
+        server.workspaceId,
+        server.id,
+        configUserId,
+      );
       const missingCredential =
         server.authType === "oauth"
-          ? !config?.oauthTokens
+          ? !config?.oauthTokensEncrypted
           : !config && server.authType !== "none";
       if (missingCredential) {
         return fail(
@@ -297,27 +295,31 @@ mcpServerConnectionRoutes.openapi(
       try {
         const tools = await discoverMcpTools(
           server,
-          (config?.headers ?? {}) as Record<string, string>,
-          configUserId,
+          config?.headersEncrypted ?? {},
+          configUserId ?? "",
         );
-        server.cachedTools = tools;
-        server.status = "connected";
-        server.lastError = undefined;
-        server.lastConnectedAt = new Date();
-        await server.save();
+        const updated =
+          (await mcpRepo.updateServer(server.workspaceId, server.id, {
+            cachedTools: tools,
+            status: "connected",
+            lastError: null,
+            lastConnectedAt: new Date(),
+          })) ?? server;
         logger.info("MCP server connected", {
           workspaceId,
-          serverId: server._id.toString(),
+          serverId: server.id,
           toolCount: tools.length,
         });
-        return c.json({ success: true, server: serializeServer(server) });
+        return c.json({ success: true, server: serializeServer(updated) });
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Connection failed";
-        server.status = "error";
-        server.lastError = message.substring(0, 500);
-        await server.save();
-        return fail(c, 502, message, { server: serializeServer(server) });
+        const errored =
+          (await mcpRepo.updateServer(server.workspaceId, server.id, {
+            status: "error",
+            lastError: message.substring(0, 500),
+          })) ?? server;
+        return fail(c, 502, message, { server: serializeServer(errored) });
       }
     } catch (error) {
       logger.error("Error testing MCP server", { error });

@@ -1,6 +1,5 @@
 /** MCP server CRUD (create/update/delete are owner/admin). */
 import { createRoute, z } from "@hono/zod-openapi";
-import { Types } from "mongoose";
 import { loggers } from "../../logging";
 import { AuthenticatedContext } from "../../middleware/workspace.middleware";
 import {
@@ -8,12 +7,14 @@ import {
   OPEN_RESPONSES,
   createRouter,
 } from "../../openapi/core";
+import { parseEntityId } from "../../database/pg/id-codec";
 import {
-  type IMcpServer,
-  McpConnectionConfig,
-  McpServer,
-  McpToolGrant,
-} from "../../database/workspace-schema";
+  isDuplicateServerNameError,
+  mcpRepo,
+  type McpConnectionConfigRecord,
+  type McpServerRecord,
+  type UpdateMcpServerPatch,
+} from "../../repositories/mcp";
 import { getMcpPreset } from "../../mcp/presets";
 import { assertSafeMcpUrl } from "../../services/mcp-client.service";
 import { fail } from "../lib/respond";
@@ -43,28 +44,26 @@ mcpServerRoutes.openapi(
   async c => {
     try {
       const workspaceId = c.req.param("workspaceId");
-      if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
+      if (!workspaceId || !parseEntityId(workspaceId)) {
         return fail(c, 400, "Valid workspace ID is required");
       }
       const user = (c as AuthenticatedContext).get("user");
-      const servers = await McpServer.find({
-        workspaceId: new Types.ObjectId(workspaceId),
-      }).sort({ createdAt: 1 });
-
-      const configs = await McpConnectionConfig.find({
-        serverId: { $in: servers.map(s => s._id) },
-      })
-        .select("serverId userId oauthTokens headers")
-        .lean();
+      const servers = await mcpRepo.listServersByWorkspace(workspaceId);
+      const configs = await mcpRepo.listConnectionConfigsByServerIds(
+        workspaceId,
+        servers.map(s => s.id),
+      );
 
       // For OAuth servers a credential only counts once tokens exist.
       const hasUsableCredential = (
-        server: IMcpServer,
-        cfg: (typeof configs)[number],
+        server: McpServerRecord,
+        cfg: McpConnectionConfigRecord,
       ): boolean =>
         server.authType === "oauth"
-          ? !!cfg.oauthTokens
-          : Object.keys(cfg.headers ?? {}).length > 0;
+          ? !!cfg.oauthTokensEncrypted
+          : Object.keys(cfg.headersEncrypted ?? {}).length > 0;
+
+      const currentUserId = user?.id ?? null;
 
       return c.json({
         success: true,
@@ -72,16 +71,18 @@ mcpServerRoutes.openapi(
           serializeServer(server, {
             hasWorkspaceCredential: configs.some(
               cfg =>
-                cfg.serverId.toString() === server._id.toString() &&
-                cfg.userId === "" &&
+                cfg.serverId === server.id &&
+                cfg.userId === null &&
                 hasUsableCredential(server, cfg),
             ),
-            hasUserCredential: configs.some(
-              cfg =>
-                cfg.serverId.toString() === server._id.toString() &&
-                cfg.userId === (user?.id ?? "") &&
-                hasUsableCredential(server, cfg),
-            ),
+            hasUserCredential:
+              currentUserId !== null &&
+              configs.some(
+                cfg =>
+                  cfg.serverId === server.id &&
+                  cfg.userId === currentUserId &&
+                  hasUsableCredential(server, cfg),
+              ),
           }),
         ),
       });
@@ -121,7 +122,7 @@ mcpServerRoutes.openapi(
   async c => {
     try {
       const workspaceId = c.req.param("workspaceId");
-      if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
+      if (!workspaceId || !parseEntityId(workspaceId)) {
         return fail(c, 400, "Valid workspace ID is required");
       }
       const adminUserId = await requireAdmin(
@@ -152,10 +153,10 @@ mcpServerRoutes.openapi(
         );
       }
 
-      const server = await McpServer.create({
-        workspaceId: new Types.ObjectId(workspaceId),
-        name: body.name,
-        description: body.description,
+      const server = await mcpRepo.createServer({
+        workspaceId,
+        name: body.name.trim(),
+        description: body.description?.trim() ?? null,
         connectorType: preset.type,
         transport: { type: "http", url },
         authType: body.authType ?? preset.authType,
@@ -169,7 +170,7 @@ mcpServerRoutes.openapi(
 
       return c.json({ success: true, server: serializeServer(server) });
     } catch (error) {
-      if ((error as { code?: number }).code === 11000) {
+      if (isDuplicateServerNameError(error)) {
         return fail(c, 409, "A server with this name already exists");
       }
       logger.error("Error creating MCP server", { error });
@@ -215,7 +216,7 @@ mcpServerRoutes.openapi(
     try {
       const workspaceId = c.req.param("workspaceId");
       const id = c.req.param("id");
-      if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
+      if (!workspaceId || !parseEntityId(workspaceId)) {
         return fail(c, 400, "Valid workspace ID is required");
       }
       const adminUserId = await requireAdmin(
@@ -237,8 +238,11 @@ mcpServerRoutes.openapi(
       const body = parsed.data;
       const preset = getMcpPreset(server.connectorType);
 
-      if (body.name !== undefined) server.name = body.name;
-      if (body.description !== undefined) server.description = body.description;
+      const patch: UpdateMcpServerPatch = {};
+      if (body.name !== undefined) patch.name = body.name.trim();
+      if (body.description !== undefined) {
+        patch.description = body.description.trim();
+      }
       if (body.url !== undefined && preset.urlEditable) {
         try {
           await assertSafeMcpUrl(body.url);
@@ -249,24 +253,28 @@ mcpServerRoutes.openapi(
             error instanceof Error ? error.message : "URL is not allowed",
           );
         }
-        server.transport = { type: "http", url: body.url };
+        patch.transport = { type: "http", url: body.url };
       }
-      if (body.writeScope !== undefined) server.writeScope = body.writeScope;
-      if (body.isActive !== undefined) server.isActive = body.isActive;
+      if (body.writeScope !== undefined) patch.writeScope = body.writeScope;
+      if (body.isActive !== undefined) patch.isActive = body.isActive;
       if (body.toolPolicy) {
-        if (body.toolPolicy.defaultRestriction !== undefined) {
-          server.toolPolicy.defaultRestriction =
-            body.toolPolicy.defaultRestriction;
-        }
-        if (body.toolPolicy.restrictions !== undefined) {
-          server.toolPolicy.restrictions = body.toolPolicy.restrictions;
-          server.markModified("toolPolicy.restrictions");
-        }
+        patch.toolPolicy = {
+          ...(body.toolPolicy.defaultRestriction !== undefined
+            ? { defaultRestriction: body.toolPolicy.defaultRestriction }
+            : {}),
+          ...(body.toolPolicy.restrictions !== undefined
+            ? { restrictions: body.toolPolicy.restrictions }
+            : {}),
+        };
       }
-      await server.save();
-      return c.json({ success: true, server: serializeServer(server) });
+
+      const updated = await mcpRepo.updateServer(workspaceId, server.id, patch);
+      if (!updated) {
+        return fail(c, 404, "Server not found");
+      }
+      return c.json({ success: true, server: serializeServer(updated) });
     } catch (error) {
-      if ((error as { code?: number }).code === 11000) {
+      if (isDuplicateServerNameError(error)) {
         return fail(c, 409, "A server with this name already exists");
       }
       logger.error("Error updating MCP server", { error });
@@ -290,7 +298,7 @@ mcpServerRoutes.openapi(
     try {
       const workspaceId = c.req.param("workspaceId");
       const id = c.req.param("id");
-      if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
+      if (!workspaceId || !parseEntityId(workspaceId)) {
         return fail(c, 400, "Valid workspace ID is required");
       }
       const adminUserId = await requireAdmin(
@@ -304,11 +312,7 @@ mcpServerRoutes.openapi(
       if (!server) {
         return fail(c, 404, "Server not found");
       }
-      await Promise.all([
-        McpConnectionConfig.deleteMany({ serverId: server._id }),
-        McpToolGrant.deleteMany({ serverId: server._id }),
-        server.deleteOne(),
-      ]);
+      await mcpRepo.deleteServerCascade(workspaceId, server.id);
       return c.json({ success: true });
     } catch (error) {
       logger.error("Error deleting MCP server", { error });

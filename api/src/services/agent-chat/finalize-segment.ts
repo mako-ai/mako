@@ -12,12 +12,11 @@
  *   7. request console descriptions with the turn's context.
  */
 import type { UIMessage } from "ai";
-import { ObjectId } from "mongodb";
 
 import { commitAgentTurn } from "../../apps/worktree.service";
 import { requestConsoleDescription } from "../../apps/workspace-consoles.service";
-import { Chat } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
+import { chatRepo } from "../../repositories/chat";
 import { saveChat } from "../agent-thread.service";
 import {
   extractConsoleContextFromMessages,
@@ -121,10 +120,7 @@ async function clearResumePointer(
   clearActiveGeneration(chatId, streamId);
   try {
     // Guarded on the streamId so a newer turn's pointer is never clobbered.
-    await Chat.updateOne(
-      { _id: new ObjectId(chatId), activeStreamId: streamId },
-      { $set: { activeStreamId: null } },
-    );
+    await chatRepo.clearActiveStreamIfMatch(workspaceId, chatId, streamId);
   } catch (error) {
     logger.warn("Failed to clear activeStreamId", { error, chatId });
   }

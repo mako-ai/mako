@@ -16,7 +16,6 @@ import {
   toUIMessageStream,
   type UIMessage,
 } from "ai";
-import { ObjectId } from "mongodb";
 
 import { buildPromptCacheHeaders } from "../../agent-lib/ai-gateway";
 import {
@@ -28,8 +27,9 @@ import {
   toolFailureFromThrown,
 } from "../../agent-lib/tool-failure";
 import { repairStringifiedToolInputs } from "../../agent-lib/tool-input-repair";
-import { Chat } from "../../database/workspace-schema";
+import { generateObjectIdHex } from "../../database/pg/id-codec";
 import { loggers } from "../../logging";
+import { chatRepo } from "../../repositories/chat";
 import { scheduleChatFinalization } from "./finalization-queue";
 import { saveChat } from "../agent-thread.service";
 import {
@@ -44,6 +44,7 @@ import {
   getResumableStreamContext,
   registerActiveGeneration,
 } from "../resumable-stream.service";
+import { withJsonbOrderedOutputs } from "./exact-history";
 import { finalizeSegment } from "./finalize-segment";
 import { buildSegmentModelMessages } from "./segment-messages";
 import { MAX_STEPS, type ChatTurn } from "./turn";
@@ -84,6 +85,7 @@ async function setUpResumableStream(
   const [resumeBranch, checkpointBranch] = stream.tee();
   void trackTurnCheckpoints({
     chatId,
+    workspaceId,
     streamId,
     sseStream: checkpointBranch,
   });
@@ -93,10 +95,7 @@ async function setUpResumableStream(
       streamId,
       () => resumeBranch,
     );
-    await Chat.updateOne(
-      { _id: new ObjectId(chatId) },
-      { $set: { activeStreamId: streamId } },
-    );
+    await chatRepo.setActiveStream(workspaceId, chatId, streamId);
     // Live activity indicators: open windows light up the chat in the
     // history menu without polling.
     publishRealtimeEvent(workspaceId, {
@@ -142,11 +141,13 @@ export async function runSegment(
   // let a pricing hiccup block the turn.
   const metadataPricingRows = await lookupPricing(modelId).catch(() => []);
 
+  const orderedTools = withJsonbOrderedOutputs(tools);
+
   const result = streamText({
     model: turn.model,
     instructions: turn.systemPrompt,
     messages: modelMessages,
-    tools,
+    tools: orderedTools,
     ...(turn.prepareStep
       ? {
           prepareStep: turn.prepareStep as Parameters<
@@ -239,9 +240,9 @@ export async function runSegment(
   const streamResponse = createUIMessageStreamResponse({
     stream: toUIMessageStream({
       stream: result.stream,
-      tools,
+      tools: orderedTools,
       originalMessages: segmentUiMessages,
-      generateMessageId: () => new ObjectId().toString(),
+      generateMessageId: () => generateObjectIdHex(),
       // Per-response cost for the chat UI: on the finish part, price the
       // segment's total usage with the prefetched gateway pricing. This lands
       // in `message.metadata` client-side and survives resumable-stream
@@ -307,7 +308,7 @@ export async function runSegment(
     // GET /chat/:chatId/stream while the turn is still generating. The
     // chat's activeStreamId is the resume pointer; finalization clears it.
     consumeSseStream: async ({ stream }) => {
-      const streamId = new ObjectId().toString();
+      const streamId = generateObjectIdHex();
       // Set before any await so finalization always sees it.
       turnStreamId = streamId;
       await setUpResumableStream(turn, segmentUiMessages, stream, streamId);

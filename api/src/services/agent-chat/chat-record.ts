@@ -2,12 +2,12 @@
  * Step 3 of a chat turn: load the chat document this turn belongs to, check
  * it may be continued by this agent, or create it on the first message.
  */
-import { ObjectId } from "mongodb";
 import type { UIMessage } from "ai";
 
 import type { AgentContext } from "../../agents";
-import { Chat } from "../../database/workspace-schema";
+import { parseEntityId } from "../../database/pg/id-codec";
 import { loggers } from "../../logging";
+import { chatRepo } from "../../repositories/chat";
 import { generateChatTitle } from "../title-generator";
 import { stepFailure, type StepFailure } from "./request";
 
@@ -22,16 +22,23 @@ export async function loadOrCreateChat(input: {
   messages: UIMessage[];
 }): Promise<StepFailure | null> {
   const { chatId, workspaceId, actorId, actorEmail, appChat, messages } = input;
-  const existingChat = await Chat.findById(chatId);
+  const existingChat = await chatRepo.findById(chatId);
 
   // An app chat stays its viewer's, about its app, under its agent — the
   // closed agent must not be steered onto someone else's chat, and an app
   // chat must not be continued by an agent with workspace-wide tools.
+  // Also reject any cross-workspace chatId rather than falling through to
+  // `create()` and crashing on duplicate PK.
   if (existingChat) {
+    const existingWsOid =
+      parseEntityId(existingChat.workspaceId)?.oid ?? existingChat.workspaceId;
+    const requestedWsOid = parseEntityId(workspaceId)?.oid ?? workspaceId;
+    if (existingWsOid !== requestedWsOid) {
+      return stepFailure(403, "Cannot access chat");
+    }
     const boundAppId = existingChat.appId ?? null;
     if (appChat) {
       if (
-        existingChat.workspaceId.toString() !== workspaceId ||
         existingChat.createdBy !== actorId ||
         boundAppId !== appChat.project._id.toString()
       ) {
@@ -48,20 +55,18 @@ export async function loadOrCreateChat(input: {
 
   if (messages.length === 0) return null;
 
-  // Create the chat document now (awaited so it is persisted), then generate
-  // the title fire-and-forget. IMPORTANT: title generation uses
-  // generateText(), which would interfere with the main streamText() response
-  // if awaited — keep the two streams separate.
-  await Chat.create({
-    _id: new ObjectId(chatId),
-    workspaceId: new ObjectId(workspaceId),
+  const now = new Date();
+  await chatRepo.create({
+    id: chatId,
+    workspaceId,
     createdBy: actorId,
-    ...(appChat ? { appId: appChat.project._id.toString() } : {}),
+    source: appChat ? "app" : "chat",
+    appId: appChat ? appChat.project._id.toString() : null,
     title: "New Chat",
     titleGenerated: false,
     messages: [],
-    createdAt: new Date(),
-    updatedAt: new Date(),
+    createdAt: now,
+    updatedAt: now,
   });
 
   const firstUserMessage = messages.find(m => m.role === "user");
@@ -80,10 +85,7 @@ export async function loadOrCreateChat(input: {
           userId: actorId,
           userEmail: actorEmail,
         });
-        await Chat.updateOne(
-          { _id: new ObjectId(chatId), titleGenerated: false },
-          { title, titleGenerated: true },
-        );
+        await chatRepo.setGeneratedTitleIfUnset(workspaceId, chatId, title);
       } catch (err) {
         logger.error("Background title generation failed", { error: err });
       }

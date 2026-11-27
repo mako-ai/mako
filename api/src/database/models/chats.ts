@@ -107,6 +107,7 @@ export interface IChat extends Document {
   // Resume pointer for in-flight turns: the resumable-stream ID clients can
   // reattach to via GET /api/agent/chat/:chatId/stream. Null when idle.
   activeStreamId?: string | null;
+  activeStreamAliveAt?: Date | null;
   /**
    * Mid-turn checkpoint (§13.27): the in-progress assistant message,
    * persisted every few seconds while a turn streams. Cleared by the final
@@ -269,6 +270,10 @@ const ChatSchema = new Schema<IChat>(
     source: { type: String, enum: ["workflow"] },
     activeStreamId: {
       type: String,
+      default: null,
+    },
+    activeStreamAliveAt: {
+      type: Date,
       default: null,
     },
     turnCheckpoint: {
