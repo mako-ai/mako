@@ -714,6 +714,7 @@ import { TimePicker, periodOf, presetPeriod, todayIso, type TimeRange } from "@m
 - `navigation` defaults to `true` when `periods` is provided, otherwise `false`.
 - Passing a single unit in `periods` (e.g. `["month"]` or `["day"]`) without `custom` or `shortcuts` automatically hides the left rail.
 - `TimeRange` is backwards-compatible with `Period` and adds optional `fromTime` / `toTime` (`"HH:MM"`) and sub-day / `1y` presets.
+- Restore any persisted `?period=...` URL preset (including `"1h"`, `"24h"`, `"1y"`, `"last_week"`, `"mtd"`, `"all"`) with `timePresetRange(param, { min, max })`.
 
 ### Legacy date filter: `PeriodPicker` (2.27, superseded by `TimePicker`)
 

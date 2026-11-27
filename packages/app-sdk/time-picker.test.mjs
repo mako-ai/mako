@@ -217,4 +217,46 @@ test("TimePicker: range shortcuts, sub-day includeTime, cohort stepping, single-
     assert.equal(ui.state.value.to.slice(5), "06-30");
     await ui.unmount();
   });
+
+  await t.test("review regressions: timePresetRange, ISO week-year boundary W01, reversed same-day times, explicit times unsteppable", async () => {
+    const { timePresetRange } = env.mod;
+    assert.equal(timePresetRange("24h")?.preset, "24h");
+    assert.ok(timePresetRange("24h")?.fromTime && timePresetRange("24h")?.toTime);
+    assert.equal(timePresetRange("1y", { min: "2020-01-01" })?.preset, "1y");
+    assert.equal(timePresetRange("last_week")?.unit, "week");
+    assert.equal(timePresetRange("not-a-preset"), null);
+
+    // Dec 31, 2024 falls in ISO week 2025-W01 (Dec 30, 2024 – Jan 5, 2025): week list must reach 2025-W01.
+    const w01 = periodOf("week", "2024-12-31");
+    const uiWeek = await render(env, {
+      value: w01,
+      periods: ["week", "month"],
+      navigation: true,
+      custom: false,
+      min: "2024-01-01",
+      max: "2024-12-31",
+    });
+    await uiWeek.open();
+    const weekTexts = [...uiWeek.doc.querySelectorAll('[data-slot="time-picker-week"]')].map(b => b.textContent);
+    assert.ok(weekTexts.some(t => t.includes("W01")), "2025-W01 is visible when max is 2024-12-31");
+    await uiWeek.unmount();
+
+    // Explicit sub-day times disable step arrows instead of silently dropping times.
+    const uiTimed = await render(env, {
+      value: { unit: "custom", from: "2026-11-27", to: "2026-11-27", fromTime: "18:00", toTime: "09:00" },
+      includeTime: true,
+      navigation: true,
+      min: "2026-01-01",
+      max: "2026-11-27",
+    });
+    assert.equal(uiTimed.prev().disabled, true, "explicit timed range disables prev step");
+    assert.equal(uiTimed.next().disabled, true, "explicit timed range disables next step");
+    // Pressing Apply on same-day reversed times (18:00 -> 09:00) normalises to 09:00 -> 18:00.
+    await uiTimed.open();
+    const applyBtn = [...uiTimed.doc.querySelectorAll('[role="dialog"] button')].find(b => b.textContent === "Apply");
+    await env.React.act(async () => applyBtn.click());
+    assert.equal(uiTimed.state.value.fromTime, "09:00");
+    assert.equal(uiTimed.state.value.toTime, "18:00");
+    await uiTimed.unmount();
+  });
 });

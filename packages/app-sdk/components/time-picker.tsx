@@ -463,6 +463,7 @@ function sameValue(a: TimeRange, b: TimeRange): boolean {
 function isSteppable(p: TimeRange): boolean {
   if (p.preset === "all") return false
   if (p.preset && /^\d+h$/.test(p.preset)) return false
+  if (hasExplicitTimes(p)) return false
   return true
 }
 
@@ -549,6 +550,29 @@ function resolveShortcut(
   }
 }
 
+/**
+ * Resolve any TimePicker shortcut/preset id (`"1h"`, `"24h"`, `"7d"`, `"28d"`, `"1y"`, `"mtd"`,
+ * `"qtd"`, `"ytd"`, `"all"`, `"this_week"`, `"last_week"`, `"last_month"`, `"last_quarter"`) into
+ * a fresh `TimeRange` — useful for restoring `?period=...` URL state on load.
+ */
+export function timePresetRange(
+  id: string | null | undefined,
+  opts: { min?: string; max?: string; today?: string; clampToMin?: boolean } = {},
+): TimeRange | null {
+  if (!id) return null
+  const isSubDay = /^([1-9]\d*)h$/.test(id)
+  const today = opts.today ?? (isSubDay ? formatIsoDay(new Date()) : todayIso())
+  const hi = opts.max ?? today
+  const item = resolveShortcut(id as TimeShortcut, today, hi, opts.min, opts.clampToMin ?? true)
+  return item ? item.value : null
+}
+
+function refreshIfSubDay(p: TimeRange): TimeRange {
+  const m = p.preset ? /^([1-9]\d*)h$/.exec(p.preset) : null
+  if (!m) return p
+  return { ...p, ...resolveSubDayBounds(Number(m[1])) }
+}
+
 function useIsNarrow(breakpointPx = 640): boolean {
   const [narrow, setNarrow] = useState(() =>
     typeof window !== "undefined" && typeof window.matchMedia === "function"
@@ -599,7 +623,13 @@ export const TimePicker = memo(function TimePicker({
 }: TimePickerProps) {
   const L = localeStrings("period", locale)
   const ariaLabel = labelProp ?? L.time
-  const today = todayIso()
+  const usesSubDay = Boolean(
+    includeTime ||
+      shortcuts?.some(s => /^([1-9]\d*)h$/.test(s)) ||
+      presets?.some(s => /^([1-9]\d*)h$/.test(s)),
+  )
+  // Keep one consistent timezone for day keys when local sub-day times are active.
+  const today = usesSubDay ? formatIsoDay(new Date()) : todayIso()
   const hi = max ?? today
   const customMode = normalizeCustomMode(custom)
   const showNavigation = navigation ?? Boolean(periods?.length)
@@ -681,7 +711,7 @@ export const TimePicker = memo(function TimePicker({
   const commit = useCallback(
     (p: TimeRange) => {
       if (activeExtraObj) onExtraChange?.(null)
-      onChange(p)
+      onChange(refreshIfSubDay(p))
       setOpen(false)
     },
     [activeExtraObj, onExtraChange, onChange],
@@ -759,7 +789,7 @@ export const TimePicker = memo(function TimePicker({
                     onClick={() => {
                       if (activeExtraObj) onExtraChange?.(null)
                       setOpen(false)
-                      onChange(item.value)
+                      onChange(refreshIfSubDay(item.value))
                     }}
                     className={cn(
                       PILL_BASE,
@@ -1063,8 +1093,11 @@ function TimePickerPopover({
     const lo = from <= to ? from : to
     const hiDay = from <= to ? to : from
     const locked = Boolean(timeRetentionMin && lo < timeRetentionMin)
-    const ft = locked ? "00:00" : startTime || "00:00"
-    const tt = locked ? "23:59" : endTime || "23:59"
+    let ft = locked ? "00:00" : startTime || "00:00"
+    let tt = locked ? "23:59" : endTime || "23:59"
+    if (lo === hiDay && ft > tt) {
+      ;[ft, tt] = [tt, ft]
+    }
     setPickingFrom(null)
     setHoverDay(null)
     setDraftRange(null)
@@ -1109,25 +1142,35 @@ function TimePickerPopover({
     return out
   }, [minDate, maxDate])
 
-  const minYear = min ? Number(min.slice(0, 4)) : Number(hi.slice(0, 4)) - 3
-  const maxYear = Number(hi.slice(0, 4))
+  const calMinYear = min ? Number(min.slice(0, 4)) : Number(hi.slice(0, 4)) - 3
+  const calMaxYear = Number(hi.slice(0, 4))
+  const weekMinYear = min ? isoWeekYear(min) : isoWeekYear(hi) - 3
+  const weekMaxYear = isoWeekYear(hi)
+  const minYear = pane === "week" ? weekMinYear : calMinYear
+  const maxYear = pane === "week" ? weekMaxYear : calMaxYear
   const [browseYear, setBrowseYear] = useState<number>(() => {
     const y =
-      value.unit === "week"
+      initialPane === "week"
         ? isoWeekYear(value.from)
-        : Number(clampDay(pane === "custom" && customMode === "month" ? value.to : value.from, min, hi).slice(0, 4))
-    return Math.min(maxYear, Math.max(minYear, y))
+        : Number(clampDay(initialPane === "custom" && customMode === "month" ? value.to : value.from, min, hi).slice(0, 4))
+    const loY = initialPane === "week" ? weekMinYear : calMinYear
+    const hiY = initialPane === "week" ? weekMaxYear : calMaxYear
+    return Math.min(hiY, Math.max(loY, y))
   })
+  const clampedBrowseYear = Math.min(maxYear, Math.max(minYear, browseYear))
 
   const yearWeeks = useMemo(
-    () => (pane === "week" ? weeksInIsoYear(browseYear, min, hi) : []),
-    [pane, browseYear, min, hi],
+    () => (pane === "week" ? weeksInIsoYear(clampedBrowseYear, min, hi) : []),
+    [pane, clampedBrowseYear, min, hi],
   )
   const yearMonths = useMemo(
-    () => (pane === "month" || (pane === "custom" && customMode === "month") ? monthsInYear(browseYear) : []),
-    [pane, customMode, browseYear],
+    () => (pane === "month" || (pane === "custom" && customMode === "month") ? monthsInYear(clampedBrowseYear) : []),
+    [pane, customMode, clampedBrowseYear],
   )
-  const yearQuarters = useMemo(() => (pane === "quarter" ? quartersInYear(browseYear) : []), [pane, browseYear])
+  const yearQuarters = useMemo(
+    () => (pane === "quarter" ? quartersInYear(clampedBrowseYear) : []),
+    [pane, clampedBrowseYear],
+  )
   const allYears = useMemo(() => (pane === "year" ? yearsInRange(min, hi) : []), [pane, min, hi])
 
   const committedFromYm = committedFrom.slice(0, 7)
@@ -1271,18 +1314,18 @@ function TimePickerPopover({
         ) : pane === "custom" && customMode === "month" ? (
           <div className="flex w-[292px] flex-col" onMouseLeave={() => setHoverMonth(null)}>
             <YearNavHeader
-              heading={String(browseYear)}
-              canPrev={browseYear > minYear}
-              canNext={browseYear < maxYear}
-              onPrev={() => setBrowseYear(y => Math.max(minYear, y - 1))}
-              onNext={() => setBrowseYear(y => Math.min(maxYear, y + 1))}
+              heading={String(clampedBrowseYear)}
+              canPrev={clampedBrowseYear > minYear}
+              canNext={clampedBrowseYear < maxYear}
+              onPrev={() => setBrowseYear(Math.max(minYear, clampedBrowseYear - 1))}
+              onNext={() => setBrowseYear(Math.min(maxYear, clampedBrowseYear + 1))}
             />
             <div className="grid grid-cols-3 gap-1.5 p-3">
               {yearMonths.map((p, idx) => {
                 const ym = p.from.slice(0, 7)
                 const live = isCurrent(p, today)
                 const disabled = Boolean((min && p.to < min) || p.from > hi)
-                const shortName = formatMonthShort(browseYear, idx, locale)
+                const shortName = formatMonthShort(clampedBrowseYear, idx, locale)
                 const isStart = ym === previewMonthRange.from
                 const isEnd = previewMonthRange.to != null && ym === previewMonthRange.to
                 const isInRange =
@@ -1343,11 +1386,11 @@ function TimePickerPopover({
           <div className="flex w-[292px] flex-col">
             {pane !== "year" && (
               <YearNavHeader
-                heading={pane === "week" ? `Weeks · ${browseYear}` : String(browseYear)}
-                canPrev={browseYear > minYear}
-                canNext={browseYear < maxYear}
-                onPrev={() => setBrowseYear(y => Math.max(minYear, y - 1))}
-                onNext={() => setBrowseYear(y => Math.min(maxYear, y + 1))}
+                heading={pane === "week" ? `Weeks · ${clampedBrowseYear}` : String(clampedBrowseYear)}
+                canPrev={clampedBrowseYear > minYear}
+                canNext={clampedBrowseYear < maxYear}
+                onPrev={() => setBrowseYear(Math.max(minYear, clampedBrowseYear - 1))}
+                onNext={() => setBrowseYear(Math.min(maxYear, clampedBrowseYear + 1))}
               />
             )}
 
@@ -1400,7 +1443,7 @@ function TimePickerPopover({
                   const active = !activeExtra && !value.preset && value.unit === "month" && value.from === p.from
                   const live = isCurrent(p, today)
                   const disabled = Boolean((min && p.to < min) || p.from > hi)
-                  const shortName = formatMonthShort(browseYear, idx, locale)
+                  const shortName = formatMonthShort(clampedBrowseYear, idx, locale)
                   return (
                     <button
                       key={p.from}
@@ -1452,7 +1495,7 @@ function TimePickerPopover({
                         <span className="inline-flex w-8 shrink-0 justify-center rounded bg-muted px-1 py-0.5 font-mono text-[11px] font-semibold text-muted-foreground">
                           Q{qNum}
                         </span>
-                        <span>{quarterMonthSpan(browseYear, qNum, locale)}</span>
+                        <span>{quarterMonthSpan(clampedBrowseYear, qNum, locale)}</span>
                       </span>
                       <span className="flex items-center gap-1.5">
                         {live && (
