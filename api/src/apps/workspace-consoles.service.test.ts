@@ -1,6 +1,6 @@
 /**
  * Consoles in git (apps.md §16): real bare repos under a temp APPS_GIT_ROOT,
- * mongodb-memory-server for the derived index, no network. Description
+ * PGlite for the derived index, no network. Description
  * derivation runs against "unavailable" providers, which is the point of
  * the sha-gating tests — the bookkeeping must be right with or without an
  * LLM in the room.
@@ -17,14 +17,18 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { eq } from "drizzle-orm";
+import { generateUuidv7 } from "../database/pg/id-codec";
+import { toPgUuid } from "../repositories/consoles-charts/mapper";
+import { savedConsoles } from "../database/pg/schema";
 import {
-  ConsoleFolder,
-  EntityVersion,
-  SavedConsole,
-  WorkspaceUserHandle,
-} from "../database/workspace-schema";
+  ensureTestDatabaseConnection,
+  ensureTestUser,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
+import { workspaceRepo } from "../repositories/workspaces";
 import { invalidateOwnerDirectory } from "./user-handles.service";
 import {
   CONSOLES_README_PATH,
@@ -56,7 +60,6 @@ import {
   syncConsolesIndexFromRepo,
 } from "./workspace-consoles.service";
 import { ConsoleManager, type ConsoleFile } from "../utils/console-manager";
-import { seedTestConnections } from "./seed-test-connections";
 import { getConsoleWithMetadata } from "../services/consoles/tree";
 import { ConsoleNotFoundError } from "../services/consoles/crud";
 import {
@@ -69,7 +72,7 @@ import {
   unbindTestWorkspaceRepo,
 } from "./bind-test-workspace-repo";
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmpRoot: string;
 
 beforeAll(async () => {
@@ -79,13 +82,11 @@ beforeAll(async () => {
   process.env.APPS_SANDBOX_PROVIDER = "local";
   delete process.env.OPENAI_API_KEY;
   delete process.env.AI_GATEWAY_API_KEY;
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -95,21 +96,13 @@ afterAll(async () => {
 });
 
 const WS = new Types.ObjectId().toString();
-const USER = new Types.ObjectId().toString();
+const USER = generateUuidv7();
 /** USER's personal folder name: `users/<handle>/`, never their id. */
 const HANDLE = "alice";
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
 
 beforeEach(async () => {
-  await SavedConsole.deleteMany({});
-  await ConsoleFolder.deleteMany({});
-  await EntityVersion.deleteMany({});
-  await WorkspaceUserHandle.deleteMany({});
-  await WorkspaceUserHandle.create({
-    workspaceId: new Types.ObjectId(WS),
-    userId: USER,
-    handle: HANDLE,
-  });
+  await pgh.reset();
   invalidateOwnerDirectory();
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,
@@ -119,11 +112,31 @@ beforeEach(async () => {
   });
   await initRepo(repoDirFor(WS), { "README.md": "x\n" });
   await bindTestWorkspaceRepo(WS);
+  await ensureTestUser(pgh.db, { id: USER });
+  await workspaceRepo.insertHandlesBestEffort(WS, [
+    { userId: USER, handle: HANDLE },
+  ]);
   // The connection ids the fixtures name belong to WS.
-  await seedTestConnections(WS, {
-    database: ["6846e6a01b05af0948070583", "68471be56e70c184bbc6cceb"],
-  });
+  for (const id of ["6846e6a01b05af0948070583", "68471be56e70c184bbc6cceb"]) {
+    await ensureTestDatabaseConnection(pgh.db, { workspaceId: WS, id });
+  }
 });
+
+const renameEmbedding = [0.125, 0.25, ...Array<number>(1534).fill(0)];
+const adoptionEmbedding = Array.from({ length: 1536 }, (_, i) =>
+  i === 0 ? 0.5 : 0,
+);
+
+function findConsole(
+  id: string | Types.ObjectId,
+  opts?: { includeEmbedding: boolean },
+) {
+  return consolesChartsRepo.findConsoleById(WS, id.toString(), opts);
+}
+
+function deleteConsoleRow(id: string | Types.ObjectId) {
+  return pgh.db.delete(savedConsoles).where(eq(savedConsoles.id, toPgUuid(id)));
+}
 
 async function fileAt(rel: string): Promise<string | null> {
   try {
@@ -193,7 +206,7 @@ describe("write-through", () => {
     // Adoption marker was written by the first write.
     expect(await fileAt(CONSOLES_README_PATH)).not.toBeNull();
     // The description was typed, so it is authored and lives in the file.
-    const row = await SavedConsole.findById(saved._id);
+    const row = await findConsole(saved._id);
     expect(row?.descriptionSource ?? "authored").toBe("authored");
   });
 
@@ -338,7 +351,9 @@ describe("write-through", () => {
     );
     expect(paths.some(p => p.startsWith("consoles/Old/"))).toBe(false);
     expect((await log(repoDirFor(WS), MAIN, 50)).length).toBe(before + 1);
-    const rows = await SavedConsole.find({ workspaceId: WS }).sort({ name: 1 });
+    const rows = await consolesChartsRepo.listConsolesByWorkspace(WS, {
+      sortBy: "nameAsc",
+    });
     expect(rows.map(r => r.path)).toEqual([
       "consoles/New/x.sql",
       "consoles/New/Sub/y.sql",
@@ -434,11 +449,9 @@ describe("sync hardening", () => {
     } finally {
       spy.mockRestore();
     }
-    expect((await SavedConsole.findById(a._id))?.code).toBe("SELECT 1");
-    expect((await SavedConsole.findById(b._id))?.code).toBe(
-      "SELECT 20 -- laptop",
-    );
-    expect((await SavedConsole.findById(doomed._id))?.is_deleted).toBe(true);
+    expect((await findConsole(a._id))?.code).toBe("SELECT 1");
+    expect((await findConsole(b._id))?.code).toBe("SELECT 20 -- laptop");
+    expect((await findConsole(doomed._id))?.is_deleted).toBe(true);
   });
 });
 
@@ -470,7 +483,7 @@ describe("sync from repo", () => {
     await externalCommit({ "consoles/Finance/mrr.sql": edited });
     stats = await syncConsolesIndexFromRepo(WS, USER);
     expect(stats).toMatchObject({ updated: 1 });
-    const row = await SavedConsole.findById(saved._id);
+    const row = await findConsole(saved._id);
     expect(row?.code).toBe("SELECT 2 -- edited on a laptop");
     expect(row?.databaseName).toBe("warehouse");
     expect(row?.description).toBe("Authored on the laptop");
@@ -480,7 +493,11 @@ describe("sync from repo", () => {
     expect(row?.sourceBlobSha).toBe(blobOid(edited));
     expect(row?.version).toBe(2);
     // History is git: the sync writes no entity_versions snapshot.
-    expect(await EntityVersion.countDocuments({ entityId: saved._id })).toBe(0);
+    expect(
+      await consolesChartsRepo.countEntityVersions(WS, "console", [
+        saved._id.toString(),
+      ]),
+    ).toBe(0);
   });
 
   it("a new file creates a row, folders and all; a removed file soft-deletes", async () => {
@@ -493,18 +510,21 @@ describe("sync from repo", () => {
     });
     const stats = await syncConsolesIndexFromRepo(WS, USER);
     expect(stats).toMatchObject({ created: 2 });
-    const shared = await SavedConsole.findOne({
-      workspaceId: WS,
-      name: "failed jobs",
-    });
+    const shared = await consolesChartsRepo.findConsoleByPath(
+      WS,
+      "consoles/Ops/Alerts/failed jobs.sql",
+    );
     expect(shared?.access).toBe("workspace");
     expect(shared?.connectionId?.toString()).toBe("6846e6a01b05af0948070583");
     expect(shared?.code).toBe("SELECT * FROM jobs WHERE failed");
-    const chain = await ConsoleFolder.find({ workspaceId: WS }).sort({
-      name: 1,
+    const chain = await consolesChartsRepo.listConsoleFolders(WS, {
+      sortByName: true,
     });
     expect(chain.map(f => f.name)).toEqual(["Alerts", "Ops"]);
-    const mine = await SavedConsole.findOne({ workspaceId: WS, name: "mine" });
+    const mine = await consolesChartsRepo.findConsoleByPath(
+      WS,
+      `users/${HANDLE}/consoles/mine.mongodb.js`,
+    );
     expect(mine?.access).toBe("private");
     expect(mine?.owner_id).toBe(USER);
     expect(mine?.language).toBe("mongodb");
@@ -513,16 +533,19 @@ describe("sync from repo", () => {
     await externalCommit({}, ["consoles/Ops/Alerts/failed jobs.sql"]);
     const after = await syncConsolesIndexFromRepo(WS, USER);
     expect(after).toMatchObject({ deleted: 1 });
-    expect(
-      (await SavedConsole.findById(must(shared, "shared")._id))?.is_deleted,
-    ).toBe(true);
+    expect((await findConsole(must(shared, "shared")._id))?.is_deleted).toBe(
+      true,
+    );
   });
 
   it("a pushed file naming another workspace's connection is indexed without it", async () => {
     await adoptWorkspaceConsoles(WS, { replayHistory: false });
     const otherWs = new Types.ObjectId().toString();
     const foreign = new Types.ObjectId().toString();
-    await seedTestConnections(otherWs, { database: [foreign] });
+    await ensureTestDatabaseConnection(pgh.db, {
+      workspaceId: otherWs,
+      id: foreign,
+    });
     await externalCommit({
       "consoles/steal.sql": serializeConsoleFile({
         name: "steal",
@@ -536,12 +559,15 @@ describe("sync from repo", () => {
     });
     const stats = await syncConsolesIndexFromRepo(WS, USER);
     expect(stats).toMatchObject({ created: 2 });
-    const steal = await SavedConsole.findOne({
-      workspaceId: WS,
-      name: "steal",
-    });
+    const steal = await consolesChartsRepo.findConsoleByPath(
+      WS,
+      "consoles/steal.sql",
+    );
     expect(steal?.connectionId ?? null).toBeNull();
-    const own = await SavedConsole.findOne({ workspaceId: WS, name: "own" });
+    const own = await consolesChartsRepo.findConsoleByPath(
+      WS,
+      "consoles/own.sql",
+    );
     expect(own?.connectionId?.toString()).toBe("6846e6a01b05af0948070583");
     // GET hands the editor the connection the sync kept, not the file's.
     const shown = await getConsoleWithMetadata(
@@ -560,7 +586,7 @@ describe("sync from repo", () => {
       "consoles/own.sql": `-- connection: ${foreign}\n\nSELECT 2\n`,
     });
     await syncConsolesIndexFromRepo(WS, USER);
-    const moved = await SavedConsole.findById(must(own, "own")._id);
+    const moved = await findConsole(must(own, "own")._id);
     expect(moved?.code).toBe("SELECT 2");
     expect(moved?.connectionId ?? null).toBeNull();
     expect(moved?.databaseId ?? null).toBeNull();
@@ -577,38 +603,33 @@ describe("sync from repo", () => {
       undefined,
       { access: "workspace", language: "sql" },
     );
-    await SavedConsole.updateOne(
-      { _id: saved._id },
-      {
-        $set: {
-          executionCount: 7,
-          descriptionEmbedding: [0.1, 0.2],
-          descriptionSourceSha: saved.sourceBlobSha,
-        },
-      },
-    );
+    await consolesChartsRepo.updateConsole(WS, saved._id.toString(), {
+      executionCount: 7,
+      descriptionEmbedding: renameEmbedding,
+      descriptionSourceSha: saved.sourceBlobSha,
+    });
     const contents = must(await fileAt("consoles/old name.sql"), "contents");
     await externalCommit({ "consoles/Archive/new name.sql": contents }, [
       "consoles/old name.sql",
     ]);
     const stats = await syncConsolesIndexFromRepo(WS, USER);
     expect(stats).toMatchObject({ renamed: 1, created: 0, deleted: 0 });
-    const row = await SavedConsole.findById(saved._id).select(
-      "+descriptionEmbedding",
-    );
+    const row = await findConsole(saved._id, { includeEmbedding: true });
     expect(row?.path).toBe("consoles/Archive/new name.sql");
     expect(row?.name).toBe("new name");
     expect(row?.executionCount).toBe(7);
-    expect(row?.descriptionEmbedding).toEqual([0.1, 0.2]);
+    expect(row?.descriptionEmbedding).toEqual(renameEmbedding);
     // Same content → the derivation stays current: no re-embed needed.
     expect(row?.descriptionSourceSha).toBe(row?.sourceBlobSha);
-    expect(await SavedConsole.countDocuments({ workspaceId: WS })).toBe(1);
+    expect((await consolesChartsRepo.listConsolesByWorkspace(WS)).length).toBe(
+      1,
+    );
   });
 
   it("never touches a workspace that has not adopted", async () => {
     // A repo exists (an app was created) but consoles were never adopted:
-    // Mongo may hold consoles git has never seen.
-    await SavedConsole.create({
+    // Postgres may hold consoles git has never seen.
+    await consolesChartsRepo.createConsole({
       workspaceId: WS,
       name: "legacy",
       code: "SELECT 1",
@@ -624,7 +645,8 @@ describe("sync from repo", () => {
     });
     expect(await syncConsolesIndexFromRepo(WS, USER)).toBeNull();
     expect(
-      (await SavedConsole.findOne({ name: "legacy" }))?.is_deleted,
+      (await consolesChartsRepo.findConsoleByPath(WS, "consoles/legacy.sql"))
+        ?.is_deleted,
     ).not.toBe(true);
   });
 });
@@ -650,7 +672,7 @@ describe("descriptions are content-addressed", () => {
     expect(await deriveConsoleDescription(saved._id.toString())).toBe(
       "updated",
     );
-    const row = await SavedConsole.findById(saved._id);
+    const row = await findConsole(saved._id);
     expect(row?.descriptionSource).toBe("authored");
     expect(row?.descriptionSourceSha).toBe(row?.sourceBlobSha);
     expect(await deriveConsoleDescription(saved._id.toString())).toBe(
@@ -659,11 +681,11 @@ describe("descriptions are content-addressed", () => {
 
     // Content moves → stale again; with no LLM configured the generated
     // path reports unavailable rather than writing anything.
-    await SavedConsole.updateOne(
-      { _id: saved._id },
-      { $set: { description: "", descriptionSource: "generated" } },
-    );
-    const fresh = must(await SavedConsole.findById(saved._id), "fresh");
+    await consolesChartsRepo.updateConsole(WS, saved._id.toString(), {
+      description: "",
+      descriptionSource: "generated",
+    });
+    const fresh = must(await findConsole(saved._id), "fresh");
     fresh.code = "SELECT 2";
     const committed = await commitConsoleState({
       row: fresh,
@@ -671,16 +693,16 @@ describe("descriptions are content-addressed", () => {
       actorUserId: USER,
       message: "save: d",
     });
-    await SavedConsole.updateOne(
-      { _id: saved._id },
-      { $set: { code: "SELECT 2", sourceBlobSha: committed.sourceBlobSha } },
-    );
+    await consolesChartsRepo.updateConsole(WS, saved._id.toString(), {
+      code: "SELECT 2",
+      sourceBlobSha: committed.sourceBlobSha,
+    });
     expect(await deriveConsoleDescription(saved._id.toString())).toBe(
       "unavailable",
     );
-    expect(
-      (await SavedConsole.findById(saved._id))?.descriptionSourceSha,
-    ).not.toBe(committed.sourceBlobSha);
+    expect((await findConsole(saved._id))?.descriptionSourceSha).not.toBe(
+      committed.sourceBlobSha,
+    );
   });
 
   it("a stale result never overwrites a newer file", async () => {
@@ -698,36 +720,27 @@ describe("descriptions are content-addressed", () => {
         description: "v1",
       },
     );
-    // Simulate: derivation read the row at sha A, the file moved to sha B
-    // before the write. The guard on sourceBlobSha refuses the write.
-    await SavedConsole.updateOne(
-      { _id: saved._id },
-      { $set: { sourceBlobSha: "b".repeat(40) } },
+    // Simulate the file moving after derivation read the original SHA.
+    const newSha = "b".repeat(40);
+    await consolesChartsRepo.updateConsole(WS, saved._id.toString(), {
+      sourceBlobSha: newSha,
+    });
+    expect((await findConsole(saved._id))?.sourceBlobSha).toBe(newSha);
+    const updated = await consolesChartsRepo.guardedUpdateConsoleDescription(
+      WS,
+      saved._id.toString(),
+      saved.sourceBlobSha,
+      { description: "stale" },
     );
-    const rowAtA = await SavedConsole.findById(saved._id);
-    expect(rowAtA?.sourceBlobSha).toBe("b".repeat(40));
-    await SavedConsole.updateOne(
-      { _id: saved._id },
-      { $set: { sourceBlobSha: saved.sourceBlobSha } },
-    );
-    // Direct check of the guard: a write claiming sha A against a row at B.
-    await SavedConsole.updateOne(
-      { _id: saved._id },
-      { $set: { sourceBlobSha: "b".repeat(40) } },
-    );
-    const res = await SavedConsole.updateOne(
-      { _id: saved._id, sourceBlobSha: saved.sourceBlobSha },
-      { $set: { description: "stale" } },
-    );
-    expect(res.matchedCount).toBe(0);
+    expect(updated).toBe(false);
   });
 });
 
 describe("adoption", () => {
   it("replays versions as commits, keeps embeddings, is re-runnable", async () => {
-    const id = new Types.ObjectId();
-    await SavedConsole.create({
-      _id: id,
+    const id = new Types.ObjectId().toString();
+    await consolesChartsRepo.createConsole({
+      id,
       workspaceId: WS,
       name: "Churn",
       code: "SELECT 3",
@@ -740,27 +753,28 @@ describe("adoption", () => {
       executionCount: 3,
       description: "generated earlier",
       descriptionGeneratedAt: new Date(),
-      descriptionEmbedding: [0.5],
+      descriptionEmbedding: adoptionEmbedding,
       embeddingModel: "text-embedding-3-small",
     });
     const t0 = new Date("2026-05-01T10:00:00Z");
     // v2 is deliberately file-identical to v1 (a metadata-only save): it
     // must STILL become a commit — its message and author are the record.
     for (const [i, code] of ["SELECT 1", "SELECT 1", "SELECT 3"].entries()) {
-      await EntityVersion.create({
+      await consolesChartsRepo.createEntityVersion({
         workspaceId: WS,
         entityType: "console",
         entityId: id,
         version: i + 1,
         snapshot: { name: "Churn", code, language: "sql", access: "workspace" },
-        savedBy: USER,
+        // The original author is gone, but the historical name survives.
+        savedBy: null,
         savedByName: "someone@example.com",
         comment: i === 1 ? "tightened the filter" : "",
         createdAt: new Date(t0.getTime() + i * 3600_000),
       });
     }
     // A draft must not be adopted.
-    await SavedConsole.create({
+    await consolesChartsRepo.createConsole({
       workspaceId: WS,
       name: "Untitled",
       code: "select",
@@ -801,12 +815,14 @@ describe("adoption", () => {
       `users/${HANDLE}/consoles/Untitled.sql`,
     );
 
-    const row = await SavedConsole.findById(id).select("+descriptionEmbedding");
+    const row = await findConsole(id, {
+      includeEmbedding: true,
+    });
     expect(row?.path).toBe("consoles/Churn.sql");
     expect(row?.sourceBlobSha).toBe(
       blobOid(must(await fileAt("consoles/Churn.sql"), "Churn.sql")),
     );
-    expect(row?.descriptionEmbedding).toEqual([0.5]);
+    expect(row?.descriptionEmbedding).toEqual(adoptionEmbedding);
     expect(row?.descriptionSourceSha).toBe(row?.sourceBlobSha);
     expect(row?.descriptionSource).toBe("generated");
     // A generated description stays out of the file.
@@ -825,7 +841,7 @@ describe("adoption", () => {
 
   it("two consoles that sanitize to one path get distinct files", async () => {
     for (const name of ["a/b", "a b"]) {
-      await SavedConsole.create({
+      await consolesChartsRepo.createConsole({
         workspaceId: WS,
         name,
         code: `SELECT '${name}'`,
@@ -843,7 +859,7 @@ describe("adoption", () => {
       p => p.startsWith("consoles/") && p.endsWith(".sql"),
     );
     expect(paths).toEqual(["consoles/a b (2).sql", "consoles/a b.sql"]);
-    const rows = await SavedConsole.find({ workspaceId: WS });
+    const rows = await consolesChartsRepo.listConsolesByWorkspace(WS);
     expect(new Set(rows.map(r => r.path)).size).toBe(2);
   });
 });
@@ -863,7 +879,7 @@ describe("history — the apps surface for a console", () => {
         language: "sql",
       },
     );
-    const v1 = must(await SavedConsole.findById(saved._id), "v1");
+    const v1 = must(await findConsole(saved._id), "v1");
     v1.code = "SELECT 2";
     const second = await commitConsoleState({
       row: v1,
@@ -871,12 +887,12 @@ describe("history — the apps surface for a console", () => {
       actorUserId: USER,
       message: "second",
     });
-    await SavedConsole.updateOne(
-      { _id: saved._id },
-      { $set: { code: "SELECT 2", sourceBlobSha: second.sourceBlobSha } },
-    );
+    await consolesChartsRepo.updateConsole(WS, saved._id.toString(), {
+      code: "SELECT 2",
+      sourceBlobSha: second.sourceBlobSha,
+    });
 
-    const row = must(await SavedConsole.findById(saved._id), "row");
+    const row = must(await findConsole(saved._id), "row");
     const history = await consoleHistory(row);
     expect(history.map(c => c.subject)).toEqual(["second", "create: h"]);
 
@@ -897,7 +913,7 @@ describe("history — the apps surface for a console", () => {
     const versionBefore = row.version;
     const restored = await restoreConsoleTo(row, history[1].oid, USER);
     expect(restored.unchanged).toBe(false);
-    const after = must(await SavedConsole.findById(saved._id), "after");
+    const after = must(await findConsole(saved._id), "after");
     expect(after.code).toBe("SELECT 1");
     expect(after.connectionId?.toString()).toBe("68471be56e70c184bbc6cceb");
     expect(after.version).toBe(versionBefore + 1);
@@ -910,7 +926,10 @@ describe("history — the apps surface for a console", () => {
   it("restoring a version that names another workspace's connection drops it", async () => {
     const otherWs = new Types.ObjectId().toString();
     const foreign = new Types.ObjectId().toString();
-    await seedTestConnections(otherWs, { database: [foreign] });
+    await ensureTestDatabaseConnection(pgh.db, {
+      workspaceId: otherWs,
+      id: foreign,
+    });
     const saved = await manager.saveConsole(
       "r",
       "SELECT 1",
@@ -925,10 +944,10 @@ describe("history — the apps surface for a console", () => {
     await externalCommit({
       "consoles/r.sql": `-- connection: ${foreign}\n\nSELECT 2\n`,
     });
-    const row = must(await SavedConsole.findById(saved._id), "row");
+    const row = must(await findConsole(saved._id), "row");
     const history = await consoleHistory(row);
     await restoreConsoleTo(row, history[0].oid, USER);
-    const after = must(await SavedConsole.findById(saved._id), "after");
+    const after = must(await findConsole(saved._id), "after");
     expect(after.code).toBe("SELECT 2");
     expect(after.connectionId).toBeUndefined();
     expect(await fileAt("consoles/r.sql")).not.toContain(foreign);
@@ -945,7 +964,7 @@ describe("history — the apps surface for a console", () => {
       undefined,
       { access: "workspace", language: "sql" },
     );
-    const row = must(await SavedConsole.findById(saved._id), "row");
+    const row = must(await findConsole(saved._id), "row");
     expect(await consoleHistory(row)).not.toEqual([]);
     await unbindTestWorkspaceRepo(WS);
     expect(await consoleHistory(row)).toEqual([]);
@@ -962,7 +981,7 @@ function flattenConsoles(nodes: ConsoleFile[]): ConsoleFile[] {
 }
 
 describe("GET/list from git", () => {
-  it("serves the file at main when the Mongo row has no body", async () => {
+  it("serves the file at main when the Postgres row has no body", async () => {
     const saved = await manager.saveConsole(
       "body-from-git",
       "SELECT 'git-body'",
@@ -973,9 +992,11 @@ describe("GET/list from git", () => {
       undefined,
       { access: "workspace", language: "sql" },
     );
-    await SavedConsole.updateOne({ _id: saved._id }, { $set: { code: "" } });
-    const mongo = await SavedConsole.findById(saved._id);
-    expect(mongo?.code).toBe("");
+    await consolesChartsRepo.updateConsole(WS, saved._id.toString(), {
+      code: "",
+    });
+    const stored = await findConsole(saved._id);
+    expect(stored?.code).toBe("");
 
     const listed = flattenConsoles(await manager.listConsoles(WS, USER));
     const hit = listed.find(c => c.name === "body-from-git");
@@ -985,7 +1006,7 @@ describe("GET/list from git", () => {
     expect(meta?.content).toContain("SELECT 'git-body'");
   });
 
-  it("lists a git file that has no Mongo row", async () => {
+  it("lists a git file that has no Postgres row", async () => {
     await adoptWorkspaceConsoles(WS, { replayHistory: false });
     await externalCommit({
       "consoles/from-laptop.sql": "SELECT 42 -- laptop\n",
@@ -996,7 +1017,7 @@ describe("GET/list from git", () => {
     expect(hit?.content).toContain("SELECT 42");
   });
 
-  it("never reconciles or soft-deletes Mongo as a side effect of listing", async () => {
+  it("never reconciles or soft-deletes Postgres rows as a side effect of listing", async () => {
     const saved = await manager.saveConsole(
       "removed-elsewhere",
       "SELECT 1",
@@ -1011,7 +1032,7 @@ describe("GET/list from git", () => {
     await externalCommit({}, [saved.path as string]);
 
     expect(await manager.listConsoles(WS, USER)).toEqual([]);
-    const row = await SavedConsole.findById(saved._id);
+    const row = await findConsole(saved._id);
     expect(row?.is_deleted).not.toBe(true);
   });
 
@@ -1030,11 +1051,11 @@ describe("GET/list from git", () => {
     expect(second).toBe(third);
   });
 
-  it("does not list a Mongo row that has no git file", async () => {
+  it("does not list a Postgres row that has no git file", async () => {
     await adoptWorkspaceConsoles(WS, { replayHistory: false });
-    await SavedConsole.create({
+    await consolesChartsRepo.createConsole({
       workspaceId: WS,
-      name: "mongo-only",
+      name: "index-only",
       code: "SELECT 'should-not-appear'",
       language: "sql",
       createdBy: USER,
@@ -1047,10 +1068,10 @@ describe("GET/list from git", () => {
       draftRevision: 1,
     });
     const listed = flattenConsoles(await manager.listConsoles(WS, USER));
-    expect(listed.map(c => c.name)).not.toContain("mongo-only");
+    expect(listed.map(c => c.name)).not.toContain("index-only");
   });
 
-  it("does not list leftover local git or Mongo when no GitHub repo is bound", async () => {
+  it("does not list leftover local git or Postgres rows when no GitHub repo is bound", async () => {
     const saved = await manager.saveConsole(
       "leftover-list",
       "SELECT leftover",
@@ -1074,7 +1095,7 @@ describe("GET/list from git", () => {
     const leftoverPath = saved.path;
     expect(leftoverPath).toBeTruthy();
     expect(await fileAt(leftoverPath as string)).toContain("SELECT leftover");
-    expect(await SavedConsole.findById(saved._id)).not.toBeNull();
+    expect(await findConsole(saved._id)).not.toBeNull();
   });
 });
 
@@ -1094,7 +1115,7 @@ describe("route-side projection", () => {
         description: "keep me",
       },
     );
-    const current = must(await SavedConsole.findById(saved._id), "current");
+    const current = must(await findConsole(saved._id), "current");
     // What the explicit-save handler sends when the client omits a field.
     const projected = await projectSavedConsole({
       workspaceId: WS,
@@ -1139,7 +1160,7 @@ describe("route-side projection", () => {
     const updateSpy = vi
       .spyOn(consolesChartsRepo, "updateConsole")
       .mockImplementationOnce(async (...args) => {
-        await SavedConsole.deleteOne({ _id: saved._id });
+        await deleteConsoleRow(saved._id);
         return origUpdate(...args);
       });
 
@@ -1158,7 +1179,7 @@ describe("route-side projection", () => {
     updateSpy.mockRestore();
 
     // No orphaned git file remains and no DB row exists
-    expect(await SavedConsole.findById(saved._id)).toBeNull();
+    expect(await findConsole(saved._id)).toBeNull();
     expect(await fileAt(savedPath)).toBeNull();
 
     // Route-level save helpers map ConsoleNotFoundError to 404
@@ -1176,7 +1197,7 @@ describe("route-side projection", () => {
     const updateSpy2 = vi
       .spyOn(consolesChartsRepo, "updateConsole")
       .mockImplementationOnce(async (...args) => {
-        await SavedConsole.deleteOne({ _id: saved2._id });
+        await deleteConsoleRow(saved2._id);
         return origUpdate(...args);
       });
 
@@ -1208,7 +1229,7 @@ describe("route-side projection", () => {
     const updateSpy3 = vi
       .spyOn(consolesChartsRepo, "updateConsole")
       .mockImplementationOnce(async (...args) => {
-        await SavedConsole.deleteOne({ _id: saved3._id });
+        await deleteConsoleRow(saved3._id);
         return origUpdate(...args);
       });
 

@@ -1,6 +1,5 @@
 /**
- * Skill usage: the daily rollup behind `loads30d` and `lastLoadedAt`. Real
- * Mongo (the unique key and the `$inc` upsert are the point).
+ * Skill usage: the daily rollup behind `loads30d` and `lastLoadedAt`. PGlite exercises the unique key and atomic upsert.
  */
 import {
   afterAll,
@@ -12,12 +11,18 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
 import {
-  SKILL_USAGE_TTL_SECONDS,
-  SkillUsageDaily,
-} from "../database/workspace-schema";
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
+import { skillUsageDaily } from "../database/pg/schema";
+import {
+  DEFAULT_PG_TTL_RULES,
+  reapExpiredRows,
+} from "../database/pg/ttl-reaper";
+import { usageStatsRepo } from "../repositories/usage-stats";
 import {
   getSkillUsage,
   getSkillUsageOrNull,
@@ -27,7 +32,7 @@ import {
   skillUsageKey,
 } from "./skill-usage.service";
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 const WS = new Types.ObjectId().toString();
 const OTHER_WS = new Types.ObjectId().toString();
 const at = (iso: string) => new Date(iso);
@@ -35,18 +40,17 @@ const NOW = at("2026-11-13T12:00:00Z");
 const glossary = { skill: "glossary", scope: "workspace" as const };
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
-  await SkillUsageDaily.syncIndexes();
+  pgh = await setupPgTestDb();
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh?.close();
 });
 
 beforeEach(async () => {
-  await SkillUsageDaily.deleteMany({});
+  await pgh.reset();
+  await ensureTestWorkspace(pgh.db, { id: WS });
+  await ensureTestWorkspace(pgh.db, { id: OTHER_WS });
 });
 
 afterEach(() => {
@@ -73,9 +77,10 @@ describe("recordSkillUsageNow", () => {
       at("2026-11-14T00:01:00Z"),
     );
 
-    const rows = await SkillUsageDaily.find({})
-      .sort({ day: 1, source: 1 })
-      .lean();
+    const rows = await pgh.db
+      .select()
+      .from(skillUsageDaily)
+      .orderBy(skillUsageDaily.day, skillUsageDaily.source);
     expect(
       rows.map(row => [
         row.day,
@@ -93,9 +98,9 @@ describe("recordSkillUsageNow", () => {
     expect(rows[0].lastAt).toEqual(at("2026-11-13T23:59:00Z"));
     // Counts only: nothing about who asked or what they asked.
     expect(Object.keys(rows[0]).sort()).toEqual([
-      "_id",
       "day",
       "firstAt",
+      "id",
       "lastAt",
       "loads",
       "relevantHits",
@@ -113,17 +118,40 @@ describe("recordSkillUsageNow", () => {
         recordSkillUsageNow(WS, [glossary], "load", "agent", NOW),
       ),
     );
-    const rows = await SkillUsageDaily.find({}).lean();
+    const rows = await pgh.db.select().from(skillUsageDaily);
     expect(rows).toHaveLength(1);
     expect(rows[0].loads).toBe(20);
   });
 
   it("expires rows 400 days after their last bump", async () => {
-    const indexes = await SkillUsageDaily.collection.indexes();
-    const ttl = indexes.find(index => index.expireAfterSeconds !== undefined);
-    expect(ttl?.key).toEqual({ lastAt: 1 });
-    expect(ttl?.expireAfterSeconds).toBe(SKILL_USAGE_TTL_SECONDS);
-    expect(SKILL_USAGE_TTL_SECONDS).toBe(400 * 24 * 60 * 60);
+    const rule = DEFAULT_PG_TTL_RULES.find(
+      rule => rule.tableName === "skill_usage_daily",
+    );
+    if (!rule) throw new Error("Missing skill usage retention rule");
+    const cutoff = NOW.getTime() - 400 * 24 * 60 * 60 * 1000;
+    await recordSkillUsageNow(
+      WS,
+      [glossary],
+      "load",
+      "agent",
+      new Date(cutoff - 1),
+    );
+    await recordSkillUsageNow(
+      WS,
+      [glossary],
+      "load",
+      "mcp",
+      new Date(cutoff - 1),
+    );
+    await recordSkillUsageNow(WS, [glossary], "load", "mcp", new Date(cutoff));
+    await reapExpiredRows(rule, { db: pgh.db, now: NOW });
+    const rows = await pgh.db.select().from(skillUsageDaily);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      source: "mcp",
+      loads: 2,
+      lastAt: new Date(cutoff),
+    });
   });
 });
 
@@ -183,33 +211,33 @@ describe("getSkillUsage", () => {
 describe("recording never fails a load", () => {
   it("returns at once and swallows a database error", async () => {
     const write = vi
-      .spyOn(SkillUsageDaily, "bulkWrite")
-      .mockRejectedValue(new Error("mongo is down"));
+      .spyOn(usageStatsRepo, "bumpSkillUsageDaily")
+      .mockRejectedValue(new Error("database is down"));
     expect(() =>
       recordSkillUsage(WS, [glossary], "load", "agent"),
     ).not.toThrow();
     await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
     // The rejection was handled: one more turn of the loop and no crash.
     await new Promise(resolve => setImmediate(resolve));
-    expect(await SkillUsageDaily.countDocuments({})).toBe(0);
+    expect(await pgh.db.$count(skillUsageDaily)).toBe(0);
   });
 
   it("writes in the background when the database is up", async () => {
     recordSkillUsage(WS, [glossary], "load", "mcp");
     await vi.waitFor(async () =>
-      expect(await SkillUsageDaily.countDocuments({})).toBe(1),
+      expect(await pgh.db.$count(skillUsageDaily)).toBe(1),
     );
   });
 
   it("ignores an empty list and a workspace id that is not an id", async () => {
     recordSkillUsage(WS, [], "relevant", "agent");
     await recordSkillUsageNow("not-an-id", [glossary], "load", "agent");
-    expect(await SkillUsageDaily.countDocuments({})).toBe(0);
+    expect(await pgh.db.$count(skillUsageDaily)).toBe(0);
   });
 
   it("answers null, not an error, when the numbers cannot be read", async () => {
-    vi.spyOn(SkillUsageDaily, "aggregate").mockImplementation(() => {
-      throw new Error("mongo is down");
+    vi.spyOn(usageStatsRepo, "getSkillUsageSummary").mockImplementation(() => {
+      throw new Error("database is down");
     });
     expect(await getSkillUsageOrNull(WS)).toBeNull();
   });

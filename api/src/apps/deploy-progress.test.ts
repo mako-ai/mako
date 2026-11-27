@@ -1,12 +1,19 @@
 /**
  * Deploy progress on the app row: what app_publish_status reports between
- * "enqueued" and "live". Real Mongo for the writes; the view is pure.
+ * "enqueued" and "live". PGlite for the writes; the view is pure.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import type { Types } from "mongoose";
+import {
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 
-import { AppProject } from "../database/workspace-schema";
+import {
+  appsMetadataRepo,
+  toAppProjectCompat,
+} from "../repositories/apps-metadata";
 import {
   DEPLOY_STALL_MS,
   clearDeployProgress,
@@ -18,34 +25,35 @@ import {
   markDeployStage,
 } from "./deploy-progress";
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
 }, 120_000);
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh?.close();
 });
 
 beforeEach(async () => {
-  await AppProject.deleteMany({});
+  await pgh.reset();
 });
 
 async function seedApp() {
-  return AppProject.create({
-    workspaceId: new Types.ObjectId(),
-    title: "Pipeline",
-    slug: "pipeline",
-  });
+  const workspace = await ensureTestWorkspace(pgh.db);
+  return toAppProjectCompat(
+    await appsMetadataRepo.createProject({
+      workspaceId: workspace.id,
+      title: "Pipeline",
+      slug: "pipeline",
+    }),
+  );
 }
 
 async function progressOf(id: Types.ObjectId) {
-  const row = await AppProject.findById(id).lean();
+  const row = await appsMetadataRepo.findProjectById(id.toString());
   return row?.deployProgress ?? null;
 }
 

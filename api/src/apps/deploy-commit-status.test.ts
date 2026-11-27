@@ -1,5 +1,5 @@
 /**
- * Deploy outcomes as GitHub commit statuses. Real Mongo (the per-commit
+ * Deploy outcomes as GitHub commit statuses. PGlite (the per-commit
  * ledger's compare-and-set is the point) and a real git repo (ancestry
  * decides what "superseded" means); GitHub, auth and realtime are stubbed.
  */
@@ -16,8 +16,15 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { and, eq } from "drizzle-orm";
+import { objectIdToUuid } from "../database/pg/id-codec";
+import { appDeployCommitStatuses } from "../database/pg/schema";
+import {
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 
 const state = vi.hoisted(() => ({
   repoDir: "",
@@ -84,10 +91,7 @@ vi.mock("./worktree.service", () => ({
   resolveProjectRef: vi.fn(async () => state.project),
 }));
 
-import {
-  AppDeployCommitStatus,
-  AppProject,
-} from "../database/workspace-schema";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
 import {
   appDeployStatusContext,
   describeDeployFailure,
@@ -99,7 +103,7 @@ import {
 const WS = new Types.ObjectId().toString();
 const APP = new Types.ObjectId().toString();
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmp: string;
 /** main: C1 → C2 → C3; SIDE forks from C1 (neither ancestor nor descendant of C3). */
 const commits = { C1: "", C2: "", C3: "", SIDE: "" };
@@ -123,8 +127,7 @@ function commit(message: string): string {
 }
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "deploy-status-"));
   state.repoDir = tmp;
   git("init", "-q", "-b", "main");
@@ -137,8 +140,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh?.close();
   fs.rmSync(tmp, {
     recursive: true,
     force: true,
@@ -165,10 +167,8 @@ beforeEach(async () => {
   state.events = [];
   process.env.CLIENT_URL = "https://app.mako.ai/";
   resetDeployStatusWarningsForTest();
-  await Promise.all([
-    AppDeployCommitStatus.deleteMany({}),
-    AppProject.deleteMany({}),
-  ]);
+  await pgh.reset();
+  await ensureTestWorkspace(pgh.db, { id: WS });
 });
 
 function report(
@@ -185,12 +185,20 @@ function report(
   });
 }
 
+function ledgerKey(sha: string) {
+  return and(
+    eq(appDeployCommitStatuses.workspaceId, objectIdToUuid(WS)),
+    eq(appDeployCommitStatuses.appId, objectIdToUuid(APP)),
+    eq(appDeployCommitStatuses.sha, sha),
+  );
+}
+
 async function ledger(sha: string) {
-  return (
-    await AppDeployCommitStatus.findOne({ workspaceId: WS, appId: APP, sha })
-      .select("state")
-      .lean()
-  )?.state;
+  const [row] = await pgh.db
+    .select({ state: appDeployCommitStatuses.state })
+    .from(appDeployCommitStatuses)
+    .where(ledgerKey(sha));
+  return row?.state;
 }
 
 const posted = () =>
@@ -307,7 +315,7 @@ describe("reportAppDeployStatus", () => {
   // Review finding 1: a folder-only app has no row when its first deploy
   // starts; the ledger does not need one.
   it("resolves the first commit of an app that has no row yet", async () => {
-    expect(await AppProject.countDocuments({})).toBe(0);
+    expect(await appsMetadataRepo.listProjectsByWorkspace(WS)).toHaveLength(0);
     await report(commits.C1, "pending");
     state.posts = [];
     await report(commits.C2, "pending");
@@ -333,16 +341,16 @@ describe("reportAppDeployStatus", () => {
     await report(commits.C1, "pending");
     state.posts = [];
     // The failure lands between the resolver reading "pending" and its CAS.
-    const find = AppDeployCommitStatus.findOneAndUpdate.bind(
-      AppDeployCommitStatus,
-    );
+    const compareAndSet = appsMetadataRepo.casResolvePendingCommitStatus;
     const spy = vi
-      .spyOn(AppDeployCommitStatus, "findOneAndUpdate")
-      .mockImplementationOnce(((...args: Parameters<typeof find>) =>
-        AppDeployCommitStatus.updateOne(
-          { workspaceId: WS, appId: APP, sha: commits.C1 },
-          { $set: { state: "failure" } },
-        ).then(() => find(...args))) as unknown as typeof find);
+      .spyOn(appsMetadataRepo, "casResolvePendingCommitStatus")
+      .mockImplementationOnce(async (...args) => {
+        await pgh.db
+          .update(appDeployCommitStatuses)
+          .set({ state: "failure" })
+          .where(ledgerKey(commits.C1));
+        return compareAndSet(...args);
+      });
     await report(commits.C2, "pending");
     spy.mockRestore();
     expect(posted()).toEqual([[commits.C2, "pending", "pending"]]);
@@ -379,9 +387,10 @@ describe("reportAppDeployStatus", () => {
 
   // Review finding 4: cancelled after going live, before its final report.
   it("calls a pending commit that is LIVE 'Live', not 'Skipped'", async () => {
-    await AppProject.collection.insertOne({
-      _id: new Types.ObjectId(APP),
-      workspaceId: new Types.ObjectId(WS),
+    await appsMetadataRepo.createProject({
+      id: APP,
+      workspaceId: WS,
+      title: "Calls",
       publishedSha: commits.C1,
     });
     await report(commits.C1, "pending");

@@ -12,8 +12,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import {
+  ensureTestMember,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 
 // The push reaction is the one side effect the endpoint owns; observe it
 // instead of the mirror queue and realtime bus it fans out to.
@@ -40,7 +44,6 @@ import {
   verifyGitToken,
 } from "./git-token.service";
 import { startTestGitServer, type TestGitServer } from "./test-git-server";
-import { WorkspaceMember } from "../database/workspace-schema";
 
 const run = promisify(execFile);
 const WS = "6846e6a01b05af0948070599";
@@ -48,7 +51,7 @@ const OTHER_WS = "6846e6a01b05af0948070600";
 
 let tmpRoot: string;
 let server: TestGitServer;
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let repoDir: string;
 
 /** Env that lets the git CLI authenticate non-interactively with `token`. */
@@ -122,18 +125,23 @@ beforeAll(async () => {
 
   server = await startTestGitServer();
   // The endpoint reads the pusher's role for the workflows rule.
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
-  await WorkspaceMember.collection.insertMany([
-    { workspaceId: new Types.ObjectId(WS), userId: "admin", role: "admin" },
-    { workspaceId: new Types.ObjectId(WS), userId: "member", role: "member" },
-  ]);
+  pgh = await setupPgTestDb();
+  await ensureTestWorkspace(pgh.db, { id: WS });
+  await ensureTestMember(pgh.db, {
+    workspaceId: WS,
+    userId: "admin",
+    role: "admin",
+  });
+  await ensureTestMember(pgh.db, {
+    workspaceId: WS,
+    userId: "member",
+    role: "member",
+  });
 }, 120_000);
 
 afterAll(async () => {
   await server?.close();
-  await mongoose.disconnect();
-  await mongo?.stop();
+  await pgh?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,

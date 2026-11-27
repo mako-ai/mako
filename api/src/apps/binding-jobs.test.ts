@@ -11,7 +11,7 @@
  *     draft object, never the app's artifact) go when the project makes
  *     another.
  *
- * Real Mongo for the job rows; the builders are injected.
+ * PGlite for the job rows; the builders are injected.
  */
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -25,8 +25,16 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { eq } from "drizzle-orm";
+import { generateUuidv7, parseEntityId } from "../database/pg/id-codec";
+import { appBindingJobs } from "../database/pg/schema";
+import {
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 import type { IAppProject } from "../database/workspace-schema";
 import {
   JOB_LEASE_MS,
@@ -48,8 +56,9 @@ import { runBindingJob, type BindingJobRunnerDeps } from "./binding-job-runner";
 import { DevBuildError } from "./binding-dev-build";
 import { getArtifactStore } from "../services/artifact-store.service";
 
-let mongo: MongoMemoryServer;
+let pgh: PgTestDb;
 let tmpRoot: string;
+const USER = generateUuidv7();
 const WS = new Types.ObjectId().toString();
 const PROJECT = new Types.ObjectId().toString();
 const project = {
@@ -61,13 +70,11 @@ beforeAll(async () => {
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "binding-jobs-test-"));
   process.env.DASHBOARD_ARTIFACT_DIR = path.join(tmpRoot, "artifacts");
   delete process.env.DASHBOARD_ARTIFACT_STORE;
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  pgh = await setupPgTestDb();
 }, 120_000);
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
+  await pgh?.close();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -76,8 +83,22 @@ afterAll(async () => {
   });
 });
 
+async function updateJob(
+  id: Types.ObjectId,
+  patch: Partial<typeof appBindingJobs.$inferInsert>,
+) {
+  const parsed = parseEntityId(id.toString());
+  if (!parsed) throw new Error("Invalid job fixture id");
+  await pgh.db
+    .update(appBindingJobs)
+    .set(patch)
+    .where(eq(appBindingJobs.id, parsed.uuid));
+}
+
 beforeEach(async () => {
-  await mongoose.connection.collection("app_binding_jobs").deleteMany({});
+  await pgh.reset();
+  await ensureTestWorkspace(pgh.db, { id: WS });
+  await ensureTestUser(pgh.db, { id: USER });
 });
 
 function newJob(
@@ -90,8 +111,8 @@ function newJob(
       projectId: PROJECT,
       name: "calls_q3",
       kind: "dev-build",
-      actorId: "u1",
-      userId: "u1",
+      actorId: USER,
+      userId: USER,
       canWrite: true,
       request: { source: "-- connection: c\nselect 1" },
       ...overrides,
@@ -148,7 +169,7 @@ describe("binding jobs", () => {
     expect(serializeBindingJob(job).status).toBe("queued");
     const d = deps();
     expect(await runBindingJob(job, d)).toBe("ready");
-    expect(d.materialize).toHaveBeenCalledWith(project, "calls_q3", "u1");
+    expect(d.materialize).toHaveBeenCalledWith(project, "calls_q3", USER);
     expect(serializeBindingJob(await reload(job))).toMatchObject({
       status: "ready",
       build: "materialized",
@@ -214,7 +235,7 @@ describe("binding jobs", () => {
       expect.objectContaining({
         project,
         name: "calls_q3",
-        actorId: "u1",
+        actorId: USER,
         canWrite: true,
         source: "x",
         dbtEnvironment: "joan",
@@ -309,7 +330,7 @@ describe("binding jobs", () => {
       resolveUnregistered: vi.fn(async () => project),
     });
     expect(await runBindingJob(queued, d)).toBe("ready");
-    expect(d.resolveUnregistered).toHaveBeenCalledWith(WS, PROJECT, "u1");
+    expect(d.resolveUnregistered).toHaveBeenCalledWith(WS, PROJECT, USER);
     expect(d.plan).toHaveBeenCalledWith(
       expect.objectContaining({ project, unregistered: true }),
     );
@@ -352,30 +373,20 @@ describe("binding jobs", () => {
     const t0 = new Date(Date.now() - 2 * JOB_TTL_MS);
     const draftJob = await newJob({}, t0);
     const draftKey = await storeJobDraft(draftJob, await localFile());
-    await mongoose.connection.collection("app_binding_jobs").updateOne(
-      { _id: draftJob._id },
-      {
-        $set: {
-          status: "ready",
-          result: { artifactKey: draftKey, build: "draft" },
-          expiresAt: new Date(t0.getTime() + JOB_TTL_MS),
-        },
-      },
-    );
+    await updateJob(draftJob._id, {
+      status: "ready",
+      result: { artifactKey: draftKey, build: "draft" },
+      expiresAt: new Date(t0.getTime() + JOB_TTL_MS),
+    });
     const committedKey = "apps/bindings/c/keep.parquet";
     const committedFile = await localFile();
     await getArtifactStore().put(committedFile, committedKey);
     const committedJob = await newJob({ kind: "materialize" }, t0);
-    await mongoose.connection.collection("app_binding_jobs").updateOne(
-      { _id: committedJob._id },
-      {
-        $set: {
-          status: "ready",
-          result: { artifactKey: committedKey, build: "materialized" },
-          expiresAt: new Date(t0.getTime() + JOB_TTL_MS),
-        },
-      },
-    );
+    await updateJob(committedJob._id, {
+      status: "ready",
+      result: { artifactKey: committedKey, build: "materialized" },
+      expiresAt: new Date(t0.getTime() + JOB_TTL_MS),
+    });
 
     await newJob();
     const store = getArtifactStore();
@@ -460,12 +471,10 @@ describe("leases and expiry", () => {
     const t0 = new Date(Date.now() - 3 * JOB_TTL_MS);
     const queued = await newJob({}, t0);
     const running = await newJob({ name: "r" }, t0);
-    await mongoose.connection
-      .collection("app_binding_jobs")
-      .updateOne(
-        { _id: running._id },
-        { $set: { status: "running", heartbeatAt: new Date() } },
-      );
+    await updateJob(running._id, {
+      status: "running",
+      heartbeatAt: new Date(),
+    });
     await newJob({ name: "trigger" });
     expect(await getBindingJobById(queued._id.toString())).not.toBeNull();
     expect(await getBindingJobById(running._id.toString())).not.toBeNull();
